@@ -1,0 +1,112 @@
+{
+  "theme": "dark",
+  "archetype": "2 (The Performance Pro)",
+  "design_philosophy": "A high-intensity, data-driven betting intelligence command center. Blends DraftKings' gamified player-pick cards with Bloomberg Terminal's data density. Uses tactical minimalism: 1px borders, high contrast pure white text on deep obsidian, and electric accent colors for lock scores.",
+  "colors": {
+    "background": {
+      "main": "#0A0A0A",
+      "surface": "#141414",
+      "surface_elevated": "#1E1E1E"
+    },
+    "text": {
+      "primary": "#FFFFFF",
+      "secondary": "#A1A1AA",
+      "muted": "#71717A",
+      "inverse": "#000000"
+    },
+    "accents": {
+      "volt_blue": "#007AFF",
+      "electric_blaze": "#FF3B30",
+      "neon_green": "#32D74B",
+      "gold_elite": "#FFD700"
+    },
+    "grades": {
+      "elite_lock_95_100": "#FFD700",
+      "strong_lock_90_94": "#32D74B",
+      "good_bet_85_89": "#007AFF",
+      "pass_below_85": "#71717A"
+    },
+    "borders": {
+      "default": "rgba(255, 255, 255, 0.1)",
+      "active": "rgba(255, 255, 255, 0.3)"
+    }
+  },
+  "typography": {
+    "font_family": {
+      "headings": "'Barlow Condensed', sans-serif",
+      "body": "'IBM Plex Sans', sans-serif",
+      "mono_data": "'JetBrains Mono', monospace"
+    },
+    "hierarchy": {
+      "h1": "text-4xl font-black tracking-tighter uppercase",
+      "h2": "text-2xl font-bold tracking-tight uppercase",
+      "h3": "text-xl font-semibold tracking-tight",
+      "body": "text-sm leading-relaxed",
+      "data_large": "text-5xl font-black tracking-tighter tabular-nums",
+      "label": "text-xs font-bold uppercase tracking-[0.2em] text-zinc-400"
+    }
+  },
+  "spacing_and_layout": {
+    "mobile_first": true,
+    "container": "px-4 py-6 pb-24",
+    "cards": "p-5 rounded-xl border border-white/10 bg-[#141414]",
+    "grid": "grid-cols-1 gap-4",
+    "bento_detail": "grid grid-cols-2 gap-3"
+  },
+  "components": {
+    "bottom_nav": {
+      "style": "fixed bottom-0 left-0 w-full h-20 border-t border-white/10 bg-black/80 backdrop-blur-xl flex justify-around items-center z-50 pb-safe",
+      "active_state": "text-white scale-110 transition-transform",
+      "inactive_state": "text-zinc-500"
+    },
+    "filter_chips": {
+      "style": "flex overflow-x-auto gap-2 pb-2 scrollbar-hide",
+      "chip_base": "px-4 py-2 rounded-full border text-sm font-semibold whitespace-nowrap transition-all",
+      "chip_active": "bg-white text-black border-white",
+      "chip_inactive": "bg-transparent text-zinc-400 border-zinc-800 hover:border-zinc-600"
+    },
+    "lock_pick_card": {
+      "style": "relative w-full rounded-2xl border border-white/10 bg-gradient-to-b from-[#1A1A1A] to-[#0A0A0A] p-5 overflow-hidden",
+      "header": "flex justify-between items-start mb-4",
+      "score_badge": "absolute top-4 right-4 flex flex-col items-center justify-center w-14 h-14 rounded-full border-2 bg-black/50 backdrop-blur-md shadow-lg",
+      "progress_bar": "h-2 w-full bg-zinc-800 rounded-full overflow-hidden mt-2",
+      "progress_fill": "h-full rounded-full"
+    },
+    "bet_killer_screen": {
+      "container_style": "min-h-screen bg-[#110000] pb-24",
+      "warning_banner": "bg-red-500/10 border-b border-red-500/30 p-4 flex items-center gap-3 text-red-500",
+      "card_style": "p-5 rounded-xl border border-red-500/30 bg-red-950/20 backdrop-blur-sm"
+    }
+  },
+  "motion": {
+    "hover": "transition-all duration-200 ease-out",
+    "tap": "active:scale-95",
+    "list_entrance": "animate-in fade-in slide-in-from-bottom-4 duration-500"
+  },
+  "icons": {
+    "library": "lucide-react",
+    "usage": "Bold, consistent stroke width (2px). Use standard imports."
+  },
+  "image_urls": {
+    "hero_background": {
+      "url": "https://images.unsplash.com/photo-1679391029864-d46f366a456b?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2Mzl8MHwxfHNlYXJjaHwyfHxzcG9ydHMlMjBzdGFkaXVtJTIwZGFyayUyMG5pZ2h0JTIwbGlnaHRzfGVufDB8fHx8MTc4MTEzNzc5OXww&ixlib=rb-4.1.0&q=85",
+      "description": "Dark soccer stadium with night lights to be used as a subtle, low-opacity background behind the main dashboard or header."
+    },
+    "ai_data_texture": {
+      "url": "https://images.pexels.com/photos/10325707/pexels-photo-10325707.png?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Abstract orange network lines, to be used sparingly as an overlay with 'mix-blend-screen' and 10% opacity in the 'Why This Pick?' AI explanation sections."
+    }
+  },
+  "instructions_to_main_agent": [
+    "Build a mobile-first web application using React (.js files), Tailwind CSS, and Shadcn UI.",
+    "Do NOT use pure black (#000000) for large background areas; stick to #0A0A0A and #141414.",
+    "Implement bottom tab navigation utilizing sticky/fixed positioning (z-50) so it overlays content correctly. Leave bottom padding (pb-24) on main content.",
+    "Design Lock Pick cards as the hero component. The Lock Score must be a prominent circular badge at the top right, utilizing the specific grade colors from the palette.",
+    "ALL interactive and key informational elements MUST include a 'data-testid' attribute (e.g., data-testid='filter-chip-nba', data-testid='lock-pick-card-score', data-testid='bottom-nav-home').",
+    "In the Bet Killer screen, use an aggressive red/dark-red aesthetic to warn users away from bad bets. Incorporate visual tension.",
+    "Add font imports for 'Barlow Condensed' and 'IBM Plex Sans' from Google Fonts in the index.html or global CSS. Use Barlow for headings/numbers and IBM Plex for standard text.",
+    "For the 'Win Probability' and 'Edge %' metrics, use horizontal progress bars with vibrant accent colors matching their grade.",
+    "Ensure dark mode is forced/default on the application.",
+    "Use 1px borders (border-white/10) heavily for structure instead of relying on shadows, keeping the 'tactical' athletic aesthetic."
+  ]
+}
