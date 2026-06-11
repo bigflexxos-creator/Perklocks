@@ -94,21 +94,28 @@ async def _fetch_odds_for(sport_key: str, regions: str = "us") -> list:
 
 
 def _grade(score: float) -> str:
-    if score >= 95: return "Elite Lock"
-    if score >= 90: return "Strong Lock"
-    if score >= 85: return "Good Bet"
+    if score >= 95:
+        return "Elite Lock"
+    if score >= 90:
+        return "Strong Lock"
+    if score >= 85:
+        return "Good Bet"
     return "Pass"
 
 
 def _confidence(score: float) -> str:
-    if score >= 90: return "Very High"
-    if score >= 85: return "High"
-    if score >= 75: return "Medium"
+    if score >= 90:
+        return "Very High"
+    if score >= 85:
+        return "High"
+    if score >= 75:
+        return "Medium"
     return "Low"
 
 
 def _implied_prob(american_odds: int) -> float:
-    if not american_odds: return 0.5
+    if not american_odds:
+        return 0.5
     if american_odds > 0:
         return 100 / (american_odds + 100)
     return -american_odds / (-american_odds + 100)
@@ -132,7 +139,8 @@ def compute_lock_score(factors: dict[str, float]) -> tuple[float, dict]:
 def _median_price(book_outcomes: list, name: str) -> int | None:
     """Median moneyline price across books for a given outcome name."""
     vals = [int(o["price"]) for o in book_outcomes if o.get("name") == name and isinstance(o.get("price"), (int, float))]
-    if not vals: return None
+    if not vals:
+        return None
     return int(statistics.median(vals))
 
 
@@ -149,15 +157,24 @@ def _consensus_market(game: dict, market_key: str) -> list:
 def _build_pick(*, sport, league, event, event_time, market, pick_side,
                 model_win_prob, book_odds, lock, factors, insights, external_id):
     # Filter out malformed prices outside realistic American odds range.
-    if book_odds is not None and (-9999 < book_odds < -1000 or -3 < book_odds < 3 or book_odds > 5000):
+    # Reject anything between -99 and +99 (no real US sportsbook posts these),
+    # absurd favorite chalk (< -1000), or absurd longshots (> +5000).
+    if book_odds is not None and (
+        book_odds <= -1000 or book_odds >= 5000 or (-100 < book_odds < 100)
+    ):
         book_odds = None
     book_implied = _implied_prob(book_odds) if book_odds else model_win_prob
     edge = round((model_win_prob - book_implied) * 100, 2)
+    final_odds = int(book_odds) if book_odds else _win_prob_to_american(model_win_prob)
+    # Drop picks whose effective odds offer essentially no payout. -500 means
+    # risking $500 to win $100 — not a viable bet for users.
+    if final_odds <= -500:
+        return None
     return {
         "sport": sport, "league": league, "event": event,
         "event_time": event_time, "market": market, "selection": pick_side,
         "win_probability": round(model_win_prob * 100, 1),
-        "book_odds": int(book_odds) if book_odds else _win_prob_to_american(model_win_prob),
+        "book_odds": final_odds,
         "implied_probability": round(book_implied * 100, 1),
         "edge_percent": edge,
         "lock_score": lock, "grade": _grade(lock), "confidence": _confidence(lock),
@@ -332,7 +349,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 insights=_insights_for(sport, rng, side, home, away),
                 external_id=f"{sport}-{game_id}-spread",
             ))
-    return picks
+    return [p for p in picks if p is not None]
 
 
 def _unit(sport: str) -> str:
@@ -489,7 +506,7 @@ def _prop_insights(sport: str, rng: random.Random, player: str) -> list[str]:
         f"Matchup ranks bottom-{rng.randint(3, 8)} vs the position",
         f"Usage rate {rng.uniform(28, 38):.1f}% over last 10",
         f"Hit this number in {rng.randint(70, 90)}% of season",
-        f"Opponent allows above season avg in this category",
+        "Opponent allows above season avg in this category",
     ]
     rng.shuffle(pool)
     return pool[:4]
@@ -550,7 +567,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             insights=_prop_insights(sport, rng, player),
             external_id=f"{sport}-{payload.get('id', '')}-{mk}-{player[:10]}-{side}-{point}",
         ))
-    return picks
+    return [p for p in picks if p is not None]
 
 
 async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
@@ -568,7 +585,8 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
         upcoming = []
         for e in events:
             ct = e.get("commence_time")
-            if not ct: continue
+            if not ct:
+                continue
             try:
                 dt = datetime.strptime(ct, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
                 if now - _dt.timedelta(minutes=30) <= dt <= now + _dt.timedelta(hours=72):
@@ -620,10 +638,39 @@ async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
     for p in all_picks:
         p["pick_date"] = date_str
         p["created_at"] = datetime.now(timezone.utc).isoformat()
-    # Promote board-toppers to Elite tier for visual hierarchy.
+    # Promote board-toppers to Elite tier — but ONLY picks that combine high
+    # model confidence with real betting value. A pick with negative edge means
+    # the book's price is BETTER than our model, so it doesn't deserve "Elite".
     if all_picks:
-        all_picks.sort(key=lambda p: p["lock_score"], reverse=True)
-        for i, p in enumerate(all_picks[:5]):
+        def _elite_composite(p: dict) -> float:
+            # Weight base confidence (lock_score) and edge equally enough that
+            # a +3% edge pick outranks a 0%-edge pick at the same base score.
+            return p["lock_score"] + max(0.0, p.get("edge_percent", 0.0)) * 1.5
+
+        # Candidates: keep only picks whose edge is not meaningfully negative.
+        # Edge >= -0.5% is the floor (tiny noise allowed; clear -EV picks excluded).
+        candidates = [p for p in all_picks if p.get("edge_percent", 0.0) >= -0.5]
+        candidates.sort(key=_elite_composite, reverse=True)
+        # Diversify by sport: cap each sport at 2 Elite slots so a single sport
+        # with many edge-rich games doesn't monopolize the Elite tier.
+        sport_count: dict = {}
+        promoted: list = []
+        for p in candidates:
+            s = p.get("sport")
+            if sport_count.get(s, 0) >= 2:
+                continue
+            sport_count[s] = sport_count.get(s, 0) + 1
+            promoted.append(p)
+            if len(promoted) >= 5:
+                break
+        # If sport diversity left us short, top up with remaining candidates.
+        if len(promoted) < 5:
+            for p in candidates:
+                if p not in promoted:
+                    promoted.append(p)
+                    if len(promoted) >= 5:
+                        break
+        for i, p in enumerate(promoted):
             boost = max(95.0, min(99.0, p["lock_score"] + (5 - i) * 1.0 + random.uniform(2, 5)))
             p["lock_score"] = round(boost, 1)
             p["grade"] = _grade(boost)
