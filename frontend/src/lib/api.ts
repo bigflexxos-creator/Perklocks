@@ -1,6 +1,29 @@
 import { storage } from "@/src/utils/storage";
 
-const BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL || "";
+// Backend URL resolution:
+//   1. Prefer EXPO_PUBLIC_BACKEND_URL if set at build time (dev preview / native builds)
+//   2. Fall back to the app's own origin in the browser so the published web app
+//      automatically uses its own production domain (Emergent serves /api/* from
+//      the same origin)
+//   3. Empty string as last resort (relative URL)
+function resolveBaseUrl(): string {
+  const envUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
+  if (envUrl && envUrl.trim().length > 0) {
+    // Avoid pinning the bundle to the dev preview URL in production builds.
+    if (typeof window !== "undefined" && window.location && window.location.origin) {
+      const previewMismatch =
+        envUrl.includes(".preview.emergentagent.com") &&
+        !window.location.origin.includes(".preview.emergentagent.com");
+      if (previewMismatch) return window.location.origin;
+    }
+    return envUrl;
+  }
+  if (typeof window !== "undefined" && window.location && window.location.origin) {
+    return window.location.origin;
+  }
+  return "";
+}
+const BASE_URL = resolveBaseUrl();
 
 export type Pick = {
   id: string;
