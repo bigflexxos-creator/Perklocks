@@ -18,8 +18,8 @@ def _build_chat(session_id: str, system_message: str) -> LlmChat:
     ).with_model(MODEL_PROVIDER, MODEL_NAME)
 
 
-async def explain_pick(pick: dict) -> str:
-    """Generate the 'Why This Pick?' explanation."""
+async def explain_pick(pick: dict) -> tuple[str, bool]:
+    """Generate the 'Why This Pick?' explanation. Returns (text, is_real_ai)."""
     system = (
         "You are an elite sports betting analyst writing for the LockScore AI platform. "
         "Your job is to explain WHY a particular pick has a positive expected value. "
@@ -43,14 +43,14 @@ async def explain_pick(pick: dict) -> str:
     )
     try:
         resp = await chat.send_message(UserMessage(text=payload))
-        return str(resp).strip()
+        return str(resp).strip(), True
     except Exception as e:
         logger.warning("AI explain failed: %s", e)
-        return _fallback_explanation(pick)
+        return _fallback_explanation(pick), False
 
 
-async def bet_killer_warning(pick: dict) -> str:
-    """Generate a 'Why To Avoid' warning for low-score picks."""
+async def bet_killer_warning(pick: dict) -> tuple[str, bool]:
+    """Generate a 'Why To Avoid' warning. Returns (text, is_real_ai)."""
     system = (
         "You are a sharp sports betting risk analyst for LockScore AI. "
         "Your job is to warn users away from dangerous bets. Be blunt, specific, "
@@ -70,10 +70,10 @@ async def bet_killer_warning(pick: dict) -> str:
     )
     try:
         resp = await chat.send_message(UserMessage(text=payload))
-        return str(resp).strip()
+        return str(resp).strip(), True
     except Exception as e:
         logger.warning("AI killer failed: %s", e)
-        return _fallback_killer(pick)
+        return _fallback_killer(pick), False
 
 
 def _fallback_explanation(pick: dict) -> str:

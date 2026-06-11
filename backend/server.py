@@ -171,14 +171,15 @@ async def pick_detail(pick_id: str,
     pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
     if not pick:
         raise HTTPException(status_code=404, detail="Pick not found")
-    # Lazy-cache AI explanations.
+    # Lazy-cache AI explanations — only cache real Claude responses, not fallbacks.
     if not pick.get("explanation"):
         if pick.get("lock_score", 0) >= 85:
-            text = await explain_pick(pick)
+            text, real = await explain_pick(pick)
         else:
-            text = await bet_killer_warning(pick)
+            text, real = await bet_killer_warning(pick)
         pick["explanation"] = text
-        await db.picks.update_one({"id": pick_id}, {"$set": {"explanation": text}})
+        if real:
+            await db.picks.update_one({"id": pick_id}, {"$set": {"explanation": text}})
     return pick
 
 
