@@ -10,12 +10,33 @@ import { api, Pick } from "@/src/lib/api";
 import { LockPickCard } from "@/src/components/LockPickCard";
 import { ChipRow } from "@/src/components/ChipRow";
 
+function timeAgo(d: Date | null): string {
+  if (!d) return "—";
+  const secs = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (secs < 5) return "just now";
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return d.toLocaleDateString();
+}
+
 export default function LocksScreen() {
   const [picks, setPicks] = useState<Pick[]>([]);
   const [sport, setSport] = useState<string>("All");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [stats, setStats] = useState<{ total_picks: number; elite_count: number; avg_edge_percent: number } | null>(null);
+  const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const [, forceTick] = useState(0);
+
+  // Tick every 30s so the "X min ago" label stays accurate.
+  useEffect(() => {
+    const t = setInterval(() => forceTick((n) => n + 1), 30000);
+    return () => clearInterval(t);
+  }, []);
 
   const load = useCallback(async (s: string) => {
     try {
@@ -25,6 +46,7 @@ export default function LocksScreen() {
       ]);
       setPicks(picksRes.picks);
       if (statsRes) setStats(statsRes);
+      setLastLoadedAt(new Date());
     } catch (e) {
       console.warn("load locks", e);
     } finally {
@@ -37,14 +59,21 @@ export default function LocksScreen() {
 
   const onRefresh = () => { setRefreshing(true); load(sport); };
 
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 2200);
+  };
+
   const onForceRefresh = async () => {
     setLoading(true);
     try {
-      await api.refresh();
+      const res = await api.refresh();
       await load(sport);
+      showToast(`Refreshed · ${res.count} picks`);
     } catch (e) {
       console.warn(e);
       setLoading(false);
+      showToast("Refresh failed");
     }
   };
 
@@ -56,6 +85,7 @@ export default function LocksScreen() {
           <Text style={styles.date}>
             Today&apos;s Locks · {new Date().toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}
           </Text>
+          <Text style={styles.updatedLabel}>Updated {timeAgo(lastLoadedAt)}</Text>
         </View>
         <Pressable
           testID="refresh-button"
@@ -66,6 +96,13 @@ export default function LocksScreen() {
           <Ionicons name="refresh" size={20} color={COLORS.textPrimary} />
         </Pressable>
       </View>
+
+      {toast && (
+        <View style={styles.toast} pointerEvents="none">
+          <Ionicons name="checkmark-circle" size={16} color={COLORS.neonGreen} />
+          <Text style={styles.toastText}>{toast}</Text>
+        </View>
+      )}
 
       {stats && (
         <View style={styles.statsRow}>
@@ -124,6 +161,15 @@ const styles = StyleSheet.create({
     flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end" },
   brand: { fontSize: 22, fontWeight: "900", color: COLORS.textPrimary, letterSpacing: 3 },
   date: { fontSize: 11, color: COLORS.textMuted, fontWeight: "600", marginTop: 4, letterSpacing: 0.5 },
+  updatedLabel: { fontSize: 10, color: COLORS.neonGreen, fontWeight: "700", marginTop: 4, letterSpacing: 0.4 },
+  toast: {
+    position: "absolute", top: 110, alignSelf: "center", zIndex: 10,
+    flexDirection: "row", alignItems: "center", gap: 8,
+    paddingHorizontal: 14, paddingVertical: 10, borderRadius: 24,
+    backgroundColor: "rgba(0,0,0,0.92)",
+    borderWidth: 1, borderColor: "rgba(0,255,170,0.35)",
+  },
+  toastText: { color: COLORS.textPrimary, fontSize: 13, fontWeight: "700" },
   refreshBtn: {
     width: 40, height: 40, borderRadius: 20,
     backgroundColor: COLORS.surface, alignItems: "center", justifyContent: "center",
