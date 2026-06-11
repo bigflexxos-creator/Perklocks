@@ -94,8 +94,18 @@ export default function LocksScreen() {
         ) : picks.length === 0 ? (
           <View style={styles.center}>
             <Ionicons name="lock-open-outline" size={48} color={COLORS.textMuted} />
-            <Text style={styles.emptyTitle}>No locks meeting threshold</Text>
-            <Text style={styles.emptyMsg}>Tap refresh or check back later for today&apos;s picks.</Text>
+            <Text style={styles.emptyTitle}>
+              {sport === "NFL"
+                ? "NFL is off-season"
+                : sport === "NBA"
+                ? "NBA — limited or off-season"
+                : "No locks meeting threshold"}
+            </Text>
+            <Text style={styles.emptyMsg}>
+              {sport === "NFL"
+                ? "Returns September. Check MLB, Soccer, or Tennis for today's locks."
+                : "Tap refresh or check back later for today's picks."}
+            </Text>
           </View>
         ) : (
           picks.map((p) => <LockPickCard key={p.id} pick={p} />)
