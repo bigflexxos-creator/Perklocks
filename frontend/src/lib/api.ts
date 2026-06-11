@@ -89,7 +89,8 @@ export const api = {
     request<{ picks: Pick[] }>(`/picks/bet-killer${sport && sport !== "All" ? `?sport=${sport}` : ""}`),
   rollover: () =>
     request<{ pick: Pick | null; composite_rank?: number; total_evaluated?: number }>("/picks/rollover"),
-  pickDetail: (id: string) => request<Pick>(`/picks/${id}`),
+  pickDetail: (id: string) => request<Pick & { ai_pending?: boolean }>(`/picks/${id}`),
+  pickAiExplain: (id: string) => request<{ explanation: string; source: string }>(`/picks/${id}/ai-explain`, { method: "POST" }),
   refresh: () => request<{ refreshed: boolean; count: number; date: string }>("/picks/refresh", { method: "POST" }),
   stats: () => request<{
     date: string; total_picks: number; elite_count: number;

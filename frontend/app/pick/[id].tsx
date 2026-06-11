@@ -13,14 +13,40 @@ export default function PickDetail() {
   const router = useRouter();
   const [pick, setPick] = useState<Pick | null>(null);
   const [loading, setLoading] = useState(true);
+  const [aiLoading, setAiLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
-    api.pickDetail(id)
-      .then(setPick)
-      .catch((e) => setError(e?.message || "Failed to load pick"))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    (async () => {
+      try {
+        const p = await api.pickDetail(id);
+        if (cancelled) return;
+        setPick(p);
+        setLoading(false);
+        // If the pick hasn't been AI-enriched yet, kick off the upgrade.
+        if ((p as any).ai_pending) {
+          setAiLoading(true);
+          try {
+            const ai = await api.pickAiExplain(id);
+            if (!cancelled && ai?.explanation) {
+              setPick((prev) => prev ? { ...prev, explanation: ai.explanation } : prev);
+            }
+          } catch {
+            // Keep the fallback template that was returned with the pick.
+          } finally {
+            if (!cancelled) setAiLoading(false);
+          }
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          setError(e?.message || "Failed to load pick");
+          setLoading(false);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
   }, [id]);
 
   const isKiller = pick && pick.lock_score < 85;
@@ -198,7 +224,11 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: COLORS.borderDefault,
   },
   explainText: { color: COLORS.textPrimary, fontSize: 13, lineHeight: 21 },
+  aiUpgradeRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 14, paddingTop: 12, borderTopWidth: 1, borderTopColor: COLORS.borderDefault },
+  aiUpgradeText: { color: COLORS.textMuted, fontSize: 11, fontWeight: "600" },
   aiLoading: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 4 },
+  aiUpgradeRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 14, paddingTop: 12, borderTopWidth: 1, borderTopColor: COLORS.borderDefault },
+  aiUpgradeText: { color: COLORS.textMuted, fontSize: 11, fontWeight: "600" },
   aiLoadingTitle: { color: COLORS.textPrimary, fontSize: 13, fontWeight: "700", marginBottom: 4 },
   aiLoadingSub: { color: COLORS.textMuted, fontSize: 11, lineHeight: 16 },
 

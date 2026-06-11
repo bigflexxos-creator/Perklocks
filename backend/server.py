@@ -192,16 +192,42 @@ async def pick_detail(pick_id: str,
     pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
     if not pick:
         raise HTTPException(status_code=404, detail="Pick not found")
-    # Lazy-cache AI explanations — only cache real Claude responses, not fallbacks.
+    # Return immediately with whatever explanation we have (template or cached AI).
     if not pick.get("explanation"):
+        from ai_engine import _fallback_explanation, _fallback_killer
         if pick.get("lock_score", 0) >= 85:
-            text, real = await explain_pick(pick)
+            pick["explanation"] = _fallback_explanation(pick)
         else:
-            text, real = await bet_killer_warning(pick)
-        pick["explanation"] = text
-        if real:
-            await db.picks.update_one({"id": pick_id}, {"$set": {"explanation": text}})
+            pick["explanation"] = _fallback_killer(pick)
+        pick["ai_pending"] = True
+    else:
+        pick["ai_pending"] = False
     return pick
+
+
+@api.post("/picks/{pick_id}/ai-explain")
+async def pick_ai_explain(pick_id: str,
+                          user: Annotated[UserPublic, Depends(current_user)]):
+    """Generate (or fetch cached) Claude Sonnet 4.5 explanation for a pick.
+    Frontend calls this after the initial pick_detail render so the spinner
+    stays scoped to the AI box only."""
+    pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
+    if not pick:
+        raise HTTPException(status_code=404, detail="Pick not found")
+    # If we already cached a real AI explanation, return it.
+    cached = pick.get("explanation_ai")
+    if cached:
+        return {"explanation": cached, "source": "cached"}
+    if pick.get("lock_score", 0) >= 85:
+        text, real = await explain_pick(pick)
+    else:
+        text, real = await bet_killer_warning(pick)
+    if real:
+        await db.picks.update_one(
+            {"id": pick_id},
+            {"$set": {"explanation": text, "explanation_ai": text}},
+        )
+    return {"explanation": text, "source": "live" if real else "fallback"}
 
 
 @api.post("/picks/refresh")
