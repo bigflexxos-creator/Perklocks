@@ -94,14 +94,24 @@ async def _picks_for_date(date_str: str) -> list[dict]:
 
 
 async def _refresh_picks(date_str: str) -> int:
-    """Generate today's picks, replace any existing rows for that date."""
+    """Generate today's picks, replace any existing rows for that date.
+
+    Critical: only delete existing picks AFTER we've successfully generated
+    new ones. Otherwise, if the upstream API is down/rate-limited, we'd
+    end up with an empty board instead of last-known-good picks.
+    """
     logger.info("Refreshing picks for %s", date_str)
     picks = await generate_all_picks(date_str)
+    if not picks:
+        logger.warning(
+            "Refresh produced 0 picks for %s — keeping existing rows intact "
+            "instead of wiping the board.", date_str,
+        )
+        return 0
     for p in picks:
         p["id"] = str(uuid.uuid4())
     await db.picks.delete_many({"pick_date": date_str})
-    if picks:
-        await db.picks.insert_many(picks)
+    await db.picks.insert_many(picks)
     logger.info("Stored %d picks for %s", len(picks), date_str)
     return len(picks)
 

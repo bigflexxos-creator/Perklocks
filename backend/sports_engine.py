@@ -26,10 +26,11 @@ from typing import Optional
 import httpx
 
 logger = logging.getLogger(__name__)
-# API key with production fallback so the deployed app works even if the
-# THE_ODDS_API_KEY env var isn't set on the production environment. The env
-# var still takes precedence — this is purely a safety net for deployment.
-ODDS_KEY = os.environ.get("THE_ODDS_API_KEY") or "cb50101e09eda94610bd499b6ea5f596"
+# Pinned to the verified working paid key. We intentionally do NOT read this
+# from the env var because the production deployment may inject a different
+# (free-tier / exhausted) key which causes OUT_OF_USAGE_CREDITS errors.
+# User explicitly authorized hardcoding this key.
+ODDS_KEY = "cb50101e09eda94610bd499b6ea5f596"
 BASE = "https://api.the-odds-api.com/v4"
 
 SPORT_KEYS: dict[str, list[str]] = {
