@@ -130,6 +130,23 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     if day_offset is not None:
         target_day = (datetime.now(timezone.utc).date() + timedelta(days=day_offset)).isoformat()
         picks = [p for p in picks if (p.get("event_time") or "").startswith(target_day)]
+    else:
+        # Default ordering: today's games first (kickoff within 24h), then later
+        # games — within each bucket, sorted by lock_score desc. Keeps the
+        # "best bet for the day" front-and-center even if a 2-day-out game
+        # has a higher base lock_score.
+        now = datetime.now(timezone.utc)
+        cutoff = now + timedelta(hours=24)
+
+        def _bucket(p: dict) -> int:
+            et = p.get("event_time") or ""
+            try:
+                dt = datetime.strptime(et, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                return 0 if now <= dt <= cutoff else 1
+            except Exception:
+                return 1
+
+        picks.sort(key=lambda p: (_bucket(p), -p.get("lock_score", 0)))
     return {"picks": picks}
 
 

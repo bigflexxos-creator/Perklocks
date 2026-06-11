@@ -19,7 +19,7 @@ import random
 import asyncio
 import logging
 import statistics
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import datetime as _dt
 from typing import Optional
 
@@ -639,17 +639,41 @@ async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
         p["pick_date"] = date_str
         p["created_at"] = datetime.now(timezone.utc).isoformat()
     # Promote board-toppers to Elite tier — but ONLY picks that combine high
-    # model confidence with real betting value. A pick with negative edge means
-    # the book's price is BETTER than our model, so it doesn't deserve "Elite".
+    # model confidence with real betting value AND happen today. Friday games
+    # don't deserve to be promoted as the "best bet for the day" on Wednesday.
     if all_picks:
         def _elite_composite(p: dict) -> float:
             # Weight base confidence (lock_score) and edge equally enough that
             # a +3% edge pick outranks a 0%-edge pick at the same base score.
             return p["lock_score"] + max(0.0, p.get("edge_percent", 0.0)) * 1.5
 
+        # Filter to games that actually kick off within the next 24 hours.
+        # This ensures the Elite tier surfaces TODAY'S best bets, not games
+        # 2-3 days out that happen to have soft lines.
+        now = datetime.now(timezone.utc)
+        today_cutoff = now + timedelta(hours=24)
+
+        def _starts_today(p: dict) -> bool:
+            et = p.get("event_time")
+            if not et:
+                return False
+            try:
+                dt = datetime.strptime(et, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                return now <= dt <= today_cutoff
+            except Exception:
+                return False
+
         # Candidates: keep only picks whose edge is not meaningfully negative.
         # Edge >= -0.5% is the floor (tiny noise allowed; clear -EV picks excluded).
-        candidates = [p for p in all_picks if p.get("edge_percent", 0.0) >= -0.5]
+        all_candidates = [p for p in all_picks if p.get("edge_percent", 0.0) >= -0.5]
+        today_candidates = [p for p in all_candidates if _starts_today(p)]
+        # Prefer today's games. If we have at least 3 quality picks today,
+        # the Elite tier is built exclusively from today. Otherwise we fall
+        # back to the broader 72h pool so the tier is never empty.
+        if len(today_candidates) >= 3:
+            candidates = today_candidates
+        else:
+            candidates = today_candidates + [p for p in all_candidates if p not in today_candidates]
         candidates.sort(key=_elite_composite, reverse=True)
         # Diversify by sport: cap each sport at 2 Elite slots so a single sport
         # with many edge-rich games doesn't monopolize the Elite tier.
