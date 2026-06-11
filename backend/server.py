@@ -157,21 +157,33 @@ async def picks_bet_killer(user: Annotated[UserPublic, Depends(current_user)],
 
 @api.get("/picks/rollover")
 async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)]):
-    """Single best bet of the day — highest combined score across the board."""
+    """Single best bet of the day — highest combined score among games
+    starting within the next 24 hours only (today's slate)."""
     await _ensure_today_picks()
     cursor = db.picks.find({"pick_date": _today_str(), "lock_score": {"$gte": 85}},
                            {"_id": 0})
     picks = await cursor.to_list(length=500)
-    if not picks:
+    # Restrict Rollover to today's games only (start time within next 24h).
+    now = datetime.now(timezone.utc)
+    cutoff = now + timedelta(hours=24)
+    def starts_today(p: dict) -> bool:
+        et = p.get("event_time") or ""
+        try:
+            dt = datetime.strptime(et, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            return now <= dt <= cutoff
+        except Exception:
+            return False
+    today_picks = [p for p in picks if starts_today(p)]
+    pool = today_picks if today_picks else picks
+    if not pool:
         return {"pick": None}
-    # Rank by composite: lock_score (70%) + edge_percent scaled (30%)
+
     def composite(p: dict) -> float:
-        # User preference: maximize edge-weighted EV. The Rollover should
-        # surface the highest expected-value bet, even if it's a longshot.
         return p.get("lock_score", 0) * 1.0 + max(0, p.get("edge_percent", 0)) * 1.5
-    best = max(picks, key=composite)
+    best = max(pool, key=composite)
     return {"pick": best, "composite_rank": round(composite(best), 2),
-            "total_evaluated": len(picks)}
+            "total_evaluated": len(pool),
+            "scoped_to_today": bool(today_picks)}
 
 
 @api.get("/picks/{pick_id}")
