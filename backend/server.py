@@ -166,19 +166,10 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)]):
         return {"pick": None}
     # Rank by composite: lock_score (70%) + edge_percent scaled (30%)
     def composite(p: dict) -> float:
-        implied = p.get("implied_probability", 50)
-        edge = max(0, p.get("edge_percent", 0))
-        # Cap edge bonus at 15% so longshot lottery tickets can't dominate.
-        edge_capped = min(edge, 15) * 1.5
-        # Confidence multiplier: high implied prob = market consensus = safer pick.
-        confidence_bonus = max(0, (implied - 35) * 0.4)
-        return p.get("lock_score", 0) + edge_capped + confidence_bonus
-
-    # Rollover ignores extreme longshots (+250 / 28% implied or worse) — not "best bet".
-    safe_picks = [p for p in picks if p.get("implied_probability", 0) >= 28]
-    if not safe_picks:
-        safe_picks = picks  # fall back if nothing meets the bar
-    best = max(safe_picks, key=composite)
+        # User preference: maximize edge-weighted EV. The Rollover should
+        # surface the highest expected-value bet, even if it's a longshot.
+        return p.get("lock_score", 0) * 1.0 + max(0, p.get("edge_percent", 0)) * 1.5
+    best = max(picks, key=composite)
     return {"pick": best, "composite_rank": round(composite(best), 2),
             "total_evaluated": len(picks)}
 

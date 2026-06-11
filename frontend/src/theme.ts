@@ -34,7 +34,7 @@ export const SPORT_ICONS: Record<string, string> = {
   Tennis: "tennis",
 };
 
-export const SPORTS = ["All", "MLB", "NBA", "NFL", "Soccer", "Tennis"] as const;
+export const SPORTS = ["All", "MLB", "NBA", "WNBA", "NFL", "Soccer", "Tennis"] as const;
 
 export const SHADOW = {
   shadowColor: "#000",
