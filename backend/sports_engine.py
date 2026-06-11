@@ -80,10 +80,10 @@ async def _load_active_sports() -> None:
     _ACTIVE_LOADED = True
 
 
-async def _fetch_odds_for(sport_key: str) -> list:
+async def _fetch_odds_for(sport_key: str, regions: str = "us") -> list:
     data = await _get(
         f"{BASE}/sports/{sport_key}/odds",
-        {"regions": "us", "markets": "h2h,spreads,totals", "oddsFormat": "american"},
+        {"regions": regions, "markets": "h2h,spreads,totals", "oddsFormat": "american"},
     )
     return data if isinstance(data, list) else []
 
@@ -203,6 +203,14 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
     if not home or not away:
         return []
     commence = game.get("commence_time")
+    # Skip games whose start time has already passed (more than 30 min ago).
+    if commence:
+        try:
+            dt = datetime.strptime(commence, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            if dt < datetime.now(timezone.utc) - __import__("datetime").timedelta(minutes=30):
+                return []
+        except Exception:
+            pass
     game_id = game.get("id") or f"{sport}-{home}-{away}-{commence}"
     seed = abs(hash(f"{sport}{home}{away}{date_str}")) % 10000
     rng = random.Random(seed)
@@ -213,17 +221,32 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
 
     picks: list[dict] = []
 
-    # Moneyline pick.
+    # Moneyline + (for soccer) Draw & Win-or-Draw via 3-way h2h.
     home_ml = _median_price(h2h_outs, home)
     away_ml = _median_price(h2h_outs, away)
+    draw_ml = _median_price(h2h_outs, "Draw")  # only present in soccer 3-way
+
     if home_ml is not None and away_ml is not None:
         home_implied = _implied_prob(home_ml)
+        # Normalize 3-way implied probs so they sum to ~1 after removing vig.
+        if draw_ml is not None:
+            draw_implied = _implied_prob(draw_ml)
+            away_implied = _implied_prob(away_ml)
+            total = home_implied + draw_implied + away_implied
+            home_implied = home_implied / total if total else home_implied
+            away_implied = away_implied / total if total else away_implied
+            draw_implied = draw_implied / total if total else draw_implied
+        else:
+            away_implied = 1 - home_implied
+            draw_implied = None
+
         model_lift = (rng.random() - 0.4) * 0.18
         home_model = max(0.1, min(0.9, home_implied + model_lift))
         if home_model >= 0.5:
             side, side_ml, mp = home, home_ml, home_model
         else:
             side, side_ml, mp = away, away_ml, 1 - home_model
+
         factors = _factors_random(rng, f"{sport}_ml") or _factors_random(rng, "Tennis_ml")
         lock, breakdown = compute_lock_score(factors)
         picks.append(_build_pick(
@@ -234,6 +257,28 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             insights=_insights_for(sport, rng, side, home, away),
             external_id=f"{sport}-{game_id}-ml",
         ))
+
+        # Soccer-only: Win-or-Draw (Double Chance) picks computed from 3-way market.
+        if draw_ml is not None and sport == "Soccer":
+            # P(home or draw) = home_implied + draw_implied  (no-vig)
+            home_dc_implied = min(0.95, home_implied + draw_implied)
+            away_dc_implied = min(0.95, away_implied + draw_implied)
+            # Pick the favored side's Double Chance only if its implied prob is high
+            # (this is the safer "Win or Draw" option for the favorite).
+            dc_side, dc_implied = (home, home_dc_implied) if home_implied >= away_implied else (away, away_dc_implied)
+            dc_book_odds = _win_prob_to_american(dc_implied)
+            dc_model = max(0.55, min(0.95, dc_implied + (rng.random() - 0.3) * 0.1))
+            factors2 = _factors_random(rng, "Soccer_ml")
+            lock2, breakdown2 = compute_lock_score(factors2)
+            picks.append(_build_pick(
+                sport=sport, league=league, event=f"{away} @ {home}",
+                event_time=commence,
+                market=f"{dc_side} Win or Draw", pick_side=dc_side,
+                model_win_prob=dc_model, book_odds=dc_book_odds,
+                lock=lock2, factors=breakdown2,
+                insights=_insights_for(sport, rng, dc_side, home, away),
+                external_id=f"{sport}-{game_id}-dc",
+            ))
 
     # Totals pick.
     if totals_outs:
@@ -259,8 +304,8 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     external_id=f"{sport}-{game_id}-total",
                 ))
 
-    # Spread pick (skip for ML-only sports like soccer/tennis without spreads).
-    if spreads_outs:
+    # Spread pick (skip for soccer/tennis which don't have h2h spreads in same sense).
+    if spreads_outs and sport in ("MLB", "NBA", "NFL"):
         home_sp = next((o for o in spreads_outs if o.get("name") == home), None)
         away_sp = next((o for o in spreads_outs if o.get("name") == away), None)
         if home_sp and away_sp:
@@ -364,10 +409,12 @@ LEAGUE_LABELS: dict[str, str] = {
 async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
     await _load_active_sports()
     all_picks: list[dict] = []
+    # Soccer needs UK region to get the Draw outcome in the h2h market.
+    region = "uk" if sport == "Soccer" else "us"
     for key in SPORT_KEYS.get(sport, []):
         if _ACTIVE_KEYS and key not in _ACTIVE_KEYS:
             continue
-        games = await _fetch_odds_for(key)
+        games = await _fetch_odds_for(key, regions=region)
         league_label = LEAGUE_LABELS.get(key, sport)
         for g in games[:15]:
             all_picks.extend(_picks_from_game(sport, league_label, g, date_str))

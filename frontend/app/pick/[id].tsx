@@ -93,9 +93,17 @@ export default function PickDetail() {
               {isKiller ? "WHY TO AVOID" : "WHY THIS PICK"}
             </Text>
             <View style={styles.explainCard}>
-              <Text style={styles.explainText}>
-                {pick.explanation || "Generating AI breakdown…"}
-              </Text>
+              {pick.explanation ? (
+                <Text style={styles.explainText}>{pick.explanation}</Text>
+              ) : (
+                <View style={styles.aiLoading}>
+                  <ActivityIndicator size="small" color={COLORS.voltBlue} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.aiLoadingTitle}>Claude Sonnet 4.5 is analyzing this pick…</Text>
+                    <Text style={styles.aiLoadingSub}>AI breakdown usually takes 5–15 seconds. Keep this screen open.</Text>
+                  </View>
+                </View>
+              )}
             </View>
 
             <Text style={styles.sectionLabel}>FACTOR BREAKDOWN</Text>
@@ -190,6 +198,9 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: COLORS.borderDefault,
   },
   explainText: { color: COLORS.textPrimary, fontSize: 13, lineHeight: 21 },
+  aiLoading: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 4 },
+  aiLoadingTitle: { color: COLORS.textPrimary, fontSize: 13, fontWeight: "700", marginBottom: 4 },
+  aiLoadingSub: { color: COLORS.textMuted, fontSize: 11, lineHeight: 16 },
 
   factorsCard: {
     backgroundColor: COLORS.surface, padding: 16, borderRadius: 14,
