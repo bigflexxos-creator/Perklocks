@@ -203,11 +203,16 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
     if not home or not away:
         return []
     commence = game.get("commence_time")
-    # Skip games whose start time has already passed (more than 30 min ago).
+    # Restrict to games starting within the next ~24 hours. The Odds API
+    # returns ALL upcoming fixtures by default — without this filter we'd
+    # show NFL games months away, Copa games weeks ahead, etc.
     if commence:
         try:
             dt = datetime.strptime(commence, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-            if dt < datetime.now(timezone.utc) - __import__("datetime").timedelta(minutes=30):
+            now = datetime.now(timezone.utc)
+            if dt < now - __import__("datetime").timedelta(minutes=30):
+                return []
+            if dt > now + __import__("datetime").timedelta(hours=28):
                 return []
         except Exception:
             pass
