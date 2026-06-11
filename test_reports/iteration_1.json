@@ -1,0 +1,66 @@
+{
+  "summary": "Backend 17/17 passing (100%). Frontend mobile flows all working: login → tabs (locks/rollover/killer/profile), sport filtering (61→5 picks), pick detail with factor bars + insights + AI explanation. CRITICAL: Emergent LLM budget exceeded — Claude Sonnet 4.5 calls are failing with 'Budget has been exceeded! Max budget: 0.001' and silently falling back to canned explanations. Functionally the app works but the headline AI feature is not delivering real Claude output. One minor React Native Web deprecation warning (props.pointerEvents). No deprecated expo packages detected.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "/api/picks/{id}",
+        "issue": "Claude Sonnet 4.5 (claude-sonnet-4-5-20250929 via emergentintegrations) raises 'litellm.BadRequestError: OpenAIException - Budget has been exceeded! Current cost: 0.0074, Max budget: 0.001'. ai_engine.explain_pick catches it and returns _fallback_explanation, so endpoint returns 200 but the 'explanation' field is the static fallback string, not real AI output. Verified on /api/picks/<id> for an Elite Lock — response began with 'Why This Pick — Lions Lions Moneyline\\n\\n• Weather: light wind 8mph' which matches the fallback template exactly. Reference: /var/log/supervisor/backend.err.log line 'AI explain failed: ... Budget has been exceeded'.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Pick detail → AI explanation",
+        "issue": "Detail screen renders an AI explanation block, but content is the server-side fallback (no real Claude reasoning). Looks identical to fallback because the LLM budget is exhausted. End user sees a plausible explanation, but it is not the differentiated AI value the PRD promises.",
+        "affected_testIDs": ["pick-card-*"]
+      }
+    ],
+    "design_issues": [
+      {
+        "screen": "Rollover tab",
+        "issues": [
+          "CTA testID expected 'rollover-cta-button' per review request but actual button text 'VIEW FULL AI BREAKDOWN' was reachable only by text/role — could not locate by that testID. Functionality works; just add a stable testID for automation."
+        ]
+      }
+    ],
+    "react_native_issues": [
+      {
+        "component": "react-native-web",
+        "issue": "Console warning: 'props.pointerEvents is deprecated. Use style.pointerEvents'. Likely from a third-party component (gesture/animated lib). Non-blocking but should be audited. Reference: browser console during /login → / navigation."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_lockscore_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "URGENT: Investigate Emergent LLM key budget — Max budget of $0.001 is far too low; each Claude call costs ~$0.007. Either raise the budget on the key, switch to a higher-tier key, or expose this as a graceful UX state ('Generating analysis...' instead of silently falling back).",
+    "Confirm fallback messaging is acceptable until LLM budget is fixed. Today the user has no indication the explanation is canned.",
+    "Add testID='rollover-cta-button' to the 'VIEW FULL AI BREAKDOWN' Pressable in /app/frontend/app/(tabs)/rollover.tsx for stable e2e selectors.",
+    "Audit source of 'props.pointerEvents is deprecated' warning (likely a Reanimated/Gesture-Handler dep) — track but no immediate fix needed."
+  ],
+  "critical_code_review_comments": [
+    "ai_engine.py swallows ALL exceptions from chat.send_message and returns fallback silently — consider logging the full error AND surfacing a flag on the pick (e.g., explanation_source='fallback') so the frontend can warn the user or skip displaying the block.",
+    "server.py /api/picks/{id} persists the fallback text into Mongo on first call, so even after the LLM budget is restored, the cached fallback will keep being returned. Recommend not caching fallback explanations (only cache real LLM responses) OR allow a force-regenerate query param.",
+    "sports_engine.py uses random.uniform inside generate_all_picks final loop to recompute edge — this makes responses non-deterministic across refresh calls and undermines the lock_score → edge relationship. Consider seeding with date+external_id for reproducibility.",
+    "server.py: pick_date is computed via _today_str() (UTC) — for users in PST/EST this can flip 'today' at unintuitive moments. Consider exposing date filter to client.",
+    "sports_engine.py is ~600 lines; consider splitting per-sport fetchers into separate modules for maintainability (>700 threshold not yet crossed but close)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_lockscore_api.py"
+  ],
+  "success_rate": {
+    "backend": "100% (17/17 endpoints + edge cases)",
+    "frontend": "100% (login, 4 tabs, sport filter, pick detail all working — AI content is fallback due to backend budget issue)"
+  },
+  "seed_data_creation": "None created. Demo user demo@lockscore.ai / demo123 already exists and was used. Test users with prefix 'test_<uuid>' created during register tests (not cleaned up — low volume, ignore).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend tests live at /app/backend/tests/test_lockscore_api.py (pytest, 17 tests). All passing. The only real issue is the EMERGENT_LLM_KEY budget exhaustion — verify by hitting GET /api/picks/<id> and checking if the explanation matches the fallback templates in /app/backend/ai_engine.py (_fallback_explanation / _fallback_killer). Frontend testIDs are clean (data-testid on web): tab-locks/rollover/killer/profile, sport-chip-<sport>, pick-card-<id>, login-email-input, login-password-input, login-submit-button. App is at https://bet-edge-ai-1.preview.emergentagent.com — login at /login redirects to / (locks tab) on success.",
+  "rca_of_issue": "Claude Sonnet 4.5 integration is non-functional: backend logs show `litellm.BadRequestError: OpenAIException - Budget has been exceeded! Current cost: 0.007395, Max budget: 0.001`. The configured EMERGENT_LLM_KEY (sk-emergent-a8b22C7Fd083243E59) has a $0.001 budget cap which is below a single Claude Sonnet 4.5 message cost (~$0.007). Each /api/picks/{id} call therefore: (1) attempts Claude call, (2) hits budget exception, (3) ai_engine catches and returns _fallback_explanation, (4) server.py caches the fallback in Mongo permanently. Reproduction: `curl -H 'Authorization: Bearer <token>' https://bet-edge-ai-1.preview.emergentagent.com/api/picks/<id>` and observe `.explanation` matches `_fallback_explanation` format. Mitigation: increase budget on Emergent LLM key OR rotate to a key with adequate budget, AND modify server.py to NOT cache fallback explanations so they regenerate once the key works."
+}
