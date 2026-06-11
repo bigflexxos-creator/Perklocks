@@ -60,8 +60,8 @@ export default function KillerScreen() {
         ) : picks.length === 0 ? (
           <View style={styles.center}>
             <Ionicons name="shield-checkmark-outline" size={48} color={COLORS.textMuted} />
-            <Text style={styles.emptyTitle}>Nothing flagged today</Text>
-            <Text style={styles.emptyMsg}>No dangerous bets on the {sport} board.</Text>
+            <Text style={styles.emptyTitle}>No games available</Text>
+            <Text style={styles.emptyMsg}>No {sport === "All" ? "" : sport + " "}fixtures returned by the sports API for today.</Text>
           </View>
         ) : (
           picks.map((p) => <LockPickCard key={p.id} pick={p} variant="killer" />)

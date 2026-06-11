@@ -94,17 +94,11 @@ export default function LocksScreen() {
         ) : picks.length === 0 ? (
           <View style={styles.center}>
             <Ionicons name="lock-open-outline" size={48} color={COLORS.textMuted} />
-            <Text style={styles.emptyTitle}>
-              {sport === "NFL"
-                ? "NFL is off-season"
-                : sport === "NBA"
-                ? "NBA — limited or off-season"
-                : "No locks meeting threshold"}
-            </Text>
+            <Text style={styles.emptyTitle}>No games available</Text>
             <Text style={styles.emptyMsg}>
-              {sport === "NFL"
-                ? "Returns September. Check MLB, Soccer, or Tennis for today's locks."
-                : "Tap refresh or check back later for today's picks."}
+              {sport === "All"
+                ? "No fixtures on the board right now. Pull to refresh."
+                : `No ${sport} fixtures returned by the sports API for today. Try another sport or refresh.`}
             </Text>
           </View>
         ) : (

@@ -60,8 +60,8 @@ export default function RolloverScreen() {
         ) : !pick ? (
           <View style={styles.center}>
             <Ionicons name="hourglass-outline" size={48} color={COLORS.textMuted} />
-            <Text style={styles.emptyTitle}>No qualifying bet yet</Text>
-            <Text style={styles.emptyMsg}>Check back once today&apos;s board has settled.</Text>
+            <Text style={styles.emptyTitle}>No games available</Text>
+            <Text style={styles.emptyMsg}>No fixtures returned by the sports API for today.</Text>
           </View>
         ) : (
           <>
