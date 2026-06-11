@@ -275,7 +275,7 @@ class TestParlay:
                 assert leg["lock_score"] >= 90
                 assert "id" in leg
             # No duplicate events
-            events = [(l.get("sport"), l.get("event")) for l in parlay["legs"]]
+            events = [(leg.get("sport"), leg.get("event")) for leg in parlay["legs"]]
             assert len(events) == len(set(events)), "duplicate event in parlay legs"
 
     def test_parlay_leg_pick_id_resolves(self, session, auth_headers):
