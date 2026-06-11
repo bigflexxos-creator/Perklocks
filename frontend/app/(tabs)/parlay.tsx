@@ -1,0 +1,185 @@
+import React, { useCallback, useEffect, useState } from "react";
+import {
+  View, Text, StyleSheet, ScrollView, ActivityIndicator,
+  RefreshControl, Pressable,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+import { COLORS, GRADE_COLORS } from "@/src/theme";
+import { api, Pick } from "@/src/lib/api";
+
+export default function ParlayScreen() {
+  const router = useRouter();
+  const [data, setData] = useState<any>(null);
+  const [legs, setLegs] = useState(3);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const load = useCallback(async (n: number) => {
+    try {
+      const res = await api.parlay(n);
+      setData(res);
+    } catch (e) {
+      console.warn("parlay load", e);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => { setLoading(true); load(legs); }, [legs, load]);
+
+  return (
+    <SafeAreaView style={styles.safe} edges={["top"]}>
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.brand}>AUTO PARLAY</Text>
+          <Text style={styles.tag}>ELITE LOCK PICKS · COMBINED</Text>
+        </View>
+        <Ionicons name="layers" size={28} color={COLORS.goldElite} />
+      </View>
+
+      <View style={styles.legSelector}>
+        <Text style={styles.legLabel}>LEGS</Text>
+        {[2, 3, 4, 5].map((n) => (
+          <Pressable
+            key={n}
+            testID={`parlay-legs-${n}`}
+            onPress={() => setLegs(n)}
+            style={[styles.legChip, legs === n && styles.legChipActive]}
+          >
+            <Text style={[styles.legChipText, legs === n && styles.legChipTextActive]}>{n}</Text>
+          </Pressable>
+        ))}
+      </View>
+
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl tintColor={COLORS.textPrimary} refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(legs); }} />}
+        showsVerticalScrollIndicator={false}
+      >
+        {loading ? (
+          <View style={styles.center}><ActivityIndicator color={COLORS.voltBlue} /></View>
+        ) : !data?.parlay ? (
+          <View style={styles.center}>
+            <Ionicons name="layers-outline" size={48} color={COLORS.textMuted} />
+            <Text style={styles.emptyTitle}>No parlay available</Text>
+            <Text style={styles.emptyMsg}>{data?.reason || "Not enough Lock 90+ picks today."}</Text>
+          </View>
+        ) : (
+          <>
+            <View style={styles.summaryCard}>
+              <Text style={styles.sectionLabel}>COMBINED PAYOUT</Text>
+              <View style={styles.payoutRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.bigOdds}>{data.parlay.combined_american_odds}</Text>
+                  <Text style={styles.smallLabel}>parlay odds</Text>
+                </View>
+                <View style={styles.divider} />
+                <View style={{ flex: 1, alignItems: "flex-end" }}>
+                  <Text style={styles.bigPayout}>${data.parlay.payout_on_100}</Text>
+                  <Text style={styles.smallLabel}>on $100 stake</Text>
+                </View>
+              </View>
+              <View style={styles.statsGrid}>
+                <Stat label="LEGS" value={String(data.parlay.leg_count)} />
+                <Stat label="PROFIT" value={`+$${data.parlay.profit_on_100}`} color={COLORS.neonGreen} />
+                <Stat label="MODEL WIN %" value={`${data.parlay.combined_win_probability}%`} />
+              </View>
+            </View>
+
+            {data.parlay.leg_count < legs && (
+              <View style={styles.notice}>
+                <Ionicons name="information-circle" size={14} color={COLORS.goldElite} />
+                <Text style={styles.noticeText}>
+                  Only {data.parlay.leg_count} Lock 90+ pick{data.parlay.leg_count === 1 ? "" : "s"} qualify today — showing best available.
+                </Text>
+              </View>
+            )}
+
+            <Text style={styles.sectionLabel}>PARLAY LEGS</Text>
+            {data.parlay.legs.map((leg: Pick, idx: number) => {
+              const gradeColor = GRADE_COLORS[leg.grade] || COLORS.textMuted;
+              return (
+                <Pressable
+                  key={leg.id}
+                  testID={`parlay-leg-${idx}`}
+                  onPress={() => router.push(`/pick/${leg.id}`)}
+                  style={({ pressed }) => [styles.legCard, pressed && { opacity: 0.85 }]}
+                >
+                  <View style={styles.legNum}><Text style={styles.legNumText}>{idx + 1}</Text></View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.legSport}>{leg.sport.toUpperCase()} · {leg.league}</Text>
+                    <Text style={styles.legEvent} numberOfLines={1}>{leg.event}</Text>
+                    <Text style={styles.legMarket} numberOfLines={2}>{leg.market}</Text>
+                    <View style={styles.legMeta}>
+                      <Text style={[styles.legLock, { color: gradeColor }]}>Lock {leg.lock_score}</Text>
+                      <Text style={styles.legOdds}>
+                        {leg.book_odds > 0 ? `+${leg.book_odds}` : leg.book_odds}
+                      </Text>
+                    </View>
+                  </View>
+                </Pressable>
+              );
+            })}
+
+            <Text style={styles.disclaimer}>
+              Auto-built from today&apos;s highest-rated picks. All legs must hit for the parlay to pay.
+              Parlay variance is significant — each added leg multiplies risk. Bet responsibly.
+            </Text>
+          </>
+        )}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+function Stat({ label, value, color = COLORS.textPrimary }: { label: string; value: string; color?: string }) {
+  return (
+    <View style={styles.statCell}>
+      <Text style={styles.statLabel}>{label}</Text>
+      <Text style={[styles.statValue, { color }]}>{value}</Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: COLORS.bg },
+  header: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 14, flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end" },
+  brand: { fontSize: 22, fontWeight: "900", color: COLORS.textPrimary, letterSpacing: 3 },
+  tag: { fontSize: 10, color: COLORS.goldElite, fontWeight: "800", letterSpacing: 1.8, marginTop: 4 },
+  legSelector: { flexDirection: "row", alignItems: "center", paddingHorizontal: 20, gap: 8, paddingBottom: 8 },
+  legLabel: { color: COLORS.textMuted, fontSize: 10, fontWeight: "800", letterSpacing: 1.3, marginRight: 4 },
+  legChip: { width: 40, height: 36, borderRadius: 18, borderWidth: 1, borderColor: COLORS.borderDefault, alignItems: "center", justifyContent: "center" },
+  legChipActive: { backgroundColor: COLORS.textPrimary, borderColor: COLORS.textPrimary },
+  legChipText: { color: COLORS.textSecondary, fontWeight: "800" },
+  legChipTextActive: { color: COLORS.bg, fontWeight: "900" },
+  content: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 30 },
+  center: { paddingVertical: 80, alignItems: "center" },
+  emptyTitle: { color: COLORS.textPrimary, fontSize: 16, fontWeight: "800", marginTop: 14 },
+  emptyMsg: { color: COLORS.textMuted, fontSize: 13, marginTop: 6, textAlign: "center", paddingHorizontal: 30 },
+  summaryCard: { backgroundColor: COLORS.surface, borderRadius: 20, padding: 22, borderWidth: 1, borderColor: COLORS.goldElite, marginBottom: 18 },
+  payoutRow: { flexDirection: "row", alignItems: "center", marginVertical: 12 },
+  divider: { width: 1, height: 60, backgroundColor: COLORS.borderDefault, marginHorizontal: 16 },
+  bigOdds: { fontSize: 36, fontWeight: "900", color: COLORS.goldElite, letterSpacing: -1 },
+  bigPayout: { fontSize: 36, fontWeight: "900", color: COLORS.neonGreen, letterSpacing: -1 },
+  smallLabel: { color: COLORS.textMuted, fontSize: 10, fontWeight: "800", letterSpacing: 1.3, marginTop: 2 },
+  statsGrid: { flexDirection: "row", marginTop: 8, gap: 12 },
+  statCell: { flex: 1 },
+  statLabel: { color: COLORS.textMuted, fontSize: 9, fontWeight: "800", letterSpacing: 1.3 },
+  statValue: { fontSize: 18, fontWeight: "900", marginTop: 4, letterSpacing: -0.3 },
+  sectionLabel: { color: COLORS.textMuted, fontSize: 10, fontWeight: "800", letterSpacing: 1.6, marginBottom: 10, marginTop: 6 },
+  legCard: { flexDirection: "row", gap: 14, padding: 14, marginBottom: 10, backgroundColor: COLORS.surface, borderRadius: 14, borderWidth: 1, borderColor: COLORS.borderDefault },
+  legNum: { width: 32, height: 32, borderRadius: 16, backgroundColor: COLORS.goldElite, alignItems: "center", justifyContent: "center" },
+  legNumText: { color: COLORS.bg, fontWeight: "900", fontSize: 14 },
+  legSport: { color: COLORS.textMuted, fontSize: 10, fontWeight: "800", letterSpacing: 1.2 },
+  legEvent: { color: COLORS.textSecondary, fontSize: 12, fontWeight: "600", marginTop: 2 },
+  legMarket: { color: COLORS.textPrimary, fontSize: 15, fontWeight: "800", marginTop: 4, letterSpacing: -0.2 },
+  legMeta: { flexDirection: "row", justifyContent: "space-between", marginTop: 8 },
+  legLock: { fontSize: 11, fontWeight: "900", letterSpacing: 1 },
+  legOdds: { color: COLORS.textPrimary, fontSize: 13, fontWeight: "900" },
+  disclaimer: { color: COLORS.textMuted, fontSize: 11, lineHeight: 17, marginTop: 18, textAlign: "center" },
+  notice: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 14, borderRadius: 12, backgroundColor: "rgba(255,215,0,0.08)", borderWidth: 1, borderColor: "rgba(255,215,0,0.25)" },
+  noticeText: { flex: 1, color: COLORS.textSecondary, fontSize: 12, lineHeight: 17 },
+});

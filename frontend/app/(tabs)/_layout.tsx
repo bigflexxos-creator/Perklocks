@@ -48,6 +48,14 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="parlay"
+        options={{
+          title: "PARLAY",
+          tabBarIcon: ({ color, size }) => <Ionicons name="layers" color={color} size={size} />,
+          tabBarButtonTestID: "tab-parlay",
+        }}
+      />
+      <Tabs.Screen
         name="killer"
         options={{
           title: "BET KILLER",

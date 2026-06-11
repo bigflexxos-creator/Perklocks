@@ -89,6 +89,12 @@ export const api = {
     request<{ picks: Pick[] }>(`/picks/bet-killer${sport && sport !== "All" ? `?sport=${sport}` : ""}`),
   rollover: () =>
     request<{ pick: Pick | null; composite_rank?: number; total_evaluated?: number }>("/picks/rollover"),
+  parlay: (legs: number = 3) =>
+    request<{ parlay: null | {
+      legs: Pick[]; leg_count: number;
+      combined_decimal_odds: number; combined_american_odds: string;
+      combined_win_probability: number; payout_on_100: number; profit_on_100: number;
+    }; reason?: string }>(`/picks/parlay?legs=${legs}`),
   pickDetail: (id: string) => request<Pick & { ai_pending?: boolean }>(`/picks/${id}`),
   pickAiExplain: (id: string) => request<{ explanation: string; source: string }>(`/picks/${id}/ai-explain`, { method: "POST" }),
   refresh: () => request<{ refreshed: boolean; count: number; date: string }>("/picks/refresh", { method: "POST" }),
