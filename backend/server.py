@@ -33,7 +33,7 @@ mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ["DB_NAME"]]
 
-app = FastAPI(title="LockScore AI")
+app = FastAPI(title="PerksLocks AI")
 api = APIRouter(prefix="/api")
 
 
@@ -114,15 +114,23 @@ async def _ensure_today_picks() -> None:
 @api.get("/picks/today")
 async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                       sport: Optional[str] = None,
-                      grade: Optional[str] = None):
+                      grade: Optional[str] = None,
+                      day_offset: Optional[int] = None):
+    """Top picks from today's 72-hour window (lock score >= 85).
+    Optional `day_offset` filters picks to a specific calendar day relative
+    to today (0=today, 1=tomorrow, 2=day after)."""
     await _ensure_today_picks()
     q: dict = {"pick_date": _today_str(), "lock_score": {"$gte": 85}}
     if sport and sport.lower() != "all":
         q["sport"] = sport
     if grade:
         q["grade"] = grade
-    cursor = db.picks.find(q, {"_id": 0}).sort("lock_score", -1).limit(50)
-    return {"picks": await cursor.to_list(length=50)}
+    cursor = db.picks.find(q, {"_id": 0}).sort("lock_score", -1).limit(200)
+    picks = await cursor.to_list(length=200)
+    if day_offset is not None:
+        target_day = (datetime.now(timezone.utc).date() + timedelta(days=day_offset)).isoformat()
+        picks = [p for p in picks if (p.get("event_time") or "").startswith(target_day)]
+    return {"picks": picks}
 
 
 @api.get("/picks/all")
@@ -233,7 +241,7 @@ async def stats_summary(user: Annotated[UserPublic, Depends(current_user)]):
 
 @api.get("/")
 async def root():
-    return {"ok": True, "service": "LockScore AI", "date": _today_str()}
+    return {"ok": True, "service": "PerksLocks AI", "date": _today_str()}
 
 
 # ────────────────────── App wiring ──────────────────────
@@ -276,7 +284,7 @@ async def on_startup():
     await db.picks.create_index([("pick_date", 1), ("lock_score", -1)])
     await db.picks.create_index("id", unique=True)
     asyncio.create_task(_daily_refresh_loop())
-    logger.info("LockScore AI started")
+    logger.info("PerksLocks AI started")
 
 
 @app.on_event("shutdown")

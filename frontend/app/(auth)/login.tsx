@@ -45,7 +45,7 @@ export default function Login() {
             <View style={styles.logoBox}>
               <Ionicons name="flash" size={32} color={COLORS.goldElite} />
             </View>
-            <Text style={styles.brandName}>LOCKSCORE</Text>
+            <Text style={styles.brandName}>PERKSLOCKS</Text>
             <Text style={styles.brandTag}>AI BETTING INTELLIGENCE</Text>
           </View>
 
@@ -109,7 +109,7 @@ export default function Login() {
             style={styles.linkBtn}
           >
             <Text style={styles.linkText}>
-              New to LockScore?{" "}
+              New to PerksLocks?{" "}
               <Text style={{ color: COLORS.voltBlue, fontWeight: "800" }}>Create account</Text>
             </Text>
           </Pressable>

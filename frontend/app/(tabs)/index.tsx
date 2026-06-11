@@ -52,7 +52,7 @@ export default function LocksScreen() {
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
         <View>
-          <Text style={styles.brand}>LOCKSCORE</Text>
+          <Text style={styles.brand}>PERKSLOCKS</Text>
           <Text style={styles.date}>
             Today&apos;s Locks · {new Date().toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}
           </Text>

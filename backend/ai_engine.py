@@ -21,7 +21,7 @@ def _build_chat(session_id: str, system_message: str) -> LlmChat:
 async def explain_pick(pick: dict) -> tuple[str, bool]:
     """Generate the 'Why This Pick?' explanation. Returns (text, is_real_ai)."""
     system = (
-        "You are an elite sports betting analyst writing for the LockScore AI platform. "
+        "You are an elite sports betting analyst writing for the PerksLocks AI platform. "
         "Your job is to explain WHY a particular pick has a positive expected value. "
         "NEVER claim guaranteed wins or 100% locks — frame everything as probabilities, "
         "edges, and confidence. Be tactical, concise, data-driven. Use bullet points. "
@@ -52,7 +52,7 @@ async def explain_pick(pick: dict) -> tuple[str, bool]:
 async def bet_killer_warning(pick: dict) -> tuple[str, bool]:
     """Generate a 'Why To Avoid' warning. Returns (text, is_real_ai)."""
     system = (
-        "You are a sharp sports betting risk analyst for LockScore AI. "
+        "You are a sharp sports betting risk analyst for PerksLocks AI. "
         "Your job is to warn users away from dangerous bets. Be blunt, specific, "
         "stat-driven. NEVER guarantee outcomes — frame as probability vs implied. "
         "Use bullet points. End with 'Recommendation: PASS' on its own line."
