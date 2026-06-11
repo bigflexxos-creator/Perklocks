@@ -512,6 +512,11 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 price = o.get("price")
                 if not (player and side and price is not None and point is not None):
                     continue
+                # User preference: never surface Under-style Home Run props
+                # (e.g. "Under 0.5 HRs") — they're high implied-prob but feel
+                # like betting against a player's success.
+                if mk == "batter_home_runs" and str(side).lower() == "under":
+                    continue
                 bucket.setdefault((mk, player, point, side), []).append(int(price))
     candidates = []
     for (mk, player, point, side), prices in bucket.items():
