@@ -31,7 +31,32 @@ HEADERS = {"x-apisports-key": APISPORTS_KEY}
 NFL_LEAGUE_ID = 1
 NBA_LEAGUE_ID = 12  # api-nba uses standard league=standard, but unused here
 MLB_LEAGUE_ID = 1
-SOCCER_LEAGUES = [39, 140, 135, 78, 61, 2]  # EPL, La Liga, Serie A, Bundesliga, Ligue 1, UCL
+# Top international + relevant summer leagues so soccer always has something live.
+SOCCER_LEAGUES = [39, 140, 135, 78, 61, 2, 3, 4, 9, 13, 71, 253]
+
+
+def _is_in_season(sport: str, today: datetime) -> bool:
+    """Skip sports that are out of season so we don't show fake games."""
+    m = today.month
+    if sport == "MLB":
+        return 3 <= m <= 11           # Mar–Nov (spring training to World Series)
+    if sport == "NBA":
+        return m >= 10 or m <= 6      # Oct–June (regular + playoffs + finals)
+    if sport == "NFL":
+        return m >= 8 or m <= 2       # Aug preseason – Feb Super Bowl
+    if sport == "Soccer":
+        return True                   # Year-round (some league always playing)
+    if sport == "Tennis":
+        return True                   # ATP/WTA tour year-round
+    return True
+
+
+def _mlb_query_season(today: datetime) -> int:
+    """API-Sports free plan only allows MLB 2022-2024. Use latest accessible."""
+    yr = today.year
+    if yr <= 2024:
+        return yr
+    return 2024  # fall back to last accessible season for the demo
 
 
 async def _get(url: str, params: dict) -> dict:
@@ -113,9 +138,14 @@ def compute_lock_score(factors: dict[str, float]) -> tuple[float, dict]:
 
 
 async def fetch_mlb_picks(date_str: str) -> list[dict]:
+    today = datetime.strptime(date_str, "%Y-%m-%d")
+    if not _is_in_season("MLB", today):
+        return []
     base = SPORT_HOSTS["MLB"]
-    data = await _get(f"{base}/games", {"date": date_str, "league": MLB_LEAGUE_ID, "season": datetime.now().year})
-    games = data.get("response", []) if isinstance(data, dict) else []
+    # API-Sports free plan: pass only date; filter to MLB league client-side.
+    data = await _get(f"{base}/games", {"date": date_str})
+    all_games = data.get("response", []) if isinstance(data, dict) else []
+    games = [g for g in all_games if (g.get("league") or {}).get("name") == "MLB"]
     if not games:
         games = _synthetic_mlb_games(date_str)
     picks: list[dict] = []
@@ -225,6 +255,9 @@ def _mlb_insights(rng: random.Random, pick: str, home: str, away: str) -> list[s
 
 
 async def fetch_nba_picks(date_str: str) -> list[dict]:
+    today = datetime.strptime(date_str, "%Y-%m-%d")
+    if not _is_in_season("NBA", today):
+        return []
     base = SPORT_HOSTS["NBA"]
     data = await _get(f"{base}/games", {"date": date_str})
     games = data.get("response", []) if isinstance(data, dict) else []
@@ -314,8 +347,11 @@ def _nba_insights(rng: random.Random, side: str) -> list[str]:
 
 
 async def fetch_nfl_picks(date_str: str) -> list[dict]:
+    today = datetime.strptime(date_str, "%Y-%m-%d")
+    if not _is_in_season("NFL", today):
+        return []  # No fake games during NFL off-season (Mar–Jul).
     base = SPORT_HOSTS["NFL"]
-    data = await _get(f"{base}/games", {"league": NFL_LEAGUE_ID, "season": datetime.now().year})
+    data = await _get(f"{base}/games", {"league": NFL_LEAGUE_ID, "season": today.year})
     games = data.get("response", []) if isinstance(data, dict) else []
     if not games:
         games = _synthetic_nfl_games(date_str)
@@ -403,9 +439,11 @@ def _nfl_insights(rng: random.Random, side: str) -> list[str]:
 async def fetch_soccer_picks(date_str: str) -> list[dict]:
     base = SPORT_HOSTS["Soccer"]
     data = await _get(f"{base}/fixtures", {"date": date_str})
-    fixtures = data.get("response", []) if isinstance(data, dict) else []
-    # Filter to top leagues only.
-    fixtures = [f for f in fixtures if (f.get("league") or {}).get("id") in SOCCER_LEAGUES][:8]
+    fixtures_all = data.get("response", []) if isinstance(data, dict) else []
+    # Prefer top international leagues; if none in season, fall back to any fixtures
+    # from cup competitions / international tournaments / MLS / Copa, etc.
+    top = [f for f in fixtures_all if (f.get("league") or {}).get("id") in SOCCER_LEAGUES]
+    fixtures = (top or fixtures_all)[:8]
     if not fixtures:
         fixtures = _synthetic_soccer_fixtures(date_str)
     picks: list[dict] = []
