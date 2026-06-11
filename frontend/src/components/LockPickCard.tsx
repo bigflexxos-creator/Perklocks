@@ -5,6 +5,24 @@ import { COLORS, GRADE_COLORS } from "@/src/theme";
 import { LockScoreBadge } from "@/src/components/LockScoreBadge";
 import { Pick } from "@/src/lib/api";
 
+function formatGameTime(iso: string): string {
+  try {
+    const dt = new Date(iso);
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const tomorrowStart = new Date(todayStart);
+    tomorrowStart.setDate(todayStart.getDate() + 1);
+    const dayAfter = new Date(todayStart);
+    dayAfter.setDate(todayStart.getDate() + 2);
+    const time = dt.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    if (dt >= todayStart && dt < tomorrowStart) return `Today · ${time}`;
+    if (dt >= tomorrowStart && dt < dayAfter) return `Tomorrow · ${time}`;
+    return `${dt.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })} · ${time}`;
+  } catch {
+    return iso;
+  }
+}
+
 export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?: "lock" | "killer" }) {
   const router = useRouter();
   const isKiller = variant === "killer";
@@ -31,6 +49,9 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
             <Text style={styles.league} numberOfLines={1}>{pick.league}</Text>
           </View>
           <Text style={styles.event} numberOfLines={1}>{pick.event}</Text>
+          {pick.event_time && (
+            <Text style={styles.gameTime}>{formatGameTime(pick.event_time)}</Text>
+          )}
           <Text style={styles.market} numberOfLines={2}>{pick.market}</Text>
         </View>
         <LockScoreBadge score={pick.lock_score} grade={pick.grade} />
@@ -100,7 +121,8 @@ const styles = StyleSheet.create({
   tagKiller: { backgroundColor: "rgba(255,59,48,0.15)" },
   tagText: { color: COLORS.textPrimary, fontSize: 10, fontWeight: "800", letterSpacing: 1.2 },
   league: { color: COLORS.textMuted, fontSize: 11, fontWeight: "600", flex: 1 },
-  event: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 4, fontWeight: "500" },
+  event: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 2, fontWeight: "500" },
+  gameTime: { color: COLORS.voltBlue, fontSize: 11, fontWeight: "700", letterSpacing: 0.3, marginBottom: 6 },
   market: { color: COLORS.textPrimary, fontSize: 17, fontWeight: "800", letterSpacing: -0.3 },
   metricsRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 18, marginBottom: 12 },
   metric: { flex: 1 },

@@ -9,6 +9,24 @@ import { useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
 import { api, Pick } from "@/src/lib/api";
 
+function formatGameTime(iso: string): string {
+  try {
+    const dt = new Date(iso);
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const tomorrowStart = new Date(todayStart);
+    tomorrowStart.setDate(todayStart.getDate() + 1);
+    const dayAfter = new Date(todayStart);
+    dayAfter.setDate(todayStart.getDate() + 2);
+    const time = dt.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    if (dt >= todayStart && dt < tomorrowStart) return `Today · ${time}`;
+    if (dt >= tomorrowStart && dt < dayAfter) return `Tomorrow · ${time}`;
+    return `${dt.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })} · ${time}`;
+  } catch {
+    return iso;
+  }
+}
+
 export default function RolloverScreen() {
   const router = useRouter();
   const [pick, setPick] = useState<Pick | null>(null);
@@ -77,6 +95,9 @@ export default function RolloverScreen() {
 
               <Text style={styles.sportLine}>{pick.sport} · {pick.league}</Text>
               <Text style={styles.event}>{pick.event}</Text>
+              {pick.event_time && (
+                <Text style={styles.gameTime}>{formatGameTime(pick.event_time)}</Text>
+              )}
               <Text style={styles.market}>{pick.market}</Text>
 
               <View style={styles.scoreBlock}>
@@ -173,6 +194,7 @@ const styles = StyleSheet.create({
   evaluated: { color: COLORS.textMuted, fontSize: 10, fontWeight: "800", letterSpacing: 1.2 },
   sportLine: { color: COLORS.textSecondary, fontSize: 12, fontWeight: "700", letterSpacing: 1, marginBottom: 4 },
   event: { color: COLORS.textPrimary, fontSize: 16, fontWeight: "700", marginBottom: 8 },
+  gameTime: { color: COLORS.voltBlue, fontSize: 12, fontWeight: "700", letterSpacing: 0.3, marginBottom: 12 },
   market: { color: COLORS.textPrimary, fontSize: 22, fontWeight: "900", letterSpacing: -0.5, marginBottom: 20 },
 
   scoreBlock: { alignItems: "center", marginBottom: 18 },

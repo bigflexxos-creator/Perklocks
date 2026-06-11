@@ -160,7 +160,7 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)]):
     """Single best bet of the day — highest combined score among games
     starting within the next 24 hours only (today's slate)."""
     await _ensure_today_picks()
-    cursor = db.picks.find({"pick_date": _today_str(), "lock_score": {"$gte": 85}},
+    cursor = db.picks.find({"pick_date": _today_str(), "lock_score": {"$gte": 90}},
                            {"_id": 0})
     picks = await cursor.to_list(length=500)
     # Restrict Rollover to today's games only (start time within next 24h).

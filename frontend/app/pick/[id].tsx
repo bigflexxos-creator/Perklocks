@@ -8,6 +8,24 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
 import { api, Pick } from "@/src/lib/api";
 
+function formatGameTime(iso: string): string {
+  try {
+    const dt = new Date(iso);
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const tomorrowStart = new Date(todayStart);
+    tomorrowStart.setDate(todayStart.getDate() + 1);
+    const dayAfter = new Date(todayStart);
+    dayAfter.setDate(todayStart.getDate() + 2);
+    const time = dt.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    if (dt >= todayStart && dt < tomorrowStart) return `Today · ${time}`;
+    if (dt >= tomorrowStart && dt < dayAfter) return `Tomorrow · ${time}`;
+    return `${dt.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })} · ${time}`;
+  } catch {
+    return iso;
+  }
+}
+
 export default function PickDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -201,6 +219,7 @@ const styles = StyleSheet.create({
   metaText: { color: COLORS.textMuted, fontSize: 11, fontWeight: "700", letterSpacing: 0.8 },
 
   event: { color: COLORS.textSecondary, fontSize: 14, fontWeight: "600" },
+  gameTime: { color: COLORS.voltBlue, fontSize: 12, fontWeight: "700", letterSpacing: 0.3, marginTop: 4 },
   market: { color: COLORS.textPrimary, fontSize: 24, fontWeight: "900", letterSpacing: -0.5, marginTop: 6 },
 
   scoreWrap: {
