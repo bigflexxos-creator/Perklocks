@@ -31,7 +31,8 @@ BASE = "https://api.the-odds-api.com/v4"
 
 SPORT_KEYS: dict[str, list[str]] = {
     "MLB": ["baseball_mlb"],
-    "NBA": ["basketball_nba", "basketball_wnba"],  # WNBA included — same NBA tab
+    "NBA": ["basketball_nba"],
+    "WNBA": ["basketball_wnba"],
     "NFL": ["americanfootball_nfl", "americanfootball_nfl_preseason"],
     "Soccer": [
         "soccer_conmebol_copa_libertadores",
@@ -446,12 +447,17 @@ async def fetch_tennis_picks(date_str: str) -> list[dict]:
     return await _fetch_picks_for_sport("Tennis", date_str)
 
 
+async def fetch_wnba_picks(date_str: str) -> list[dict]:
+    return await _fetch_picks_for_sport("WNBA", date_str)
+
+
 # ───────────────────────── Aggregator ─────────────────────────
 
 
 PLAYER_PROP_MARKETS = {
     "MLB": ["batter_hits", "batter_total_bases", "batter_home_runs"],
     "NBA": ["player_points", "player_rebounds", "player_assists"],
+    "WNBA": ["player_points", "player_rebounds", "player_assists"],
 }
 _HIGH_PROB_MIN_IMPLIED = 0.62
 
@@ -585,6 +591,7 @@ async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
     game_results = await asyncio.gather(
         fetch_mlb_picks(date_str),
         fetch_nba_picks(date_str),
+        fetch_wnba_picks(date_str),
         fetch_nfl_picks(date_str),
         fetch_soccer_picks(date_str),
         fetch_tennis_picks(date_str),
@@ -597,7 +604,7 @@ async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
 
     # Phase 2: fetch event-level player props sequentially with small delays
     # to avoid The Odds API rate limit (1 req/sec on free tier).
-    for sport in ("MLB", "NBA"):
+    for sport in ("MLB", "NBA", "WNBA"):
         try:
             props = await _fetch_player_props_for_sport(sport)
             if props:
