@@ -296,3 +296,26 @@ agent_communication:
           7. Switch to Profile tab → user info + logout works
 
       NO mocked APIs.
+
+  - agent: "testing"
+    message: |
+      iteration_2 — FULL E2E REGRESSION PASSED.
+
+      Backend: 24/24 tests (100%). Added TestParlay class with parametrized legs=2/3/4/5,
+      parlay→pick_detail end-to-end test, explicit regression test for GET /api/picks/{pick_id}
+      asserting 200 + full pick fields + ai_pending bool present, and 2 ai-explain tests (200 + 404).
+      The decorator fix is verified.
+
+      Frontend: 12/12 (100%, mobile viewport 375x667). Login → Locks (50 cards) → pick detail OK;
+      Rollover shows Lock 99 MLB pick; Parlay tab default 3-leg renders, 2/4/5 chips re-fetch,
+      gold notice banner appears when only 4 of 5 Lock 90+ qualify, tapping a parlay leg navigates
+      to /pick/{id} (end-to-end confirmation of the decorator fix). Bet Killer shows 92 dangerous
+      bets with sport filter. Profile shows user + by-sport stats; logout returns to login.
+
+      Bonus: AI explanations now real Claude markdown — LiteLLM completion(model=claude-sonnet-4-5-20250929)
+      invocations succeed in backend logs.
+
+      Only finding: persistent `props.pointerEvents is deprecated` console warning from a third-party RN
+      lib (Reanimated/Gesture-Handler) — non-blocking, same as iteration_1.
+
+      No retest needed.
