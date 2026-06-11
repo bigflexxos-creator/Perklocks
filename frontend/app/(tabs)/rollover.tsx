@@ -113,7 +113,7 @@ export default function RolloverScreen() {
             </View>
 
             <Pressable
-              testID="open-rollover-detail"
+              testID="rollover-cta-button"
               onPress={() => router.push(`/pick/${pick.id}`)}
               style={({ pressed }) => [
                 styles.cta,
