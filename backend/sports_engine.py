@@ -72,21 +72,49 @@ SPORT_KEYS: dict[str, list[str]] = {
 _ACTIVE_KEYS: set[str] = set()
 _ACTIVE_LOADED = False
 
+# Circuit breaker: once the Odds API returns OUT_OF_USAGE_CREDITS or invalid key,
+# stop hammering it for the rest of this process. Saves quota across container
+# restarts and prevents log spam during deployment when quota is exhausted.
+_API_DISABLED = False
+_API_DISABLED_REASON = ""
+
+# Concurrency throttle: cap parallel Odds API calls so we don't trip the
+# per-second rate limit (429 EXCEEDED_FREQ_LIMIT) on bulk refresh.
+_API_SEM = asyncio.Semaphore(4)
+
 
 async def _get(url: str, params: dict) -> list | dict | None:
-    if not ODDS_KEY:
+    global _API_DISABLED, _API_DISABLED_REASON
+    if not ODDS_KEY or _API_DISABLED:
         return None
     params = {**params, "apiKey": ODDS_KEY}
-    try:
-        async with httpx.AsyncClient(timeout=15) as cx:
-            r = await cx.get(url, params=params)
-            if r.status_code != 200:
-                logger.warning("OddsAPI %s -> %s %s", url, r.status_code, r.text[:160])
-                return None
-            return r.json()
-    except Exception as e:
-        logger.warning("OddsAPI error %s: %s", url, e)
-        return None
+    async with _API_SEM:
+        try:
+            async with httpx.AsyncClient(timeout=15) as cx:
+                r = await cx.get(url, params=params)
+                if r.status_code == 401:
+                    body = r.text[:200]
+                    # Permanent failure modes — disable for the rest of the
+                    # process so we stop burning time/log noise.
+                    if "OUT_OF_USAGE_CREDITS" in body or "INVALID_API_KEY" in body:
+                        _API_DISABLED = True
+                        _API_DISABLED_REASON = body[:120]
+                        logger.error("Odds API disabled: %s", _API_DISABLED_REASON)
+                    else:
+                        logger.warning("OddsAPI %s -> 401 %s", url, body)
+                    return None
+                if r.status_code == 429:
+                    # Brief backoff so the next call in the burst doesn't also trip.
+                    await asyncio.sleep(1.2)
+                    logger.warning("OddsAPI %s -> 429 (rate limited)", url)
+                    return None
+                if r.status_code != 200:
+                    logger.warning("OddsAPI %s -> %s %s", url, r.status_code, r.text[:160])
+                    return None
+                return r.json()
+        except Exception as e:
+            logger.warning("OddsAPI error %s: %s", url, e)
+            return None
 
 
 async def _load_active_sports() -> None:
