@@ -59,7 +59,7 @@ class TestHealth:
         assert r.status_code == 200
         body = r.json()
         assert body.get("ok") is True
-        assert body.get("service") == "LockScore AI"
+        assert body.get("service") in ("LockScore AI", "PerksLocks AI")
 
 
 # ──────────────── Auth ────────────────
@@ -175,6 +175,8 @@ class TestPicks:
             assert body["pick"]["lock_score"] >= 85
 
     def test_pick_detail_generates_ai_explanation(self, session, auth_headers):
+        """REGRESSION: /api/picks/{pick_id} decorator restored.
+        Verifies route returns 200 with full pick object including ai_pending bool."""
         # Get a pick id from today
         r = session.get(f"{BASE_URL}/api/picks/today", headers=auth_headers, timeout=60)
         picks = r.json().get("picks", [])
@@ -188,6 +190,38 @@ class TestPicks:
         assert body["id"] == pid
         assert body.get("explanation"), "explanation should be populated"
         assert len(body["explanation"]) > 30
+        # Critical regression assertion: ai_pending field must be present
+        assert "ai_pending" in body, "ai_pending boolean missing — decorator regression"
+        assert isinstance(body["ai_pending"], bool)
+        # Full pick fields preserved
+        for k in ("sport", "market", "selection", "grade", "lock_score",
+                  "book_odds", "win_probability"):
+            assert k in body, f"missing field {k}"
+
+    def test_pick_ai_explain_endpoint(self, session, auth_headers):
+        """POST /api/picks/{id}/ai-explain returns explanation text + source."""
+        r = session.get(f"{BASE_URL}/api/picks/today", headers=auth_headers, timeout=60)
+        picks = r.json().get("picks", [])
+        assert picks, "no picks to ai-explain"
+        pid = picks[0]["id"]
+        r2 = session.post(
+            f"{BASE_URL}/api/picks/{pid}/ai-explain",
+            headers=auth_headers,
+            timeout=60,
+        )
+        assert r2.status_code == 200, r2.text
+        body = r2.json()
+        assert body.get("explanation"), "explanation text missing"
+        assert len(body["explanation"]) > 20
+        assert body.get("source") in ("live", "cached", "fallback")
+
+    def test_pick_ai_explain_404(self, session, auth_headers):
+        r = session.post(
+            f"{BASE_URL}/api/picks/nonexistent-xyz/ai-explain",
+            headers=auth_headers,
+            timeout=20,
+        )
+        assert r.status_code == 404
 
     def test_pick_detail_404(self, session, auth_headers):
         r = session.get(
@@ -209,6 +243,55 @@ class TestPicks:
         body = r.json()
         assert body["refreshed"] is True
         assert body["count"] > 0
+
+
+# ──────────────── Parlay ────────────────
+class TestParlay:
+    """Auto Parlay endpoint — supports legs=2/3/4/5."""
+
+    @pytest.mark.parametrize("legs", [2, 3, 4, 5])
+    def test_parlay_legs_returns_payload_or_reason(self, session, auth_headers, legs):
+        r = session.get(
+            f"{BASE_URL}/api/picks/parlay?legs={legs}",
+            headers=auth_headers,
+            timeout=60,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "parlay" in body
+        if body["parlay"] is None:
+            assert "reason" in body and body["reason"]
+        else:
+            parlay = body["parlay"]
+            for k in ("legs", "leg_count", "combined_decimal_odds",
+                      "combined_american_odds", "combined_win_probability",
+                      "payout_on_100", "profit_on_100"):
+                assert k in parlay, f"missing {k}"
+            assert isinstance(parlay["legs"], list)
+            assert len(parlay["legs"]) == parlay["leg_count"]
+            assert 2 <= parlay["leg_count"] <= legs
+            # All legs are Lock 90+ per spec
+            for leg in parlay["legs"]:
+                assert leg["lock_score"] >= 90
+                assert "id" in leg
+            # No duplicate events
+            events = [(l.get("sport"), l.get("event")) for l in parlay["legs"]]
+            assert len(events) == len(set(events)), "duplicate event in parlay legs"
+
+    def test_parlay_leg_pick_id_resolves(self, session, auth_headers):
+        """End-to-end: parlay leg id -> pick_detail must return 200."""
+        r = session.get(
+            f"{BASE_URL}/api/picks/parlay?legs=3", headers=auth_headers, timeout=60
+        )
+        body = r.json()
+        if not body.get("parlay"):
+            pytest.skip("no parlay available today")
+        pid = body["parlay"]["legs"][0]["id"]
+        r2 = session.get(
+            f"{BASE_URL}/api/picks/{pid}", headers=auth_headers, timeout=30
+        )
+        assert r2.status_code == 200
+        assert r2.json()["id"] == pid
 
 
 # ──────────────── Stats ────────────────

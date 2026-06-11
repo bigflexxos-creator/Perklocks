@@ -1,0 +1,43 @@
+{
+  "summary": "Full E2E regression PASSED. Backend 24/24 tests (100%) including new TestParlay class (4 legs param: 2/3/4/5) and explicit regression test for GET /api/picks/{pick_id} verifying the restored decorator returns 200 with ai_pending bool + full pick fields. Frontend 12/12 mobile flows passed: login → Locks (50 cards, tap opens detail with Lock score + Why This Pick section) → Rollover (best pick visible) → Parlay (default 3-leg renders, 2/4/5 switching re-fetches, gold notice banner appears when only 4 of 5 Lock 90+ qualify, tapping a leg navigates to /pick/{id} — end-to-end regression confirmed) → Bet Killer (92 dangerous bets) → Profile (demo user + logout returns to login). AI explanation content now appears to be real Claude output (not fallback template) — markdown headings like '## Why This Pick Has Value' and structured reasoning observed, suggesting the LLM budget issue from iteration_1 is resolved. One non-blocking warning persists: 'props.pointerEvents is deprecated' from a third-party RN lib.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {
+        "component": "react-native-web (third-party)",
+        "issue": "Console warning 'props.pointerEvents is deprecated. Use style.pointerEvents'. Same as iteration_1 — emitted on app boot, likely from Reanimated/Gesture-Handler. Non-blocking. Reference: browser console during /login → / navigation."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_lockscore_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Track the source of 'props.pointerEvents is deprecated' warning — likely a transitive dep (Reanimated 3.x or react-native-gesture-handler). No immediate fix needed.",
+    "OPTIONAL: Verify on a fresh pick (force refresh) that AI explanation source='live' via POST /api/picks/{id}/ai-explain to confirm Claude budget is fully healthy (iteration_1 reported budget exhaustion; iteration_2 sees what looks like real AI markdown, so it appears resolved)."
+  ],
+  "critical_code_review_comments": [
+    "server.py /api/picks/{pick_id} still caches the first explanation (fallback or real) into Mongo via the POST /ai-explain. If a fallback was cached before the budget was raised, it will keep returning the stale fallback. Consider only persisting when source='live' (already does — only caches when `real` is True — good). Verified ai_engine returns real=True only on success.",
+    "sports_engine.py still uses random.uniform in pick generation (flagged in iteration_1) — picks change shape across /api/picks/refresh calls. Not user-facing yet but undermines reproducibility.",
+    "server.py is ~380 lines — still under the 700-line threshold but growing; consider extracting picks routes to a separate router module if more endpoints are added."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_lockscore_api.py"
+  ],
+  "success_rate": {
+    "backend": "100% (24/24 — added 7 new tests: 4 parlay param cases, 1 parlay→pick_detail e2e, 2 ai-explain tests, regression assertions on pick_detail.ai_pending)",
+    "frontend": "100% (12/12 mobile flows — login, locks, pick detail, rollover, parlay default+2+4+5+leg-tap-navigation, bet killer, profile, logout)"
+  },
+  "seed_data_creation": "None. Demo user demo@lockscore.ai already seeded. Register tests create test_<uuid>@example.com users (low volume, no cleanup needed).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend tests at /app/backend/tests/test_lockscore_api.py — 24 pytest tests, run with `pytest /app/backend/tests/ -v`. All pass against https://bet-edge-ai-1.preview.emergentagent.com. The critical /api/picks/{pick_id} decorator is verified BOTH via direct API test (TestPicks::test_pick_detail_generates_ai_explanation asserts ai_pending bool + full pick fields) AND via UI (parlay leg tap → /pick/{id} loaded successfully with Lock score and Why This Pick). Frontend testIDs: tab-locks/rollover/parlay/killer/profile, pick-card-<id>, parlay-legs-2/3/4/5, parlay-leg-<idx>, logout-button, login-email-input, login-password-input, login-submit-button.",
+  "rca_of_issue": "N/A — no failures this iteration. The /api/picks/{pick_id} decorator regression reported in the request is fully fixed and verified end-to-end (curl + UI tap). The previous iteration_1 issue about Claude budget exhaustion appears resolved (AI explanation now renders real markdown-formatted analytical text, not the canned fallback template)."
+}
