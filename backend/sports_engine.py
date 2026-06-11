@@ -31,7 +31,7 @@ BASE = "https://api.the-odds-api.com/v4"
 
 SPORT_KEYS: dict[str, list[str]] = {
     "MLB": ["baseball_mlb"],
-    "NBA": ["basketball_nba"],
+    "NBA": ["basketball_nba", "basketball_wnba"],  # WNBA included — same NBA tab
     "NFL": ["americanfootball_nfl", "americanfootball_nfl_preseason"],
     "Soccer": [
         "soccer_conmebol_copa_libertadores",
@@ -390,6 +390,7 @@ def _insights_for(sport: str, rng, side: str, home: str, away: str) -> list[str]
 LEAGUE_LABELS: dict[str, str] = {
     "baseball_mlb": "MLB",
     "basketball_nba": "NBA",
+    "basketball_wnba": "WNBA",
     "americanfootball_nfl": "NFL",
     "americanfootball_nfl_preseason": "NFL Preseason",
     "soccer_conmebol_copa_libertadores": "Copa Libertadores",
@@ -565,6 +566,7 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                 continue
         upcoming.sort(key=lambda x: x[0])
         for _, ev in upcoming[:3]:
+            await asyncio.sleep(1.1)  # space requests under rate limit
             payload = await _fetch_event_props_payload(sport, key, ev["id"])
             if isinstance(payload, dict) and payload.get("bookmakers"):
                 payload["id"] = ev["id"]
@@ -579,20 +581,30 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
 async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
     if not date_str:
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    results = await asyncio.gather(
+    # Phase 1: fetch all sport-summary games (one call per sport-key, parallel).
+    game_results = await asyncio.gather(
         fetch_mlb_picks(date_str),
         fetch_nba_picks(date_str),
         fetch_nfl_picks(date_str),
         fetch_soccer_picks(date_str),
         fetch_tennis_picks(date_str),
-        _fetch_player_props_for_sport("MLB"),
-        _fetch_player_props_for_sport("NBA"),
         return_exceptions=True,
     )
     all_picks: list[dict] = []
-    for r in results:
+    for r in game_results:
         if isinstance(r, list):
             all_picks.extend(r)
+
+    # Phase 2: fetch event-level player props sequentially with small delays
+    # to avoid The Odds API rate limit (1 req/sec on free tier).
+    for sport in ("MLB", "NBA"):
+        try:
+            props = await _fetch_player_props_for_sport(sport)
+            if props:
+                all_picks.extend(props)
+        except Exception as e:
+            logger.warning("Props fetch failed for %s: %s", sport, e)
+        await asyncio.sleep(1.2)
     for p in all_picks:
         p["pick_date"] = date_str
         p["created_at"] = datetime.now(timezone.utc).isoformat()
