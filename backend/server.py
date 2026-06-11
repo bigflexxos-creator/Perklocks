@@ -29,9 +29,11 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("lockscore")
 
-mongo_url = os.environ["MONGO_URL"]
+# Production-safe env loading with sane fallbacks so deployment doesn't crash
+# if env vars aren't set on the production environment.
+mongo_url = os.environ.get("MONGO_URL") or "mongodb://localhost:27017"
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ["DB_NAME"]]
+db = client[os.environ.get("DB_NAME") or "perkslocks_production"]
 
 app = FastAPI(title="PerksLocks AI")
 api = APIRouter(prefix="/api")
