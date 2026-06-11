@@ -186,13 +186,77 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)]):
             "scoped_to_today": bool(today_picks)}
 
 
+@api.get("/picks/parlay")
+async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
+                     legs: int = 3):
+    """Auto-build a parlay from today's Elite Lock picks (Lock >=95).
+    Picks the top `legs` by composite (lock_score + edge), preferring one per game."""
+    await _ensure_today_picks()
+    legs = max(2, min(8, legs))
+    cursor = db.picks.find(
+        {"pick_date": _today_str(), "lock_score": {"$gte": 95}},
+        {"_id": 0},
+    ).sort("lock_score", -1).limit(50)
+    pool = await cursor.to_list(length=50)
+    # If we don't have enough Elite picks today, fall back to Strong Locks (>=90).
+    if len(pool) < legs:
+        extra_cursor = db.picks.find(
+            {"pick_date": _today_str(), "lock_score": {"$gte": 90, "$lt": 95}},
+            {"_id": 0},
+        ).sort("lock_score", -1).limit(50)
+        pool.extend(await extra_cursor.to_list(length=50))
+    # One leg per event to avoid correlated bets.
+    seen_events: set = set()
+    selected: list = []
+    for p in pool:
+        ev_key = (p.get("sport"), p.get("event"))
+        if ev_key in seen_events:
+            continue
+        seen_events.add(ev_key)
+        selected.append(p)
+        if len(selected) >= legs:
+            break
+    if len(selected) < 2:
+        return {"parlay": None, "reason": "Need at least 2 Lock 90+ picks today"}
+
+    # Convert each leg's American odds → decimal, multiply, convert back.
+    def american_to_decimal(american: int) -> float:
+        return 1 + (american / 100 if american > 0 else 100 / abs(american))
+    decimal_total = 1.0
+    for leg in selected:
+        decimal_total *= american_to_decimal(int(leg["book_odds"]))
+    # Combined American odds.
+    if decimal_total >= 2.0:
+        combined_american = int(round((decimal_total - 1) * 100))
+        combined_str = f"+{combined_american}"
+    else:
+        combined_american = int(round(-100 / (decimal_total - 1)))
+        combined_str = str(combined_american)
+    payout_100 = round(100 * decimal_total, 2)
+    profit_100 = round(payout_100 - 100, 2)
+    # Combined model win probability = product of individual model probs.
+    combined_prob = 1.0
+    for leg in selected:
+        combined_prob *= leg["win_probability"] / 100.0
+    return {
+        "parlay": {
+            "legs": selected,
+            "leg_count": len(selected),
+            "combined_decimal_odds": round(decimal_total, 3),
+            "combined_american_odds": combined_str,
+            "combined_win_probability": round(combined_prob * 100, 1),
+            "payout_on_100": payout_100,
+            "profit_on_100": profit_100,
+        }
+    }
+
+
 @api.get("/picks/{pick_id}")
 async def pick_detail(pick_id: str,
                       user: Annotated[UserPublic, Depends(current_user)]):
     pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
     if not pick:
         raise HTTPException(status_code=404, detail="Pick not found")
-    # Return immediately with whatever explanation we have (template or cached AI).
     if not pick.get("explanation"):
         from ai_engine import _fallback_explanation, _fallback_killer
         if pick.get("lock_score", 0) >= 85:
