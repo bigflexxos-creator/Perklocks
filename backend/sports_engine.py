@@ -643,9 +643,12 @@ async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
     # don't deserve to be promoted as the "best bet for the day" on Wednesday.
     if all_picks:
         def _elite_composite(p: dict) -> float:
-            # Weight base confidence (lock_score) and edge equally enough that
-            # a +3% edge pick outranks a 0%-edge pick at the same base score.
-            return p["lock_score"] + max(0.0, p.get("edge_percent", 0.0)) * 1.5
+            # Primary: lock_score (high-confidence picks come first — these
+            # are the "feels-like-a-lock" picks users want at the top).
+            # Tiebreaker: edge (when two picks share a lock_score, prefer
+            # the one with more value). Edge contribution is tiny so it
+            # only matters within the same lock_score band.
+            return p["lock_score"] + max(0.0, p.get("edge_percent", 0.0)) * 0.1
 
         # Filter to games that actually kick off within the next 24 hours.
         # This ensures the Elite tier surfaces TODAY'S best bets, not games
@@ -675,25 +678,9 @@ async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
         else:
             candidates = today_candidates + [p for p in all_candidates if p not in today_candidates]
         candidates.sort(key=_elite_composite, reverse=True)
-        # Diversify by sport: cap each sport at 2 Elite slots so a single sport
-        # with many edge-rich games doesn't monopolize the Elite tier.
-        sport_count: dict = {}
-        promoted: list = []
-        for p in candidates:
-            s = p.get("sport")
-            if sport_count.get(s, 0) >= 2:
-                continue
-            sport_count[s] = sport_count.get(s, 0) + 1
-            promoted.append(p)
-            if len(promoted) >= 5:
-                break
-        # If sport diversity left us short, top up with remaining candidates.
-        if len(promoted) < 5:
-            for p in candidates:
-                if p not in promoted:
-                    promoted.append(p)
-                    if len(promoted) >= 5:
-                        break
+        # No sport cap — top 5 by lock score wins, period. Users want the
+        # highest-confidence picks at the top, even if they cluster in one sport.
+        promoted = candidates[:5]
         for i, p in enumerate(promoted):
             boost = max(95.0, min(99.0, p["lock_score"] + (5 - i) * 1.0 + random.uniform(2, 5)))
             p["lock_score"] = round(boost, 1)
