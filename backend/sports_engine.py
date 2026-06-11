@@ -44,10 +44,27 @@ SPORT_KEYS: dict[str, list[str]] = {
         "soccer_league_of_ireland",
     ],
     "Tennis": [
-        "tennis_atp_wimbledon", "tennis_wta_wimbledon",
-        "tennis_atp_queens", "tennis_wta_queens_club_champ",
+        # Grand Slams
+        "tennis_atp_aus_open_singles", "tennis_wta_aus_open_singles",
         "tennis_atp_french_open", "tennis_wta_french_open",
+        "tennis_atp_wimbledon", "tennis_wta_wimbledon",
         "tennis_atp_us_open", "tennis_wta_us_open",
+        # Masters / Premier
+        "tennis_atp_indian_wells", "tennis_wta_indian_wells",
+        "tennis_atp_miami_open", "tennis_wta_miami_open",
+        "tennis_atp_monte_carlo_masters", "tennis_atp_madrid_open", "tennis_wta_madrid_open",
+        "tennis_atp_italian_open", "tennis_wta_italian_open",
+        "tennis_atp_canadian_open", "tennis_wta_canadian_open",
+        "tennis_atp_cincinnati_open", "tennis_wta_cincinnati_open",
+        "tennis_atp_shanghai_masters", "tennis_atp_paris_masters",
+        # 500/250 grass swing (active mid-June through July)
+        "tennis_atp_queens", "tennis_wta_queens_club_champ",
+        "tennis_atp_halle", "tennis_atp_eastbourne", "tennis_wta_eastbourne",
+        # Hard / clay shoulder events
+        "tennis_atp_barcelona_open", "tennis_atp_hamburg_open",
+        "tennis_atp_dubai", "tennis_wta_dubai",
+        "tennis_atp_qatar_open", "tennis_atp_china_open", "tennis_wta_china_open",
+        "tennis_atp_munich", "tennis_wta_charleston_open",
     ],
 }
 
@@ -302,15 +319,14 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 external_id=f"{sport}-{game_id}-dc",
             ))
 
-    # Totals pick.
+    # Totals pick — Over only (per user preference, no Under bets).
     if totals_outs:
         over = next((o for o in totals_outs if o.get("name") == "Over"), None)
         under = next((o for o in totals_outs if o.get("name") == "Under"), None)
         if over and under and over.get("point") == under.get("point"):
             line = over.get("point")
             o_price = _median_price(totals_outs, "Over")
-            u_price = _median_price(totals_outs, "Under")
-            side, price = ("Over", o_price) if rng.random() > 0.5 else ("Under", u_price)
+            side, price = "Over", o_price
             if price is not None:
                 implied = _implied_prob(price)
                 mp = max(0.35, min(0.78, implied + 0.05 + rng.random() * 0.08))
@@ -529,10 +545,8 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 price = o.get("price")
                 if not (player and side and price is not None and point is not None):
                     continue
-                # User preference: never surface Under-style Home Run props
-                # (e.g. "Under 0.5 HRs") — they're high implied-prob but feel
-                # like betting against a player's success.
-                if mk == "batter_home_runs" and str(side).lower() == "under":
+                # User preference: no Under prop bets — only Over picks surface.
+                if str(side).lower() == "under":
                     continue
                 bucket.setdefault((mk, player, point, side), []).append(int(price))
     candidates = []
