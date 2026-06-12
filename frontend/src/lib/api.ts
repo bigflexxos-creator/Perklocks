@@ -111,7 +111,7 @@ export const api = {
   betKiller: (sport?: string) =>
     request<{ picks: Pick[] }>(`/picks/bet-killer${sport && sport !== "All" ? `?sport=${sport}` : ""}`),
   rollover: () =>
-    request<{ pick: Pick | null; composite_rank?: number; total_evaluated?: number }>("/picks/rollover"),
+    request<{ picks: Pick[]; pick: Pick | null; composite_rank?: number; total_evaluated?: number }>("/picks/rollover"),
   parlay: (legs: number = 3) =>
     request<{ parlay: null | {
       legs: Pick[]; leg_count: number;
