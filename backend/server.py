@@ -186,15 +186,15 @@ async def picks_bet_killer(user: Annotated[UserPublic, Depends(current_user)],
 
 @api.get("/picks/rollover")
 async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)]):
-    """Single best bet of the day — the SAFEST pick on the board.
+    """Top 3 safest bets of the day — the user picks which one to roll.
 
     Rules:
       - Today's slate only (kickoff within 24h)
       - Lock score >= 90
-      - NO Soccer (small leagues, high variance, too volatile for a daily roll)
-      - Prefers player props over team moneylines (props have lower variance)
-      - Ranks by win_probability first, then lock_score — the goal is "most
-        likely to hit" not "highest edge".
+      - NO Soccer (small leagues, high variance, too volatile)
+      - Prefers player props over team moneylines (lower variance)
+      - Ranks by win_probability first, then lock_score — "most likely to hit"
+      - Diversifies: at most one pick per game so the trio isn't 3 of the same matchup
     """
     await _ensure_today_picks()
     cursor = db.picks.find({"pick_date": _today_str(), "lock_score": {"$gte": 90}},
@@ -212,26 +212,38 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)]):
             return False
     today_picks = [p for p in picks if starts_today(p)]
     pool = today_picks if today_picks else picks
-    # Exclude Soccer — user feedback: small-league soccer rollovers don't hit
-    # reliably enough to be the daily anchor pick.
+    # Exclude Soccer — user feedback: small-league soccer rollovers are too volatile.
     pool = [p for p in pool if (p.get("sport") or "").lower() != "soccer"]
     if not pool:
-        return {"pick": None}
+        return {"picks": [], "pick": None, "total_evaluated": 0}
 
     def composite(p: dict) -> float:
-        # Weight win_probability heavily — Rollover must be the MOST LIKELY to hit.
-        # Player props get a small boost because they have lower variance than
-        # team-level moneylines.
         win_prob = p.get("win_probability", 0) or 0
         lock = p.get("lock_score", 0) or 0
         edge = max(0, p.get("edge_percent", 0) or 0)
         league = (p.get("league") or "").lower()
         prop_boost = 2.0 if "props" in league else 0.0
         return (win_prob * 2.0) + (lock * 0.5) + (edge * 0.3) + prop_boost
-    best = max(pool, key=composite)
-    return {"pick": best, "composite_rank": round(composite(best), 2),
-            "total_evaluated": len(pool),
-            "scoped_to_today": bool(today_picks)}
+
+    ranked = sorted(pool, key=composite, reverse=True)
+    # Diversify: one pick per game so the user gets 3 distinct options.
+    seen_events: set = set()
+    top: list = []
+    for p in ranked:
+        ev = p.get("event")
+        if ev in seen_events:
+            continue
+        seen_events.add(ev)
+        top.append({**p, "composite_rank": round(composite(p), 2)})
+        if len(top) >= 3:
+            break
+    return {
+        "picks": top,
+        "pick": top[0] if top else None,  # back-compat for older clients
+        "composite_rank": top[0]["composite_rank"] if top else None,
+        "total_evaluated": len(pool),
+        "scoped_to_today": bool(today_picks),
+    }
 
 
 @api.get("/picks/parlay")
