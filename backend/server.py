@@ -186,8 +186,16 @@ async def picks_bet_killer(user: Annotated[UserPublic, Depends(current_user)],
 
 @api.get("/picks/rollover")
 async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)]):
-    """Single best bet of the day — highest combined score among games
-    starting within the next 24 hours only (today's slate)."""
+    """Single best bet of the day — the SAFEST pick on the board.
+
+    Rules:
+      - Today's slate only (kickoff within 24h)
+      - Lock score >= 90
+      - NO Soccer (small leagues, high variance, too volatile for a daily roll)
+      - Prefers player props over team moneylines (props have lower variance)
+      - Ranks by win_probability first, then lock_score — the goal is "most
+        likely to hit" not "highest edge".
+    """
     await _ensure_today_picks()
     cursor = db.picks.find({"pick_date": _today_str(), "lock_score": {"$gte": 90}},
                            {"_id": 0})
@@ -204,11 +212,22 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)]):
             return False
     today_picks = [p for p in picks if starts_today(p)]
     pool = today_picks if today_picks else picks
+    # Exclude Soccer — user feedback: small-league soccer rollovers don't hit
+    # reliably enough to be the daily anchor pick.
+    pool = [p for p in pool if (p.get("sport") or "").lower() != "soccer"]
     if not pool:
         return {"pick": None}
 
     def composite(p: dict) -> float:
-        return p.get("lock_score", 0) * 1.0 + max(0, p.get("edge_percent", 0)) * 1.5
+        # Weight win_probability heavily — Rollover must be the MOST LIKELY to hit.
+        # Player props get a small boost because they have lower variance than
+        # team-level moneylines.
+        win_prob = p.get("win_probability", 0) or 0
+        lock = p.get("lock_score", 0) or 0
+        edge = max(0, p.get("edge_percent", 0) or 0)
+        league = (p.get("league") or "").lower()
+        prop_boost = 2.0 if "props" in league else 0.0
+        return (win_prob * 2.0) + (lock * 0.5) + (edge * 0.3) + prop_boost
     best = max(pool, key=composite)
     return {"pick": best, "composite_rank": round(composite(best), 2),
             "total_evaluated": len(pool),
