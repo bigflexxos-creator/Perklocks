@@ -38,6 +38,10 @@ SPORT_KEYS: dict[str, list[str]] = {
     "NBA": ["basketball_nba"],
     "WNBA": ["basketball_wnba"],
     "NFL": ["americanfootball_nfl", "americanfootball_nfl_preseason"],
+    # UFC / MMA — The Odds API uses one combined MMA key (covers UFC events).
+    "UFC": ["mma_mixed_martial_arts"],
+    # Korea Baseball Organization
+    "KBO": ["baseball_kbo"],
     "Soccer": [
         # FIFA World Cup 2026 — happening now
         "soccer_fifa_world_cup",
@@ -473,6 +477,10 @@ LEAGUE_LABELS: dict[str, str] = {
     "basketball_wnba": "WNBA",
     "americanfootball_nfl": "NFL",
     "americanfootball_nfl_preseason": "NFL Preseason",
+    # UFC / MMA
+    "mma_mixed_martial_arts": "UFC / MMA",
+    # KBO
+    "baseball_kbo": "KBO",
     # FIFA tournaments
     "soccer_fifa_world_cup": "FIFA World Cup",
     "soccer_fifa_world_cup_winner": "FIFA World Cup Outright",
@@ -553,6 +561,14 @@ async def fetch_tennis_picks(date_str: str) -> list[dict]:
 
 async def fetch_wnba_picks(date_str: str) -> list[dict]:
     return await _fetch_picks_for_sport("WNBA", date_str)
+
+
+async def fetch_ufc_picks(date_str: str) -> list[dict]:
+    return await _fetch_picks_for_sport("UFC", date_str)
+
+
+async def fetch_kbo_picks(date_str: str) -> list[dict]:
+    return await _fetch_picks_for_sport("KBO", date_str)
 
 
 # ───────────────────────── Aggregator ─────────────────────────
@@ -749,6 +765,8 @@ async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
         fetch_nfl_picks(date_str),
         fetch_soccer_picks(date_str),
         fetch_tennis_picks(date_str),
+        fetch_ufc_picks(date_str),
+        fetch_kbo_picks(date_str),
         return_exceptions=True,
     )
     all_picks: list[dict] = []
