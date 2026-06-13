@@ -199,20 +199,28 @@ async def picks_bet_killer(user: Annotated[UserPublic, Depends(current_user)],
 
 
 @api.get("/picks/under-of-the-day")
-async def under_of_the_day(user: Annotated[UserPublic, Depends(current_user)]):
-    """The single safest alt-UNDER lock across all sports.
+async def under_of_the_day(user: Annotated[UserPublic, Depends(current_user)],
+                           line_type: Optional[str] = None):
+    """The single safest Under lock across all sports.
 
-    Returns alt-Under prop picks (e.g. "Player Under 45.5 Points" where the
-    line is set absurdly high) sorted by implied probability. The top one is
-    the "Under of the Day".
+    Returns Under picks (both main-line totals and alt-Under props). The top
+    one is the "Under of the Day".
+
+    `line_type`:
+      - "main": main-line totals only (Under X.5 Runs/Points at standard book line)
+      - "alt":  alt-prop Unders only (chalky high-line player props)
+      - "both" / None: unrestricted (default)
     """
     await _ensure_today_picks()
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=24)
-    cursor = db.picks.find(
-        {"pick_date": _today_str(), "is_under_lock": True},
-        {"_id": 0},
-    ).sort("lock_score", -1).limit(50)
+    q: dict = {"pick_date": _today_str(), "is_under_lock": True}
+    lt = (line_type or "").lower()
+    if lt == "main":
+        q["is_alt"] = {"$ne": True}
+    elif lt == "alt":
+        q["is_alt"] = True
+    cursor = db.picks.find(q, {"_id": 0}).sort("lock_score", -1).limit(50)
     picks = await cursor.to_list(length=50)
 
     def starts_today(p: dict) -> bool:

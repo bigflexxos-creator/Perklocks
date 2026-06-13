@@ -120,8 +120,10 @@ export const api = {
     request<{ picks: Pick[]; pick: Pick | null; composite_rank?: number; total_evaluated?: number }>(
       `/picks/rollover${lineType && lineType !== "both" ? `?line_type=${lineType}` : ""}`,
     ),
-  underOfTheDay: () =>
-    request<{ pick: Pick | null; alternates: Pick[]; total_evaluated: number; scoped_to_today?: boolean }>("/picks/under-of-the-day"),
+  underOfTheDay: (lineType?: LineType) =>
+    request<{ pick: Pick | null; alternates: Pick[]; total_evaluated: number; scoped_to_today?: boolean }>(
+      `/picks/under-of-the-day${lineType && lineType !== "both" ? `?line_type=${lineType}` : ""}`,
+    ),
   parlay: (legs: number = 3, mode: "standard" | "high_risk" = "standard", sport?: string, lineType?: LineType) => {
     const qs = new URLSearchParams({ legs: String(legs), mode });
     if (sport && sport !== "mix") qs.set("sport", sport);
