@@ -732,17 +732,20 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         candidates.append((implied, mk, player, point, side, median, is_alt))
     candidates.sort(reverse=True)
     picks: list[dict] = []
-    # For alts we allow up to 2 per player (e.g. points + rebounds alts)
-    # to give the user real options. For standard props, keep one per player.
-    alt_per_player: dict = {}
+    # Track per-player caps separately for Over alts vs Under alts so they
+    # don't compete for the same player slots. This ensures the "Under of
+    # the Day" pool always has enough variety even when Overs dominate.
+    alt_over_per_player: dict = {}
+    alt_under_per_player: dict = {}
     std_seen: set = set()
-    # Process all candidates — caps below keep things sane. Don't slice to a
-    # fixed number because that crowds out alt-line picks behind standard ones.
     for implied, mk, player, point, side, median, is_alt in candidates:
+        side_lower = str(side).lower()
         if is_alt:
-            if alt_per_player.get(player, 0) >= 2:
+            cap_dict = alt_under_per_player if side_lower == "under" else alt_over_per_player
+            # Allow up to 3 alts per player per side (e.g. points/rebs/assists)
+            if cap_dict.get(player, 0) >= 3:
                 continue
-            alt_per_player[player] = alt_per_player.get(player, 0) + 1
+            cap_dict[player] = cap_dict.get(player, 0) + 1
         else:
             if player in std_seen:
                 continue
