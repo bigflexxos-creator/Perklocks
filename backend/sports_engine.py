@@ -233,19 +233,21 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
     book_implied = _implied_prob(book_odds) if book_odds else model_win_prob
     edge = round((model_win_prob - book_implied) * 100, 2)
     final_odds = int(book_odds) if book_odds else _win_prob_to_american(model_win_prob)
-    # ─── QUALITY FILTERS (raised after observing 58% baseline hit rate) ───
-    # 1. Drop chalky bets — risk:payout ratio gets ugly past -350.
-    if final_odds <= -350:
+    # ─── QUALITY FILTERS (balanced — remove garbage, keep options) ───
+    # 1. Drop only deeply chalky bets. -450 is risk:1 reward:0.22 — beyond
+    #    that the math gets ugly. Below this still pays decently.
+    if final_odds <= -450:
         return None
-    # 2. Drop low-confidence picks. Lock < 78 historically underperform.
-    if lock < 78:
+    # 2. Floor lock score at 72 — anything below is genuinely low confidence
+    #    and rarely a lock. Keeps the medium-confidence picks visible.
+    if lock < 72:
         return None
-    # 3. Drop negative-edge picks across the board, not just Elite.
-    if edge < 0:
+    # 3. Drop only clearly negative-edge picks. -1% is noise; below that
+    #    means we're worse than the book by a meaningful margin.
+    if edge < -1.0:
         return None
-    # 4. Drop picks where model win probability is below 60%. We don't pretend
-    #    to forecast coin-flips as locks.
-    if model_win_prob < 0.60:
+    # 4. Drop forecasts below 55% — coin-flip territory shouldn't be a "pick".
+    if model_win_prob < 0.55:
         return None
     return {
         "sport": sport, "league": league, "event": event,
