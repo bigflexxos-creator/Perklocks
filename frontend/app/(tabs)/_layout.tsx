@@ -1,9 +1,11 @@
 import React, { useEffect } from "react";
+import { View } from "react-native";
 import { Tabs, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { COLORS } from "@/src/theme";
 import { useAuth } from "@/src/contexts/AuthContext";
+import { BetSlipFab } from "@/src/components/BetSlipFab";
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
@@ -15,6 +17,7 @@ export default function TabsLayout() {
   }, [loading, user]);
 
   return (
+    <View style={{ flex: 1, backgroundColor: COLORS.bg }}>
     <Tabs
       screenOptions={{
         headerShown: false,
@@ -72,5 +75,7 @@ export default function TabsLayout() {
         }}
       />
     </Tabs>
+    <BetSlipFab />
+    </View>
   );
 }
