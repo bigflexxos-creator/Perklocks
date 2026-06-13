@@ -114,12 +114,14 @@ export const api = {
     request<{ picks: Pick[]; pick: Pick | null; composite_rank?: number; total_evaluated?: number }>("/picks/rollover"),
   underOfTheDay: () =>
     request<{ pick: Pick | null; alternates: Pick[]; total_evaluated: number; scoped_to_today?: boolean }>("/picks/under-of-the-day"),
-  parlay: (legs: number = 3, mode: "standard" | "high_risk" = "standard") =>
+  parlay: (legs: number = 3, mode: "standard" | "high_risk" = "standard", sport?: string) =>
     request<{ parlay: null | {
       legs: Pick[]; leg_count: number;
       combined_decimal_odds: number; combined_american_odds: string;
       combined_win_probability: number; payout_on_100: number; profit_on_100: number;
-    }; reason?: string }>(`/picks/parlay?legs=${legs}&mode=${mode}`),
+    }; reason?: string }>(
+      `/picks/parlay?legs=${legs}&mode=${mode}${sport && sport !== "mix" ? `&sport=${encodeURIComponent(sport)}` : ""}`,
+    ),
   pickDetail: (id: string) => request<Pick & { ai_pending?: boolean }>(`/picks/${id}`),
   pickAiExplain: (id: string) => request<{ explanation: string; source: string }>(`/picks/${id}/ai-explain`, { method: "POST" }),
   refresh: () => request<{ refreshed: boolean; count: number; date: string }>("/picks/refresh", { method: "POST" }),
