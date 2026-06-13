@@ -47,6 +47,7 @@ export type Pick = {
 };
 
 export type User = { id: string; email: string; name?: string };
+export type LineType = "both" | "main" | "alt";
 
 const TOKEN_KEY = "lockscore_token";
 
@@ -104,24 +105,33 @@ export const api = {
       auth: false,
     }),
   me: () => request<User>("/auth/me"),
-  picksToday: (sport?: string) =>
-    request<{ picks: Pick[] }>(`/picks/today${sport && sport !== "All" ? `?sport=${sport}` : ""}`),
+  picksToday: (sport?: string, lineType?: LineType) => {
+    const qs = new URLSearchParams();
+    if (sport && sport !== "All") qs.set("sport", sport);
+    if (lineType && lineType !== "both") qs.set("line_type", lineType);
+    const q = qs.toString();
+    return request<{ picks: Pick[] }>(`/picks/today${q ? `?${q}` : ""}`);
+  },
   picksAll: (sport?: string) =>
     request<{ picks: Pick[] }>(`/picks/all${sport && sport !== "All" ? `?sport=${sport}` : ""}`),
   betKiller: (sport?: string) =>
     request<{ picks: Pick[] }>(`/picks/bet-killer${sport && sport !== "All" ? `?sport=${sport}` : ""}`),
-  rollover: () =>
-    request<{ picks: Pick[]; pick: Pick | null; composite_rank?: number; total_evaluated?: number }>("/picks/rollover"),
+  rollover: (lineType?: LineType) =>
+    request<{ picks: Pick[]; pick: Pick | null; composite_rank?: number; total_evaluated?: number }>(
+      `/picks/rollover${lineType && lineType !== "both" ? `?line_type=${lineType}` : ""}`,
+    ),
   underOfTheDay: () =>
     request<{ pick: Pick | null; alternates: Pick[]; total_evaluated: number; scoped_to_today?: boolean }>("/picks/under-of-the-day"),
-  parlay: (legs: number = 3, mode: "standard" | "high_risk" = "standard", sport?: string) =>
-    request<{ parlay: null | {
+  parlay: (legs: number = 3, mode: "standard" | "high_risk" = "standard", sport?: string, lineType?: LineType) => {
+    const qs = new URLSearchParams({ legs: String(legs), mode });
+    if (sport && sport !== "mix") qs.set("sport", sport);
+    if (lineType && lineType !== "both") qs.set("line_type", lineType);
+    return request<{ parlay: null | {
       legs: Pick[]; leg_count: number;
       combined_decimal_odds: number; combined_american_odds: string;
       combined_win_probability: number; payout_on_100: number; profit_on_100: number;
-    }; reason?: string }>(
-      `/picks/parlay?legs=${legs}&mode=${mode}${sport && sport !== "mix" ? `&sport=${encodeURIComponent(sport)}` : ""}`,
-    ),
+    }; reason?: string }>(`/picks/parlay?${qs.toString()}`);
+  },
   pickDetail: (id: string) => request<Pick & { ai_pending?: boolean }>(`/picks/${id}`),
   pickAiExplain: (id: string) => request<{ explanation: string; source: string }>(`/picks/${id}/ai-explain`, { method: "POST" }),
   refresh: () => request<{ refreshed: boolean; count: number; date: string }>("/picks/refresh", { method: "POST" }),
