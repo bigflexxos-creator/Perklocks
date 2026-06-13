@@ -14,12 +14,13 @@ export default function ParlayScreen() {
   const [data, setData] = useState<any>(null);
   const [mode, setMode] = useState<"standard" | "high_risk">("standard");
   const [legs, setLegs] = useState(3);
+  const [sport, setSport] = useState<string>("mix");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async (n: number, m: "standard" | "high_risk") => {
+  const load = useCallback(async (n: number, m: "standard" | "high_risk", s: string) => {
     try {
-      const res = await api.parlay(n, m);
+      const res = await api.parlay(n, m, s);
       setData(res);
     } catch (e) {
       console.warn("parlay load", e);
@@ -29,7 +30,7 @@ export default function ParlayScreen() {
     }
   }, []);
 
-  useEffect(() => { setLoading(true); load(legs, mode); }, [legs, mode, load]);
+  useEffect(() => { setLoading(true); load(legs, mode, sport); }, [legs, mode, sport, load]);
 
   const onModeChange = (m: "standard" | "high_risk") => {
     setMode(m);
@@ -40,6 +41,17 @@ export default function ParlayScreen() {
   const isHighRisk = mode === "high_risk";
   const legOptions = isHighRisk ? [10, 15, 20] : [2, 3, 4, 5];
   const accentColor = isHighRisk ? COLORS.electricBlaze : COLORS.goldElite;
+  const SPORT_OPTIONS = [
+    { id: "mix", label: "MIX" },
+    { id: "MLB", label: "MLB" },
+    { id: "NBA", label: "NBA" },
+    { id: "WNBA", label: "WNBA" },
+    { id: "NFL", label: "NFL" },
+    { id: "Soccer", label: "SOCCER" },
+    { id: "Tennis", label: "TENNIS" },
+    { id: "UFC", label: "UFC" },
+    { id: "KBO", label: "KBO" },
+  ];
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -85,9 +97,51 @@ export default function ParlayScreen() {
         ))}
       </View>
 
+      <View style={styles.sportRowWrap}>
+        <Text style={styles.legLabel}>SPORT</Text>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.sportRow}
+        >
+          {SPORT_OPTIONS.map((opt) => {
+            const active = sport === opt.id;
+            const isMix = opt.id === "mix";
+            return (
+              <Pressable
+                key={opt.id}
+                testID={`parlay-sport-${opt.id}`}
+                onPress={() => setSport(opt.id)}
+                style={[
+                  styles.sportChip,
+                  active && (isMix ? styles.sportChipMixActive : styles.sportChipActive),
+                ]}
+              >
+                {isMix && (
+                  <Ionicons
+                    name="shuffle"
+                    size={11}
+                    color={active ? COLORS.bg : COLORS.textSecondary}
+                    style={{ marginRight: 4 }}
+                  />
+                )}
+                <Text
+                  style={[
+                    styles.sportChipText,
+                    active && styles.sportChipTextActive,
+                  ]}
+                >
+                  {opt.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </View>
+
       <ScrollView
         contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl tintColor={COLORS.textPrimary} refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(legs); }} />}
+        refreshControl={<RefreshControl tintColor={COLORS.textPrimary} refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(legs, mode, sport); }} />}
         showsVerticalScrollIndicator={false}
       >
         {loading ? (
@@ -199,6 +253,18 @@ const styles = StyleSheet.create({
   legChipActive: { backgroundColor: COLORS.textPrimary, borderColor: COLORS.textPrimary },
   legChipText: { color: COLORS.textSecondary, fontWeight: "800" },
   legChipTextActive: { color: COLORS.bg, fontWeight: "900" },
+  sportRowWrap: { flexDirection: "row", alignItems: "center", paddingHorizontal: 20, paddingBottom: 12, gap: 8 },
+  sportRow: { gap: 6, paddingRight: 20 },
+  sportChip: {
+    flexDirection: "row", alignItems: "center",
+    paddingHorizontal: 12, height: 30, borderRadius: 15,
+    borderWidth: 1, borderColor: COLORS.borderDefault,
+    backgroundColor: "transparent",
+  },
+  sportChipActive: { backgroundColor: COLORS.textPrimary, borderColor: COLORS.textPrimary },
+  sportChipMixActive: { backgroundColor: COLORS.voltBlue, borderColor: COLORS.voltBlue },
+  sportChipText: { color: COLORS.textSecondary, fontSize: 11, fontWeight: "800", letterSpacing: 1 },
+  sportChipTextActive: { color: COLORS.bg, fontWeight: "900" },
   content: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 30 },
   center: { paddingVertical: 80, alignItems: "center" },
   emptyTitle: { color: COLORS.textPrimary, fontSize: 16, fontWeight: "800", marginTop: 14 },
