@@ -294,23 +294,37 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)]):
 
 @api.get("/picks/parlay")
 async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
-                     legs: int = 3):
-    """Auto-build a parlay from today's Elite Lock picks (Lock >=95).
-    Picks the top `legs` by composite (lock_score + edge), preferring one per game."""
+                     legs: int = 3,
+                     mode: str = "standard"):
+    """Auto-build a parlay from today's picks.
+
+    Modes:
+      - standard: Elite Locks (>=95), fallback to Strong (>=90). Legs 2-8.
+      - high_risk: Lock 90+ across the entire board. Legs 10/15/20 — designed
+        as a longshot/lottery ticket where if everything hits, payout is huge.
+    """
     await _ensure_today_picks()
-    legs = max(2, min(8, legs))
-    cursor = db.picks.find(
-        {"pick_date": _today_str(), "lock_score": {"$gte": 95}},
-        {"_id": 0},
-    ).sort("lock_score", -1).limit(50)
-    pool = await cursor.to_list(length=50)
-    # If we don't have enough Elite picks today, fall back to Strong Locks (>=90).
-    if len(pool) < legs:
-        extra_cursor = db.picks.find(
-            {"pick_date": _today_str(), "lock_score": {"$gte": 90, "$lt": 95}},
+    is_high_risk = (mode or "").lower() == "high_risk"
+    if is_high_risk:
+        legs = max(10, min(20, legs))
+        cursor = db.picks.find(
+            {"pick_date": _today_str(), "lock_score": {"$gte": 90}},
+            {"_id": 0},
+        ).sort("lock_score", -1).limit(200)
+        pool = await cursor.to_list(length=200)
+    else:
+        legs = max(2, min(8, legs))
+        cursor = db.picks.find(
+            {"pick_date": _today_str(), "lock_score": {"$gte": 95}},
             {"_id": 0},
         ).sort("lock_score", -1).limit(50)
-        pool.extend(await extra_cursor.to_list(length=50))
+        pool = await cursor.to_list(length=50)
+        if len(pool) < legs:
+            extra_cursor = db.picks.find(
+                {"pick_date": _today_str(), "lock_score": {"$gte": 90, "$lt": 95}},
+                {"_id": 0},
+            ).sort("lock_score", -1).limit(50)
+            pool.extend(await extra_cursor.to_list(length=50))
     # One leg per event to avoid correlated bets.
     seen_events: set = set()
     selected: list = []
@@ -322,8 +336,9 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         selected.append(p)
         if len(selected) >= legs:
             break
-    if len(selected) < 2:
-        return {"parlay": None, "reason": "Need at least 2 Lock 90+ picks today"}
+    min_legs = 5 if is_high_risk else 2
+    if len(selected) < min_legs:
+        return {"parlay": None, "reason": f"Need at least {min_legs} Lock 90+ picks today (have {len(selected)})"}
 
     # Convert each leg's American odds → decimal, multiply, convert back.
     def american_to_decimal(american: int) -> float:
