@@ -77,6 +77,16 @@ export default function ProfileScreen() {
           </>
         ) : null}
 
+        <Pressable
+          testID="history-button"
+          onPress={() => router.push("/history")}
+          style={styles.actionBtn}
+        >
+          <Ionicons name="time-outline" size={18} color={COLORS.voltBlue} />
+          <Text style={styles.actionText}>PICK HISTORY & RESULTS</Text>
+          <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+        </Pressable>
+
         <Pressable testID="logout-button" onPress={onLogout} style={styles.logoutBtn}>
           <Ionicons name="log-out-outline" size={18} color={COLORS.electricBlaze} />
           <Text style={styles.logoutText}>SIGN OUT</Text>
@@ -133,6 +143,12 @@ const styles = StyleSheet.create({
   sportName: { color: COLORS.textPrimary, fontWeight: "900", letterSpacing: 1.3, fontSize: 13 },
   sportMetrics: { flexDirection: "row", gap: 12 },
   sportMetric: { color: COLORS.textSecondary, fontSize: 12, fontWeight: "700" },
+  actionBtn: {
+    flexDirection: "row", alignItems: "center", gap: 12,
+    padding: 16, marginTop: 16, borderRadius: 12,
+    borderWidth: 1, borderColor: COLORS.borderDefault, backgroundColor: COLORS.surface,
+  },
+  actionText: { flex: 1, color: COLORS.textPrimary, fontWeight: "900", letterSpacing: 1.5, fontSize: 12 },
   logoutBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10,
     padding: 16, marginTop: 24, borderRadius: 12,

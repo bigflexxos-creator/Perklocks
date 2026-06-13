@@ -96,3 +96,62 @@ def _fallback_killer(pick: dict) -> str:
         f"• Edge: {pick.get('edge_percent')}%\n\n"
         f"Recommendation: PASS"
     )
+
+
+
+async def analyze_loss(pick: dict) -> tuple[str, bool]:
+    """Generate a 'Why It Lost' breakdown for a settled losing pick.
+
+    Returns (text, is_real_ai). Falls back to a deterministic template if
+    Claude isn't reachable.
+    """
+    system = (
+        "You are a sports betting post-mortem analyst for PerksLocks. "
+        "A pick the model classified as a high-confidence lock just LOST. "
+        "Your job is to reconstruct what likely went wrong: which model factors "
+        "were probably misread, what scoreline / matchup pattern caught the "
+        "model off-guard, and ONE concrete adjustment users could apply to "
+        "future similar picks. Be honest — don't sugarcoat. Use 4-6 bullets. "
+        "End with a single-line takeaway: 'Lesson: ...'."
+    )
+    final_score = pick.get("final_score") or {}
+    score_str = " · ".join(f"{k} {v}" for k, v in final_score.items()) or "unknown"
+    factors = pick.get("factors") or {}
+    factor_lines = "\n".join(f"- {k}: {v}" for k, v in factors.items())
+    insights = "\n".join(f"- {ins}" for ins in (pick.get("key_insights") or []))
+    user_msg = (
+        f"PICK: {pick.get('selection')} | {pick.get('market')}\n"
+        f"SPORT/LEAGUE: {pick.get('sport')} · {pick.get('league')}\n"
+        f"GAME: {pick.get('event')}\n"
+        f"FINAL SCORE: {score_str}\n"
+        f"LOCK SCORE WAS: {pick.get('lock_score')}\n"
+        f"MODEL WIN PROB: {pick.get('win_probability')}%\n"
+        f"BOOK ODDS: {pick.get('book_odds')}\n"
+        f"EDGE WAS: {pick.get('edge_percent')}%\n\n"
+        f"MODEL FACTOR BREAKDOWN (0-1 scale, higher = more confident):\n{factor_lines}\n\n"
+        f"KEY INSIGHTS PRE-GAME:\n{insights}\n\n"
+        "Analyze why this loss happened and what to learn from it."
+    )
+    if not EMERGENT_LLM_KEY:
+        return (_fallback_loss(pick), False)
+    try:
+        chat = _build_chat(f"loss-{pick.get('id', '')}", system)
+        resp = await chat.send_message(UserMessage(text=user_msg))
+        return (resp, True) if isinstance(resp, str) and resp.strip() else (_fallback_loss(pick), False)
+    except Exception as e:
+        logger.warning("analyze_loss Claude call failed: %s", e)
+        return (_fallback_loss(pick), False)
+
+
+def _fallback_loss(pick: dict) -> str:
+    final_score = pick.get("final_score") or {}
+    score_str = " · ".join(f"{k} {v}" for k, v in final_score.items()) or "score unavailable"
+    return (
+        f"Why It Lost — {pick.get('market')}\n\n"
+        f"• Final: {score_str}\n"
+        f"• Model expected {pick.get('win_probability')}% win prob — outcome fell in the {100 - (pick.get('win_probability') or 0)}% tail\n"
+        f"• Edge was only {pick.get('edge_percent')}% — narrow margin for error\n"
+        f"• Lock Score of {pick.get('lock_score')} reflects high confidence but no guarantee\n"
+        f"• Even Elite-tier picks lose ~15-20% of the time\n\n"
+        f"Lesson: One loss isn't a model failure — variance is real. Stay disciplined."
+    )

@@ -23,7 +23,8 @@ from auth import (  # noqa: E402
     get_current_user_from_db, oauth2_scheme,
 )
 from sports_engine import generate_all_picks  # noqa: E402
-from ai_engine import explain_pick, bet_killer_warning  # noqa: E402
+from ai_engine import explain_pick, bet_killer_warning, analyze_loss  # noqa: E402
+from settlement_engine import settle_due_picks  # noqa: E402
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -311,6 +312,52 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     }
 
 
+# Static routes MUST be declared BEFORE the parameterized /picks/{pick_id}
+# route, otherwise FastAPI's routing would match them as a pick_id.
+
+@api.post("/picks/settle")
+async def trigger_settle(user: Annotated[UserPublic, Depends(current_user)]):
+    """Manually trigger settlement (also runs every 30 min in background)."""
+    result = await settle_due_picks(db)
+    return result
+
+
+@api.get("/picks/history")
+async def picks_history(user: Annotated[UserPublic, Depends(current_user)],
+                        days: int = 30,
+                        rollover_only: bool = False):
+    """Settled picks from the last N days, newest first."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    q: dict = {"settled_at": {"$gte": cutoff}}
+    cursor = db.picks.find(q, {"_id": 0}).sort("settled_at", -1).limit(500)
+    picks = await cursor.to_list(length=500)
+    settled = [p for p in picks if p.get("status") in ("won", "lost", "push")]
+    won = sum(1 for p in settled if p.get("status") == "won")
+    lost = sum(1 for p in settled if p.get("status") == "lost")
+    push = sum(1 for p in settled if p.get("status") == "push")
+    decided = won + lost
+    hit_rate = round(won / decided * 100, 1) if decided else 0.0
+    rollover_picks = [p for p in settled if (p.get("lock_score") or 0) >= 90]
+    ro_won = sum(1 for p in rollover_picks if p.get("status") == "won")
+    ro_lost = sum(1 for p in rollover_picks if p.get("status") == "lost")
+    ro_decided = ro_won + ro_lost
+    ro_hit_rate = round(ro_won / ro_decided * 100, 1) if ro_decided else 0.0
+    if rollover_only:
+        settled = rollover_picks
+    return {
+        "picks": settled,
+        "stats": {
+            "total": len(settled),
+            "won": won,
+            "lost": lost,
+            "push": push,
+            "hit_rate": hit_rate,
+            "rollover_hit_rate": ro_hit_rate,
+            "rollover_decided": ro_decided,
+        },
+    }
+
+
 @api.get("/picks/{pick_id}")
 async def pick_detail(pick_id: str,
                       user: Annotated[UserPublic, Depends(current_user)]):
@@ -358,6 +405,29 @@ async def pick_ai_explain(pick_id: str,
 async def force_refresh(user: Annotated[UserPublic, Depends(current_user)]):
     count = await _refresh_picks(_today_str())
     return {"refreshed": True, "count": count, "date": _today_str()}
+
+
+# ───────────────────────── Loss Analysis ─────────────────────────
+
+@api.post("/picks/{pick_id}/loss-analysis")
+async def pick_loss_analysis(pick_id: str,
+                             user: Annotated[UserPublic, Depends(current_user)]):
+    """AI 'Why It Lost' breakdown for a losing pick."""
+    pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
+    if not pick:
+        raise HTTPException(status_code=404, detail="Pick not found")
+    if pick.get("status") != "lost":
+        return {"analysis": "This pick wasn't recorded as a loss. No analysis available.",
+                "source": "skip"}
+    if pick.get("loss_analysis"):
+        return {"analysis": pick["loss_analysis"], "source": "cached"}
+    text, real = await analyze_loss(pick)
+    if real:
+        await db.picks.update_one(
+            {"id": pick_id},
+            {"$set": {"loss_analysis": text, "loss_analysis_ai": text}},
+        )
+    return {"analysis": text, "source": "live" if real else "fallback"}
 
 
 @api.get("/stats/summary")
@@ -430,13 +500,28 @@ async def _daily_refresh_loop():
             await asyncio.sleep(3600)
 
 
+async def _settlement_loop():
+    """Run settlement every 30 minutes to mark completed picks Won/Lost."""
+    await asyncio.sleep(60)  # let startup settle
+    while True:
+        try:
+            await settle_due_picks(db)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning("Settlement loop error: %s", e)
+        await asyncio.sleep(1800)  # 30 min
+
+
 @app.on_event("startup")
 async def on_startup():
     await db.users.create_index("email", unique=True)
     await db.picks.create_index([("pick_date", 1), ("sport", 1)])
     await db.picks.create_index([("pick_date", 1), ("lock_score", -1)])
+    await db.picks.create_index([("status", 1), ("settled_at", -1)])
     await db.picks.create_index("id", unique=True)
     asyncio.create_task(_daily_refresh_loop())
+    asyncio.create_task(_settlement_loop())
     logger.info("PerksLocks AI started")
 
 

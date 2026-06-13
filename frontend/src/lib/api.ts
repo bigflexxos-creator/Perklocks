@@ -121,6 +121,15 @@ export const api = {
   pickDetail: (id: string) => request<Pick & { ai_pending?: boolean }>(`/picks/${id}`),
   pickAiExplain: (id: string) => request<{ explanation: string; source: string }>(`/picks/${id}/ai-explain`, { method: "POST" }),
   refresh: () => request<{ refreshed: boolean; count: number; date: string }>("/picks/refresh", { method: "POST" }),
+  history: (days: number = 30, rolloverOnly = false) =>
+    request<{
+      picks: (Pick & { status?: string; settled_at?: string; final_score?: Record<string, number>; loss_analysis?: string })[];
+      stats: { total: number; won: number; lost: number; push: number; hit_rate: number; rollover_hit_rate: number; rollover_decided: number };
+    }>(`/picks/history?days=${days}${rolloverOnly ? "&rollover_only=true" : ""}`),
+  lossAnalysis: (id: string) =>
+    request<{ analysis: string; source: string }>(`/picks/${id}/loss-analysis`, { method: "POST" }),
+  triggerSettle: () =>
+    request<{ settled: number; won: number; lost: number; push: number; skipped: number; props_pending: number }>("/picks/settle", { method: "POST" }),
   stats: () => request<{
     date: string; total_picks: number; elite_count: number;
     avg_edge_percent: number;
