@@ -12,13 +12,14 @@ import { api, Pick } from "@/src/lib/api";
 export default function ParlayScreen() {
   const router = useRouter();
   const [data, setData] = useState<any>(null);
+  const [mode, setMode] = useState<"standard" | "high_risk">("standard");
   const [legs, setLegs] = useState(3);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async (n: number) => {
+  const load = useCallback(async (n: number, m: "standard" | "high_risk") => {
     try {
-      const res = await api.parlay(n);
+      const res = await api.parlay(n, m);
       setData(res);
     } catch (e) {
       console.warn("parlay load", e);
@@ -28,21 +29,51 @@ export default function ParlayScreen() {
     }
   }, []);
 
-  useEffect(() => { setLoading(true); load(legs); }, [legs, load]);
+  useEffect(() => { setLoading(true); load(legs, mode); }, [legs, mode, load]);
+
+  const onModeChange = (m: "standard" | "high_risk") => {
+    setMode(m);
+    // Reset to a sensible default when switching modes.
+    setLegs(m === "high_risk" ? 10 : 3);
+  };
+
+  const isHighRisk = mode === "high_risk";
+  const legOptions = isHighRisk ? [10, 15, 20] : [2, 3, 4, 5];
+  const accentColor = isHighRisk ? COLORS.electricBlaze : COLORS.goldElite;
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
         <View>
           <Text style={styles.brand}>AUTO PARLAY</Text>
-          <Text style={styles.tag}>ELITE LOCK PICKS · COMBINED</Text>
+          <Text style={[styles.tag, { color: accentColor }]}>
+            {isHighRisk ? "HIGH RISK · LOCK 90+ LONGSHOT" : "ELITE LOCK PICKS · COMBINED"}
+          </Text>
         </View>
-        <Ionicons name="layers" size={28} color={COLORS.goldElite} />
+        <Ionicons name={isHighRisk ? "flame" : "layers"} size={28} color={accentColor} />
+      </View>
+
+      <View style={styles.modeRow}>
+        <Pressable
+          testID="parlay-mode-standard"
+          onPress={() => onModeChange("standard")}
+          style={[styles.modeBtn, !isHighRisk && styles.modeBtnActive]}
+        >
+          <Text style={[styles.modeText, !isHighRisk && styles.modeTextActive]}>STANDARD</Text>
+        </Pressable>
+        <Pressable
+          testID="parlay-mode-high-risk"
+          onPress={() => onModeChange("high_risk")}
+          style={[styles.modeBtn, isHighRisk && styles.modeBtnHighRiskActive]}
+        >
+          <Ionicons name="flame" size={12} color={isHighRisk ? COLORS.bg : COLORS.electricBlaze} />
+          <Text style={[styles.modeText, isHighRisk && styles.modeTextHighRiskActive]}>HIGH RISK</Text>
+        </Pressable>
       </View>
 
       <View style={styles.legSelector}>
         <Text style={styles.legLabel}>LEGS</Text>
-        {[2, 3, 4, 5].map((n) => (
+        {legOptions.map((n) => (
           <Pressable
             key={n}
             testID={`parlay-legs-${n}`}
@@ -149,6 +180,19 @@ const styles = StyleSheet.create({
   header: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 14, flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end" },
   brand: { fontSize: 22, fontWeight: "900", color: COLORS.textPrimary, letterSpacing: 3 },
   tag: { fontSize: 10, color: COLORS.goldElite, fontWeight: "800", letterSpacing: 1.8, marginTop: 4 },
+  modeRow: {
+    flexDirection: "row", gap: 8, paddingHorizontal: 20, paddingBottom: 10,
+  },
+  modeBtn: {
+    flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+    paddingVertical: 9, borderRadius: 10,
+    borderWidth: 1, borderColor: COLORS.borderDefault,
+  },
+  modeBtnActive: { backgroundColor: COLORS.goldElite, borderColor: COLORS.goldElite },
+  modeBtnHighRiskActive: { backgroundColor: COLORS.electricBlaze, borderColor: COLORS.electricBlaze },
+  modeText: { color: COLORS.textSecondary, fontSize: 11, fontWeight: "900", letterSpacing: 1.4 },
+  modeTextActive: { color: COLORS.bg },
+  modeTextHighRiskActive: { color: COLORS.bg },
   legSelector: { flexDirection: "row", alignItems: "center", paddingHorizontal: 20, gap: 8, paddingBottom: 8 },
   legLabel: { color: COLORS.textMuted, fontSize: 10, fontWeight: "800", letterSpacing: 1.3, marginRight: 4 },
   legChip: { width: 40, height: 36, borderRadius: 18, borderWidth: 1, borderColor: COLORS.borderDefault, alignItems: "center", justifyContent: "center" },
