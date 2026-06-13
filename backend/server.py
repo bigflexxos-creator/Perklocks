@@ -133,7 +133,8 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     Optional `day_offset` filters picks to a specific calendar day relative
     to today (0=today, 1=tomorrow, 2=day after)."""
     await _ensure_today_picks()
-    q: dict = {"pick_date": _today_str(), "lock_score": {"$gte": 85}}
+    q: dict = {"pick_date": _today_str(), "lock_score": {"$gte": 85},
+               "is_under_lock": {"$ne": True}}
     if sport and sport.lower() != "all":
         q["sport"] = sport
     if grade:
@@ -177,12 +178,53 @@ async def picks_all(user: Annotated[UserPublic, Depends(current_user)],
 @api.get("/picks/bet-killer")
 async def picks_bet_killer(user: Annotated[UserPublic, Depends(current_user)],
                            sport: Optional[str] = None):
+    """Legacy bet-killer endpoint (deprecated) — kept for backwards compat."""
     await _ensure_today_picks()
     q: dict = {"pick_date": _today_str(), "lock_score": {"$lt": 85}}
     if sport and sport.lower() != "all":
         q["sport"] = sport
     cursor = db.picks.find(q, {"_id": 0}).sort("lock_score", 1).limit(50)
     return {"picks": await cursor.to_list(length=50)}
+
+
+@api.get("/picks/under-of-the-day")
+async def under_of_the_day(user: Annotated[UserPublic, Depends(current_user)]):
+    """The single safest alt-UNDER lock across all sports.
+
+    Returns alt-Under prop picks (e.g. "Player Under 45.5 Points" where the
+    line is set absurdly high) sorted by implied probability. The top one is
+    the "Under of the Day".
+    """
+    await _ensure_today_picks()
+    now = datetime.now(timezone.utc)
+    cutoff = now + timedelta(hours=24)
+    cursor = db.picks.find(
+        {"pick_date": _today_str(), "is_under_lock": True},
+        {"_id": 0},
+    ).sort("lock_score", -1).limit(50)
+    picks = await cursor.to_list(length=50)
+
+    def starts_today(p: dict) -> bool:
+        et = p.get("event_time") or ""
+        try:
+            dt = datetime.strptime(et, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            return now <= dt <= cutoff
+        except Exception:
+            return False
+
+    today_picks = [p for p in picks if starts_today(p)]
+    pool = today_picks if today_picks else picks
+    if not pool:
+        return {"pick": None, "alternates": [], "total_evaluated": 0}
+
+    # Rank by win probability (the higher, the safer the Under)
+    pool.sort(key=lambda p: (p.get("win_probability", 0), p.get("lock_score", 0)), reverse=True)
+    return {
+        "pick": pool[0],
+        "alternates": pool[1:6],  # 5 backup alt-Under locks
+        "total_evaluated": len(pool),
+        "scoped_to_today": bool(today_picks),
+    }
 
 
 @api.get("/picks/rollover")

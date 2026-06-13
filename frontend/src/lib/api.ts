@@ -112,6 +112,8 @@ export const api = {
     request<{ picks: Pick[] }>(`/picks/bet-killer${sport && sport !== "All" ? `?sport=${sport}` : ""}`),
   rollover: () =>
     request<{ picks: Pick[]; pick: Pick | null; composite_rank?: number; total_evaluated?: number }>("/picks/rollover"),
+  underOfTheDay: () =>
+    request<{ pick: Pick | null; alternates: Pick[]; total_evaluated: number; scoped_to_today?: boolean }>("/picks/under-of-the-day"),
   parlay: (legs: number = 3) =>
     request<{ parlay: null | {
       legs: Pick[]; leg_count: number;
