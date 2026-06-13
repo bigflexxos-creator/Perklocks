@@ -1,81 +1,14 @@
 import React, { useEffect, useState } from "react";
 import {
-  View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Linking, Alert, Platform,
+  View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import * as WebBrowser from "expo-web-browser";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
 import { api, Pick } from "@/src/lib/api";
 import { useBetSlip, MAX_SLIP_SIZE } from "@/src/contexts/BetSlipContext";
-
-// Sportsbook deep-links — open the book's sport landing page so users can
-// quickly place the bet themselves. Direct bet-slip deep-linking requires
-// affiliate partnerships, so we land users in the right section instead.
-const SPORTSBOOK_URLS: Record<string, Record<string, string>> = {
-  FanDuel: {
-    MLB: "https://sportsbook.fanduel.com/navigation/mlb",
-    NBA: "https://sportsbook.fanduel.com/navigation/nba",
-    WNBA: "https://sportsbook.fanduel.com/navigation/wnba",
-    NFL: "https://sportsbook.fanduel.com/navigation/nfl",
-    Soccer: "https://sportsbook.fanduel.com/navigation/soccer",
-    Tennis: "https://sportsbook.fanduel.com/navigation/tennis",
-    UFC: "https://sportsbook.fanduel.com/navigation/mma",
-    KBO: "https://sportsbook.fanduel.com/navigation/baseball",
-    _default: "https://sportsbook.fanduel.com/",
-  },
-  DraftKings: {
-    MLB: "https://sportsbook.draftkings.com/leagues/baseball/mlb",
-    NBA: "https://sportsbook.draftkings.com/leagues/basketball/nba",
-    WNBA: "https://sportsbook.draftkings.com/leagues/basketball/wnba",
-    NFL: "https://sportsbook.draftkings.com/leagues/football/nfl",
-    Soccer: "https://sportsbook.draftkings.com/leagues/soccer",
-    Tennis: "https://sportsbook.draftkings.com/leagues/tennis",
-    UFC: "https://sportsbook.draftkings.com/leagues/mma/ufc",
-    KBO: "https://sportsbook.draftkings.com/leagues/baseball",
-    _default: "https://sportsbook.draftkings.com/",
-  },
-  BetMGM: {
-    MLB: "https://sports.betmgm.com/en/sports/baseball-23",
-    NBA: "https://sports.betmgm.com/en/sports/basketball-7",
-    WNBA: "https://sports.betmgm.com/en/sports/basketball-7",
-    NFL: "https://sports.betmgm.com/en/sports/football-11",
-    Soccer: "https://sports.betmgm.com/en/sports/soccer-4",
-    Tennis: "https://sports.betmgm.com/en/sports/tennis-5",
-    UFC: "https://sports.betmgm.com/en/sports/mma-15",
-    KBO: "https://sports.betmgm.com/en/sports/baseball-23",
-    _default: "https://sports.betmgm.com/",
-  },
-};
-
-const SPORTSBOOKS = ["FanDuel", "DraftKings", "BetMGM"] as const;
-
-function openSportsbook(book: string, sport: string) {
-  const map = SPORTSBOOK_URLS[book];
-  if (!map) return;
-  const url = map[sport] ?? map._default;
-  // Native: use expo-web-browser (SFSafariViewController / Chrome Custom Tabs).
-  // This respects universal links so iOS/Android will jump to the installed
-  // sportsbook app when present. Linking.openURL alone silently fails on
-  // some Android intents for https:// URLs, which is why taps "didn't pop".
-  if (Platform.OS === "web") {
-    if (typeof window !== "undefined") {
-      const popup = window.open(url, "_blank", "noopener,noreferrer");
-      if (!popup) window.location.href = url;
-    }
-    return;
-  }
-  WebBrowser.openBrowserAsync(url, {
-    showTitle: true,
-    enableBarCollapsing: true,
-    dismissButtonStyle: "close",
-  }).catch(() => {
-    Linking.openURL(url).catch(() =>
-      Alert.alert("Couldn't open sportsbook", `Please open ${url} manually.`),
-    );
-  });
-}
+import { SPORTSBOOKS, openSportsbookWithSlip, SportsbookName } from "@/src/utils/sportsbook";
 
 function formatGameTime(iso: string): string {
   try {
@@ -281,7 +214,7 @@ export default function PickDetail() {
                 {SPORTSBOOKS.map((book) => (
                   <Pressable
                     key={book}
-                    onPress={() => openSportsbook(book, pick.sport)}
+                    onPress={() => openSportsbookWithSlip(book as SportsbookName, [pick])}
                     style={({ pressed }) => [
                       styles.sportsbookBtn,
                       pressed && { opacity: 0.8 },

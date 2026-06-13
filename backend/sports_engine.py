@@ -302,6 +302,17 @@ _FACTOR_RECIPES: dict[str, list[str]] = {
                      "Set Piece Threat", "Pace of Play", "Match Importance"],
     "Tennis_ml": ["Surface Record", "Recent Form (L10)", "H2H Record",
                   "Hold % (Service)", "Break % (Return)", "Fatigue / Travel"],
+    "UFC_ml": ["Striking Differential", "Takedown Defense", "Recent Form (L5)",
+               "Cardio / Pace", "Reach / Height Edge", "Camp Quality",
+               "Layoff / Ring Rust"],
+    "UFC_total": ["Finish Rate", "Opp Durability", "Pace of Strikes",
+                  "Wrestling Style", "Cardio Profile", "Round 1 KO Risk"],
+    "KBO_ml": ["Starting Pitcher ERA", "Bullpen ERA", "Recent Form (L10)",
+               "Home/Away Splits", "Lineup Health", "Run Differential",
+               "vs. Opp Recent H2H"],
+    "KBO_total": ["Team OPS (L15)", "Combined Bullpen ERA", "Park Factor",
+                  "Weather (Wind/Humidity)", "Last 10 Total Trend",
+                  "Umpire Strike Zone"],
 }
 
 
@@ -318,14 +329,23 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
     if not home or not away:
         return []
     commence = game.get("commence_time")
-    # Restrict to games starting within the next 72 hours (3 days).
+    # Per-sport scheduling window. UFC fight cards run weekly, KBO has 5
+    # games/day all week, Tennis tournaments span 7-10 days — these sparse
+    # sports need a wider window than daily-game sports or we'd ship the
+    # board with 2-3 picks.
+    window_hours = {
+        "UFC": 10 * 24,
+        "KBO": 7 * 24,
+        "Tennis": 7 * 24,
+        "Soccer": 5 * 24,
+    }.get(sport, 72)
     if commence:
         try:
             dt = datetime.strptime(commence, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
             now = datetime.now(timezone.utc)
             if dt < now - __import__("datetime").timedelta(minutes=30):
                 return []
-            if dt > now + __import__("datetime").timedelta(hours=72):
+            if dt > now + __import__("datetime").timedelta(hours=window_hours):
                 return []
         except Exception:
             pass
@@ -421,8 +441,9 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     external_id=f"{sport}-{game_id}-total",
                 ))
 
-    # Spread pick (skip for soccer/tennis which don't have h2h spreads in same sense).
-    if spreads_outs and sport in ("MLB", "NBA", "NFL"):
+    # Spread / Run line pick — skip for soccer/tennis/UFC (no balanced
+    # spread market). KBO uses the same run-line format as MLB.
+    if spreads_outs and sport in ("MLB", "NBA", "NFL", "KBO"):
         home_sp = next((o for o in spreads_outs if o.get("name") == home), None)
         away_sp = next((o for o in spreads_outs if o.get("name") == away), None)
         if home_sp and away_sp:
@@ -449,7 +470,9 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
 
 def _unit(sport: str) -> str:
     return {"MLB": "Runs", "NBA": "Points", "NFL": "Points",
-            "Soccer": "Goals", "Tennis": "Games"}.get(sport, "Points")
+            "Soccer": "Goals", "Tennis": "Games",
+            "UFC": "Rounds", "KBO": "Runs",
+            "WNBA": "Points"}.get(sport, "Points")
 
 
 def _insights_for(sport: str, rng, side: str, home: str, away: str) -> list[str]:
@@ -484,6 +507,24 @@ def _insights_for(sport: str, rng, side: str, home: str, away: str) -> list[str]
             f"H2H last 5: {side} won {rng.randint(2, 5)} of 5",
             f"{home} clean sheet rate: {rng.randint(15, 30)}%",
             f"Both teams scored in {rng.randint(5, 9)} of last 10 meetings",
+        ]
+    elif sport == "UFC":
+        pool = [
+            f"{side} significant strikes/min: {rng.uniform(4.2, 6.8):.1f}",
+            f"Takedown defense: {rng.randint(72, 92)}%",
+            f"Recent form: {rng.randint(3, 5)}-{rng.randint(0, 2)} in last 5 fights",
+            f"Reach advantage: +{rng.randint(2, 6)}\" vs opponent",
+            f"Camp: {rng.choice(['American Top Team', 'Jackson-Wink', 'AKA', 'City Kickboxing', 'Tristar'])}",
+            f"{rng.randint(60, 80)}% of fights end via finish",
+        ]
+    elif sport == "KBO":
+        pool = [
+            f"{side} starting pitcher ERA: {rng.uniform(2.4, 3.8):.2f}",
+            f"Bullpen ranked top-{rng.randint(2, 5)} in KBO ERA",
+            f"Recent form: {rng.randint(6, 9)}-{rng.randint(1, 4)} in last 10",
+            f"Lineup OPS vs opp handedness: {rng.uniform(.770, .880):.3f}",
+            f"Run differential: +{rng.uniform(0.4, 1.6):.1f} per game (L15)",
+            f"Home/Away splits favor {side} by {rng.randint(8, 22)} points wRC+",
         ]
     else:  # Tennis
         pool = [
