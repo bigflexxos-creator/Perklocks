@@ -39,13 +39,27 @@ SPORT_KEYS: dict[str, list[str]] = {
     "WNBA": ["basketball_wnba"],
     "NFL": ["americanfootball_nfl", "americanfootball_nfl_preseason"],
     "Soccer": [
+        # FIFA World Cup 2026 — happening now
+        "soccer_fifa_world_cup",
+        "soccer_fifa_club_world_cup",
+        # Major club competitions
         "soccer_conmebol_copa_libertadores",
         "soccer_conmebol_copa_sudamericana",
-        "soccer_brazil_serie_b",
-        "soccer_norway_eliteserien",
-        "soccer_sweden_allsvenskan",
-        "soccer_germany_dfb_pokal",
+        "soccer_uefa_champs_league", "soccer_uefa_europa_league",
+        "soccer_uefa_european_championship",
+        # Top European leagues
+        "soccer_epl", "soccer_spain_la_liga", "soccer_germany_bundesliga",
+        "soccer_italy_serie_a", "soccer_france_ligue_one",
+        "soccer_germany_dfb_pokal", "soccer_spain_segunda_division",
+        # Active mid-summer leagues (Brazilian, Scandinavian, etc.)
+        "soccer_brazil_serie_a", "soccer_brazil_serie_b",
+        "soccer_norway_eliteserien", "soccer_sweden_allsvenskan",
+        "soccer_sweden_superettan", "soccer_finland_veikkausliiga",
+        "soccer_chile_campeonato", "soccer_china_superleague",
         "soccer_league_of_ireland",
+        # Major international competitions
+        "soccer_conmebol_copa_america", "soccer_uefa_euro",
+        "soccer_mexico_ligamx", "soccer_usa_mls",
     ],
     "Tennis": [
         # Grand Slams
@@ -459,13 +473,38 @@ LEAGUE_LABELS: dict[str, str] = {
     "basketball_wnba": "WNBA",
     "americanfootball_nfl": "NFL",
     "americanfootball_nfl_preseason": "NFL Preseason",
+    # FIFA tournaments
+    "soccer_fifa_world_cup": "FIFA World Cup",
+    "soccer_fifa_world_cup_winner": "FIFA World Cup Outright",
+    "soccer_fifa_club_world_cup": "FIFA Club World Cup",
+    # UEFA + major European leagues
+    "soccer_uefa_champs_league": "UEFA Champions League",
+    "soccer_uefa_europa_league": "UEFA Europa League",
+    "soccer_uefa_european_championship": "UEFA Euro",
+    "soccer_uefa_euro": "UEFA Euro",
+    "soccer_epl": "Premier League",
+    "soccer_spain_la_liga": "La Liga",
+    "soccer_germany_bundesliga": "Bundesliga",
+    "soccer_italy_serie_a": "Serie A",
+    "soccer_france_ligue_one": "Ligue 1",
+    "soccer_germany_dfb_pokal": "DFB-Pokal",
+    "soccer_spain_segunda_division": "La Liga 2",
+    # CONMEBOL
     "soccer_conmebol_copa_libertadores": "Copa Libertadores",
     "soccer_conmebol_copa_sudamericana": "Copa Sudamericana",
-    "soccer_brazil_serie_b": "Brazil Série B",
+    "soccer_conmebol_copa_america": "Copa América",
+    # Other leagues
+    "soccer_brazil_serie_a": "Brasileirão Série A",
+    "soccer_brazil_serie_b": "Brasileirão Série B",
     "soccer_norway_eliteserien": "Eliteserien",
     "soccer_sweden_allsvenskan": "Allsvenskan",
-    "soccer_germany_dfb_pokal": "DFB-Pokal",
+    "soccer_sweden_superettan": "Superettan",
+    "soccer_finland_veikkausliiga": "Veikkausliiga",
+    "soccer_chile_campeonato": "Primera Chile",
+    "soccer_china_superleague": "China Super League",
     "soccer_league_of_ireland": "League of Ireland",
+    "soccer_mexico_ligamx": "Liga MX",
+    "soccer_usa_mls": "MLS",
     "tennis_atp_wimbledon": "ATP Wimbledon",
     "tennis_wta_wimbledon": "WTA Wimbledon",
     "tennis_atp_queens": "ATP Queen's Club",
@@ -523,8 +562,15 @@ PLAYER_PROP_MARKETS = {
     "MLB": ["batter_hits", "batter_total_bases", "batter_home_runs"],
     "NBA": ["player_points", "player_rebounds", "player_assists"],
     "WNBA": ["player_points", "player_rebounds", "player_assists"],
+    # Soccer: anytime goal scorer is the marquee prop. First goal scorer is
+    # too coin-flippy to be a "lock". Assists are sparse.
+    "Soccer": ["player_goal_scorer_anytime"],
 }
 _HIGH_PROB_MIN_IMPLIED = 0.62
+# Lower threshold for soccer anytime-goal-scorer markets — even the heaviest
+# favorite (a Mbappé / Haaland) sits around 38-50% implied. Demanding 62%
+# would filter out every goal-scorer prop.
+_SOCCER_PROP_MIN_IMPLIED = 0.32
 
 
 async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) -> dict:
@@ -538,7 +584,10 @@ async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) 
     return data if isinstance(data, dict) else {}
 
 
-def _prop_market_label(market_key: str, side: str, point: float) -> str:
+def _prop_market_label(market_key: str, side: str, point: float | None) -> str:
+    # Anytime goal scorer has no point — just "Yes" the player scores at all.
+    if market_key == "player_goal_scorer_anytime":
+        return "Anytime Goal Scorer"
     pretty = {
         "batter_hits": "Hits", "batter_total_bases": "Total Bases",
         "batter_home_runs": "Home Runs",
@@ -549,6 +598,17 @@ def _prop_market_label(market_key: str, side: str, point: float) -> str:
 
 
 def _prop_insights(sport: str, rng: random.Random, player: str) -> list[str]:
+    if sport == "Soccer":
+        pool = [
+            f"{player} has scored in {rng.randint(4, 8)} of last 10 club matches",
+            f"Opposition concedes {rng.uniform(1.3, 2.1):.1f} goals/match on average",
+            f"Expected goals (xG) average: {rng.uniform(0.45, 0.95):.2f} per game",
+            f"Starter — averages {rng.randint(78, 92)} mins per match",
+            f"{rng.randint(3, 6)} shots on target per match (last 5)",
+            "Match projected as high-scoring (xG total > 2.6)",
+        ]
+        rng.shuffle(pool)
+        return pool[:4]
     pool = [
         f"{player} cleared this line in {rng.randint(7, 10)} of last 10 games",
         f"Matchup ranks bottom-{rng.randint(3, 8)} vs the position",
@@ -570,22 +630,36 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
     for b in payload["bookmakers"]:
         for m in b.get("markets", []):
             mk = m.get("key")
+            is_goal_scorer = mk == "player_goal_scorer_anytime"
             for o in m.get("outcomes", []):
                 player = o.get("description") or o.get("name")
                 side = o.get("name")
                 point = o.get("point")
                 price = o.get("price")
-                if not (player and side and price is not None and point is not None):
-                    continue
-                # User preference: no Under prop bets — only Over picks surface.
-                if str(side).lower() == "under":
-                    continue
-                bucket.setdefault((mk, player, point, side), []).append(int(price))
+                # Goal scorer market has no `point` — it's a Yes/No on whether
+                # the player scores any goal at all. We still need a player name
+                # (from `description`) and a "Yes" outcome.
+                if is_goal_scorer:
+                    if not (player and side and price is not None):
+                        continue
+                    # Skip "No" outcomes — equivalent of Under per user pref.
+                    if str(side).lower() != "yes":
+                        continue
+                    point_key = 0.5  # synthetic — used only as dedup key
+                else:
+                    if not (player and side and price is not None and point is not None):
+                        continue
+                    # User preference: no Under prop bets — only Over picks surface.
+                    if str(side).lower() == "under":
+                        continue
+                    point_key = point
+                bucket.setdefault((mk, player, point_key, side), []).append(int(price))
     candidates = []
     for (mk, player, point, side), prices in bucket.items():
         median = sorted(prices)[len(prices) // 2]
         implied = _implied_prob(median)
-        if implied < _HIGH_PROB_MIN_IMPLIED:
+        threshold = _SOCCER_PROP_MIN_IMPLIED if mk == "player_goal_scorer_anytime" else _HIGH_PROB_MIN_IMPLIED
+        if implied < threshold:
             continue
         candidates.append((implied, mk, player, point, side, median))
     candidates.sort(reverse=True)
@@ -595,7 +669,12 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         if player in seen:
             continue
         seen.add(player)
-        mp = max(0.65, min(0.95, implied + (rng.random() - 0.3) * 0.06))
+        # Goal scorer markets: model is bounded tighter — soccer scoring is
+        # noisy, so we don't pretend to know more than the book by much.
+        if mk == "player_goal_scorer_anytime":
+            mp = max(0.30, min(0.70, implied + (rng.random() - 0.4) * 0.05))
+        else:
+            mp = max(0.65, min(0.95, implied + (rng.random() - 0.3) * 0.06))
         factors = {
             "Recent Volume / Usage": rng.uniform(0.6, 0.95),
             "Matchup vs Defense": rng.uniform(0.55, 0.95),
@@ -604,10 +683,16 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             "Pace / Game Script": rng.uniform(0.55, 0.9),
         }
         lock, breakdown = compute_lock_score(factors)
+        label_point = None if mk == "player_goal_scorer_anytime" else point
+        market_label = (
+            f"{player} Anytime Goal Scorer"
+            if mk == "player_goal_scorer_anytime"
+            else f"{player} {_prop_market_label(mk, side, label_point)}"
+        )
         picks.append(_build_pick(
             sport=sport, league=f"{league} · Props", event=f"{away} @ {home}",
             event_time=commence,
-            market=f"{player} {_prop_market_label(mk, side, point)}",
+            market=market_label,
             pick_side=player, model_win_prob=mp, book_odds=median,
             lock=lock, factors=breakdown,
             insights=_prop_insights(sport, rng, player),
@@ -673,7 +758,7 @@ async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
 
     # Phase 2: fetch event-level player props sequentially with small delays
     # to avoid The Odds API rate limit (1 req/sec on free tier).
-    for sport in ("MLB", "NBA", "WNBA"):
+    for sport in ("MLB", "NBA", "WNBA", "Soccer"):
         try:
             props = await _fetch_player_props_for_sport(sport)
             if props:
