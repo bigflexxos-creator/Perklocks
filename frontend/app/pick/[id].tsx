@@ -7,6 +7,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
 import { api, Pick } from "@/src/lib/api";
+import { useBetSlip, MAX_SLIP_SIZE } from "@/src/contexts/BetSlipContext";
 
 // Sportsbook deep-links — open the book's sport landing page so users can
 // quickly place the bet themselves. Direct bet-slip deep-linking requires
@@ -77,6 +78,7 @@ function formatGameTime(iso: string): string {
 export default function PickDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const slip = useBetSlip();
   const [pick, setPick] = useState<Pick | null>(null);
   const [loading, setLoading] = useState(true);
   const [aiLoading, setAiLoading] = useState(false);
@@ -135,7 +137,33 @@ export default function PickDetail() {
         <Text style={styles.headerTitle}>
           {isKiller ? "BET KILLER" : "PICK BREAKDOWN"}
         </Text>
-        <View style={{ width: 32 }} />
+        <Pressable
+          testID="add-to-slip-button"
+          onPress={() => {
+            if (!pick) return;
+            if (slip.has(pick.id)) {
+              slip.removePick(pick.id);
+            } else {
+              const res = slip.addPick(pick);
+              if (!res.ok) {
+                console.warn(res.reason);
+              }
+            }
+          }}
+          hitSlop={12}
+          style={[styles.slipBtn, pick && slip.has(pick.id) && styles.slipBtnActive]}
+        >
+          <Ionicons
+            name={pick && slip.has(pick.id) ? "checkmark" : "add"}
+            size={20}
+            color={pick && slip.has(pick.id) ? COLORS.bg : COLORS.textPrimary}
+          />
+          {slip.count > 0 && (
+            <View style={styles.slipBadge}>
+              <Text style={styles.slipBadgeText}>{slip.count}</Text>
+            </View>
+          )}
+        </Pressable>
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
@@ -345,6 +373,17 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderWidth: 1, borderColor: COLORS.borderDefault,
   },
+  slipBtn: {
+    width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center",
+    borderWidth: 1.5, borderColor: COLORS.textPrimary, backgroundColor: "transparent",
+  },
+  slipBtnActive: { backgroundColor: COLORS.neonGreen, borderColor: COLORS.neonGreen },
+  slipBadge: {
+    position: "absolute", top: -4, right: -4, minWidth: 16, height: 16, borderRadius: 8,
+    backgroundColor: COLORS.electricBlaze, alignItems: "center", justifyContent: "center",
+    paddingHorizontal: 4,
+  },
+  slipBadgeText: { color: COLORS.textPrimary, fontSize: 9, fontWeight: "900" },
   sportsbookHelper: {
     color: COLORS.textSecondary, fontSize: 11, lineHeight: 16, marginBottom: 12,
   },

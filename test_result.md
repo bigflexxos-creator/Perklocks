@@ -319,3 +319,40 @@ agent_communication:
       lib (Reanimated/Gesture-Handler) — non-blocking, same as iteration_1.
 
       No retest needed.
+
+
+  - agent: "main"
+    message: |
+      Bet Slip feature verification + polish complete (June 13, 2026):
+
+      Fixed (BetSlipContext.tsx):
+        - `storage.secureGet(SLIP_KEY)` was missing the required `fallback` arg (TS error +
+          runtime never resolved). Swapped to AsyncStorage directly (slip payload exceeds the
+          SecureStore 2KB cap on iOS for 25 enriched picks). Hydration is now non-blocking and
+          guarded with a hydratedRef so initial empty state never overwrites persisted picks.
+
+      New (BetSlipFab.tsx + tabs/_layout.tsx):
+        - Floating gold "VIEW SLIP (N)" pill anchored above the tab bar across every tab,
+          showing live combined parlay odds + $100 stake payout. Hidden on /slip and when slip
+          is empty. Shows "FULL" tag at 25 legs. testID="bet-slip-fab" for E2E.
+
+      New (slip.tsx):
+        - Header now has share + clear buttons. Native React Native Share on iOS/Android, Web
+          Share API → clipboard fallback on web. Share text includes formatted parlay summary,
+          all legs (sport · market · odds · matchup), and avg lock score.
+
+      Manual E2E verified on the preview URL with mobile viewport (414x896):
+        - Login → tap pick card → tap "+" turns into checkmark, badge shows count.
+        - FAB appears bottom-center over tab bar with correct count + live odds.
+        - Slip page renders: 2-leg parlay (-575, -660) → -284 odds, $135 payout, $35.18 profit.
+          3-leg parlay (-575, -720, -675) → -187 odds, $154 payout, $53.50 profit. Math is
+          correct (decimal product → American conversion).
+        - Trash icon on each leg removes; Clear button prompts confirm Alert; share icon dims
+          when empty. FanDuel/DraftKings/BetMGM buttons open sportsbook URLs.
+        - Persists across refresh via AsyncStorage.
+
+      Discovered side-finding: on localhost:3000 testing, EXPO_PUBLIC_BACKEND_URL resolves to
+      window.location.origin which doesn't proxy /api/* — preview URL must be used. Not a
+      regression, already-existing behavior in api.ts.
+
+      No backend changes. No retest needed for backend.
