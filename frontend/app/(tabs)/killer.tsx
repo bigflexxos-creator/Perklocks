@@ -7,7 +7,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
-import { api, Pick } from "@/src/lib/api";
+import { api, Pick, LineType } from "@/src/lib/api";
+import { LineTypeToggle } from "@/src/components/LineTypeToggle";
 
 function formatGameTime(iso: string): string {
   try {
@@ -32,12 +33,13 @@ export default function UnderOfTheDayScreen() {
   const [pick, setPick] = useState<Pick | null>(null);
   const [alternates, setAlternates] = useState<Pick[]>([]);
   const [pool, setPool] = useState<number>(0);
+  const [lineType, setLineType] = useState<LineType>("both");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (lt: LineType) => {
     try {
-      const res = await api.underOfTheDay();
+      const res = await api.underOfTheDay(lt);
       setPick(res.pick);
       setAlternates(res.alternates ?? []);
       setPool(res.total_evaluated ?? 0);
@@ -49,9 +51,9 @@ export default function UnderOfTheDayScreen() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { setLoading(true); load(lineType); }, [lineType, load]);
 
-  const onRefresh = () => { setRefreshing(true); load(); };
+  const onRefresh = () => { setRefreshing(true); load(lineType); };
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -63,6 +65,8 @@ export default function UnderOfTheDayScreen() {
         <Ionicons name="trending-down" size={28} color={COLORS.voltBlue} />
       </View>
 
+      <LineTypeToggle value={lineType} onChange={setLineType} testIDPrefix="under-line" />
+
       <ScrollView
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl tintColor={COLORS.textPrimary} refreshing={refreshing} onRefresh={onRefresh} />}
@@ -73,9 +77,15 @@ export default function UnderOfTheDayScreen() {
         ) : !pick ? (
           <View style={styles.center}>
             <Ionicons name="search-outline" size={48} color={COLORS.textMuted} />
-            <Text style={styles.emptyTitle}>No alt-Under locks today</Text>
+            <Text style={styles.emptyTitle}>
+              {lineType === "main" ? "No main-line Unders" :
+               lineType === "alt" ? "No alt-Under locks" :
+               "No Under locks today"}
+            </Text>
             <Text style={styles.emptyMsg}>
-              Books don&apos;t always offer alt lines on every event. Pull to refresh.
+              {lineType === "main"
+                ? "Try ALT or BOTH for chalky alt-line Unders. Pull to refresh."
+                : "Books don't always offer alt lines on every event. Pull to refresh."}
             </Text>
           </View>
         ) : (

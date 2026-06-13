@@ -421,28 +421,53 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 external_id=f"{sport}-{game_id}-dc",
             ))
 
-    # Totals pick — Over only (per user preference, no Under bets).
+    # Totals pick — Over by default. We also build the Under counterpart and
+    # tag it as a main-line "Under lock" so the dedicated Under-of-the-Day
+    # tab can surface it under MAIN (vs. extreme alt unders under ALT).
     if totals_outs:
         over = next((o for o in totals_outs if o.get("name") == "Over"), None)
         under = next((o for o in totals_outs if o.get("name") == "Under"), None)
         if over and under and over.get("point") == under.get("point"):
             line = over.get("point")
+            # ── Over pick ──
             o_price = _median_price(totals_outs, "Over")
-            side, price = "Over", o_price
-            if price is not None:
-                implied = _implied_prob(price)
+            if o_price is not None:
+                implied = _implied_prob(o_price)
                 mp = max(0.35, min(0.78, implied + 0.05 + rng.random() * 0.08))
                 factors = _factors_random(rng, f"{sport}_total") or _factors_random(rng, f"{sport}_ml")
                 lock, breakdown = compute_lock_score(factors)
                 picks.append(_build_pick(
                     sport=sport, league=league, event=f"{away} @ {home}",
                     event_time=commence,
-                    market=f"Total {_unit(sport)} {side} {line}", pick_side=side,
-                    model_win_prob=mp, book_odds=price,
+                    market=f"Total {_unit(sport)} Over {line}", pick_side="Over",
+                    model_win_prob=mp, book_odds=o_price,
                     lock=lock, factors=breakdown,
-                    insights=_insights_for(sport, rng, side, home, away),
-                    external_id=f"{sport}-{game_id}-total",
+                    insights=_insights_for(sport, rng, "Over", home, away),
+                    external_id=f"{sport}-{game_id}-total-over",
                 ))
+            # ── Under pick (main-line) — tag for Under Lock tab ──
+            u_price = _median_price(totals_outs, "Under")
+            if u_price is not None:
+                implied_u = _implied_prob(u_price)
+                # Don't surface lopsided dog-Unders; only consider when implied
+                # is at least 38% (i.e. roughly -160 or better). Below that the
+                # Over is the obvious pick.
+                if implied_u >= 0.38:
+                    mp_u = max(0.35, min(0.78, implied_u + 0.04 + rng.random() * 0.07))
+                    factors_u = _factors_random(rng, f"{sport}_total") or _factors_random(rng, f"{sport}_ml")
+                    lock_u, breakdown_u = compute_lock_score(factors_u)
+                    under_pick = _build_pick(
+                        sport=sport, league=league, event=f"{away} @ {home}",
+                        event_time=commence,
+                        market=f"Total {_unit(sport)} Under {line}", pick_side="Under",
+                        model_win_prob=mp_u, book_odds=u_price,
+                        lock=lock_u, factors=breakdown_u,
+                        insights=_insights_for(sport, rng, "Under", home, away),
+                        external_id=f"{sport}-{game_id}-total-under",
+                    )
+                    if under_pick:
+                        under_pick["is_under_lock"] = True
+                        picks.append(under_pick)
 
     # Spread / Run line pick — skip for soccer/tennis/UFC (no balanced
     # spread market). KBO uses the same run-line format as MLB.
