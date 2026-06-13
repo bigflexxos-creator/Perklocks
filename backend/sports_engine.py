@@ -276,6 +276,9 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
         "lock_score": lock, "grade": _grade(lock), "confidence": _confidence(lock),
         "factors": factors, "key_insights": insights,
         "external_id": str(external_id),
+        # Line classification — used by the UI's MAIN | ALT | BOTH toggle.
+        "is_alt": bool(is_alt_prop),
+        "is_long_shot": bool(is_long_shot),
     }
 
 

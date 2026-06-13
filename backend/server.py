@@ -128,10 +128,16 @@ async def _ensure_today_picks() -> None:
 async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                       sport: Optional[str] = None,
                       grade: Optional[str] = None,
-                      day_offset: Optional[int] = None):
+                      day_offset: Optional[int] = None,
+                      line_type: Optional[str] = None):
     """Top picks from today's 72-hour window (lock score >= 85).
     Optional `day_offset` filters picks to a specific calendar day relative
-    to today (0=today, 1=tomorrow, 2=day after)."""
+    to today (0=today, 1=tomorrow, 2=day after).
+    `line_type` filters by line family:
+      - "main": standard markets only (no alt-prop lines)
+      - "alt":  alternate-line picks only (e.g. Over 0.5 Hits, Anytime Goal Scorer)
+      - "both" / None (default): unrestricted
+    """
     await _ensure_today_picks()
     q: dict = {"pick_date": _today_str(), "lock_score": {"$gte": 85},
                "is_under_lock": {"$ne": True}}
@@ -139,6 +145,11 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         q["sport"] = sport
     if grade:
         q["grade"] = grade
+    lt = (line_type or "").lower()
+    if lt == "main":
+        q["is_alt"] = {"$ne": True}
+    elif lt == "alt":
+        q["is_alt"] = True
     cursor = db.picks.find(q, {"_id": 0}).sort("lock_score", -1).limit(200)
     picks = await cursor.to_list(length=200)
     if day_offset is not None:
@@ -228,7 +239,8 @@ async def under_of_the_day(user: Annotated[UserPublic, Depends(current_user)]):
 
 
 @api.get("/picks/rollover")
-async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)]):
+async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
+                        line_type: Optional[str] = None):
     """Top 3 safest bets of the day — the user picks which one to roll.
 
     Rules:
@@ -238,10 +250,16 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)]):
       - Prefers player props over team moneylines (lower variance)
       - Ranks by win_probability first, then lock_score — "most likely to hit"
       - Diversifies: at most one pick per game so the trio isn't 3 of the same matchup
+      - `line_type`: "main" / "alt" / "both" (default) — same semantics as /picks/today.
     """
     await _ensure_today_picks()
-    cursor = db.picks.find({"pick_date": _today_str(), "lock_score": {"$gte": 90}},
-                           {"_id": 0})
+    q: dict = {"pick_date": _today_str(), "lock_score": {"$gte": 90}}
+    lt = (line_type or "").lower()
+    if lt == "main":
+        q["is_alt"] = {"$ne": True}
+    elif lt == "alt":
+        q["is_alt"] = True
+    cursor = db.picks.find(q, {"_id": 0})
     picks = await cursor.to_list(length=500)
     # Restrict Rollover to today's games only (start time within next 24h).
     now = datetime.now(timezone.utc)
@@ -296,7 +314,8 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)]):
 async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
                      legs: int = 3,
                      mode: str = "standard",
-                     sport: str | None = None):
+                     sport: str | None = None,
+                     line_type: str | None = None):
     """Auto-build a parlay from today's picks.
 
     Modes:
@@ -307,6 +326,11 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     Sport filter:
       - None or "mix": cross-sport parlay (default — best variance distribution).
       - Specific sport (e.g. "MLB", "NBA", "Soccer"): single-sport parlay.
+
+    Line type:
+      - "main": standard markets only (no alt-prop lines).
+      - "alt":  alternate-line picks only.
+      - "both" / None: unrestricted (default).
     """
     await _ensure_today_picks()
     is_high_risk = (mode or "").lower() == "high_risk"
@@ -315,23 +339,30 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     sport_filter: dict = {}
     if sport_q and sport_q.lower() not in ("mix", "all", ""):
         sport_filter = {"sport": sport_q}
+    # Line type filter — same semantics as picks_today.
+    lt = (line_type or "").lower()
+    line_filter: dict = {}
+    if lt == "main":
+        line_filter = {"is_alt": {"$ne": True}}
+    elif lt == "alt":
+        line_filter = {"is_alt": True}
     if is_high_risk:
         legs = max(10, min(20, legs))
         cursor = db.picks.find(
-            {"pick_date": _today_str(), "lock_score": {"$gte": 90}, **sport_filter},
+            {"pick_date": _today_str(), "lock_score": {"$gte": 90}, **sport_filter, **line_filter},
             {"_id": 0},
         ).sort("lock_score", -1).limit(200)
         pool = await cursor.to_list(length=200)
     else:
         legs = max(2, min(8, legs))
         cursor = db.picks.find(
-            {"pick_date": _today_str(), "lock_score": {"$gte": 95}, **sport_filter},
+            {"pick_date": _today_str(), "lock_score": {"$gte": 95}, **sport_filter, **line_filter},
             {"_id": 0},
         ).sort("lock_score", -1).limit(50)
         pool = await cursor.to_list(length=50)
         if len(pool) < legs:
             extra_cursor = db.picks.find(
-                {"pick_date": _today_str(), "lock_score": {"$gte": 90, "$lt": 95}, **sport_filter},
+                {"pick_date": _today_str(), "lock_score": {"$gte": 90, "$lt": 95}, **sport_filter, **line_filter},
                 {"_id": 0},
             ).sort("lock_score", -1).limit(50)
             pool.extend(await extra_cursor.to_list(length=50))

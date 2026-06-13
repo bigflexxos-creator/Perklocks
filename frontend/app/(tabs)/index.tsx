@@ -6,9 +6,10 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS, SPORTS } from "@/src/theme";
-import { api, Pick } from "@/src/lib/api";
+import { api, Pick, LineType } from "@/src/lib/api";
 import { LockPickCard } from "@/src/components/LockPickCard";
 import { ChipRow } from "@/src/components/ChipRow";
+import { LineTypeToggle } from "@/src/components/LineTypeToggle";
 
 function timeAgo(d: Date | null): string {
   if (!d) return "—";
@@ -25,6 +26,7 @@ function timeAgo(d: Date | null): string {
 export default function LocksScreen() {
   const [picks, setPicks] = useState<Pick[]>([]);
   const [sport, setSport] = useState<string>("All");
+  const [lineType, setLineType] = useState<LineType>("both");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [stats, setStats] = useState<{ total_picks: number; elite_count: number; avg_edge_percent: number } | null>(null);
@@ -38,10 +40,10 @@ export default function LocksScreen() {
     return () => clearInterval(t);
   }, []);
 
-  const load = useCallback(async (s: string) => {
+  const load = useCallback(async (s: string, lt: LineType) => {
     try {
       const [picksRes, statsRes] = await Promise.all([
-        api.picksToday(s),
+        api.picksToday(s, lt),
         api.stats().catch(() => null),
       ]);
       setPicks(picksRes.picks);
@@ -55,9 +57,9 @@ export default function LocksScreen() {
     }
   }, []);
 
-  useEffect(() => { setLoading(true); load(sport); }, [sport, load]);
+  useEffect(() => { setLoading(true); load(sport, lineType); }, [sport, lineType, load]);
 
-  const onRefresh = () => { setRefreshing(true); load(sport); };
+  const onRefresh = () => { setRefreshing(true); load(sport, lineType); };
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -68,7 +70,7 @@ export default function LocksScreen() {
     setLoading(true);
     try {
       const res = await api.refresh();
-      await load(sport);
+      await load(sport, lineType);
       showToast(`Refreshed · ${res.count} picks`);
     } catch (e) {
       console.warn(e);
@@ -117,6 +119,7 @@ export default function LocksScreen() {
       )}
 
       <ChipRow options={SPORTS} active={sport} onChange={setSport} testIDPrefix="sport-chip" />
+      <LineTypeToggle value={lineType} onChange={setLineType} testIDPrefix="locks-line" />
 
       <ScrollView
         contentContainerStyle={styles.content}

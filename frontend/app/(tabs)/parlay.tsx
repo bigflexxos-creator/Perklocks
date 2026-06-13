@@ -7,7 +7,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
-import { api, Pick } from "@/src/lib/api";
+import { api, Pick, LineType } from "@/src/lib/api";
+import { LineTypeToggle } from "@/src/components/LineTypeToggle";
 
 export default function ParlayScreen() {
   const router = useRouter();
@@ -15,12 +16,13 @@ export default function ParlayScreen() {
   const [mode, setMode] = useState<"standard" | "high_risk">("standard");
   const [legs, setLegs] = useState(3);
   const [sport, setSport] = useState<string>("mix");
+  const [lineType, setLineType] = useState<LineType>("both");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async (n: number, m: "standard" | "high_risk", s: string) => {
+  const load = useCallback(async (n: number, m: "standard" | "high_risk", s: string, lt: LineType) => {
     try {
-      const res = await api.parlay(n, m, s);
+      const res = await api.parlay(n, m, s, lt);
       setData(res);
     } catch (e) {
       console.warn("parlay load", e);
@@ -30,7 +32,7 @@ export default function ParlayScreen() {
     }
   }, []);
 
-  useEffect(() => { setLoading(true); load(legs, mode, sport); }, [legs, mode, sport, load]);
+  useEffect(() => { setLoading(true); load(legs, mode, sport, lineType); }, [legs, mode, sport, lineType, load]);
 
   const onModeChange = (m: "standard" | "high_risk") => {
     setMode(m);
@@ -139,9 +141,11 @@ export default function ParlayScreen() {
         </ScrollView>
       </View>
 
+      <LineTypeToggle value={lineType} onChange={setLineType} testIDPrefix="parlay-line" />
+
       <ScrollView
         contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl tintColor={COLORS.textPrimary} refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(legs, mode, sport); }} />}
+        refreshControl={<RefreshControl tintColor={COLORS.textPrimary} refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(legs, mode, sport, lineType); }} />}
         showsVerticalScrollIndicator={false}
       >
         {loading ? (

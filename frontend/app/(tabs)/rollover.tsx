@@ -7,7 +7,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
-import { api, Pick } from "@/src/lib/api";
+import { api, Pick, LineType } from "@/src/lib/api";
+import { LineTypeToggle } from "@/src/components/LineTypeToggle";
 
 function formatGameTime(iso: string): string {
   try {
@@ -34,12 +35,13 @@ export default function RolloverScreen() {
   const router = useRouter();
   const [picks, setPicks] = useState<Pick[]>([]);
   const [pool, setPool] = useState<number>(0);
+  const [lineType, setLineType] = useState<LineType>("both");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (lt: LineType) => {
     try {
-      const res = await api.rollover();
+      const res = await api.rollover(lt);
       // Backend now returns an array of up to 3 picks.
       const arr = (res.picks && res.picks.length > 0)
         ? res.picks
@@ -54,9 +56,9 @@ export default function RolloverScreen() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { setLoading(true); load(lineType); }, [lineType, load]);
 
-  const onRefresh = () => { setRefreshing(true); load(); };
+  const onRefresh = () => { setRefreshing(true); load(lineType); };
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -67,6 +69,8 @@ export default function RolloverScreen() {
         </View>
         <Ionicons name="flash" size={28} color={COLORS.goldElite} />
       </View>
+
+      <LineTypeToggle value={lineType} onChange={setLineType} testIDPrefix="rollover-line" />
 
       <ScrollView
         contentContainerStyle={styles.content}
