@@ -223,11 +223,17 @@ def _consensus_market(game: dict, market_key: str) -> list:
 
 def _build_pick(*, sport, league, event, event_time, market, pick_side,
                 model_win_prob, book_odds, lock, factors, insights, external_id,
-                is_alt_prop: bool = False):
+                is_alt_prop: bool = False, is_long_shot: bool = False):
     # Filter out malformed prices outside realistic American odds range.
     # Alt prop picks are legitimately chalky but capped at -1000 max.
+    # Long-shot picks (anytime goal scorer, etc.) can have huge plus prices.
     if book_odds is not None:
-        if is_alt_prop:
+        if is_long_shot:
+            # Anytime goal scorer odds range from +200 (top stars) to +10000
+            # (defenders). Cap at +3500 — beyond that it's a lottery ticket.
+            if book_odds <= -1000 or book_odds >= 3500:
+                book_odds = None
+        elif is_alt_prop:
             if book_odds <= -1000 or book_odds >= 5000 or (-100 < book_odds < 100):
                 book_odds = None
         else:
@@ -238,18 +244,27 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
     final_odds = int(book_odds) if book_odds else _win_prob_to_american(model_win_prob)
     # ─── QUALITY FILTERS (balanced — remove garbage, keep options) ───
     # Alt prop picks intentionally use chalky pricing but cap at -750 per user
-    # preference. Standard picks cap at -450.
-    chalk_floor = -750 if is_alt_prop else -450
-    if final_odds < chalk_floor:
-        return None
-    # Floor lock score at 72 — anything below is genuinely low confidence.
-    if lock < 72:
+    # preference. Standard picks cap at -450. Long-shots are positive odds.
+    if is_long_shot:
+        # Long-shots have plus odds by definition — no floor needed.
+        # Just reject if for some reason we ended up with a steep favorite.
+        if final_odds < -200:
+            return None
+    else:
+        chalk_floor = -750 if is_alt_prop else -450
+        if final_odds < chalk_floor:
+            return None
+    # Lock score floor: long-shots get 65 (anytime scorers are inherently
+    # less "lock-y"). Standard picks need 72+.
+    min_lock = 65 if is_long_shot else 72
+    if lock < min_lock:
         return None
     # Drop only clearly negative-edge picks. -1% is noise tolerance.
     if edge < -1.0:
         return None
-    # Drop forecasts below 55% — coin-flip territory shouldn't be a "pick".
-    if model_win_prob < 0.55:
+    # Probability floor: standard 55%, long-shots 25% (anytime scorers).
+    min_prob = 0.25 if is_long_shot else 0.55
+    if model_win_prob < min_prob:
         return None
     return {
         "sport": sport, "league": league, "event": event,
@@ -624,10 +639,11 @@ _HIGH_PROB_MIN_IMPLIED = 0.62
 # Alt lines must be true locks — at least 80% implied (-400 or steeper).
 _ALT_PROP_MIN_IMPLIED = 0.80
 _ALT_PROP_MAX_IMPLIED = 0.95  # cap absurd chalk like -2000 (95% implied)
-# Lower threshold for soccer anytime-goal-scorer markets — even the heaviest
-# favorite (a Mbappé / Haaland) sits around 38-50% implied. Demanding 62%
-# would filter out every goal-scorer prop.
-_SOCCER_PROP_MIN_IMPLIED = 0.32
+# Lower threshold for soccer anytime-goal-scorer markets — top forwards in
+# strong matches sit around 40-55% implied, mid-tier playmakers 22-35%. We
+# accept down to 22% so picks always show; weaker (<22%) are real lottery
+# tickets that don't qualify as "intelligence" picks.
+_SOCCER_PROP_MIN_IMPLIED = 0.22
 
 
 async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) -> dict:
@@ -753,7 +769,11 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         # Model probabilities — tightly bounded for alts since they're already
         # near-locks at the bookmaker, so we don't pretend to see more edge.
         if mk == "player_goal_scorer_anytime":
-            mp = max(0.30, min(0.70, implied + (rng.random() - 0.4) * 0.05))
+            # For anytime scorers: model can credit a *small* edge over the
+            # book (3-7%) for top forwards in great matchups, but never claim
+            # more than 70% certainty. Floor at the implied so a 22% scorer
+            # still surfaces as a 25-29% model pick.
+            mp = max(0.25, min(0.70, implied + 0.03 + (rng.random() - 0.3) * 0.04))
         elif is_alt:
             # Stay within a small band around the book's implied — alts ARE
             # what they say they are. Just tiny positive nudge to surface them.
@@ -783,6 +803,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             insights=_prop_insights(sport, rng, player),
             external_id=f"{sport}-{payload.get('id', '')}-{mk}-{player[:10]}-{side}-{point}",
             is_alt_prop=is_alt,
+            is_long_shot=(mk == "player_goal_scorer_anytime"),
         ))
     # Tag every Under-alt pick so the main Locks feed can exclude them
     # and the dedicated "Under of the Day" tab can surface them.
