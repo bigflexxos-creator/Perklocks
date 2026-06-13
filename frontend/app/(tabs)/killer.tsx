@@ -1,88 +1,211 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
-  View, Text, StyleSheet, ScrollView, RefreshControl, ActivityIndicator,
+  View, Text, StyleSheet, ScrollView, ActivityIndicator,
+  RefreshControl, Pressable,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { COLORS, SPORTS } from "@/src/theme";
+import { useRouter } from "expo-router";
+import { COLORS, GRADE_COLORS } from "@/src/theme";
 import { api, Pick } from "@/src/lib/api";
-import { LockPickCard } from "@/src/components/LockPickCard";
-import { ChipRow } from "@/src/components/ChipRow";
 
-export default function KillerScreen() {
-  const [picks, setPicks] = useState<Pick[]>([]);
-  const [sport, setSport] = useState("All");
+function formatGameTime(iso: string): string {
+  try {
+    const dt = new Date(iso);
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const tomorrowStart = new Date(todayStart);
+    tomorrowStart.setDate(todayStart.getDate() + 1);
+    const dayAfter = new Date(todayStart);
+    dayAfter.setDate(todayStart.getDate() + 2);
+    const time = dt.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    if (dt >= todayStart && dt < tomorrowStart) return `Today · ${time}`;
+    if (dt >= tomorrowStart && dt < dayAfter) return `Tomorrow · ${time}`;
+    return `${dt.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })} · ${time}`;
+  } catch {
+    return iso;
+  }
+}
+
+export default function UnderOfTheDayScreen() {
+  const router = useRouter();
+  const [pick, setPick] = useState<Pick | null>(null);
+  const [alternates, setAlternates] = useState<Pick[]>([]);
+  const [pool, setPool] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async (s: string) => {
+  const load = useCallback(async () => {
     try {
-      const res = await api.betKiller(s);
-      setPicks(res.picks);
+      const res = await api.underOfTheDay();
+      setPick(res.pick);
+      setAlternates(res.alternates ?? []);
+      setPool(res.total_evaluated ?? 0);
     } catch (e) {
-      console.warn("killer load", e);
+      console.warn("under load", e);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
   }, []);
 
-  useEffect(() => { setLoading(true); load(sport); }, [sport, load]);
+  useEffect(() => { load(); }, [load]);
+
+  const onRefresh = () => { setRefreshing(true); load(); };
 
   return (
-    <SafeAreaView style={[styles.safe]} edges={["top"]}>
-      <View style={styles.warningBanner}>
-        <Ionicons name="warning" size={20} color={COLORS.electricBlaze} />
-        <View style={{ flex: 1 }}>
-          <Text style={styles.bannerTitle}>BET KILLER</Text>
-          <Text style={styles.bannerSub}>Bets the model says to AVOID — Lock Score below 85.</Text>
+    <SafeAreaView style={styles.safe} edges={["top"]}>
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.brand}>UNDER OF THE DAY</Text>
+          <Text style={styles.tag}>SAFEST ALT-UNDER · ALL SPORTS</Text>
         </View>
+        <Ionicons name="trending-down" size={28} color={COLORS.voltBlue} />
       </View>
-
-      <ChipRow options={SPORTS} active={sport} onChange={setSport} testIDPrefix="killer-chip" />
 
       <ScrollView
         contentContainerStyle={styles.content}
-        refreshControl={
-          <RefreshControl
-            tintColor={COLORS.electricBlaze}
-            refreshing={refreshing}
-            onRefresh={() => { setRefreshing(true); load(sport); }}
-          />
-        }
+        refreshControl={<RefreshControl tintColor={COLORS.textPrimary} refreshing={refreshing} onRefresh={onRefresh} />}
         showsVerticalScrollIndicator={false}
-        testID="killer-scroll"
       >
         {loading ? (
+          <View style={styles.center}><ActivityIndicator color={COLORS.voltBlue} /></View>
+        ) : !pick ? (
           <View style={styles.center}>
-            <ActivityIndicator color={COLORS.electricBlaze} />
-          </View>
-        ) : picks.length === 0 ? (
-          <View style={styles.center}>
-            <Ionicons name="shield-checkmark-outline" size={48} color={COLORS.textMuted} />
-            <Text style={styles.emptyTitle}>No games available</Text>
-            <Text style={styles.emptyMsg}>No {sport === "All" ? "" : sport + " "}fixtures returned by the sports API for today.</Text>
+            <Ionicons name="search-outline" size={48} color={COLORS.textMuted} />
+            <Text style={styles.emptyTitle}>No alt-Under locks today</Text>
+            <Text style={styles.emptyMsg}>
+              Books don&apos;t always offer alt lines on every event. Pull to refresh.
+            </Text>
           </View>
         ) : (
-          picks.map((p) => <LockPickCard key={p.id} pick={p} variant="killer" />)
+          <>
+            <Text style={styles.intro}>
+              The single safest alt-Under bet across NBA, WNBA, MLB, KBO and Tennis.
+              The line is set absurdly high — Under is the lock.
+            </Text>
+
+            {/* Hero card */}
+            <Pressable onPress={() => router.push(`/pick/${pick.id}`)} style={styles.heroCard}>
+              <View style={styles.heroHeader}>
+                <View style={styles.heroBadge}>
+                  <Ionicons name="trending-down" size={12} color={COLORS.voltBlue} />
+                  <Text style={styles.heroBadgeText}>UNDER OF THE DAY</Text>
+                </View>
+                <Text style={styles.poolNote}>1 / {pool}</Text>
+              </View>
+              <Text style={styles.sportLine}>{pick.sport} · {pick.league}</Text>
+              <Text style={styles.event}>{pick.event}</Text>
+              {pick.event_time && (
+                <Text style={styles.gameTime}>{formatGameTime(pick.event_time)}</Text>
+              )}
+              <Text style={styles.market}>{pick.market}</Text>
+              <View style={styles.metricsRow}>
+                <Metric label="LOCK" value={String(Math.round(pick.lock_score))} color={GRADE_COLORS[pick.grade]} />
+                <View style={styles.metricDivider} />
+                <Metric label="WIN %" value={`${Math.round(pick.win_probability)}%`} color={COLORS.neonGreen} />
+                <View style={styles.metricDivider} />
+                <Metric label="ODDS" value={pick.book_odds > 0 ? `+${pick.book_odds}` : `${pick.book_odds}`} />
+              </View>
+              <View style={styles.heroCtaRow}>
+                <Text style={styles.heroCtaText}>VIEW FULL BREAKDOWN</Text>
+                <Ionicons name="arrow-forward" size={14} color={COLORS.voltBlue} />
+              </View>
+            </Pressable>
+
+            {alternates.length > 0 && (
+              <>
+                <Text style={styles.sectionLabel}>BACKUP UNDER LOCKS</Text>
+                {alternates.map((alt) => (
+                  <Pressable key={alt.id} onPress={() => router.push(`/pick/${alt.id}`)} style={styles.altCard}>
+                    <View style={styles.altLeft}>
+                      <Text style={styles.altSport}>{alt.sport}</Text>
+                      <Text style={styles.altMarket}>{alt.market}</Text>
+                      <Text style={styles.altEvent}>{alt.event}</Text>
+                    </View>
+                    <View style={styles.altRight}>
+                      <Text style={styles.altOdds}>{alt.book_odds > 0 ? `+${alt.book_odds}` : alt.book_odds}</Text>
+                      <Text style={styles.altWin}>{Math.round(alt.win_probability)}%</Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </>
+            )}
+
+            <Text style={styles.disclaimer}>
+              Alt-Unders use higher lines than standard props — book pays less because they hit
+              ~85-92% of the time. High confidence, lower payout. Stake accordingly.
+            </Text>
+          </>
         )}
       </ScrollView>
     </SafeAreaView>
   );
 }
 
+function Metric({ label, value, color = COLORS.textPrimary }: { label: string; value: string; color?: string }) {
+  return (
+    <View style={styles.metricCell}>
+      <Text style={styles.metricLabel}>{label}</Text>
+      <Text style={[styles.metricValue, { color }]}>{value}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: COLORS.killerBg },
-  warningBanner: {
-    flexDirection: "row", alignItems: "center", gap: 14,
-    paddingHorizontal: 20, paddingVertical: 16,
-    backgroundColor: COLORS.killerSurface,
-    borderBottomWidth: 1, borderBottomColor: COLORS.killerBorder,
+  safe: { flex: 1, backgroundColor: COLORS.bg },
+  header: {
+    paddingHorizontal: 20, paddingTop: 8, paddingBottom: 14,
+    flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end",
   },
-  bannerTitle: { color: COLORS.electricBlaze, fontWeight: "900", letterSpacing: 2.5, fontSize: 16 },
-  bannerSub: { color: COLORS.textSecondary, fontSize: 11, marginTop: 2, fontWeight: "600" },
-  content: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 24 },
+  brand: { fontSize: 22, fontWeight: "900", color: COLORS.textPrimary, letterSpacing: 3 },
+  tag: { fontSize: 10, color: COLORS.voltBlue, fontWeight: "800", letterSpacing: 1.6, marginTop: 4 },
+  content: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 30 },
   center: { paddingVertical: 80, alignItems: "center" },
   emptyTitle: { color: COLORS.textPrimary, fontSize: 16, fontWeight: "800", marginTop: 14 },
-  emptyMsg: { color: COLORS.textMuted, fontSize: 13, marginTop: 6, textAlign: "center" },
+  emptyMsg: { color: COLORS.textMuted, fontSize: 13, marginTop: 6, textAlign: "center", paddingHorizontal: 30 },
+  intro: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 14, lineHeight: 18 },
+
+  heroCard: {
+    backgroundColor: COLORS.surface, borderRadius: 16, padding: 18,
+    borderColor: COLORS.voltBlue, borderWidth: 2, marginBottom: 18,
+  },
+  heroHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
+  heroBadge: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, borderWidth: 1,
+    backgroundColor: "rgba(56,189,248,0.12)", borderColor: COLORS.voltBlue,
+  },
+  heroBadgeText: { fontSize: 10, fontWeight: "900", letterSpacing: 1.4, color: COLORS.voltBlue },
+  poolNote: { color: COLORS.textMuted, fontSize: 10, fontWeight: "800", letterSpacing: 1.2 },
+  sportLine: { color: COLORS.textSecondary, fontSize: 11, fontWeight: "700", letterSpacing: 1, marginBottom: 4 },
+  event: { color: COLORS.textPrimary, fontSize: 14, fontWeight: "700", marginBottom: 4 },
+  gameTime: { color: COLORS.voltBlue, fontSize: 11, fontWeight: "700", marginBottom: 10 },
+  market: { color: COLORS.textPrimary, fontSize: 18, fontWeight: "900", letterSpacing: -0.3, marginBottom: 16 },
+  metricsRow: {
+    flexDirection: "row", alignItems: "center",
+    backgroundColor: COLORS.bg, borderRadius: 10, padding: 12, marginBottom: 12,
+  },
+  metricDivider: { width: 1, alignSelf: "stretch", backgroundColor: COLORS.borderDefault, marginHorizontal: 4 },
+  metricCell: { flex: 1, alignItems: "center" },
+  metricLabel: { color: COLORS.textMuted, fontSize: 9, fontWeight: "800", letterSpacing: 1.2, marginBottom: 4 },
+  metricValue: { fontSize: 18, fontWeight: "900", letterSpacing: -0.3 },
+  heroCtaRow: { flexDirection: "row", justifyContent: "flex-end", alignItems: "center", gap: 6 },
+  heroCtaText: { fontSize: 11, fontWeight: "900", letterSpacing: 1.4, color: COLORS.voltBlue },
+
+  sectionLabel: { color: COLORS.textMuted, fontSize: 11, fontWeight: "800", letterSpacing: 1.4, marginBottom: 10, marginTop: 4 },
+  altCard: {
+    backgroundColor: COLORS.surface, borderRadius: 12, padding: 14, marginBottom: 8,
+    borderWidth: 1, borderColor: COLORS.borderDefault,
+    flexDirection: "row", justifyContent: "space-between", alignItems: "center",
+  },
+  altLeft: { flex: 1, paddingRight: 10 },
+  altRight: { alignItems: "flex-end" },
+  altSport: { color: COLORS.textSecondary, fontSize: 9, fontWeight: "800", letterSpacing: 1.2, marginBottom: 4 },
+  altMarket: { color: COLORS.textPrimary, fontSize: 13, fontWeight: "800", marginBottom: 2 },
+  altEvent: { color: COLORS.textMuted, fontSize: 10 },
+  altOdds: { color: COLORS.textPrimary, fontSize: 16, fontWeight: "900" },
+  altWin: { color: COLORS.neonGreen, fontSize: 10, fontWeight: "800", marginTop: 2 },
+
+  disclaimer: { color: COLORS.textMuted, fontSize: 11, lineHeight: 17, marginTop: 16, textAlign: "center", paddingHorizontal: 10 },
 });

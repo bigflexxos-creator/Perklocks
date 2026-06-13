@@ -58,9 +58,9 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="killer"
         options={{
-          title: "BET KILLER",
-          tabBarIcon: ({ color, size }) => <Ionicons name="warning" color={color} size={size} />,
-          tabBarButtonTestID: "tab-killer",
+          title: "UNDER LOCK",
+          tabBarIcon: ({ color, size }) => <Ionicons name="trending-down" color={color} size={size} />,
+          tabBarButtonTestID: "tab-under-of-day",
         }}
       />
       <Tabs.Screen

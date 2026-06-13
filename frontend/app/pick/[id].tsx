@@ -1,12 +1,60 @@
 import React, { useEffect, useState } from "react";
 import {
-  View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable,
+  View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable, Linking,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
 import { api, Pick } from "@/src/lib/api";
+
+// Sportsbook deep-links — open the book's sport landing page so users can
+// quickly place the bet themselves. Direct bet-slip deep-linking requires
+// affiliate partnerships, so we land users in the right section instead.
+const SPORTSBOOK_URLS: Record<string, Record<string, string>> = {
+  FanDuel: {
+    MLB: "https://sportsbook.fanduel.com/navigation/mlb",
+    NBA: "https://sportsbook.fanduel.com/navigation/nba",
+    WNBA: "https://sportsbook.fanduel.com/navigation/wnba",
+    NFL: "https://sportsbook.fanduel.com/navigation/nfl",
+    Soccer: "https://sportsbook.fanduel.com/navigation/soccer",
+    Tennis: "https://sportsbook.fanduel.com/navigation/tennis",
+    UFC: "https://sportsbook.fanduel.com/navigation/mma",
+    KBO: "https://sportsbook.fanduel.com/navigation/baseball",
+    _default: "https://sportsbook.fanduel.com/",
+  },
+  DraftKings: {
+    MLB: "https://sportsbook.draftkings.com/leagues/baseball/mlb",
+    NBA: "https://sportsbook.draftkings.com/leagues/basketball/nba",
+    WNBA: "https://sportsbook.draftkings.com/leagues/basketball/wnba",
+    NFL: "https://sportsbook.draftkings.com/leagues/football/nfl",
+    Soccer: "https://sportsbook.draftkings.com/leagues/soccer",
+    Tennis: "https://sportsbook.draftkings.com/leagues/tennis",
+    UFC: "https://sportsbook.draftkings.com/leagues/mma/ufc",
+    KBO: "https://sportsbook.draftkings.com/leagues/baseball",
+    _default: "https://sportsbook.draftkings.com/",
+  },
+  BetMGM: {
+    MLB: "https://sports.betmgm.com/en/sports/baseball-23",
+    NBA: "https://sports.betmgm.com/en/sports/basketball-7",
+    WNBA: "https://sports.betmgm.com/en/sports/basketball-7",
+    NFL: "https://sports.betmgm.com/en/sports/football-11",
+    Soccer: "https://sports.betmgm.com/en/sports/soccer-4",
+    Tennis: "https://sports.betmgm.com/en/sports/tennis-5",
+    UFC: "https://sports.betmgm.com/en/sports/mma-15",
+    KBO: "https://sports.betmgm.com/en/sports/baseball-23",
+    _default: "https://sports.betmgm.com/",
+  },
+};
+
+const SPORTSBOOKS = ["FanDuel", "DraftKings", "BetMGM"] as const;
+
+function openSportsbook(book: string, sport: string) {
+  const map = SPORTSBOOK_URLS[book];
+  if (!map) return;
+  const url = map[sport] ?? map._default;
+  Linking.openURL(url).catch((e) => console.warn("openURL failed", e));
+}
 
 function formatGameTime(iso: string): string {
   try {
@@ -176,6 +224,29 @@ export default function PickDetail() {
               ))}
             </View>
 
+            <View style={styles.sportsbookSection}>
+              <Text style={styles.sectionLabel}>PLACE THE BET</Text>
+              <Text style={styles.sportsbookHelper}>
+                Tap a sportsbook to open it in the {pick.sport} section. Search for the matchup &amp; line.
+              </Text>
+              <View style={styles.sportsbookGrid}>
+                {SPORTSBOOKS.map((book) => (
+                  <Pressable
+                    key={book}
+                    onPress={() => openSportsbook(book, pick.sport)}
+                    style={({ pressed }) => [
+                      styles.sportsbookBtn,
+                      pressed && { opacity: 0.8 },
+                    ]}
+                    testID={`sportsbook-${book}`}
+                  >
+                    <Ionicons name="open-outline" size={14} color={COLORS.textPrimary} />
+                    <Text style={styles.sportsbookText}>{book}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+
             <Text style={styles.disclaimer}>
               Probabilistic forecast — no bet is guaranteed. Always bet responsibly.
             </Text>
@@ -268,6 +339,23 @@ const styles = StyleSheet.create({
   bullet: { flexDirection: "row", alignItems: "flex-start", marginVertical: 6 },
   bulletDot: { width: 6, height: 6, borderRadius: 3, marginTop: 7, marginRight: 10 },
   bulletText: { flex: 1, color: COLORS.textPrimary, fontSize: 13, lineHeight: 20 },
+
+  sportsbookSection: {
+    marginTop: 22, padding: 16, borderRadius: 14,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1, borderColor: COLORS.borderDefault,
+  },
+  sportsbookHelper: {
+    color: COLORS.textSecondary, fontSize: 11, lineHeight: 16, marginBottom: 12,
+  },
+  sportsbookGrid: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
+  sportsbookBtn: {
+    flex: 1, minWidth: 90, flexDirection: "row", alignItems: "center", justifyContent: "center",
+    gap: 6, paddingVertical: 12, paddingHorizontal: 10,
+    backgroundColor: COLORS.bg, borderRadius: 10,
+    borderWidth: 1, borderColor: COLORS.voltBlue,
+  },
+  sportsbookText: { color: COLORS.textPrimary, fontWeight: "900", fontSize: 12, letterSpacing: 0.5 },
 
   disclaimer: {
     color: COLORS.textMuted, fontSize: 11, lineHeight: 16,

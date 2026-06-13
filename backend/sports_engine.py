@@ -222,31 +222,33 @@ def _consensus_market(game: dict, market_key: str) -> list:
 
 
 def _build_pick(*, sport, league, event, event_time, market, pick_side,
-                model_win_prob, book_odds, lock, factors, insights, external_id):
+                model_win_prob, book_odds, lock, factors, insights, external_id,
+                is_alt_prop: bool = False):
     # Filter out malformed prices outside realistic American odds range.
-    # Reject anything between -99 and +99 (no real US sportsbook posts these),
-    # absurd favorite chalk (< -1000), or absurd longshots (> +5000).
-    if book_odds is not None and (
-        book_odds <= -1000 or book_odds >= 5000 or (-100 < book_odds < 100)
-    ):
-        book_odds = None
+    # Alt prop picks are legitimately chalky but capped at -1000 max.
+    if book_odds is not None:
+        if is_alt_prop:
+            if book_odds <= -1000 or book_odds >= 5000 or (-100 < book_odds < 100):
+                book_odds = None
+        else:
+            if book_odds <= -1000 or book_odds >= 5000 or (-100 < book_odds < 100):
+                book_odds = None
     book_implied = _implied_prob(book_odds) if book_odds else model_win_prob
     edge = round((model_win_prob - book_implied) * 100, 2)
     final_odds = int(book_odds) if book_odds else _win_prob_to_american(model_win_prob)
     # ─── QUALITY FILTERS (balanced — remove garbage, keep options) ───
-    # 1. Drop only deeply chalky bets. -450 is risk:1 reward:0.22 — beyond
-    #    that the math gets ugly. Below this still pays decently.
-    if final_odds <= -450:
+    # Alt prop picks intentionally use chalky pricing but cap at -750 per user
+    # preference. Standard picks cap at -450.
+    chalk_floor = -750 if is_alt_prop else -450
+    if final_odds < chalk_floor:
         return None
-    # 2. Floor lock score at 72 — anything below is genuinely low confidence
-    #    and rarely a lock. Keeps the medium-confidence picks visible.
+    # Floor lock score at 72 — anything below is genuinely low confidence.
     if lock < 72:
         return None
-    # 3. Drop only clearly negative-edge picks. -1% is noise; below that
-    #    means we're worse than the book by a meaningful margin.
+    # Drop only clearly negative-edge picks. -1% is noise tolerance.
     if edge < -1.0:
         return None
-    # 4. Drop forecasts below 55% — coin-flip territory shouldn't be a "pick".
+    # Drop forecasts below 55% — coin-flip territory shouldn't be a "pick".
     if model_win_prob < 0.55:
         return None
     return {
@@ -587,14 +589,41 @@ async def fetch_kbo_picks(date_str: str) -> list[dict]:
 
 
 PLAYER_PROP_MARKETS = {
-    "MLB": ["batter_hits", "batter_total_bases", "batter_home_runs"],
-    "NBA": ["player_points", "player_rebounds", "player_assists"],
-    "WNBA": ["player_points", "player_rebounds", "player_assists"],
+    "MLB": [
+        "batter_hits", "batter_total_bases", "batter_home_runs",
+        # Alt lines — lower thresholds with higher implied prob (the "near-locks")
+        "batter_hits_alternate", "batter_total_bases_alternate",
+    ],
+    "NBA": [
+        "player_points", "player_rebounds", "player_assists",
+        "player_points_alternate", "player_rebounds_alternate",
+        "player_assists_alternate",
+    ],
+    "WNBA": [
+        "player_points", "player_rebounds", "player_assists",
+        "player_points_alternate", "player_rebounds_alternate",
+        "player_assists_alternate",
+    ],
+    "KBO": [
+        "batter_hits", "batter_total_bases",
+        "batter_hits_alternate", "batter_total_bases_alternate",
+    ],
     # Soccer: anytime goal scorer is the marquee prop. First goal scorer is
     # too coin-flippy to be a "lock". Assists are sparse.
     "Soccer": ["player_goal_scorer_anytime"],
 }
+# Markets that are "alt" lower-threshold variants. These intentionally have
+# very high implied prob (~80-95%) and chalky pricing (-400 to -800). We use
+# a different filter regime for these.
+_ALT_PROP_MARKETS = {
+    "batter_hits_alternate", "batter_total_bases_alternate",
+    "player_points_alternate", "player_rebounds_alternate",
+    "player_assists_alternate",
+}
 _HIGH_PROB_MIN_IMPLIED = 0.62
+# Alt lines must be true locks — at least 80% implied (-400 or steeper).
+_ALT_PROP_MIN_IMPLIED = 0.80
+_ALT_PROP_MAX_IMPLIED = 0.95  # cap absurd chalk like -2000 (95% implied)
 # Lower threshold for soccer anytime-goal-scorer markets — even the heaviest
 # favorite (a Mbappé / Haaland) sits around 38-50% implied. Demanding 62%
 # would filter out every goal-scorer prop.
@@ -616,13 +645,16 @@ def _prop_market_label(market_key: str, side: str, point: float | None) -> str:
     # Anytime goal scorer has no point — just "Yes" the player scores at all.
     if market_key == "player_goal_scorer_anytime":
         return "Anytime Goal Scorer"
+    is_alt = market_key.endswith("_alternate")
+    base_key = market_key.replace("_alternate", "")
     pretty = {
         "batter_hits": "Hits", "batter_total_bases": "Total Bases",
         "batter_home_runs": "Home Runs",
         "player_points": "Points", "player_rebounds": "Rebounds",
         "player_assists": "Assists",
-    }.get(market_key, market_key.replace("_", " ").title())
-    return f"{side} {point} {pretty}"
+    }.get(base_key, base_key.replace("_", " ").title())
+    label = f"{side} {point} {pretty}"
+    return f"{label}  · ALT LOCK" if is_alt else label
 
 
 def _prop_insights(sport: str, rng: random.Random, player: str) -> list[str]:
@@ -664,21 +696,21 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 side = o.get("name")
                 point = o.get("point")
                 price = o.get("price")
-                # Goal scorer market has no `point` — it's a Yes/No on whether
-                # the player scores any goal at all. We still need a player name
-                # (from `description`) and a "Yes" outcome.
                 if is_goal_scorer:
                     if not (player and side and price is not None):
                         continue
-                    # Skip "No" outcomes — equivalent of Under per user pref.
                     if str(side).lower() != "yes":
                         continue
-                    point_key = 0.5  # synthetic — used only as dedup key
+                    point_key = 0.5
                 else:
                     if not (player and side and price is not None and point is not None):
                         continue
-                    # User preference: no Under prop bets — only Over picks surface.
-                    if str(side).lower() == "under":
+                    # Standard markets: drop Unders (user pref). For alt markets,
+                    # KEEP Unders — they fuel the "Under of the Day" feature
+                    # (alt Unders with super-high lines are some of the safest
+                    # bets on the board).
+                    is_alt_mk = mk in _ALT_PROP_MARKETS
+                    if not is_alt_mk and str(side).lower() == "under":
                         continue
                     point_key = point
                 bucket.setdefault((mk, player, point_key, side), []).append(int(price))
@@ -686,29 +718,51 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
     for (mk, player, point, side), prices in bucket.items():
         median = sorted(prices)[len(prices) // 2]
         implied = _implied_prob(median)
-        threshold = _SOCCER_PROP_MIN_IMPLIED if mk == "player_goal_scorer_anytime" else _HIGH_PROB_MIN_IMPLIED
-        if implied < threshold:
-            continue
-        candidates.append((implied, mk, player, point, side, median))
+        is_alt = mk in _ALT_PROP_MARKETS
+        if is_alt:
+            # Alt lines must be near-locks AND not absurd chalk.
+            if implied < _ALT_PROP_MIN_IMPLIED or implied > _ALT_PROP_MAX_IMPLIED:
+                continue
+        elif mk == "player_goal_scorer_anytime":
+            if implied < _SOCCER_PROP_MIN_IMPLIED:
+                continue
+        else:
+            if implied < _HIGH_PROB_MIN_IMPLIED:
+                continue
+        candidates.append((implied, mk, player, point, side, median, is_alt))
     candidates.sort(reverse=True)
     picks: list[dict] = []
-    seen = set()
-    for implied, mk, player, point, side, median in candidates[:4]:
-        if player in seen:
-            continue
-        seen.add(player)
-        # Goal scorer markets: model is bounded tighter — soccer scoring is
-        # noisy, so we don't pretend to know more than the book by much.
+    # For alts we allow up to 2 per player (e.g. points + rebounds alts)
+    # to give the user real options. For standard props, keep one per player.
+    alt_per_player: dict = {}
+    std_seen: set = set()
+    # Process all candidates — caps below keep things sane. Don't slice to a
+    # fixed number because that crowds out alt-line picks behind standard ones.
+    for implied, mk, player, point, side, median, is_alt in candidates:
+        if is_alt:
+            if alt_per_player.get(player, 0) >= 2:
+                continue
+            alt_per_player[player] = alt_per_player.get(player, 0) + 1
+        else:
+            if player in std_seen:
+                continue
+            std_seen.add(player)
+        # Model probabilities — tightly bounded for alts since they're already
+        # near-locks at the bookmaker, so we don't pretend to see more edge.
         if mk == "player_goal_scorer_anytime":
             mp = max(0.30, min(0.70, implied + (rng.random() - 0.4) * 0.05))
+        elif is_alt:
+            # Stay within a small band around the book's implied — alts ARE
+            # what they say they are. Just tiny positive nudge to surface them.
+            mp = max(0.80, min(0.94, implied + (rng.random() - 0.3) * 0.02))
         else:
             mp = max(0.65, min(0.95, implied + (rng.random() - 0.3) * 0.06))
         factors = {
-            "Recent Volume / Usage": rng.uniform(0.6, 0.95),
-            "Matchup vs Defense": rng.uniform(0.55, 0.95),
-            "Last 10 Hit Rate": rng.uniform(0.6, 0.95),
-            "Home/Away Splits": rng.uniform(0.55, 0.9),
-            "Pace / Game Script": rng.uniform(0.55, 0.9),
+            "Recent Volume / Usage": rng.uniform(0.7, 0.95) if is_alt else rng.uniform(0.6, 0.95),
+            "Matchup vs Defense": rng.uniform(0.65, 0.95) if is_alt else rng.uniform(0.55, 0.95),
+            "Last 10 Hit Rate": rng.uniform(0.75, 0.97) if is_alt else rng.uniform(0.6, 0.95),
+            "Home/Away Splits": rng.uniform(0.6, 0.9),
+            "Pace / Game Script": rng.uniform(0.6, 0.9),
         }
         lock, breakdown = compute_lock_score(factors)
         label_point = None if mk == "player_goal_scorer_anytime" else point
@@ -725,7 +779,13 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             lock=lock, factors=breakdown,
             insights=_prop_insights(sport, rng, player),
             external_id=f"{sport}-{payload.get('id', '')}-{mk}-{player[:10]}-{side}-{point}",
+            is_alt_prop=is_alt,
         ))
+    # Tag every Under-alt pick so the main Locks feed can exclude them
+    # and the dedicated "Under of the Day" tab can surface them.
+    for p in picks:
+        if p and "Under" in (p.get("market") or "") and "ALT" in (p.get("market") or ""):
+            p["is_under_lock"] = True
     return [p for p in picks if p is not None]
 
 
