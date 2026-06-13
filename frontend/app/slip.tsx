@@ -3,15 +3,105 @@ import { View, Text, StyleSheet, ScrollView, Pressable, Linking, Alert, Share, P
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { Stack, useRouter } from "expo-router";
+import * as WebBrowser from "expo-web-browser";
 import { COLORS } from "@/src/theme";
 import { useBetSlip, computeParlay, MAX_SLIP_SIZE } from "@/src/contexts/BetSlipContext";
 import { Pick } from "@/src/lib/api";
 
-const BOOK_URLS: Record<string, string> = {
-  FanDuel: "https://sportsbook.fanduel.com/",
-  DraftKings: "https://sportsbook.draftkings.com/",
-  BetMGM: "https://sports.betmgm.com/",
+// Sportsbook URLs — sport-specific landing pages so users hit the right
+// section. Direct bet-slip handoff isn't possible without affiliate
+// partnerships, so we route them to the matching league.
+const SPORTSBOOK_URLS: Record<string, Record<string, string>> = {
+  FanDuel: {
+    MLB: "https://sportsbook.fanduel.com/navigation/mlb",
+    NBA: "https://sportsbook.fanduel.com/navigation/nba",
+    WNBA: "https://sportsbook.fanduel.com/navigation/wnba",
+    NFL: "https://sportsbook.fanduel.com/navigation/nfl",
+    Soccer: "https://sportsbook.fanduel.com/navigation/soccer",
+    Tennis: "https://sportsbook.fanduel.com/navigation/tennis",
+    UFC: "https://sportsbook.fanduel.com/navigation/mma",
+    KBO: "https://sportsbook.fanduel.com/navigation/baseball",
+    _default: "https://sportsbook.fanduel.com/",
+  },
+  DraftKings: {
+    MLB: "https://sportsbook.draftkings.com/leagues/baseball/mlb",
+    NBA: "https://sportsbook.draftkings.com/leagues/basketball/nba",
+    WNBA: "https://sportsbook.draftkings.com/leagues/basketball/wnba",
+    NFL: "https://sportsbook.draftkings.com/leagues/football/nfl",
+    Soccer: "https://sportsbook.draftkings.com/leagues/soccer",
+    Tennis: "https://sportsbook.draftkings.com/leagues/tennis",
+    UFC: "https://sportsbook.draftkings.com/leagues/mma/ufc",
+    KBO: "https://sportsbook.draftkings.com/leagues/baseball",
+    _default: "https://sportsbook.draftkings.com/",
+  },
+  BetMGM: {
+    MLB: "https://sports.betmgm.com/en/sports/baseball-23",
+    NBA: "https://sports.betmgm.com/en/sports/basketball-7",
+    WNBA: "https://sports.betmgm.com/en/sports/basketball-7",
+    NFL: "https://sports.betmgm.com/en/sports/football-11",
+    Soccer: "https://sports.betmgm.com/en/sports/soccer-4",
+    Tennis: "https://sports.betmgm.com/en/sports/tennis-5",
+    UFC: "https://sports.betmgm.com/en/sports/mma-15",
+    KBO: "https://sports.betmgm.com/en/sports/baseball-23",
+    _default: "https://sports.betmgm.com/",
+  },
 };
+const SPORTSBOOKS = ["FanDuel", "DraftKings", "BetMGM"] as const;
+
+// If every leg is the same sport, return that sport. Otherwise return null.
+function dominantSport(picks: Pick[]): string | null {
+  if (!picks.length) return null;
+  const first = picks[0].sport;
+  return picks.every((p) => p.sport === first) ? first : null;
+}
+
+// Resolve the right URL for a given book + slip.
+function bookUrl(book: string, picks: Pick[]): string {
+  const map = SPORTSBOOK_URLS[book];
+  const sport = dominantSport(picks);
+  if (!map) return "";
+  return (sport && map[sport]) || map._default;
+}
+
+// Open the sportsbook reliably:
+//   - Native (iOS/Android): use expo-web-browser. Opens SFSafariViewController /
+//     Custom Tabs which respects universal-links / app-links and will route to the
+//     installed sportsbook app when available. More reliable than Linking.openURL
+//     which silently fails on some Android intents for https:// URLs.
+//   - Web: window.open in a new tab. Falls back to same-tab navigation if blocked.
+async function openSportsbook(url: string) {
+  if (!url) return;
+  try {
+    if (Platform.OS === "web") {
+      if (typeof window !== "undefined") {
+        const popup = window.open(url, "_blank", "noopener,noreferrer");
+        if (!popup) {
+          // Popup-blocked — fall back to same-tab navigation so the user always
+          // lands on the sportsbook.
+          window.location.href = url;
+        }
+      }
+      return;
+    }
+    await WebBrowser.openBrowserAsync(url, {
+      // Prefer the user's default browser so they're already signed in to
+      // their sportsbook session.
+      showTitle: true,
+      enableBarCollapsing: true,
+      dismissButtonStyle: "close",
+    });
+  } catch (e) {
+    // Last-resort: defer to the OS handler. If even this throws, surface to user.
+    try {
+      await Linking.openURL(url);
+    } catch {
+      Alert.alert(
+        "Couldn't open sportsbook",
+        `Please open ${url} in your browser manually.`,
+      );
+    }
+  }
+}
 
 function buildShareText(picks: Pick[]): string {
   const parlay = computeParlay(picks);
@@ -31,7 +121,7 @@ export default function SlipScreen() {
   const router = useRouter();
   const slip = useBetSlip();
   const parlay = computeParlay(slip.picks);
-  const open = (url: string) => Linking.openURL(url).catch(() => {});
+  const sport = dominantSport(slip.picks);
 
   const handleShare = async () => {
     if (slip.count === 0) return;
@@ -137,17 +227,29 @@ export default function SlipScreen() {
               </View>
             ))}
 
-            <Text style={[styles.section, { marginTop: 18 }]}>BUILD THIS PARLAY ON</Text>
+            <Text style={[styles.section, { marginTop: 18 }]}>
+              {sport ? `OPEN ${sport.toUpperCase()} ON` : "BUILD THIS PARLAY ON"}
+            </Text>
             <View style={styles.bookGrid}>
-              {Object.entries(BOOK_URLS).map(([book, url]) => (
-                <Pressable key={book} onPress={() => open(url)} style={styles.bookBtn}>
-                  <Ionicons name="open-outline" size={14} color={COLORS.textPrimary} />
-                  <Text style={styles.bookText}>{book}</Text>
-                </Pressable>
-              ))}
+              {SPORTSBOOKS.map((book) => {
+                const url = bookUrl(book, slip.picks);
+                return (
+                  <Pressable
+                    key={book}
+                    onPress={() => openSportsbook(url)}
+                    style={({ pressed }) => [styles.bookBtn, pressed && { opacity: 0.7 }]}
+                    testID={`slip-book-${book}`}
+                  >
+                    <Ionicons name="open-outline" size={14} color={COLORS.textPrimary} />
+                    <Text style={styles.bookText}>{book}</Text>
+                  </Pressable>
+                );
+              })}
             </View>
             <Text style={styles.helper}>
-              Tap a sportsbook to open it. Add each leg manually using the matchup & line above.
+              {sport
+                ? `Opens ${sport} on the sportsbook. Add each leg using the matchup & line above.`
+                : "Mixed-sport slip — opens the sportsbook home. Add each leg using the matchup & line above."}
             </Text>
           </>
         )}
