@@ -257,6 +257,9 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)]):
     pool = today_picks if today_picks else picks
     # Exclude Soccer — user feedback: small-league soccer rollovers are too volatile.
     pool = [p for p in pool if (p.get("sport") or "").lower() != "soccer"]
+    # Cap chalk at -200 so risk:reward is reasonable. -200 means $200 risked
+    # to win $100 — a daily roll should pay decently, not all be chalk.
+    pool = [p for p in pool if (p.get("book_odds") or -9999) >= -200]
     if not pool:
         return {"picks": [], "pick": None, "total_evaluated": 0}
 
