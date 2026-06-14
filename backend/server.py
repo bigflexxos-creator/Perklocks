@@ -130,21 +130,24 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                       grade: Optional[str] = None,
                       day_offset: Optional[int] = None,
                       line_type: Optional[str] = None,
-                      sort: Optional[str] = None):
+                      sort: Optional[str] = None,
+                      min_lock: Optional[float] = None,
+                      min_implied: Optional[float] = None,
+                      max_implied: Optional[float] = None):
     """Top picks from today's 72-hour window (lock score >= 85).
-    Optional `day_offset` filters picks to a specific calendar day relative
-    to today (0=today, 1=tomorrow, 2=day after).
-    `line_type`:
-      - "main": standard markets only (no alt-prop lines)
-      - "alt":  alternate-line picks only (e.g. Over 0.5 Hits, Anytime Goal Scorer)
-      - "both" / None (default): unrestricted
-    `sort`:
+    Filters:
+      - `min_lock`: only show picks with lock_score >= this value.
+      - `min_implied` / `max_implied`: only show picks whose implied
+        probability falls in [min, max] (units: %, e.g. 60 → 90).
+    Sort options:
       - "lock" / None (default): highest lock_score first
       - "time": soonest kickoff first
       - "edge": biggest model edge first
+      - "implied": highest implied probability first (safest first)
     """
     await _ensure_today_picks()
-    q: dict = {"pick_date": _today_str(), "lock_score": {"$gte": 85},
+    floor = max(85.0, float(min_lock)) if min_lock is not None else 85.0
+    q: dict = {"pick_date": _today_str(), "lock_score": {"$gte": floor},
                "is_under_lock": {"$ne": True}}
     if sport and sport.lower() != "all":
         q["sport"] = sport
@@ -155,6 +158,13 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         q["is_alt"] = {"$ne": True}
     elif lt == "alt":
         q["is_alt"] = True
+    if min_implied is not None or max_implied is not None:
+        imp_q: dict = {}
+        if min_implied is not None:
+            imp_q["$gte"] = float(min_implied)
+        if max_implied is not None:
+            imp_q["$lte"] = float(max_implied)
+        q["implied_probability"] = imp_q
     cursor = db.picks.find(q, {"_id": 0}).sort("lock_score", -1).limit(200)
     picks = await cursor.to_list(length=200)
     if day_offset is not None:
@@ -191,6 +201,8 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             picks.sort(key=lambda p: (_event_dt(p), -p.get("lock_score", 0)))
         elif s == "edge":
             picks.sort(key=lambda p: (_bucket(p), -p.get("edge_percent", 0), -p.get("lock_score", 0)))
+        elif s == "implied":
+            picks.sort(key=lambda p: (_bucket(p), -p.get("implied_probability", 0), -p.get("lock_score", 0)))
         else:  # "lock" (default)
             picks.sort(key=lambda p: (_bucket(p), -p.get("lock_score", 0)))
     return {"picks": picks}
@@ -465,11 +477,65 @@ async def trigger_settle(user: Annotated[UserPublic, Depends(current_user)]):
 async def picks_history(user: Annotated[UserPublic, Depends(current_user)],
                         days: int = 30,
                         rollover_only: bool = False):
-    """Settled picks from the last N days, newest first."""
+    """Settled picks from the last N days, newest first.
+
+    Applies the same correlated-pick dedup as the live picks endpoint so the
+    History tab doesn't show "Player Over 0.5 Hits" AND "Player Over 0.5
+    Total Bases" as two separate losses — they're one logical bet.
+    """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     q: dict = {"settled_at": {"$gte": cutoff}}
-    cursor = db.picks.find(q, {"_id": 0}).sort("settled_at", -1).limit(500)
-    picks = await cursor.to_list(length=500)
+    cursor = db.picks.find(q, {"_id": 0}).sort("settled_at", -1).limit(2000)
+    picks = await cursor.to_list(length=2000)
+
+    # ─── Dedupe correlated historical picks ───
+    # Same logic as sports_engine.generate_all_picks. Group by
+    # (sport, event, selection, line_threshold) and keep the preferred one:
+    #   1) Market family — Hits > anything > Total Bases
+    #   2) Settled status outcome consistency (prefer won > lost > push > pending)
+    #      so the user sees the strongest historical signal for that bet.
+    #   3) Higher lock_score, then better odds.
+    import re as _re
+    def _key(p: dict) -> tuple:
+        market = p.get("market") or ""
+        m = _re.search(r"(-?\d+\.\d+)", market)
+        return (
+            p.get("sport"), p.get("event"), p.get("selection") or "",
+            m.group(1) if m else "",
+        )
+    def _market_priority(market: str) -> int:
+        m = (market or "").lower()
+        if "hits" in m: return 0
+        if "total bases" in m: return 2
+        return 1
+    _STATUS_RANK = {"won": 0, "lost": 1, "push": 2, "pending": 3}
+
+    best: dict = {}
+    for p in picks:
+        k = _key(p)
+        ex = best.get(k)
+        if ex is None:
+            best[k] = p
+            continue
+        new_pri = _market_priority(p.get("market"))
+        old_pri = _market_priority(ex.get("market"))
+        if new_pri != old_pri:
+            if new_pri < old_pri:
+                best[k] = p
+            continue
+        new_stat = _STATUS_RANK.get(p.get("status") or "pending", 4)
+        old_stat = _STATUS_RANK.get(ex.get("status") or "pending", 4)
+        if new_stat != old_stat:
+            if new_stat < old_stat:
+                best[k] = p
+            continue
+        if (p.get("lock_score") or 0) > (ex.get("lock_score") or 0):
+            best[k] = p
+        elif (p.get("lock_score") or 0) == (ex.get("lock_score") or 0):
+            if (p.get("book_odds") or -9999) > (ex.get("book_odds") or -9999):
+                best[k] = p
+    picks = sorted(best.values(), key=lambda p: p.get("settled_at") or "", reverse=True)
+
     settled = [p for p in picks if p.get("status") in ("won", "lost", "push")]
     won = sum(1 for p in settled if p.get("status") == "won")
     lost = sum(1 for p in settled if p.get("status") == "lost")
