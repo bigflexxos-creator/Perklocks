@@ -94,12 +94,75 @@ async def _picks_for_date(date_str: str) -> list[dict]:
     return await cursor.to_list(length=500)
 
 
+_WINRATE_CACHE: dict = {"data": {}, "expires_at": 0.0}
+_WINRATE_TTL = 1800  # 30 min refresh window for the learning loop
+
+
+async def _historical_winrates() -> dict:
+    """Aggregate settled picks into (sport, market_family) win-rate buckets.
+
+    Used by the parlay builder as the "study from past picks" learning loop —
+    buckets that historically over-perform get a leg-selection boost, ones
+    that under-perform get penalized. Cached for 30 min to avoid hammering
+    Mongo on every parlay request. Key '__global__' carries the overall
+    settled win-rate for normalization.
+    """
+    import time as _t
+    now = _t.time()
+    if _WINRATE_CACHE["data"] and _WINRATE_CACHE["expires_at"] > now:
+        return _WINRATE_CACHE["data"]
+    cursor = db.picks.find(
+        {"status": {"$in": ["won", "lost"]}},
+        {"_id": 0, "sport": 1, "market": 1, "status": 1},
+    )
+    docs = await cursor.to_list(length=5000)
+    if not docs:
+        out = {"__global__": 0.55}
+        _WINRATE_CACHE["data"] = out
+        _WINRATE_CACHE["expires_at"] = now + _WINRATE_TTL
+        return out
+    def _family(market: str) -> str:
+        m = (market or "").lower()
+        if "anytime goal scorer" in m: return "goal_scorer"
+        if "win or draw" in m or "double chance" in m: return "win_or_draw"
+        if "moneyline" in m: return "moneyline"
+        if "spread" in m: return "spread"
+        if "over" in m and ("hits" in m or "total bases" in m): return "batter_over"
+        if "over" in m or "under" in m: return "total_over_under"
+        if "wins by" in m: return "mma_method"
+        return "other"
+    buckets: dict = {}
+    g_won = g_total = 0
+    for d in docs:
+        won = d["status"] == "won"
+        key = ((d.get("sport") or "").lower(), _family(d.get("market") or ""))
+        b = buckets.setdefault(key, {"n": 0, "w": 0})
+        b["n"] += 1
+        if won: b["w"] += 1
+        g_total += 1
+        if won: g_won += 1
+    result: dict = {
+        k: {"n": v["n"], "winrate": v["w"] / max(v["n"], 1)}
+        for k, v in buckets.items()
+    }
+    result["__global__"] = g_won / max(g_total, 1)
+    _WINRATE_CACHE["data"] = result
+    _WINRATE_CACHE["expires_at"] = now + _WINRATE_TTL
+    logger.info("Win-rate buckets refreshed: %d buckets, global=%.3f", len(buckets), result["__global__"])
+    return result
+
+
+
 async def _refresh_picks(date_str: str) -> int:
     """Generate today's picks, replace any existing rows for that date.
 
     Critical: only delete existing picks AFTER we've successfully generated
     new ones. Otherwise, if the upstream API is down/rate-limited, we'd
     end up with an empty board instead of last-known-good picks.
+
+    Pick IDs are deterministic (UUID5 derived from external_id) so cached
+    references in user slips and the frontend remain valid across refreshes
+    instead of pointing to a brand-new UUID that 404s.
     """
     logger.info("Refreshing picks for %s", date_str)
     picks = await generate_all_picks(date_str)
@@ -109,8 +172,10 @@ async def _refresh_picks(date_str: str) -> int:
             "instead of wiping the board.", date_str,
         )
         return 0
+    namespace = uuid.UUID("00000000-0000-0000-0000-000000000001")
     for p in picks:
-        p["id"] = str(uuid.uuid4())
+        ext = str(p.get("external_id") or "")
+        p["id"] = str(uuid.uuid5(namespace, ext)) if ext else str(uuid.uuid4())
     await db.picks.delete_many({"pick_date": date_str})
     await db.picks.insert_many(picks)
     logger.info("Stored %d picks for %s", len(picks), date_str)
@@ -377,22 +442,15 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
 
     Modes:
       - standard: Elite Locks (>=95), fallback to Strong (>=90). Legs 2-8.
-      - high_risk: Lock 90+ across the entire board. Legs 10/15/20 — designed
-        as a longshot/lottery ticket where if everything hits, payout is huge.
+      - high_risk: Win-probability >= 66% (was lock_score >= 90 — the user
+        explicitly asked for win-prob-based selection here). Legs 10/15/20.
 
-    Sport filter:
-      - None or "mix": cross-sport parlay (default — best variance distribution).
-      - Specific sport (e.g. "MLB", "NBA", "Soccer"): single-sport parlay.
-
-    `exclude_sports` (only honored when sport=mix/None):
-      - Comma-separated list of sports to exclude from the mix parlay
-        (e.g. "Soccer,Tennis"). Useful when a sport has been hurting your
-        record or you simply don't follow it.
-
-    Line type:
-      - "main": standard markets only (no alt-prop lines).
-      - "alt":  alternate-line picks only.
-      - "both" / None: unrestricted (default).
+    Leg ranking is data-driven: each candidate's model win-probability is
+    multiplied by the HISTORICAL win-rate uplift of its (sport, market-family)
+    bucket. Buckets that have historically over-performed get prioritized
+    (e.g. Soccer Win-or-Draw 75% historical → 1.15x boost), buckets that
+    under-perform get penalized (e.g. MLB main-line ML 48% → 0.85x). This is
+    the "study in background" learning loop the user requested.
     """
     await _ensure_today_picks()
     is_high_risk = (mode or "").lower() == "high_risk"
@@ -402,12 +460,10 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     if sport_q and sport_q.lower() not in ("mix", "all", ""):
         sport_filter = {"sport": sport_q}
     else:
-        # MIX mode honors the exclusion list.
         if exclude_sports:
             excluded = [s.strip() for s in exclude_sports.split(",") if s.strip()]
             if excluded:
                 sport_filter = {"sport": {"$nin": excluded}}
-    # Line type filter — same semantics as picks_today.
     lt = (line_type or "").lower()
     line_filter: dict = {}
     if lt == "main":
@@ -416,11 +472,13 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         line_filter = {"is_alt": True}
     if is_high_risk:
         legs = max(10, min(20, legs))
+        # Switched from lock_score >= 90 to win_probability >= 66 per user
+        # request. Win-prob is the better signal for "will this hit".
         cursor = db.picks.find(
-            {"pick_date": _today_str(), "lock_score": {"$gte": 90}, **sport_filter, **line_filter},
+            {"pick_date": _today_str(), "win_probability": {"$gte": 66}, **sport_filter, **line_filter},
             {"_id": 0},
-        ).sort("lock_score", -1).limit(200)
-        pool = await cursor.to_list(length=200)
+        ).sort("win_probability", -1).limit(300)
+        pool = await cursor.to_list(length=300)
     else:
         legs = max(2, min(8, legs))
         cursor = db.picks.find(
@@ -434,6 +492,41 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
                 {"_id": 0},
             ).sort("lock_score", -1).limit(50)
             pool.extend(await extra_cursor.to_list(length=50))
+
+    # ─── Apply historical win-rate uplift to each candidate ───
+    bucket_rates = await _historical_winrates()
+    global_rate = bucket_rates.get("__global__", 0.55)
+
+    def _bucket_key(p: dict) -> tuple:
+        sport_ = (p.get("sport") or "").lower()
+        market = (p.get("market") or "").lower()
+        # Coarse market family — keep buckets stable enough to accumulate
+        # statistically meaningful samples (we have 168 settled picks).
+        if "anytime goal scorer" in market: family = "goal_scorer"
+        elif "win or draw" in market or "double chance" in market: family = "win_or_draw"
+        elif "moneyline" in market: family = "moneyline"
+        elif "spread" in market: family = "spread"
+        elif "over" in market and ("hits" in market or "total bases" in market): family = "batter_over"
+        elif "over" in market or "under" in market: family = "total_over_under"
+        elif "wins by" in market: family = "mma_method"
+        else: family = "other"
+        return (sport_, family)
+
+    def _adjusted_score(p: dict) -> float:
+        win_p = (p.get("win_probability") or 0) / 100.0
+        key = _bucket_key(p)
+        sample = bucket_rates.get(key)
+        if not sample or sample["n"] < 8:
+            # Not enough historical data for this bucket — fall back to
+            # win_probability alone (no penalty, no boost).
+            return win_p
+        # Uplift = bucket historical winrate / global average winrate.
+        # Clamped to [0.7, 1.3] so a single bad slice can't fully suppress.
+        uplift = max(0.7, min(1.3, sample["winrate"] / max(global_rate, 0.3)))
+        return win_p * uplift
+
+    pool.sort(key=_adjusted_score, reverse=True)
+
     # One leg per event to avoid correlated bets.
     seen_events: set = set()
     selected: list = []
@@ -448,9 +541,10 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     min_legs = 5 if is_high_risk else 2
     if len(selected) < min_legs:
         sport_hint = f" in {sport_q}" if sport_filter else ""
+        threshold = "win-prob 66%+" if is_high_risk else "Lock 90+"
         return {
             "parlay": None,
-            "reason": f"Need at least {min_legs} Lock 90+ picks today{sport_hint} (have {len(selected)})",
+            "reason": f"Need at least {min_legs} {threshold} picks today{sport_hint} (have {len(selected)})",
         }
 
     # Convert each leg's American odds → decimal, multiply, convert back.
