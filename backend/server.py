@@ -528,6 +528,8 @@ async def picks_history(user: Annotated[UserPublic, Depends(current_user)],
     def _market_priority(market: str) -> int:
         m = (market or "").lower()
         if "hits" in m: return 0
+        if "moneyline" in m: return 0
+        if "win or draw" in m or "double chance" in m: return 3
         if "total bases" in m: return 2
         return 1
     _STATUS_RANK = {"won": 0, "lost": 1, "push": 2, "pending": 3}
