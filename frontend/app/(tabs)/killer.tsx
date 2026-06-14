@@ -7,8 +7,9 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
-import { api, Pick, LineType } from "@/src/lib/api";
+import { api, Pick, LineType, SortKey } from "@/src/lib/api";
 import { LineTypeToggle } from "@/src/components/LineTypeToggle";
+import { SortSelector } from "@/src/components/SortSelector";
 
 function formatGameTime(iso: string): string {
   try {
@@ -34,12 +35,13 @@ export default function UnderOfTheDayScreen() {
   const [alternates, setAlternates] = useState<Pick[]>([]);
   const [pool, setPool] = useState<number>(0);
   const [lineType, setLineType] = useState<LineType>("both");
+  const [sortKey, setSortKey] = useState<SortKey>("lock");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async (lt: LineType) => {
+  const load = useCallback(async (lt: LineType, sk: SortKey) => {
     try {
-      const res = await api.underOfTheDay(lt);
+      const res = await api.underOfTheDay(lt, sk);
       setPick(res.pick);
       setAlternates(res.alternates ?? []);
       setPool(res.total_evaluated ?? 0);
@@ -51,9 +53,9 @@ export default function UnderOfTheDayScreen() {
     }
   }, []);
 
-  useEffect(() => { setLoading(true); load(lineType); }, [lineType, load]);
+  useEffect(() => { setLoading(true); load(lineType, sortKey); }, [lineType, sortKey, load]);
 
-  const onRefresh = () => { setRefreshing(true); load(lineType); };
+  const onRefresh = () => { setRefreshing(true); load(lineType, sortKey); };
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -66,6 +68,7 @@ export default function UnderOfTheDayScreen() {
       </View>
 
       <LineTypeToggle value={lineType} onChange={setLineType} testIDPrefix="under-line" />
+      <SortSelector value={sortKey} onChange={setSortKey} testIDPrefix="under-sort" />
 
       <ScrollView
         contentContainerStyle={styles.content}

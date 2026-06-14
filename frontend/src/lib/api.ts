@@ -48,6 +48,7 @@ export type Pick = {
 
 export type User = { id: string; email: string; name?: string };
 export type LineType = "both" | "main" | "alt";
+export type SortKey = "lock" | "time" | "edge";
 
 const TOKEN_KEY = "lockscore_token";
 
@@ -105,10 +106,11 @@ export const api = {
       auth: false,
     }),
   me: () => request<User>("/auth/me"),
-  picksToday: (sport?: string, lineType?: LineType) => {
+  picksToday: (sport?: string, lineType?: LineType, sortKey?: SortKey) => {
     const qs = new URLSearchParams();
     if (sport && sport !== "All") qs.set("sport", sport);
     if (lineType && lineType !== "both") qs.set("line_type", lineType);
+    if (sortKey && sortKey !== "lock") qs.set("sort", sortKey);
     const q = qs.toString();
     return request<{ picks: Pick[] }>(`/picks/today${q ? `?${q}` : ""}`);
   },
@@ -120,10 +122,15 @@ export const api = {
     request<{ picks: Pick[]; pick: Pick | null; composite_rank?: number; total_evaluated?: number }>(
       `/picks/rollover${lineType && lineType !== "both" ? `?line_type=${lineType}` : ""}`,
     ),
-  underOfTheDay: (lineType?: LineType) =>
-    request<{ pick: Pick | null; alternates: Pick[]; total_evaluated: number; scoped_to_today?: boolean }>(
-      `/picks/under-of-the-day${lineType && lineType !== "both" ? `?line_type=${lineType}` : ""}`,
-    ),
+  underOfTheDay: (lineType?: LineType, sortKey?: SortKey) => {
+    const qs = new URLSearchParams();
+    if (lineType && lineType !== "both") qs.set("line_type", lineType);
+    if (sortKey && sortKey !== "lock") qs.set("sort", sortKey);
+    const q = qs.toString();
+    return request<{ pick: Pick | null; alternates: Pick[]; total_evaluated: number; scoped_to_today?: boolean }>(
+      `/picks/under-of-the-day${q ? `?${q}` : ""}`,
+    );
+  },
   parlay: (legs: number = 3, mode: "standard" | "high_risk" = "standard", sport?: string, lineType?: LineType) => {
     const qs = new URLSearchParams({ legs: String(legs), mode });
     if (sport && sport !== "mix") qs.set("sport", sport);

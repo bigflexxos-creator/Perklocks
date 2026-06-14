@@ -6,10 +6,11 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS, SPORTS } from "@/src/theme";
-import { api, Pick, LineType } from "@/src/lib/api";
+import { api, Pick, LineType, SortKey } from "@/src/lib/api";
 import { LockPickCard } from "@/src/components/LockPickCard";
 import { ChipRow } from "@/src/components/ChipRow";
 import { LineTypeToggle } from "@/src/components/LineTypeToggle";
+import { SortSelector } from "@/src/components/SortSelector";
 
 function timeAgo(d: Date | null): string {
   if (!d) return "—";
@@ -27,6 +28,7 @@ export default function LocksScreen() {
   const [picks, setPicks] = useState<Pick[]>([]);
   const [sport, setSport] = useState<string>("All");
   const [lineType, setLineType] = useState<LineType>("both");
+  const [sortKey, setSortKey] = useState<SortKey>("lock");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [stats, setStats] = useState<{ total_picks: number; elite_count: number; avg_edge_percent: number } | null>(null);
@@ -40,10 +42,10 @@ export default function LocksScreen() {
     return () => clearInterval(t);
   }, []);
 
-  const load = useCallback(async (s: string, lt: LineType) => {
+  const load = useCallback(async (s: string, lt: LineType, sk: SortKey) => {
     try {
       const [picksRes, statsRes] = await Promise.all([
-        api.picksToday(s, lt),
+        api.picksToday(s, lt, sk),
         api.stats().catch(() => null),
       ]);
       setPicks(picksRes.picks);
@@ -57,9 +59,9 @@ export default function LocksScreen() {
     }
   }, []);
 
-  useEffect(() => { setLoading(true); load(sport, lineType); }, [sport, lineType, load]);
+  useEffect(() => { setLoading(true); load(sport, lineType, sortKey); }, [sport, lineType, sortKey, load]);
 
-  const onRefresh = () => { setRefreshing(true); load(sport, lineType); };
+  const onRefresh = () => { setRefreshing(true); load(sport, lineType, sortKey); };
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -70,7 +72,7 @@ export default function LocksScreen() {
     setLoading(true);
     try {
       const res = await api.refresh();
-      await load(sport, lineType);
+      await load(sport, lineType, sortKey);
       showToast(`Refreshed · ${res.count} picks`);
     } catch (e) {
       console.warn(e);
@@ -120,6 +122,7 @@ export default function LocksScreen() {
 
       <ChipRow options={SPORTS} active={sport} onChange={setSport} testIDPrefix="sport-chip" />
       <LineTypeToggle value={lineType} onChange={setLineType} testIDPrefix="locks-line" />
+      <SortSelector value={sortKey} onChange={setSortKey} testIDPrefix="locks-sort" />
 
       <ScrollView
         contentContainerStyle={styles.content}
