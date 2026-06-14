@@ -632,7 +632,39 @@ async def pick_ai_explain(pick_id: str,
 
 @api.post("/picks/refresh")
 async def force_refresh(user: Annotated[UserPublic, Depends(current_user)]):
+    """Manually refresh today's picks. Rate-limited to 1× per hour per user
+    to prevent button-mashing that burns The Odds API credits
+    (each refresh costs ~250-400 credits)."""
+    now = datetime.now(timezone.utc)
+    # Check last refresh time for this user (stored in user doc).
+    user_doc = await db.users.find_one({"id": user.id}, {"_id": 0, "last_refresh_at": 1})
+    last_iso = (user_doc or {}).get("last_refresh_at")
+    if last_iso:
+        try:
+            last_dt = datetime.fromisoformat(last_iso)
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            elapsed = (now - last_dt).total_seconds()
+            cooldown = 3600  # 1 hour
+            if elapsed < cooldown:
+                remaining_min = int((cooldown - elapsed) // 60) + 1
+                # Return current pick count without burning a refresh.
+                existing = await db.picks.count_documents({"pick_date": _today_str()})
+                return {
+                    "refreshed": False,
+                    "rate_limited": True,
+                    "retry_after_minutes": remaining_min,
+                    "count": existing,
+                    "date": _today_str(),
+                    "message": f"Picks were refreshed recently. Try again in {remaining_min} min — saves API credits.",
+                }
+        except Exception:
+            pass
     count = await _refresh_picks(_today_str())
+    await db.users.update_one(
+        {"id": user.id},
+        {"$set": {"last_refresh_at": now.isoformat()}},
+    )
     return {"refreshed": True, "count": count, "date": _today_str()}
 
 
@@ -730,7 +762,13 @@ async def _daily_refresh_loop():
 
 
 async def _settlement_loop():
-    """Run settlement every 30 minutes to mark completed picks Won/Lost."""
+    """Run settlement every 2 hours to mark completed picks Won/Lost.
+
+    Was 30 min — burned ~480 Odds API credits/day on score polls. Most games
+    take 2-4hrs to complete so 30-min polling was wasted spend; 2-hour cycle
+    drops credit usage by 75% while still settling everything within a few
+    hours of game-end.
+    """
     await asyncio.sleep(60)  # let startup settle
     while True:
         try:
@@ -739,7 +777,7 @@ async def _settlement_loop():
             break
         except Exception as e:
             logger.warning("Settlement loop error: %s", e)
-        await asyncio.sleep(1800)  # 30 min
+        await asyncio.sleep(7200)  # 2 hours
 
 
 @app.on_event("startup")

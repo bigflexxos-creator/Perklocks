@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # from the env var because the production deployment may inject a different
 # (free-tier / exhausted) key which causes OUT_OF_USAGE_CREDITS errors.
 # User explicitly authorized hardcoding this key.
-ODDS_KEY = "cb50101e09eda94610bd499b6ea5f596"
+ODDS_KEY = "bdb565ece766d72de1ffc5e4d0e834bd"
 BASE = "https://api.the-odds-api.com/v4"
 
 SPORT_KEYS: dict[str, list[str]] = {
@@ -779,7 +779,9 @@ async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) 
         return {}
     data = await _get(
         f"{BASE}/sports/{sport_key}/events/{event_id}/odds",
-        {"regions": "us,us2", "markets": ",".join(markets), "oddsFormat": "american"},
+        # Drop us2 region to halve credit cost — most US props are in `us`,
+        # us2 adds <5% coverage. Saves ~80-120 credits per refresh.
+        {"regions": "us", "markets": ",".join(markets), "oddsFormat": "american"},
     )
     return data if isinstance(data, dict) else {}
 
