@@ -850,6 +850,12 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     is_alt_mk = mk in _ALT_PROP_MARKETS
                     if not is_alt_mk and str(side).lower() == "under":
                         continue
+                    # Drop Total Bases at the 0.5 line entirely — it's the
+                    # same outcome as Hits 0.5 (any base = at least 1 hit) and
+                    # clutters the board. Higher TB thresholds (1.5, 2.5) are
+                    # real value bets and pass through.
+                    if mk in ("batter_total_bases", "batter_total_bases_alternate") and point == 0.5:
+                        continue
                     point_key = point
                 bucket.setdefault((mk, player, point_key, side), []).append(int(price))
     candidates = []
