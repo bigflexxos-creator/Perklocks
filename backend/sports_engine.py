@@ -969,17 +969,38 @@ async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
         return (p.get("sport"), p.get("event"), sel, threshold)
 
     best: dict = {}
+    # Market-family preference when two correlated picks tie on dedup key.
+    # User preference: surface "Hits" over "Total Bases" — both score the
+    # same offensive event but Hits is the more common ask. Lower number =
+    # higher preference.
+    def _market_priority(market: str) -> int:
+        m = (market or "").lower()
+        if "hits" in m:
+            return 0
+        if "total bases" in m:
+            return 2
+        return 1
+
     for p in all_picks:
         k = _dedup_key(p)
         existing = best.get(k)
         if existing is None:
             best[k] = p
             continue
-        # Prefer the higher lock_score. Tie-break on better (more positive
-        # or less negative) odds so the user gets the friendlier price.
+        # 1) Market-family preference (Hits beats Total Bases regardless of
+        #    lock_score — they're effectively the same bet for the bettor).
+        new_pri = _market_priority(p.get("market"))
+        old_pri = _market_priority(existing.get("market"))
+        if new_pri < old_pri:
+            best[k] = p
+            continue
+        if new_pri > old_pri:
+            continue
+        # 2) Same family — prefer higher lock_score.
         if p["lock_score"] > existing["lock_score"]:
             best[k] = p
         elif p["lock_score"] == existing["lock_score"]:
+            # 3) Tie-break on better (more positive) odds.
             if (p.get("book_odds") or -9999) > (existing.get("book_odds") or -9999):
                 best[k] = p
     if len(best) < len(all_picks):
