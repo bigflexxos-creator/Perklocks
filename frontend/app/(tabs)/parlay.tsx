@@ -16,13 +16,14 @@ export default function ParlayScreen() {
   const [mode, setMode] = useState<"standard" | "high_risk">("standard");
   const [legs, setLegs] = useState(3);
   const [sport, setSport] = useState<string>("mix");
+  const [excludedSports, setExcludedSports] = useState<string[]>([]);
   const [lineType, setLineType] = useState<LineType>("both");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async (n: number, m: "standard" | "high_risk", s: string, lt: LineType) => {
+  const load = useCallback(async (n: number, m: "standard" | "high_risk", s: string, lt: LineType, excl: string[]) => {
     try {
-      const res = await api.parlay(n, m, s, lt);
+      const res = await api.parlay(n, m, s, lt, excl);
       setData(res);
     } catch (e) {
       console.warn("parlay load", e);
@@ -32,7 +33,7 @@ export default function ParlayScreen() {
     }
   }, []);
 
-  useEffect(() => { setLoading(true); load(legs, mode, sport, lineType); }, [legs, mode, sport, lineType, load]);
+  useEffect(() => { setLoading(true); load(legs, mode, sport, lineType, excludedSports); }, [legs, mode, sport, lineType, excludedSports, load]);
 
   const onModeChange = (m: "standard" | "high_risk") => {
     setMode(m);
@@ -141,11 +142,66 @@ export default function ParlayScreen() {
         </ScrollView>
       </View>
 
+      {sport === "mix" && (
+        <View style={styles.excludeRowWrap}>
+          <Text style={styles.legLabel}>EXCLUDE</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.sportRow}
+          >
+            {SPORT_OPTIONS.filter((o) => o.id !== "mix").map((opt) => {
+              const excluded = excludedSports.includes(opt.id);
+              return (
+                <Pressable
+                  key={`excl-${opt.id}`}
+                  testID={`parlay-exclude-${opt.id}`}
+                  onPress={() =>
+                    setExcludedSports((prev) =>
+                      excluded
+                        ? prev.filter((s) => s !== opt.id)
+                        : [...prev, opt.id],
+                    )
+                  }
+                  style={[styles.excludeChip, excluded && styles.excludeChipActive]}
+                >
+                  {excluded && (
+                    <Ionicons
+                      name="close-circle"
+                      size={12}
+                      color={COLORS.bg}
+                      style={{ marginRight: 4 }}
+                    />
+                  )}
+                  <Text
+                    style={[
+                      styles.excludeChipText,
+                      excluded && styles.excludeChipTextActive,
+                    ]}
+                  >
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+            {excludedSports.length > 0 && (
+              <Pressable
+                onPress={() => setExcludedSports([])}
+                style={styles.clearExcludeBtn}
+                testID="parlay-exclude-clear"
+              >
+                <Text style={styles.clearExcludeText}>CLEAR</Text>
+              </Pressable>
+            )}
+          </ScrollView>
+        </View>
+      )}
+
       <LineTypeToggle value={lineType} onChange={setLineType} testIDPrefix="parlay-line" />
 
       <ScrollView
         contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl tintColor={COLORS.textPrimary} refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(legs, mode, sport, lineType); }} />}
+        refreshControl={<RefreshControl tintColor={COLORS.textPrimary} refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(legs, mode, sport, lineType, excludedSports); }} />}
         showsVerticalScrollIndicator={false}
       >
         {loading ? (
@@ -269,6 +325,18 @@ const styles = StyleSheet.create({
   sportChipMixActive: { backgroundColor: COLORS.voltBlue, borderColor: COLORS.voltBlue },
   sportChipText: { color: COLORS.textSecondary, fontSize: 11, fontWeight: "800", letterSpacing: 1 },
   sportChipTextActive: { color: COLORS.bg, fontWeight: "900" },
+  excludeRowWrap: { flexDirection: "row", alignItems: "center", paddingHorizontal: 20, paddingBottom: 10, gap: 8 },
+  excludeChip: {
+    flexDirection: "row", alignItems: "center",
+    paddingHorizontal: 11, height: 28, borderRadius: 14,
+    borderWidth: 1, borderColor: COLORS.borderDefault,
+    backgroundColor: "transparent",
+  },
+  excludeChipActive: { backgroundColor: COLORS.electricBlaze, borderColor: COLORS.electricBlaze },
+  excludeChipText: { color: COLORS.textSecondary, fontSize: 10, fontWeight: "800", letterSpacing: 0.8 },
+  excludeChipTextActive: { color: COLORS.bg, fontWeight: "900" },
+  clearExcludeBtn: { paddingHorizontal: 10, alignSelf: "center" },
+  clearExcludeText: { color: COLORS.textMuted, fontSize: 10, fontWeight: "800", letterSpacing: 1.2 },
   content: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 30 },
   center: { paddingVertical: 80, alignItems: "center" },
   emptyTitle: { color: COLORS.textPrimary, fontSize: 16, fontWeight: "800", marginTop: 14 },
