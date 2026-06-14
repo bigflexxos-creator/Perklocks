@@ -307,7 +307,15 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
         q["is_alt"] = True
     cursor = db.picks.find(q, {"_id": 0})
     picks = await cursor.to_list(length=500)
-    # Restrict Rollover to today's games only (start time within next 24h).
+    # Exclude Soccer FIRST — user feedback: small-league soccer rollovers are
+    # too volatile. Doing this before the 24h window prevents soccer picks
+    # from dominating the "today" bucket and then getting wiped.
+    picks = [p for p in picks if (p.get("sport") or "").lower() != "soccer"]
+    # Cap chalk at -200 so risk:reward is reasonable. -200 means $200 risked
+    # to win $100 — a daily roll should pay decently, not all be chalk.
+    picks = [p for p in picks if (p.get("book_odds") or -9999) >= -200]
+    # Restrict Rollover to today's games only (start time within next 24h),
+    # with graceful fallback to the broader pool if nothing starts today.
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=24)
     def starts_today(p: dict) -> bool:
@@ -319,23 +327,21 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
             return False
     today_picks = [p for p in picks if starts_today(p)]
     pool = today_picks if today_picks else picks
-    # Exclude Soccer — user feedback: small-league soccer rollovers are too volatile.
-    pool = [p for p in pool if (p.get("sport") or "").lower() != "soccer"]
-    # Cap chalk at -200 so risk:reward is reasonable. -200 means $200 risked
-    # to win $100 — a daily roll should pay decently, not all be chalk.
-    pool = [p for p in pool if (p.get("book_odds") or -9999) >= -200]
     if not pool:
         return {"picks": [], "pick": None, "total_evaluated": 0}
 
-    def composite(p: dict) -> float:
-        win_prob = p.get("win_probability", 0) or 0
-        lock = p.get("lock_score", 0) or 0
-        edge = max(0, p.get("edge_percent", 0) or 0)
-        league = (p.get("league") or "").lower()
-        prop_boost = 2.0 if "props" in league else 0.0
-        return (win_prob * 2.0) + (lock * 0.5) + (edge * 0.3) + prop_boost
-
-    ranked = sorted(pool, key=composite, reverse=True)
+    # User explicit ranking: win_probability first (highest chance to hit),
+    # lock_score as tie-breaker, edge_percent as third tie-breaker. No
+    # composite weighting — the strongest signal of "will it hit" should win.
+    ranked = sorted(
+        pool,
+        key=lambda p: (
+            p.get("win_probability", 0) or 0,
+            p.get("lock_score", 0) or 0,
+            p.get("edge_percent", 0) or 0,
+        ),
+        reverse=True,
+    )
     # Diversify: one pick per game so the user gets 3 distinct options.
     seen_events: set = set()
     top: list = []
@@ -344,7 +350,10 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
         if ev in seen_events:
             continue
         seen_events.add(ev)
-        top.append({**p, "composite_rank": round(composite(p), 2)})
+        top.append({
+            **p,
+            "composite_rank": round(p.get("win_probability", 0) or 0, 1),
+        })
         if len(top) >= 3:
             break
     return {
