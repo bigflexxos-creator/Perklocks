@@ -311,9 +311,10 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
     # too volatile. Doing this before the 24h window prevents soccer picks
     # from dominating the "today" bucket and then getting wiped.
     picks = [p for p in picks if (p.get("sport") or "").lower() != "soccer"]
-    # Cap chalk at -200 so risk:reward is reasonable. -200 means $200 risked
-    # to win $100 — a daily roll should pay decently, not all be chalk.
-    picks = [p for p in picks if (p.get("book_odds") or -9999) >= -200]
+    # Cap chalk at -400 (was -200). The Rollover tab is for "most likely to
+    # hit" — capping too tight excludes legit 75-88% win-prob alt props
+    # priced -300 to -400. -400 still rejects absurd -700+ super-chalk.
+    picks = [p for p in picks if (p.get("book_odds") or -9999) >= -400]
     # Restrict Rollover to today's games only (start time within next 24h),
     # with graceful fallback to the broader pool if nothing starts today.
     now = datetime.now(timezone.utc)
