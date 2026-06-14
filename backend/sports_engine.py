@@ -748,6 +748,11 @@ PLAYER_PROP_MARKETS = {
     # Soccer: anytime goal scorer is the marquee prop. First goal scorer is
     # too coin-flippy to be a "lock". Assists are sparse.
     "Soccer": ["player_goal_scorer_anytime"],
+    # UFC: Method of Victory is the marquee prop — surfaces "wins by KO/TKO",
+    # "wins by Submission", "wins by Decision" outcomes per fighter. The
+    # `mma_method_of_victory` market returns one outcome per (fighter, method)
+    # tuple so we get 6 picks per fight to evaluate.
+    "UFC": ["mma_method_of_victory"],
 }
 # Markets that are "alt" lower-threshold variants. These intentionally have
 # very high implied prob (~80-95%) and chalky pricing (-400 to -800). We use
@@ -829,6 +834,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         for m in b.get("markets", []):
             mk = m.get("key")
             is_goal_scorer = mk == "player_goal_scorer_anytime"
+            is_mma_method = mk == "mma_method_of_victory"
             for o in m.get("outcomes", []):
                 player = o.get("description") or o.get("name")
                 side = o.get("name")
@@ -840,6 +846,21 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     if str(side).lower() != "yes":
                         continue
                     point_key = 0.5
+                elif is_mma_method:
+                    # `mma_method_of_victory` outcomes:
+                    #   name = fighter (e.g. "Sean O'Malley")
+                    #   description = method (e.g. "KO/TKO", "Submission", "Decision")
+                    # We treat each (fighter, method) pair as its own pick.
+                    fighter = o.get("name")
+                    method = o.get("description")
+                    if not (fighter and method and price is not None):
+                        continue
+                    # Cap absurd longshots — +800 or worse is a coin flip lottery.
+                    if int(price) > 800:
+                        continue
+                    player = fighter
+                    side = method  # encode method into side slot for downstream use
+                    point_key = method  # disambiguates KO vs Sub vs Dec for same fighter
                 else:
                     if not (player and side and price is not None and point is not None):
                         continue
@@ -869,6 +890,12 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 continue
         elif mk == "player_goal_scorer_anytime":
             if implied < _SOCCER_PROP_MIN_IMPLIED:
+                continue
+        elif mk == "mma_method_of_victory":
+            # Method of victory is inherently a low-implied market (each
+            # outcome carves the win pie into 3 methods). Accept 18%+ which
+            # is roughly +450 American — typical for "Sean O'Malley by KO".
+            if implied < 0.18:
                 continue
         else:
             if implied < _HIGH_PROB_MIN_IMPLIED:
@@ -916,12 +943,14 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             "Pace / Game Script": rng.uniform(0.6, 0.9),
         }
         lock, breakdown = compute_lock_score(factors)
-        label_point = None if mk == "player_goal_scorer_anytime" else point
-        market_label = (
-            f"{player} Anytime Goal Scorer"
-            if mk == "player_goal_scorer_anytime"
-            else f"{player} {_prop_market_label(mk, side, label_point)}"
-        )
+        label_point = None if mk in ("player_goal_scorer_anytime", "mma_method_of_victory") else point
+        if mk == "player_goal_scorer_anytime":
+            market_label = f"{player} Anytime Goal Scorer"
+        elif mk == "mma_method_of_victory":
+            # `side` carries the method string (KO/TKO, Submission, Decision).
+            market_label = f"{player} wins by {side}"
+        else:
+            market_label = f"{player} {_prop_market_label(mk, side, label_point)}"
         picks.append(_build_pick(
             sport=sport, league=f"{league} · Props", event=f"{away} @ {home}",
             event_time=commence,
@@ -931,7 +960,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             insights=_prop_insights(sport, rng, player),
             external_id=f"{sport}-{payload.get('id', '')}-{mk}-{player[:10]}-{side}-{point}",
             is_alt_prop=is_alt,
-            is_long_shot=(mk == "player_goal_scorer_anytime"),
+            is_long_shot=(mk in ("player_goal_scorer_anytime", "mma_method_of_victory")),
         ))
     # Tag every Under-alt pick so the main Locks feed can exclude them
     # and the dedicated "Under of the Day" tab can surface them.
