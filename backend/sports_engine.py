@@ -952,6 +952,42 @@ async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
     for p in all_picks:
         p["pick_date"] = date_str
         p["created_at"] = datetime.now(timezone.utc).isoformat()
+    # ─── Dedupe highly-correlated picks ───
+    # Books offer both "Player Over 0.5 Hits" AND "Player Over 0.5 Total
+    # Bases" — these are basically the same bet (a hit guarantees a total
+    # base). Showing both on the Locks tab looks like duplication. Collapse
+    # picks that share (sport, event, player/team selection, line threshold)
+    # and keep the one with the higher lock_score (ties broken by better
+    # odds).
+    import re as _re
+    def _dedup_key(p: dict) -> tuple:
+        market = p.get("market") or ""
+        sel = p.get("selection") or ""
+        # First decimal in the market is the line ("0.5", "1.5", "8.5", ...).
+        m = _re.search(r"(-?\d+\.\d+)", market)
+        threshold = m.group(1) if m else ""
+        return (p.get("sport"), p.get("event"), sel, threshold)
+
+    best: dict = {}
+    for p in all_picks:
+        k = _dedup_key(p)
+        existing = best.get(k)
+        if existing is None:
+            best[k] = p
+            continue
+        # Prefer the higher lock_score. Tie-break on better (more positive
+        # or less negative) odds so the user gets the friendlier price.
+        if p["lock_score"] > existing["lock_score"]:
+            best[k] = p
+        elif p["lock_score"] == existing["lock_score"]:
+            if (p.get("book_odds") or -9999) > (existing.get("book_odds") or -9999):
+                best[k] = p
+    if len(best) < len(all_picks):
+        logger.info(
+            "Deduped %d correlated picks (kept %d of %d)",
+            len(all_picks) - len(best), len(best), len(all_picks),
+        )
+    all_picks = list(best.values())
     # Promote board-toppers to Elite tier — but ONLY picks that combine high
     # model confidence with real betting value AND happen today. Friday games
     # don't deserve to be promoted as the "best bet for the day" on Wednesday.

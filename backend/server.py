@@ -129,14 +129,19 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                       sport: Optional[str] = None,
                       grade: Optional[str] = None,
                       day_offset: Optional[int] = None,
-                      line_type: Optional[str] = None):
+                      line_type: Optional[str] = None,
+                      sort: Optional[str] = None):
     """Top picks from today's 72-hour window (lock score >= 85).
     Optional `day_offset` filters picks to a specific calendar day relative
     to today (0=today, 1=tomorrow, 2=day after).
-    `line_type` filters by line family:
+    `line_type`:
       - "main": standard markets only (no alt-prop lines)
       - "alt":  alternate-line picks only (e.g. Over 0.5 Hits, Anytime Goal Scorer)
       - "both" / None (default): unrestricted
+    `sort`:
+      - "lock" / None (default): highest lock_score first
+      - "time": soonest kickoff first
+      - "edge": biggest model edge first
     """
     await _ensure_today_picks()
     q: dict = {"pick_date": _today_str(), "lock_score": {"$gte": 85},
@@ -171,7 +176,23 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             except Exception:
                 return 1
 
-        picks.sort(key=lambda p: (_bucket(p), -p.get("lock_score", 0)))
+        # Apply the user's sort preference. Default "lock": highest lock_score
+        # first (today first). "time": soonest kickoff first. "edge": biggest
+        # model edge first.
+        s = (sort or "lock").lower()
+        def _event_dt(p: dict) -> datetime:
+            try:
+                return datetime.strptime(
+                    p.get("event_time") or "", "%Y-%m-%dT%H:%M:%SZ",
+                ).replace(tzinfo=timezone.utc)
+            except Exception:
+                return datetime.max.replace(tzinfo=timezone.utc)
+        if s == "time":
+            picks.sort(key=lambda p: (_event_dt(p), -p.get("lock_score", 0)))
+        elif s == "edge":
+            picks.sort(key=lambda p: (_bucket(p), -p.get("edge_percent", 0), -p.get("lock_score", 0)))
+        else:  # "lock" (default)
+            picks.sort(key=lambda p: (_bucket(p), -p.get("lock_score", 0)))
     return {"picks": picks}
 
 
@@ -200,16 +221,15 @@ async def picks_bet_killer(user: Annotated[UserPublic, Depends(current_user)],
 
 @api.get("/picks/under-of-the-day")
 async def under_of_the_day(user: Annotated[UserPublic, Depends(current_user)],
-                           line_type: Optional[str] = None):
+                           line_type: Optional[str] = None,
+                           sort: Optional[str] = None):
     """The single safest Under lock across all sports.
 
-    Returns Under picks (both main-line totals and alt-Under props). The top
-    one is the "Under of the Day".
-
     `line_type`:
-      - "main": main-line totals only (Under X.5 Runs/Points at standard book line)
-      - "alt":  alt-prop Unders only (chalky high-line player props)
+      - "main": main-line totals only
+      - "alt":  alt-prop Unders only
       - "both" / None: unrestricted (default)
+    `sort`: "lock" (default), "time", or "edge"
     """
     await _ensure_today_picks()
     now = datetime.now(timezone.utc)
@@ -220,7 +240,13 @@ async def under_of_the_day(user: Annotated[UserPublic, Depends(current_user)],
         q["is_alt"] = {"$ne": True}
     elif lt == "alt":
         q["is_alt"] = True
-    cursor = db.picks.find(q, {"_id": 0}).sort("lock_score", -1).limit(50)
+    s = (sort or "lock").lower()
+    if s == "time":
+        cursor = db.picks.find(q, {"_id": 0}).sort("event_time", 1).limit(50)
+    elif s == "edge":
+        cursor = db.picks.find(q, {"_id": 0}).sort("edge_percent", -1).limit(50)
+    else:
+        cursor = db.picks.find(q, {"_id": 0}).sort("lock_score", -1).limit(50)
     picks = await cursor.to_list(length=50)
 
     def starts_today(p: dict) -> bool:
