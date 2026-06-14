@@ -129,10 +129,9 @@ export default function LocksScreen() {
       )}
 
       <ChipRow options={SPORTS} active={sport} onChange={setSport} testIDPrefix="sport-chip" />
-      <LineTypeToggle value={lineType} onChange={setLineType} testIDPrefix="locks-line" />
-      <View style={styles.sortRow}>
+      <View style={styles.controlsRow}>
         <View style={{ flex: 1 }}>
-          <SortSelector value={sortKey} onChange={setSortKey} testIDPrefix="locks-sort" />
+          <LineTypeToggle value={lineType} onChange={setLineType} testIDPrefix="locks-line" />
         </View>
         <View style={styles.filterBtnWrap}>
           <FilterButton
@@ -142,6 +141,7 @@ export default function LocksScreen() {
           />
         </View>
       </View>
+      <SortSelector value={sortKey} onChange={setSortKey} testIDPrefix="locks-sort" />
       <FilterSheet
         visible={filterOpen}
         onClose={() => setFilterOpen(false)}
@@ -207,7 +207,7 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: COLORS.borderDefault,
   },
   statsRow: { flexDirection: "row", paddingHorizontal: 20, gap: 10, marginBottom: 6 },
-  sortRow: { flexDirection: "row", alignItems: "center" },
+  controlsRow: { flexDirection: "row", alignItems: "center" },
   filterBtnWrap: { paddingRight: 20, paddingBottom: 10 },
   statTile: {
     flex: 1, padding: 12, borderRadius: 12, borderWidth: 1,
