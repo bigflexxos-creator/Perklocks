@@ -361,7 +361,8 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
                      legs: int = 3,
                      mode: str = "standard",
                      sport: str | None = None,
-                     line_type: str | None = None):
+                     line_type: str | None = None,
+                     exclude_sports: str | None = None):
     """Auto-build a parlay from today's picks.
 
     Modes:
@@ -372,6 +373,11 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     Sport filter:
       - None or "mix": cross-sport parlay (default — best variance distribution).
       - Specific sport (e.g. "MLB", "NBA", "Soccer"): single-sport parlay.
+
+    `exclude_sports` (only honored when sport=mix/None):
+      - Comma-separated list of sports to exclude from the mix parlay
+        (e.g. "Soccer,Tennis"). Useful when a sport has been hurting your
+        record or you simply don't follow it.
 
     Line type:
       - "main": standard markets only (no alt-prop lines).
@@ -385,6 +391,12 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     sport_filter: dict = {}
     if sport_q and sport_q.lower() not in ("mix", "all", ""):
         sport_filter = {"sport": sport_q}
+    else:
+        # MIX mode honors the exclusion list.
+        if exclude_sports:
+            excluded = [s.strip() for s in exclude_sports.split(",") if s.strip()]
+            if excluded:
+                sport_filter = {"sport": {"$nin": excluded}}
     # Line type filter — same semantics as picks_today.
     lt = (line_type or "").lower()
     line_filter: dict = {}

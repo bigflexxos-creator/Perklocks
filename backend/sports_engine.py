@@ -149,7 +149,10 @@ async def _load_active_sports() -> None:
     _ACTIVE_LOADED = True
 
 
-async def _fetch_odds_for(sport_key: str, regions: str = "us") -> list:
+async def _fetch_odds_for(sport_key: str, regions: str = "us", sport: str | None = None) -> list:
+    # `sport` is accepted for future sport-specific market tuning; currently
+    # we use the same core markets for everything. Alternate markets must be
+    # fetched via the per-event endpoint, not /odds.
     data = await _get(
         f"{BASE}/sports/{sport_key}/odds",
         {"regions": regions, "markets": "h2h,spreads,totals", "oddsFormat": "american"},
@@ -254,18 +257,62 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
         chalk_floor = -750 if is_alt_prop else -450
         if final_odds < chalk_floor:
             return None
-    # Lock score floor: long-shots get 65 (anytime scorers are inherently
-    # less "lock-y"). Standard picks need 72+.
-    min_lock = 65 if is_long_shot else 72
+    # Per-sport quality floors for STANDARD (non-alt, non-long-shot) picks.
+    # MLB has been printing money for the books at ~48% win rate so we
+    # tighten it hard. Sparse sports (Tennis/UFC/KBO) keep looser bars
+    # because their prop coverage is limited and the absolute pick volume
+    # would crater otherwise.
+    SPORT_LOCK_FLOOR = {
+        "MLB": 88,
+        "NBA": 80,
+        "WNBA": 78,
+        "NFL": 80,
+        "Soccer": 75,  # most "Soccer" non-prop picks are h2h on weak leagues
+        "Tennis": 72,
+        "UFC": 72,
+        "KBO": 75,
+    }
+    SPORT_IMPLIED_FLOOR = {
+        "MLB": 0.56,    # require -127 or better book confidence
+        "NBA": 0.54,
+        "WNBA": 0.54,
+        "NFL": 0.54,
+        "Soccer": 0.50,
+        "Tennis": 0.48,
+        "UFC": 0.48,
+        "KBO": 0.50,
+    }
+    # Lock score floor: long-shots 65, alt-props 72, standard markets
+    # sport-tiered per the table above.
+    if is_long_shot:
+        min_lock = 65
+    elif is_alt_prop:
+        min_lock = 72
+    else:
+        min_lock = SPORT_LOCK_FLOOR.get(sport, 78)
     if lock < min_lock:
         return None
     # Drop only clearly negative-edge picks. -1% is noise tolerance.
     if edge < -1.0:
         return None
-    # Probability floor: standard 55%, long-shots 25% (anytime scorers).
-    min_prob = 0.25 if is_long_shot else 0.55
+    # Probability floor: standard 58% (raised from 55), MLB needs 62% to
+    # combat the model's coin-flip overconfidence.
+    if is_long_shot:
+        min_prob = 0.25
+    elif is_alt_prop:
+        min_prob = 0.55
+    elif sport == "MLB":
+        min_prob = 0.62
+    else:
+        min_prob = 0.58
     if model_win_prob < min_prob:
         return None
+    # Standard markets must show meaningful book confidence too — we don't
+    # want to surface a coin-flip Moneyline just because lock_score is
+    # arbitrarily high.
+    if not is_long_shot and not is_alt_prop:
+        if book_implied < SPORT_IMPLIED_FLOOR.get(sport, 0.50):
+            return None
     return {
         "sport": sport, "league": league, "event": event,
         "event_time": event_time, "market": market, "selection": pick_side,
@@ -381,7 +428,12 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             away_implied = 1 - home_implied
             draw_implied = None
 
-        model_lift = (rng.random() - 0.4) * 0.18
+        # Model lift bound — tightened from 0.18 to 0.08 to stop the model
+        # from inventing 8-9% edges on near-coinflip ML markets. Anchored on
+        # book implied with a small (±2-3%) personalization shift instead of
+        # ±9% which produced overconfident 75%+ win prob claims on 50/50
+        # MLB games (the bulk of last week's losses).
+        model_lift = (rng.random() - 0.5) * 0.08
         home_model = max(0.1, min(0.9, home_implied + model_lift))
         if home_model >= 0.5:
             side, side_ml, mp = home, home_ml, home_model
@@ -469,9 +521,10 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         under_pick["is_under_lock"] = True
                         picks.append(under_pick)
 
-    # Spread / Run line pick — skip for soccer/tennis/UFC (no balanced
-    # spread market). KBO uses the same run-line format as MLB.
-    if spreads_outs and sport in ("MLB", "NBA", "NFL", "KBO"):
+    # Spread / Run / Game line pick — skip for soccer (no balanced spread
+    # market) and UFC (rare). KBO uses run-line like MLB. Tennis has game
+    # spreads which are useful for asymmetric matchups.
+    if spreads_outs and sport in ("MLB", "NBA", "NFL", "KBO", "Tennis"):
         home_sp = next((o for o in spreads_outs if o.get("name") == home), None)
         away_sp = next((o for o in spreads_outs if o.get("name") == away), None)
         if home_sp and away_sp:
@@ -630,7 +683,7 @@ async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
     for key in SPORT_KEYS.get(sport, []):
         if _ACTIVE_KEYS and key not in _ACTIVE_KEYS:
             continue
-        games = await _fetch_odds_for(key, regions=region)
+        games = await _fetch_odds_for(key, regions=region, sport=sport)
         league_label = LEAGUE_LABELS.get(key, sport)
         for g in games[:15]:
             all_picks.extend(_picks_from_game(sport, league_label, g, date_str))

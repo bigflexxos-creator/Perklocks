@@ -140,10 +140,13 @@ export const api = {
       `/picks/under-of-the-day${q ? `?${q}` : ""}`,
     );
   },
-  parlay: (legs: number = 3, mode: "standard" | "high_risk" = "standard", sport?: string, lineType?: LineType) => {
+  parlay: (legs: number = 3, mode: "standard" | "high_risk" = "standard", sport?: string, lineType?: LineType, excludeSports?: string[]) => {
     const qs = new URLSearchParams({ legs: String(legs), mode });
     if (sport && sport !== "mix") qs.set("sport", sport);
     if (lineType && lineType !== "both") qs.set("line_type", lineType);
+    if ((!sport || sport === "mix") && excludeSports && excludeSports.length > 0) {
+      qs.set("exclude_sports", excludeSports.join(","));
+    }
     return request<{ parlay: null | {
       legs: Pick[]; leg_count: number;
       combined_decimal_odds: number; combined_american_odds: string;
