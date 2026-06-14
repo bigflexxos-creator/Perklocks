@@ -1029,21 +1029,20 @@ async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
 
     best: dict = {}
     # Market-family preference when two correlated picks tie on dedup key.
-    # User preference:
-    #   - "Hits" over "Total Bases" — both score the same offensive event
-    #     but Hits is the more common ask.
-    #   - "Moneyline" over "Win or Draw" / "Double Chance" — Win-or-Draw
-    #     is the same team in the same matchup with a hedge layer, looks
-    #     like a duplicate next to the straight Moneyline.
+    # User preferences (verified by historical results):
+    #   - "Hits" over "Total Bases" — same outcome, Hits is the common ask.
+    #   - "Win or Draw" / "Double Chance" over straight "Moneyline" for
+    #     soccer — the draw safety net wins games where the favorite ties
+    #     (e.g. Sport Recife drew today; W-or-D would have cashed).
     # Lower number = higher preference.
     def _market_priority(market: str) -> int:
         m = (market or "").lower()
         if "hits" in m:
             return 0
-        if "moneyline" in m:
-            return 0
         if "win or draw" in m or "double chance" in m:
-            return 3
+            return 0
+        if "moneyline" in m:
+            return 2
         if "total bases" in m:
             return 2
         return 1
