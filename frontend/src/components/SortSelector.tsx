@@ -8,6 +8,7 @@ const OPTIONS: { id: SortKey; label: string; icon: keyof typeof Ionicons.glyphMa
   { id: "lock", label: "LOCK", icon: "lock-closed" },
   { id: "time", label: "TIME", icon: "time-outline" },
   { id: "edge", label: "EDGE", icon: "trending-up" },
+  { id: "implied", label: "ODDS", icon: "stats-chart" },
 ];
 
 type Props = {

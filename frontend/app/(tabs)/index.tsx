@@ -6,11 +6,12 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS, SPORTS } from "@/src/theme";
-import { api, Pick, LineType, SortKey } from "@/src/lib/api";
+import { api, Pick, LineType, SortKey, PickFilters } from "@/src/lib/api";
 import { LockPickCard } from "@/src/components/LockPickCard";
 import { ChipRow } from "@/src/components/ChipRow";
 import { LineTypeToggle } from "@/src/components/LineTypeToggle";
 import { SortSelector } from "@/src/components/SortSelector";
+import { FilterButton, FilterSheet } from "@/src/components/FilterSheet";
 
 function timeAgo(d: Date | null): string {
   if (!d) return "—";
@@ -29,6 +30,8 @@ export default function LocksScreen() {
   const [sport, setSport] = useState<string>("All");
   const [lineType, setLineType] = useState<LineType>("both");
   const [sortKey, setSortKey] = useState<SortKey>("lock");
+  const [filters, setFilters] = useState<PickFilters>({});
+  const [filterOpen, setFilterOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [stats, setStats] = useState<{ total_picks: number; elite_count: number; avg_edge_percent: number } | null>(null);
@@ -42,10 +45,15 @@ export default function LocksScreen() {
     return () => clearInterval(t);
   }, []);
 
-  const load = useCallback(async (s: string, lt: LineType, sk: SortKey) => {
+  const activeFilterCount =
+    (filters.minLock && filters.minLock > 85 ? 1 : 0) +
+    (filters.minImplied ? 1 : 0) +
+    (filters.maxImplied && filters.maxImplied < 100 ? 1 : 0);
+
+  const load = useCallback(async (s: string, lt: LineType, sk: SortKey, f: PickFilters) => {
     try {
       const [picksRes, statsRes] = await Promise.all([
-        api.picksToday(s, lt, sk),
+        api.picksToday(s, lt, sk, f),
         api.stats().catch(() => null),
       ]);
       setPicks(picksRes.picks);
@@ -59,9 +67,9 @@ export default function LocksScreen() {
     }
   }, []);
 
-  useEffect(() => { setLoading(true); load(sport, lineType, sortKey); }, [sport, lineType, sortKey, load]);
+  useEffect(() => { setLoading(true); load(sport, lineType, sortKey, filters); }, [sport, lineType, sortKey, filters, load]);
 
-  const onRefresh = () => { setRefreshing(true); load(sport, lineType, sortKey); };
+  const onRefresh = () => { setRefreshing(true); load(sport, lineType, sortKey, filters); };
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -72,7 +80,7 @@ export default function LocksScreen() {
     setLoading(true);
     try {
       const res = await api.refresh();
-      await load(sport, lineType, sortKey);
+      await load(sport, lineType, sortKey, filters);
       showToast(`Refreshed · ${res.count} picks`);
     } catch (e) {
       console.warn(e);
@@ -122,7 +130,24 @@ export default function LocksScreen() {
 
       <ChipRow options={SPORTS} active={sport} onChange={setSport} testIDPrefix="sport-chip" />
       <LineTypeToggle value={lineType} onChange={setLineType} testIDPrefix="locks-line" />
-      <SortSelector value={sortKey} onChange={setSortKey} testIDPrefix="locks-sort" />
+      <View style={styles.sortRow}>
+        <View style={{ flex: 1 }}>
+          <SortSelector value={sortKey} onChange={setSortKey} testIDPrefix="locks-sort" />
+        </View>
+        <View style={styles.filterBtnWrap}>
+          <FilterButton
+            onPress={() => setFilterOpen(true)}
+            activeCount={activeFilterCount}
+            testID="locks-filter-button"
+          />
+        </View>
+      </View>
+      <FilterSheet
+        visible={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        filters={filters}
+        onApply={setFilters}
+      />
 
       <ScrollView
         contentContainerStyle={styles.content}
@@ -182,6 +207,8 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: COLORS.borderDefault,
   },
   statsRow: { flexDirection: "row", paddingHorizontal: 20, gap: 10, marginBottom: 6 },
+  sortRow: { flexDirection: "row", alignItems: "center" },
+  filterBtnWrap: { paddingRight: 20, paddingBottom: 10 },
   statTile: {
     flex: 1, padding: 12, borderRadius: 12, borderWidth: 1,
     borderColor: COLORS.borderDefault, backgroundColor: COLORS.surface,
