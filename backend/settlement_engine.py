@@ -275,4 +275,14 @@ async def settle_due_picks(db) -> dict:
     except Exception as e:
         logger.warning("learning recompute failed: %s", e)
 
+    # ── Self-healing math validator — silently corrects edge/implied/lock
+    # drift, including any post-learning win-prob stacking. Pure DB-side
+    # math, no external API calls, runs every settlement cycle.
+    try:
+        from pick_validator import validate_and_heal
+        heal_counts = await validate_and_heal(db)
+        counts["validator"] = heal_counts
+    except Exception as e:
+        logger.warning("validator failed: %s", e)
+
     return counts
