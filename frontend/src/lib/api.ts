@@ -42,6 +42,10 @@ export type Pick = {
   confidence: string;
   factors: Record<string, number>;
   key_insights: string[];
+  top_reasons?: string[];
+  edge_score?: number;
+  confidence_score?: number;
+  risk_score?: number;
   explanation?: string;
   pick_date: string;
 };
