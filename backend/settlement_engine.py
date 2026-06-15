@@ -225,12 +225,23 @@ async def settle_due_picks(db) -> dict:
                 counts["skipped"] += 1
                 continue
             scores_dict = {s["name"]: s["score"] for s in (score_payload.get("scores") or [])}
+            # Compute units_profit + CLV at settle time so the analytics
+            # dashboard never has to recompute from raw odds.
+            from analytics import (american_profit_per_unit, clv_units,
+                                    confidence_bucket)
+            odds_used = pick.get("closing_odds") or pick.get("book_odds")
+            units_profit = american_profit_per_unit(odds_used or 0, outcome)
+            clv = clv_units(pick.get("odds_at_pick"), pick.get("closing_odds") or pick.get("book_odds"))
             await db.picks.update_one(
                 {"id": pick["id"]},
                 {"$set": {
                     "status": outcome,
                     "settled_at": datetime.now(timezone.utc).isoformat(),
                     "final_score": scores_dict,
+                    "units_risked": 1.0 if outcome != "push" else 0.0,
+                    "units_profit": units_profit,
+                    "clv_value": clv,
+                    "confidence_bucket": confidence_bucket(pick.get("lock_score")),
                 }},
             )
             counts[outcome] += 1

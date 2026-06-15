@@ -634,6 +634,19 @@ def _player_from_market(market: str) -> str:
 
 
 async def _record(db, pick: dict, outcome: str, detail: dict, counts: dict):
+    # Compute analytics-side fields the same way settlement_engine does so
+    # the model-performance dashboard treats every settled pick uniformly.
+    try:
+        from analytics import (american_profit_per_unit, clv_units,
+                                confidence_bucket)
+        odds_used = pick.get("closing_odds") or pick.get("book_odds") or 0
+        units_profit = american_profit_per_unit(odds_used, outcome)
+        clv = clv_units(pick.get("odds_at_pick"), pick.get("closing_odds") or pick.get("book_odds"))
+        conf = confidence_bucket(pick.get("lock_score"))
+    except Exception:
+        units_profit = -1.0 if outcome == "lost" else (0.0 if outcome == "push" else 0.91)
+        clv = 0.0
+        conf = None
     await db.picks.update_one(
         {"id": pick["id"]},
         {"$set": {
@@ -641,6 +654,10 @@ async def _record(db, pick: dict, outcome: str, detail: dict, counts: dict):
             "settled_at": datetime.now(timezone.utc).isoformat(),
             "settlement_detail": detail,
             "settled_via": "prop_engine",
+            "units_risked": 1.0 if outcome != "push" else 0.0,
+            "units_profit": units_profit,
+            "clv_value": clv,
+            **({"confidence_bucket": conf} if conf else {}),
         }},
     )
     counts[outcome] = counts.get(outcome, 0) + 1
