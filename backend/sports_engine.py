@@ -784,9 +784,11 @@ PLAYER_PROP_MARKETS = {
         "batter_hits", "batter_total_bases",
         "batter_hits_alternate", "batter_total_bases_alternate",
     ],
-    # Soccer: anytime goal scorer is the marquee prop. First goal scorer is
-    # too coin-flippy to be a "lock". Assists are sparse.
-    "Soccer": ["player_goal_scorer_anytime"],
+    # Soccer: anytime goal scorer is the marquee prop. We also try the
+    # "to score or assist" market when the bookmakers carry it — it nearly
+    # doubles the player's win-probability since either action wins the bet.
+    # If the Odds API returns 422 (unsupported), we silently skip it.
+    "Soccer": ["player_goal_scorer_anytime", "player_to_score_or_assist"],
     # UFC: The Odds API does NOT expose method-of-victory, round-betting, or
     # any MMA prop markets — only `h2h` (moneyline) and `totals` (rounds)
     # which we already get from the bulk /odds endpoint. Confirmed by
@@ -877,13 +879,14 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         for m in b.get("markets", []):
             mk = m.get("key")
             is_goal_scorer = mk == "player_goal_scorer_anytime"
+            is_score_or_assist = mk == "player_to_score_or_assist"
             is_mma_method = mk == "mma_method_of_victory"
             for o in m.get("outcomes", []):
                 player = o.get("description") or o.get("name")
                 side = o.get("name")
                 point = o.get("point")
                 price = o.get("price")
-                if is_goal_scorer:
+                if is_goal_scorer or is_score_or_assist:
                     if not (player and side and price is not None):
                         continue
                     if str(side).lower() != "yes":
@@ -934,6 +937,12 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         elif mk == "player_goal_scorer_anytime":
             if implied < _SOCCER_PROP_MIN_IMPLIED:
                 continue
+        elif mk == "player_to_score_or_assist":
+            # Score-or-assist has a HIGHER implied prob than goal-scorer-only
+            # (either action wins) — require 30%+ which still gives us value
+            # picks but filters lottery tickets.
+            if implied < 0.30:
+                continue
         elif mk == "mma_method_of_victory":
             # Method of victory is inherently a low-implied market (each
             # outcome carves the win pie into 3 methods). Accept 18%+ which
@@ -972,6 +981,11 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             # more than 70% certainty. Floor at the implied so a 22% scorer
             # still surfaces as a 25-29% model pick.
             mp = max(0.25, min(0.70, implied + 0.03 + (rng.random() - 0.3) * 0.04))
+        elif mk == "player_to_score_or_assist":
+            # Score-or-assist has higher base rate (either action wins). We
+            # accept implied 30-70%, and the model adds a slightly larger
+            # edge band since these markets are typically less efficient.
+            mp = max(0.35, min(0.78, implied + 0.04 + (rng.random() - 0.3) * 0.05))
         elif is_alt:
             # Stay within a small band around the book's implied — alts ARE
             # what they say they are. Just tiny positive nudge to surface them.
@@ -986,9 +1000,11 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             "Pace / Game Script": rng.uniform(0.6, 0.9),
         }
         lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
-        label_point = None if mk in ("player_goal_scorer_anytime", "mma_method_of_victory") else point
+        label_point = None if mk in ("player_goal_scorer_anytime", "player_to_score_or_assist", "mma_method_of_victory") else point
         if mk == "player_goal_scorer_anytime":
             market_label = f"{player} Anytime Goal Scorer"
+        elif mk == "player_to_score_or_assist":
+            market_label = f"{player} To Score or Assist"
         elif mk == "mma_method_of_victory":
             # `side` carries the method string (KO/TKO, Submission, Decision).
             market_label = f"{player} wins by {side}"
@@ -1003,7 +1019,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             insights=_prop_insights(sport, rng, player),
             external_id=f"{sport}-{payload.get('id', '')}-{mk}-{player[:10]}-{side}-{point}",
             is_alt_prop=is_alt,
-            is_long_shot=(mk in ("player_goal_scorer_anytime", "mma_method_of_victory")),
+            is_long_shot=(mk in ("player_goal_scorer_anytime", "player_to_score_or_assist", "mma_method_of_victory")),
         ))
     # Tag every Under pick so the main Locks feed can exclude them and the
     # dedicated "Under of the Day" tab can surface them. Anything where the

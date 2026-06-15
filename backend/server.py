@@ -278,7 +278,7 @@ _MARKET_REGEX = {
     # ── Soccer-specific families ──────────────────────────────────────────
     "1x2":           r"\bmoneyline\b|\bwin or draw\b",
     "btts":          r"both teams to score|\bbtts\b",
-    "goalscorer":    r"anytime goal scorer|first goal scorer|last goal scorer",
+    "goalscorer":    r"anytime goal scorer|first goal scorer|last goal scorer|to score or assist",
 
     # ── Generic team markets ──────────────────────────────────────────────
     "moneyline":     r"\bmoneyline\b",
@@ -590,30 +590,48 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
       - `sport` / `market` / `league`: optional narrowing filters.
     """
     await _ensure_today_picks()
-    q: dict = {"pick_date": _today_str(), "lock_score": {"$gte": 90}}
+    base_q: dict = {"pick_date": _today_str()}
     lt = (line_type or "").lower()
     if lt == "main":
-        q["is_alt"] = {"$ne": True}
+        base_q["is_alt"] = {"$ne": True}
     elif lt == "alt":
-        q["is_alt"] = True
-    if sport and sport.lower() != "all":
-        q["sport"] = sport
+        base_q["is_alt"] = True
+    sport_filter_active = bool(sport and sport.lower() != "all")
+    if sport_filter_active:
+        base_q["sport"] = sport
     if market:
         regex = _market_regex(market)
         if regex:
-            q["market"] = {"$regex": regex, "$options": "i"}
+            base_q["market"] = {"$regex": regex, "$options": "i"}
     if league:
-        q["league"] = {"$regex": str(league).replace("\\", ""), "$options": "i"}
-    cursor = db.picks.find(q, {"_id": 0})
-    picks = await cursor.to_list(length=500)
-    # Soccer exclusion is the *default* — if the user explicitly filtered to
-    # Soccer, respect that. Otherwise keep variance low by dropping soccer.
-    if not sport or sport.lower() == "all":
-        picks = [p for p in picks if (p.get("sport") or "").lower() != "soccer"]
-    # Cap chalk at -400 (was -200). The Rollover tab is for "most likely to
-    # hit" — capping too tight excludes legit 75-88% win-prob alt props
-    # priced -300 to -400. -400 still rejects absurd -700+ super-chalk.
-    picks = [p for p in picks if (p.get("book_odds") or -9999) >= -400]
+        base_q["league"] = {"$regex": str(league).replace("\\", ""), "$options": "i"}
+
+    # Progressive widening — Rollover needs at least 3 options. We try each
+    # safety floor in order until we have ≥3 distinct candidate games, but we
+    # NEVER widen the user-chosen sport/market/league filters.
+    floors = [90, 85, 80, 75, 70]
+    chalk_cap = -400
+    picks: list = []
+    floor_used: int = 90
+    for f in floors:
+        q = {**base_q, "lock_score": {"$gte": f}}
+        cursor = db.picks.find(q, {"_id": 0})
+        picks = await cursor.to_list(length=500)
+        # Honour the Soccer-exclusion default (unless user explicitly chose Soccer).
+        if not sport_filter_active:
+            picks = [p for p in picks if (p.get("sport") or "").lower() != "soccer"]
+        picks = [p for p in picks if (p.get("book_odds") or -9999) >= chalk_cap]
+        if len({p.get("event") for p in picks}) >= 3:
+            floor_used = f
+            break
+        floor_used = f
+    # Final safety net — if still nothing matched, broaden the chalk cap.
+    if len(picks) < 3:
+        q = {**base_q, "lock_score": {"$gte": 70}}
+        picks = await db.picks.find(q, {"_id": 0}).to_list(length=500)
+        if not sport_filter_active:
+            picks = [p for p in picks if (p.get("sport") or "").lower() != "soccer"]
+        picks = [p for p in picks if (p.get("book_odds") or -9999) >= -700]
     # Restrict Rollover to today's games only (start time within next 24h),
     # with graceful fallback to the broader pool if nothing starts today.
     now = datetime.now(timezone.utc)
