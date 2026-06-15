@@ -170,4 +170,27 @@ export const api = {
     avg_edge_percent: number;
     by_sport: { sport: string; count: number; avg_lock: number; avg_edge: number; elite_count: number }[];
   }>("/stats/summary"),
+  modelPerformance: () => request<{
+    as_of: string;
+    totals: {
+      picks: number; wins: number; losses: number; pushes: number; decisive: number;
+      hit_rate: number; units_risked: number; units_won: number; roi_pct: number;
+      units_profit_7d: number; units_profit_30d: number;
+      avg_edge_pct: number; avg_clv: number; positive_clv_pct: number;
+    };
+    by_sport: AnalyticsRow[];
+    by_market: AnalyticsRow[];
+    by_confidence: AnalyticsRow[];
+    calibration: { band: string; count: number; avg_lock_score: number; actual_hit_rate: number; delta: number }[];
+    highlights: {
+      best_sport: AnalyticsRow | null;
+      best_market: AnalyticsRow | null;
+      worst_market: AnalyticsRow | null;
+    };
+  }>("/analytics/model-performance"),
+};
+
+export type AnalyticsRow = {
+  key: string; count: number; wins: number; losses: number; pushes: number;
+  hit_rate: number; units: number; roi: number; avg_edge: number; avg_clv: number;
 };

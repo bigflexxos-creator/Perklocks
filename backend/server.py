@@ -209,6 +209,34 @@ async def _refresh_picks(date_str: str) -> int:
         dedup_picks.append(p)
     picks = dedup_picks
 
+    # Preserve original `odds_at_pick` and `units_risked` across refreshes so
+    # CLV can be measured later (closing_odds is updated by settle). The
+    # latest book_odds becomes the running "closing line" snapshot.
+    if seen_ids:
+        existing = db.picks.find(
+            {"id": {"$in": list(seen_ids)}},
+            {"_id": 0, "id": 1, "odds_at_pick": 1, "units_risked": 1, "first_seen_at": 1},
+        )
+        prior: dict[str, dict] = {}
+        async for doc in existing:
+            prior[doc["id"]] = doc
+        from datetime import datetime as _dt, timezone as _tz
+        now_iso = _dt.now(_tz.utc).isoformat()
+        for p in picks:
+            pid = p.get("id")
+            book = p.get("book_odds")
+            prev = prior.get(pid)
+            if prev and prev.get("odds_at_pick"):
+                p["odds_at_pick"] = prev["odds_at_pick"]
+                p["first_seen_at"] = prev.get("first_seen_at", now_iso)
+            else:
+                p["odds_at_pick"] = book
+                p["first_seen_at"] = now_iso
+            # closing_odds will be the latest book_odds we saw at refresh time
+            # — re-snapshotted on settle below.
+            p["closing_odds"] = book
+            p["units_risked"] = (prev.get("units_risked") if prev else None) or 1.0
+
     # Delete previous entries for this date AND any leftover picks with the
     # same UUID5 from a prior day, then insert fresh.
     await db.picks.delete_many({"pick_date": date_str})
@@ -867,6 +895,21 @@ async def stats_summary(user: Annotated[UserPublic, Depends(current_user)]):
     avg_edge = round(avg_edge_agg[0]["avg"], 2) if avg_edge_agg else 0
     return {"date": today, "total_picks": total, "elite_count": elite,
             "avg_edge_percent": avg_edge, "by_sport": by_sport}
+
+
+@api.get("/analytics/model-performance")
+async def model_performance(
+    user: Annotated[UserPublic, Depends(current_user)],
+    days: int = 30,
+    backfill: bool = True,
+):
+    """Auto-tracked model performance: ROI, CLV, Edge, calibration. Does NOT
+    require the user to log any bets — every generated pick is simulated as
+    a 1u flat stake."""
+    from analytics import backfill_metrics, compute_model_performance
+    if backfill:
+        await backfill_metrics(db)
+    return await compute_model_performance(db, days=days)
 
 
 @api.get("/")

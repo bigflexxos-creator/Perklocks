@@ -78,6 +78,16 @@ export default function ProfileScreen() {
         ) : null}
 
         <Pressable
+          testID="analytics-button"
+          onPress={() => router.push("/analytics")}
+          style={[styles.actionBtn, styles.actionBtnPrimary]}
+        >
+          <Ionicons name="stats-chart" size={18} color={COLORS.goldElite} />
+          <Text style={[styles.actionText, { color: COLORS.goldElite }]}>MODEL PERFORMANCE & ROI</Text>
+          <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+        </Pressable>
+
+        <Pressable
           testID="history-button"
           onPress={() => router.push("/history")}
           style={styles.actionBtn}
@@ -148,6 +158,7 @@ const styles = StyleSheet.create({
     padding: 16, marginTop: 16, borderRadius: 12,
     borderWidth: 1, borderColor: COLORS.borderDefault, backgroundColor: COLORS.surface,
   },
+  actionBtnPrimary: { borderColor: "rgba(255,215,0,0.35)", backgroundColor: "rgba(255,215,0,0.06)" },
   actionText: { flex: 1, color: COLORS.textPrimary, fontWeight: "900", letterSpacing: 1.5, fontSize: 12 },
   logoutBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10,
