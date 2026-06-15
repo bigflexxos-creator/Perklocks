@@ -140,15 +140,32 @@ export const api = {
     request<{ picks: Pick[] }>(`/picks/all${sport && sport !== "All" ? `?sport=${sport}` : ""}`),
   betKiller: (sport?: string) =>
     request<{ picks: Pick[] }>(`/picks/bet-killer${sport && sport !== "All" ? `?sport=${sport}` : ""}`),
-  rollover: (lineType?: LineType) =>
-    request<{ picks: Pick[]; pick: Pick | null; composite_rank?: number; total_evaluated?: number }>(
-      `/picks/rollover${lineType && lineType !== "both" ? `?line_type=${lineType}` : ""}`,
-    ),
-  underOfTheDay: (lineType?: LineType, sortKey?: SortKey) => {
+  rollover: (lineType?: LineType, filters?: PickFilters, sport?: string) => {
+    const qs = new URLSearchParams();
+    if (lineType && lineType !== "both") qs.set("line_type", lineType);
+    if (sport && sport !== "All") qs.set("sport", sport);
+    if (filters?.market) qs.set("market", filters.market);
+    if (filters?.league) qs.set("league", filters.league);
+    const q = qs.toString();
+    return request<{ picks: Pick[]; pick: Pick | null; composite_rank?: number; total_evaluated?: number }>(
+      `/picks/rollover${q ? `?${q}` : ""}`,
+    );
+  },
+  underOfTheDay: (lineType?: LineType, sortKey?: SortKey, filters?: PickFilters, sport?: string) => {
     const qs = new URLSearchParams();
     if (lineType && lineType !== "both") qs.set("line_type", lineType);
     if (sortKey && sortKey !== "lock") qs.set("sort", sortKey);
+    if (sport && sport !== "All") qs.set("sport", sport);
+    if (filters?.market) qs.set("market", filters.market);
+    if (filters?.league) qs.set("league", filters.league);
     const q = qs.toString();
+    return request<{
+      pick: Pick | null;
+      alternates: Pick[];
+      total_evaluated?: number;
+      scoped_to_today?: boolean;
+    }>(`/picks/under-of-the-day${q ? `?${q}` : ""}`);
+  },
     return request<{ pick: Pick | null; alternates: Pick[]; total_evaluated: number; scoped_to_today?: boolean }>(
       `/picks/under-of-the-day${q ? `?${q}` : ""}`,
     );
