@@ -430,7 +430,12 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     floor = max(default_floor, float(min_lock)) if min_lock is not None else default_floor
     q: dict = {"pick_date": _today_str(), "lock_score": {"$gte": floor},
                "is_under_lock": {"$ne": True},
-               "no_bet": {"$ne": True}}
+               "no_bet": {"$ne": True},
+               # Hide negative-edge picks from the main feed entirely.
+               # Picks where model_WP < book_implied are by definition bad
+               # bets (book is sharper than us). The Locks tab is for
+               # actionable +EV picks only.
+               "edge_percent": {"$gte": 0}}
     if sport and sport.lower() != "all":
         q["sport"] = sport
     if grade:
