@@ -198,11 +198,48 @@ def _win_prob_to_american(prob: float) -> int:
     return int(round(100 * (1 - prob) / prob))
 
 
-def compute_lock_score(factors: dict[str, float]) -> tuple[float, dict]:
+def compute_lock_score(factors: dict[str, float], win_prob: float | None = None) -> tuple[float, dict]:
+    """Composite confidence score (55-99).
+
+    Anchored in `win_prob` so a 36% pick can never out-rank a 70% pick — a
+    real bug we hit when synthetic "form / xG" factors out-weighed actual hit
+    probability. Factors and edge still nudge the score but cannot dominate.
+
+    Mapping (approx):
+        win_prob 30% → ~45   →   clamped to floor 55
+        win_prob 50% → 70
+        win_prob 60% → 78
+        win_prob 70% → 86
+        win_prob 80% → 92
+        win_prob 90% → 97
+    """
     weighted = {k: round(v * 100, 1) for k, v in factors.items()}
-    avg = sum(factors.values()) / max(len(factors), 1)
-    peak = max(factors.values()) if factors else 0
-    score = 50 + avg * 40 + peak * 10
+    avg = sum(factors.values()) / max(len(factors), 1)   # 0..1
+    peak = max(factors.values()) if factors else 0       # 0..1
+
+    if win_prob is None:
+        # Legacy fallback — never used by the live pipeline now that all
+        # _build_pick callers pass win_prob, but keeps the helper safe.
+        score = 50 + avg * 40 + peak * 10
+    else:
+        # Convert 0..100 win prob → 0..1 anchor; weight factors lightly.
+        wp = max(0.0, min(1.0, (win_prob or 0) / 100.0))
+        # Base anchor: 30% → 50, 50% → 70, 70% → 86, 90% → 97.
+        # Piece-wise linear keeps shape intuitive for moneyline AND long-shot props.
+        if wp < 0.30:
+            base = 40 + wp * (50 / 0.30)            # 0% → 40, 30% → 50
+        elif wp < 0.50:
+            base = 50 + (wp - 0.30) * (20 / 0.20)   # 30% → 50, 50% → 70
+        elif wp < 0.70:
+            base = 70 + (wp - 0.50) * (16 / 0.20)   # 50% → 70, 70% → 86
+        elif wp < 0.90:
+            base = 86 + (wp - 0.70) * (11 / 0.20)   # 70% → 86, 90% → 97
+        else:
+            base = 97 + (wp - 0.90) * (2 / 0.10)    # 90% → 97, 100% → 99
+        # Factor contribution: ±6 max — synthetic factors can fine-tune but
+        # never override the hit-probability anchor.
+        factor_adj = (avg - 0.5) * 10 + (peak - 0.5) * 2   # roughly -6..+6
+        score = base + factor_adj
     return max(55.0, min(99.0, round(score, 1))), weighted
 
 
@@ -441,7 +478,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             side, side_ml, mp = away, away_ml, 1 - home_model
 
         factors = _factors_random(rng, f"{sport}_ml") or _factors_random(rng, "Tennis_ml")
-        lock, breakdown = compute_lock_score(factors)
+        lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
         picks.append(_build_pick(
             sport=sport, league=league, event=f"{away} @ {home}",
             event_time=commence, market=f"{side} Moneyline", pick_side=side,
@@ -462,7 +499,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             dc_book_odds = _win_prob_to_american(dc_implied)
             dc_model = max(0.55, min(0.95, dc_implied + (rng.random() - 0.3) * 0.1))
             factors2 = _factors_random(rng, "Soccer_ml")
-            lock2, breakdown2 = compute_lock_score(factors2)
+            lock2, breakdown2 = compute_lock_score(factors2, win_prob=dc_model * 100)
             picks.append(_build_pick(
                 sport=sport, league=league, event=f"{away} @ {home}",
                 event_time=commence,
@@ -487,7 +524,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 implied = _implied_prob(o_price)
                 mp = max(0.35, min(0.78, implied + 0.05 + rng.random() * 0.08))
                 factors = _factors_random(rng, f"{sport}_total") or _factors_random(rng, f"{sport}_ml")
-                lock, breakdown = compute_lock_score(factors)
+                lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
                 picks.append(_build_pick(
                     sport=sport, league=league, event=f"{away} @ {home}",
                     event_time=commence,
@@ -507,7 +544,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 if implied_u >= 0.38:
                     mp_u = max(0.35, min(0.78, implied_u + 0.04 + rng.random() * 0.07))
                     factors_u = _factors_random(rng, f"{sport}_total") or _factors_random(rng, f"{sport}_ml")
-                    lock_u, breakdown_u = compute_lock_score(factors_u)
+                    lock_u, breakdown_u = compute_lock_score(factors_u, win_prob=mp_u * 100)
                     under_pick = _build_pick(
                         sport=sport, league=league, event=f"{away} @ {home}",
                         event_time=commence,
@@ -535,7 +572,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             implied = _implied_prob(price)
             mp = max(0.4, min(0.78, implied + 0.04 + rng.random() * 0.08))
             factors = _factors_random(rng, f"{sport}_ml")
-            lock, breakdown = compute_lock_score(factors)
+            lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
             sign = "+" if (line or 0) > 0 else ""
             picks.append(_build_pick(
                 sport=sport, league=league, event=f"{away} @ {home}",
@@ -946,7 +983,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             "Home/Away Splits": rng.uniform(0.6, 0.9),
             "Pace / Game Script": rng.uniform(0.6, 0.9),
         }
-        lock, breakdown = compute_lock_score(factors)
+        lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
         label_point = None if mk in ("player_goal_scorer_anytime", "mma_method_of_victory") else point
         if mk == "player_goal_scorer_anytime":
             market_label = f"{player} Anytime Goal Scorer"

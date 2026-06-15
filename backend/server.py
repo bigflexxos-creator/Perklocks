@@ -196,7 +196,23 @@ async def _refresh_picks(date_str: str) -> int:
     except Exception as e:
         logger.warning("SportDB enrichment skipped: %s", e)
 
+    # Deduplicate picks within this batch by `id` — UUID5 hashes can collide
+    # if two markets produce identical external_ids (saw this with Anytime
+    # Goal Scorer picks generated twice in the same refresh). Keep the first.
+    seen_ids: set = set()
+    dedup_picks = []
+    for p in picks:
+        pid = p.get("id")
+        if pid in seen_ids:
+            continue
+        seen_ids.add(pid)
+        dedup_picks.append(p)
+    picks = dedup_picks
+
+    # Delete previous entries for this date AND any leftover picks with the
+    # same UUID5 from a prior day, then insert fresh.
     await db.picks.delete_many({"pick_date": date_str})
+    await db.picks.delete_many({"id": {"$in": list(seen_ids)}})
     await db.picks.insert_many(picks)
     logger.info("Stored %d picks for %s", len(picks), date_str)
     return len(picks)
