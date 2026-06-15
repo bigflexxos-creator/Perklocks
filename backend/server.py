@@ -176,6 +176,26 @@ async def _refresh_picks(date_str: str) -> int:
     for p in picks:
         ext = str(p.get("external_id") or "")
         p["id"] = str(uuid.uuid5(namespace, ext)) if ext else str(uuid.uuid4())
+
+    # ── SportDB enrichment: pull live team-form into Soccer picks. Cached
+    # league standings (24h TTL) keep the daily request count to ~10. The
+    # enrichment is best-effort — if SportDB is down or budget hit we still
+    # save the un-enriched pick and move on.
+    try:
+        from sportdb_client import refresh_top_leagues, enrich_pick
+        await refresh_top_leagues(db)
+        enriched = 0
+        for p in picks:
+            if p.get("sport") == "Soccer":
+                before = p.get("win_probability")
+                await enrich_pick(db, p)
+                if p.get("enriched_by") == "sportdb" and p.get("win_probability") != before:
+                    enriched += 1
+        if enriched:
+            logger.info("SportDB enriched %d Soccer picks", enriched)
+    except Exception as e:
+        logger.warning("SportDB enrichment skipped: %s", e)
+
     await db.picks.delete_many({"pick_date": date_str})
     await db.picks.insert_many(picks)
     logger.info("Stored %d picks for %s", len(picks), date_str)
