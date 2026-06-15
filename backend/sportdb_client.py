@@ -384,41 +384,137 @@ async def enrich_pick(db, pick: dict) -> dict:
     implied probability delta, and key_insights in-place; returns the pick."""
     if pick.get("sport") != "Soccer":
         return pick
-    event = pick.get("event") or ""
-    if "@" not in event:
-        return pick
-    away_team, home_team = [x.strip() for x in event.split("@", 1)]
-    home = await lookup_team_form(db, home_team)
-    away = await lookup_team_form(db, away_team)
-    if not home and not away:
-        return pick
 
-    # 1) Insights
+    event = pick.get("event") or ""
+    home: Optional[dict] = None
+    away: Optional[dict] = None
+    home_team = ""
+    away_team = ""
+    if "@" in event:
+        away_team, home_team = [x.strip() for x in event.split("@", 1)]
+        home = await lookup_team_form(db, home_team)
+        away = await lookup_team_form(db, away_team)
+
     insights = pick.get("key_insights") or []
-    insights.extend(build_form_insights(home, away))
+    market_l = (pick.get("market") or "").lower()
+    is_goalscorer = "goal scorer" in market_l or "to score or assist" in market_l
+    have_form = bool(home or away)
+
+    # Form-based insights (only if we have cached standings — i.e. club games).
+    if have_form:
+        insights.extend(build_form_insights(home, away))
+
+    # Goal-scorer deep-dive — works even WITHOUT SportDB form by leaning on
+    # the market price + model factors. So national-team World Cup props still
+    # get a "why he should score" breakdown.
+    if is_goalscorer:
+        gs_insights = _goalscorer_deep_dive(pick, home, away, home_team, away_team)
+        if gs_insights:
+            insights.extend(gs_insights)
+
     pick["key_insights"] = insights
 
-    # 2) Probability delta (capped). Apply to win_probability AND recompute
-    # edge / implied so the rest of the app stays internally consistent.
-    delta = form_win_prob_delta(pick, home, away)
-    if abs(delta) > 0.005:
-        old_wp = pick.get("win_probability") or 0
-        new_wp = max(1.0, min(99.0, old_wp + delta * 100))
-        pick["win_probability"] = round(new_wp, 1)
-        # Recompute edge using existing book_odds.
-        book_odds = pick.get("book_odds") or 0
-        if book_odds:
-            book_implied = _implied_prob_pct(book_odds)
-            pick["implied_probability"] = round(book_implied, 1)
-            pick["edge_percent"] = round((new_wp - book_implied), 2)
-        # Mark as SportDB-enriched so UI / debugging can tell.
-        factors = pick.get("factors") or {}
-        # Inject a synthetic factor that nudges lock_score the same direction.
-        factors["Live Form (SportDB)"] = round(50 + delta * 500, 1)  # 50 = neutral
-        pick["factors"] = factors
+    # Probability delta only meaningful when team form is available.
+    if have_form:
+        delta = form_win_prob_delta(pick, home, away)
+        if abs(delta) > 0.005:
+            old_wp = pick.get("win_probability") or 0
+            new_wp = max(1.0, min(99.0, old_wp + delta * 100))
+            pick["win_probability"] = round(new_wp, 1)
+            book_odds = pick.get("book_odds") or 0
+            if book_odds:
+                book_implied = _implied_prob_pct(book_odds)
+                pick["implied_probability"] = round(book_implied, 1)
+                pick["edge_percent"] = round((new_wp - book_implied), 2)
+            factors = pick.get("factors") or {}
+            factors["Live Form (SportDB)"] = round(50 + delta * 500, 1)
+            pick["factors"] = factors
 
-    pick["enriched_by"] = "sportdb"
+    # Mark as enriched if we contributed anything (form OR goalscorer deep dive).
+    if have_form or is_goalscorer:
+        pick["enriched_by"] = "sportdb"
     return pick
+
+
+def _goalscorer_deep_dive(pick: dict, home: Optional[dict], away: Optional[dict],
+                           home_team: str, away_team: str) -> list[str]:
+    """Generate sport-aware reasoning for an Anytime Goal Scorer pick.
+
+    We can't fetch every player's last-N matches without burning the trial
+    budget, so we lean on data we already have cached: opposing defence,
+    home/away offence, and the player's market price (which IS the market's
+    estimate of his scoring rate).
+
+    Returns 3-5 plain-language bullets the UI renders in `key_insights`.
+    """
+    out: list[str] = []
+    player = (pick.get("selection") or pick.get("market") or "").strip()
+    # Strip trailing "Anytime Goal Scorer" wording when selection is the full market.
+    player_name = player.replace("Anytime Goal Scorer", "").replace("First Goal Scorer", "").strip()
+    if not player_name:
+        return out
+
+    # Identify which side the player is on by checking the model's stored
+    # `home_or_away` hint if available; otherwise infer from defensive form.
+    player_side = pick.get("player_side")  # "home" | "away" if set upstream
+    player_team = pick.get("player_team")
+    if not player_team:
+        # Best-effort guess: use the team with the stronger attack as a hint
+        # (forwards on the stronger attack are more likely to be the bookmaker's
+        # named goal scorer). UI tone is "we think" not "we know".
+        player_team = (home["team_name"] if (home and away and
+                       home["goals_for"] >= away["goals_for"]) else
+                       (away["team_name"] if away else home_team))
+        player_side = "home" if player_team == (home or {}).get("team_name") else "away"
+
+    own = home if player_side == "home" else away
+    opp = away if player_side == "home" else home
+
+    # 1) Implied scoring rate from the price.
+    book_odds = pick.get("book_odds")
+    if book_odds is not None:
+        implied = _implied_prob_pct(book_odds)
+        out.append(
+            f"Market prices {player_name} to score at {implied:.0f}% — "
+            f"sportsbooks see him as a {'primary' if implied >= 55 else 'secondary' if implied >= 40 else 'depth'} threat."
+        )
+
+    # 2) Own team's attacking output.
+    if own:
+        gpm = own["goals_for"] / max(own["matches"], 1)
+        out.append(
+            f"{own['team_name']} are averaging {gpm:.2f} goals/match this season "
+            f"({own['goals_for']} in {own['matches']}). Players in this attack convert {form_label(own['form_score']).lower()} form into goals."
+        )
+
+    # 3) Opponent's defensive frailty.
+    if opp:
+        cgpm = opp["goals_against"] / max(opp["matches"], 1)
+        out.append(
+            f"{opp['team_name']} concede {cgpm:.2f} goals/match — "
+            f"{'bottom-tier defence (chance for a clean strike)' if cgpm >= 1.5 else 'mid-tier defence (occasional gaps)' if cgpm >= 1.0 else 'tight defence (toughest matchup)'}."
+        )
+
+    # 4) Form interaction — hot striker vs leaky defence is the dream.
+    if own and opp:
+        offence = own["goals_for"] / max(own["matches"], 1)
+        defence_weakness = opp["goals_against"] / max(opp["matches"], 1)
+        score = offence + defence_weakness
+        if score >= 3.5:
+            out.append(f"🔥 Style matchup favours scorers: combined offence + defensive frailty rates {score:.2f} goals/g.")
+        elif score >= 2.5:
+            out.append(f"Neutral matchup: combined goal-environment is {score:.2f}/match.")
+        else:
+            out.append(f"⚠️ Low-scoring matchup expected: combined goal-environment is {score:.2f}/match — fade if you need a sure thing.")
+
+    # 5) Win-or-Draw / Assist note: if the player's team also has a strong
+    # Win-or-Draw price, the goalscorer pick is doubly supported. We can't
+    # cross-reference picks without an extra query, so we just nudge the user.
+    if own and own["form_score"] >= 0.4:
+        out.append(f"Bonus angle: {own['team_name']} are also trending up — a goal or assist contribution is the upside scenario.")
+
+    return out
+
 
 
 def _implied_prob_pct(american: int) -> float:
