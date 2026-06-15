@@ -748,11 +748,13 @@ PLAYER_PROP_MARKETS = {
     # Soccer: anytime goal scorer is the marquee prop. First goal scorer is
     # too coin-flippy to be a "lock". Assists are sparse.
     "Soccer": ["player_goal_scorer_anytime"],
-    # UFC: Method of Victory is the marquee prop — surfaces "wins by KO/TKO",
-    # "wins by Submission", "wins by Decision" outcomes per fighter. The
-    # `mma_method_of_victory` market returns one outcome per (fighter, method)
-    # tuple so we get 6 picks per fight to evaluate.
-    "UFC": ["mma_method_of_victory"],
+    # UFC: The Odds API does NOT expose method-of-victory, round-betting, or
+    # any MMA prop markets — only `h2h` (moneyline) and `totals` (rounds)
+    # which we already get from the bulk /odds endpoint. Confirmed by
+    # testing every market key variant (returns INVALID_MARKET). To surface
+    # "wins by KO/Sub/Dec" we'd need Sportradar, OpticOdds, or a similar
+    # premium feed.
+    "UFC": [],
 }
 # Markets that are "alt" lower-threshold variants. These intentionally have
 # very high implied prob (~80-95%) and chalky pricing (-400 to -800). We use
