@@ -195,6 +195,35 @@ export default function PickDetail() {
               ))}
             </View>
 
+            <Text style={styles.sectionLabel}>WHY THIS PICK</Text>
+            <View style={styles.insightsCard}>
+              {(pick.top_reasons && pick.top_reasons.length > 0
+                ? pick.top_reasons
+                : pick.key_insights.slice(0, 3)
+              ).map((reason, idx) => (
+                <View key={`reason-${idx}`} style={styles.reasonRow}>
+                  <View style={[styles.reasonBadge, { backgroundColor: gradeColor + "22", borderColor: gradeColor }]}>
+                    <Text style={[styles.reasonBadgeTxt, { color: gradeColor }]}>{idx + 1}</Text>
+                  </View>
+                  <Text style={styles.reasonText}>{reason}</Text>
+                </View>
+              ))}
+            </View>
+
+            {(pick.confidence_score != null || pick.edge_score != null || pick.risk_score != null) && (
+              <View style={styles.scoresRow}>
+                {pick.confidence_score != null && (
+                  <ScoreChip label="Confidence" value={pick.confidence_score} color={COLORS.neonGreen} />
+                )}
+                {pick.edge_score != null && (
+                  <ScoreChip label="Edge" value={pick.edge_score} color={COLORS.voltBlue} />
+                )}
+                {pick.risk_score != null && (
+                  <ScoreChip label="Risk" value={pick.risk_score} color={COLORS.electricBlaze} inverse />
+                )}
+              </View>
+            )}
+
             <Text style={styles.sectionLabel}>KEY INSIGHTS</Text>
             <View style={styles.insightsCard}>
               {pick.key_insights.map((i, idx) => (
@@ -245,6 +274,22 @@ function BentoCell({ label, value, color = COLORS.textPrimary, muted }: {
     <View style={[styles.bentoCell, muted && { backgroundColor: "transparent" }]}>
       <Text style={styles.bentoLabel}>{label}</Text>
       <Text style={[styles.bentoValue, { color }]}>{value}</Text>
+    </View>
+  );
+}
+
+function ScoreChip({ label, value, color, inverse }: {
+  label: string; value: number; color: string; inverse?: boolean;
+}) {
+  // For Risk, the user-facing "good" direction is LOW, so we tint by inverted value.
+  const shown = inverse ? 100 - value : value;
+  const tint = shown >= 70 ? color
+             : shown >= 40 ? COLORS.voltBlue
+             : COLORS.textMuted;
+  return (
+    <View style={[styles.scoreChip, { borderColor: tint + "55" }]}>
+      <Text style={styles.scoreChipLabel}>{label.toUpperCase()}</Text>
+      <Text style={[styles.scoreChipValue, { color: tint }]}>{Math.round(value)}</Text>
     </View>
   );
 }
@@ -320,6 +365,25 @@ const styles = StyleSheet.create({
   bullet: { flexDirection: "row", alignItems: "flex-start", marginVertical: 6 },
   bulletDot: { width: 6, height: 6, borderRadius: 3, marginTop: 7, marginRight: 10 },
   bulletText: { flex: 1, color: COLORS.textPrimary, fontSize: 13, lineHeight: 20 },
+
+  reasonRow: { flexDirection: "row", alignItems: "flex-start", marginVertical: 8 },
+  reasonBadge: {
+    width: 24, height: 24, borderRadius: 12, marginRight: 12,
+    alignItems: "center", justifyContent: "center", borderWidth: 1.5,
+  },
+  reasonBadgeTxt: { fontSize: 12, fontWeight: "900" },
+  reasonText: { flex: 1, color: COLORS.textPrimary, fontSize: 14, lineHeight: 20, fontWeight: "500" },
+
+  scoresRow: {
+    flexDirection: "row", gap: 8, marginTop: 12, marginBottom: 8,
+  },
+  scoreChip: {
+    flex: 1, paddingVertical: 10, paddingHorizontal: 6,
+    backgroundColor: COLORS.surface, borderRadius: 10, borderWidth: 1,
+    borderColor: COLORS.borderDefault, alignItems: "center",
+  },
+  scoreChipLabel: { color: COLORS.textMuted, fontSize: 9, fontWeight: "800", letterSpacing: 1.1 },
+  scoreChipValue: { fontSize: 20, fontWeight: "900", marginTop: 4, letterSpacing: -0.3 },
 
   sportsbookSection: {
     marginTop: 22, padding: 16, borderRadius: 14,
