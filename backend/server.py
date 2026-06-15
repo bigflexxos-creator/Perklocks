@@ -487,7 +487,10 @@ async def picks_bet_killer(user: Annotated[UserPublic, Depends(current_user)],
 @api.get("/picks/under-of-the-day")
 async def under_of_the_day(user: Annotated[UserPublic, Depends(current_user)],
                            line_type: Optional[str] = None,
-                           sort: Optional[str] = None):
+                           sort: Optional[str] = None,
+                           sport: Optional[str] = None,
+                           market: Optional[str] = None,
+                           league: Optional[str] = None):
     """The single safest Under lock across all sports.
 
     `line_type`:
@@ -495,6 +498,7 @@ async def under_of_the_day(user: Annotated[UserPublic, Depends(current_user)],
       - "alt":  alt-prop Unders only
       - "both" / None: unrestricted (default)
     `sort`: "lock" (default), "time", or "edge"
+    `sport` / `market` / `league`: same semantics as /picks/today.
     """
     await _ensure_today_picks()
     now = datetime.now(timezone.utc)
@@ -505,6 +509,14 @@ async def under_of_the_day(user: Annotated[UserPublic, Depends(current_user)],
         q["is_alt"] = {"$ne": True}
     elif lt == "alt":
         q["is_alt"] = True
+    if sport and sport.lower() != "all":
+        q["sport"] = sport
+    if market:
+        regex = _market_regex(market)
+        if regex:
+            q["market"] = {"$regex": regex, "$options": "i"}
+    if league:
+        q["league"] = {"$regex": str(league).replace("\\", ""), "$options": "i"}
     s = (sort or "lock").lower()
     if s == "time":
         cursor = db.picks.find(q, {"_id": 0}).sort("event_time", 1).limit(50)
@@ -539,17 +551,22 @@ async def under_of_the_day(user: Annotated[UserPublic, Depends(current_user)],
 
 @api.get("/picks/rollover")
 async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
-                        line_type: Optional[str] = None):
+                        line_type: Optional[str] = None,
+                        sport: Optional[str] = None,
+                        market: Optional[str] = None,
+                        league: Optional[str] = None):
     """Top 3 safest bets of the day — the user picks which one to roll.
 
     Rules:
       - Today's slate only (kickoff within 24h)
       - Lock score >= 90
-      - NO Soccer (small leagues, high variance, too volatile)
+      - NO Soccer by default (small leagues, high variance) — but if the user
+        explicitly picks `sport=Soccer` we honour their choice.
       - Prefers player props over team moneylines (lower variance)
       - Ranks by win_probability first, then lock_score — "most likely to hit"
       - Diversifies: at most one pick per game so the trio isn't 3 of the same matchup
       - `line_type`: "main" / "alt" / "both" (default) — same semantics as /picks/today.
+      - `sport` / `market` / `league`: optional narrowing filters.
     """
     await _ensure_today_picks()
     q: dict = {"pick_date": _today_str(), "lock_score": {"$gte": 90}}
@@ -558,12 +575,20 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
         q["is_alt"] = {"$ne": True}
     elif lt == "alt":
         q["is_alt"] = True
+    if sport and sport.lower() != "all":
+        q["sport"] = sport
+    if market:
+        regex = _market_regex(market)
+        if regex:
+            q["market"] = {"$regex": regex, "$options": "i"}
+    if league:
+        q["league"] = {"$regex": str(league).replace("\\", ""), "$options": "i"}
     cursor = db.picks.find(q, {"_id": 0})
     picks = await cursor.to_list(length=500)
-    # Exclude Soccer FIRST — user feedback: small-league soccer rollovers are
-    # too volatile. Doing this before the 24h window prevents soccer picks
-    # from dominating the "today" bucket and then getting wiped.
-    picks = [p for p in picks if (p.get("sport") or "").lower() != "soccer"]
+    # Soccer exclusion is the *default* — if the user explicitly filtered to
+    # Soccer, respect that. Otherwise keep variance low by dropping soccer.
+    if not sport or sport.lower() == "all":
+        picks = [p for p in picks if (p.get("sport") or "").lower() != "soccer"]
     # Cap chalk at -400 (was -200). The Rollover tab is for "most likely to
     # hit" — capping too tight excludes legit 75-88% win-prob alt props
     # priced -300 to -400. -400 still rejects absurd -700+ super-chalk.

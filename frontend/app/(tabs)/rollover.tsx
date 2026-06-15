@@ -6,9 +6,11 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { COLORS, GRADE_COLORS } from "@/src/theme";
-import { api, Pick, LineType } from "@/src/lib/api";
+import { COLORS, GRADE_COLORS, SPORTS } from "@/src/theme";
+import { api, Pick, LineType, PickFilters } from "@/src/lib/api";
 import { LineTypeToggle } from "@/src/components/LineTypeToggle";
+import { ChipRow } from "@/src/components/ChipRow";
+import { SportFilterBar } from "@/src/components/SportFilterBar";
 
 function formatGameTime(iso: string): string {
   try {
@@ -36,12 +38,14 @@ export default function RolloverScreen() {
   const [picks, setPicks] = useState<Pick[]>([]);
   const [pool, setPool] = useState<number>(0);
   const [lineType, setLineType] = useState<LineType>("both");
+  const [sport, setSport] = useState<string>("All");
+  const [filters, setFilters] = useState<PickFilters>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async (lt: LineType) => {
+  const load = useCallback(async (lt: LineType, sp: string, f: PickFilters) => {
     try {
-      const res = await api.rollover(lt);
+      const res = await api.rollover(lt, f, sp);
       // Backend now returns an array of up to 3 picks.
       const arr = (res.picks && res.picks.length > 0)
         ? res.picks
@@ -56,9 +60,9 @@ export default function RolloverScreen() {
     }
   }, []);
 
-  useEffect(() => { setLoading(true); load(lineType); }, [lineType, load]);
+  useEffect(() => { setLoading(true); load(lineType, sport, filters); }, [lineType, sport, filters, load]);
 
-  const onRefresh = () => { setRefreshing(true); load(lineType); };
+  const onRefresh = () => { setRefreshing(true); load(lineType, sport, filters); };
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -71,6 +75,16 @@ export default function RolloverScreen() {
       </View>
 
       <LineTypeToggle value={lineType} onChange={setLineType} testIDPrefix="rollover-line" />
+      <ChipRow
+        options={SPORTS}
+        active={sport}
+        onChange={(s) => {
+          setFilters((f) => ({ ...f, market: undefined, league: undefined }));
+          setSport(s);
+        }}
+        testIDPrefix="rollover-sport-chip"
+      />
+      <SportFilterBar sport={sport} filters={filters} onChange={setFilters} />
 
       <ScrollView
         contentContainerStyle={styles.content}
