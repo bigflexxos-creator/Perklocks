@@ -236,4 +236,23 @@ async def settle_due_picks(db) -> dict:
             counts[outcome] += 1
             counts["settled"] += 1
     logger.info("Settlement complete: %s", counts)
+
+    # Player props can't be graded from The Odds API scores; delegate to the
+    # dedicated prop engine which pulls player stats from MLB Stats API + ESPN.
+    try:
+        from prop_settlement import settle_player_props
+        prop_counts = await settle_player_props(db)
+        counts["props_settled"] = prop_counts.get("settled", 0)
+        counts["props_won"] = prop_counts.get("won", 0)
+        counts["props_lost"] = prop_counts.get("lost", 0)
+        counts["props_push"] = prop_counts.get("push", 0)
+        counts["won"] += prop_counts.get("won", 0)
+        counts["lost"] += prop_counts.get("lost", 0)
+        counts["push"] += prop_counts.get("push", 0)
+        counts["settled"] += prop_counts.get("settled", 0)
+        if prop_counts.get("settled"):
+            logger.info("Player-prop settlement: %s", prop_counts)
+    except Exception as e:
+        logger.warning("prop settlement failed: %s", e)
+
     return counts

@@ -663,10 +663,26 @@ async def picks_history(user: Annotated[UserPublic, Depends(current_user)],
     rollover_picks = [p for p in settled if (p.get("lock_score") or 0) >= 90]
     ro_won = sum(1 for p in rollover_picks if p.get("status") == "won")
     ro_lost = sum(1 for p in rollover_picks if p.get("status") == "lost")
+    ro_push = sum(1 for p in rollover_picks if p.get("status") == "push")
     ro_decided = ro_won + ro_lost
     ro_hit_rate = round(ro_won / ro_decided * 100, 1) if ro_decided else 0.0
     if rollover_only:
+        # Stats must reflect the SAME scope as the returned picks list.
+        # Previously we returned rollover_picks but kept the broader stats —
+        # showed e.g. "6 picks · 77 won" which was nonsense.
         settled = rollover_picks
+        return {
+            "picks": settled,
+            "stats": {
+                "total": len(settled),
+                "won": ro_won,
+                "lost": ro_lost,
+                "push": ro_push,
+                "hit_rate": ro_hit_rate,
+                "rollover_hit_rate": ro_hit_rate,
+                "rollover_decided": ro_decided,
+            },
+        }
     return {
         "picks": settled,
         "stats": {

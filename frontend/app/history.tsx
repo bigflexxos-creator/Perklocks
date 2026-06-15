@@ -39,9 +39,11 @@ export default function HistoryScreen() {
   const load = useCallback(async () => {
     try {
       const res = await api.history(30, filter === "Rollover");
-      setPicks(res.picks as HistoryPick[]);
-      setStats(res.stats);
+      setPicks((res?.picks as HistoryPick[]) ?? []);
+      setStats(res?.stats ?? null);
     } catch (e) {
+      setPicks([]);
+      setStats(null);
       console.warn("history load", e);
     } finally {
       setLoading(false);
