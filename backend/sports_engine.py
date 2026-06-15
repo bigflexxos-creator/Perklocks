@@ -198,48 +198,99 @@ def _win_prob_to_american(prob: float) -> int:
     return int(round(100 * (1 - prob) / prob))
 
 
-def compute_lock_score(factors: dict[str, float], win_prob: float | None = None) -> tuple[float, dict]:
-    """Composite confidence score (55-99).
+def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
+                        pick: dict | None = None, bucket_row: dict | None = None) -> tuple[float, dict]:
+    """Bet-Quality Score (0-99). **NOT a direct win-probability.**
 
-    Anchored in `win_prob` so a 36% pick can never out-rank a 70% pick — a
-    real bug we hit when synthetic "form / xG" factors out-weighed actual hit
-    probability. Factors and edge still nudge the score but cannot dominate.
+    Lock Score is a composite of six weighted components per the v3 spec:
 
-    Mapping (approx):
-        win_prob 30% → ~45   →   clamped to floor 55
-        win_prob 50% → 70
-        win_prob 60% → 78
-        win_prob 70% → 86
-        win_prob 80% → 92
-        win_prob 90% → 97
+      0.35 * normalized_model_edge   (edge_percent normalised to 0-100)
+      0.20 * market_alignment         (low factor variance = high agreement)
+      0.15 * historical_roi           (bucket ROI from learning engine)
+      0.10 * data_quality             (lineup / API completeness — base 75)
+      0.10 * volatility_control       (inverse of is_long_shot / chalk risk)
+      0.10 * closing_line_strength    (CLV reward)
+
+    Bands stay the same — 99-95 Elite, 94-90 Premium, 89-85 Strong, 84-80
+    Standard, <80 Pass — so high lock numbers are preserved for genuinely
+    high-quality bets across multiple dimensions, not just confidence.
     """
     weighted = {k: round(v * 100, 1) for k, v in factors.items()}
-    avg = sum(factors.values()) / max(len(factors), 1)   # 0..1
-    peak = max(factors.values()) if factors else 0       # 0..1
 
-    if win_prob is None:
-        # Legacy fallback — never used by the live pipeline now that all
-        # _build_pick callers pass win_prob, but keeps the helper safe.
-        score = 50 + avg * 40 + peak * 10
-    else:
-        # Convert 0..100 win prob → 0..1 anchor; weight factors lightly.
+    # Legacy fallback when caller doesn't pass a pick — used only by old code
+    # paths that haven't migrated. Anchored on win_prob as before so tests
+    # don't break.
+    if pick is None:
         wp = max(0.0, min(1.0, (win_prob or 0) / 100.0))
-        # Base anchor: 30% → 50, 50% → 70, 70% → 86, 90% → 97.
-        # Piece-wise linear keeps shape intuitive for moneyline AND long-shot props.
-        if wp < 0.30:
-            base = 40 + wp * (50 / 0.30)            # 0% → 40, 30% → 50
-        elif wp < 0.50:
-            base = 50 + (wp - 0.30) * (20 / 0.20)   # 30% → 50, 50% → 70
-        elif wp < 0.70:
-            base = 70 + (wp - 0.50) * (16 / 0.20)   # 50% → 70, 70% → 86
-        elif wp < 0.90:
-            base = 86 + (wp - 0.70) * (11 / 0.20)   # 70% → 86, 90% → 97
-        else:
-            base = 97 + (wp - 0.90) * (2 / 0.10)    # 90% → 97, 100% → 99
-        # Factor contribution: ±6 max — synthetic factors can fine-tune but
-        # never override the hit-probability anchor.
-        factor_adj = (avg - 0.5) * 10 + (peak - 0.5) * 2   # roughly -6..+6
-        score = base + factor_adj
+        if wp < 0.30:   base = 40 + wp * (50 / 0.30)
+        elif wp < 0.50: base = 50 + (wp - 0.30) * (20 / 0.20)
+        elif wp < 0.70: base = 70 + (wp - 0.50) * (16 / 0.20)
+        elif wp < 0.90: base = 86 + (wp - 0.70) * (11 / 0.20)
+        else:           base = 97 + (wp - 0.90) * (2 / 0.10)
+        avg = sum(factors.values()) / max(len(factors), 1)
+        peak = max(factors.values()) if factors else 0
+        score = base + (avg - 0.5) * 10 + (peak - 0.5) * 2
+        return max(55.0, min(99.0, round(score, 1))), weighted
+
+    # ── v3 six-component composite ────────────────────────────────────────
+    # 1) Normalized model edge (35%)
+    edge_pct = pick.get("edge_percent") or 0
+    edge_comp = max(0.0, min(100.0, 50 + edge_pct * 5))
+
+    # 2) Market alignment — agreement across factors (low stdev = high agreement)
+    vals = list(factors.values()) if factors else []
+    if len(vals) >= 2:
+        mean = sum(vals) / len(vals)
+        stdev = (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5
+        # stdev 0 → 100, stdev 0.20+ → 0
+        market_align = max(0.0, min(100.0, 100 - stdev * 500))
+    else:
+        market_align = 50.0
+
+    # 3) Historical ROI (bucket-level)
+    if bucket_row and bucket_row.get("n", 0) >= 10:
+        roi = bucket_row.get("roi", 0.0)
+        # ROI 20% → 100, 0% → 50, -10% → 0
+        roi_comp = max(0.0, min(100.0, 50 + roi * 2.5))
+    else:
+        roi_comp = 50.0   # neutral until enough sample
+
+    # 4) Data quality — base 75 (placeholder for future injury/lineup feeds)
+    data_quality = 75.0
+
+    # 5) Volatility control (lower volatility = higher score)
+    vol = 80.0
+    if pick.get("is_long_shot"):
+        vol -= 25
+    book = pick.get("book_odds") or 0
+    if book >= 250:    vol -= 10        # lottery prices
+    if book <= -400:   vol -= 10        # heavy chalk
+    vol_comp = max(0.0, min(100.0, vol))
+
+    # 6) Closing line strength (CLV)
+    odds_at = pick.get("odds_at_pick")
+    closing = pick.get("closing_odds")
+    if odds_at and closing and odds_at != closing:
+        try:
+            from analytics import american_to_implied_pct as _imp
+            clv = _imp(closing) - _imp(odds_at)
+            cls_comp = max(0.0, min(100.0, 50 + clv * 5))
+        except Exception:
+            cls_comp = 50.0
+    else:
+        cls_comp = 50.0
+
+    score = (0.35 * edge_comp + 0.20 * market_align + 0.15 * roi_comp
+             + 0.10 * data_quality + 0.10 * vol_comp + 0.10 * cls_comp)
+    # Store the 6 components so the UI / analytics can inspect them later.
+    pick["lock_components"] = {
+        "edge":        round(edge_comp, 1),
+        "alignment":   round(market_align, 1),
+        "roi":         round(roi_comp, 1),
+        "data_quality": round(data_quality, 1),
+        "volatility":  round(vol_comp, 1),
+        "clv":         round(cls_comp, 1),
+    }
     return max(55.0, min(99.0, round(score, 1))), weighted
 
 

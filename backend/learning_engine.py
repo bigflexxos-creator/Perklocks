@@ -111,40 +111,50 @@ async def recompute_learned_weights(db) -> dict[str, Any]:
         })
     rows.sort(key=lambda r: r["roi"], reverse=True)
 
-    # ── 2) Lock-band calibration correction ─────────────────────────────
-    # Only use picks created with the CURRENT lock-score formula (v2). Older
-    # picks were generated with a broken formula that wildly over-promised
-    # confidence (Lock 95 band actually hit 75%), which was anchoring the
-    # calibration to -6pp on every band and stacking onto current picks.
+    # ── 2) Win-Probability calibration (NOT lock-score bands) ───────────
+    # Per spec v3: Lock Score is bet-quality, NOT win-probability. So
+    # calibration must compare the model's Expected Win % to Actual Win %,
+    # binned by WP range — not by lock-score band.
+    wp_bins = [(50, 60), (60, 70), (70, 80), (80, 90), (90, 100)]
+    bin_labels = ["WP 50-60%", "WP 60-70%", "WP 70-80%", "WP 80-90%", "WP 90-100%"]
     bands: dict[str, dict] = {}
+    for label in bin_labels:
+        bands[label] = {"band": label, "n": 0, "wins": 0, "losses": 0, "wp_sum": 0.0}
     for p in picks:
         if p["status"] == "push":
             continue
-        # Skip legacy picks for calibration math.
         if (p.get("formula_v") or 1) < 2:
             continue
-        bk = p.get("confidence_bucket") or confidence_bucket(p.get("lock_score"))
-        bd = bands.setdefault(bk, {"band": bk, "n": 0, "wins": 0,
-                                   "losses": 0, "lock_sum": 0.0})
+        wp = p.get("win_probability") or 0
+        idx = None
+        for i, (lo, hi) in enumerate(wp_bins):
+            if lo <= wp < hi or (i == len(wp_bins) - 1 and wp >= hi - 10):
+                idx = i
+                break
+        if idx is None:
+            continue
+        bk = bin_labels[idx]
+        bd = bands[bk]
         bd["n"] += 1
-        bd["lock_sum"] += p.get("lock_score") or 0.0
+        bd["wp_sum"] += wp
         if p["status"] == "won":
             bd["wins"] += 1
         elif p["status"] == "lost":
             bd["losses"] += 1
 
     calibration: list[dict] = []
-    for bk, bd in bands.items():
+    for label in bin_labels:
+        bd = bands[label]
         decisive = bd["wins"] + bd["losses"]
         actual = (bd["wins"] * 100 / decisive) if decisive else 0.0
-        expected = bd["lock_sum"] / bd["n"] if bd["n"] else 0.0
-        delta_pp = actual - expected   # negative → band overpromised
+        expected = bd["wp_sum"] / bd["n"] if bd["n"] else 0.0
+        delta_pp = actual - expected
         if bd["n"] >= MIN_SAMPLES:
             adj = max(-MAX_CAL_DELTA, min(MAX_CAL_DELTA, delta_pp / 100.0))
         else:
             adj = 0.0
         calibration.append({
-            "band": bk,
+            "band": label,
             "n": bd["n"],
             "actual": round(actual, 1),
             "expected": round(expected, 1),
@@ -152,9 +162,6 @@ async def recompute_learned_weights(db) -> dict[str, Any]:
             "adjustment": round(adj, 4),
             "active": bd["n"] >= MIN_SAMPLES,
         })
-    band_order = {"Elite (95+)": 0, "Premium (90-94)": 1, "Strong (85-89)": 2,
-                  "Standard (80-84)": 3, "Speculative (70-79)": 4, "Pass (<70)": 5}
-    calibration.sort(key=lambda c: band_order.get(c["band"], 99))
 
     payload = {
         "_id": "current",
