@@ -2,7 +2,6 @@ import React from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
 import { useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
-import { LockScoreBadge } from "@/src/components/LockScoreBadge";
 import { Pick } from "@/src/lib/api";
 
 function formatGameTime(iso: string): string {
@@ -39,7 +38,7 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
       ]}
     >
       <View style={styles.header}>
-        <View style={{ flex: 1, paddingRight: 70 }}>
+        <View style={{ flex: 1 }}>
           <View style={styles.tagRow}>
             <View style={[styles.tag, isKiller && styles.tagKiller]}>
               <Text style={[styles.tagText, isKiller && { color: COLORS.electricBlaze }]}>
@@ -47,6 +46,11 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
               </Text>
             </View>
             <Text style={styles.league} numberOfLines={1}>{pick.league}</Text>
+            <View style={[styles.gradePill, { borderColor: gradeColor, backgroundColor: gradeColor + "18" }]}>
+              <Text style={[styles.gradePillText, { color: gradeColor }]} numberOfLines={1}>
+                {pick.grade.toUpperCase()}
+              </Text>
+            </View>
           </View>
           <Text style={styles.event} numberOfLines={1}>{pick.event}</Text>
           {pick.event_time && (
@@ -54,17 +58,36 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
           )}
           <Text style={styles.market} numberOfLines={2}>{pick.market}</Text>
         </View>
-        <LockScoreBadge score={pick.lock_score} grade={pick.grade} />
       </View>
 
-      <View style={styles.metricsRow}>
-        <Metric label="WIN PROB" value={`${pick.win_probability}%`} color={COLORS.textPrimary} />
-        <Metric label="IMPLIED" value={`${pick.implied_probability}%`} color={COLORS.textSecondary} />
-        <Metric
-          label="EDGE"
+      {/* Lock v3 — Stacked badge hero row: Bet Quality / Expected Win / Edge */}
+      <View style={styles.heroBadgeRow}>
+        <HeroBadge
+          icon="🔒"
+          value={`${Math.round(pick.lock_score)}`}
+          label="LOCK"
+          sub="BET QUALITY"
+          color={gradeColor}
+        />
+        <HeroBadge
+          icon="📊"
+          value={`${pick.win_probability}%`}
+          label="WIN"
+          sub="EXPECTED"
+          color={COLORS.textPrimary}
+        />
+        <HeroBadge
+          icon="⚡"
           value={`${pick.edge_percent > 0 ? "+" : ""}${pick.edge_percent}%`}
+          label="EDGE"
+          sub="VALUE"
           color={edgeColor}
         />
+      </View>
+
+      <View style={styles.secondaryRow}>
+        <Metric label="IMPLIED" value={`${pick.implied_probability}%`} color={COLORS.textSecondary} />
+        <View style={styles.secondaryDivider} />
         <Metric
           label="ODDS"
           value={pick.book_odds > 0 ? `+${pick.book_odds}` : `${pick.book_odds}`}
@@ -76,15 +99,28 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
         <View
           style={[
             styles.progressFill,
-            { width: `${Math.min(100, pick.win_probability)}%`, backgroundColor: gradeColor },
+            { width: `${Math.min(100, pick.lock_score)}%`, backgroundColor: gradeColor },
           ]}
         />
       </View>
       <View style={styles.footer}>
-        <Text style={[styles.gradeText, { color: gradeColor }]}>{pick.grade.toUpperCase()}</Text>
-        <Text style={styles.confidence}>Confidence: {pick.confidence}</Text>
+        <Text style={styles.lockNote}>Lock = Bet Quality · Win = Expected Hit Rate</Text>
+        <Text style={styles.confidence}>{pick.confidence}</Text>
       </View>
     </Pressable>
+  );
+}
+
+function HeroBadge({
+  icon, value, label, sub, color,
+}: { icon: string; value: string; label: string; sub: string; color: string }) {
+  return (
+    <View style={[styles.heroBadge, { borderColor: color + "55", backgroundColor: color + "10" }]}>
+      <Text style={styles.heroIcon}>{icon}</Text>
+      <Text style={[styles.heroValue, { color }]} numberOfLines={1}>{value}</Text>
+      <Text style={styles.heroLabel}>{label}</Text>
+      <Text style={styles.heroSub}>{sub}</Text>
+    </View>
   );
 }
 
@@ -128,6 +164,64 @@ const styles = StyleSheet.create({
   metric: { flex: 1 },
   metricLabel: { color: COLORS.textMuted, fontSize: 9, fontWeight: "800", letterSpacing: 1.3 },
   metricValue: { fontSize: 16, fontWeight: "900", marginTop: 3, letterSpacing: -0.3 },
+
+  heroBadgeRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 16,
+    marginBottom: 12,
+  },
+  heroBadge: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  heroIcon: { fontSize: 14, marginBottom: 2 },
+  heroValue: { fontSize: 22, fontWeight: "900", letterSpacing: -0.6, marginTop: 2 },
+  heroLabel: {
+    color: COLORS.textPrimary,
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 1.4,
+    marginTop: 4,
+  },
+  heroSub: {
+    color: COLORS.textMuted,
+    fontSize: 8,
+    fontWeight: "700",
+    letterSpacing: 1.0,
+    marginTop: 1,
+  },
+
+  secondaryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    marginBottom: 10,
+  },
+  secondaryDivider: {
+    width: 1,
+    height: 22,
+    backgroundColor: COLORS.borderDefault,
+  },
+
+  gradePill: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+    borderWidth: 1,
+  },
+  gradePillText: {
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 1.2,
+  },
   progressTrack: {
     height: 4,
     backgroundColor: "rgba(255,255,255,0.06)",
@@ -142,5 +236,12 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   gradeText: { fontSize: 11, fontWeight: "900", letterSpacing: 1.5 },
+  lockNote: {
+    color: COLORS.textMuted,
+    fontSize: 9,
+    fontWeight: "700",
+    letterSpacing: 0.4,
+    flex: 1,
+  },
   confidence: { fontSize: 10, color: COLORS.textMuted, fontWeight: "700", letterSpacing: 0.8 },
 });

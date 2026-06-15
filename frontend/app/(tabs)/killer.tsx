@@ -128,9 +128,15 @@ export default function UnderOfTheDayScreen() {
               )}
               <Text style={styles.market}>{pick.market}</Text>
               <View style={styles.metricsRow}>
-                <Metric label="LOCK" value={String(Math.round(pick.lock_score))} color={GRADE_COLORS[pick.grade]} />
+                <Metric label="🔒 LOCK" value={String(Math.round(pick.lock_score))} color={GRADE_COLORS[pick.grade]} />
                 <View style={styles.metricDivider} />
-                <Metric label="WIN %" value={`${Math.round(pick.win_probability)}%`} color={COLORS.neonGreen} />
+                <Metric label="📊 WIN" value={`${Math.round(pick.win_probability)}%`} color={COLORS.neonGreen} />
+                <View style={styles.metricDivider} />
+                <Metric
+                  label="⚡ EDGE"
+                  value={`${pick.edge_percent > 0 ? "+" : ""}${pick.edge_percent}%`}
+                  color={pick.edge_percent > 0 ? COLORS.neonGreen : COLORS.electricBlaze}
+                />
                 <View style={styles.metricDivider} />
                 <Metric label="ODDS" value={pick.book_odds > 0 ? `+${pick.book_odds}` : `${pick.book_odds}`} />
               </View>
