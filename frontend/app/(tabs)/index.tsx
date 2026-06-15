@@ -12,6 +12,7 @@ import { ChipRow } from "@/src/components/ChipRow";
 import { LineTypeToggle } from "@/src/components/LineTypeToggle";
 import { SortSelector } from "@/src/components/SortSelector";
 import { FilterButton, FilterSheet } from "@/src/components/FilterSheet";
+import { SportFilterBar } from "@/src/components/SportFilterBar";
 
 function timeAgo(d: Date | null): string {
   if (!d) return "—";
@@ -128,7 +129,17 @@ export default function LocksScreen() {
         </View>
       )}
 
-      <ChipRow options={SPORTS} active={sport} onChange={setSport} testIDPrefix="sport-chip" />
+      <ChipRow
+        options={SPORTS}
+        active={sport}
+        onChange={(s) => {
+          // Reset sport-specific filters when switching sports.
+          setFilters((f) => ({ ...f, market: undefined, league: undefined }));
+          setSport(s);
+        }}
+        testIDPrefix="sport-chip"
+      />
+      <SportFilterBar sport={sport} filters={filters} onChange={setFilters} />
       <View style={styles.controlsRow}>
         <View style={{ flex: 1 }}>
           <LineTypeToggle value={lineType} onChange={setLineType} testIDPrefix="locks-line" />

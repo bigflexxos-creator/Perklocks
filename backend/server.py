@@ -269,6 +269,99 @@ async def _ensure_today_picks() -> None:
         await _refresh_picks(today)
 
 
+# ── Market filter taxonomy ────────────────────────────────────────────────
+# Tokens are the SAME across sports where it makes sense (moneyline, totals,
+# spread). Sport-specific tokens (btts, goalscorer, player_points, etc.) only
+# match their own sport. The regex is matched (case-insensitive) against the
+# pick's stored `market` string.
+_MARKET_REGEX = {
+    "moneyline":      r"moneyline|^win or draw|win$",
+    "1x2":            r"moneyline|win or draw|draw",
+    "double_chance":  r"win or draw|double chance",
+    "btts":           r"both teams to score|btts",
+    "goalscorer":     r"goal scorer|anytime|first goal",
+    "spread":         r"spread|handicap",
+    "run_line":       r"run line|spread",
+    "totals":         r"total goals|game total|total points|total runs|total bases|over/under|\bover\b|\bunder\b",
+    "player_points":  r"\bpoints\b",
+    "player_rebounds": r"rebounds",
+    "player_assists": r"assists",
+    "player_props":   r"hits|total bases|points|rebounds|assists|passing yards|rushing yards|receiving yards|touchdowns|goal scorer",
+    "batter_hits":    r"hits",
+    "batter_total_bases": r"total bases",
+    "passing_yards":  r"passing yards",
+    "rushing_yards":  r"rushing yards",
+    "receiving_yards": r"receiving yards",
+    "match_winner":   r"moneyline|match winner|to win",
+    "sets":           r"\bsets?\b|set winner|set total",
+    "games_total":    r"games over|games under|total games",
+}
+
+
+def _market_regex(token: str) -> str | None:
+    return _MARKET_REGEX.get(token.lower().strip())
+
+
+# Sport → available market filter tokens. Drives the UI MarketSelector pills.
+SPORT_MARKETS = {
+    "Soccer": [
+        {"token": "1x2",         "label": "1X2"},
+        {"token": "totals",      "label": "Over/Under"},
+        {"token": "btts",        "label": "BTTS"},
+        {"token": "goalscorer",  "label": "Goalscorer"},
+    ],
+    "NBA": [
+        {"token": "moneyline",   "label": "Moneyline"},
+        {"token": "spread",      "label": "Spread"},
+        {"token": "totals",      "label": "Totals"},
+        {"token": "player_points",   "label": "Points"},
+        {"token": "player_rebounds", "label": "Rebounds"},
+        {"token": "player_assists",  "label": "Assists"},
+    ],
+    "NFL": [
+        {"token": "moneyline",   "label": "Moneyline"},
+        {"token": "spread",      "label": "Spread"},
+        {"token": "totals",      "label": "Totals"},
+        {"token": "passing_yards",   "label": "Passing Yds"},
+        {"token": "rushing_yards",   "label": "Rushing Yds"},
+        {"token": "receiving_yards", "label": "Receiving Yds"},
+    ],
+    "MLB": [
+        {"token": "moneyline",   "label": "Moneyline"},
+        {"token": "run_line",    "label": "Run Line"},
+        {"token": "totals",      "label": "Totals"},
+        {"token": "batter_hits",        "label": "Hits"},
+        {"token": "batter_total_bases", "label": "Total Bases"},
+    ],
+    "Tennis": [
+        {"token": "match_winner", "label": "Match Winner"},
+        {"token": "sets",         "label": "Sets"},
+        {"token": "games_total",  "label": "Games O/U"},
+    ],
+}
+
+
+@api.get("/picks/markets/{sport}")
+async def markets_for_sport(
+    user: Annotated[UserPublic, Depends(current_user)],
+    sport: str,
+):
+    """Return the dynamic market list + active leagues for a given sport.
+    Used by the Locks tab to populate the MarketSelector + League pills."""
+    markets = SPORT_MARKETS.get(sport, [])
+    # Active leagues: distinct league names from today's picks for this sport.
+    leagues_cursor = db.picks.aggregate([
+        {"$match": {"sport": sport, "pick_date": _today_str()}},
+        {"$group": {"_id": "$league", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+    ])
+    leagues = []
+    async for row in leagues_cursor:
+        if row.get("_id"):
+            leagues.append({"name": row["_id"], "count": row["count"]})
+    return {"sport": sport, "markets": markets, "leagues": leagues}
+
+
 @api.get("/picks/today")
 async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                       sport: Optional[str] = None,
@@ -278,12 +371,16 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                       sort: Optional[str] = None,
                       min_lock: Optional[float] = None,
                       min_implied: Optional[float] = None,
-                      max_implied: Optional[float] = None):
+                      max_implied: Optional[float] = None,
+                      market: Optional[str] = None,
+                      league: Optional[str] = None):
     """Top picks from today's 72-hour window (lock score >= 85).
     Filters:
       - `min_lock`: only show picks with lock_score >= this value.
       - `min_implied` / `max_implied`: only show picks whose implied
         probability falls in [min, max] (units: %, e.g. 60 → 90).
+      - `market`: filter by market family token (see /picks/markets/{sport}).
+      - `league`: substring-match against pick.league.
     Sort options:
       - "lock" / None (default): highest lock_score first
       - "time": soonest kickoff first
@@ -310,6 +407,17 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         if max_implied is not None:
             imp_q["$lte"] = float(max_implied)
         q["implied_probability"] = imp_q
+    # Market family filter — uses the same labelling we use in analytics so
+    # the same token works on every sport (e.g. "moneyline", "spread",
+    # "game_total", "btts", "1x2", "goalscorer", "player_points", etc.).
+    if market:
+        regex = _market_regex(market)
+        if regex:
+            q["market"] = {"$regex": regex, "$options": "i"}
+    if league:
+        # League names come from The Odds API e.g. "Premier League", "MLS",
+        # "MLB". Loose substring match keeps the UI simple.
+        q["league"] = {"$regex": str(league).replace("\\", ""), "$options": "i"}
     cursor = db.picks.find(q, {"_id": 0}).sort("lock_score", -1).limit(200)
     picks = await cursor.to_list(length=200)
     if day_offset is not None:

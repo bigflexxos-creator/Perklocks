@@ -54,7 +54,14 @@ export type PickFilters = {
   minLock?: number;
   minImplied?: number;
   maxImplied?: number;
+  /** Market filter token — matched against /picks/markets/{sport} tokens. */
+  market?: string;
+  /** League substring match. */
+  league?: string;
 };
+
+export type SportMarket = { token: string; label: string };
+export type SportLeague = { name: string; count: number };
 
 const TOKEN_KEY = "lockscore_token";
 
@@ -120,9 +127,15 @@ export const api = {
     if (filters?.minLock != null && filters.minLock > 85) qs.set("min_lock", String(filters.minLock));
     if (filters?.minImplied != null) qs.set("min_implied", String(filters.minImplied));
     if (filters?.maxImplied != null) qs.set("max_implied", String(filters.maxImplied));
+    if (filters?.market) qs.set("market", filters.market);
+    if (filters?.league) qs.set("league", filters.league);
     const q = qs.toString();
     return request<{ picks: Pick[] }>(`/picks/today${q ? `?${q}` : ""}`);
   },
+  sportMarkets: (sport: string) =>
+    request<{ sport: string; markets: SportMarket[]; leagues: SportLeague[] }>(
+      `/picks/markets/${encodeURIComponent(sport)}`,
+    ),
   picksAll: (sport?: string) =>
     request<{ picks: Pick[] }>(`/picks/all${sport && sport !== "All" ? `?sport=${sport}` : ""}`),
   betKiller: (sport?: string) =>

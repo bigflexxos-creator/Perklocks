@@ -764,7 +764,9 @@ async def fetch_kbo_picks(date_str: str) -> list[dict]:
 
 PLAYER_PROP_MARKETS = {
     "MLB": [
-        "batter_hits", "batter_total_bases", "batter_home_runs",
+        # Per user request: only hits + total bases (no home runs, no pitcher
+        # strikeouts) until the Odds API can supply better player-prop data.
+        "batter_hits", "batter_total_bases",
         # Alt lines — lower thresholds with higher implied prob (the "near-locks")
         "batter_hits_alternate", "batter_total_bases_alternate",
     ],
