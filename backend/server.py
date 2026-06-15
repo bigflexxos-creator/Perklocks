@@ -218,6 +218,10 @@ async def _refresh_picks(date_str: str) -> int:
         from deep_dive import deep_dive, NO_BET_THRESHOLD
         no_bet_count = 0
         for p in picks:
+            # Tag every fresh pick with the current formula version so the
+            # learning engine can isolate clean calibration samples from
+            # legacy data.
+            p["formula_v"] = 2
             await deep_dive(db, p)
             if p.get("no_bet"):
                 no_bet_count += 1
