@@ -1005,10 +1005,16 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             is_alt_prop=is_alt,
             is_long_shot=(mk in ("player_goal_scorer_anytime", "mma_method_of_victory")),
         ))
-    # Tag every Under-alt pick so the main Locks feed can exclude them
-    # and the dedicated "Under of the Day" tab can surface them.
+    # Tag every Under pick so the main Locks feed can exclude them and the
+    # dedicated "Under of the Day" tab can surface them. Anything where the
+    # bettor needs the line to go UNDER (Totals, Game Total, alt-prop totals)
+    # qualifies — that's the safest tier of "under-style" wagers.
     for p in picks:
-        if p and "Under" in (p.get("market") or "") and "ALT" in (p.get("market") or ""):
+        if not p:
+            continue
+        market = (p.get("market") or "").lower()
+        selection = (p.get("selection") or "").lower()
+        if "under" in market or "under" in selection:
             p["is_under_lock"] = True
     return [p for p in picks if p is not None]
 

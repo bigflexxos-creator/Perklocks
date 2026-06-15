@@ -166,17 +166,15 @@ export const api = {
       scoped_to_today?: boolean;
     }>(`/picks/under-of-the-day${q ? `?${q}` : ""}`);
   },
-    return request<{ pick: Pick | null; alternates: Pick[]; total_evaluated: number; scoped_to_today?: boolean }>(
-      `/picks/under-of-the-day${q ? `?${q}` : ""}`,
-    );
-  },
-  parlay: (legs: number = 3, mode: "standard" | "high_risk" = "standard", sport?: string, lineType?: LineType, excludeSports?: string[]) => {
+  parlay: (legs: number = 3, mode: "standard" | "high_risk" = "standard", sport?: string, lineType?: LineType, excludeSports?: string[], filters?: PickFilters) => {
     const qs = new URLSearchParams({ legs: String(legs), mode });
     if (sport && sport !== "mix") qs.set("sport", sport);
     if (lineType && lineType !== "both") qs.set("line_type", lineType);
     if ((!sport || sport === "mix") && excludeSports && excludeSports.length > 0) {
       qs.set("exclude_sports", excludeSports.join(","));
     }
+    if (filters?.market) qs.set("market", filters.market);
+    if (filters?.league) qs.set("league", filters.league);
     return request<{ parlay: null | {
       legs: Pick[]; leg_count: number;
       combined_decimal_odds: number; combined_american_odds: string;

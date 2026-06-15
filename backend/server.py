@@ -650,7 +650,9 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
                      mode: str = "standard",
                      sport: str | None = None,
                      line_type: str | None = None,
-                     exclude_sports: str | None = None):
+                     exclude_sports: str | None = None,
+                     market: str | None = None,
+                     league: str | None = None):
     """Auto-build a parlay from today's picks.
 
     Modes:
@@ -658,12 +660,8 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
       - high_risk: Win-probability >= 66% (was lock_score >= 90 — the user
         explicitly asked for win-prob-based selection here). Legs 10/15/20.
 
-    Leg ranking is data-driven: each candidate's model win-probability is
-    multiplied by the HISTORICAL win-rate uplift of its (sport, market-family)
-    bucket. Buckets that have historically over-performed get prioritized
-    (e.g. Soccer Win-or-Draw 75% historical → 1.15x boost), buckets that
-    under-perform get penalized (e.g. MLB main-line ML 48% → 0.85x). This is
-    the "study in background" learning loop the user requested.
+    Optional `market` / `league` narrow the candidate pool further so users
+    can build, e.g., a 4-leg MLB Hits parlay or a 3-leg EPL 1X2 parlay.
     """
     await _ensure_today_picks()
     is_high_risk = (mode or "").lower() == "high_risk"
@@ -683,25 +681,36 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         line_filter = {"is_alt": {"$ne": True}}
     elif lt == "alt":
         line_filter = {"is_alt": True}
+    market_filter: dict = {}
+    if market:
+        regex = _market_regex(market)
+        if regex:
+            market_filter = {"market": {"$regex": regex, "$options": "i"}}
+    league_filter: dict = {}
+    if league:
+        league_filter = {"league": {"$regex": str(league).replace("\\", ""), "$options": "i"}}
     if is_high_risk:
         legs = max(10, min(20, legs))
         # Switched from lock_score >= 90 to win_probability >= 66 per user
         # request. Win-prob is the better signal for "will this hit".
         cursor = db.picks.find(
-            {"pick_date": _today_str(), "win_probability": {"$gte": 66}, **sport_filter, **line_filter},
+            {"pick_date": _today_str(), "win_probability": {"$gte": 66},
+             **sport_filter, **line_filter, **market_filter, **league_filter},
             {"_id": 0},
         ).sort("win_probability", -1).limit(300)
         pool = await cursor.to_list(length=300)
     else:
         legs = max(2, min(8, legs))
         cursor = db.picks.find(
-            {"pick_date": _today_str(), "lock_score": {"$gte": 95}, **sport_filter, **line_filter},
+            {"pick_date": _today_str(), "lock_score": {"$gte": 95},
+             **sport_filter, **line_filter, **market_filter, **league_filter},
             {"_id": 0},
         ).sort("lock_score", -1).limit(50)
         pool = await cursor.to_list(length=50)
         if len(pool) < legs:
             extra_cursor = db.picks.find(
-                {"pick_date": _today_str(), "lock_score": {"$gte": 90, "$lt": 95}, **sport_filter, **line_filter},
+                {"pick_date": _today_str(), "lock_score": {"$gte": 90, "$lt": 95},
+                 **sport_filter, **line_filter, **market_filter, **league_filter},
                 {"_id": 0},
             ).sort("lock_score", -1).limit(50)
             pool.extend(await extra_cursor.to_list(length=50))
