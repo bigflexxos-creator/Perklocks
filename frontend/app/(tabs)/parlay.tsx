@@ -7,8 +7,9 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
-import { api, Pick, LineType } from "@/src/lib/api";
+import { api, Pick, LineType, PickFilters } from "@/src/lib/api";
 import { LineTypeToggle } from "@/src/components/LineTypeToggle";
+import { SportFilterBar } from "@/src/components/SportFilterBar";
 
 export default function ParlayScreen() {
   const router = useRouter();
@@ -18,12 +19,13 @@ export default function ParlayScreen() {
   const [sport, setSport] = useState<string>("mix");
   const [excludedSports, setExcludedSports] = useState<string[]>([]);
   const [lineType, setLineType] = useState<LineType>("both");
+  const [filters, setFilters] = useState<PickFilters>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const load = useCallback(async (n: number, m: "standard" | "high_risk", s: string, lt: LineType, excl: string[]) => {
+  const load = useCallback(async (n: number, m: "standard" | "high_risk", s: string, lt: LineType, excl: string[], f: PickFilters) => {
     try {
-      const res = await api.parlay(n, m, s, lt, excl);
+      const res = await api.parlay(n, m, s, lt, excl, f);
       setData(res);
     } catch (e) {
       console.warn("parlay load", e);
@@ -33,7 +35,7 @@ export default function ParlayScreen() {
     }
   }, []);
 
-  useEffect(() => { setLoading(true); load(legs, mode, sport, lineType, excludedSports); }, [legs, mode, sport, lineType, excludedSports, load]);
+  useEffect(() => { setLoading(true); load(legs, mode, sport, lineType, excludedSports, filters); }, [legs, mode, sport, lineType, excludedSports, filters, load]);
 
   const onModeChange = (m: "standard" | "high_risk") => {
     setMode(m);
@@ -199,9 +201,13 @@ export default function ParlayScreen() {
 
       <LineTypeToggle value={lineType} onChange={setLineType} testIDPrefix="parlay-line" />
 
+      {sport !== "mix" && (
+        <SportFilterBar sport={sport} filters={filters} onChange={setFilters} />
+      )}
+
       <ScrollView
         contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl tintColor={COLORS.textPrimary} refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(legs, mode, sport, lineType, excludedSports); }} />}
+        refreshControl={<RefreshControl tintColor={COLORS.textPrimary} refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(legs, mode, sport, lineType, excludedSports, filters); }} />}
         showsVerticalScrollIndicator={false}
       >
         {loading ? (
