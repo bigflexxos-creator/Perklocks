@@ -70,7 +70,11 @@ export default function PickDetail() {
     return () => { cancelled = true; };
   }, [id]);
 
-  const isKiller = pick && pick.lock_score < 85;
+  // BET KILLER badging was a legacy feature — now that NO_BET filtering hides
+  // truly bad picks at the API level, every pick that REACHES the UI is a
+  // recommended pick. Only mark as Killer mode for explicitly opted-in legacy
+  // browsing (i.e. when reached via the bet-killer route, never from Rollover).
+  const isKiller = false;
   const gradeColor = pick ? GRADE_COLORS[pick.grade] : COLORS.textMuted;
 
   return (

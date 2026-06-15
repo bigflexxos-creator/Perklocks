@@ -622,6 +622,21 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
     if league:
         base_q["league"] = {"$regex": str(league).replace("\\", ""), "$options": "i"}
 
+    # Rollover = "most likely to hit" → require POSITIVE expected value. A
+    # negative-edge pick (model WP < book implied) is a bad bet — must never
+    # appear here regardless of lock_score.
+    base_q["edge_percent"] = {"$gte": 0}
+
+    # Always exclude Soccer goalscorer markets from Rollover — they're
+    # high-variance lottery tickets (often 20-35% implied). Other Soccer
+    # markets (Moneyline / Win-or-Draw / Totals) are now ALLOWED in rollover.
+    existing_market_q = base_q.pop("market", None)
+    goalscorer_block = {"market": {"$not": {"$regex": r"goal scorer|to score or assist", "$options": "i"}}}
+    if existing_market_q:
+        base_q["$and"] = [{"market": existing_market_q}, goalscorer_block]
+    else:
+        base_q["market"] = goalscorer_block["market"]
+
     # Progressive widening — Rollover needs at least 3 options. We try each
     # safety floor in order until we have ≥3 distinct candidate games, but we
     # NEVER widen the user-chosen sport/market/league filters.
@@ -633,9 +648,6 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
         q = {**base_q, "lock_score": {"$gte": f}}
         cursor = db.picks.find(q, {"_id": 0})
         picks = await cursor.to_list(length=500)
-        # Honour the Soccer-exclusion default (unless user explicitly chose Soccer).
-        if not sport_filter_active:
-            picks = [p for p in picks if (p.get("sport") or "").lower() != "soccer"]
         picks = [p for p in picks if (p.get("book_odds") or -9999) >= chalk_cap]
         if len({p.get("event") for p in picks}) >= 3:
             floor_used = f
@@ -645,8 +657,6 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
     if len(picks) < 3:
         q = {**base_q, "lock_score": {"$gte": 70}}
         picks = await db.picks.find(q, {"_id": 0}).to_list(length=500)
-        if not sport_filter_active:
-            picks = [p for p in picks if (p.get("sport") or "").lower() != "soccer"]
         picks = [p for p in picks if (p.get("book_odds") or -9999) >= -700]
     # Restrict Rollover to today's games only (start time within next 24h),
     # with graceful fallback to the broader pool if nothing starts today.
@@ -1005,10 +1015,10 @@ async def pick_ai_explain(pick_id: str,
     cached = pick.get("explanation_ai")
     if cached:
         return {"explanation": cached, "source": "cached"}
-    if pick.get("lock_score", 0) >= 85:
-        text, real = await explain_pick(pick)
-    else:
-        text, real = await bet_killer_warning(pick)
+    # All picks reaching the UI are recommended picks (NO_BET filter removed
+    # the bad ones). Always generate the "why to BET" explanation, never the
+    # legacy bet-killer warning.
+    text, real = await explain_pick(pick)
     if real:
         await db.picks.update_one(
             {"id": pick_id},
