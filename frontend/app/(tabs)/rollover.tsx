@@ -167,9 +167,15 @@ function RolloverCard({ pick, rank, pool, onPress }: { pick: Pick; rank: number;
       <Text style={styles.market}>{pick.market}</Text>
 
       <View style={styles.metricsRow}>
-        <Metric label="LOCK" value={String(Math.round(pick.lock_score))} color={gradeColor} />
+        <Metric label="🔒 LOCK" value={String(Math.round(pick.lock_score))} color={gradeColor} />
         <View style={styles.metricDivider} />
-        <Metric label="WIN %" value={`${Math.round(pick.win_probability)}%`} color={COLORS.neonGreen} />
+        <Metric label="📊 WIN" value={`${Math.round(pick.win_probability)}%`} color={COLORS.neonGreen} />
+        <View style={styles.metricDivider} />
+        <Metric
+          label="⚡ EDGE"
+          value={`${pick.edge_percent > 0 ? "+" : ""}${pick.edge_percent}%`}
+          color={pick.edge_percent > 0 ? COLORS.neonGreen : COLORS.electricBlaze}
+        />
         <View style={styles.metricDivider} />
         <Metric
           label="ODDS"

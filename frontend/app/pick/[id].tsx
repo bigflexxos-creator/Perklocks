@@ -148,18 +148,41 @@ export default function PickDetail() {
               <Text style={[styles.scoreBig, { color: gradeColor }]}>
                 {Math.round(pick.lock_score)}
               </Text>
-              <Text style={styles.scoreSub}>LOCK SCORE</Text>
+              <Text style={styles.scoreSub}>🔒 LOCK SCORE · BET QUALITY</Text>
+              <Text style={styles.scoreNote}>
+                A 0-99 quality score blending edge, alignment, ROI, data quality, volatility &amp; CLV.
+              </Text>
+
+              {/* Lock v3 — Expected Win and Edge displayed alongside */}
+              <View style={styles.scoreSplitRow}>
+                <View style={styles.scoreSplitCell}>
+                  <Text style={styles.scoreSplitIcon}>📊</Text>
+                  <Text style={[styles.scoreSplitValue, { color: COLORS.textPrimary }]}>
+                    {pick.win_probability}%
+                  </Text>
+                  <Text style={styles.scoreSplitLabel}>EXPECTED WIN</Text>
+                </View>
+                <View style={styles.scoreSplitDivider} />
+                <View style={styles.scoreSplitCell}>
+                  <Text style={styles.scoreSplitIcon}>⚡</Text>
+                  <Text
+                    style={[
+                      styles.scoreSplitValue,
+                      { color: pick.edge_percent > 0 ? COLORS.neonGreen : COLORS.electricBlaze },
+                    ]}
+                  >
+                    {pick.edge_percent > 0 ? "+" : ""}
+                    {pick.edge_percent}%
+                  </Text>
+                  <Text style={styles.scoreSplitLabel}>EDGE VS BOOK</Text>
+                </View>
+              </View>
+
               <Text style={styles.confidence}>Confidence: {pick.confidence}</Text>
             </View>
 
             <View style={styles.bento}>
-              <BentoCell label="WIN PROBABILITY" value={`${pick.win_probability}%`} />
               <BentoCell label="BOOK IMPLIED" value={`${pick.implied_probability}%`} muted />
-              <BentoCell
-                label="EDGE %"
-                value={`${pick.edge_percent > 0 ? "+" : ""}${pick.edge_percent}%`}
-                color={pick.edge_percent > 0 ? COLORS.neonGreen : COLORS.electricBlaze}
-              />
               <BentoCell
                 label="BOOK ODDS"
                 value={pick.book_odds > 0 ? `+${pick.book_odds}` : `${pick.book_odds}`}
@@ -329,7 +352,37 @@ const styles = StyleSheet.create({
   },
   scoreBig: { fontSize: 78, fontWeight: "900", letterSpacing: -3, lineHeight: 84 },
   scoreSub: { color: COLORS.textMuted, fontSize: 10, fontWeight: "800", letterSpacing: 2 },
-  confidence: { color: COLORS.textSecondary, fontSize: 12, fontWeight: "700", marginTop: 8, letterSpacing: 0.5 },
+  scoreNote: {
+    color: COLORS.textMuted,
+    fontSize: 10,
+    fontWeight: "500",
+    textAlign: "center",
+    marginTop: 8,
+    paddingHorizontal: 8,
+    lineHeight: 14,
+  },
+  scoreSplitRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 18,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.borderDefault,
+    width: "100%",
+  },
+  scoreSplitCell: { flex: 1, alignItems: "center" },
+  scoreSplitDivider: { width: 1, height: 44, backgroundColor: COLORS.borderDefault },
+  scoreSplitIcon: { fontSize: 16, marginBottom: 4 },
+  scoreSplitValue: { fontSize: 26, fontWeight: "900", letterSpacing: -0.6 },
+  scoreSplitLabel: {
+    color: COLORS.textMuted,
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 1.3,
+    marginTop: 4,
+  },
+  confidence: { color: COLORS.textSecondary, fontSize: 12, fontWeight: "700", marginTop: 14, letterSpacing: 0.5 },
 
   bento: { flexDirection: "row", flexWrap: "wrap", marginHorizontal: -6, marginBottom: 8 },
   bentoCell: {
