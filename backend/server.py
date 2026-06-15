@@ -212,6 +212,20 @@ async def _refresh_picks(date_str: str) -> int:
     except Exception as e:
         logger.warning("Learning engine skipped: %s", e)
 
+    # ── Deep Dive Mode: attach edge/confidence/risk scores, top-3 reasons,
+    # and NO-BET flag for low-confidence picks. Internal only; UI unchanged.
+    try:
+        from deep_dive import deep_dive, NO_BET_THRESHOLD
+        no_bet_count = 0
+        for p in picks:
+            await deep_dive(db, p)
+            if p.get("no_bet"):
+                no_bet_count += 1
+        logger.info("Deep Dive: %d picks analysed, %d flagged NO-BET (conf < %d)",
+                    len(picks), no_bet_count, NO_BET_THRESHOLD)
+    except Exception as e:
+        logger.warning("Deep Dive skipped: %s", e)
+
     # Deduplicate picks within this batch by `id` — UUID5 hashes can collide
     # if two markets produce identical external_ids (saw this with Anytime
     # Goal Scorer picks generated twice in the same refresh). Keep the first.
@@ -411,7 +425,8 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     default_floor = 75.0 if market else 85.0
     floor = max(default_floor, float(min_lock)) if min_lock is not None else default_floor
     q: dict = {"pick_date": _today_str(), "lock_score": {"$gte": floor},
-               "is_under_lock": {"$ne": True}}
+               "is_under_lock": {"$ne": True},
+               "no_bet": {"$ne": True}}
     if sport and sport.lower() != "all":
         q["sport"] = sport
     if grade:
@@ -524,7 +539,8 @@ async def under_of_the_day(user: Annotated[UserPublic, Depends(current_user)],
     await _ensure_today_picks()
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=24)
-    q: dict = {"pick_date": _today_str(), "is_under_lock": True}
+    q: dict = {"pick_date": _today_str(), "is_under_lock": True,
+               "no_bet": {"$ne": True}}
     lt = (line_type or "").lower()
     if lt == "main":
         q["is_alt"] = {"$ne": True}
@@ -590,7 +606,7 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
       - `sport` / `market` / `league`: optional narrowing filters.
     """
     await _ensure_today_picks()
-    base_q: dict = {"pick_date": _today_str()}
+    base_q: dict = {"pick_date": _today_str(), "no_bet": {"$ne": True}}
     lt = (line_type or "").lower()
     if lt == "main":
         base_q["is_alt"] = {"$ne": True}
@@ -1208,6 +1224,47 @@ async def _settlement_loop():
         await asyncio.sleep(7200)  # 2 hours
 
 
+async def _weekly_model_tuning_loop():
+    """Once a week, recompute learned weights from the FULL settled-pick
+    dataset and reseed the model. This is the user-requested weekly model
+    adjustment — the per-settlement recompute already updates incrementally,
+    but the weekly run also re-applies fresh weights to today's open picks.
+    """
+    await asyncio.sleep(180)  # let startup settle
+    SEVEN_DAYS = 7 * 24 * 3600
+    while True:
+        try:
+            from learning_engine import recompute_learned_weights, apply_learning
+            weights = await recompute_learned_weights(db)
+            # Re-apply to all open picks for the next 7 days.
+            cursor = db.picks.find(
+                {"status": {"$in": [None, "pending"]}},
+                {"_id": 0},
+            )
+            adjusted = 0
+            async for p in cursor:
+                before = p.get("win_probability")
+                await apply_learning(db, p)
+                if p.get("learning") and p.get("win_probability") != before:
+                    adjusted += 1
+                    await db.picks.update_one(
+                        {"id": p["id"]},
+                        {"$set": {"win_probability": p["win_probability"],
+                                   "lock_score": p.get("lock_score"),
+                                   "edge_percent": p.get("edge_percent"),
+                                   "implied_probability": p.get("implied_probability"),
+                                   "learning": p.get("learning")}},
+                    )
+            active = sum(1 for b in weights.get("buckets", []) if b.get("active"))
+            logger.info("Weekly model tuning: %d active buckets, %d picks re-weighted",
+                        active, adjusted)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning("Weekly tuning failed: %s", e)
+        await asyncio.sleep(SEVEN_DAYS)
+
+
 @app.on_event("startup")
 async def on_startup():
     await db.users.create_index("email", unique=True)
@@ -1217,6 +1274,7 @@ async def on_startup():
     await db.picks.create_index("id", unique=True)
     asyncio.create_task(_daily_refresh_loop())
     asyncio.create_task(_settlement_loop())
+    asyncio.create_task(_weekly_model_tuning_loop())
     logger.info("PerksLocks AI started")
 
 
