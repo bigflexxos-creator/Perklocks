@@ -112,9 +112,16 @@ async def recompute_learned_weights(db) -> dict[str, Any]:
     rows.sort(key=lambda r: r["roi"], reverse=True)
 
     # ── 2) Lock-band calibration correction ─────────────────────────────
+    # Only use picks created with the CURRENT lock-score formula (v2). Older
+    # picks were generated with a broken formula that wildly over-promised
+    # confidence (Lock 95 band actually hit 75%), which was anchoring the
+    # calibration to -6pp on every band and stacking onto current picks.
     bands: dict[str, dict] = {}
     for p in picks:
         if p["status"] == "push":
+            continue
+        # Skip legacy picks for calibration math.
+        if (p.get("formula_v") or 1) < 2:
             continue
         bk = p.get("confidence_bucket") or confidence_bucket(p.get("lock_score"))
         bd = bands.setdefault(bk, {"band": bk, "n": 0, "wins": 0,
