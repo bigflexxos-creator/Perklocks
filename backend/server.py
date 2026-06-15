@@ -196,6 +196,22 @@ async def _refresh_picks(date_str: str) -> int:
     except Exception as e:
         logger.warning("SportDB enrichment skipped: %s", e)
 
+    # ── Self-tuning learning layer: bias predictions based on historical
+    # ROI / hit-rate vs expected. Applied AFTER all other enrichment so it
+    # sits on top of model + SportDB + Odds-API edge.
+    try:
+        from learning_engine import apply_learning
+        adjusted = 0
+        for p in picks:
+            before = p.get("win_probability")
+            await apply_learning(db, p)
+            if p.get("learning") and p.get("win_probability") != before:
+                adjusted += 1
+        if adjusted:
+            logger.info("Learning engine adjusted %d picks", adjusted)
+    except Exception as e:
+        logger.warning("Learning engine skipped: %s", e)
+
     # Deduplicate picks within this batch by `id` — UUID5 hashes can collide
     # if two markets produce identical external_ids (saw this with Anytime
     # Goal Scorer picks generated twice in the same refresh). Keep the first.
@@ -910,6 +926,48 @@ async def model_performance(
     if backfill:
         await backfill_metrics(db)
     return await compute_model_performance(db, days=days)
+
+
+@api.get("/analytics/learned-weights")
+async def learned_weights(user: Annotated[UserPublic, Depends(current_user)]):
+    """What the self-tuning engine has learned from past picks. Used by the
+    Analytics screen to surface every active bucket weight + calibration
+    correction the engine is currently applying to new picks."""
+    doc = await db.learned_weights.find_one({"_id": "current"}, {"_id": 0})
+    if not doc:
+        return {"buckets": [], "calibration": [], "updated_at": None, "sample_size": 0}
+    return doc
+
+
+@api.post("/analytics/learn")
+async def learn_now(user: Annotated[UserPublic, Depends(current_user)]):
+    """Force a recompute of learned weights and re-apply to today's picks."""
+    from learning_engine import recompute_learned_weights, apply_learning
+    weights = await recompute_learned_weights(db)
+    # Apply to all picks generated for today that haven't been settled.
+    cursor = db.picks.find(
+        {"pick_date": _today_str(), "status": {"$in": [None, "pending"]}},
+        {"_id": 0},
+    )
+    adjusted = 0
+    async for p in cursor:
+        before = p.get("win_probability")
+        await apply_learning(db, p)
+        if p.get("learning") and p.get("win_probability") != before:
+            adjusted += 1
+            await db.picks.update_one(
+                {"id": p["id"]},
+                {"$set": {
+                    "win_probability": p["win_probability"],
+                    "lock_score": p.get("lock_score"),
+                    "edge_percent": p.get("edge_percent"),
+                    "implied_probability": p.get("implied_probability"),
+                    "learning": p.get("learning"),
+                }},
+            )
+    return {"active_buckets": sum(1 for b in weights.get("buckets", []) if b.get("active")),
+            "picks_adjusted": adjusted,
+            "sample_size": weights.get("sample_size", 0)}
 
 
 @api.get("/")

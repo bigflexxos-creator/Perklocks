@@ -266,4 +266,13 @@ async def settle_due_picks(db) -> dict:
     except Exception as e:
         logger.warning("prop settlement failed: %s", e)
 
+    # ── Recompute self-tuning weights from the freshly-updated outcomes.
+    # Cheap (pure aggregation over `picks`), runs after every settlement.
+    try:
+        from learning_engine import recompute_learned_weights
+        weights = await recompute_learned_weights(db)
+        counts["learning_buckets"] = sum(1 for b in weights.get("buckets", []) if b.get("active"))
+    except Exception as e:
+        logger.warning("learning recompute failed: %s", e)
+
     return counts

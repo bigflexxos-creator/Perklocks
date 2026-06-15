@@ -1,0 +1,237 @@
+"""Self-tuning learning engine.
+
+Uses the model performance dataset (every settled pick + simulated 1u ROI)
+to bias future picks toward markets the model has actually been profitable in.
+
+Two complementary signals:
+
+  1. **Bucket weight** — per-(sport, market_label). Combines ROI and
+     calibration error into a single win-probability delta in [-0.08, +0.08].
+     Computed only when ≥ MIN_SAMPLES picks exist in the bucket so a hot or
+     cold streak doesn't whipsaw the model.
+
+  2. **Calibration correction** — per Lock-score band. Pulls future
+     win-probabilities toward the actual historical hit-rate of that band
+     (so if Lock-90 picks really hit 87%, fresh 90-band picks lose ~3%).
+
+Both are persisted to `db.learned_weights` (singleton doc, _id="current")
+and refreshed at the end of every settlement run — no extra API calls.
+
+`apply_learning(db, pick)` is the integration point — call it inside the
+pick-refresh loop AFTER all other enrichment so the learned bias sits on
+top of model + SportDB + Odds-API edge.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from analytics import _market_label, confidence_bucket  # type: ignore
+
+logger = logging.getLogger("lockscore.learning")
+
+# Safeguards
+MIN_SAMPLES = 10           # ≥ N settled picks needed before a bucket gets a non-zero weight
+MAX_WP_DELTA = 0.08        # cap learned win_prob adjustment at ±8 percentage points
+MAX_CAL_DELTA = 0.06       # cap calibration correction at ±6 pp
+ROI_GAIN = 0.4             # how much of bucket ROI/100 maps to win_prob delta
+CAL_GAIN = 0.6             # how much of (actual − expected)/100 maps to delta
+
+
+async def recompute_learned_weights(db) -> dict[str, Any]:
+    """Recompute and persist all learning signals from settled picks.
+
+    Returns the same payload that `/api/analytics/learned-weights` serves so
+    the caller can log / inspect.
+    """
+    cursor = db.picks.find(
+        {"status": {"$in": ["won", "lost", "push"]}},
+        {"_id": 0, "sport": 1, "market": 1, "status": 1, "lock_score": 1,
+         "win_probability": 1, "edge_percent": 1, "units_profit": 1,
+         "units_risked": 1, "confidence_bucket": 1},
+    )
+    picks = await cursor.to_list(length=20_000)
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if not picks:
+        empty = {"_id": "current", "buckets": [], "calibration": [],
+                 "updated_at": now_iso, "sample_size": 0}
+        await db.learned_weights.replace_one({"_id": "current"}, empty, upsert=True)
+        return empty
+
+    # ── 1) Per-(sport, market_label) bucket weight ──────────────────────
+    buckets: dict[tuple[str, str], dict] = {}
+    for p in picks:
+        key = (p.get("sport") or "Unknown", _market_label(p.get("market")))
+        b = buckets.setdefault(key, {
+            "sport": key[0], "market_label": key[1],
+            "n": 0, "wins": 0, "losses": 0, "pushes": 0,
+            "units_risked": 0.0, "units_profit": 0.0,
+            "model_wp_sum": 0.0,
+        })
+        b["n"] += 1
+        if p["status"] == "won":
+            b["wins"] += 1
+        elif p["status"] == "lost":
+            b["losses"] += 1
+        else:
+            b["pushes"] += 1
+        if p["status"] != "push":
+            b["units_risked"] += p.get("units_risked", 1.0)
+        b["units_profit"] += p.get("units_profit") or 0.0
+        b["model_wp_sum"] += p.get("win_probability") or 0.0
+
+    rows: list[dict] = []
+    for b in buckets.values():
+        decisive = b["wins"] + b["losses"]
+        hit_rate = (b["wins"] * 100 / decisive) if decisive else 0.0
+        expected = (b["model_wp_sum"] / b["n"]) if b["n"] else 0.0
+        roi = (b["units_profit"] * 100 / b["units_risked"]) if b["units_risked"] else 0.0
+        # Learnable only if enough data
+        if b["n"] >= MIN_SAMPLES:
+            # ROI/100 signed contribution
+            roi_signal = (roi / 100.0) * ROI_GAIN          # rough magnitude
+            cal_signal = ((hit_rate - expected) / 100.0) * CAL_GAIN
+            raw = roi_signal + cal_signal
+            weight = max(-MAX_WP_DELTA, min(MAX_WP_DELTA, raw))
+        else:
+            weight = 0.0
+        rows.append({
+            "sport": b["sport"],
+            "market_label": b["market_label"],
+            "n": b["n"],
+            "wins": b["wins"],
+            "losses": b["losses"],
+            "hit_rate": round(hit_rate, 1),
+            "expected_wp": round(expected, 1),
+            "roi": round(roi, 2),
+            "weight": round(weight, 4),
+            "active": b["n"] >= MIN_SAMPLES,
+        })
+    rows.sort(key=lambda r: r["roi"], reverse=True)
+
+    # ── 2) Lock-band calibration correction ─────────────────────────────
+    bands: dict[str, dict] = {}
+    for p in picks:
+        if p["status"] == "push":
+            continue
+        bk = p.get("confidence_bucket") or confidence_bucket(p.get("lock_score"))
+        bd = bands.setdefault(bk, {"band": bk, "n": 0, "wins": 0,
+                                   "losses": 0, "lock_sum": 0.0})
+        bd["n"] += 1
+        bd["lock_sum"] += p.get("lock_score") or 0.0
+        if p["status"] == "won":
+            bd["wins"] += 1
+        elif p["status"] == "lost":
+            bd["losses"] += 1
+
+    calibration: list[dict] = []
+    for bk, bd in bands.items():
+        decisive = bd["wins"] + bd["losses"]
+        actual = (bd["wins"] * 100 / decisive) if decisive else 0.0
+        expected = bd["lock_sum"] / bd["n"] if bd["n"] else 0.0
+        delta_pp = actual - expected   # negative → band overpromised
+        if bd["n"] >= MIN_SAMPLES:
+            adj = max(-MAX_CAL_DELTA, min(MAX_CAL_DELTA, delta_pp / 100.0))
+        else:
+            adj = 0.0
+        calibration.append({
+            "band": bk,
+            "n": bd["n"],
+            "actual": round(actual, 1),
+            "expected": round(expected, 1),
+            "delta": round(delta_pp, 2),
+            "adjustment": round(adj, 4),
+            "active": bd["n"] >= MIN_SAMPLES,
+        })
+    band_order = {"Elite (95+)": 0, "Premium (90-94)": 1, "Strong (85-89)": 2,
+                  "Standard (80-84)": 3, "Speculative (70-79)": 4, "Pass (<70)": 5}
+    calibration.sort(key=lambda c: band_order.get(c["band"], 99))
+
+    payload = {
+        "_id": "current",
+        "buckets": rows,
+        "calibration": calibration,
+        "updated_at": now_iso,
+        "sample_size": len(picks),
+        "settings": {
+            "min_samples": MIN_SAMPLES,
+            "max_wp_delta": MAX_WP_DELTA,
+            "max_cal_delta": MAX_CAL_DELTA,
+        },
+    }
+    await db.learned_weights.replace_one({"_id": "current"}, payload, upsert=True)
+    active = sum(1 for r in rows if r["active"])
+    logger.info("Learning engine recomputed: %d buckets (%d active) over %d picks",
+                len(rows), active, len(picks))
+    return payload
+
+
+async def _load_weights(db) -> Optional[dict]:
+    return await db.learned_weights.find_one({"_id": "current"}, {"_id": 0})
+
+
+async def apply_learning(db, pick: dict) -> dict:
+    """Adjust `win_probability` / `lock_score` of a fresh pick using learned
+    weights. Mutates and returns the pick. Best-effort — if weights aren't
+    available yet we silently no-op."""
+    weights = await _load_weights(db)
+    if not weights:
+        return pick
+
+    sport = pick.get("sport") or ""
+    label = _market_label(pick.get("market"))
+
+    # Bucket weight
+    bucket_w = 0.0
+    bucket_row = None
+    for r in weights.get("buckets", []):
+        if r.get("active") and r.get("sport") == sport and r.get("market_label") == label:
+            bucket_w = r.get("weight") or 0.0
+            bucket_row = r
+            break
+
+    # Calibration adjustment (depends on current pick's lock band)
+    cal_adj = 0.0
+    band = confidence_bucket(pick.get("lock_score"))
+    for c in weights.get("calibration", []):
+        if c.get("active") and c.get("band") == band:
+            cal_adj = c.get("adjustment") or 0.0
+            break
+
+    total_delta = bucket_w + cal_adj
+    if abs(total_delta) < 0.002:
+        return pick
+
+    old_wp = pick.get("win_probability") or 0
+    new_wp = max(1.0, min(99.0, old_wp + total_delta * 100))
+    pick["win_probability"] = round(new_wp, 1)
+
+    # Recompute edge + implied to stay consistent.
+    from analytics import american_to_implied_pct
+    book = pick.get("book_odds")
+    if book:
+        implied = american_to_implied_pct(book)
+        pick["implied_probability"] = round(implied, 1)
+        pick["edge_percent"] = round(new_wp - implied, 2)
+
+    # Recompute lock_score with the corrected win_prob.
+    try:
+        from sports_engine import compute_lock_score
+        factors_pct = pick.get("factors") or {}
+        factors = {k: v / 100.0 for k, v in factors_pct.items()}
+        lock, _ = compute_lock_score(factors, win_prob=new_wp)
+        pick["lock_score"] = lock
+    except Exception:
+        pass
+
+    pick.setdefault("learning", {})
+    pick["learning"] = {
+        "bucket_weight": round(bucket_w, 4),
+        "calibration_adj": round(cal_adj, 4),
+        "total_delta_pp": round(total_delta * 100, 2),
+        "matched_bucket": f"{sport} · {label}" if bucket_row else None,
+        "matched_band": band if cal_adj else None,
+    }
+    return pick

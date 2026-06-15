@@ -188,6 +188,19 @@ export const api = {
       worst_market: AnalyticsRow | null;
     };
   }>("/analytics/model-performance"),
+
+  learnedWeights: () => request<{
+    sample_size: number;
+    updated_at: string | null;
+    buckets: { sport: string; market_label: string; n: number; wins: number; losses: number;
+               hit_rate: number; expected_wp: number; roi: number; weight: number; active: boolean }[];
+    calibration: { band: string; n: number; actual: number; expected: number; delta: number;
+                   adjustment: number; active: boolean }[];
+    settings?: { min_samples: number; max_wp_delta: number; max_cal_delta: number };
+  }>("/analytics/learned-weights"),
+
+  learnNow: () => request<{ active_buckets: number; picks_adjusted: number; sample_size: number }>(
+    "/analytics/learn", { method: "POST" }),
 };
 
 export type AnalyticsRow = {
