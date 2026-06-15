@@ -275,26 +275,43 @@ async def _ensure_today_picks() -> None:
 # match their own sport. The regex is matched (case-insensitive) against the
 # pick's stored `market` string.
 _MARKET_REGEX = {
-    "moneyline":      r"moneyline|^win or draw|win$",
-    "1x2":            r"moneyline|win or draw|draw",
-    "double_chance":  r"win or draw|double chance",
-    "btts":           r"both teams to score|btts",
-    "goalscorer":     r"goal scorer|anytime|first goal",
-    "spread":         r"spread|handicap",
-    "run_line":       r"run line|spread",
-    "totals":         r"total goals|game total|total points|total runs|total bases|over/under|\bover\b|\bunder\b",
-    "player_points":  r"\bpoints\b",
-    "player_rebounds": r"rebounds",
-    "player_assists": r"assists",
-    "player_props":   r"hits|total bases|points|rebounds|assists|passing yards|rushing yards|receiving yards|touchdowns|goal scorer",
-    "batter_hits":    r"hits",
-    "batter_total_bases": r"total bases",
-    "passing_yards":  r"passing yards",
-    "rushing_yards":  r"rushing yards",
+    # ── Soccer-specific families ──────────────────────────────────────────
+    "1x2":           r"\bmoneyline\b|\bwin or draw\b",
+    "btts":          r"both teams to score|\bbtts\b",
+    "goalscorer":    r"anytime goal scorer|first goal scorer|last goal scorer",
+
+    # ── Generic team markets ──────────────────────────────────────────────
+    "moneyline":     r"\bmoneyline\b",
+    "double_chance": r"\bwin or draw\b|double chance",
+    "spread":        r"[+\-]\d+(\.\d+)?\s+spread\b|\bspread\b",
+    "run_line":      r"\brun line\b|[+\-]\d+(\.\d+)?\s+spread\b",  # MLB run line ≡ spread
+
+    # ── Game totals ONLY (must START with "Total <stat>") ─────────────────
+    # This intentionally does NOT match "Total Bases", "Player … Total …",
+    # or alt-prop Over/Under player markets. Game totals only.
+    "totals":        r"^total (goals|points|runs|sets|games|corners)\b|\bgame total\b",
+
+    # ── Player props (mutually exclusive, anchored) ───────────────────────
+    # Each prop is keyed off the STAT NAME and excludes neighbouring stats.
+    # MongoDB supports PCRE lookaheads so we use them to disambiguate.
+    "batter_hits":          r"\bhits\b(?!\s*allowed)",
+    "batter_total_bases":   r"\btotal bases\b",
+    "player_points":        r"\bpoints\b(?!\s*total)",
+    "player_rebounds":      r"\brebounds\b",
+    "player_assists":       r"\bassists\b",
+
+    # ── NFL props ─────────────────────────────────────────────────────────
+    "passing_yards":   r"passing yards",
+    "rushing_yards":   r"rushing yards",
     "receiving_yards": r"receiving yards",
-    "match_winner":   r"moneyline|match winner|to win",
-    "sets":           r"\bsets?\b|set winner|set total",
-    "games_total":    r"games over|games under|total games",
+
+    # ── Tennis ────────────────────────────────────────────────────────────
+    "match_winner":  r"\bmoneyline\b|match winner|to win match",
+    "sets":          r"\btotal sets\b|\bset winner\b|\bset score\b",
+    "games_total":   r"\bgames over\b|\bgames under\b|\btotal games\b",
+
+    # ── Broad catch-all (still used by analytics market-label grouping) ──
+    "player_props":  r"hits|total bases|points|rebounds|assists|passing yards|rushing yards|receiving yards|touchdowns|goal scorer",
 }
 
 
@@ -388,7 +405,11 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
       - "implied": highest implied probability first (safest first)
     """
     await _ensure_today_picks()
-    floor = max(85.0, float(min_lock)) if min_lock is not None else 85.0
+    # When the user explicitly filters by a single market, relax the default
+    # 85+ lock floor — they're narrowing the pool themselves and want to see
+    # everything that matches their selection.
+    default_floor = 75.0 if market else 85.0
+    floor = max(default_floor, float(min_lock)) if min_lock is not None else default_floor
     q: dict = {"pick_date": _today_str(), "lock_score": {"$gte": floor},
                "is_under_lock": {"$ne": True}}
     if sport and sport.lower() != "all":
