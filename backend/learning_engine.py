@@ -204,7 +204,12 @@ async def apply_learning(db, pick: dict) -> dict:
     if abs(total_delta) < 0.002:
         return pick
 
-    old_wp = pick.get("win_probability") or 0
+    # IDEMPOTENT — store the original model WP the first time, then always
+    # recompute FROM the original. Without this the learning delta stacks
+    # every time the function runs (refresh → weekly tune → manual relearn).
+    if "model_win_probability" not in pick:
+        pick["model_win_probability"] = pick.get("win_probability") or 0
+    old_wp = pick["model_win_probability"]
     new_wp = max(1.0, min(99.0, old_wp + total_delta * 100))
     pick["win_probability"] = round(new_wp, 1)
 
