@@ -207,18 +207,37 @@ async def apply_learning(db, pick: dict) -> dict:
             cal_adj = c.get("adjustment") or 0.0
             break
 
-    total_delta = bucket_w + cal_adj
-    if abs(total_delta) < 0.002:
-        return pick
-
     # IDEMPOTENT — store the original model WP the first time, then always
     # recompute FROM the original. Without this the learning delta stacks
     # every time the function runs (refresh → weekly tune → manual relearn).
     if "model_win_probability" not in pick:
         pick["model_win_probability"] = pick.get("win_probability") or 0
-    old_wp = pick["model_win_probability"]
-    new_wp = max(1.0, min(99.0, old_wp + total_delta * 100))
-    pick["win_probability"] = round(new_wp, 1)
+    baseline = pick["model_win_probability"]
+
+    # ── Hit-rate flooring for high-sample buckets ────────────────────────
+    # If a market historically hits at rate R% over a meaningful sample, and
+    # the book is pricing the current pick BELOW R%, the model should claim
+    # at least R% — otherwise we're leaving real edge on the table.
+    # Concrete: MLB Hits bucket hits 73.7% over 57 picks. A -150 player priced
+    # at 60% implied should produce a +13.7pp edge, not +5pp.
+    hit_rate_floor = 0.0
+    if bucket_row and bucket_row.get("n", 0) >= 20:
+        hr = bucket_row.get("hit_rate") or 0.0
+        # Use HR as a soft floor — cap the lift at ±10pp from baseline so a
+        # single hot/cold bucket can't crater the prediction.
+        hit_rate_floor = max(baseline, min(baseline + 10, hr))
+
+    total_delta = bucket_w + cal_adj
+    new_wp = max(1.0, min(99.0, baseline + total_delta * 100))
+    # Apply the hit-rate floor LAST so it can lift but never lowers WP.
+    if hit_rate_floor > new_wp:
+        new_wp = hit_rate_floor
+    new_wp = round(new_wp, 1)
+
+    if abs(new_wp - (pick.get("win_probability") or 0)) < 0.5 and abs(total_delta) < 0.002 and hit_rate_floor <= baseline:
+        return pick
+
+    pick["win_probability"] = new_wp
 
     # Recompute edge + implied to stay consistent.
     from analytics import american_to_implied_pct
@@ -238,11 +257,11 @@ async def apply_learning(db, pick: dict) -> dict:
     except Exception:
         pass
 
-    pick.setdefault("learning", {})
     pick["learning"] = {
         "bucket_weight": round(bucket_w, 4),
         "calibration_adj": round(cal_adj, 4),
-        "total_delta_pp": round(total_delta * 100, 2),
+        "hit_rate_floor": round(hit_rate_floor, 2) if hit_rate_floor > baseline else None,
+        "total_delta_pp": round(new_wp - baseline, 2),
         "matched_bucket": f"{sport} · {label}" if bucket_row else None,
         "matched_band": band if cal_adj else None,
     }
