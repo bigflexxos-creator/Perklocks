@@ -212,6 +212,27 @@ async def _refresh_picks(date_str: str) -> int:
     except Exception as e:
         logger.warning("Learning engine skipped: %s", e)
 
+    # ── Tennis Edge Engine v2: per-pick component scoring + NO_BET filter,
+    # 99-LOCK gating, and max-3-per-day cap. Pure post-processing; no extra
+    # API calls. Non-tennis picks pass through unchanged.
+    try:
+        from tennis_engine import apply_tennis_engine, build_tennis_insights
+        before_tennis = sum(1 for p in picks if (p.get("sport") or "").lower() == "tennis")
+        picks = apply_tennis_engine(picks)
+        after_tennis = sum(1 for p in picks if (p.get("sport") or "").lower() == "tennis")
+        # Attach tennis-specific insights to surviving tennis picks so the
+        # Deep Dive UI gets the surface/serve/matchup bullets.
+        for p in picks:
+            if (p.get("sport") or "").lower() == "tennis":
+                tennis_insights = build_tennis_insights(p)
+                if tennis_insights:
+                    existing = p.get("key_insights") or []
+                    p["key_insights"] = tennis_insights + existing
+        logger.info("Tennis Edge v2: tennis picks %d → %d (filtered + capped)",
+                    before_tennis, after_tennis)
+    except Exception as e:
+        logger.warning("Tennis Edge v2 skipped: %s", e)
+
     # ── Deep Dive Mode: attach edge/confidence/risk scores, top-3 reasons,
     # and NO-BET flag for low-confidence picks. Internal only; UI unchanged.
     try:
