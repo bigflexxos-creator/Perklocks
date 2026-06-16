@@ -874,16 +874,16 @@ PLAYER_PROP_MARKETS = {
     # "to score or assist" market when the bookmakers carry it — it nearly
     # doubles the player's win-probability since either action wins the bet.
     # If the Odds API returns 422 (unsupported), we silently skip it.
-    # Soccer player props — Anytime Goal Scorer is the primary market (covers
-    # users' main interest in "will Mbappé/Haaland/Messi score?"). To Score
-    # or Assist is the broader fallback. Adding more markets doubles Odds API
-    # credit cost per event — keep tight.
-    # Note: heavy users like Haaland may not appear if their team isn't playing
-    # OR if the Odds API doesn't list anytime-scorer for that match (typical
-    # for international friendlies + lower leagues).
+    # Soccer player props — 3 markets The Odds API supports:
+    #   • player_goal_scorer_anytime  → "Anytime Goal Scorer"
+    #   • player_to_score_or_assist   → "To Score or Assist"
+    #   • player_first_goal_scorer    → "First Goal Scorer"
+    # (player_anytime_assist and player_to_score_2_or_more are NOT exposed
+    # by The Odds API — confirmed via 422 INVALID_MARKET response.)
     "Soccer": [
         "player_goal_scorer_anytime",
         "player_to_score_or_assist",
+        "player_first_goal_scorer",
     ],
     # UFC: The Odds API does NOT expose method-of-victory, round-betting, or
     # any MMA prop markets — only `h2h` (moneyline) and `totals` (rounds)
@@ -1165,6 +1165,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             mk = m.get("key")
             is_goal_scorer = mk == "player_goal_scorer_anytime"
             is_score_or_assist = mk == "player_to_score_or_assist"
+            is_first_goal_scorer = mk == "player_first_goal_scorer"
             is_mma_method = mk == "mma_method_of_victory"
             for o in m.get("outcomes", []):
                 raw_player = o.get("description") or o.get("name") or ""
@@ -1292,15 +1293,13 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             "Pace / Game Script": rng.uniform(0.6, 0.9),
         }
         lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
-        label_point = None if mk in ("player_goal_scorer_anytime", "player_to_score_or_assist", "mma_method_of_victory") else point
+        label_point = None if mk in ("player_goal_scorer_anytime", "player_to_score_or_assist", "player_first_goal_scorer", "mma_method_of_victory") else point
         if mk == "player_goal_scorer_anytime":
             market_label = f"{player} Anytime Goal Scorer"
         elif mk == "player_to_score_or_assist":
             market_label = f"{player} To Score or Assist"
         elif mk == "player_first_goal_scorer":
             market_label = f"{player} First Goal Scorer"
-        elif mk == "player_to_score_2_or_more":
-            market_label = f"{player} To Score 2+ Goals"
         elif mk == "mma_method_of_victory":
             # `side` carries the method string (KO/TKO, Submission, Decision).
             market_label = f"{player} wins by {side}"
