@@ -22,9 +22,14 @@ SETTLEABLE_KEYWORDS = (
     "moneyline", "spread", "total goals", "total runs", "total points",
     "total games", "total ", "win or draw",
 )
+# Player-prop keywords. These are kept narrow so they don't false-positive
+# on GAME totals like "Total Points Over 171.5" (WNBA/NBA) — the substring
+# "points" in such markets used to flag the entire game total as a player
+# prop and block settlement. Player props are now identified primarily via
+# the `· Props` league suffix (set in sports_engine when building props)
+# and only secondarily via these very specific market labels.
 PROP_KEYWORDS = (
-    "hits", "home runs", "total bases", "rebounds", "assists", "points",
-    "anytime goal scorer", "first goal scorer",
+    "anytime goal scorer", "first goal scorer", "to score or assist",
 )
 
 
@@ -92,8 +97,16 @@ def settle_pick(pick: dict, score_payload: dict) -> Optional[str]:
 
     # Moneyline (and Win or Draw)
     if "moneyline" in market:
+        # Soccer / Tennis / UFC: 3-way (or no-draw) markets where the pick
+        # is on a SPECIFIC team to WIN — a draw means the team failed to
+        # win, which is a LOSS, not a push.
+        # NBA / NFL / MLB / NHL / KBO / WNBA: 2-way moneylines that can never
+        # end in a regulation tie (extras decide), so equal scores in those
+        # leagues genuinely shouldn't happen — treat as push defensively.
+        sport = (pick.get("sport") or "").lower()
+        is_3way = sport in ("soccer", "tennis", "ufc", "mma")
         if away_score == home_score:
-            return "push"
+            return "lost" if is_3way else "push"
         winner = away if away_score > home_score else home
         return "won" if winner == selection else "lost"
 

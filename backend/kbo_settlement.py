@@ -176,12 +176,16 @@ def _kbo_outcome(pick: dict, game: dict) -> Optional[str]:
         if line is None:
             return None
         if "over" in selection:
-            if total > line:  return "won"
-            if total < line:  return "lost"
+            if total > line:
+                return "won"
+            if total < line:
+                return "lost"
             return "push"
         if "under" in selection:
-            if total < line:  return "won"
-            if total > line:  return "lost"
+            if total < line:
+                return "won"
+            if total > line:
+                return "lost"
             return "push"
     return None
 

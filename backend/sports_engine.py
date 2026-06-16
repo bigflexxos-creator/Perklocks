@@ -1446,6 +1446,16 @@ async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
             base_market = _re.sub(r"\b(over|under)\b", "", market_l).strip()
             base_market = _re.sub(r"\s+", " ", base_market)
             return (p.get("sport"), p.get("event"), base_market, threshold)
+        # MONEYLINE / "Win or Draw" / "Double Chance": only ONE team's side
+        # of the game can win. Pick the higher-edge side. We key by the
+        # market family only (not the team), so both opponents collapse.
+        if "moneyline" in market_l or "money line" in market_l:
+            return (p.get("sport"), p.get("event"), "MONEYLINE")
+        if "win or draw" in market_l or "double chance" in market_l:
+            # Win-or-Draw and Double Chance markets — at most one of the two
+            # combos can be the right side of the bet for a given game outcome.
+            # Pick the higher-edge one.
+            return (p.get("sport"), p.get("event"), "WIN_OR_DRAW")
         return (p.get("sport"), p.get("event"), sel, threshold)
 
     best: dict = {}
