@@ -484,14 +484,31 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # everything that matches their selection.
     default_floor = 75.0 if market else 85.0
     floor = max(default_floor, float(min_lock)) if min_lock is not None else default_floor
-    q: dict = {"pick_date": _today_str(), "lock_score": {"$gte": floor},
-               "is_under_lock": {"$ne": True},
-               "no_bet": {"$ne": True},
-               # Hide negative-edge picks from the main feed entirely.
-               # Picks where model_WP < book_implied are by definition bad
-               # bets (book is sharper than us). The Locks tab is for
-               # actionable +EV picks only.
-               "edge_percent": {"$gte": 0}}
+    # Two-bucket query:
+    #  • Standard picks: must pass lock floor + edge >= 0 + not no_bet + not under_lock
+    #  • Elite-player anchors (Mbappé, Haaland, Messi, Kane, Ronaldo synth FGS
+    #    etc.): bypass lock floor + edge filter — they're reputation-locked
+    #    Elite tier even when raw math is borderline. Still must not be NO-BET
+    #    or under-lock.
+    standard_q = {
+        "lock_score": {"$gte": floor},
+        "is_under_lock": {"$ne": True},
+        "no_bet": {"$ne": True},
+        # Hide negative-edge picks from the main feed entirely.
+        # Picks where model_WP < book_implied are by definition bad
+        # bets (book is sharper than us). The Locks tab is for
+        # actionable +EV picks only.
+        "edge_percent": {"$gte": 0},
+    }
+    elite_q = {
+        "elite_player": True,
+        "is_under_lock": {"$ne": True},
+        "no_bet": {"$ne": True},
+    }
+    q: dict = {
+        "pick_date": _today_str(),
+        "$or": [standard_q, elite_q],
+    }
     if sport and sport.lower() != "all":
         q["sport"] = sport
     if grade:

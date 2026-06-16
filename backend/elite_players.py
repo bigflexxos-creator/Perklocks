@@ -47,10 +47,13 @@ ELITE_PLAYERS = {
     # World-class strikers / forwards / playmakers (Anytime Goal Scorer + ML)
     "Soccer": {
         # Top strikers (auto-boost on Anytime Goal Scorer)
-        "Erling Haaland", "Kylian Mbappé", "Kylian Mbappe",
+        "Erling Haaland", "Erling Braut Haaland",
+        "Kylian Mbappé", "Kylian Mbappe",
         "Lionel Messi", "Harry Kane", "Mohamed Salah", "Mo Salah",
-        "Cristiano Ronaldo", "Robert Lewandowski",
+        "Cristiano Ronaldo", "Cristiano Ronaldo dos Santos Aveiro",
+        "Robert Lewandowski",
         "Vinicius Junior", "Vinicius Jr", "Vinícius Júnior",
+        "Vinicius Jose Paixao de Oliveira Junior",
         "Lautaro Martínez", "Lautaro Martinez",
         "Victor Osimhen", "Julián Álvarez", "Julian Alvarez",
         "Romelu Lukaku", "Darwin Núñez", "Darwin Nunez",
@@ -247,10 +250,12 @@ def apply_elite_boost(picks: list[dict]) -> list[dict]:
     # for this league), synthesize one. Goal-only probability ≈ 75% of
     # score-or-assist probability for strikers (assists are less common).
     ELITE_STRIKERS = {
-        "Erling Haaland", "Kylian Mbappé", "Kylian Mbappe", "Harry Kane",
+        "Erling Haaland", "Erling Braut Haaland",
+        "Kylian Mbappé", "Kylian Mbappe", "Harry Kane",
         "Lionel Messi", "Robert Lewandowski", "Mohamed Salah",
         "Victor Osimhen", "Lautaro Martínez", "Julián Álvarez",
         "Romelu Lukaku", "Darwin Núñez", "Cristiano Ronaldo",
+        "Cristiano Ronaldo dos Santos Aveiro",
         "Bukayo Saka", "Vinicius Junior", "Vinicius Jr",
         "Alexander Isak", "Ollie Watkins", "Ivan Toney",
         "Khvicha Kvaratskhelia", "Jude Bellingham", "Jamal Musiala",
@@ -258,8 +263,10 @@ def apply_elite_boost(picks: list[dict]) -> list[dict]:
     }
     synth_added = 0
     soa_picks_by_player: dict[tuple, dict] = {}
+    ags_picks_by_player: dict[tuple, dict] = {}
     ags_existing: set = set()
     fgs_existing: set = set()
+    soa_existing: set = set()
     for p in picks:
         if (p.get("sport") or "") != "Soccer":
             continue
@@ -268,7 +275,9 @@ def apply_elite_boost(picks: list[dict]) -> list[dict]:
             if striker.lower() in market.lower():
                 if "To Score or Assist" in market:
                     soa_picks_by_player[(striker, p.get("event"))] = p
+                    soa_existing.add((striker, p.get("event")))
                 elif "Anytime Goal Scorer" in market:
+                    ags_picks_by_player[(striker, p.get("event"))] = p
                     ags_existing.add((striker, p.get("event")))
                 elif "First Goal Scorer" in market:
                     fgs_existing.add((striker, p.get("event")))
@@ -305,6 +314,7 @@ def apply_elite_boost(picks: list[dict]) -> list[dict]:
                 f"(synthesized from book's To Score or Assist line)."
             ] + (soa_pick.get("key_insights") or [])
             picks.append(synth)
+            ags_existing.add((striker, event))
             synth_added += 1
 
         # ── Synthetic FIRST GOAL SCORER (~25% of AGS prob, longer odds)
@@ -336,8 +346,86 @@ def apply_elite_boost(picks: list[dict]) -> list[dict]:
                 f"score first in ~12-18% of starts)."
             ] + (soa_pick.get("key_insights") or [])
             picks.append(synth)
+            fgs_existing.add((striker, event))
+            synth_added += 1
+
+    # ── Fallback: derive synthetic FGS + SoA from real AGS picks for elite
+    # strikers when the book did NOT expose To Score or Assist (e.g. Norway
+    # vs Senegal, France vs Iraq). Without this, Haaland/Mbappé would only
+    # show Anytime Goal Scorer (1 pick) instead of the full triple-market.
+    for (striker, event), ags_pick in ags_picks_by_player.items():
+        ags_win = float(ags_pick.get("win_probability") or 0)
+        ags_odds = float(ags_pick.get("book_odds") or -100)
+
+        # ── Synthetic FIRST GOAL SCORER (~25% of AGS prob)
+        if (striker, event) not in fgs_existing:
+            fgs_win = round(ags_win * 0.28, 1)
+            # FGS odds: roughly 3× longer than AGS for elite strikers
+            if ags_odds < 0:
+                fgs_odds = max(300, int(abs(ags_odds) * 3.0))
+            else:
+                fgs_odds = max(300, int(ags_odds * 2.5))
+            fgs_implied = round(100 / (1 + fgs_odds / 100.0), 1)
+            synth = {**ags_pick}
+            synth["id"] = str(uuid.uuid4())
+            synth["market"] = f"{striker} First Goal Scorer"
+            synth["win_probability"] = fgs_win
+            synth["book_odds"] = fgs_odds
+            synth["implied_probability"] = fgs_implied
+            synth["edge_percent"] = round(fgs_win - fgs_implied, 2)
+            synth["lock_score"] = round(min(92.0,
+                float(ags_pick.get("lock_score") or 88) - 3), 1)
+            synth["synthetic_fgs"] = True
+            synth["elite_player"] = True
+            synth["elite_player_name"] = striker
+            synth["selection"] = "Yes"
+            synth["key_insights"] = [
+                f"⭐ Elite Striker Lottery: {striker} First Goal Scorer "
+                f"(synthesized from book's Anytime Goal Scorer line — "
+                f"strikers like {striker} score first in ~12-18% of starts)."
+            ] + (ags_pick.get("key_insights") or [])
+            picks.append(synth)
+            fgs_existing.add((striker, event))
+            synth_added += 1
+
+        # ── Synthetic TO SCORE OR ASSIST (~33% boost over AGS)
+        # A striker who's anytime-goal at 50% is roughly 60-70% to score-or-
+        # assist (assists ~20-30% of contributions for top strikers).
+        if (striker, event) not in soa_existing:
+            soa_win = round(min(85.0, ags_win * 1.33), 1)
+            # SoA odds: tighter than AGS by ~50-70 American points.
+            if ags_odds < 0:
+                soa_odds = int(ags_odds - 60)  # more negative = chalkier
+            else:
+                soa_odds = max(-300, int(ags_odds * 0.6))  # cross to negative
+            if soa_odds < 0:
+                soa_implied = round(100 / (1 + (abs(soa_odds) / 100.0)) * (abs(soa_odds)/100.0) * (100/abs(soa_odds)), 1)
+                # Simpler: implied = abs(odds) / (abs(odds) + 100) * 100
+                soa_implied = round(abs(soa_odds) / (abs(soa_odds) + 100.0) * 100, 1)
+            else:
+                soa_implied = round(100 / (1 + soa_odds / 100.0), 1)
+            synth = {**ags_pick}
+            synth["id"] = str(uuid.uuid4())
+            synth["market"] = f"{striker} To Score or Assist"
+            synth["win_probability"] = soa_win
+            synth["book_odds"] = soa_odds
+            synth["implied_probability"] = soa_implied
+            synth["edge_percent"] = round(soa_win - soa_implied, 2)
+            synth["lock_score"] = round(min(99.0, max(ELITE_LOCK_FLOOR,
+                float(ags_pick.get("lock_score") or 92) + 2)), 1)
+            synth["synthetic_soa"] = True
+            synth["elite_player"] = True
+            synth["elite_player_name"] = striker
+            synth["selection"] = "Yes"
+            synth["key_insights"] = [
+                f"⭐ Elite Striker Lock: {striker} To Score or Assist "
+                f"(synthesized from book's Anytime Goal Scorer line — "
+                f"adds ~20-30% probability for assists)."
+            ] + (ags_pick.get("key_insights") or [])
+            picks.append(synth)
+            soa_existing.add((striker, event))
             synth_added += 1
 
     if synth_added:
-        logger.info("Synthetic AGS+FGS picks added: %d", synth_added)
+        logger.info("Synthetic AGS+FGS+SoA picks added: %d", synth_added)
     return picks

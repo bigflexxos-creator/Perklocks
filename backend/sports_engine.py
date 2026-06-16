@@ -1353,8 +1353,88 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
     return [p for p in picks if p is not None]
 
 
+# ── Elite teams: events featuring these get fetched FIRST (for player props)
+# so star strikers like Kane / Haaland / Mbappé / Messi never get cut off by
+# the per-key event cap. Major World Cup nations + top European clubs.
+_ELITE_SOCCER_TEAMS = {
+    # World Cup top nations (men's)
+    "England", "Brazil", "Argentina", "France", "Germany", "Spain",
+    "Portugal", "Netherlands", "Norway", "Italy", "Belgium", "Croatia",
+    "Uruguay", "Colombia", "Mexico", "USA", "United States", "Senegal",
+    "Morocco", "Japan", "Denmark", "Switzerland", "Sweden", "Poland",
+    # Top European clubs (UCL/UEL/EPL/La Liga/Bundesliga/Serie A/Ligue 1)
+    "Manchester City", "Real Madrid", "FC Barcelona", "Barcelona",
+    "Bayern Munich", "Bayern München", "Paris Saint Germain", "PSG",
+    "Arsenal", "Liverpool", "Chelsea", "Manchester United", "Tottenham",
+    "Tottenham Hotspur", "Inter Milan", "Internazionale", "Juventus",
+    "AC Milan", "Napoli", "Atletico Madrid", "Borussia Dortmund",
+}
+# ── ANCHOR teams: these MUST be in the selection regardless of cap, because
+# they contain marquee players the user explicitly demanded (Mbappé/Haaland/
+# Messi/Kane/Ronaldo). Priority above all other elite teams.
+_ANCHOR_SOCCER_TEAMS = {
+    "France",            # Mbappé
+    "Norway",            # Haaland
+    "Argentina",         # Messi
+    "England",           # Kane / Bellingham / Saka / Foden
+    "Portugal",          # Ronaldo
+    "Brazil",            # Vinicius / Rodrygo / Neymar
+    "Spain",             # Yamal
+    "Germany",           # Musiala / Wirtz
+    "Netherlands",       # Depay / Gakpo
+    # Top European clubs with global stars
+    "Real Madrid", "FC Barcelona", "Barcelona",
+    "Manchester City", "Bayern Munich", "Bayern München",
+    "Paris Saint Germain", "PSG",
+}
+# Per-sport-key cap for event-level props fetches. World Cup is the marquee
+# event with 50+ matches over a tournament — we fetch up to 10 (vs default 3)
+# so Kane/Haaland/Mbappé/Messi etc. all get their props pulled even when their
+# match isn't in the chronological top-3. Trade-off: more API credits used.
+_PROPS_PER_KEY_CAP = {
+    "soccer_fifa_world_cup": 14,
+    "soccer_fifa_club_world_cup": 10,
+    "soccer_uefa_champs_league": 10,
+    "soccer_uefa_europa_league": 6,
+}
+_DEFAULT_PROPS_PER_KEY = 3
+
+# Per-sport-key look-ahead window (in hours). World Cup pools use a 7-day
+# window so elite-team matches still get props fetched even when France
+# (Mbappé) / Brazil (Vinicius) / Germany etc. don't play for several days.
+_PROPS_LOOKAHEAD_HOURS = {
+    "soccer_fifa_world_cup": 168,         # 7 days
+    "soccer_fifa_club_world_cup": 168,    # 7 days
+    "soccer_uefa_champs_league": 168,
+    "soccer_uefa_europa_league": 168,
+}
+_DEFAULT_LOOKAHEAD_HOURS = 72
+
+
+def _event_priority(ev: dict, sport: str) -> int:
+    """Lower number = higher priority for player-props fetching.
+    Tier 0 = ANCHOR teams (Mbappé/France, Haaland/Norway, Messi/Argentina,
+              Kane/England, Ronaldo/Portugal, etc.) — ALWAYS fetched.
+    Tier 1 = other elite teams (Croatia, Switzerland, Mexico, USA, ...).
+    Tier 2 = non-elite (filler)."""
+    if sport != "Soccer":
+        return 1
+    home = (ev.get("home_team") or "")
+    away = (ev.get("away_team") or "")
+    if home in _ANCHOR_SOCCER_TEAMS or away in _ANCHOR_SOCCER_TEAMS:
+        return 0
+    if home in _ELITE_SOCCER_TEAMS or away in _ELITE_SOCCER_TEAMS:
+        return 1
+    return 2
+
+
 async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
-    """Fetch top 3 upcoming events per sport-key and pull high-prob player props."""
+    """Fetch upcoming events per sport-key and pull high-prob player props.
+
+    Elite-team events (Kane's England, Haaland's Norway, etc.) are prioritized
+    so they never get cut off by the per-key cap. World Cup events use a
+    higher cap (10) vs default (3) to capture the full marquee slate.
+    """
     if sport not in PLAYER_PROP_MARKETS:
         return []
     # Refresh MLB rosters once per day so we can tag player picks with their
@@ -1373,6 +1453,7 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
         if not isinstance(events, list):
             continue
         now = datetime.now(timezone.utc)
+        lookahead_hours = _PROPS_LOOKAHEAD_HOURS.get(key, _DEFAULT_LOOKAHEAD_HOURS)
         upcoming = []
         for e in events:
             ct = e.get("commence_time")
@@ -1380,12 +1461,25 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                 continue
             try:
                 dt = datetime.strptime(ct, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                if now - _dt.timedelta(minutes=30) <= dt <= now + _dt.timedelta(hours=72):
+                if now - _dt.timedelta(minutes=30) <= dt <= now + _dt.timedelta(hours=lookahead_hours):
                     upcoming.append((dt, e))
             except Exception:
                 continue
-        upcoming.sort(key=lambda x: x[0])
-        for _, ev in upcoming[:3]:
+        # Sort by (priority, commence_time): ANCHOR teams (Mbappé/Haaland/
+        # Messi/Kane/Ronaldo) first, then other elite, then filler. Within
+        # each tier, sort by chronological order.
+        upcoming.sort(key=lambda x: (_event_priority(x[1], sport), x[0]))
+        cap = _PROPS_PER_KEY_CAP.get(key, _DEFAULT_PROPS_PER_KEY)
+        selected = upcoming[:cap]
+        anchor_count = sum(1 for _, ev in selected if _event_priority(ev, sport) == 0)
+        elite_count = sum(1 for _, ev in selected if _event_priority(ev, sport) <= 1)
+        logger.info(
+            "Props fetch %s/%s: %d upcoming, selecting %d (cap=%d). "
+            "Anchor teams: %d, Elite teams: %d",
+            sport, key, len(upcoming), len(selected), cap,
+            anchor_count, elite_count,
+        )
+        for _, ev in selected:
             await asyncio.sleep(1.1)  # space requests under rate limit
             payload = await _fetch_event_props_payload(sport, key, ev["id"])
             if isinstance(payload, dict) and payload.get("bookmakers"):
