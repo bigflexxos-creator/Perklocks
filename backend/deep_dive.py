@@ -163,7 +163,23 @@ async def deep_dive(db, pick: dict) -> dict:
         pick["confidence_score"] = compute_confidence_score(pick, bucket_n, bucket_hit_rate)
         pick["risk_score"]       = compute_risk_score(pick, bucket_n)
         pick["top_reasons"]      = top_three_reasons(pick)
-        pick["no_bet"]           = pick["confidence_score"] < NO_BET_THRESHOLD
+        # NO-BET gate. Two carve-outs:
+        #  • Elite-player anchors: Mbappé/Haaland/Messi/Kane/Ronaldo etc. are
+        #    locked at Elite tier regardless of edge math. Never NO-BET them.
+        #  • Synthetic long-shot props (First Goal Scorer etc.): the raw
+        #    win_probability is inherently ~12-18% by market structure, so
+        #    falls below threshold. Lock-score already accounts for the
+        #    high-variance nature, so keep these visible.
+        is_elite_anchor = bool(pick.get("elite_player"))
+        is_long_shot_synth = bool(
+            pick.get("synthetic_fgs")
+            or pick.get("synthetic_ags")
+            or pick.get("synthetic_soa")
+        )
+        if is_elite_anchor or is_long_shot_synth:
+            pick["no_bet"] = False
+        else:
+            pick["no_bet"] = pick["confidence_score"] < NO_BET_THRESHOLD
         pick["deep_dive"]        = True
     except Exception as e:
         logger.warning("deep_dive failed for pick %s: %s", pick.get("id"), e)

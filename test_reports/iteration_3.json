@@ -1,0 +1,42 @@
+{
+  "summary": "Backend-only verification of Harry Kane / Haaland / Mbappe / Messi / Ronaldo goalscorer fix. RESULT: Core fix is WORKING — all 5 elite strikers now appear with all 3 markets (Anytime Goal Scorer, First Goal Scorer, To Score or Assist). 14/15 new tests pass (93%). 92 Soccer picks returned (>=80 required). Vinicius Jr, Lamine Yamal, Jamal Musiala all present (no regression). Rollover and bet-killer endpoints alive (no 500). The only failing assertion is /api/stats/summary.elite_count = 12 (< 30 expected). RCA: stats endpoint defines 'elite' as lock_score >= 95 (server.py:1189,1200), not elite_player=True. Actual elite_player=True picks in feed = 58. Definitional mismatch — not a regression of the fix, but the stat metric does not surface the elite strikers fix to the UI.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/stats/summary",
+        "issue": "elite_count returns 12 (lock_score>=95 only); actual elite_player=True picks across feed = 58. Definition out of sync with the rest of the elite-player system. Reference: server.py:1189 and :1200. Consider counting {'elite_player': True} OR adding a second metric (e.g., 'elite_player_count') so the Kane/Mbappe/Haaland fix is reflected in stats."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_elite_goalscorers.py",
+    "/app/backend/tests/test_lockscore_api.py",
+    "/app/test_reports/pytest/elite_goalscorers.xml"
+  ],
+  "action_items": [
+    "Decide stats/summary semantics: either change `elite_count` in server.py (lines 1189 & 1200) from `lock_score>=95` to `elite_player: True` to match the rest of the codebase, OR keep lock>=95 and lower the request's 'elite_count >= 30' expectation. The Kane/Haaland/Mbappe/Messi/Ronaldo fix itself is verified end-to-end; this is only a metric definition gap."
+  ],
+  "critical_code_review_comments": [
+    "server.py:1189 / 1200 — elite_count uses lock_score>=95 bound but the rest of the codebase (deep_dive.py, picks/today $or carve-out) treats `elite_player=True` as the elite marker. Two divergent definitions create user-visible inconsistency: stats says '12 elite picks' while feed actually contains 58 elite_player picks (incl. Kane, Mbappe, Haaland, Messi, Ronaldo at locks 68–90).",
+    "server.py is now ~1477 lines — exceeds the 700-line guideline. Consider splitting /api/picks/* routes into a dedicated router module."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_elite_goalscorers.py"
+  ],
+  "success_rate": {
+    "backend": "93% (14/15 — 5 elite strikers all PASS with 3 markets each, soccer feed=92 picks, no_regression PASS for Vinicius/Yamal/Musiala, rollover/bet-killer alive, goalscorer market filter clean. 1 FAIL: stats elite_count metric definition gap.)",
+    "frontend": "N/A — backend-only review requested"
+  },
+  "seed_data_creation": "None. Demo user demo@lockscore.ai already seeded.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: pytest /app/backend/tests/test_elite_goalscorers.py -v against EXPO_PUBLIC_BACKEND_URL=https://bet-edge-ai-1.preview.emergentagent.com. Demo creds: demo@lockscore.ai / demo123. Key sample verification: GET /api/picks/today?sport=Soccer returns 92 picks; filter by `market` field containing player name (e.g. 'Harry Kane Anytime Goal Scorer'). Found markets per striker (lock_score, event in parens): Harry Kane 6 picks (Croatia@England 77.3, Ghana@England 79.2), Haaland 3 (Senegal@Norway 68.6), Mbappe 3 (Iraq@France 89.8), Messi 6 (Algeria@Argentina 85.0, Austria@Argentina 81.5), Ronaldo 6 (DR Congo@Portugal 89.0, Uzbekistan@Portugal 90.4). All have no_bet=False, elite_player=True.",
+  "rca_of_issue": "1) ROOT CAUSE of the missing-Kane bug from the request — VERIFIED FIXED. Top-3 event cap and lack of elite-team priority sorting in _fetch_player_props_for_sport was filtering out England/France/Norway World Cup matches. After the fix (cap raised to 14, _event_priority puts anchor teams first, 168h lookahead), Kane/Mbappe/Haaland/Messi/Ronaldo all appear with full 3-market trios. Synthesis bidirectionality also working — Haaland's Senegal match only exposed Anytime Goal Scorer from The Odds API; the new FGS+SoA synthesis successfully derived the missing two markets (visible in feed: Erling Braut Haaland First Goal Scorer + To Score or Assist, both at lock 68.6). 2) NEW MINOR FINDING — /api/stats/summary uses a stricter elite definition (lock_score>=95) than the rest of the system (elite_player flag). Report says '12 elite' while feed has 58 elite_player picks. Easy fix: change MongoDB filter on server.py:1189 from {'$gte':['$lock_score',95]} to {'$eq':['$elite_player', True]} and line 1200 similarly. No retest required from testing agent — main agent can verify in 1 line."
+}
