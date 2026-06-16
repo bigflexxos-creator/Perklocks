@@ -915,6 +915,191 @@ async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) 
     return data if isinstance(data, dict) else {}
 
 
+# ─── MLB Roster Cache (free MLB Stats API, no auth) ───
+# Used to tag each prop pick with the player's team abbreviation so we don't
+# confuse users about which "Max Muncy" / "Brandon Lowe" / etc. they're seeing.
+_MLB_TEAM_ID_BY_NAME = {
+    "Arizona Diamondbacks": 109, "Atlanta Braves": 144, "Baltimore Orioles": 110,
+    "Boston Red Sox": 111, "Chicago Cubs": 112, "Chicago White Sox": 145,
+    "Cincinnati Reds": 113, "Cleveland Guardians": 114, "Colorado Rockies": 115,
+    "Detroit Tigers": 116, "Houston Astros": 117, "Kansas City Royals": 118,
+    "Los Angeles Angels": 108, "Los Angeles Dodgers": 119, "Miami Marlins": 146,
+    "Milwaukee Brewers": 158, "Minnesota Twins": 142, "New York Mets": 121,
+    "New York Yankees": 147, "Athletics": 133, "Oakland Athletics": 133,
+    "Philadelphia Phillies": 143, "Pittsburgh Pirates": 134, "San Diego Padres": 135,
+    "Seattle Mariners": 136, "San Francisco Giants": 137, "St. Louis Cardinals": 138,
+    "Tampa Bay Rays": 139, "Texas Rangers": 140, "Toronto Blue Jays": 141,
+    "Washington Nationals": 120,
+}
+_MLB_ROSTER_CACHE: dict[str, set[str]] = {}   # team_name → {player_full_names}
+_MLB_ROSTER_FETCHED_DATE: str | None = None
+
+
+async def _refresh_mlb_rosters(date_str: str) -> None:
+    """Fetch all 30 MLB active rosters once per day. Free public API, no auth.
+    Used to map prop player names → team for clear display."""
+    global _MLB_ROSTER_CACHE, _MLB_ROSTER_FETCHED_DATE
+    if _MLB_ROSTER_FETCHED_DATE == date_str and _MLB_ROSTER_CACHE:
+        return
+    new_cache: dict[str, set[str]] = {}
+    async with httpx.AsyncClient(timeout=10) as client:
+        for team_name, team_id in _MLB_TEAM_ID_BY_NAME.items():
+            try:
+                r = await client.get(
+                    f"https://statsapi.mlb.com/api/v1/teams/{team_id}/roster",
+                    params={"rosterType": "40Man"},   # broader than active (40-man + recent call-ups)
+                )
+                if r.status_code != 200:
+                    continue
+                data = r.json()
+                names: set[str] = set()
+                for entry in data.get("roster", []):
+                    p = entry.get("person") or {}
+                    full = p.get("fullName")
+                    if full:
+                        names.add(full)
+                if names:
+                    new_cache[team_name] = names
+            except Exception as e:
+                logger.debug("MLB roster fetch failed for %s: %s", team_name, e)
+                continue
+            await asyncio.sleep(0.05)
+    if new_cache:
+        _MLB_ROSTER_CACHE = new_cache
+        _MLB_ROSTER_FETCHED_DATE = date_str
+        logger.info("MLB rosters cached: %d teams, %d total players",
+                    len(new_cache), sum(len(v) for v in new_cache.values()))
+
+
+def _player_team_for_event(player: str, home_team: str, away_team: str,
+                           year_hint: str = "") -> str | None:
+    """Given a cleaned player name and the 2 teams in the event, return the
+    team name (full) the player belongs to. Returns None if unknown.
+
+    `year_hint` (e.g. "2002") helps disambiguate name-collisions when both
+    teams in the matchup have a player with the same name — we look up the
+    player's MLB Stats API birth-year and prefer the roster whose player
+    matches the hint.
+    """
+    if not player:
+        return None
+    pl = _strip_accents(player.strip().lower())
+    home_roster = _MLB_ROSTER_CACHE.get(home_team, set())
+    away_roster = _MLB_ROSTER_CACHE.get(away_team, set())
+    # Build accent-normalized lookup sets so 'Yandy Diaz' matches 'Yandy Díaz'.
+    home_norm = {_strip_accents(n.lower()): n for n in home_roster}
+    away_norm = {_strip_accents(n.lower()): n for n in away_roster}
+    home_has = pl in home_norm
+    away_has = pl in away_norm
+    # Exact match — no ambiguity
+    if home_has and not away_has:
+        return home_team
+    if away_has and not home_has:
+        return away_team
+    # Both teams have same-name players (rare: e.g. two Max Muncys).
+    # Use birth-year hint from The Odds API to disambiguate via the player-id
+    # cache (built lazily).
+    if home_has and away_has:
+        if not year_hint:
+            return None  # ambiguous — leave untagged
+        try:
+            year_int = int(year_hint)
+            for team_name in (home_team, away_team):
+                team_id = _MLB_TEAM_ID_BY_NAME.get(team_name)
+                if not team_id:
+                    continue
+                # Look up player birth year via MLB Stats API. Cheap call,
+                # only triggered on actual collisions (very rare).
+                r = httpx.get(
+                    f"https://statsapi.mlb.com/api/v1/teams/{team_id}/roster",
+                    params={"rosterType": "40Man"}, timeout=5,
+                )
+                if r.status_code != 200:
+                    continue
+                for e in r.json().get("roster", []):
+                    p = e.get("person") or {}
+                    if (p.get("fullName") or "").lower() != pl:
+                        continue
+                    pid = p.get("id")
+                    if not pid:
+                        continue
+                    p2 = httpx.get(
+                        f"https://statsapi.mlb.com/api/v1/people/{pid}",
+                        timeout=5,
+                    )
+                    if p2.status_code != 200:
+                        continue
+                    people = p2.json().get("people", [])
+                    if not people:
+                        continue
+                    bd = (people[0].get("birthDate") or "")
+                    if bd.startswith(str(year_int)):
+                        return team_name
+        except Exception as e:
+            logger.debug("Year-hint roster lookup failed: %s", e)
+        return None
+    # Loose last-name match: only one team has a player with this last name.
+    last = pl.split()[-1] if " " in pl else pl
+    home_matches = [n for n in home_roster if n.lower().split()[-1] == last]
+    away_matches = [n for n in away_roster if n.lower().split()[-1] == last]
+    if len(home_matches) == 1 and not away_matches:
+        return home_team
+    if len(away_matches) == 1 and not home_matches:
+        return away_team
+    return None
+
+
+# MLB has several name-collision pairs (e.g. Max Muncy/1990 LAD vs Max Muncy/2002
+# OAK) that The Odds API disambiguates by appending a birth-year suffix like
+# "Max Muncy (2002)". To users this looks like a bug ("why is the famous Max
+# Muncy in a Pirates@A's game?") so we strip the suffix for display and rely
+# on the event context + team tag to identify the correct player.
+import re as _re
+import unicodedata as _ud
+_NAME_YEAR_SUFFIX = _re.compile(r"\s*\((19|20)\d{2}\)\s*$")
+
+
+def _strip_accents(s: str) -> str:
+    """Normalize accents: 'Yandy Díaz' → 'Yandy Diaz' so name matching works
+    against the MLB Stats API (which preserves diacritics)."""
+    if not s:
+        return ""
+    return "".join(c for c in _ud.normalize("NFD", s) if _ud.category(c) != "Mn")
+
+
+def _clean_player_name(raw: str | None) -> str:
+    """Strip the (YYYY) birth-year disambiguator The Odds API appends to
+    name-collision MLB players (e.g. 'Max Muncy (2002)' → 'Max Muncy')."""
+    if not raw:
+        return ""
+    return _NAME_YEAR_SUFFIX.sub("", str(raw)).strip()
+
+
+def _team_abbr(team_name: str) -> str:
+    """Short 3-letter team tag for display. Falls back to the first word."""
+    if not team_name:
+        return ""
+    MAP = {
+        # MLB
+        "Arizona Diamondbacks": "ARI", "Atlanta Braves": "ATL", "Baltimore Orioles": "BAL",
+        "Boston Red Sox": "BOS", "Chicago Cubs": "CHC", "Chicago White Sox": "CWS",
+        "Cincinnati Reds": "CIN", "Cleveland Guardians": "CLE", "Colorado Rockies": "COL",
+        "Detroit Tigers": "DET", "Houston Astros": "HOU", "Kansas City Royals": "KC",
+        "Los Angeles Angels": "LAA", "Los Angeles Dodgers": "LAD", "Miami Marlins": "MIA",
+        "Milwaukee Brewers": "MIL", "Minnesota Twins": "MIN", "New York Mets": "NYM",
+        "New York Yankees": "NYY", "Athletics": "OAK", "Oakland Athletics": "OAK",
+        "Philadelphia Phillies": "PHI", "Pittsburgh Pirates": "PIT", "San Diego Padres": "SD",
+        "Seattle Mariners": "SEA", "San Francisco Giants": "SF", "St. Louis Cardinals": "STL",
+        "Tampa Bay Rays": "TB", "Texas Rangers": "TEX", "Toronto Blue Jays": "TOR",
+        "Washington Nationals": "WSH",
+    }
+    if team_name in MAP:
+        return MAP[team_name]
+    # Generic fallback: take first 3 letters of last word.
+    parts = team_name.split()
+    return (parts[-1][:3] if parts else team_name[:3]).upper()
+
+
 def _prop_market_label(market_key: str, side: str, point: float | None) -> str:
     # Anytime goal scorer has no point — just "Yes" the player scores at all.
     if market_key == "player_goal_scorer_anytime":
@@ -961,6 +1146,10 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
     if not home or not away or not payload.get("bookmakers"):
         return []
     bucket: dict = {}
+    # Track birth-year hints per (clean) player name so we can disambiguate
+    # name-collision pairs (Max Muncy LAD vs OAK) when both teams have the
+    # same player name on their roster.
+    player_year_hints: dict[str, str] = {}
     for b in payload["bookmakers"]:
         for m in b.get("markets", []):
             mk = m.get("key")
@@ -968,7 +1157,14 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             is_score_or_assist = mk == "player_to_score_or_assist"
             is_mma_method = mk == "mma_method_of_victory"
             for o in m.get("outcomes", []):
-                player = o.get("description") or o.get("name")
+                raw_player = o.get("description") or o.get("name") or ""
+                player = _clean_player_name(raw_player)
+                # Preserve any (YYYY) hint The Odds API attached so we can
+                # disambiguate same-name players via birth-year lookup.
+                _ym = _NAME_YEAR_SUFFIX.search(raw_player)
+                player_year_hint = _ym.group(0).strip("() ") if _ym else ""
+                if player and player_year_hint:
+                    player_year_hints[player] = player_year_hint
                 side = o.get("name")
                 point = o.get("point")
                 price = o.get("price")
@@ -983,7 +1179,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     #   name = fighter (e.g. "Sean O'Malley")
                     #   description = method (e.g. "KO/TKO", "Submission", "Decision")
                     # We treat each (fighter, method) pair as its own pick.
-                    fighter = o.get("name")
+                    fighter = _clean_player_name(o.get("name"))
                     method = o.get("description")
                     if not (fighter and method and price is not None):
                         continue
@@ -1096,6 +1292,20 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             market_label = f"{player} wins by {side}"
         else:
             market_label = f"{player} {_prop_market_label(mk, side, label_point)}"
+
+        # Tag MLB props with the player's team so users can disambiguate
+        # name-collision players (Max Muncy LAD vs Max Muncy OAK, etc.).
+        team_label = ""
+        if sport == "MLB":
+            team_full = _player_team_for_event(
+                player, home, away,
+                year_hint=player_year_hints.get(player, ""),
+            )
+            if team_full:
+                team_label = _team_abbr(team_full)
+                if team_label and team_label not in market_label:
+                    # Insert tag right after the player name.
+                    market_label = market_label.replace(player, f"{player} ({team_label})", 1)
         picks.append(_build_pick(
             sport=sport, league=f"{league} · Props", event=f"{away} @ {home}",
             event_time=commence,
@@ -1125,6 +1335,14 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
     """Fetch top 3 upcoming events per sport-key and pull high-prob player props."""
     if sport not in PLAYER_PROP_MARKETS:
         return []
+    # Refresh MLB rosters once per day so we can tag player picks with their
+    # team (disambiguates name-collision players like Max Muncy LAD vs OAK).
+    if sport == "MLB":
+        try:
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            await _refresh_mlb_rosters(today)
+        except Exception as e:
+            logger.warning("MLB roster refresh failed: %s", e)
     all_picks: list[dict] = []
     for key in SPORT_KEYS.get(sport, []):
         if _ACTIVE_KEYS and key not in _ACTIVE_KEYS:
