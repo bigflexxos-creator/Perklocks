@@ -266,6 +266,25 @@ async def settle_due_picks(db) -> dict:
     except Exception as e:
         logger.warning("prop settlement failed: %s", e)
 
+    # ── KBO settlement via Naver Sports — The Odds API doesn't return
+    # completed KBO scores so we settle KBO picks against the free public
+    # Naver KBO scoreboard. Pure HTTP, no auth required.
+    try:
+        from kbo_settlement import settle_kbo_picks
+        kbo_counts = await settle_kbo_picks(db)
+        counts["kbo_settled"] = kbo_counts.get("settled", 0)
+        counts["kbo_won"] = kbo_counts.get("won", 0)
+        counts["kbo_lost"] = kbo_counts.get("lost", 0)
+        counts["kbo_push"] = kbo_counts.get("push", 0)
+        counts["won"] += kbo_counts.get("won", 0)
+        counts["lost"] += kbo_counts.get("lost", 0)
+        counts["push"] += kbo_counts.get("push", 0)
+        counts["settled"] += kbo_counts.get("settled", 0)
+        if kbo_counts.get("settled"):
+            logger.info("KBO Naver settlement: %s", kbo_counts)
+    except Exception as e:
+        logger.warning("KBO settlement failed: %s", e)
+
     # ── Recompute self-tuning weights from the freshly-updated outcomes.
     # Cheap (pure aggregation over `picks`), runs after every settlement.
     try:
