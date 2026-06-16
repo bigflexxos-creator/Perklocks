@@ -1186,7 +1186,16 @@ async def stats_summary(user: Annotated[UserPublic, Depends(current_user)]):
             "count": {"$sum": 1},
             "avg_lock": {"$avg": "$lock_score"},
             "avg_edge": {"$avg": "$edge_percent"},
-            "elite": {"$sum": {"$cond": [{"$gte": ["$lock_score", 95]}, 1, 0]}},
+            # Elite = explicitly anchored to a star player (Mbappé/Haaland/
+            # Messi/Kane/Ronaldo/Sinner/Jokic/Judge/etc.), OR very high lock.
+            # The `elite_player` flag is the canonical signal — the lock-score
+            # threshold is only a fallback for sports without anchor coverage.
+            "elite": {"$sum": {"$cond": [
+                {"$or": [
+                    {"$eq": ["$elite_player", True]},
+                    {"$gte": ["$lock_score", 95]},
+                ]}, 1, 0,
+            ]}},
         }},
     ]
     by_sport = [
@@ -1197,7 +1206,13 @@ async def stats_summary(user: Annotated[UserPublic, Depends(current_user)]):
         async for r in db.picks.aggregate(pipeline)
     ]
     total = await db.picks.count_documents({"pick_date": today})
-    elite = await db.picks.count_documents({"pick_date": today, "lock_score": {"$gte": 95}})
+    elite = await db.picks.count_documents({
+        "pick_date": today,
+        "$or": [
+            {"elite_player": True},
+            {"lock_score": {"$gte": 95}},
+        ],
+    })
     avg_edge_agg = await db.picks.aggregate([
         {"$match": {"pick_date": today, "lock_score": {"$gte": 85}}},
         {"$group": {"_id": None, "avg": {"$avg": "$edge_percent"}}},

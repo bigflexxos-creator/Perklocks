@@ -172,6 +172,40 @@ backend:
         agent: "main"
         comment: "Async fetch — UI receives ai_pending boolean and replaces fallback when Claude responds."
 
+  - task: "Elite Striker Triple-Market Visibility (Kane / Haaland / Mbappé / Messi / Ronaldo)"
+    implemented: true
+    working: true
+    file: "/app/backend/sports_engine.py, /app/backend/elite_players.py, /app/backend/deep_dive.py, /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: false
+        agent: "user"
+        comment: "User reported Harry Kane missing from Soccer goalscorer picks despite England vs Croatia being live today."
+      - working: true
+        agent: "main"
+        comment: |
+          Root cause: _fetch_player_props_for_sport() in sports_engine.py only fetched the chronologically-first 3 events per sport-key, so World Cup matches featuring elite strikers (England, France, Norway) were cut off behind earlier filler matches. Five-part fix:
+          (1) sports_engine.py — Added _ANCHOR_SOCCER_TEAMS (France/Norway/England/Argentina/Portugal/Brazil/Spain/Germany/Netherlands + top clubs) + _ELITE_SOCCER_TEAMS. New _event_priority() returns 0 for anchors, 1 for elite, 2 for filler. World Cup cap raised 3→14, lookahead window 72h→168h.
+          (2) elite_players.py — Added 'Erling Braut Haaland' (The Odds API's exact string), 'Cristiano Ronaldo dos Santos Aveiro', and Vinicius variants.
+          (3) elite_players.py — Bidirectional synthesis: now derives FGS + SoA from real AGS picks too (was only AGS+FGS from SoA), so Mbappé/Haaland get all 3 markets even when their match only exposes Anytime Goal Scorer.
+          (4) deep_dive.py — NO-BET gate now forces no_bet=False for any elite_player=True or any synthetic_fgs/ags/soa pick (FGS markets have inherently low win-prob ~14% which used to trigger no_bet=True).
+          (5) server.py /api/picks/today — Query now uses $or: standard picks need lock_floor + edge>=0, but elite-player picks bypass both (still must not be no_bet or under_lock).
+      - working: true
+        agent: "testing"
+        comment: |
+          14/15 backend tests pass (93%). All 5 elite strikers verified with full 3-market trio in /api/picks/today?sport=Soccer:
+            - Harry Kane: Croatia@England + Ghana@England (6 picks total)
+            - Erling Braut Haaland: Senegal@Norway (3 picks)
+            - Kylian Mbappe: Iraq@France (3 picks)
+            - Lionel Messi: Algeria@Argentina + Austria@Argentina (6 picks)
+            - Cristiano Ronaldo: DR Congo@Portugal + Uzbekistan@Portugal (6 picks)
+          /api/picks/today returns 125 picks total, /api/stats/summary returns 70 elite (up from 12 after stats fix). No regressions: Vinicius Junior, Lamine Yamal, Jamal Musiala still present.
+      - working: true
+        agent: "main"
+        comment: "Stats summary fix applied: elite_count now counts elite_player=True OR lock_score>=95 (was only the lock-score threshold). API confirms 70 elite picks visible."
+
 frontend:
   - task: "Auth flow (login, register, persistence)"
     implemented: true
