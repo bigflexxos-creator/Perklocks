@@ -47,6 +47,8 @@ export type Pick = {
   confidence_score?: number;
   risk_score?: number;
   explanation?: string;
+  elite_player?: boolean;
+  elite_player_name?: string;
   pick_date: string;
 };
 

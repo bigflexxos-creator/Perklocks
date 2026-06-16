@@ -212,6 +212,20 @@ async def _refresh_picks(date_str: str) -> int:
     except Exception as e:
         logger.warning("Learning engine skipped: %s", e)
 
+    # ── Elite Player Boost: world-class players (Mbappé, Haaland, Messi,
+    # Kane, Judge, Sinner, Jokic, Wilson, etc.) get a +10 lock_score bump
+    # so they auto-qualify for Lock tier — books price them tightly but
+    # they're still the safest hit candidates by reputation.
+    try:
+        from elite_players import apply_elite_boost
+        before_elite = sum(1 for p in picks if p.get("elite_player"))
+        picks = apply_elite_boost(picks)
+        after_elite = sum(1 for p in picks if p.get("elite_player"))
+        logger.info("Elite Player Boost applied: %d picks tagged (was %d)",
+                    after_elite, before_elite)
+    except Exception as e:
+        logger.warning("Elite Player Boost skipped: %s", e)
+
     # ── Tennis Edge Engine v2: per-pick component scoring + NO_BET filter,
     # 99-LOCK gating, and max-3-per-day cap. Pure post-processing; no extra
     # API calls. Non-tennis picks pass through unchanged.
@@ -516,14 +530,19 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 ).replace(tzinfo=timezone.utc)
             except Exception:
                 return datetime.max.replace(tzinfo=timezone.utc)
+        # Elite-player anchor: always float elite picks to the top within
+        # their bucket regardless of sort key. Mbappé/Haaland/Messi/Kane etc.
+        # are the headline picks of the slate.
+        def _elite_rank(p: dict) -> int:
+            return 0 if p.get("elite_player") else 1
         if s == "time":
-            picks.sort(key=lambda p: (_event_dt(p), -p.get("lock_score", 0)))
+            picks.sort(key=lambda p: (_elite_rank(p), _event_dt(p), -p.get("lock_score", 0)))
         elif s == "edge":
-            picks.sort(key=lambda p: (_bucket(p), -p.get("edge_percent", 0), -p.get("lock_score", 0)))
+            picks.sort(key=lambda p: (_elite_rank(p), _bucket(p), -p.get("edge_percent", 0), -p.get("lock_score", 0)))
         elif s == "implied":
-            picks.sort(key=lambda p: (_bucket(p), -p.get("implied_probability", 0), -p.get("lock_score", 0)))
+            picks.sort(key=lambda p: (_elite_rank(p), _bucket(p), -p.get("implied_probability", 0), -p.get("lock_score", 0)))
         else:  # "lock" (default)
-            picks.sort(key=lambda p: (_bucket(p), -p.get("lock_score", 0)))
+            picks.sort(key=lambda p: (_elite_rank(p), _bucket(p), -p.get("lock_score", 0)))
     return {"picks": picks}
 
 

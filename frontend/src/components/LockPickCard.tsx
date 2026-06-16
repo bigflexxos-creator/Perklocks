@@ -45,6 +45,11 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
                 {pick.sport.toUpperCase()}
               </Text>
             </View>
+            {pick.elite_player && (
+              <View style={styles.eliteTag}>
+                <Text style={styles.eliteTagText}>⭐ ELITE</Text>
+              </View>
+            )}
             <Text style={styles.league} numberOfLines={1}>{pick.league}</Text>
             <View style={[styles.gradePill, { borderColor: gradeColor, backgroundColor: gradeColor + "18" }]}>
               <Text style={[styles.gradePillText, { color: gradeColor }]} numberOfLines={1}>
@@ -221,6 +226,20 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: "900",
     letterSpacing: 1.2,
+  },
+  eliteTag: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 4,
+    backgroundColor: "#FFD70022",
+    borderWidth: 1,
+    borderColor: "#FFD700",
+  },
+  eliteTagText: {
+    color: "#FFD700",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 1.0,
   },
   progressTrack: {
     height: 4,
