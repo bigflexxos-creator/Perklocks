@@ -235,6 +235,26 @@ export const api = {
 
   learnNow: () => request<{ active_buckets: number; picks_adjusted: number; sample_size: number }>(
     "/analytics/learn", { method: "POST" }),
+  analyticsV2: () => request<{
+    as_of?: string;
+    total_settled?: number;
+    market_rows?: Array<{
+      sport: string; market: string; n: number; won: number; lost: number;
+      units_risked: number; units_profit: number; roi: number; hit_rate: number;
+      clv_avg: number; calibration_err: number; composite_weight?: number;
+    }>;
+    market_weights?: Record<string, number>;
+    band_calibration?: Array<{ band: string; n: number; expected: number; actual: number; gap: number; needs_gate_raise: boolean }>;
+    band_raises?: Record<string, number>;
+    profit_by_sport?: Array<{
+      sport: string; n: number; won: number; lost: number;
+      units_risked: number; units_profit: number; roi_pct: number;
+      hit_rate_pct: number; clv_avg: number;
+    }>;
+    changes_log?: Array<{ ts: string; type: string; reason?: string; sport?: string; market?: string; band?: string; from?: number; to?: number; raise_by?: number }>;
+  }>("/analytics/v2"),
+  analyticsV2Recompute: () => request<{ gated: boolean; total_settled: number; rows: number }>(
+    "/analytics/v2/recompute", { method: "POST" }),
 };
 
 export type AnalyticsRow = {

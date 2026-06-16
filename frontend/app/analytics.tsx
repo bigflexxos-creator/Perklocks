@@ -12,6 +12,7 @@ import { COLORS } from "@/src/theme";
 
 type Performance = Awaited<ReturnType<typeof api.modelPerformance>>;
 type Learned = Awaited<ReturnType<typeof api.learnedWeights>>;
+type V2 = Awaited<ReturnType<typeof api.analyticsV2>>;
 
 const sign = (n: number) => (n > 0 ? "+" : "");
 const fmt = (n: number, d = 2) => (Number.isFinite(n) ? n.toFixed(d) : "—");
@@ -19,21 +20,25 @@ const fmt = (n: number, d = 2) => (Number.isFinite(n) ? n.toFixed(d) : "—");
 export default function AnalyticsScreen() {
   const [data, setData] = useState<Performance | null>(null);
   const [learned, setLearned] = useState<Learned | null>(null);
+  const [v2, setV2] = useState<V2 | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [learning, setLearning] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [res, lw] = await Promise.all([
+      const [res, lw, v2res] = await Promise.all([
         api.modelPerformance(),
         api.learnedWeights().catch(() => null),
+        api.analyticsV2().catch(() => null),
       ]);
       setData(res);
       setLearned(lw);
+      setV2(v2res);
     } catch (e) {
       setData(null);
       setLearned(null);
+      setV2(null);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -48,6 +53,7 @@ export default function AnalyticsScreen() {
     setLearning(true);
     try {
       await api.learnNow();
+      await api.analyticsV2Recompute().catch(() => null);
       await load();
     } catch {}
     setLearning(false);
@@ -230,6 +236,117 @@ export default function AnalyticsScreen() {
         {/* ── By Confidence ── */}
         <SectionHeader title="By Confidence Bucket" />
         {data.by_confidence.map((r) => <BreakdownRow key={r.key} row={r} />)}
+
+        {/* ── Learning System v2 (NEW) ── */}
+        {v2 && (v2.total_settled ?? 0) > 0 && (
+          <>
+            <SectionHeader
+              title="Learning System v2"
+              hint={`ROI 50% · CLV 25% · Calibration 20% · Volume 5% · ${v2.total_settled} settled`}
+            />
+
+            {/* Profit by Sport */}
+            {(v2.profit_by_sport ?? []).map((s) => (
+              <View key={`v2sport-${s.sport}`} style={styles.row}>
+                <Text style={[styles.td, { flex: 1.4, fontWeight: "700" }]}>{s.sport}</Text>
+                <Text style={[styles.td, { flex: 0.7, textAlign: "right" }]}>{s.n}</Text>
+                <Text style={[styles.td, { flex: 1, textAlign: "right" }]}>
+                  {fmt(s.hit_rate_pct, 1)}%
+                </Text>
+                <Text style={[styles.td, { flex: 1, textAlign: "right", fontWeight: "700",
+                  color: s.roi_pct >= 0 ? COLORS.neonGreen : COLORS.electricBlaze }]}>
+                  {sign(s.roi_pct)}{fmt(s.roi_pct, 1)}%
+                </Text>
+                <Text style={[styles.td, { flex: 1, textAlign: "right",
+                  color: s.units_profit >= 0 ? COLORS.neonGreen : COLORS.electricBlaze }]}>
+                  {sign(s.units_profit)}{fmt(s.units_profit, 1)}u
+                </Text>
+              </View>
+            ))}
+
+            {/* Calibration band — expected vs actual */}
+            {(v2.band_calibration ?? []).length > 0 && (
+              <>
+                <SectionHeader title="Band Calibration" hint="Expected vs actual hit rate" />
+                {v2.band_calibration!.map((b) => (
+                  <View key={`band-${b.band}`} style={styles.row}>
+                    <Text style={[styles.td, { flex: 1, fontWeight: "700" }]}>LOCK {b.band}</Text>
+                    <Text style={[styles.td, { flex: 0.7, textAlign: "right" }]}>n={b.n}</Text>
+                    <Text style={[styles.td, { flex: 1, textAlign: "right" }]}>
+                      exp {fmt(b.expected, 0)}%
+                    </Text>
+                    <Text style={[styles.td, { flex: 1, textAlign: "right", fontWeight: "700" }]}>
+                      act {fmt(b.actual, 1)}%
+                    </Text>
+                    <Text style={[styles.td, { flex: 1, textAlign: "right", fontWeight: "700",
+                      color: b.gap > 10 ? COLORS.electricBlaze :
+                             b.gap > 0  ? "#F2C744" : COLORS.neonGreen }]}>
+                      {sign(-b.gap)}{fmt(-b.gap, 1)}pp
+                    </Text>
+                  </View>
+                ))}
+              </>
+            )}
+
+            {/* Top-ROI markets */}
+            {(v2.market_rows ?? []).filter(r => r.n >= 5).length > 0 && (
+              <>
+                <SectionHeader title="Profit by Market" hint="ROI-sorted · ≥5 picks" />
+                {(v2.market_rows ?? [])
+                  .filter(r => r.n >= 5)
+                  .sort((a, b) => b.roi - a.roi)
+                  .slice(0, 12)
+                  .map((r) => (
+                    <View key={`v2m-${r.sport}-${r.market}`} style={styles.row}>
+                      <View style={{ flex: 2 }}>
+                        <Text style={styles.breakdownKey}>{r.sport} · {r.market}</Text>
+                        <Text style={styles.breakdownSub}>
+                          n={r.n} · hit {fmt(r.hit_rate, 1)}% · CLV {sign(r.clv_avg)}{fmt(r.clv_avg, 1)}
+                        </Text>
+                      </View>
+                      <Text style={[styles.td, { flex: 1, textAlign: "right", fontWeight: "700",
+                        color: r.roi >= 0 ? COLORS.neonGreen : COLORS.electricBlaze }]}>
+                        {sign(r.roi)}{fmt(r.roi, 1)}%
+                      </Text>
+                    </View>
+                  ))}
+              </>
+            )}
+
+            {/* Active market weights */}
+            {v2.market_weights && Object.keys(v2.market_weights).length > 0 && (
+              <>
+                <SectionHeader title="Market Filter Weights" hint="Boost (>1.0) · Decay (<1.0)" />
+                {Object.entries(v2.market_weights).map(([m, w]) => (
+                  <View key={`mw-${m}`} style={styles.row}>
+                    <Text style={[styles.td, { flex: 2, fontWeight: "700" }]}>{m}</Text>
+                    <Text style={[styles.td, { flex: 1, textAlign: "right", fontWeight: "800",
+                      color: w > 1.0 ? COLORS.neonGreen : w < 1.0 ? COLORS.electricBlaze : COLORS.textSecondary }]}>
+                      ×{fmt(w, 2)}
+                    </Text>
+                  </View>
+                ))}
+              </>
+            )}
+
+            {/* Changes log */}
+            {(v2.changes_log ?? []).length > 0 && (
+              <>
+                <SectionHeader title="Learning Changes Log" hint="Most recent first" />
+                {v2.changes_log!.slice(0, 10).map((c, i) => (
+                  <View key={`log-${i}`} style={[styles.row, { flexDirection: "column", alignItems: "stretch" }]}>
+                    <Text style={{ color: COLORS.textPrimary, fontWeight: "700", fontSize: 12 }}>
+                      [{c.type}] {c.band ? `Band ${c.band}` : `${c.sport ?? ""} · ${c.market ?? ""}`}
+                    </Text>
+                    <Text style={{ color: COLORS.textMuted, fontSize: 11, marginTop: 2 }}>
+                      {c.reason}
+                    </Text>
+                  </View>
+                ))}
+              </>
+            )}
+          </>
+        )}
 
         <Text style={styles.footnote}>
           Updated {new Date(data.as_of).toLocaleString()}. CLV populates after a few daily refreshes.
