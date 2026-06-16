@@ -242,8 +242,15 @@ async def settle_due_picks(db) -> dict:
             # dashboard never has to recompute from raw odds.
             from analytics import (american_profit_per_unit, clv_units,
                                     confidence_bucket)
+            from bet_type import classify_bet_type, unit_weight
             odds_used = pick.get("closing_odds") or pick.get("book_odds")
-            units_profit = american_profit_per_unit(odds_used or 0, outcome)
+            # Per-bet-type weighting: heavy chalk (-300/-500+) gets reduced or
+            # parlay-only stakes instead of flat $100 so ROI matches reality.
+            bet_type = classify_bet_type(odds_used)
+            w = unit_weight(odds_used)
+            raw_profit = american_profit_per_unit(odds_used or 0, outcome)
+            units_profit = round(raw_profit * w, 4)
+            units_risked = w if outcome != "push" else 0.0
             clv = clv_units(pick.get("odds_at_pick"), pick.get("closing_odds") or pick.get("book_odds"))
             await db.picks.update_one(
                 {"id": pick["id"]},
@@ -251,8 +258,10 @@ async def settle_due_picks(db) -> dict:
                     "status": outcome,
                     "settled_at": datetime.now(timezone.utc).isoformat(),
                     "final_score": scores_dict,
-                    "units_risked": 1.0 if outcome != "push" else 0.0,
+                    "units_risked": units_risked,
                     "units_profit": units_profit,
+                    "bet_type": bet_type,
+                    "unit_weight": w,
                     "clv_value": clv,
                     "confidence_bucket": confidence_bucket(pick.get("lock_score")),
                 }},
