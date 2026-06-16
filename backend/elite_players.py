@@ -259,6 +259,7 @@ def apply_elite_boost(picks: list[dict]) -> list[dict]:
     synth_added = 0
     soa_picks_by_player: dict[tuple, dict] = {}
     ags_existing: set = set()
+    fgs_existing: set = set()
     for p in picks:
         if (p.get("sport") or "") != "Soccer":
             continue
@@ -269,41 +270,74 @@ def apply_elite_boost(picks: list[dict]) -> list[dict]:
                     soa_picks_by_player[(striker, p.get("event"))] = p
                 elif "Anytime Goal Scorer" in market:
                     ags_existing.add((striker, p.get("event")))
+                elif "First Goal Scorer" in market:
+                    fgs_existing.add((striker, p.get("event")))
                 break
-    # For each elite SoA pick without a matching AGS, create a synthetic.
+    # For each elite SoA pick without a matching AGS / FGS, create synthetics.
     import uuid
     for (striker, event), soa_pick in soa_picks_by_player.items():
-        if (striker, event) in ags_existing:
-            continue
-        # Build synthetic Anytime Goal Scorer (slightly worse odds because
-        # scoring is harder than scoring-or-assisting).
         soa_win = float(soa_pick.get("win_probability") or 0)
         soa_odds = float(soa_pick.get("book_odds") or -150)
-        # AGS probability ≈ 75% of SoA prob.
-        ags_win = round(soa_win * 0.75, 1)
-        # AGS odds are typically less chalky than SoA (-30 American units).
-        ags_odds = int(soa_odds + 40) if soa_odds < 0 else int(soa_odds * 1.3)
-        ags_implied = round(100 / (1 + (abs(ags_odds) / 100.0 if ags_odds < 0 else ags_odds / 100.0)) if ags_odds < 0 else 100 / (1 + ags_odds / 100.0), 1)
-        ags_edge = round(ags_win - ags_implied, 2)
-        synth = {**soa_pick}
-        synth["id"] = str(uuid.uuid4())
-        synth["market"] = f"{striker} Anytime Goal Scorer"
-        synth["win_probability"] = ags_win
-        synth["book_odds"] = ags_odds
-        synth["implied_probability"] = ags_implied
-        synth["edge_percent"] = ags_edge
-        synth["lock_score"] = round(min(99.0, max(ELITE_LOCK_FLOOR, float(soa_pick.get("lock_score") or 90) - 2)), 1)
-        synth["synthetic_ags"] = True
-        synth["elite_player"] = True
-        synth["elite_player_name"] = striker
-        synth["selection"] = "Yes"
-        synth["key_insights"] = [
-            f"⭐ Elite Striker Lock: {striker} Anytime Goal Scorer (synthesized "
-            f"from book's To Score or Assist line — Anytime Goal Scorer market "
-            f"not exposed for this match)."
-        ] + (soa_pick.get("key_insights") or [])
-        picks.append(synth)
-        synth_added += 1
+
+        # ── Synthetic ANYTIME GOAL SCORER (~75% of SoA prob)
+        if (striker, event) not in ags_existing:
+            ags_win = round(soa_win * 0.75, 1)
+            ags_odds = int(soa_odds + 40) if soa_odds < 0 else int(soa_odds * 1.3)
+            ags_implied = round(
+                (100 / (1 + (abs(ags_odds) / 100.0))) if ags_odds < 0
+                else (100 / (1 + ags_odds / 100.0)), 1
+            )
+            synth = {**soa_pick}
+            synth["id"] = str(uuid.uuid4())
+            synth["market"] = f"{striker} Anytime Goal Scorer"
+            synth["win_probability"] = ags_win
+            synth["book_odds"] = ags_odds
+            synth["implied_probability"] = ags_implied
+            synth["edge_percent"] = round(ags_win - ags_implied, 2)
+            synth["lock_score"] = round(min(99.0, max(ELITE_LOCK_FLOOR,
+                float(soa_pick.get("lock_score") or 90) - 2)), 1)
+            synth["synthetic_ags"] = True
+            synth["elite_player"] = True
+            synth["elite_player_name"] = striker
+            synth["selection"] = "Yes"
+            synth["key_insights"] = [
+                f"⭐ Elite Striker Lock: {striker} Anytime Goal Scorer "
+                f"(synthesized from book's To Score or Assist line)."
+            ] + (soa_pick.get("key_insights") or [])
+            picks.append(synth)
+            synth_added += 1
+
+        # ── Synthetic FIRST GOAL SCORER (~25% of AGS prob, longer odds)
+        if (striker, event) not in fgs_existing:
+            # First-goal probability ≈ 25-30% of anytime-goal probability.
+            fgs_win = round(soa_win * 0.75 * 0.28, 1)
+            # First goal scorer markets typically price +400 to +700 for elites.
+            fgs_odds = max(300, int(abs(soa_odds) * 2.5) if soa_odds < 0 else int(soa_odds * 3.5))
+            fgs_implied = round(100 / (1 + fgs_odds / 100.0), 1)
+            synth = {**soa_pick}
+            synth["id"] = str(uuid.uuid4())
+            synth["market"] = f"{striker} First Goal Scorer"
+            synth["win_probability"] = fgs_win
+            synth["book_odds"] = fgs_odds
+            synth["implied_probability"] = fgs_implied
+            synth["edge_percent"] = round(fgs_win - fgs_implied, 2)
+            # First-goal-scorer is a lottery-ticket bet so keep lock_score
+            # below Elite tier (max 92) even for elite players — match the
+            # market's inherently higher variance.
+            synth["lock_score"] = round(min(92.0,
+                float(soa_pick.get("lock_score") or 88) - 5), 1)
+            synth["synthetic_fgs"] = True
+            synth["elite_player"] = True
+            synth["elite_player_name"] = striker
+            synth["selection"] = "Yes"
+            synth["key_insights"] = [
+                f"⭐ Elite Striker Lottery: {striker} First Goal Scorer "
+                f"(synthesized; high-variance market — strikers like {striker} "
+                f"score first in ~12-18% of starts)."
+            ] + (soa_pick.get("key_insights") or [])
+            picks.append(synth)
+            synth_added += 1
+
     if synth_added:
-        logger.info("Synthetic Anytime Goal Scorer picks added: %d", synth_added)
+        logger.info("Synthetic AGS+FGS picks added: %d", synth_added)
     return picks
