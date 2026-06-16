@@ -1332,11 +1332,26 @@ async def _settlement_loop():
     take 2-4hrs to complete so 30-min polling was wasted spend; 2-hour cycle
     drops credit usage by 75% while still settling everything within a few
     hours of game-end.
+
+    After each settlement run, also recompute Learning v2 state so the next
+    pick refresh picks up updated market weights + band-gate raises.
     """
     await asyncio.sleep(60)  # let startup settle
     while True:
         try:
             await settle_due_picks(db)
+            # Recompute Learning v2 immediately so new settlements feed
+            # forward into the next pick generation cycle.
+            try:
+                from learning_system_v2 import recompute_and_persist
+                v2_res = await recompute_and_persist(db)
+                if not v2_res.get("gated"):
+                    logger.info("Learning v2 recomputed: %d rows, %d weight overrides, %d log entries",
+                                v2_res.get("rows", 0),
+                                len(v2_res.get("market_weights") or {}),
+                                v2_res.get("changes_log_count", 0))
+            except Exception as e:
+                logger.warning("Learning v2 recompute error: %s", e)
         except asyncio.CancelledError:
             break
         except Exception as e:
