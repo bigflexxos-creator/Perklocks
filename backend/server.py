@@ -247,6 +247,14 @@ async def _refresh_picks(date_str: str) -> int:
     except Exception as e:
         logger.warning("Tennis Edge v2 skipped: %s", e)
 
+    # ── Learning System v2: apply ROI/CLV/Calibration/Volume weights +
+    # 99-Lock gates + calibration band raises to the freshly-built slate.
+    try:
+        from learning_system_v2 import apply_v2_to_picks
+        picks = await apply_v2_to_picks(picks, db)
+    except Exception as e:
+        logger.warning("Learning v2 apply skipped: %s", e)
+
     # ── Deep Dive Mode: attach edge/confidence/risk scores, top-3 reasons,
     # and NO-BET flag for low-confidence picks. Internal only; UI unchanged.
     try:
@@ -1193,6 +1201,59 @@ async def learned_weights(user: Annotated[UserPublic, Depends(current_user)]):
     if not doc:
         return {"buckets": [], "calibration": [], "updated_at": None, "sample_size": 0}
     return doc
+
+
+@api.get("/analytics/v2")
+async def analytics_v2(user: Annotated[UserPublic, Depends(current_user)]):
+    """Learning System v2 dashboard payload.
+
+    Returns: market performance rows, band calibration, market weights,
+    learning changes log (last 30), and high-level totals. Used by the new
+    Analytics dashboard sections."""
+    state = await db.learning_state.find_one({"_id": "learning_v2_state"},
+                                             {"_id": 0}) or {}
+    # Last 30 audit log entries (most recent first).
+    log = await db.learning_log.find({}, {"_id": 0}).sort(
+        "ts", -1
+    ).to_list(length=30)
+    state["changes_log"] = log
+    # Sport-level profit summary.
+    sport_rows: dict[str, dict] = {}
+    async for p in db.picks.aggregate([
+        {"$match": {"status": {"$in": ["won", "lost", "push"]}}},
+        {"$group": {
+            "_id": "$sport",
+            "n": {"$sum": 1},
+            "won": {"$sum": {"$cond": [{"$eq": ["$status", "won"]}, 1, 0]}},
+            "lost": {"$sum": {"$cond": [{"$eq": ["$status", "lost"]}, 1, 0]}},
+            "units_risked": {"$sum": {"$ifNull": ["$units_risked", 0]}},
+            "units_profit": {"$sum": {"$ifNull": ["$units_profit", 0]}},
+            "clv_avg": {"$avg": "$clv_value"},
+        }},
+    ]):
+        s = p["_id"]
+        risked = p.get("units_risked") or 0
+        profit = p.get("units_profit") or 0
+        sport_rows[s] = {
+            "sport": s,
+            "n": p["n"], "won": p["won"], "lost": p["lost"],
+            "units_risked": round(risked, 2),
+            "units_profit": round(profit, 2),
+            "roi_pct": round((profit / risked * 100.0) if risked else 0, 2),
+            "hit_rate_pct": round((p["won"] / (p["won"] + p["lost"]) * 100.0)
+                                  if (p["won"] + p["lost"]) else 0, 2),
+            "clv_avg": round(p.get("clv_avg") or 0, 2),
+        }
+    state["profit_by_sport"] = list(sport_rows.values())
+    return state
+
+
+@api.post("/analytics/v2/recompute")
+async def analytics_v2_recompute(user: Annotated[UserPublic, Depends(current_user)]):
+    """Force re-run of the v2 learning aggregation (market perf, calibration,
+    band gates, market weights, audit log). Returns the new state summary."""
+    from learning_system_v2 import recompute_and_persist
+    return await recompute_and_persist(db)
 
 
 @api.post("/analytics/learn")
