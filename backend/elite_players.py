@@ -240,6 +240,70 @@ def apply_elite_boost(picks: list[dict]) -> list[dict]:
         if all("Elite Player Lock" not in s for s in existing):
             p["key_insights"] = [elite_insight] + existing
         boosted += 1
-    if boosted:
-        logger.info("Elite anchor applied to %d picks", boosted)
+
+    # ── Synthetic Anytime Goal Scorer for elite strikers
+    # When an elite striker has a "To Score or Assist" pick but no standalone
+    # "Anytime Goal Scorer" (because the Odds API didn't expose that market
+    # for this league), synthesize one. Goal-only probability ≈ 75% of
+    # score-or-assist probability for strikers (assists are less common).
+    ELITE_STRIKERS = {
+        "Erling Haaland", "Kylian Mbappé", "Kylian Mbappe", "Harry Kane",
+        "Lionel Messi", "Robert Lewandowski", "Mohamed Salah",
+        "Victor Osimhen", "Lautaro Martínez", "Julián Álvarez",
+        "Romelu Lukaku", "Darwin Núñez", "Cristiano Ronaldo",
+        "Bukayo Saka", "Vinicius Junior", "Vinicius Jr",
+        "Alexander Isak", "Ollie Watkins", "Ivan Toney",
+        "Khvicha Kvaratskhelia", "Jude Bellingham", "Jamal Musiala",
+        "Serhou Guirassy", "Dušan Vlahović", "Dusan Vlahovic",
+    }
+    synth_added = 0
+    soa_picks_by_player: dict[tuple, dict] = {}
+    ags_existing: set = set()
+    for p in picks:
+        if (p.get("sport") or "") != "Soccer":
+            continue
+        market = p.get("market") or ""
+        for striker in ELITE_STRIKERS:
+            if striker.lower() in market.lower():
+                if "To Score or Assist" in market:
+                    soa_picks_by_player[(striker, p.get("event"))] = p
+                elif "Anytime Goal Scorer" in market:
+                    ags_existing.add((striker, p.get("event")))
+                break
+    # For each elite SoA pick without a matching AGS, create a synthetic.
+    import uuid
+    for (striker, event), soa_pick in soa_picks_by_player.items():
+        if (striker, event) in ags_existing:
+            continue
+        # Build synthetic Anytime Goal Scorer (slightly worse odds because
+        # scoring is harder than scoring-or-assisting).
+        soa_win = float(soa_pick.get("win_probability") or 0)
+        soa_odds = float(soa_pick.get("book_odds") or -150)
+        # AGS probability ≈ 75% of SoA prob.
+        ags_win = round(soa_win * 0.75, 1)
+        # AGS odds are typically less chalky than SoA (-30 American units).
+        ags_odds = int(soa_odds + 40) if soa_odds < 0 else int(soa_odds * 1.3)
+        ags_implied = round(100 / (1 + (abs(ags_odds) / 100.0 if ags_odds < 0 else ags_odds / 100.0)) if ags_odds < 0 else 100 / (1 + ags_odds / 100.0), 1)
+        ags_edge = round(ags_win - ags_implied, 2)
+        synth = {**soa_pick}
+        synth["id"] = str(uuid.uuid4())
+        synth["market"] = f"{striker} Anytime Goal Scorer"
+        synth["win_probability"] = ags_win
+        synth["book_odds"] = ags_odds
+        synth["implied_probability"] = ags_implied
+        synth["edge_percent"] = ags_edge
+        synth["lock_score"] = round(min(99.0, max(ELITE_LOCK_FLOOR, float(soa_pick.get("lock_score") or 90) - 2)), 1)
+        synth["synthetic_ags"] = True
+        synth["elite_player"] = True
+        synth["elite_player_name"] = striker
+        synth["selection"] = "Yes"
+        synth["key_insights"] = [
+            f"⭐ Elite Striker Lock: {striker} Anytime Goal Scorer (synthesized "
+            f"from book's To Score or Assist line — Anytime Goal Scorer market "
+            f"not exposed for this match)."
+        ] + (soa_pick.get("key_insights") or [])
+        picks.append(synth)
+        synth_added += 1
+    if synth_added:
+        logger.info("Synthetic Anytime Goal Scorer picks added: %d", synth_added)
     return picks
