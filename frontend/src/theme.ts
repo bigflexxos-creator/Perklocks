@@ -36,7 +36,7 @@ export const SPORT_ICONS: Record<string, string> = {
   KBO: "baseball",
 };
 
-export const SPORTS = ["All", "MLB", "NBA", "WNBA", "NFL", "Soccer", "Tennis", "UFC", "KBO"] as const;
+export const SPORTS = ["All", "MLB", "NBA", "NFL", "Soccer", "Tennis", "UFC", "KBO"] as const;
 
 export const SHADOW = {
   shadowColor: "#000",
