@@ -531,8 +531,14 @@ async def _record_settlement(db, pick: dict, outcome: str, ref: dict, source: st
     """Write the settled status, units profit, CLV to MongoDB."""
     from analytics import (american_profit_per_unit, clv_units,
                             confidence_bucket)
+    from bet_type import classify_bet_type, unit_weight
     odds_used = pick.get("closing_odds") or pick.get("book_odds")
-    units_profit = american_profit_per_unit(odds_used or 0, outcome)
+    # Per-bet-type weighting (1.0u straight / 0.5u reduced / 0.25u parlay-only).
+    bet_type = classify_bet_type(odds_used)
+    w = unit_weight(odds_used)
+    raw_profit = american_profit_per_unit(odds_used or 0, outcome)
+    units_profit = round(raw_profit * w, 4)
+    units_risked = w if outcome != "push" else 0.0
     clv = clv_units(pick.get("odds_at_pick"),
                     pick.get("closing_odds") or pick.get("book_odds"))
     # Build final-score dict where possible (Tennis: games per player; UFC: just winner).
@@ -550,8 +556,10 @@ async def _record_settlement(db, pick: dict, outcome: str, ref: dict, source: st
             "status": outcome,
             "settled_at": datetime.now(timezone.utc).isoformat(),
             "final_score": final_score,
-            "units_risked": 1.0 if outcome != "push" else 0.0,
+            "units_risked": units_risked,
             "units_profit": units_profit,
+            "bet_type": bet_type,
+            "unit_weight": w,
             "clv_value": clv,
             "confidence_bucket": confidence_bucket(pick.get("lock_score")),
             "settlement_source": source,

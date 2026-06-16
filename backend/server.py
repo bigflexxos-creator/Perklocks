@@ -247,6 +247,19 @@ async def _refresh_picks(date_str: str) -> int:
     except Exception as e:
         logger.warning("Tennis Edge v2 skipped: %s", e)
 
+    # ── Bet-Type Classification & Weighted Unit Tagging
+    # Per spec: odds ≥ -300 → STRAIGHT (1.0u), ≥ -500 → REDUCED (0.5u),
+    # < -500 → PARLAY (0.25u). Real betting behavior — heavy chalk gets
+    # smaller stake so ROI math isn't distorted by -500+ lines.
+    try:
+        from bet_type import classify_bet_type, unit_weight
+        for p in picks:
+            odds = p.get("book_odds")
+            p["bet_type"] = classify_bet_type(odds)
+            p["unit_weight"] = unit_weight(odds)
+    except Exception as e:
+        logger.warning("Bet-type tagging skipped: %s", e)
+
     # ── Learning System v2: apply ROI/CLV/Calibration/Volume weights +
     # 99-Lock gates + calibration band raises to the freshly-built slate.
     try:
@@ -1245,6 +1258,34 @@ async def analytics_v2(user: Annotated[UserPublic, Depends(current_user)]):
             "clv_avg": round(p.get("clv_avg") or 0, 2),
         }
     state["profit_by_sport"] = list(sport_rows.values())
+
+    # Bet-Type breakdown — STRAIGHT (1.0u) / REDUCED (0.5u) / PARLAY (0.25u)
+    # ROI is now weighted per spec so heavy chalk doesn't distort the metric.
+    bt_rows: dict[str, dict] = {}
+    async for p in db.picks.aggregate([
+        {"$match": {"status": {"$in": ["won", "lost", "push"]}}},
+        {"$group": {
+            "_id": {"$ifNull": ["$bet_type", "STRAIGHT"]},
+            "n": {"$sum": 1},
+            "won": {"$sum": {"$cond": [{"$eq": ["$status", "won"]}, 1, 0]}},
+            "lost": {"$sum": {"$cond": [{"$eq": ["$status", "lost"]}, 1, 0]}},
+            "units_risked": {"$sum": {"$ifNull": ["$units_risked", 0]}},
+            "units_profit": {"$sum": {"$ifNull": ["$units_profit", 0]}},
+        }},
+    ]):
+        bt = p["_id"]
+        risked = p.get("units_risked") or 0
+        profit = p.get("units_profit") or 0
+        bt_rows[bt] = {
+            "bet_type": bt,
+            "n": p["n"], "won": p["won"], "lost": p["lost"],
+            "units_risked": round(risked, 2),
+            "units_profit": round(profit, 2),
+            "roi_pct": round((profit / risked * 100.0) if risked else 0, 2),
+            "hit_rate_pct": round((p["won"] / (p["won"] + p["lost"]) * 100.0)
+                                  if (p["won"] + p["lost"]) else 0, 2),
+        }
+    state["profit_by_bet_type"] = list(bt_rows.values())
     return state
 
 
