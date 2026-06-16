@@ -298,6 +298,27 @@ async def settle_due_picks(db) -> dict:
     except Exception as e:
         logger.warning("KBO settlement failed: %s", e)
 
+    # ── ESPN fallback settler for Tennis / UFC / WNBA-NBA player props.
+    # The Odds API is slow/lacking coverage for these — ESPN has free public
+    # box-scores. Each handler only operates on its own sport so it's safe
+    # to run alongside the primary settler.
+    try:
+        from espn_settlement import settle_via_espn
+        espn = await settle_via_espn(db)
+        for k in ("tennis", "ufc", "props"):
+            sub = espn.get(k, {})
+            if sub.get("settled"):
+                counts[f"espn_{k}_settled"] = sub.get("settled", 0)
+                counts[f"espn_{k}_won"] = sub.get("won", 0)
+                counts[f"espn_{k}_lost"] = sub.get("lost", 0)
+                counts["won"] += sub.get("won", 0)
+                counts["lost"] += sub.get("lost", 0)
+                counts["push"] += sub.get("push", 0)
+                counts["settled"] += sub.get("settled", 0)
+                logger.info("ESPN %s settled: %s", k, sub)
+    except Exception as e:
+        logger.warning("ESPN settlement failed: %s", e)
+
     # ── Recompute self-tuning weights from the freshly-updated outcomes.
     # Cheap (pure aggregation over `picks`), runs after every settlement.
     try:
