@@ -36,7 +36,7 @@ BASE = "https://api.the-odds-api.com/v4"
 SPORT_KEYS: dict[str, list[str]] = {
     "MLB": ["baseball_mlb"],
     "NBA": ["basketball_nba"],
-    "WNBA": ["basketball_wnba"],
+    # "WNBA": ["basketball_wnba"],  # DISABLED — killing ROI (-31% Player Points)
     "NFL": ["americanfootball_nfl", "americanfootball_nfl_preseason"],
     # UFC / MMA — The Odds API uses one combined MMA key (covers UFC events).
     "UFC": ["mma_mixed_martial_arts"],
@@ -1383,7 +1383,7 @@ async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
     game_results = await asyncio.gather(
         fetch_mlb_picks(date_str),
         fetch_nba_picks(date_str),
-        fetch_wnba_picks(date_str),
+        # fetch_wnba_picks(date_str),  # DISABLED — see SPORT_KEYS comment
         fetch_nfl_picks(date_str),
         fetch_soccer_picks(date_str),
         fetch_tennis_picks(date_str),
@@ -1398,7 +1398,7 @@ async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
 
     # Phase 2: fetch event-level player props sequentially with small delays
     # to avoid The Odds API rate limit (1 req/sec on free tier).
-    for sport in ("MLB", "NBA", "WNBA", "Soccer"):
+    for sport in ("MLB", "NBA", "Soccer"):
         try:
             props = await _fetch_player_props_for_sport(sport)
             if props:

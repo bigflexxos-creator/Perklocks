@@ -50,7 +50,9 @@ export default function ParlayScreen() {
     { id: "mix", label: "MIX" },
     { id: "MLB", label: "MLB" },
     { id: "NBA", label: "NBA" },
-    { id: "WNBA", label: "WNBA" },
+    { id: "NBA", label: "NBA" },
+    // { id: "WNBA", label: "WNBA" },  // DISABLED — see backend SPORT_KEYS
+    { id: "Tennis", label: "Tennis" },
     { id: "NFL", label: "NFL" },
     { id: "Soccer", label: "SOCCER" },
     { id: "Tennis", label: "TENNIS" },
