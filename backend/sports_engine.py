@@ -874,7 +874,17 @@ PLAYER_PROP_MARKETS = {
     # "to score or assist" market when the bookmakers carry it — it nearly
     # doubles the player's win-probability since either action wins the bet.
     # If the Odds API returns 422 (unsupported), we silently skip it.
-    "Soccer": ["player_goal_scorer_anytime", "player_to_score_or_assist"],
+    # Soccer player props — Anytime Goal Scorer is the primary market (covers
+    # users' main interest in "will Mbappé/Haaland/Messi score?"). To Score
+    # or Assist is the broader fallback. Adding more markets doubles Odds API
+    # credit cost per event — keep tight.
+    # Note: heavy users like Haaland may not appear if their team isn't playing
+    # OR if the Odds API doesn't list anytime-scorer for that match (typical
+    # for international friendlies + lower leagues).
+    "Soccer": [
+        "player_goal_scorer_anytime",
+        "player_to_score_or_assist",
+    ],
     # UFC: The Odds API does NOT expose method-of-victory, round-betting, or
     # any MMA prop markets — only `h2h` (moneyline) and `totals` (rounds)
     # which we already get from the bulk /odds endpoint. Confirmed by
@@ -1287,6 +1297,10 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             market_label = f"{player} Anytime Goal Scorer"
         elif mk == "player_to_score_or_assist":
             market_label = f"{player} To Score or Assist"
+        elif mk == "player_first_goal_scorer":
+            market_label = f"{player} First Goal Scorer"
+        elif mk == "player_to_score_2_or_more":
+            market_label = f"{player} To Score 2+ Goals"
         elif mk == "mma_method_of_victory":
             # `side` carries the method string (KO/TKO, Submission, Decision).
             market_label = f"{player} wins by {side}"
