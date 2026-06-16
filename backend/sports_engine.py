@@ -340,8 +340,10 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
     # preference. Standard picks cap at -450. Long-shots are positive odds.
     if is_long_shot:
         # Long-shots have plus odds by definition — no floor needed.
-        # Just reject if for some reason we ended up with a steep favorite.
-        if final_odds < -200:
+        # EXCEPT goal-scorer markets where elite strikers (Haaland, Mbappé,
+        # Messi, Kane) are priced -180 to -350 by the books and we still
+        # want to surface them as Elite Locks. Allow steeper chalk.
+        if final_odds < -400:
             return None
     else:
         chalk_floor = -750 if is_alt_prop else -450
@@ -383,7 +385,11 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
     if lock < min_lock:
         return None
     # Drop only clearly negative-edge picks. -1% is noise tolerance.
-    if edge < -1.0:
+    # For Anytime Goal Scorer / First Goal Scorer / similar long-shot props,
+    # heavy chalk is intentional (Haaland -180, Mbappé -150) — we want these
+    # surfaced as Elite Locks even when our model is slightly pessimistic.
+    edge_floor = -10.0 if is_long_shot else -1.0
+    if edge < edge_floor:
         return None
     # Probability floor: standard 58% (raised from 55), MLB needs 62% to
     # combat the model's coin-flip overconfidence.
@@ -1328,7 +1334,10 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             insights=_prop_insights(sport, rng, player),
             external_id=f"{sport}-{payload.get('id', '')}-{mk}-{player[:10]}-{side}-{point}",
             is_alt_prop=is_alt,
-            is_long_shot=(mk in ("player_goal_scorer_anytime", "player_to_score_or_assist", "mma_method_of_victory")),
+            is_long_shot=(mk in ("player_goal_scorer_anytime",
+                                  "player_to_score_or_assist",
+                                  "player_first_goal_scorer",
+                                  "mma_method_of_victory")),
         ))
     # Tag every Under pick so the main Locks feed can exclude them and the
     # dedicated "Under of the Day" tab can surface them. Anything where the
