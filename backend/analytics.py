@@ -182,6 +182,22 @@ async def compute_model_performance(db, days: int = 30) -> dict[str, Any]:
     sport_rows = [r for r in by_sport if r["count"] >= 5]
     best_sport = max(sport_rows, key=lambda r: r["roi"]) if sport_rows else None
 
+    # Tennis-specific breakdown: ROI by tournament + by surface.
+    # Used by /api/analytics/tennis and the Analytics dashboard.
+    tennis_picks = [p for p in picks if (p.get("sport") or "").lower() == "tennis"]
+    by_tennis_tournament = _group(tennis_picks, lambda p: p.get("league") or "Unknown")
+    def _surface_of(p: dict) -> str:
+        tc = p.get("tennis_components") or {}
+        if tc.get("surface_name"):
+            return tc["surface_name"]
+        # Fallback: import map lazily to avoid circular imports.
+        try:
+            from tennis_engine import SURFACE_BY_LEAGUE
+            return SURFACE_BY_LEAGUE.get(p.get("league") or "", "Hard")
+        except Exception:
+            return "Hard"
+    by_tennis_surface = _group(tennis_picks, _surface_of)
+
     return {
         "as_of": datetime.now(timezone.utc).isoformat(),
         "totals": {
@@ -203,6 +219,8 @@ async def compute_model_performance(db, days: int = 30) -> dict[str, Any]:
         "by_sport": by_sport,
         "by_market": by_market,
         "by_confidence": by_conf,
+        "by_tennis_tournament": by_tennis_tournament,
+        "by_tennis_surface": by_tennis_surface,
         "calibration": calibration,
         "highlights": {
             "best_sport": best_sport,
