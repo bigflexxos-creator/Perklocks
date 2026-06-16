@@ -80,13 +80,15 @@ SPORT_KEYS: dict[str, list[str]] = {
         "tennis_atp_cincinnati_open", "tennis_wta_cincinnati_open",
         "tennis_atp_shanghai_masters", "tennis_atp_paris_masters",
         # 500/250 grass swing (active mid-June through July)
-        "tennis_atp_queens", "tennis_wta_queens_club_champ",
-        "tennis_atp_halle", "tennis_atp_eastbourne", "tennis_wta_eastbourne",
+        "tennis_atp_queens_club_champ", "tennis_wta_queens_club_champ",
+        "tennis_atp_halle_open", "tennis_wta_german_open",
+        "tennis_atp_eastbourne", "tennis_wta_eastbourne",
         # Hard / clay shoulder events
         "tennis_atp_barcelona_open", "tennis_atp_hamburg_open",
         "tennis_atp_dubai", "tennis_wta_dubai",
         "tennis_atp_qatar_open", "tennis_atp_china_open", "tennis_wta_china_open",
         "tennis_atp_munich", "tennis_wta_charleston_open",
+        "tennis_wta_strasbourg", "tennis_wta_stuttgart_open", "tennis_wta_wuhan_open",
     ],
 }
 
