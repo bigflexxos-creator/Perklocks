@@ -1420,9 +1420,32 @@ async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
     def _dedup_key(p: dict) -> tuple:
         market = p.get("market") or ""
         sel = p.get("selection") or ""
+        market_l = market.lower()
+        sel_l = sel.lower()
         # First decimal in the market is the line ("0.5", "1.5", "8.5", ...).
         m = _re.search(r"(-?\d+\.\d+)", market)
         threshold = m.group(1) if m else ""
+
+        # CRITICAL: For Totals markets (Over/Under) and Spreads (team A +X /
+        # team B -X), the two sides are MUTUALLY EXCLUSIVE — they can never
+        # both win. We must NOT issue both as separate picks. Collapse them
+        # into the same dedup key so only the higher-edge side survives.
+        if "total" in market_l and threshold:
+            # Same game + same total line → one pick (Over OR Under, not both)
+            return (p.get("sport"), p.get("event"), "TOTALS", threshold)
+        if "spread" in market_l and threshold:
+            # Same game + spread line (irrespective of sign): the two sides
+            # straddle the same line. Normalize sign so +1.5/-1.5 collapse.
+            return (p.get("sport"), p.get("event"), "SPREAD", threshold.lstrip("+-"))
+        if "run line" in market_l or "runline" in market_l:
+            return (p.get("sport"), p.get("event"), "RUNLINE", threshold.lstrip("+-"))
+        # Player-prop over/under on the same player+line (e.g. "Aaron Judge
+        # Over 1.5 Hits" vs "Aaron Judge Under 1.5 Hits"): collapse.
+        if ("over" in sel_l or "under" in sel_l) and threshold:
+            # Strip the side word from the market label so both sides share key.
+            base_market = _re.sub(r"\b(over|under)\b", "", market_l).strip()
+            base_market = _re.sub(r"\s+", " ", base_market)
+            return (p.get("sport"), p.get("event"), base_market, threshold)
         return (p.get("sport"), p.get("event"), sel, threshold)
 
     best: dict = {}
