@@ -935,6 +935,10 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
                 f"{target_legs}-leg parlay (need Lock>=88, Edge>=+3%, "
                 f"positive ROI)."
             ),
+            "rank": rank,
+            "locked_ids": [p.get("id") for p in locked_picks],
+            "window_hours": window_hours,
+            "sport_mode": mode_lower,
         }
 
     payloads = [parlay_to_payload(p, bucket_map) for p in top]
