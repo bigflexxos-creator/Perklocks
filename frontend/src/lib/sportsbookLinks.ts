@@ -77,23 +77,29 @@ export const SPORTSBOOKS: SportsbookInfo[] = [
 
 /** Open a sportsbook app, falling back to the mobile web URL if app missing.
  *
- * Pass an `eventId` (built by backend `event_matcher.py`) to deep-link
- * straight to the specific game page. Without one we land on the sportsbook
- * homepage. With one, FanDuel / DraftKings universal-link search redirects
- * land users on the matching event page for ~85 % of major-market games.
+ * `preferredUrl` — when provided (from the Sportsbook Mapping Engine on
+ * each pick's `sportsbook_mapping[book].best_link`) we try this URL FIRST
+ * since it's the deepest link we can build (search query with player
+ * name / matchup, an event slug, or one day a partner-API selection link).
+ * Falls through to the legacy sport-landing-page logic if it fails.
  */
 export async function openSportsbook(
   book: SportsbookId,
   eventId?: string,
   searchHint?: string,
+  preferredUrl?: string | null,
 ): Promise<boolean> {
   const info = SPORTSBOOKS.find((s) => s.id === book);
   if (!info) return false;
 
-  // Build the event-specific URL when possible. Pattern differs per book.
-  const eventUrls = buildEventUrls(book, eventId, searchHint);
+  // Mapping-engine URL takes priority — it carries the search query for the
+  // pick which lands users one-tap from the actual selection inside the
+  // sportsbook search.
+  const candidates: string[] = [];
+  if (preferredUrl) candidates.push(preferredUrl);
+  candidates.push(...buildEventUrls(book, eventId, searchHint));
 
-  for (const url of eventUrls) {
+  for (const url of candidates) {
     if (!url) continue;
     try {
       if (Platform.OS === "ios" && url.startsWith(info.appScheme.split("://")[0])) {
