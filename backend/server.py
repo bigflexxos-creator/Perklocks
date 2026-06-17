@@ -322,6 +322,22 @@ async def _refresh_picks(date_str: str) -> int:
     except Exception as e:
         logger.warning("Deep Dive skipped: %s", e)
 
+    # ── Brain Pipeline v1 — Prediction Memory + Candidate Ranker + hidden
+    # Monte Carlo simulator + Decision Filter (PASS verdict) + Confidence
+    # Calibration. All seven layers run ON TOP of existing scoring; PASS
+    # picks set the existing `no_bet=True` flag so feed endpoints silently
+    # drop them with zero UI change. See /app/backend/brain/ for the
+    # individual modules.
+    try:
+        from brain import process_brain
+        brain_summary = await process_brain(picks, db)
+        logger.info("Brain v%s done in %sms: %s",
+                    brain_summary.get("version"),
+                    brain_summary.get("elapsed_ms"),
+                    brain_summary.get("steps", {}).get("filter"))
+    except Exception as e:
+        logger.warning("Brain pipeline skipped: %s", e)
+
     # Deduplicate picks within this batch by `id` — UUID5 hashes can collide
     # if two markets produce identical external_ids (saw this with Anytime
     # Goal Scorer picks generated twice in the same refresh). Keep the first.
@@ -1714,6 +1730,14 @@ async def _settlement_loop():
                                 v2_res.get("changes_log_count", 0))
             except Exception as e:
                 logger.warning("Learning v2 recompute error: %s", e)
+            # Brain memory cache-bust so the next pick refresh picks up
+            # the freshly-settled samples (calibration / ROI / market perf).
+            try:
+                from brain import process_brain  # noqa: F401 — for module import side effect
+                from brain.pipeline import on_settlement
+                await on_settlement(db)
+            except Exception as e:
+                logger.warning("Brain cache-bust error: %s", e)
         except asyncio.CancelledError:
             break
         except Exception as e:
