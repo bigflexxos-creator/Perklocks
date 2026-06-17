@@ -902,7 +902,12 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     )
 
     if not top:
-        sport_hint = f" in {sport_q}" if sport_filter else ""
+        if sport_filter and sport_q:
+            sport_hint = f" in {sport_q}"
+        elif exclude_sports:
+            sport_hint = f" (excluding {exclude_sports})"
+        else:
+            sport_hint = ""
         return {
             "parlay": None,
             "parlays": [],
