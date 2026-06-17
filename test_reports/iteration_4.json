@@ -1,0 +1,42 @@
+{
+  "summary": "Parlay Optimizer V1 verified end-to-end. Backend: 9 PASS / 1 SKIP (no failures) across 10 pytest cases against /api/picks/parlay. Endpoint reliably returns 3 cards (SAFE/BALANCED/AGGRESSIVE) with grade A-F, strength_score 0-100, survival_pct 0-100, leg_count>=2, populated legs[] and reasons[]. Hard rules enforced: every standard-mode leg has lock_score>=88 AND edge_percent>=3 (no exceptions across all sampled cards), no leg has no_bet=True or is_under_lock=True. High-risk legs=15 returned 15 legs across all three cards as designed, grade D with survival ~2% which matches spec ('low survival is expected'). Refresh cursor (rank=2) returns different content than rank=1. locked_ids pin verified — pinned pick id appears in every one of the 3 cards. Sport filter (Soccer) honoured. Grade<->score consistency holds across modes. Survival ordering SAFE>=AGGRESSIVE holds. SAFE returning 2 legs when 5 requested is correct per 'no filler legs' spec. Frontend smoke (mobile 390x844): login -> Parlay tab loads, 3 cards labelled correctly, grade badges (A/B/B), strength bar, mini-stat grid (HIT%/EDGE/ROI/DIVERSE/LEGS), WHY THIS PARLAY reasons, 🔒 pin icon on every leg row, refresh updates RANK badge to 2. No red screens or 500s.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/picks/parlay?mode=standard&exclude_sports=Soccer",
+        "issue": "When Soccer is excluded today, only 10 non-Soccer Lock>=88/Edge>=+3% picks remain (9 MLB + 1 KBO), and the diversification rule (max 40% same sport) caps a 3-leg parlay at 1 MLB leg, so the optimizer correctly returns 0 parlays with the 'Not enough qualifying picks' reason. Behavior is per spec, not a bug, but worth surfacing as a UX consideration: the user-facing reason string says 'Not enough qualifying picks today in  to build a 3-leg parlay' (note the empty interpolation when sport filter is unset). Reference: server.py:910. Cosmetic only — suggest 'in your selected sports' or similar fallback."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_parlay_optimizer.py",
+    "/app/test_reports/pytest/parlay_optimizer.xml"
+  ],
+  "action_items": [
+    "Optional UX polish (not blocking): tighten the 'Not enough qualifying picks today in <sport>' reason copy in server.py:910 to avoid the empty interpolation when sport_q is blank but exclude_sports is set."
+  ],
+  "critical_code_review_comments": [
+    "server.py is still ~1473 lines — the parlay endpoint adds another ~135 lines on top. Consider extracting /api/picks/* routes into a dedicated router module (previously flagged in iteration_3).",
+    "parlay_optimizer.py is well-structured (723 lines, single-responsibility helpers). Light suggestion: the file is approaching the 700-line guideline; the candidate-generation loop (build_top_parlays + build_one_parlay) could be split into a separate `candidate_search.py` for clarity, but it is not urgent.",
+    "server.py:868 — pool query uses lock_score>=70 for high-risk; works correctly today, but the literal 70 should ideally come from a constant alongside MIN_LOCK_SCORE_HIGH_RISK already defined in parlay_optimizer.py."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_parlay_optimizer.py"
+  ],
+  "success_rate": {
+    "backend": "100% (9/9 executed; 1 skipped because exclude_sports=Soccer leaves a single-sport pool that the diversification rule correctly rejects — not a failure)",
+    "frontend": "100% smoke (3 cards, grades, strength bar, mini-stats, reasons, pin icons, refresh all rendered)"
+  },
+  "seed_data_creation": "None. Used existing demo user (demo@lockscore.ai / demo123) and live /api/picks/today pool.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: pytest /app/backend/tests/test_parlay_optimizer.py -v against EXPO_PUBLIC_BACKEND_URL. Demo creds: demo@lockscore.ai / demo123. Verified live samples on this run: standard&legs=5 -> SAFE 2 legs (grade A, 87.4% survival), BALANCED 3 legs (grade B, 47.3%), AGGRESSIVE 3 legs (grade B, 44.2%). high_risk&legs=15 -> all three cards have 15 legs, grade D, survival 1.9-2.1%, avg edge ~8.8%, ROI ~+42%. rank=2 yields a different leg fingerprint than rank=1. locked_ids pinning verified end-to-end — every returned card legs[] contains the pinned id. exclude_sports=Soccer today returns 0 parlays because only 10 non-Soccer eligible picks exist (9 MLB + 1 KBO) and 40% same-sport diversification cap rejects single-sport pools — this is per spec.",
+  "rca_of_issue": "No bugs to RCA. Parlay Optimizer V1 behaves per spec across all 9 review criteria (shape, hard rules, leg-count flexibility, refresh cursor, locked_ids pinning, sport/exclude filters, damage control ordering, grade<->score consistency, no negative numerics)."
+}

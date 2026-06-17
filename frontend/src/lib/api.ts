@@ -69,6 +69,27 @@ export type PickFilters = {
 export type SportMarket = { token: string; label: string };
 export type SportLeague = { name: string; count: number };
 
+// Parlay Optimizer V1 — Top 3 cards with health grade + reasoning
+export type ParlayCard = {
+  label: "SAFE" | "BALANCED" | "AGGRESSIVE";
+  grade: "A" | "B" | "C" | "D" | "F";
+  strength_score: number;            // 0-100 health composite
+  leg_count: number;
+  legs: Pick[];
+  survival_pct: number;              // estimated hit rate
+  avg_edge_pct: number;
+  avg_roi_pct: number;
+  avg_win_prob: number;
+  diversification_pct: number;       // 100 - max-sport-concentration
+  correlation_score: number;
+  stability_score: number;
+  combined_decimal_odds: number;
+  combined_american_odds: string;
+  payout_on_100: number;
+  profit_on_100: number;
+  reasons: string[];                 // Why-this-parlay bullets
+};
+
 const TOKEN_KEY = "lockscore_token";
 
 export async function getToken(): Promise<string | null> {
@@ -172,8 +193,10 @@ export const api = {
       scoped_to_today?: boolean;
     }>(`/picks/under-of-the-day${q ? `?${q}` : ""}`);
   },
-  parlay: (legs: number = 3, mode: "standard" | "high_risk" = "standard", sport?: string, lineType?: LineType, excludeSports?: string[], filters?: PickFilters) => {
-    const qs = new URLSearchParams({ legs: String(legs), mode });
+  parlay: (legs: number = 3, mode: "standard" | "high_risk" = "standard",
+           sport?: string, lineType?: LineType, excludeSports?: string[],
+           filters?: PickFilters, rank: number = 1, lockedIds: string[] = []) => {
+    const qs = new URLSearchParams({ legs: String(legs), mode, rank: String(rank) });
     if (sport && sport !== "mix") qs.set("sport", sport);
     if (lineType && lineType !== "both") qs.set("line_type", lineType);
     if ((!sport || sport === "mix") && excludeSports && excludeSports.length > 0) {
@@ -181,11 +204,18 @@ export const api = {
     }
     if (filters?.market) qs.set("market", filters.market);
     if (filters?.league) qs.set("league", filters.league);
-    return request<{ parlay: null | {
-      legs: Pick[]; leg_count: number;
-      combined_decimal_odds: number; combined_american_odds: string;
-      combined_win_probability: number; payout_on_100: number; profit_on_100: number;
-    }; reason?: string }>(`/picks/parlay?${qs.toString()}`);
+    if (lockedIds.length > 0) qs.set("locked_ids", lockedIds.join(","));
+    return request<{
+      parlay: null | {
+        legs: Pick[]; leg_count: number;
+        combined_decimal_odds: number; combined_american_odds: string;
+        combined_win_probability: number; payout_on_100: number; profit_on_100: number;
+      };
+      parlays?: ParlayCard[];
+      rank?: number;
+      locked_ids?: string[];
+      reason?: string;
+    }>(`/picks/parlay?${qs.toString()}`);
   },
   pickDetail: (id: string) => request<Pick & { ai_pending?: boolean }>(`/picks/${id}`),
   pickAiExplain: (id: string) => request<{ explanation: string; source: string }>(`/picks/${id}/ai-explain`, { method: "POST" }),
