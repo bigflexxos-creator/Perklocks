@@ -7,6 +7,7 @@ import { COLORS } from "@/src/theme";
 import { useBetSlip, computeParlay, MAX_SLIP_SIZE } from "@/src/contexts/BetSlipContext";
 import { Pick } from "@/src/lib/api";
 import { SPORTSBOOKS, dominantSport, openSportsbookWithSlip } from "@/src/utils/sportsbook";
+import { formatGameTime } from "@/src/lib/formatGameTime";
 
 function buildShareText(picks: Pick[]): string {
   const parlay = computeParlay(picks);
@@ -14,7 +15,9 @@ function buildShareText(picks: Pick[]): string {
   const legs = picks
     .map((p, i) => {
       const odds = p.book_odds > 0 ? `+${p.book_odds}` : `${p.book_odds}`;
-      return `${i + 1}. ${p.sport} \u00b7 ${p.market} (${odds})\n   ${p.event}`;
+      const t = formatGameTime(p.event_time);
+      const timeLine = t ? `\n   ${t}` : "";
+      return `${i + 1}. ${p.sport} \u00b7 ${p.market} (${odds})\n   ${p.event}${timeLine}`;
     })
     .join("\n");
   return `${header}\n${legs}\n\nLock scores avg: ${Math.round(
@@ -122,6 +125,9 @@ export default function SlipScreen() {
                   <Text style={styles.legSport}>{p.sport} · Lock {Math.round(p.lock_score)}</Text>
                   <Text style={styles.legMarket}>{p.market}</Text>
                   <Text style={styles.legEvent}>{p.event}</Text>
+                  {p.event_time && (
+                    <Text style={styles.legTime}>{formatGameTime(p.event_time)}</Text>
+                  )}
                 </View>
                 <View style={{ alignItems: "flex-end" }}>
                   <Text style={styles.legOdds}>{p.book_odds > 0 ? `+${p.book_odds}` : p.book_odds}</Text>
@@ -195,6 +201,7 @@ const styles = StyleSheet.create({
   legSport: { color: COLORS.textSecondary, fontSize: 10, fontWeight: "800", letterSpacing: 1, marginBottom: 2 },
   legMarket: { color: COLORS.textPrimary, fontSize: 13, fontWeight: "800" },
   legEvent: { color: COLORS.textMuted, fontSize: 11, marginTop: 2 },
+  legTime: { color: COLORS.voltBlue, fontSize: 10, fontWeight: "800", letterSpacing: 0.4, marginTop: 3 },
   legOdds: { color: COLORS.textPrimary, fontSize: 14, fontWeight: "900" },
 
   bookGrid: { flexDirection: "row", gap: 8, flexWrap: "wrap", marginBottom: 8 },

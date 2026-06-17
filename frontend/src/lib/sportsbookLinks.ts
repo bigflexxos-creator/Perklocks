@@ -11,6 +11,7 @@
  */
 import { Linking, Platform } from "react-native";
 import * as Clipboard from "expo-clipboard";
+import { formatGameTime } from "./formatGameTime";
 
 export type SportsbookId = "draftkings" | "fanduel" | "betmgm" | "caesars";
 
@@ -234,6 +235,7 @@ export type BetSlipLeg = {
   sport: string;
   league: string;
   event: string;
+  event_time?: string | null;
   market: string;
   book_odds: number;
   lock_score: number;
@@ -256,8 +258,10 @@ export function formatBetSlip(legs: BetSlipLeg[], opts: {
   ];
   legs.forEach((L, i) => {
     const odds = L.book_odds > 0 ? `+${L.book_odds}` : String(L.book_odds);
+    const t = formatGameTime(L.event_time);
     lines.push(`${i + 1}. ${L.sport} · ${L.league}`);
     lines.push(`   ${L.event}`);
+    if (t) lines.push(`   ⏰ ${t}`);
     lines.push(`   ${L.market}   ${odds}   (Lock ${L.lock_score})`);
   });
   lines.push(`─────────────────────`);

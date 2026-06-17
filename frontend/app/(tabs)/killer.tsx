@@ -12,24 +12,7 @@ import { LineTypeToggle } from "@/src/components/LineTypeToggle";
 import { SortSelector } from "@/src/components/SortSelector";
 import { ChipRow } from "@/src/components/ChipRow";
 import { SportFilterBar } from "@/src/components/SportFilterBar";
-
-function formatGameTime(iso: string): string {
-  try {
-    const dt = new Date(iso);
-    const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const tomorrowStart = new Date(todayStart);
-    tomorrowStart.setDate(todayStart.getDate() + 1);
-    const dayAfter = new Date(todayStart);
-    dayAfter.setDate(todayStart.getDate() + 2);
-    const time = dt.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-    if (dt >= todayStart && dt < tomorrowStart) return `Today · ${time}`;
-    if (dt >= tomorrowStart && dt < dayAfter) return `Tomorrow · ${time}`;
-    return `${dt.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })} · ${time}`;
-  } catch {
-    return iso;
-  }
-}
+import { formatGameTime } from "@/src/lib/formatGameTime";
 
 export default function UnderOfTheDayScreen() {
   const router = useRouter();

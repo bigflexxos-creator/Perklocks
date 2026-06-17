@@ -8,11 +8,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { Stack, useRouter } from "expo-router";
 import { COLORS } from "@/src/theme";
 import { api } from "@/src/lib/api";
+import { formatGameTime } from "@/src/lib/formatGameTime";
 
 type HistoryPick = {
   id: string;
   sport: string;
   event: string;
+  event_time?: string | null;
   market: string;
   lock_score: number;
   win_probability: number;
@@ -167,6 +169,9 @@ export default function HistoryScreen() {
                   </View>
                 </View>
                 <Text style={styles.cardEvent}>{p.event}</Text>
+                {p.event_time && (
+                  <Text style={styles.cardTime}>{formatGameTime(p.event_time)}</Text>
+                )}
                 <Text style={styles.cardMarket}>{p.market}</Text>
                 {!!scoreStr && <Text style={styles.cardScore}>Final: {scoreStr}</Text>}
                 <View style={styles.cardMetrics}>
@@ -251,6 +256,7 @@ const styles = StyleSheet.create({
   statusPill: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1 },
   statusText: { fontSize: 10, fontWeight: "900", letterSpacing: 1 },
   cardEvent: { color: COLORS.textPrimary, fontSize: 13, fontWeight: "700", marginBottom: 2 },
+  cardTime: { color: COLORS.voltBlue, fontSize: 11, fontWeight: "800", letterSpacing: 0.3, marginBottom: 4 },
   cardMarket: { color: COLORS.textPrimary, fontSize: 14, fontWeight: "800", marginBottom: 6 },
   cardScore: { color: COLORS.textSecondary, fontSize: 11, marginBottom: 6 },
   cardMetrics: { flexDirection: "row", alignItems: "center", gap: 6 },
