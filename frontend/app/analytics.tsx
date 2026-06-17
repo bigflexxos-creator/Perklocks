@@ -32,9 +32,32 @@ export default function AnalyticsScreen() {
         api.learnedWeights().catch(() => null),
         api.analyticsV2().catch(() => null),
       ]);
-      setData(res);
-      setLearned(lw);
-      setV2(v2res);
+      // Defensive WNBA stripping. WNBA was permanently disabled in a prior
+      // release because it was destroying ROI (-31% Player Points). If a
+      // stale cached response or downstream pipeline ever returns WNBA
+      // rows again, drop them client-side so they never reappear on the
+      // Analytics screen.
+      const stripWnba = <T extends Record<string, any>>(rows: T[] | undefined): T[] =>
+        (rows || []).filter((r) => {
+          const flat = `${r.sport || ""} ${r.market || ""} ${r.market_label || ""} ${r.label || ""} ${r.name || ""}`.toUpperCase();
+          return !flat.includes("WNBA");
+        });
+      const cleanRes = res ? {
+        ...res,
+        by_sport: stripWnba((res as any).by_sport),
+        by_market: stripWnba((res as any).by_market),
+      } as Performance : res;
+      const cleanLw = lw ? {
+        ...lw,
+        buckets: stripWnba((lw as any).buckets),
+      } as Learned : lw;
+      const cleanV2 = v2res ? {
+        ...v2res,
+        market_rows: stripWnba((v2res as any).market_rows),
+      } as V2 : v2res;
+      setData(cleanRes);
+      setLearned(cleanLw);
+      setV2(cleanV2);
     } catch (e) {
       setData(null);
       setLearned(null);
