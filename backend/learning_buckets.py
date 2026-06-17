@@ -16,10 +16,11 @@ NBA           ml, spread, totals, props_points, props_rebounds,
               props_assists, props_3pt
 NFL           ml, spread, totals, props_pass_yds, props_rush_yds,
               props_recs, props_tds
-MLB           ml, spread, props_hits          # BATTERS ONLY
+MLB           ml, spread, totals, props_hits  # BATTERS ONLY
 Soccer        ml, draw, btts, totals, props_goalscorer, props_shots
 Tennis        match_winner, sets, games
-KBO           ml, spread, props_hits          # BATTERS ONLY
+KBO           ml, spread, totals, props_hits  # BATTERS ONLY
+UFC           ml, method, rounds
 ============  ============================================================
 
 Per-bucket stored metrics
@@ -104,6 +105,12 @@ def classify_pick(pick: dict) -> tuple[str, str, str | None]:
     if sport == "MLB":
         if "moneyline" in market: return ("MLB", "ml", None)
         if "spread" in market or "run line" in market: return ("MLB", "spread", None)
+        # Game totals (Total Runs Over/Under N.N) — distinct from "total bases" prop
+        if "total runs" in market or (
+            "total" in market and ("over" in market or "under" in market)
+            and "bases" not in market and "hits" not in market and "player" not in market
+        ):
+            return ("MLB", "totals", None)
         # Pitcher props: explicit exclusion (strikeouts, outs recorded, earned runs)
         pitcher_kw = ("strikeout", "outs recorded", "earned run", "pitch", "k's")
         if any(kw in market for kw in pitcher_kw):
@@ -131,20 +138,40 @@ def classify_pick(pick: dict) -> tuple[str, str, str | None]:
     if sport == "Tennis":
         if "moneyline" in market or "match winner" in market or "to win" in market:
             return ("Tennis", "match_winner", None)
+        if "spread" in market:
+            # Tennis spreads are game-margin bets (e.g. "Player -3.5 Spread")
+            # Belongs in the "games" bucket per spec.
+            return ("Tennis", "games", None)
         if "set" in market and "game" not in market:
             return ("Tennis", "sets", None)
-        if "game" in market: return ("Tennis", "games", None)
+        if "game" in market:
+            return ("Tennis", "games", None)
 
     # ── KBO ──────────────────────────────────────────────────────────────
     if sport == "KBO":
         if "moneyline" in market: return ("KBO", "ml", None)
         if "spread" in market or "run line" in market: return ("KBO", "spread", None)
+        # Game totals (Total Runs Over/Under N.N)
+        if "total runs" in market or (
+            "total" in market and ("over" in market or "under" in market)
+            and "bases" not in market and "hits" not in market and "player" not in market
+        ):
+            return ("KBO", "totals", None)
         # KBO pitcher exclusion (same as MLB)
         pitcher_kw = ("strikeout", "pitch", "earned run")
         if any(kw in market for kw in pitcher_kw):
             return ("KBO", "other_pitcher", None)
         if "hit" in market or "total bases" in market:
             return ("KBO", "props", "hits")
+
+    # ── UFC ──────────────────────────────────────────────────────────────
+    if sport == "UFC":
+        if "moneyline" in market or "to win" in market:
+            return ("UFC", "ml", None)
+        if "method of victory" in market or "by ko" in market or "by submission" in market or "by decision" in market:
+            return ("UFC", "method", None)
+        if "round" in market and ("over" in market or "under" in market):
+            return ("UFC", "rounds", None)
 
     return ("other", "other", None)
 
