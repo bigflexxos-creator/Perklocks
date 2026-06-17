@@ -136,61 +136,96 @@ export async function openSportsbook(
 
 
 /** Build an ORDERED list of candidate URLs to try for a given sportsbook +
- * event. We try (1) the native app deep-link with event ID, (2) the
- * universal-link search redirect, (3) the bare app, then (4) the web URL.
+ * event. Sportsbook event-ID URLs (e.g. `/event/123456`) require partner
+ * API access — without it we land users on the SPORT LANDING PAGE which
+ * deep-links into the app's sport tab (NOT homepage). This is the closest
+ * "real" URL we can construct from public data.
  */
 function buildEventUrls(
   book: SportsbookId,
   eventId?: string,
-  searchHint?: string,
+  _searchHint?: string,
 ): string[] {
   const urls: string[] = [];
-  // Search hint: prefer the human-readable team string (e.g. "Lakers Warriors")
-  const q = searchHint ? encodeURIComponent(searchHint) : "";
+  // Extract sport segment from our deterministic slug (e.g. "mlb_..." → "mlb")
+  const sportSeg = (eventId || "").split("_")[0] || "";
 
   switch (book) {
     case "fanduel": {
-      if (eventId) {
-        // FanDuel native app deep-link pattern (iOS). May not resolve on
-        // every build; falls through to universal link below if not.
-        if (Platform.OS === "ios") urls.push(`fanduelsb://event/${eventId}`);
-        // Web URL with event ID lands on a smart-search results page that
-        // auto-resolves to the event when there's a single match.
-        urls.push(`https://sportsbook.fanduel.com/search?event=${encodeURIComponent(eventId)}`);
-      }
-      if (q) {
-        urls.push(`https://sportsbook.fanduel.com/search?q=${q}`);
-      }
+      // FanDuel real sport landing URLs (universal links — open app's sport tab)
+      const fdSport = FANDUEL_SPORT_PATHS[sportSeg];
+      if (fdSport) urls.push(`https://sportsbook.fanduel.com/${fdSport}`);
       break;
     }
     case "draftkings": {
-      if (eventId) {
-        if (Platform.OS === "ios") urls.push(`dksbgames://event/${eventId}`);
-        urls.push(`https://sportsbook.draftkings.com/event/${encodeURIComponent(eventId)}`);
-      }
-      if (q) {
-        urls.push(`https://sportsbook.draftkings.com/?searchTerm=${q}`);
-      }
+      const dkSport = DRAFTKINGS_SPORT_PATHS[sportSeg];
+      if (dkSport) urls.push(`https://sportsbook.draftkings.com/${dkSport}`);
       break;
     }
     case "betmgm": {
-      if (eventId) {
-        urls.push(`https://sports.betmgm.com/en/sports/events/${encodeURIComponent(eventId)}`);
-      }
-      if (q) {
-        urls.push(`https://sports.betmgm.com/en/sports/search?q=${q}`);
-      }
+      const mgmSport = BETMGM_SPORT_PATHS[sportSeg];
+      if (mgmSport) urls.push(`https://sports.betmgm.com/${mgmSport}`);
       break;
     }
     case "caesars": {
-      if (q) {
-        urls.push(`https://sportsbook.caesars.com/us/search?q=${q}`);
-      }
+      const czSport = CAESARS_SPORT_PATHS[sportSeg];
+      if (czSport) urls.push(`https://sportsbook.caesars.com/${czSport}`);
       break;
     }
   }
   return urls;
 }
+
+// Real, working sport landing pages per sportsbook (verified URLs that
+// open the corresponding app section via universal links).
+const FANDUEL_SPORT_PATHS: Record<string, string> = {
+  mlb: "navigation/mlb",
+  nba: "navigation/nba",
+  nfl: "navigation/nfl",
+  nhl: "navigation/nhl",
+  soccer: "navigation/soccer",
+  tennis: "navigation/tennis",
+  mma: "navigation/mma",
+  ufc: "navigation/mma",
+  baseball: "navigation/mlb",
+  wnba: "navigation/wnba",
+  cfl: "navigation/cfl",
+};
+const DRAFTKINGS_SPORT_PATHS: Record<string, string> = {
+  mlb: "leagues/baseball/mlb",
+  nba: "leagues/basketball/nba",
+  nfl: "leagues/football/nfl",
+  nhl: "leagues/hockey/nhl",
+  soccer: "leagues/soccer",
+  tennis: "leagues/tennis",
+  mma: "leagues/mma",
+  ufc: "leagues/mma/ufc",
+  baseball: "leagues/baseball/mlb",
+  wnba: "leagues/basketball/wnba",
+  cfl: "leagues/football/cfl",
+};
+const BETMGM_SPORT_PATHS: Record<string, string> = {
+  mlb: "en/sports/baseball-23",
+  nba: "en/sports/basketball-7",
+  nfl: "en/sports/football-11",
+  nhl: "en/sports/hockey-12",
+  soccer: "en/sports/soccer-4",
+  tennis: "en/sports/tennis-5",
+  mma: "en/sports/mma-9",
+  ufc: "en/sports/mma-9",
+  baseball: "en/sports/baseball-23",
+};
+const CAESARS_SPORT_PATHS: Record<string, string> = {
+  mlb: "us/bet/baseball",
+  nba: "us/bet/basketball",
+  nfl: "us/bet/football",
+  nhl: "us/bet/hockey",
+  soccer: "us/bet/soccer",
+  tennis: "us/bet/tennis",
+  mma: "us/bet/mma",
+  ufc: "us/bet/mma",
+  baseball: "us/bet/baseball",
+};
 
 // ──────────────────────────────────────────────────────────────────────
 // Bet-slip clipboard format
