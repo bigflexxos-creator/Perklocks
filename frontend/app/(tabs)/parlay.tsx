@@ -1,15 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator,
-  RefreshControl, Pressable,
+  RefreshControl, Pressable, Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
-import { api, Pick, LineType, PickFilters, ParlayCard } from "@/src/lib/api";
+import { api, Pick, LineType, ParlayCard } from "@/src/lib/api";
 import { LineTypeToggle } from "@/src/components/LineTypeToggle";
 import { SportFilterBar } from "@/src/components/SportFilterBar";
+import { useParlayPreferences } from "@/src/lib/useParlayPreferences";
+import {
+  SPORTSBOOKS, SportsbookId, openSportsbook,
+  formatBetSlip, copyBetSlip,
+} from "@/src/lib/sportsbookLinks";
 
 // ─── Card label → accent colour mapping ───────────────────────────────
 const CARD_ACCENTS: Record<ParlayCard["label"], string> = {
@@ -34,29 +39,27 @@ const GRADE_TINT: Record<string, string> = {
   B: COLORS.goldElite,
   C: COLORS.voltBlue,
   D: COLORS.electricBlaze,
-  F: COLORS.lossRed ?? "#FF3B5C",
+  F: "#FF3B5C",
 };
 
 export default function ParlayScreen() {
   const router = useRouter();
+  const { prefs, updatePrefs, hydrated } = useParlayPreferences();
   const [parlays, setParlays] = useState<ParlayCard[]>([]);
   const [reason, setReason] = useState<string>("");
-  const [mode, setMode] = useState<"standard" | "high_risk">("standard");
-  const [legs, setLegs] = useState(3);
-  const [sport, setSport] = useState<string>("mix");
-  const [excludedSports, setExcludedSports] = useState<string[]>([]);
-  const [lineType, setLineType] = useState<LineType>("both");
-  const [filters, setFilters] = useState<PickFilters>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  // Per-card refresh cursor: SAFE=card[0], BALANCED=card[1], AGGRESSIVE=card[2]
+  // Per-card refresh cursor: ephemeral — NOT persisted (resets every launch)
   const [rank, setRank] = useState(1);
-  // Pinned leg IDs survive refresh
+  // Pinned leg IDs survive refresh — ephemeral session-only state
   const [lockedIds, setLockedIds] = useState<string[]>([]);
+
+  // Convenience accessors
+  const { mode, legs, sport, lineType, excludedSports, filters, preferredBook } = prefs;
 
   const load = useCallback(
     async (n: number, m: "standard" | "high_risk", s: string, lt: LineType,
-           excl: string[], f: PickFilters, r: number, locked: string[]) => {
+           excl: string[], f: any, r: number, locked: string[]) => {
       try {
         const res = await api.parlay(n, m, s, lt, excl, f, r, locked);
         setParlays(res.parlays || []);
@@ -71,14 +74,15 @@ export default function ParlayScreen() {
     [],
   );
 
+  // Wait until preferences are hydrated from AsyncStorage before first fetch.
   useEffect(() => {
+    if (!hydrated) return;
     setLoading(true);
     load(legs, mode, sport, lineType, excludedSports, filters, rank, lockedIds);
-  }, [legs, mode, sport, lineType, excludedSports, filters, rank, lockedIds, load]);
+  }, [hydrated, legs, mode, sport, lineType, excludedSports, filters, rank, lockedIds, load]);
 
   const onModeChange = (m: "standard" | "high_risk") => {
-    setMode(m);
-    setLegs(m === "high_risk" ? 10 : 3);
+    updatePrefs({ mode: m, legs: m === "high_risk" ? 10 : 3 });
     setRank(1);
     setLockedIds([]);
   };
@@ -162,7 +166,7 @@ export default function ParlayScreen() {
           <Pressable
             key={n}
             testID={`parlay-legs-${n}`}
-            onPress={() => { setLegs(n); setRank(1); }}
+            onPress={() => { updatePrefs({ legs: n }); setRank(1); }}
             style={[styles.legChip, legs === n && styles.legChipActive]}
           >
             <Text style={[styles.legChipText, legs === n && styles.legChipTextActive]}>{n}</Text>
@@ -180,7 +184,7 @@ export default function ParlayScreen() {
               <Pressable
                 key={opt.id}
                 testID={`parlay-sport-${opt.id}`}
-                onPress={() => { setSport(opt.id); setRank(1); }}
+                onPress={() => { updatePrefs({ sport: opt.id }); setRank(1); }}
                 style={[
                   styles.sportChip,
                   active && (isMix ? styles.sportChipMixActive : styles.sportChipActive),
@@ -207,9 +211,10 @@ export default function ParlayScreen() {
                   key={`excl-${opt.id}`}
                   testID={`parlay-exclude-${opt.id}`}
                   onPress={() => {
-                    setExcludedSports((prev) =>
-                      excluded ? prev.filter((s) => s !== opt.id) : [...prev, opt.id],
-                    );
+                    const next = excluded
+                      ? excludedSports.filter((s) => s !== opt.id)
+                      : [...excludedSports, opt.id];
+                    updatePrefs({ excludedSports: next });
                     setRank(1);
                   }}
                   style={[styles.excludeChip, excluded && styles.excludeChipActive]}
@@ -222,7 +227,7 @@ export default function ParlayScreen() {
               );
             })}
             {excludedSports.length > 0 && (
-              <Pressable onPress={() => setExcludedSports([])} style={styles.clearExcludeBtn} testID="parlay-exclude-clear">
+              <Pressable onPress={() => updatePrefs({ excludedSports: [] })} style={styles.clearExcludeBtn} testID="parlay-exclude-clear">
                 <Text style={styles.clearExcludeText}>CLEAR</Text>
               </Pressable>
             )}
@@ -230,10 +235,10 @@ export default function ParlayScreen() {
         </View>
       )}
 
-      <LineTypeToggle value={lineType} onChange={(v) => { setLineType(v); setRank(1); }} testIDPrefix="parlay-line" />
+      <LineTypeToggle value={lineType} onChange={(v) => { updatePrefs({ lineType: v }); setRank(1); }} testIDPrefix="parlay-line" />
 
       {sport !== "mix" && (
-        <SportFilterBar sport={sport} filters={filters} onChange={(f) => { setFilters(f); setRank(1); }} />
+        <SportFilterBar sport={sport} filters={filters} onChange={(f) => { updatePrefs({ filters: f }); setRank(1); }} />
       )}
 
       {lockedIds.length > 0 && (
@@ -277,8 +282,10 @@ export default function ParlayScreen() {
                 key={card.label}
                 card={card}
                 lockedIds={lockedIds}
+                preferredBook={preferredBook}
                 onTogglePin={togglePin}
                 onLegPress={(id) => router.push(`/pick/${id}`)}
+                onSetPreferredBook={(book) => updatePrefs({ preferredBook: book })}
               />
             ))}
             <Text style={styles.disclaimer}>
@@ -297,17 +304,55 @@ export default function ParlayScreen() {
 // Parlay Card — one of 3 (SAFE / BALANCED / AGGRESSIVE)
 // ──────────────────────────────────────────────────────────────────────
 function ParlayCardView({
-  card, lockedIds, onTogglePin, onLegPress,
+  card, lockedIds, preferredBook, onTogglePin, onLegPress, onSetPreferredBook,
 }: {
   card: ParlayCard;
   lockedIds: string[];
+  preferredBook: SportsbookId | null;
   onTogglePin: (legId: string) => void;
   onLegPress: (id: string) => void;
+  onSetPreferredBook: (book: SportsbookId) => void;
 }) {
   const accent = CARD_ACCENTS[card.label];
   const iconName = CARD_ICONS[card.label];
   const tagline = CARD_TAGLINES[card.label];
   const gradeColor = GRADE_TINT[card.grade] || COLORS.textPrimary;
+  const [copied, setCopied] = useState(false);
+
+  const onCopy = useCallback(async () => {
+    const text = formatBetSlip(card.legs, {
+      label: card.label,
+      combinedOdds: card.combined_american_odds,
+      payout: card.payout_on_100,
+      profit: card.profit_on_100,
+      survival: card.survival_pct,
+    });
+    const ok = await copyBetSlip(text);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } else {
+      Alert.alert("Copy failed", "Could not copy bet slip to clipboard.");
+    }
+  }, [card]);
+
+  const onOpenBook = useCallback(async (book: SportsbookId) => {
+    // Auto-copy the slip first so the user can paste it in the sportsbook.
+    const text = formatBetSlip(card.legs, {
+      label: card.label,
+      combinedOdds: card.combined_american_odds,
+      payout: card.payout_on_100,
+      profit: card.profit_on_100,
+      survival: card.survival_pct,
+    });
+    await copyBetSlip(text);
+    onSetPreferredBook(book);
+    const ok = await openSportsbook(book);
+    if (!ok) {
+      Alert.alert("Could not open sportsbook",
+        "Your bet slip is copied — paste it manually in the sportsbook.");
+    }
+  }, [card, onSetPreferredBook]);
 
   return (
     <View style={[styles.cardWrap, { borderColor: accent }]}>
@@ -385,7 +430,7 @@ function ParlayCardView({
       {/* Legs */}
       <Text style={styles.legsHeader}>LEGS</Text>
       {card.legs.map((leg, idx) => {
-        const lockColor = GRADE_COLORS[leg.grade as any] || COLORS.textMuted;
+        const lockColor = (GRADE_COLORS as Record<string, string>)[leg.grade] || COLORS.textMuted;
         const pinned = lockedIds.includes(leg.id);
         return (
           <Pressable
@@ -431,6 +476,50 @@ function ParlayCardView({
           </Pressable>
         );
       })}
+
+      {/* ── BET SLIP ACTION ROW — copy & open sportsbook deep links ── */}
+      <View style={[styles.betSlipBar, { borderColor: accent + "55" }]}>
+        <Pressable
+          testID={`parlay-copy-${card.label}`}
+          onPress={onCopy}
+          style={({ pressed }) => [
+            styles.copyBtn,
+            { borderColor: accent, opacity: pressed ? 0.6 : 1 },
+          ]}
+        >
+          <Ionicons
+            name={copied ? "checkmark-circle" : "copy-outline"}
+            size={14}
+            color={copied ? COLORS.neonGreen : accent}
+          />
+          <Text style={[styles.copyTxt, { color: copied ? COLORS.neonGreen : accent }]}>
+            {copied ? "COPIED" : "COPY SLIP"}
+          </Text>
+        </Pressable>
+        <View style={styles.bookRow}>
+          {SPORTSBOOKS.slice(0, 4).map((book) => {
+            const isPreferred = preferredBook === book.id;
+            return (
+              <Pressable
+                key={book.id}
+                testID={`parlay-book-${card.label}-${book.id}`}
+                onPress={() => onOpenBook(book.id)}
+                style={({ pressed }) => [
+                  styles.bookBtn,
+                  { borderColor: isPreferred ? book.brandColor : COLORS.borderDefault,
+                    backgroundColor: isPreferred ? book.brandColor + "22" : "transparent" },
+                  pressed && { opacity: 0.6 },
+                ]}
+              >
+                <Text style={[styles.bookTxt, { color: book.brandColor }]}>{book.short}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+      <Text style={styles.betSlipHelp}>
+        Tap a sportsbook to open it · slip is auto-copied to clipboard
+      </Text>
     </View>
   );
 }
@@ -552,5 +641,41 @@ const styles = StyleSheet.create({
   legEdge: { color: COLORS.neonGreen, fontSize: 10, fontWeight: "900", letterSpacing: 0.4 },
   legOdds: { color: COLORS.textPrimary, fontSize: 11, fontWeight: "900", marginLeft: "auto" },
   pinBtn: { padding: 6 },
+  betSlipBar: {
+    marginTop: 8,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  copyBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1.5,
+  },
+  copyTxt: { fontSize: 10, fontWeight: "900", letterSpacing: 1.4 },
+  bookRow: { flex: 1, flexDirection: "row", justifyContent: "flex-end", gap: 6 },
+  bookBtn: {
+    minWidth: 38,
+    height: 32,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  bookTxt: { fontSize: 11, fontWeight: "900", letterSpacing: 0.8 },
+  betSlipHelp: {
+    color: COLORS.textMuted,
+    fontSize: 10,
+    fontWeight: "600",
+    textAlign: "center",
+    marginTop: 6,
+  },
   disclaimer: { color: COLORS.textMuted, fontSize: 11, lineHeight: 17, marginTop: 12, textAlign: "center" },
 });

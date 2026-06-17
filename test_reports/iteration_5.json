@@ -1,0 +1,33 @@
+{
+  "summary": "Parlay preference persistence + bet-slip deep-link features verified end-to-end on mobile viewport (390x844). All 5 frontend scenarios PASS plus backend smoke PASS. F1 — persistence: mode=high_risk + legs=15 set via UI, persisted to localStorage key @perkslocks/parlay-prefs-v1, survived hard page reload (legs-15 chip remained present, legs-3 absent, confirming HR mode retained). F2 — copy slip: tapping parlay-copy-SAFE changed label COPY SLIP → COPIED with checkmark icon and reverted ~1.8s later; navigator.clipboard.readText() returned text starting with '🔒 PerksLocks SAFE Parlay  (2 legs)\\nCombined: -193 ...' exactly as formatted by formatBetSlip(). F3 — book buttons render: all four buttons present with correct labels (DK/FD/MGM/CZR). Tapping parlay-book-SAFE-draftkings opened a popup to https://sportsbook.draftkings.com/ (web fallback — correct behavior on web preview since iOS dksbgames:// scheme isn't accessible) and persisted preferredBook='draftkings' to localStorage. F4 — preferred book persistence: after full page reload, DK button shows brand-color highlight (bg rgba(83,211,55,0.13), border rgb(83,211,55) = #53D337 DraftKings green) while FD/MGM/CZR remain in default border/transparent state. F5 — regression: parlay-pin-BALANCED-0 still toggles, pinned bar appears with '1 pinned · survives refresh' alongside the new bet-slip features. Backend smoke: /api/picks/parlay?mode=standard&legs=3 returns 3 cards (SAFE/BALANCED/AGGRESSIVE); &rank=2 returns a different first-leg fingerprint, confirming rank cycling still works. No crashes, no red screens, no pageerrors, no TypeScript runtime errors. One pre-existing console warning ('props.pointerEvents is deprecated') is RN-web framework noise unrelated to these features.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_parlay_optimizer.py (existing regression suite, unchanged)"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "useParlayPreferences.ts:73 — the persist useEffect lists `prefs` as a dep but JSON.stringify is called on every render where prefs object identity changes. Behavior is correct but if prefs.filters becomes a nested object that mutates often, consider debouncing. Non-blocking.",
+    "sportsbookLinks.ts:32-72 — Platform.select() is evaluated at module load time on web, so appScheme on web always equals webUrl. The openSportsbook function correctly skips the iOS/Android branches on web (Platform.OS==='web') and falls through to the webUrl Linking.openURL call, which is what produced the popup in F3. Logic is sound.",
+    "parlay.tsx is now 681 lines (was ~530). With the new ParlayCardView + bet-slip bar, the file is approaching the 700-line guideline. Extracting ParlayCardView into its own component file would improve maintainability — non-blocking but flagged.",
+    "parlay.tsx:322-337 onCopy / 339-355 onOpenBook — both build the same formatBetSlip payload from card fields. Could be DRY'd into a single buildSlipText(card) helper inside the component. Minor."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% (parlay endpoint smoke: 3 cards returned, rank cycling works)",
+    "frontend": "100% (5/5 scenarios PASS — F1 persistence, F2 copy-slip, F3 book buttons render+tap, F4 preferred book highlight after reload, F5 pin regression)"
+  },
+  "seed_data_creation": "None. Used demo@lockscore.ai / demo123 and live /api/picks/today pool.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Feature is verified working. AsyncStorage key on web is @perkslocks/parlay-prefs-v1 in localStorage. To clear prefs between tests: page.evaluate(\"window.localStorage.removeItem('@perkslocks/parlay-prefs-v1')\") then reload. Clipboard read works on chromium after page.context.grant_permissions(['clipboard-read','clipboard-write']). Tapping a book button on web opens a popup window (the webUrl fallback) — listen with page.on('popup', ...) to verify URL. Preferred-book highlight check: read computed style backgroundColor — DK active = rgba(83,211,55,0.13), FD/MGM/CZR inactive = rgba(0,0,0,0).",
+  "rca_of_issue": "No bugs to RCA. Both new features (useParlayPreferences hook + bet-slip action row with copy + sportsbook deep-links) work as specified across persistence, clipboard, deep-link fallback, and preferred-book highlighting."
+}
