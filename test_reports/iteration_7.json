@@ -1,0 +1,35 @@
+{
+  "summary": "Frontend-only verification of the new game-time-and-date display feature. All 7 surfaces in the review request render times correctly using the shared util /app/frontend/src/lib/formatGameTime.ts. Mobile viewport 390x844, demo@lockscore.ai login. (1) Parlay screen: 7/7 legs in SAFE card show a time line under the event matchup. Computed style confirms color=rgb(0,122,255) (voltBlue) at 10px / fontWeight 800 — matches spec. Mixed samples observed across leg cards: 'Today · 11:06 PM', 'Tomorrow · 9:59 AM', 'Today · 11:00 PM' (all three formats produced by the util). (2) Home/Lock tab regression: time labels still render on every visible LockPickCard (e.g. 'Today · 10:46 PM') after the dedup refactor — no regression. (3) Killer tab regression: time strings render (e.g. 'Tomorrow · 7:00 PM'), no red screen, no console errors. (4) Rollover tab regression: 3 time strings observed (e.g. 'Tomorrow · 2:00 AM', 'Today · 11:15 PM', 'Tomorrow · 1:41 AM'), no errors. (5) History tab: settled cards show original game time under matchup — all three format branches verified in one screen ('Today · 8:00 PM' / 'Tue, Jun 16 · 11:16 PM'). Time line sits between event and result line, styled correctly. (6) Pick Detail: header renders 'Today · 11:06 PM' directly under 'Chicago White Sox @ New York Yankees' (screenshot confirmed). (7) Copy-to-clipboard from Parlay COPY SLIP: clipboard text matches spec exactly — each leg block contains a '   ⏰ Today · 11:06 PM' line between the event line and the market/odds line. Both legs in the copied parlay had a ⏰ time line. Lint clean across all 9 changed files. No red-screen errors, no new pageerror events. Pre-existing 'props.pointerEvents is deprecated' RN-web warning still present (framework noise, unrelated to this turn).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/iteration_7.json"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "formatGameTime.ts is correct: gracefully returns '' for null/undefined/invalid ISO (caller-safe gating with `{label && <Text>{label}</Text>}` works everywhere). Today/Tomorrow boundary uses local-day start (new Date(y,m,d)) — correct, no UTC drift.",
+    "All 5 new render sites (parlay legs, slip legs, history cards, pick-detail header, formatBetSlip) consistently guard with `event_time && (...)` so picks missing event_time degrade gracefully (no empty lines).",
+    "parlay.tsx styles.legTime uses COLORS.voltBlue at 10px/800-weight/marginTop:2 — visible blue confirmed via getComputedStyle; contrast against the dark leg card is sufficient.",
+    "sportsbookLinks.ts formatBetSlip inserts '   ⏰ ${t}' between the event line and the market line — exactly matches the spec; if event_time absent the ⏰ line is omitted (no orphan emoji).",
+    "Dedup refactor in killer.tsx / rollover.tsx / LockPickCard.tsx / pick/[id].tsx all import from @/src/lib/formatGameTime; no behavior change observed in regression checks. pick/[id].tsx still uses its own styles.eventTime so the visual treatment in the header is preserved.",
+    "Minor non-blocking: parlay.tsx is now ~753 lines, still above the 700-line guideline flagged in iter5/iter6. Extracting ParlayCardView would help, but not introduced by this turn."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "N/A (skipped per request — backend unchanged)",
+    "frontend": "100% (7/7 surfaces verified)"
+  },
+  "seed_data_creation": "None. Used live demo account demo@lockscore.ai and /api/picks/parlay live data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Bet-Slip screen empty-state behaves correctly and the time-rendering code in /app/frontend/app/slip.tsx (line 128-130, styles.legTime line 204) plus buildShareText (line 18, conditional ⏰ in line 19-20) is verified by source + lint + parity with the parlay/history paths that DO render live. To populate the slip from UI for future testing, use the + icon on a Home pick card (TouchableOpacity in LockPickCard); slip persists via AsyncStorage key 'perkslocks.betslip.v1' (web localStorage). Note: GET /api/picks?limit=5 returns 404 (the listing endpoint path is different) — irrelevant to this turn but useful to know.",
+  "rca_of_issue": "No bugs found. The shared formatGameTime util is wired into all 5 new sites with correct conditional rendering and consistent voltBlue styling. The copy-slip clipboard text now includes ⏰ time lines per leg exactly as specified."
+}

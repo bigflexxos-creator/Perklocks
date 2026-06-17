@@ -15,6 +15,7 @@ import {
   SPORTSBOOKS, SportsbookId, openSportsbook,
   formatBetSlip, copyBetSlip,
 } from "@/src/lib/sportsbookLinks";
+import { formatGameTime } from "@/src/lib/formatGameTime";
 
 // ─── Card label → accent colour mapping ───────────────────────────────
 const CARD_ACCENTS: Record<ParlayCard["label"], string> = {
@@ -506,6 +507,9 @@ function ParlayCardView({
                 {leg.elite_player ? "  ⭐" : ""}
               </Text>
               <Text style={styles.legEvent} numberOfLines={1}>{leg.event}</Text>
+              {leg.event_time && (
+                <Text style={styles.legTime}>{formatGameTime(leg.event_time)}</Text>
+              )}
               <Text style={styles.legMarket} numberOfLines={2}>{leg.market}</Text>
               <View style={styles.legMeta}>
                 <Text style={[styles.legLock, { color: lockColor }]}>Lock {leg.lock_score}</Text>
@@ -701,6 +705,7 @@ const styles = StyleSheet.create({
   legNumText: { color: COLORS.bg, fontWeight: "900", fontSize: 13 },
   legSport: { color: COLORS.textMuted, fontSize: 9, fontWeight: "800", letterSpacing: 1.2 },
   legEvent: { color: COLORS.textSecondary, fontSize: 11, fontWeight: "600", marginTop: 2 },
+  legTime: { color: COLORS.voltBlue, fontSize: 10, fontWeight: "800", letterSpacing: 0.4, marginTop: 2 },
   legMarket: { color: COLORS.textPrimary, fontSize: 13, fontWeight: "800", marginTop: 3, letterSpacing: -0.1 },
   legMeta: { flexDirection: "row", alignItems: "center", marginTop: 6, gap: 10 },
   legLock: { fontSize: 10, fontWeight: "900", letterSpacing: 0.8 },

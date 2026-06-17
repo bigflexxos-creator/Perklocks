@@ -9,24 +9,7 @@ import { COLORS, GRADE_COLORS } from "@/src/theme";
 import { api, Pick } from "@/src/lib/api";
 import { useBetSlip, MAX_SLIP_SIZE } from "@/src/contexts/BetSlipContext";
 import { SPORTSBOOKS, openSportsbookWithSlip, SportsbookName } from "@/src/utils/sportsbook";
-
-function formatGameTime(iso: string): string {
-  try {
-    const dt = new Date(iso);
-    const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const tomorrowStart = new Date(todayStart);
-    tomorrowStart.setDate(todayStart.getDate() + 1);
-    const dayAfter = new Date(todayStart);
-    dayAfter.setDate(todayStart.getDate() + 2);
-    const time = dt.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-    if (dt >= todayStart && dt < tomorrowStart) return `Today · ${time}`;
-    if (dt >= tomorrowStart && dt < dayAfter) return `Tomorrow · ${time}`;
-    return `${dt.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })} · ${time}`;
-  } catch {
-    return iso;
-  }
-}
+import { formatGameTime } from "@/src/lib/formatGameTime";
 
 export default function PickDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -142,6 +125,9 @@ export default function PickDetail() {
             </View>
 
             <Text style={styles.event}>{pick.event}</Text>
+            {pick.event_time && (
+              <Text style={styles.eventTime}>{formatGameTime(pick.event_time)}</Text>
+            )}
             <Text style={styles.market}>{pick.market}</Text>
 
             <View style={[styles.scoreWrap, { borderColor: gradeColor }]}>
@@ -343,6 +329,7 @@ const styles = StyleSheet.create({
   metaText: { color: COLORS.textMuted, fontSize: 11, fontWeight: "700", letterSpacing: 0.8 },
 
   event: { color: COLORS.textSecondary, fontSize: 14, fontWeight: "600" },
+  eventTime: { color: COLORS.voltBlue, fontSize: 12, fontWeight: "800", letterSpacing: 0.3, marginTop: 4 },
   gameTime: { color: COLORS.voltBlue, fontSize: 12, fontWeight: "700", letterSpacing: 0.3, marginTop: 4 },
   market: { color: COLORS.textPrimary, fontSize: 24, fontWeight: "900", letterSpacing: -0.5, marginTop: 6 },
 
