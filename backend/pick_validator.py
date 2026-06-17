@@ -130,7 +130,13 @@ async def validate_and_heal(db) -> dict:
                 counts["fixed_edge"] += 1
 
         # 4) Lock-score anchor — re-derive from current factors + WP.
-        if compute_lock_score and wp is not None:
+        # CARVE-OUT: skip tennis picks — `tennis_engine.py` v2 already
+        # produces calibrated lock scores via its own component-based
+        # formula (`edge_v2_score`). Re-running the generic formula here
+        # systematically LOWERS tennis locks (e.g. Sabalenka 99 → 83)
+        # because tennis spreads have modest model-edges relative to other
+        # sports. Trust the sport-specific engine.
+        if compute_lock_score and wp is not None and (p.get("sport") or "") != "Tennis":
             factors_pct = p.get("factors") or {}
             if factors_pct:
                 factors = {k: v / 100.0 for k, v in factors_pct.items()}
