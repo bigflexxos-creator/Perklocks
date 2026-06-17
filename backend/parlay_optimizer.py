@@ -53,9 +53,18 @@ MAX_REL_DROP_HIGH_RISK = 0.45  # 45 % for high-risk parlays (lottery)
 MAX_ABS_DROP_STANDARD = 0.15   # 15 percentage points absolute
 MAX_ABS_DROP_HIGH_RISK = 0.30  # 30 pp absolute for high-risk
 
-# Diversification (per spec)
-MAX_SAME_SPORT_RATIO = 0.40    # Max 40 % of legs from same sport
-MAX_SAME_GAME = 2              # Max 2 legs from same game
+# Diversification (per spec, leg-count-aware soft limits)
+# These define the maximum number of legs that may share the same sport.
+# SINGLE-SPORT mode bypasses these entirely.
+def max_same_sport_for_target(target_legs: int) -> int:
+    """Per-spec soft limit on legs sharing the same sport, by target size."""
+    if target_legs <= 5:
+        return 2                       # 2-5 legs:   max 2 same sport
+    if target_legs <= 10:
+        return max(2, target_legs // 2)  # 6-10 legs: max 50% same sport
+    return max(2, (target_legs * 4) // 10)  # 11-20 legs: max 40% same sport
+
+MAX_SAME_GAME = 2              # Max 2 legs from same game (always)
 
 # Per-leg composite score weights (per spec)
 W_LOCK = 0.40
@@ -197,10 +206,12 @@ def detect_anti_hero(pick: dict, bucket_map: dict) -> dict:
 # PER-LEG COMPOSITE SCORE (0-100)
 # ──────────────────────────────────────────────────────────────────────────
 
-def score_leg(pick: dict, bucket_map: dict, current_legs: list[dict]) -> float:
+def score_leg(pick: dict, bucket_map: dict, current_legs: list[dict],
+              *, target_legs: int = 5, single_sport_mode: bool = False) -> float:
     """Composite leg score 0-100 per spec weighting:
         40 % Lock  +  25 % Edge  +  20 % ROI  +  10 % Correlation  +  5 % Stability
     `current_legs` is the parlay-in-progress (for correlation calc).
+    `target_legs` & `single_sport_mode` change the same-sport penalty.
     """
     lock = float(pick.get("lock_score") or 0)
     edge = float(pick.get("edge_percent") or 0)
@@ -228,9 +239,12 @@ def score_leg(pick: dict, bucket_map: dict, current_legs: list[dict]) -> float:
         if pick_player:
             same_player = sum(1 for L in current_legs
                             if L.get("elite_player_name") == pick_player)
-        ratio_same_sport = same_sport / max(1, len(current_legs))
-        if ratio_same_sport > MAX_SAME_SPORT_RATIO:
-            correlation_component -= 30
+        # Leg-count-aware same-sport tolerance.
+        # In single-sport mode there is no penalty.
+        if not single_sport_mode:
+            max_same = max_same_sport_for_target(target_legs)
+            if (same_sport + 1) > max_same:
+                correlation_component -= 30
         if same_event >= MAX_SAME_GAME:
             correlation_component -= 50
         elif same_event == 1:
@@ -355,15 +369,28 @@ def damage_control_ok(current_legs: list[dict], candidate: dict, *,
 # DIVERSIFICATION GUARD
 # ──────────────────────────────────────────────────────────────────────────
 
-def diversification_ok(current_legs: list[dict], candidate: dict) -> tuple[bool, str]:
-    """Enforce max-40 %-same-sport and max-2-same-game caps."""
+def diversification_ok(current_legs: list[dict], candidate: dict,
+                       *, target_legs: int = 5,
+                       single_sport_mode: bool = False) -> tuple[bool, str]:
+    """Enforce same-sport and same-game caps. Leg-count-aware per spec:
+      • 2-5 legs:  max 2 same sport
+      • 6-10 legs: max 50% same sport
+      • 11-20 legs: max 40% same sport
+    SINGLE-SPORT mode bypasses the same-sport cap entirely."""
     if not current_legs:
         return True, ""
-    new_size = len(current_legs) + 1
-    same_sport = sum(1 for L in current_legs
-                    if (L.get("sport") or "") == (candidate.get("sport") or ""))
-    if (same_sport + 1) / new_size > MAX_SAME_SPORT_RATIO and new_size >= 3:
-        return False, f"Max {int(MAX_SAME_SPORT_RATIO*100)}% same sport"
+    if not single_sport_mode:
+        same_sport = sum(1 for L in current_legs
+                        if (L.get("sport") or "") == (candidate.get("sport") or ""))
+        max_same = max_same_sport_for_target(target_legs)
+        if same_sport + 1 > max_same:
+            if target_legs <= 5:
+                msg = f"Max {max_same} same sport"
+            elif target_legs <= 10:
+                msg = "Max 50% same sport"
+            else:
+                msg = "Max 40% same sport"
+            return False, msg
     same_event = sum(1 for L in current_legs
                     if (L.get("event") or "") == (candidate.get("event") or ""))
     if same_event >= MAX_SAME_GAME:
@@ -522,7 +549,8 @@ def explain_parlay(legs: list[dict], health: dict, bucket_map: dict) -> list[str
 def build_one_parlay(pool: list[dict], *, target_legs: int, high_risk: bool,
                     bucket_map: dict, seed_pick: dict | None = None,
                     locked_picks: list[dict] | None = None,
-                    randomness: float = 0.0) -> list[dict]:
+                    randomness: float = 0.0,
+                    single_sport_mode: bool = False) -> list[dict]:
     """Build a single parlay greedily.
 
     1. Start with locked_picks (if any) + seed_pick (if provided).
@@ -547,13 +575,21 @@ def build_one_parlay(pool: list[dict], *, target_legs: int, high_risk: bool,
             ok, _ = is_eligible_leg(cand, bucket_map, high_risk=high_risk)
             if not ok:
                 continue
-            div_ok, _ = diversification_ok(legs, cand)
+            div_ok, _ = diversification_ok(
+                legs, cand,
+                target_legs=target_legs,
+                single_sport_mode=single_sport_mode,
+            )
             if not div_ok:
                 continue
             dmg_ok, _, _ = damage_control_ok(legs, cand, high_risk=high_risk)
             if not dmg_ok:
                 continue
-            s = score_leg(cand, bucket_map, legs)
+            s = score_leg(
+                cand, bucket_map, legs,
+                target_legs=target_legs,
+                single_sport_mode=single_sport_mode,
+            )
             # Inject randomness for candidate diversity (small)
             if randomness > 0:
                 s += rng.uniform(-randomness, randomness)
@@ -589,12 +625,14 @@ def build_one_parlay(pool: list[dict], *, target_legs: int, high_risk: bool,
 def build_top_parlays(pool: list[dict], *, target_legs: int, high_risk: bool,
                      bucket_map: dict, n_candidates: int = N_CANDIDATES,
                      locked_picks: list[dict] | None = None,
-                     rank: int = 1) -> list[dict]:
+                     rank: int = 1,
+                     single_sport_mode: bool = False) -> list[dict]:
     """Generate ~N candidate parlays, score them, return Top 3 labelled.
 
     `rank` lets the frontend "refresh" cycle through next-best candidates
     without randomising — rank=1 returns the canonical top-3, rank=2 returns
     the 4th-6th best parlays, etc.
+    `single_sport_mode` disables the same-sport diversification cap.
     """
     if not pool:
         return []
@@ -606,7 +644,9 @@ def build_top_parlays(pool: list[dict], *, target_legs: int, high_risk: bool,
         return []
     # Sort pool by composite leg-score for stable seed-picking
     eligible_pool.sort(
-        key=lambda p: score_leg(p, bucket_map, []),
+        key=lambda p: score_leg(p, bucket_map, [],
+                                target_legs=target_legs,
+                                single_sport_mode=single_sport_mode),
         reverse=True,
     )
 
@@ -628,7 +668,8 @@ def build_top_parlays(pool: list[dict], *, target_legs: int, high_risk: bool,
         legs = build_one_parlay(eligible_pool, target_legs=target_legs,
                                 high_risk=high_risk, bucket_map=bucket_map,
                                 seed_pick=seed, locked_picks=locked_picks,
-                                randomness=randomness)
+                                randomness=randomness,
+                                single_sport_mode=single_sport_mode)
         min_legs = 5 if high_risk else 2
         if len(legs) < min_legs:
             continue

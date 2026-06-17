@@ -194,14 +194,24 @@ export const api = {
     }>(`/picks/under-of-the-day${q ? `?${q}` : ""}`);
   },
   parlay: (legs: number = 3, mode: "standard" | "high_risk" = "standard",
-           sport?: string, lineType?: LineType, excludeSports?: string[],
-           filters?: PickFilters, rank: number = 1, lockedIds: string[] = []) => {
-    const qs = new URLSearchParams({ legs: String(legs), mode, rank: String(rank) });
-    if (sport && sport !== "mix") qs.set("sport", sport);
-    if (lineType && lineType !== "both") qs.set("line_type", lineType);
-    if ((!sport || sport === "mix") && excludeSports && excludeSports.length > 0) {
+           sport?: string, lineType?: LineType,
+           includeSports: string[] = [],
+           filters?: PickFilters, rank: number = 1, lockedIds: string[] = [],
+           sportMode: "auto" | "custom" | "single" = "auto",
+           windowHours: number = 24,
+           excludeSports: string[] = []) => {
+    const qs = new URLSearchParams({
+      legs: String(legs), mode, rank: String(rank),
+      sport_mode: sportMode, window_hours: String(windowHours),
+    });
+    if (sportMode === "single" && sport && sport !== "mix") qs.set("sport", sport);
+    if (sportMode === "custom" && includeSports.length > 0) {
+      qs.set("include_sports", includeSports.join(","));
+    }
+    if (sportMode === "auto" && excludeSports.length > 0) {
       qs.set("exclude_sports", excludeSports.join(","));
     }
+    if (lineType && lineType !== "both") qs.set("line_type", lineType);
     if (filters?.market) qs.set("market", filters.market);
     if (filters?.league) qs.set("league", filters.league);
     if (lockedIds.length > 0) qs.set("locked_ids", lockedIds.join(","));
@@ -214,6 +224,8 @@ export const api = {
       parlays?: ParlayCard[];
       rank?: number;
       locked_ids?: string[];
+      window_hours?: number;
+      sport_mode?: string;
       reason?: string;
     }>(`/picks/parlay?${qs.toString()}`);
   },

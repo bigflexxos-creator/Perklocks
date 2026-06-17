@@ -803,10 +803,158 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
                      sport: str | None = None,
                      line_type: str | None = None,
                      exclude_sports: str | None = None,
+                     include_sports: str | None = None,
+                     sport_mode: str = "auto",
+                     window_hours: int = 24,
                      market: str | None = None,
                      league: str | None = None,
                      rank: int = 1,
                      locked_ids: str | None = None):
+    """Parlay Optimizer V1.1 — highest-probability parlay builder.
+
+    Mode (`mode`):
+      - standard: Lock≥88, Edge≥+3%, ROI non-negative. Target 2-5 legs.
+      - high_risk: Lock≥75, Edge≥+1%. Target 10-20 legs.
+
+    Sport selection (`sport_mode`):
+      - auto: use everything (default).
+      - custom: limit pool to `include_sports` (comma-separated list).
+      - single: limit pool to one `sport` value AND bypass same-sport
+        diversification (so 100% same sport is allowed).
+
+    Time window (`window_hours`): only consider events with commence_time
+    inside the next N hours. Defaults to 24h.
+
+    Refresh: pass `rank=2,3,4…` to cycle through next-best candidates.
+    Pin legs: pass `locked_ids` (comma-separated pick IDs).
+    """
+    from parlay_optimizer import (
+        build_top_parlays, parlay_to_payload,
+    )
+    await _ensure_today_picks()
+    is_high_risk = (mode or "").lower() == "high_risk"
+    mode_lower = (sport_mode or "auto").lower()
+    is_single_sport = mode_lower == "single"
+
+    # ─── Sport filter ───
+    sport_filter: dict = {}
+    sport_q = (sport or "").strip()
+    if mode_lower == "single" and sport_q and sport_q.lower() not in ("mix", "all"):
+        sport_filter = {"sport": sport_q}
+    elif mode_lower == "custom" and include_sports:
+        wanted = [s.strip() for s in include_sports.split(",") if s.strip()]
+        if wanted:
+            sport_filter = {"sport": {"$in": wanted}}
+    else:
+        # AUTO mode (or fallback): honour legacy exclude_sports if provided.
+        if exclude_sports:
+            excluded = [s.strip() for s in exclude_sports.split(",") if s.strip()]
+            if excluded:
+                sport_filter = {"sport": {"$nin": excluded}}
+
+    lt = (line_type or "").lower()
+    line_filter: dict = {}
+    if lt == "main":
+        line_filter = {"is_alt": {"$ne": True}}
+    elif lt == "alt":
+        line_filter = {"is_alt": True}
+    market_filter: dict = {}
+    if market:
+        regex = _market_regex(market)
+        if regex:
+            market_filter = {"market": {"$regex": regex, "$options": "i"}}
+    league_filter: dict = {}
+    if league:
+        league_filter = {"league": {"$regex": str(league).replace("\\", ""), "$options": "i"}}
+
+    target_legs = max(10, min(20, legs)) if is_high_risk else max(2, min(8, legs))
+
+    # ─── Time window filter ───
+    # `commence_time` is stored as ISO-8601 string (UTC, e.g.
+    # "2026-06-19T19:00:00Z"). Build a window cap and filter the DB query.
+    window_hours = max(1, min(720, int(window_hours)))  # 1h .. 30d
+    now_utc = datetime.now(timezone.utc)
+    window_cap_iso = (now_utc + timedelta(hours=window_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    window_floor_iso = (now_utc - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    time_filter = {"event_time": {"$gte": window_floor_iso, "$lte": window_cap_iso}}
+
+    # ─── Fetch candidate pool ───
+    base_q = {
+        "pick_date": _today_str(),
+        "no_bet": {"$ne": True},
+        "is_under_lock": {"$ne": True},
+        **sport_filter, **line_filter, **market_filter, **league_filter,
+        **time_filter,
+    }
+    base_q["lock_score"] = {"$gte": 70 if is_high_risk else 85}
+    pool = await db.picks.find(base_q, {"_id": 0}).sort("lock_score", -1).limit(400).to_list(length=400)
+
+    # ─── Bucket-map ROI ───
+    raw_buckets = await _historical_winrates()
+    bucket_map: dict = {}
+    for k, v in raw_buckets.items():
+        if k == "__global__":
+            continue
+        winrate = v.get("winrate", 0.0)
+        n = v.get("n", 0)
+        proxy_roi = (winrate - 0.524) / 0.524 if winrate > 0 else 0.0
+        bucket_map[k] = {"roi": proxy_roi, "n": n}
+
+    # ─── Locked picks ───
+    locked_picks: list[dict] = []
+    if locked_ids:
+        wanted_ids = [s.strip() for s in locked_ids.split(",") if s.strip()]
+        if wanted_ids:
+            locked_picks = await db.picks.find(
+                {"id": {"$in": wanted_ids}, "pick_date": _today_str()},
+                {"_id": 0},
+            ).to_list(length=len(wanted_ids))
+
+    # ─── Build ───
+    top = build_top_parlays(
+        pool, target_legs=target_legs, high_risk=is_high_risk,
+        bucket_map=bucket_map, rank=max(1, rank),
+        locked_picks=locked_picks if locked_picks else None,
+        single_sport_mode=is_single_sport,
+    )
+
+    if not top:
+        hints = []
+        if mode_lower == "single" and sport_q:
+            hints.append(f"in {sport_q}")
+        elif mode_lower == "custom" and include_sports:
+            hints.append(f"in {include_sports}")
+        if window_hours != 24:
+            hints.append(f"within {window_hours}h")
+        hint_str = (" " + " ".join(hints)) if hints else ""
+        return {
+            "parlay": None,
+            "parlays": [],
+            "reason": (
+                f"Not enough qualifying picks today{hint_str} to build a "
+                f"{target_legs}-leg parlay (need Lock>=88, Edge>=+3%, "
+                f"positive ROI)."
+            ),
+        }
+
+    payloads = [parlay_to_payload(p, bucket_map) for p in top]
+    legacy = payloads[1] if len(payloads) > 1 else payloads[0]
+    return {
+        "parlay": {
+            "legs": legacy["legs"],
+            "leg_count": legacy["leg_count"],
+            "combined_decimal_odds": legacy["combined_decimal_odds"],
+            "combined_american_odds": legacy["combined_american_odds"],
+            "combined_win_probability": legacy["survival_pct"],
+            "payout_on_100": legacy["payout_on_100"],
+            "profit_on_100": legacy["profit_on_100"],
+        },
+        "parlays": payloads,
+        "rank": rank,
+        "locked_ids": [p.get("id") for p in locked_picks],
+        "window_hours": window_hours,
+        "sport_mode": mode_lower,
+    }
     """Parlay Optimizer V1 — highest-probability parlay builder.
 
     Modes:

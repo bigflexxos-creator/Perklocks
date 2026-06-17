@@ -55,13 +55,19 @@ export default function ParlayScreen() {
   const [lockedIds, setLockedIds] = useState<string[]>([]);
 
   // Convenience accessors
-  const { mode, legs, sport, lineType, excludedSports, filters, preferredBook } = prefs;
+  const {
+    mode, legs, sport, lineType, excludedSports, includedSports,
+    sportMode, windowHours, filters, preferredBook,
+  } = prefs;
 
   const load = useCallback(
     async (n: number, m: "standard" | "high_risk", s: string, lt: LineType,
-           excl: string[], f: any, r: number, locked: string[]) => {
+           incl: string[], excl: string[], f: any, r: number, locked: string[],
+           sMode: "auto"|"custom"|"single", wHours: number) => {
       try {
-        const res = await api.parlay(n, m, s, lt, excl, f, r, locked);
+        const res = await api.parlay(
+          n, m, s, lt, incl, f, r, locked, sMode, wHours, excl,
+        );
         setParlays(res.parlays || []);
         setReason(res.reason || "");
       } catch (e) {
@@ -78,8 +84,10 @@ export default function ParlayScreen() {
   useEffect(() => {
     if (!hydrated) return;
     setLoading(true);
-    load(legs, mode, sport, lineType, excludedSports, filters, rank, lockedIds);
-  }, [hydrated, legs, mode, sport, lineType, excludedSports, filters, rank, lockedIds, load]);
+    load(legs, mode, sport, lineType, includedSports, excludedSports,
+         filters, rank, lockedIds, sportMode, windowHours);
+  }, [hydrated, legs, mode, sport, lineType, includedSports, excludedSports,
+      filters, rank, lockedIds, sportMode, windowHours, load]);
 
   const onModeChange = (m: "standard" | "high_risk") => {
     updatePrefs({ mode: m, legs: m === "high_risk" ? 10 : 3 });
@@ -137,7 +145,7 @@ export default function ParlayScreen() {
         >
           <Ionicons name="refresh" size={14} color={accentColor} />
           <Text style={[styles.refreshTxt, { color: accentColor }]}>
-            {rank === 1 ? "REFRESH" : `RANK ${rank}`}
+            REFRESH{rank > 1 ? ` #${rank}` : ""}
           </Text>
         </Pressable>
       </View>
@@ -174,60 +182,98 @@ export default function ParlayScreen() {
         ))}
       </View>
 
+      {/* ── TIME WINDOW selector ── */}
       <View style={styles.sportRowWrap}>
-        <Text style={styles.legLabel}>SPORT</Text>
+        <Text style={styles.legLabel}>WINDOW</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sportRow}>
-          {SPORT_OPTIONS.map((opt) => {
-            const active = sport === opt.id;
-            const isMix = opt.id === "mix";
+          {[
+            { hours: 24, label: "24H" },
+            { hours: 48, label: "48H" },
+            { hours: 72, label: "72H" },
+            { hours: 168, label: "WEEK" },
+          ].map((w) => {
+            const active = windowHours === w.hours;
             return (
               <Pressable
-                key={opt.id}
-                testID={`parlay-sport-${opt.id}`}
-                onPress={() => { updatePrefs({ sport: opt.id }); setRank(1); }}
-                style={[
-                  styles.sportChip,
-                  active && (isMix ? styles.sportChipMixActive : styles.sportChipActive),
-                ]}
+                key={w.hours}
+                testID={`parlay-window-${w.hours}`}
+                onPress={() => { updatePrefs({ windowHours: w.hours }); setRank(1); }}
+                style={[styles.sportChip, active && styles.sportChipMixActive]}
               >
-                {isMix && (
-                  <Ionicons name="shuffle" size={11} color={active ? COLORS.bg : COLORS.textSecondary} style={{ marginRight: 4 }} />
-                )}
-                <Text style={[styles.sportChipText, active && styles.sportChipTextActive]}>{opt.label}</Text>
+                <Text style={[styles.sportChipText, active && styles.sportChipTextActive]}>{w.label}</Text>
               </Pressable>
             );
           })}
         </ScrollView>
       </View>
 
-      {sport === "mix" && (
-        <View style={styles.excludeRowWrap}>
-          <Text style={styles.legLabel}>EXCLUDE</Text>
+      {/* ── SPORT MODE selector (AUTO / CUSTOM / SINGLE) ── */}
+      <View style={styles.sportModeRow}>
+        {(["auto", "custom", "single"] as const).map((m) => {
+          const active = sportMode === m;
+          return (
+            <Pressable
+              key={m}
+              testID={`parlay-sportmode-${m}`}
+              onPress={() => { updatePrefs({ sportMode: m }); setRank(1); }}
+              style={[styles.sportModeBtn, active && styles.sportModeBtnActive]}
+            >
+              <Text style={[styles.sportModeText, active && styles.sportModeTextActive]}>{m.toUpperCase()}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      {/* ── SPORT chips: behaviour driven by sportMode ── */}
+      {sportMode === "single" && (
+        <View style={styles.sportRowWrap}>
+          <Text style={styles.legLabel}>SPORT</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sportRow}>
             {SPORT_OPTIONS.filter((o) => o.id !== "mix").map((opt) => {
-              const excluded = excludedSports.includes(opt.id);
+              const active = sport === opt.id;
               return (
                 <Pressable
-                  key={`excl-${opt.id}`}
-                  testID={`parlay-exclude-${opt.id}`}
-                  onPress={() => {
-                    const next = excluded
-                      ? excludedSports.filter((s) => s !== opt.id)
-                      : [...excludedSports, opt.id];
-                    updatePrefs({ excludedSports: next });
-                    setRank(1);
-                  }}
-                  style={[styles.excludeChip, excluded && styles.excludeChipActive]}
+                  key={opt.id}
+                  testID={`parlay-sport-${opt.id}`}
+                  onPress={() => { updatePrefs({ sport: opt.id }); setRank(1); }}
+                  style={[styles.sportChip, active && styles.sportChipActive]}
                 >
-                  {excluded && (
-                    <Ionicons name="close-circle" size={12} color={COLORS.bg} style={{ marginRight: 4 }} />
-                  )}
-                  <Text style={[styles.excludeChipText, excluded && styles.excludeChipTextActive]}>{opt.label}</Text>
+                  <Text style={[styles.sportChipText, active && styles.sportChipTextActive]}>{opt.label}</Text>
                 </Pressable>
               );
             })}
-            {excludedSports.length > 0 && (
-              <Pressable onPress={() => updatePrefs({ excludedSports: [] })} style={styles.clearExcludeBtn} testID="parlay-exclude-clear">
+          </ScrollView>
+        </View>
+      )}
+
+      {sportMode === "custom" && (
+        <View style={styles.excludeRowWrap}>
+          <Text style={styles.legLabel}>INCLUDE</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sportRow}>
+            {SPORT_OPTIONS.filter((o) => o.id !== "mix").map((opt) => {
+              const included = includedSports.includes(opt.id);
+              return (
+                <Pressable
+                  key={`incl-${opt.id}`}
+                  testID={`parlay-include-${opt.id}`}
+                  onPress={() => {
+                    const next = included
+                      ? includedSports.filter((s) => s !== opt.id)
+                      : [...includedSports, opt.id];
+                    updatePrefs({ includedSports: next });
+                    setRank(1);
+                  }}
+                  style={[styles.excludeChip, included && styles.includeChipActive]}
+                >
+                  {included && (
+                    <Ionicons name="checkmark-circle" size={12} color={COLORS.bg} style={{ marginRight: 4 }} />
+                  )}
+                  <Text style={[styles.excludeChipText, included && styles.excludeChipTextActive]}>{opt.label}</Text>
+                </Pressable>
+              );
+            })}
+            {includedSports.length > 0 && (
+              <Pressable onPress={() => updatePrefs({ includedSports: [] })} style={styles.clearExcludeBtn} testID="parlay-include-clear">
                 <Text style={styles.clearExcludeText}>CLEAR</Text>
               </Pressable>
             )}
@@ -553,6 +599,17 @@ const styles = StyleSheet.create({
   legChipTextActive: { color: COLORS.bg, fontWeight: "900" },
   sportRowWrap: { flexDirection: "row", alignItems: "center", paddingHorizontal: 20, paddingBottom: 12, gap: 8 },
   sportRow: { gap: 6, paddingRight: 20 },
+  sportModeRow: {
+    flexDirection: "row", gap: 6, paddingHorizontal: 20, paddingBottom: 10,
+  },
+  sportModeBtn: {
+    flex: 1, paddingVertical: 8, borderRadius: 8,
+    borderWidth: 1, borderColor: COLORS.borderDefault,
+    alignItems: "center", justifyContent: "center",
+  },
+  sportModeBtnActive: { backgroundColor: COLORS.voltBlue, borderColor: COLORS.voltBlue },
+  sportModeText: { color: COLORS.textSecondary, fontSize: 10, fontWeight: "900", letterSpacing: 1.4 },
+  sportModeTextActive: { color: COLORS.bg },
   sportChip: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, height: 30, borderRadius: 15, borderWidth: 1, borderColor: COLORS.borderDefault, backgroundColor: "transparent" },
   sportChipActive: { backgroundColor: COLORS.textPrimary, borderColor: COLORS.textPrimary },
   sportChipMixActive: { backgroundColor: COLORS.voltBlue, borderColor: COLORS.voltBlue },
@@ -561,6 +618,7 @@ const styles = StyleSheet.create({
   excludeRowWrap: { flexDirection: "row", alignItems: "center", paddingHorizontal: 20, paddingBottom: 10, gap: 8 },
   excludeChip: { flexDirection: "row", alignItems: "center", paddingHorizontal: 11, height: 28, borderRadius: 14, borderWidth: 1, borderColor: COLORS.borderDefault, backgroundColor: "transparent" },
   excludeChipActive: { backgroundColor: COLORS.electricBlaze, borderColor: COLORS.electricBlaze },
+  includeChipActive: { backgroundColor: COLORS.neonGreen, borderColor: COLORS.neonGreen },
   excludeChipText: { color: COLORS.textSecondary, fontSize: 10, fontWeight: "800", letterSpacing: 0.8 },
   excludeChipTextActive: { color: COLORS.bg, fontWeight: "900" },
   clearExcludeBtn: { paddingHorizontal: 10, alignSelf: "center" },
