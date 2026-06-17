@@ -1,0 +1,161 @@
+/**
+ * Sportsbook deep-link helpers.
+ *
+ * Two delivery modes:
+ *   1. APP deep link  — tries to open the native app if installed.
+ *   2. WEB fallback   — opens the mobile sportsbook in the system browser.
+ *
+ * Note: Open-bet-slip APIs (DraftKings / FanDuel) require a paid partnership
+ * agreement. Without that, we expose a "Copy to clipboard + open sportsbook"
+ * flow so the user can paste/select the bets manually inside the book.
+ */
+import { Linking, Platform } from "react-native";
+import * as Clipboard from "expo-clipboard";
+
+export type SportsbookId = "draftkings" | "fanduel" | "betmgm" | "caesars";
+
+export type SportsbookInfo = {
+  id: SportsbookId;
+  name: string;
+  short: string;
+  brandColor: string;
+  appScheme: string; // iOS / Android deep-link scheme
+  webUrl: string;    // fallback browser URL
+};
+
+export const SPORTSBOOKS: SportsbookInfo[] = [
+  {
+    id: "draftkings",
+    name: "DraftKings",
+    short: "DK",
+    brandColor: "#53D337",
+    appScheme: Platform.select({
+      ios: "dksbgames://",
+      android: "intent://sportsbook.draftkings.com#Intent;scheme=https;package=com.draftkings.sportsbook;end",
+      default: "https://sportsbook.draftkings.com/",
+    })!,
+    webUrl: "https://sportsbook.draftkings.com/",
+  },
+  {
+    id: "fanduel",
+    name: "FanDuel",
+    short: "FD",
+    brandColor: "#1B73DA",
+    appScheme: Platform.select({
+      ios: "fanduelsb://",
+      android: "intent://sportsbook.fanduel.com#Intent;scheme=https;package=com.fanduel.sportsbook;end",
+      default: "https://sportsbook.fanduel.com/",
+    })!,
+    webUrl: "https://sportsbook.fanduel.com/",
+  },
+  {
+    id: "betmgm",
+    name: "BetMGM",
+    short: "MGM",
+    brandColor: "#BFA45A",
+    appScheme: Platform.select({
+      ios: "betmgm://",
+      android: "intent://sports.betmgm.com#Intent;scheme=https;package=com.entaingaming.betmgm.sportsbook.aws;end",
+      default: "https://sports.betmgm.com/",
+    })!,
+    webUrl: "https://sports.betmgm.com/",
+  },
+  {
+    id: "caesars",
+    name: "Caesars",
+    short: "CZR",
+    brandColor: "#C8A45D",
+    appScheme: Platform.select({
+      ios: "wha-app://",
+      android: "intent://sportsbook.caesars.com#Intent;scheme=https;package=com.caesars.sportsbook;end",
+      default: "https://www.caesars.com/sportsbook-and-casino",
+    })!,
+    webUrl: "https://www.caesars.com/sportsbook-and-casino",
+  },
+];
+
+/** Open a sportsbook app, falling back to the mobile web URL if app missing. */
+export async function openSportsbook(book: SportsbookId): Promise<boolean> {
+  const info = SPORTSBOOKS.find((s) => s.id === book);
+  if (!info) return false;
+
+  // Try native deep link first (Android intent strings also work via Linking)
+  try {
+    // Linking.canOpenURL on iOS only returns true if the scheme is whitelisted
+    // in Info.plist. We don't whitelist sportsbook schemes (would require app
+    // store re-review), so just try-open and fall back to web on failure.
+    if (Platform.OS === "ios") {
+      try {
+        const supported = await Linking.canOpenURL(info.appScheme);
+        if (supported) {
+          await Linking.openURL(info.appScheme);
+          return true;
+        }
+      } catch { /* fall through to web */ }
+    } else if (Platform.OS === "android" && info.appScheme.startsWith("intent://")) {
+      // Android intent URLs auto-fall-back to the URL inside the intent.
+      try {
+        await Linking.openURL(info.appScheme);
+        return true;
+      } catch { /* fall through to web */ }
+    }
+  } catch { /* fall through */ }
+
+  // Web fallback
+  try {
+    await Linking.openURL(info.webUrl);
+    return true;
+  } catch (e) {
+    console.warn("openSportsbook web fallback failed", e);
+    return false;
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Bet-slip clipboard format
+// ──────────────────────────────────────────────────────────────────────
+export type BetSlipLeg = {
+  sport: string;
+  league: string;
+  event: string;
+  market: string;
+  book_odds: number;
+  lock_score: number;
+};
+
+/** Format a parlay as a paste-friendly bet-slip summary. */
+export function formatBetSlip(legs: BetSlipLeg[], opts: {
+  label: string;
+  combinedOdds: string;
+  payout: number;
+  profit: number;
+  survival: number;
+}): string {
+  const ts = new Date().toLocaleString();
+  const lines: string[] = [
+    `🔒 PerksLocks ${opts.label} Parlay  (${legs.length} legs)`,
+    `Combined: ${opts.combinedOdds}   Hit rate ≈ ${opts.survival.toFixed(0)}%`,
+    `$100 → $${opts.payout.toFixed(0)}  (profit $${opts.profit.toFixed(0)})`,
+    `─────────────────────`,
+  ];
+  legs.forEach((L, i) => {
+    const odds = L.book_odds > 0 ? `+${L.book_odds}` : String(L.book_odds);
+    lines.push(`${i + 1}. ${L.sport} · ${L.league}`);
+    lines.push(`   ${L.event}`);
+    lines.push(`   ${L.market}   ${odds}   (Lock ${L.lock_score})`);
+  });
+  lines.push(`─────────────────────`);
+  lines.push(`Generated by PerksLocks · ${ts}`);
+  return lines.join("\n");
+}
+
+/** Copy parlay summary to clipboard and return success. */
+export async function copyBetSlip(text: string): Promise<boolean> {
+  try {
+    await Clipboard.setStringAsync(text);
+    return true;
+  } catch (e) {
+    console.warn("copyBetSlip failed", e);
+    return false;
+  }
+}
