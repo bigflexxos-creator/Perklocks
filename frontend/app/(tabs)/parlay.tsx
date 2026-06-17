@@ -319,40 +319,35 @@ function ParlayCardView({
   const gradeColor = GRADE_TINT[card.grade] || COLORS.textPrimary;
   const [copied, setCopied] = useState(false);
 
+  // DRY: build the same bet-slip text for both Copy and Open-Book actions.
+  const buildSlipText = useCallback(() => formatBetSlip(card.legs, {
+    label: card.label,
+    combinedOdds: card.combined_american_odds,
+    payout: card.payout_on_100,
+    profit: card.profit_on_100,
+    survival: card.survival_pct,
+  }), [card]);
+
   const onCopy = useCallback(async () => {
-    const text = formatBetSlip(card.legs, {
-      label: card.label,
-      combinedOdds: card.combined_american_odds,
-      payout: card.payout_on_100,
-      profit: card.profit_on_100,
-      survival: card.survival_pct,
-    });
-    const ok = await copyBetSlip(text);
+    const ok = await copyBetSlip(buildSlipText());
     if (ok) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
     } else {
       Alert.alert("Copy failed", "Could not copy bet slip to clipboard.");
     }
-  }, [card]);
+  }, [buildSlipText]);
 
   const onOpenBook = useCallback(async (book: SportsbookId) => {
     // Auto-copy the slip first so the user can paste it in the sportsbook.
-    const text = formatBetSlip(card.legs, {
-      label: card.label,
-      combinedOdds: card.combined_american_odds,
-      payout: card.payout_on_100,
-      profit: card.profit_on_100,
-      survival: card.survival_pct,
-    });
-    await copyBetSlip(text);
+    await copyBetSlip(buildSlipText());
     onSetPreferredBook(book);
     const ok = await openSportsbook(book);
     if (!ok) {
       Alert.alert("Could not open sportsbook",
         "Your bet slip is copied — paste it manually in the sportsbook.");
     }
-  }, [card, onSetPreferredBook]);
+  }, [buildSlipText, onSetPreferredBook]);
 
   return (
     <View style={[styles.cardWrap, { borderColor: accent }]}>
