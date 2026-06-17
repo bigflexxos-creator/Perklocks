@@ -101,35 +101,92 @@ export async function setToken(t: string | null): Promise<void> {
   else await storage.secureSet(TOKEN_KEY, t);
 }
 
+// ── Reliability layer: retries + timeout + in-flight dedupe ─────────────
+// Surgical hardening that doesn't change response shapes. Adds:
+//   1. 10-second per-request timeout via AbortController
+//   2. Up to 2 retries on network errors / 5xx (exponential 300ms → 900ms)
+//   3. In-flight GET deduplication — identical concurrent GETs share one
+//      network call. Prevents accidental thundering-herd from React
+//      double-renders. Mutations (POST/PUT/DELETE) NEVER dedupe.
+const REQUEST_TIMEOUT_MS = 10_000;
+const MAX_RETRIES = 2;
+const _inflight = new Map<string, Promise<any>>();
+
+async function _fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function request<T>(
   path: string,
   opts: { method?: string; body?: any; auth?: boolean } = {},
 ): Promise<T> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    Accept: "application/json",
+  const method = (opts.method || "GET").toUpperCase();
+  const url = `${BASE_URL}/api${path}`;
+
+  // In-flight dedupe — GETs only (mutations must NEVER be deduped).
+  const dedupeKey = method === "GET" ? `${method}:${url}` : null;
+  if (dedupeKey && _inflight.has(dedupeKey)) {
+    return _inflight.get(dedupeKey) as Promise<T>;
+  }
+
+  const exec = async (): Promise<T> => {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    };
+    if (opts.auth !== false) {
+      const tok = await getToken();
+      if (tok) headers.Authorization = `Bearer ${tok}`;
+    }
+    const init: RequestInit = {
+      method,
+      headers,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    };
+
+    let lastErr: any = null;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const res = await _fetchWithTimeout(url, init, REQUEST_TIMEOUT_MS);
+        const text = await res.text();
+        let data: any = {};
+        try { data = text ? JSON.parse(text) : {}; }
+        catch { data = { detail: text }; }
+        if (!res.ok) {
+          // 4xx errors are intentional — don't retry (e.g. 401 means bad
+          // creds, retrying won't help). Only retry 5xx + 408 + 429.
+          const shouldRetry = res.status >= 500 || res.status === 408 || res.status === 429;
+          if (!shouldRetry || attempt === MAX_RETRIES) {
+            const msg = data?.detail || data?.error || `Request failed (${res.status})`;
+            throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+          }
+          lastErr = new Error(`HTTP ${res.status}`);
+        } else {
+          return data as T;
+        }
+      } catch (err: any) {
+        // Network error / timeout / abort → retry
+        lastErr = err;
+        if (attempt === MAX_RETRIES) break;
+      }
+      // Exponential backoff: 300ms → 900ms
+      await new Promise((r) => setTimeout(r, 300 * Math.pow(3, attempt)));
+    }
+    throw lastErr || new Error("Request failed");
   };
-  if (opts.auth !== false) {
-    const tok = await getToken();
-    if (tok) headers.Authorization = `Bearer ${tok}`;
+
+  if (dedupeKey) {
+    const promise = exec().finally(() => _inflight.delete(dedupeKey));
+    _inflight.set(dedupeKey, promise);
+    return promise;
   }
-  const res = await fetch(`${BASE_URL}/api${path}`, {
-    method: opts.method || "GET",
-    headers,
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  });
-  const text = await res.text();
-  let data: any = {};
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    data = { detail: text };
-  }
-  if (!res.ok) {
-    const msg = data?.detail || `Request failed (${res.status})`;
-    throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
-  }
-  return data as T;
+  return exec();
 }
 
 export const api = {

@@ -30,7 +30,7 @@ export default function LocksScreen() {
   const [picks, setPicks] = useState<Pick[]>([]);
   const [sport, setSport] = useState<string>("All");
   const [lineType, setLineType] = useState<LineType>("both");
-  const [sortKey, setSortKey] = useState<SortKey>("lock");
+  const [sortKey, setSortKey] = useState<SortKey>("time");
   const [filters, setFilters] = useState<PickFilters>({});
   const [filterOpen, setFilterOpen] = useState(false);
   const [loading, setLoading] = useState(true);

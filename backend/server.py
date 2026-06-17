@@ -348,9 +348,29 @@ async def _refresh_picks(date_str: str) -> int:
     # same UUID5 from a prior day, then insert fresh.
     await db.picks.delete_many({"pick_date": date_str})
     await db.picks.delete_many({"id": {"$in": list(seen_ids)}})
-    await db.picks.insert_many(picks)
-    logger.info("Stored %d picks for %s", len(picks), date_str)
-    return len(picks)
+    # Defensive write: drop malformed pick docs (missing required fields)
+    # so a single broken doc never aborts the entire batch insert. Required
+    # fields: id, sport, event_time, market, book_odds.
+    REQUIRED = ("id", "sport", "event_time", "market", "book_odds")
+    safe_picks = []
+    dropped = 0
+    for p in picks:
+        if not isinstance(p, dict):
+            dropped += 1
+            continue
+        missing = [k for k in REQUIRED if not p.get(k)]
+        if missing:
+            logger.warning("Dropping malformed pick (missing %s): event=%s market=%s",
+                         missing, p.get("event"), p.get("market"))
+            dropped += 1
+            continue
+        safe_picks.append(p)
+    if dropped:
+        logger.warning("Skipped %d malformed picks before insert", dropped)
+    if safe_picks:
+        await db.picks.insert_many(safe_picks, ordered=False)
+    logger.info("Stored %d picks for %s", len(safe_picks), date_str)
+    return len(safe_picks)
 
 
 async def _ensure_today_picks() -> None:
@@ -884,7 +904,8 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     if league:
         league_filter = {"league": {"$regex": str(league).replace("\\", ""), "$options": "i"}}
 
-    target_legs = max(10, min(20, legs)) if is_high_risk else max(2, min(8, legs))
+    target_legs = max(10, min(20, max(1, int(legs or 10)))) if is_high_risk else max(2, min(8, max(1, int(legs or 3))))
+    rank = max(1, min(20, int(rank or 1)))  # clamp refresh cursor to 1-20
 
     # ─── Time window filter ───
     # `commence_time` is stored as ISO-8601 string (UTC, e.g.
@@ -1022,7 +1043,8 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     if league:
         league_filter = {"league": {"$regex": str(league).replace("\\", ""), "$options": "i"}}
 
-    target_legs = max(10, min(20, legs)) if is_high_risk else max(2, min(8, legs))
+    target_legs = max(10, min(20, max(1, int(legs or 10)))) if is_high_risk else max(2, min(8, max(1, int(legs or 3))))
+    rank = max(1, min(20, int(rank or 1)))  # clamp refresh cursor to 1-20
 
     # ─── Fetch candidate pool ───
     # Broad pool — optimizer applies hard eligibility filters internally.
@@ -1530,6 +1552,59 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ────────────────────── Reliability layer ──────────────────────
+# Surgical hardening that does NOT change behavior — only catches errors,
+# logs them, and returns friendly JSON instead of HTML 500 pages.
+import time as _time_mod
+import traceback as _traceback
+
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+
+
+class _ReliabilityMiddleware(BaseHTTPMiddleware):
+    """Catches every uncaught exception, logs with full traceback + request
+    context, and returns a friendly JSON error. Also tracks per-route
+    response times for monitoring.
+    """
+    async def dispatch(self, request: Request, call_next):
+        rid = uuid.uuid4().hex[:12]
+        request.state.request_id = rid
+        start = _time_mod.perf_counter()
+        try:
+            response = await call_next(request)
+            elapsed_ms = (_time_mod.perf_counter() - start) * 1000.0
+            # Slow-request log (>1500 ms — likely a perf regression)
+            if elapsed_ms > 1500:
+                logger.warning(
+                    "SLOW %s %s → %d in %.0fms (rid=%s)",
+                    request.method, request.url.path, response.status_code,
+                    elapsed_ms, rid,
+                )
+            # Always set a request-id header so the frontend can echo it
+            # back in bug reports.
+            response.headers["X-Request-ID"] = rid
+            return response
+        except Exception as exc:
+            tb = _traceback.format_exc()
+            logger.error(
+                "UNHANDLED %s %s rid=%s\n%s\n%s",
+                request.method, request.url.path, rid, exc, tb,
+            )
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "error": "Something went wrong — please retry.",
+                    "request_id": rid,
+                },
+                headers={"X-Request-ID": rid},
+            )
+
+
+app.add_middleware(_ReliabilityMiddleware)
 
 
 async def _daily_refresh_loop():
