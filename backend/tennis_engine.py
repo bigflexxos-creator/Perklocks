@@ -67,7 +67,7 @@ WEIGHTS = {
 
 NO_BET_MIN_EDGE = 5.0       # %
 NO_BET_MIN_CONF = 72.0      # composite confidence 0-100
-MAX_TENNIS_PICKS_PER_DAY = 3
+MAX_TENNIS_PICKS_PER_DAY = 10
 
 # 99-LOCK gating thresholds
 LOCK99 = {
