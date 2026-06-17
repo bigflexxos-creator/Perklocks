@@ -496,7 +496,7 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                       grade: Optional[str] = None,
                       day_offset: Optional[int] = None,
                       line_type: Optional[str] = None,
-                      sort: Optional[str] = None,
+                      sort: Optional[str] = "time",
                       min_lock: Optional[float] = None,
                       min_implied: Optional[float] = None,
                       max_implied: Optional[float] = None,
@@ -611,7 +611,9 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         def _elite_rank(p: dict) -> int:
             return 0 if p.get("elite_player") else 1
         if s == "time":
-            picks.sort(key=lambda p: (_elite_rank(p), _event_dt(p), -p.get("lock_score", 0)))
+            # Pure chronological — earliest kickoff first, regardless of
+            # elite/lock status. User explicitly wants time order.
+            picks.sort(key=lambda p: (_event_dt(p), -p.get("lock_score", 0)))
         elif s == "edge":
             picks.sort(key=lambda p: (_elite_rank(p), _bucket(p), -p.get("edge_percent", 0), -p.get("lock_score", 0)))
         elif s == "implied":
@@ -647,7 +649,7 @@ async def picks_bet_killer(user: Annotated[UserPublic, Depends(current_user)],
 @api.get("/picks/under-of-the-day")
 async def under_of_the_day(user: Annotated[UserPublic, Depends(current_user)],
                            line_type: Optional[str] = None,
-                           sort: Optional[str] = None,
+                           sort: Optional[str] = "time",
                            sport: Optional[str] = None,
                            market: Optional[str] = None,
                            league: Optional[str] = None):
