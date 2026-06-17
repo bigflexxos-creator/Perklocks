@@ -37,7 +37,7 @@ export default function UnderOfTheDayScreen() {
   const [alternates, setAlternates] = useState<Pick[]>([]);
   const [pool, setPool] = useState<number>(0);
   const [lineType, setLineType] = useState<LineType>("both");
-  const [sortKey, setSortKey] = useState<SortKey>("lock");
+  const [sortKey, setSortKey] = useState<SortKey>("time");
   const [sport, setSport] = useState<string>("All");
   const [filters, setFilters] = useState<PickFilters>({});
   const [loading, setLoading] = useState(true);
