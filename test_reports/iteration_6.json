@@ -1,0 +1,42 @@
+{
+  "summary": "Parlay Module V1.1 (Time Window + Sport Mode + leg-count-aware diversification + refresh counter + new persistence fields) verified end-to-end. Backend: 9/9 pytest assertions passed (1 skipped due to no Soccer-excluded standard-mode parlays in current pool — not a regression). B1 AUTO+24h: returns 3 parlays with sport_mode='auto', window_hours=24, all leg event_time within 24h floor/cap. B2 CUSTOM Soccer+MLB+48h: every leg's sport ∈ {Soccer,MLB}. B3 SINGLE Soccer+168h: all legs sport=='Soccer'. B4 diversification caps verified: 3-leg AUTO ≤2 same sport, 8-leg high_risk ≤50%, 15-leg high_risk ≤40%. B5 1h window: returns reason 'Not enough qualifying picks today within 1h…' as spec allows. B6 backward compat: no-params call defaults to auto/24, legacy exclude_sports=Soccer respected. Frontend smoke (mobile 390x844): F1 all 4 window chips visible with labels 24H/48H/72H/WEEK; tapping 48H fires request. F2 all 3 sportmode pills (AUTO/CUSTOM/SINGLE) render; CUSTOM reveals include-Soccer/MLB chip row; SINGLE reveals sport-Soccer chip row. F3 refresh badge cycled REFRESH → REFRESH #2 → REFRESH #3 → REFRESH #4 → REFRESH → REFRESH #2 (wraps exactly per spec). F4 persistence: localStorage key '@perkslocks/parlay-prefs-v1' wrote {sportMode:'custom', includedSports:['Soccer','MLB'], windowHours:72} and the exact same JSON survived a hard page reload — INCLUDE chip row still rendered after reload, confirming CUSTOM mode was restored. No 500s, no red screens, no pageerror events. One pre-existing 'props.pointerEvents is deprecated' RN-web warning (framework noise, unrelated).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/picks/parlay",
+        "issue": "When the endpoint returns the empty-pool branch (parlay:null + reason), it does NOT echo back window_hours/sport_mode/rank in the response. The success branch returns them. Minor inconsistency — clients that depend on these fields to drive UI state would need to fall back to the request params. Reference: /app/backend/server.py:930-938."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_parlay_v11.py",
+    "/app/test_reports/pytest/parlay_v11.xml"
+  ],
+  "action_items": [
+    "OPTIONAL minor: make /api/picks/parlay echo window_hours, sport_mode, rank inside the empty-pool {parlay:null, reason} branch for response-shape consistency (server.py:930-938).",
+    "OPTIONAL non-blocking: parlay.tsx is now ~735 lines, past the 700-line guideline. Consider extracting ParlayCardView into its own component file (previously flagged in iter5)."
+  ],
+  "critical_code_review_comments": [
+    "parlay_optimizer.py:59-65 max_same_sport_for_target is per-spec and correctly invoked by both diversification_ok and score_leg with the same target_legs propagation. Single_sport_mode bypass is consistently gated in both functions. Correct.",
+    "server.py:870 target_legs clamp: high_risk floors at 10 (min(10, legs)) so requesting legs=8&mode=high_risk actually builds a 10-leg parlay. Test B4b accounts for this by reading the actual leg count from the response and using max(2, legcount//2) as the cap.",
+    "server.py:842-853 sport_mode plumbing: 'single' requires a non-mix/non-all sport_q value to apply, 'custom' requires non-empty include_sports list — both fail-soft to empty filter when params missing, which is correct.",
+    "server.py:874-879 event_time filter uses ISO-Z formatted strings with a -30min floor. Works because db.picks.event_time is stored as ISO strings (verified — the test asserts datetime parsing and window membership)."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% (9/9 assertions; 1 skipped due to data, not regression)",
+    "frontend": "100% (F1+F2+F3+F4 all PASS on mobile viewport)"
+  },
+  "seed_data_creation": "None. Used demo@lockscore.ai / demo123 and live /api/picks pool.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "AsyncStorage key on web is '@perkslocks/parlay-prefs-v1' in localStorage with new persisted fields includedSports[], sportMode, windowHours. Login: demo@lockscore.ai / demo123 via testID login-email-input / login-password-input / login-submit-button. Refresh cycle is local UI state only — rank increments 1→2→3→4 then wraps to 1 (parlay.tsx:101). Backend test file: /app/backend/tests/test_parlay_v11.py — reuse for regression. Empty-pool path is gracefully handled but does not echo window_hours/sport_mode (flagged minor).",
+  "rca_of_issue": "No bugs. All 5 V1.1 deliverables (time window filter, sport mode pill, leg-count-aware diversification caps, refresh counter wrap-around, and AsyncStorage persistence of the 3 new fields) are functioning per spec on both backend and frontend."
+}

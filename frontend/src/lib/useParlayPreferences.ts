@@ -20,12 +20,17 @@ import type { SportsbookId } from "@/src/lib/sportsbookLinks";
 
 const STORAGE_KEY = "@perkslocks/parlay-prefs-v1";
 
+export type SportMode = "auto" | "custom" | "single";
+
 export type ParlayPrefs = {
   mode: "standard" | "high_risk";
   legs: number;
   sport: string;
   lineType: LineType;
   excludedSports: string[];
+  includedSports: string[];
+  sportMode: SportMode;
+  windowHours: number;
   filters: PickFilters;
   preferredBook: SportsbookId | null;
 };
@@ -36,6 +41,9 @@ export const DEFAULT_PARLAY_PREFS: ParlayPrefs = {
   sport: "mix",
   lineType: "both",
   excludedSports: [],
+  includedSports: [],
+  sportMode: "auto",
+  windowHours: 24,
   filters: {},
   preferredBook: null,
 };
