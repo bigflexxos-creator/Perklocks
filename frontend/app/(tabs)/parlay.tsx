@@ -388,12 +388,25 @@ function ParlayCardView({
     // Auto-copy the slip first so the user can paste it in the sportsbook.
     await copyBetSlip(buildSlipText());
     onSetPreferredBook(book);
-    const ok = await openSportsbook(book);
+    // Deep-link to the FIRST leg's event page. Multi-leg parlays can't be
+    // pre-loaded without partner-API auth, but landing on the first event
+    // is far better than the sportsbook homepage.
+    const firstLeg = card.legs[0] as any;
+    const eventId =
+      book === "fanduel" ? firstLeg?.fanduel_event_id :
+      book === "draftkings" ? firstLeg?.draftkings_event_id :
+      book === "betmgm" ? firstLeg?.betmgm_event_id :
+      book === "caesars" ? firstLeg?.caesars_event_id :
+      undefined;
+    const searchHint = firstLeg
+      ? `${firstLeg.away_team || ""} ${firstLeg.home_team || ""}`.trim() || firstLeg.event
+      : undefined;
+    const ok = await openSportsbook(book, eventId, searchHint);
     if (!ok) {
       Alert.alert("Could not open sportsbook",
         "Your bet slip is copied — paste it manually in the sportsbook.");
     }
-  }, [buildSlipText, onSetPreferredBook]);
+  }, [buildSlipText, card.legs, onSetPreferredBook]);
 
   return (
     <View style={[styles.cardWrap, { borderColor: accent }]}>

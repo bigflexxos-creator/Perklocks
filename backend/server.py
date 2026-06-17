@@ -226,6 +226,23 @@ async def _refresh_picks(date_str: str) -> int:
     except Exception as e:
         logger.warning("Elite Player Boost skipped: %s", e)
 
+    # ── Sportsbook deep-link enrichment: attach home_team / away_team / pick
+    # / fanduel_event_id / draftkings_event_id / etc. to every pick. These
+    # power the "Add to Bet Slip" deep links from the parlay & detail screens
+    # so users land on the correct game page in FanDuel / DraftKings instead
+    # of the sportsbook homepage.
+    try:
+        from event_matcher import enrich_picks_with_event_ids
+        enrich_picks_with_event_ids(picks)
+        sample = next((p for p in picks if p.get("fanduel_event_id")), None)
+        logger.info(
+            "Event-ID enrichment applied to %d picks (sample: %s)",
+            len(picks),
+            sample.get("fanduel_event_id") if sample else "NONE",
+        )
+    except Exception as e:
+        logger.warning("Event-ID enrichment skipped: %s", e)
+
     # ── Tennis Edge Engine v2: per-pick component scoring + NO_BET filter,
     # 99-LOCK gating, and max-3-per-day cap. Pure post-processing; no extra
     # API calls. Non-tennis picks pass through unchanged.
