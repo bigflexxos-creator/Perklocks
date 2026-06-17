@@ -197,3 +197,57 @@ def test_response_includes_request_id_header(auth_header):
         # ReliabilityMiddleware adds X-Request-ID on every response
         assert "x-request-id" in {k.lower() for k in r.headers.keys()}, \
             "ReliabilityMiddleware not adding X-Request-ID header"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Isolated learning buckets (analytics-only)
+# ──────────────────────────────────────────────────────────────────────
+
+def test_buckets_recompute_returns_summary(auth_header):
+    with httpx.Client(base_url=BASE, timeout=20.0) as cli:
+        r = cli.post("/api/analytics/buckets/recompute", headers=auth_header)
+        assert r.status_code == 200
+        d = r.json()
+        for k in ("buckets", "settled_total", "ready_to_adjust", "frozen", "updated_at"):
+            assert k in d
+
+
+def test_buckets_get_returns_grouped_by_sport(auth_header):
+    with httpx.Client(base_url=BASE, timeout=20.0) as cli:
+        r = cli.get("/api/analytics/buckets", headers=auth_header)
+        assert r.status_code == 200
+        d = r.json()
+        assert "total_buckets" in d
+        assert "by_sport" in d
+        assert isinstance(d["by_sport"], dict)
+        for sport, buckets in d["by_sport"].items():
+            assert isinstance(buckets, list)
+            for b in buckets:
+                # Every bucket has all required fields
+                for k in ("sport", "market_type", "prop_type", "n", "wins",
+                         "losses", "pushes", "accuracy", "roi_pct",
+                         "peak_roi", "frozen", "ready_to_adjust",
+                         "last_adjustment", "updated_at"):
+                    assert k in b, f"bucket missing '{k}': {list(b.keys())}"
+                # last_adjustment must be clamped to ±5%
+                assert -0.05 <= b["last_adjustment"] <= 0.05, \
+                    f"adjustment {b['last_adjustment']} exceeds ±5% cap"
+
+
+def test_buckets_classifier_separates_nba_prop_types():
+    """NBA Points / Rebounds / Assists must NEVER share a bucket."""
+    from learning_buckets import classify_pick
+    cases = [
+        ({"sport": "NBA", "market": "LeBron James Points Over 25.5"}, "NBA", "props", "points"),
+        ({"sport": "NBA", "market": "LeBron James Rebounds Over 8.5"}, "NBA", "props", "rebounds"),
+        ({"sport": "NBA", "market": "LeBron James Assists Over 7.5"}, "NBA", "props", "assists"),
+        ({"sport": "NBA", "market": "Lakers Moneyline"}, "NBA", "ml", None),
+        ({"sport": "MLB", "market": "Aaron Judge 1+ Hits"}, "MLB", "props", "hits"),
+        ({"sport": "MLB", "market": "Strider Strikeouts Over 7.5"}, "MLB", "other_pitcher", None),
+        ({"sport": "Soccer", "market": "Erling Haaland Anytime Goal Scorer"}, "Soccer", "props", "goalscorer"),
+        ({"sport": "Soccer", "market": "England Win or Draw"}, "Soccer", "draw", None),
+    ]
+    for pick, ex_sport, ex_mtype, ex_ptype in cases:
+        s, m, p = classify_pick(pick)
+        assert (s, m, p) == (ex_sport, ex_mtype, ex_ptype), \
+            f"{pick} → got ({s}, {m}, {p}), expected ({ex_sport}, {ex_mtype}, {ex_ptype})"

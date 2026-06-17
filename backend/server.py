@@ -1506,6 +1506,44 @@ async def analytics_v2_recompute(user: Annotated[UserPublic, Depends(current_use
     return await recompute_and_persist(db)
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Isolated learning buckets (sport × market_type × prop_type)
+# ANALYTICS-ONLY: see /app/backend/learning_buckets.py — does NOT influence
+# predictions, lock scores, or confidence outputs. Pure dashboard.
+# ──────────────────────────────────────────────────────────────────────────
+
+@api.get("/analytics/buckets")
+async def analytics_buckets(user: Annotated[UserPublic, Depends(current_user)]):
+    """Return per-sport, per-market-type, per-prop-type bucket performance.
+
+    NEVER influences live predictions. Pure analytics for monitoring how
+    each isolated learning group is performing.
+    """
+    from learning_buckets import get_buckets
+    return await get_buckets(db)
+
+
+@api.post("/analytics/buckets/recompute")
+async def analytics_buckets_recompute(user: Annotated[UserPublic, Depends(current_user)]):
+    """Force re-scan settled picks and rebuild all isolated learning buckets.
+
+    Snapshots the previous state for rollback (keeps last 5). Analytics-only.
+    """
+    from learning_buckets import recompute_buckets
+    return await recompute_buckets(db)
+
+
+@api.post("/analytics/buckets/rollback")
+async def analytics_buckets_rollback(
+    user: Annotated[UserPublic, Depends(current_user)],
+    snapshot_index: int = 1,
+):
+    """Restore the Nth-most-recent bucket snapshot. snapshot_index=1 = the
+    previous version, =2 = two versions ago. Analytics-only."""
+    from learning_buckets import rollback_buckets
+    return await rollback_buckets(db, snapshot_index=max(1, min(5, int(snapshot_index or 1))))
+
+
 @api.post("/analytics/learn")
 async def learn_now(user: Annotated[UserPublic, Depends(current_user)]):
     """Force a recompute of learned weights and re-apply to today's picks."""
