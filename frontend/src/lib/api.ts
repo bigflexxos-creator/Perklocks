@@ -50,6 +50,42 @@ export type Pick = {
   elite_player?: boolean;
   elite_player_name?: string;
   pick_date: string;
+
+  // ─── Sportsbook Mapping Engine (book-agnostic + per-book deep links) ──
+  selection_v2?: {
+    league: string;
+    league_label: string;
+    sport: string;
+    event: {
+      home: string;
+      away: string;
+      kickoff: string | null;
+      date: string;
+      slug: string;
+    };
+    market: { family: string; subtype: string; label: string };
+    selection: {
+      side: string | null;
+      team: string | null;
+      player: string | null;
+      line: number | null;
+      label: string;
+    };
+  };
+  sportsbook_mapping?: Record<string, {
+    supports_deep_link: boolean;
+    deep_link: string | null;
+    event_id?: string | null;
+    market_id?: string | null;
+    selection_id?: string | null;
+    event_url: string | null;
+    search_url: string | null;
+    league_url: string | null;
+    home_url: string;
+    best_link: string;
+    best_depth: "selection" | "event" | "search" | "league" | "home";
+    search_query: string;
+  }>;
 };
 
 export type User = { id: string; email: string; name?: string };

@@ -402,7 +402,17 @@ function ParlayCardView({
     const searchHint = firstLeg
       ? `${firstLeg.away_team || ""} ${firstLeg.home_team || ""}`.trim() || firstLeg.event
       : undefined;
-    const ok = await openSportsbook(book, eventId, searchHint);
+    // Sportsbook Mapping Engine: prefer the per-leg best_link if available
+    // (mapping keys are PascalCase: FanDuel/DraftKings/BetMGM/Caesars).
+    const bookKeyMap: Record<SportsbookId, string> = {
+      fanduel:   "FanDuel",
+      draftkings: "DraftKings",
+      betmgm:    "BetMGM",
+      caesars:   "Caesars",
+    };
+    const mappedBookKey = bookKeyMap[book];
+    const mappedLink = firstLeg?.sportsbook_mapping?.[mappedBookKey]?.best_link as string | undefined;
+    const ok = await openSportsbook(book, eventId, searchHint, mappedLink);
     if (!ok) {
       Alert.alert("Could not open sportsbook",
         "Your bet slip is copied — paste it manually in the sportsbook.");

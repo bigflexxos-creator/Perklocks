@@ -75,6 +75,36 @@ function webUrl(book: SportsbookName, sport: string | null): string {
   return (sport && map[sport]) || map._default;
 }
 
+/**
+ * Resolve the deepest available URL for the given picks.
+ *
+ * Sportsbook Mapping Engine (backend) attaches a `sportsbook_mapping`
+ * object to each pick with per-book {best_link, best_depth}. Order of
+ * preference here:
+ *   1. SINGLE pick — use that pick's `best_link` (could be selection /
+ *      event / search / league depth, in that order).
+ *   2. MULTI-leg parlay — without partner API access we can't open a
+ *      sportsbook directly to a prefilled parlay slip, so we anchor on
+ *      the FIRST leg's best link (gets the user inside the book on the
+ *      right sport / closest event) and rely on the clipboard handoff
+ *      to fill in the rest.
+ *
+ * Falls back to the static `WEB_URLS` table if the pick has no mapping.
+ */
+function resolveDeepestUrl(book: SportsbookName, picks: Pick[], sport: string | null): {
+  url: string;
+  depth: string;
+} {
+  if (picks.length > 0) {
+    const anchor = picks[0];
+    const mapped = anchor.sportsbook_mapping?.[book];
+    if (mapped?.best_link) {
+      return { url: mapped.best_link, depth: mapped.best_depth || "search" };
+    }
+  }
+  return { url: webUrl(book, sport), depth: "league" };
+}
+
 // Produce a short clipboard-friendly summary the user can paste/search
 // inside the sportsbook app. We keep it tight so the search bar isn't
 // overwhelmed.
@@ -122,7 +152,7 @@ export async function openSportsbookWithSlip(
   picks: Pick[],
 ): Promise<void> {
   const sport = dominantSport(picks);
-  const fallbackUrl = webUrl(book, sport);
+  const { url: fallbackUrl } = resolveDeepestUrl(book, picks, sport);
   const clip = buildClipboardText(picks);
 
   // 1) Best-effort clipboard copy so user can paste/search in the book.

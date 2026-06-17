@@ -243,6 +243,25 @@ async def _refresh_picks(date_str: str) -> int:
     except Exception as e:
         logger.warning("Event-ID enrichment skipped: %s", e)
 
+    # ── Sportsbook Mapping Engine: build a sportsbook-INDEPENDENT
+    # ``selection_v2`` per pick + per-book deep-link bundles (best_link /
+    # best_depth). The frontend consumes ``sportsbook_mapping[<Book>].best_link``
+    # so users land as close to the actual bet as we can manage without a
+    # partner API key. UI is unchanged — same buttons, deeper destinations.
+    try:
+        from sportsbook_mapper import enrich_picks_with_mapping, SUPPORTED_BOOKS
+        enrich_picks_with_mapping(picks)
+        depth_counts: dict[str, int] = {}
+        for p in picks:
+            depths = {b: ((p.get("sportsbook_mapping") or {}).get(b) or {}).get("best_depth")
+                      for b in SUPPORTED_BOOKS}
+            for d in depths.values():
+                depth_counts[d or "none"] = depth_counts.get(d or "none", 0) + 1
+        logger.info("Sportsbook Mapping: %d picks enriched across %d books · depth=%s",
+                    len(picks), len(SUPPORTED_BOOKS), depth_counts)
+    except Exception as e:
+        logger.warning("Sportsbook mapping enrichment skipped: %s", e)
+
     # ── Tennis Edge Engine v2: per-pick component scoring + NO_BET filter,
     # 99-LOCK gating, and max-3-per-day cap. Pure post-processing; no extra
     # API calls. Non-tennis picks pass through unchanged.
