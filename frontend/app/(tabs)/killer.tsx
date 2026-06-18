@@ -29,8 +29,11 @@ export default function UnderOfTheDayScreen() {
   const load = useCallback(async (lt: LineType, sk: SortKey, sp: string, f: PickFilters) => {
     try {
       const res = await api.underOfTheDay(lt, sk, f, sp);
-      setPick(res.pick);
-      setAlternates(res.alternates ?? []);
+      // Defensive: hide KBO at the client even if production backend
+      // hasn't deployed the sport removal yet.
+      const isKbo = (p: any) => p && p.sport === "KBO";
+      setPick(isKbo(res.pick) ? null : res.pick);
+      setAlternates((res.alternates ?? []).filter((p: any) => !isKbo(p)));
       setPool(res.total_evaluated ?? 0);
     } catch (e) {
       console.warn("under load", e);
