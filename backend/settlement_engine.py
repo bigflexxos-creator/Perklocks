@@ -236,16 +236,33 @@ async def settle_due_picks(db) -> dict:
             continue
         by_sport.setdefault(sp, []).append(p)
 
-    # Fetch scores per sport_key
+    # Fetch scores per sport_key. For MLB we now try the free MLB Stats API
+    # FIRST (zero Odds-credit cost, faster, official data); only fall back
+    # to The Odds API if MLB Stats API returns nothing.
     scores_cache: dict[str, list[dict]] = {}
     for sport, sport_picks in by_sport.items():
-        keys = SPORT_KEYS.get(sport, [])
         all_scores: list[dict] = []
-        for key in keys:
-            data = await _fetch_scores(key)
-            if data:
-                all_scores.extend(data)
-            await asyncio.sleep(0.6)  # throttle to avoid 429
+        # MLB fast-path: free official scores
+        if sport == "MLB":
+            try:
+                from mlb_live import fetch_mlb_scores
+                mlb_data = await fetch_mlb_scores(days_back=3)
+                if mlb_data:
+                    all_scores.extend(mlb_data)
+                    logger.info(
+                        "MLB settlement source: MLB Stats API (free) — %d games, 0 Odds credits used",
+                        len(mlb_data),
+                    )
+            except Exception as e:
+                logger.warning("MLB Stats API path failed, falling back to Odds API: %s", e)
+        # Fallback / non-MLB sports: original Odds API path
+        if not all_scores:
+            keys = SPORT_KEYS.get(sport, [])
+            for key in keys:
+                data = await _fetch_scores(key)
+                if data:
+                    all_scores.extend(data)
+                await asyncio.sleep(0.6)  # throttle to avoid 429
         scores_cache[sport] = all_scores
 
     # Only grade games that have actually FINISHED. Two safety checks:
