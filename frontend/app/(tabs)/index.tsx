@@ -27,6 +27,13 @@ function timeAgo(d: Date | null): string {
   return d.toLocaleDateString();
 }
 
+function formatCountdown(seconds: number): string {
+  if (seconds <= 0) return "";
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
 export default function LocksScreen() {
   const [picks, setPicks] = useState<Pick[]>([]);
   const [sport, setSport] = useState<string>("All");
@@ -39,6 +46,11 @@ export default function LocksScreen() {
   const [stats, setStats] = useState<{ total_picks: number; elite_count: number; avg_edge_percent: number } | null>(null);
   const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  // Refresh-cooldown countdown driven by /picks/refresh-status. `nextRefreshAt`
+  // is an absolute timestamp (ms since epoch); `remaining` is derived from it
+  // by a 1-second ticker so the badge animates smoothly.
+  const [nextRefreshAt, setNextRefreshAt] = useState<number | null>(null);
+  const [remaining, setRemaining] = useState<number>(0); // seconds until next refresh
   const [, forceTick] = useState(0);
 
   // Tick every 30s so the "X min ago" label stays accurate.
@@ -46,6 +58,41 @@ export default function LocksScreen() {
     const t = setInterval(() => forceTick((n) => n + 1), 30000);
     return () => clearInterval(t);
   }, []);
+
+  // 1-second tick to drive the cooldown countdown. Only runs while a
+  // cooldown is active to avoid waking the UI thread needlessly.
+  useEffect(() => {
+    if (nextRefreshAt == null) {
+      if (remaining !== 0) setRemaining(0);
+      return;
+    }
+    const update = () => {
+      const r = Math.max(0, Math.ceil((nextRefreshAt - Date.now()) / 1000));
+      setRemaining(r);
+      if (r === 0) setNextRefreshAt(null);
+    };
+    update();
+    const t = setInterval(update, 1000);
+    return () => clearInterval(t);
+  }, [nextRefreshAt, remaining]);
+
+  // Pull the current cooldown state from the server (zero credit cost).
+  const loadCooldown = useCallback(async () => {
+    try {
+      const res = await api.refreshStatus();
+      if (res.next_refresh_at) {
+        const t = Date.parse(res.next_refresh_at);
+        setNextRefreshAt(isNaN(t) ? null : t);
+      } else {
+        setNextRefreshAt(null);
+      }
+    } catch (e) {
+      // Silent — countdown is a nicety, not a blocker.
+    }
+  }, []);
+
+  // Fetch cooldown on first mount.
+  useEffect(() => { loadCooldown(); }, [loadCooldown]);
 
   const activeFilterCount =
     (filters.minLock && filters.minLock > 85 ? 1 : 0) +
@@ -93,8 +140,8 @@ export default function LocksScreen() {
   // user opens the Locks tab, but skip if the last successful fetch was less
   // than 30 s ago. No interval polling — focus + manual refresh only.
   useFocusRefetch(
-    () => load(sport, lineType, sortKey, filters),
-    [sport, lineType, sortKey, filters, load],
+    () => { load(sport, lineType, sortKey, filters); loadCooldown(); },
+    [sport, lineType, sortKey, filters, load, loadCooldown],
     30_000,
   );
 
@@ -106,15 +153,33 @@ export default function LocksScreen() {
   };
 
   const onForceRefresh = async () => {
+    if (remaining > 0) {
+      // Cooldown active — surface the countdown instead of burning credits.
+      const mins = Math.ceil(remaining / 60);
+      showToast(`New picks in ${mins} min`);
+      return;
+    }
     setLoading(true);
     try {
       const res = await api.refresh();
+      // Backend tells us the next-allowed time. Drive the countdown from
+      // that instead of guessing client-side.
+      if (res.next_refresh_at) {
+        const t = Date.parse(res.next_refresh_at);
+        if (!isNaN(t)) setNextRefreshAt(t);
+      }
       await load(sport, lineType, sortKey, filters);
-      showToast(`Refreshed · ${res.count} picks`);
+      if (res.rate_limited) {
+        showToast(res.message || "Refresh on cooldown");
+      } else {
+        showToast(`Refreshed · ${res.count} picks`);
+      }
     } catch (e) {
       console.warn(e);
       setLoading(false);
       showToast("Refresh failed");
+      // Re-pull status in case server already advanced the cooldown.
+      loadCooldown();
     }
   };
 
@@ -127,14 +192,25 @@ export default function LocksScreen() {
             Today&apos;s Locks · {new Date().toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}
           </Text>
           <Text style={styles.updatedLabel}>Updated {timeAgo(lastLoadedAt)}</Text>
+          {remaining > 0 && (
+            <Text style={styles.cooldownLabel} testID="refresh-cooldown-label">
+              New picks in {formatCountdown(remaining)}
+            </Text>
+          )}
         </View>
         <Pressable
           testID="refresh-button"
           onPress={onForceRefresh}
-          style={styles.refreshBtn}
+          style={[styles.refreshBtn, remaining > 0 && styles.refreshBtnDisabled]}
           hitSlop={10}
         >
-          <Ionicons name="refresh" size={20} color={COLORS.textPrimary} />
+          {remaining > 0 ? (
+            <Text style={styles.refreshBtnCountdown} testID="refresh-button-countdown">
+              {formatCountdown(remaining)}
+            </Text>
+          ) : (
+            <Ionicons name="refresh" size={20} color={COLORS.textPrimary} />
+          )}
         </Pressable>
       </View>
 
@@ -232,6 +308,7 @@ const styles = StyleSheet.create({
   brand: { fontSize: 22, fontWeight: "900", color: COLORS.textPrimary, letterSpacing: 3 },
   date: { fontSize: 11, color: COLORS.textMuted, fontWeight: "600", marginTop: 4, letterSpacing: 0.5 },
   updatedLabel: { fontSize: 10, color: COLORS.neonGreen, fontWeight: "700", marginTop: 4, letterSpacing: 0.4 },
+  cooldownLabel: { fontSize: 10, color: COLORS.goldElite, fontWeight: "700", marginTop: 2, letterSpacing: 0.4 },
   toast: {
     position: "absolute", top: 110, alignSelf: "center", zIndex: 10,
     flexDirection: "row", alignItems: "center", gap: 8,
@@ -241,9 +318,18 @@ const styles = StyleSheet.create({
   },
   toastText: { color: COLORS.textPrimary, fontSize: 13, fontWeight: "700" },
   refreshBtn: {
-    width: 40, height: 40, borderRadius: 20,
+    width: 56, height: 40, borderRadius: 20,
     backgroundColor: COLORS.surface, alignItems: "center", justifyContent: "center",
     borderWidth: 1, borderColor: COLORS.borderDefault,
+    paddingHorizontal: 8,
+  },
+  refreshBtnDisabled: {
+    borderColor: COLORS.goldElite,
+    opacity: 0.85,
+  },
+  refreshBtnCountdown: {
+    color: COLORS.goldElite, fontSize: 12, fontWeight: "800",
+    letterSpacing: 0.3, fontVariant: ["tabular-nums"],
   },
   statsRow: { flexDirection: "row", paddingHorizontal: 20, gap: 10, marginBottom: 6 },
   controlsRow: { flexDirection: "row", alignItems: "center" },

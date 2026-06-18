@@ -342,7 +342,23 @@ export const api = {
   },
   pickDetail: (id: string) => request<Pick & { ai_pending?: boolean }>(`/picks/${id}`),
   pickAiExplain: (id: string) => request<{ explanation: string; source: string }>(`/picks/${id}/ai-explain`, { method: "POST" }),
-  refresh: () => request<{ refreshed: boolean; count: number; date: string }>("/picks/refresh", { method: "POST" }),
+  refresh: () => request<{
+    refreshed: boolean;
+    count: number;
+    date: string;
+    cooldown_seconds?: number;
+    next_refresh_at?: string | null;
+    last_refresh_at?: string | null;
+    rate_limited?: boolean;
+    retry_after_minutes?: number;
+    message?: string;
+  }>("/picks/refresh", { method: "POST" }),
+  refreshStatus: () => request<{
+    can_refresh: boolean;
+    cooldown_seconds: number;
+    next_refresh_at: string | null;
+    last_refresh_at: string | null;
+  }>("/picks/refresh-status"),
   history: (days: number = 30, rolloverOnly = false) =>
     request<{
       picks: (Pick & { status?: string; settled_at?: string; final_score?: Record<string, number>; loss_analysis?: string })[];
