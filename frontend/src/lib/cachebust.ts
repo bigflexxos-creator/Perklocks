@@ -24,7 +24,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // Bump on every server-side data shape / content change.
 // Format: YYYYMMDD-N  so collisions are obvious in git history.
-export const APP_DATA_VERSION = "20260618-4";
+export const APP_DATA_VERSION = "20260618-5";
 
 const VERSION_KEY = "perkslocks.app_data_version";
 

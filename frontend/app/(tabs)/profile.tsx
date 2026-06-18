@@ -64,7 +64,7 @@ export default function ProfileScreen() {
 
             <Text style={styles.sectionLabel}>BY SPORT</Text>
             <View style={styles.sportList}>
-              {stats.by_sport.map((s) => (
+              {stats.by_sport.filter((s) => s.sport !== "KBO").map((s) => (
                 <View key={s.sport} style={styles.sportRow}>
                   <Text style={styles.sportName}>{s.sport.toUpperCase()}</Text>
                   <View style={styles.sportMetrics}>
