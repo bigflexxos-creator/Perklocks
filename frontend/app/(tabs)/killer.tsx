@@ -1,11 +1,11 @@
-import React, { useCallback, useEffect, useState, useRef } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator,
   RefreshControl, Pressable,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter, useFocusEffect } from "expo-router";
+import { useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS, SPORTS } from "@/src/theme";
 import { api, Pick, LineType, SortKey, PickFilters } from "@/src/lib/api";
 import { LineTypeToggle } from "@/src/components/LineTypeToggle";
@@ -13,6 +13,7 @@ import { SortSelector } from "@/src/components/SortSelector";
 import { ChipRow } from "@/src/components/ChipRow";
 import { SportFilterBar } from "@/src/components/SportFilterBar";
 import { formatGameTime } from "@/src/lib/formatGameTime";
+import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 
 export default function UnderOfTheDayScreen() {
   const router = useRouter();
@@ -45,17 +46,12 @@ export default function UnderOfTheDayScreen() {
 
   useEffect(() => { setLoading(true); load(lineType, sortKey, sport, filters); }, [lineType, sortKey, sport, filters, load]);
 
-  // Re-fetch on every tab focus (throttled to once per 60s) so users don't
-  // get stuck looking at picks from when they first opened the app hours ago.
-  const lastFocusRefreshRef = useRef<number>(0);
-  useFocusEffect(
-    useCallback(() => {
-      const now = Date.now();
-      if (now - lastFocusRefreshRef.current > 60_000) {
-        lastFocusRefreshRef.current = now;
-        load(lineType, sortKey, sport, filters);
-      }
-    }, [load, lineType, sortKey, sport, filters]),
+  // Smart refetch on focus — calls API again when the user returns to the
+  // tab, but skips if last successful fetch was less than 30 s ago.
+  useFocusRefetch(
+    () => load(lineType, sortKey, sport, filters),
+    [load, lineType, sortKey, sport, filters],
+    30_000,
   );
 
   const onRefresh = () => { setRefreshing(true); load(lineType, sortKey, sport, filters); };
