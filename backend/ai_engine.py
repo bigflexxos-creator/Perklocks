@@ -1,5 +1,6 @@
 """Claude Sonnet 4.5 explainer for picks & bet-killer warnings."""
 import os
+import re
 import logging
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
@@ -8,6 +9,61 @@ logger = logging.getLogger(__name__)
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 MODEL_PROVIDER = "anthropic"
 MODEL_NAME = "claude-sonnet-4-5-20250929"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Fabrication scrubber — runtime safety net.
+#
+# Even with a hardened system prompt the LLM can still hallucinate
+# specific stats ("Marozsan 41-6", "hold rate 83%", "career 12-0 vs lefties").
+# These patterns matched the fake-stat templates we used to inject; we
+# strip any line containing them from the final output so the user never
+# sees fabricated numbers.
+# ──────────────────────────────────────────────────────────────────────
+
+_FAB_PATTERNS: tuple[re.Pattern, ...] = (
+    re.compile(r"\b\d{2,3}-\d{1,2}(?:-\d{1,2})?\s+(?:record|L\d+|last|in|over)", re.IGNORECASE),
+    re.compile(r"\bL\d+\s+months?\b", re.IGNORECASE),
+    re.compile(r"hold rate\b", re.IGNORECASE),
+    re.compile(r"\bbreak rate\b", re.IGNORECASE),
+    re.compile(r"\bcareer\s+\d{1,3}-\d{1,3}\b", re.IGNORECASE),
+    re.compile(r"\b\d{1,3}\s*BAA\b", re.IGNORECASE),
+    re.compile(r"\bERA\s+\d", re.IGNORECASE),
+    re.compile(r"\bwRC\+?\s+\d", re.IGNORECASE),
+    re.compile(r"\bxG/90\b", re.IGNORECASE),
+    re.compile(r"\bclean sheet rate\b", re.IGNORECASE),
+    re.compile(r"\btakedown defense\b", re.IGNORECASE),
+    re.compile(r"\bDVOA\b", re.IGNORECASE),
+    re.compile(r"\bsnap share\b", re.IGNORECASE),
+    re.compile(r"\busage rate\b", re.IGNORECASE),
+    re.compile(r"\bopposing pitcher allows\b", re.IGNORECASE),
+    re.compile(r"\bsignificant strikes per\b", re.IGNORECASE),
+    re.compile(r"\bsurface record\b", re.IGNORECASE),
+    # "Player won X of last Y" pattern
+    re.compile(r"\bwon\s+\d{1,2}\s+of\s+(?:his\s+)?last\s+\d{1,2}\b", re.IGNORECASE),
+)
+
+
+def _scrub_fabrications(text: str) -> str:
+    """Remove any line containing a fabricated-stat pattern.
+
+    Returns the cleaned text. Adds a brief footer if any line was scrubbed
+    so we never silently drop content the user might miss.
+    """
+    if not text:
+        return text
+    lines = text.split("\n")
+    kept: list[str] = []
+    scrubbed_count = 0
+    for ln in lines:
+        if any(p.search(ln) for p in _FAB_PATTERNS):
+            scrubbed_count += 1
+            continue
+        kept.append(ln)
+    cleaned = "\n".join(kept)
+    if scrubbed_count:
+        logger.warning("AI scrubber removed %d fabricated lines", scrubbed_count)
+    return cleaned
 
 
 def _build_chat(session_id: str, system_message: str) -> LlmChat:
@@ -52,10 +108,11 @@ async def explain_pick(pick: dict) -> tuple[str, bool]:
     )
     try:
         resp = await chat.send_message(UserMessage(text=payload))
-        return str(resp).strip(), True
+        cleaned = _scrub_fabrications(str(resp).strip())
+        return cleaned, True
     except Exception as e:
         logger.warning("AI explain failed: %s", e)
-        return _fallback_explanation(pick), False
+        return _scrub_fabrications(_fallback_explanation(pick)), False
 
 
 async def bet_killer_warning(pick: dict) -> tuple[str, bool]:
@@ -79,10 +136,10 @@ async def bet_killer_warning(pick: dict) -> tuple[str, bool]:
     )
     try:
         resp = await chat.send_message(UserMessage(text=payload))
-        return str(resp).strip(), True
+        return _scrub_fabrications(str(resp).strip()), True
     except Exception as e:
         logger.warning("AI killer failed: %s", e)
-        return _fallback_killer(pick), False
+        return _scrub_fabrications(_fallback_killer(pick)), False
 
 
 def _fallback_explanation(pick: dict) -> str:
