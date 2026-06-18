@@ -26,7 +26,16 @@ async def explain_pick(pick: dict) -> tuple[str, bool]:
         "NEVER claim guaranteed wins or 100% locks — frame everything as probabilities, "
         "edges, and confidence. Be tactical, concise, data-driven. Use bullet points. "
         "Mention the specific stats from the factor breakdown and key insights provided. "
-        "End with a one-line risk note ('Risk:' …)."
+        "End with a one-line risk note ('Risk:' …).\n\n"
+        "STRICT FACTUAL RULES — violating these is a critical failure:\n"
+        "• Do NOT invent specific numeric stats not present in the input (e.g. win-loss "
+        "records, hold percentages, shooting splits, surface records, snap shares, "
+        "ERAs, xG values). If the data doesn't include a number, do not fabricate one.\n"
+        "• Do NOT cite head-to-head records, last-N-game streaks, or career numbers "
+        "unless they appear verbatim in the Factor breakdown or Key insights.\n"
+        "• Use ONLY the factor scores (0-100) and qualitative insights provided. "
+        "Describe them as model signals, not as raw box-score statistics.\n"
+        "• If you're tempted to write a specific stat that isn't in the input, omit it."
     )
     chat = _build_chat(f"explain-{pick.get('external_id', 'x')}", system)
     payload = (
