@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/src/lib/api";
+import { useAuth } from "@/src/contexts/AuthContext";
 
 type LiveGame = {
   home: string;
@@ -42,8 +43,14 @@ const POLL_INTERVAL_MS = 60_000; // 60 s — matches MLB's pace of live changes
 export function MLBLiveProvider({ children }: { children: React.ReactNode }) {
   const [games, setGames] = useState<LiveMap>({});
   const inflightRef = useRef<boolean>(false);
+  // Only fetch /api/mlb/live once the user is authenticated. Otherwise the
+  // mount-time poll fires before AsyncStorage has hydrated the token and the
+  // backend returns 401, flooding the logs and ESPN-style retry loops.
+  const { user } = useAuth();
+  const isAuthed = !!user;
 
   const refresh = useCallback(async () => {
+    if (!isAuthed) return;          // hard gate — no auth, no call
     if (inflightRef.current) return; // simple in-flight dedupe
     inflightRef.current = true;
     try {
@@ -54,10 +61,16 @@ export function MLBLiveProvider({ children }: { children: React.ReactNode }) {
     } finally {
       inflightRef.current = false;
     }
-  }, []);
+  }, [isAuthed]);
 
   // Kick off + poll loop. Effect re-runs cleanup when the provider unmounts.
   useEffect(() => {
+    if (!isAuthed) {
+      // Make sure stale data from a previous session isn't shown to the
+      // next anonymous user (e.g. after sign-out).
+      setGames({});
+      return;
+    }
     let active = true;
     let timer: ReturnType<typeof setInterval> | null = null;
     const start = () => {
@@ -92,7 +105,7 @@ export function MLBLiveProvider({ children }: { children: React.ReactNode }) {
         document.removeEventListener("visibilitychange", onVisibility);
       }
     };
-  }, [refresh]);
+  }, [refresh, isAuthed]);
 
   const lookup = useCallback(
     (event: string | undefined | null): LiveGame | null => {
