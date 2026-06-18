@@ -1,11 +1,11 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState, useRef } from "react";
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator,
   RefreshControl, Pressable,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { COLORS, GRADE_COLORS, SPORTS } from "@/src/theme";
 import { api, Pick, LineType, PickFilters } from "@/src/lib/api";
 import { LineTypeToggle } from "@/src/components/LineTypeToggle";
@@ -44,6 +44,18 @@ export default function RolloverScreen() {
   }, []);
 
   useEffect(() => { setLoading(true); load(lineType, sport, filters); }, [lineType, sport, filters, load]);
+
+  // Auto-refresh on tab focus (throttled to once per 60s).
+  const lastFocusRefreshRef = useRef<number>(0);
+  useFocusEffect(
+    useCallback(() => {
+      const now = Date.now();
+      if (now - lastFocusRefreshRef.current > 60_000) {
+        lastFocusRefreshRef.current = now;
+        load(lineType, sport, filters);
+      }
+    }, [load, lineType, sport, filters]),
+  );
 
   const onRefresh = () => { setRefreshing(true); load(lineType, sport, filters); };
 
