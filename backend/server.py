@@ -788,6 +788,9 @@ async def under_of_the_day(user: Annotated[UserPublic, Depends(current_user)],
     else:
         cursor = db.picks.find(q, {"_id": 0}).sort("lock_score", -1).limit(50)
     picks = await cursor.to_list(length=50)
+    # Drop picks for games that have already started — `_filter_in_play_window`
+    # protects the fallback path on line 801 from leaking started games.
+    picks = _filter_in_play_window(picks)
 
     def starts_today(p: dict) -> bool:
         et = p.get("event_time") or ""
@@ -886,6 +889,10 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
         picks = [p for p in picks if (p.get("book_odds") or -9999) >= -700]
     # Restrict Rollover to today's games only (start time within next 24h),
     # with graceful fallback to the broader pool if nothing starts today.
+    # In ALL cases (including the fallback) we run picks through
+    # _filter_in_play_window so games that have already started never leak
+    # in — the "I see old MLB Hits in Rollover" bug.
+    picks = _filter_in_play_window(picks)
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=24)
     def starts_today(p: dict) -> bool:
