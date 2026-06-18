@@ -442,6 +442,8 @@ _MARKET_REGEX = {
     # MongoDB supports PCRE lookaheads so we use them to disambiguate.
     "batter_hits":          r"\bhits\b(?!\s*allowed)",
     "batter_total_bases":   r"\btotal bases\b",
+    # Pitcher strikeouts — added 2026-06-18 with the pitcher Ks props
+    "pitcher_strikeouts":   r"\bstrikeouts\b",
     "player_points":        r"\bpoints\b(?!\s*total)",
     "player_rebounds":      r"\brebounds\b",
     "player_assists":       r"\bassists\b",
@@ -495,6 +497,7 @@ SPORT_MARKETS = {
         {"token": "totals",      "label": "Totals"},
         {"token": "batter_hits",        "label": "Hits"},
         {"token": "batter_total_bases", "label": "Total Bases"},
+        {"token": "pitcher_strikeouts", "label": "Strikeouts"},
     ],
     "Tennis": [
         {"token": "match_winner", "label": "Match Winner"},
