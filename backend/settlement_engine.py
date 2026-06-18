@@ -165,17 +165,56 @@ async def _fetch_scores(sport_key: str) -> list[dict]:
 
 
 def _match_score_for_pick(pick: dict, all_scores: list[dict]) -> Optional[dict]:
+    """Find the score payload that corresponds to this pick.
+
+    Three-layer match — most specific first to handle doubleheaders and
+    suspended/resumed games correctly:
+
+      1. Odds API event-ID exact match (we stored this as fanduel_event_id
+         via event_matcher at pick generation time). Bulletproof for
+         doubleheaders since each game has a unique event ID.
+      2. Teams + commence_time within ±3 hours (fallback when no event_id).
+      3. Teams only — last resort, may match wrong game in a doubleheader.
+    """
+    event_id = pick.get("fanduel_event_id") or pick.get("event_id")
+    if event_id:
+        for s in all_scores:
+            if s.get("id") == event_id:
+                return s
     away, home = parse_event_teams(pick.get("event") or "")
     if not away or not home:
         return None
-    al = away.lower()
-    hl = home.lower()
-    for s in all_scores:
-        h_team = (s.get("home_team") or "").lower()
-        a_team = (s.get("away_team") or "").lower()
-        if h_team == hl and a_team == al:
-            return s
-    return None
+    al, hl = away.lower(), home.lower()
+
+    # Layer 2: team + commence_time (handles doubleheaders)
+    pick_time = pick.get("event_time") or ""
+    pick_dt = None
+    try:
+        pick_dt = datetime.strptime(pick_time, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except Exception:
+        pass
+
+    candidates = [
+        s for s in all_scores
+        if (s.get("home_team") or "").lower() == hl
+        and (s.get("away_team") or "").lower() == al
+    ]
+    if pick_dt and candidates:
+        # Pick the score whose commence_time is closest to the pick's event_time.
+        def _delta(s):
+            try:
+                st = datetime.strptime(s.get("commence_time", ""), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                return abs((st - pick_dt).total_seconds())
+            except Exception:
+                return 10**9
+        candidates.sort(key=_delta)
+        # Reject if even the closest is > 3 hours off — likely a different day's
+        # game in the same matchup; safer to wait than mis-grade.
+        if _delta(candidates[0]) <= 3 * 3600:
+            return candidates[0]
+        return None
+    # Layer 3: team-only fallback
+    return candidates[0] if candidates else None
 
 
 async def settle_due_picks(db) -> dict:
@@ -183,7 +222,6 @@ async def settle_due_picks(db) -> dict:
 
     Returns counts: {settled, won, lost, push, skipped}.
     """
-    cutoff_recent = datetime.now(timezone.utc) + timedelta(hours=1)
     cursor = db.picks.find({"status": {"$in": [None, "pending"]}}, {"_id": 0})
     picks = await cursor.to_list(length=2000)
     counts = {"settled": 0, "won": 0, "lost": 0, "push": 0, "skipped": 0, "props_pending": 0}
@@ -210,6 +248,12 @@ async def settle_due_picks(db) -> dict:
             await asyncio.sleep(0.6)  # throttle to avoid 429
         scores_cache[sport] = all_scores
 
+    # Only grade games that have actually FINISHED. Two safety checks:
+    #   1. event_time must be at least 3 hours in the past (baseball / tennis
+    #      can run long; this avoids grading in-progress games)
+    #   2. The Odds API score payload must include `completed: True`
+    now_utc = datetime.now(timezone.utc)
+    settle_cutoff = now_utc - timedelta(hours=3)
     for sport, sport_picks in by_sport.items():
         all_scores = scores_cache.get(sport, [])
         if not all_scores:
@@ -219,18 +263,24 @@ async def settle_due_picks(db) -> dict:
             if is_player_prop(pick):
                 counts["props_pending"] += 1
                 continue
-            # Only consider picks whose game time has clearly passed.
+            # Game must have started long enough ago to have plausibly ended.
             et = pick.get("event_time") or ""
             try:
                 dt = datetime.strptime(et, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                # Game should have ended at least an hour ago.
-                if dt > cutoff_recent:
+                if dt > settle_cutoff:
                     counts["skipped"] += 1
                     continue
             except Exception:
                 pass
             score_payload = _match_score_for_pick(pick, all_scores)
             if not score_payload:
+                counts["skipped"] += 1
+                continue
+            # CRITICAL: only grade against COMPLETED games. The Odds API
+            # returns in-progress games in the scores endpoint too — without
+            # this gate we'd grade against partial scores (the bug behind
+            # the 6/17 Orioles mis-grade where the game wasn't even over yet).
+            if not score_payload.get("completed"):
                 counts["skipped"] += 1
                 continue
             outcome = settle_pick(pick, score_payload)
