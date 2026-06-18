@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useRef, useState, ReactNode, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { Pick } from "@/src/lib/api";
+import { Pick, api } from "@/src/lib/api";
 
 const SLIP_KEY = "perkslocks.betslip.v1";
 export const MAX_SLIP_SIZE = 25;
@@ -28,20 +28,49 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
   const [hydrated, setHydrated] = useState(false);
   const hydratedRef = useRef(false);
 
-  // Hydrate from storage on mount.
+  // Hydrate from storage on mount, THEN immediately fetch fresh server data
+  // for every cached pick. This guarantees that stale explanations / insights
+  // / odds baked into the local copy when the pick was originally added (e.g.
+  // the old fabricated tennis records) are replaced with the current truth.
+  // Picks no longer in the backend (yesterday's slate, since removed) are
+  // silently dropped from the slip.
   useEffect(() => {
     (async () => {
+      let initial: Pick[] = [];
       try {
         const raw = await AsyncStorage.getItem(SLIP_KEY);
         if (raw) {
           const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed)) setPicks(parsed as Pick[]);
+          if (Array.isArray(parsed)) initial = parsed as Pick[];
         }
       } catch (e) {
         console.warn("[BetSlip] hydrate failed", e);
-      } finally {
-        hydratedRef.current = true;
-        setHydrated(true);
+      }
+      // Show the cached picks immediately so the UI isn't blank.
+      if (initial.length > 0) setPicks(initial);
+      hydratedRef.current = true;
+      setHydrated(true);
+
+      // Refresh each cached pick against the live backend.
+      if (initial.length === 0) return;
+      try {
+        const fresh = await Promise.all(
+          initial.map(async (p) => {
+            try {
+              const live = await api.pickDetail(p.id);
+              return live as Pick;
+            } catch {
+              return null;  // pick gone from backend — drop it
+            }
+          }),
+        );
+        const refreshed = fresh.filter((p): p is Pick => p !== null);
+        // Only update state if something actually changed (avoid pointless renders).
+        const changed = refreshed.length !== initial.length ||
+          refreshed.some((p, i) => p.id !== initial[i]?.id || p.explanation !== initial[i]?.explanation);
+        if (changed) setPicks(refreshed);
+      } catch (e) {
+        console.warn("[BetSlip] refresh-on-hydrate failed", e);
       }
     })();
   }, []);
