@@ -1686,23 +1686,28 @@ app.add_middleware(_ReliabilityMiddleware)
 
 
 async def _daily_refresh_loop():
-    """Refresh picks once on startup, then daily at 06:00 UTC."""
+    """Refresh picks on startup and every 2 hours thereafter.
+
+    The /picks/refresh endpoint has its own 56-minute rate-limit guard so
+    we never burn The Odds API credits — but a 2-hour scheduler keeps the
+    feed fresh as new lines drop, players get scratched, and previous
+    games complete. Game-time sorting feels live instead of frozen until
+    the next 06:00 UTC daily reset.
+    """
     try:
         await _ensure_today_picks()
     except Exception as e:
         logger.warning("Startup picks seed failed: %s", e)
     while True:
         try:
-            now = datetime.now(timezone.utc)
-            tomorrow_6 = datetime.combine(
-                (now + timedelta(days=1)).date(), dtime(6, 0), tzinfo=timezone.utc)
-            sleep_for = (tomorrow_6 - now).total_seconds()
-            await asyncio.sleep(max(sleep_for, 60))
+            # 2-hour cadence keeps the slate moving without slamming the
+            # Odds API; the per-call rate limiter still owns the hard cap.
+            await asyncio.sleep(2 * 3600)
             await _refresh_picks(_today_str())
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.warning("Daily refresh failed: %s", e)
+            logger.warning("Periodic refresh failed: %s", e)
             await asyncio.sleep(3600)
 
 
