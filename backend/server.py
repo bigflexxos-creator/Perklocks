@@ -89,21 +89,22 @@ def _today_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
-# Game-time cutoffs for "today" feeds. Pregame markets (ML/spread/total/
-# run line/etc.) become unbettable the moment a game starts so we hide
-# them ~5 minutes after kickoff. Player props are kept for ~90 minutes
-# because some still resolve mid-game (e.g. "Anytime Goal Scorer",
-# "Batter Over 0.5 Hits", "Pitcher Over 5.5 Ks").
-_PREGAME_GRACE_SECONDS = 5 * 60
-_PROP_GRACE_SECONDS    = 90 * 60
+# Game-time cutoff for "today" feeds. We only want PREGAME picks — once
+# a game starts (with a tiny 2-minute clock-skew grace for first-pitch
+# timing) the pick is hidden. Player props get the same treatment as
+# spreads/totals/moneyline: no live picks, period.
+_PREGAME_GRACE_SECONDS = 2 * 60
 
 
 def _filter_in_play_window(picks: list[dict]) -> list[dict]:
-    """Drop picks whose game has already started (with a small grace
-    window). Reused across /picks/today, /picks/bet-killer,
-    /picks/under-of-the-day, and /picks/rollover so the user never sees
-    a pregame line for a game that's already underway."""
-    from settlement_engine import is_player_prop as _is_prop
+    """Drop picks whose game has already started.
+
+    User spec: "I do want pregame picks I don't want live picks." So
+    once an event's `event_time` is in the past (beyond a tiny clock-skew
+    grace) we drop the pick from the visible slate — even player props,
+    even MLB Hits/Strikeouts. Reused across /picks/today,
+    /picks/bet-killer, /picks/under-of-the-day, and /picks/rollover.
+    """
     now_utc = datetime.now(timezone.utc)
     out: list[dict] = []
     for p in picks:
@@ -111,11 +112,10 @@ def _filter_in_play_window(picks: list[dict]) -> list[dict]:
         try:
             dt = datetime.strptime(et, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
         except Exception:
-            # Unknown time → keep the pick (safe default, matches old behaviour).
+            # Unknown time → keep the pick (safe default).
             out.append(p)
             continue
-        grace = _PROP_GRACE_SECONDS if _is_prop(p) else _PREGAME_GRACE_SECONDS
-        if (now_utc - dt).total_seconds() <= grace:
+        if (now_utc - dt).total_seconds() <= _PREGAME_GRACE_SECONDS:
             out.append(p)
     return out
 
