@@ -1685,6 +1685,25 @@ class _ReliabilityMiddleware(BaseHTTPMiddleware):
 app.add_middleware(_ReliabilityMiddleware)
 
 
+@app.middleware("http")
+async def _no_store_api_responses(request, call_next):
+    """Force every /api response to bypass intermediate caches.
+
+    The published Expo bundle was hitting our backend through the same
+    edge proxy as the website, but the iOS native HTTP stack was serving
+    cached responses (especially `/picks/today`) for hours. Setting
+    Cache-Control: no-store + Pragma: no-cache + Expires: 0 stops every
+    layer (CDN, proxy, iOS NSURLCache, RN fetch cache) from holding
+    onto pick data.
+    """
+    response = await call_next(request)
+    if str(request.url.path).startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
 async def _daily_refresh_loop():
     """Refresh picks on startup and every 2 hours thereafter.
 

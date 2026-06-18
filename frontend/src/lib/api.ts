@@ -175,21 +175,39 @@ async function request<T>(
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "application/json",
+      // Force every layer (browser HTTP cache, iOS NSURLCache, any
+      // CDN/edge proxy in front of the backend) to bypass cached
+      // responses and hit our origin. Without these, iOS in particular
+      // will happily serve a hours-old `/picks/today` payload to the
+      // app even though the same URL in Safari shows fresh data.
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      "Pragma": "no-cache",
     };
     if (opts.auth !== false) {
       const tok = await getToken();
       if (tok) headers.Authorization = `Bearer ${tok}`;
     }
+    // Cache-buster query param on GETs ensures any intermediate cache that
+    // ignores headers (some CDNs do) can't serve a stale entry — the URL
+    // itself is unique per request.
+    let finalUrl = url;
+    if (method === "GET") {
+      const sep = url.includes("?") ? "&" : "?";
+      finalUrl = `${url}${sep}_=${Date.now()}`;
+    }
     const init: RequestInit = {
       method,
       headers,
       body: opts.body ? JSON.stringify(opts.body) : undefined,
+      // RN's fetch ignores this on iOS but it's the canonical way to
+      // disable HTTP caching on web/Hermes for parity.
+      cache: "no-store",
     };
 
     let lastErr: any = null;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
-        const res = await _fetchWithTimeout(url, init, REQUEST_TIMEOUT_MS);
+        const res = await _fetchWithTimeout(finalUrl, init, REQUEST_TIMEOUT_MS);
         const text = await res.text();
         let data: any = {};
         try { data = text ? JSON.parse(text) : {}; }
