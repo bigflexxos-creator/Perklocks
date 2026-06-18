@@ -89,6 +89,37 @@ def _today_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+# Game-time cutoffs for "today" feeds. Pregame markets (ML/spread/total/
+# run line/etc.) become unbettable the moment a game starts so we hide
+# them ~5 minutes after kickoff. Player props are kept for ~90 minutes
+# because some still resolve mid-game (e.g. "Anytime Goal Scorer",
+# "Batter Over 0.5 Hits", "Pitcher Over 5.5 Ks").
+_PREGAME_GRACE_SECONDS = 5 * 60
+_PROP_GRACE_SECONDS    = 90 * 60
+
+
+def _filter_in_play_window(picks: list[dict]) -> list[dict]:
+    """Drop picks whose game has already started (with a small grace
+    window). Reused across /picks/today, /picks/bet-killer,
+    /picks/under-of-the-day, and /picks/rollover so the user never sees
+    a pregame line for a game that's already underway."""
+    from settlement_engine import is_player_prop as _is_prop
+    now_utc = datetime.now(timezone.utc)
+    out: list[dict] = []
+    for p in picks:
+        et = p.get("event_time") or ""
+        try:
+            dt = datetime.strptime(et, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        except Exception:
+            # Unknown time → keep the pick (safe default, matches old behaviour).
+            out.append(p)
+            continue
+        grace = _PROP_GRACE_SECONDS if _is_prop(p) else _PREGAME_GRACE_SECONDS
+        if (now_utc - dt).total_seconds() <= grace:
+            out.append(p)
+    return out
+
+
 async def _picks_for_date(date_str: str) -> list[dict]:
     cursor = db.picks.find({"pick_date": date_str}, {"_id": 0}).sort("lock_score", -1)
     return await cursor.to_list(length=500)
@@ -613,6 +644,8 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         q["league"] = {"$regex": str(league).replace("\\", ""), "$options": "i"}
     cursor = db.picks.find(q, {"_id": 0}).sort("lock_score", -1).limit(200)
     picks = await cursor.to_list(length=200)
+    # Hide picks for games that have already started (see _filter_in_play_window).
+    picks = _filter_in_play_window(picks)
     if day_offset is not None:
         target_day = (datetime.now(timezone.utc).date() + timedelta(days=day_offset)).isoformat()
         picks = [p for p in picks if (p.get("event_time") or "").startswith(target_day)]
