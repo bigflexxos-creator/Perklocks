@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState, useRef } from "react";
 import {
   View, Text, StyleSheet, ScrollView, RefreshControl,
   ActivityIndicator, Pressable,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS, SPORTS } from "@/src/theme";
 import { api, Pick, LineType, SortKey, PickFilters } from "@/src/lib/api";
@@ -69,6 +70,22 @@ export default function LocksScreen() {
   }, []);
 
   useEffect(() => { setLoading(true); load(sport, lineType, sortKey, filters); }, [sport, lineType, sortKey, filters, load]);
+
+  // Auto-refresh whenever the user focuses this tab — but no more often than
+  // once every 60s to avoid hammering the backend when they're tab-flipping.
+  // This fixes the "app shows stale picks" issue where the screen would only
+  // refetch on first mount or filter change; if the user kept the app open
+  // for hours the list stayed frozen until they pulled to refresh.
+  const lastFocusRefreshRef = useRef<number>(0);
+  useFocusEffect(
+    useCallback(() => {
+      const now = Date.now();
+      if (now - lastFocusRefreshRef.current > 60_000) {
+        lastFocusRefreshRef.current = now;
+        load(sport, lineType, sortKey, filters);
+      }
+    }, [load, sport, lineType, sortKey, filters]),
+  );
 
   const onRefresh = () => { setRefreshing(true); load(sport, lineType, sortKey, filters); };
 
