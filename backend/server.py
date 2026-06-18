@@ -544,18 +544,47 @@ async def markets_for_sport(
     sport: str,
 ):
     """Return the dynamic market list + active leagues for a given sport.
-    Used by the Locks tab to populate the MarketSelector + League pills."""
+    Used by the Locks tab to populate the MarketSelector + League pills.
+
+    Critically, the league `count` MUST be computed from the SAME pick
+    universe that `/picks/today` serves — i.e. after `_filter_in_play_window`
+    drops games that have already started. Otherwise the chip shows
+    "MLB · Props · 28" but the filtered list only contains 21 picks, leaving
+    the user staring at an empty state with a non-zero counter (the exact
+    bug a user reported on the production app build).
+    """
     markets = SPORT_MARKETS.get(sport, [])
-    # Active leagues: distinct league names from today's picks for this sport.
-    leagues_cursor = db.picks.aggregate([
-        {"$match": {"sport": sport, "pick_date": _today_str()}},
-        {"$group": {"_id": "$league", "count": {"$sum": 1}}},
-        {"$sort": {"count": -1}},
-    ])
-    leagues = []
-    async for row in leagues_cursor:
-        if row.get("_id"):
-            leagues.append({"name": row["_id"], "count": row["count"]})
+    # Pull every pick for the sport today (raw — no qualification filter
+    # here so chips remain stable across the same universe as /picks/today),
+    # then apply the play-window filter and group in-Python.
+    raw = await db.picks.find(
+        {"sport": sport, "pick_date": _today_str()},
+        {"_id": 0, "league": 1, "event_time": 1, "lock_score": 1,
+         "is_under_lock": 1, "no_bet": 1, "edge_percent": 1,
+         "elite_player": 1},
+    ).to_list(length=1000)
+    # Apply the same qualification logic /picks/today uses so the chip
+    # count exactly matches the visible slate.
+    def _qualifies(p: dict) -> bool:
+        if p.get("is_under_lock") is True or p.get("no_bet") is True:
+            return False
+        elite = bool(p.get("elite_player"))
+        lock = float(p.get("lock_score") or 0)
+        edge = float(p.get("edge_percent") or 0)
+        # Same OR logic as /picks/today: base lock-score gate OR elite bypass.
+        if elite:
+            return True
+        return lock >= 85 and edge >= 0
+    raw = [p for p in raw if _qualifies(p)]
+    raw = _filter_in_play_window(raw)
+    counts: dict[str, int] = {}
+    for p in raw:
+        lg = p.get("league")
+        if not lg:
+            continue
+        counts[lg] = counts.get(lg, 0) + 1
+    leagues = [{"name": name, "count": c}
+               for name, c in sorted(counts.items(), key=lambda kv: -kv[1])]
     return {"sport": sport, "markets": markets, "leagues": leagues}
 
 
