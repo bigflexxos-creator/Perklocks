@@ -16,6 +16,7 @@ import {
   formatBetSlip, copyBetSlip,
 } from "@/src/lib/sportsbookLinks";
 import { formatGameTime } from "@/src/lib/formatGameTime";
+import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 
 // ─── Card label → accent colour mapping ───────────────────────────────
 const CARD_ACCENTS: Record<ParlayCard["label"], string> = {
@@ -89,6 +90,19 @@ export default function ParlayScreen() {
          filters, rank, lockedIds, sportMode, windowHours);
   }, [hydrated, legs, mode, sport, lineType, includedSports, excludedSports,
       filters, rank, lockedIds, sportMode, windowHours, load]);
+
+  // Smart refetch on focus — re-rebuild the parlay when the user returns
+  // to the tab, but suppress duplicate calls inside 30 s.
+  useFocusRefetch(
+    () => {
+      if (!hydrated) return;
+      load(legs, mode, sport, lineType, includedSports, excludedSports,
+           filters, rank, lockedIds, sportMode, windowHours);
+    },
+    [hydrated, legs, mode, sport, lineType, includedSports, excludedSports,
+     filters, rank, lockedIds, sportMode, windowHours, load],
+    30_000,
+  );
 
   const onModeChange = (m: "standard" | "high_risk") => {
     updatePrefs({ mode: m, legs: m === "high_risk" ? 10 : 3 });

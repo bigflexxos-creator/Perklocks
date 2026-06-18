@@ -1,14 +1,15 @@
-import React, { useCallback, useEffect, useState, useRef } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator,
   RefreshControl, Pressable,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { Stack, useRouter, useFocusEffect } from "expo-router";
+import { Stack, useRouter } from "expo-router";
 import { COLORS } from "@/src/theme";
 import { api } from "@/src/lib/api";
 import { formatGameTime } from "@/src/lib/formatGameTime";
+import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 
 type HistoryPick = {
   id: string;
@@ -57,18 +58,9 @@ export default function HistoryScreen() {
 
   useEffect(() => { setLoading(true); load(); }, [load]);
 
-  // Auto-refresh history on tab focus (throttled to 60s) so updated grades
-  // (e.g. Orioles regrades) appear without manual pull-to-refresh.
-  const lastFocusRefreshRef = useRef<number>(0);
-  useFocusEffect(
-    useCallback(() => {
-      const now = Date.now();
-      if (now - lastFocusRefreshRef.current > 60_000) {
-        lastFocusRefreshRef.current = now;
-        load();
-      }
-    }, [load]),
-  );
+  // Smart refetch on focus — re-pull history when the user returns, but
+  // suppress duplicate calls inside 30 s.
+  useFocusRefetch(load, [load], 30_000);
 
   const onRefresh = async () => {
     setRefreshing(true);
