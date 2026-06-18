@@ -1705,13 +1705,12 @@ async def _no_store_api_responses(request, call_next):
 
 
 async def _daily_refresh_loop():
-    """Refresh picks on startup and every 2 hours thereafter.
+    """Refresh picks on startup and every 1 hour thereafter.
 
-    The /picks/refresh endpoint has its own 56-minute rate-limit guard so
-    we never burn The Odds API credits — but a 2-hour scheduler keeps the
-    feed fresh as new lines drop, players get scratched, and previous
-    games complete. Game-time sorting feels live instead of frozen until
-    the next 06:00 UTC daily reset.
+    The /picks/refresh endpoint has its own rate-limit guard so we never
+    burn The Odds API credits unexpectedly — but a 1-hour scheduler keeps
+    the feed fresh as new lines drop, players get scratched, and previous
+    games complete. Game-time sorting feels live instead of frozen.
     """
     try:
         await _ensure_today_picks()
@@ -1719,9 +1718,9 @@ async def _daily_refresh_loop():
         logger.warning("Startup picks seed failed: %s", e)
     while True:
         try:
-            # 2-hour cadence keeps the slate moving without slamming the
-            # Odds API; the per-call rate limiter still owns the hard cap.
-            await asyncio.sleep(2 * 3600)
+            # 1-hour cadence — balances slate freshness against Odds API
+            # credit usage. The per-call rate limiter still owns the hard cap.
+            await asyncio.sleep(3600)
             await _refresh_picks(_today_str())
         except asyncio.CancelledError:
             break
