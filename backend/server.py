@@ -1288,6 +1288,20 @@ async def picks_history(user: Annotated[UserPublic, Depends(current_user)],
     }
 
 
+@api.get("/picks/refresh-status")
+async def refresh_status_pre(user: Annotated[UserPublic, Depends(current_user)]):
+    """Return the user's current refresh cooldown WITHOUT triggering a
+    refresh (zero Odds API cost). Declared BEFORE /picks/{pick_id} so
+    FastAPI's route matching doesn't capture the literal segment as an
+    ID. Logic lives in _cooldown_payload() further down."""
+    now = datetime.now(timezone.utc)
+    user_doc = await db.users.find_one(
+        {"id": user.id}, {"_id": 0, "last_refresh_at": 1},
+    )
+    last_iso = (user_doc or {}).get("last_refresh_at")
+    return _cooldown_payload(last_iso, now)
+
+
 @api.get("/picks/{pick_id}")
 async def pick_detail(pick_id: str,
                       user: Annotated[UserPublic, Depends(current_user)]):
@@ -1331,6 +1345,45 @@ async def pick_ai_explain(pick_id: str,
     return {"explanation": text, "source": "live" if real else "fallback"}
 
 
+REFRESH_COOLDOWN_SECONDS = 3600  # 1 hour — matches scheduler cadence
+
+
+def _cooldown_payload(last_iso: str | None, now: datetime) -> dict:
+    """Compute cooldown state for the refresh rate-limiter.
+
+    Returns dict with `can_refresh`, `cooldown_seconds` (remaining),
+    `next_refresh_at` (ISO string, or None), `last_refresh_at`.
+    Safe against missing/malformed timestamps.
+    """
+    if not last_iso:
+        return {
+            "can_refresh": True,
+            "cooldown_seconds": 0,
+            "next_refresh_at": None,
+            "last_refresh_at": None,
+        }
+    try:
+        last_dt = datetime.fromisoformat(last_iso)
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return {
+            "can_refresh": True,
+            "cooldown_seconds": 0,
+            "next_refresh_at": None,
+            "last_refresh_at": None,
+        }
+    elapsed = (now - last_dt).total_seconds()
+    remaining = max(0, REFRESH_COOLDOWN_SECONDS - int(elapsed))
+    next_dt = last_dt + timedelta(seconds=REFRESH_COOLDOWN_SECONDS)
+    return {
+        "can_refresh": remaining <= 0,
+        "cooldown_seconds": remaining,
+        "next_refresh_at": next_dt.isoformat() if remaining > 0 else None,
+        "last_refresh_at": last_dt.isoformat(),
+    }
+
+
 @api.post("/picks/refresh")
 async def force_refresh(user: Annotated[UserPublic, Depends(current_user)]):
     """Manually refresh today's picks. Rate-limited to 1× per hour per user
@@ -1340,33 +1393,35 @@ async def force_refresh(user: Annotated[UserPublic, Depends(current_user)]):
     # Check last refresh time for this user (stored in user doc).
     user_doc = await db.users.find_one({"id": user.id}, {"_id": 0, "last_refresh_at": 1})
     last_iso = (user_doc or {}).get("last_refresh_at")
-    if last_iso:
-        try:
-            last_dt = datetime.fromisoformat(last_iso)
-            if last_dt.tzinfo is None:
-                last_dt = last_dt.replace(tzinfo=timezone.utc)
-            elapsed = (now - last_dt).total_seconds()
-            cooldown = 3600  # 1 hour
-            if elapsed < cooldown:
-                remaining_min = int((cooldown - elapsed) // 60) + 1
-                # Return current pick count without burning a refresh.
-                existing = await db.picks.count_documents({"pick_date": _today_str()})
-                return {
-                    "refreshed": False,
-                    "rate_limited": True,
-                    "retry_after_minutes": remaining_min,
-                    "count": existing,
-                    "date": _today_str(),
-                    "message": f"Picks were refreshed recently. Try again in {remaining_min} min — saves API credits.",
-                }
-        except Exception:
-            pass
+    cd = _cooldown_payload(last_iso, now)
+    if not cd["can_refresh"]:
+        remaining_min = (cd["cooldown_seconds"] // 60) + (1 if cd["cooldown_seconds"] % 60 else 0)
+        existing = await db.picks.count_documents({"pick_date": _today_str()})
+        return {
+            "refreshed": False,
+            "rate_limited": True,
+            "retry_after_minutes": remaining_min,
+            "cooldown_seconds": cd["cooldown_seconds"],
+            "next_refresh_at": cd["next_refresh_at"],
+            "last_refresh_at": cd["last_refresh_at"],
+            "count": existing,
+            "date": _today_str(),
+            "message": f"Picks were refreshed recently. Try again in {remaining_min} min — saves API credits.",
+        }
     count = await _refresh_picks(_today_str())
     await db.users.update_one(
         {"id": user.id},
         {"$set": {"last_refresh_at": now.isoformat()}},
     )
-    return {"refreshed": True, "count": count, "date": _today_str()}
+    next_dt = now + timedelta(seconds=REFRESH_COOLDOWN_SECONDS)
+    return {
+        "refreshed": True,
+        "count": count,
+        "date": _today_str(),
+        "cooldown_seconds": REFRESH_COOLDOWN_SECONDS,
+        "next_refresh_at": next_dt.isoformat(),
+        "last_refresh_at": now.isoformat(),
+    }
 
 
 # ───────────────────────── Loss Analysis ─────────────────────────
