@@ -26,11 +26,13 @@ from typing import Optional
 import httpx
 
 logger = logging.getLogger(__name__)
-# Pinned to the verified working paid key. We intentionally do NOT read this
-# from the env var because the production deployment may inject a different
-# (free-tier / exhausted) key which causes OUT_OF_USAGE_CREDITS errors.
-# User explicitly authorized hardcoding this key.
-ODDS_KEY = "bdb565ece766d72de1ffc5e4d0e834bd"
+# Odds API key resolution: prefer THE_ODDS_API_KEY env var (the recommended
+# production path) and fall back to the verified working paid key the user
+# explicitly authorized hardcoding. The fallback exists because some
+# deployment environments inject a different (free-tier / exhausted) key
+# which surfaces as OUT_OF_USAGE_CREDITS errors — having a known-good
+# default keeps the app self-healing.
+ODDS_KEY = os.environ.get("THE_ODDS_API_KEY") or "bdb565ece766d72de1ffc5e4d0e834bd"
 BASE = "https://api.the-odds-api.com/v4"
 
 SPORT_KEYS: dict[str, list[str]] = {
