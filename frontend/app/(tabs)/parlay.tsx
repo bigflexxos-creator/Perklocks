@@ -121,7 +121,6 @@ export default function ParlayScreen() {
       { id: "NFL", label: "NFL" },
       { id: "Soccer", label: "SOCCER" },
       { id: "UFC", label: "UFC" },
-      { id: "KBO", label: "KBO" },
     ],
     [],
   );

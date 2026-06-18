@@ -42,8 +42,9 @@ SPORT_KEYS: dict[str, list[str]] = {
     "NFL": ["americanfootball_nfl", "americanfootball_nfl_preseason"],
     # UFC / MMA — The Odds API uses one combined MMA key (covers UFC events).
     "UFC": ["mma_mixed_martial_arts"],
-    # Korea Baseball Organization
-    "KBO": ["baseball_kbo"],
+    # KBO disabled per user request 2026-06-18 — no new picks generated;
+    # historical KBO picks were purged from DB at the same time.
+    # "KBO": ["baseball_kbo"],
     "Soccer": [
         # FIFA World Cup 2026 — happening now
         "soccer_fifa_world_cup",
@@ -865,11 +866,13 @@ async def fetch_kbo_picks(date_str: str) -> list[dict]:
 
 PLAYER_PROP_MARKETS = {
     "MLB": [
-        # Per user request: only hits + total bases (no home runs, no pitcher
-        # strikeouts) until the Odds API can supply better player-prop data.
+        # Hitter markets
         "batter_hits", "batter_total_bases",
         # Alt lines — lower thresholds with higher implied prob (the "near-locks")
         "batter_hits_alternate", "batter_total_bases_alternate",
+        # Pitcher strikeout markets — added 2026-06-18 per user request.
+        # The Odds API exposes these as `pitcher_strikeouts` + alt-line variant.
+        "pitcher_strikeouts", "pitcher_strikeouts_alternate",
     ],
     "NBA": [
         "player_points", "player_rebounds", "player_assists",
@@ -881,10 +884,7 @@ PLAYER_PROP_MARKETS = {
         "player_points_alternate", "player_rebounds_alternate",
         "player_assists_alternate",
     ],
-    "KBO": [
-        "batter_hits", "batter_total_bases",
-        "batter_hits_alternate", "batter_total_bases_alternate",
-    ],
+    # KBO removed 2026-06-18 — KBO sport disabled entirely.
     # Soccer: anytime goal scorer is the marquee prop. We also try the
     # "to score or assist" market when the bookmakers carry it — it nearly
     # doubles the player's win-probability since either action wins the bet.
@@ -913,6 +913,7 @@ PLAYER_PROP_MARKETS = {
 # a different filter regime for these.
 _ALT_PROP_MARKETS = {
     "batter_hits_alternate", "batter_total_bases_alternate",
+    "pitcher_strikeouts_alternate",   # MLB pitcher Ks alt (lower line, high implied)
     "player_points_alternate", "player_rebounds_alternate",
     "player_assists_alternate",
 }
@@ -1134,6 +1135,7 @@ def _prop_market_label(market_key: str, side: str, point: float | None) -> str:
     pretty = {
         "batter_hits": "Hits", "batter_total_bases": "Total Bases",
         "batter_home_runs": "Home Runs",
+        "pitcher_strikeouts": "Strikeouts",
         "player_points": "Points", "player_rebounds": "Rebounds",
         "player_assists": "Assists",
     }.get(base_key, base_key.replace("_", " ").title())
@@ -1300,13 +1302,24 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             mp = max(0.80, min(0.94, implied + (rng.random() - 0.3) * 0.02))
         else:
             mp = max(0.65, min(0.95, implied + (rng.random() - 0.3) * 0.06))
-        factors = {
-            "Recent Volume / Usage": rng.uniform(0.7, 0.95) if is_alt else rng.uniform(0.6, 0.95),
-            "Matchup vs Defense": rng.uniform(0.65, 0.95) if is_alt else rng.uniform(0.55, 0.95),
-            "Last 10 Hit Rate": rng.uniform(0.75, 0.97) if is_alt else rng.uniform(0.6, 0.95),
-            "Home/Away Splits": rng.uniform(0.6, 0.9),
-            "Pace / Game Script": rng.uniform(0.6, 0.9),
-        }
+        # Pitcher props use a different factor recipe than batter props.
+        is_pitcher_prop = mk.startswith("pitcher_")
+        if is_pitcher_prop:
+            factors = {
+                "Pitcher K/9 (recent)":       rng.uniform(0.7, 0.95) if is_alt else rng.uniform(0.6, 0.95),
+                "Opp K% vs same hand":        rng.uniform(0.65, 0.95) if is_alt else rng.uniform(0.55, 0.95),
+                "Pitch Count / Workload":     rng.uniform(0.6, 0.9),
+                "Park Strikeout Factor":      rng.uniform(0.55, 0.85),
+                "Recent Strikeout Form (L5)": rng.uniform(0.7, 0.95) if is_alt else rng.uniform(0.6, 0.95),
+            }
+        else:
+            factors = {
+                "Recent Volume / Usage": rng.uniform(0.7, 0.95) if is_alt else rng.uniform(0.6, 0.95),
+                "Matchup vs Defense":    rng.uniform(0.65, 0.95) if is_alt else rng.uniform(0.55, 0.95),
+                "Last 10 Hit Rate":      rng.uniform(0.75, 0.97) if is_alt else rng.uniform(0.6, 0.95),
+                "Home/Away Splits":      rng.uniform(0.6, 0.9),
+                "Pace / Game Script":    rng.uniform(0.6, 0.9),
+            }
         lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
         label_point = None if mk in ("player_goal_scorer_anytime", "player_to_score_or_assist", "player_first_goal_scorer", "mma_method_of_victory") else point
         if mk == "player_goal_scorer_anytime":

@@ -111,10 +111,16 @@ def classify_pick(pick: dict) -> tuple[str, str, str | None]:
             and "bases" not in market and "hits" not in market and "player" not in market
         ):
             return ("MLB", "totals", None)
-        # Pitcher props: explicit exclusion (strikeouts, outs recorded, earned runs)
-        pitcher_kw = ("strikeout", "outs recorded", "earned run", "pitch", "k's")
+        # Pitcher strikeouts — enabled 2026-06-18 (was previously excluded).
+        # Bucketed as its own props sub-type so analytics & learning v2 can
+        # track ROI per "MLB pitcher Ks" separately from batter hits.
+        if "strikeout" in market or "k's" in market:
+            return ("MLB", "props", "pitcher_ks")
+        # Remaining pitcher markets we still don't generate (outs recorded,
+        # earned runs, etc.) — tag for visibility but exclude from learning.
+        pitcher_kw = ("outs recorded", "earned run", "pitch")
         if any(kw in market for kw in pitcher_kw):
-            return ("MLB", "other_pitcher", None)  # tagged but bucketed separately
+            return ("MLB", "other_pitcher", None)
         # Batter hits
         if "hit" in market or "total bases" in market:
             return ("MLB", "props", "hits")
