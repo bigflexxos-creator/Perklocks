@@ -8,6 +8,11 @@ import { useRouter } from "expo-router";
 import { COLORS } from "@/src/theme";
 import { useAuth } from "@/src/contexts/AuthContext";
 import { api } from "@/src/lib/api";
+import { APP_DATA_VERSION } from "@/src/lib/cachebust";
+
+const BACKEND_URL_DISPLAY = (process.env.EXPO_PUBLIC_BACKEND_URL || "auto")
+  .replace(/^https?:\/\//, "")
+  .replace(/\/$/, "");
 
 export default function ProfileScreen() {
   const { user, signOut } = useAuth();
@@ -104,7 +109,8 @@ export default function ProfileScreen() {
 
         <Text style={styles.footerNote}>
           PerksLocks v1.0 · Daily auto-refresh at 06:00 UTC{"\n"}
-          All picks are probabilistic — never guaranteed.
+          All picks are probabilistic — never guaranteed.{"\n\n"}
+          Build: {APP_DATA_VERSION}  ·  Backend: {BACKEND_URL_DISPLAY}
         </Text>
       </ScrollView>
     </SafeAreaView>
