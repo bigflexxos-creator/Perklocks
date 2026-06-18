@@ -41,7 +41,9 @@ export default function HistoryScreen() {
   const load = useCallback(async () => {
     try {
       const res = await api.history(30, filter === "Rollover");
-      setPicks((res?.picks as HistoryPick[]) ?? []);
+      const all = (res?.picks as HistoryPick[]) ?? [];
+      // Defensive: hide KBO history per product decision (no KBO anywhere).
+      setPicks(all.filter((p) => p.sport !== "KBO"));
       setStats(res?.stats ?? null);
     } catch (e) {
       setPicks([]);

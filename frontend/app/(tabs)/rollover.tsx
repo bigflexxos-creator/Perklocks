@@ -33,7 +33,7 @@ export default function RolloverScreen() {
       const arr = (res.picks && res.picks.length > 0)
         ? res.picks
         : (res.pick ? [res.pick] : []);
-      setPicks(arr);
+      setPicks(arr.filter((p: Pick) => p.sport !== "KBO"));
       setPool(res.total_evaluated ?? 0);
     } catch (e) {
       console.warn("rollover load", e);
