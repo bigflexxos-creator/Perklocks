@@ -58,8 +58,36 @@ export default function LocksScreen() {
         api.picksToday(s, lt, sk, f),
         api.stats().catch(() => null),
       ]);
-      setPicks(picksRes.picks);
-      if (statsRes) setStats(statsRes);
+      // Defensive client-side filters — protect users from production
+      // backends that haven't yet deployed the latest server cleanup:
+      //   • KBO sport is disabled at the product level — hide any KBO
+      //     picks that slip through from a stale backend
+      //   • Hide games whose event_time is already > 30 min in the past
+      //     (these are usually live or finished, not bettable any more)
+      const nowMs = Date.now();
+      const fresh = (picksRes.picks || []).filter((p: any) => {
+        if (p.sport === "KBO") return false;
+        const et = p.event_time;
+        if (et) {
+          const t = new Date(et).getTime();
+          if (!Number.isNaN(t) && t < nowMs - 30 * 60 * 1000) return false;
+        }
+        return true;
+      });
+      setPicks(fresh);
+      // Stats: if backend hasn't deployed KBO removal yet, recompute the
+      // top-row totals locally so the hero card matches the visible list.
+      if (statsRes) {
+        const kboCount = (picksRes.picks || []).filter((p: any) => p.sport === "KBO").length;
+        if (kboCount > 0 && typeof statsRes.total_picks === "number") {
+          setStats({
+            ...statsRes,
+            total_picks: Math.max(0, statsRes.total_picks - kboCount),
+          });
+        } else {
+          setStats(statsRes);
+        }
+      }
       setLastLoadedAt(new Date());
     } catch (e) {
       console.warn("load locks", e);
