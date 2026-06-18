@@ -1480,49 +1480,141 @@ async def pick_loss_analysis(pick_id: str,
     return {"analysis": text, "source": "live" if real else "fallback"}
 
 
+@api.get("/mlb/live")
+async def mlb_live(user: Annotated[UserPublic, Depends(current_user)]):
+    """Live MLB game state — feeds the in-game score badges on Lock cards.
+
+    Returns a dict keyed by team-vs-team event string so the frontend can
+    O(1)-lookup any MLB pick. Costs ZERO Odds API credits (uses the free
+    statsapi.mlb.com endpoint via `mlb_live.fetch_today_live_mlb`).
+
+    The 15 s in-memory cache inside `mlb_live` means a whole tab of MLB
+    cards triggers at most one upstream HTTP call per quarter-minute.
+    Shape per game:
+        {
+          "home": "Baltimore Orioles", "away": "Seattle Mariners",
+          "home_score": 4, "away_score": 3,
+          "status": "Final" | "In Progress" | "Pre-Game" | "Postponed" | …,
+          "abstract_status": "Final" | "Live" | "Preview",
+          "is_live": true,           # convenience flag
+          "is_final": false,
+        }
+    """
+    try:
+        from mlb_live import fetch_today_live_mlb
+        games = await fetch_today_live_mlb()
+    except Exception as e:
+        logger.warning("MLB live endpoint failed: %s", e)
+        return {"games": {}, "as_of": _today_str()}
+    out: dict[str, dict] = {}
+    for g in games:
+        away = g.get("away_team") or ""
+        home = g.get("home_team") or ""
+        if not away or not home:
+            continue
+        scores = g.get("scores") or []
+        home_score = next((int(s["score"]) for s in scores
+                           if s.get("name") == home), None)
+        away_score = next((int(s["score"]) for s in scores
+                           if s.get("name") == away), None)
+        game_status   = g.get("status") or ""
+        abstract = g.get("abstract_status") or ""
+        # MLB Stats API quirk: postponed/cancelled/suspended games carry
+        # `abstractGameState == "Final"` even though they never finished.
+        # Treat them as NOT final so the UI doesn't mis-badge them.
+        non_final_terminal = {
+            "Postponed", "Cancelled", "Canceled", "Suspended", "Delayed Start",
+        }
+        is_final = (
+            (abstract == "Final" or g.get("completed") is True)
+            and game_status not in non_final_terminal
+        )
+        entry = {
+            "home": home,
+            "away": away,
+            "home_score": home_score,
+            "away_score": away_score,
+            "status": game_status,
+            "abstract_status": abstract,
+            "is_live": abstract == "Live",
+            "is_final": is_final,
+        }
+        # Key by both "Away @ Home" (matches pick.event) and the gamePk-style
+        # id so the frontend can match either format.
+        out[f"{away} @ {home}"] = entry
+        if g.get("id"):
+            out[g["id"]] = entry
+    return {"games": out, "as_of": datetime.now(timezone.utc).isoformat()}
+
+
 @api.get("/stats/summary")
 async def stats_summary(user: Annotated[UserPublic, Depends(current_user)]):
+    """Hero-card totals for the Locks tab.
+
+    Computed from the SAME picks the user actually sees on /picks/today —
+    i.e. lock_score >= 85, no NO-BET, no under-lock, no negative edge, AND
+    game time has not yet passed the play-window cutoff. Previously this
+    counted every row for `pick_date == today` regardless of game state,
+    which is why the "224 LOCKS" hero number didn't match the visible
+    list once games started kicking off.
+    """
     await _ensure_today_picks()
     today = _today_str()
-    pipeline = [
-        {"$match": {"pick_date": today}},
-        {"$group": {
-            "_id": "$sport",
-            "count": {"$sum": 1},
-            "avg_lock": {"$avg": "$lock_score"},
-            "avg_edge": {"$avg": "$edge_percent"},
-            # Elite = explicitly anchored to a star player (Mbappé/Haaland/
-            # Messi/Kane/Ronaldo/Sinner/Jokic/Judge/etc.), OR very high lock.
-            # The `elite_player` flag is the canonical signal — the lock-score
-            # threshold is only a fallback for sports without anchor coverage.
-            "elite": {"$sum": {"$cond": [
-                {"$or": [
-                    {"$eq": ["$elite_player", True]},
-                    {"$gte": ["$lock_score", 95]},
-                ]}, 1, 0,
-            ]}},
-        }},
-    ]
-    by_sport = [
-        {"sport": r["_id"], "count": r["count"],
-         "avg_lock": round(r["avg_lock"], 1) if r["avg_lock"] else 0,
-         "avg_edge": round(r["avg_edge"], 2) if r["avg_edge"] else 0,
-         "elite_count": r["elite"]}
-        async for r in db.picks.aggregate(pipeline)
-    ]
-    total = await db.picks.count_documents({"pick_date": today})
-    elite = await db.picks.count_documents({
+    base_q = {
         "pick_date": today,
-        "$or": [
-            {"elite_player": True},
-            {"lock_score": {"$gte": 95}},
-        ],
-    })
-    avg_edge_agg = await db.picks.aggregate([
-        {"$match": {"pick_date": today, "lock_score": {"$gte": 85}}},
-        {"$group": {"_id": None, "avg": {"$avg": "$edge_percent"}}},
-    ]).to_list(1)
-    avg_edge = round(avg_edge_agg[0]["avg"], 2) if avg_edge_agg else 0
+        "lock_score": {"$gte": 85},
+        "is_under_lock": {"$ne": True},
+        "no_bet": {"$ne": True},
+        "edge_percent": {"$gte": 0},
+    }
+    elite_q = {
+        "pick_date": today,
+        "elite_player": True,
+        "is_under_lock": {"$ne": True},
+        "no_bet": {"$ne": True},
+    }
+    # Pull both buckets and dedupe by id so the totals match the /picks/today
+    # response exactly.
+    base_cur = db.picks.find(base_q, {"_id": 0}).to_list(length=500)
+    elite_cur = db.picks.find(elite_q, {"_id": 0}).to_list(length=500)
+    base_rows, elite_rows = await base_cur, await elite_cur
+    seen: set = set()
+    rows: list[dict] = []
+    for p in (*base_rows, *elite_rows):
+        pid = p.get("id")
+        if pid in seen:
+            continue
+        seen.add(pid)
+        rows.append(p)
+    # Apply the same play-window filter as /picks/today.
+    rows = _filter_in_play_window(rows)
+
+    # Per-sport aggregates
+    by_sport_map: dict[str, dict] = {}
+    for p in rows:
+        sp = p.get("sport") or "Unknown"
+        b = by_sport_map.setdefault(sp, {"count": 0, "lock_sum": 0.0, "edge_sum": 0.0, "elite": 0})
+        b["count"] += 1
+        b["lock_sum"] += float(p.get("lock_score") or 0)
+        b["edge_sum"] += float(p.get("edge_percent") or 0)
+        if p.get("elite_player") or float(p.get("lock_score") or 0) >= 95:
+            b["elite"] += 1
+    by_sport = [
+        {"sport": sp,
+         "count": b["count"],
+         "avg_lock": round(b["lock_sum"] / b["count"], 1) if b["count"] else 0,
+         "avg_edge": round(b["edge_sum"] / b["count"], 2) if b["count"] else 0,
+         "elite_count": b["elite"]}
+        for sp, b in by_sport_map.items()
+    ]
+    total = len(rows)
+    elite = sum(1 for p in rows
+                if p.get("elite_player") or float(p.get("lock_score") or 0) >= 95)
+    # Average edge across the visible slate (matches /picks/today universe).
+    if rows:
+        avg_edge = round(sum(float(p.get("edge_percent") or 0) for p in rows) / len(rows), 2)
+    else:
+        avg_edge = 0
     return {"date": today, "total_picks": total, "elite_count": elite,
             "avg_edge_percent": avg_edge, "by_sport": by_sport}
 

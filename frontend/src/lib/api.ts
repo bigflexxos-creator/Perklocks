@@ -359,6 +359,19 @@ export const api = {
     next_refresh_at: string | null;
     last_refresh_at: string | null;
   }>("/picks/refresh-status"),
+  mlbLive: () => request<{
+    games: Record<string, {
+      home: string;
+      away: string;
+      home_score: number | null;
+      away_score: number | null;
+      status: string;
+      abstract_status: string;
+      is_live: boolean;
+      is_final: boolean;
+    }>;
+    as_of: string;
+  }>("/mlb/live"),
   history: (days: number = 30, rolloverOnly = false) =>
     request<{
       picks: (Pick & { status?: string; settled_at?: string; final_score?: Record<string, number>; loss_analysis?: string })[];

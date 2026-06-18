@@ -8,6 +8,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { AuthProvider } from "@/src/contexts/AuthContext";
 import { BetSlipProvider } from "@/src/contexts/BetSlipContext";
+import { MLBLiveProvider } from "@/src/contexts/MLBLiveContext";
 import { ErrorBoundary } from "@/src/components/ErrorBoundary";
 import { runCacheBustIfNeeded } from "@/src/lib/cachebust";
 
@@ -52,8 +53,10 @@ export default function RootLayout() {
         <SafeAreaProvider>
           <AuthProvider>
             <BetSlipProvider>
-              <StatusBar style="light" />
-              <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0A0A0A" } }} />
+              <MLBLiveProvider>
+                <StatusBar style="light" />
+                <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0A0A0A" } }} />
+              </MLBLiveProvider>
             </BetSlipProvider>
           </AuthProvider>
         </SafeAreaProvider>

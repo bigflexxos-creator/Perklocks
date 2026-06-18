@@ -4,12 +4,16 @@ import { useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
 import { Pick } from "@/src/lib/api";
 import { formatGameTime } from "@/src/lib/formatGameTime";
+import { useMLBLive } from "@/src/contexts/MLBLiveContext";
 
 export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?: "lock" | "killer" }) {
   const router = useRouter();
   const isKiller = variant === "killer";
   const gradeColor = GRADE_COLORS[pick.grade] || COLORS.textMuted;
   const edgeColor = pick.edge_percent > 0 ? COLORS.neonGreen : COLORS.electricBlaze;
+  // Live MLB score lookup — null for non-MLB picks (zero cost when missing).
+  const live = useMLBLive(pick.sport === "MLB" ? pick.event : null);
+  const showLiveBadge = !!live && (live.is_live || live.is_final);
   return (
     <Pressable
       testID={`pick-card-${pick.id}`}
@@ -43,6 +47,14 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
           <Text style={styles.event} numberOfLines={1}>{pick.event}</Text>
           {pick.event_time && (
             <Text style={styles.gameTime}>{formatGameTime(pick.event_time)}</Text>
+          )}
+          {showLiveBadge && live && (
+            <View style={[styles.liveBadge, live.is_final ? styles.liveBadgeFinal : styles.liveBadgeLive]}>
+              <View style={[styles.liveDot, { backgroundColor: live.is_final ? COLORS.textMuted : COLORS.neonGreen }]} />
+              <Text style={[styles.liveBadgeText, { color: live.is_final ? COLORS.textMuted : COLORS.neonGreen }]}>
+                {live.is_final ? "FINAL" : "LIVE"} · {live.away_score ?? 0}-{live.home_score ?? 0}
+              </Text>
+            </View>
           )}
           <Text style={styles.market} numberOfLines={2}>{pick.market}</Text>
         </View>
@@ -147,6 +159,21 @@ const styles = StyleSheet.create({
   league: { color: COLORS.textMuted, fontSize: 11, fontWeight: "600", flex: 1 },
   event: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 2, fontWeight: "500" },
   gameTime: { color: COLORS.voltBlue, fontSize: 11, fontWeight: "700", letterSpacing: 0.3, marginBottom: 6 },
+  liveBadge: {
+    flexDirection: "row", alignItems: "center", alignSelf: "flex-start",
+    gap: 6, paddingHorizontal: 8, paddingVertical: 3,
+    borderRadius: 4, borderWidth: 1, marginBottom: 6,
+  },
+  liveBadgeLive: {
+    backgroundColor: "rgba(0,255,170,0.10)",
+    borderColor: "rgba(0,255,170,0.45)",
+  },
+  liveBadgeFinal: {
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderColor: "rgba(255,255,255,0.18)",
+  },
+  liveDot: { width: 6, height: 6, borderRadius: 3 },
+  liveBadgeText: { fontSize: 10, fontWeight: "800", letterSpacing: 0.8, fontVariant: ["tabular-nums"] },
   market: { color: COLORS.textPrimary, fontSize: 17, fontWeight: "800", letterSpacing: -0.3 },
   metricsRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 18, marginBottom: 12 },
   metric: { flex: 1 },
