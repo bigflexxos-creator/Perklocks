@@ -543,7 +543,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             event_time=commence, market=f"{side} Moneyline", pick_side=side,
             model_win_prob=mp, book_odds=side_ml,
             lock=lock, factors=breakdown,
-            insights=_insights_for(sport, rng, side, home, away),
+            insights=_insights_for(sport, breakdown, side, home, away),
             external_id=f"{sport}-{game_id}-ml",
         ))
 
@@ -565,7 +565,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 market=f"{dc_side} Win or Draw", pick_side=dc_side,
                 model_win_prob=dc_model, book_odds=dc_book_odds,
                 lock=lock2, factors=breakdown2,
-                insights=_insights_for(sport, rng, dc_side, home, away),
+                insights=_insights_for(sport, breakdown2, dc_side, home, away),
                 external_id=f"{sport}-{game_id}-dc",
             ))
 
@@ -590,7 +590,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     market=f"Total {_unit(sport)} Over {line}", pick_side="Over",
                     model_win_prob=mp, book_odds=o_price,
                     lock=lock, factors=breakdown,
-                    insights=_insights_for(sport, rng, "Over", home, away),
+                    insights=_insights_for(sport, breakdown, "Over", home, away),
                     external_id=f"{sport}-{game_id}-total-over",
                 ))
             # ── Under pick (main-line) — tag for Under Lock tab ──
@@ -610,7 +610,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         market=f"Total {_unit(sport)} Under {line}", pick_side="Under",
                         model_win_prob=mp_u, book_odds=u_price,
                         lock=lock_u, factors=breakdown_u,
-                        insights=_insights_for(sport, rng, "Under", home, away),
+                        insights=_insights_for(sport, breakdown_u, "Under", home, away),
                         external_id=f"{sport}-{game_id}-total-under",
                     )
                     if under_pick:
@@ -639,7 +639,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 market=f"{side} {sign}{line} Spread", pick_side=side,
                 model_win_prob=mp, book_odds=price,
                 lock=lock, factors=breakdown,
-                insights=_insights_for(sport, rng, side, home, away),
+                insights=_insights_for(sport, breakdown, side, home, away),
                 external_id=f"{sport}-{game_id}-spread",
             ))
     return [p for p in picks if p is not None]
@@ -652,67 +652,74 @@ def _unit(sport: str) -> str:
             "WNBA": "Points"}.get(sport, "Points")
 
 
-def _insights_for(sport: str, rng, side: str, home: str, away: str) -> list[str]:
-    if sport == "MLB":
-        pool = [
-            f"{side} batting .{rng.randint(280, 410)} vs starting pitcher",
-            f"Opposing pitcher allows .{rng.randint(260, 320)} vs same-handed hitters",
-            f"Wind blowing out to {'left' if rng.random() > 0.5 else 'center'} field",
-            f"Opposing bullpen ranked {rng.randint(20, 30)}th in MLB ERA",
-            f"Hard Hit % above {rng.randint(40, 52)}% over last 15 games",
-        ]
-    elif sport == "NBA":
-        pool = [
-            f"{side} usage rate {rng.uniform(28, 38):.1f}% over last 10 games",
-            f"Opponent allows {rng.uniform(28, 38):.1f}% to position",
-            f"Pace differential: {rng.uniform(2.5, 5.5):.1f} possessions/game",
-            f"Defensive rating allowed: {rng.uniform(115, 122):.1f}",
-            f"Hit this side in {rng.randint(7, 10)} of last 10 games",
-        ]
-    elif sport == "NFL":
-        pool = [
-            f"{side} snap share {rng.randint(75, 95)}% over last 5 games",
-            f"Opponent ranks {rng.randint(25, 32)}nd in Pass EPA Allowed",
-            f"Defensive DVOA vs position: bottom-{rng.randint(3, 8)} in NFL",
-            f"Red zone share {rng.randint(22, 36)}%",
-            f"Weather: {rng.choice(['dome', 'clear 62°F', 'light wind 8mph'])}",
-        ]
-    elif sport == "Soccer":
-        pool = [
-            f"{home} xG/90: {rng.uniform(1.4, 2.4):.2f}",
-            f"{away} xGA/90: {rng.uniform(1.2, 2.1):.2f}",
-            f"H2H last 5: {side} won {rng.randint(2, 5)} of 5",
-            f"{home} clean sheet rate: {rng.randint(15, 30)}%",
-            f"Both teams scored in {rng.randint(5, 9)} of last 10 meetings",
-        ]
-    elif sport == "UFC":
-        pool = [
-            f"{side} significant strikes/min: {rng.uniform(4.2, 6.8):.1f}",
-            f"Takedown defense: {rng.randint(72, 92)}%",
-            f"Recent form: {rng.randint(3, 5)}-{rng.randint(0, 2)} in last 5 fights",
-            f"Reach advantage: +{rng.randint(2, 6)}\" vs opponent",
-            f"Camp: {rng.choice(['American Top Team', 'Jackson-Wink', 'AKA', 'City Kickboxing', 'Tristar'])}",
-            f"{rng.randint(60, 80)}% of fights end via finish",
-        ]
-    elif sport == "KBO":
-        pool = [
-            f"{side} starting pitcher ERA: {rng.uniform(2.4, 3.8):.2f}",
-            f"Bullpen ranked top-{rng.randint(2, 5)} in KBO ERA",
-            f"Recent form: {rng.randint(6, 9)}-{rng.randint(1, 4)} in last 10",
-            f"Lineup OPS vs opp handedness: {rng.uniform(.770, .880):.3f}",
-            f"Run differential: +{rng.uniform(0.4, 1.6):.1f} per game (L15)",
-            f"Home/Away splits favor {side} by {rng.randint(8, 22)} points wRC+",
-        ]
-    else:  # Tennis
-        pool = [
-            f"{side} surface record: {rng.randint(28, 42)}-{rng.randint(5, 12)} L12 months",
-            f"Hold rate on surface: {rng.randint(82, 92)}%",
-            f"Break rate vs opponent's profile: {rng.randint(22, 32)}%",
-            f"Recent form: {rng.randint(7, 10)} wins in last 10 matches",
-            f"Rested {rng.randint(2, 4)} days; opponent played 3-setter yesterday",
-        ]
-    rng.shuffle(pool)
-    return pool[:4]
+def _insights_for(sport: str, breakdown: dict, side: str, home: str, away: str) -> list[str]:
+    """Generate HONEST qualitative bullets from the actual model factor scores.
+
+    Critically: we NEVER invent specific numeric stats (e.g. "39-5 L12 months",
+    ".275 BAA", "78% finish rate") because those would mislead users into
+    thinking they're real data. Instead we describe each factor in plain
+    English using its model score band:
+
+        90+  → "elite"        70-79 → "favorable"      40-49 → "neutral"
+        80-89 → "strong"      60-69 → "solid"         30-39 → "below avg"
+                              50-59 → "modest"        <30   → "concern"
+
+    Tennis picks layer their richer (real) component insights on top via
+    `tennis_engine.build_tennis_insights`; this function only fills in the
+    sport-agnostic baseline for non-tennis picks.
+    """
+    if not breakdown:
+        return []
+    # Sort factors descending — highlight the strongest model signals first.
+    sorted_factors = sorted(
+        ((k, float(v)) for k, v in breakdown.items() if isinstance(v, (int, float))),
+        key=lambda kv: -kv[1],
+    )
+    top = sorted_factors[:4]  # only the four most decisive
+    out: list[str] = []
+    for name, score in top:
+        out.append(f"{name}: {score:.0f}/100 — {_score_label(score)}.")
+    # Append a single sport-context note tying the analysis to the pick side
+    # without inventing any stats.
+    side_note = _side_context_note(sport, side, home, away)
+    if side_note:
+        out.append(side_note)
+    return out
+
+
+def _score_label(score: float) -> str:
+    if score >= 90: return "elite signal"
+    if score >= 80: return "strong"
+    if score >= 70: return "favorable"
+    if score >= 60: return "solid"
+    if score >= 50: return "modest"
+    if score >= 40: return "neutral"
+    if score >= 30: return "below average"
+    return "concern"
+
+
+def _side_context_note(sport: str, side: str, home: str, away: str) -> str:
+    """A single sport-aware sentence that does NOT invent numbers.
+
+    Just frames the pick contextually so the rationale reads naturally.
+    """
+    if sport == "Tennis":
+        return ""  # tennis insights are produced by tennis_engine
+    if sport == "Soccer":
+        if side == home:
+            return f"Home environment favors {home} on multiple factor axes."
+        if side == away:
+            return f"Model rates {away} ahead of book despite away leg."
+        return ""
+    if sport in ("MLB", "KBO"):
+        return f"Composite weighting tilts toward {side} on this slate."
+    if sport in ("NBA", "WNBA"):
+        return f"Pace + matchup model favors {side} tonight."
+    if sport == "NFL":
+        return f"Snap-share / DVOA model tilts toward {side}."
+    if sport == "UFC":
+        return f"Striking + grappling composite favors {side}."
+    return ""
 
 
 # ───────────────────────── Per-sport fetchers ─────────────────────────
@@ -1132,27 +1139,27 @@ def _prop_market_label(market_key: str, side: str, point: float | None) -> str:
     return f"{label}  · ALT LOCK" if is_alt else label
 
 
-def _prop_insights(sport: str, rng: random.Random, player: str) -> list[str]:
+def _prop_insights(sport: str, breakdown: dict, player: str) -> list[str]:
+    """Honest factor-derived insights for a player prop pick.
+
+    Never fabricates specific numeric stats. Uses the actual model factor
+    scores to describe why this prop has model edge.
+    """
+    if not breakdown:
+        return []
+    sorted_factors = sorted(
+        ((k, float(v)) for k, v in breakdown.items() if isinstance(v, (int, float))),
+        key=lambda kv: -kv[1],
+    )
+    out: list[str] = []
+    for name, score in sorted_factors[:4]:
+        out.append(f"{name}: {score:.0f}/100 — {_score_label(score)}.")
+    # Sport-context note that DOESN'T invent numbers.
     if sport == "Soccer":
-        pool = [
-            f"{player} has scored in {rng.randint(4, 8)} of last 10 club matches",
-            f"Opposition concedes {rng.uniform(1.3, 2.1):.1f} goals/match on average",
-            f"Expected goals (xG) average: {rng.uniform(0.45, 0.95):.2f} per game",
-            f"Starter — averages {rng.randint(78, 92)} mins per match",
-            f"{rng.randint(3, 6)} shots on target per match (last 5)",
-            "Match projected as high-scoring (xG total > 2.6)",
-        ]
-        rng.shuffle(pool)
-        return pool[:4]
-    pool = [
-        f"{player} cleared this line in {rng.randint(7, 10)} of last 10 games",
-        f"Matchup ranks bottom-{rng.randint(3, 8)} vs the position",
-        f"Usage rate {rng.uniform(28, 38):.1f}% over last 10",
-        f"Hit this number in {rng.randint(70, 90)}% of season",
-        "Opponent allows above season avg in this category",
-    ]
-    rng.shuffle(pool)
-    return pool[:4]
+        out.append(f"Model rates {player} above book implied for this market.")
+    else:
+        out.append(f"Composite usage + matchup model favors {player} clearing the line.")
+    return out
 
 
 def _props_picks_from_event(sport: str, league: str, payload: dict,
@@ -1331,7 +1338,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             market=market_label,
             pick_side=player, model_win_prob=mp, book_odds=median,
             lock=lock, factors=breakdown,
-            insights=_prop_insights(sport, rng, player),
+            insights=_prop_insights(sport, breakdown, player),
             external_id=f"{sport}-{payload.get('id', '')}-{mk}-{player[:10]}-{side}-{point}",
             is_alt_prop=is_alt,
             is_long_shot=(mk in ("player_goal_scorer_anytime",
