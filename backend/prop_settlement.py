@@ -3,8 +3,9 @@
 The Odds API doesn't grade player props (Hits, Rebounds, Points, Anytime Goal
 Scorer, etc.). This module fills that gap using free official stat sources:
 
-  * MLB:    statsapi.mlb.com         — hits, total bases, home runs, RBIs,
-                                       strikeouts (batter & pitcher), walks
+  * MLB:    statsapi.mlb.com         — hits, home runs, RBIs, runs,
+                                       strikeouts (batter & pitcher), walks,
+                                       pitcher outs recorded
   * NBA/WNBA/NHL/NFL:  ESPN site API — points, rebounds, assists, goals
   * Soccer:           ESPN site API — anytime goal scorer (any goal)
 
@@ -15,7 +16,7 @@ game day stays well under 20 outbound HTTP calls.
 Markets we know how to grade today (selection is the player name, market
 string contains the line e.g. "Aaron Judge Over 0.5 Hits"):
 
-    MLB    : Hits, Total Bases, Home Runs, Strikeouts, RBIs, Runs, Walks
+    MLB    : Hits, Home Runs, Strikeouts, RBIs, Runs, Walks, Outs Recorded
     NBA    : Points, Rebounds, Assists, Threes, Steals, Blocks
     WNBA   : Points, Rebounds, Assists
     NHL    : Points (G+A), Goals, Assists, Shots on Goal
@@ -128,7 +129,8 @@ def _extract_line(market: str) -> Optional[tuple[float, str]]:
 # Keys are matched in priority order against the LOWERCASED market text.
 _MARKET_STATS: list[tuple[str, str]] = [
     # MLB
-    ("total bases", "mlb.totalBases"),
+    ("outs recorded", "mlb.outs"),
+    ("pitcher outs",  "mlb.outs"),
     ("home runs",   "mlb.homeRuns"),
     ("strikeouts",  "mlb.strikeOuts"),
     ("walks",       "mlb.baseOnBalls"),

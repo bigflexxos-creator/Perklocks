@@ -472,9 +472,10 @@ _MARKET_REGEX = {
     # Each prop is keyed off the STAT NAME and excludes neighbouring stats.
     # MongoDB supports PCRE lookaheads so we use them to disambiguate.
     "batter_hits":          r"\bhits\b(?!\s*allowed)",
-    "batter_total_bases":   r"\btotal bases\b",
     # Pitcher strikeouts — added 2026-06-18 with the pitcher Ks props
     "pitcher_strikeouts":   r"\bstrikeouts\b",
+    # Pitcher outs recorded — added 2026-06-19. Main line only (no alt).
+    "pitcher_outs":         r"\bouts recorded\b|\bpitcher outs\b",
     "player_points":        r"\bpoints\b(?!\s*total)",
     "player_rebounds":      r"\brebounds\b",
     "player_assists":       r"\bassists\b",
@@ -490,7 +491,7 @@ _MARKET_REGEX = {
     "games_total":   r"\bgames over\b|\bgames under\b|\btotal games\b",
 
     # ── Broad catch-all (still used by analytics market-label grouping) ──
-    "player_props":  r"hits|total bases|points|rebounds|assists|passing yards|rushing yards|receiving yards|touchdowns|goal scorer",
+    "player_props":  r"hits|outs recorded|points|rebounds|assists|passing yards|rushing yards|receiving yards|touchdowns|goal scorer",
 }
 
 
@@ -527,8 +528,8 @@ SPORT_MARKETS = {
         {"token": "run_line",    "label": "Run Line"},
         {"token": "totals",      "label": "Totals"},
         {"token": "batter_hits",        "label": "Hits"},
-        {"token": "batter_total_bases", "label": "Total Bases"},
         {"token": "pitcher_strikeouts", "label": "Strikeouts"},
+        {"token": "pitcher_outs",       "label": "Outs Recorded"},
     ],
     "Tennis": [
         {"token": "match_winner", "label": "Match Winner"},
