@@ -242,6 +242,81 @@ class FootballDataClient:
             f"/teams/{team_id}/matches", params,
         )
 
+    async def h2h_matches(self, team_a_id: int, team_b_id: int,
+                          limit: int = 10) -> list[dict]:
+        """Return the last `limit` head-to-head matches between two teams.
+
+        football-data.org doesn't have a dedicated H2H endpoint on
+        TIER_ONE, so we fetch one team's history (longer window) and
+        filter to matches that include the other team. Cached for 24h
+        because historical results don't change.
+        """
+        # Use a 2-year window — should comfortably contain `limit` H2Hs
+        # for any team pair in active competition.
+        end = date.today()
+        start = end - timedelta(days=730)
+        ck = f"h2h:{team_a_id}:{team_b_id}:{limit}"
+        hit = await cache.get(ck)
+        if hit is not None:
+            return hit
+        try:
+            r = await self._request(
+                f"/teams/{team_a_id}/matches",
+                {"dateFrom": start.isoformat(),
+                 "dateTo":   end.isoformat(),
+                 "status":   "FINISHED",
+                 "limit":    100},
+            )
+        except SoccerAPIError as e:
+            logger.warning("H2H fetch %d vs %d failed: %s", team_a_id, team_b_id, e)
+            await cache.set(ck, [], 60 * 60)
+            return []
+        h2hs: list[dict] = []
+        for m in (r or {}).get("matches") or []:
+            home_id = ((m.get("homeTeam") or {}).get("id"))
+            away_id = ((m.get("awayTeam") or {}).get("id"))
+            if {home_id, away_id} == {team_a_id, team_b_id}:
+                h2hs.append(m)
+            if len(h2hs) >= limit:
+                break
+        # Cache for 24h — historical results are immutable.
+        await cache.set(ck, h2hs, 24 * 60 * 60)
+        return h2hs
+
+    async def finished_matches_for_date(self, d: date) -> list[dict]:
+        """All FINISHED matches across active competitions for date `d`.
+
+        Used by the backfill loop to grade yesterday's soccer
+        predictions. Same per-competition iteration as
+        `matches_by_date` so it works on the user's TIER_ONE plan.
+        Cached for 24h (historical = immutable).
+        """
+        ds = d.isoformat()
+        ck = f"finished_matches:{ds}"
+        hit = await cache.get(ck)
+        if hit is not None:
+            return hit
+        active_codes = ["WC", "CL", "EC", "PL", "BL1", "PD", "SA", "FL1",
+                        "BSA", "ELC", "DED", "PPL", "CLI"]
+        combined: list[dict] = []
+        REQ_INTERVAL_SECS = 7
+        for i, code in enumerate(active_codes):
+            try:
+                r = await self._cached(
+                    f"comp_finished:{code}:{ds}",
+                    f"/competitions/{code}/matches",
+                    {"dateFrom": ds, "dateTo": ds, "status": "FINISHED"},
+                    ttl=24 * 60 * 60,
+                )
+                for m in (r or {}).get("matches") or []:
+                    combined.append(m)
+            except SoccerAPIError as e:
+                logger.warning("finished_matches_for_date(%s): %s failed: %s", ds, code, e)
+            if i < len(active_codes) - 1:
+                await asyncio.sleep(REQ_INTERVAL_SECS)
+        await cache.set(ck, combined, 24 * 60 * 60)
+        return combined
+
 
 # ---------- module helpers ----------
 def _safe_int(v: Any) -> int | None:

@@ -105,3 +105,34 @@ async def soccer_refresh(user = Depends(_require_auth())):
     """
     db = _get_db()
     return await run_prediction_pipeline(db)
+
+
+@router.get("/accuracy")
+async def soccer_accuracy(user = Depends(_require_auth())):
+    """Return the latest rollup of soccer prediction accuracy.
+
+    Populated by the daily backfill loop. Costs 0 upstream calls —
+    reads the precomputed `soccer_accuracy` rollup doc."""
+    db = _get_db()
+    doc = await db.soccer_accuracy.find_one({"_id": "rollup"}, {"_id": 0})
+    if not doc:
+        return {
+            "total": 0,
+            "correct": 0,
+            "accuracy": 0.0,
+            "by_model_version": [],
+            "by_pick_side": [],
+            "by_league": [],
+            "by_confidence_bucket": [],
+            "note": "Backfill hasn't run yet — accuracy populates after the first graded match.",
+        }
+    return doc
+
+
+@router.post("/backfill")
+async def soccer_backfill(user = Depends(_require_auth())):
+    """Manually trigger the historical backfill — grades any
+    predictions whose match has finished in the lookback window."""
+    from .backfill import run_backfill
+    db = _get_db()
+    return await run_backfill(db)
