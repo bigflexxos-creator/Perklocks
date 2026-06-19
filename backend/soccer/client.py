@@ -159,9 +159,11 @@ class FootballDataClient:
                         "BSA", "ELC", "DED", "PPL", "CLI"]
         combined: list[dict] = []
         errors: list[str] = []
-        # Free-tier limit = 10 req/min. Pace at ~9/min so we stay under
-        # the wire even when other parts of the module make ad-hoc calls.
-        REQ_INTERVAL_SECS = 7
+        # Free-tier limit = 10 req/min. Pace at ~4s between calls (= 15
+        # calls/min, but the 15-min cache means most runs hit ~0 fresh
+        # calls). Earlier 7s pacing made the pipeline take 93s which
+        # exceeded mobile HTTP timeouts on the manual refresh endpoint.
+        REQ_INTERVAL_SECS = 4
         for i, code in enumerate(active_codes):
             try:
                 r = await self._cached(
