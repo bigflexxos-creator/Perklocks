@@ -385,31 +385,67 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
         min_lock = 72
     else:
         min_lock = SPORT_LOCK_FLOOR.get(sport, 78)
+    # ── Tennis heavy-chalk anchor exception ─────────────────────────
+    # For Tennis moneylines at -500 or chalkier (book ≥ 83.3% implied),
+    # the matchup is fundamentally lopsided (top-30 vs unseeded etc.)
+    # and a "lock" categorisation is more about player class than
+    # model edge. Our model frequently UNDER-estimates these favorites
+    # (gives Sinner vs qualifier at 70% when book says 90%), which
+    # would normally crash `edge` and kill the pick.
+    #
+    # Per user instruction: allow Tennis moneylines at -500 and under,
+    # plus alt lines, to bypass the standard edge + win-prob floors.
+    # Lock score floor still applies so trash picks can't sneak in.
+    market_l = (market or "").lower()
+    is_tennis_chalk_ml = (
+        sport == "Tennis"
+        and ("moneyline" in market_l or market_l.startswith("h2h"))
+        and book_odds is not None
+        and book_odds <= -500
+    )
+    is_tennis_alt = sport == "Tennis" and is_alt_prop
+
     if lock < min_lock:
         return None
     # Drop only clearly negative-edge picks. -1% is noise tolerance.
     # For Anytime Goal Scorer / First Goal Scorer / similar long-shot props,
     # heavy chalk is intentional (Haaland -180, Mbappé -150) — we want these
     # surfaced as Elite Locks even when our model is slightly pessimistic.
-    edge_floor = -10.0 if is_long_shot else -1.0
+    # Tennis heavy-chalk MLs + Tennis alt lines get the same generous
+    # treatment.
+    if is_tennis_chalk_ml or is_tennis_alt:
+        edge_floor = -25.0       # broad anchor-style tolerance
+    elif is_long_shot:
+        edge_floor = -10.0
+    else:
+        edge_floor = -1.0
     if edge < edge_floor:
         return None
     # Probability floor: standard 58% (raised from 55), MLB needs 62% to
-    # combat the model's coin-flip overconfidence.
-    if is_long_shot:
+    # combat the model's coin-flip overconfidence. Tennis chalk MLs skip
+    # this floor entirely — the book is the source of truth there.
+    if is_tennis_chalk_ml:
+        pass                     # no win-prob floor — book chalk is the anchor
+    elif is_long_shot:
         min_prob = 0.25
+        if model_win_prob < min_prob:
+            return None
     elif is_alt_prop:
         min_prob = 0.55
+        if model_win_prob < min_prob:
+            return None
     elif sport == "MLB":
-        min_prob = 0.62
+        if model_win_prob < 0.62:
+            return None
     else:
-        min_prob = 0.58
-    if model_win_prob < min_prob:
-        return None
+        if model_win_prob < 0.58:
+            return None
     # Standard markets must show meaningful book confidence too — we don't
     # want to surface a coin-flip Moneyline just because lock_score is
-    # arbitrarily high.
-    if not is_long_shot and not is_alt_prop:
+    # arbitrarily high. Tennis heavy-chalk MLs are exempt (they're 83%+
+    # book implied by definition).
+    if (not is_long_shot and not is_alt_prop
+            and not is_tennis_chalk_ml):
         if book_implied < SPORT_IMPLIED_FLOOR.get(sport, 0.50):
             return None
     return {
