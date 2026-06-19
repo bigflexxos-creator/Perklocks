@@ -319,7 +319,9 @@ def _consensus_market(game: dict, market_key: str) -> list:
 
 def _build_pick(*, sport, league, event, event_time, market, pick_side,
                 model_win_prob, book_odds, lock, factors, insights, external_id,
-                is_alt_prop: bool = False, is_long_shot: bool = False):
+                is_alt_prop: bool = False, is_long_shot: bool = False,
+                home_team_name: str | None = None,
+                away_team_name: str | None = None):
     # Filter out malformed prices outside realistic American odds range.
     # Alt prop picks are legitimately chalky but capped at -1000 max.
     # Long-shot picks (anytime goal scorer, etc.) can have huge plus prices.
@@ -465,7 +467,39 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
         # Line classification — used by the UI's MAIN | ALT | BOTH toggle.
         "is_alt": bool(is_alt_prop),
         "is_long_shot": bool(is_long_shot),
+        # Team metadata (sport-aware). For MLB we also resolve MLB Stats
+        # API integer team IDs so the Survivability Engine and other
+        # downstream consumers can look up rosters / game logs without
+        # name-parsing tricks. Falsy entries are dropped.
+        **({"home_team": home_team_name} if home_team_name else {}),
+        **({"away_team": away_team_name} if away_team_name else {}),
+        **({"home_team_id": _MLB_TEAM_NAME_TO_ID.get(home_team_name)}
+           if (sport == "MLB" and home_team_name
+               and home_team_name in _MLB_TEAM_NAME_TO_ID) else {}),
+        **({"away_team_id": _MLB_TEAM_NAME_TO_ID.get(away_team_name)}
+           if (sport == "MLB" and away_team_name
+               and away_team_name in _MLB_TEAM_NAME_TO_ID) else {}),
     }
+
+
+# MLB Stats API team IDs keyed by the full team name the Odds API returns.
+# Used by `_build_pick` to enrich every MLB pick with structured team
+# identifiers so the Survivability Engine (and any future per-team
+# analytics) can look up rosters / game logs without parsing "(TOR)"
+# out of selection strings.
+_MLB_TEAM_NAME_TO_ID: dict[str, int] = {
+    "Arizona Diamondbacks": 109, "Atlanta Braves": 144, "Baltimore Orioles": 110,
+    "Boston Red Sox": 111, "Chicago Cubs": 112, "Chicago White Sox": 145,
+    "Cincinnati Reds": 113, "Cleveland Guardians": 114, "Colorado Rockies": 115,
+    "Detroit Tigers": 116, "Houston Astros": 117, "Kansas City Royals": 118,
+    "Los Angeles Angels": 108, "Los Angeles Dodgers": 119, "Miami Marlins": 146,
+    "Milwaukee Brewers": 158, "Minnesota Twins": 142, "New York Mets": 121,
+    "New York Yankees": 147, "Oakland Athletics": 133, "Athletics": 133,
+    "Philadelphia Phillies": 143, "Pittsburgh Pirates": 134, "San Diego Padres": 135,
+    "San Francisco Giants": 137, "Seattle Mariners": 136, "St. Louis Cardinals": 138,
+    "Tampa Bay Rays": 139, "Texas Rangers": 140, "Toronto Blue Jays": 141,
+    "Washington Nationals": 120,
+}
 
 
 # ───────────────────────── Per-sport factor matrices ─────────────────────────
@@ -1400,6 +1434,10 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                                   "player_to_score_or_assist",
                                   "player_first_goal_scorer",
                                   "mma_method_of_victory")),
+            # Pass full team names so the pick carries home_team /
+            # away_team / home_team_id / away_team_id natively (MLB only).
+            home_team_name=home,
+            away_team_name=away,
         ))
     # Tag every Under pick so the main Locks feed can exclude them and the
     # dedicated "Under of the Day" tab can surface them. Anything where the
