@@ -564,9 +564,12 @@ async def markets_for_sport(
          "elite_player": 1},
     ).to_list(length=1000)
     # Apply the same qualification logic /picks/today uses so the chip
-    # count exactly matches the visible slate.
+    # count exactly matches the visible slate. NB: `is_under_lock` is
+    # intentionally NOT excluded — under-style locks (e.g. "Total Games
+    # Under 28.5") are still high-confidence picks that belong in the
+    # sport tab, matching the relaxed filter in /picks/today.
     def _qualifies(p: dict) -> bool:
-        if p.get("is_under_lock") is True or p.get("no_bet") is True:
+        if p.get("no_bet") is True:
             return False
         elite = bool(p.get("elite_player"))
         lock = float(p.get("lock_score") or 0)
@@ -620,14 +623,18 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     default_floor = 75.0 if market else 85.0
     floor = max(default_floor, float(min_lock)) if min_lock is not None else default_floor
     # Two-bucket query:
-    #  • Standard picks: must pass lock floor + edge >= 0 + not no_bet + not under_lock
+    #  • Standard picks: must pass lock floor + edge >= 0 + not no_bet
     #  • Elite-player anchors (Mbappé, Haaland, Messi, Kane, Ronaldo synth FGS
     #    etc.): bypass lock floor + edge filter — they're reputation-locked
-    #    Elite tier even when raw math is borderline. Still must not be NO-BET
-    #    or under-lock.
+    #    Elite tier even when raw math is borderline. Still must not be NO-BET.
+    #
+    # NOTE: We deliberately DO NOT exclude `is_under_lock` here anymore.
+    # Under-style locks (e.g. "Total Games Under 28.5") are still high-
+    # confidence picks the user expects to see when filtering by sport. The
+    # Bet Killer / Under-of-the-Day tabs surface them separately too, but
+    # users found their absence from the main sport tab confusing.
     standard_q = {
         "lock_score": {"$gte": floor},
-        "is_under_lock": {"$ne": True},
         "no_bet": {"$ne": True},
         # Hide negative-edge picks from the main feed entirely.
         # Picks where model_WP < book_implied are by definition bad
@@ -637,7 +644,6 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     }
     elite_q = {
         "elite_player": True,
-        "is_under_lock": {"$ne": True},
         "no_bet": {"$ne": True},
     }
     q: dict = {
@@ -1588,25 +1594,22 @@ async def stats_summary(user: Annotated[UserPublic, Depends(current_user)]):
     """Hero-card totals for the Locks tab.
 
     Computed from the SAME picks the user actually sees on /picks/today —
-    i.e. lock_score >= 85, no NO-BET, no under-lock, no negative edge, AND
-    game time has not yet passed the play-window cutoff. Previously this
-    counted every row for `pick_date == today` regardless of game state,
-    which is why the "224 LOCKS" hero number didn't match the visible
-    list once games started kicking off.
+    i.e. lock_score >= 85, no NO-BET, no negative edge, AND game time
+    has not yet passed the play-window cutoff. Under-style locks ARE
+    counted (matching /picks/today's behaviour) so the hero number
+    matches the visible list across every sport tab.
     """
     await _ensure_today_picks()
     today = _today_str()
     base_q = {
         "pick_date": today,
         "lock_score": {"$gte": 85},
-        "is_under_lock": {"$ne": True},
         "no_bet": {"$ne": True},
         "edge_percent": {"$gte": 0},
     }
     elite_q = {
         "pick_date": today,
         "elite_player": True,
-        "is_under_lock": {"$ne": True},
         "no_bet": {"$ne": True},
     }
     # Pull both buckets and dedupe by id so the totals match the /picks/today
