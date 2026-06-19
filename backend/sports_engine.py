@@ -380,11 +380,18 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
         "KBO": 0.50,
     }
     # Lock score floor: long-shots 65, alt-props 72, standard markets
-    # sport-tiered per the table above.
+    # sport-tiered per the table above. EXCEPTION: pitcher_outs main lines
+    # (no alt variant, per user spec). Outs Recorded prices are tighter
+    # than batter hits / pitcher strikeouts, so their factor-driven lock
+    # scores typically land in the 80-87 band. Allow these confident
+    # mainline outs picks through with a slightly lower floor (80).
+    is_pitcher_outs = "outs recorded" in (market or "").lower()
     if is_long_shot:
         min_lock = 65
     elif is_alt_prop:
         min_lock = 72
+    elif is_pitcher_outs:
+        min_lock = 80
     else:
         min_lock = SPORT_LOCK_FLOOR.get(sport, 78)
     # ── Heavy-chalk anchor exception (Tennis + UFC) ─────────────────
@@ -941,12 +948,15 @@ async def fetch_kbo_picks(date_str: str) -> list[dict]:
 PLAYER_PROP_MARKETS = {
     "MLB": [
         # Hitter markets
-        "batter_hits", "batter_total_bases",
+        "batter_hits",
         # Alt lines — lower thresholds with higher implied prob (the "near-locks")
-        "batter_hits_alternate", "batter_total_bases_alternate",
+        "batter_hits_alternate",
         # Pitcher strikeout markets — added 2026-06-18 per user request.
         # The Odds API exposes these as `pitcher_strikeouts` + alt-line variant.
         "pitcher_strikeouts", "pitcher_strikeouts_alternate",
+        # Pitcher outs recorded — added 2026-06-19 per user request.
+        # Main line only — no alt variant per spec.
+        "pitcher_outs",
     ],
     "NBA": [
         "player_points", "player_rebounds", "player_assists",
@@ -986,7 +996,7 @@ PLAYER_PROP_MARKETS = {
 # very high implied prob (~80-95%) and chalky pricing (-400 to -800). We use
 # a different filter regime for these.
 _ALT_PROP_MARKETS = {
-    "batter_hits_alternate", "batter_total_bases_alternate",
+    "batter_hits_alternate",
     "pitcher_strikeouts_alternate",   # MLB pitcher Ks alt (lower line, high implied)
     "player_points_alternate", "player_rebounds_alternate",
     "player_assists_alternate",
@@ -1207,9 +1217,10 @@ def _prop_market_label(market_key: str, side: str, point: float | None) -> str:
     is_alt = market_key.endswith("_alternate")
     base_key = market_key.replace("_alternate", "")
     pretty = {
-        "batter_hits": "Hits", "batter_total_bases": "Total Bases",
+        "batter_hits": "Hits",
         "batter_home_runs": "Home Runs",
         "pitcher_strikeouts": "Strikeouts",
+        "pitcher_outs": "Outs Recorded",
         "player_points": "Points", "player_rebounds": "Rebounds",
         "player_assists": "Assists",
     }.get(base_key, base_key.replace("_", " ").title())
@@ -1303,9 +1314,11 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                         continue
                     # Drop Total Bases at the 0.5 line entirely — it's the
                     # same outcome as Hits 0.5 (any base = at least 1 hit) and
-                    # clutters the board. Higher TB thresholds (1.5, 2.5) are
-                    # real value bets and pass through.
-                    if mk in ("batter_total_bases", "batter_total_bases_alternate") and point == 0.5:
+                    # clutters the board. (Total Bases markets removed
+                    # entirely 2026-06-19; this branch is now a no-op safety
+                    # net in case a stray TB pick slips through historical
+                    # data and gets re-priced.)
+                    if mk in ("batter_total_bases", "batter_total_bases_alternate"):
                         continue
                     point_key = point
                 bucket.setdefault((mk, player, point_key, side), []).append(int(price))
@@ -1333,6 +1346,14 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             # is roughly +450 American — typical for "Sean O'Malley by KO".
             if implied < 0.18:
                 continue
+        elif mk == "pitcher_outs":
+            # Pitcher outs main lines (no alt — user spec) are tightly
+            # priced around -110 / -150 (~52-60% implied). Use a lower
+            # min of 0.55 so confident chalky main-line picks can surface.
+            # Higher-priced outs (-200+) get an outsized lock score boost
+            # via factor weighting.
+            if implied < 0.55:
+                continue
         else:
             if implied < _HIGH_PROB_MIN_IMPLIED:
                 continue
@@ -1344,7 +1365,16 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
     # the Day" pool always has enough variety even when Overs dominate.
     alt_over_per_player: dict = {}
     alt_under_per_player: dict = {}
+    # std_seen is keyed by (player, market_family) so a pitcher can surface
+    # in BOTH the Strikeouts and Outs Recorded markets — they're distinct
+    # bets, not correlated dupes. Previous behaviour locked one std pick
+    # per player which masked pitcher_outs picks whenever the same pitcher
+    # had a stronger Strikeouts price.
     std_seen: set = set()
+    def _market_family(mk: str) -> str:
+        # Collapse "_alternate" so std + alt of the same stat stay correlated,
+        # though alts use their own cap path and never hit this branch.
+        return mk.replace("_alternate", "")
     for implied, mk, player, point, side, median, is_alt in candidates:
         side_lower = str(side).lower()
         if is_alt:
@@ -1354,9 +1384,10 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 continue
             cap_dict[player] = cap_dict.get(player, 0) + 1
         else:
-            if player in std_seen:
+            std_key = (player, _market_family(mk))
+            if std_key in std_seen:
                 continue
-            std_seen.add(player)
+            std_seen.add(std_key)
         # Model probabilities — tightly bounded for alts since they're already
         # near-locks at the bookmaker, so we don't pretend to see more edge.
         if mk == "player_goal_scorer_anytime":
@@ -1677,7 +1708,6 @@ async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
     best: dict = {}
     # Market-family preference when two correlated picks tie on dedup key.
     # User preferences (verified by historical results):
-    #   - "Hits" over "Total Bases" — same outcome, Hits is the common ask.
     #   - "Win or Draw" / "Double Chance" over straight "Moneyline" for
     #     soccer — the draw safety net wins games where the favorite ties
     #     (e.g. Sport Recife drew today; W-or-D would have cashed).
@@ -1689,8 +1719,6 @@ async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
         if "win or draw" in m or "double chance" in m:
             return 0
         if "moneyline" in m:
-            return 2
-        if "total bases" in m:
             return 2
         return 1
 
