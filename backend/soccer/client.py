@@ -159,7 +159,10 @@ class FootballDataClient:
                         "BSA", "ELC", "DED", "PPL", "CLI"]
         combined: list[dict] = []
         errors: list[str] = []
-        for code in active_codes:
+        # Free-tier limit = 10 req/min. Pace at ~9/min so we stay under
+        # the wire even when other parts of the module make ad-hoc calls.
+        REQ_INTERVAL_SECS = 7
+        for i, code in enumerate(active_codes):
             try:
                 r = await self._cached(
                     f"comp_matches:{code}:{ds}",
@@ -169,10 +172,11 @@ class FootballDataClient:
                 for m in (r or {}).get("matches") or []:
                     combined.append(m)
             except SoccerAPIError as e:
-                # Mark and continue \u2014 a single league outage
-                # shouldn't kill the whole slate.
                 errors.append(f"{code}: {e}")
                 logger.warning("matches_by_date(%s): %s failed: %s", ds, code, e)
+            # Sleep between requests EXCEPT after the last one.
+            if i < len(active_codes) - 1:
+                await asyncio.sleep(REQ_INTERVAL_SECS)
         # Shape the response so downstream consumers see the same
         # `{matches: [...]}` envelope as the original endpoint.
         out = {"matches": combined, "errors_per_comp": errors}

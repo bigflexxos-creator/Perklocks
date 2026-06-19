@@ -445,10 +445,32 @@ def compute_components(pick: dict) -> TennisComponents:
     )
 
     # NO_BET reason — populated so we can log which gate dropped a pick.
-    if comp.market_edge < NO_BET_MIN_EDGE:
-        comp.reason_no_bet = f"edge {comp.market_edge}% < {NO_BET_MIN_EDGE}% min"
-    elif comp.confidence < NO_BET_MIN_CONF:
-        comp.reason_no_bet = f"confidence {comp.confidence} < {NO_BET_MIN_CONF} min"
+    # Heavy-chalk Tennis moneylines (book ≤ -500) and alt-line picks are
+    # exempt from the strict 5% edge gate — for these the "lock" rationale
+    # is player class / line softness, not raw edge. Per user spec:
+    # "OK to use alt lines and moneyline -500 and under when building
+    # Tennis Locks."
+    book_odds = pick.get("book_odds")
+    market_l = (pick.get("market") or "").lower()
+    is_ml = ("moneyline" in market_l) or market_l.startswith("h2h") or market_l == "winner"
+    is_chalk_ml = is_ml and isinstance(book_odds, (int, float)) and book_odds <= -500
+    is_alt = ("alt" in market_l) or ("alt" in (pick.get("line_type") or "").lower())
+
+    if not (is_chalk_ml or is_alt):
+        # Standard path: full edge + confidence gates.
+        if comp.market_edge < NO_BET_MIN_EDGE:
+            comp.reason_no_bet = f"edge {comp.market_edge}% < {NO_BET_MIN_EDGE}% min"
+        elif comp.confidence < NO_BET_MIN_CONF:
+            comp.reason_no_bet = f"confidence {comp.confidence} < {NO_BET_MIN_CONF} min"
+    else:
+        # Anchor path: skip the edge gate, allow lower confidence floor
+        # (60 vs 72) — heavy chalk + alts get into the slate as long as
+        # the player profile isn't obviously broken.
+        anchor_min_conf = 60.0
+        if comp.confidence < anchor_min_conf:
+            comp.reason_no_bet = (
+                f"confidence {comp.confidence} < {anchor_min_conf} (anchor floor)"
+            )
 
     return comp
 
