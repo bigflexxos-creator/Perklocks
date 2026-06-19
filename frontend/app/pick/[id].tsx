@@ -391,8 +391,6 @@ const styles = StyleSheet.create({
   aiUpgradeRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 14, paddingTop: 12, borderTopWidth: 1, borderTopColor: COLORS.borderDefault },
   aiUpgradeText: { color: COLORS.textMuted, fontSize: 11, fontWeight: "600" },
   aiLoading: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 4 },
-  aiUpgradeRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 14, paddingTop: 12, borderTopWidth: 1, borderTopColor: COLORS.borderDefault },
-  aiUpgradeText: { color: COLORS.textMuted, fontSize: 11, fontWeight: "600" },
   aiLoadingTitle: { color: COLORS.textPrimary, fontSize: 13, fontWeight: "700", marginBottom: 4 },
   aiLoadingSub: { color: COLORS.textMuted, fontSize: 11, lineHeight: 16 },
 
