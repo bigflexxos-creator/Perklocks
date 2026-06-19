@@ -100,11 +100,24 @@ async def run_prediction_pipeline(db) -> dict:
                         standings_index[nr["team_id"]] = nr
         summary["competitions_loaded"] = len(comp_codes)
 
-    # Build predictions + dual-write.
+    # Build predictions + dual-write. For each fixture, kick off the
+    # H2H lookup concurrently — these are tiny GETs and the 24h cache
+    # means each unique team pair only hits the API once per day.
     upserts_pred: list[dict] = []
     upserts_pick: list[dict] = []
-    for raw in pregame:
-        pred = build_prediction(raw, standings_index)
+    # Fan out H2H calls in parallel, capped to one per fixture.
+    h2h_lookups = await asyncio.gather(
+        *[client.h2h_matches(
+            (raw.get("homeTeam") or {}).get("id") or 0,
+            (raw.get("awayTeam") or {}).get("id") or 0,
+            limit=6,
+        ) for raw in pregame],
+        return_exceptions=True,
+    )
+    for raw, h2h in zip(pregame, h2h_lookups):
+        if isinstance(h2h, Exception):
+            h2h = []
+        pred = build_prediction(raw, standings_index, h2h_matches=h2h)
         if pred is None:
             continue
         upserts_pred.append(pred)

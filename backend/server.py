@@ -2060,11 +2060,16 @@ async def on_startup():
     # rest of the backend startup.
     try:
         from soccer.pipeline import soccer_pipeline_loop
-        # Useful index for the new soccer_predictions collection.
+        from soccer.backfill import soccer_backfill_loop
+        # Useful indices for the new soccer collections.
         await db.soccer_predictions.create_index("id", unique=True)
         await db.soccer_predictions.create_index([("created_at", -1)])
+        await db.soccer_predictions.create_index("fixture_id")
+        await db.soccer_predictions.create_index("correct")
+        await db.soccer_accuracy.create_index("_id")
         asyncio.create_task(soccer_pipeline_loop(db))
-        logger.info("Soccer pipeline scheduler armed (15-min pregame loop)")
+        asyncio.create_task(soccer_backfill_loop(db))
+        logger.info("Soccer pipeline scheduler armed (15-min pregame loop + 24h backfill loop)")
     except Exception as e:
         logger.warning("Soccer pipeline scheduler not armed: %s", e)
     logger.info("PerksLocks AI started")
