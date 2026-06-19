@@ -1841,6 +1841,18 @@ async def root():
 
 # ────────────────────── App wiring ──────────────────────
 
+# Mount the isolated soccer module BEFORE the catch-all api router so its
+# routes are registered on the same /api prefix. The soccer router is
+# completely standalone — fully self-contained in /app/backend/soccer/.
+try:
+    from soccer.routes import router as soccer_router
+    api.include_router(soccer_router)
+    logger.info("Soccer module mounted at /api/sports/soccer")
+except Exception as _soccer_mount_err:
+    # Don't crash the entire backend if the soccer module fails to load —
+    # the existing sports_engine soccer flow keeps producing picks.
+    logger.warning("Soccer module failed to mount, continuing without it: %s", _soccer_mount_err)
+
 app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
@@ -2043,6 +2055,18 @@ async def on_startup():
     asyncio.create_task(_daily_refresh_loop())
     asyncio.create_task(_settlement_loop())
     asyncio.create_task(_weekly_model_tuning_loop())
+    # Soccer module: pregame pipeline every 15 min (user choice 3A — no
+    # live loop). Try/except so a soccer init failure doesn't break the
+    # rest of the backend startup.
+    try:
+        from soccer.pipeline import soccer_pipeline_loop
+        # Useful index for the new soccer_predictions collection.
+        await db.soccer_predictions.create_index("id", unique=True)
+        await db.soccer_predictions.create_index([("created_at", -1)])
+        asyncio.create_task(soccer_pipeline_loop(db))
+        logger.info("Soccer pipeline scheduler armed (15-min pregame loop)")
+    except Exception as e:
+        logger.warning("Soccer pipeline scheduler not armed: %s", e)
     logger.info("PerksLocks AI started")
 
 
