@@ -342,6 +342,27 @@ export const api = {
   },
   pickDetail: (id: string) => request<Pick & { ai_pending?: boolean }>(`/picks/${id}`),
   pickAiExplain: (id: string) => request<{ explanation: string; source: string }>(`/picks/${id}/ai-explain`, { method: "POST" }),
+  pickCoverage: (id: string, cohort: "teammates" | "league" = "teammates") =>
+    request<{
+      pick_id?: string;
+      primary?: { name?: string; id?: number; miss_games?: number };
+      reliability: "High Sample" | "Medium Sample" | "Low Sample";
+      survival_index: number;
+      candidates: Array<{
+        id: number;
+        name: string;
+        position?: string;
+        score: number;
+        streak: string;
+        last10: { hit: number; n: number; rate: number };
+        last30: { hit: number; n: number; rate: number };
+        season: { hit: number; n: number; rate: number };
+        label: string;
+      }>;
+      cohort_size: number;
+      computed_at: string;
+      note?: string;
+    }>(`/picks/${id}/coverage?cohort=${cohort}`),
   refresh: () => request<{
     refreshed: boolean;
     count: number;

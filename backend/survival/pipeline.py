@@ -86,7 +86,8 @@ def _is_hit_prop(pick: dict) -> bool:
 
 
 async def compute_coverage_for_pick(pick: dict, db,
-                                    use_cache: bool = True) -> dict:
+                                    use_cache: bool = True,
+                                    cohort: str = "teammates") -> dict:
     """Public entry point. Returns a payload ready for the API response."""
     pick_id = pick.get("id")
     if not pick_id:
