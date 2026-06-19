@@ -10,6 +10,7 @@ import { api, Pick } from "@/src/lib/api";
 import { useBetSlip, MAX_SLIP_SIZE } from "@/src/contexts/BetSlipContext";
 import { SPORTSBOOKS, openSportsbookWithSlip, SportsbookName } from "@/src/utils/sportsbook";
 import { formatGameTime } from "@/src/lib/formatGameTime";
+import { SurvivabilityPanel } from "@/src/components/SurvivabilityPanel";
 
 export default function PickDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -207,6 +208,9 @@ export default function PickDetail() {
                 </View>
               ))}
             </View>
+
+            {/* Survivability Engine — only renders for MLB hit props */}
+            <SurvivabilityPanel pick={pick} />
 
             <Text style={styles.sectionLabel}>WHY THIS PICK</Text>
             <View style={styles.insightsCard}>

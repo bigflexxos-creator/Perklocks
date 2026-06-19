@@ -20,18 +20,24 @@ def _require_auth():
 
 
 @router.get("/{pick_id}/coverage")
-async def coverage_for_pick(pick_id: str, user = Depends(_require_auth())):
+async def coverage_for_pick(
+    pick_id: str,
+    cohort: str = "teammates",
+    user = Depends(_require_auth()),
+):
     """Return conditional-hit coverage for an MLB hits prop.
 
-    Pure insight — never modifies the underlying pick. For non-hits
-    props (or non-MLB) we return an explanatory `note` with empty
-    candidates so the UI can show a clean "Coverage not applicable"
-    state.
+    Query params:
+      • cohort = "teammates" (default) — scan same-team hitters only
+      • cohort = "league"               — scan a broader league pool
+                                          (caps API + compute cost
+                                          accordingly, see pipeline)
+
+    Pure insight — never modifies the underlying pick.
     """
     db = _get_db()
     pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
     if not pick:
         raise HTTPException(status_code=404, detail="Pick not found")
-
     from .pipeline import compute_coverage_for_pick
-    return await compute_coverage_for_pick(pick, db)
+    return await compute_coverage_for_pick(pick, db, cohort=cohort)

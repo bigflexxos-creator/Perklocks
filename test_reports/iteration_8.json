@@ -1,0 +1,36 @@
+{
+  "summary": "Frontend-only verification of the new SurvivabilityPanel component for MLB hit props. Authenticated as demo@lockscore.ai at 390x844 mobile viewport, ran live API + DOM checks against /api/picks/all and four real pick-detail screens. (1) SPECIMEN MLB-HITS pick (049e24bb-... Vladimir Guerrero Jr. Over 0.5 Hits): SurvivabilityPanel renders below FACTOR BREAKDOWN with all three sub-sections — COVERAGE shows numeric Survival Index '76 / 100' + 'High Sample' pill + '27 miss games' + '11 hitters scanned'; HISTORY shows 5 ranked candidate rows (Pete Crow-Armstrong CF '🔥 Solid cover' 84% 8/9; Matt Shaw RF 79% 1/1; Nico Hoerner 2B 71% 6/9; Michael Busch 1B '✨ Decent cover' 60% 5/9; Alex Bregman 3B 56% 4/9); WHY shows methodology text + 'Anti-overfit guardrails: minimum 5 miss-game overlap…' + 'Insight only — does not replace or modify the primary pick.' INSIGHT chip visible top-right. Tagline reads 'If Vladimir misses, here's who historically picks up the slack.' No 'toUpperCase'/undefined errors, no red screen, no pageerror events. (2) Another live MLB-HITS pick (Riley Greene Over 0.5 Hits, id=404604fd-...) — panel also rendered cleanly. (3) NON-MLB negative test (Soccer 'USA Win or Draw', id=ca8f333c-...) — SURVIVABILITY ENGINE not present, FACTOR BREAKDOWN rendered, no JS errors. (4) MLB-STRIKEOUTS negative test (Erick Fedde Over 1.5 Strikeouts ALT LOCK, id=fe6da5ff-...) — SURVIVABILITY ENGINE not present, FACTOR BREAKDOWN rendered, no JS errors. Backend /api/picks/{id}/coverage live-verified via in-browser fetch: status 200, survival_index=75.8, reliability='High Sample', cohort_size=11, 5 candidates. The previously-reported 'Cannot read properties of undefined (reading toUpperCase)' error did NOT reproduce on any of the four pick-detail screens this iteration — it appears to have been resolved or was a transient unauthenticated/stale-state issue. Only console noise observed is the pre-existing 'props.pointerEvents is deprecated' RN-web framework warning (unrelated). All 4 expected pick-detail flows behave correctly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/iteration_8.json"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "SurvivabilityPanel.tsx isMLBHitProp guard (line 209-213) correctly normalises pick.sport with toUpperCase() and pick.market with toLowerCase(), and both fall back to '' on undefined — so the historical toUpperCase crash cannot originate from this file. The guard also correctly excludes 'strikeout' markets, which was verified on a live ALT-LOCK strikeouts pick.",
+    "SurvivabilityPanel correctly returns null when not eligible (line 49), so the panel is fully hidden — no empty card / header artifacts on non-eligible picks. Confirmed on Soccer + MLB-strikeouts screens.",
+    "Loading/error/empty states all guarded: ActivityIndicator while fetching, emptyCard with 'Coverage unavailable' on error, and emptyCard with data.note when candidates array is empty. The component never crashes the parent screen.",
+    "CandidateRow safely handles missing fields: candidate.position is conditionally rendered (line 195-197), and Math.round((candidate.score || 0) * 100) defaults to 0%. firstName() also nil-safe.",
+    "pick/[id].tsx mounts <SurvivabilityPanel pick={pick} /> on line 213, AFTER FACTOR BREAKDOWN (line 196) and BEFORE the second 'WHY THIS PICK' / top_reasons block — exactly per spec. The component is rendered only inside the `pick ? (…) : null` branch so it never mounts before pick data is available.",
+    "Minor (non-blocking, not in scope this turn): pick/[id].tsx has a duplicated style key — `aiUpgradeRow` and `aiUpgradeText` are declared twice in StyleSheet (lines 391-392 and again 394-395). React Native StyleSheet silently keeps the last value; no functional impact but worth cleaning up.",
+    "Minor (non-blocking): pick/[id].tsx renders two separate 'WHY THIS PICK' sectionLabels (line 179-180 and 215) — the first explains the AI explanation, the second labels the top_reasons / key_insights list. Could be confusing for users; consider renaming the second to e.g. 'TOP REASONS'."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "N/A (skipped per request — backend unchanged, /coverage endpoint live-verified via fetch returns 200 + valid payload)",
+    "frontend": "100% (4/4 pick-detail flows verified: 2 MLB-hits show panel, 1 Soccer hides panel, 1 MLB-strikeouts hides panel; no JS errors)"
+  },
+  "seed_data_creation": "None. Used live demo@lockscore.ai account against seeded MLB / Soccer / MLB-strikeouts picks already present in /api/picks/all (200 picks across MLB, Soccer, UFC, Tennis).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Auth token lives in localStorage key 'lockscore_token' as a JSON-stringified JWT (parse with JSON.parse before using as Bearer). Endpoint /api/picks/lock does NOT exist (returns 404); use /api/picks/all or /api/picks/today instead. Useful sample IDs verified this iteration: MLB-hits (panel shown) — 049e24bb-546b-57c5-a972-f8ff48d27eee (Vladimir Guerrero Jr.) and 404604fd-e134-5954-a805-446d850d05f1 (Riley Greene). Negative cases (panel hidden) — ca8f333c-6f02-52e7-acda-3e1bb556351b (Soccer) and fe6da5ff-2bd7-5644-8116-9ffcbff65e7c (MLB Strikeouts ALT LOCK). The /api/picks/{id}/coverage endpoint returns survival_index, reliability, cohort_size, candidates[] (each w/ name, position, score 0..1, streak 'k/n', label e.g. '🔥 Solid cover'), and note. Coverage call only fires when isMLBHitProp(pick) returns true, so non-eligible screens incur zero extra API cost.",
+  "rca_of_issue": "The 'Cannot read properties of undefined (reading toUpperCase)' that was previously seen could not be reproduced in this iteration on any of the four pick-detail screens (MLB-hits ×2, Soccer, MLB-strikeouts). Most likely root cause of the earlier sighting: the previous reproduction occurred either (a) BEFORE authentication completed — pickDetail() would 401 and pick state stayed null, but a transient render of `pick.grade.toUpperCase()` (line 121) or `pick.sport ... toUpperCase()` in some child could have run against a stale/partial object, or (b) on a pick whose payload was missing a string field like `grade`. With a fully authenticated session and well-formed payloads in the live db, none of the toUpperCase sites crash. New SurvivabilityPanel code itself defensively guards both .toUpperCase() and .toLowerCase() calls with `|| ''` fallbacks (line 210-212), so it cannot be the source. No action needed unless a fresh reproduction surfaces — recommend the main agent add an early `if (!pick) return null;` guard in PickDetail render and a try/catch boundary for safety."
+}
