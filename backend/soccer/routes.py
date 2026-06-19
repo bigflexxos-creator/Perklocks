@@ -97,14 +97,21 @@ async def soccer_predictions_list(
 
 @router.post("/refresh")
 async def soccer_refresh(user = Depends(_require_auth())):
-    """Manually trigger the pipeline.
+    """Manually trigger the pipeline — fire-and-forget so the HTTP call
+    returns immediately while the pipeline (which takes ~90s due to
+    rate-limit pacing) runs in the background.
 
-    Honours the 15-min cache TTL on individual API-Football calls so
-    button-mashing this costs ~0 upstream credits. Returns the pipeline
-    summary with counts + any errors so the user can see what happened.
+    Honours the 15-min cache TTL on individual football-data.org calls
+    so button-mashing is harmless. Read predictions back via
+    `GET /predictions` once the run completes (logged in the backend).
     """
+    import asyncio as _asyncio
     db = _get_db()
-    return await run_prediction_pipeline(db)
+    _asyncio.create_task(run_prediction_pipeline(db))
+    return {
+        "status": "started",
+        "note": "Pipeline runs in background (~90s). Check /predictions for results.",
+    }
 
 
 @router.get("/accuracy")
