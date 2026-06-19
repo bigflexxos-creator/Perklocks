@@ -1858,9 +1858,17 @@ try:
     api.include_router(soccer_router)
     logger.info("Soccer module mounted at /api/sports/soccer")
 except Exception as _soccer_mount_err:
-    # Don't crash the entire backend if the soccer module fails to load —
-    # the existing sports_engine soccer flow keeps producing picks.
     logger.warning("Soccer module failed to mount, continuing without it: %s", _soccer_mount_err)
+
+# Mount the Survivability Engine — pure-insight conditional hit coverage
+# for MLB hit props. Adds /api/picks/{id}/coverage. Isolated module so
+# a failure here doesn't break pick loading.
+try:
+    from survival.routes import router as survival_router
+    api.include_router(survival_router)
+    logger.info("Survivability module mounted at /api/picks/{id}/coverage")
+except Exception as _survival_mount_err:
+    logger.warning("Survival module failed to mount, continuing without it: %s", _survival_mount_err)
 
 app.include_router(api)
 app.add_middleware(
