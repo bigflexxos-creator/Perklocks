@@ -1483,21 +1483,30 @@ async def force_refresh(user: Annotated[UserPublic, Depends(current_user)]):
             "date": _today_str(),
             "message": f"Picks were refreshed recently. Try again in {remaining_min} min — saves API credits.",
         }
-    count = await _refresh_picks(_today_str())
+    # Fire-and-forget: kick off the actual refresh in the background.
+    # `_refresh_picks` takes ~45 s end-to-end (Odds API fetch +
+    # generation + brain filter + validator) which exceeds mobile HTTP
+    # timeouts, so the user's app would show "Refresh failed" even
+    # when the refresh actually succeeded. We now mark cooldown
+    # immediately, return instantly, and let the user's existing
+    # focus-refetch (30 s) pull the new picks once they land.
     await db.users.update_one(
         {"id": user.id},
         {"$set": {"last_refresh_at": now.isoformat()}},
     )
+    asyncio.create_task(_refresh_picks(_today_str()))
+    existing = await db.picks.count_documents({"pick_date": _today_str()})
     next_dt = now + timedelta(seconds=REFRESH_COOLDOWN_SECONDS)
     return {
         "refreshed": True,
-        "count": count,
+        "queued": True,
+        "count": existing,                   # current count; new count lands soon
         "date": _today_str(),
         "cooldown_seconds": REFRESH_COOLDOWN_SECONDS,
         "next_refresh_at": next_dt.isoformat(),
         "last_refresh_at": now.isoformat(),
+        "note": "Refresh started in background (~45 s). New picks will appear automatically on the next focus-refetch.",
     }
-
 
 # ───────────────────────── Loss Analysis ─────────────────────────
 
