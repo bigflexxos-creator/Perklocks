@@ -1,0 +1,30 @@
+{
+  "summary": "All 6 new UI features VERIFIED on PerksLocks mobile web (390x844). Lock V2 tier chips render on home cards (STRONG x52, ELITE x65 visible across 116 cards). Apex picks are rare and none were on the slate (acceptable). The new empty-state card design renders for NFL with 'No locks on the board', divider, 'NEXT REFRESH IN M:SS' countdown, and 'Tip: try other sports' subtitle. AsyncStorage persistence works: locks_feed_prefs_v1 = {sport:Tennis,sortKey:win,lineType:both} persists across reload + re-login; Tennis chip + WIN% sort re-activate. Multi-sport Lab CTAs work for MLB/Tennis/UFC/NBA/NFL/Soccer with correct icons + headers; CTA hidden when sport=All. 0 page errors. IMPORTANT: Initial test run failed because Metro CI mode kept a stale bundle (E1's code changes weren't picked up). After `sudo supervisorctl restart expo` everything worked. Main agent should restart expo after code changes since Metro is in CI mode (reloads disabled).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "Pressable pointerEvents prop", "issue": "Console warning: 'props.pointerEvents is deprecated. Use style.pointerEvents'. Reference: /app/frontend/app/(tabs)/index.tsx:249 (the toast View uses pointerEvents='none' as prop)"}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Metro is running in CI mode (reloads disabled) — after any code change you MUST run `sudo supervisorctl restart expo` to rebuild. The first test run saw a stale bundle that still had 'No games available' empty state and no Lab CTA.",
+    "Minor: replace `pointerEvents='none'` prop with `style={{ pointerEvents: 'none' }}` on the toast View in /app/frontend/app/(tabs)/index.tsx (deprecation warning, not blocking).",
+    "Acceptable but worth noting: ~64/116 home cards (sport=All) had no v2 tier chip rendered. This is expected if backend tier_v2 is optional, but confirm coverage is intentional.",
+    "No Apex picks were visible in the live feed during testing (0/116). Confirm gold-border styling end-to-end the next time an Apex pick lands — code path looks correct (cardApex style with #FFD700 border + ⚡ APEX chip text)."
+  ],
+  "critical_code_review_comments": [
+    "/app/frontend/app/(tabs)/index.tsx:249 — `pointerEvents='none'` should move into style (RN-Web deprecation warning surfaced in console).",
+    "/app/frontend/app/(tabs)/index.tsx:291 — CTA conditional list includes NFL, so when NFL is selected the user sees both the empty state card AND the '🏈 NFL LAB' CTA above it. Confirmed visually — fine, just noting."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (frontend-only review)", "frontend": "100% (6/6 features verified)"},
+  "seed_data_creation": "None. Used demo@lockscore.ai / demo123 from /app/memory/test_credentials.md.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Metro is in CI mode (reloads disabled). After ANY frontend change run `sudo supervisorctl restart expo` then wait ~6s before testing or you will get stale bundles. Login flow: data-testid login-email-input / login-password-input / login-submit-button. Locks home: data-testid locks-scroll. Sport chips: data-testid sport-chip-<sport_lowercased> (e.g. sport-chip-mlb, sport-chip-tennis, sport-chip-ufc, sport-chip-nfl, sport-chip-soccer, sport-chip-all). Sort: data-testid locks-sort-<id> where id ∈ {lock,time,edge,win,implied}. Lab CTA: data-testid soccer-lab-cta — navigates to /soccer-lab?sport=<SportName>. Pick cards: data-testid pick-card-<id>. Persistence key: localStorage 'locks_feed_prefs_v1' (web; AsyncStorage on native). Public URL: https://bet-edge-ai-1.preview.emergentagent.com (env var EXPO_PUBLIC_BACKEND_URL).",
+  "rca_of_issue": "Initial failures (CTA invisible, old empty state strings, prefs not persisted) were caused by Metro serving a stale cached bundle from /app/frontend/.metro-cache. Metro is started with `Metro is running in CI mode, reloads are disabled` so file watcher does not rebuild on save. Mitigation: `sudo supervisorctl restart expo` to trigger a fresh bundle. After restart, all 6 features verified PASS with 0 console errors."
+}

@@ -14,6 +14,25 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
   // Live MLB score lookup — null for non-MLB picks (zero cost when missing).
   const live = useMLBLive(pick.sport === "MLB" ? pick.event : null);
   const showLiveBadge = !!live && (live.is_live || live.is_final);
+
+  // Lock V2 (Deep Thinking) shadow scores
+  const v2Tier = pick.tier_v2;
+  const isApex = !!pick.is_apex;
+  const v2Lock = pick.lock_score_v2 ?? null;
+  const tierColor =
+    v2Tier === "Apex Lock"    ? "#FFD700"
+  : v2Tier === "Rare Lock"    ? COLORS.neonGreen
+  : v2Tier === "Strong Lock"  ? COLORS.voltBlue
+  : v2Tier === "Elite Setup"  ? COLORS.textSecondary
+  : COLORS.textMuted;
+  // "Almost Apex" hint: lock v2 ≥ 97 but not Apex due to gate failures
+  const nearMiss = !isApex
+    && v2Lock != null
+    && v2Lock >= 97
+    && Array.isArray(pick.apex_blockers)
+    && pick.apex_blockers.length > 0;
+  const firstBlocker = nearMiss ? pick.apex_blockers![0] : null;
+
   return (
     <Pressable
       testID={`pick-card-${pick.id}`}
@@ -21,6 +40,7 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
       style={({ pressed }) => [
         styles.card,
         isKiller && styles.cardKiller,
+        isApex && styles.cardApex,
         pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
       ]}
     >
@@ -43,6 +63,17 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
                 {pick.grade.toUpperCase()}
               </Text>
             </View>
+            {/* Lock V2 tier chip — shadow engine verdict at a glance */}
+            {v2Tier && (
+              <View style={[styles.v2Chip, { borderColor: tierColor + "66", backgroundColor: tierColor + "12" }]}>
+                {isApex && <Text style={styles.apexIcon}>⚡</Text>}
+                <Text style={[styles.v2ChipText, { color: tierColor }]} numberOfLines={1}>
+                  {isApex ? "APEX" : v2Tier === "Rare Lock" ? "RARE"
+                          : v2Tier === "Strong Lock" ? "STRONG"
+                          : v2Tier === "Elite Setup" ? "ELITE" : v2Tier.toUpperCase()}
+                </Text>
+              </View>
+            )}
           </View>
           <Text style={styles.event} numberOfLines={1}>{pick.event}</Text>
           {pick.event_time && (
@@ -57,6 +88,11 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
             </View>
           )}
           <Text style={styles.market} numberOfLines={2}>{pick.market}</Text>
+          {nearMiss && firstBlocker && (
+            <Text style={styles.nearMissText} numberOfLines={1}>
+              ⚡ Almost Apex — blocked by {firstBlocker}
+            </Text>
+          )}
         </View>
       </View>
 
@@ -145,6 +181,37 @@ const styles = StyleSheet.create({
   cardKiller: {
     backgroundColor: COLORS.killerSurface,
     borderColor: COLORS.killerBorder,
+  },
+  cardApex: {
+    borderColor: "#FFD700",
+    borderWidth: 1.5,
+    shadowColor: "#FFD700",
+    shadowOpacity: 0.25,
+    shadowOffset: { width: 0, height: 0 },
+    shadowRadius: 8,
+  },
+  v2Chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+  },
+  v2ChipText: {
+    fontSize: 8.5,
+    fontWeight: "900",
+    letterSpacing: 0.9,
+  },
+  apexIcon: { fontSize: 9 },
+  nearMissText: {
+    color: "#FFD700",
+    fontSize: 10.5,
+    fontWeight: "700",
+    letterSpacing: 0.3,
+    marginTop: 6,
+    opacity: 0.85,
   },
   header: { flexDirection: "row", justifyContent: "space-between" },
   tagRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 },

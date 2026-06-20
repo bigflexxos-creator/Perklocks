@@ -147,15 +147,14 @@ def _confidence(p: dict) -> float:
 async def soccer_lab_feed(
     limit: int = 50,
     min_lock: float = 78.0,
+    sport: str = "Soccer",
     user=Depends(_require_auth()),
 ):
-    """Ranked global soccer feed — all active leagues, confidence-sorted desc.
+    """Ranked global feed for `sport` — defaults to Soccer.
 
-    * Excludes `no_bet=True` picks and `Pass` grades (user spec — Pass picks
-      only show if they survive the lock-score gate).
+    * Excludes `no_bet=True` picks and `Pass` grades.
     * Pregame only.
-    * Confidence = 1/decimal_odds × 100 (implied probability), falling back to
-      lock_score for picks missing odds.
+    * Confidence = 1/decimal_odds × 100, falling back to lock_score.
     """
     if limit < 1 or limit > 200:
         raise HTTPException(400, "limit must be 1-200")
@@ -166,7 +165,7 @@ async def soccer_lab_feed(
 
     cur = db.picks.find(
         {
-            "sport":      "Soccer",
+            "sport":      sport,
             "no_bet":     {"$ne": True},
             "grade":      {"$ne": "Pass"},
             "event_time": {"$gt": now_iso},
