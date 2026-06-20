@@ -13,6 +13,7 @@ import { formatGameTime } from "@/src/lib/formatGameTime";
 import { SurvivabilityPanel } from "@/src/components/SurvivabilityPanel";
 import { LockV2Panel } from "@/src/components/LockV2Panel";
 import { MarketRankPanel } from "@/src/components/MarketRankPanel";
+import { ScorerBundlesPanel } from "@/src/components/ScorerBundlesPanel";
 
 export default function PickDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -219,6 +220,10 @@ export default function PickDetail() {
 
             {/* Market Competition Engine — rank parallel markets in this event */}
             <MarketRankPanel pick={pick} />
+
+            {/* Scorer Bundles — synthesized 2+ Goals / Hat-Trick / Goal+Assist
+                Only renders for Soccer Anytime Goal Scorer picks. */}
+            <ScorerBundlesPanel pick={pick} />
 
             <Text style={styles.sectionLabel}>WHY THIS PICK</Text>
             <View style={styles.insightsCard}>
