@@ -294,27 +294,25 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     score = (0.35 * edge_comp + 0.20 * market_align + 0.15 * roi_comp
              + 0.10 * data_quality + 0.10 * vol_comp + 0.10 * cls_comp)
 
-    # ── Bet-Quality Floor (WEIGHTED SCORE — USER SPEC) ───────────────────
-    # Spec: Lock = weighted(win_prob + edge + confidence_modifier).
-    # Do NOT directly map probability → lock.  A 72 % prediction with
-    # positive edge MUST grade ≥ 95 (Strong Lock). Reserve 98–99 for
-    # elite conditions ONLY (≥80 % win AND ≥+15 % edge AT THE SAME TIME).
+    # ── Bet-Quality Floor (TIER STEP FUNCTION — USER SPEC) ───────────────
+    # Spec is a STEP function, not continuous. Each tier requires BOTH a
+    # win-prob bar AND an edge bar:
     #
-    # Implementation:
-    #   raw  = 85   (entry to Playable band; the v3 6-component score
-    #                only RAISES above raw when broader signals align)
-    #         + win_bonus  (caps at +12 — drives the bulk of the band)
-    #         + edge_bonus (caps at +8  — secondary signal)
+    #   Win ≥80 AND Edge ≥15 → 98  (Elite Lock)
+    #   Win ≥75 AND Edge ≥10 → 95  (Strong Lock)
+    #   Win ≥70 AND Edge ≥5  → 90  (Lock)
+    #   Win ≥65 AND Edge ≥3  → 85  (Playable)
+    #   else                  → no floor; 6-component score governs.
     #
-    # Then enforce a 97 ceiling for non-elite picks so 98–99 only fires
-    # on genuine elite conditions. The 6-component composite can still
-    # naturally push a pick into 98-99 if every dimension agrees.
+    # Why step (not continuous):  the old continuous formula
+    # (85 + (wp-65)*1.5 + edge*0.5) overshot the spec — a soccer pick at
+    # 72 % win / 4 % edge got pushed to ~95 (Strong Lock) when the spec
+    # places it in the Playable band. Step function honors the user's
+    # exact tier table.
+    #
     # Read win-prob + edge from BOTH the explicit args (preferred — passed
     # by callers at pick generation time) AND the pick dict (used by the
     # validator's recompute path where the pick object is already built).
-    # Without this, the bet-quality floor only ever fired on the validator
-    # path and brand-new picks displayed lock 90 with grade "Pass" until
-    # the next validator cycle 30 min later.
     wp_val = float(
         win_prob if win_prob is not None
         else (pick.get("win_probability") if pick else 0) or 0
@@ -324,20 +322,19 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
         else (pick.get("edge_percent") if pick else 0) or 0
     )
     floor = 0.0
-    if wp_val >= 65 and ed_val >= 1:
-        win_bonus = min(12.0, max(0.0, (wp_val - 65.0) * 1.5))
-        edge_bonus = min(8.0, max(0.0, ed_val * 0.5))
-        floor = 85.0 + win_bonus + edge_bonus
-        # Elite conditions = BOTH win-prob AND edge meet the high bars.
-        is_elite_conditions = (wp_val >= 80.0) and (ed_val >= 15.0)
-        if not is_elite_conditions:
-            # Cap to Strong Lock ceiling so 98-99 stays sacred.
-            floor = min(97.0, floor)
+    if wp_val >= 80.0 and ed_val >= 15.0:
+        floor = 98.0
+    elif wp_val >= 75.0 and ed_val >= 10.0:
+        floor = 95.0
+    elif wp_val >= 70.0 and ed_val >= 5.0:
+        floor = 90.0
+    elif wp_val >= 65.0 and ed_val >= 3.0:
+        floor = 85.0
     if floor and score < floor:
         score = floor
-    # Hard clamp — Lock Score band is 0-99. Without this, the floor
-    # math (85 + 12 + 8 = 105 in elite conditions) could overflow past
-    # the band cap and break UI badges / progress bars.
+    # Hard clamp — Lock Score band is 0-99. Without this the floor or
+    # 6-component math could overflow past the band cap and break UI
+    # badges / progress bars.
     score = min(99.0, score)
 
     # Store the 6 components so the UI / analytics can inspect them later.

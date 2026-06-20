@@ -554,20 +554,26 @@ async def apply_v2_to_picks(picks: list[dict], db) -> list[dict]:
         # push a high-win/edge pick below 85 → grade flips to "Pass"
         # even though the underlying signals justify a Lock/Playable
         # tier. User-visible bug: "Pass" badge on Lock-90+ picks.
+        # Tier step function (matches sports_engine.compute_lock_score):
+        #   Win≥80 & Edge≥15 → 98, Win≥75 & Edge≥10 → 95,
+        #   Win≥70 & Edge≥5  → 90, Win≥65 & Edge≥3  → 85, else none.
         try:
             wp_v = float(p.get("win_probability") or 0)
             ed_v = float(p.get("edge_percent") or 0)
             cur_lock = float(p.get("lock_score") or 0)
-            if wp_v >= 65 and ed_v >= 1:
-                win_bonus = min(12.0, max(0.0, (wp_v - 65.0) * 1.5))
-                edge_bonus = min(8.0, max(0.0, ed_v * 0.5))
-                floor = 85.0 + win_bonus + edge_bonus
-                if not (wp_v >= 80.0 and ed_v >= 15.0):
-                    floor = min(97.0, floor)
-                if cur_lock < floor:
-                    # Clamp to 99 — Lock Score band is 0-99 by spec.
-                    p["lock_score"] = round(min(99.0, floor), 1)
-                    p["bet_quality_floor_applied"] = True
+            floor = 0.0
+            if wp_v >= 80.0 and ed_v >= 15.0:
+                floor = 98.0
+            elif wp_v >= 75.0 and ed_v >= 10.0:
+                floor = 95.0
+            elif wp_v >= 70.0 and ed_v >= 5.0:
+                floor = 90.0
+            elif wp_v >= 65.0 and ed_v >= 3.0:
+                floor = 85.0
+            if floor and cur_lock < floor:
+                # Clamp to 99 — Lock Score band is 0-99 by spec.
+                p["lock_score"] = round(min(99.0, floor), 1)
+                p["bet_quality_floor_applied"] = True
         except Exception:
             pass
 
