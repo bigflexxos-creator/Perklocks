@@ -176,10 +176,24 @@ async def deep_dive(db, pick: dict) -> dict:
             or pick.get("synthetic_ags")
             or pick.get("synthetic_soa")
         )
+        # ── V2 LIVE: deep-dive `no_bet` flagging is now advisory only ──
+        # User feedback ("V2 is blocking a lot of picks let's just make
+        # it live"): the confidence_score < threshold check was silently
+        # nuking Strong Lock / Elite Lock picks with high win-prob + edge.
+        # We still COMPUTE the deep-dive scores for visibility, but the
+        # `no_bet` gate is forced OFF here. The bet-quality floor + V2
+        # promotion in learning_system_v2 are the only gates that matter
+        # now — and those PROMOTE picks rather than silently blocking.
         if is_elite_anchor or is_long_shot_synth:
             pick["no_bet"] = False
         else:
-            pick["no_bet"] = pick["confidence_score"] < NO_BET_THRESHOLD
+            pick["no_bet"] = False
+            # Keep the threshold check as a soft warning the UI can read.
+            if pick.get("confidence_score", 100) < NO_BET_THRESHOLD:
+                pick["deep_dive_warning"] = (
+                    f"Low confidence ({pick.get('confidence_score')}) — "
+                    f"pick kept visible per LIVE mode."
+                )
         pick["deep_dive"]        = True
     except Exception as e:
         logger.warning("deep_dive failed for pick %s: %s", pick.get("id"), e)

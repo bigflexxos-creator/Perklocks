@@ -85,20 +85,26 @@ def decision_filter(picks: list[dict], memory: BrainMemory) -> dict:
             reason_tally[r] = reason_tally.get(r, 0) + 1
 
         if reasons:
-            # Honour the product rule: Elite picks always surface, but we
-            # still record the verdict for audit.
+            # ── V2 LIVE MODE: Brain Filter is now ADVISORY ──
+            # Verdict + reasons are still recorded for audit / UI display,
+            # but we do NOT set `no_bet=True` anymore. User spec: "V2 is
+            # blocking a lot of picks let's just make it live". The
+            # bet-quality floor and lock_score promotion are the only
+            # gates that matter now. Elite picks STILL get an explicit
+            # KEEP verdict so the override badge surfaces.
             if p.get("elite_player") or (p.get("lock_score") or 0) >= 99:
                 brain["verdict"] = "KEEP"
                 brain["elite_override_pass"] = reasons
                 counts["elite_override"] += 1
                 counts["KEEP"] += 1
             else:
-                brain["verdict"] = "PASS"
+                brain["verdict"] = "WARN"
                 brain["pass_reasons"] = reasons
-                # Hook into the existing no_bet flag → feed endpoints drop it.
-                p["no_bet"] = True
-                p["brain_pass"] = True   # explicit attribution
-                counts["PASS"] += 1
+                brain["brain_warning"] = (
+                    "Brain flagged concerns but pick kept visible (LIVE mode)"
+                )
+                # NO `no_bet=True` here — pick stays visible to user.
+                counts["KEEP"] += 1
         else:
             brain["verdict"] = "KEEP"
             counts["KEEP"] += 1
