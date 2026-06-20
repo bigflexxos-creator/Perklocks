@@ -433,6 +433,24 @@ async def _refresh_picks(date_str: str) -> int:
         safe_picks.append(p)
     if dropped:
         logger.warning("Skipped %d malformed picks before insert", dropped)
+
+    # ── Lock Engine V2 — SHADOW MODE. Compute v2 scores for every pick.
+    # Adds counter_score / survival_score / lock_score_v2 / tier_v2 etc
+    # to each pick. The production lock_score field is NEVER touched.
+    # Gated by ENABLE_COUNTER_ENGINE env var.
+    try:
+        from lock_v2.engine import V2_ENABLED, compute_v2_shadow
+        if V2_ENABLED and safe_picks:
+            v2_tagged = 0
+            for p in safe_picks:
+                shadow = compute_v2_shadow(p)
+                if shadow:
+                    p.update(shadow)
+                    v2_tagged += 1
+            logger.info("Lock V2 shadow tagged %d / %d picks", v2_tagged, len(safe_picks))
+    except Exception as _v2_err:
+        logger.warning("Lock V2 shadow tagging failed (continuing): %s", _v2_err)
+
     if safe_picks:
         await db.picks.insert_many(safe_picks, ordered=False)
     logger.info("Stored %d picks for %s", len(safe_picks), date_str)
@@ -1870,6 +1888,18 @@ try:
     logger.info("Survivability module mounted at /api/picks/{id}/coverage")
 except Exception as _survival_mount_err:
     logger.warning("Survival module failed to mount, continuing without it: %s", _survival_mount_err)
+
+# Mount the Lock Engine V2 — SHADOW MODE deep-thinking scoring layer.
+# Adds /api/lock-v2/report and /api/picks/{id}/lock-breakdown. The v2
+# engine writes hidden shadow fields (lock_score_v2, counter_score, ...)
+# alongside every new pick when ENABLE_COUNTER_ENGINE=true. Production
+# lock_score is NEVER modified by this layer.
+try:
+    from lock_v2.routes import router as lock_v2_router
+    api.include_router(lock_v2_router)
+    logger.info("Lock Engine V2 (shadow) mounted at /api/lock-v2/* and /api/picks/{id}/lock-breakdown")
+except Exception as _lock_v2_mount_err:
+    logger.warning("Lock V2 module failed to mount, continuing without it: %s", _lock_v2_mount_err)
 
 app.include_router(api)
 app.add_middleware(
