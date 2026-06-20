@@ -32,10 +32,14 @@ export function SortSelector({
   onDirectionChange,
   testIDPrefix = "sort",
 }: Props) {
-  // Time sort doesn't get the direction toggle — chronological is always
-  // soonest-first by default, and "asc/desc" semantically maps to "earliest
-  // vs latest" which would just confuse users. Hide the toggle for time.
-  const showDirToggle = !!onDirectionChange && value !== "time";
+  // Direction toggle now applies to ALL sort keys including TIME — user
+  // spec: "the time need to be like edge odds where I can sort time".
+  // For time, asc = soonest-first, desc = latest-first. We render
+  // sport-specific labels below so the meaning stays obvious.
+  const showDirToggle = !!onDirectionChange;
+  const dirLabels = value === "time"
+    ? { asc: "SOON→LATE", desc: "LATE→SOON" }
+    : { asc: "LOW→HIGH", desc: "HIGH→LOW" };
   return (
     <View style={styles.row}>
       <Text style={styles.label}>SORT</Text>
@@ -78,7 +82,11 @@ export function SortSelector({
             }
             style={styles.dirBtn}
             hitSlop={8}
-            accessibilityLabel={direction === "desc" ? "Highest first" : "Lowest first"}
+            accessibilityLabel={
+              value === "time"
+                ? (direction === "asc" ? "Soonest first" : "Latest first")
+                : (direction === "desc" ? "Highest first" : "Lowest first")
+            }
           >
             <Ionicons
               name={direction === "desc" ? "arrow-down" : "arrow-up"}
@@ -86,7 +94,7 @@ export function SortSelector({
               color={COLORS.goldElite}
             />
             <Text style={styles.dirText}>
-              {direction === "desc" ? "HIGH→LOW" : "LOW→HIGH"}
+              {direction === "desc" ? dirLabels.desc : dirLabels.asc}
             </Text>
           </Pressable>
         ) : null}
