@@ -237,12 +237,24 @@ def to_picks_collection_doc(pred: dict) -> dict:
 
 
 def _grade_from_conf(c: float) -> str:
-    if c >= 90: return "ELITE"
-    if c >= 85: return "A+"
-    if c >= 80: return "A"
-    if c >= 75: return "B+"
-    if c >= 70: return "B"
-    return "C"
+    """Soccer grader — delegates to the canonical `sports_engine._grade`
+    so the soccer pipeline writes the spec vocabulary
+    ("Elite Lock" / "Strong Lock" / "Lock" / "Playable" / "Pass") instead
+    of the legacy ("ELITE","A+","A","B+","B","C") values. Without this
+    delegation the soccer 15-min upsert cycle stomps the validator's
+    correct grade back to a legacy letter, leaving Lock 90+ picks
+    visually grouped under wrong tier badges in the feed.
+    """
+    try:
+        from sports_engine import _grade as _spec_grade
+        return _spec_grade(float(c))
+    except Exception:
+        # Fail-safe: legacy mapping aligned to spec tier thresholds.
+        if c >= 98: return "Elite Lock"
+        if c >= 95: return "Strong Lock"
+        if c >= 90: return "Lock"
+        if c >= 85: return "Playable"
+        return "Pass"
 
 
 # ────────────────────────────────────────────────────────────────────
