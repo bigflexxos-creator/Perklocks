@@ -1220,14 +1220,22 @@ async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) 
 # probability so we surface true high-confidence locks without going
 # absurdly chalky (≤95% implied = -1900 American).
 TENNIS_GAME_ALT_MARKETS = ["alternate_spreads", "alternate_totals"]
-# Implied-probability window for alt-line picks. Widened to 55-93% for
-# Tennis because The Odds API only exposes one alt total line per match
-# (typically 0.5-1.5 games away from the main consensus, priced -106 to
-# -180). Without widening we'd capture zero — defeating the user's
-# request. The band still excludes truly chalky -1500+ lines and
-# truly soft -100 lines.
+# Implied-probability window for alt-line picks. Widened to 55-97% so
+# we capture both the safe-bet chalkiest tier (e.g. Over 19.5 priced
+# at -1500/-3000 = 94-97% implied) AND moderate alts down to ~-122.
+#
+# User spec evolution:
+#   v1 (78-93%) → too narrow, captured zero alts
+#   v2 (55-93%) → captured -278/-208 but missed chalkier sportsbook
+#                 offerings the user pointed out ("for eala you had
+#                 over alt 21.5, sportsbook give you option to get
+#                 over 19.5" — that's the -2000+ deep-chalk tier).
+#   v3 (55-97%) → covers the full sportsbook ladder including
+#                 deep-chalk "almost free" lines. Anything >97 implied
+#                 is true junk juice (1.5% return on -7000+) so we
+#                 still exclude it.
 _TENNIS_ALT_MIN_IMPLIED = 0.55
-_TENNIS_ALT_MAX_IMPLIED = 0.93
+_TENNIS_ALT_MAX_IMPLIED = 0.97
 
 
 async def _fetch_tennis_event_alts(sport_key: str, event_id: str) -> dict:
