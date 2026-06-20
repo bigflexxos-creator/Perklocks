@@ -12,7 +12,12 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
   const gradeColor = GRADE_COLORS[pick.grade] || COLORS.textMuted;
   const edgeColor = pick.edge_percent > 0 ? COLORS.neonGreen : COLORS.electricBlaze;
   // Live MLB score lookup — null for non-MLB picks (zero cost when missing).
-  const live = useMLBLive(pick.sport === "MLB" ? pick.event : null);
+  // Pass event_time so a multi-game series doesn't show yesterday's FINAL
+  // on tomorrow's matching matchup card.
+  const live = useMLBLive(
+    pick.sport === "MLB" ? pick.event : null,
+    pick.sport === "MLB" ? (pick.event_time as string | null) : null,
+  );
   const showLiveBadge = !!live && (live.is_live || live.is_final);
 
   // Lock V2 (Deep Thinking) shadow scores

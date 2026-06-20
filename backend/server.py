@@ -120,6 +120,75 @@ def _filter_in_play_window(picks: list[dict]) -> list[dict]:
     return out
 
 
+def _dedupe_game_outcome_picks(picks: list[dict]) -> list[dict]:
+    """Collapse mutually-exclusive game-outcome picks for the same match.
+
+    Picks that resolve from the same 3-way h2h market — Moneyline, Win-or-
+    Draw, Double Chance — are MUTUALLY EXCLUSIVE when picked on different
+    sides. Showing both ("Sweden ML" + "Netherlands Win or Draw") makes the
+    app look broken because they cannot both win.
+
+    Strategy:
+      • Group by (sport, event)
+      • Identify the game-outcome family (ML / W-or-D / Double Chance / Draw)
+      • Keep ONE pick per game from that family, preferring:
+          1. Win-or-Draw / Double Chance over straight ML (lower variance,
+             draw safety net — pays attention to the user's verified
+             preference logged in sports_engine deduper)
+          2. Higher lock_score within the same family
+          3. Higher edge as final tiebreaker
+      • All non-game-outcome picks (totals, spreads, props, goalscorer,
+        BTTS, etc.) pass through untouched.
+    """
+    GAME_OUTCOME_KEYWORDS = (
+        "moneyline", "money line", "win or draw", "double chance",
+        "match result", " to win",
+    )
+
+    def _is_game_outcome(p: dict) -> bool:
+        m = (p.get("market") or "").lower()
+        return any(k in m for k in GAME_OUTCOME_KEYWORDS)
+
+    def _family_priority(p: dict) -> int:
+        m = (p.get("market") or "").lower()
+        # Lower number wins. Win-or-Draw / Double Chance preferred for
+        # soccer (built-in draw safety net). Pure Draw picks fall behind
+        # because they're a coin flip without a clear sharpness edge.
+        if "win or draw" in m or "double chance" in m:
+            return 0
+        if " to win" in m or "moneyline" in m or "money line" in m or "match result" in m:
+            return 1
+        return 2
+
+    keep_by_game: dict = {}
+    passthrough: list[dict] = []
+    for p in picks:
+        if not _is_game_outcome(p):
+            passthrough.append(p)
+            continue
+        key = (p.get("sport"), p.get("event"))
+        cur = keep_by_game.get(key)
+        if cur is None:
+            keep_by_game[key] = p
+            continue
+        # Family priority first
+        new_pri = _family_priority(p)
+        old_pri = _family_priority(cur)
+        if new_pri < old_pri:
+            keep_by_game[key] = p
+            continue
+        if new_pri > old_pri:
+            continue
+        # Same family → higher lock_score, then higher edge
+        if float(p.get("lock_score") or 0) > float(cur.get("lock_score") or 0):
+            keep_by_game[key] = p
+            continue
+        if float(p.get("lock_score") or 0) == float(cur.get("lock_score") or 0):
+            if float(p.get("edge_percent") or 0) > float(cur.get("edge_percent") or 0):
+                keep_by_game[key] = p
+    return passthrough + list(keep_by_game.values())
+
+
 async def _picks_for_date(date_str: str) -> list[dict]:
     cursor = db.picks.find({"pick_date": date_str}, {"_id": 0}).sort("lock_score", -1)
     return await cursor.to_list(length=500)
@@ -700,6 +769,17 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     picks = await cursor.to_list(length=200)
     # Hide picks for games that have already started (see _filter_in_play_window).
     picks = _filter_in_play_window(picks)
+    # ── Cross-pipeline GAME OUTCOME dedupe ───────────────────────────────
+    # The main pipeline (sports_engine.py) and the soccer pipeline
+    # (soccer/predictor.py) BOTH write into `picks`. They can produce
+    # picks on opposite sides of the same 3-way h2h market — e.g. main
+    # pipeline writes "Sweden Moneyline" while soccer pipeline writes
+    # "Netherlands Win or Draw" for the same game. Those bets are
+    # MUTUALLY EXCLUSIVE (if Sweden wins, NL W-or-D loses) and showing
+    # both makes the app look broken. Collapse to the single highest-
+    # confidence side per game, preferring Win-or-Draw / Double Chance
+    # over straight Moneyline (draw safety net = lower variance).
+    picks = _dedupe_game_outcome_picks(picks)
     if day_offset is not None:
         target_day = (datetime.now(timezone.utc).date() + timedelta(days=day_offset)).isoformat()
         picks = [p for p in picks if (p.get("event_time") or "").startswith(target_day)]
@@ -1603,6 +1683,7 @@ async def mlb_live(user: Annotated[UserPublic, Depends(current_user)]):
             (abstract == "Final" or g.get("completed") is True)
             and game_status not in non_final_terminal
         )
+        commence = g.get("commence_time") or ""
         entry = {
             "home": home,
             "away": away,
@@ -1612,10 +1693,33 @@ async def mlb_live(user: Annotated[UserPublic, Depends(current_user)]):
             "abstract_status": abstract,
             "is_live": abstract == "Live",
             "is_final": is_final,
+            # Commence time — frontend uses this to verify the live badge
+            # belongs to the SAME scheduled game (not yesterday's finale
+            # of the same matchup that already cashed/ended).
+            "commence_time": commence,
         }
-        # Key by both "Away @ Home" (matches pick.event) and the gamePk-style
-        # id so the frontend can match either format.
-        out[f"{away} @ {home}"] = entry
+        ev_key = f"{away} @ {home}"
+        # Multi-game / series support: when CIN @ NYY plays Thu AND Fri, we
+        # were stomping on the same key and showing yesterday's FINAL on
+        # tomorrow's card. Key per (event, date) so each game gets its own
+        # entry. Frontend looks up "Away @ Home|YYYY-MM-DD" first, then
+        # falls back to the plain event key for backwards compat.
+        date_part = ""
+        if commence and len(commence) >= 10:
+            date_part = commence[:10]
+        if date_part:
+            out[f"{ev_key}|{date_part}"] = entry
+        # Backward-compat key — but ONLY for live or today's-pre-game lookups.
+        # Avoid stamping a finished game over a future game with same teams.
+        # Strategy: only set the plain key if there isn't already one with
+        # better signal (live > pre > final).
+        existing = out.get(ev_key)
+        def _signal(e: dict) -> int:
+            if e.get("is_live"): return 3
+            if not e.get("is_final"): return 2  # upcoming/preview
+            return 1                              # final
+        if not existing or _signal(entry) > _signal(existing):
+            out[ev_key] = entry
         if g.get("id"):
             out[g["id"]] = entry
     return {"games": out, "as_of": datetime.now(timezone.utc).isoformat()}

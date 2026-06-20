@@ -701,6 +701,88 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         under_pick["is_under_lock"] = True
                         picks.append(under_pick)
 
+            # ── Soccer Poisson-synthesized alt totals (Over 1.5, Over 3.5) ──
+            # The Odds API doesn't return alternate_totals for soccer in the
+            # bulk `/odds` call we use (would burn extra credits per-event).
+            # Instead, derive Over 1.5 and Over 3.5 by fitting a Poisson to
+            # the main O/U 2.5 implied prob and reading fair-odds off the
+            # distribution. Tagged as `model_line=True` so the UI can label
+            # them honestly (this is a model estimate, not a live book line).
+            if (
+                sport == "Soccer"
+                and o_price is not None
+                and isinstance(line, (int, float))
+                and 1.0 <= float(line) <= 3.5
+            ):
+                try:
+                    import math as _math
+                    main_line = float(line)              # e.g. 2.5
+                    p_over_main = _implied_prob(o_price) # de-vigged below using under
+                    # No-vig adjustment using under (we have both sides for main).
+                    u_implied = _implied_prob(u_price) if u_price is not None else (1.0 - p_over_main)
+                    tot_v = p_over_main + u_implied
+                    if tot_v > 0:
+                        p_over_main = p_over_main / tot_v
+                    # Fit λ via binary search so P(X > floor(main_line)) ≈ p_over_main.
+                    # For 2.5: need P(X >= 3) ≈ p_over_main.
+                    target_k = int(_math.floor(main_line)) + 1
+                    def _p_over_at(lam: float, k_strict: int) -> float:
+                        # P(X >= k_strict) where X ~ Poisson(lam)
+                        cum = 0.0
+                        term = _math.exp(-lam)
+                        for i in range(k_strict):
+                            cum += term
+                            term *= lam / (i + 1)
+                        return max(0.0, min(1.0, 1.0 - cum))
+                    lo_l, hi_l = 0.1, 8.0
+                    for _ in range(40):
+                        mid_l = (lo_l + hi_l) / 2
+                        if _p_over_at(mid_l, target_k) < p_over_main:
+                            lo_l = mid_l
+                        else:
+                            hi_l = mid_l
+                    lam = (lo_l + hi_l) / 2
+
+                    # Synthesize Over 1.5 and Over 3.5 only when they bracket
+                    # the main line (skip if main is already 1.5).
+                    extra_lines = [v for v in (1.5, 3.5) if abs(v - main_line) > 0.4]
+                    for alt_line in extra_lines:
+                        alt_k = int(_math.floor(alt_line)) + 1
+                        p_alt = _p_over_at(lam, alt_k)
+                        # Reject implausible synthesis: stay in [0.20, 0.93].
+                        if not (0.20 <= p_alt <= 0.93):
+                            continue
+                        # Fair American odds from probability.
+                        if p_alt >= 0.5:
+                            fair_odds = int(round(-100 * p_alt / (1 - p_alt)))
+                        else:
+                            fair_odds = int(round(100 * (1 - p_alt) / p_alt))
+                        # Model win prob — small upward tilt to mirror existing
+                        # logic, capped to avoid 95%+ claims.
+                        mp_alt = max(0.30, min(0.92, p_alt + 0.02 + rng.random() * 0.04))
+                        factors_alt = _factors_random(rng, "Soccer_total") or _factors_random(rng, "Soccer_ml")
+                        lock_alt, breakdown_alt = compute_lock_score(factors_alt, win_prob=mp_alt * 100)
+                        side_label = "Over"
+                        alt_pick = _build_pick(
+                            sport=sport, league=league,
+                            event=f"{away} @ {home}",
+                            event_time=commence,
+                            market=f"Total {_unit(sport)} {side_label} {alt_line}",
+                            pick_side=side_label,
+                            model_win_prob=mp_alt, book_odds=fair_odds,
+                            lock=lock_alt, factors=breakdown_alt,
+                            insights=_insights_for(sport, breakdown_alt, side_label, home, away),
+                            external_id=f"{sport}-{game_id}-total-over-{alt_line}",
+                        )
+                        if alt_pick:
+                            # Flag as model-derived so the UI can label it
+                            # ("Model line — synthesized from market O/U 2.5").
+                            alt_pick["model_line"] = True
+                            alt_pick["model_source"] = "poisson_from_main_total"
+                            picks.append(alt_pick)
+                except Exception as _e:
+                    logger.debug("Soccer Poisson alt-totals skipped: %s", _e)
+
     # Spread / Run / Game line pick — skip for soccer (no balanced spread
     # market) and UFC (rare). KBO uses run-line like MLB. Tennis has game
     # spreads which are useful for asymmetric matchups.
@@ -1693,16 +1775,17 @@ async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
             base_market = _re.sub(r"\b(over|under)\b", "", market_l).strip()
             base_market = _re.sub(r"\s+", " ", base_market)
             return (p.get("sport"), p.get("event"), base_market, threshold)
-        # MONEYLINE / "Win or Draw" / "Double Chance": only ONE team's side
-        # of the game can win. Pick the higher-edge side. We key by the
-        # market family only (not the team), so both opponents collapse.
-        if "moneyline" in market_l or "money line" in market_l:
-            return (p.get("sport"), p.get("event"), "MONEYLINE")
-        if "win or draw" in market_l or "double chance" in market_l:
-            # Win-or-Draw and Double Chance markets — at most one of the two
-            # combos can be the right side of the bet for a given game outcome.
-            # Pick the higher-edge one.
-            return (p.get("sport"), p.get("event"), "WIN_OR_DRAW")
+        # GAME OUTCOME family — Moneyline + Win-or-Draw + Double Chance ALL
+        # resolve from the same 3-way h2h market. Any two picks from
+        # different sides of this family (e.g. "Sweden ML" vs "Netherlands
+        # Win or Draw") are mutually exclusive: if Sweden wins, NL W-or-D
+        # loses; if NL wins or draws, Sweden ML loses. We MUST collapse
+        # them into one key per game so only the highest-EV side survives
+        # (preference rules below favor Win-or-Draw on soccer for the
+        # built-in draw safety net).
+        if ("moneyline" in market_l or "money line" in market_l
+                or "win or draw" in market_l or "double chance" in market_l):
+            return (p.get("sport"), p.get("event"), "GAME_OUTCOME")
         return (p.get("sport"), p.get("event"), sel, threshold)
 
     best: dict = {}
