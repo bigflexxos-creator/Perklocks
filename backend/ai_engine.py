@@ -115,6 +115,21 @@ async def explain_pick(pick: dict) -> tuple[str, bool]:
         return _scrub_fabrications(_fallback_explanation(pick)), False
 
 
+def _fallback_explanation(pick: dict) -> str:
+    """Deterministic explanation used when the LLM call fails or the picks
+    endpoint is asked for a body before the async AI worker has filled it in.
+    Restored after the Bet Killer purge accidentally removed it (the
+    /api/picks/{id} endpoint imports it inline)."""
+    bullets = "\n".join(f"• {k}" for k in (pick.get("key_insights") or []))
+    return (
+        f"Why This Pick — {pick.get('selection') or ''} {pick.get('market') or ''}\n\n"
+        f"{bullets}\n"
+        f"• Model edge: +{pick.get('edge_percent', 0)}%\n"
+        f"• Lock Score: {pick.get('lock_score', 0)} ({pick.get('grade', '')})\n\n"
+        f"Risk: All bets carry variance — manage bankroll accordingly."
+    )
+
+
 async def analyze_loss(pick: dict) -> tuple[str, bool]:
     """Generate a 'Why It Lost' breakdown for a settled losing pick.
 
