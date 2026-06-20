@@ -7,7 +7,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS, SPORTS } from "@/src/theme";
-import { api, Pick, LineType, SortKey, PickFilters } from "@/src/lib/api";
+import { api, Pick, LineType, SortKey, SortDirection, PickFilters } from "@/src/lib/api";
 import { LockPickCard } from "@/src/components/LockPickCard";
 import { ChipRow } from "@/src/components/ChipRow";
 import { LineTypeToggle } from "@/src/components/LineTypeToggle";
@@ -43,7 +43,15 @@ export default function LocksScreen() {
   const [picks, setPicks] = useState<Pick[]>([]);
   const [sport, setSport] = useState<string>("All");
   const [lineType, setLineType] = useState<LineType>("both");
-  const [sortKey, setSortKey] = useState<SortKey>("time");
+  // Default sort = "lock" descending so the user immediately sees the
+  // strongest locks at the TOP of the feed when they tap the tab. Was
+  // previously "time" which buried elite locks below early kickoffs.
+  const [sortKey, setSortKey] = useState<SortKey>("lock");
+  // Sort direction — defaults to "desc" (highest first) so the BEST locks
+  // are always at the top of the feed and the user never has to scroll
+  // down to find them. Time sort uses its own chronology logic on the
+  // backend (asc=earliest first, desc=latest first).
+  const [sortDir, setSortDir] = useState<SortDirection>("desc");
   const [filters, setFilters] = useState<PickFilters>({});
   const [filterOpen, setFilterOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -130,10 +138,10 @@ export default function LocksScreen() {
     (filters.minImplied ? 1 : 0) +
     (filters.maxImplied && filters.maxImplied < 100 ? 1 : 0);
 
-  const load = useCallback(async (s: string, lt: LineType, sk: SortKey, f: PickFilters) => {
+  const load = useCallback(async (s: string, lt: LineType, sk: SortKey, f: PickFilters, dir: SortDirection) => {
     try {
       const [picksRes, statsRes] = await Promise.all([
-        api.picksToday(s, lt, sk, f),
+        api.picksToday(s, lt, sk, f, dir),
         api.stats().catch(() => null),
       ]);
       // Defensive client-side filter — protect users from production
@@ -165,18 +173,18 @@ export default function LocksScreen() {
     }
   }, []);
 
-  useEffect(() => { setLoading(true); load(sport, lineType, sortKey, filters); }, [sport, lineType, sortKey, filters, load]);
+  useEffect(() => { setLoading(true); load(sport, lineType, sortKey, filters, sortDir); }, [sport, lineType, sortKey, filters, sortDir, load]);
 
   // Smart refetch on screen focus: hit /api/picks/today again every time the
   // user opens the Locks tab, but skip if the last successful fetch was less
   // than 30 s ago. No interval polling — focus + manual refresh only.
   useFocusRefetch(
-    () => { load(sport, lineType, sortKey, filters); loadCooldown(); },
-    [sport, lineType, sortKey, filters, load, loadCooldown],
+    () => { load(sport, lineType, sortKey, filters, sortDir); loadCooldown(); },
+    [sport, lineType, sortKey, filters, sortDir, load, loadCooldown],
     30_000,
   );
 
-  const onRefresh = () => { setRefreshing(true); load(sport, lineType, sortKey, filters); };
+  const onRefresh = () => { setRefreshing(true); load(sport, lineType, sortKey, filters, sortDir); };
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -199,7 +207,7 @@ export default function LocksScreen() {
         const t = Date.parse(res.next_refresh_at);
         if (!isNaN(t)) setNextRefreshAt(t);
       }
-      await load(sport, lineType, sortKey, filters);
+      await load(sport, lineType, sortKey, filters, sortDir);
       if (res.rate_limited) {
         showToast(res.message || "Refresh on cooldown");
       } else {
@@ -287,7 +295,13 @@ export default function LocksScreen() {
           />
         </View>
       </View>
-      <SortSelector value={sortKey} onChange={setSortKey} testIDPrefix="locks-sort" />
+      <SortSelector
+        value={sortKey}
+        onChange={setSortKey}
+        direction={sortDir}
+        onDirectionChange={setSortDir}
+        testIDPrefix="locks-sort"
+      />
       {(sport === "Soccer" || sport === "MLB" || sport === "Tennis" || sport === "UFC" || sport === "NBA" || sport === "NFL") && (
         <TouchableOpacity
           onPress={() => router.push(`/soccer-lab?sport=${encodeURIComponent(sport)}` as any)}

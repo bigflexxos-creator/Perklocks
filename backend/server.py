@@ -189,6 +189,96 @@ def _dedupe_game_outcome_picks(picks: list[dict]) -> list[dict]:
     return passthrough + list(keep_by_game.values())
 
 
+def _dedupe_goalscorer_per_event(picks: list[dict], top_n: int = 2) -> list[dict]:
+    """Per-match cap on goalscorer / score-or-assist picks.
+
+    The pick engine generates THREE variants per qualifying player (Anytime
+    Goal Scorer + First Goal Scorer + To Score or Assist). For a match with
+    8 forwards, that's 24+ near-identical picks dominating the user's feed
+    (the Germany / Ivory Coast complaint).
+
+    Rules:
+      1. Group goalscorer-family picks by (sport, event).
+      2. Within each group, collapse to ONE row per player — keep the
+         highest-win% market for that player. Ties break Anytime > To Score
+         or Assist > First Goal Scorer (Anytime is the safest variant).
+      3. Then keep only the TOP N players per match (default 2 — user spec
+         "It should be the top 2"), ranked by win_probability.
+      4. ELITE players (Mbappé, Haaland, Messi, Kane, Vini Jr, Gyökeres,
+         …) ALWAYS survive the top-N cap as a 3rd protected slot — they're
+         the headline picks of the slate.
+      5. Non-goalscorer picks pass through untouched.
+    """
+    GOALSCORER_KEYWORDS = (
+        "anytime goal scorer", "first goal scorer", "last goal scorer",
+        "to score or assist", "to score",
+    )
+
+    def _is_scorer(p: dict) -> bool:
+        m = (p.get("market") or "").lower()
+        return any(k in m for k in GOALSCORER_KEYWORDS)
+
+    def _market_rank(market: str) -> int:
+        # Lower = preferred when same player has multiple market variants.
+        ml = market.lower()
+        if "anytime goal scorer" in ml:       return 0
+        if "to score or assist" in ml:         return 1
+        if "first goal scorer" in ml:          return 2
+        if "last goal scorer" in ml:           return 3
+        return 4
+
+    def _player_from_market(market: str) -> str:
+        # "Lionel Messi Anytime Goal Scorer" → "Lionel Messi"
+        # "Jamal Musiala First Goal Scorer" → "Jamal Musiala"
+        for kw in GOALSCORER_KEYWORDS:
+            idx = market.lower().find(kw)
+            if idx > 0:
+                return market[:idx].strip()
+        return market.strip()
+
+    by_event: dict = {}
+    passthrough: list[dict] = []
+    for p in picks:
+        if not _is_scorer(p):
+            passthrough.append(p)
+            continue
+        key = (p.get("sport"), p.get("event"))
+        by_event.setdefault(key, []).append(p)
+
+    kept: list[dict] = []
+    for key, group in by_event.items():
+        # Step 2: collapse to one pick per player (highest win% wins).
+        best_by_player: dict = {}
+        for p in group:
+            player = _player_from_market(p.get("market") or "")
+            cur = best_by_player.get(player)
+            if (
+                cur is None
+                or float(p.get("win_probability") or 0) > float(cur.get("win_probability") or 0)
+                or (
+                    float(p.get("win_probability") or 0) == float(cur.get("win_probability") or 0)
+                    and _market_rank(p.get("market") or "") < _market_rank(cur.get("market") or "")
+                )
+            ):
+                best_by_player[player] = p
+        # Step 3: top N by win_probability, plus any elite players past N.
+        ranked = sorted(
+            best_by_player.values(),
+            key=lambda x: -float(x.get("win_probability") or 0),
+        )
+        top_picks = ranked[:top_n]
+        # Step 4: elite-player exemption — let elites/auto-elites that
+        # didn't make top-N still slip through (capped at +1 protected
+        # slot so we never balloon back to old volume).
+        protected_elite = [
+            p for p in ranked[top_n:]
+            if (p.get("elite_player") or p.get("auto_elite"))
+        ][:1]
+        kept.extend(top_picks)
+        kept.extend(protected_elite)
+    return passthrough + kept
+
+
 async def _picks_for_date(date_str: str) -> list[dict]:
     cursor = db.picks.find({"pick_date": date_str}, {"_id": 0}).sort("lock_score", -1)
     return await cursor.to_list(length=500)
@@ -698,6 +788,7 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                       day_offset: Optional[int] = None,
                       line_type: Optional[str] = None,
                       sort: Optional[str] = "time",
+                      direction: Optional[str] = "desc",
                       min_lock: Optional[float] = None,
                       min_implied: Optional[float] = None,
                       max_implied: Optional[float] = None,
@@ -714,7 +805,11 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
       - "lock" / None (default): highest lock_score first
       - "time": soonest kickoff first
       - "edge": biggest model edge first
+      - "win": highest model win-probability first
       - "implied": highest implied probability first (safest first)
+    Direction:
+      - "desc" (default): highest value at top — user's "best lock first" intent
+      - "asc": lowest value at top (useful for finding longshots / weakest)
     """
     await _ensure_today_picks()
     # When the user explicitly filters by a single market, relax the default
@@ -792,6 +887,13 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # confidence side per game, preferring Win-or-Draw / Double Chance
     # over straight Moneyline (draw safety net = lower variance).
     picks = _dedupe_game_outcome_picks(picks)
+    # Goalscorer pick cap — per match, surface at most the TOP 2 unique
+    # players from the goalscorer family (Anytime / First / Last / To
+    # Score or Assist). Without this dedupe a single player like Musiala
+    # would clog the feed with 3 rows of identical lock score for the
+    # same match (Anytime + First + Score-or-Assist all at lock 78.4).
+    # Spec from user: "It should be the top 2".
+    picks = _dedupe_goalscorer_per_event(picks, top_n=2)
     if day_offset is not None:
         target_day = (datetime.now(timezone.utc).date() + timedelta(days=day_offset)).isoformat()
         picks = [p for p in picks if (p.get("event_time") or "").startswith(target_day)]
@@ -812,9 +914,14 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 return 1
 
         # Apply the user's sort preference. Default "lock": highest lock_score
-        # first (today first). "time": soonest kickoff first. "edge": biggest
-        # model edge first.
+        # first. "time": soonest kickoff first. "edge": biggest model edge
+        # first. Direction (asc/desc) flips numerical sorts so the user can
+        # find weakest picks too without having to scroll all the way down.
         s = (sort or "lock").lower()
+        asc = (direction or "desc").lower() == "asc"
+        # Multiplier for numerical sort fields: -1 = desc (highest first),
+        # +1 = asc (lowest first). Time sort uses its own direction logic.
+        m = 1 if asc else -1
         def _event_dt(p: dict) -> datetime:
             try:
                 return datetime.strptime(
@@ -822,25 +929,42 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 ).replace(tzinfo=timezone.utc)
             except Exception:
                 return datetime.max.replace(tzinfo=timezone.utc)
-        # Elite-player anchor: always float elite picks to the top within
-        # their bucket regardless of sort key. Mbappé/Haaland/Messi/Kane etc.
-        # are the headline picks of the slate.
+        # Elite-player anchor: float elite picks to the top within their
+        # bucket — but ONLY for the default lock-desc view. When the user
+        # has explicitly asked for asc / win / edge / time, respect their
+        # chosen ordering without re-shuffling Mbappé/Haaland/Messi/Kane
+        # to the top.
         def _elite_rank(p: dict) -> int:
             return 0 if p.get("elite_player") else 1
         if s == "time":
-            # Pure chronological — earliest kickoff first, regardless of
-            # elite/lock status. User explicitly wants time order.
-            picks.sort(key=lambda p: (_event_dt(p), -p.get("lock_score", 0)))
+            # Pure chronological — earliest kickoff first by default;
+            # latest first when asc=False reversed (we treat time asc as
+            # earliest→latest, which is the natural meaning, so flip
+            # signature only when direction explicitly says desc).
+            # Default 'time' direction is "soonest first" which is asc by
+            # natural time ordering — keep that as the default.
+            if asc:
+                picks.sort(key=lambda p: (_event_dt(p), -p.get("lock_score", 0)))
+            else:
+                picks.sort(key=lambda p: (_event_dt(p), -p.get("lock_score", 0)), reverse=True)
         elif s == "edge":
-            picks.sort(key=lambda p: (_elite_rank(p), _bucket(p), -p.get("edge_percent", 0), -p.get("lock_score", 0)))
+            # Pure edge sort — no today-first bucket so highest edges
+            # always at top regardless of date.
+            picks.sort(key=lambda p: (m * p.get("edge_percent", 0), -p.get("lock_score", 0)))
         elif s == "win":
-            # Win % — model win_probability highest first. Useful for users
-            # who want the chalkiest setups by raw confidence.
-            picks.sort(key=lambda p: (_elite_rank(p), _bucket(p), -p.get("win_probability", 0), -p.get("lock_score", 0)))
+            # Win % sort — model win_probability highest first by default.
+            picks.sort(key=lambda p: (m * p.get("win_probability", 0), -p.get("lock_score", 0)))
         elif s == "implied":
-            picks.sort(key=lambda p: (_elite_rank(p), _bucket(p), -p.get("implied_probability", 0), -p.get("lock_score", 0)))
+            picks.sort(key=lambda p: (m * p.get("implied_probability", 0), -p.get("lock_score", 0)))
         else:  # "lock" (default)
-            picks.sort(key=lambda p: (_elite_rank(p), _bucket(p), -p.get("lock_score", 0)))
+            # Pure lock_score sort — highest at top (or lowest at top if
+            # asc=true). NO bucket pre-sort so tomorrow's 95-lock outranks
+            # today's 75-lock — fixes the "have to scroll to find best
+            # lock" UX bug. Elite anchor only applied to default desc.
+            if asc:
+                picks.sort(key=lambda p: p.get("lock_score", 0))
+            else:
+                picks.sort(key=lambda p: (_elite_rank(p), -p.get("lock_score", 0)))
     return {"picks": picks}
 
 

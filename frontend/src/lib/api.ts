@@ -101,6 +101,7 @@ export type Pick = {
 export type User = { id: string; email: string; name?: string };
 export type LineType = "both" | "main" | "alt";
 export type SortKey = "lock" | "time" | "edge" | "win" | "implied";
+export type SortDirection = "desc" | "asc";
 
 export type PickFilters = {
   minLock?: number;
@@ -267,11 +268,12 @@ export const api = {
       auth: false,
     }),
   me: () => request<User>("/auth/me"),
-  picksToday: (sport?: string, lineType?: LineType, sortKey?: SortKey, filters?: PickFilters) => {
+  picksToday: (sport?: string, lineType?: LineType, sortKey?: SortKey, filters?: PickFilters, direction?: SortDirection) => {
     const qs = new URLSearchParams();
     if (sport && sport !== "All") qs.set("sport", sport);
     if (lineType && lineType !== "both") qs.set("line_type", lineType);
     if (sortKey && sortKey !== "lock") qs.set("sort", sortKey);
+    if (direction && direction !== "desc") qs.set("direction", direction);
     if (filters?.minLock != null && filters.minLock > 85) qs.set("min_lock", String(filters.minLock));
     if (filters?.minImplied != null) qs.set("min_implied", String(filters.minImplied));
     if (filters?.maxImplied != null) qs.set("max_implied", String(filters.maxImplied));
