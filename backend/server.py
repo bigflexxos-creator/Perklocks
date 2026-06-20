@@ -2061,6 +2061,17 @@ async def _settlement_loop():
                                 v2_res.get("changes_log_count", 0))
             except Exception as e:
                 logger.warning("Learning v2 recompute error: %s", e)
+            # Auto-Elite scorer discovery — promote players with 5+ picks
+            # and 55%+ hit rate to auto_elite (protected slot in goalscorer cap).
+            try:
+                from auto_elite import recompute_auto_elite_scorers
+                ae_res = await recompute_auto_elite_scorers(db)
+                if ae_res.get("promoted"):
+                    logger.info("Auto-elite scorers updated: %d promoted (e.g. %s)",
+                                ae_res["promoted"],
+                                ", ".join(ae_res.get("promoted_names", [])[:3]))
+            except Exception as e:
+                logger.warning("Auto-elite recompute error: %s", e)
             # Brain memory cache-bust so the next pick refresh picks up
             # the freshly-settled samples (calibration / ROI / market perf).
             try:
