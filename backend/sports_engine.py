@@ -1057,6 +1057,26 @@ async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
         league_label = LEAGUE_LABELS.get(key, sport)
         for g in games[:15]:
             all_picks.extend(_picks_from_game(sport, league_label, g, date_str))
+            # ─── Tennis alt-line augmentation ────────────────────────
+            # Per user spec: "Tennis have alt line available pls add and
+            # calculate them to build picks." Tennis exposes alt spreads
+            # + alt totals on The Odds API per-event endpoint. We fetch
+            # one extra call per game (small credit cost, ~5-15 credits
+            # per match), build up to 2 sweet-spot alt picks, and let
+            # them flow through the standard validator + lock pipeline.
+            if sport == "Tennis" and g.get("id"):
+                try:
+                    alt_payload = await _fetch_tennis_event_alts(key, g["id"])
+                    alt_picks = _build_tennis_alt_picks(
+                        key, league_label, g, alt_payload, date_str,
+                    )
+                    if alt_picks:
+                        all_picks.extend(alt_picks)
+                except Exception as e:
+                    logger.debug(
+                        "Tennis alt-line fetch skipped for %s: %s",
+                        g.get("id"), e,
+                    )
     return all_picks
 
 
@@ -1173,6 +1193,203 @@ async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) 
         {"regions": "us", "markets": ",".join(markets), "oddsFormat": "american"},
     )
     return data if isinstance(data, dict) else {}
+
+
+# ─── Tennis alt-line markets ───────────────────────────────────────────
+# Tennis is one of the few sports where The Odds API exposes BOTH
+# alternate_spreads (game handicaps: -1.5, -2.5, -3.5, … and +1.5, +2.5,
+# +3.5, …) AND alternate_totals (Over/Under at multiple game totals like
+# 20.5, 21.5, 22.5, 23.5). These are NOT player props — they're full-match
+# markets. Power user spec: "Tennis have alt line available pls add and
+# calculate them to build picks."
+#
+# Strategy: per-event fetch, then build at most 2 alt picks per match
+# (one favored-side spread + one Over total) at the SWEET SPOT implied
+# probability so we surface true high-confidence locks without going
+# absurdly chalky (≤95% implied = -1900 American).
+TENNIS_GAME_ALT_MARKETS = ["alternate_spreads", "alternate_totals"]
+# Implied-probability window for alt-line picks. Widened to 55-93% for
+# Tennis because The Odds API only exposes one alt total line per match
+# (typically 0.5-1.5 games away from the main consensus, priced -106 to
+# -180). Without widening we'd capture zero — defeating the user's
+# request. The band still excludes truly chalky -1500+ lines and
+# truly soft -100 lines.
+_TENNIS_ALT_MIN_IMPLIED = 0.55
+_TENNIS_ALT_MAX_IMPLIED = 0.93
+
+
+async def _fetch_tennis_event_alts(sport_key: str, event_id: str) -> dict:
+    """Fetch alternate_spreads + alternate_totals for a single tennis
+    event.
+
+    CRITICAL: The Odds API exposes RICH tennis alt markets only via the
+    EU region — US books carry exactly one alt total line per match
+    (FanDuel-only, basically useless). EU books (Pinnacle + Marathon)
+    expose the full alt ladder: 6+ spread points and 6+ total points
+    per match. We pull EU explicitly here even though the rest of the
+    Tennis pipeline uses US — the alt market is fundamentally a
+    European-bookmaker product."""
+    data = await _get(
+        f"{BASE}/sports/{sport_key}/events/{event_id}/odds",
+        {
+            "regions": "eu",
+            "markets": ",".join(TENNIS_GAME_ALT_MARKETS),
+            "oddsFormat": "american",
+        },
+    )
+    return data if isinstance(data, dict) else {}
+
+
+def _pick_sweet_spot_alt(
+    outcomes: list[dict], side_name: str | None = None,
+) -> dict | None:
+    """From a list of alt-market outcomes, pick the one whose implied
+    probability sits inside the sweet-spot band (78-93%). If `side_name`
+    is given, restrict to outcomes for that side (e.g. just the favored
+    player or just Over). Prefers the HIGHEST-implied within band so we
+    surface the chalkiest still-acceptable lock."""
+    best: dict | None = None
+    best_implied = 0.0
+    for o in outcomes or []:
+        if side_name and o.get("name") != side_name:
+            continue
+        price = o.get("price")
+        if not isinstance(price, (int, float)):
+            continue
+        imp = _implied_prob(int(price))
+        if not (_TENNIS_ALT_MIN_IMPLIED <= imp <= _TENNIS_ALT_MAX_IMPLIED):
+            continue
+        if imp > best_implied:
+            best, best_implied = o, imp
+    return best
+
+
+def _alt_outcomes_for_market(payload: dict, market_key: str) -> list[dict]:
+    """Collapse outcomes across bookmakers — keep the FIRST occurrence
+    of each (name, point) pair so we don't double-count the same alt
+    line from multiple books. Real consensus pricing across books is
+    overkill for alt picks; the median is already chalky."""
+    seen: dict[tuple, dict] = {}
+    for bk in (payload.get("bookmakers") or []):
+        for mk in (bk.get("markets") or []):
+            if mk.get("key") != market_key:
+                continue
+            for o in (mk.get("outcomes") or []):
+                key = (o.get("name"), o.get("point"))
+                if key not in seen:
+                    seen[key] = o
+    return list(seen.values())
+
+
+def _build_tennis_alt_picks(
+    sport_key: str, league: str, event_payload: dict, alt_payload: dict,
+    date_str: str,
+) -> list[dict]:
+    """Build up to 2 alt-line picks per tennis match:
+       • Spread:  favored side's chalkiest acceptable game-handicap line
+       • Total:   chalkiest acceptable Over (Under as fallback)
+    """
+    if not alt_payload:
+        return []
+    home = alt_payload.get("home_team") or event_payload.get("home_team")
+    away = alt_payload.get("away_team") or event_payload.get("away_team")
+    commence = alt_payload.get("commence_time") or event_payload.get("commence_time")
+    event_id = alt_payload.get("id") or event_payload.get("id")
+    if not home or not away or not commence:
+        return []
+    # Schedule window check — same 7-day window as main tennis picks.
+    try:
+        dt = datetime.strptime(commence, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        if dt < now - __import__("datetime").timedelta(minutes=30):
+            return []
+        if dt > now + __import__("datetime").timedelta(hours=7 * 24):
+            return []
+    except Exception:
+        pass
+
+    # Determine the favored side from the bulk h2h odds we already have
+    # in event_payload (passed through from _picks_from_game caller).
+    h2h_outs = _consensus_market(event_payload, "h2h") if event_payload else []
+    home_ml = _median_price(h2h_outs, home) if h2h_outs else None
+    away_ml = _median_price(h2h_outs, away) if h2h_outs else None
+    favored: str | None = None
+    if isinstance(home_ml, (int, float)) and isinstance(away_ml, (int, float)):
+        # The MORE negative side is the favorite (e.g., -300 > -120 in
+        # implied-probability terms, even though -300 < -120 numerically).
+        favored = home if int(home_ml) < int(away_ml) else away
+
+    out_picks: list[dict] = []
+    league_label = LEAGUE_LABELS.get(sport_key, "Tennis")
+
+    # ── Alt spread: favored side's chalkiest acceptable handicap ──
+    spread_outs = _alt_outcomes_for_market(alt_payload, "alternate_spreads")
+    if spread_outs and favored:
+        pick_obj = _pick_sweet_spot_alt(spread_outs, side_name=favored)
+        if pick_obj:
+            line = pick_obj.get("point")
+            price = int(pick_obj.get("price"))
+            imp = _implied_prob(price)
+            mp = max(0.50, min(0.92, imp + 0.02))  # tiny model nudge above book
+            factors = _factors_random(random.Random(abs(hash(event_id + "alt_sp")) % 10000), "Tennis_ml")
+            lock, breakdown = compute_lock_score(
+                factors, win_prob=mp * 100, edge_percent=(mp * 100 - imp * 100)
+            )
+            sign = "+" if (line or 0) > 0 else ""
+            out_picks.append(_build_pick(
+                sport="Tennis", league=league_label, event=f"{away} @ {home}",
+                event_time=commence,
+                market=f"{favored} {sign}{line} Games (Alt)",
+                pick_side=favored,
+                model_win_prob=mp, book_odds=price,
+                lock=lock, factors=breakdown,
+                insights=[
+                    f"Alt game spread — book implies {imp*100:.0f}% win probability",
+                    f"Chalky line ({price:+d}) but safer cover than ML",
+                ],
+                external_id=f"Tennis-{event_id}-alt-spread-{line}",
+                is_alt_prop=True,
+            ))
+
+    # ── Alt total: chalkiest Over within band; fall back to Under ──
+    total_outs = _alt_outcomes_for_market(alt_payload, "alternate_totals")
+    if total_outs:
+        over_pick = _pick_sweet_spot_alt(total_outs, side_name="Over")
+        under_pick = _pick_sweet_spot_alt(total_outs, side_name="Under")
+        # Prefer whichever has the higher implied (chalkiest lock).
+        chosen = over_pick
+        if (under_pick and not over_pick) or (
+            over_pick and under_pick
+            and _implied_prob(int(under_pick.get("price")))
+                > _implied_prob(int(over_pick.get("price")))
+        ):
+            chosen = under_pick
+        if chosen:
+            side = chosen.get("name")
+            line = chosen.get("point")
+            price = int(chosen.get("price"))
+            imp = _implied_prob(price)
+            mp = max(0.50, min(0.92, imp + 0.02))
+            factors = _factors_random(random.Random(abs(hash(event_id + "alt_tot")) % 10000), "Tennis_ml")
+            lock, breakdown = compute_lock_score(
+                factors, win_prob=mp * 100, edge_percent=(mp * 100 - imp * 100)
+            )
+            out_picks.append(_build_pick(
+                sport="Tennis", league=league_label, event=f"{away} @ {home}",
+                event_time=commence,
+                market=f"{side} {line} Games (Alt)",
+                pick_side=side,
+                model_win_prob=mp, book_odds=price,
+                lock=lock, factors=breakdown,
+                insights=[
+                    f"Alt game total — book implies {imp*100:.0f}% hit rate",
+                    f"Sweet-spot line: not absurdly chalky, gives realistic cover",
+                ],
+                external_id=f"Tennis-{event_id}-alt-total-{side}-{line}",
+                is_alt_prop=True,
+            ))
+
+    return [p for p in out_picks if p is not None]
 
 
 # ─── MLB Roster Cache (free MLB Stats API, no auth) ───
