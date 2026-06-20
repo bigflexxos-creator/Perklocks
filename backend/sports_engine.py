@@ -810,13 +810,24 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                             hi_l = mid_l
                     lam = (lo_l + hi_l) / 2
 
-                    # Synthesize ONLY Over 1.5 from the main line — Over 3.5
-                    # excluded per user spec (low-juice/junk territory).
-                    # Skip if main is already 1.5 (no synthesis needed).
-                    extra_lines = [v for v in (1.5,) if abs(v - main_line) > 0.4]
-                    for alt_line in extra_lines:
+                    # Synthesize Over 1.5 (chalkier Over) and Under 3.5
+                    # (chalkier Under) from the Poisson lambda. These are
+                    # tagged `is_alt=True` so they surface on the ALT
+                    # line-type tab — user spec: "when I hit just alt
+                    # tab soccer nothing pops up shouldn't over 1.5 pop
+                    # up here". Over 3.5 / Under 1.5 excluded (junk juice).
+                    # Each `(line, side)` tuple is skipped if it matches
+                    # the main consensus line we already published.
+                    extra: list[tuple[float, str]] = []
+                    if abs(1.5 - main_line) > 0.4:
+                        extra.append((1.5, "Over"))
+                    if abs(3.5 - main_line) > 0.4:
+                        extra.append((3.5, "Under"))
+                    for alt_line, side_label in extra:
                         alt_k = int(_math.floor(alt_line)) + 1
-                        p_alt = _p_over_at(lam, alt_k)
+                        # For Over: P(X >= alt_k). For Under: P(X < alt_k).
+                        p_over_alt = _p_over_at(lam, alt_k)
+                        p_alt = p_over_alt if side_label == "Over" else (1.0 - p_over_alt)
                         # Reject implausible synthesis: stay in [0.20, 0.93].
                         if not (0.20 <= p_alt <= 0.93):
                             continue
@@ -830,7 +841,6 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         mp_alt = max(0.30, min(0.92, p_alt + 0.02 + rng.random() * 0.04))
                         factors_alt = _factors_random(rng, "Soccer_total") or _factors_random(rng, "Soccer_ml")
                         lock_alt, breakdown_alt = compute_lock_score(factors_alt, win_prob=mp_alt * 100)
-                        side_label = "Over"
                         alt_pick = _build_pick(
                             sport=sport, league=league,
                             event=f"{away} @ {home}",
@@ -840,13 +850,15 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                             model_win_prob=mp_alt, book_odds=fair_odds,
                             lock=lock_alt, factors=breakdown_alt,
                             insights=_insights_for(sport, breakdown_alt, side_label, home, away),
-                            external_id=f"{sport}-{game_id}-total-over-{alt_line}",
+                            external_id=f"{sport}-{game_id}-total-{side_label.lower()}-{alt_line}",
                         )
                         if alt_pick:
-                            # Flag as model-derived so the UI can label it
-                            # ("Model line — synthesized from market O/U 2.5").
+                            # Flag as model-derived AND as an alt line so the
+                            # UI can label it ("Model line — synthesized from
+                            # market O/U") and route it under the ALT tab.
                             alt_pick["model_line"] = True
                             alt_pick["model_source"] = "poisson_from_main_total"
+                            alt_pick["is_alt"] = True
                             picks.append(alt_pick)
                 except Exception as _e:
                     logger.debug("Soccer Poisson alt-totals skipped: %s", _e)
