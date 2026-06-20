@@ -85,8 +85,79 @@ def _short_market(market: str) -> str:
     return market.split(" ")[-1] if market else "Unknown"
 
 
+# ── Side-alignment filtering ─────────────────────────────────────────
+# Markets that DON'T pick a side (totals, BTTS) are always considered
+# "compatible" with any side-biased pick. Everything else needs the
+# selection / pick-side to align with the user's current pick.
+NEUTRAL_MARKETS = {
+    "Over 0.5", "Over 1.5", "Over 2.5", "Over 3.5", "Over 4.5",
+    "Under 0.5", "Under 1.5", "Under 2.5", "Under 3.5", "Under 4.5",
+    "Over", "Under", "BTTS",
+}
+
+
+def _pick_side(p: dict) -> str:
+    """Best-effort extraction of the SIDE (team / player / Over / Under)
+    a pick favours. Returns "" if the pick is side-neutral (totals)."""
+    sel = (p.get("selection") or "").strip()
+    if sel:
+        return sel
+    # Try to parse from the market string
+    mkt = p.get("market") or ""
+    # "Sweden to Win" → "Sweden"
+    if " to Win" in mkt:
+        return mkt.split(" to Win")[0].strip()
+    # "Netherlands Win or Draw" → "Netherlands"
+    if " Win or Draw" in mkt:
+        return mkt.split(" Win or Draw")[0].strip()
+    # "Netherlands +1.5 Spread" → "Netherlands"
+    if " Spread" in mkt:
+        return mkt.split(" ")[0].strip()
+    # Anything else (Over/Under totals) → side-neutral
+    return ""
+
+
+def _sides_compatible(current_side: str, candidate: dict) -> bool:
+    """Return True if the candidate market is either:
+       • side-neutral (totals, BTTS), or
+       • on the SAME side as the current pick (same team / player).
+    Excludes opposite-side picks (e.g., Sweden Moneyline when current
+    pick is Netherlands Win or Draw). Without this filter the Market
+    Competition panel showed contradictory "alternatives" — user spec:
+    "u got Netherlands win or draw but Sweden ml is this right?"."""
+    if not current_side:
+        # Current pick is itself side-neutral (e.g., Over 2.5) — any
+        # candidate is fine; the rank formula does the rest.
+        return True
+    short = _short_market(candidate.get("market") or "")
+    if short in NEUTRAL_MARKETS:
+        return True
+    cand_side = _pick_side(candidate)
+    if not cand_side:
+        return True   # candidate is neutral
+    # Case-insensitive equality; tolerate small whitespace / suffix drift
+    return cand_side.lower().strip() == current_side.lower().strip()
+
+
 async def _rank_markets_for_event(db, event: str, sport: str, exclude_id: str = "") -> list[dict]:
-    """Return all picks for an event, scored and sorted top to bottom."""
+    """Return all picks for an event, scored and sorted top to bottom.
+
+    Filters out picks that contradict the SIDE of the current pick.
+    Without this, the panel was showing e.g. "Sweden Moneyline" as a
+    sibling of "Netherlands Win or Draw" — two opposite-side bets that
+    cannot both be the best play in the same match.
+    """
+    # Look up current pick's side so we can filter side-contradictory
+    # candidates. Side-neutral markets (totals, BTTS) are always shown.
+    current_side = ""
+    if exclude_id:
+        cur = await db.picks.find_one(
+            {"id": exclude_id},
+            {"_id": 0, "selection": 1, "market": 1},
+        )
+        if cur:
+            current_side = _pick_side(cur)
+
     cursor = db.picks.find(
         {"event": event, "sport": sport},
         {
@@ -104,6 +175,13 @@ async def _rank_markets_for_event(db, event: str, sport: str, exclude_id: str = 
         if not p.get("market"):
             continue
         if p.get("no_bet"):
+            continue
+        # ── Side-alignment filter ──
+        # Always include the current pick itself (so the UI can show
+        # "CURRENT" indicator). For everything else, the candidate
+        # must be on the SAME side as the current pick OR be a
+        # side-neutral market (Over/Under/BTTS).
+        if p.get("id") != exclude_id and not _sides_compatible(current_side, p):
             continue
         short = _short_market(p.get("market") or "")
         # Dedupe by short market label (only top of each market type)
