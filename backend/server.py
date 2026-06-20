@@ -837,9 +837,19 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         # actionable +EV picks only.
         "edge_percent": {"$gte": 0},
     }
+    # Elite-player anchor query — marquee names (Mbappé, Haaland, Messi,
+    # Kane, Ronaldo etc.) skip the strict edge ≥ 0 filter so a
+    # reputation-locked superstar appears in the feed even when the
+    # market doesn't quite price them as +EV. BUT we still apply a soft
+    # lock-floor (≥ 80) so the user never sees the 58-67 lock garbage
+    # they reported ("why is app showing 57 56 lock scores"). 80 means
+    # "almost Playable" — close enough to the action band that the user
+    # treats it as a marquee-name reference rather than a clearly
+    # unactionable pick.
     elite_q = {
         "elite_player": True,
         "no_bet": {"$ne": True},
+        "lock_score": {"$gte": 80.0},
     }
     q: dict = {
         "pick_date": _today_str(),
