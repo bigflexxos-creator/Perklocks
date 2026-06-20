@@ -743,9 +743,10 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                             hi_l = mid_l
                     lam = (lo_l + hi_l) / 2
 
-                    # Synthesize Over 1.5 and Over 3.5 only when they bracket
-                    # the main line (skip if main is already 1.5).
-                    extra_lines = [v for v in (1.5, 3.5) if abs(v - main_line) > 0.4]
+                    # Synthesize ONLY Over 1.5 from the main line — Over 3.5
+                    # excluded per user spec (low-juice/junk territory).
+                    # Skip if main is already 1.5 (no synthesis needed).
+                    extra_lines = [v for v in (1.5,) if abs(v - main_line) > 0.4]
                     for alt_line in extra_lines:
                         alt_k = int(_math.floor(alt_line)) + 1
                         p_alt = _p_over_at(lam, alt_k)

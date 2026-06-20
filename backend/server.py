@@ -520,6 +520,18 @@ async def _refresh_picks(date_str: str) -> int:
     except Exception as _v2_err:
         logger.warning("Lock V2 shadow tagging failed (continuing): %s", _v2_err)
 
+    # ── Player Intelligence enrichment ──
+    # Resolve every player-prop pick's market into a canonical profile and
+    # attach `player_intel` (archetype, team, position, volatility, usage)
+    # so the frontend never has to re-resolve from raw market strings.
+    try:
+        from player_intel import enrich_picks_with_player_intel
+        pi_count = enrich_picks_with_player_intel(safe_picks)
+        if pi_count:
+            logger.info("Player Intelligence enriched %d picks", pi_count)
+    except Exception as _pi_err:
+        logger.warning("Player Intelligence enrichment failed (continuing): %s", _pi_err)
+
     if safe_picks:
         await db.picks.insert_many(safe_picks, ordered=False)
     logger.info("Stored %d picks for %s", len(safe_picks), date_str)
@@ -2049,6 +2061,17 @@ try:
 except Exception as _sb_mount_err:
     logger.warning("Scorer Bundles failed to mount, continuing without it: %s", _sb_mount_err)
 
+# ── Player Intelligence ──
+# Canonical player resolver + archetype + volatility profiles, used to enrich
+# every pick that mentions an athlete so downstream UI never deals with raw
+# name strings. Routes: /api/player-intel/profile, /list, /refresh.
+try:
+    from player_intel import router as player_intel_router
+    api.include_router(player_intel_router)
+    logger.info("Player Intelligence mounted at /api/player-intel/*")
+except Exception as _pi_mount_err:
+    logger.warning("Player Intelligence failed to mount, continuing without it: %s", _pi_mount_err)
+
 app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
@@ -2196,6 +2219,20 @@ async def _settlement_loop():
                                 ", ".join(ae_res.get("promoted_names", [])[:3]))
             except Exception as e:
                 logger.warning("Auto-elite recompute error: %s", e)
+            # Player Intelligence — refresh canonical profiles (seeds +
+            # learned from settled picks). Powers archetype/usage/volatility
+            # tags attached to every pick during generation.
+            try:
+                from player_intel import refresh_player_profiles
+                pi_res = await refresh_player_profiles(db)
+                logger.info(
+                    "Player Intelligence: %d total profiles (%d seeded new, %d learned)",
+                    pi_res.get("total_profiles", 0),
+                    pi_res.get("seeded_new", 0),
+                    pi_res.get("learned_updates", 0),
+                )
+            except Exception as e:
+                logger.warning("Player Intelligence refresh error: %s", e)
             # Brain memory cache-bust so the next pick refresh picks up
             # the freshly-settled samples (calibration / ROI / market perf).
             try:
