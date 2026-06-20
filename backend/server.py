@@ -1182,20 +1182,46 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
         ),
         reverse=True,
     )
-    # Diversify: one pick per game so the user gets 3 distinct options.
+    # Diversify: at most one pick per game AND prefer at most one per
+    # SPORT so the trio represents the day's slate broadly. Without the
+    # sport-cap, soccer ML moneylines (which carry the highest single-bet
+    # win probabilities) crowded out MLB / Tennis / UFC every day — user
+    # spec: "where did baseball picks go".
+    #
+    # Algorithm:
+    #   Pass 1 — pick the BEST candidate from each distinct (sport, event)
+    #            cluster (no sport repeats unless we run out).
+    #   Pass 2 — top up from leftover sport-repeats if we still need 3.
     seen_events: set = set()
-    top: list = []
+    seen_sports: set = set()
+    primary: list = []
+    secondary: list = []
     for p in ranked:
         ev = p.get("event")
+        sp = p.get("sport") or ""
         if ev in seen_events:
             continue
+        if sp in seen_sports:
+            secondary.append(p)
+            continue
         seen_events.add(ev)
-        top.append({
-            **p,
-            "composite_rank": round(p.get("win_probability", 0) or 0, 1),
-        })
-        if len(top) >= 3:
+        seen_sports.add(sp)
+        primary.append({**p, "composite_rank": round(p.get("win_probability", 0) or 0, 1)})
+        if len(primary) >= 3:
             break
+    # Fall back to sport-repeats only if we couldn't fill the top 3 from
+    # distinct sports (rare — happens when only 1 sport has eligible
+    # picks today).
+    top = primary
+    if len(top) < 3:
+        for p in secondary:
+            ev = p.get("event")
+            if ev in seen_events:
+                continue
+            seen_events.add(ev)
+            top.append({**p, "composite_rank": round(p.get("win_probability", 0) or 0, 1)})
+            if len(top) >= 3:
+                break
     return {
         "picks": top,
         "pick": top[0] if top else None,  # back-compat for older clients
