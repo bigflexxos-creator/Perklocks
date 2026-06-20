@@ -335,6 +335,10 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
             floor = min(97.0, floor)
     if floor and score < floor:
         score = floor
+    # Hard clamp — Lock Score band is 0-99. Without this, the floor
+    # math (85 + 12 + 8 = 105 in elite conditions) could overflow past
+    # the band cap and break UI badges / progress bars.
+    score = min(99.0, score)
 
     # Store the 6 components so the UI / analytics can inspect them later.
     pick["lock_components"] = {

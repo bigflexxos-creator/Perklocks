@@ -110,7 +110,17 @@ export default function ParlayScreen() {
   );
 
   const onModeChange = (m: "standard" | "high_risk") => {
-    updatePrefs({ mode: m, legs: m === "high_risk" ? 10 : 3 });
+    // High-risk mode auto-expands the time window to 72h so the optimizer
+    // has enough qualifying legs (Lock≥75, Edge≥+1%) to build a 10-20 leg
+    // parlay. Standard mode stays at 24h. User spec: "when I go 72hrs out
+    // I see soccer legs on board that meet that criteria" — make this the
+    // default for high-risk so the user doesn't have to discover the
+    // window control to get a working parlay.
+    updatePrefs({
+      mode: m,
+      legs: m === "high_risk" ? 10 : 3,
+      windowHours: m === "high_risk" ? 72 : 24,
+    });
     setRank(1);
     setLockedIds([]);
   };
