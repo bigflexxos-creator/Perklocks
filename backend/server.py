@@ -1200,7 +1200,8 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
                      market: str | None = None,
                      league: str | None = None,
                      rank: int = 1,
-                     locked_ids: str | None = None):
+                     locked_ids: str | None = None,
+                     refresh_nonce: int = 0):
     """Parlay Optimizer V1.1 — highest-probability parlay builder.
 
     Mode (`mode`):
@@ -1302,12 +1303,28 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
                 {"_id": 0},
             ).to_list(length=len(wanted_ids))
 
+    # ─── Load learned parlay synergy map ───
+    # Per-(sport, market_family) hit rate FROM PRIOR SETTLED PARLAYS.
+    # Feeds into the optimizer's leg scoring so families that have
+    # historically cashed parlays get a small boost, and families that
+    # tank parlays get a small penalty. Requires ≥3 settled parlays of
+    # evidence per family before applying — until then synergy_bonus
+    # returns 0 and the optimizer behaves identically to before.
+    synergy_map: dict = {}
+    try:
+        from parlay_learning import load_synergy_map
+        synergy_map = await load_synergy_map(db)
+    except Exception as _sm_err:
+        logger.warning("Parlay synergy map load failed: %s", _sm_err)
+
     # ─── Build ───
     top = build_top_parlays(
         pool, target_legs=target_legs, high_risk=is_high_risk,
         bucket_map=bucket_map, rank=max(1, rank),
         locked_picks=locked_picks if locked_picks else None,
         single_sport_mode=is_single_sport,
+        refresh_nonce=int(refresh_nonce or 0),
+        synergy_map=synergy_map,
     )
 
     if not top:
@@ -1464,6 +1481,16 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         }
 
     payloads = [parlay_to_payload(p, bucket_map) for p in top]
+    # Persist this parlay slate into history so the learning loop has
+    # data to settle and aggregate from. Cheap — dedupes by signature.
+    try:
+        from parlay_learning import record_parlay_shown
+        for card in payloads:
+            await record_parlay_shown(
+                db, card, mode=mode or "standard", sport_mode=mode_lower,
+            )
+    except Exception as _rec_err:
+        logger.warning("record_parlay_shown skipped: %s", _rec_err)
     # Legacy field for backward compatibility — return the BALANCED card
     # (middle of survival) as `parlay`. Frontend should prefer `parlays`.
     legacy = payloads[1] if len(payloads) > 1 else payloads[0]
@@ -2357,6 +2384,25 @@ async def _settlement_loop():
                 )
             except Exception as e:
                 logger.warning("Player Intelligence refresh error: %s", e)
+            # ── Parlay Learning ──
+            # Settle any pending parlays (all-legs-resolved → won/lost/push)
+            # and rebuild the (sport, market_family) synergy map. The map
+            # feeds back into the optimizer's leg scoring the very next
+            # request, so the generator literally gets smarter every cycle.
+            try:
+                from parlay_learning import settle_parlays, compute_synergy_map
+                pl_settled = await settle_parlays(db)
+                pl_syn = await compute_synergy_map(db)
+                logger.info(
+                    "Parlay Learning: settled=%d (won=%d lost=%d push=%d) | %d synergy rows",
+                    pl_settled.get("settled", 0),
+                    pl_settled.get("won", 0),
+                    pl_settled.get("lost", 0),
+                    pl_settled.get("push", 0),
+                    len(pl_syn),
+                )
+            except Exception as e:
+                logger.warning("Parlay Learning settle/aggregate failed: %s", e)
             # Brain memory cache-bust so the next pick refresh picks up
             # the freshly-settled samples (calibration / ROI / market perf).
             try:

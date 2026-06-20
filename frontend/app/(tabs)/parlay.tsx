@@ -53,6 +53,11 @@ export default function ParlayScreen() {
   const [refreshing, setRefreshing] = useState(false);
   // Per-card refresh cursor: ephemeral — NOT persisted (resets every launch)
   const [rank, setRank] = useState(1);
+  // Refresh nonce — bumped on every user-triggered REGENERATE so the
+  // optimizer reshuffles seeds and emits *different* parlays for the
+  // same underlying pick pool. User spec: "the app should try to build
+  // a better parlay with every refresh".
+  const [refreshNonce, setRefreshNonce] = useState(0);
   // Pinned leg IDs survive refresh — ephemeral session-only state
   const [lockedIds, setLockedIds] = useState<string[]>([]);
 
@@ -65,10 +70,10 @@ export default function ParlayScreen() {
   const load = useCallback(
     async (n: number, m: "standard" | "high_risk", s: string, lt: LineType,
            incl: string[], excl: string[], f: any, r: number, locked: string[],
-           sMode: "auto"|"custom"|"single", wHours: number) => {
+           sMode: "auto"|"custom"|"single", wHours: number, nonce: number) => {
       try {
         const res = await api.parlay(
-          n, m, s, lt, incl, f, r, locked, sMode, wHours, excl,
+          n, m, s, lt, incl, f, r, locked, sMode, wHours, excl, nonce,
         );
         setParlays(res.parlays || []);
         setReason(res.reason || "");
@@ -87,9 +92,9 @@ export default function ParlayScreen() {
     if (!hydrated) return;
     setLoading(true);
     load(legs, mode, sport, lineType, includedSports, excludedSports,
-         filters, rank, lockedIds, sportMode, windowHours);
+         filters, rank, lockedIds, sportMode, windowHours, refreshNonce);
   }, [hydrated, legs, mode, sport, lineType, includedSports, excludedSports,
-      filters, rank, lockedIds, sportMode, windowHours, load]);
+      filters, rank, lockedIds, sportMode, windowHours, refreshNonce, load]);
 
   // Smart refetch on focus — re-rebuild the parlay when the user returns
   // to the tab, but suppress duplicate calls inside 30 s.
@@ -97,10 +102,10 @@ export default function ParlayScreen() {
     () => {
       if (!hydrated) return;
       load(legs, mode, sport, lineType, includedSports, excludedSports,
-           filters, rank, lockedIds, sportMode, windowHours);
+           filters, rank, lockedIds, sportMode, windowHours, refreshNonce);
     },
     [hydrated, legs, mode, sport, lineType, includedSports, excludedSports,
-     filters, rank, lockedIds, sportMode, windowHours, load],
+     filters, rank, lockedIds, sportMode, windowHours, refreshNonce, load],
     30_000,
   );
 
@@ -110,11 +115,22 @@ export default function ParlayScreen() {
     setLockedIds([]);
   };
 
+  // Pull-to-refresh — bumps both rank (next-best slot) AND nonce
+  // (different seed). Net effect: a meaningfully different parlay.
   const onRefresh = () => {
     setRefreshing(true);
-    // Cycle to next-best candidate (rank=2,3,4...) — when rank reaches 4 reset.
     setRank((r) => (r >= 4 ? 1 : r + 1));
+    setRefreshNonce((n) => n + 1);
   };
+
+  // Big "REGENERATE" button — pure nonce bump (keeps rank=1). Designed
+  // to always offer the user a freshly-shuffled top parlay. Pinned legs
+  // survive (the optimizer respects lockedIds).
+  const onRegenerate = useCallback(() => {
+    setRefreshing(true);
+    setRank(1);
+    setRefreshNonce((n) => n + 1);
+  }, []);
 
   const togglePin = useCallback((legId: string) => {
     setLockedIds((prev) =>
@@ -163,6 +179,32 @@ export default function ParlayScreen() {
           </Text>
         </Pressable>
       </View>
+
+      {/* Regenerate button — shuffles the optimizer seed so the user gets
+          a freshly-built parlay every tap. Pinned legs survive. Sits as a
+          prominent CTA below the header so it can't be missed. User spec:
+          "the app should try to build a better parlay with every refresh". */}
+      <Pressable
+        testID="parlay-regenerate"
+        onPress={onRegenerate}
+        disabled={refreshing}
+        style={({ pressed }) => [
+          styles.regenBtn,
+          { borderColor: accentColor },
+          (pressed || refreshing) && { opacity: 0.7 },
+        ]}
+      >
+        <Ionicons name="sparkles" size={16} color={accentColor} />
+        <Text style={[styles.regenTxt, { color: accentColor }]}>
+          {refreshing ? "BUILDING…" : "REGENERATE PARLAY"}
+        </Text>
+        {refreshNonce > 0 && !refreshing ? (
+          <Text style={[styles.regenCount, { color: accentColor }]}>
+            {refreshNonce}×
+          </Text>
+        ) : null}
+      </Pressable>
+
 
       <View style={styles.modeRow}>
         <Pressable
@@ -624,6 +666,27 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10, height: 30, borderRadius: 15, borderWidth: 1,
   },
   refreshTxt: { fontSize: 10, fontWeight: "900", letterSpacing: 1.5 },
+  // Regenerate parlay CTA — big, obvious, sits between header and mode tabs.
+  regenBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    marginHorizontal: 20,
+    marginBottom: 12,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    backgroundColor: "rgba(255, 215, 0, 0.06)",
+  },
+  regenTxt: { fontSize: 13, fontWeight: "900", letterSpacing: 1.5 },
+  regenCount: {
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+    opacity: 0.6,
+    marginLeft: 4,
+  },
   modeRow: { flexDirection: "row", gap: 8, paddingHorizontal: 20, paddingBottom: 10 },
   modeBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 9, borderRadius: 10, borderWidth: 1, borderColor: COLORS.borderDefault },
   modeBtnActive: { backgroundColor: COLORS.goldElite, borderColor: COLORS.goldElite },

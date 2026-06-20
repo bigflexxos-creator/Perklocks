@@ -322,7 +322,8 @@ export const api = {
            filters?: PickFilters, rank: number = 1, lockedIds: string[] = [],
            sportMode: "auto" | "custom" | "single" = "auto",
            windowHours: number = 24,
-           excludeSports: string[] = []) => {
+           excludeSports: string[] = [],
+           refreshNonce: number = 0) => {
     const qs = new URLSearchParams({
       legs: String(legs), mode, rank: String(rank),
       sport_mode: sportMode, window_hours: String(windowHours),
@@ -338,6 +339,7 @@ export const api = {
     if (filters?.market) qs.set("market", filters.market);
     if (filters?.league) qs.set("league", filters.league);
     if (lockedIds.length > 0) qs.set("locked_ids", lockedIds.join(","));
+    if (refreshNonce > 0) qs.set("refresh_nonce", String(refreshNonce));
     return request<{
       parlay: null | {
         legs: Pick[]; leg_count: number;

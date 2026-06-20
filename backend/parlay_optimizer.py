@@ -66,12 +66,27 @@ def max_same_sport_for_target(target_legs: int) -> int:
 
 MAX_SAME_GAME = 2              # Max 2 legs from same game (always)
 
-# Per-leg composite score weights (per spec)
-W_LOCK = 0.40
-W_EDGE = 0.25
-W_ROI = 0.20
-W_CORRELATION = 0.10
-W_MARKET_STABILITY = 0.05
+# Per-leg composite score weights — REBALANCED so win_probability is a
+# first-class signal. The old formula ignored win_probability entirely
+# (it sat in a comment as "reserved for future calibration"), which is
+# why the optimizer kept picking Win-or-Draw rows whose lock=98 masked
+# their middling win%. User spec: "should picking highest winning pct
+# pick into parlay simulator". New mix:
+#   30% Lock + 30% Win Probability + 20% Edge + 12% ROI + 5% Correlation + 3% Stability
+# This gives equal voice to model confidence (win_p) and market-side
+# confidence (lock_score) so the parlay can never again build a 5-leg
+# soccer ML monoculture on lock-score alone.
+W_LOCK = 0.30
+W_WIN_PROB = 0.30
+W_EDGE = 0.20
+W_ROI = 0.12
+W_CORRELATION = 0.05
+W_MARKET_STABILITY = 0.03
+
+# Max legs per parlay belonging to the same MARKET FAMILY (Win-or-Draw,
+# Moneyline, Goal Scorer, Over/Under, …). Prevents the "all Win-or-Draw"
+# Soccer high-risk parlay that prompted this overhaul.
+MAX_SAME_MARKET_FAMILY = 2
 
 # Health grade thresholds (parlay-level composite)
 GRADE_THRESHOLDS = [
@@ -207,18 +222,29 @@ def detect_anti_hero(pick: dict, bucket_map: dict) -> dict:
 # ──────────────────────────────────────────────────────────────────────────
 
 def score_leg(pick: dict, bucket_map: dict, current_legs: list[dict],
-              *, target_legs: int = 5, single_sport_mode: bool = False) -> float:
+              *, target_legs: int = 5, single_sport_mode: bool = False,
+              synergy_map: dict | None = None) -> float:
     """Composite leg score 0-100 per spec weighting:
-        40 % Lock  +  25 % Edge  +  20 % ROI  +  10 % Correlation  +  5 % Stability
+        30 % Lock  +  30 % Win Probability  +  20 % Edge  +  12 % ROI
+        +  5 % Correlation  +  3 % Stability  +  Synergy Bonus (-15..+15)
     `current_legs` is the parlay-in-progress (for correlation calc).
     `target_legs` & `single_sport_mode` change the same-sport penalty.
+    `synergy_map` is the learned per-(sport, market_family) parlay hit rate
+    map from parlay_learning. When provided, the score gets a small bonus
+    for combos historically won and a penalty for combos historically lost.
     """
     lock = float(pick.get("lock_score") or 0)
     edge = float(pick.get("edge_percent") or 0)
-    # win_p reserved for future calibration adjustments; not currently used.
+    win_p = float(pick.get("win_probability") or 0)
 
     # Lock component (already 0-99) — clamp to 0-100
     lock_component = min(100.0, max(0.0, lock))
+
+    # Win-probability component. Spec: should "pick highest winning pct
+    # picks". Map 50 % → 0, 90 % → 80, 99 % → 98. So a pick at 60 % gets
+    # 20, at 75 % gets 50, at 90 % gets 80. This makes win_p a major
+    # signal alongside lock_score instead of an ignored bystander.
+    win_prob_component = min(100.0, max(0.0, (win_p - 50.0) * 2.0))
 
     # Edge component: map -5 → 0, +5 → 50, +15+ → 100
     edge_component = min(100.0, max(0.0, (edge + 5.0) * 10.0))
@@ -267,6 +293,7 @@ def score_leg(pick: dict, bucket_map: dict, current_legs: list[dict],
 
     composite = (
         W_LOCK * lock_component
+        + W_WIN_PROB * win_prob_component
         + W_EDGE * edge_component
         + W_ROI * roi_component
         + W_CORRELATION * correlation_component
@@ -276,6 +303,19 @@ def score_leg(pick: dict, bucket_map: dict, current_legs: list[dict],
     # Apply anti-hero penalty
     anti = detect_anti_hero(pick, bucket_map)
     composite -= anti["penalty"]
+
+    # Apply learned parlay synergy bonus / penalty. When the (sport,
+    # market_family) of this leg has a track record of cashing parlays
+    # in our settled history (≥3 settled parlays of evidence), nudge the
+    # composite up to +15 / down to -15. Picks that LOOK strong but
+    # systematically tank our parlays (the kind of bug the user wanted
+    # solved) get scored down here. Picks that quietly cash parlays
+    # over and over get an organic boost.
+    if synergy_map is not None:
+        from parlay_learning import synergy_bonus  # local import — avoid cycle
+        family = _market_family(pick.get("market") or "")
+        sport = pick.get("sport") or ""
+        composite += synergy_bonus(synergy_map, sport, family)
 
     return max(0.0, min(100.0, composite))
 
@@ -395,6 +435,19 @@ def diversification_ok(current_legs: list[dict], candidate: dict,
                     if (L.get("event") or "") == (candidate.get("event") or ""))
     if same_event >= MAX_SAME_GAME:
         return False, "Max 2 legs from same game"
+    # Market-family cap — prevent the "all Win-or-Draw" monoculture.
+    # Without this, soccer high-risk parlays would consist of 5 W-or-D
+    # picks because they have the highest lock scores. User spec: "high
+    # risk soccer only putting win or draw" → fixed by capping each
+    # family to MAX_SAME_MARKET_FAMILY legs per parlay.
+    cand_family = _market_family(candidate.get("market") or "")
+    if cand_family != "other":
+        same_family = sum(
+            1 for L in current_legs
+            if _market_family(L.get("market") or "") == cand_family
+        )
+        if same_family >= MAX_SAME_MARKET_FAMILY:
+            return False, f"Max {MAX_SAME_MARKET_FAMILY} {cand_family.replace('_',' ')} legs"
     # No duplicate picks
     if any(L.get("id") == candidate.get("id") for L in current_legs):
         return False, "Duplicate pick"
@@ -550,13 +603,18 @@ def build_one_parlay(pool: list[dict], *, target_legs: int, high_risk: bool,
                     bucket_map: dict, seed_pick: dict | None = None,
                     locked_picks: list[dict] | None = None,
                     randomness: float = 0.0,
-                    single_sport_mode: bool = False) -> list[dict]:
+                    single_sport_mode: bool = False,
+                    rng_salt: int = 0,
+                    synergy_map: dict | None = None) -> list[dict]:
     """Build a single parlay greedily.
 
     1. Start with locked_picks (if any) + seed_pick (if provided).
     2. Repeatedly pick the highest-scoring eligible candidate that passes
        damage-control + diversification.
     3. Stop early if no candidate improves quality OR target_legs reached.
+
+    `rng_salt` mixes into the per-leg jitter so consecutive refresh nonces
+    produce different leg pickups even with the same seed.
     """
     locked_picks = list(locked_picks or [])
     legs = list(locked_picks)
@@ -564,7 +622,11 @@ def build_one_parlay(pool: list[dict], *, target_legs: int, high_risk: bool,
         legs.append(seed_pick)
 
     used_ids = {L.get("id") for L in legs}
-    rng = random.Random(hash((target_legs, high_risk, seed_pick.get("id") if seed_pick else "x")))
+    rng = random.Random(
+        hash((target_legs, high_risk,
+              seed_pick.get("id") if seed_pick else "x",
+              rng_salt))
+    )
 
     while len(legs) < target_legs:
         # Score all remaining eligible candidates
@@ -589,6 +651,7 @@ def build_one_parlay(pool: list[dict], *, target_legs: int, high_risk: bool,
                 cand, bucket_map, legs,
                 target_legs=target_legs,
                 single_sport_mode=single_sport_mode,
+                synergy_map=synergy_map,
             )
             # Inject randomness for candidate diversity (small)
             if randomness > 0:
@@ -626,13 +689,23 @@ def build_top_parlays(pool: list[dict], *, target_legs: int, high_risk: bool,
                      bucket_map: dict, n_candidates: int = N_CANDIDATES,
                      locked_picks: list[dict] | None = None,
                      rank: int = 1,
-                     single_sport_mode: bool = False) -> list[dict]:
+                     single_sport_mode: bool = False,
+                     refresh_nonce: int = 0,
+                     avoid_signatures: set[tuple] | None = None,
+                     synergy_map: dict | None = None) -> list[dict]:
     """Generate ~N candidate parlays, score them, return Top 3 labelled.
 
     `rank` lets the frontend "refresh" cycle through next-best candidates
     without randomising — rank=1 returns the canonical top-3, rank=2 returns
     the 4th-6th best parlays, etc.
     `single_sport_mode` disables the same-sport diversification cap.
+    `refresh_nonce` perturbs the seed-pick shuffle so consecutive refreshes
+    return *different* parlays even when the underlying pool is identical
+    (user spec: "the app should try to build a better parlay with every
+    refresh"). nonce=0 → canonical run, nonce>0 → shuffled.
+    `avoid_signatures` is an optional set of leg-id tuples to skip — used
+    by the regenerate flow so the user never sees the same parlay twice
+    in a row.
     """
     if not pool:
         return []
@@ -646,30 +719,44 @@ def build_top_parlays(pool: list[dict], *, target_legs: int, high_risk: bool,
     eligible_pool.sort(
         key=lambda p: score_leg(p, bucket_map, [],
                                 target_legs=target_legs,
-                                single_sport_mode=single_sport_mode),
+                                single_sport_mode=single_sport_mode,
+                                synergy_map=synergy_map),
         reverse=True,
     )
 
     candidates: list[dict] = []
-    # Seed from the top-N picks AND a few mid-pool picks to get variety
-    seed_indices = list(range(min(len(eligible_pool), max(20, n_candidates // 2))))
-    # Add some randomised seeds for variety
-    extra_seeds = list(range(len(eligible_pool)))
-    random.Random(7).shuffle(extra_seeds)
-    seed_indices.extend(extra_seeds[:max(0, n_candidates - len(seed_indices))])
-    seen_signatures: set = set()
+    # Seed from the top-N picks AND a few mid-pool picks to get variety.
+    # When refresh_nonce > 0 we widen + shuffle so the next refresh sees
+    # different seeds (and therefore different parlays).
+    if refresh_nonce > 0:
+        # Bigger pool of seeds and a per-request shuffle.
+        seed_count = min(len(eligible_pool), max(40, n_candidates))
+        seed_indices = list(range(seed_count))
+        random.Random(refresh_nonce + 1).shuffle(seed_indices)
+    else:
+        seed_indices = list(range(min(len(eligible_pool), max(20, n_candidates // 2))))
+        extra_seeds = list(range(len(eligible_pool)))
+        random.Random(7).shuffle(extra_seeds)
+        seed_indices.extend(extra_seeds[:max(0, n_candidates - len(seed_indices))])
+    seen_signatures: set = set(avoid_signatures or set())
 
     for i, idx in enumerate(seed_indices[:n_candidates]):
         if idx >= len(eligible_pool):
             continue
         seed = eligible_pool[idx]
-        # Slight randomness for non-top seeds for variety
-        randomness = 0.0 if i < 10 else 4.0
+        # Slight randomness for non-top seeds for variety. With nonce>0,
+        # bump the randomness floor so the build path diverges noticeably
+        # between refreshes.
+        if refresh_nonce > 0:
+            randomness = 2.0 + (i % 7)         # 2-8 range, varies per seed
+        else:
+            randomness = 0.0 if i < 10 else 4.0
         legs = build_one_parlay(eligible_pool, target_legs=target_legs,
                                 high_risk=high_risk, bucket_map=bucket_map,
                                 seed_pick=seed, locked_picks=locked_picks,
                                 randomness=randomness,
-                                single_sport_mode=single_sport_mode)
+                                single_sport_mode=single_sport_mode,
+                                rng_salt=refresh_nonce)
         min_legs = 5 if high_risk else 2
         if len(legs) < min_legs:
             continue
