@@ -123,12 +123,15 @@ export default function ParlayScreen() {
     setRefreshNonce((n) => n + 1);
   };
 
-  // Big "REGENERATE" button — pure nonce bump (keeps rank=1). Designed
-  // to always offer the user a freshly-shuffled top parlay. Pinned legs
-  // survive (the optimizer respects lockedIds).
+  // Big "REGENERATE" button — bumps both nonce (different seed) AND
+  // cycles to the next-best parlay rank. The combination guarantees a
+  // visibly different parlay even when the underlying pick pool is
+  // identical (just bumping the seed by itself can collapse back to
+  // the same greedy-optimal build). Pinned legs still survive — the
+  // optimizer respects lockedIds.
   const onRegenerate = useCallback(() => {
     setRefreshing(true);
-    setRank(1);
+    setRank((r) => (r >= 4 ? 1 : r + 1));
     setRefreshNonce((n) => n + 1);
   }, []);
 
