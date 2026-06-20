@@ -1252,16 +1252,19 @@ async def _fetch_tennis_event_alts(sport_key: str, event_id: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _pick_sweet_spot_alt(
-    outcomes: list[dict], side_name: str | None = None,
-) -> dict | None:
-    """From a list of alt-market outcomes, pick the one whose implied
-    probability sits inside the sweet-spot band (78-93%). If `side_name`
-    is given, restrict to outcomes for that side (e.g. just the favored
-    player or just Over). Prefers the HIGHEST-implied within band so we
-    surface the chalkiest still-acceptable lock."""
-    best: dict | None = None
-    best_implied = 0.0
+def _pick_sweet_spot_alts(
+    outcomes: list[dict],
+    side_name: str | None = None,
+    *,
+    limit: int = 3,
+) -> list[dict]:
+    """From a list of alt-market outcomes, return up to `limit` chalky
+    alt lines within the sweet-spot band (55-93% implied), sorted
+    highest-implied first. User spec: "With tennis alt you can get
+    lower odds up -500" — books expose alts as chalky as -500/-833,
+    surface multiple chalk tiers so the user can pick their risk
+    appetite instead of only seeing the single safest line."""
+    keep: list[tuple[float, dict]] = []
     for o in outcomes or []:
         if side_name and o.get("name") != side_name:
             continue
@@ -1271,9 +1274,29 @@ def _pick_sweet_spot_alt(
         imp = _implied_prob(int(price))
         if not (_TENNIS_ALT_MIN_IMPLIED <= imp <= _TENNIS_ALT_MAX_IMPLIED):
             continue
-        if imp > best_implied:
-            best, best_implied = o, imp
-    return best
+        keep.append((imp, o))
+    # Sort chalkiest first (highest implied probability).
+    keep.sort(key=lambda t: t[0], reverse=True)
+    out: list[dict] = []
+    seen_points: set = set()
+    for _imp, o in keep:
+        pt = o.get("point")
+        if pt in seen_points:
+            continue
+        seen_points.add(pt)
+        out.append(o)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _pick_sweet_spot_alt(
+    outcomes: list[dict], side_name: str | None = None,
+) -> dict | None:
+    """Back-compat wrapper for callers that want only ONE chalkiest
+    sweet-spot alt (used by alt-totals)."""
+    picks = _pick_sweet_spot_alts(outcomes, side_name=side_name, limit=1)
+    return picks[0] if picks else None
 
 
 def _alt_outcomes_for_market(payload: dict, market_key: str) -> list[dict]:
@@ -1334,72 +1357,79 @@ def _build_tennis_alt_picks(
     out_picks: list[dict] = []
     league_label = LEAGUE_LABELS.get(sport_key, "Tennis")
 
-    # ── Alt spread: favored side's chalkiest acceptable handicap ──
+    # ── Alt spreads: up to 3 chalky lines for the FAVORED side + up to
+    # 2 for the underdog. Yields a "chalk ladder" so the user sees
+    # multiple risk tiers (e.g., -833, -500, -300) per match —
+    # user spec: "you can get lower odds up -500".
     spread_outs = _alt_outcomes_for_market(alt_payload, "alternate_spreads")
     if spread_outs and favored:
-        pick_obj = _pick_sweet_spot_alt(spread_outs, side_name=favored)
-        if pick_obj:
-            line = pick_obj.get("point")
-            price = int(pick_obj.get("price"))
-            imp = _implied_prob(price)
-            mp = max(0.50, min(0.92, imp + 0.02))  # tiny model nudge above book
-            factors = _factors_random(random.Random(abs(hash(event_id + "alt_sp")) % 10000), "Tennis_ml")
-            lock, breakdown = compute_lock_score(
-                factors, win_prob=mp * 100, edge_percent=(mp * 100 - imp * 100)
-            )
-            sign = "+" if (line or 0) > 0 else ""
-            out_picks.append(_build_pick(
-                sport="Tennis", league=league_label, event=f"{away} @ {home}",
-                event_time=commence,
-                market=f"{favored} {sign}{line} Games (Alt)",
-                pick_side=favored,
-                model_win_prob=mp, book_odds=price,
-                lock=lock, factors=breakdown,
-                insights=[
-                    f"Alt game spread — book implies {imp*100:.0f}% win probability",
-                    f"Chalky line ({price:+d}) but safer cover than ML",
-                ],
-                external_id=f"Tennis-{event_id}-alt-spread-{line}",
-                is_alt_prop=True,
-            ))
+        # Underdog name (the OTHER team)
+        underdog = away if favored == home else home
+        for side, take in ((favored, 3), (underdog, 2)):
+            picks_for_side = _pick_sweet_spot_alts(spread_outs, side_name=side, limit=take)
+            for pick_obj in picks_for_side:
+                line = pick_obj.get("point")
+                price = int(pick_obj.get("price"))
+                imp = _implied_prob(price)
+                mp = max(0.50, min(0.92, imp + 0.02))
+                factors = _factors_random(
+                    random.Random(abs(hash(f"{event_id}-altsp-{side}-{line}")) % 10000),
+                    "Tennis_ml",
+                )
+                lock, breakdown = compute_lock_score(
+                    factors, win_prob=mp * 100, edge_percent=(mp * 100 - imp * 100)
+                )
+                sign = "+" if (line or 0) > 0 else ""
+                out_picks.append(_build_pick(
+                    sport="Tennis", league=league_label, event=f"{away} @ {home}",
+                    event_time=commence,
+                    market=f"{side} {sign}{line} Games (Alt)",
+                    pick_side=side,
+                    model_win_prob=mp, book_odds=price,
+                    lock=lock, factors=breakdown,
+                    insights=[
+                        f"Alt game spread — book implies {imp*100:.0f}% cover probability",
+                        f"Chalk level: {price:+d} American "
+                        + ("(deep favorite)" if imp >= 0.80 else "(moderate chalk)"),
+                    ],
+                    external_id=f"Tennis-{event_id}-alt-spread-{side}-{line}",
+                    is_alt_prop=True,
+                ))
 
-    # ── Alt total: chalkiest Over within band; fall back to Under ──
+    # ── Alt totals: up to 3 chalky Over OR Under lines. We keep BOTH
+    # sides if both have in-band offerings (different points), so the
+    # user can pick directionally. ──
     total_outs = _alt_outcomes_for_market(alt_payload, "alternate_totals")
     if total_outs:
-        over_pick = _pick_sweet_spot_alt(total_outs, side_name="Over")
-        under_pick = _pick_sweet_spot_alt(total_outs, side_name="Under")
-        # Prefer whichever has the higher implied (chalkiest lock).
-        chosen = over_pick
-        if (under_pick and not over_pick) or (
-            over_pick and under_pick
-            and _implied_prob(int(under_pick.get("price")))
-                > _implied_prob(int(over_pick.get("price")))
-        ):
-            chosen = under_pick
-        if chosen:
-            side = chosen.get("name")
-            line = chosen.get("point")
-            price = int(chosen.get("price"))
-            imp = _implied_prob(price)
-            mp = max(0.50, min(0.92, imp + 0.02))
-            factors = _factors_random(random.Random(abs(hash(event_id + "alt_tot")) % 10000), "Tennis_ml")
-            lock, breakdown = compute_lock_score(
-                factors, win_prob=mp * 100, edge_percent=(mp * 100 - imp * 100)
-            )
-            out_picks.append(_build_pick(
-                sport="Tennis", league=league_label, event=f"{away} @ {home}",
-                event_time=commence,
-                market=f"{side} {line} Games (Alt)",
-                pick_side=side,
-                model_win_prob=mp, book_odds=price,
-                lock=lock, factors=breakdown,
-                insights=[
-                    f"Alt game total — book implies {imp*100:.0f}% hit rate",
-                    f"Sweet-spot line: not absurdly chalky, gives realistic cover",
-                ],
-                external_id=f"Tennis-{event_id}-alt-total-{side}-{line}",
-                is_alt_prop=True,
-            ))
+        for side in ("Over", "Under"):
+            picks_for_side = _pick_sweet_spot_alts(total_outs, side_name=side, limit=3)
+            for pick_obj in picks_for_side:
+                line = pick_obj.get("point")
+                price = int(pick_obj.get("price"))
+                imp = _implied_prob(price)
+                mp = max(0.50, min(0.92, imp + 0.02))
+                factors = _factors_random(
+                    random.Random(abs(hash(f"{event_id}-alttot-{side}-{line}")) % 10000),
+                    "Tennis_ml",
+                )
+                lock, breakdown = compute_lock_score(
+                    factors, win_prob=mp * 100, edge_percent=(mp * 100 - imp * 100)
+                )
+                out_picks.append(_build_pick(
+                    sport="Tennis", league=league_label, event=f"{away} @ {home}",
+                    event_time=commence,
+                    market=f"{side} {line} Games (Alt)",
+                    pick_side=side,
+                    model_win_prob=mp, book_odds=price,
+                    lock=lock, factors=breakdown,
+                    insights=[
+                        f"Alt game total — book implies {imp*100:.0f}% hit rate",
+                        f"Chalk level: {price:+d} "
+                        + ("(deep chalk)" if imp >= 0.80 else "(moderate)"),
+                    ],
+                    external_id=f"Tennis-{event_id}-alt-total-{side}-{line}",
+                    is_alt_prop=True,
+                ))
 
     return [p for p in out_picks if p is not None]
 
