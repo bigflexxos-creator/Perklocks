@@ -23,7 +23,7 @@ from auth import (  # noqa: E402
     get_current_user_from_db, oauth2_scheme,
 )
 from sports_engine import generate_all_picks  # noqa: E402
-from ai_engine import explain_pick, bet_killer_warning, analyze_loss  # noqa: E402
+from ai_engine import explain_pick, analyze_loss  # noqa: E402
 from settlement_engine import settle_due_picks  # noqa: E402
 
 logging.basicConfig(level=logging.INFO,
@@ -1722,11 +1722,10 @@ async def pick_detail(pick_id: str,
     # feed card. Single source of truth — see `_canonicalize_lock_score` doc.
     pick = _canonicalize_lock_score(pick)
     if not pick.get("explanation"):
-        from ai_engine import _fallback_explanation, _fallback_killer
-        if pick.get("lock_score", 0) >= 85:
-            pick["explanation"] = _fallback_explanation(pick)
-        else:
-            pick["explanation"] = _fallback_killer(pick)
+        from ai_engine import _fallback_explanation
+        # Every pick reaching the UI is a recommended pick — always use the
+        # "why to BET" fallback. Legacy bet-killer warning path retired.
+        pick["explanation"] = _fallback_explanation(pick)
         pick["ai_pending"] = True
     else:
         pick["ai_pending"] = False
@@ -1747,8 +1746,7 @@ async def pick_ai_explain(pick_id: str,
     if cached:
         return {"explanation": cached, "source": "cached"}
     # All picks reaching the UI are recommended picks (NO_BET filter removed
-    # the bad ones). Always generate the "why to BET" explanation, never the
-    # legacy bet-killer warning.
+    # the bad ones). Always generate the "why to BET" explanation.
     text, real = await explain_pick(pick)
     if real:
         await db.picks.update_one(

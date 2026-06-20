@@ -169,7 +169,7 @@ const styles = StyleSheet.create({
   logoutBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10,
     padding: 16, marginTop: 24, borderRadius: 12,
-    borderWidth: 1, borderColor: COLORS.killerBorder, backgroundColor: COLORS.killerSurface,
+    borderWidth: 1, borderColor: COLORS.dangerBorder, backgroundColor: COLORS.dangerSurface,
   },
   logoutText: { color: COLORS.electricBlaze, fontWeight: "900", letterSpacing: 2, fontSize: 13 },
   footerNote: {
