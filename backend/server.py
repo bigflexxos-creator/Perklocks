@@ -1925,6 +1925,15 @@ try:
 except Exception as _slab_mount_err:
     logger.warning("Soccer Lab failed to mount, continuing without it: %s", _slab_mount_err)
 
+# Mount Auto-Elite Discovery — exposes data-driven scorer profiles + trends.
+# Endpoints: /api/auto-elite, /api/player-profiles, /api/auto-elite/recompute.
+try:
+    from auto_elite import router as auto_elite_router
+    api.include_router(auto_elite_router)
+    logger.info("Auto-Elite module mounted at /api/auto-elite + /api/player-profiles")
+except Exception as _ae_mount_err:
+    logger.warning("Auto-Elite failed to mount, continuing without it: %s", _ae_mount_err)
+
 app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
