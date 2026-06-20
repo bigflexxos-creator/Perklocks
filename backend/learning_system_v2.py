@@ -427,11 +427,32 @@ async def apply_v2_to_picks(picks: list[dict], db) -> list[dict]:
 
     blacklisted_count = 0
 
+    # Load auto-elite scorer set (auto-discovered from settled data: players
+    # with ≥5 settled picks and ≥55% hit rate over last 90 days).
+    auto_elite_set: set[str] = set()
+    try:
+        from auto_elite import load_auto_elite_set, name_in_market
+        auto_elite_set = await load_auto_elite_set(db, sport="Soccer")
+    except Exception:
+        name_in_market = None  # type: ignore
+
+    def _is_elite_or_auto(p: dict) -> bool:
+        if p.get("elite_player"):
+            return True
+        if not auto_elite_set or not name_in_market:
+            return False
+        market = p.get("market") or ""
+        for n in auto_elite_set:
+            if name_in_market(market, n):
+                # Tag the pick so downstream UI sees the badge
+                p["auto_elite"] = True
+                p["elite_player_name"] = p.get("elite_player_name") or n.title()
+                return True
+        return False
+
     # Per-event goalscorer cap: keep top 2 by lock_score, flag rest as no_bet.
-    # ELITE-AWARE: elite players (Vini Jr, Messi, Mbappé, Kane, Salah, Haaland,
-    # etc. — see elite_players.ELITE_PLAYERS["Soccer"]) ALWAYS keep a slot.
-    # Remaining slots fill by lock_score. This prevents both flooding AND
-    # losing the marquee names that should anchor a match's coverage.
+    # ELITE-AWARE: hardcoded ELITE_PLAYERS (Mbappé/Vini/Messi/Kane) + AUTO-ELITE
+    # (data-discovered scorers ≥55% hit rate). Both protected from cap.
     GS_PICKS_PER_EVENT = 2
     gs_by_event: dict[str, list[dict]] = {}
     for p in picks:
@@ -440,13 +461,11 @@ async def apply_v2_to_picks(picks: list[dict], db) -> list[dict]:
     for event, gs in gs_by_event.items():
         if len(gs) <= GS_PICKS_PER_EVENT:
             continue
-        # Sort: elite first (preserved automatically), then by lock_score desc
+        # Sort: elites (hardcoded or auto) first, then by lock_score desc
         gs.sort(key=lambda x: (
-            0 if x.get("elite_player") else 1,    # elites at the top
-            -float(x.get("lock_score") or 0),     # then by lock_score desc
+            0 if _is_elite_or_auto(x) else 1,
+            -float(x.get("lock_score") or 0),
         ))
-        # If multiple elites compete, keep up to GS_PICKS_PER_EVENT of them.
-        # If only 1 elite, it gets slot 1 + best non-elite gets slot 2.
         for extra in gs[GS_PICKS_PER_EVENT:]:
             extra["no_bet"] = True
             extra["no_bet_reason"] = (
