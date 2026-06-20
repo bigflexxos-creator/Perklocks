@@ -1337,6 +1337,41 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         synergy_map=synergy_map,
     )
 
+    # ─── HIGH-RISK SAFETY NET: auto-expand window if empty ───
+    # User feedback: "when I go 72hrs out I see soccer legs on board
+    # that meet that criteria" — so if the requested window is too tight
+    # and yields no parlays, automatically widen up to 168h (a week) so
+    # the high-risk mode is never broken just because TODAY's slate is
+    # thin. Standard mode does NOT auto-expand (user wants tight 24h
+    # parlays for sharp action).
+    auto_expanded_to: int | None = None
+    if not top and is_high_risk and window_hours < 168:
+        for fallback_window in (72, 168):
+            if fallback_window <= window_hours:
+                continue
+            fb_cap = (now_utc + timedelta(hours=fallback_window)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            fb_q = {**base_q}
+            fb_q["event_time"] = {"$gte": window_floor_iso, "$lte": fb_cap}
+            fb_pool = await db.picks.find(fb_q, {"_id": 0}).sort("lock_score", -1).limit(400).to_list(length=400)
+            if len(fb_pool) < 5:
+                continue
+            fb_top = build_top_parlays(
+                fb_pool, target_legs=target_legs, high_risk=is_high_risk,
+                bucket_map=bucket_map, rank=max(1, rank),
+                locked_picks=locked_picks if locked_picks else None,
+                single_sport_mode=is_single_sport,
+                refresh_nonce=int(refresh_nonce or 0),
+                synergy_map=synergy_map,
+            )
+            if fb_top:
+                top = fb_top
+                auto_expanded_to = fallback_window
+                logger.info(
+                    "High-risk parlay auto-expanded window %dh → %dh (%d candidate picks)",
+                    window_hours, fallback_window, len(fb_pool),
+                )
+                break
+
     if not top:
         hints = []
         if mode_lower == "single" and sport_q:
@@ -1386,6 +1421,7 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         "rank": rank,
         "locked_ids": [p.get("id") for p in locked_picks],
         "window_hours": window_hours,
+        "auto_expanded_to": auto_expanded_to,
         "sport_mode": mode_lower,
     }
 
