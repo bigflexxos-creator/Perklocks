@@ -1351,6 +1351,16 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         }
 
     payloads = [parlay_to_payload(p, bucket_map) for p in top]
+    # Persist this parlay slate into history so the learning loop has
+    # data to settle and aggregate from. Cheap — dedupes by signature.
+    try:
+        from parlay_learning import record_parlay_shown
+        for card in payloads:
+            await record_parlay_shown(
+                db, card, mode=mode or "standard", sport_mode=mode_lower,
+            )
+    except Exception as _rec_err:
+        logger.warning("record_parlay_shown skipped: %s", _rec_err)
     legacy = payloads[1] if len(payloads) > 1 else payloads[0]
     return {
         "parlay": {
@@ -1368,148 +1378,6 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         "window_hours": window_hours,
         "sport_mode": mode_lower,
     }
-    """Parlay Optimizer V1 — highest-probability parlay builder.
-
-    Modes:
-      - standard: Lock>=88, Edge>=+3%, ROI non-negative. Legs 2-5 (target).
-      - high_risk: Lock>=75, Edge>=+1%. Legs 10-20 (target).
-
-    Returns TOP 3 parlays labelled SAFE / BALANCED / AGGRESSIVE in one
-    response. The builder enforces survival-damage control, no-filler-legs,
-    diversification (max 40% same sport, max 2 same game), correlation
-    penalties, and anti-hero detection.
-
-    Refresh: pass `rank=2`, `rank=3`, ... to cycle to next-best candidates
-    in each survival band. `locked_ids` is a comma-separated list of pick
-    IDs that MUST be included in every returned parlay (pin-leg feature).
-    """
-    from parlay_optimizer import (
-        build_top_parlays, parlay_to_payload,
-    )
-    await _ensure_today_picks()
-    is_high_risk = (mode or "").lower() == "high_risk"
-
-    # ─── Build pool with the same filters as before ───
-    sport_q = (sport or "").strip()
-    sport_filter: dict = {}
-    if sport_q and sport_q.lower() not in ("mix", "all", ""):
-        sport_filter = {"sport": sport_q}
-    else:
-        if exclude_sports:
-            excluded = [s.strip() for s in exclude_sports.split(",") if s.strip()]
-            if excluded:
-                sport_filter = {"sport": {"$nin": excluded}}
-    lt = (line_type or "").lower()
-    line_filter: dict = {}
-    if lt == "main":
-        line_filter = {"is_alt": {"$ne": True}}
-    elif lt == "alt":
-        line_filter = {"is_alt": True}
-    market_filter: dict = {}
-    if market:
-        regex = _market_regex(market)
-        if regex:
-            market_filter = {"market": {"$regex": regex, "$options": "i"}}
-    league_filter: dict = {}
-    if league:
-        league_filter = {"league": {"$regex": str(league).replace("\\", ""), "$options": "i"}}
-
-    target_legs = max(10, min(20, max(1, int(legs or 10)))) if is_high_risk else max(2, min(8, max(1, int(legs or 3))))
-    rank = max(1, min(20, int(rank or 1)))  # clamp refresh cursor to 1-20
-
-    # ─── Fetch candidate pool ───
-    # Broad pool — optimizer applies hard eligibility filters internally.
-    base_q = {
-        "pick_date": _today_str(),
-        "no_bet": {"$ne": True},
-        "is_under_lock": {"$ne": True},
-        **sport_filter, **line_filter, **market_filter, **league_filter,
-    }
-    # In standard mode, use lock>=85 floor so we have headroom above the
-    # optimizer's 88 hard cut.  High-risk uses lock>=70 to cast wider net.
-    base_q["lock_score"] = {"$gte": 70 if is_high_risk else 85}
-    pool = await db.picks.find(base_q, {"_id": 0}).sort("lock_score", -1).limit(300).to_list(length=300)
-
-    # ─── Build bucket-map for ROI scoring ───
-    # Convert _historical_winrates → optimizer-expected shape {(sport, family): {roi, n}}.
-    # We use winrate-vs-global as a proxy ROI when no learning-v2 row exists.
-    raw_buckets = await _historical_winrates()
-    global_rate = raw_buckets.get("__global__", 0.55)
-    bucket_map: dict = {}
-    for k, v in raw_buckets.items():
-        if k == "__global__":
-            continue
-        winrate = v.get("winrate", 0.0)
-        n = v.get("n", 0)
-        # Proxy ROI: (winrate - 0.524) / 0.524 ≈ ROI assuming -110 vig book.
-        # 52.4% win-rate = break-even. 60% → +14% ROI.
-        proxy_roi = (winrate - 0.524) / 0.524 if winrate > 0 else 0.0
-        bucket_map[k] = {"roi": proxy_roi, "n": n}
-
-    # ─── Resolve locked picks ───
-    locked_picks: list[dict] = []
-    if locked_ids:
-        wanted = [s.strip() for s in locked_ids.split(",") if s.strip()]
-        if wanted:
-            locked_picks = await db.picks.find(
-                {"id": {"$in": wanted}, "pick_date": _today_str()},
-                {"_id": 0},
-            ).to_list(length=len(wanted))
-
-    # ─── Run the optimizer ───
-    top = build_top_parlays(
-        pool, target_legs=target_legs, high_risk=is_high_risk,
-        bucket_map=bucket_map, rank=max(1, rank),
-        locked_picks=locked_picks if locked_picks else None,
-    )
-
-    if not top:
-        if sport_filter and sport_q:
-            sport_hint = f" in {sport_q}"
-        elif exclude_sports:
-            sport_hint = f" (excluding {exclude_sports})"
-        else:
-            sport_hint = ""
-        return {
-            "parlay": None,
-            "parlays": [],
-            "reason": (
-                f"Not enough qualifying picks today{sport_hint} to build a "
-                f"{target_legs}-leg parlay (need Lock>=88, Edge>=+3%, "
-                f"positive ROI)."
-            ),
-        }
-
-    payloads = [parlay_to_payload(p, bucket_map) for p in top]
-    # Persist this parlay slate into history so the learning loop has
-    # data to settle and aggregate from. Cheap — dedupes by signature.
-    try:
-        from parlay_learning import record_parlay_shown
-        for card in payloads:
-            await record_parlay_shown(
-                db, card, mode=mode or "standard", sport_mode=mode_lower,
-            )
-    except Exception as _rec_err:
-        logger.warning("record_parlay_shown skipped: %s", _rec_err)
-    # Legacy field for backward compatibility — return the BALANCED card
-    # (middle of survival) as `parlay`. Frontend should prefer `parlays`.
-    legacy = payloads[1] if len(payloads) > 1 else payloads[0]
-    return {
-        "parlay": {
-            # Legacy-shaped fields the old UI consumed
-            "legs": legacy["legs"],
-            "leg_count": legacy["leg_count"],
-            "combined_decimal_odds": legacy["combined_decimal_odds"],
-            "combined_american_odds": legacy["combined_american_odds"],
-            "combined_win_probability": legacy["survival_pct"],
-            "payout_on_100": legacy["payout_on_100"],
-            "profit_on_100": legacy["profit_on_100"],
-        },
-        "parlays": payloads,
-        "rank": rank,
-        "locked_ids": [p.get("id") for p in locked_picks],
-    }
-
 
 # Static routes MUST be declared BEFORE the parameterized /picks/{pick_id}
 # route, otherwise FastAPI's routing would match them as a pick_id.
