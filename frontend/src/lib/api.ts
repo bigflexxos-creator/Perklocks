@@ -422,6 +422,26 @@ export const api = {
       alternatives: any[];
       rule: "single" | "co_best" | "best_with_alts" | "dominant" | "no_candidates";
     }>(`/picks/${id}/market-rank`),
+  pickScorerBundles: (id: string) =>
+    request<{
+      pick_id: string;
+      eligible: boolean;
+      synthesizable?: boolean;
+      note?: string;
+      player?: string;
+      primary_market?: string;
+      primary_odds?: number;
+      primary_implied_pct?: number;
+      "expected_goals_\u03bb"?: number;
+      bundles?: Array<{
+        name: string;
+        type: "primary" | "synthesized";
+        probability: number;
+        fair_american: string;
+        decimal: number;
+      }>;
+      method?: string;
+    }>(`/picks/${id}/scorer-bundles`),
   soccerLabLeagues: (refresh = false) =>
     request<{
       leagues: Array<{ key: string; title: string; group: string; description: string; has_outrights: boolean }>;
