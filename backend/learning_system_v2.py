@@ -427,6 +427,27 @@ async def apply_v2_to_picks(picks: list[dict], db) -> list[dict]:
 
     blacklisted_count = 0
 
+    # Per-event goalscorer cap: keep top 2 by lock_score, flag rest as no_bet.
+    # Prevents flooding the feed with 5+ "Anytime Goal Scorer" picks for a
+    # single match (e.g. Brazil vs Haiti spawning Vinicius + Rodrygo +
+    # Neymar + ... when realistically only the top 1-2 are real edges).
+    GS_PICKS_PER_EVENT = 2
+    gs_by_event: dict[str, list[dict]] = {}
+    for p in picks:
+        if "goal scorer" in (p.get("market") or "").lower():
+            gs_by_event.setdefault(p.get("event") or "", []).append(p)
+    for event, gs in gs_by_event.items():
+        if len(gs) <= GS_PICKS_PER_EVENT:
+            continue
+        gs.sort(key=lambda x: -float(x.get("lock_score") or 0))
+        for extra in gs[GS_PICKS_PER_EVENT:]:
+            extra["no_bet"] = True
+            extra["no_bet_reason"] = (
+                f"Max {GS_PICKS_PER_EVENT} goalscorer picks per match — "
+                f"surfaced top {GS_PICKS_PER_EVENT} only"
+            )
+            extra["capped_by_learning"] = True
+
     for p in picks:
         sport = p.get("sport") or "Unknown"
         league = p.get("league")

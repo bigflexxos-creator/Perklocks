@@ -379,18 +379,19 @@ const styles = StyleSheet.create({
   },
   toastText: { color: COLORS.textPrimary, fontSize: 13, fontWeight: "700" },
   refreshBtn: {
-    width: 56, height: 40, borderRadius: 20,
+    minWidth: 64, height: 40, borderRadius: 20,
     backgroundColor: COLORS.surface, alignItems: "center", justifyContent: "center",
     borderWidth: 1, borderColor: COLORS.borderDefault,
-    paddingHorizontal: 8,
+    paddingHorizontal: 12,
   },
   refreshBtnDisabled: {
     borderColor: COLORS.goldElite,
     opacity: 0.85,
   },
   refreshBtnCountdown: {
-    color: COLORS.goldElite, fontSize: 12, fontWeight: "800",
-    letterSpacing: 0.3, fontVariant: ["tabular-nums"],
+    color: COLORS.goldElite, fontSize: 11, fontWeight: "800",
+    letterSpacing: 0, fontVariant: ["tabular-nums"],
+    textAlign: "center",
   },
   statsRow: { flexDirection: "row", paddingHorizontal: 20, gap: 10, marginBottom: 6 },
   controlsRow: { flexDirection: "row", alignItems: "center" },

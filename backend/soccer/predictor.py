@@ -196,16 +196,31 @@ def to_picks_collection_doc(pred: dict) -> dict:
     """Convert a soccer prediction into the existing `picks` schema."""
     conf = float(pred.get("confidence") or 0)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # ── User-friendly market label.
+    # "Match Result (1X2)" → "{Team} to Win" / "{Team} or Draw" / "Draw"
+    sel = pred.get("selection") or ""
+    side = (pred.get("pick_side") or "").lower()
+    if side == "draw" or sel.lower() == "draw":
+        friendly_market = "Match Result · Draw"
+    elif "or draw" in sel.lower():
+        friendly_market = f"{sel}"  # already "Team Win or Draw"
+    elif side in ("home", "away"):
+        friendly_market = f"{sel} to Win"
+    else:
+        friendly_market = sel or pred.get("market") or "Match Result"
     return {
         "id":               pred["id"],
         "sport":            "Soccer",
         "league":           pred.get("league") or "Soccer",
         "event":            pred["event"],
         "event_time":       pred.get("event_time") or "",
-        "market":           pred["market"],
-        "selection":        pred["selection"],
-        "win_probability":  round(conf / 100.0, 4),
-        "implied_probability": 0.5,
+        "market":           friendly_market,
+        "selection":        sel,
+        # Win probability stored as 0-100 percentage (matches main pipeline).
+        # Previously was incorrectly stored as 0-1 decimal which made the UI
+        # show "0.96%" instead of "96%".
+        "win_probability":  round(conf, 1),
+        "implied_probability": 50.0,
         "book_odds":        100,
         "edge_percent":     round((conf - 50.0) / 5.0, 2),
         "lock_score":       round(conf, 1),
