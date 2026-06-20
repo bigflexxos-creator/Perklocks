@@ -7,7 +7,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
-import { api, Pick, LineType, ParlayCard } from "@/src/lib/api";
+import { api, LineType, ParlayCard } from "@/src/lib/api";
 import { LineTypeToggle } from "@/src/components/LineTypeToggle";
 import { SportFilterBar } from "@/src/components/SportFilterBar";
 import { useParlayPreferences } from "@/src/lib/useParlayPreferences";
@@ -160,15 +160,20 @@ export default function ParlayScreen() {
   const isHighRisk = mode === "high_risk";
   const legOptions = isHighRisk ? [10, 15, 20] : [2, 3, 4, 5];
   const accentColor = isHighRisk ? COLORS.electricBlaze : COLORS.goldElite;
+  // Sport list — kept in PARITY with the Home feed (src/theme.ts SPORTS)
+  // so the user sees the same set of tabs everywhere. Order matches
+  // the home feed for muscle-memory consistency.
+  // NOTE: removed the legacy "mix" pseudo-chip — AUTO mode already
+  // means "all sports allowed", so a separate MIX chip was redundant
+  // and was the reason the sport tab row looked half-empty.
   const SPORT_OPTIONS = useMemo(
     () => [
-      { id: "mix", label: "MIX" },
-      { id: "MLB", label: "MLB" },
-      { id: "NBA", label: "NBA" },
-      { id: "Tennis", label: "TENNIS" },
-      { id: "NFL", label: "NFL" },
+      { id: "MLB",    label: "MLB" },
+      { id: "NBA",    label: "NBA" },
+      { id: "NFL",    label: "NFL" },
       { id: "Soccer", label: "SOCCER" },
-      { id: "UFC", label: "UFC" },
+      { id: "Tennis", label: "TENNIS" },
+      { id: "UFC",    label: "UFC" },
     ],
     [],
   );
@@ -302,7 +307,7 @@ export default function ParlayScreen() {
             : "SPORT"}
         </Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sportRow}>
-          {SPORT_OPTIONS.filter((o) => o.id !== "mix" || sportMode === "single").map((opt) => {
+          {SPORT_OPTIONS.map((opt) => {
             // AUTO: every sport visually "live"; tapping locks to that sport.
             // CUSTOM: include toggle.
             // SINGLE: single-select.
