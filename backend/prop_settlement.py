@@ -696,7 +696,17 @@ async def _settle_group(cx, db, sport: str, date_str: str, batch: list[dict], co
                 summary = await _espn_summary(cx, sport_path, league, ev_id) or {}
                 summaries[ev_id] = summary
                 await asyncio.sleep(0.2)
-            player = (p.get("selection") or "").strip() or _player_from_market(p["market"])
+            # Determine the player. selection often holds the actual name
+            # (e.g. "Vinicius Jr"); for picks where selection is just "Yes"
+            # (older Odds API payloads), pull the name out of the market label.
+            raw_sel = (p.get("selection") or "").strip()
+            player = raw_sel if raw_sel and raw_sel.lower() not in ("yes", "no") else _player_from_market(p["market"])
+            if not player:
+                # No way to identify the player → don't guess. Leave pending so
+                # we don't grade as a fake loss. The previous bug graded every
+                # "Yes" pick as lost because `_player_from_market` returned "".
+                counts["skipped"] += 1
+                continue
             if stat_key == "soccer.scoreOrAssist":
                 got = _espn_did_score_or_assist(summary, player)
                 if got is None:
@@ -766,9 +776,48 @@ async def _settle_group(cx, db, sport: str, date_str: str, batch: list[dict], co
 
 
 def _player_from_market(market: str) -> str:
-    """Best-effort fallback: 'Aaron Judge Over 0.5 Hits' → 'Aaron Judge'."""
-    m = re.match(r"^(.*?)\s+(Over|Under)\s+", market or "", re.IGNORECASE)
-    return m.group(1).strip() if m else ""
+    """Best-effort fallback to pull the player name out of the market label.
+
+    Examples that must work:
+      • "Aaron Judge Over 0.5 Hits"                → "Aaron Judge"
+      • "Jamal Musiala Anytime Goal Scorer"        → "Jamal Musiala"
+      • "Bukayo Saka First Goal Scorer"            → "Bukayo Saka"
+      • "Vinicius Jr To Score or Assist"           → "Vinicius Jr"
+      • "Pitcher Strikeouts Over 5.5 (Sandy Alcantara)" → "Sandy Alcantara"
+
+    Returns "" when no name can be extracted — callers MUST treat that as
+    "skip / leave pending", never grade against an empty name (that's the bug
+    that was marking every soccer goalscorer pick as a loss when selection
+    was just "Yes").
+    """
+    raw = (market or "").strip()
+    if not raw:
+        return ""
+    # 1. Hits/Over/Under style: "<Name> Over 1.5 Hits" or "(<Name>)" trailing.
+    paren = re.search(r"\(([A-ZÀ-ÿ][\w'.\- ]+?)\)\s*$", raw)
+    if paren:
+        return paren.group(1).strip()
+    m = re.match(r"^(.*?)\s+(Over|Under)\s+", raw, re.IGNORECASE)
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+    # 2. Goal-scorer style: "<Name> Anytime Goal Scorer" / "First Goal Scorer".
+    for tag in [
+        r"Anytime Goal Scorer",
+        r"First Goal Scorer",
+        r"Last Goal Scorer",
+        r"To Score or Assist",
+        r"To Score \d+\+\s*Goals?",
+        r"To Score Hat-?trick",
+        r"To Score Brace",
+    ]:
+        m = re.match(rf"^(.+?)\s+{tag}\b", raw, re.IGNORECASE)
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+    # 3. Last-ditch heuristic: leading two capitalised tokens.
+    m = re.match(r"^([A-ZÀ-ÿ][\w'.\-]+(?:\s+[A-ZÀ-ÿ][\w'.\-]+){1,3})\b", raw)
+    if m:
+        return m.group(1).strip()
+    return ""
 
 
 async def _record(db, pick: dict, outcome: str, detail: dict, counts: dict):
