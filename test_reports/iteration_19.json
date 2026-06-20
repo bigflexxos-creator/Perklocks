@@ -1,0 +1,42 @@
+{
+  "summary": "Backend-only verification of iter19 parlay diversity tightening (max_same_sport_for_target) + frontend lint of parlay.tsx unification. 13/13 backend tests PASS. ESLint clean (0 errors, 1 acceptable 'Pick' unused-var warning).\n\n— Feature 5 (cap math): all 5 sanity points verified — target=5→2, 8→3, 10→4, 15→5, 20→6. Also 2-3 legs → 2.\n— Feature 1 (high-risk 72h diversity): cap is enforced against requested target_legs (10) → 4. All 3 parlays respect cap=4 (top sport = 4 in each). All 3 parlays have ≥2 distinct sports (Soccer + MLB).\n— Feature 2 (high-risk structure): exactly 3 parlays returned, labels = {SAFE, BALANCED, AGGRESSIVE}, each has 8 legs (≥5 required).\n— Feature 3 (standard 24h): 3 parlays returned, each ≥2 legs.\n— Feature 4 (lint): `npx eslint app/(tabs)/parlay.tsx` → 0 errors, 1 warning (`'Pick' is defined but never used`).\n— Frontend confirmation: `isCustomWithIncludes` helper defined at parlay.tsx:47 as documented; chip-row render at line ~290 unified across AUTO/CUSTOM/SINGLE.\n\nOBSERVATION (not a regression — diagnostic): With current 72h pool (74 Soccer / 19 MLB / 2 Tennis), the optimizer stops at 8 legs (not 10) and the post-truncation Soccer share is 50% (4 of 8) in every parlay. The 40% cap is correctly applied against target_legs=10 (=4) — but because the parlay truncates to 8 legs the *observed* ratio is 50%. Tennis (only 2 picks in 72h) cannot reliably contribute a 3rd sport leg. This matches the main-agent's predicted distribution (~4 Soccer / 2-4 MLB / 0-2 Tennis).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/picks/parlay?legs=10&mode=high_risk&window_hours=72", "issue": "Top-sport ratio of FINAL delivered parlay is 50% (4 Soccer of 8 legs) because the optimizer truncates from 10→8 legs while the same-sport cap was computed against the original target of 10. User-perceived 'mostly Soccer' feeling may persist on 8-leg deliveries even though the cap math is technically respected. Consider re-applying the cap against actual leg count post-build, OR boosting Tennis/UFC inventory in the 72h pool. With current slate this is the practical ceiling."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_parlay_diversity_iter19.py",
+    "/app/test_reports/pytest/parlay_diversity_iter19.xml"
+  ],
+  "action_items": [
+    "OPTIONAL — Apply max_same_sport_for_target against the *current* leg count after build completes, not only against the original target. Would deliver ≤40% in the final parlay regardless of early truncation. Today cap=4 is enforced vs target=10, but final delivered parlay has 8 legs → 50% Soccer.",
+    "OPTIONAL — Backend could broaden the 72h pool (e.g. relax Tennis eligibility to lock≥70 in high-risk mode) so a 3rd sport can actually enter the parlay; right now only 2 Tennis picks in 72h means no Tennis legs survive damage-control + diversification.",
+    "Cosmetic — remove the unused `Pick` import at /app/frontend/app/(tabs)/parlay.tsx:10 to clear the lone eslint warning."
+  ],
+  "critical_code_review_comments": [
+    "/app/backend/parlay_optimizer.py:65-71 — max_same_sport_for_target correctly tightened: 2-5→2, 6-10→floor(target*4/10), 11-20→floor(target/3). All 5 spec points verified.",
+    "/app/backend/parlay_optimizer.py:418-460 — diversification_ok uses target_legs (not len(legs)) for the same-sport cap. This is the source of the 50% post-truncation observation: when build stops at 8 of 10 legs, 4 same-sport legs (40% of 10) are 50% of 8. Not a bug per se — just a UX artefact worth flagging.",
+    "/app/frontend/app/(tabs)/parlay.tsx:47-50 — isCustomWithIncludes helper present, signature matches spec (mode + included[] → bool).",
+    "/app/frontend/app/(tabs)/parlay.tsx:290-360 — sport chip row now always rendered; chipActive logic correctly branches on isAuto/isCustom/isSingle. AUTO chips read-only (all active), CUSTOM uses includeChip styling for multi-select, SINGLE is single-select. Matches PR description."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_parlay_diversity_iter19.py (NEW — 13 tests: 6 cap-math unit tests + 1 standard 24h + 6 high-risk 72h including diversity, structure, and post-truncation diagnostic)"
+  ],
+  "success_rate": {
+    "backend": "100% (13/13)",
+    "frontend": "lint-only verification: 0 errors, 1 acceptable warning"
+  },
+  "seed_data_creation": "None. Used demo@lockscore.ai / demo123 from /app/memory/test_credentials.md.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Re-run: `cd /app && python -m pytest backend/tests/test_parlay_diversity_iter19.py -v -s`. Expect 13 passed. If the live slate shifts and the optimizer starts producing 10-leg parlays (vs current 8), the test_post_truncation_sport_ratio_observation diagnostic line will print actual ratios — the 60% ceiling there still holds. The target-based cap test (test_sport_diversity_within_implementation_cap) is the load-bearing diversity check; it's pegged to max_same_sport_for_target(10) = 4.",
+  "rca_of_issue": "n/a — verification run, no failures found. The original 'all soccer' complaint is structurally addressed at the cap layer (40% of 6-10 legs, 33% of 11-20). The only remaining UX exposure is the post-truncation ratio: a build that target=10 but stops at 8 legs can deliver 50% same-sport even though the cap of 4 is technically respected. Recommend the optional re-apply-on-actual-length fix above if main agent wants the user-visible ratio to also be ≤40%."
+}

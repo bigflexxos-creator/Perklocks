@@ -56,13 +56,19 @@ MAX_ABS_DROP_HIGH_RISK = 0.30  # 30 pp absolute for high-risk
 # Diversification (per spec, leg-count-aware soft limits)
 # These define the maximum number of legs that may share the same sport.
 # SINGLE-SPORT mode bypasses these entirely.
+#
+# User feedback (parlay "all soccer" complaint): even with the 50 % cap
+# for 6-10 leg parlays, a 5-of-9 soccer card *feels* sport-monocultural
+# because the 4 non-soccer legs split across MLB/Tennis. Tightened to
+# 40 % for the 6-10 band and 33 % for 11-20 leg high-risk so the user
+# always sees ≥3 sports on a 9-leg ticket and ≥4 sports on a 12-leg.
 def max_same_sport_for_target(target_legs: int) -> int:
     """Per-spec soft limit on legs sharing the same sport, by target size."""
     if target_legs <= 5:
         return 2                       # 2-5 legs:   max 2 same sport
     if target_legs <= 10:
-        return max(2, target_legs // 2)  # 6-10 legs: max 50% same sport
-    return max(2, (target_legs * 4) // 10)  # 11-20 legs: max 40% same sport
+        return max(2, (target_legs * 4) // 10)  # 6-10 legs: max 40% same sport
+    return max(3, target_legs // 3)             # 11-20 legs: max 33% same sport
 
 MAX_SAME_GAME = 2              # Max 2 legs from same game (always)
 

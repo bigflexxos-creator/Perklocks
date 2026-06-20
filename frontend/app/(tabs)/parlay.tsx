@@ -44,6 +44,11 @@ const GRADE_TINT: Record<string, string> = {
   F: "#FF3B5C",
 };
 
+const isCustomWithIncludes = (
+  mode: "auto"|"custom"|"single",
+  included: string[],
+) => mode === "custom" && included.length > 0;
+
 export default function ParlayScreen() {
   const router = useRouter();
   const { prefs, updatePrefs, hydrated } = useParlayPreferences();
@@ -282,62 +287,79 @@ export default function ParlayScreen() {
         })}
       </View>
 
-      {/* ── SPORT chips: behaviour driven by sportMode ── */}
-      {sportMode === "single" && (
-        <View style={styles.sportRowWrap}>
-          <Text style={styles.legLabel}>SPORT</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sportRow}>
-            {SPORT_OPTIONS.filter((o) => o.id !== "mix").map((opt) => {
-              const active = sport === opt.id;
-              return (
-                <Pressable
-                  key={opt.id}
-                  testID={`parlay-sport-${opt.id}`}
-                  onPress={() => { updatePrefs({ sport: opt.id }); setRank(1); }}
-                  style={[styles.sportChip, active && styles.sportChipActive]}
-                >
-                  <Text style={[styles.sportChipText, active && styles.sportChipTextActive]}>{opt.label}</Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
-        </View>
-      )}
-
-      {sportMode === "custom" && (
-        <View style={styles.excludeRowWrap}>
-          <Text style={styles.legLabel}>INCLUDE</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sportRow}>
-            {SPORT_OPTIONS.filter((o) => o.id !== "mix").map((opt) => {
-              const included = includedSports.includes(opt.id);
-              return (
-                <Pressable
-                  key={`incl-${opt.id}`}
-                  testID={`parlay-include-${opt.id}`}
-                  onPress={() => {
-                    const next = included
+      {/* ── SPORT chips — ALWAYS visible. Behaviour adapts to sportMode:
+           • AUTO   → chips are read-only indicators (all sports active,
+                       letting the optimizer pick). Tapping a chip
+                       auto-switches to SINGLE mode for that sport.
+           • CUSTOM → chips toggle INCLUDE (multi-select).
+           • SINGLE → chips are single-select; one sport at a time.
+           Always showing the sport row fixes the user's complaint that
+           the "sport tab / include tab" disappeared after picking AUTO. */}
+      <View style={sportMode === "custom" ? styles.excludeRowWrap : styles.sportRowWrap}>
+        <Text style={styles.legLabel}>
+          {sportMode === "auto" ? "SPORT (TAP TO LOCK)"
+            : sportMode === "custom" ? "INCLUDE"
+            : "SPORT"}
+        </Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sportRow}>
+          {SPORT_OPTIONS.filter((o) => o.id !== "mix" || sportMode === "single").map((opt) => {
+            // AUTO: every sport visually "live"; tapping locks to that sport.
+            // CUSTOM: include toggle.
+            // SINGLE: single-select.
+            const isAuto = sportMode === "auto";
+            const isCustom = sportMode === "custom";
+            const isSingle = sportMode === "single";
+            const includedInCustom = isCustom && includedSports.includes(opt.id);
+            const customAllOn = isCustom && includedSports.length === 0; // nothing toggled = "all in"
+            const chipActive =
+              (isAuto)                               // all chips look active in AUTO
+              || (isSingle && sport === opt.id)
+              || includedInCustom
+              || (customAllOn);
+            const showCheck = includedInCustom;
+            return (
+              <Pressable
+                key={`${sportMode}-${opt.id}`}
+                testID={`parlay-sport-${opt.id}`}
+                onPress={() => {
+                  if (isAuto) {
+                    // Tap a sport in AUTO → flip to SINGLE-locked on it.
+                    updatePrefs({ sportMode: "single", sport: opt.id });
+                  } else if (isSingle) {
+                    updatePrefs({ sport: opt.id });
+                  } else {
+                    // CUSTOM: toggle include
+                    const next = includedSports.includes(opt.id)
                       ? includedSports.filter((s) => s !== opt.id)
                       : [...includedSports, opt.id];
                     updatePrefs({ includedSports: next });
-                    setRank(1);
-                  }}
-                  style={[styles.excludeChip, included && styles.includeChipActive]}
-                >
-                  {included && (
-                    <Ionicons name="checkmark-circle" size={12} color={COLORS.bg} style={{ marginRight: 4 }} />
-                  )}
-                  <Text style={[styles.excludeChipText, included && styles.excludeChipTextActive]}>{opt.label}</Text>
-                </Pressable>
-              );
-            })}
-            {includedSports.length > 0 && (
-              <Pressable onPress={() => updatePrefs({ includedSports: [] })} style={styles.clearExcludeBtn} testID="parlay-include-clear">
-                <Text style={styles.clearExcludeText}>CLEAR</Text>
+                  }
+                  setRank(1);
+                }}
+                style={[
+                  isCustom ? styles.excludeChip : styles.sportChip,
+                  chipActive && (isCustom ? styles.includeChipActive : styles.sportChipActive),
+                ]}
+              >
+                {showCheck && (
+                  <Ionicons name="checkmark-circle" size={12} color={COLORS.bg} style={{ marginRight: 4 }} />
+                )}
+                <Text style={[
+                  isCustom ? styles.excludeChipText : styles.sportChipText,
+                  chipActive && (isCustom ? styles.excludeChipTextActive : styles.sportChipTextActive),
+                ]}>
+                  {opt.label}
+                </Text>
               </Pressable>
-            )}
-          </ScrollView>
-        </View>
-      )}
+            );
+          })}
+          {isCustomWithIncludes(sportMode, includedSports) && (
+            <Pressable onPress={() => updatePrefs({ includedSports: [] })} style={styles.clearExcludeBtn} testID="parlay-include-clear">
+              <Text style={styles.clearExcludeText}>CLEAR</Text>
+            </Pressable>
+          )}
+        </ScrollView>
+      </View>
 
       <LineTypeToggle value={lineType} onChange={(v) => { updatePrefs({ lineType: v }); setRank(1); }} testIDPrefix="parlay-line" />
 
