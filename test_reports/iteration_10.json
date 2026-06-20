@@ -1,0 +1,37 @@
+{
+  "summary": "Verified the new WIN % sort button in the LOCKS tab via code review + backend API tests. Code change in /app/frontend/src/components/SortSelector.tsx adds {id:'win',label:'WIN %',icon:'trophy'} between EDGE and ODDS — correct position, correct testID prefix produces 'locks-sort-win'. Backend route /api/picks/today?sort=win is wired up in /app/backend/server.py (lines 744–747) and sorts by (_elite_rank, _bucket, -win_probability, -lock_score). However, FULL E2E UI verification was BLOCKED: on the web preview at http://localhost:3000, after a successful POST /api/auth/login (200) the app does NOT navigate from /login to /(tabs). The URL stays /login despite token-bearing requests to /api/picks/today briefly firing. AsyncStorage write of 'lockscore_token' never reaches localStorage on the web build (only 'perkslocks.app_data_version' is present after submit), so any reload also bounces back to /login. Because of this, the 5-button sort row could not be visibly tapped/asserted in the browser.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/picks/today", "issue": "When called without day_offset, returns 0 picks even though day_offset=0 returns 38 picks. The default path uses _filter_in_play_window + event_time bucketing which strips out today's started games — the LOCKS tab fetches without day_offset by default, so demo user sees an empty list. Independent of sort changes but blocks visual sort verification."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Login → Tabs navigation", "issue": "After POST /api/auth/login returns 200, router.replace('/(tabs)') in app/(auth)/login.tsx never lands on the tabs route. The (tabs) layout briefly mounts (picks/today fires) then the auth guard in app/(tabs)/_layout.tsx bounces back to /login. localStorage after submit contains only 'perkslocks.app_data_version' — no 'lockscore_token' — so the AsyncStorage-backed setToken() write is silently failing on the web target. This blocks all UI testing that requires login.", "affected_testIDs": ["login-submit-button", "locks-sort-lock", "locks-sort-win"]}
+    ],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/frontend/src/components/SortSelector.tsx (code review)",
+    "/app/backend/server.py:744-747 (sort=win handler)"
+  ],
+  "action_items": [
+    "Fix login → tabs navigation on web. Suspected: storage.secureSet for 'lockscore_token' isn't persisting to localStorage even though cachebust's AsyncStorage.setItem for 'perkslocks.app_data_version' does. Verify @react-native-async-storage/async-storage web backend in this Metro/Expo build and/or remove the (tabs)/_layout auth-guard race (check user IN-context, not via redirect-on-mount).",
+    "Investigate why GET /api/picks/today (no day_offset) returns empty for demo user while day_offset=0 returns 38 picks. The LOCKS screen fetches without day_offset → empty list → nothing to visually sort.",
+    "After the above two are fixed, re-run sort UI verification: tap WIN%/LOCK/EDGE and assert pick reorder + GET /api/picks/today?sort=<key> on the wire."
+  ],
+  "critical_code_review_comments": [
+    "SortSelector.tsx is correct: new entry placed at index 3 of OPTIONS array (between EDGE and ODDS as required); testID built from testIDPrefix+'-'+opt.id resolves to 'locks-sort-win' on the LOCKS tab and 'under-sort-win' on the Under tab (both consumers pass the prefix). Active styling (goldElite bg, COLORS.bg foreground) is reused — no regression to the other 4 chips.",
+    "frontend/src/lib/api.ts:264 strips sort param when value is 'lock' (default). That means tapping LOCK does NOT fire a /api/picks/today?sort=lock request — it fires /api/picks/today (no sort). The test prompt's step 3 ('Tap LOCK — verify picks reorder by lock_score descending') will not see a sort=lock query string; it will see a bare /api/picks/today. The reorder itself is correct because the backend default is lock. Tester should look for the bare URL, not sort=lock."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (sort=win endpoint reachable & responds)", "frontend": "0% (UI testing blocked at login redirect)"},
+  "seed_data_creation": "None.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "If you hit the same login-doesn't-navigate problem on web, do NOT keep retrying the form. The bug is that storage.secureSet for 'lockscore_token' isn't reaching localStorage on the Expo web build (the cachebust write to 'perkslocks.app_data_version' works, but the AuthContext token write doesn't). Either (a) inject the token into localStorage AND in-memory before navigating, (b) temporarily remove the (tabs)/_layout useEffect redirect for testing, or (c) ask main agent to fix the persistence first. Also note: backend /api/picks/today without day_offset returns 0 picks right now — pass day_offset=0 if you need a populated list to assert reorder. Backend sort logic uses tiered ordering (elite_rank → bucket → metric), so sort=win does NOT yield pure win_probability descending across the whole list — only within each bucket. That's intentional per code comments lines 733-737 and 744-747.",
+  "rca_of_issue": "Login navigation RCA: signIn() in AuthContext.tsx calls `await setToken(res.access_token); setUser(res.user)`. setToken delegates to storage.secureSet → AsyncStorage.setItem(JSON.stringify(...)). On this web build the write does NOT land in localStorage (verified empty after submit). Within the same SPA tick, setUser() updates the React Context; login.tsx then router.replace('/(tabs)'). But (tabs)/_layout.tsx line 16 fires `if (!loading && !user) router.replace('/(auth)/login')` on its useEffect. Because Stack route remounts in expo-router cause the consumer to re-read context, and because the persisted token is empty, AuthProvider's hydration useEffect reads getToken() → null → user stays null → bounce. Reproduction: open http://localhost:3000, fill login, submit; observe NAV trace / → /login → /login. Mitigation: persist token correctly on web (verify @react-native-async-storage/async-storage backend writes), OR change AuthContext so it doesn't depend on AsyncStorage round-trip for the just-signed-in session (already does setUser synchronously, but the (tabs) layout effect must read the same in-memory context, which it should — so the real culprit is most likely an AuthProvider remount between routes wiping in-memory state)."
+}

@@ -90,7 +90,7 @@ export type Pick = {
 
 export type User = { id: string; email: string; name?: string };
 export type LineType = "both" | "main" | "alt";
-export type SortKey = "lock" | "time" | "edge" | "implied";
+export type SortKey = "lock" | "time" | "edge" | "win" | "implied";
 
 export type PickFilters = {
   minLock?: number;

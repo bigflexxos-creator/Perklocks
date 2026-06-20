@@ -741,6 +741,10 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             picks.sort(key=lambda p: (_event_dt(p), -p.get("lock_score", 0)))
         elif s == "edge":
             picks.sort(key=lambda p: (_elite_rank(p), _bucket(p), -p.get("edge_percent", 0), -p.get("lock_score", 0)))
+        elif s == "win":
+            # Win % — model win_probability highest first. Useful for users
+            # who want the chalkiest setups by raw confidence.
+            picks.sort(key=lambda p: (_elite_rank(p), _bucket(p), -p.get("win_probability", 0), -p.get("lock_score", 0)))
         elif s == "implied":
             picks.sort(key=lambda p: (_elite_rank(p), _bucket(p), -p.get("implied_probability", 0), -p.get("lock_score", 0)))
         else:  # "lock" (default)
