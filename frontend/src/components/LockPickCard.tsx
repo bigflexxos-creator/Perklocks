@@ -20,9 +20,18 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
   );
   const showLiveBadge = !!live && (live.is_live || live.is_final);
 
-  // Lock V2 (Deep Thinking) shadow scores
-  const v2Tier = pick.tier_v2;
-  const isApex = !!pick.is_apex;
+  // Lock V2 (Deep Thinking) shadow scores.
+  //
+  // CRITICAL: V2 is in SHADOW MODE — its data must not contradict V1 on
+  // the home card. Showing a gold APEX border + "RARE LOCK" chip on a
+  // pick whose V1 grade is "Pass" is the inconsistency the user flagged.
+  // So we only allow V2 UI elements to surface when they AGREE with V1:
+  // V2 chip + APEX border only render when the V1 lock_score is already
+  // in the Strong Lock band (95+). Otherwise treat V2 as silent data
+  // available solely in the pick detail "Deep Thinking" panel.
+  const v1IsStrong = (pick.lock_score ?? 0) >= 95;
+  const v2Tier = v1IsStrong ? pick.tier_v2 : undefined;
+  const isApex = v1IsStrong && !!pick.is_apex;
   const v2Lock = pick.lock_score_v2 ?? null;
   const tierColor =
     v2Tier === "Apex Lock"    ? "#FFD700"
@@ -30,8 +39,9 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
   : v2Tier === "Strong Lock"  ? COLORS.voltBlue
   : v2Tier === "Elite Setup"  ? COLORS.textSecondary
   : COLORS.textMuted;
-  // "Almost Apex" hint: lock v2 ≥ 97 but not Apex due to gate failures
-  const nearMiss = !isApex
+  // "Almost Apex" hint suppressed for non-Strong-Lock picks (same reason).
+  const nearMiss = v1IsStrong
+    && !isApex
     && v2Lock != null
     && v2Lock >= 97
     && Array.isArray(pick.apex_blockers)
