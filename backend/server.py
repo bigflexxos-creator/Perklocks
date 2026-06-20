@@ -815,7 +815,15 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # When the user explicitly filters by a single market, relax the default
     # 85+ lock floor — they're narrowing the pool themselves and want to see
     # everything that matches their selection.
-    default_floor = 75.0 if market else 85.0
+    #
+    # Also relax for the ALT line-type tab — alt lines like soccer
+    # Over 1.5 / Under 3.5 are intentionally lower-confidence chalkier
+    # OR longer-shot variations of the main consensus, so a strict 85
+    # floor zeroes-out the tab entirely. User feedback: "soccer still
+    # not showing alt on website or app" — drop floor to 55 for alt so
+    # the synthesized lines surface.
+    lt = (line_type or "").lower()
+    default_floor = 75.0 if market else (55.0 if lt == "alt" else 85.0)
     floor = max(default_floor, float(min_lock)) if min_lock is not None else default_floor
     # Two-bucket query:
     #  • Standard picks: must pass lock floor + edge >= 0 + not no_bet
