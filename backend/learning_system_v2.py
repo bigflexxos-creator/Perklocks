@@ -453,11 +453,29 @@ async def apply_v2_to_picks(picks: list[dict], db) -> list[dict]:
     # Per-event goalscorer cap: keep top 2 by lock_score, flag rest as no_bet.
     # ELITE-AWARE: hardcoded ELITE_PLAYERS (Mbappé/Vini/Messi/Kane) + AUTO-ELITE
     # (data-discovered scorers ≥55% hit rate). Both protected from cap.
+    # MARQUEE LOCK: hardcoded soccer elites on goalscorer markets are forced
+    # to lock_score=99 with the Apex tier — per user spec ("Harry Kane / Mbappé
+    # / Messi are always a threat to score, always 99 lock"). Applies only to
+    # the hardcoded ELITE_PLAYERS list (not auto-elite) so a streaky scorer
+    # can't game the 99 badge.
     GS_PICKS_PER_EVENT = 2
     gs_by_event: dict[str, list[dict]] = {}
     for p in picks:
         if "goal scorer" in (p.get("market") or "").lower():
             gs_by_event.setdefault(p.get("event") or "", []).append(p)
+            # Marquee lock — hardcoded elite scorers always 99 on this market
+            if p.get("elite_player") and not p.get("auto_elite"):
+                p["lock_score"] = 99.0
+                p["lock_score_v2"] = 99.0
+                p["tier_v2"] = "Apex Lock"
+                p["is_apex"] = True
+                p["grade"] = "Elite Lock"
+                p["apex_blockers"] = []
+                p["marquee_locked"] = True
+                p["marquee_reason"] = (
+                    f"{p.get('elite_player_name') or 'Elite scorer'} — always a "
+                    f"threat on goalscorer markets (per user spec)"
+                )
     for event, gs in gs_by_event.items():
         if len(gs) <= GS_PICKS_PER_EVENT:
             continue
