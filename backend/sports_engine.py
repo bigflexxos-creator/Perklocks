@@ -287,6 +287,36 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
 
     score = (0.35 * edge_comp + 0.20 * market_align + 0.15 * roi_comp
              + 0.10 * data_quality + 0.10 * vol_comp + 0.10 * cls_comp)
+
+    # ── Bet-Quality Floor ────────────────────────────────────────────────
+    # The 6-component formula is intentionally decoupled from raw win
+    # probability, but that decoupling created an embarrassing UX bug:
+    # Harry Kane with 72.3 % win + 13.12 % edge was getting a 71 lock
+    # score and a "Pass" badge. To any user that's broken — high win%
+    # AND positive edge IS a quality bet by definition.
+    #
+    # So we apply a floor based on the (win_prob, edge_percent) pair:
+    #   • win_p ≥ 80 % AND edge ≥ +15 %  →  lock floor 96  (Elite Lock)
+    #   • win_p ≥ 75 % AND edge ≥ +10 %  →  lock floor 92  (Strong Lock)
+    #   • win_p ≥ 70 % AND edge ≥  +5 %  →  lock floor 88  (Good Bet)
+    #   • win_p ≥ 65 % AND edge ≥  +3 %  →  lock floor 85  (Good Bet)
+    # The floor only RAISES the score (never lowers it) so high-quality
+    # bets get appropriate labels while low-edge picks stay where the
+    # 6-component formula put them.
+    wp_val = float(pick.get("win_probability") or 0)
+    ed_val = float(pick.get("edge_percent") or 0)
+    floor = 0.0
+    if wp_val >= 80 and ed_val >= 15:
+        floor = 96.0
+    elif wp_val >= 75 and ed_val >= 10:
+        floor = 92.0
+    elif wp_val >= 70 and ed_val >= 5:
+        floor = 88.0
+    elif wp_val >= 65 and ed_val >= 3:
+        floor = 85.0
+    if floor and score < floor:
+        score = floor
+
     # Store the 6 components so the UI / analytics can inspect them later.
     pick["lock_components"] = {
         "edge":        round(edge_comp, 1),
@@ -295,6 +325,7 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
         "data_quality": round(data_quality, 1),
         "volatility":  round(vol_comp, 1),
         "clv":         round(cls_comp, 1),
+        "quality_floor": round(floor, 1) if floor else 0,
     }
     return max(55.0, min(99.0, round(score, 1))), weighted
 
