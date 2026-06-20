@@ -14,7 +14,11 @@ import { LineTypeToggle } from "@/src/components/LineTypeToggle";
 import { SortSelector } from "@/src/components/SortSelector";
 import { FilterButton, FilterSheet } from "@/src/components/FilterSheet";
 import { SportFilterBar } from "@/src/components/SportFilterBar";
+import { storage } from "@/src/utils/storage";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
+
+const PREFS_KEY = "locks_feed_prefs_v1";
+type FeedPrefs = { sport?: string; sortKey?: SortKey; lineType?: LineType };
 
 function timeAgo(d: Date | null): string {
   if (!d) return "—";
@@ -53,6 +57,32 @@ export default function LocksScreen() {
   const [nextRefreshAt, setNextRefreshAt] = useState<number | null>(null);
   const [remaining, setRemaining] = useState<number>(0); // seconds until next refresh
   const [, forceTick] = useState(0);
+  const [prefsHydrated, setPrefsHydrated] = useState(false);
+
+  // Hydrate persisted feed prefs (sport, sort, lineType) on mount so the
+  // user's last view sticks across sessions.
+  useEffect(() => {
+    (async () => {
+      const saved = await storage.getItem<string>(PREFS_KEY, "");
+      if (saved) {
+        try {
+          const p: FeedPrefs = JSON.parse(saved as any);
+          if (p.sport) setSport(p.sport);
+          if (p.sortKey) setSortKey(p.sortKey);
+          if (p.lineType) setLineType(p.lineType);
+        } catch {}
+      }
+      setPrefsHydrated(true);
+    })();
+  }, []);
+
+  // Persist prefs whenever they change (but only after hydration so we don't
+  // overwrite saved values with initial defaults).
+  useEffect(() => {
+    if (!prefsHydrated) return;
+    const payload: FeedPrefs = { sport, sortKey, lineType };
+    storage.setItem(PREFS_KEY, JSON.stringify(payload));
+  }, [sport, sortKey, lineType, prefsHydrated]);
 
   // Tick every 30s so the "X min ago" label stays accurate.
   useEffect(() => {
@@ -258,18 +288,22 @@ export default function LocksScreen() {
         </View>
       </View>
       <SortSelector value={sortKey} onChange={setSortKey} testIDPrefix="locks-sort" />
-      {sport === "Soccer" && (
+      {(sport === "Soccer" || sport === "MLB" || sport === "Tennis" || sport === "UFC" || sport === "NBA" || sport === "NFL") && (
         <TouchableOpacity
-          onPress={() => router.push("/soccer-lab" as any)}
+          onPress={() => router.push(`/soccer-lab?sport=${encodeURIComponent(sport)}` as any)}
           style={styles.soccerLabBtn}
           activeOpacity={0.8}
           testID="soccer-lab-cta"
         >
-          <Text style={styles.soccerLabIcon}>🌍</Text>
+          <Text style={styles.soccerLabIcon}>
+            {sport === "Soccer" ? "🌍" : sport === "MLB" ? "⚾" : sport === "Tennis" ? "🎾" : sport === "UFC" ? "🥊" : sport === "NBA" ? "🏀" : "🏈"}
+          </Text>
           <View style={{ flex: 1 }}>
-            <Text style={styles.soccerLabTitle}>SOCCER LAB</Text>
+            <Text style={styles.soccerLabTitle}>{sport.toUpperCase()} LAB</Text>
             <Text style={styles.soccerLabSub}>
-              All active leagues · global ranked feed
+              {sport === "Soccer"
+                ? "All active leagues · global ranked feed"
+                : `Confidence-ranked ${sport} feed across every league`}
             </Text>
           </View>
           <Text style={styles.soccerLabChevron}>›</Text>
@@ -293,13 +327,22 @@ export default function LocksScreen() {
             <ActivityIndicator color={COLORS.voltBlue} />
           </View>
         ) : picks.length === 0 ? (
-          <View style={styles.center}>
-            <Ionicons name="lock-open-outline" size={48} color={COLORS.textMuted} />
-            <Text style={styles.emptyTitle}>No games available</Text>
+          <View style={styles.emptyCard}>
+            <Ionicons name="lock-open-outline" size={42} color={COLORS.textMuted} />
+            <Text style={styles.emptyTitle}>No locks on the board</Text>
             <Text style={styles.emptyMsg}>
               {sport === "All"
-                ? "No fixtures on the board right now. Pull to refresh."
-                : `No ${sport} fixtures returned by the sports API for today. Try another sport or refresh.`}
+                ? "All today's games are either started or below our lock-score gate."
+                : `No pregame ${sport} setups cleared the lock-score gate.`}
+            </Text>
+            <View style={styles.emptyDivider} />
+            <Text style={styles.emptyHintLabel}>
+              {remaining > 0
+                ? `NEXT REFRESH IN ${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}`
+                : "PULL DOWN TO REFRESH"}
+            </Text>
+            <Text style={styles.emptyHintSub}>
+              Tip: try other sports — soccer + tennis often have late slates.
             </Text>
           </View>
         ) : (
@@ -361,7 +404,40 @@ const styles = StyleSheet.create({
   content: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 24 },
   center: { paddingVertical: 80, alignItems: "center" },
   emptyTitle: { color: COLORS.textPrimary, fontSize: 16, fontWeight: "800", marginTop: 14 },
-  emptyMsg: { color: COLORS.textMuted, fontSize: 13, marginTop: 6, textAlign: "center", paddingHorizontal: 40 },
+  emptyMsg: { color: COLORS.textMuted, fontSize: 13, marginTop: 6, textAlign: "center", paddingHorizontal: 24, lineHeight: 18 },
+  emptyCard: {
+    marginHorizontal: 20,
+    marginTop: 30,
+    paddingVertical: 28,
+    paddingHorizontal: 18,
+    backgroundColor: COLORS.surface,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.borderDefault,
+    alignItems: "center",
+  },
+  emptyDivider: {
+    height: 1,
+    width: "60%",
+    backgroundColor: COLORS.borderDefault,
+    marginVertical: 16,
+  },
+  emptyHintLabel: {
+    color: COLORS.voltBlue,
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 1.4,
+    fontVariant: ["tabular-nums"],
+  },
+  emptyHintSub: {
+    color: COLORS.textMuted,
+    fontSize: 11,
+    fontWeight: "600",
+    marginTop: 6,
+    textAlign: "center",
+    paddingHorizontal: 16,
+    lineHeight: 16,
+  },
   soccerLabBtn: {
     flexDirection: "row",
     alignItems: "center",

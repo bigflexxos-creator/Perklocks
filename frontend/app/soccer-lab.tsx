@@ -13,7 +13,7 @@ import {
   RefreshControl, FlatList,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Stack, router as expoRouter } from "expo-router";
+import { Stack, router as expoRouter, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS } from "@/src/theme";
 import { api } from "@/src/lib/api";
@@ -22,8 +22,21 @@ import { formatGameTime } from "@/src/lib/formatGameTime";
 type Feed = Awaited<ReturnType<typeof api.soccerLabFeed>>;
 type Pick = Feed["picks"][number];
 
+const SPORT_LABEL: Record<string, { title: string; icon: string }> = {
+  Soccer: { title: "SOCCER LAB",  icon: "🌍" },
+  MLB:    { title: "MLB LAB",     icon: "⚾" },
+  Tennis: { title: "TENNIS LAB",  icon: "🎾" },
+  UFC:    { title: "UFC LAB",     icon: "🥊" },
+  NBA:    { title: "NBA LAB",     icon: "🏀" },
+  NFL:    { title: "NFL LAB",     icon: "🏈" },
+};
+
 export default function SoccerLabScreen() {
   const insets = useSafeAreaInsets();
+  const params = useLocalSearchParams<{ sport?: string }>();
+  const sport = (params.sport as string) || "Soccer";
+  const meta = SPORT_LABEL[sport] || { title: `${sport.toUpperCase()} LAB`, icon: "🏆" };
+  const isSoccer = sport === "Soccer";
   const [feed, setFeed] = useState<Feed | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -34,19 +47,25 @@ export default function SoccerLabScreen() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [feedRes, leaguesRes] = await Promise.all([
-        api.soccerLabFeed(100, 78),
-        api.soccerLabLeagues(),
-      ]);
+      // soccerLabFeed is the generic endpoint — supports any sport
+      const feedRes = await api.soccerLabFeed(100, 78, sport);
       setFeed(feedRes);
-      setLeaguesMeta({ count: leaguesRes.count, age_sec: leaguesRes.age_sec });
+      if (isSoccer) {
+        try {
+          const leaguesRes = await api.soccerLabLeagues();
+          setLeaguesMeta({ count: leaguesRes.count, age_sec: leaguesRes.age_sec });
+        } catch {}
+      } else {
+        // Use league_distribution count from feed for non-soccer sports
+        setLeaguesMeta({ count: feedRes.league_distribution.length, age_sec: 0 });
+      }
     } catch (e: any) {
-      setError(e?.message || "Failed to load Soccer Lab");
+      setError(e?.message || "Failed to load Lab");
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [sport, isSoccer]);
 
   useEffect(() => {
     load();
@@ -72,9 +91,11 @@ export default function SoccerLabScreen() {
           <Ionicons name="chevron-back" size={22} color={COLORS.textPrimary} />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>SOCCER LAB</Text>
+          <Text style={styles.headerTitle}>{meta.icon} {meta.title}</Text>
           <Text style={styles.headerSub}>
-            {leaguesMeta ? `${leaguesMeta.count} active leagues · auto-discovered` : "Loading…"}
+            {leaguesMeta
+              ? `${leaguesMeta.count} ${isSoccer ? "active leagues · auto-discovered" : "league" + (leaguesMeta.count === 1 ? "" : "s") + " · ranked by confidence"}`
+              : "Loading…"}
           </Text>
         </View>
         <TouchableOpacity onPress={onRefresh} style={styles.refreshBtn} hitSlop={12}>

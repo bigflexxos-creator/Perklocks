@@ -51,6 +51,16 @@ export type Pick = {
   elite_player_name?: string;
   pick_date: string;
 
+  // ─── Lock Engine V2 (shadow mode) — populated when ENABLE_COUNTER_ENGINE=true
+  lock_score_v2?: number;
+  tier_v2?: "Apex Lock" | "Rare Lock" | "Strong Lock" | "Elite Setup" | string;
+  is_apex?: boolean;
+  apex_blockers?: string[];
+  counter_score?: number;
+  survival_score?: number;
+  evidence_score?: number;
+  conviction_score?: number;
+
   // ─── Sportsbook Mapping Engine (book-agnostic + per-book deep links) ──
   selection_v2?: {
     league: string;
@@ -420,7 +430,7 @@ export const api = {
       source: string;
       fetched_at: number;
     }>(`/soccer-lab/leagues${refresh ? "?refresh=true" : ""}`),
-  soccerLabFeed: (limit = 50, min_lock = 78) =>
+  soccerLabFeed: (limit = 50, min_lock = 78, sport = "Soccer") =>
     request<{
       count: number;
       total_returned: number;
@@ -444,7 +454,7 @@ export const api = {
         implied_probability?: number;
       }>;
       league_distribution: Array<{ league: string; count: number }>;
-    }>(`/soccer-lab/feed?limit=${limit}&min_lock=${min_lock}`),
+    }>(`/soccer-lab/feed?limit=${limit}&min_lock=${min_lock}&sport=${encodeURIComponent(sport)}`),
   refresh: () => request<{
     refreshed: boolean;
     count: number;
