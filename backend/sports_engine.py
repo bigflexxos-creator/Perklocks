@@ -209,7 +209,8 @@ def _win_prob_to_american(prob: float) -> int:
 
 
 def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
-                        pick: dict | None = None, bucket_row: dict | None = None) -> tuple[float, dict]:
+                        pick: dict | None = None, bucket_row: dict | None = None,
+                        edge_percent: float | None = None) -> tuple[float, dict]:
     """Bet-Quality Score (0-99). **NOT a direct win-probability.**
 
     Lock Score is a composite of six weighted components per the v3 spec:
@@ -308,8 +309,20 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     # Then enforce a 97 ceiling for non-elite picks so 98–99 only fires
     # on genuine elite conditions. The 6-component composite can still
     # naturally push a pick into 98-99 if every dimension agrees.
-    wp_val = float(pick.get("win_probability") or 0)
-    ed_val = float(pick.get("edge_percent") or 0)
+    # Read win-prob + edge from BOTH the explicit args (preferred — passed
+    # by callers at pick generation time) AND the pick dict (used by the
+    # validator's recompute path where the pick object is already built).
+    # Without this, the bet-quality floor only ever fired on the validator
+    # path and brand-new picks displayed lock 90 with grade "Pass" until
+    # the next validator cycle 30 min later.
+    wp_val = float(
+        win_prob if win_prob is not None
+        else (pick.get("win_probability") if pick else 0) or 0
+    )
+    ed_val = float(
+        edge_percent if edge_percent is not None
+        else (pick.get("edge_percent") if pick else 0) or 0
+    )
     floor = 0.0
     if wp_val >= 65 and ed_val >= 1:
         win_bonus = min(12.0, max(0.0, (wp_val - 65.0) * 1.5))
