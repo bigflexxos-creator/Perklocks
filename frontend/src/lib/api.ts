@@ -38,7 +38,7 @@ export type Pick = {
   implied_probability: number;
   edge_percent: number;
   lock_score: number;
-  grade: "Elite Lock" | "Strong Lock" | "Good Bet" | "Pass";
+  grade: "Elite Lock" | "Strong Lock" | "Lock" | "Playable" | "Pass";
   confidence: string;
   factors: Record<string, number>;
   key_insights: string[];

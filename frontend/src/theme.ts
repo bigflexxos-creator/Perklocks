@@ -22,8 +22,11 @@ export const COLORS = {
 export const GRADE_COLORS = {
   "Elite Lock": COLORS.goldElite,
   "Strong Lock": COLORS.neonGreen,
-  "Good Bet": COLORS.voltBlue,
-  Pass: COLORS.textMuted,
+  "Lock":       COLORS.neonGreen,
+  "Playable":   COLORS.voltBlue,
+  // Legacy alias — keeps cards rendering correctly while DB drains old rows.
+  "Good Bet":   COLORS.voltBlue,
+  Pass:         COLORS.textMuted,
 } as const;
 
 export const SPORT_ICONS: Record<string, string> = {
