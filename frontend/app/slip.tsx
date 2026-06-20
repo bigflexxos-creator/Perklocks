@@ -8,6 +8,7 @@ import { useBetSlip, computeParlay, MAX_SLIP_SIZE } from "@/src/contexts/BetSlip
 import { Pick } from "@/src/lib/api";
 import { SPORTSBOOKS, dominantSport, openSportsbookWithSlip } from "@/src/utils/sportsbook";
 import { formatGameTime } from "@/src/lib/formatGameTime";
+import { getDisplayLock, getDisplayLockRounded } from "@/src/lib/lockScore";
 
 function buildShareText(picks: Pick[]): string {
   const parlay = computeParlay(picks);
@@ -21,7 +22,7 @@ function buildShareText(picks: Pick[]): string {
     })
     .join("\n");
   return `${header}\n${legs}\n\nLock scores avg: ${Math.round(
-    picks.reduce((s, p) => s + p.lock_score, 0) / picks.length,
+    picks.reduce((s, p) => s + getDisplayLock(p), 0) / picks.length,
   )}`;
 }
 
@@ -122,7 +123,7 @@ export default function SlipScreen() {
                   <Text style={styles.legNumText}>{i + 1}</Text>
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.legSport}>{p.sport} · Lock {Math.round(p.lock_score)}</Text>
+                  <Text style={styles.legSport}>{p.sport} · Lock {getDisplayLockRounded(p)}</Text>
                   <Text style={styles.legMarket}>{p.market}</Text>
                   <Text style={styles.legEvent}>{p.event}</Text>
                   {p.event_time && (

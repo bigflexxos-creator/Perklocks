@@ -18,6 +18,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { COLORS } from "@/src/theme";
 import { api } from "@/src/lib/api";
 import { formatGameTime } from "@/src/lib/formatGameTime";
+import { getDisplayLock } from "@/src/lib/lockScore";
 
 type Feed = Awaited<ReturnType<typeof api.soccerLabFeed>>;
 type Pick = Feed["picks"][number];
@@ -198,7 +199,7 @@ function Chip({
 
 function PickRow({ pick, rank }: { pick: Pick; rank: number }) {
   const conf = Math.round(pick.confidence || 0);
-  const lock = Math.round(pick.lock_score || 0);
+  const lock = Math.round(getDisplayLock(pick as any));
   const tint = conf >= 70 ? COLORS.neonGreen : conf >= 55 ? COLORS.voltBlue : COLORS.textSecondary;
   return (
     <TouchableOpacity

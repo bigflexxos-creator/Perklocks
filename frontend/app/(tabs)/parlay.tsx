@@ -17,6 +17,7 @@ import {
 } from "@/src/lib/sportsbookLinks";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
+import { getDisplayLockRounded } from "@/src/lib/lockScore";
 
 // ─── Card label → accent colour mapping ───────────────────────────────
 const CARD_ACCENTS: Record<ParlayCard["label"], string> = {
@@ -606,7 +607,7 @@ function ParlayCardView({
               )}
               <Text style={styles.legMarket} numberOfLines={2}>{leg.market}</Text>
               <View style={styles.legMeta}>
-                <Text style={[styles.legLock, { color: lockColor }]}>Lock {leg.lock_score}</Text>
+                <Text style={[styles.legLock, { color: lockColor }]}>Lock {getDisplayLockRounded(leg)}</Text>
                 <Text style={styles.legEdge}>{leg.edge_percent >= 0 ? "+" : ""}{leg.edge_percent.toFixed(1)}% edge</Text>
                 <Text style={styles.legOdds}>
                   {leg.book_odds > 0 ? `+${leg.book_odds}` : leg.book_odds}

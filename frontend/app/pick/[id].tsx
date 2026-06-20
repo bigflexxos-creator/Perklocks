@@ -14,6 +14,7 @@ import { SurvivabilityPanel } from "@/src/components/SurvivabilityPanel";
 import { LockV2Panel } from "@/src/components/LockV2Panel";
 import { MarketRankPanel } from "@/src/components/MarketRankPanel";
 import { ScorerBundlesPanel } from "@/src/components/ScorerBundlesPanel";
+import { getDisplayLockRounded } from "@/src/lib/lockScore";
 
 export default function PickDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -57,16 +58,14 @@ export default function PickDetail() {
     return () => { cancelled = true; };
   }, [id]);
 
-  // BET KILLER badging was a legacy feature — now that NO_BET filtering hides
-  // truly bad picks at the API level, every pick that REACHES the UI is a
-  // recommended pick. Only mark as Killer mode for explicitly opted-in legacy
-  // browsing (i.e. when reached via the bet-killer route, never from Rollover).
-  const isKiller = false;
+  // Detail screen always renders as "PICK BREAKDOWN" — Bet Killer was
+  // deprecated and replaced by the Under-of-the-Day tab; every pick that
+  // reaches the UI is a recommended pick post NO_BET filtering.
   const gradeColor = pick ? GRADE_COLORS[pick.grade] : COLORS.textMuted;
 
   return (
     <SafeAreaView
-      style={[styles.safe, isKiller && { backgroundColor: COLORS.killerBg }]}
+      style={styles.safe}
       edges={["top", "bottom"]}
     >
       <View style={styles.headerBar}>
@@ -79,7 +78,7 @@ export default function PickDetail() {
           <Ionicons name="chevron-back" size={22} color={COLORS.textPrimary} />
         </Pressable>
         <Text style={styles.headerTitle}>
-          {isKiller ? "BET KILLER" : "PICK BREAKDOWN"}
+          PICK BREAKDOWN
         </Text>
         <Pressable
           testID="add-to-slip-button"
@@ -135,8 +134,8 @@ export default function PickDetail() {
             <Text style={styles.market}>{pick.market}</Text>
 
             <View style={[styles.scoreWrap, { borderColor: gradeColor }]}>
-              <Text style={[styles.scoreBig, { color: gradeColor }]}>
-                {Math.round(pick.lock_score)}
+              <Text style={[styles.scoreBig, { color: gradeColor }]} testID="pick-detail-lock-score">
+                {getDisplayLockRounded(pick)}
               </Text>
               <Text style={styles.scoreSub}>🔒 LOCK SCORE · BET QUALITY</Text>
               <Text style={styles.scoreNote}>
@@ -180,7 +179,7 @@ export default function PickDetail() {
             </View>
 
             <Text style={styles.sectionLabel}>
-              {isKiller ? "WHY TO AVOID" : "WHY THIS PICK"}
+              WHY THIS PICK
             </Text>
             <View style={styles.explainCard}>
               {pick.explanation ? (

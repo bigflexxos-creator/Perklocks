@@ -59,7 +59,7 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
-        name="killer"
+        name="under"
         options={{
           title: "UNDER LOCK",
           tabBarIcon: ({ color, size }) => <Ionicons name="trending-down" color={color} size={size} />,

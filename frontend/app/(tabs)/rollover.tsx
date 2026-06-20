@@ -13,6 +13,7 @@ import { ChipRow } from "@/src/components/ChipRow";
 import { SportFilterBar } from "@/src/components/SportFilterBar";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
+import { getDisplayLockRounded } from "@/src/lib/lockScore";
 
 const RANK_LABELS = ["TOP PICK", "OPTION #2", "OPTION #3"];
 const RANK_COLORS = [COLORS.goldElite, COLORS.voltBlue, COLORS.neonGreen];
@@ -159,7 +160,7 @@ function RolloverCard({ pick, rank, pool, onPress }: { pick: Pick; rank: number;
       <Text style={styles.market}>{pick.market}</Text>
 
       <View style={styles.metricsRow}>
-        <Metric label="🔒 LOCK" value={String(Math.round(pick.lock_score))} color={gradeColor} />
+        <Metric label="🔒 LOCK" value={String(getDisplayLockRounded(pick))} color={gradeColor} />
         <View style={styles.metricDivider} />
         <Metric label="📊 WIN" value={`${Math.round(pick.win_probability)}%`} color={COLORS.neonGreen} />
         <View style={styles.metricDivider} />
