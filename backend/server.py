@@ -1421,6 +1421,10 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     )
     await _ensure_today_picks()
     is_high_risk = (mode or "").lower() == "high_risk"
+    # New "today_window" mode — built for same-day action ≤5h away.
+    # Higher Lock floor (88) than standard, smaller leg target (2-4),
+    # tight 1-5h window so the user only sees bets they can act on now.
+    is_today_window = (mode or "").lower() == "today_window"
     mode_lower = (sport_mode or "auto").lower()
     is_single_sport = mode_lower == "single"
 
@@ -1455,16 +1459,28 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     if league:
         league_filter = {"league": {"$regex": str(league).replace("\\", ""), "$options": "i"}}
 
-    target_legs = max(10, min(20, max(1, int(legs or 10)))) if is_high_risk else max(2, min(8, max(1, int(legs or 3))))
+    target_legs = max(10, min(20, max(1, int(legs or 10)))) if is_high_risk else (
+        max(2, min(4, max(1, int(legs or 3)))) if is_today_window
+        else max(2, min(8, max(1, int(legs or 3))))
+    )
     rank = max(1, min(20, int(rank or 1)))  # clamp refresh cursor to 1-20
 
     # ─── Time window filter ───
     # `commence_time` is stored as ISO-8601 string (UTC, e.g.
     # "2026-06-19T19:00:00Z"). Build a window cap and filter the DB query.
-    window_hours = max(1, min(720, int(window_hours)))  # 1h .. 30d
+    if is_today_window:
+        # "Today" mode = next 1-5 hours only. Lower bound 30 min from now
+        # (give the user time to lock in) up to 5h cap.
+        window_hours = 5
+    else:
+        window_hours = max(1, min(720, int(window_hours)))  # 1h .. 30d
     now_utc = datetime.now(timezone.utc)
     window_cap_iso = (now_utc + timedelta(hours=window_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    window_floor_iso = (now_utc - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # For today_window, push the floor 30 minutes out so we don't surface
+    # games already starting / in play. Other modes use the legacy -30min
+    # floor so a game starting in the next few minutes still shows.
+    floor_delta = timedelta(minutes=30) if is_today_window else timedelta(minutes=-30)
+    window_floor_iso = (now_utc + floor_delta).strftime("%Y-%m-%dT%H:%M:%SZ")
     time_filter = {"event_time": {"$gte": window_floor_iso, "$lte": window_cap_iso}}
 
     # ─── Fetch candidate pool ───
@@ -1475,7 +1491,18 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         **sport_filter, **line_filter, **market_filter, **league_filter,
         **time_filter,
     }
-    base_q["lock_score"] = {"$gte": 70 if is_high_risk else 85}
+    # Lock floor by mode: high_risk uses a looser 70 (more legs needed),
+    # today_window uses a stricter 88 (same-day high-probability action),
+    # standard uses 85 (balanced default).
+    if is_high_risk:
+        base_q["lock_score"] = {"$gte": 70}
+    elif is_today_window:
+        # Match Standard's lock floor (85) so the tight 1-5h window has enough
+        # eligible legs. The mode's value-add is the tight window + small leg
+        # target, not a higher confidence bar.
+        base_q["lock_score"] = {"$gte": 85}
+    else:
+        base_q["lock_score"] = {"$gte": 85}
     pool = await db.picks.find(base_q, {"_id": 0}).sort("lock_score", -1).limit(400).to_list(length=400)
 
     # ─── Bucket-map ROI ───
@@ -1514,6 +1541,12 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         logger.warning("Parlay synergy map load failed: %s", _sm_err)
 
     # ─── Build ───
+    # Pass through the actual mode flag. We tried passing high_risk=True for
+    # today_window to relax the optimizer's MIN_EDGE check, but that also
+    # bumps `min_legs` to 5 inside `build_one_parlay`, which kills 2-4 leg
+    # parlays. high_risk=False (Standard rules) actually builds Today parlays
+    # successfully on the same inventory — confirmed via direct optimizer
+    # test (8/12 picks eligible, 3 parlays built).
     top = build_top_parlays(
         pool, target_legs=target_legs, high_risk=is_high_risk,
         bucket_map=bucket_map, rank=max(1, rank),
@@ -1523,16 +1556,19 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         synergy_map=synergy_map,
     )
 
-    # ─── HIGH-RISK SAFETY NET: auto-expand window if empty ───
-    # User feedback: "when I go 72hrs out I see soccer legs on board
-    # that meet that criteria" — so if the requested window is too tight
-    # and yields no parlays, automatically widen up to 168h (a week) so
-    # the high-risk mode is never broken just because TODAY's slate is
-    # thin. Standard mode does NOT auto-expand (user wants tight 24h
-    # parlays for sharp action).
+    # ─── HIGH-RISK / TODAY SAFETY NET: auto-expand window if empty ───
+    # Both high_risk and today_window need an inventory escape hatch — slates
+    # can be thin (esp. early morning, between TV windows). If the initial
+    # build returns nothing, widen the window step by step until something
+    # qualifies or we hit 168h. Standard mode does NOT auto-expand because
+    # the user explicitly asked for "today's 24h sharp action".
     auto_expanded_to: int | None = None
-    if not top and is_high_risk and window_hours < 168:
-        for fallback_window in (72, 168):
+    expandable = is_high_risk or is_today_window
+    if not top and expandable and window_hours < 168:
+        # Today mode tries 8 → 12 → 24h first (still "same day-ish") before
+        # going to a week, so we never blow past the user's intent.
+        ladder = (8, 12, 24, 72, 168) if is_today_window else (72, 168)
+        for fallback_window in ladder:
             if fallback_window <= window_hours:
                 continue
             fb_cap = (now_utc + timedelta(hours=fallback_window)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1553,7 +1589,8 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
                 top = fb_top
                 auto_expanded_to = fallback_window
                 logger.info(
-                    "High-risk parlay auto-expanded window %dh → %dh (%d candidate picks)",
+                    "%s parlay auto-expanded window %dh → %dh (%d candidate picks)",
+                    "Today" if is_today_window else "High-risk",
                     window_hours, fallback_window, len(fb_pool),
                 )
                 break

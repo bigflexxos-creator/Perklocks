@@ -320,7 +320,7 @@ export const api = {
       scoped_to_today?: boolean;
     }>(`/picks/under-of-the-day${q ? `?${q}` : ""}`);
   },
-  parlay: (legs: number = 3, mode: "standard" | "high_risk" = "standard",
+  parlay: (legs: number = 3, mode: "standard" | "high_risk" | "today_window" = "standard",
            sport?: string, lineType?: LineType,
            includeSports: string[] = [],
            filters?: PickFilters, rank: number = 1, lockedIds: string[] = [],

@@ -115,18 +115,21 @@ export default function ParlayScreen() {
     30_000,
   );
 
-  const onModeChange = (m: "standard" | "high_risk") => {
-    // High-risk mode auto-expands the time window to 72h so the optimizer
-    // has enough qualifying legs (Lock≥75, Edge≥+1%) to build a 10-20 leg
-    // parlay. Standard mode stays at 24h. User spec: "when I go 72hrs out
-    // I see soccer legs on board that meet that criteria" — make this the
-    // default for high-risk so the user doesn't have to discover the
-    // window control to get a working parlay.
-    updatePrefs({
-      mode: m,
-      legs: m === "high_risk" ? 10 : 3,
-      windowHours: m === "high_risk" ? 72 : 24,
-    });
+  const onModeChange = (m: "standard" | "high_risk" | "today_window") => {
+    // Each mode tunes leg count + time window to match its optimizer profile:
+    //   • standard      — 3 legs, 24h window (balanced default)
+    //   • high_risk     — 10 legs, 72h window (10-20 leg lottery, looser floor)
+    //   • today_window  — 3 legs, 5h window (same-day high-probability action)
+    let legs: number;
+    let windowHours: number;
+    if (m === "high_risk") {
+      legs = 10; windowHours = 72;
+    } else if (m === "today_window") {
+      legs = 3; windowHours = 5;  // server force-clamps to 5 anyway
+    } else {
+      legs = 3; windowHours = 24;
+    }
+    updatePrefs({ mode: m, legs, windowHours });
     setRank(1);
     setLockedIds([]);
   };
@@ -159,6 +162,7 @@ export default function ParlayScreen() {
   }, []);
 
   const isHighRisk = mode === "high_risk";
+  const isTodayWindow = mode === "today_window";
   const legOptions = isHighRisk ? [10, 15, 20] : [2, 3, 4, 5];
   const accentColor = isHighRisk ? COLORS.electricBlaze : COLORS.goldElite;
   // Sport list — kept in PARITY with the Home feed (src/theme.ts SPORTS)
@@ -185,7 +189,11 @@ export default function ParlayScreen() {
         <View>
           <Text style={styles.brand}>AUTO PARLAY</Text>
           <Text style={[styles.tag, { color: accentColor }]}>
-            {isHighRisk ? "HIGH RISK · 10-20 LEG LOTTERY" : "OPTIMIZER V1 · SAFE / BALANCED / AGGRESSIVE"}
+            {isHighRisk
+              ? "HIGH RISK · 10-20 LEG LOTTERY"
+              : isTodayWindow
+                ? "TODAY · NEXT 1-5h · HIGH PROBABILITY"
+                : "OPTIMIZER V1 · SAFE / BALANCED / AGGRESSIVE"}
           </Text>
         </View>
         {/* REFRESH button removed per user spec — REGENERATE below is the
@@ -223,9 +231,17 @@ export default function ParlayScreen() {
         <Pressable
           testID="parlay-mode-standard"
           onPress={() => onModeChange("standard")}
-          style={[styles.modeBtn, !isHighRisk && styles.modeBtnActive]}
+          style={[styles.modeBtn, mode === "standard" && styles.modeBtnActive]}
         >
-          <Text style={[styles.modeText, !isHighRisk && styles.modeTextActive]}>STANDARD</Text>
+          <Text style={[styles.modeText, mode === "standard" && styles.modeTextActive]}>STANDARD</Text>
+        </Pressable>
+        <Pressable
+          testID="parlay-mode-today"
+          onPress={() => onModeChange("today_window")}
+          style={[styles.modeBtn, isTodayWindow && styles.modeBtnTodayActive]}
+        >
+          <Ionicons name="time" size={12} color={isTodayWindow ? COLORS.bg : COLORS.voltBlue} />
+          <Text style={[styles.modeText, isTodayWindow && styles.modeTextTodayActive]}>TODAY</Text>
         </Pressable>
         <Pressable
           testID="parlay-mode-high-risk"
@@ -721,9 +737,11 @@ const styles = StyleSheet.create({
   modeBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 9, borderRadius: 10, borderWidth: 1, borderColor: COLORS.borderDefault },
   modeBtnActive: { backgroundColor: COLORS.goldElite, borderColor: COLORS.goldElite },
   modeBtnHighRiskActive: { backgroundColor: COLORS.electricBlaze, borderColor: COLORS.electricBlaze },
+  modeBtnTodayActive: { backgroundColor: COLORS.voltBlue, borderColor: COLORS.voltBlue },
   modeText: { color: COLORS.textSecondary, fontSize: 11, fontWeight: "900", letterSpacing: 1.4 },
   modeTextActive: { color: COLORS.bg },
   modeTextHighRiskActive: { color: COLORS.bg },
+  modeTextTodayActive: { color: COLORS.bg },
   legSelector: { flexDirection: "row", alignItems: "center", paddingHorizontal: 20, gap: 8, paddingBottom: 8 },
   legLabel: { color: COLORS.textMuted, fontSize: 10, fontWeight: "800", letterSpacing: 1.3, marginRight: 4 },
   legChip: { width: 40, height: 36, borderRadius: 18, borderWidth: 1, borderColor: COLORS.borderDefault, alignItems: "center", justifyContent: "center" },
