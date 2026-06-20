@@ -167,20 +167,9 @@ export default function ParlayScreen() {
             {isHighRisk ? "HIGH RISK · 10-20 LEG LOTTERY" : "OPTIMIZER V1 · SAFE / BALANCED / AGGRESSIVE"}
           </Text>
         </View>
-        <Pressable
-          onPress={onRefresh}
-          testID="parlay-refresh"
-          hitSlop={10}
-          style={({ pressed }) => [
-            styles.refreshBadge,
-            { borderColor: accentColor, opacity: pressed ? 0.6 : 1 },
-          ]}
-        >
-          <Ionicons name="refresh" size={14} color={accentColor} />
-          <Text style={[styles.refreshTxt, { color: accentColor }]}>
-            REFRESH{rank > 1 ? ` #${rank}` : ""}
-          </Text>
-        </Pressable>
+        {/* REFRESH button removed per user spec — REGENERATE below is the
+            single source of truth for getting a new parlay. Avoids the
+            duplicate-CTA confusion ("which one do I tap?"). */}
       </View>
 
       {/* Regenerate button — shuffles the optimizer seed so the user gets
