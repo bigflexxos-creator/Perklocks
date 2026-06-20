@@ -93,6 +93,11 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
             </View>
           )}
           <Text style={styles.market} numberOfLines={2}>{pick.market}</Text>
+          {(pick as any).model_line === true && (
+            <Text style={styles.modelLineText} numberOfLines={1}>
+              📐 Model line — synthesized from market O/U
+            </Text>
+          )}
           {nearMiss && firstBlocker && (
             <Text style={styles.nearMissText} numberOfLines={1}>
               ⚡ Almost Apex — blocked by {firstBlocker}
@@ -217,6 +222,14 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
     marginTop: 6,
     opacity: 0.85,
+  },
+  modelLineText: {
+    color: COLORS.textMuted,
+    fontSize: 10.5,
+    fontWeight: "600",
+    letterSpacing: 0.2,
+    marginTop: 4,
+    fontStyle: "italic",
   },
   header: { flexDirection: "row", justifyContent: "space-between" },
   tagRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 },

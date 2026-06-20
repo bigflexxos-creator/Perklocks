@@ -1,0 +1,40 @@
+{
+  "summary": "Backend review for PerksLocks: 11/13 pytest tests PASSED, 1 SKIPPED (Sweden/NL has no Over 1.5 because main O/U emit was absent for that fixture), 1 FAILED (Soccer Over 1.5 Poisson synthesis under-emits: 2 picks vs spec's ≥10). PASS: (1) Conflicting picks dedupe — 0 events with >1 game-outcome pick on Soccer slate (114 picks scanned); Sweden @ Netherlands has exactly 1 game-outcome pick ('Netherlands Win or Draw', lock 95.9). (2) Over 1.5 quality is correct — both synthesized picks carry model_line=true and model_source='poisson_from_main_total'; Bohemians @ Shelbourne lock_score=90.1, Grêmio Novorizontino @ Ponte Preta=86.7. (3) MLB /api/mlb/live shape — response is {games:{...}, as_of:...}; under games both plain 'Cincinnati Reds @ New York Yankees' (with commence_time '2026-06-19T22:35:00Z' ISO UTC) and dated 'Cincinnati Reds @ New York Yankees|2026-06-19' keys exist (42 game keys total). (4) Player Intel: refresh returns {seeded_new:0, learned_updates:83, total_profiles:186}; profile lookups for Mbappe→'Kylian Mbappé' (high-xG attacker), Mahomes→'Patrick Mahomes' (dual-threat QB), Sinner→'Jannik Sinner' (archetype='aggressive server' — see note), LeBron James→'LeBron James' (two-way wing) all pass; /list?sport=Soccer&limit=10 returns 10 players with archetype/team/position fields populated. Response is wrapped: profile endpoint returns {profile:{...}} and list returns {sport,count,players}. (5) /api/auto-elite?sport=MLB returns 200 {sport:'MLB',count:0,players:[]} — no 500. (6) Full slate (129 picks): 0 events with duplicate game-outcome picks. FAIL: Test 2 — only 2 'Total Goals Over 1.5' picks across the whole Soccer slate (114 picks, ~25 events). Root cause: synthesis is gated inside the totals block in sports_engine.py:711 — it only fires when the bulk Odds API returned a main Total Goals O/U line for that event; only 3 events on today's slate had a main Total Goals O/U (Bohemians, Grêmio Novorizontino, and one more), so only 2 Over 1.5 synthesizable. Sweden @ Netherlands has NO Total Goals market at all → no synthesis possible from current data path. Either (a) main-line totals are being filtered out upstream, or (b) synthesis needs a fallback when only ML/spreads are present (e.g. fit Poisson from xG/team-strength priors rather than market O/U).",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "GET /api/picks/today?sport=Soccer&line_type=both", "issue": "Soccer Over 1.5 Poisson synthesis under-emits: only 2 picks vs spec's ≥10. Sweden @ Netherlands has zero Total Goals picks (no main O/U 2.5 emitted upstream → synthesis skipped). Synthesis at sports_engine.py:711 requires a main Total Goals line; today only 3 events had one. Either widen upstream totals emission or add a model-prior fallback that doesn't depend on the bulk O/U line.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "GET /api/player-intel/profile?name=Sinner&sport=Tennis", "issue": "Sinner archetype is 'aggressive server' (not asserted in spec, but worth noting — spec only required canonical_name)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_perkslocks_review.py",
+    "/app/test_reports/pytest/perkslocks_review.xml"
+  ],
+  "action_items": [
+    "FIX (HIGH): Soccer Over 1.5 synthesis emits only 2/expected ≥10 picks. Inspect /app/backend/sports_engine.py:711 — synthesis is conditional on a main Total Goals O/U line being present in the soccer odds payload. Today only ~3 events have a main total; the rest of the slate (incl. Sweden @ Netherlands) gets no Over 1.5. Options: (a) ensure /odds soccer call includes totals for all events, (b) add a Poisson-prior fallback using team xG/strength when no market O/U is available, (c) loosen the line-range filter (currently `1.0 <= line <= 3.5`).",
+    "VERIFY: Spec requires Sweden @ Netherlands Over 1.5 with lock_score ≥ 90 — currently not produced. This will start passing once fallback synthesis is added.",
+    "Optional cosmetic: Sinner profile archetype is 'aggressive server' — confirm that's the intended Tennis archetype label (spec did not assert it)."
+  ],
+  "critical_code_review_comments": [
+    "sports_engine.py:711-785 — Poisson Over 1.5 synthesis path looks correct but is fully dependent on the upstream emitting a main Total Goals line. If the bulk Odds API call for Soccer doesn't include totals for an event, the synthesis never fires. No fallback path exists.",
+    "Player Intel endpoints wrap responses inconsistently: /profile returns {profile:{...}}, /list returns {sport,count,players}, /refresh returns flat keys. Document this in API spec so clients don't have to introspect.",
+    "/api/mlb/live response correctly contains BOTH plain and dated keys for each game — old-score bug fix verified. Note the data is nested under 'games' key (top-level: {games, as_of}); confirm mobile client knows to descend into 'games'."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_perkslocks_review.py (new — pytest suite for this review)"
+  ],
+  "success_rate": {"backend": "84.6% (11/13 passed, 1 skipped due to slate, 1 hard failure)", "frontend": "n/a (skipped per request)"},
+  "seed_data_creation": "None. Used demo@lockscore.ai / demo123 from /app/memory/test_credentials.md.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Tests live at /app/backend/tests/test_perkslocks_review.py. Run: cd /app && EXPO_PUBLIC_BACKEND_URL=https://bet-edge-ai-1.preview.emergentagent.com python -m pytest backend/tests/test_perkslocks_review.py -v -s --tb=short. Public URL env: EXPO_PUBLIC_BACKEND_URL. Login at /api/auth/login with demo@lockscore.ai/demo123. /api/picks/today returns {picks:[...]}; /api/mlb/live returns {games:{key→{...,commence_time}}, as_of:str}; /api/player-intel/profile returns {profile:{...}}; /api/player-intel/list returns {sport,count,players:[...]}; /api/auto-elite returns {sport,count,players:[...]}. The Over 1.5 count is slate-dependent — if main agent fixes synthesis, expect ≥10 picks with model_line=true & model_source='poisson_from_main_total'. Sweden @ Netherlands appears on slate intermittently.",
+  "rca_of_issue": "Over 1.5 Poisson synthesis only fires inside the soccer totals processing block in /app/backend/sports_engine.py:711-785. The block is entered only when the soccer event's bulk Odds API payload contains a `totals` market with a main O/U line in [1.0, 3.5]. On today's slate (114 soccer picks, ~25 events), only 3 events had an upstream Total Goals line — so synthesis produced just 2 Over 1.5 picks (one main line was already 1.5, so no synthesis needed there). Reproduction: GET /api/picks/today?sport=Soccer&line_type=both → grep market='Total Goals Over 1.5' → count=2. Sweden @ Netherlands has 13 picks total but none are Total Goals (only Win-or-Draw + player props). Mitigation: extend synthesis to use a model prior (team xG / form factors already used elsewhere in sports_engine for Soccer) when the upstream totals market is missing, so every soccer event yields an Over 1.5 pick when a credible lambda can be derived from non-market signals."
+}
