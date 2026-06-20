@@ -511,6 +511,22 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
             and not is_chalk_ml):
         if book_implied < SPORT_IMPLIED_FLOOR.get(sport, 0.50):
             return None
+    # Apply bet-quality floor at GENERATION time using the win_prob + edge
+    # values we already have. Mirrors the floor inside compute_lock_score
+    # but doesn't require re-loading the pick dict. Without this, every
+    # newly-built pick wrote `grade="Pass"` for a couple cycles until the
+    # validator caught up — the 59-pick "Lock 90 + Pass badge" bug.
+    _wp_floor = float(model_win_prob * 100)
+    _ed_floor = float(edge or 0)
+    _floor = 0.0
+    if _wp_floor >= 65 and _ed_floor >= 1:
+        _wb = min(12.0, max(0.0, (_wp_floor - 65.0) * 1.5))
+        _eb = min(8.0, max(0.0, _ed_floor * 0.5))
+        _floor = 85.0 + _wb + _eb
+        if not (_wp_floor >= 80.0 and _ed_floor >= 15.0):
+            _floor = min(97.0, _floor)
+    if _floor and lock < _floor:
+        lock = _floor
     return {
         "sport": sport, "league": league, "event": event,
         "event_time": event_time, "market": market, "selection": pick_side,
