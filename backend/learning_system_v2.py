@@ -460,16 +460,19 @@ async def apply_v2_to_picks(picks: list[dict], db) -> list[dict]:
                 return True
         return False
 
-    # Per-event goalscorer cap: keep top 2 by lock_score, flag rest as no_bet.
-    # ELITE-AWARE: hardcoded ELITE_PLAYERS (Mbappé/Vini/Messi/Kane) + AUTO-ELITE
-    # ELITE-AWARE: hardcoded ELITE_PLAYERS (Mbappé/Vini/Messi/Kane) + AUTO-ELITE
-    # (data-discovered scorers ≥55% hit rate). Both protected from cap.
-    # MARQUEE LOCK: hardcoded soccer elites on goalscorer markets are forced
-    # to lock_score=99 with the Apex tier — per user spec ("Harry Kane / Mbappé
-    # / Messi are always a threat to score, always 99 lock"). Applies only to
-    # the hardcoded ELITE_PLAYERS list (not auto-elite) so a streaky scorer
-    # can't game the 99 badge.
-    GS_PICKS_PER_EVENT = 2
+    # ── V2 LIVE MODE (user spec: "V2 is blocking a lot of picks let's
+    #   just make it live") ──
+    #
+    # Previously V2 ran with hidden enforcement: blacklist marked picks
+    # `no_bet=True`, per-event goalscorer cap dropped extras, and
+    # calibration band demotion pushed picks below the 85 floor —
+    # silently removing them from the feed. Now V2 is informational:
+    # it still writes `lock_score_v2`, `tier_v2`, market weights, and
+    # the calibration bands for visibility, but it NEVER blocks a pick.
+    # The API-layer goalscorer dedupe (_dedupe_goalscorer_per_event)
+    # still enforces a top-N-per-team cap, so we don't balloon the
+    # feed; just no SILENT silencing.
+    GS_PICKS_PER_EVENT = 99   # effectively disabled — API layer dedupe handles caps
     gs_by_event: dict[str, list[dict]] = {}
     for p in picks:
         if "goal scorer" in (p.get("market") or "").lower():
@@ -487,10 +490,14 @@ async def apply_v2_to_picks(picks: list[dict], db) -> list[dict]:
                     f"{p.get('elite_player_name') or 'Elite scorer'} — always a "
                     f"threat on goalscorer markets (per user spec)"
                 )
+    # ── Goalscorer per-event cap DISABLED in V2 (handled at API layer) ──
     for event, gs in gs_by_event.items():
         if len(gs) <= GS_PICKS_PER_EVENT:
             continue
-        # Sort: elites (hardcoded or auto) first, then by lock_score desc
+        # If GS_PICKS_PER_EVENT ever gets re-tightened, the cap logic
+        # below kicks back in. Leaving the structure in place rather
+        # than deleting it so a quick `99 → 2` toggle restores the
+        # old behavior without re-introducing a regression.
         gs.sort(key=lambda x: (
             0 if _is_elite_or_auto(x) else 1,
             -float(x.get("lock_score") or 0),
@@ -508,15 +515,14 @@ async def apply_v2_to_picks(picks: list[dict], db) -> list[dict]:
         league = p.get("league")
         market_norm = _market_key(p.get("market") or "")
 
-        # 0) Hard blacklist — sport+league+market combos with sustained -EV.
-        # Flag as `no_bet=True` (API filter already hides these from the feed)
-        # and record the reason for the user.
+        # 0) Blacklist — record the warning but DO NOT silence the pick.
+        # User wants to see all picks; the blacklist becomes advisory.
         bl, reason = _is_blacklisted(sport, league, p.get("market") or "")
         if bl:
-            p["no_bet"] = True
-            p["no_bet_reason"] = reason
+            p["learning_blacklist_warning"] = reason
             p["blacklisted_by_learning"] = True
             blacklisted_count += 1
+            # Skip further V2 mutation but keep the pick visible.
             continue
 
         # 1) Apply 99 gates (don't touch elite anchors per spec — they stay 99)
@@ -534,21 +540,35 @@ async def apply_v2_to_picks(picks: list[dict], db) -> list[dict]:
             if gate_reason:
                 p["lock99_gate_failed"] = gate_reason
                 p["lock_score"] = new_score
-        # 2) Apply market weight multiplier (subtle nudge, not a full re-score)
+        # 2) Apply market weight multiplier — BOOST ONLY in live mode.
+        # We only honor mw > 1.0 (markets the learning loop has flagged
+        # as historically OUTPERFORMING). Down-weights are kept as a
+        # display-only `learning_v2_weight` field but never applied to
+        # `lock_score`. User spec: stop V2 from silently nuking picks.
         mw = market_weights.get(market_norm, 1.0)
-        if abs(mw - 1.0) > 0.001:
+        if mw > 1.001:
             adjusted = float(p.get("lock_score", 0)) * mw
             p["lock_score"] = round(max(0.0, min(99.0, adjusted)), 1)
             p["learning_v2_weight"] = round(mw, 3)
-        # 3) Apply calibration band raise — raise the minimum lock to enter a band
+        elif mw < 0.999:
+            # Record but DO NOT apply — user can see the soft warning.
+            p["learning_v2_weight"] = round(mw, 3)
+            p["learning_v2_warning"] = (
+                f"Market underperforming ({mw:.2f}x) — pick kept visible "
+                f"per live-mode setting"
+            )
+        # 3) Calibration band raise — DISABLED in live mode.
+        # The legacy demotion would drop a pick from "Strong Lock" (90)
+        # down to "Pass" (84.9) if the band was historically under,
+        # which silently removed picks from the 85+ feed. Now we record
+        # the band's calibration index as info-only.
         band_name = _band_for_score(p.get("lock_score", 0))
         raise_amt = band_raises.get(band_name, 0)
         if raise_amt > 0:
-            # If the score's just barely in the band, push it down one band.
-            band = next((b for b in CALIBRATION_BANDS if b["name"] == band_name), None)
-            if band and (p["lock_score"] - band["min"]) < raise_amt:
-                p["lock_score"] = round(band["min"] - 0.1, 1)
-                p["calibration_demotion"] = f"{band_name} band underperformed"
+            p["calibration_band_warning"] = (
+                f"{band_name} band historically under by {raise_amt:.1f} pts "
+                f"— pick kept (live mode)"
+            )
         # 4) Re-apply the bet-quality floor BEFORE re-grading. Without
         # this, market_weight multipliers / calibration demotions can
         # push a high-win/edge pick below 85 → grade flips to "Pass"
