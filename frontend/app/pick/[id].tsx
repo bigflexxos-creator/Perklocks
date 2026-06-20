@@ -198,7 +198,13 @@ export default function PickDetail() {
 
             <Text style={styles.sectionLabel}>FACTOR BREAKDOWN</Text>
             <View style={styles.factorsCard}>
-              {Object.entries(pick.factors).map(([k, v]) => (
+              {/* Defensive: alt-line picks (e.g. tennis Tommy Paul +0.5 Games)
+                  occasionally arrive without a populated `factors` map —
+                  Object.entries(undefined) was crashing the whole pick
+                  detail screen with "Cannot convert undefined value to
+                  object". Coalesce to {} so the section just renders
+                  empty rather than tanking the route. */}
+              {Object.entries(pick.factors || {}).map(([k, v]) => (
                 <View key={k} style={styles.factorRow}>
                   <Text style={styles.factorName}>{k}</Text>
                   <View style={styles.factorBarTrack}>
@@ -207,9 +213,14 @@ export default function PickDetail() {
                       { width: `${v}%`, backgroundColor: gradeColor },
                     ]} />
                   </View>
-                  <Text style={[styles.factorValue, { color: gradeColor }]}>{Math.round(v)}</Text>
+                  <Text style={[styles.factorValue, { color: gradeColor }]}>{Math.round(Number(v) || 0)}</Text>
                 </View>
               ))}
+              {(!pick.factors || Object.keys(pick.factors).length === 0) && (
+                <Text style={[styles.factorName, { textAlign: "center", paddingVertical: 8 }]}>
+                  Factor breakdown unavailable for this pick.
+                </Text>
+              )}
             </View>
 
             {/* Survivability Engine — only renders for MLB hit props */}
