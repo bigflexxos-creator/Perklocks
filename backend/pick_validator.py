@@ -136,13 +136,22 @@ async def validate_and_heal(db) -> dict:
         # systematically LOWERS tennis locks (e.g. Sabalenka 99 → 83)
         # because tennis spreads have modest model-edges relative to other
         # sports. Trust the sport-specific engine.
+        # FIX (drift bug): we MUST pass `pick=p` so the validator hits the
+        # v3 six-component formula that was used at generation time —
+        # otherwise it falls into the legacy WP-only fallback and writes
+        # back a different value every cycle, causing the user's complaint
+        # that "Mbappé and other goalscorer locks keep changing".
+        # Also widen the diff tolerance from 1.0 → 4.0 so micro-jitter in
+        # factor recomputation doesn't trigger pointless rewrites.
         if compute_lock_score and wp is not None and (p.get("sport") or "") != "Tennis":
             factors_pct = p.get("factors") or {}
             if factors_pct:
                 factors = {k: v / 100.0 for k, v in factors_pct.items()}
-                target_lock, _ = compute_lock_score(factors, win_prob=wp)
+                target_lock, _ = compute_lock_score(
+                    factors, win_prob=wp, pick=p,
+                )
                 current_lock = p.get("lock_score") or 0
-                if abs(current_lock - target_lock) > 1.0:
+                if abs(current_lock - target_lock) > 4.0:
                     updates["lock_score"] = target_lock
                     p["lock_score"] = target_lock
                     counts["fixed_lock"] += 1
