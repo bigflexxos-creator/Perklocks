@@ -293,40 +293,33 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     score = (0.35 * edge_comp + 0.20 * market_align + 0.15 * roi_comp
              + 0.10 * data_quality + 0.10 * vol_comp + 0.10 * cls_comp)
 
-    # ── Bet-Quality Floor (USER-CALIBRATED TIERS) ────────────────────────
-    # User-defined band system (matches mental model exactly):
-    #   Win 65-69 + Edge 3-5   → Lock 85-89 → "Playable"
-    #   Win 70-74 + Edge 5-9   → Lock 90-94 → "Lock"
-    #   Win 75-79 + Edge 10-14 → Lock 95-97 → "Strong Lock"
-    #   Win 80+  + Edge 15+    → Lock 98-99 → "Elite Lock"
+    # ── Bet-Quality Floor (WEIGHTED SCORE — USER SPEC) ───────────────────
+    # Spec: Lock = weighted(win_prob + edge + confidence_modifier).
+    # Do NOT directly map probability → lock.  A 72 % prediction with
+    # positive edge MUST grade ≥ 95 (Strong Lock). Reserve 98–99 for
+    # elite conditions ONLY (≥80 % win AND ≥+15 % edge AT THE SAME TIME).
     #
-    # Floor sets the BAND; the intra-band position is derived from how
-    # strong the win-prob + edge actually are within the qualifying
-    # range. Floor only RAISES the 6-component score — never lowers.
+    # Implementation:
+    #   raw  = 85   (entry to Playable band; the v3 6-component score
+    #                only RAISES above raw when broader signals align)
+    #         + win_bonus  (caps at +12 — drives the bulk of the band)
+    #         + edge_bonus (caps at +8  — secondary signal)
+    #
+    # Then enforce a 97 ceiling for non-elite picks so 98–99 only fires
+    # on genuine elite conditions. The 6-component composite can still
+    # naturally push a pick into 98-99 if every dimension agrees.
     wp_val = float(pick.get("win_probability") or 0)
     ed_val = float(pick.get("edge_percent") or 0)
     floor = 0.0
-    if wp_val >= 80 and ed_val >= 15:
-        # 98 base + up to +1 from extra edge → caps at 99 (Elite Lock).
-        floor = 98.0 + min(1.0, max(0.0, (ed_val - 15) / 15.0))
-    elif wp_val >= 75 and ed_val >= 10:
-        # 95-97 (Strong Lock) — climbs with both win% and edge.
-        floor = 95.0 + min(
-            2.0,
-            max(0.0, (wp_val - 75) * 0.4 + (ed_val - 10) * 0.3),
-        )
-    elif wp_val >= 70 and ed_val >= 5:
-        # 90-94 (Lock) — middle band, primary "this is a quality bet" tier.
-        floor = 90.0 + min(
-            4.0,
-            max(0.0, (wp_val - 70) * 0.6 + (ed_val - 5) * 0.5),
-        )
-    elif wp_val >= 65 and ed_val >= 3:
-        # 85-89 (Playable) — entry-level quality tier.
-        floor = 85.0 + min(
-            4.0,
-            max(0.0, (wp_val - 65) * 0.6 + (ed_val - 3) * 1.0),
-        )
+    if wp_val >= 65 and ed_val >= 1:
+        win_bonus = min(12.0, max(0.0, (wp_val - 65.0) * 1.5))
+        edge_bonus = min(8.0, max(0.0, ed_val * 0.5))
+        floor = 85.0 + win_bonus + edge_bonus
+        # Elite conditions = BOTH win-prob AND edge meet the high bars.
+        is_elite_conditions = (wp_val >= 80.0) and (ed_val >= 15.0)
+        if not is_elite_conditions:
+            # Cap to Strong Lock ceiling so 98-99 stays sacred.
+            floor = min(97.0, floor)
     if floor and score < floor:
         score = floor
 
