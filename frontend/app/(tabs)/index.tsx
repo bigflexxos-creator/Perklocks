@@ -295,13 +295,30 @@ export default function LocksScreen() {
           />
         </View>
       </View>
-      <SortSelector
-        value={sortKey}
-        onChange={setSortKey}
-        direction={sortDir}
-        onDirectionChange={setSortDir}
-        testIDPrefix="locks-sort"
-      />
+      <View style={styles.sortRow}>
+        <View style={{ flex: 1 }}>
+          <SortSelector
+            value={sortKey}
+            onChange={setSortKey}
+            direction={sortDir}
+            onDirectionChange={setSortDir}
+            testIDPrefix="locks-sort"
+          />
+        </View>
+        {/* Visible UPDATE button — force-refreshes the slate by re-fetching
+            /api/picks/today + bypassing the cached request. Sits next to
+            the SORT selector so the user can always see "I can pull new
+            data right now" without remembering pull-to-refresh. */}
+        <TouchableOpacity
+          onPress={onRefresh}
+          activeOpacity={0.7}
+          style={styles.updateBtn}
+          accessibilityLabel="Update slate"
+          testID="locks-update"
+        >
+          <Text style={styles.updateBtnTxt}>{refreshing ? "…" : "UPDATE"}</Text>
+        </TouchableOpacity>
+      </View>
       {(sport === "Soccer" || sport === "MLB" || sport === "Tennis" || sport === "UFC" || sport === "NBA" || sport === "NFL") && (
         <TouchableOpacity
           onPress={() => router.push(`/soccer-lab?sport=${encodeURIComponent(sport)}` as any)}
@@ -360,11 +377,62 @@ export default function LocksScreen() {
             </Text>
           </View>
         ) : (
-          picks.map((p) => <LockPickCard key={p.id} pick={p} />)
+          /* Picks render in the grouped block below */ null
         )}
+        {/* Grouped render — replaces the flat list when picks exist. */}
+        {picks.length > 0 && groupPicksByDay(picks).map((group) => (
+          <View key={group.key} style={styles.dayGroup}>
+            <View style={styles.dayHeader}>
+              <Text style={styles.dayLabel}>{group.label}</Text>
+              <Text style={styles.dayCount}>{group.items.length} GAMES</Text>
+            </View>
+            {group.items.map((p) => <LockPickCard key={p.id} pick={p} />)}
+          </View>
+        ))}
       </ScrollView>
     </SafeAreaView>
   );
+}
+
+/** Group picks by event date (TODAY / TOMORROW / weekday). Honour the
+ *  current sort/direction inside each group so high-lock picks still
+ *  surface at the top of TODAY before TOMORROW shows up at all. */
+function groupPicksByDay(
+  picks: Pick[],
+): Array<{ key: string; label: string; items: Pick[] }> {
+  const now = new Date();
+  const startOfToday = new Date(
+    now.getFullYear(), now.getMonth(), now.getDate(),
+  );
+  const startOfTomorrow = new Date(startOfToday.getTime() + 86_400_000);
+  const startOfDayAfter = new Date(startOfToday.getTime() + 2 * 86_400_000);
+  const labelFor = (d: Date): string =>
+    d.toLocaleDateString(undefined, { weekday: "long" }).toUpperCase();
+
+  const groups: Record<string, { key: string; label: string; sort: number; items: Pick[] }> = {};
+  for (const p of picks) {
+    const t = p.event_time ? new Date(p.event_time as any) : null;
+    let key = "later", label = "LATER", sort = 9;
+    if (!t || isNaN(t.getTime())) {
+      key = "tba"; label = "TBA"; sort = 99;
+    } else if (t < startOfTomorrow) {
+      key = "today"; label = "TODAY"; sort = 0;
+    } else if (t < startOfDayAfter) {
+      key = "tomorrow"; label = "TOMORROW"; sort = 1;
+    } else {
+      // Group future days by weekday name (TUESDAY, WEDNESDAY, …) and
+      // sort chronologically. Cap at 7 day-keys so we don't sprawl into
+      // 14 sections during long-tournament weeks.
+      const dayStart = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+      const offset = Math.round((dayStart.getTime() - startOfToday.getTime()) / 86_400_000);
+      key = `d${offset}`;
+      label = labelFor(t);
+      sort = 2 + offset;
+    }
+    if (!groups[key]) groups[key] = { key, label, sort, items: [] };
+    groups[key].items.push(p);
+  }
+  return Object.values(groups).sort((a, b) => a.sort - b.sort);
 }
 
 function StatTile({ label, value, color = COLORS.textPrimary }: { label: string; value: string; color?: string }) {
@@ -465,6 +533,52 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.voltBlue + "55",
     backgroundColor: COLORS.voltBlue + "10",
+  },
+  // Sort row holds the SortSelector plus the visible UPDATE button.
+  sortRow: { flexDirection: "row", alignItems: "center" },
+  // UPDATE button — explicit refresh CTA. Power users use pull-to-refresh
+  // but the visible button removes the "is anything happening?" doubt.
+  updateBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.goldElite,
+    backgroundColor: COLORS.goldElite + "12",
+    marginRight: 20,
+    marginBottom: 10,
+    minWidth: 64,
+    alignItems: "center",
+  },
+  updateBtnTxt: {
+    color: COLORS.goldElite,
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 1.2,
+  },
+  // Date-section grouping for the Locks feed.
+  dayGroup: { marginBottom: 4 },
+  dayHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    marginTop: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.borderDefault,
+  },
+  dayLabel: {
+    color: COLORS.text,
+    fontSize: 13,
+    fontWeight: "900",
+    letterSpacing: 1.4,
+  },
+  dayCount: {
+    color: COLORS.textMuted,
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 1,
   },
   soccerLabIcon: { fontSize: 22 },
   soccerLabTitle: {
