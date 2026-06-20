@@ -1,0 +1,37 @@
+{
+  "summary": "Backend-only FINAL P0 retest after iter17 fix to _weekly_model_tuning_loop (server.py:2352-2396 now re-applies step-floor + recomputes grade/confidence + includes them in the $set). ALL TESTS PASS. 17/17 (14 iter17 suite + 3 iter18 follow-up).\n\n— Iter17 root cause CLOSED: the loop's $set now persists grade & confidence. Verified end-to-end across THREE separate natural-fire cycles of the loop (10:36:06, 10:39:59 post-restart, and one mid-test) — DB stayed clean each time. Pre-fix this exact path produced 68 wrong_pass picks per cycle; post-fix produced 0.\n\n— Grade consistency (API + DB): 0 picks with lock>=85 & grade='Pass', 0 legacy grades, 0 lock>99 overflow, 0 tier-mapping mismatches. DB distinct grades today are exactly {'Elite Lock','Lock','Pass','Playable','Strong Lock'} across 281 picks (115-119 served on /api/picks/today).\n\n— Forced reproduction confirmed: `sudo supervisorctl restart backend` → waited for the 180s startup tuning fire (`Weekly model tuning: 10 active buckets, 110 picks re-weighted` at 10:39:59) → re-audited API+DB → 0 wrong_pass. Pre-fix this same sequence reliably yielded 68 wrong_pass.\n\n— Loop-body parity test: re-implemented server.py:2352-2390 verbatim against the live open-pick set, then audited DB → 0 wrong_pass / 0 mismatch / 0 overflow.\n\n— Tier-mapping spec verified per pick: `_grade(lock)` matches stored grade for all 281 open picks today.\n\n— Sort toggle: lock/edge/time/win × asc/desc all monotonic, top-10 IDs differ between desc and asc.\n\n— High-risk parlay 72h: 3 cards × 9 legs each, survival 11.7–12.0%.\n\n— Auto-expand: 4h→72h and 6h→72h fire; 8h served directly (slate-rich, expected). All three windows return 3 parlays.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "pick_validator.validate_and_heal counts dict", "issue": "Step-5 counts['fixed_grade'] still not pre-initialised at line 42-45 — when no grades need fixing the key drops out of the log line. Cosmetic only; functionality is correct. Carried over from iter17."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": [], "react_native_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_p0_bugs_iteration17.py",
+    "/app/backend/tests/test_p0_bugs_iteration18.py",
+    "/app/test_reports/pytest/p0_iter18.xml",
+    "/app/test_reports/pytest/p0_iter18_followup.xml"
+  ],
+  "action_items": [
+    "OPTIONAL — pick_validator.py:42-45 pre-init `'fixed_grade': 0` in counts dict for stable log shape (cosmetic only). Not a blocker; no functional impact.",
+    "OPTIONAL DEFENSE-IN-DEPTH — learning_engine.apply_learning (line 263) mutates pick['lock_score'] without setting pick['grade']/pick['confidence']. The caller currently handles the re-sync correctly, but if any future caller forgets, drift returns. Consider setting pick['grade'] = _grade(new_lock) inside apply_learning itself."
+  ],
+  "critical_code_review_comments": [
+    "/app/backend/server.py:2352-2396 — FIX VERIFIED. Loop now re-applies step-function floor (Win>=80&Edge>=15 → 98, etc.), clamps to 99, and writes grade/confidence in the $set alongside lock_score. Coherent at write time. ✓",
+    "/app/backend/server.py:2381-2390 — $set payload now includes grade + confidence. The iter17 root cause is closed at the persistence boundary. ✓",
+    "/app/backend/soccer/predictor.py — Fix #1 (iter16) still clean: 0 legacy grades in 281 picks. ✓",
+    "/app/backend/sports_engine.py — Fix #2 (iter16) still clean: 99-clamp holds (0 overflow). ✓",
+    "/app/backend/learning_system_v2.py — Fix #3 (iter16) still clean: step-floor + step-5 re-grade in apply_v2_to_picks. ✓",
+    "/app/backend/pick_validator.py:42-45 — 'fixed_grade' default still missing; pure cosmetics."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_p0_bugs_iteration18.py (NEW — 3-test follow-up suite: (1) re-implements the weekly-tuning loop body verbatim against the live DB and audits; (2) DB-wide grade-vs-lock_score spec mirror; (3) natural-fire stability checked against latest 'Weekly model tuning' log marker. Loads /app/backend/.env for MONGO_URL/DB_NAME.)"
+  ],
+  "success_rate": {"backend": "100% (17/17 — 14 iter17 suite + 3 iter18 follow-up). Forced post-restart reproduction also clean.", "frontend": "n/a (skipped per request)"},
+  "seed_data_creation": "None. Used demo@lockscore.ai / demo123 from /app/memory/test_credentials.md.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "P0 set is closed. To re-verify on demand: `cd /app && python -m pytest backend/tests/test_p0_bugs_iteration17.py backend/tests/test_p0_bugs_iteration18.py -v -s`. Expect 17 passed. To force-reproduce the original failure mode (would only fail on a regression): `sudo supervisorctl restart backend && sleep 200 && grep 'Weekly model tuning' /var/log/supervisor/backend.err.log | tail -1` — wait for the 180s startup fire — then re-run the test suite; DB should remain clean with 0 wrong_pass.",
+  "rca_of_issue": "RCA (iter18 — final): The iter17 fix landed at server.py:2352-2396. The loop body now re-applies the bet-quality step-function floor BEFORE the $set, recomputes grade + confidence from the new lock_score via sports_engine._grade/_confidence, and writes both fields in the $set payload alongside lock_score/win_probability/edge_percent/implied_probability/learning. Verification today: (a) 3 separate natural-fire cycles of the loop produced 0 drift; (b) forced restart cycle (sleep 200s for the 180s startup timer) also produced 0 drift; (c) loop-body parity test (re-implementing the loop verbatim and running it against live open picks) produced 0 drift. The drift root cause that travelled from soccer/predictor (iter16) → weekly_tuning (iter17) is now sealed at the only remaining mutation site."
+}
