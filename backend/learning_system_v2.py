@@ -83,6 +83,47 @@ LOCK99_GATES = {
 }
 
 
+# ─────────────────────────────────────────────────────────────
+# League-aware learning + market blacklist
+# ─────────────────────────────────────────────────────────────
+# Sports where league granularity matters for learning. For these sports,
+# the bucket key becomes (sport, league, market) instead of (sport, market).
+# Adds smarter weight isolation for niche leagues whose playstyle differs
+# from the sport mean (e.g. League of Ireland defensive 1-0 grind vs the
+# attacking, draw-rare Brasileirão).
+LEAGUE_AWARE_SPORTS = {"Soccer"}
+
+# Hard blacklist — sport+league_substring+market_substring combos that have
+# shown sustained -EV. Picks matching get auto-flagged `no_bet=True` and
+# disappear from the home feed (filtered server-side already).
+LEAGUE_MARKET_BLACKLIST: list[tuple[str, str, str, str]] = [
+    ("Soccer", "league of ireland", "moneyline",
+     "League of Ireland Moneyline is -27% ROI over last 14 days — auto-blocked"),
+]
+
+
+def _bucket_key(sport: str, league: str | None, market_norm: str) -> tuple:
+    """Canonical learning bucket key.
+
+    Returns a 3-tuple for league-aware sports, 2-tuple for others. The
+    2/3-tuple union adds granularity for sports that need it without
+    churning all existing buckets.
+    """
+    if sport in LEAGUE_AWARE_SPORTS and league:
+        return (sport, league, market_norm)
+    return (sport, market_norm)
+
+
+def _is_blacklisted(sport: str, league: str | None, market: str) -> tuple[bool, str]:
+    """Return (True, reason) if the pick matches a blacklist entry."""
+    lg = (league or "").lower()
+    mk = (market or "").lower()
+    for bl_sport, bl_lg, bl_mk, reason in LEAGUE_MARKET_BLACKLIST:
+        if sport == bl_sport and bl_lg in lg and bl_mk in mk:
+            return True, reason
+    return False, ""
+
+
 # ───────────────────────── Helpers ─────────────────────────
 
 
@@ -122,19 +163,22 @@ async def compute_market_performance(db) -> dict[tuple[str, str], dict]:
     pipeline = [
         {"$match": {"status": {"$in": ["won", "lost", "push"]}}},
         {"$project": {
-            "_id": 0, "sport": 1,
+            "_id": 0, "sport": 1, "league": 1,
             "market_key": {"$toLower": {"$ifNull": ["$market", ""]}},
             "status": 1, "units_risked": 1, "units_profit": 1,
             "clv_value": 1, "lock_score": 1, "win_probability": 1,
         }},
     ]
-    rows: dict[tuple[str, str], dict] = {}
+    rows: dict[tuple, dict] = {}
     async for p in db.picks.aggregate(pipeline):
         sport = p.get("sport") or "Unknown"
+        league = p.get("league")
         market_norm = _market_key(p.get("market_key", ""))
-        key = (sport, market_norm)
+        key = _bucket_key(sport, league, market_norm)
         r = rows.setdefault(key, {
-            "sport": sport, "market": market_norm,
+            "sport": sport,
+            "league": league if sport in LEAGUE_AWARE_SPORTS else None,
+            "market": market_norm,
             "n": 0, "won": 0, "lost": 0, "push": 0,
             "units_risked": 0.0, "units_profit": 0.0,
             "clv_sum": 0.0, "clv_n": 0,
@@ -231,8 +275,13 @@ async def recompute_and_persist(db) -> dict:
     # Compute composite + auto-decay multiplier per row.
     learning_log: list[dict] = []
     market_weights_runtime: dict[str, float] = {}
-    for (sport, market), row in rows.items():
-        n_market = sum(r["n"] for k, r in rows.items() if k[1] == market)
+    for key, row in rows.items():
+        # key is (sport, market) or (sport, league, market) — extract sport+market
+        if len(key) == 3:
+            sport, _league, market = key
+        else:
+            sport, market = key
+        n_market = sum(r["n"] for k, r in rows.items() if k[-1] == market)
         # Min picks per market gate
         if n_market < MIN_PICKS_PER_MARKET:
             row["composite"] = 0.5  # neutral
@@ -367,19 +416,47 @@ async def apply_v2_to_picks(picks: list[dict], db) -> list[dict]:
     market_weights = state.get("market_weights") or MARKET_WEIGHTS
     band_raises = state.get("band_raises") or {}
     market_rows_list = state.get("market_rows") or []
-    market_rows = {(r["sport"], r["market"]): r for r in market_rows_list}
+    # Build a dual lookup: league-aware key wins, falls back to (sport, market).
+    market_rows_la: dict[tuple, dict] = {}
+    market_rows_sw: dict[tuple, dict] = {}
+    for r in market_rows_list:
+        s, m, lg = r.get("sport"), r.get("market"), r.get("league")
+        if lg:
+            market_rows_la[(s, lg, m)] = r
+        market_rows_sw[(s, m)] = r  # always keep sport-wide fallback
+
+    blacklisted_count = 0
 
     for p in picks:
         sport = p.get("sport") or "Unknown"
+        league = p.get("league")
         market_norm = _market_key(p.get("market") or "")
+
+        # 0) Hard blacklist — sport+league+market combos with sustained -EV.
+        # Flag as `no_bet=True` (API filter already hides these from the feed)
+        # and record the reason for the user.
+        bl, reason = _is_blacklisted(sport, league, p.get("market") or "")
+        if bl:
+            p["no_bet"] = True
+            p["no_bet_reason"] = reason
+            p["blacklisted_by_learning"] = True
+            blacklisted_count += 1
+            continue
+
         # 1) Apply 99 gates (don't touch elite anchors per spec — they stay 99)
         if not p.get("elite_player"):
-            bucket = market_rows.get((sport, market_norm))
-            new_score, reason = apply_lock99_gates(
+            # League-aware bucket lookup with sport-wide fallback
+            bucket = (
+                market_rows_la.get((sport, league, market_norm))
+                if sport in LEAGUE_AWARE_SPORTS and league else None
+            )
+            if bucket is None:
+                bucket = market_rows_sw.get((sport, market_norm))
+            new_score, gate_reason = apply_lock99_gates(
                 p, p.get("factors") or {}, float(p.get("lock_score") or 0), bucket
             )
-            if reason:
-                p["lock99_gate_failed"] = reason
+            if gate_reason:
+                p["lock99_gate_failed"] = gate_reason
                 p["lock_score"] = new_score
         # 2) Apply market weight multiplier (subtle nudge, not a full re-score)
         mw = market_weights.get(market_norm, 1.0)
