@@ -1,23 +1,39 @@
 import React, { useState, useEffect } from "react";
 import {
-  View, Text, Modal, Pressable, StyleSheet, Platform,
+  View, Text, Modal, Pressable, StyleSheet, Platform, ScrollView,
 } from "react-native";
 import Slider from "@react-native-community/slider";
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS } from "@/src/theme";
-import { PickFilters } from "@/src/lib/api";
+import { PickFilters, LineType } from "@/src/lib/api";
+import { SortSelector, SortKey } from "@/src/components/SortSelector";
+import { LineTypeToggle } from "@/src/components/LineTypeToggle";
 
 type Props = {
   visible: boolean;
   onClose: () => void;
   filters: PickFilters;
   onApply: (next: PickFilters) => void;
+  // Optional: bring LINE + SORT controls into the sheet. User spec:
+  // "the line and sort should [be] in the filters" — keeps the home
+  // header clean (no permanent stats row, no permanent sort/line bar).
+  lineType?: LineType;
+  onLineTypeChange?: (v: LineType) => void;
+  sortKey?: SortKey;
+  onSortKeyChange?: (v: SortKey) => void;
+  sortDir?: "asc" | "desc";
+  onSortDirChange?: (v: "asc" | "desc") => void;
 };
 
 // Bottom-sheet style filter for lock score and implied probability. Single
 // slider per dimension (min lock, min implied, max implied) keeps the UI
 // simple while letting power users tighten the board.
-export function FilterSheet({ visible, onClose, filters, onApply }: Props) {
+export function FilterSheet({
+  visible, onClose, filters, onApply,
+  lineType, onLineTypeChange,
+  sortKey, onSortKeyChange,
+  sortDir = "desc", onSortDirChange,
+}: Props) {
   // Local state so users can scrub without firing API calls on every drag.
   const [minLock, setMinLock] = useState<number>(filters.minLock ?? 85);
   const [minImplied, setMinImplied] = useState<number>(filters.minImplied ?? 0);
@@ -64,6 +80,40 @@ export function FilterSheet({ visible, onClose, filters, onApply }: Props) {
             <Ionicons name="close" size={22} color={COLORS.textSecondary} />
           </Pressable>
         </View>
+
+        <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 520 }}>
+
+        {/* ── LINE TYPE — moved from the home header per user spec ── */}
+        {lineType && onLineTypeChange && (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="git-branch-outline" size={14} color={COLORS.electricBlaze} />
+                <Text style={styles.sectionTitle}>LINE TYPE</Text>
+              </View>
+            </View>
+            <LineTypeToggle value={lineType} onChange={onLineTypeChange} testIDPrefix="filter-line" />
+          </View>
+        )}
+
+        {/* ── SORT BY — moved from the home header per user spec ── */}
+        {sortKey && onSortKeyChange && (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="swap-vertical" size={14} color={COLORS.neonGreen} />
+                <Text style={styles.sectionTitle}>SORT BY</Text>
+              </View>
+            </View>
+            <SortSelector
+              value={sortKey}
+              onChange={onSortKeyChange}
+              direction={sortDir}
+              onDirectionChange={onSortDirChange}
+              testIDPrefix="filter-sort"
+            />
+          </View>
+        )}
 
         {/* Lock score floor */}
         <View style={styles.section}>
@@ -134,6 +184,8 @@ export function FilterSheet({ visible, onClose, filters, onApply }: Props) {
             Lower implied = bigger payouts. Higher implied = chalkier safer picks.
           </Text>
         </View>
+
+        </ScrollView>
 
         <View style={styles.actions}>
           <Pressable onPress={reset} style={styles.resetBtn} testID="filter-reset">
