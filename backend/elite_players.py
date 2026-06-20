@@ -70,6 +70,13 @@ ELITE_PLAYERS = {
         "Serhou Guirassy", "Niclas Füllkrug", "Niclas Fullkrug",
         "Jamal Musiala", "Leroy Sané", "Sadio Mané", "Sadio Mane",
         "Mason Greenwood", "Joshua Zirkzee", "Eberechi Eze",
+        # 2026 breakout strikers (Sporting / national-team marquee scorers)
+        "Viktor Gyökeres", "Viktor Gyokeres",
+        "Benjamin Šeško", "Benjamin Sesko",
+        "Hugo Ekitike", "Mateo Retegui", "Artem Dovbyk",
+        "Loïs Openda", "Lois Openda", "Santiago Giménez", "Santiago Gimenez",
+        "Mikel Oyarzabal", "Bryan Mbeumo", "Yoane Wissa",
+        "Cody Gakpo", "Memphis Depay",
     },
 
     "MLB": {
@@ -260,6 +267,13 @@ def apply_elite_boost(picks: list[dict]) -> list[dict]:
         "Alexander Isak", "Ollie Watkins", "Ivan Toney",
         "Khvicha Kvaratskhelia", "Jude Bellingham", "Jamal Musiala",
         "Serhou Guirassy", "Dušan Vlahović", "Dusan Vlahovic",
+        # 2026 breakout marquee scorers
+        "Viktor Gyökeres", "Viktor Gyokeres",
+        "Benjamin Šeško", "Benjamin Sesko",
+        "Hugo Ekitike", "Mateo Retegui", "Artem Dovbyk",
+        "Loïs Openda", "Lois Openda",
+        "Santiago Giménez", "Santiago Gimenez",
+        "Mikel Oyarzabal", "Cody Gakpo", "Memphis Depay",
     }
     synth_added = 0
     soa_picks_by_player: dict[tuple, dict] = {}

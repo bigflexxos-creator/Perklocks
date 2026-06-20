@@ -428,21 +428,31 @@ async def apply_v2_to_picks(picks: list[dict], db) -> list[dict]:
     blacklisted_count = 0
 
     # Load auto-elite scorer set (auto-discovered from settled data: players
-    # with ≥5 settled picks and ≥55% hit rate over last 90 days).
-    auto_elite_set: set[str] = set()
+    # with ≥5 settled picks and ≥55% hit rate over last 90 days). We load
+    # per-sport sets so an "auto_elite_set" lookup matches the player to the
+    # sport context (e.g. MLB hitter ≠ soccer scorer with same first name).
+    auto_elite_sets: dict[str, set[str]] = {}
     try:
         from auto_elite import load_auto_elite_set, name_in_market
-        auto_elite_set = await load_auto_elite_set(db, sport="Soccer")
+        for _sport in ("Soccer", "MLB"):
+            try:
+                auto_elite_sets[_sport] = await load_auto_elite_set(db, sport=_sport)
+            except Exception:
+                auto_elite_sets[_sport] = set()
     except Exception:
         name_in_market = None  # type: ignore
 
     def _is_elite_or_auto(p: dict) -> bool:
         if p.get("elite_player"):
             return True
-        if not auto_elite_set or not name_in_market:
+        if not name_in_market:
+            return False
+        sport = p.get("sport") or "Soccer"
+        pool = auto_elite_sets.get(sport) or set()
+        if not pool:
             return False
         market = p.get("market") or ""
-        for n in auto_elite_set:
+        for n in pool:
             if name_in_market(market, n):
                 # Tag the pick so downstream UI sees the badge
                 p["auto_elite"] = True
@@ -451,6 +461,7 @@ async def apply_v2_to_picks(picks: list[dict], db) -> list[dict]:
         return False
 
     # Per-event goalscorer cap: keep top 2 by lock_score, flag rest as no_bet.
+    # ELITE-AWARE: hardcoded ELITE_PLAYERS (Mbappé/Vini/Messi/Kane) + AUTO-ELITE
     # ELITE-AWARE: hardcoded ELITE_PLAYERS (Mbappé/Vini/Messi/Kane) + AUTO-ELITE
     # (data-discovered scorers ≥55% hit rate). Both protected from cap.
     # MARQUEE LOCK: hardcoded soccer elites on goalscorer markets are forced

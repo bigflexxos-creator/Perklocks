@@ -11,13 +11,18 @@ type LiveGame = {
   abstract_status: string;
   is_live: boolean;
   is_final: boolean;
+  /** ISO UTC commence time of THIS scheduled game — used to verify the live
+   *  badge attaches to the right game in a multi-game series. */
+  commence_time?: string | null;
 };
 
 type LiveMap = Record<string, LiveGame>;
 
 type Ctx = {
-  /** Look up live state for a pick by its `event` ("Away @ Home") string. */
-  lookup: (event: string | undefined | null) => LiveGame | null;
+  /** Look up live state for a pick by its `event` ("Away @ Home") string +
+   *  optional `eventTime` (ISO UTC) so a card never shows yesterday's
+   *  FINAL score on tomorrow's matchup. */
+  lookup: (event: string | undefined | null, eventTime?: string | null) => LiveGame | null;
   /** Force-refresh the in-pod cache (rarely needed — auto-polls every 60 s). */
   refresh: () => void;
 };
@@ -108,9 +113,28 @@ export function MLBLiveProvider({ children }: { children: React.ReactNode }) {
   }, [refresh, isAuthed]);
 
   const lookup = useCallback(
-    (event: string | undefined | null): LiveGame | null => {
+    (event: string | undefined | null, eventTime?: string | null): LiveGame | null => {
       if (!event) return null;
-      return games[event] || null;
+      // 1) Try the dated key first — guarantees we get the right game
+      //    when teams play a multi-game series (Thu + Fri + Sat all
+      //    "Reds @ Yankees" — yesterday's FINAL must NOT leak onto
+      //    tomorrow's card).
+      if (eventTime && typeof eventTime === "string" && eventTime.length >= 10) {
+        const dated = games[`${event}|${eventTime.slice(0, 10)}`];
+        if (dated) return dated;
+      }
+      // 2) Fall back to the bare event key (back-compat for callers
+      //    that don't pass event_time).
+      const g = games[event] || null;
+      // Even with bare key, defensively check that the dates align —
+      // if the live game's commence date doesn't match the pick's date,
+      // suppress the badge instead of showing a misleading FINAL.
+      if (g && eventTime && typeof eventTime === "string" && eventTime.length >= 10) {
+        const liveDate = (g.commence_time || "").slice(0, 10);
+        const pickDate = eventTime.slice(0, 10);
+        if (liveDate && liveDate !== pickDate) return null;
+      }
+      return g;
     },
     [games],
   );
@@ -121,8 +145,13 @@ export function MLBLiveProvider({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Hook returning live state for a single pick. */
-export function useMLBLive(event: string | undefined | null): LiveGame | null {
+/** Hook returning live state for a single pick.
+ *  Pass `eventTime` (the pick's ISO commence string) to ensure a multi-game
+ *  series doesn't leak yesterday's FINAL onto tomorrow's matching card. */
+export function useMLBLive(
+  event: string | undefined | null,
+  eventTime?: string | null,
+): LiveGame | null {
   const { lookup } = useContext(MLBLiveContext);
-  return lookup(event);
+  return lookup(event, eventTime);
 }
