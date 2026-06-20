@@ -1,0 +1,49 @@
+{
+  "summary": "Re-tested WIN% sort button (Feature 1) and validated NEW Soccer Lab (Feature 2) end-to-end on the public Expo web preview at https://bet-edge-ai-1.preview.emergentagent.com. Login flow from iteration_10 is now WORKING — demo@lockscore.ai/demo123 successfully authenticates and lands on the LOCKS tab. All 12 specified test cases PASS. Backend endpoints verified separately via curl: /api/auth/login (200), /api/picks/today?sort=win (40 picks), /api/soccer-lab/leagues (15 active leagues), /api/soccer-lab/feed?limit=100&min_lock=78 (100 picks across 7 leagues, top conf 79.84, top lock 98.8).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "props.pointerEvents deprecation warning", "issue": "Console warning: 'props.pointerEvents is deprecated. Use style.pointerEvents'. Non-blocking but should be migrated. Source likely in app/(tabs)/index.tsx toast View or similar. Reference: /app/frontend/app/(tabs)/index.tsx:219"}
+    ]
+  },
+  "test_report_links": [
+    "Manual playwright runs via mcp_browser_automation (5 sessions). No persistent test script committed because tests were exploratory + Feature 2 navigation requires coordinate-based clicks on RN FlatList rows that lack a stable testID."
+  ],
+  "action_items": [
+    "[Optional] Add a testID prop on the pick rows in /app/frontend/app/soccer-lab.tsx PickRow (e.g. testID={`soccer-lab-row-${rank}`}) so future regression tests don't need coordinate clicks.",
+    "[Optional] Replace deprecated `pointerEvents` prop with style.pointerEvents in /app/frontend/app/(tabs)/index.tsx line 219 to clear the console warning."
+  ],
+  "critical_code_review_comments": [
+    "SortSelector.tsx — WIN entry is correctly inserted at index 3 (between EDGE and ODDS). testID `locks-sort-win` resolves correctly.",
+    "(tabs)/index.tsx:261-277 — Soccer Lab CTA is gated by `sport === 'Soccer'`. CTA hidden until user selects the Soccer chip. Correct.",
+    "soccer-lab.tsx — Fires both /api/soccer-lab/feed and /api/soccer-lab/leagues in parallel on mount. Top pick shows confidence 80 / lock 99 which matches backend data exactly.",
+    "api.ts:264 (per iteration_10 note) — sort=lock is stripped from the query, so tapping LOCK fires bare /api/picks/today. Confirmed in this run."
+  ],
+  "test_cases_results": {
+    "1_win_button_visible": "PASS — locks-sort-win visible alongside lock/time/edge/implied",
+    "2_tap_win_fires_sort_win": "PASS — GET /api/picks/today?sort=win observed",
+    "3_tap_edge_fires_sort_edge": "PASS — GET /api/picks/today?sort=edge observed",
+    "4_tap_lock_bare_url": "PASS — GET /api/picks/today (no sort param, as designed per api.ts:264). LOCK chip became visibly active (gold border).",
+    "5_soccer_filter_shows_cta": "PASS — CTA hidden by default; visible after tapping sport-chip-soccer",
+    "6_tap_cta_navigates": "PASS — Routes to /soccer-lab. Both /api/soccer-lab/feed and /api/soccer-lab/leagues fire.",
+    "7_header_text": "PASS — 'SOCCER LAB' title + '15 active leagues · auto-discovered' subtitle",
+    "8_league_chips": "PASS — ALL(100), FIFA World Cup · Props(91), Brasileirão Série B(15), FIFA World Cup(14), Superettan(13), Veikkausliiga(9), League of Ireland(2), La Liga 2(1). First chip is ALL.",
+    "9_top_pick_metrics": "PASS — Row 1: Ilves Tampere @ KuPS Kuopio, conf=80, lock=99 (spec asked for ~80 / 98-ish — matches)",
+    "10_tap_pick_navigates": "PASS — Click row 1 navigated to /pick/12a68145-e19d-5a77-844b-057765da8ada showing KuPS Kuopio Win or Draw detail (lock 99, expected win 88.4%, edge +8.56%)",
+    "11_back_button_returns_to_locks": "PASS — Header back chevron returned user from /soccer-lab to /. Soccer filter & CTA still visible on return.",
+    "12_no_js_errors": "PASS — Zero pageerror events; only one minor deprecation WARNING (pointerEvents)."
+  },
+  "updated_files": [],
+  "success_rate": {"backend": "100% (4/4 endpoints)", "frontend": "100% (12/12 test cases)"},
+  "seed_data_creation": "None.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Auth (login → LOCKS tab) is working on the web preview now; the iteration_10 blocker is resolved (AsyncStorage uses IndexedDB on web, not localStorage — that's why the previous tester saw empty localStorage and incorrectly concluded persistence failed). For interacting with soccer-lab FlatList rows: there is no testID on row items, so use coordinate clicks (row 1 sits around viewport (195,135) on 390x844). The pick row redirect to /pick/{id} works via expoRouter.push. Sport chip testIDs are lowercased (sport-chip-soccer, not sport-chip-Soccer). The /api/picks/today route strips sort=lock (default), so tapping LOCK fires a bare /api/picks/today — assert on URL without ?sort=lock.",
+  "rca_of_issue": "N/A — no bugs found."
+}

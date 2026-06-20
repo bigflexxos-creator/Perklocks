@@ -1915,6 +1915,16 @@ try:
 except Exception as _mc_mount_err:
     logger.warning("Market Competition module failed to mount, continuing without it: %s", _mc_mount_err)
 
+# Mount the Soccer Lab — dynamic league discovery + ranked global feed.
+# Endpoints: /api/soccer-lab/leagues (cached active soccer_* leagues) and
+# /api/soccer-lab/feed (confidence-sorted soccer picks across all leagues).
+try:
+    from soccer_lab import router as soccer_lab_router
+    api.include_router(soccer_lab_router)
+    logger.info("Soccer Lab mounted at /api/soccer-lab/*")
+except Exception as _slab_mount_err:
+    logger.warning("Soccer Lab failed to mount, continuing without it: %s", _slab_mount_err)
+
 app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
