@@ -123,6 +123,17 @@ async def run_prediction_pipeline(db) -> dict:
         upserts_pred.append(pred)
         if (pred.get("confidence") or 0) >= 85.0:
             upserts_pick.append(to_picks_collection_doc(pred))
+        # Synthesize Over 1.5 Goals from team strengths (no Odds API
+        # dependency). Only emits when the Poisson model is confident
+        # the goal floor will clear — see make_over_1_5_pick().
+        try:
+            from .predictor import make_over_1_5_pick
+            ov = make_over_1_5_pick(pred)
+            if ov:
+                upserts_pick.append(ov)
+        except Exception as _ov_err:
+            logger.warning("Over 1.5 synthesis skipped for %s: %s",
+                           pred.get("event"), _ov_err)
 
     summary["predictions_made"]  = len(upserts_pred)
     summary["merged_into_picks"] = len(upserts_pick)
