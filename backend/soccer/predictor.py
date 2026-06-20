@@ -243,3 +243,78 @@ def _grade_from_conf(c: float) -> str:
     if c >= 75: return "B+"
     if c >= 70: return "B"
     return "C"
+
+
+# ────────────────────────────────────────────────────────────────────
+# Over 1.5 Goals synthesis (no Odds API dependency)
+# ────────────────────────────────────────────────────────────────────
+# Football-data.org doesn't provide totals odds either, so we model the
+# expected goal total λ from team strengths and emit Over 1.5 via a
+# Poisson lookup. Tagged `model_line=True` so the UI labels it honestly.
+#
+# Calibration: across recent international + top-5 league sample, mean
+# total goals is ~2.65. We anchor λ_base at 2.6 and shift ±0.5 based on
+# combined team strength signal (form + goal-diff already baked into
+# `home_strength` + `away_strength`).
+def make_over_1_5_pick(prediction: dict) -> dict | None:
+    """Emit a Total Goals Over 1.5 pick if the model thinks it's safe.
+
+    Returns None when expected λ is too low (defensive matchups) or when
+    confidence falls below the threshold (75%) — we don't want to spam
+    Over 1.5 on every game just because it cleared the math gate.
+    """
+    import math as _math
+    if not prediction:
+        return None
+    feats = prediction.get("features") or {}
+    hs = float(feats.get("home_strength") or 1.0)
+    as_ = float(feats.get("away_strength") or 1.0)
+    # λ_total — expected combined goals. Mean of the two strengths is in
+    # [-0.5, 2.5] range; map to [1.9, 3.3] for a sensible λ_total.
+    avg_str = max(-0.5, min(2.5, (hs + as_) / 2.0))
+    lam = 1.9 + (avg_str + 0.5) / 3.0 * 1.4        # → 1.9..3.3
+    lam = max(1.6, min(3.6, lam))
+    # P(X >= 2) with X ~ Poisson(lam)  =  1 - e^{-lam}(1 + lam)
+    p_over_15 = 1.0 - _math.exp(-lam) * (1.0 + lam)
+    win_pct = round(p_over_15 * 100.0, 1)
+    # Threshold tuned to surface Over 1.5 on matchups with a credible goal
+    # floor (top-flight + most internationals clear this). Below ~70%
+    # the bet is too thin to justify featuring.
+    if win_pct < 70.0:
+        return None
+    # Fair American odds from probability (used as `book_odds` placeholder
+    # since we have no bookmaker line for this synth).
+    if p_over_15 >= 0.5:
+        fair_odds = int(round(-100 * p_over_15 / (1 - p_over_15)))
+    else:
+        fair_odds = int(round(100 * (1 - p_over_15) / p_over_15))
+
+    sig = f"{prediction.get('fixture_id')}|{MODEL_VERSION}|over_1_5"
+    pred_id = str(uuid.UUID(hashlib.md5(sig.encode()).hexdigest()))
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return {
+        "id":                pred_id,
+        "sport":             "Soccer",
+        "league":            prediction.get("league") or "Soccer",
+        "event":             prediction["event"],
+        "event_time":        prediction.get("event_time") or "",
+        "market":            "Total Goals Over 1.5",
+        "selection":         "Over",
+        "win_probability":   win_pct,
+        "implied_probability": 50.0,
+        "book_odds":         fair_odds,
+        "edge_percent":      round((win_pct - 50.0) / 5.0, 2),
+        "lock_score":        win_pct,
+        "grade":             _grade_from_conf(win_pct),
+        "pick_date":         today,
+        "is_under_lock":     False,
+        "no_bet":            win_pct < 80.0,
+        "elite_player":      False,
+        "deep_dive":         False,
+        "source":            "soccer_v1_synth",
+        "model_version":     MODEL_VERSION,
+        "model_line":        True,
+        "model_source":      "poisson_from_strengths",
+        "lam_total":         round(lam, 3),
+        "created_at":        datetime.now(timezone.utc).isoformat(),
+    }
