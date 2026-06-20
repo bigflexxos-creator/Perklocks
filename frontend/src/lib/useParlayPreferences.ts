@@ -22,8 +22,10 @@ const STORAGE_KEY = "@perkslocks/parlay-prefs-v1";
 
 export type SportMode = "auto" | "custom" | "single";
 
+export type ParlayMode = "standard" | "high_risk" | "today_window";
+
 export type ParlayPrefs = {
-  mode: "standard" | "high_risk";
+  mode: ParlayMode;
   legs: number;
   sport: string;
   lineType: LineType;
