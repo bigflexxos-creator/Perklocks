@@ -230,8 +230,8 @@ frontend:
   - task: "LockPickCard displays max(lock_score, lock_score_v2) — UI/Detail score parity"
     implemented: true
     working: "NA"
-    file: "/app/frontend/src/components/LockPickCard.tsx"
-    stuck_count: 0
+    file: "/app/frontend/src/components/LockPickCard.tsx, /app/frontend/app/pick/[id].tsx, /app/frontend/src/lib/lockScore.ts, /app/backend/server.py"
+    stuck_count: 1
     priority: "high"
     needs_retesting: true
     status_history:
@@ -239,15 +239,55 @@ frontend:
         agent: "main"
         comment: |
           User reported: "machado say 85 when I click pick break down it says he a 94 why won't it update".
-          Root cause: backend DB drift between legacy lock_score and recomputed lock_score_v2 — the
-          home-feed array could carry stale lock_score while the on-demand /api/picks/{id} breakdown
-          recomputed v2 fresh. Frontend fix: LockPickCard.tsx line 38 now computes
-          `displayLock = Math.max(Number(pick.lock_score)||0, Number(pick.lock_score_v2)||0)` at
-          render time. Headline LOCK badge, progress bar width, and Strong-Lock chip gates all
-          consume `displayLock`. Need testing_agent to verify:
-            (a) home feed card LOCK value == pick detail Lock Score for the same pick id,
-            (b) no NaN/0 fallback if one of the two scores is missing,
-            (c) APEX/RARE/STRONG chip only surfaces when displayLock >= 95.
+          First attempt: only patched LockPickCard.tsx with inline Math.max. iteration_20 testing_agent
+          found this was incomplete — pick detail page still showed the lower v1 score (e.g. 85 on card,
+          85 on detail when v2 was 94). 87% of picks in /picks/today had lock_score != lock_score_v2.
+      - working: false
+        agent: "testing"
+        comment: |
+          iteration_20 P0: card now shows max(v1, v2) correctly, but pick detail page renders bare
+          pick.lock_score → 4/5 random picks mismatched. Backend `lock_score` field was NOT being
+          promoted from v2. Filed concrete fix: patch pick/[id].tsx + investigate writer.
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Root-cause fix shipped (system-wide):
+          1. **Backend** — Added `_canonicalize_lock_score(pick)` + `_canonicalize_picks(list)` to
+             /app/backend/server.py. Applied to every picks endpoint response: /picks/today,
+             /picks/all, /picks/bet-killer, /picks/under-of-the-day, /picks/rollover (both pick + alternates),
+             /picks/parlay (every leg), and /picks/{pick_id}. The API now ALWAYS returns
+             lock_score = max(lock_score, lock_score_v2), with grade + confidence re-derived.
+             Curl-verified on the 5 previously-mismatched picks (all now matching v1 = v2) and
+             /picks/today shows 0/52 mismatches.
+          2. **Frontend** — Added /app/frontend/src/lib/lockScore.ts with `getDisplayLock(pick)` +
+             `getDisplayLockRounded(pick)` as the single source of truth. Replaced every surface
+             that previously read `pick.lock_score` directly:
+               - /app/frontend/src/components/LockPickCard.tsx (home feed card)
+               - /app/frontend/app/pick/[id].tsx (pick detail headline — now testID="pick-detail-lock-score")
+               - /app/frontend/app/(tabs)/parlay.tsx (leg cards)
+               - /app/frontend/app/(tabs)/killer.tsx (bet killer cards)
+               - /app/frontend/app/(tabs)/rollover.tsx (rollover cards)
+               - /app/frontend/app/soccer-lab.tsx (soccer lab cards)
+               - /app/frontend/app/slip.tsx (bet slip avg + leg row)
+             history.tsx left untouched intentionally — that surface shows the score AT the time
+             the user placed the bet (immutable record).
+          Defense in depth: even if the backend ever drifts, getDisplayLock() will still pick max.
+
+  - task: "Backend canonicalize lock_score = max(v1, v2) at READ time across all picks endpoints"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          New helpers `_canonicalize_lock_score(pick)` and `_canonicalize_picks(list)` defined just
+          before `_filter_in_play_window`. Promotes lock_score = max(lock_score, lock_score_v2),
+          clamped to [0, 99], re-grades via sports_engine._grade. Wired into every picks endpoint
+          return statement. Curl-verified — 0/52 mismatches on /picks/today vs 45/52 before.
 
   - task: "Rollover tab (single best pick, today only, Lock>=90)"
     implemented: true

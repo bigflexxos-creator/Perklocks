@@ -5,6 +5,7 @@ import { COLORS, GRADE_COLORS } from "@/src/theme";
 import { Pick } from "@/src/lib/api";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { useMLBLive } from "@/src/contexts/MLBLiveContext";
+import { getDisplayLock } from "@/src/lib/lockScore";
 
 export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?: "lock" | "killer" }) {
   const router = useRouter();
@@ -29,16 +30,12 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
   // V2 chip + APEX border only render when the V1 lock_score is already
   // in the Strong Lock band (95+). Otherwise treat V2 as silent data
   // available solely in the pick detail "Deep Thinking" panel.
-  // ── V2 LIVE: card always displays max(lock_score, lock_score_v2) ──
-  // User spec: "machado say 85 when I click pick break down it says he
-  // a 94 why won't it update". The DB-side V2 promotion can drift out
-  // of sync with on-demand v2 computations from the breakdown endpoint,
-  // so we just compute the effective lock at RENDER time. No more
-  // "card 85, detail 94" mismatch.
-  const displayLock = Math.max(
-    Number(pick.lock_score) || 0,
-    Number(pick.lock_score_v2) || 0,
-  );
+  // ── Single source of truth: see /src/lib/lockScore.ts ──
+  // Backend now also canonicalizes lock_score = max(v1, v2) at READ time
+  // (server.py `_canonicalize_lock_score`), so `pick.lock_score` from the
+  // wire is already the right number. We keep `getDisplayLock` as defense
+  // in depth in case any pick slips through with v2 > v1.
+  const displayLock = getDisplayLock(pick);
   // Anything that referenced pick.lock_score for visual logic now uses
   // displayLock so the badge / progress bar / strong-lock gates all
   // match the headline number.

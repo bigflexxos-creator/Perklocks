@@ -288,8 +288,7 @@ export const api = {
     ),
   picksAll: (sport?: string) =>
     request<{ picks: Pick[] }>(`/picks/all${sport && sport !== "All" ? `?sport=${sport}` : ""}`),
-  betKiller: (sport?: string) =>
-    request<{ picks: Pick[] }>(`/picks/bet-killer${sport && sport !== "All" ? `?sport=${sport}` : ""}`),
+  // (Bet Killer endpoint removed — superseded by Under-of-the-Day.)
   rollover: (lineType?: LineType, filters?: PickFilters, sport?: string) => {
     const qs = new URLSearchParams();
     if (lineType && lineType !== "both") qs.set("line_type", lineType);

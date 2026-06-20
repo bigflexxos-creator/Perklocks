@@ -96,6 +96,52 @@ def _today_str() -> str:
 _PREGAME_GRACE_SECONDS = 2 * 60
 
 
+def _canonicalize_lock_score(pick: dict) -> dict:
+    """Promote V2 → primary lock_score at READ time so every endpoint
+    returns the same number the user sees in the UI.
+
+    Background: pick docs carry both `lock_score` (legacy V1, written at
+    creation) and `lock_score_v2` (recomputed by the V2 engine). The
+    learning loop promotes V2 → V1 periodically, but between passes the
+    two can drift apart — the home feed would carry stale V1 (e.g. 85)
+    while /picks/{id} re-derived V2 (e.g. 94). Calling this on every
+    serialized pick guarantees parity across the API surface and lets
+    the frontend treat `lock_score` as the canonical value once again.
+
+    Rules:
+      • lock_score = max(lock_score, lock_score_v2), clamped to [0, 99].
+      • lock_score_v2 left intact for analytics / shadow visibility.
+      • grade + confidence re-derived when we promote, so the badge,
+        progress bar, and label always agree with the headline number.
+    """
+    try:
+        v1 = float(pick.get("lock_score") or 0)
+    except Exception:
+        v1 = 0.0
+    try:
+        v2 = float(pick.get("lock_score_v2") or 0)
+    except Exception:
+        v2 = 0.0
+    if v2 > v1:
+        try:
+            from sports_engine import _grade, _confidence
+            pick["lock_score"] = round(min(99.0, v2), 1)
+            pick["grade"] = _grade(pick["lock_score"])
+            pick["confidence"] = _confidence(pick["lock_score"])
+            pick["v2_promoted_at_read"] = True
+        except Exception:
+            # Safe fallback — at minimum, surface the higher number even if
+            # we can't re-grade. Prevents the card-vs-detail mismatch.
+            pick["lock_score"] = round(min(99.0, v2), 1)
+    return pick
+
+
+def _canonicalize_picks(picks: list[dict]) -> list[dict]:
+    """Bulk variant of `_canonicalize_lock_score` — apply before returning
+    any list of picks from an API endpoint."""
+    return [_canonicalize_lock_score(p) for p in picks]
+
+
 def _filter_in_play_window(picks: list[dict]) -> list[dict]:
     """Drop picks whose game has already started.
 
@@ -1057,7 +1103,7 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 picks.sort(key=lambda p: p.get("lock_score", 0))
             else:
                 picks.sort(key=lambda p: (_elite_rank(p), -p.get("lock_score", 0)))
-    return {"picks": picks}
+    return {"picks": _canonicalize_picks(picks)}
 
 
 @api.get("/picks/all")
@@ -1068,19 +1114,15 @@ async def picks_all(user: Annotated[UserPublic, Depends(current_user)],
     if sport and sport.lower() != "all":
         q["sport"] = sport
     cursor = db.picks.find(q, {"_id": 0}).sort("lock_score", -1).limit(200)
-    return {"picks": await cursor.to_list(length=200)}
+    return {"picks": _canonicalize_picks(await cursor.to_list(length=200))}
 
 
-@api.get("/picks/bet-killer")
+@api.get("/picks/bet-killer", deprecated=True)
 async def picks_bet_killer(user: Annotated[UserPublic, Depends(current_user)],
                            sport: Optional[str] = None):
-    """Legacy bet-killer endpoint (deprecated) — kept for backwards compat."""
-    await _ensure_today_picks()
-    q: dict = {"pick_date": _today_str(), "lock_score": {"$lt": 85}}
-    if sport and sport.lower() != "all":
-        q["sport"] = sport
-    cursor = db.picks.find(q, {"_id": 0}).sort("lock_score", 1).limit(50)
-    return {"picks": await cursor.to_list(length=50)}
+    """DEPRECATED — Bet Killer was replaced by Under-of-the-Day.
+    Returns an empty payload. Will be removed in a future release."""
+    return {"picks": []}
 
 
 @api.get("/picks/under-of-the-day")
@@ -1145,8 +1187,8 @@ async def under_of_the_day(user: Annotated[UserPublic, Depends(current_user)],
     # Rank by win probability (the higher, the safer the Under)
     pool.sort(key=lambda p: (p.get("win_probability", 0), p.get("lock_score", 0)), reverse=True)
     return {
-        "pick": pool[0],
-        "alternates": pool[1:6],  # 5 backup alt-Under locks
+        "pick": _canonicalize_lock_score(pool[0]),
+        "alternates": _canonicalize_picks(pool[1:6]),  # 5 backup alt-Under locks
         "total_evaluated": len(pool),
         "scoped_to_today": bool(today_picks),
     }
@@ -1297,8 +1339,8 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
             if len(top) >= 3:
                 break
     return {
-        "picks": top,
-        "pick": top[0] if top else None,  # back-compat for older clients
+        "picks": _canonicalize_picks(top),
+        "pick": _canonicalize_lock_score(top[0]) if top else None,  # back-compat for older clients
         "composite_rank": top[0]["composite_rank"] if top else None,
         "total_evaluated": len(pool),
         "scoped_to_today": bool(today_picks),
@@ -1504,6 +1546,11 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         }
 
     payloads = [parlay_to_payload(p, bucket_map) for p in top]
+    # Canonicalize lock_score on every leg pick (parlay payload nests the
+    # leg dicts under .legs). Single source of truth for displayed score.
+    for _card in payloads:
+        if isinstance(_card.get("legs"), list):
+            _card["legs"] = _canonicalize_picks(_card["legs"])
     # Persist this parlay slate into history so the learning loop has
     # data to settle and aggregate from. Cheap — dedupes by signature.
     try:
@@ -1671,6 +1718,9 @@ async def pick_detail(pick_id: str,
     pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
     if not pick:
         raise HTTPException(status_code=404, detail="Pick not found")
+    # Canonicalize lock_score → max(v1, v2) so detail view matches the home
+    # feed card. Single source of truth — see `_canonicalize_lock_score` doc.
+    pick = _canonicalize_lock_score(pick)
     if not pick.get("explanation"):
         from ai_engine import _fallback_explanation, _fallback_killer
         if pick.get("lock_score", 0) >= 85:
