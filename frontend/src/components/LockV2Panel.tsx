@@ -50,7 +50,7 @@ export function LockV2Panel({ pick }: { pick: Pick }) {
         <View style={styles.headerRow}>
           <Text style={styles.sectionLabel}>DEEP THINKING ENGINE</Text>
           <View style={styles.shadowChip}>
-            <Text style={styles.shadowChipText}>SHADOW</Text>
+            <Text style={styles.shadowChipText}>LIVE</Text>
           </View>
         </View>
         <View style={styles.loadingRow}>
@@ -83,27 +83,23 @@ export function LockV2Panel({ pick }: { pick: Pick }) {
           </Text>
         </View>
         <View style={styles.shadowChip}>
-          <Text style={styles.shadowChipText}>SHADOW</Text>
+          <Text style={styles.shadowChipText}>LIVE</Text>
         </View>
       </View>
 
-      {/* Headline: Lock V2 + Tier */}
+      {/* Headline: Lock V2 + Tier — V2 is now canonical (per user spec "make
+          it live"). We hide the "Old lock 85 → v2 94" comparison because
+          V2 IS the lock now, not a side-shadow. */}
       <View style={styles.headlineRow}>
         <View style={[styles.lockBlock, { borderColor: tierColor + "55" }]}>
           <Text style={[styles.lockValue, { color: tierColor }]}>
             {Number(s.lock_score_v2).toFixed(0)}
           </Text>
-          <Text style={styles.lockUnit}>LOCK V2</Text>
+          <Text style={styles.lockUnit}>LOCK</Text>
         </View>
         <View style={{ flex: 1 }}>
           <Text style={[styles.tierName, { color: tierColor }]}>
             {s.tier_v2}{s.is_apex ? " · ⚡ APEX" : ""}
-          </Text>
-          <Text style={styles.subHeadline}>
-            Old lock {pick.lock_score?.toFixed(0)} →{" "}
-            <Text style={{ color: tierColor, fontWeight: "800" }}>
-              v2 {Number(s.lock_score_v2).toFixed(0)}
-            </Text>
           </Text>
           {!s.is_apex && s.apex_blockers && s.apex_blockers.length > 0 && (
             <Text style={styles.blockerText} numberOfLines={2}>
