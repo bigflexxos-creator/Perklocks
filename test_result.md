@@ -219,7 +219,34 @@ frontend:
         agent: "main"
         comment: "Login persists token via AsyncStorage (web) / SecureStore (native)."
 
-  - task: "Locks tab (today's picks feed)"
+## ITERATION 21 — System-wide cleanup (Lock Score parity + Bet Killer purge)
+
+### What landed
+1. **Lock Score parity (root-cause fix)**
+   - Backend: `_canonicalize_lock_score(pick)` + `_canonicalize_picks(list)` helpers in
+     `/app/backend/server.py` applied to EVERY picks endpoint return. Promotes
+     `lock_score = max(lock_score, lock_score_v2)`, clamped [0,99], re-grades.
+   - Frontend: `/app/frontend/src/lib/lockScore.ts` single helper used by all 7 surfaces.
+   - Verified live: 0/126 mismatches on /picks/today (was 45/52 = 87% before).
+
+2. **Bet Killer purge (complete removal)**
+   - Renamed `app/(tabs)/killer.tsx` → `app/(tabs)/under.tsx` (tab label = "UNDER LOCK").
+   - `_layout.tsx` route name killer → under.
+   - `/api/picks/bet-killer` deprecated stub returns `{"picks":[]}` (kept for back-compat).
+   - Dropped `api.betKiller()` client method.
+   - Dropped `bet_killer_warning()` and `_fallback_killer()` from `ai_engine.py`.
+   - Removed dead `variant="killer"` prop from `LockPickCard`; removed `cardKiller`/`tagKiller`
+     styles. Renamed theme colors `killerBg/killerBorder/killerSurface` → `dangerBg/dangerBorder/dangerSurface`
+     (still used by logout button).
+   - Pick detail page: header always "PICK BREAKDOWN", section always "WHY THIS PICK". No
+     "BET KILLER" or "WHY TO AVOID" text anywhere in user-facing UI.
+
+### Testing
+- `testing_agent` iter21 = pass on both backend (11/11) and frontend smoke (3/3 parity).
+- Manual curl verification: 0/126 v2>v1 mismatches across the whole /picks/today feed.
+- All 5 picks endpoints return 200.
+
+
     implemented: true
     working: true
     file: "/app/frontend/app/(tabs)/index.tsx"

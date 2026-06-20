@@ -7,9 +7,8 @@ import { formatGameTime } from "@/src/lib/formatGameTime";
 import { useMLBLive } from "@/src/contexts/MLBLiveContext";
 import { getDisplayLock } from "@/src/lib/lockScore";
 
-export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?: "lock" | "killer" }) {
+export function LockPickCard({ pick }: { pick: Pick }) {
   const router = useRouter();
-  const isKiller = variant === "killer";
   const gradeColor = GRADE_COLORS[pick.grade] || COLORS.textMuted;
   const edgeColor = pick.edge_percent > 0 ? COLORS.neonGreen : COLORS.electricBlaze;
   // Live MLB score lookup — null for non-MLB picks (zero cost when missing).
@@ -64,7 +63,6 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
       onPress={() => router.push(`/pick/${pick.id}`)}
       style={({ pressed }) => [
         styles.card,
-        isKiller && styles.cardKiller,
         isApex && styles.cardApex,
         pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
       ]}
@@ -72,8 +70,8 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
           <View style={styles.tagRow}>
-            <View style={[styles.tag, isKiller && styles.tagKiller]}>
-              <Text style={[styles.tagText, isKiller && { color: COLORS.electricBlaze }]}>
+            <View style={styles.tag}>
+              <Text style={styles.tagText}>
                 {pick.sport.toUpperCase()}
               </Text>
             </View>
@@ -208,10 +206,6 @@ const styles = StyleSheet.create({
     borderColor: COLORS.borderDefault,
     marginBottom: 14,
   },
-  cardKiller: {
-    backgroundColor: COLORS.killerSurface,
-    borderColor: COLORS.killerBorder,
-  },
   cardApex: {
     borderColor: "#FFD700",
     borderWidth: 1.5,
@@ -259,7 +253,6 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: "rgba(255,255,255,0.08)",
   },
-  tagKiller: { backgroundColor: "rgba(255,59,48,0.15)" },
   tagText: { color: COLORS.textPrimary, fontSize: 10, fontWeight: "800", letterSpacing: 1.2 },
   league: { color: COLORS.textMuted, fontSize: 11, fontWeight: "600", flex: 1 },
   event: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 2, fontWeight: "500" },

@@ -14,9 +14,11 @@ export const COLORS = {
   goldElite: "#FFD700",
   borderDefault: "rgba(255,255,255,0.10)",
   borderActive: "rgba(255,255,255,0.30)",
-  killerBg: "#180505",
-  killerBorder: "rgba(255,59,48,0.30)",
-  killerSurface: "rgba(255,59,48,0.08)",
+  // Destructive / danger surface tones (used by the logout button and
+  // anywhere we need a red-tinted destructive surface).
+  dangerBg: "#180505",
+  dangerBorder: "rgba(255,59,48,0.30)",
+  dangerSurface: "rgba(255,59,48,0.08)",
 };
 
 export const GRADE_COLORS = {
