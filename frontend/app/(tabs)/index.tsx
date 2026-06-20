@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View, Text, StyleSheet, ScrollView, RefreshControl,
   ActivityIndicator, Pressable, TouchableOpacity,
@@ -136,19 +136,44 @@ export default function LocksScreen() {
     (filters.minImplied ? 1 : 0) +
     (filters.maxImplied && filters.maxImplied < 100 ? 1 : 0);
 
+  // Request-token guard: each call to load() captures a monotonically
+  // increasing token. When the response arrives, we only commit state
+  // if the token still matches `latestLoadTokenRef.current` (i.e. no
+  // newer load was kicked off in the meantime). Without this guard,
+  // switching sports rapidly OR an in-flight previous-sport request
+  // landing after a focus refetch will populate the WRONG sport tab —
+  // exactly the bug user reported: "soccer under Tennis... fixes
+  // itself but can we stop this".
+  const latestLoadTokenRef = useRef(0);
+  const lastLoadedForSportRef = useRef<string>("");
+
   const load = useCallback(async (s: string, lt: LineType, sk: SortKey, f: PickFilters, dir: SortDirection) => {
+    const myToken = latestLoadTokenRef.current + 1;
+    latestLoadTokenRef.current = myToken;
+    // Snapshot the requested sport so a late response can prove it
+    // matches the CURRENTLY selected sport before painting picks.
+    const requestedSport = s;
     try {
       const [picksRes, statsRes] = await Promise.all([
         api.picksToday(s, lt, sk, f, dir),
         api.stats().catch(() => null),
       ]);
+      // Discard if a newer load was fired after we sent this one.
+      if (myToken !== latestLoadTokenRef.current) return;
       // Defensive client-side filter — protect users from production
       // backends that haven't yet deployed the KBO removal. We do NOT
       // filter by event_time here because player props for in-progress
       // games (e.g. batter Over 0.5 Hits) are still legitimate locks
       // that the user wants to see on the slate even after first pitch.
-      const fresh = (picksRes.picks || []).filter((p: any) => p.sport !== "KBO");
+      let fresh = (picksRes.picks || []).filter((p: any) => p.sport !== "KBO");
+      // Extra defence: if the user requested a single sport, drop any
+      // picks not matching it (e.g. backend race that returned a
+      // mixed-sport slate). Skip for "All".
+      if (requestedSport && requestedSport.toLowerCase() !== "all") {
+        fresh = fresh.filter((p: any) => p.sport === requestedSport);
+      }
       setPicks(fresh);
+      lastLoadedForSportRef.current = requestedSport;
       // Stats: if backend hasn't deployed KBO removal yet, recompute the
       // top-row totals locally so the hero card matches the visible list.
       if (statsRes) {
@@ -166,12 +191,25 @@ export default function LocksScreen() {
     } catch (e) {
       console.warn("load locks", e);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      // Only clear loading flags if this is still the latest request.
+      if (myToken === latestLoadTokenRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, []);
 
-  useEffect(() => { setLoading(true); load(sport, lineType, sortKey, filters, sortDir); }, [sport, lineType, sortKey, filters, sortDir, load]);
+  useEffect(() => {
+    // Wipe stale picks the moment the user changes sport so the wrong
+    // tab can NEVER be shown for even a single frame. Only triggers
+    // when the new sport differs from what's currently painted —
+    // otherwise we'd needlessly clear identical data.
+    if (lastLoadedForSportRef.current && lastLoadedForSportRef.current !== sport) {
+      setPicks([]);
+    }
+    setLoading(true);
+    load(sport, lineType, sortKey, filters, sortDir);
+  }, [sport, lineType, sortKey, filters, sortDir, load]);
 
   // Smart refetch on screen focus: hit /api/picks/today again every time the
   // user opens the Locks tab, but skip if the last successful fetch was less
