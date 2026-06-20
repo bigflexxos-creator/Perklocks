@@ -254,13 +254,19 @@ async def apply_learning(db, pick: dict) -> dict:
         pick["implied_probability"] = round(implied, 1)
         pick["edge_percent"] = round(new_wp - implied, 2)
 
-    # Recompute lock_score with the corrected win_prob.
+    # Recompute lock_score with the corrected win_prob, and KEEP the
+    # grade + confidence fields in lock-step so any consumer that
+    # forgets to call the validator afterwards still sees a coherent
+    # pick (iter17/18 found: weekly tuning loop omitted grade sync →
+    # 68 stale "Pass" badges per cycle).
     try:
-        from sports_engine import compute_lock_score
+        from sports_engine import compute_lock_score, _grade, _confidence
         factors_pct = pick.get("factors") or {}
         factors = {k: v / 100.0 for k, v in factors_pct.items()}
-        lock, _ = compute_lock_score(factors, win_prob=new_wp)
+        lock, _ = compute_lock_score(factors, win_prob=new_wp, pick=pick)
         pick["lock_score"] = lock
+        pick["grade"] = _grade(lock)
+        pick["confidence"] = _confidence(lock)
     except Exception:
         pass
 
