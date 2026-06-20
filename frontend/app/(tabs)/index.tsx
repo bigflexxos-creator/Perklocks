@@ -12,6 +12,7 @@ import { LockPickCard } from "@/src/components/LockPickCard";
 import { ChipRow } from "@/src/components/ChipRow";
 import { FilterButton, FilterSheet } from "@/src/components/FilterSheet";
 import { SportFilterBar } from "@/src/components/SportFilterBar";
+import { StaleVersionBanner } from "@/src/components/StaleVersionBanner";
 import { storage } from "@/src/utils/storage";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 
@@ -307,6 +308,7 @@ export default function LocksScreen() {
         testIDPrefix="sport-chip"
       />
       <SportFilterBar sport={sport} filters={filters} onChange={setFilters} />
+      <StaleVersionBanner onRefresh={() => load(sport, lineType, sortKey, filters, sortDir)} />
 
       {/* ── Cleaned-up controls row ──
           User spec: "we can take lock, elite and edge at top of page off

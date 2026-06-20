@@ -268,6 +268,11 @@ export const api = {
       auth: false,
     }),
   me: () => request<User>("/auth/me"),
+  version: () =>
+    request<{ data_version: string; server_time: string; server_started_at: string }>(
+      "/version",
+      { auth: false },
+    ),
   picksToday: (sport?: string, lineType?: LineType, sortKey?: SortKey, filters?: PickFilters, direction?: SortDirection) => {
     const qs = new URLSearchParams();
     if (sport && sport !== "All") qs.set("sport", sport);

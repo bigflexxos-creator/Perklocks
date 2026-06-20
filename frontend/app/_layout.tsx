@@ -10,7 +10,11 @@ import { AuthProvider } from "@/src/contexts/AuthContext";
 import { BetSlipProvider } from "@/src/contexts/BetSlipContext";
 import { MLBLiveProvider } from "@/src/contexts/MLBLiveContext";
 import { ErrorBoundary } from "@/src/components/ErrorBoundary";
-import { runCacheBustIfNeeded } from "@/src/lib/cachebust";
+import {
+  runCacheBustIfNeeded,
+  runBackendCacheBustIfNeeded,
+} from "@/src/lib/cachebust";
+import { api } from "@/src/lib/api";
 
 // Keep the native splash visible from cold start until icon fonts register.
 // Required because @expo/vector-icons' componentDidMount fallback fires
@@ -26,12 +30,23 @@ export default function RootLayout() {
   // hydrates from a clean slate when a data-version bump occurs. This is
   // what kills the "Marozsan 41-6" / other stale-pick artifacts that get
   // pinned into AsyncStorage when picks shipped with bad explanations.
+  //
+  // Layer 3: client-baked version check (`APP_DATA_VERSION`).
+  // Layer 2: backend-version check via `/api/version` — phones auto-wipe
+  // whenever the server ships a new DATA_VERSION.
   useEffect(() => {
     (async () => {
-      const result = await runCacheBustIfNeeded();
-      if (result.wiped) {
+      const clientResult = await runCacheBustIfNeeded();
+      if (clientResult.wiped) {
         // eslint-disable-next-line no-console
-        console.log("[cachebust] wiped AsyncStorage —", result.reason);
+        console.log("[cachebust] L3 wiped AsyncStorage —", clientResult.reason);
+      }
+      const backendResult = await runBackendCacheBustIfNeeded(
+        () => api.version().then((r) => r.data_version).catch(() => null),
+      );
+      if (backendResult.wiped) {
+        // eslint-disable-next-line no-console
+        console.log("[cachebust] L2 wiped AsyncStorage —", backendResult.reason);
       }
       setCacheBustDone(true);
     })();
