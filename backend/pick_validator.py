@@ -151,7 +151,17 @@ async def validate_and_heal(db) -> dict:
                     factors, win_prob=wp, pick=p,
                 )
                 current_lock = p.get("lock_score") or 0
-                if abs(current_lock - target_lock) > 4.0:
+                # The edge_percent is recomputed earlier in this same
+                # cycle — its drift cascades into lock_score even when
+                # the underlying win_probability is unchanged. So we
+                # widen the tolerance further to absorb that cascade
+                # plus normal factor jitter. The user complaint that
+                # "Mbappé locks keep changing" is solved when the
+                # validator only intervenes on REAL drift (>6 points),
+                # which corresponds to a full lock-band shift (85-89
+                # Strong → 90-94 Premium etc.) rather than cosmetic
+                # micro-drift between 86.5 and 87.2.
+                if abs(current_lock - target_lock) > 6.0:
                     updates["lock_score"] = target_lock
                     p["lock_score"] = target_lock
                     counts["fixed_lock"] += 1
