@@ -154,6 +154,7 @@ _MARKET_STATS: list[tuple[str, str]] = [
     # Soccer special-case
     ("anytime goal scorer", "soccer.anytime"),
     ("first goal scorer",   "soccer.first"),
+    ("to score or assist",  "soccer.scoreOrAssist"),
 ]
 
 
@@ -212,11 +213,27 @@ def _mlb_find_game(games: list[dict], away: str, home: str) -> Optional[dict]:
 
 
 def _mlb_stat_for_player(box: dict, player_name: str, stat_key: str) -> Optional[float]:
-    """stat_key is like 'mlb.hits'."""
+    """stat_key is like 'mlb.hits'.
+
+    Returns the player's stat value. Critical edge case fixed here:
+    when the player IS on the roster but did NOT play (empty batting/pitching
+    block — happens with bench scratches, late-arrival rosters, and games
+    where a bullpen pitcher prop never came in), the upstream MLB Stats API
+    response still includes the player under teams.{side}.players but the
+    `batting` and `pitching` blocks are empty dicts.
+
+    Previously we returned None in that case, which made the settlement engine
+    SKIP the pick (status stayed pending forever — the Friday→Saturday "still
+    on Friday" bug the user reported). Sportsbooks resolve a DNP / no-at-bat
+    Over prop as a LOSS under standard "Action" rules (you bet on a stat that
+    didn't materialise → you lose). We now return 0.0 in that case so the
+    grader can settle it. If we ever want PUSH-on-DNP semantics, change the
+    sentinel here and teach `_grade` to honour it.
+    """
     field = stat_key.split(".", 1)[1]
     if not box:
         return None
-    # box["teams"]["away"]["players"]["ID{ID}"]["stats"]["batting"|"pitching"]
+    found_player = False
     for side in ("away", "home"):
         players = ((box.get("teams") or {}).get(side, {}).get("players") or {})
         for _pid, pdata in players.items():
@@ -224,10 +241,10 @@ def _mlb_stat_for_player(box: dict, player_name: str, stat_key: str) -> Optional
             full = person.get("fullName") or ""
             if not _names_match(player_name, full):
                 continue
+            found_player = True
             stats = pdata.get("stats") or {}
-            # Strikeouts can come from batting or pitching depending on context;
-            # for prop markets we always treat the player's own stat line. The
-            # MLB API uses identical keys ('strikeOuts') in both blocks.
+            # Try canonical blocks first (batting, pitching). The MLB API uses
+            # identical keys ('strikeOuts', 'hits', etc.) in both.
             for block in ("batting", "pitching"):
                 section = stats.get(block) or {}
                 if field in section:
@@ -235,14 +252,19 @@ def _mlb_stat_for_player(box: dict, player_name: str, stat_key: str) -> Optional
                         return float(section[field])
                     except (TypeError, ValueError):
                         return None
-            # Field-level fallback (e.g. "hits" might also live elsewhere)
-            for block_name, block in stats.items():
+            # Field-level fallback (some stats live under non-canonical keys).
+            for _block_name, block in stats.items():
                 if isinstance(block, dict) and field in block:
                     try:
                         return float(block[field])
                     except (TypeError, ValueError):
                         continue
-    return None
+            # Player matched but no usable stat block — DNP / scratch.
+            # Treat as 0 so the prop grades cleanly instead of hanging in
+            # "pending" until the heat death of the universe.
+            return 0.0
+    # Player not on either roster at all — unknown game, bail.
+    return None if not found_player else 0.0
 
 
 # ─────────────────────────── ESPN (NBA/WNBA/NHL/NFL/Soccer) ───────────────────────────
@@ -365,16 +387,28 @@ def _espn_player_stat(summary: dict, player_name: str, stat_key: str) -> Optiona
 
 
 def _espn_did_score_goal(summary: dict, player_name: str) -> Optional[bool]:
-    """For Anytime/First Goal Scorer markets in Soccer/NHL."""
+    """For Anytime/First Goal Scorer markets in Soccer/NHL.
+
+    ESPN moved the play feed: modern soccer summaries put goal events under
+    `keyEvents` (each event has `type.text == "Goal"` and a text field like
+    "Goal! Team 1, Team 0. Player Name (Team) ..."). Older endpoints used
+    `scoringPlays`/`plays`. We check all three so we work against whichever
+    shape the API returns for a given match.
+    """
     if not summary:
         return None
-    # Soccer: scoringPlays[*].team / participants / athletes
-    plays = summary.get("scoringPlays") or summary.get("plays") or []
+    plays = list(summary.get("scoringPlays") or summary.get("plays") or [])
+    # Also pull Goal-type rows out of keyEvents (modern shape).
+    for ev in summary.get("keyEvents") or []:
+        if (ev.get("type") or {}).get("text", "").lower() == "goal":
+            plays.append(ev)
+    if not plays:
+        return None
     found_first: Optional[str] = None
     found_any = False
     for p in plays:
-        # ESPN format varies; scan athletes / participants
-        ath_blocks = p.get("athletes") or p.get("participants") or []
+        ath_blocks = (p.get("athletes") or p.get("participants") or
+                      p.get("athletesInvolved") or [])
         scorer_name = None
         for block in ath_blocks:
             ath = block.get("athlete") or block
@@ -383,9 +417,11 @@ def _espn_did_score_goal(summary: dict, player_name: str) -> Optional[bool]:
                 scorer_name = name
                 break
         if not scorer_name:
-            # Sometimes the text field has "Goal by NAME"
             text = (p.get("text") or "") + " " + (p.get("name") or "")
-            m = re.search(r"by\s+([A-ZÀ-ÿ][\w'.-]+(?:\s+[A-ZÀ-ÿ][\w'.-]+)+)", text)
+            # "Goal! Saudi Arabia 1, Uruguay 0. Abdulelah Al Amri (Saudi Arabia) ..."
+            m = re.search(r"\.\s+([A-ZÀ-ÿ][\w'.-]+(?:\s+[A-ZÀ-ÿ][\w'.-]+)+)\s*\(", text)
+            if not m:
+                m = re.search(r"by\s+([A-ZÀ-ÿ][\w'.-]+(?:\s+[A-ZÀ-ÿ][\w'.-]+)+)", text)
             if m:
                 scorer_name = m.group(1)
         if not scorer_name:
@@ -396,7 +432,61 @@ def _espn_did_score_goal(summary: dict, player_name: str) -> Optional[bool]:
                 found_first = scorer_name
         if found_first is None:
             found_first = scorer_name
-    return None if not plays else (found_any, found_first)
+    return (found_any, found_first)
+
+
+def _espn_did_score_or_assist(summary: dict, player_name: str) -> Optional[bool]:
+    """For Soccer "To Score or Assist" markets.
+
+    Returns True if `player_name` either scored OR was credited with an assist.
+    False if neither. None if we couldn't read the play feed at all.
+
+    See `_espn_did_score_goal` for the modern ESPN summary shape — we look
+    at `keyEvents`, `scoringPlays`, and `plays` in that order.
+    """
+    if not summary:
+        return None
+    plays = list(summary.get("scoringPlays") or summary.get("plays") or [])
+    for ev in summary.get("keyEvents") or []:
+        if (ev.get("type") or {}).get("text", "").lower() == "goal":
+            plays.append(ev)
+    if not plays:
+        return None
+    for p in plays:
+        names: list[str] = []
+        for block in (p.get("athletes") or p.get("participants") or
+                      p.get("athletesInvolved") or []):
+            ath = block.get("athlete") or block
+            nm = ath.get("displayName") or ath.get("name") or ""
+            if nm:
+                names.append(nm)
+        for k in ("assist", "assistedBy", "assists"):
+            v = p.get(k)
+            if isinstance(v, dict):
+                nm = v.get("displayName") or v.get("name")
+                if nm:
+                    names.append(nm)
+            elif isinstance(v, list):
+                for entry in v:
+                    if isinstance(entry, dict):
+                        nm = entry.get("displayName") or entry.get("name")
+                        if nm:
+                            names.append(nm)
+        # Text-field fallback covers "Goal! ... Player Name (Team) ... Assisted by Other"
+        text = (p.get("text") or "") + " " + (p.get("name") or "")
+        for m in re.finditer(
+            r"(?:by|assist(?:ed)? by|from)\s+([A-ZÀ-ÿ][\w'.-]+(?:\s+[A-ZÀ-ÿ][\w'.-]+)+)",
+            text, re.IGNORECASE,
+        ):
+            names.append(m.group(1))
+        # Also catch "Goal! ... Player Name (Team)" pattern
+        m = re.search(r"\.\s+([A-ZÀ-ÿ][\w'.-]+(?:\s+[A-ZÀ-ÿ][\w'.-]+)+)\s*\(", text)
+        if m:
+            names.append(m.group(1))
+        for nm in names:
+            if _names_match(player_name, nm):
+                return True
+    return False
 
 
 # ─────────────────────────── orchestrator ───────────────────────────
@@ -526,21 +616,57 @@ async def _settle_group(cx, db, sport: str, date_str: str, batch: list[dict], co
 
     # ESPN sports (NBA, WNBA, NHL, NFL, Soccer)
     if sport == "Soccer":
-        # ESPN soccer needs a league code, which varies. We try a couple of
-        # the highest-volume leagues The Odds API surfaces.
-        soccer_leagues = ["soccer/eng.1", "soccer/esp.1", "soccer/ger.1", "soccer/ita.1",
-                          "soccer/fra.1", "soccer/mex.1", "soccer/usa.1", "soccer/uefa.champions",
-                          "soccer/uefa.europa", "soccer/uefa.nations", "soccer/conmebol.libertadores"]
+        # ESPN soccer needs a league code, which varies. We try all the
+        # leagues The Odds API + our soccer pipeline can possibly surface,
+        # including FIFA World Cup, World Cup qualifiers, EU domestic leagues,
+        # CONMEBOL competitions, and the rest. Adding a league here costs
+        # one extra scoreboard call per settle group — cheap, public API.
+        soccer_leagues = [
+            # FIFA / international
+            "soccer/fifa.world",
+            "soccer/fifa.worldq.uefa",
+            "soccer/fifa.worldq.conmebol",
+            "soccer/fifa.worldq.concacaf",
+            "soccer/fifa.worldq.afc",
+            "soccer/fifa.worldq.caf",
+            "soccer/fifa.worldq.ofc",
+            "soccer/fifa.confederations",
+            "soccer/fifa.cwc",
+            # UEFA
+            "soccer/uefa.champions",
+            "soccer/uefa.europa",
+            "soccer/uefa.europa.conf",
+            "soccer/uefa.nations",
+            "soccer/uefa.euro",
+            "soccer/uefa.euroq",
+            # CONMEBOL
+            "soccer/conmebol.libertadores",
+            "soccer/conmebol.sudamericana",
+            "soccer/conmebol.america",
+            # Domestic top flights
+            "soccer/eng.1", "soccer/esp.1", "soccer/ger.1", "soccer/ita.1",
+            "soccer/fra.1", "soccer/por.1", "soccer/ned.1",
+            "soccer/mex.1", "soccer/usa.1", "soccer/bra.1", "soccer/arg.1",
+            # Second tiers (where our backfill found events)
+            "soccer/eng.2", "soccer/esp.2", "soccer/ita.2", "soccer/ger.2",
+            "soccer/bra.2", "soccer/swe.1", "soccer/nor.1", "soccer/fin.1",
+            "soccer/irl.1", "soccer/chn.1", "soccer/jpn.1", "soccer/kor.1",
+        ]
         events: list[dict] = []
+        event_league_map: dict[str, str] = {}  # event_id → league code
         for sl in soccer_leagues:
             sport_path, league = sl.split("/", 1)
             try:
                 ev = await _espn_scoreboard(cx, sport_path, league, date_str)
                 if ev:
+                    for e in ev:
+                        eid = str(e.get("id") or "")
+                        if eid and eid not in event_league_map:
+                            event_league_map[eid] = league
                     events.extend(ev)
             except Exception:
                 pass
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.05)  # 33 leagues @ 0.05s = 1.6s overhead, ESPN tolerates this
         summaries: dict[str, dict] = {}
         for p in batch:
             stat_key = _stat_key_for_market(p["market"] or "")
@@ -559,18 +685,28 @@ async def _settle_group(cx, db, sport: str, date_str: str, batch: list[dict], co
                 continue
             summary = summaries.get(ev_id)
             if summary is None:
-                # Need to infer sport/league from event link
-                link = ev.get("links", [{}])[0].get("href") or ""
-                # Reuse the same league guesser by matching the date scoreboard's league
-                # (we'd already know but it's not stored on the event). Default to eng.1.
-                sport_path, league = "soccer", "eng.1"
-                m = re.search(r"/soccer/([a-z0-9.]+)/", link, re.IGNORECASE)
-                if m:
-                    league = m.group(1)
+                # Use the league we discovered at scoreboard time (mapped per
+                # event ID). Previously we tried to parse the league out of
+                # the event's link URL but ESPN URLs look like
+                # `.../soccer/match/_/gameId/<id>` — the regex matched
+                # `match` instead of the real league code, so the summary
+                # fetch 404'd and the prop never settled.
+                sport_path = "soccer"
+                league = event_league_map.get(ev_id, "eng.1")
                 summary = await _espn_summary(cx, sport_path, league, ev_id) or {}
                 summaries[ev_id] = summary
                 await asyncio.sleep(0.2)
             player = (p.get("selection") or "").strip() or _player_from_market(p["market"])
+            if stat_key == "soccer.scoreOrAssist":
+                got = _espn_did_score_or_assist(summary, player)
+                if got is None:
+                    counts["skipped"] += 1
+                    continue
+                outcome = "won" if got else "lost"
+                await _record(db, p, outcome,
+                              {"player": player, "stat": "scoreOrAssist", "value": 1 if got else 0, "line": 0.5},
+                              counts)
+                continue
             result = _espn_did_score_goal(summary, player)
             if not result:
                 counts["skipped"] += 1

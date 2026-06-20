@@ -40,6 +40,30 @@ app = FastAPI(title="PerksLocks AI")
 api = APIRouter(prefix="/api")
 
 
+# ────────────────────── Data version (cache-bust signal) ──────────────────────
+# Bump `DATA_VERSION` whenever a backend change requires phones to wipe their
+# AsyncStorage caches (changed pick schema, fabrication scrub, market filters,
+# etc.). Phones poll /api/version on launch + tab focus and auto-wipe stale
+# caches when their stored version differs from this one. See cachebust.ts
+# on the frontend for the consumer logic.
+#
+# Format: YYYY.MM.DD-N
+DATA_VERSION = "2026.06.20-3"
+SERVER_STARTED_AT = datetime.now(timezone.utc)
+
+
+@api.get("/version")
+async def get_version():
+    """Public endpoint — no auth required. Phones poll this on launch and on
+    tab focus to detect when the server has shipped new data they should
+    rehydrate."""
+    return {
+        "data_version": DATA_VERSION,
+        "server_time": datetime.now(timezone.utc).isoformat(),
+        "server_started_at": SERVER_STARTED_AT.isoformat(),
+    }
+
+
 # ────────────────────── Auth ──────────────────────
 
 async def current_user(

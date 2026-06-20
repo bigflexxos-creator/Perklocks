@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator,
+  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Alert, Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -8,7 +8,7 @@ import { useRouter } from "expo-router";
 import { COLORS } from "@/src/theme";
 import { useAuth } from "@/src/contexts/AuthContext";
 import { api } from "@/src/lib/api";
-import { APP_DATA_VERSION } from "@/src/lib/cachebust";
+import { APP_DATA_VERSION, forceClearAllCaches } from "@/src/lib/cachebust";
 
 const BACKEND_URL_DISPLAY = (process.env.EXPO_PUBLIC_BACKEND_URL || "auto")
   .replace(/^https?:\/\//, "")
@@ -30,6 +30,42 @@ export default function ProfileScreen() {
   const onLogout = async () => {
     await signOut();
     router.replace("/(auth)/login");
+  };
+
+  // Force-clear all AsyncStorage caches and reload — Layer 1 of the cache-bust
+  // system. User-facing escape hatch for when the phone shows stale data
+  // ("hits visible on website but not on app", etc.). See cachebust.ts.
+  const [clearing, setClearing] = useState(false);
+  const onForceRefresh = () => {
+    const doClear = async () => {
+      setClearing(true);
+      try {
+        await forceClearAllCaches();
+        if (Platform.OS === "web") {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const w: any = (typeof window !== "undefined" ? window : null);
+          if (w?.location?.reload) w.location.reload();
+          return;
+        }
+        // Native: nav back to Locks tab so it re-fetches everything fresh.
+        router.replace("/(tabs)");
+      } finally {
+        setClearing(false);
+      }
+    };
+    if (Platform.OS === "web") {
+      // Skip the confirm dialog on web — it's a single tap escape hatch.
+      doClear();
+      return;
+    }
+    Alert.alert(
+      "Refresh app data?",
+      "Clears cached picks, bet slip, and preferences from this device. You won't be signed out.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Refresh", style: "destructive", onPress: doClear },
+      ],
+    );
   };
 
   return (
@@ -99,6 +135,21 @@ export default function ProfileScreen() {
         >
           <Ionicons name="time-outline" size={18} color={COLORS.voltBlue} />
           <Text style={styles.actionText}>PICK HISTORY & RESULTS</Text>
+          <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+        </Pressable>
+
+        <Pressable
+          testID="force-refresh-button"
+          onPress={onForceRefresh}
+          disabled={clearing}
+          style={[styles.actionBtn, clearing && { opacity: 0.5 }]}
+        >
+          {clearing ? (
+            <ActivityIndicator size="small" color="#FFB300" />
+          ) : (
+            <Ionicons name="refresh-circle-outline" size={18} color="#FFB300" />
+          )}
+          <Text style={styles.actionText}>REFRESH APP DATA</Text>
           <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
         </Pressable>
 

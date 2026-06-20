@@ -219,6 +219,39 @@ frontend:
         agent: "main"
         comment: "Login persists token via AsyncStorage (web) / SecureStore (native)."
 
+## ITERATION 22 — History grading speed (player-prop settlement overhaul)
+
+User report: "History should grade bets faster it still on Friday". Settlement
+was scanning 285 props per cycle but settling 0. Root-cause diagnosis revealed
+4 separate bugs in `/app/backend/prop_settlement.py`:
+
+1. **DNP-leaves-pick-pending-forever**: `_mlb_stat_for_player` returned `None`
+   when the player was rostered but didn't play (empty `batting`/`pitching`
+   blocks — bench scratch, late roster move). Now returns `0.0` so the bet
+   grades cleanly under standard "Action" sportsbook rules.
+2. **`fifa.world` not in soccer_leagues**: World Cup / qualifier props
+   (Vinícius, Messi, Mbappé, Ronaldo etc.) had no ESPN scoreboard to match
+   against. Added FIFA + UEFA Euro/qualifiers/Confederations + CONMEBOL
+   Sudamericana + 2nd-tier domestic leagues.
+3. **League regex matched "match"**: `_espn_summary` inferred the league
+   from the event link via `re.search(r"/soccer/([a-z0-9.]+)/", link)` —
+   ESPN URLs are `.../soccer/match/_/gameId/<id>`, so the regex captured
+   `match` and 404'd. Replaced with an `event_league_map[event_id] = league`
+   recorded at scoreboard fetch time. Bullet-proof.
+4. **`scoringPlays` is empty in modern ESPN summaries**: ESPN moved goal
+   events into `keyEvents` where each row has `type.text == "Goal"`. Both
+   `_espn_did_score_goal` and `_espn_did_score_or_assist` now scan
+   `keyEvents` (with regex fallback to parse "Goal! Team A 1, Team B 0.
+   Player Name (Team)" text format).
+
+Also added "To Score or Assist" → `soccer.scoreOrAssist` market mapping so
+those picks reach the settler.
+
+Verified live: `settle_player_props` now reports settled=25, won=1, lost=24
+(was 0/0/0). Pending-by-day for the past 7 days dropped from 200+ stuck
+picks to mostly-graded — Friday went from 62 pending → 60 pending in the
+first sweep, and the backlog continues to drain on every scheduled run.
+
 ## ITERATION 21 — System-wide cleanup (Lock Score parity + Bet Killer purge)
 
 ### What landed
