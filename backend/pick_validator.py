@@ -165,8 +165,53 @@ async def validate_and_heal(db) -> dict:
                     updates["lock_score"] = target_lock
                     p["lock_score"] = target_lock
                     counts["fixed_lock"] += 1
+                    # ── CRITICAL: re-sync grade + confidence to the new
+                    # lock_score so the UI badge ("Elite Lock", "Strong
+                    # Lock", …) doesn't lie about a pick whose score has
+                    # been demoted to 71 while still flashing the gold
+                    # ELITE LOCK chip. Same for confidence rail. This is
+                    # the V1/V2 inconsistency the user flagged.
+                    try:
+                        from sports_engine import _grade, _confidence
+                        new_grade = _grade(target_lock)
+                        new_conf  = _confidence(target_lock)
+                        if new_grade != p.get("grade"):
+                            updates["grade"] = new_grade
+                            p["grade"] = new_grade
+                        if new_conf != p.get("confidence"):
+                            updates["confidence"] = new_conf
+                            p["confidence"] = new_conf
+                    except Exception:
+                        # If sports_engine isn't importable for some
+                        # reason, leaving grade alone is better than
+                        # raising — pick still has SOME label.
+                        pass
 
-        # 5) If any math changed, refresh deep-dive scores too.
+        # 5) Grade + Confidence consistency — ALWAYS reconcile the badge
+        # labels with the CURRENT lock_score, regardless of whether the
+        # validator touched lock_score this cycle. The user-visible bug
+        # ("ELITE LOCK chip on a 71 lock") happens when a previous
+        # cycle demoted lock_score but didn't update the stored grade.
+        # This unconditional pass guarantees grade and lock_score always
+        # tell the same story to the user.
+        try:
+            from sports_engine import _grade as _g_fn, _confidence as _c_fn
+            ls = p.get("lock_score")
+            if ls is not None:
+                gx = _g_fn(float(ls))
+                cx = _c_fn(float(ls))
+                if gx != p.get("grade"):
+                    updates["grade"] = gx
+                    p["grade"] = gx
+                    counts.setdefault("fixed_grade", 0)
+                    counts["fixed_grade"] += 1
+                if cx != p.get("confidence"):
+                    updates["confidence"] = cx
+                    p["confidence"] = cx
+        except Exception:
+            pass
+
+        # 6) If any math changed, refresh deep-dive scores too.
         if updates and deep_dive:
             await deep_dive(db, p)
             updates["edge_score"] = p.get("edge_score")
