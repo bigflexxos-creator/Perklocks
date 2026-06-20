@@ -425,6 +425,17 @@ async def _refresh_picks(date_str: str) -> int:
             "instead of wiping the board.", date_str,
         )
         return 0
+    # ── MLB Batter-vs-Pitcher enrichment ──
+    # User spec: "make sure you got batter vs pitcher when making hit
+    # prediction". Pulls career BvP splits from MLB Stats API (free,
+    # 0 Odds credits), boosts lock_score for batters with strong
+    # historical edge vs the opposing starter, and appends a "5-for-12
+    # vs Strider" insight bullet to each MLB hit prop card.
+    try:
+        from mlb_bvp import enrich_picks_bulk as _bvp_enrich
+        await _bvp_enrich(picks)
+    except Exception as e:
+        logger.warning("MLB BvP enrichment skipped: %s", e)
     namespace = uuid.UUID("00000000-0000-0000-0000-000000000001")
     for p in picks:
         ext = str(p.get("external_id") or "")
