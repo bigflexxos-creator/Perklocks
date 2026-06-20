@@ -428,9 +428,10 @@ async def apply_v2_to_picks(picks: list[dict], db) -> list[dict]:
     blacklisted_count = 0
 
     # Per-event goalscorer cap: keep top 2 by lock_score, flag rest as no_bet.
-    # Prevents flooding the feed with 5+ "Anytime Goal Scorer" picks for a
-    # single match (e.g. Brazil vs Haiti spawning Vinicius + Rodrygo +
-    # Neymar + ... when realistically only the top 1-2 are real edges).
+    # ELITE-AWARE: elite players (Vini Jr, Messi, Mbappé, Kane, Salah, Haaland,
+    # etc. — see elite_players.ELITE_PLAYERS["Soccer"]) ALWAYS keep a slot.
+    # Remaining slots fill by lock_score. This prevents both flooding AND
+    # losing the marquee names that should anchor a match's coverage.
     GS_PICKS_PER_EVENT = 2
     gs_by_event: dict[str, list[dict]] = {}
     for p in picks:
@@ -439,12 +440,18 @@ async def apply_v2_to_picks(picks: list[dict], db) -> list[dict]:
     for event, gs in gs_by_event.items():
         if len(gs) <= GS_PICKS_PER_EVENT:
             continue
-        gs.sort(key=lambda x: -float(x.get("lock_score") or 0))
+        # Sort: elite first (preserved automatically), then by lock_score desc
+        gs.sort(key=lambda x: (
+            0 if x.get("elite_player") else 1,    # elites at the top
+            -float(x.get("lock_score") or 0),     # then by lock_score desc
+        ))
+        # If multiple elites compete, keep up to GS_PICKS_PER_EVENT of them.
+        # If only 1 elite, it gets slot 1 + best non-elite gets slot 2.
         for extra in gs[GS_PICKS_PER_EVENT:]:
             extra["no_bet"] = True
             extra["no_bet_reason"] = (
                 f"Max {GS_PICKS_PER_EVENT} goalscorer picks per match — "
-                f"surfaced top {GS_PICKS_PER_EVENT} only"
+                f"elite + top lock kept"
             )
             extra["capped_by_learning"] = True
 
