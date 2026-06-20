@@ -169,12 +169,17 @@ async def _fetch_odds_for(sport_key: str, regions: str = "us", sport: str | None
 
 
 def _grade(score: float) -> str:
-    if score >= 95:
+    # User-defined band labels — match the bet-quality floor tiers in
+    # compute_lock_score() exactly so the badge on every card always
+    # reflects which earned tier the pick landed in.
+    if score >= 98:
         return "Elite Lock"
-    if score >= 90:
+    if score >= 95:
         return "Strong Lock"
+    if score >= 90:
+        return "Lock"
     if score >= 85:
-        return "Good Bet"
+        return "Playable"
     return "Pass"
 
 
@@ -288,32 +293,40 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     score = (0.35 * edge_comp + 0.20 * market_align + 0.15 * roi_comp
              + 0.10 * data_quality + 0.10 * vol_comp + 0.10 * cls_comp)
 
-    # ── Bet-Quality Floor ────────────────────────────────────────────────
-    # The 6-component formula is intentionally decoupled from raw win
-    # probability, but that decoupling created an embarrassing UX bug:
-    # Harry Kane with 72.3 % win + 13.12 % edge was getting a 71 lock
-    # score and a "Pass" badge. To any user that's broken — high win%
-    # AND positive edge IS a quality bet by definition.
+    # ── Bet-Quality Floor (USER-CALIBRATED TIERS) ────────────────────────
+    # User-defined band system (matches mental model exactly):
+    #   Win 65-69 + Edge 3-5   → Lock 85-89 → "Playable"
+    #   Win 70-74 + Edge 5-9   → Lock 90-94 → "Lock"
+    #   Win 75-79 + Edge 10-14 → Lock 95-97 → "Strong Lock"
+    #   Win 80+  + Edge 15+    → Lock 98-99 → "Elite Lock"
     #
-    # So we apply a floor based on the (win_prob, edge_percent) pair:
-    #   • win_p ≥ 80 % AND edge ≥ +15 %  →  lock floor 96  (Elite Lock)
-    #   • win_p ≥ 75 % AND edge ≥ +10 %  →  lock floor 92  (Strong Lock)
-    #   • win_p ≥ 70 % AND edge ≥  +5 %  →  lock floor 88  (Good Bet)
-    #   • win_p ≥ 65 % AND edge ≥  +3 %  →  lock floor 85  (Good Bet)
-    # The floor only RAISES the score (never lowers it) so high-quality
-    # bets get appropriate labels while low-edge picks stay where the
-    # 6-component formula put them.
+    # Floor sets the BAND; the intra-band position is derived from how
+    # strong the win-prob + edge actually are within the qualifying
+    # range. Floor only RAISES the 6-component score — never lowers.
     wp_val = float(pick.get("win_probability") or 0)
     ed_val = float(pick.get("edge_percent") or 0)
     floor = 0.0
     if wp_val >= 80 and ed_val >= 15:
-        floor = 96.0
+        # 98 base + up to +1 from extra edge → caps at 99 (Elite Lock).
+        floor = 98.0 + min(1.0, max(0.0, (ed_val - 15) / 15.0))
     elif wp_val >= 75 and ed_val >= 10:
-        floor = 92.0
+        # 95-97 (Strong Lock) — climbs with both win% and edge.
+        floor = 95.0 + min(
+            2.0,
+            max(0.0, (wp_val - 75) * 0.4 + (ed_val - 10) * 0.3),
+        )
     elif wp_val >= 70 and ed_val >= 5:
-        floor = 88.0
+        # 90-94 (Lock) — middle band, primary "this is a quality bet" tier.
+        floor = 90.0 + min(
+            4.0,
+            max(0.0, (wp_val - 70) * 0.6 + (ed_val - 5) * 0.5),
+        )
     elif wp_val >= 65 and ed_val >= 3:
-        floor = 85.0
+        # 85-89 (Playable) — entry-level quality tier.
+        floor = 85.0 + min(
+            4.0,
+            max(0.0, (wp_val - 65) * 0.6 + (ed_val - 3) * 1.0),
+        )
     if floor and score < floor:
         score = floor
 
