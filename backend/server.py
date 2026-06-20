@@ -980,8 +980,17 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # confidence picks the user expects to see when filtering by sport. The
     # Bet Killer / Under-of-the-Day tabs surface them separately too, but
     # users found their absence from the main sport tab confusing.
+    # Floor check must consider EITHER lock_score (legacy/validator-drifted)
+    # OR lock_score_v2 (canonical, refreshed every cycle). The pick_validator
+    # can write a stale low value into lock_score while v2 still holds the
+    # correct high score — without this OR, the home feed hides those picks
+    # silently. The serializer (`_canonicalize_lock_score`) then promotes
+    # whichever is higher before returning, so the user sees the right number.
     standard_q = {
-        "lock_score": {"$gte": floor},
+        "$or": [
+            {"lock_score": {"$gte": floor}},
+            {"lock_score_v2": {"$gte": floor}},
+        ],
         "no_bet": {"$ne": True},
         # Hide negative-edge picks from the main feed entirely.
         # Picks where model_WP < book_implied are by definition bad
@@ -1001,7 +1010,10 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     elite_q = {
         "elite_player": True,
         "no_bet": {"$ne": True},
-        "lock_score": {"$gte": 80.0},
+        "$or": [
+            {"lock_score": {"$gte": 80.0}},
+            {"lock_score_v2": {"$gte": 80.0}},
+        ],
     }
     q: dict = {
         "pick_date": _today_str(),
