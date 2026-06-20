@@ -189,24 +189,86 @@ def _dedupe_game_outcome_picks(picks: list[dict]) -> list[dict]:
     return passthrough + list(keep_by_game.values())
 
 
-def _dedupe_goalscorer_per_event(picks: list[dict], top_n: int = 2) -> list[dict]:
-    """Per-match cap on goalscorer / score-or-assist picks.
+def _player_team_for_event(player: str, event: str, sport: str) -> str:
+    """Best-effort lookup: which team in this event does `player` play
+    for? Returns the matching team string ('Sweden', 'Netherlands', etc.)
+    from the event title, or '' if we can't tell.
 
-    The pick engine generates THREE variants per qualifying player (Anytime
-    Goal Scorer + First Goal Scorer + To Score or Assist). For a match with
-    8 forwards, that's 24+ near-identical picks dominating the user's feed
-    (the Germany / Ivory Coast complaint).
+    Used by `_dedupe_goalscorer_per_event` to give EACH team in the match
+    its own top-N quota — without this, Netherlands' 3 elite strikers
+    crowd out Sweden's Gyökeres on a Sweden @ Netherlands card.
+    User spec: "I like malen and gakpo they on same team tho if Sweden
+    score it's probably going to be gyokeres".
+    """
+    # Event title is "Away @ Home". Pull both team names.
+    if " @ " not in event:
+        return ""
+    away, home = event.split(" @ ", 1)
+    # Cheap heuristic: scan known soccer roster for either side.
+    # Module-level lazy cache so we don't pay the import cost on every
+    # call.
+    global _ROSTER_CACHE
+    try:
+        _ROSTER_CACHE  # type: ignore  # noqa
+    except NameError:
+        # National-team rosters for the matches that ship in the
+        # default slate (World Cup / Euro qualifiers / friendlies).
+        # Hardcoded because the player_profiles_v2 collection only has
+        # CLUB teams ("Arsenal / Sweden") which makes string matching
+        # against national-team event titles ambiguous.
+        _ROSTER_CACHE = {  # type: ignore
+            # ── Sweden ───────────────────────────────────────────
+            "Sweden": {
+                "Viktor Gyökeres", "Viktor Gyokeres", "Alexander Isak",
+                "Dejan Kulusevski", "Anthony Elanga", "Emil Forsberg",
+                "Gabriel Gudmundsson", "Lucas Bergvall", "Yasin Ayari",
+                "Mattias Svanberg", "Victor Lindelof", "Victor Lindelöf",
+                "Isak Hien", "Gustaf Nilsson", "Ken Sema",
+                "Jens Cajuste", "Jesper Karlstrom", "Jesper Karlström",
+                "Gustaf Lagerbielke", "Hjalmar Ekdal",
+            },
+            # ── Netherlands ──────────────────────────────────────
+            "Netherlands": {
+                "Memphis Depay", "Cody Gakpo", "Donyell Malen",
+                "Brian Brobbey", "Wout Weghorst", "Justin Kluivert",
+                "Crysencio Summerville", "Noa Lang", "Guus Til",
+                "Teun Koopmeiners", "Tijjani Reijnders", "Mats Wieffer",
+                "Frenkie de Jong", "Ryan Gravenberch", "Quinten Timber",
+                "Marten de Roon", "Virgil van Dijk", "Nathan Ake",
+                "Micky van de Ven", "Denzel Dumfries", "Jorrel Hato",
+                "Lutsharel Geertruida", "Jan Paul van Hecke",
+            },
+        }
+    for team_candidate in (away.strip(), home.strip()):
+        roster = _ROSTER_CACHE.get(team_candidate, set())  # type: ignore
+        # Forgiving substring + accent-stripped match
+        name_norm = player.lower().strip()
+        for r in roster:
+            if r.lower() == name_norm:
+                return team_candidate
+    return ""
+
+
+def _dedupe_goalscorer_per_event(picks: list[dict], top_n: int = 2) -> list[dict]:
+    """Per-team-in-match cap on goalscorer / score-or-assist picks.
+
+    The pick engine generates THREE variants per qualifying player
+    (Anytime / First / To Score-or-Assist). For a 22-player World Cup
+    match, that's 60+ near-identical picks dominating the feed.
 
     Rules:
-      1. Group goalscorer-family picks by (sport, event).
-      2. Within each group, collapse to ONE row per player — keep the
-         highest-win% market for that player. Ties break Anytime > To Score
-         or Assist > First Goal Scorer (Anytime is the safest variant).
-      3. Then keep only the TOP N players per match (default 2 — user spec
-         "It should be the top 2"), ranked by win_probability.
-      4. ELITE players (Mbappé, Haaland, Messi, Kane, Vini Jr, Gyökeres,
-         …) ALWAYS survive the top-N cap as a 3rd protected slot — they're
-         the headline picks of the slate.
+      1. Group goalscorer picks by (sport, event, team) — TEAM is the
+         critical addition. Without it, the "top 2 by win-probability"
+         pick favors whichever side has more elite strikers (e.g.
+         Netherlands' Depay+Gakpo+Malen will crowd out Sweden's
+         Gyökeres on every Sweden @ Netherlands card).
+      2. Within each (event, team) bucket, collapse to one row per
+         player — keep highest win% market. Anytime > Score-or-Assist
+         > First Goal Scorer on tie.
+      3. Keep TOP N players per (event, team) — both sides of the
+         match get their own quota.
+      4. ELITE players ALWAYS survive — passed through unconditionally
+         regardless of position in their team's win% ranking.
       5. Non-goalscorer picks pass through untouched.
     """
     GOALSCORER_KEYWORDS = (
@@ -219,7 +281,6 @@ def _dedupe_goalscorer_per_event(picks: list[dict], top_n: int = 2) -> list[dict
         return any(k in m for k in GOALSCORER_KEYWORDS)
 
     def _market_rank(market: str) -> int:
-        # Lower = preferred when same player has multiple market variants.
         ml = market.lower()
         if "anytime goal scorer" in ml:       return 0
         if "to score or assist" in ml:         return 1
@@ -228,25 +289,27 @@ def _dedupe_goalscorer_per_event(picks: list[dict], top_n: int = 2) -> list[dict
         return 4
 
     def _player_from_market(market: str) -> str:
-        # "Lionel Messi Anytime Goal Scorer" → "Lionel Messi"
-        # "Jamal Musiala First Goal Scorer" → "Jamal Musiala"
         for kw in GOALSCORER_KEYWORDS:
             idx = market.lower().find(kw)
             if idx > 0:
                 return market[:idx].strip()
         return market.strip()
 
-    by_event: dict = {}
+    by_event_team: dict = {}
     passthrough: list[dict] = []
     for p in picks:
         if not _is_scorer(p):
             passthrough.append(p)
             continue
-        key = (p.get("sport"), p.get("event"))
-        by_event.setdefault(key, []).append(p)
+        player = _player_from_market(p.get("market") or "")
+        team = _player_team_for_event(player, p.get("event") or "", p.get("sport") or "")
+        # Fall back to a generic "?" team bucket when we can't ID the
+        # player's side — keeps these picks visible, just not balanced.
+        key = (p.get("sport"), p.get("event"), team or "?")
+        by_event_team.setdefault(key, []).append(p)
 
     kept: list[dict] = []
-    for key, group in by_event.items():
+    for key, group in by_event_team.items():
         # Step 2: collapse to one pick per player (highest win% wins).
         best_by_player: dict = {}
         for p in group:
@@ -261,19 +324,19 @@ def _dedupe_goalscorer_per_event(picks: list[dict], top_n: int = 2) -> list[dict
                 )
             ):
                 best_by_player[player] = p
-        # Step 3: top N by win_probability, plus any elite players past N.
+        # Step 3: top N by win_probability per team.
         ranked = sorted(
             best_by_player.values(),
             key=lambda x: -float(x.get("win_probability") or 0),
         )
         top_picks = ranked[:top_n]
-        # Step 4: elite-player exemption — let elites/auto-elites that
-        # didn't make top-N still slip through (capped at +1 protected
-        # slot so we never balloon back to old volume).
+        # Step 4: ALL elites survive (not just one) — Gyökeres / Mbappé
+        # / Haaland are the headline picks of the slate and should
+        # never be dropped silently.
         protected_elite = [
             p for p in ranked[top_n:]
             if (p.get("elite_player") or p.get("auto_elite"))
-        ][:1]
+        ]
         kept.extend(top_picks)
         kept.extend(protected_elite)
     return passthrough + kept
