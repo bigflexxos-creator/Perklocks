@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
   View, Text, StyleSheet, ScrollView, RefreshControl,
-  ActivityIndicator, Pressable,
+  ActivityIndicator, Pressable, TouchableOpacity,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS, SPORTS } from "@/src/theme";
 import { api, Pick, LineType, SortKey, PickFilters } from "@/src/lib/api";
@@ -257,6 +258,23 @@ export default function LocksScreen() {
         </View>
       </View>
       <SortSelector value={sortKey} onChange={setSortKey} testIDPrefix="locks-sort" />
+      {sport === "Soccer" && (
+        <TouchableOpacity
+          onPress={() => router.push("/soccer-lab" as any)}
+          style={styles.soccerLabBtn}
+          activeOpacity={0.8}
+          testID="soccer-lab-cta"
+        >
+          <Text style={styles.soccerLabIcon}>🌍</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.soccerLabTitle}>SOCCER LAB</Text>
+            <Text style={styles.soccerLabSub}>
+              All active leagues · global ranked feed
+            </Text>
+          </View>
+          <Text style={styles.soccerLabChevron}>›</Text>
+        </TouchableOpacity>
+      )}
       <FilterSheet
         visible={filterOpen}
         onClose={() => setFilterOpen(false)}
@@ -344,4 +362,35 @@ const styles = StyleSheet.create({
   center: { paddingVertical: 80, alignItems: "center" },
   emptyTitle: { color: COLORS.textPrimary, fontSize: 16, fontWeight: "800", marginTop: 14 },
   emptyMsg: { color: COLORS.textMuted, fontSize: 13, marginTop: 6, textAlign: "center", paddingHorizontal: 40 },
+  soccerLabBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginHorizontal: 20,
+    marginTop: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.voltBlue + "55",
+    backgroundColor: COLORS.voltBlue + "10",
+  },
+  soccerLabIcon: { fontSize: 22 },
+  soccerLabTitle: {
+    color: COLORS.voltBlue,
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 1.2,
+  },
+  soccerLabSub: {
+    color: COLORS.textSecondary,
+    fontSize: 11,
+    fontWeight: "600",
+    marginTop: 2,
+  },
+  soccerLabChevron: {
+    color: COLORS.voltBlue,
+    fontSize: 24,
+    fontWeight: "300",
+  },
 });

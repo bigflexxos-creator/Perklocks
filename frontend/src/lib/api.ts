@@ -412,6 +412,39 @@ export const api = {
       alternatives: any[];
       rule: "single" | "co_best" | "best_with_alts" | "dominant" | "no_candidates";
     }>(`/picks/${id}/market-rank`),
+  soccerLabLeagues: (refresh = false) =>
+    request<{
+      leagues: Array<{ key: string; title: string; group: string; description: string; has_outrights: boolean }>;
+      count: number;
+      age_sec: number;
+      source: string;
+      fetched_at: number;
+    }>(`/soccer-lab/leagues${refresh ? "?refresh=true" : ""}`),
+  soccerLabFeed: (limit = 50, min_lock = 78) =>
+    request<{
+      count: number;
+      total_returned: number;
+      min_lock: number;
+      picks: Array<{
+        id: string;
+        league: string;
+        event: string;
+        event_time: string;
+        market: string;
+        selection?: string;
+        book_odds?: number;
+        win_probability?: number;
+        edge_percent?: number;
+        lock_score?: number;
+        lock_score_v2?: number;
+        tier_v2?: string;
+        is_apex?: boolean;
+        grade?: string;
+        confidence: number;
+        implied_probability?: number;
+      }>;
+      league_distribution: Array<{ league: string; count: number }>;
+    }>(`/soccer-lab/feed?limit=${limit}&min_lock=${min_lock}`),
   refresh: () => request<{
     refreshed: boolean;
     count: number;
