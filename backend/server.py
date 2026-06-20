@@ -1934,6 +1934,17 @@ try:
 except Exception as _ae_mount_err:
     logger.warning("Auto-Elite failed to mount, continuing without it: %s", _ae_mount_err)
 
+# Mount Scorer Bundles — synthesizes 2+ goals / hat-trick / goal+assist SGP
+# probabilities from anytime goal scorer odds (Poisson inversion). The Odds
+# API doesn't expose those markets directly, so this gives users a fair-odds
+# read for sizing their own SGPs.
+try:
+    from scorer_bundles import router as scorer_bundles_router
+    api.include_router(scorer_bundles_router)
+    logger.info("Scorer Bundles mounted at /api/picks/{id}/scorer-bundles")
+except Exception as _sb_mount_err:
+    logger.warning("Scorer Bundles failed to mount, continuing without it: %s", _sb_mount_err)
+
 app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
