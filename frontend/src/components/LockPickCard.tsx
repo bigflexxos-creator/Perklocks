@@ -29,7 +29,20 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
   // V2 chip + APEX border only render when the V1 lock_score is already
   // in the Strong Lock band (95+). Otherwise treat V2 as silent data
   // available solely in the pick detail "Deep Thinking" panel.
-  const v1IsStrong = (pick.lock_score ?? 0) >= 95;
+  // ── V2 LIVE: card always displays max(lock_score, lock_score_v2) ──
+  // User spec: "machado say 85 when I click pick break down it says he
+  // a 94 why won't it update". The DB-side V2 promotion can drift out
+  // of sync with on-demand v2 computations from the breakdown endpoint,
+  // so we just compute the effective lock at RENDER time. No more
+  // "card 85, detail 94" mismatch.
+  const displayLock = Math.max(
+    Number(pick.lock_score) || 0,
+    Number(pick.lock_score_v2) || 0,
+  );
+  // Anything that referenced pick.lock_score for visual logic now uses
+  // displayLock so the badge / progress bar / strong-lock gates all
+  // match the headline number.
+  const v1IsStrong = displayLock >= 95;
   const v2Tier = v1IsStrong ? pick.tier_v2 : undefined;
   const isApex = v1IsStrong && !!pick.is_apex;
   const v2Lock = pick.lock_score_v2 ?? null;
@@ -120,7 +133,7 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
       <View style={styles.heroBadgeRow}>
         <HeroBadge
           icon="🔒"
-          value={`${Math.round(pick.lock_score)}`}
+          value={`${Math.round(displayLock)}`}
           label="LOCK"
           sub="BET QUALITY"
           color={gradeColor}
@@ -155,7 +168,7 @@ export function LockPickCard({ pick, variant = "lock" }: { pick: Pick; variant?:
         <View
           style={[
             styles.progressFill,
-            { width: `${Math.min(100, pick.lock_score)}%`, backgroundColor: gradeColor },
+            { width: `${Math.min(100, displayLock)}%`, backgroundColor: gradeColor },
           ]}
         />
       </View>
