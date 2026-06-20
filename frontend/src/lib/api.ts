@@ -340,8 +340,13 @@ export const api = {
       qs.set("exclude_sports", excludeSports.join(","));
     }
     if (lineType && lineType !== "both") qs.set("line_type", lineType);
-    if (filters?.market) qs.set("market", filters.market);
-    if (filters?.league) qs.set("league", filters.league);
+    // Market filter only makes sense when the parlay is locked to one sport
+    // (sport_mode=single). For mixed/auto/custom modes, sending market=
+    // "pitcher_strikeouts" would filter every Soccer/Tennis/UFC pick out and
+    // leave the optimizer with only MLB — which is how the user's parlay
+    // tab ended up showing only one sport after a stale filter leaked in.
+    if (sportMode === "single" && filters?.market) qs.set("market", filters.market);
+    if (sportMode === "single" && filters?.league) qs.set("league", filters.league);
     if (lockedIds.length > 0) qs.set("locked_ids", lockedIds.join(","));
     if (refreshNonce > 0) qs.set("refresh_nonce", String(refreshNonce));
     return request<{
