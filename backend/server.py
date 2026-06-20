@@ -2355,12 +2355,37 @@ async def _weekly_model_tuning_loop():
                 await apply_learning(db, p)
                 if p.get("learning") and p.get("win_probability") != before:
                     adjusted += 1
+                    # Re-apply the bet-quality floor + recompute grade /
+                    # confidence so the persisted record stays coherent.
+                    # Without this, `apply_learning` mutated `lock_score`
+                    # while `grade` stayed at its pre-tuning value — which
+                    # caused Lock-90+ picks to display the legacy/stale
+                    # "Pass" badge until the next 30-min validator cycle.
+                    try:
+                        from sports_engine import _grade, _confidence
+                        wp_v = float(p.get("win_probability") or 0)
+                        ed_v = float(p.get("edge_percent") or 0)
+                        cur_lock = float(p.get("lock_score") or 0)
+                        # Step-function floor (matches sports_engine spec)
+                        floor = 0.0
+                        if wp_v >= 80.0 and ed_v >= 15.0: floor = 98.0
+                        elif wp_v >= 75.0 and ed_v >= 10.0: floor = 95.0
+                        elif wp_v >= 70.0 and ed_v >= 5.0:  floor = 90.0
+                        elif wp_v >= 65.0 and ed_v >= 3.0:  floor = 85.0
+                        new_lock = min(99.0, max(cur_lock, floor))
+                        p["lock_score"] = round(new_lock, 1)
+                        p["grade"] = _grade(new_lock)
+                        p["confidence"] = _confidence(new_lock)
+                    except Exception:
+                        pass
                     await db.picks.update_one(
                         {"id": p["id"]},
                         {"$set": {"win_probability": p["win_probability"],
                                    "lock_score": p.get("lock_score"),
                                    "edge_percent": p.get("edge_percent"),
                                    "implied_probability": p.get("implied_probability"),
+                                   "grade": p.get("grade"),
+                                   "confidence": p.get("confidence"),
                                    "learning": p.get("learning")}},
                     )
             active = sum(1 for b in weights.get("buckets", []) if b.get("active"))
