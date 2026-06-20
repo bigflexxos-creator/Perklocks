@@ -57,25 +57,33 @@ def _short_market(market: str) -> str:
     """Extract a short market label from a verbose 'market' string.
 
     Examples:
-      "Manchester City to Win"       -> "Moneyline"
-      "Liverpool Win or Draw"        -> "Double Chance"
-      "Over 2.5 Goals"               -> "Over 2.5"
-      "Both Teams To Score"          -> "BTTS"
+      "Manchester City to Win"           -> "Moneyline"
+      "Liverpool Win or Draw"            -> "Double Chance"
+      "Over 2.5 Goals"                   -> "Over 2.5"
+      "Total Games Over 23.5"            -> "Over 23.5"   (NOT "Over 3.5")
+      "Both Teams To Score"              -> "BTTS"
     """
+    import re as _re
     m = (market or "").lower()
     if "win or draw" in m or "double chance" in m: return "Double Chance"
     if "both teams to score" in m or "btts" in m: return "BTTS"
     if "draw" in m and "no bet" not in m:         return "Draw"
-    if "over" in m:
-        for thr in ("0.5", "1.5", "2.5", "3.5", "4.5"):
-            if thr in m: return f"Over {thr}"
-        return "Over"
-    if "under" in m:
-        for thr in ("0.5", "1.5", "2.5", "3.5", "4.5"):
-            if thr in m: return f"Under {thr}"
-        return "Under"
+    # Extract the FULL numeric line after "over"/"under" (not just the
+    # last decimal substring). Earlier impl matched "3.5" inside "23.5"
+    # because of a naive substring search — user spotted the resulting
+    # mis-label: "You got 3.5 shouldn't it be 23.5".
+    over_match = _re.search(r"\bover\s+(\d+(?:\.\d+)?)", m)
+    if over_match:
+        return f"Over {over_match.group(1)}"
+    under_match = _re.search(r"\bunder\s+(\d+(?:\.\d+)?)", m)
+    if under_match:
+        return f"Under {under_match.group(1)}"
     if "team total" in m:    return "Team Total"
     if "moneyline" in m or "to win" in m: return "Moneyline"
+    # Tennis alt-spread: "Frances Tiafoe -0.5 Games (Alt)" → "Spread -0.5"
+    games_spread = _re.search(r"([+-]?\d+(?:\.\d+)?)\s+games", m)
+    if games_spread:
+        return f"Spread {games_spread.group(1)}"
     if "spread" in m or "+1.5" in m or "-1.5" in m: return "Spread"
     if "hits" in m and "strikeout" not in m: return "Hits"
     if "outs recorded" in m: return "Outs Recorded"
