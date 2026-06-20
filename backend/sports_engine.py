@@ -1324,6 +1324,92 @@ def _alt_outcomes_for_market(payload: dict, market_key: str) -> list[dict]:
     return list(seen.values())
 
 
+def _prob_to_american(p: float) -> int:
+    """Convert a probability in [0,1] to fair American odds."""
+    p = max(0.01, min(0.99, p))
+    if p >= 0.5:
+        return int(round(-100 * p / (1 - p)))
+    return int(round(100 * (1 - p) / p))
+
+
+def _synthesize_chalk_alt_totals(api_outcomes: list[dict]) -> list[dict]:
+    """Extrapolate the chalk ladder BELOW the API's lowest Over point and
+    ABOVE the API's highest Under point.
+
+    Why: The Odds API for tennis exposes a narrow alt-total ladder
+    (typically 4-6 points around the main line). Real sportsbooks
+    offer chalkier safer lines further out — user reported
+    "for eala you had over alt 21.5, sportsbook give you option to
+    get over 19.5 at -275". We fit a linear slope to the implied
+    probabilities the API does expose, then extrapolate 4 steps in
+    the chalk direction (Over → lower points, Under → higher points)
+    capped at 97% implied (no -7000+ junk juice).
+
+    Returned synthetic outcomes mirror the real API shape so
+    `_pick_sweet_spot_alts` consumes them unchanged. Each carries
+    `_synthesized=True` so the pick layer can label them
+    ("model-extrapolated from market ladder")."""
+    if not api_outcomes:
+        return []
+
+    # Slope fit per side: rows sorted by point ascending; compute the
+    # average local slope in implied-probability space.
+    def _slope(rows: list[tuple[float, float]]) -> float:
+        # rows = [(point, implied_prob), ...]
+        if len(rows) < 2:
+            return 0.072  # fallback: 7.2 % implied prob per +1 game
+        slopes = []
+        for i in range(1, len(rows)):
+            dp = rows[i][0] - rows[i - 1][0]
+            if dp == 0:
+                continue
+            slopes.append((rows[i - 1][1] - rows[i][1]) / dp)
+        return sum(slopes) / len(slopes) if slopes else 0.072
+
+    synth: list[dict] = []
+    for side_name, direction in (("Over", -1), ("Under", +1)):
+        # Build (point, implied) ascending-by-point.
+        rows: list[tuple[float, float]] = []
+        for o in api_outcomes:
+            if o.get("name") != side_name:
+                continue
+            pt = o.get("point")
+            pr = o.get("price")
+            if not isinstance(pt, (int, float)) or not isinstance(pr, (int, float)):
+                continue
+            rows.append((float(pt), _implied_prob(int(pr))))
+        if not rows:
+            continue
+        rows.sort(key=lambda t: t[0])
+        slope = _slope(rows)
+        # For Over: extrapolate DOWN from the lowest point (chalkier).
+        # For Under: extrapolate UP from the highest point (chalkier).
+        if direction < 0:
+            base_pt, base_imp = rows[0]
+        else:
+            base_pt, base_imp = rows[-1]
+        # 4 synthetic steps of 1.0 game each (matches sportsbook grid).
+        for step in (1.0, 2.0, 3.0, 4.0):
+            new_pt = base_pt + direction * step
+            # Stay on .5 grid (real sportsbook convention).
+            if abs((new_pt * 2) - round(new_pt * 2)) > 0.01:
+                continue
+            # Probability moves UP in the chalk direction.
+            new_imp = base_imp + slope * step
+            # Cap at 97 % (anything chalkier is junk juice).
+            if new_imp > 0.97:
+                break
+            if new_imp < 0.55:
+                continue   # below our band — pointless to synth a "soft" alt
+            synth.append({
+                "name": side_name,
+                "point": new_pt,
+                "price": _prob_to_american(new_imp),
+                "_synthesized": True,
+            })
+    return synth
+
+
 def _build_tennis_alt_picks(
     sport_key: str, league: str, event_payload: dict, alt_payload: dict,
     date_str: str,
@@ -1404,13 +1490,16 @@ def _build_tennis_alt_picks(
                     is_alt_prop=True,
                 ))
 
-    # ── Alt totals: up to 3 chalky Over OR Under lines. We keep BOTH
-    # sides if both have in-band offerings (different points), so the
-    # user can pick directionally. ──
-    total_outs = _alt_outcomes_for_market(alt_payload, "alternate_totals")
-    if total_outs:
+    # ── Alt totals: up to 3 chalky Over OR Under lines. Combines real
+    # bookmaker outcomes with SYNTHESIZED chalkier alts (extrapolated
+    # below/above the API ladder) so users see the full sportsbook
+    # ladder including chalkier safer lines the API doesn't propagate.
+    api_total_outs = _alt_outcomes_for_market(alt_payload, "alternate_totals")
+    if api_total_outs:
+        # Merge real + synthesized — synthesized go in chalk direction.
+        total_outs = list(api_total_outs) + _synthesize_chalk_alt_totals(api_total_outs)
         for side in ("Over", "Under"):
-            picks_for_side = _pick_sweet_spot_alts(total_outs, side_name=side, limit=3)
+            picks_for_side = _pick_sweet_spot_alts(total_outs, side_name=side, limit=4)
             for pick_obj in picks_for_side:
                 line = pick_obj.get("point")
                 price = int(pick_obj.get("price"))
@@ -1423,6 +1512,15 @@ def _build_tennis_alt_picks(
                 lock, breakdown = compute_lock_score(
                     factors, win_prob=mp * 100, edge_percent=(mp * 100 - imp * 100)
                 )
+                # Tag synthesized picks in their insights + external_id
+                # so the consumer can distinguish them from real-book alts.
+                is_synth = bool(pick_obj.get("_synthesized"))
+                synth_tag = "-synth" if is_synth else ""
+                source_note = (
+                    " (model-extrapolated from market ladder)"
+                    if is_synth
+                    else f" — book implies {imp*100:.0f}% hit rate"
+                )
                 out_picks.append(_build_pick(
                     sport="Tennis", league=league_label, event=f"{away} @ {home}",
                     event_time=commence,
@@ -1431,11 +1529,11 @@ def _build_tennis_alt_picks(
                     model_win_prob=mp, book_odds=price,
                     lock=lock, factors=breakdown,
                     insights=[
-                        f"Alt game total — book implies {imp*100:.0f}% hit rate",
+                        f"Alt game total{source_note}",
                         f"Chalk level: {price:+d} "
                         + ("(deep chalk)" if imp >= 0.80 else "(moderate)"),
                     ],
-                    external_id=f"Tennis-{event_id}-alt-total-{side}-{line}",
+                    external_id=f"Tennis-{event_id}-alt-total-{side}-{line}{synth_tag}",
                     is_alt_prop=True,
                 ))
 
