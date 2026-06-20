@@ -10,8 +10,6 @@ import { COLORS, SPORTS } from "@/src/theme";
 import { api, Pick, LineType, SortKey, SortDirection, PickFilters } from "@/src/lib/api";
 import { LockPickCard } from "@/src/components/LockPickCard";
 import { ChipRow } from "@/src/components/ChipRow";
-import { LineTypeToggle } from "@/src/components/LineTypeToggle";
-import { SortSelector } from "@/src/components/SortSelector";
 import { FilterButton, FilterSheet } from "@/src/components/FilterSheet";
 import { SportFilterBar } from "@/src/components/SportFilterBar";
 import { storage } from "@/src/utils/storage";
@@ -260,18 +258,6 @@ export default function LocksScreen() {
         </View>
       )}
 
-      {stats && (
-        <View style={styles.statsRow}>
-          <StatTile label="LOCKS" value={`${stats.total_picks}`} />
-          <StatTile label="ELITE" value={`${stats.elite_count}`} color={COLORS.goldElite} />
-          <StatTile
-            label="AVG EDGE"
-            value={`${stats.avg_edge_percent > 0 ? "+" : ""}${stats.avg_edge_percent}%`}
-            color={COLORS.neonGreen}
-          />
-        </View>
-      )}
-
       <ChipRow
         options={SPORTS}
         active={sport}
@@ -283,32 +269,22 @@ export default function LocksScreen() {
         testIDPrefix="sport-chip"
       />
       <SportFilterBar sport={sport} filters={filters} onChange={setFilters} />
+
+      {/* ── Cleaned-up controls row ──
+          User spec: "we can take lock, elite and edge at top of page off
+          the line and sort should [be] in the filters". So we removed
+          the StatsRow + LineTypeToggle + SortSelector from this header.
+          The FilterSheet now owns LINE + SORT controls. The only
+          permanent controls here are the FILTER trigger and the
+          UPDATE button so users can always pull fresh data. */}
       <View style={styles.controlsRow}>
-        <View style={{ flex: 1 }}>
-          <LineTypeToggle value={lineType} onChange={setLineType} testIDPrefix="locks-line" />
-        </View>
         <View style={styles.filterBtnWrap}>
           <FilterButton
             onPress={() => setFilterOpen(true)}
-            activeCount={activeFilterCount}
+            activeCount={activeFilterCount + (lineType !== "both" ? 1 : 0) + (sortKey !== "lock" ? 1 : 0) + (sortDir !== "desc" ? 1 : 0)}
             testID="locks-filter-button"
           />
         </View>
-      </View>
-      <View style={styles.sortRow}>
-        <View style={{ flex: 1 }}>
-          <SortSelector
-            value={sortKey}
-            onChange={setSortKey}
-            direction={sortDir}
-            onDirectionChange={setSortDir}
-            testIDPrefix="locks-sort"
-          />
-        </View>
-        {/* Visible UPDATE button — force-refreshes the slate by re-fetching
-            /api/picks/today + bypassing the cached request. Sits next to
-            the SORT selector so the user can always see "I can pull new
-            data right now" without remembering pull-to-refresh. */}
         <TouchableOpacity
           onPress={onRefresh}
           activeOpacity={0.7}
@@ -345,6 +321,12 @@ export default function LocksScreen() {
         onClose={() => setFilterOpen(false)}
         filters={filters}
         onApply={setFilters}
+        lineType={lineType}
+        onLineTypeChange={setLineType}
+        sortKey={sortKey}
+        onSortKeyChange={setSortKey}
+        sortDir={sortDir}
+        onSortDirChange={setSortDir}
       />
 
       <ScrollView
