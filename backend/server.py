@@ -1637,7 +1637,16 @@ async def picks_history(user: Annotated[UserPublic, Depends(current_user)],
     Total Bases" as two separate losses — they're one logical bet.
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    q: dict = {"settled_at": {"$gte": cutoff}}
+    q: dict = {
+        "settled_at": {"$gte": cutoff},
+        # Hide voided picks (e.g. the legacy soccer goalscorer payloads
+        # generated before the new top-3-scorers logic shipped, which
+        # wouldn't have made the cut under the new rules). Voided picks
+        # are kept in the DB for the learning engine but never shown in
+        # the user-facing History tab or counted toward W/L stats.
+        "status": {"$nin": ["void"]},
+        "excluded_from_history": {"$ne": True},
+    }
     cursor = db.picks.find(q, {"_id": 0}).sort("settled_at", -1).limit(2000)
     picks = await cursor.to_list(length=2000)
 
