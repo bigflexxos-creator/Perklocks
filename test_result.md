@@ -227,6 +227,28 @@ frontend:
     priority: "high"
     needs_retesting: true
 
+  - task: "LockPickCard displays max(lock_score, lock_score_v2) — UI/Detail score parity"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/src/components/LockPickCard.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          User reported: "machado say 85 when I click pick break down it says he a 94 why won't it update".
+          Root cause: backend DB drift between legacy lock_score and recomputed lock_score_v2 — the
+          home-feed array could carry stale lock_score while the on-demand /api/picks/{id} breakdown
+          recomputed v2 fresh. Frontend fix: LockPickCard.tsx line 38 now computes
+          `displayLock = Math.max(Number(pick.lock_score)||0, Number(pick.lock_score_v2)||0)` at
+          render time. Headline LOCK badge, progress bar width, and Strong-Lock chip gates all
+          consume `displayLock`. Need testing_agent to verify:
+            (a) home feed card LOCK value == pick detail Lock Score for the same pick id,
+            (b) no NaN/0 fallback if one of the two scores is missing,
+            (c) APEX/RARE/STRONG chip only surfaces when displayLock >= 95.
+
   - task: "Rollover tab (single best pick, today only, Lock>=90)"
     implemented: true
     working: true

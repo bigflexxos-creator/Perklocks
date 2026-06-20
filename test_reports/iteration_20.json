@@ -1,0 +1,59 @@
+{
+  "summary": "P0 BUG REPRODUCED — Lock Score parity FAILED in 4/5 random picks. The frontend fix in LockPickCard.tsx (displayLock=max(v1,v2)) was applied, BUT the Pick Detail page (/app/frontend/app/pick/[id].tsx line 139) still renders `Math.round(pick.lock_score)` — it does NOT apply the same max(v1, v2) logic. Worse, the backend has NOT promoted V2 into the canonical lock_score field: 45 of 52 picks (87%) have lock_score != lock_score_v2 (deltas up to ±6.8). Net result: the original 'card 85 / detail 94' bug is INVERSED but STILL PRESENT — card now shows the higher max, detail shows the lower v1. Verified concretely: pick a4d570de (MLB) — card displays 95, detail displays 85. Same pattern in 3 other random picks (UFC card=92/detail=85, Soccer card=94/detail=85, MLB card=93/detail=90). Backend endpoints + auth + AI explain all 200 (12/16 tests pass).",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "DB: picks.lock_score vs picks.lock_score_v2",
+        "issue": "V2 promotion into canonical `lock_score` is NOT happening for 45/52 picks (87%). The plan said 'Backend (previous iterations): promoted V2 scores into the canonical lock_score field in DB' — this is not the current state. Many picks have lock_score=85 (v1 cap floor) while lock_score_v2 is 92–95. This breaks Pick Detail page which reads lock_score directly. Either re-run the promotion job, or change detail-page endpoint to return max(v1,v2) as lock_score on the wire.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "app/pick/[id].tsx (Pick Detail page)",
+        "issue": "Line 139 renders `Math.round(pick.lock_score)` — does NOT apply the max(lock_score, lock_score_v2) logic that LockPickCard.tsx line 38 applies. Reproduces the exact original user complaint, just inverted: card 95 / detail 85 instead of card 85 / detail 94. Must mirror the FE max() logic OR backend must promote v2 into lock_score before this screen reads it.",
+        "testID": "scoreBig (no testID currently — recommend adding `pick-detail-lock-score`)",
+        "priority": "P0"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Home Feed → Pick Detail Lock Score parity",
+        "issue": "4 of 5 random picks tested have mismatched LOCK between home card and detail page. Concrete cases (id / sport / card / detail): a4d570de / MLB / 95 / 85 ;  25766c35 / UFC / 92 / 85 ;  c12dcbcc / Soccer / 94 / 85 ;  f16188cd / Soccer / 91 / 90 ;  f256fd1c / MLB / 93 / 90 ;  437f2e76 / UFC / 92 / 90. Only sub-95 v2 picks are at risk; Soccer pick cb2fc49b (card=95/detail=95) matched because v1 was already 95.",
+        "affected_testIDs": ["pick-card-{id}", "scoreBig"]
+      }
+    ],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_lock_score_parity_iter20.py",
+    "/app/test_reports/pytest/lock_score_parity_iter20.xml"
+  ],
+  "action_items": [
+    "P0 — In /app/frontend/app/pick/[id].tsx replace `Math.round(pick.lock_score)` (line 139) with `Math.round(Math.max(Number(pick.lock_score)||0, Number(pick.lock_score_v2)||0))`. This is the minimal one-line fix to make card and detail agree everywhere.",
+    "P0 — Better long-term fix: ensure the backend V2-promotion path actually writes max(lock_score, lock_score_v2) into the canonical lock_score field at pick-generation time (currently 45/52 picks have lock_score < lock_score_v2). Verify the promotion code path is being executed in the pipeline cron, then run a one-shot reconciler on existing docs.",
+    "P1 — Add `testID=\"pick-detail-lock-score\"` to the big score Text in pick/[id].tsx for future automated parity tests.",
+    "P1 — Apply the same max(v1,v2) logic in any other surface that renders lock_score: parlay leg cards, bet-killer cards, rollover screen, profile history. Currently only LockPickCard was patched."
+  ],
+  "critical_code_review_comments": [
+    "/app/frontend/src/components/LockPickCard.tsx:38–41 — displayLock = Math.max(v1,v2) correctly applied. Good.",
+    "/app/frontend/app/pick/[id].tsx:139 — STILL uses raw pick.lock_score. This is the source of the inverted bug. The header comment in LockPickCard says 'No more card 85, detail 94 mismatch' — but that mismatch is back, just inverted, because the detail page was not updated.",
+    "Backend: V2-promotion claim from the review prompt does not match observed data. /api/picks/today returns lock_score==85 in many picks where lock_score_v2 is 91–95. Either the promotion never runs or it runs against a different field path. Recommend grepping for `lock_score_v2` writes in server.py and learning_system_v2.py to find the assignment site, then promoting at the read site (today/all/detail serializer) as a safety net."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_lock_score_parity_iter20.py (NEW — 16 tests covering auth, read endpoints, lock-score parity across MLB/Soccer/Other + 5 random picks, V2 promotion in DB, tier-chip gating, AI explain)"
+  ],
+  "success_rate": {
+    "backend": "75% (12/16) — 4 parity tests fail; all auth + read + AI tests pass",
+    "frontend": "not browser-tested this iteration; bug is provable from API responses alone and exact pixel value mismatch is mathematically certain (FE max(85,94.8)=95 vs FE Math.round(85)=85)"
+  },
+  "seed_data_creation": "None. Used demo@lockscore.ai / demo123 from /app/memory/test_credentials.md.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Re-run: `cd /app && python -m pytest backend/tests/test_lock_score_parity_iter20.py -v -s`. Expect 16 passed once the fix lands. The 4 currently-failing tests are: test_parity_mlb_pick, test_parity_other_pick, test_parity_5_random_picks, test_v2_promotion_in_db. The test_v2_promotion_in_db test is gated at 25% — relax tolerance only if main agent chooses the FE-only fix (mirror max() in detail page) instead of the backend promotion fix. With FE-only fix, V2 promotion ratio is irrelevant and that one test can be removed/skipped. The 3 parity tests will pass either way as long as detail-page render math equals card render math.",
+  "rca_of_issue": "ROOT CAUSE: The Lock Score sync fix is half-applied. LockPickCard.tsx (home feed card) was patched to compute `displayLock = Math.max(pick.lock_score, pick.lock_score_v2)`. The matching change was NOT made on the Pick Detail screen (/app/frontend/app/pick/[id].tsx line 139), which still renders `Math.round(pick.lock_score)`. Additionally, the claimed backend promotion of V2 into canonical lock_score is not happening: 45/52 (87%) picks in /api/picks/today have lock_score != lock_score_v2. So the same source of truth (backend lock_score field) returns one number to the card and that same number is shown on detail — but the card overrides it with max(v1,v2), so detail and card disagree whenever v2 > v1.\\n\\nREPRO: 1) login as demo@lockscore.ai. 2) GET /api/picks/today → find any pick where lock_score_v2 > lock_score (very common — happens for 45 of 52 picks). 3) On the home feed the LOCK badge shows round(max(v1,v2))=95 (or similar). 4) Tap the card → on detail page the big 78px LOCK number shows round(v1)=85. 5) User sees the same 'why won't it update' inconsistency.\\n\\nMITIGATION (recommended, single line): In /app/frontend/app/pick/[id].tsx change line 139 from `{Math.round(pick.lock_score)}` to `{Math.round(Math.max(Number(pick.lock_score)||0, Number(pick.lock_score_v2)||0))}`. Test will pass immediately. Then sweep the same fix across SurvivabilityPanel/LockV2Panel/MarketRankPanel if they display lock_score anywhere visibly. Better long-term: have the backend write max(v1,v2) into lock_score at pick-generation time so the FE can drop all this defensive max() code."
+}
