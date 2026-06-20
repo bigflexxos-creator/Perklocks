@@ -363,6 +363,55 @@ export const api = {
       computed_at: string;
       note?: string;
     }>(`/picks/${id}/coverage?cohort=${cohort}`),
+  pickLockBreakdown: (id: string) =>
+    request<{
+      pick_id: string;
+      v2_enabled: boolean;
+      live_computed?: boolean;
+      shadow: {
+        evidence_score?: number;
+        conviction_score?: number;
+        counter_score?: number;
+        survival_score?: number;
+        variance_score?: number;
+        simulation_pass?: number;
+        agreement_score?: number;
+        lock_score_v2?: number;
+        tier_v2?: string;
+        is_apex?: boolean;
+        apex_blockers?: string[];
+        v2_reasons?: {
+          evidence: Array<[string, string, string]>;
+          counter:  Array<[string, string, string]>;
+          survival: Array<[string, string, string]>;
+        };
+      };
+    }>(`/picks/${id}/lock-breakdown`),
+  pickMarketRank: (id: string) =>
+    request<{
+      pick_id: string;
+      event: string;
+      sport: string;
+      total: number;
+      ranked: Array<{
+        id: string;
+        market: string;
+        short_market: string;
+        selection?: string;
+        win_probability?: number;
+        edge_percent?: number;
+        book_odds?: number;
+        lock_score?: number;
+        lock_score_v2?: number;
+        tier_v2?: string;
+        is_apex?: boolean;
+        market_score: number;
+        is_current: boolean;
+      }>;
+      best?: any;
+      alternatives: any[];
+      rule: "single" | "co_best" | "best_with_alts" | "dominant" | "no_candidates";
+    }>(`/picks/${id}/market-rank`),
   refresh: () => request<{
     refreshed: boolean;
     count: number;

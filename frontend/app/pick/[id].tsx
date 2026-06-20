@@ -11,6 +11,8 @@ import { useBetSlip, MAX_SLIP_SIZE } from "@/src/contexts/BetSlipContext";
 import { SPORTSBOOKS, openSportsbookWithSlip, SportsbookName } from "@/src/utils/sportsbook";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { SurvivabilityPanel } from "@/src/components/SurvivabilityPanel";
+import { LockV2Panel } from "@/src/components/LockV2Panel";
+import { MarketRankPanel } from "@/src/components/MarketRankPanel";
 
 export default function PickDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -211,6 +213,12 @@ export default function PickDetail() {
 
             {/* Survivability Engine — only renders for MLB hit props */}
             <SurvivabilityPanel pick={pick} />
+
+            {/* Lock Engine V2 — Deep Thinking (Counter + Survival + Sim) — shadow mode */}
+            <LockV2Panel pick={pick} />
+
+            {/* Market Competition Engine — rank parallel markets in this event */}
+            <MarketRankPanel pick={pick} />
 
             <Text style={styles.sectionLabel}>WHY THIS PICK</Text>
             <View style={styles.insightsCard}>

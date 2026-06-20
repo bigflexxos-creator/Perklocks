@@ -1901,6 +1901,16 @@ try:
 except Exception as _lock_v2_mount_err:
     logger.warning("Lock V2 module failed to mount, continuing without it: %s", _lock_v2_mount_err)
 
+# Mount the Market Competition Engine — ranks parallel markets per event so
+# the UI can surface "Best Pick · Alternative · Alternative" for any match.
+# Endpoints: /api/picks/{id}/market-rank and /api/market-rank/feed.
+try:
+    from market_competition.routes import router as market_rank_router
+    api.include_router(market_rank_router)
+    logger.info("Market Competition Engine mounted at /api/picks/{id}/market-rank")
+except Exception as _mc_mount_err:
+    logger.warning("Market Competition module failed to mount, continuing without it: %s", _mc_mount_err)
+
 app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
