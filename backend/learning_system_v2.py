@@ -605,6 +605,32 @@ async def apply_v2_to_picks(picks: list[dict], db) -> list[dict]:
             p["confidence"] = _confidence(p["lock_score"])
         except Exception:
             pass
+
+        # 6) PROMOTE V2 TO PRIMARY — user spec: "make it live".
+        # If a lock_score_v2 has been computed (by the Lock Engine v2
+        # shadow-scoring path) and is HIGHER than the current V1 lock,
+        # use V2 as the canonical lock. This stops the UI from showing
+        # the stale "Old lock 85 → v2 94" framing — V2 IS the lock now.
+        # We never PROMOTE below the bet-quality floor or above 99.
+        try:
+            v2 = p.get("lock_score_v2")
+            if v2 is not None:
+                v2_f = float(v2)
+                cur = float(p.get("lock_score") or 0)
+                if v2_f > cur:
+                    p["lock_score"] = round(min(99.0, v2_f), 1)
+                    p["grade"] = _grade(p["lock_score"])
+                    p["confidence"] = _confidence(p["lock_score"])
+                    p["v2_promoted_to_primary"] = True
+                # Sync v2 tier into grade when v2 says Apex/Elite Lock
+                # so the badge matches the headline score.
+                tier_v2 = p.get("tier_v2")
+                if tier_v2 in ("Apex Lock", "Elite Lock", "Strong Lock", "Lock", "Playable"):
+                    # Only upgrade — never downgrade an already-higher v1 grade.
+                    spec_grade = _grade(p["lock_score"])
+                    p["grade"] = spec_grade
+        except Exception:
+            pass
     return picks
 
 
