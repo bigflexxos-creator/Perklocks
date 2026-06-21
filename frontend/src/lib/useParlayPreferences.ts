@@ -22,10 +22,12 @@ const STORAGE_KEY = "@perkslocks/parlay-prefs-v1";
 
 export type SportMode = "auto" | "custom" | "single";
 
-export type ParlayMode = "standard" | "high_risk" | "today_window";
+export type ParlayMode = "standard" | "high_risk" | "today_window" | "advanced";
+export type AdvancedSub = "safer" | "ev";
 
 export type ParlayPrefs = {
   mode: ParlayMode;
+  advancedSub?: AdvancedSub;
   legs: number;
   sport: string;
   lineType: LineType;

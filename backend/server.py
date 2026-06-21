@@ -1397,7 +1397,8 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
                      league: str | None = None,
                      rank: int = 1,
                      locked_ids: str | None = None,
-                     refresh_nonce: int = 0):
+                     refresh_nonce: int = 0,
+                     advanced_sub: str = "ev"):
     """Parlay Optimizer V1.1 — highest-probability parlay builder.
 
     Mode (`mode`):
@@ -1421,10 +1422,20 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     )
     await _ensure_today_picks()
     is_high_risk = (mode or "").lower() == "high_risk"
-    # New "today_window" mode — built for same-day action ≤5h away.
-    # Higher Lock floor (88) than standard, smaller leg target (2-4),
-    # tight 1-5h window so the user only sees bets they can act on now.
     is_today_window = (mode or "").lower() == "today_window"
+    # ─── Advanced mode (4th) ─────────────────────────────────────────────
+    # Smarter optimizer that pulls from the FULL board (matching the Locks
+    # feed query) and weights legs by historical bucket ROI + win-rate
+    # learning. Toggleable between two profiles via `advanced_sub`:
+    #   • "safer"  → high hit-rate priority. Lock floor 92, max 4 legs,
+    #                reject any negative-ROI bucket, prefer 95+ legs first.
+    #   • "ev"     → long-term profit priority. Lock floor 85, max 6 legs,
+    #                EV-weighted ranking (win_prob × payout vs loss × stake),
+    #                allows slightly worse buckets if EV>0.
+    is_advanced = (mode or "").lower() == "advanced"
+    advanced_sub_norm = (advanced_sub or "ev").lower()
+    if advanced_sub_norm not in ("safer", "ev"):
+        advanced_sub_norm = "ev"
     mode_lower = (sport_mode or "auto").lower()
     is_single_sport = mode_lower == "single"
 
@@ -1459,9 +1470,13 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     if league:
         league_filter = {"league": {"$regex": str(league).replace("\\", ""), "$options": "i"}}
 
-    target_legs = max(10, min(20, max(1, int(legs or 10)))) if is_high_risk else (
-        max(2, min(4, max(1, int(legs or 3)))) if is_today_window
-        else max(2, min(8, max(1, int(legs or 3))))
+    target_legs = (
+        max(10, min(20, max(1, int(legs or 10)))) if is_high_risk else
+        max(2, min(4, max(1, int(legs or 3)))) if is_today_window else
+        # Advanced: SAFER caps at 4 legs (hit rate), EV up to 6 (more shots).
+        max(2, min(4 if advanced_sub_norm == "safer" else 6, max(1, int(legs or 3))))
+        if is_advanced else
+        max(2, min(8, max(1, int(legs or 3))))
     )
     rank = max(1, min(20, int(rank or 1)))  # clamp refresh cursor to 1-20
 
@@ -1494,16 +1509,32 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     # Lock floor by mode: high_risk uses a looser 70 (more legs needed),
     # today_window uses a stricter 88 (same-day high-probability action),
     # standard uses 85 (balanced default).
+    # Lock floor by mode. Advanced.safer is the strictest (92), high_risk the
+    # loosest (70). We ALSO check `lock_score_v2` because the legacy `lock_score`
+    # column can drift behind v2 between learning passes — exact same bug we
+    # fixed in /picks/today. Without this `$or`, the parlay optimizer was
+    # invisibly missing 30-60 picks from the board on every request, which
+    # is the "on the board not populating into this system" symptom.
     if is_high_risk:
-        base_q["lock_score"] = {"$gte": 70}
+        lock_floor_val = 70
+    elif is_advanced and advanced_sub_norm == "safer":
+        lock_floor_val = 92
+    elif is_advanced and advanced_sub_norm == "ev":
+        lock_floor_val = 85
     elif is_today_window:
-        # Match Standard's lock floor (85) so the tight 1-5h window has enough
-        # eligible legs. The mode's value-add is the tight window + small leg
-        # target, not a higher confidence bar.
-        base_q["lock_score"] = {"$gte": 85}
+        lock_floor_val = 85
     else:
-        base_q["lock_score"] = {"$gte": 85}
+        lock_floor_val = 85
+    # Drop any pre-existing lock_score filter and re-express as $or so v2-only
+    # high scores aren't missed.
+    base_q.pop("lock_score", None)
+    base_q["$or"] = [
+        {"lock_score": {"$gte": lock_floor_val}},
+        {"lock_score_v2": {"$gte": lock_floor_val}},
+    ]
     pool = await db.picks.find(base_q, {"_id": 0}).sort("lock_score", -1).limit(400).to_list(length=400)
+    # Canonicalize so optimizer reads the v2-promoted lock_score.
+    pool = _canonicalize_picks(pool)
 
     # ─── Bucket-map ROI ───
     raw_buckets = await _historical_winrates()
