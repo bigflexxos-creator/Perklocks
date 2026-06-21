@@ -174,15 +174,27 @@ def _filter_in_play_window(picks: list[dict]) -> list[dict]:
     grace) we drop the pick from the visible slate — even player props,
     even MLB Hits/Strikeouts. Reused across /picks/today,
     /picks/bet-killer, /picks/under-of-the-day, and /picks/rollover.
+
+    Robust to both ISO suffixes: `...Z` (Odds API style) AND `...+00:00`
+    (tennis-extra scraper / Python isoformat() style). Earlier strict
+    `strptime` only matched the `Z` form, so tennis-extra picks fell into
+    the "unknown → keep" branch and remained visible all day even after
+    the match settled — which is the exact bug the user spotted with
+    morning tennis picks still showing in the evening.
     """
     now_utc = datetime.now(timezone.utc)
     out: list[dict] = []
     for p in picks:
         et = p.get("event_time") or ""
         try:
-            dt = datetime.strptime(et, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            # fromisoformat handles both `+00:00` and `Z` (Python 3.11+).
+            # Fall back to manual `Z` → `+00:00` swap for older interpreters.
+            iso = et[:-1] + "+00:00" if et.endswith("Z") else et
+            dt = datetime.fromisoformat(iso)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
         except Exception:
-            # Unknown time → keep the pick (safe default).
+            # Truly unparseable → keep the pick (safe default).
             out.append(p)
             continue
         if (now_utc - dt).total_seconds() <= _PREGAME_GRACE_SECONDS:
