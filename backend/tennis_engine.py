@@ -453,7 +453,13 @@ def compute_components(pick: dict) -> TennisComponents:
     book_odds = pick.get("book_odds")
     market_l = (pick.get("market") or "").lower()
     is_ml = ("moneyline" in market_l) or market_l.startswith("h2h") or market_l == "winner"
-    is_chalk_ml = is_ml and isinstance(book_odds, (int, float)) and book_odds <= -500
+    # Treat ALL tennis MLs as anchor path — books are highly accurate on 1v1
+    # markets so the chalk-ML exception (-500+) should extend to every ML.
+    # Without this, moderate-chalk MLs (Fritz -230, Paul -210, Pegula -167)
+    # all failed the 5% edge gate even when survivability + form were elite.
+    # User complaint: "why don't tennis produce money line picks" → root
+    # cause was the post-build edge gate, NOT the per-pick edge floor.
+    is_chalk_ml = is_ml
     is_alt = ("alt" in market_l) or ("alt" in (pick.get("line_type") or "").lower())
 
     if not (is_chalk_ml or is_alt):
