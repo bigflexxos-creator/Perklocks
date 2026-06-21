@@ -918,7 +918,11 @@ _MARKET_REGEX = {
     # ── Player props (mutually exclusive, anchored) ───────────────────────
     # Each prop is keyed off the STAT NAME and excludes neighbouring stats.
     # MongoDB supports PCRE lookaheads so we use them to disambiguate.
-    "batter_hits":          r"\bhits\b(?!\s*allowed)",
+    # Hits+Runs+RBIs MUST come before plain batter_hits — otherwise "Hits +
+    # Runs + RBIs" would also match the bare "hits" pattern and bleed into
+    # the Hits filter pill.
+    "batter_hits_runs_rbis": r"hits \+ runs \+ rbis|h\+r\+rbi",
+    "batter_hits":          r"\bhits\b(?!\s*allowed)(?!\s*\+)",
     # Pitcher strikeouts — added 2026-06-18 with the pitcher Ks props
     "pitcher_strikeouts":   r"\bstrikeouts\b",
     # Pitcher outs recorded — added 2026-06-19. Main line only (no alt).
@@ -974,9 +978,10 @@ SPORT_MARKETS = {
         {"token": "moneyline",   "label": "Moneyline"},
         {"token": "run_line",    "label": "Run Line"},
         {"token": "totals",      "label": "Totals"},
-        {"token": "batter_hits",        "label": "Hits"},
-        {"token": "pitcher_strikeouts", "label": "Strikeouts"},
-        {"token": "pitcher_outs",       "label": "Outs Recorded"},
+        {"token": "batter_hits",            "label": "Hits"},
+        {"token": "batter_hits_runs_rbis",  "label": "H+R+RBI"},
+        {"token": "pitcher_strikeouts",     "label": "Strikeouts"},
+        {"token": "pitcher_outs",           "label": "Outs Recorded"},
     ],
     "Tennis": [
         {"token": "match_winner", "label": "Match Winner"},
