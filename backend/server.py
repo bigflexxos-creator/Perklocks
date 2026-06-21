@@ -559,6 +559,22 @@ async def _refresh_picks(date_str: str) -> int:
             "instead of wiping the board.", date_str,
         )
         return 0
+    # ── Tennis Extra — scraped picks for tournaments The Odds API doesn't ──
+    # carry (Mallorca, Bad Homburg, Eastbourne, Challengers, etc.).
+    # User complaint addressed: "Why we not getting these tennis games."
+    # Free fallback uses TennisExplorer.com — scrape is cached 30 min.
+    try:
+        from tennis_extra import fetch_extra_tennis_picks
+        extra = await fetch_extra_tennis_picks(date_str=date_str)
+        if extra:
+            existing_ids = {p.get("id") for p in picks}
+            for ep in extra:
+                if ep.get("id") in existing_ids:
+                    continue  # dedupe just in case
+                picks.append(ep)
+            logger.info("Tennis Extra: added %d scraped picks", len(extra))
+    except Exception as e:
+        logger.warning("Tennis Extra scrape skipped: %s", e)
     # ── MLB Batter-vs-Pitcher enrichment ──
     # User spec: "make sure you got batter vs pitcher when making hit
     # prediction". Pulls career BvP splits from MLB Stats API (free,
