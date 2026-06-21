@@ -702,11 +702,32 @@ async def _settle_group(cx, db, sport: str, date_str: str, batch: list[dict], co
             raw_sel = (p.get("selection") or "").strip()
             player = raw_sel if raw_sel and raw_sel.lower() not in ("yes", "no") else _player_from_market(p["market"])
             if not player:
-                # No way to identify the player → don't guess. Leave pending so
-                # we don't grade as a fake loss. The previous bug graded every
-                # "Yes" pick as lost because `_player_from_market` returned "".
                 counts["skipped"] += 1
                 continue
+            # ─── Top-3-scorers gate (Soccer goalscorer markets only) ───
+            # Per the user's spec: "It can grade the top 3 you give out for
+            # games but that's it". Soccer goalscorer / score-or-assist picks
+            # only get graded when the player is in the elite OR auto-elite
+            # roster (i.e. one of the top-3 scorers we surfaced for that team).
+            # Anything else gets VOIDED instead of graded, matching how we
+            # cleaned the historical legacy picks.
+            is_goalscorer_market = stat_key in (
+                "soccer.anytime", "soccer.first", "soccer.scoreOrAssist",
+            )
+            if is_goalscorer_market and sport == "Soccer":
+                in_elite_set = bool(p.get("elite_player") or p.get("auto_elite"))
+                if not in_elite_set:
+                    await db.picks.update_one(
+                        {"id": p["id"]},
+                        {"$set": {
+                            "status": "void",
+                            "voided_at": datetime.now(timezone.utc).isoformat(),
+                            "voided_reason": "not-in-top-3-scorers",
+                            "excluded_from_history": True,
+                        }},
+                    )
+                    counts["skipped"] += 1
+                    continue
             if stat_key == "soccer.scoreOrAssist":
                 got = _espn_did_score_or_assist(summary, player)
                 if got is None:
