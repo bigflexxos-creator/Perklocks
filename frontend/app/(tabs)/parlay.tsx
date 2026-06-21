@@ -253,12 +253,12 @@ export default function ParlayScreen() {
           <Text style={[styles.modeText, mode === "standard" && styles.modeTextActive]}>STANDARD</Text>
         </Pressable>
         <Pressable
-          testID="parlay-mode-today"
-          onPress={() => onModeChange("today_window")}
-          style={[styles.modeBtn, isTodayWindow && styles.modeBtnTodayActive]}
+          testID="parlay-mode-advanced"
+          onPress={() => onModeChange("advanced")}
+          style={[styles.modeBtn, isAdvanced && styles.modeBtnAdvancedActive]}
         >
-          <Ionicons name="time" size={12} color={isTodayWindow ? COLORS.bg : COLORS.voltBlue} />
-          <Text style={[styles.modeText, isTodayWindow && styles.modeTextTodayActive]}>TODAY</Text>
+          <Ionicons name="bulb" size={12} color={isAdvanced ? COLORS.bg : "#A78BFA"} />
+          <Text style={[styles.modeText, isAdvanced && styles.modeTextAdvancedActive]}>ADVANCED</Text>
         </Pressable>
         <Pressable
           testID="parlay-mode-high-risk"
@@ -267,14 +267,6 @@ export default function ParlayScreen() {
         >
           <Ionicons name="flame" size={12} color={isHighRisk ? COLORS.bg : COLORS.electricBlaze} />
           <Text style={[styles.modeText, isHighRisk && styles.modeTextHighRiskActive]}>HIGH RISK</Text>
-        </Pressable>
-        <Pressable
-          testID="parlay-mode-advanced"
-          onPress={() => onModeChange("advanced")}
-          style={[styles.modeBtn, isAdvanced && styles.modeBtnAdvancedActive]}
-        >
-          <Ionicons name="bulb" size={12} color={isAdvanced ? COLORS.bg : "#A78BFA"} />
-          <Text style={[styles.modeText, isAdvanced && styles.modeTextAdvancedActive]}>ADVANCED</Text>
         </Pressable>
       </View>
 
@@ -314,24 +306,43 @@ export default function ParlayScreen() {
         ))}
       </View>
 
-      {/* ── TIME WINDOW selector ── */}
+      {/* ── TIME WINDOW selector ──
+          Picking "1-5H TODAY" auto-engages the today_window optimizer mode
+          (30-min start floor, auto-expand fallback) so the user controls
+          "same-day action" right from the window picker instead of from
+          a separate mode button. Other windows revert mode to standard. */}
       <View style={styles.sportRowWrap}>
         <Text style={styles.legLabel}>WINDOW</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sportRow}>
           {[
+            { hours: 5, label: "1-5H · TODAY", todayMode: true },
             { hours: 24, label: "24H" },
             { hours: 48, label: "48H" },
             { hours: 72, label: "72H" },
             { hours: 168, label: "WEEK" },
           ].map((w) => {
-            const active = windowHours === w.hours;
+            const active = windowHours === w.hours && (
+              w.todayMode ? mode === "today_window" : mode !== "today_window"
+            );
             return (
               <Pressable
                 key={w.hours}
                 testID={`parlay-window-${w.hours}`}
-                onPress={() => { updatePrefs({ windowHours: w.hours }); setRank(1); }}
-                style={[styles.sportChip, active && styles.sportChipMixActive]}
+                onPress={() => {
+                  // Auto-switch mode based on window choice.
+                  //   • 5h preset → today_window (tight, high probability)
+                  //   • everything else → back to standard if we were in today_window
+                  const nextMode = w.todayMode
+                    ? "today_window"
+                    : (mode === "today_window" ? "standard" : mode);
+                  updatePrefs({ windowHours: w.hours, mode: nextMode });
+                  setRank(1);
+                }}
+                style={[styles.sportChip, active && (w.todayMode ? styles.sportChipTodayActive : styles.sportChipMixActive)]}
               >
+                {w.todayMode && (
+                  <Ionicons name="time" size={10} color={active ? COLORS.bg : COLORS.voltBlue} />
+                )}
                 <Text style={[styles.sportChipText, active && styles.sportChipTextActive]}>{w.label}</Text>
               </Pressable>
             );
@@ -785,6 +796,7 @@ const styles = StyleSheet.create({
   modeBtnActive: { backgroundColor: COLORS.goldElite, borderColor: COLORS.goldElite },
   modeBtnHighRiskActive: { backgroundColor: COLORS.electricBlaze, borderColor: COLORS.electricBlaze },
   modeBtnTodayActive: { backgroundColor: COLORS.voltBlue, borderColor: COLORS.voltBlue },
+  sportChipTodayActive: { backgroundColor: COLORS.voltBlue, borderColor: COLORS.voltBlue },
   modeBtnAdvancedActive: { backgroundColor: "#A78BFA", borderColor: "#A78BFA" },
   modeTextAdvancedActive: { color: COLORS.bg },
   subModeBtn: { flex: 1, flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 5, paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, borderWidth: 1, borderColor: COLORS.borderDefault, backgroundColor: "rgba(167,139,250,0.05)" },
