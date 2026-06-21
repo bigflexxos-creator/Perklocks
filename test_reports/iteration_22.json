@@ -1,0 +1,44 @@
+{
+  "summary": "Frontend-only review of the new 'Share to Gambly' feature on PerksLocks. Static code review + lint + partial runtime UI smoke. All code-level requirements PASS: shareBetSlip.ts implements buildSlipText/copySlipText/shareSlip/saveSlipImage per spec; the FD/DK/MGM/CZR sportsbook deep-link grids are GONE from slip.tsx and pick/[id].tsx (grep confirmed); SHARE/COPY/SAVE-IMG action rows are wired on /parlay (per-card SAFE/BALANCED/AGGRESSIVE), /slip, /pick/[id] and /parlay-history with the correct testIDs; cards have ref={cardRef} collapsable={false} for view-shot capture; app.json has NSPhotoLibraryAddUsageDescription; required deps (react-native-view-shot 4.0.3, expo-sharing 14.0.8, expo-media-library 18.2.1, expo-clipboard 8.0.8) all present; web fallback uses navigator.share then navigator.clipboard.writeText. ESLint clean on all 5 touched files. Runtime UI: app bundles + serves 200; demo login transitioned to authenticated routes; /slip and /parlay-history render their empty-state shells correctly with NO FanDuel/DraftKings/BetMGM/Caesars strings in the DOM. Direct end-to-end button taps on parlay/slip/pick share buttons could not be executed because (a) GET /api/parlay returns 401 'Could not validate credentials' for the demo user — pre-existing, NOT introduced by this share feature — so no parlay cards render; (b) the bet slip is empty by default so its share row only renders once a pick is added; (c) home feed pick cards do not have a testID that the test could lock onto to drill into /pick/[id]. No JSX/syntax errors, no red screens, no React Native rule violations. App-level console noise: deprecated 'shadow*' / 'pointerEvents' warnings (cosmetic, pre-existing).",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Parlay tab data fetch",
+        "issue": "GET /api/parlay returns 401 'Could not validate credentials' for the seeded demo user (demo@lockscore.ai). This is pre-existing and unrelated to the Share-to-Gambly change, but it blocks live-tap verification of the parlay SHARE/COPY/SAVE/SAVE-IMG buttons because no parlay cards render. Login itself succeeds (slip + parlay-history authenticated routes render fine).",
+        "affected_testIDs": ["parlay-share-SAFE", "parlay-share-BALANCED", "parlay-share-AGGRESSIVE", "parlay-copy-SAFE", "parlay-copy-BALANCED", "parlay-copy-AGGRESSIVE", "parlay-save-image-SAFE", "parlay-save-image-BALANCED", "parlay-save-image-AGGRESSIVE"]
+      },
+      {
+        "flow": "Home → Pick detail navigation",
+        "issue": "Pick cards on the home feed do not expose a testID like 'pick-card-{id}', making it hard for automated tests to drill into /pick/[id] and exercise the pick-copy / pick-share / pick-save-image buttons. Recommend adding testID={`pick-card-${pick.id}`} to the home-feed Pressable.",
+        "affected_testIDs": ["pick-copy", "pick-share", "pick-save-image"]
+      }
+    ],
+    "design_issues": [],
+    "react_native_issues": [
+      { "component": "deprecated style props", "issue": "Console reports 'shadow*' style props are deprecated, use 'boxShadow' instead. Multiple sites in the styles tree. Pre-existing, not introduced by this share feature." },
+      { "component": "deprecated pointerEvents prop", "issue": "Console reports 'props.pointerEvents is deprecated. Use style.pointerEvents'. Pre-existing." }
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_22.json"],
+  "action_items": [
+    "Investigate why GET /api/parlay 401s for the demo user even though the same token authenticates /api/bet-slip and /api/parlay/history endpoints (pre-existing, but blocks UI verification of parlay-tab Share buttons).",
+    "Add testID={`pick-card-${pick.id}`} on the home-feed pick card Pressable so automated tests can drill into pick detail and exercise the new SHARE/COPY/SAVE-IMG row on /pick/[id].",
+    "Optional follow-up: migrate the deprecated 'shadow*' style props to 'boxShadow' and 'props.pointerEvents' to 'style.pointerEvents' (warnings appear after every navigation).",
+    "Re-test on a real device or Expo Go once the 401 above is fixed — confirm captureRef produces a non-empty PNG, that expo-sharing opens the OS share sheet on iOS/Android, and that MediaLibrary save lands in Photos (the web preview cannot exercise these native paths)."
+  ],
+  "critical_code_review_comments": [
+    "shareBetSlip.ts buildSlipText() correctly emits the Gambly contract for both shapes: single-pick (Sport / League / Event / Market / Selection / Odds / Bookmaker / Confidence / Generated At) and N-leg parlay (`${n}-Leg Parlay`, per-leg `selection (odds)`, optional Total Odds, Generated At). Web Share path is graceful: tries navigator.share, falls back to clipboard.writeText.",
+    "All three share screens correctly attach ref={cardRef} collapsable={false} to the captured view region — that's the required setup for react-native-view-shot.",
+    "parlay-history ParlayCard wraps the entire card (including the share-row Pressables) inside the captured ref — so a Save-Image will include the action buttons themselves. Minor cosmetic: consider moving cardRef to wrap just the visual card body, not the action row, so the PNG output looks cleaner.",
+    "pick/[id].tsx still has unused legacy styles in the StyleSheet (sportsbookGrid, sportsbookBtn, sportsbookText, bookGrid in slip.tsx) — dead-code cleanup recommended but not blocking."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "n/a — backend testing was skipped per request", "frontend": "static review 100% PASS; runtime end-to-end button taps were blocked by pre-existing /api/parlay 401 + empty-state defaults — could not click SHARE/COPY/SAVE/SAVE-IMG buttons live, but all corresponding testIDs and code paths are verified present and lint-clean" },
+  "seed_data_creation": "None.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "To live-tap the Share buttons end-to-end you must (1) resolve the /api/parlay 401 for the demo user so parlay cards render, then click [data-testid=\"parlay-share-SAFE\"] etc.; (2) seed at least one pick into the bet slip (via /pick/[id] [data-testid=\"add-to-slip-button\"]) so /slip's share row renders; (3) save at least one parlay to history so /parlay-history's share row renders. On web the share path uses navigator.share — stub it in page.add_init_script() to capture the payload. To verify the structured-text contract, stub navigator.clipboard.writeText similarly and read back window.__lastCopied. captureRef + expo-sharing + MediaLibrary cannot be fully exercised on the web preview — those need a native build (Expo Go or dev-client).",
+  "rca_of_issue": "No new bug introduced by this feature. Pre-existing 401 on /api/parlay blocks live UI verification of parlay-tab share buttons; root cause is in the parlay endpoint's token verification (not in the share pipeline). Likely a token-scope / endpoint-level auth-dependency mismatch — other authenticated endpoints (/api/bet-slip listing, /api/parlay/history) accept the same JWT and return 200."
+}

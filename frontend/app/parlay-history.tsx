@@ -3,7 +3,7 @@
  * Lists all parlays the user has saved, grouped by status with quick
  * filter pills. Each card shows per-leg progress and live status.
  */
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator,
   RefreshControl, Pressable, Alert,
@@ -13,6 +13,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Stack, useRouter } from "expo-router";
 import { COLORS } from "@/src/theme";
 import { api } from "@/src/lib/api";
+import { buildSlipText, shareSlip, saveSlipImage, copySlipText } from "@/src/lib/shareBetSlip";
 
 type Status = "live" | "won" | "lost" | "all";
 
@@ -128,8 +129,42 @@ export default function ParlayHistoryScreen() {
 function ParlayCard({ parlay, onDelete }: { parlay: any; onDelete: () => void }) {
   const accent = STATUS_COLOR[parlay.status] || COLORS.textPrimary;
   const oddsLabel = parlay.combined_odds > 0 ? `+${parlay.combined_odds}` : `${parlay.combined_odds}`;
+  const cardRef = useRef<View>(null);
+  const [busy, setBusy] = useState(false);
+
+  const slipPayload = useCallback(() => ({
+    legs: (parlay.legs || []).map((l: any) => ({
+      sport: l.sport,
+      league: l.league,
+      event: l.event,
+      market: l.market,
+      selection: l.market,
+      book_odds: l.book_odds,
+      bookmaker: l.bookmaker || l.book,
+    })),
+    combined_odds: parlay.combined_odds,
+    label: parlay.status?.toUpperCase(),
+    generated_at: parlay.created_at,
+  }), [parlay]);
+
+  const onShare = useCallback(async () => {
+    if (busy) return; setBusy(true);
+    try { await shareSlip(cardRef, buildSlipText(slipPayload())); }
+    finally { setBusy(false); }
+  }, [busy, slipPayload]);
+
+  const onCopy = useCallback(async () => {
+    const ok = await copySlipText(buildSlipText(slipPayload()));
+    if (ok) Alert.alert("Copied", "Bet slip copied to clipboard.");
+  }, [slipPayload]);
+
+  const onSaveImg = useCallback(async () => {
+    if (busy) return; setBusy(true);
+    try { await saveSlipImage(cardRef); } finally { setBusy(false); }
+  }, [busy]);
+
   return (
-    <View style={[styles.card, { borderColor: accent + "55" }]}>
+    <View ref={cardRef} collapsable={false} style={[styles.card, { borderColor: accent + "55" }]}>
       <View style={styles.cardHead}>
         <View style={[styles.statusChip, { backgroundColor: accent + "22", borderColor: accent }]}>
           <Text style={[styles.statusTxt, { color: accent }]}>{parlay.status.toUpperCase()}</Text>
@@ -167,6 +202,39 @@ function ParlayCard({ parlay, onDelete }: { parlay: any; onDelete: () => void })
           </View>
         );
       })}
+
+      {/* Share action row */}
+      <View style={styles.shareRow}>
+        <Pressable
+          onPress={onCopy}
+          testID={`history-copy-${parlay.id}`}
+          hitSlop={6}
+          style={({ pressed }) => [styles.shareBtn, { borderColor: COLORS.textMuted }, pressed && { opacity: 0.6 }]}
+        >
+          <Ionicons name="copy-outline" size={13} color={COLORS.textPrimary} />
+          <Text style={styles.shareTxt}>COPY</Text>
+        </Pressable>
+        <Pressable
+          onPress={onSaveImg}
+          disabled={busy}
+          testID={`history-save-img-${parlay.id}`}
+          hitSlop={6}
+          style={({ pressed }) => [styles.shareBtn, { borderColor: COLORS.voltBlue }, (pressed || busy) && { opacity: 0.6 }]}
+        >
+          <Ionicons name="download-outline" size={13} color={COLORS.voltBlue} />
+          <Text style={[styles.shareTxt, { color: COLORS.voltBlue }]}>IMG</Text>
+        </Pressable>
+        <Pressable
+          onPress={onShare}
+          disabled={busy}
+          testID={`history-share-${parlay.id}`}
+          hitSlop={6}
+          style={({ pressed }) => [styles.shareBtnPrimary, { backgroundColor: accent }, (pressed || busy) && { opacity: 0.65 }]}
+        >
+          <Ionicons name="share-social-outline" size={13} color={COLORS.bg} />
+          <Text style={[styles.shareTxt, { color: COLORS.bg }]}>SHARE</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -215,4 +283,19 @@ const styles = StyleSheet.create({
   legSport: { color: COLORS.textMuted, fontSize: 10, fontWeight: "700", letterSpacing: 0.5 },
   legMarket: { color: COLORS.textPrimary, fontSize: 12.5, fontWeight: "600", marginTop: 1 },
   legOdds: { color: COLORS.textPrimary, fontSize: 12, fontWeight: "800" },
+  shareRow: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    marginTop: 10, paddingTop: 10,
+    borderTopWidth: 1, borderTopColor: COLORS.borderDefault,
+  },
+  shareBtn: {
+    flexDirection: "row", alignItems: "center", gap: 5,
+    paddingHorizontal: 10, height: 28, borderRadius: 14, borderWidth: 1.5,
+  },
+  shareBtnPrimary: {
+    flexDirection: "row", alignItems: "center", gap: 5,
+    paddingHorizontal: 14, height: 28, borderRadius: 14,
+    marginLeft: "auto",
+  },
+  shareTxt: { color: COLORS.textPrimary, fontSize: 10, fontWeight: "900", letterSpacing: 1.2 },
 });

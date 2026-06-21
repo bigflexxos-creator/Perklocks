@@ -1,55 +1,58 @@
-import React from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Alert, Share, Platform } from "react-native";
+import React, { useRef, useState } from "react";
+import { View, Text, StyleSheet, ScrollView, Pressable, Alert } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { Stack, useRouter } from "expo-router";
 import { COLORS } from "@/src/theme";
 import { useBetSlip, computeParlay, MAX_SLIP_SIZE } from "@/src/contexts/BetSlipContext";
 import { Pick } from "@/src/lib/api";
-import { SPORTSBOOKS, dominantSport, openSportsbookWithSlip } from "@/src/utils/sportsbook";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { getDisplayLock, getDisplayLockRounded } from "@/src/lib/lockScore";
+import { buildSlipText, shareSlip, saveSlipImage, copySlipText } from "@/src/lib/shareBetSlip";
 
-function buildShareText(picks: Pick[]): string {
-  const parlay = computeParlay(picks);
-  const header = `\ud83d\udd12 PerksLocks \u00b7 ${parlay.legCount}-Leg Parlay\nCombined: ${parlay.americanOdds}  \u00b7  $${parlay.payoutOn100.toFixed(0)} on $100\n`;
-  const legs = picks
-    .map((p, i) => {
-      const odds = p.book_odds > 0 ? `+${p.book_odds}` : `${p.book_odds}`;
-      const t = formatGameTime(p.event_time);
-      const timeLine = t ? `\n   ${t}` : "";
-      return `${i + 1}. ${p.sport} \u00b7 ${p.market} (${odds})\n   ${p.event}${timeLine}`;
-    })
-    .join("\n");
-  return `${header}\n${legs}\n\nLock scores avg: ${Math.round(
-    picks.reduce((s, p) => s + getDisplayLock(p), 0) / picks.length,
-  )}`;
+function buildSharePayload(picks: Pick[]) {
+  return {
+    legs: picks.map((p) => ({
+      sport: p.sport,
+      league: (p as any).league,
+      event: p.event,
+      market: p.market,
+      selection: p.market,
+      book_odds: p.book_odds,
+      bookmaker: (p as any).bookmaker || (p as any).book,
+      confidence: getDisplayLock(p),
+    })),
+    combined_odds: computeParlay(picks).americanOdds,
+    generated_at: new Date().toISOString(),
+  };
 }
 
 export default function SlipScreen() {
   const router = useRouter();
   const slip = useBetSlip();
   const parlay = computeParlay(slip.picks);
-  const sport = dominantSport(slip.picks);
+  const cardRef = useRef<View>(null);
+  const [busy, setBusy] = useState(false);
 
-  const handleShare = async () => {
-    if (slip.count === 0) return;
-    const message = buildShareText(slip.picks);
+  const onShare = async () => {
+    if (slip.count === 0 || busy) return;
+    setBusy(true);
     try {
-      if (Platform.OS === "web") {
-        // Try the Web Share API, fall back to clipboard.
-        if (typeof (globalThis as any).navigator !== "undefined" && (globalThis as any).navigator.share) {
-          await (globalThis as any).navigator.share({ title: "My PerksLocks Slip", text: message });
-        } else if (typeof (globalThis as any).navigator !== "undefined" && (globalThis as any).navigator.clipboard) {
-          await (globalThis as any).navigator.clipboard.writeText(message);
-          Alert.alert("Copied!", "Slip copied to clipboard.");
-        }
-      } else {
-        await Share.share({ message, title: "My PerksLocks Slip" });
-      }
-    } catch (e) {
-      console.warn("share failed", e);
-    }
+      const text = buildSlipText(buildSharePayload(slip.picks));
+      await shareSlip(cardRef, text);
+    } finally { setBusy(false); }
+  };
+
+  const onCopy = async () => {
+    if (slip.count === 0) return;
+    const ok = await copySlipText(buildSlipText(buildSharePayload(slip.picks)));
+    if (ok) Alert.alert("Copied", "Bet slip copied to clipboard.");
+  };
+
+  const onSaveImg = async () => {
+    if (slip.count === 0 || busy) return;
+    setBusy(true);
+    try { await saveSlipImage(cardRef); } finally { setBusy(false); }
   };
 
   return (
@@ -61,19 +64,6 @@ export default function SlipScreen() {
         </Pressable>
         <Text style={styles.title}>MY BET SLIP</Text>
         <View style={styles.headerActions}>
-          <Pressable
-            onPress={handleShare}
-            disabled={slip.count === 0}
-            hitSlop={10}
-            testID="slip-share"
-          >
-            <Ionicons
-              name="share-outline"
-              size={20}
-              color={slip.count === 0 ? COLORS.textMuted : COLORS.textPrimary}
-              style={{ opacity: slip.count === 0 ? 0.3 : 1 }}
-            />
-          </Pressable>
           <Pressable
             onPress={() => slip.count > 0 && Alert.alert("Clear slip?", "Remove all picks?", [
               { text: "Cancel", style: "cancel" },
@@ -98,69 +88,81 @@ export default function SlipScreen() {
           </View>
         ) : (
           <>
-            <View style={styles.parlayCard}>
-              <Text style={styles.parlayLabel}>{parlay.legCount}-LEG PARLAY · COMBINED</Text>
-              <View style={styles.parlayRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.parlayOdds}>{parlay.americanOdds}</Text>
-                  <Text style={styles.parlaySub}>parlay odds</Text>
+            <View ref={cardRef} collapsable={false}>
+              <View style={styles.parlayCard}>
+                <Text style={styles.parlayLabel}>{parlay.legCount}-LEG PARLAY · COMBINED</Text>
+                <View style={styles.parlayRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.parlayOdds}>{parlay.americanOdds}</Text>
+                    <Text style={styles.parlaySub}>parlay odds</Text>
+                  </View>
+                  <View style={styles.divider} />
+                  <View style={{ flex: 1, alignItems: "flex-end" }}>
+                    <Text style={styles.parlayPayout}>${parlay.payoutOn100.toFixed(0)}</Text>
+                    <Text style={styles.parlaySub}>on $100 stake</Text>
+                  </View>
                 </View>
-                <View style={styles.divider} />
-                <View style={{ flex: 1, alignItems: "flex-end" }}>
-                  <Text style={styles.parlayPayout}>${parlay.payoutOn100.toFixed(0)}</Text>
-                  <Text style={styles.parlaySub}>on $100 stake</Text>
-                </View>
+                <Text style={styles.profitNote}>
+                  Profit: +${parlay.profitOn100.toFixed(2)} if all {parlay.legCount} legs hit
+                </Text>
               </View>
-              <Text style={styles.profitNote}>
-                Profit: +${parlay.profitOn100.toFixed(2)} if all {parlay.legCount} legs hit
-              </Text>
+
+              <Text style={styles.section}>PICKS ({slip.count} / {MAX_SLIP_SIZE})</Text>
+              {slip.picks.map((p, i) => (
+                <View key={p.id} style={styles.leg}>
+                  <View style={styles.legNum}>
+                    <Text style={styles.legNumText}>{i + 1}</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.legSport}>{p.sport} · Lock {getDisplayLockRounded(p)}</Text>
+                    <Text style={styles.legMarket}>{p.market}</Text>
+                    <Text style={styles.legEvent}>{p.event}</Text>
+                    {p.event_time && (
+                      <Text style={styles.legTime}>{formatGameTime(p.event_time)}</Text>
+                    )}
+                  </View>
+                  <View style={{ alignItems: "flex-end" }}>
+                    <Text style={styles.legOdds}>{p.book_odds > 0 ? `+${p.book_odds}` : p.book_odds}</Text>
+                    <Pressable onPress={() => slip.removePick(p.id)} hitSlop={8} style={{ marginTop: 6 }}>
+                      <Ionicons name="trash-outline" size={16} color={COLORS.electricBlaze} />
+                    </Pressable>
+                  </View>
+                </View>
+              ))}
             </View>
 
-            <Text style={styles.section}>PICKS ({slip.count} / {MAX_SLIP_SIZE})</Text>
-            {slip.picks.map((p, i) => (
-              <View key={p.id} style={styles.leg}>
-                <View style={styles.legNum}>
-                  <Text style={styles.legNumText}>{i + 1}</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.legSport}>{p.sport} · Lock {getDisplayLockRounded(p)}</Text>
-                  <Text style={styles.legMarket}>{p.market}</Text>
-                  <Text style={styles.legEvent}>{p.event}</Text>
-                  {p.event_time && (
-                    <Text style={styles.legTime}>{formatGameTime(p.event_time)}</Text>
-                  )}
-                </View>
-                <View style={{ alignItems: "flex-end" }}>
-                  <Text style={styles.legOdds}>{p.book_odds > 0 ? `+${p.book_odds}` : p.book_odds}</Text>
-                  <Pressable onPress={() => slip.removePick(p.id)} hitSlop={8} style={{ marginTop: 6 }}>
-                    <Ionicons name="trash-outline" size={16} color={COLORS.electricBlaze} />
-                  </Pressable>
-                </View>
-              </View>
-            ))}
-
-            <Text style={[styles.section, { marginTop: 18 }]}>
-              {sport ? `OPEN ${sport.toUpperCase()} ON` : "BUILD THIS PARLAY ON"}
-            </Text>
-            <View style={styles.bookGrid}>
-              {SPORTSBOOKS.map((book) => {
-                return (
-                  <Pressable
-                    key={book}
-                    onPress={() => openSportsbookWithSlip(book, slip.picks)}
-                    style={({ pressed }) => [styles.bookBtn, pressed && { opacity: 0.7 }]}
-                    testID={`slip-book-${book}`}
-                  >
-                    <Ionicons name="open-outline" size={14} color={COLORS.textPrimary} />
-                    <Text style={styles.bookText}>{book}</Text>
-                  </Pressable>
-                );
-              })}
+            {/* ── Share-to-Gambly action row ─────────────────────────── */}
+            <View style={styles.shareRow}>
+              <Pressable
+                onPress={onCopy}
+                testID="slip-copy"
+                style={({ pressed }) => [styles.shareBtn, { borderColor: COLORS.textMuted }, pressed && { opacity: 0.6 }]}
+              >
+                <Ionicons name="copy-outline" size={14} color={COLORS.textPrimary} />
+                <Text style={styles.shareTxt}>COPY</Text>
+              </Pressable>
+              <Pressable
+                onPress={onSaveImg}
+                disabled={busy}
+                testID="slip-save-image"
+                style={({ pressed }) => [styles.shareBtn, { borderColor: COLORS.voltBlue }, (pressed || busy) && { opacity: 0.6 }]}
+              >
+                <Ionicons name="download-outline" size={14} color={COLORS.voltBlue} />
+                <Text style={[styles.shareTxt, { color: COLORS.voltBlue }]}>SAVE IMG</Text>
+              </Pressable>
+              <Pressable
+                onPress={onShare}
+                disabled={busy}
+                testID="slip-share"
+                style={({ pressed }) => [styles.shareBtnPrimary, (pressed || busy) && { opacity: 0.65 }]}
+              >
+                <Ionicons name="share-social-outline" size={14} color={COLORS.bg} />
+                <Text style={[styles.shareTxt, { color: COLORS.bg }]}>SHARE TO GAMBLY</Text>
+              </Pressable>
             </View>
             <Text style={styles.helper}>
-              {sport
-                ? `Opens ${sport} on the sportsbook. Add each leg using the matchup & line above.`
-                : "Mixed-sport slip — opens the sportsbook home. Add each leg using the matchup & line above."}
+              SHARE opens the system share sheet (Gambly, Messages, more) with a PNG of this slip.
+              Structured text is also copied to your clipboard so any target can paste it.
             </Text>
           </>
         )}
@@ -206,6 +208,21 @@ const styles = StyleSheet.create({
   legOdds: { color: COLORS.textPrimary, fontSize: 14, fontWeight: "900" },
 
   bookGrid: { flexDirection: "row", gap: 8, flexWrap: "wrap", marginBottom: 8 },
+  shareRow: {
+    flexDirection: "row", gap: 8, flexWrap: "wrap",
+    marginTop: 18, marginBottom: 6, alignItems: "center",
+  },
+  shareBtn: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    paddingHorizontal: 12, height: 36, borderRadius: 18, borderWidth: 1.5,
+  },
+  shareBtnPrimary: {
+    flex: 1, minWidth: 140,
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+    paddingHorizontal: 14, height: 36, borderRadius: 18,
+    backgroundColor: COLORS.goldElite,
+  },
+  shareTxt: { color: COLORS.textPrimary, fontSize: 11, fontWeight: "900", letterSpacing: 1.2 },
   bookBtn: { flex: 1, minWidth: 90, flexDirection: "row", alignItems: "center", justifyContent: "center",
     gap: 6, paddingVertical: 12, backgroundColor: COLORS.surface, borderRadius: 10,
     borderWidth: 1, borderColor: COLORS.voltBlue },
