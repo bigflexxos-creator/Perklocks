@@ -80,6 +80,11 @@ export function LockPickCard({ pick }: { pick: Pick }) {
                 <Text style={styles.eliteTagText}>⭐ ELITE</Text>
               </View>
             )}
+            {(pick as any).is_extra && (
+              <View style={styles.extraTag}>
+                <Text style={styles.extraTagText}>📡 EXTENDED</Text>
+              </View>
+            )}
             <Text style={styles.league} numberOfLines={1}>{pick.league}</Text>
             <View style={[styles.gradePill, { borderColor: gradeColor, backgroundColor: gradeColor + "18" }]}>
               <Text style={[styles.gradePillText, { color: gradeColor }]} numberOfLines={1}>
@@ -254,6 +259,15 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.08)",
   },
   tagText: { color: COLORS.textPrimary, fontSize: 10, fontWeight: "800", letterSpacing: 1.2 },
+  extraTag: {
+    paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4,
+    borderWidth: 1, borderColor: COLORS.voltBlue + "66",
+    backgroundColor: COLORS.voltBlue + "18",
+  },
+  extraTagText: {
+    color: COLORS.voltBlue, fontSize: 9, fontWeight: "800",
+    letterSpacing: 0.8,
+  },
   league: { color: COLORS.textMuted, fontSize: 11, fontWeight: "600", flex: 1 },
   event: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 2, fontWeight: "500" },
   gameTime: { color: COLORS.voltBlue, fontSize: 11, fontWeight: "700", letterSpacing: 0.3, marginBottom: 6 },

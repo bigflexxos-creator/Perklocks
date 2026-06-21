@@ -83,7 +83,7 @@ export default function SoccerLabScreen() {
     : picks;
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top }]}>
+    <View style={[styles.root, { paddingTop: insets.top + 6 }]}>
       <Stack.Screen options={{ headerShown: false }} />
 
       {/* Header */}
@@ -91,10 +91,12 @@ export default function SoccerLabScreen() {
         <TouchableOpacity onPress={() => expoRouter.back()} style={styles.backBtn} hitSlop={12}>
           <Ionicons name="chevron-back" size={22} color={COLORS.textPrimary} />
         </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>{meta.icon} {meta.title}</Text>
-          <Text style={styles.headerSub}>
-            {leaguesMeta
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.headerTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
+            {meta.icon} {meta.title}
+          </Text>
+          <Text style={styles.headerSub} numberOfLines={1}>
+            {leaguesMeta && typeof leaguesMeta.count === "number"
               ? `${leaguesMeta.count} ${isSoccer ? "active leagues · auto-discovered" : "league" + (leaguesMeta.count === 1 ? "" : "s") + " · ranked by confidence"}`
               : "Loading…"}
           </Text>
@@ -250,7 +252,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingTop: 14,
+    paddingBottom: 14,
     gap: 12,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.borderDefault,
@@ -280,13 +283,14 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "900",
     letterSpacing: -0.3,
+    flexShrink: 1,
   },
   headerSub: {
     color: COLORS.textMuted,
-    fontSize: 10.5,
+    fontSize: 11.5,
     fontWeight: "700",
-    letterSpacing: 0.6,
-    marginTop: 2,
+    letterSpacing: 0.4,
+    marginTop: 3,
   },
 
   chipRow: {
