@@ -366,6 +366,29 @@ export const api = {
     }>(`/picks/parlay?${qs.toString()}`);
   },
   pickDetail: (id: string) => request<Pick & { ai_pending?: boolean }>(`/picks/${id}`),
+  saveParlay: (legs: Pick[], mode: string = "standard", stake: number = 1.0) =>
+    request<{ id: string; status: string; combined_odds: number; legs_pending: number; legs_won: number; legs_lost: number; payout: number | null }>(
+      "/parlay/save", { method: "POST", body: { legs, mode, stake } }
+    ),
+  parlayHistory: (filter?: "won" | "live" | "lost" | "all") => {
+    const qs = filter && filter !== "all" ? `?filter=${filter}` : "";
+    return request<{
+      parlays: Array<{
+        id: string; created_at: string; mode: string; combined_odds: number;
+        stake: number; status: "live" | "won" | "lost";
+        legs_won: number; legs_lost: number; legs_pending: number;
+        settled_at: string | null; payout: number | null;
+        legs: Array<{
+          pick_id: string; sport: string; league: string; event: string;
+          market: string; selection: string; book_odds: number;
+          event_time: string; lock_score: number;
+          status: "pending" | "won" | "lost" | "void";
+        }>;
+      }>;
+      count: number;
+    }>(`/parlay/history${qs}`);
+  },
+  deleteParlay: (id: string) => request<{ deleted: boolean }>(`/parlay/${id}`, { method: "DELETE" }),
   pickAiExplain: (id: string) => request<{ explanation: string; source: string }>(`/picks/${id}/ai-explain`, { method: "POST" }),
   pickCoverage: (id: string, cohort: "teammates" | "league" = "teammates") =>
     request<{
