@@ -3024,6 +3024,14 @@ async def on_startup():
         logger.info("Soccer pipeline scheduler armed (15-min pregame loop + 24h backfill loop)")
     except Exception as e:
         logger.warning("Soccer pipeline scheduler not armed: %s", e)
+    # ── MLB Lineup Verifier ─────────────────────────────────────────
+    # Voids picks for scratched MLB players ~30 min before first pitch.
+    try:
+        from mlb_lineup import lineup_verifier_loop
+        asyncio.create_task(lineup_verifier_loop(db, _today_str))
+        logger.info("MLB lineup verifier armed (5-min loop, 30-min pre-game)")
+    except Exception as e:
+        logger.warning("MLB lineup verifier failed to start: %s", e)
     logger.info("PerksLocks AI started")
 
 
