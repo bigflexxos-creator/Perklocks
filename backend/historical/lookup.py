@@ -11,6 +11,9 @@ Design rules:
     on every pick generation.
   • Never throws — returns `None` if data is missing so the Lock Engine
     can degrade gracefully.
+  • Accent-insensitive name matching — "Mbappe" → "Mbappé",
+    "Pena" → "Peña", etc. Critical for soccer where football-data.org
+    stores names with diacritics but odds feeds often strip them.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+import unicodedata
 from typing import Optional
 
 logger = logging.getLogger("lockscore.historical.lookup")
@@ -44,10 +48,71 @@ def _norm_name(name: str) -> str:
     return n
 
 
+def _strip_accents(s: str) -> str:
+    """Mbappé → Mbappe, Peña → Pena, Vázquez → Vazquez."""
+    if not s:
+        return ""
+    return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+
+
 def _name_match_query(name: str) -> dict:
-    """Build a case-insensitive regex match for player names."""
+    """Build a case-insensitive regex match for player names.
+
+    Mongo regex doesn't natively strip accents, so we build a pattern that
+    matches each base letter against itself + any accented variant.
+    """
     safe = re.escape(name.strip())
     return {"$regex": f"^{safe}$", "$options": "i"}
+
+
+def _accent_insensitive_regex(name: str) -> str:
+    """Build a regex that matches `name` regardless of diacritics.
+
+    'Mbappe' → matches 'Mbappé', 'Mbappe', 'Mbáppé', etc.
+    We escape the input first, then expand each ASCII letter to a class
+    containing its common Unicode variants.
+    """
+    if not name:
+        return ""
+    # Strip accents from the input first so we work from a normalized base.
+    base = _strip_accents(name.strip())
+    out: list[str] = []
+    # Map each ASCII letter to a character class with common variants.
+    table = {
+        "a": "[aàáâãäåāăąǎ]",
+        "c": "[cçćĉčċ]",
+        "e": "[eèéêëēĕėęě]",
+        "i": "[iìíîïīĩĭįı]",
+        "l": "[lľĺļŀł]",
+        "n": "[nñńņňŋ]",
+        "o": "[oòóôõöøōŏőǒ]",
+        "s": "[sśŝšșş]",
+        "u": "[uùúûüūŭůűųǔ]",
+        "y": "[yýÿŷȳ]",
+        "z": "[zźżž]",
+        "d": "[dďđ]",
+        "g": "[gĝğġģ]",
+        "h": "[hĥħ]",
+        "j": "[jĵǰ]",
+        "k": "[kķ]",
+        "r": "[rŕŗř]",
+        "t": "[tţťŧ]",
+        "w": "[wŵẁẃẅ]",
+    }
+    for ch in base:
+        lo = ch.lower()
+        if lo in table:
+            out.append(table[lo])
+        else:
+            # Escape regex meta characters; keep spaces/hyphens as-is.
+            out.append(re.escape(ch))
+    return "".join(out)
+
+
+def _name_match_query(name: str) -> dict:
+    """Case-insensitive + accent-insensitive exact match."""
+    pattern = _accent_insensitive_regex(name)
+    return {"$regex": f"^{pattern}$", "$options": "i"}
 
 
 async def get_player_form(
