@@ -22,6 +22,7 @@ export default function RolloverScreen() {
   const router = useRouter();
   const [picks, setPicks] = useState<Pick[]>([]);
   const [pool, setPool] = useState<number>(0);
+  const [survivability, setSurvivability] = useState<any>(null);
   const [lineType, setLineType] = useState<LineType>("both");
   const [sport, setSport] = useState<string>("All");
   const [filters, setFilters] = useState<PickFilters>({});
@@ -37,6 +38,7 @@ export default function RolloverScreen() {
         : (res.pick ? [res.pick] : []);
       setPicks(arr.filter((p: Pick) => p.sport !== "KBO"));
       setPool(res.total_evaluated ?? 0);
+      setSurvivability((res as any).survivability ?? null);
     } catch (e) {
       console.warn("rollover load", e);
     } finally {
@@ -103,6 +105,16 @@ export default function RolloverScreen() {
               The three highest-probability bets on the board, ranked. Soccer excluded.
               Each is scoped to today&apos;s slate only.
             </Text>
+
+            {survivability && (
+              <View style={styles.survBadge}>
+                <Ionicons name="shield-checkmark" size={14} color={COLORS.neonGreen} />
+                <Text style={styles.survText}>
+                  Survivability V2 — odds ≥ {survivability.odds_floor}, edge ≥ {survivability.edge_floor}%, +{survivability.ev_cushion_pts}pt EV cushion
+                  {survivability.rejected_chalk > 0 ? ` · ${survivability.rejected_chalk} chalk picks rejected` : ""}
+                </Text>
+              </View>
+            )}
 
             {picks.map((p, idx) => (
               <RolloverCard
@@ -247,5 +259,16 @@ const styles = StyleSheet.create({
   disclaimer: {
     color: COLORS.textMuted, fontSize: 11, lineHeight: 17, marginTop: 8,
     textAlign: "center", paddingHorizontal: 10,
+  },
+  survBadge: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    backgroundColor: COLORS.surface, borderRadius: 8,
+    paddingHorizontal: 10, paddingVertical: 8,
+    marginBottom: 12,
+    borderWidth: 1, borderColor: COLORS.neonGreen,
+  },
+  survText: {
+    color: COLORS.textSecondary, fontSize: 11, fontWeight: "600",
+    flex: 1, letterSpacing: 0.2,
   },
 });
