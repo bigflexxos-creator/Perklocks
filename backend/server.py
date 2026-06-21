@@ -3032,6 +3032,24 @@ async def on_startup():
         logger.info("MLB lineup verifier armed (5-min loop, 30-min pre-game)")
     except Exception as e:
         logger.warning("MLB lineup verifier failed to start: %s", e)
+    # ── Tennis Extra Settler ────────────────────────────────────────
+    # Settles Mallorca/Eastbourne/Challenger picks from TennisExplorer
+    # results page. Runs every 30 min, walks back 3 days.
+    try:
+        from tennis_extra.settle import tennis_extra_settler_loop
+        asyncio.create_task(tennis_extra_settler_loop(db))
+        logger.info("Tennis Extra settler armed (30-min loop)")
+    except Exception as e:
+        logger.warning("Tennis Extra settler failed to start: %s", e)
+    # ── Tennis Fair-Odds Engine ─────────────────────────────────────
+    # Elo + surface + form + fatigue for matches without book odds.
+    try:
+        from tennis_extra.odds_engine import set_db as _te_odds_set_db
+        _te_odds_set_db(db)
+        await db.tennis_players.create_index("name_norm", unique=True)
+        logger.info("Tennis fair-odds engine wired to MongoDB")
+    except Exception as e:
+        logger.warning("Tennis fair-odds engine not armed: %s", e)
     logger.info("PerksLocks AI started")
 
 
