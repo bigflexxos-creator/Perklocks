@@ -90,8 +90,14 @@ async def backfill_current_season(sports: list[str] | None = None) -> dict:
     return out
 
 
-async def incremental_sync(sports: list[str] | None = None) -> dict:
-    """Nightly sync — fetch only what changed since last run."""
+async def incremental_sync(sports: list[str] | None = None,
+                            since_override: Optional[datetime] = None) -> dict:
+    """Nightly sync — fetch only what changed since last run.
+
+    If `since_override` is provided, it overrides the stored `last_sync` for
+    every requested sport. Useful for ad-hoc admin syncs (e.g. "pull the last
+    30 days even though we synced yesterday").
+    """
     sports = sports or ["soccer", "mlb", "nfl", "nba", "tennis"]
     out: dict = {}
     for sport in sports:
@@ -99,7 +105,7 @@ async def incremental_sync(sports: list[str] | None = None) -> dict:
         if client is None:
             out[sport] = {"skipped": "no client"}
             continue
-        since = await _last_sync(sport)
+        since = since_override if since_override is not None else await _last_sync(sport)
         try:
             summary = await client.incremental_sync(_db, since=since)
             await _set_last_sync(sport, datetime.now(timezone.utc))

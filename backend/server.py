@@ -2348,6 +2348,73 @@ async def root():
     return {"ok": True, "service": "PerksLocks AI", "date": _today_str()}
 
 
+# ────────────────────── Historical Sports Intelligence Engine ──────────────────────
+# Admin endpoints to trigger backfills and inspect player form. The Lock Engine
+# itself reads from this engine via historical.lookup.get_player_form — no API
+# call needed.
+
+class HistoricalBackfillRequest(BaseModel):
+    sports: list[str] | None = None  # default: all 5 sports
+    mode: str = "backfill"           # "backfill" | "incremental"
+    days: int | None = None          # incremental: how many days back (default 3)
+
+
+@api.post("/admin/historical/backfill")
+async def historical_backfill(req: HistoricalBackfillRequest,
+                              user: Annotated[UserPublic, Depends(current_user)] = None):
+    """Trigger a current-season backfill (or incremental sync) for one or
+    more sports. Returns per-sport summary.
+
+    Note: Soccer (football-data.org) is paced at 6.5s/req due to the strict
+    10 req/min free-tier limit — a full backfill of 8 competitions can take
+    ~3-5 minutes. Other sports complete much faster.
+    """
+    # Auth required; user identity available via `user`. No admin restriction
+    # in dev — tighten via email allow-list later if needed.
+    try:
+        from historical.orchestrator import backfill_current_season, incremental_sync
+    except Exception as e:
+        raise HTTPException(500, f"Historical engine not loaded: {e}")
+    sports = req.sports or ["mlb", "nba", "nfl", "nhl", "soccer"]
+    if req.mode == "incremental":
+        # Allow custom lookback window for incremental syncs (default 3 days).
+        from datetime import timedelta as _td
+        since_override = None
+        if req.days and req.days > 0:
+            since_override = datetime.now(timezone.utc) - _td(days=int(req.days))
+        out = await incremental_sync(sports=sports, since_override=since_override)
+    else:
+        out = await backfill_current_season(sports=sports)
+    return {"mode": req.mode, "sports": sports, "results": out}
+
+
+@api.get("/admin/historical/status")
+async def historical_status(user: Annotated[UserPublic, Depends(current_user)] = None):
+    """Quick summary of what's stored in the historical engine."""
+    counts = {}
+    for col in ("players", "games", "player_game_logs", "season_totals", "team_form"):
+        try:
+            counts[col] = await db[col].estimated_document_count()
+        except Exception:
+            counts[col] = -1
+    last_syncs = {}
+    async for doc in db.historical_meta.find({}):
+        last_syncs[doc.get("_id")] = doc.get("last_sync")
+    return {"collections": counts, "last_syncs": last_syncs}
+
+
+@api.get("/admin/historical/player-form")
+async def historical_player_form(sport: str, name: str, market: Optional[str] = None,
+                                  user: Annotated[UserPublic, Depends(current_user)] = None):
+    """Look up the stored form summary for a player (debug + transparency)."""
+    try:
+        from historical.lookup import get_player_form
+        out = await get_player_form(sport, name, market_hint=market)
+        return out or {"found": False, "sport": sport, "name": name}
+    except Exception as e:
+        raise HTTPException(500, f"lookup failed: {e}")
+
+
 # ────────────────────── App wiring ──────────────────────
 
 # Mount the isolated soccer module BEFORE the catch-all api router so its
@@ -2701,6 +2768,27 @@ async def on_startup():
     await db.picks.create_index([("pick_date", 1), ("lock_score", -1)])
     await db.picks.create_index([("status", 1), ("settled_at", -1)])
     await db.picks.create_index("id", unique=True)
+    # ── Historical Sports Intelligence Engine — wire DB handles ───────────
+    # Read side (lookup) is called from the Lock Engine on every pick gen, so
+    # we MUST set the db handle before any pick generation kicks off. Write
+    # side (orchestrator) is used by the /api/admin/historical/* endpoints.
+    try:
+        from historical.orchestrator import _set_db as _hist_set_db
+        from historical.lookup import _set_db as _hist_lookup_set_db
+        _hist_set_db(db)
+        _hist_lookup_set_db(db)
+        # Indices for the historical collections (created lazily on first
+        # insert by Motor, but we add the hot-path ones explicitly).
+        await db.players.create_index([("sport", 1), ("name", 1)])
+        await db.players.create_index([("player_id", 1), ("sport", 1)], unique=True)
+        await db.games.create_index([("game_id", 1), ("sport", 1)], unique=True)
+        await db.player_game_logs.create_index([("player_id", 1), ("date", -1)])
+        await db.player_game_logs.create_index([("player_id", 1), ("game_id", 1)], unique=True, sparse=True)
+        await db.season_totals.create_index([("player_id", 1), ("sport", 1), ("season", 1), ("competition", 1)])
+        await db.team_form.create_index([("team_id", 1), ("sport", 1)])
+        logger.info("Historical Sports Intelligence Engine wired to MongoDB")
+    except Exception as e:
+        logger.warning("Historical Engine not armed: %s", e)
     asyncio.create_task(_daily_refresh_loop())
     asyncio.create_task(_settlement_loop())
     asyncio.create_task(_weekly_model_tuning_loop())

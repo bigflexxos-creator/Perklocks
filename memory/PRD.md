@@ -48,3 +48,23 @@ Score formula: `50 + avg_factor × 40 + peak_factor × 10` → clamped 55–99. 
 ## Disclaimers
 - All picks are probabilistic. App never displays "guaranteed winner" language.
 - "Pass" tier explicitly recommends NOT betting that market.
+
+## Historical Sports Intelligence Engine (June 2026)
+Low-cost historical memory layer feeding the Lock Engine — uses FREE APIs only:
+- **MLB**: statsapi.mlb.com (no key)
+- **NBA**: balldontlie.io (free tier)
+- **NFL**: ESPN hidden API (no key)
+- **NHL**: api-web.nhle.com (no key)
+- **Soccer**: football-data.org (free tier, 10 req/min, 6.5s pacing)
+
+MongoDB collections: `players`, `games`, `player_game_logs`, `season_totals`, `team_form`.
+
+### Admin endpoints
+- `POST /api/admin/historical/backfill` — body `{sports, mode, days?}`
+- `GET /api/admin/historical/status`
+- `GET /api/admin/historical/player-form?sport=&name=&market=`
+
+### Lock Engine integration
+Runs ALONGSIDE `elite_players.py` / `auto_elite.py` (per user spec — never replaces).
+Each player-prop pick is enriched with `player_form` data and a soft ±1.5 nudge
+based on hot/cold trend + consistency (min 3 logged games to react).

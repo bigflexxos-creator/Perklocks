@@ -428,6 +428,22 @@ async def apply_v2_to_picks(picks: list[dict], db) -> list[dict]:
 
     blacklisted_count = 0
 
+    # ── Historical Sports Intelligence Engine — soft form signal ──
+    # Enriches every PLAYER-PROP pick with `player_form` data and applies a
+    # ±1.5 nudge to lock_score based on hot/cold trend + consistency. Runs
+    # ALONGSIDE the existing elite_players.py / auto_elite.py checks
+    # (per user spec: "don't remove elite players").
+    try:
+        from historical.enrichment import enrich_pick_with_form
+        for _p in picks:
+            try:
+                await enrich_pick_with_form(_p)
+            except Exception:
+                pass  # never let form enrichment break the picks pipeline
+    except Exception:
+        # Historical engine not yet wired — skip silently.
+        pass
+
     # Load auto-elite scorer set (auto-discovered from settled data: players
     # with ≥5 settled picks and ≥55% hit rate over last 90 days). We load
     # per-sport sets so an "auto_elite_set" lookup matches the player to the
