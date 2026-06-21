@@ -319,6 +319,70 @@ def _player_team_for_event(player: str, event: str, sport: str) -> str:
     return ""
 
 
+def _interleave_by_league(picks: list[dict], top_n: int = 20,
+                            max_per_round: int = 1) -> list[dict]:
+    """Round-robin interleave picks by league for the top N positions.
+
+    Fixes the "Sweden Superettan never appears on the app" bug. When one
+    competition (FIFA World Cup, MLB AL East, etc.) dominates the lock-
+    score leaderboard, every other smaller league gets pushed past the
+    user's natural scroll horizon. Users report "you don't carry that
+    league" when actually we have 28 picks from it — just buried.
+
+    Approach:
+      1. Preserve the FIRST 6 picks (true elite anchors — Mbappé, 99-lock
+         marquee picks that should never be displaced).
+      2. From position 7 onwards, interleave one pick per league per
+         round (sorted by lock_score desc within each league). When all
+         leagues exhaust their pool, return to natural lock_score order.
+      3. Stop interleaving after `top_n` picks total — beyond that, users
+         have made an explicit choice to scroll and the pure lock_score
+         order is what they want.
+
+    Args:
+      picks: already sorted by lock_score desc.
+      top_n: how many of the top positions to apply diversification to.
+      max_per_round: picks per league per cycle (defaults to 1 = strict round-robin).
+    """
+    if not picks or len(picks) <= 6:
+        return picks
+    head = picks[:6]   # untouched elite anchor zone
+    tail = picks[6:]
+    # Bucket the tail by league.
+    by_lg: dict[str, list[dict]] = {}
+    league_order: list[str] = []
+    for p in tail:
+        lg = p.get("league") or "Other"
+        if lg not in by_lg:
+            by_lg[lg] = []
+            league_order.append(lg)
+        by_lg[lg].append(p)
+    # Only diversify if there are ≥3 leagues — otherwise pure sort is fine.
+    if len(league_order) < 3:
+        return picks
+    # Round-robin interleave from the bucketed tail.
+    interleaved: list[dict] = []
+    remaining_quota = max(0, top_n - len(head))
+    while remaining_quota > 0 and any(by_lg.values()):
+        for lg in list(league_order):
+            if not by_lg.get(lg):
+                continue
+            for _ in range(max_per_round):
+                if not by_lg[lg] or remaining_quota <= 0:
+                    break
+                interleaved.append(by_lg[lg].pop(0))
+                remaining_quota -= 1
+            if remaining_quota <= 0:
+                break
+    # Append everything that wasn't selected in the round-robin pass,
+    # restoring natural lock_score order (each league's list is already sorted).
+    leftover: list[dict] = []
+    for lg in league_order:
+        leftover.extend(by_lg.get(lg, []))
+    leftover.sort(key=lambda p: -float(p.get("lock_score") or 0))
+    return head + interleaved + leftover
+
+
 def _dedupe_goalscorer_per_event(picks: list[dict], top_n: int = 2) -> list[dict]:
     """Per-team-in-match cap on goalscorer / score-or-assist picks.
 
@@ -1139,6 +1203,24 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 picks.sort(key=lambda p: p.get("lock_score", 0))
             else:
                 picks.sort(key=lambda p: (_elite_rank(p), -p.get("lock_score", 0)))
+                # ── League diversification — fixes "never saw Sweden league"
+                # When a single sport (esp. Soccer) has 4-6 leagues live but
+                # one tournament (FIFA WC, MLB, etc.) has 30+ picks dominating
+                # the lock_score leaderboard, smaller leagues like Superettan
+                # get buried at position 30+. Users never scroll that far and
+                # report "you don't carry those leagues".
+                #
+                # Solution: round-robin interleave by league across the FIRST
+                # screen-worth of picks (~20). Keeps the top ~6 elite/anchor
+                # picks at the very top (they're already de-ranked above), then
+                # rotates one pick per league so every active league is
+                # immediately visible. After the first ~20 slots we fall back
+                # to pure lock_score order.
+                #
+                # Only kicks in for multi-sport feeds with ≥3 distinct leagues
+                # and when the user hasn't explicitly filtered by league.
+                if not league and sport and sport.lower() in ("soccer", "tennis"):
+                    picks = _interleave_by_league(picks, top_n=20, max_per_round=1)
     return {"picks": _canonicalize_picks(picks)}
 
 
