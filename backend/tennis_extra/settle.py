@@ -1,0 +1,185 @@
+"""Tennis Extra settler — settles Mallorca/Eastbourne/Challenger picks
+from TennisExplorer's results page.
+
+The Tennis Extra picks (`source: "tennis_extra"`) have `auto_settle: False`
+and pile up as `pending` forever without this. We scrape the daily
+results page and match player names + tournament to mark won/lost.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+import httpx
+from bs4 import BeautifulSoup
+
+logger = logging.getLogger("lockscore.tennis_extra.settle")
+
+_BASE = "https://www.tennisexplorer.com/results/"
+_TIMEOUT = 20.0
+
+
+def _norm(name: str) -> str:
+    if not name:
+        return ""
+    n = name.lower().strip()
+    n = re.sub(r"\s*\(\d+\)\s*$", "", n)  # strip seed
+    n = re.sub(r"[^a-z0-9\s\.]", "", n)
+    n = re.sub(r"\s+", " ", n).strip()
+    return n
+
+
+async def _fetch_results_html(date_str: str) -> Optional[str]:
+    """date_str = YYYY-MM-DD"""
+    y, m, d = date_str.split("-")
+    url = f"{_BASE}?year={int(y)}&month={int(m):02d}&day={int(d):02d}"
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT,
+                                       headers={"User-Agent": "Mozilla/5.0 PerksLocks/1.0"}) as cx:
+            r = await cx.get(url, follow_redirects=True)
+            if r.status_code != 200:
+                return None
+            return r.text
+    except Exception as e:
+        logger.warning("results fetch failed for %s: %s", date_str, e)
+        return None
+
+
+def _parse_winners(html: str) -> list[dict]:
+    """Return [{tournament, winner_norm, loser_norm}, ...] for tour-grade events."""
+    soup = BeautifulSoup(html, "lxml")
+    out: list[dict] = []
+    # Only consider tournaments scraped extras might have come from.
+    from .scraper import _is_tour_grade  # reuse exact same filter
+
+    for tbl in soup.find_all("table", class_="result"):
+        rows = tbl.find_all("tr")
+        current = None
+        is_tour = False
+        i = 0
+        while i < len(rows):
+            r = rows[i]
+            classes = r.get("class") or []
+            if "head" in classes:
+                cell = r.find("td")
+                current = cell.get_text(" ", strip=True) if cell else None
+                is_tour = _is_tour_grade(current or "")
+                i += 1
+                continue
+            if not is_tour or current is None:
+                i += 1
+                continue
+            if i + 1 >= len(rows):
+                break
+            r1, r2 = r, rows[i + 1]
+            if "head" in (r2.get("class") or []):
+                i += 1
+                continue
+            tds1 = [td.get_text(" ", strip=True) for td in r1.find_all("td")]
+            tds2 = [td.get_text(" ", strip=True) for td in r2.find_all("td")]
+            if len(tds1) < 4 or len(tds2) < 2:
+                i += 1
+                continue
+            name1 = tds1[1].strip()
+            name2 = tds2[0].strip()
+            # Sets won are at index 2 of row1 and index 1 of row2.
+            try:
+                s1 = int(tds1[2])
+                s2 = int(tds2[1])
+            except (ValueError, IndexError):
+                i += 2
+                continue
+            if s1 == s2 or s1 < 0 or s2 < 0:
+                i += 2
+                continue
+            winner, loser = (name1, name2) if s1 > s2 else (name2, name1)
+            out.append({
+                "tournament": current,
+                "winner_norm": _norm(winner),
+                "loser_norm": _norm(loser),
+            })
+            i += 2
+    return out
+
+
+async def settle_tennis_extra(db, *, days_back: int = 3) -> dict:
+    """Walk back `days_back` days and settle any pending `tennis_extra` picks."""
+    today = datetime.now(timezone.utc).date()
+    won = lost = pushed = unmatched = 0
+    for delta in range(0, days_back + 1):
+        date_str = (today - timedelta(days=delta)).strftime("%Y-%m-%d")
+        html = await _fetch_results_html(date_str)
+        if not html:
+            continue
+        winners = _parse_winners(html)
+        if not winners:
+            continue
+        # Index by tournament for fast lookup.
+        idx: dict[str, list[dict]] = {}
+        for w in winners:
+            idx.setdefault(w["tournament"].lower(), []).append(w)
+        # All pending tennis_extra picks for this date.
+        cursor = db.picks.find({
+            "source": "tennis_extra",
+            "status": "pending",
+            "pick_date": date_str,
+        })
+        async for p in cursor:
+            league = (p.get("league") or "").lower()
+            results = idx.get(league)
+            if not results:
+                unmatched += 1
+                continue
+            sel_norm = _norm(p.get("selection") or "")
+            match = None
+            for r in results:
+                if sel_norm in (r["winner_norm"], r["loser_norm"]):
+                    match = r
+                    break
+            if not match:
+                # Try last-name fallback.
+                sel_last = sel_norm.split()[0] if sel_norm else ""
+                for r in results:
+                    if sel_last and (sel_last in r["winner_norm"]
+                                       or sel_last in r["loser_norm"]):
+                        match = r
+                        break
+            if not match:
+                unmatched += 1
+                continue
+            won_match = sel_norm in match["winner_norm"] or (
+                sel_norm and sel_norm.split()[0] in match["winner_norm"]
+            )
+            status = "won" if won_match else "lost"
+            await db.picks.update_one(
+                {"id": p["id"]},
+                {"$set": {
+                    "status": status,
+                    "settled_at": datetime.now(timezone.utc).isoformat(),
+                    "settle_source": "tennis_extra_settler",
+                    "settle_winner": match["winner_norm"],
+                }},
+            )
+            if status == "won":
+                won += 1
+            else:
+                lost += 1
+    return {"won": won, "lost": lost, "pushed": pushed, "unmatched": unmatched}
+
+
+async def tennis_extra_settler_loop(db) -> None:
+    """Long-running 30-min loop."""
+    while True:
+        try:
+            await asyncio.sleep(30 * 60)
+            summary = await settle_tennis_extra(db)
+            if summary.get("won") or summary.get("lost"):
+                logger.info("Tennis Extra settler: %s", summary)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning("Tennis Extra settler loop error: %s", e)

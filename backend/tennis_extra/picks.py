@@ -90,13 +90,36 @@ async def fetch_extra_tennis_picks(
         tier = m.get("tournament_tier") or "Unknown"
         if not include_challengers and "Challenger" in tier:
             continue
-        # Must have both odds.
+        # Must have both odds (book-anchored path)... OR fall back to
+        # the Elo-based fair-odds engine if odds are missing.
         odds_p1 = m.get("odds_american_p1")
         odds_p2 = m.get("odds_american_p2")
+        is_model_pick = False
+        model_components: Optional[dict] = None
         if odds_p1 is None or odds_p2 is None:
-            continue
-        implied_p1 = float(m.get("implied_p1") or 0)
-        implied_p2 = float(m.get("implied_p2") or 0)
+            # ── Fair-odds fallback (Elo + surface + form + fatigue) ─────
+            try:
+                from .odds_engine import fair_win_probability
+                fair = await fair_win_probability(
+                    m["player1"], m["player2"],
+                    tournament=m.get("tournament") or "")
+                # Convert fair odds into the same downstream shape.
+                if fair["prob_a"] >= 0.5:
+                    odds_p1 = fair["fair_odds_a"]
+                    odds_p2 = fair["fair_odds_b"]
+                else:
+                    odds_p1 = fair["fair_odds_a"]
+                    odds_p2 = fair["fair_odds_b"]
+                # Use Elo-derived implied probability directly.
+                implied_p1 = fair["prob_a"]
+                implied_p2 = fair["prob_b"]
+                is_model_pick = True
+                model_components = fair.get("components")
+            except Exception:
+                continue
+        else:
+            implied_p1 = float(m.get("implied_p1") or 0)
+            implied_p2 = float(m.get("implied_p2") or 0)
         # Normalize for vig (sum often exceeds 1.0).
         s = implied_p1 + implied_p2
         if s <= 0:
@@ -152,11 +175,13 @@ async def fetch_extra_tennis_picks(
             },
             "is_alt": False,
             "is_extra": True,
-            "source": "tennis_extra",
+            "source": "tennis_extra_model" if is_model_pick else "tennis_extra",
+            "fair_odds_model": is_model_pick,
+            "model_components": model_components if is_model_pick else None,
             "auto_settle": False,
             "pick_date": date_str,
             "status": "pending",
-            "no_edge_model": True,
+            "no_edge_model": not is_model_pick,
         })
 
     return picks
