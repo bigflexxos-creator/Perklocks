@@ -162,6 +162,28 @@ async def validate_and_heal(db) -> dict:
                 # Strong → 90-94 Premium etc.) rather than cosmetic
                 # micro-drift between 86.5 and 87.2.
                 if abs(current_lock - target_lock) > 6.0:
+                    # ─── Delta guard (recommendation #7) ───
+                    # Cap downward drift at 10 points per validator run. The
+                    # validator was demoting Yordan Alvarez 95 → 56 in one
+                    # cycle, hiding good picks. Real model drift never moves
+                    # that fast; only odds-staleness or factor jitter does.
+                    # Upward moves are unrestricted (we always want to surface
+                    # newly-discovered edges immediately).
+                    if target_lock < current_lock - 10.0:
+                        target_lock = current_lock - 10.0
+                    # ─── CLV demotion (recommendation #2) ───
+                    # If closing line moved AGAINST us (book got sharper),
+                    # apply an additional 2-5 point lock penalty so the pick
+                    # naturally drops off the feed. CLV < -1 unit ≈ market
+                    # disagreed strongly. CLV > 0 = market agreed (free EV).
+                    try:
+                        clv = float(p.get("clv_value") or 0)
+                    except Exception:
+                        clv = 0.0
+                    if clv < -1.5:
+                        target_lock = max(60.0, target_lock - 5.0)
+                    elif clv < -0.5:
+                        target_lock = max(60.0, target_lock - 2.0)
                     updates["lock_score"] = target_lock
                     p["lock_score"] = target_lock
                     counts["fixed_lock"] += 1

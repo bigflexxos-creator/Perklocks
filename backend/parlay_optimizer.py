@@ -441,6 +441,15 @@ def diversification_ok(current_legs: list[dict], candidate: dict,
                     if (L.get("event") or "") == (candidate.get("event") or ""))
     if same_event >= MAX_SAME_GAME:
         return False, "Max 2 legs from same game"
+    # ─── Same-game-parlay (SGP) HARD BLOCK for correlated sports ───
+    # MLB / UFC / Tennis are one-event-per-pick sports — any two legs from the
+    # same event are dangerously correlated (Team A ML + Team A Hitter Over =
+    # one positive outcome, not two independent). Soccer allows up to 2 because
+    # there are legit independent angles (Total Goals + Anytime Scorer can both
+    # land on different scoring events). For everything else, hard-block.
+    cand_sport = (candidate.get("sport") or "").lower()
+    if cand_sport in ("mlb", "ufc", "tennis", "nba", "nfl", "nhl") and same_event >= 1:
+        return False, f"Same-game blocked ({cand_sport})"
     # Market-family cap — prevent the "all Win-or-Draw" monoculture.
     # Without this, soccer high-risk parlays would consist of 5 W-or-D
     # picks because they have the highest lock scores. User spec: "high
