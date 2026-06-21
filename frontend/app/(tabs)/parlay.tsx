@@ -740,29 +740,10 @@ function ParlayCardView({
           <Ionicons name="bookmark-outline" size={14} color={COLORS.goldElite} />
           <Text style={[styles.copyTxt, { color: COLORS.goldElite }]}>SAVE</Text>
         </Pressable>
-        <View style={styles.bookRow}>
-          {SPORTSBOOKS.slice(0, 4).map((book) => {
-            const isPreferred = preferredBook === book.id;
-            return (
-              <Pressable
-                key={book.id}
-                testID={`parlay-book-${card.label}-${book.id}`}
-                onPress={() => onOpenBook(book.id)}
-                style={({ pressed }) => [
-                  styles.bookBtn,
-                  { borderColor: isPreferred ? book.brandColor : COLORS.borderDefault,
-                    backgroundColor: isPreferred ? book.brandColor + "22" : "transparent" },
-                  pressed && { opacity: 0.6 },
-                ]}
-              >
-                <Text style={[styles.bookTxt, { color: book.brandColor }]}>{book.short}</Text>
-              </Pressable>
-            );
-          })}
-        </View>
       </View>
       <Text style={styles.betSlipHelp}>
-        Tap a sportsbook to open it · slip is auto-copied to clipboard
+        Slip auto-copied to clipboard · Tap SAVE to track it under History
+      </Text>
       </Text>
     </View>
   );
