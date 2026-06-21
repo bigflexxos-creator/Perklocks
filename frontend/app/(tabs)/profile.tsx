@@ -47,8 +47,18 @@ export default function ProfileScreen() {
           if (w?.location?.reload) w.location.reload();
           return;
         }
-        // Native: nav back to Locks tab so it re-fetches everything fresh.
+        // Native: route to Locks tab so its useFocusRefetch fires AND
+        // surface a confirmation so the user knows the wipe completed.
+        // Without this confirmation users tap the button repeatedly because
+        // there's no visible "I did it" signal.
         router.replace("/(tabs)");
+        // Small delay so the screen transition completes before the alert.
+        setTimeout(() => {
+          Alert.alert(
+            "App data refreshed",
+            "Cleared cached picks, bet slip, and preferences. The Locks tab is reloading fresh data from the server.",
+          );
+        }, 250);
       } finally {
         setClearing(false);
       }
