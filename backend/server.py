@@ -540,7 +540,7 @@ async def _historical_winrates() -> dict:
 
 
 
-async def _refresh_picks(date_str: str) -> int:
+async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> int:
     """Generate today's picks, replace any existing rows for that date.
 
     Critical: only delete existing picks AFTER we've successfully generated
@@ -550,14 +550,30 @@ async def _refresh_picks(date_str: str) -> int:
     Pick IDs are deterministic (UUID5 derived from external_id) so cached
     references in user slips and the frontend remain valid across refreshes
     instead of pointing to a brand-new UUID that 404s.
+
+    Args:
+      sport_filter: when set (e.g. "MLB"), only re-fetch + replace picks for
+        that one sport. Used by the MLB pregame loop (`_mlb_pregame_loop`)
+        which runs every 5 min during US afternoons so MLB picks surface
+        ~60-90 min pre-game rather than ~5 min pre-game, without burning
+        Odds API credits on sports whose slates haven't moved.
     """
-    logger.info("Refreshing picks for %s", date_str)
-    picks = await generate_all_picks(date_str)
+    if sport_filter:
+        logger.info("Refreshing picks for %s · sport_filter=%s", date_str, sport_filter)
+    else:
+        logger.info("Refreshing picks for %s", date_str)
+    picks = await generate_all_picks(date_str, sport_filter=sport_filter)
     if not picks:
-        logger.warning(
-            "Refresh produced 0 picks for %s — keeping existing rows intact "
-            "instead of wiping the board.", date_str,
-        )
+        if sport_filter:
+            logger.info(
+                "%s pregame refresh: 0 picks (likely no lines posted yet) — "
+                "leaving existing %s rows untouched.", sport_filter, sport_filter,
+            )
+        else:
+            logger.warning(
+                "Refresh produced 0 picks for %s — keeping existing rows intact "
+                "instead of wiping the board.", date_str,
+            )
         return 0
     # ── Tennis Extra — scraped picks for tournaments The Odds API doesn't ──
     # carry (Mallorca, Bad Homburg, Eastbourne, Challengers, etc.).
@@ -795,8 +811,14 @@ async def _refresh_picks(date_str: str) -> int:
 
     # Delete previous entries for this date AND any leftover picks with the
     # same UUID5 from a prior day, then insert fresh.
-    await db.picks.delete_many({"pick_date": date_str})
-    await db.picks.delete_many({"id": {"$in": list(seen_ids)}})
+    # When sport_filter is set (e.g. MLB pregame loop), scope the wipe to
+    # just that sport so the other sports' rows stay intact.
+    if sport_filter:
+        await db.picks.delete_many({"pick_date": date_str, "sport": sport_filter})
+        await db.picks.delete_many({"id": {"$in": list(seen_ids)}, "sport": sport_filter})
+    else:
+        await db.picks.delete_many({"pick_date": date_str})
+        await db.picks.delete_many({"id": {"$in": list(seen_ids)}})
     # Defensive write: drop malformed pick docs (missing required fields)
     # so a single broken doc never aborts the entire batch insert. Required
     # fields: id, sport, event_time, market, book_odds.
@@ -2884,6 +2906,58 @@ async def _daily_refresh_loop():
             await asyncio.sleep(3600)
 
 
+# ─── MLB Pregame Quick-Refresh Loop ─────────────────────────────────────
+# User-reported bug (verified in DB): "MLB games come on at 3:11 and get on
+# board around 3:08 — barely have time to put bets in." Cause: the global
+# refresh runs hourly, and books typically post MLB player props ~90 min
+# before first pitch (when the manager publishes the lineup). With a 1-hour
+# cadence, picks land 5–55 min pre-game depending on when the slate happened
+# to align with the refresh tick.
+#
+# Fix: poll MLB-only every 5 min during the US daytime window (15:00–23:00
+# UTC = 11 AM – 7 PM ET). Cheap because we filter to MLB only — non-MLB
+# fetchers are skipped (saves Odds credits) and other sports' picks are not
+# wiped from the DB.
+_MLB_QUICK_REFRESH_INTERVAL = 5 * 60   # 5 minutes
+_MLB_WINDOW_START_UTC_HOUR = 15        # 11 AM ET
+_MLB_WINDOW_END_UTC_HOUR = 23          # 7 PM ET (catches late west-coast first pitches)
+
+
+async def _mlb_pregame_loop():
+    """Refresh MLB picks every 5 min during US daytime so player props
+    surface 60–90 min pre-game instead of 5–10 min pre-game."""
+    # Let startup settle so the initial seed completes first.
+    await asyncio.sleep(120)
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            hour = now.hour
+            if _MLB_WINDOW_START_UTC_HOUR <= hour < _MLB_WINDOW_END_UTC_HOUR:
+                await _refresh_picks(_today_str(), sport_filter="MLB")
+                await asyncio.sleep(_MLB_QUICK_REFRESH_INTERVAL)
+            else:
+                # Outside MLB hours — sleep until the window reopens.
+                # Compute seconds until 15:00 UTC today (or tomorrow if already past 23:00).
+                target = now.replace(
+                    hour=_MLB_WINDOW_START_UTC_HOUR, minute=0, second=0, microsecond=0,
+                )
+                if now >= target:
+                    target = target + timedelta(days=1)
+                wait_seconds = max(60, int((target - now).total_seconds()))
+                logger.info(
+                    "MLB pregame loop: outside window (UTC %02d:00–%02d:00), "
+                    "sleeping %d min until next opener.",
+                    _MLB_WINDOW_START_UTC_HOUR, _MLB_WINDOW_END_UTC_HOUR,
+                    wait_seconds // 60,
+                )
+                await asyncio.sleep(min(wait_seconds, 3600))  # cap at 1h, re-check
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning("MLB pregame refresh failed: %s", e)
+            await asyncio.sleep(_MLB_QUICK_REFRESH_INTERVAL)
+
+
 async def _settlement_loop():
     """Run settlement every 30 minutes.
 
@@ -3078,6 +3152,12 @@ async def on_startup():
     except Exception as e:
         logger.warning("Historical Engine not armed: %s", e)
     asyncio.create_task(_daily_refresh_loop())
+    asyncio.create_task(_mlb_pregame_loop())
+    logger.info(
+        "MLB pregame quick-refresh loop armed (%d-sec cadence during UTC %02d:00–%02d:00)",
+        _MLB_QUICK_REFRESH_INTERVAL,
+        _MLB_WINDOW_START_UTC_HOUR, _MLB_WINDOW_END_UTC_HOUR,
+    )
     asyncio.create_task(_settlement_loop())
     asyncio.create_task(_weekly_model_tuning_loop())
     # Soccer module: pregame pipeline every 15 min (user choice 3A — no
