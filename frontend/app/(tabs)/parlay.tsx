@@ -744,7 +744,6 @@ function ParlayCardView({
       <Text style={styles.betSlipHelp}>
         Slip auto-copied to clipboard · Tap SAVE to track it under History
       </Text>
-      </Text>
     </View>
   );
 }
