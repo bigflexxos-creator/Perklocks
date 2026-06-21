@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator,
   RefreshControl, Pressable, Alert,
@@ -12,12 +12,13 @@ import { LineTypeToggle } from "@/src/components/LineTypeToggle";
 import { SportFilterBar } from "@/src/components/SportFilterBar";
 import { useParlayPreferences } from "@/src/lib/useParlayPreferences";
 import {
-  SPORTSBOOKS, SportsbookId, openSportsbook,
+  SportsbookId,
   formatBetSlip, copyBetSlip,
 } from "@/src/lib/sportsbookLinks";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 import { getDisplayLockRounded } from "@/src/lib/lockScore";
+import { buildSlipText as buildGamblySlipText, shareSlip, saveSlipImage } from "@/src/lib/shareBetSlip";
 
 // ─── Card label → accent colour mapping ───────────────────────────────
 const CARD_ACCENTS: Record<ParlayCard["label"], string> = {
@@ -542,42 +543,46 @@ function ParlayCardView({
     }
   }, [buildSlipText]);
 
-  const onOpenBook = useCallback(async (book: SportsbookId) => {
-    // Auto-copy the slip first so the user can paste it in the sportsbook.
-    await copyBetSlip(buildSlipText());
-    onSetPreferredBook(book);
-    // Deep-link to the FIRST leg's event page. Multi-leg parlays can't be
-    // pre-loaded without partner-API auth, but landing on the first event
-    // is far better than the sportsbook homepage.
-    const firstLeg = card.legs[0] as any;
-    const eventId =
-      book === "fanduel" ? firstLeg?.fanduel_event_id :
-      book === "draftkings" ? firstLeg?.draftkings_event_id :
-      book === "betmgm" ? firstLeg?.betmgm_event_id :
-      book === "caesars" ? firstLeg?.caesars_event_id :
-      undefined;
-    const searchHint = firstLeg
-      ? `${firstLeg.away_team || ""} ${firstLeg.home_team || ""}`.trim() || firstLeg.event
-      : undefined;
-    // Sportsbook Mapping Engine: prefer the per-leg best_link if available
-    // (mapping keys are PascalCase: FanDuel/DraftKings/BetMGM/Caesars).
-    const bookKeyMap: Record<SportsbookId, string> = {
-      fanduel:   "FanDuel",
-      draftkings: "DraftKings",
-      betmgm:    "BetMGM",
-      caesars:   "Caesars",
-    };
-    const mappedBookKey = bookKeyMap[book];
-    const mappedLink = firstLeg?.sportsbook_mapping?.[mappedBookKey]?.best_link as string | undefined;
-    const ok = await openSportsbook(book, eventId, searchHint, mappedLink);
-    if (!ok) {
-      Alert.alert("Could not open sportsbook",
-        "Your bet slip is copied — paste it manually in the sportsbook.");
+  // ── Share-to-Gambly pipeline ────────────────────────────────────────
+  const cardRef = useRef<View>(null);
+  const [sharing, setSharing] = useState(false);
+
+  const buildSharePayload = useCallback(() => ({
+    legs: card.legs.map((l: any) => ({
+      sport: l.sport,
+      league: l.league,
+      event: l.event,
+      market: l.market,
+      selection: l.market,
+      book_odds: l.book_odds,
+      bookmaker: l.bookmaker || l.book,
+      confidence: typeof getDisplayLockRounded === "function"
+        ? getDisplayLockRounded(l) : undefined,
+    })),
+    combined_odds: card.combined_american_odds,
+    label: card.label,
+    generated_at: new Date().toISOString(),
+  }), [card]);
+
+  const onShare = useCallback(async () => {
+    if (sharing) return;
+    setSharing(true);
+    try {
+      const text = buildGamblySlipText(buildSharePayload());
+      await shareSlip(cardRef, text);
+    } finally {
+      setSharing(false);
     }
-  }, [buildSlipText, card.legs, onSetPreferredBook]);
+  }, [buildSharePayload, sharing]);
+
+  const onSaveImage = useCallback(async () => {
+    if (sharing) return;
+    setSharing(true);
+    try { await saveSlipImage(cardRef); } finally { setSharing(false); }
+  }, [sharing]);
 
   return (
-    <View style={[styles.cardWrap, { borderColor: accent }]}>
+    <View ref={cardRef} collapsable={false} style={[styles.cardWrap, { borderColor: accent }]}>
       {/* Header */}
       <View style={styles.cardHeader}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flex: 1 }}>
@@ -702,13 +707,13 @@ function ParlayCardView({
         );
       })}
 
-      {/* ── BET SLIP ACTION ROW — copy & open sportsbook deep links ── */}
+      {/* ── BET SLIP ACTION ROW — copy · save-to-history · share · save-image ── */}
       <View style={[styles.betSlipBar, { borderColor: accent + "55" }]}>
         <Pressable
           testID={`parlay-copy-${card.label}`}
           onPress={onCopy}
           style={({ pressed }) => [
-            styles.copyBtn,
+            styles.actionBtn,
             { borderColor: accent, opacity: pressed ? 0.6 : 1 },
           ]}
         >
@@ -717,11 +722,12 @@ function ParlayCardView({
             size={14}
             color={copied ? COLORS.neonGreen : accent}
           />
-          <Text style={[styles.copyTxt, { color: copied ? COLORS.neonGreen : accent }]}>
-            {copied ? "COPIED" : "COPY SLIP"}
+          <Text style={[styles.actionTxt, { color: copied ? COLORS.neonGreen : accent }]}>
+            {copied ? "COPIED" : "COPY"}
           </Text>
         </Pressable>
-        {/* ── Save to History (Save-on-Tap) ──────────────────── */}
+
+        {/* Save to History (Save-on-Tap) */}
         <Pressable
           testID={`parlay-save-${card.label}`}
           onPress={async () => {
@@ -733,16 +739,44 @@ function ParlayCardView({
             }
           }}
           style={({ pressed }) => [
-            styles.copyBtn,
+            styles.actionBtn,
             { borderColor: COLORS.goldElite, opacity: pressed ? 0.6 : 1 },
           ]}
         >
           <Ionicons name="bookmark-outline" size={14} color={COLORS.goldElite} />
-          <Text style={[styles.copyTxt, { color: COLORS.goldElite }]}>SAVE</Text>
+          <Text style={[styles.actionTxt, { color: COLORS.goldElite }]}>SAVE</Text>
+        </Pressable>
+
+        {/* Native share sheet — Gambly + any installed share target */}
+        <Pressable
+          testID={`parlay-share-${card.label}`}
+          onPress={onShare}
+          disabled={sharing}
+          style={({ pressed }) => [
+            styles.actionBtnPrimary,
+            { backgroundColor: accent, opacity: pressed || sharing ? 0.65 : 1 },
+          ]}
+        >
+          <Ionicons name="share-social-outline" size={14} color={COLORS.bg} />
+          <Text style={[styles.actionTxt, { color: COLORS.bg }]}>SHARE</Text>
+        </Pressable>
+
+        {/* Save PNG to device gallery */}
+        <Pressable
+          testID={`parlay-save-image-${card.label}`}
+          onPress={onSaveImage}
+          disabled={sharing}
+          hitSlop={6}
+          style={({ pressed }) => [
+            styles.iconBtn,
+            { borderColor: COLORS.voltBlue, opacity: pressed || sharing ? 0.6 : 1 },
+          ]}
+        >
+          <Ionicons name="download-outline" size={16} color={COLORS.voltBlue} />
         </Pressable>
       </View>
       <Text style={styles.betSlipHelp}>
-        Slip auto-copied to clipboard · Tap SAVE to track it under History
+        SHARE → opens system share sheet (Gambly, Messages, more) with PNG slip · text also copied to clipboard
       </Text>
     </View>
   );
@@ -921,8 +955,34 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 8,
+    flexWrap: "wrap",
   },
+  actionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 11,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1.5,
+  },
+  actionBtnPrimary: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 14,
+    height: 32,
+    borderRadius: 16,
+    marginLeft: "auto",
+  },
+  actionTxt: { fontSize: 10, fontWeight: "900", letterSpacing: 1.3 },
+  iconBtn: {
+    width: 32, height: 32, borderRadius: 16,
+    borderWidth: 1.5,
+    alignItems: "center", justifyContent: "center",
+  },
+  // legacy aliases (kept to avoid breaking any external refs)
   copyBtn: {
     flexDirection: "row",
     alignItems: "center",

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator, Pressable,
 } from "react-native";
@@ -8,13 +8,13 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
 import { api, Pick } from "@/src/lib/api";
 import { useBetSlip, MAX_SLIP_SIZE } from "@/src/contexts/BetSlipContext";
-import { SPORTSBOOKS, openSportsbookWithSlip, SportsbookName } from "@/src/utils/sportsbook";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { SurvivabilityPanel } from "@/src/components/SurvivabilityPanel";
 import { LockV2Panel } from "@/src/components/LockV2Panel";
 import { MarketRankPanel } from "@/src/components/MarketRankPanel";
 import { ScorerBundlesPanel } from "@/src/components/ScorerBundlesPanel";
 import { getDisplayLockRounded } from "@/src/lib/lockScore";
+import { buildSlipText, shareSlip, saveSlipImage, copySlipText } from "@/src/lib/shareBetSlip";
 
 export default function PickDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -24,6 +24,41 @@ export default function PickDetail() {
   const [loading, setLoading] = useState(true);
   const [aiLoading, setAiLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const shareCardRef = useRef<View>(null);
+  const [shareBusy, setShareBusy] = useState(false);
+
+  const buildPickPayload = useCallback((p: Pick) => ({
+    single: {
+      sport: p.sport,
+      league: (p as any).league,
+      event: p.event,
+      market: p.market,
+      selection: p.market,
+      book_odds: p.book_odds,
+      bookmaker: (p as any).bookmaker || (p as any).book,
+      confidence: getDisplayLockRounded(p),
+    },
+    generated_at: new Date().toISOString(),
+  }), []);
+
+  const onShare = useCallback(async () => {
+    if (!pick || shareBusy) return;
+    setShareBusy(true);
+    try {
+      await shareSlip(shareCardRef, buildSlipText(buildPickPayload(pick)));
+    } finally { setShareBusy(false); }
+  }, [pick, shareBusy, buildPickPayload]);
+
+  const onCopy = useCallback(async () => {
+    if (!pick) return;
+    await copySlipText(buildSlipText(buildPickPayload(pick)));
+  }, [pick, buildPickPayload]);
+
+  const onSaveImg = useCallback(async () => {
+    if (!pick || shareBusy) return;
+    setShareBusy(true);
+    try { await saveSlipImage(shareCardRef); } finally { setShareBusy(false); }
+  }, [pick, shareBusy]);
 
   useEffect(() => {
     if (!id) return;
@@ -118,64 +153,102 @@ export default function PickDetail() {
           <Text style={styles.error}>{error}</Text>
         ) : pick ? (
           <>
-            <View style={styles.tagRow}>
-              <View style={[styles.tag, { backgroundColor: `${gradeColor}20`, borderColor: gradeColor }]}>
-                <Text style={[styles.tagText, { color: gradeColor }]}>{pick.grade.toUpperCase()}</Text>
-              </View>
-              <Text style={styles.metaText}>
-                {pick.sport} · {pick.league}
-              </Text>
-            </View>
-
-            <Text style={styles.event}>{pick.event}</Text>
-            {pick.event_time && (
-              <Text style={styles.eventTime}>{formatGameTime(pick.event_time)}</Text>
-            )}
-            <Text style={styles.market}>{pick.market}</Text>
-
-            <View style={[styles.scoreWrap, { borderColor: gradeColor }]}>
-              <Text style={[styles.scoreBig, { color: gradeColor }]} testID="pick-detail-lock-score">
-                {getDisplayLockRounded(pick)}
-              </Text>
-              <Text style={styles.scoreSub}>🔒 LOCK SCORE · BET QUALITY</Text>
-              <Text style={styles.scoreNote}>
-                A 0-99 quality score blending edge, alignment, ROI, data quality, volatility &amp; CLV.
-              </Text>
-
-              {/* Lock v3 — Expected Win and Edge displayed alongside */}
-              <View style={styles.scoreSplitRow}>
-                <View style={styles.scoreSplitCell}>
-                  <Text style={styles.scoreSplitIcon}>📊</Text>
-                  <Text style={[styles.scoreSplitValue, { color: COLORS.textPrimary }]}>
-                    {pick.win_probability}%
-                  </Text>
-                  <Text style={styles.scoreSplitLabel}>EXPECTED WIN</Text>
+            <View ref={shareCardRef} collapsable={false} style={styles.shareCardWrap}>
+              <View style={styles.tagRow}>
+                <View style={[styles.tag, { backgroundColor: `${gradeColor}20`, borderColor: gradeColor }]}>
+                  <Text style={[styles.tagText, { color: gradeColor }]}>{pick.grade.toUpperCase()}</Text>
                 </View>
-                <View style={styles.scoreSplitDivider} />
-                <View style={styles.scoreSplitCell}>
-                  <Text style={styles.scoreSplitIcon}>⚡</Text>
-                  <Text
-                    style={[
-                      styles.scoreSplitValue,
-                      { color: pick.edge_percent > 0 ? COLORS.neonGreen : COLORS.electricBlaze },
-                    ]}
-                  >
-                    {pick.edge_percent > 0 ? "+" : ""}
-                    {pick.edge_percent}%
-                  </Text>
-                  <Text style={styles.scoreSplitLabel}>EDGE VS BOOK</Text>
-                </View>
+                <Text style={styles.metaText}>
+                  {pick.sport} · {pick.league}
+                </Text>
               </View>
 
-              <Text style={styles.confidence}>Confidence: {pick.confidence}</Text>
+              <Text style={styles.event}>{pick.event}</Text>
+              {pick.event_time && (
+                <Text style={styles.eventTime}>{formatGameTime(pick.event_time)}</Text>
+              )}
+              <Text style={styles.market}>{pick.market}</Text>
+
+              <View style={[styles.scoreWrap, { borderColor: gradeColor }]}>
+                <Text style={[styles.scoreBig, { color: gradeColor }]} testID="pick-detail-lock-score">
+                  {getDisplayLockRounded(pick)}
+                </Text>
+                <Text style={styles.scoreSub}>🔒 LOCK SCORE · BET QUALITY</Text>
+                <Text style={styles.scoreNote}>
+                  A 0-99 quality score blending edge, alignment, ROI, data quality, volatility &amp; CLV.
+                </Text>
+
+                {/* Lock v3 — Expected Win and Edge displayed alongside */}
+                <View style={styles.scoreSplitRow}>
+                  <View style={styles.scoreSplitCell}>
+                    <Text style={styles.scoreSplitIcon}>📊</Text>
+                    <Text style={[styles.scoreSplitValue, { color: COLORS.textPrimary }]}>
+                      {pick.win_probability}%
+                    </Text>
+                    <Text style={styles.scoreSplitLabel}>EXPECTED WIN</Text>
+                  </View>
+                  <View style={styles.scoreSplitDivider} />
+                  <View style={styles.scoreSplitCell}>
+                    <Text style={styles.scoreSplitIcon}>⚡</Text>
+                    <Text
+                      style={[
+                        styles.scoreSplitValue,
+                        { color: pick.edge_percent > 0 ? COLORS.neonGreen : COLORS.electricBlaze },
+                      ]}
+                    >
+                      {pick.edge_percent > 0 ? "+" : ""}
+                      {pick.edge_percent}%
+                    </Text>
+                    <Text style={styles.scoreSplitLabel}>EDGE VS BOOK</Text>
+                  </View>
+                </View>
+
+                <Text style={styles.confidence}>Confidence: {pick.confidence}</Text>
+              </View>
+
+              <View style={styles.bento}>
+                <BentoCell label="BOOK IMPLIED" value={`${pick.implied_probability}%`} muted />
+                <BentoCell
+                  label="BOOK ODDS"
+                  value={pick.book_odds > 0 ? `+${pick.book_odds}` : `${pick.book_odds}`}
+                />
+              </View>
             </View>
 
-            <View style={styles.bento}>
-              <BentoCell label="BOOK IMPLIED" value={`${pick.implied_probability}%`} muted />
-              <BentoCell
-                label="BOOK ODDS"
-                value={pick.book_odds > 0 ? `+${pick.book_odds}` : `${pick.book_odds}`}
-              />
+            {/* ── Share-to-Gambly action row ────────────────────────── */}
+            <View style={styles.shareRow}>
+              <Pressable
+                testID="pick-copy"
+                onPress={onCopy}
+                style={({ pressed }) => [
+                  styles.shareBtn, { borderColor: COLORS.textMuted }, pressed && { opacity: 0.6 },
+                ]}
+              >
+                <Ionicons name="copy-outline" size={14} color={COLORS.textPrimary} />
+                <Text style={styles.shareTxt}>COPY</Text>
+              </Pressable>
+              <Pressable
+                testID="pick-save-image"
+                onPress={onSaveImg}
+                disabled={shareBusy}
+                style={({ pressed }) => [
+                  styles.shareBtn, { borderColor: COLORS.voltBlue }, (pressed || shareBusy) && { opacity: 0.6 },
+                ]}
+              >
+                <Ionicons name="download-outline" size={14} color={COLORS.voltBlue} />
+                <Text style={[styles.shareTxt, { color: COLORS.voltBlue }]}>SAVE IMG</Text>
+              </Pressable>
+              <Pressable
+                testID="pick-share"
+                onPress={onShare}
+                disabled={shareBusy}
+                style={({ pressed }) => [
+                  styles.shareBtnPrimary, (pressed || shareBusy) && { opacity: 0.65 },
+                ]}
+              >
+                <Ionicons name="share-social-outline" size={14} color={COLORS.bg} />
+                <Text style={[styles.shareTxt, { color: COLORS.bg }]}>SHARE TO GAMBLY</Text>
+              </Pressable>
             </View>
 
             <Text style={styles.sectionLabel}>
@@ -328,26 +401,10 @@ export default function PickDetail() {
             </View>
 
             <View style={styles.sportsbookSection}>
-              <Text style={styles.sectionLabel}>PLACE THE BET</Text>
+              <Text style={styles.sectionLabel}>SHARE THIS PICK</Text>
               <Text style={styles.sportsbookHelper}>
-                Tap a sportsbook to open it in the {pick.sport} section. Search for the matchup &amp; line.
+                Use the share buttons at the top of this card to send the slip to Gambly or any installed app.
               </Text>
-              <View style={styles.sportsbookGrid}>
-                {SPORTSBOOKS.map((book) => (
-                  <Pressable
-                    key={book}
-                    onPress={() => openSportsbookWithSlip(book as SportsbookName, [pick])}
-                    style={({ pressed }) => [
-                      styles.sportsbookBtn,
-                      pressed && { opacity: 0.8 },
-                    ]}
-                    testID={`sportsbook-${book}`}
-                  >
-                    <Ionicons name="open-outline" size={14} color={COLORS.textPrimary} />
-                    <Text style={styles.sportsbookText}>{book}</Text>
-                  </Pressable>
-                ))}
-              </View>
             </View>
 
             <Text style={styles.disclaimer}>
@@ -539,4 +596,21 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted, fontSize: 11, lineHeight: 16,
     marginTop: 22, textAlign: "center",
   },
+  // ── Share-to-Gambly ─────────────────────────────────────────────
+  shareCardWrap: { paddingTop: 4 },
+  shareRow: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    marginTop: 14, marginBottom: 4, flexWrap: "wrap",
+  },
+  shareBtn: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    paddingHorizontal: 12, height: 36, borderRadius: 18, borderWidth: 1.5,
+  },
+  shareBtnPrimary: {
+    flex: 1, minWidth: 150,
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+    paddingHorizontal: 14, height: 36, borderRadius: 18,
+    backgroundColor: COLORS.goldElite,
+  },
+  shareTxt: { color: COLORS.textPrimary, fontSize: 11, fontWeight: "900", letterSpacing: 1.2 },
 });
