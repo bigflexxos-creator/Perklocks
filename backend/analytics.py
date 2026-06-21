@@ -128,9 +128,14 @@ async def compute_model_performance(db, days: int = 30) -> dict[str, Any]:
     iso_cutoff = cutoff.isoformat()
     iso_week = week_cutoff.isoformat()
 
-    # Pull all settled picks once.
+    # Pull all settled picks once. Excludes voided / excluded-from-history
+    # picks so the Analytics dashboard doesn't double-count the legacy soccer
+    # goalscorer payloads we voided after shipping the top-3-scorers rule.
+    # Without this filter, those picks polluted ROI / CLV / win-rate stats
+    # even though they were already hidden from the History tab.
     cursor = db.picks.find(
-        {"status": {"$in": ["won", "lost", "push"]}},
+        {"status": {"$in": ["won", "lost", "push"]},
+         "excluded_from_history": {"$ne": True}},
         {"_id": 0, "sport": 1, "market": 1, "status": 1, "lock_score": 1,
          "win_probability": 1, "edge_percent": 1, "book_odds": 1,
          "odds_at_pick": 1, "closing_odds": 1, "units_profit": 1,
