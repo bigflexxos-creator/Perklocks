@@ -480,6 +480,16 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
         edge_floor = -50.0
     elif is_long_shot:
         edge_floor = -10.0
+    elif sport in ("Tennis", "UFC") and (
+        "moneyline" in market_l or market_l.startswith("h2h")
+    ):
+        # Tennis & UFC are 1v1 sports where the book is highly accurate.
+        # Our random model_lift of ±4% routinely produces tiny negative
+        # edges (-0.5 to -3%) on legit -150 to -400 favorites. The strict
+        # -1% edge floor was killing ~70% of all tennis MLs, leaving only
+        # alt-line picks visible. Loosen specifically for these 1v1 ML
+        # markets — lock_score floor still gates true garbage.
+        edge_floor = -8.0
     else:
         edge_floor = -1.0
     if edge < edge_floor:
@@ -624,6 +634,13 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
     away = game.get("away_team")
     if not home or not away:
         return []
+    # ── UFC policy: MONEYLINE ONLY ────────────────────────────────────
+    # Per user spec ("only ufc money lines from now"), suppress all UFC
+    # non-moneyline markets (totals = round-totals, spreads = method-of-
+    # victory variants, etc.). UFC is fundamentally a 1v1 sport — the
+    # totals/method markets are high-variance and have been losing
+    # money. We still let the moneyline path below run normally.
+    _ufc_ml_only = (sport == "UFC")
     commence = game.get("commence_time")
     # Per-sport scheduling window. UFC fight cards run weekly, KBO has 5
     # games/day all week, Tennis tournaments span 7-10 days — these sparse
@@ -722,7 +739,8 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
     # Totals pick — Over by default. We also build the Under counterpart and
     # tag it as a main-line "Under lock" so the dedicated Under-of-the-Day
     # tab can surface it under MAIN (vs. extreme alt unders under ALT).
-    if totals_outs:
+    # UFC: skip — moneyline-only policy.
+    if totals_outs and not _ufc_ml_only:
         over = next((o for o in totals_outs if o.get("name") == "Over"), None)
         under = next((o for o in totals_outs if o.get("name") == "Under"), None)
         if over and under and over.get("point") == under.get("point"):
