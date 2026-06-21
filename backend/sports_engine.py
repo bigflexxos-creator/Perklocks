@@ -1150,6 +1150,12 @@ PLAYER_PROP_MARKETS = {
         "batter_hits",
         # Alt lines — lower thresholds with higher implied prob (the "near-locks")
         "batter_hits_alternate",
+        # Hits + Runs + RBIs composite (popular DFS-style market) — added
+        # 2026-06-21 per user request. Main line is typically 1.5; alt lines
+        # carve out near-locks at 0.5 / 2.5 / 3.5+. The Odds API exposes
+        # both as `batter_hits_runs_rbis` + `_alternate`.
+        "batter_hits_runs_rbis",
+        "batter_hits_runs_rbis_alternate",
         # Pitcher strikeout markets — added 2026-06-18 per user request.
         # The Odds API exposes these as `pitcher_strikeouts` + alt-line variant.
         "pitcher_strikeouts", "pitcher_strikeouts_alternate",
@@ -1196,6 +1202,7 @@ PLAYER_PROP_MARKETS = {
 # a different filter regime for these.
 _ALT_PROP_MARKETS = {
     "batter_hits_alternate",
+    "batter_hits_runs_rbis_alternate",  # MLB Hits+Runs+RBIs alt (lower line)
     "pitcher_strikeouts_alternate",   # MLB pitcher Ks alt (lower line, high implied)
     "player_points_alternate", "player_rebounds_alternate",
     "player_assists_alternate",
@@ -1756,6 +1763,7 @@ def _prop_market_label(market_key: str, side: str, point: float | None) -> str:
     base_key = market_key.replace("_alternate", "")
     pretty = {
         "batter_hits": "Hits",
+        "batter_hits_runs_rbis": "Hits + Runs + RBIs",
         "batter_home_runs": "Home Runs",
         "pitcher_strikeouts": "Strikeouts",
         "pitcher_outs": "Outs Recorded",
