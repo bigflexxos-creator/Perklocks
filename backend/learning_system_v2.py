@@ -161,7 +161,7 @@ async def compute_market_performance(db) -> dict[tuple[str, str], dict]:
                                  roi, clv_avg, calibration_err}}.
     """
     pipeline = [
-        {"$match": {"status": {"$in": ["won", "lost", "push"]}}},
+        {"$match": {"status": {"$in": ["won", "lost", "push"]}, "excluded_from_history": {"$ne": True}}},
         {"$project": {
             "_id": 0, "sport": 1, "league": 1,
             "market_key": {"$toLower": {"$ifNull": ["$market", ""]}},
@@ -236,6 +236,7 @@ async def compute_band_calibration(db) -> list[dict]:
         cursor = db.picks.find({
             "status": {"$in": ["won", "lost"]},
             "lock_score": {"$gte": band["min"], "$lte": band["max"]},
+            "excluded_from_history": {"$ne": True},
         }, {"_id": 0, "status": 1})
         won = lost = 0
         async for p in cursor:
@@ -263,7 +264,7 @@ async def recompute_and_persist(db) -> dict:
 
     Returns a summary dict ready for the analytics dashboard."""
     # Volume gate: skip relearn if not enough settled picks.
-    total_settled = await db.picks.count_documents({"status": {"$in": ["won", "lost"]}})
+    total_settled = await db.picks.count_documents({"status": {"$in": ["won", "lost"]}, "excluded_from_history": {"$ne": True}})
     if total_settled < MIN_TOTAL_PICKS:
         logger.info("v2 learning gated: total_settled=%d < %d — using neutral weights",
                     total_settled, MIN_TOTAL_PICKS)
