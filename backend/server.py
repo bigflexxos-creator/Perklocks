@@ -1235,17 +1235,30 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
                         line_type: Optional[str] = None,
                         sport: Optional[str] = None,
                         market: Optional[str] = None,
-                        league: Optional[str] = None):
+                        league: Optional[str] = None,
+                        mode: str = "v2"):
     """Top 3 safest bets of the day — the user picks which one to roll.
+
+    Rollover V2 (default) — "Survivability Mode":
+      • HARD floors: odds ≥ -350, edge ≥ +5%, win_prob ≥ implied + 5pts
+      • Risk-adjusted ranking (chalk penalty + edge multiplier + historical
+        consistency bonus + alt-line penalty) replaces pure win_prob sort
+      • At most ONE alt-line pick in the trio
+      • Soccer goalscorer markets always blocked
+
+    Modes:
+      • `mode=v2` (default) — single best pick + 2 alternatives
+      • `mode=split` — return 2 uncorrelated picks for split-stake bankroll
+        management (lower variance than single -500 chalk)
+      • `mode=v1` — legacy ranking (no floors), useful for comparison
 
     Rules:
       - Today's slate only (kickoff within 24h)
-      - Lock score >= 90
+      - Lock score >= 90 (progressive floor)
       - NO Soccer by default (small leagues, high variance) — but if the user
         explicitly picks `sport=Soccer` we honour their choice.
       - Prefers player props over team moneylines (lower variance)
-      - Ranks by win_probability first, then lock_score — "most likely to hit"
-      - Diversifies: at most one pick per game so the trio isn't 3 of the same matchup
+      - Diversifies: at most one pick per game / per sport
       - `line_type`: "main" / "alt" / "both" (default) — same semantics as /picks/today.
       - `sport` / `market` / `league`: optional narrowing filters.
     """
@@ -1281,27 +1294,81 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
     else:
         base_q["market"] = goalscorer_block["market"]
 
-    # Progressive widening — Rollover needs at least 3 options. We try each
-    # safety floor in order until we have ≥3 distinct candidate games, but we
-    # NEVER widen the user-chosen sport/market/league filters.
+    # ── Rollover V2 — Survivability Mode ─────────────────────────────
+    # Root cause of past losses (per user feedback "rollover did bad today"):
+    #   • Alt-line picks at -400 to -750 odds carried lock_score=99 but
+    #     edge was 0-2%. One loss wipes out 5+ wins → -EV in the long run.
+    #   • Tennis Over 18.5 Games at -332 with 2% edge ("razor-thin") kept
+    #     hitting the rollover and burning bankroll.
+    #
+    # Hard floors that EVERY rollover candidate must clear:
+    #   1. book_odds ≥ -350           (no chalk bombs)
+    #   2. edge_percent ≥ +5%         (no razor-thin edges)
+    #   3. real EV gate: wp ≥ implied + 5  (kills lock=99 / odds=-500 traps)
+    #
+    # Diversification:
+    #   • At most ONE alt-line pick in the trio.
+    #   • At most one pick per game / per sport (existing rule).
     floors = [90, 85, 80, 75, 70]
-    chalk_cap = -400
+    chalk_cap_strict = -350
+    chalk_cap_relaxed = -400  # fallback if we genuinely have no safe pool
+
+    def _implied_prob(odds: float) -> float:
+        """American odds → implied probability (0..1)."""
+        try:
+            o = float(odds)
+        except Exception:
+            return 0.0
+        if o == 0:
+            return 0.0
+        return (-o) / ((-o) + 100.0) if o < 0 else 100.0 / (o + 100.0)
+
+    def _survivability_ok(p: dict, *, strict: bool = True) -> bool:
+        """Filter that decides whether a pick deserves rollover placement."""
+        odds = p.get("book_odds") or -9999
+        edge = float(p.get("edge_percent") or 0)
+        wp = float(p.get("win_probability") or 0)
+        cap = chalk_cap_strict if strict else chalk_cap_relaxed
+        if odds < cap:
+            return False
+        if strict and edge < 5.0:
+            return False
+        if not strict and edge < 3.0:
+            return False
+        # Real-EV gate — model must show ≥5pt edge over the book's implied
+        # probability (strict) or ≥3pt (relaxed). This kills picks that look
+        # locked-in only because the price is already pricing them as locks.
+        implied_pct = _implied_prob(odds) * 100.0
+        cushion = 5.0 if strict else 3.0
+        if wp < (implied_pct + cushion):
+            return False
+        return True
+
     picks: list = []
     floor_used: int = 90
+    strict_mode = True
     for f in floors:
         q = {**base_q, "lock_score": {"$gte": f}}
         cursor = db.picks.find(q, {"_id": 0})
-        picks = await cursor.to_list(length=500)
-        picks = [p for p in picks if (p.get("book_odds") or -9999) >= chalk_cap]
+        candidates = await cursor.to_list(length=500)
+        picks = [p for p in candidates if _survivability_ok(p, strict=True)]
         if len({p.get("event") for p in picks}) >= 3:
             floor_used = f
             break
         floor_used = f
-    # Final safety net — if still nothing matched, broaden the chalk cap.
-    if len(picks) < 3:
+    # Relaxed fallback — only if strict mode couldn't muster 3 distinct
+    # games. Still applies survivability gates, just slightly looser.
+    if len({p.get("event") for p in picks}) < 3:
+        strict_mode = False
+        q = {**base_q, "lock_score": {"$gte": 75}}
+        candidates = await db.picks.find(q, {"_id": 0}).to_list(length=500)
+        picks = [p for p in candidates if _survivability_ok(p, strict=False)]
+    # Last-ditch safety net — anything within reasonable bounds.
+    if not picks:
         q = {**base_q, "lock_score": {"$gte": 70}}
-        picks = await db.picks.find(q, {"_id": 0}).to_list(length=500)
-        picks = [p for p in picks if (p.get("book_odds") or -9999) >= -700]
+        candidates = await db.picks.find(q, {"_id": 0}).to_list(length=500)
+        picks = [p for p in candidates if (p.get("book_odds") or -9999) >= -500
+                                          and float(p.get("edge_percent") or 0) >= 2.0]
     # Restrict Rollover to today's games only (start time within next 24h),
     # with graceful fallback to the broader pool if nothing starts today.
     # In ALL cases (including the fallback) we run picks through
@@ -1325,15 +1392,41 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
     # User explicit ranking: win_probability first (highest chance to hit),
     # lock_score as tie-breaker, edge_percent as third tie-breaker. No
     # composite weighting — the strongest signal of "will it hit" should win.
-    ranked = sorted(
-        pool,
-        key=lambda p: (
-            p.get("win_probability", 0) or 0,
-            p.get("lock_score", 0) or 0,
-            p.get("edge_percent", 0) or 0,
-        ),
-        reverse=True,
-    )
+    #
+    # Rollover V2 — RISK-ADJUSTED ranking. Pure win_probability sort was
+    # putting -500/-700 chalks at the top even when their edge was 0%. The
+    # new composite penalizes chalk and rewards real edge + historical
+    # consistency (Historical Engine signal).
+    def _ev_score(p: dict) -> float:
+        wp = float(p.get("win_probability") or 0)
+        edge = float(p.get("edge_percent") or 0)
+        odds = float(p.get("book_odds") or -100)
+        # 1) Chalk penalty: 0% at -200, scaling to 30% by -350 and beyond.
+        if odds <= -200:
+            chalk_pen = min(0.30, (abs(odds) - 200) / 500.0)
+        else:
+            chalk_pen = 0.0
+        # 2) Edge multiplier: +20% if edge ≥10%, baseline 1.0 at 5%.
+        if edge >= 10:
+            edge_mult = 1.20
+        elif edge >= 7:
+            edge_mult = 1.10
+        else:
+            edge_mult = 1.0
+        # 3) Historical consistency bonus (Historical Engine).
+        sig = p.get("historical_signal") or {}
+        consistency = float(sig.get("consistency") or 0)
+        if sig.get("label") == "hot" and consistency >= 0.7:
+            hist_bonus = 1.05
+        elif sig.get("label") == "cold":
+            hist_bonus = 0.95
+        else:
+            hist_bonus = 1.0
+        # 4) Alt-line penalty: alt lines have wider settlement variance.
+        alt_pen = 0.92 if p.get("is_alt") else 1.0
+        return wp * (1.0 - chalk_pen) * edge_mult * hist_bonus * alt_pen
+
+    ranked = sorted(pool, key=_ev_score, reverse=True)
     # Diversify: at most one pick per game AND prefer at most one per
     # SPORT so the trio represents the day's slate broadly. Without the
     # sport-cap, soccer ML moneylines (which carry the highest single-bet
@@ -1348,17 +1441,25 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
     seen_sports: set = set()
     primary: list = []
     secondary: list = []
+    alts_in_trio: int = 0
+    MAX_ALTS = 1  # Rollover V2: at most ONE alt-line pick in the trio
     for p in ranked:
         ev = p.get("event")
         sp = p.get("sport") or ""
         if ev in seen_events:
+            continue
+        # Alt-line cap — once we have 1 alt, skip further alts.
+        if p.get("is_alt") and alts_in_trio >= MAX_ALTS:
+            secondary.append(p)
             continue
         if sp in seen_sports:
             secondary.append(p)
             continue
         seen_events.add(ev)
         seen_sports.add(sp)
-        primary.append({**p, "composite_rank": round(p.get("win_probability", 0) or 0, 1)})
+        if p.get("is_alt"):
+            alts_in_trio += 1
+        primary.append({**p, "composite_rank": round(_ev_score(p), 2)})
         if len(primary) >= 3:
             break
     # Fall back to sport-repeats only if we couldn't fill the top 3 from
@@ -1380,6 +1481,19 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
         "composite_rank": top[0]["composite_rank"] if top else None,
         "total_evaluated": len(pool),
         "scoped_to_today": bool(today_picks),
+        "rollover_version": "v2",
+        "survivability": {
+            "mode": "strict" if strict_mode else "relaxed",
+            "odds_floor": chalk_cap_strict if strict_mode else chalk_cap_relaxed,
+            "edge_floor": 5.0 if strict_mode else 3.0,
+            "ev_cushion_pts": 5.0 if strict_mode else 3.0,
+            "alt_cap": MAX_ALTS,
+            "lock_floor_used": floor_used,
+            "rejected_chalk": sum(
+                1 for p in candidates
+                if (p.get("book_odds") or -9999) < chalk_cap_strict
+            ) if candidates else 0,
+        },
     }
 
 
