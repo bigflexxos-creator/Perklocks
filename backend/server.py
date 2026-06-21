@@ -1422,16 +1422,12 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     )
     await _ensure_today_picks()
     is_high_risk = (mode or "").lower() == "high_risk"
-    is_today_window = (mode or "").lower() == "today_window"
-    # ─── Advanced mode (4th) ─────────────────────────────────────────────
-    # Smarter optimizer that pulls from the FULL board (matching the Locks
-    # feed query) and weights legs by historical bucket ROI + win-rate
-    # learning. Toggleable between two profiles via `advanced_sub`:
-    #   • "safer"  → high hit-rate priority. Lock floor 92, max 4 legs,
-    #                reject any negative-ROI bucket, prefer 95+ legs first.
-    #   • "ev"     → long-term profit priority. Lock floor 85, max 6 legs,
-    #                EV-weighted ranking (win_prob × payout vs loss × stake),
-    #                allows slightly worse buckets if EV>0.
+    # "1-5H Today" is now a WINDOW overlay (not its own mode) — it works under
+    # any active mode (Standard / Advanced / High Risk). Triggered whenever the
+    # requested window is short (≤8h). Applies a 30-min start floor (so we
+    # don't show games already starting) + auto-expand fallback if the tight
+    # window is empty. The mode's lock floor / leg target rules still apply.
+    is_today_window = (mode or "").lower() == "today_window" or int(window_hours or 24) <= 8
     is_advanced = (mode or "").lower() == "advanced"
     advanced_sub_norm = (advanced_sub or "ev").lower()
     if advanced_sub_norm not in ("safer", "ev"):

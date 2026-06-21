@@ -307,40 +307,32 @@ export default function ParlayScreen() {
       </View>
 
       {/* ── TIME WINDOW selector ──
-          Picking "1-5H TODAY" auto-engages the today_window optimizer mode
-          (30-min start floor, auto-expand fallback) so the user controls
-          "same-day action" right from the window picker instead of from
-          a separate mode button. Other windows revert mode to standard. */}
+          1-5H is now a pure window overlay — it works under ANY mode
+          (Standard / Advanced / High Risk). Backend auto-applies the
+          "today" guards (30-min start floor + auto-expand fallback)
+          whenever the requested window is ≤8h, regardless of mode. */}
       <View style={styles.sportRowWrap}>
         <Text style={styles.legLabel}>WINDOW</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sportRow}>
           {[
-            { hours: 5, label: "1-5H · TODAY", todayMode: true },
+            { hours: 5, label: "1-5H · TODAY", isToday: true },
             { hours: 24, label: "24H" },
             { hours: 48, label: "48H" },
             { hours: 72, label: "72H" },
             { hours: 168, label: "WEEK" },
           ].map((w) => {
-            const active = windowHours === w.hours && (
-              w.todayMode ? mode === "today_window" : mode !== "today_window"
-            );
+            const active = windowHours === w.hours;
             return (
               <Pressable
                 key={w.hours}
                 testID={`parlay-window-${w.hours}`}
                 onPress={() => {
-                  // Auto-switch mode based on window choice.
-                  //   • 5h preset → today_window (tight, high probability)
-                  //   • everything else → back to standard if we were in today_window
-                  const nextMode = w.todayMode
-                    ? "today_window"
-                    : (mode === "today_window" ? "standard" : mode);
-                  updatePrefs({ windowHours: w.hours, mode: nextMode });
+                  updatePrefs({ windowHours: w.hours });
                   setRank(1);
                 }}
-                style={[styles.sportChip, active && (w.todayMode ? styles.sportChipTodayActive : styles.sportChipMixActive)]}
+                style={[styles.sportChip, active && (w.isToday ? styles.sportChipTodayActive : styles.sportChipMixActive)]}
               >
-                {w.todayMode && (
+                {w.isToday && (
                   <Ionicons name="time" size={10} color={active ? COLORS.bg : COLORS.voltBlue} />
                 )}
                 <Text style={[styles.sportChipText, active && styles.sportChipTextActive]}>{w.label}</Text>
