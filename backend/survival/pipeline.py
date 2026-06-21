@@ -23,7 +23,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from .client import find_player_id, hitting_game_log, team_roster
+from .client import find_player_id, hitting_game_log, player_current_team_id, team_roster
 from .engine import rank_candidates, reliability, survival_index, MIN_MISS_SAMPLE
 
 logger = logging.getLogger("lockscore.survival.pipeline")
@@ -135,21 +135,23 @@ async def compute_coverage_for_pick(pick: dict, db,
         )
 
     # Candidate cohort: SAME-TEAM teammates ONLY (per user spec).
-    # Rationale: teammates share the exact same pitching matchup, weather,
-    # ballpark, batting-order context. The opposing team faces a different
-    # pitcher entirely — including them as "coverage" pollutes the signal
-    # with cross-game noise. We deliberately drop the away-team roster.
+    # Critical fix: we MUST resolve the player's team from MLB Stats API,
+    # NOT from the pick's home_team_id. A pick stores the GAME's home team
+    # (e.g. Brewers @ Braves → home_team_id=ATL), which means a Christian
+    # Yelich (Brewers) pick was loading the BRAVES roster as "teammates".
+    # That bug is why Michael Harris II / Matt Olson kept appearing as
+    # Yelich's coverage — they're his OPPONENTS, not teammates.
     #
-    # Resolution order for the primary's team id:
-    #   1. structured `team_id` / `home_team_id` field on the pick
-    #   2. fallback: parse "(TOR)" suffix from the selection text
-    #   3. fallback: if the primary's first game log row has a team field
-    #      we use that (handled implicitly by find_player_id team caching)
-    primary_team_id = (
-        pick.get("team_id")
-        or pick.get("home_team_id")
-        or _team_id_from_selection(pick.get("selection") or "")
-    )
+    # Resolution order (most reliable first):
+    #   1. MLB Stats API `/people/{id}?hydrate=currentTeam` ← authoritative
+    #   2. Structured `team_id` field on the pick (rarely populated)
+    #   3. Fallback: parse "(MIL)" suffix from selection text
+    primary_team_id = await player_current_team_id(primary_id)
+    if not primary_team_id:
+        primary_team_id = (
+            pick.get("team_id")
+            or _team_id_from_selection(pick.get("selection") or "")
+        )
     candidate_ids: list[dict] = []
     if primary_team_id:
         try:
@@ -158,10 +160,8 @@ async def compute_coverage_for_pick(pick: dict, db,
         except Exception as e:
             logger.warning("roster fetch failed for team %s: %s",
                             primary_team_id, e)
-    # Fall back to inferring the team from `(KC)` style suffix if the
-    # pick has no structured team id.
     if not candidate_ids:
-        return _empty("could not load teammate roster (no team id on pick)")
+        return _empty("could not resolve primary's team / roster")
 
     # Trim to MAX_CANDIDATES and exclude the primary himself.
     seen: set[int] = {primary_id}
