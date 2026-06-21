@@ -320,14 +320,15 @@ export const api = {
       scoped_to_today?: boolean;
     }>(`/picks/under-of-the-day${q ? `?${q}` : ""}`);
   },
-  parlay: (legs: number = 3, mode: "standard" | "high_risk" | "today_window" = "standard",
+  parlay: (legs: number = 3, mode: "standard" | "high_risk" | "today_window" | "advanced" = "standard",
            sport?: string, lineType?: LineType,
            includeSports: string[] = [],
            filters?: PickFilters, rank: number = 1, lockedIds: string[] = [],
            sportMode: "auto" | "custom" | "single" = "auto",
            windowHours: number = 24,
            excludeSports: string[] = [],
-           refreshNonce: number = 0) => {
+           refreshNonce: number = 0,
+           advancedSub?: "safer" | "ev") => {
     const qs = new URLSearchParams({
       legs: String(legs), mode, rank: String(rank),
       sport_mode: sportMode, window_hours: String(windowHours),
@@ -349,6 +350,7 @@ export const api = {
     if (sportMode === "single" && filters?.league) qs.set("league", filters.league);
     if (lockedIds.length > 0) qs.set("locked_ids", lockedIds.join(","));
     if (refreshNonce > 0) qs.set("refresh_nonce", String(refreshNonce));
+    if (mode === "advanced" && advancedSub) qs.set("advanced_sub", advancedSub);
     return request<{
       parlay: null | {
         legs: Pick[]; leg_count: number;

@@ -74,12 +74,13 @@ export default function ParlayScreen() {
   } = prefs;
 
   const load = useCallback(
-    async (n: number, m: "standard" | "high_risk", s: string, lt: LineType,
+    async (n: number, m: "standard" | "high_risk" | "today_window" | "advanced", s: string, lt: LineType,
            incl: string[], excl: string[], f: any, r: number, locked: string[],
-           sMode: "auto"|"custom"|"single", wHours: number, nonce: number) => {
+           sMode: "auto"|"custom"|"single", wHours: number, nonce: number,
+           advSub?: "safer" | "ev") => {
       try {
         const res = await api.parlay(
-          n, m, s, lt, incl, f, r, locked, sMode, wHours, excl, nonce,
+          n, m, s, lt, incl, f, r, locked, sMode, wHours, excl, nonce, advSub,
         );
         setParlays(res.parlays || []);
         setReason(res.reason || "");
@@ -94,13 +95,16 @@ export default function ParlayScreen() {
   );
 
   // Wait until preferences are hydrated from AsyncStorage before first fetch.
+  const advancedSub = prefs.advancedSub || "ev";
+
   useEffect(() => {
     if (!hydrated) return;
     setLoading(true);
     load(legs, mode, sport, lineType, includedSports, excludedSports,
-         filters, rank, lockedIds, sportMode, windowHours, refreshNonce);
+         filters, rank, lockedIds, sportMode, windowHours, refreshNonce,
+         mode === "advanced" ? advancedSub : undefined);
   }, [hydrated, legs, mode, sport, lineType, includedSports, excludedSports,
-      filters, rank, lockedIds, sportMode, windowHours, refreshNonce, load]);
+      filters, rank, lockedIds, sportMode, windowHours, refreshNonce, load, advancedSub]);
 
   // Smart refetch on focus — re-rebuild the parlay when the user returns
   // to the tab, but suppress duplicate calls inside 30 s.
@@ -108,14 +112,15 @@ export default function ParlayScreen() {
     () => {
       if (!hydrated) return;
       load(legs, mode, sport, lineType, includedSports, excludedSports,
-           filters, rank, lockedIds, sportMode, windowHours, refreshNonce);
+           filters, rank, lockedIds, sportMode, windowHours, refreshNonce,
+           mode === "advanced" ? advancedSub : undefined);
     },
     [hydrated, legs, mode, sport, lineType, includedSports, excludedSports,
-     filters, rank, lockedIds, sportMode, windowHours, refreshNonce, load],
+     filters, rank, lockedIds, sportMode, windowHours, refreshNonce, load, advancedSub],
     30_000,
   );
 
-  const onModeChange = (m: "standard" | "high_risk" | "today_window") => {
+  const onModeChange = (m: "standard" | "high_risk" | "today_window" | "advanced") => {
     // Each mode tunes leg count + time window to match its optimizer profile:
     //   • standard      — 3 legs, 24h window (balanced default)
     //   • high_risk     — 10 legs, 72h window (10-20 leg lottery, looser floor)
@@ -125,13 +130,22 @@ export default function ParlayScreen() {
     if (m === "high_risk") {
       legs = 10; windowHours = 72;
     } else if (m === "today_window") {
-      legs = 3; windowHours = 5;  // server force-clamps to 5 anyway
+      legs = 3; windowHours = 5;
+    } else if (m === "advanced") {
+      // Advanced default: EV sub-mode, 3 legs, 24h window. Sub-mode (safer/ev)
+      // is persisted independently so toggling Advanced doesn't reset it.
+      legs = 3; windowHours = 24;
     } else {
       legs = 3; windowHours = 24;
     }
     updatePrefs({ mode: m, legs, windowHours });
     setRank(1);
     setLockedIds([]);
+  };
+
+  const onAdvancedSubChange = (sub: "safer" | "ev") => {
+    updatePrefs({ advancedSub: sub });
+    setRank(1);
   };
 
   // Pull-to-refresh — bumps both rank (next-best slot) AND nonce
@@ -163,6 +177,7 @@ export default function ParlayScreen() {
 
   const isHighRisk = mode === "high_risk";
   const isTodayWindow = mode === "today_window";
+  const isAdvanced = mode === "advanced";
   const legOptions = isHighRisk ? [10, 15, 20] : [2, 3, 4, 5];
   const accentColor = isHighRisk ? COLORS.electricBlaze : COLORS.goldElite;
   // Sport list — kept in PARITY with the Home feed (src/theme.ts SPORTS)
@@ -193,7 +208,9 @@ export default function ParlayScreen() {
               ? "HIGH RISK · 10-20 LEG LOTTERY"
               : isTodayWindow
                 ? "TODAY · NEXT 1-5h · HIGH PROBABILITY"
-                : "OPTIMIZER V1 · SAFE / BALANCED / AGGRESSIVE"}
+                : isAdvanced
+                  ? (advancedSub === "safer" ? "ADVANCED · SAFER · HIT-RATE OPTIMIZED" : "ADVANCED · HIGH EV · LONG-RUN PROFIT")
+                  : "OPTIMIZER V1 · SAFE / BALANCED / AGGRESSIVE"}
           </Text>
         </View>
         {/* REFRESH button removed per user spec — REGENERATE below is the
@@ -251,7 +268,37 @@ export default function ParlayScreen() {
           <Ionicons name="flame" size={12} color={isHighRisk ? COLORS.bg : COLORS.electricBlaze} />
           <Text style={[styles.modeText, isHighRisk && styles.modeTextHighRiskActive]}>HIGH RISK</Text>
         </Pressable>
+        <Pressable
+          testID="parlay-mode-advanced"
+          onPress={() => onModeChange("advanced")}
+          style={[styles.modeBtn, isAdvanced && styles.modeBtnAdvancedActive]}
+        >
+          <Ionicons name="bulb" size={12} color={isAdvanced ? COLORS.bg : "#A78BFA"} />
+          <Text style={[styles.modeText, isAdvanced && styles.modeTextAdvancedActive]}>ADVANCED</Text>
+        </Pressable>
       </View>
+
+      {/* Advanced sub-toggle — only visible when Advanced mode active. */}
+      {isAdvanced && (
+        <View style={[styles.modeRow, { marginTop: 0, marginBottom: 8, gap: 6 }]}>
+          <Pressable
+            testID="parlay-adv-sub-safer"
+            onPress={() => onAdvancedSubChange("safer")}
+            style={[styles.subModeBtn, advancedSub === "safer" && styles.subModeBtnActive]}
+          >
+            <Ionicons name="shield-checkmark" size={11} color={advancedSub === "safer" ? COLORS.bg : COLORS.textSecondary} />
+            <Text style={[styles.subModeText, advancedSub === "safer" && styles.subModeTextActive]}>SAFER · HIT RATE</Text>
+          </Pressable>
+          <Pressable
+            testID="parlay-adv-sub-ev"
+            onPress={() => onAdvancedSubChange("ev")}
+            style={[styles.subModeBtn, advancedSub === "ev" && styles.subModeBtnActive]}
+          >
+            <Ionicons name="trending-up" size={11} color={advancedSub === "ev" ? COLORS.bg : COLORS.textSecondary} />
+            <Text style={[styles.subModeText, advancedSub === "ev" && styles.subModeTextActive]}>HIGH EV · LONG-RUN PROFIT</Text>
+          </Pressable>
+        </View>
+      )}
 
       <View style={styles.legSelector}>
         <Text style={styles.legLabel}>TARGET LEGS</Text>
@@ -738,6 +785,12 @@ const styles = StyleSheet.create({
   modeBtnActive: { backgroundColor: COLORS.goldElite, borderColor: COLORS.goldElite },
   modeBtnHighRiskActive: { backgroundColor: COLORS.electricBlaze, borderColor: COLORS.electricBlaze },
   modeBtnTodayActive: { backgroundColor: COLORS.voltBlue, borderColor: COLORS.voltBlue },
+  modeBtnAdvancedActive: { backgroundColor: "#A78BFA", borderColor: "#A78BFA" },
+  modeTextAdvancedActive: { color: COLORS.bg },
+  subModeBtn: { flex: 1, flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 5, paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, borderWidth: 1, borderColor: COLORS.borderDefault, backgroundColor: "rgba(167,139,250,0.05)" },
+  subModeBtnActive: { backgroundColor: "#A78BFA", borderColor: "#A78BFA" },
+  subModeText: { color: COLORS.textSecondary, fontSize: 10, fontWeight: "700", letterSpacing: 0.6 },
+  subModeTextActive: { color: COLORS.bg },
   modeText: { color: COLORS.textSecondary, fontSize: 11, fontWeight: "900", letterSpacing: 1.4 },
   modeTextActive: { color: COLORS.bg },
   modeTextHighRiskActive: { color: COLORS.bg },
