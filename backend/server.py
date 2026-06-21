@@ -1655,6 +1655,37 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     for _card in payloads:
         if isinstance(_card.get("legs"), list):
             _card["legs"] = _canonicalize_picks(_card["legs"])
+
+    # ─── Substitute / Combination support ─────────────────────────────
+    # Attach up to 5 alternate legs per parlay card — picks from the same
+    # pool that didn't make the headline parlay but would be valid drop-in
+    # swaps if a leg's odds move, line gets pulled, or the user wants to
+    # rotate. The frontend can render these as "Swap" suggestions next to
+    # each card. We pick alternates by:
+    #   1. Excluding picks already used as legs in this card.
+    #   2. Excluding picks from events already represented (anti-correlation).
+    #   3. Sorting by lock_score desc (highest-confidence backups first).
+    used_event_ids_per_card = [
+        {l.get("event_id") for l in (c.get("legs") or []) if l.get("event_id")}
+        for c in payloads
+    ]
+    used_pick_ids_per_card = [
+        {l.get("id") for l in (c.get("legs") or [])}
+        for c in payloads
+    ]
+    canonical_pool = _canonicalize_picks(pool)
+    for idx, card in enumerate(payloads):
+        used_events = used_event_ids_per_card[idx]
+        used_ids = used_pick_ids_per_card[idx]
+        alternates = [
+            p for p in canonical_pool
+            if p.get("id") not in used_ids
+            and p.get("event_id") not in used_events
+        ]
+        # Top 5 alternates by lock_score for the swap UI.
+        alternates.sort(key=lambda p: -(p.get("lock_score") or 0))
+        card["alternates"] = alternates[:5]
+        card["alternates_count"] = len(card["alternates"])
     # Persist this parlay slate into history so the learning loop has
     # data to settle and aggregate from. Cheap — dedupes by signature.
     try:
