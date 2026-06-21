@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.21-3-survival-team-from-player-not-game"
+DATA_VERSION = "2026.06.21-4-parlay-history"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -2627,6 +2627,71 @@ async def historical_player_form(sport: str, name: str, market: Optional[str] = 
         raise HTTPException(500, f"lookup failed: {e}")
 
 
+# ────────────────────── Parlay History (Save-on-Tap) ──────────────────────
+# User taps "Save" on a generated parlay → we persist it and track the
+# status of every leg until all settle. Frontend can then filter live /
+# won / lost parlays.
+
+class SaveParlayRequest(BaseModel):
+    legs: list[dict]                  # the full pick objects from /api/picks/parlay
+    mode: str = "standard"
+    stake: float = 1.0
+
+
+@api.post("/parlay/save")
+async def parlay_save(req: SaveParlayRequest,
+                       user: Annotated[UserPublic, Depends(current_user)]):
+    try:
+        from parlay_history import save_parlay
+        doc = await save_parlay(db, user_id=user.id,
+                                  legs=req.legs, mode=req.mode,
+                                  stake=req.stake)
+        return _strip_mongo(doc)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.exception("save_parlay failed")
+        raise HTTPException(500, f"save failed: {e}")
+
+
+@api.get("/parlay/history")
+async def parlay_history_list(user: Annotated[UserPublic, Depends(current_user)],
+                                filter: Optional[str] = None,
+                                limit: int = 50):
+    """List the user's saved parlays. `filter` = won | live | lost | all."""
+    try:
+        from parlay_history import list_history
+        rows = await list_history(db, user_id=user.id,
+                                    status_filter=filter, limit=limit)
+        return {"parlays": rows, "count": len(rows)}
+    except Exception as e:
+        raise HTTPException(500, f"list failed: {e}")
+
+
+@api.get("/parlay/{parlay_id}")
+async def parlay_detail(parlay_id: str,
+                          user: Annotated[UserPublic, Depends(current_user)]):
+    from parlay_history import get_parlay
+    doc = await get_parlay(db, user_id=user.id, parlay_id=parlay_id)
+    if not doc:
+        raise HTTPException(404, "parlay not found")
+    return doc
+
+
+@api.delete("/parlay/{parlay_id}")
+async def parlay_remove(parlay_id: str,
+                          user: Annotated[UserPublic, Depends(current_user)]):
+    from parlay_history import delete_parlay
+    ok = await delete_parlay(db, user_id=user.id, parlay_id=parlay_id)
+    return {"deleted": ok}
+
+
+def _strip_mongo(doc: dict) -> dict:
+    if doc and "_id" in doc:
+        doc = {k: v for k, v in doc.items() if k != "_id"}
+    return doc
+
+
 # ────────────────────── App wiring ──────────────────────
 
 # Mount the isolated soccer module BEFORE the catch-all api router so its
@@ -2848,6 +2913,14 @@ async def _settlement_loop():
                                 v2_res.get("changes_log_count", 0))
             except Exception as e:
                 logger.warning("Learning v2 recompute error: %s", e)
+            # ── Parlay History Resolver ─────────────────────────────
+            # Walk all `live` saved parlays and update leg statuses /
+            # mark won/lost based on the just-settled picks.
+            try:
+                from parlay_history import resolve_saved_parlays
+                await resolve_saved_parlays(db)
+            except Exception as e:
+                logger.warning("Parlay history resolver error: %s", e)
             # Auto-Elite scorer discovery — promote players with 5+ picks
             # and 55%+ hit rate to auto_elite (protected slot in goalscorer cap).
             try:
@@ -3050,6 +3123,14 @@ async def on_startup():
         logger.info("Tennis fair-odds engine wired to MongoDB")
     except Exception as e:
         logger.warning("Tennis fair-odds engine not armed: %s", e)
+    # ── Parlay History (Save-on-Tap) ────────────────────────────────
+    try:
+        await db.parlay_history.create_index("id", unique=True)
+        await db.parlay_history.create_index([("user_id", 1), ("created_at", -1)])
+        await db.parlay_history.create_index([("user_id", 1), ("status", 1)])
+        logger.info("Parlay History indices ready")
+    except Exception as e:
+        logger.warning("Parlay History setup failed: %s", e)
     logger.info("PerksLocks AI started")
 
 

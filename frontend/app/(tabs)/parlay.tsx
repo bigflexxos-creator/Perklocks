@@ -201,7 +201,7 @@ export default function ParlayScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
-        <View>
+        <View style={{ flex: 1 }}>
           <Text style={styles.brand}>AUTO PARLAY</Text>
           <Text style={[styles.tag, { color: accentColor }]}>
             {isHighRisk
@@ -213,9 +213,15 @@ export default function ParlayScreen() {
                   : "OPTIMIZER V1 · SAFE / BALANCED / AGGRESSIVE"}
           </Text>
         </View>
-        {/* REFRESH button removed per user spec — REGENERATE below is the
-            single source of truth for getting a new parlay. Avoids the
-            duplicate-CTA confusion ("which one do I tap?"). */}
+        <Pressable
+          onPress={() => router.push("/parlay-history")}
+          hitSlop={10}
+          testID="parlay-history-btn"
+          style={({ pressed }) => [styles.histBtn, pressed && { opacity: 0.7 }]}
+        >
+          <Ionicons name="trophy-outline" size={16} color={COLORS.goldElite} />
+          <Text style={styles.histTxt}>HISTORY</Text>
+        </Pressable>
       </View>
 
       {/* Regenerate button — shuffles the optimizer seed so the user gets
@@ -715,6 +721,25 @@ function ParlayCardView({
             {copied ? "COPIED" : "COPY SLIP"}
           </Text>
         </Pressable>
+        {/* ── Save to History (Save-on-Tap) ──────────────────── */}
+        <Pressable
+          testID={`parlay-save-${card.label}`}
+          onPress={async () => {
+            try {
+              await api.saveParlay(card.legs as any, "standard", 10);
+              Alert.alert("Saved", "Parlay added to your history. Tap History to see live status.");
+            } catch (e: any) {
+              Alert.alert("Save failed", String(e?.message || e));
+            }
+          }}
+          style={({ pressed }) => [
+            styles.copyBtn,
+            { borderColor: COLORS.goldElite, opacity: pressed ? 0.6 : 1 },
+          ]}
+        >
+          <Ionicons name="bookmark-outline" size={14} color={COLORS.goldElite} />
+          <Text style={[styles.copyTxt, { color: COLORS.goldElite }]}>SAVE</Text>
+        </Pressable>
         <View style={styles.bookRow}>
           {SPORTSBOOKS.slice(0, 4).map((book) => {
             const isPreferred = preferredBook === book.id;
@@ -757,6 +782,13 @@ const styles = StyleSheet.create({
   header: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 14, flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end" },
   brand: { fontSize: 22, fontWeight: "900", color: COLORS.textPrimary, letterSpacing: 3 },
   tag: { fontSize: 10, color: COLORS.goldElite, fontWeight: "800", letterSpacing: 1.4, marginTop: 4 },
+  histBtn: {
+    flexDirection: "row", alignItems: "center", gap: 5,
+    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 16,
+    borderWidth: 1, borderColor: COLORS.goldElite + "66",
+    backgroundColor: COLORS.goldElite + "12",
+  },
+  histTxt: { color: COLORS.goldElite, fontSize: 10.5, fontWeight: "800", letterSpacing: 0.8 },
   refreshBadge: {
     flexDirection: "row", alignItems: "center", gap: 6,
     paddingHorizontal: 10, height: 30, borderRadius: 15, borderWidth: 1,
