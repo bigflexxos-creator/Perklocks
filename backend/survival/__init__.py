@@ -1,7 +1,11 @@
 """Survivability Engine — Conditional Hit Coverage.
 
-For every MLB hit prop generated, compute which OTHER hitters
-historically recorded a hit on days when this hitter went 0-for.
+For every MLB hit prop generated, compute which other hitters ON THE
+PRIMARY'S OWN TEAM historically recorded a hit on days when this hitter
+went 0-for. Same-team-only is intentional — teammates share the exact
+same pitching matchup, weather, ballpark, and batting-order context,
+which is the only environment where "coverage" math is meaningful.
+
 The output is pure INSIGHT — it never replaces a pick, never adjusts
 odds, never claims 100% certainty.
 

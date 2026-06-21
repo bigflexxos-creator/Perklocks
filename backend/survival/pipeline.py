@@ -134,28 +134,30 @@ async def compute_coverage_for_pick(pick: dict, db,
                      "miss_games": len(miss_dates)},
         )
 
-    # Candidate cohort: same-team teammates. Per spec we avoid
-    # teammates-only matching unless explicitly preferred — but the MVP
-    # uses teammates as the default cohort because:
-    #   (a) it's the highest-signal slice (same game environment)
-    #   (b) it costs 1 roster call vs. crawling 750+ league hitters
-    # A `cohort=league` opt-in can be added later without breaking the
-    # API shape.
-    home_team_id = pick.get("home_team_id") or pick.get("team_id")
-    away_team_id = pick.get("away_team_id")
-    # Fallback: existing picks don't carry team_id structurally — parse
-    # it from the "(TOR)" suffix in the selection text.
-    if not home_team_id and not away_team_id:
-        fallback_tid = _team_id_from_selection(pick.get("selection") or "")
-        if fallback_tid:
-            home_team_id = fallback_tid
+    # Candidate cohort: SAME-TEAM teammates ONLY (per user spec).
+    # Rationale: teammates share the exact same pitching matchup, weather,
+    # ballpark, batting-order context. The opposing team faces a different
+    # pitcher entirely — including them as "coverage" pollutes the signal
+    # with cross-game noise. We deliberately drop the away-team roster.
+    #
+    # Resolution order for the primary's team id:
+    #   1. structured `team_id` / `home_team_id` field on the pick
+    #   2. fallback: parse "(TOR)" suffix from the selection text
+    #   3. fallback: if the primary's first game log row has a team field
+    #      we use that (handled implicitly by find_player_id team caching)
+    primary_team_id = (
+        pick.get("team_id")
+        or pick.get("home_team_id")
+        or _team_id_from_selection(pick.get("selection") or "")
+    )
     candidate_ids: list[dict] = []
-    for tid in filter(None, [home_team_id, away_team_id]):
+    if primary_team_id:
         try:
-            roster = await team_roster(int(tid))
+            roster = await team_roster(int(primary_team_id))
             candidate_ids.extend(roster)
         except Exception as e:
-            logger.warning("roster fetch failed for team %s: %s", tid, e)
+            logger.warning("roster fetch failed for team %s: %s",
+                            primary_team_id, e)
     # Fall back to inferring the team from `(KC)` style suffix if the
     # pick has no structured team id.
     if not candidate_ids:
