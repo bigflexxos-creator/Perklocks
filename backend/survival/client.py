@@ -156,3 +156,35 @@ async def team_roster(team_id: int) -> list[dict]:
         if pid and name:
             out.append({"id": pid, "name": name, "position": pos_code})
     return out
+
+
+async def player_current_team_id(person_id: int) -> int | None:
+    """Resolve a player's CURRENT team id directly from MLB Stats API.
+
+    Critical fix for the survival cohort bug: picks carry the GAME's
+    `home_team_id` (which can be the OPPONENT's team), not the player's
+    actual team. e.g. "Christian Yelich" in a Brewers-at-Braves game
+    has home_team_id=ATL(144). We must hit `/people/{id}` with the
+    `currentTeam` hydration to learn that Yelich plays for MIL(158).
+
+    Cached for 12h since trades are rare. Returns None on failure.
+    """
+    if not person_id:
+        return None
+    data = await _safe_get(
+        f"{BASE}/people/{person_id}",
+        params={"hydrate": "currentTeam"},
+        ttl_seconds=12 * 3600,
+    )
+    if not data:
+        return None
+    people = data.get("people") or []
+    if not people:
+        return None
+    person = people[0]
+    team = person.get("currentTeam") or {}
+    tid = team.get("id")
+    try:
+        return int(tid) if tid else None
+    except (TypeError, ValueError):
+        return None
