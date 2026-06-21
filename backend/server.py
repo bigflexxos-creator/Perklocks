@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.21-4-parlay-history"
+DATA_VERSION = "2026.06.21-5-parlay-copy-save-only"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
