@@ -235,6 +235,59 @@ export default function PickDetail() {
                 Only renders for Soccer Anytime Goal Scorer picks. */}
             <ScorerBundlesPanel pick={pick} />
 
+            {/* Batter-vs-Pitcher card — MLB hit/total bases/HR props only.
+                Populated by /app/backend/mlb_bvp.py at pick-generation time
+                (career splits from the free MLB Stats API). Renders nothing
+                when there's no historical BvP sample for this matchup. */}
+            {pick.bvp_history && (pick.bvp_history as any).ab > 0 && (
+              <View style={[styles.insightsCard, { marginTop: 10, borderColor: COLORS.voltBlue + "55" }]}>
+                <Text style={[styles.sectionLabel, { marginBottom: 6 }]}>
+                  BATTER vs PITCHER
+                </Text>
+                <Text style={{ color: COLORS.textSecondary, fontSize: 12, lineHeight: 18 }}>
+                  <Text style={{ color: COLORS.textPrimary, fontWeight: "800" }}>
+                    {(pick.bvp_history as any).batter_name}
+                  </Text>
+                  {"  vs  "}
+                  <Text style={{ color: COLORS.textPrimary, fontWeight: "800" }}>
+                    {(pick.bvp_history as any).pitcher_name}
+                  </Text>
+                </Text>
+                <View style={{ flexDirection: "row", marginTop: 8, gap: 14, flexWrap: "wrap" }}>
+                  <Text style={{ color: COLORS.voltBlue, fontSize: 13, fontWeight: "800" }}>
+                    {(pick.bvp_history as any).h}-for-{(pick.bvp_history as any).ab}{" "}
+                    <Text style={{ color: COLORS.textSecondary, fontWeight: "500" }}>
+                      ({((pick.bvp_history as any).avg || 0).toFixed(3)})
+                    </Text>
+                  </Text>
+                  {(pick.bvp_history as any).hr > 0 && (
+                    <Text style={{ color: COLORS.neonGreen, fontSize: 13, fontWeight: "700" }}>
+                      {(pick.bvp_history as any).hr} HR
+                    </Text>
+                  )}
+                  {(pick.bvp_history as any).so > 0 && (
+                    <Text style={{ color: COLORS.textMuted, fontSize: 12 }}>
+                      {(pick.bvp_history as any).so} SO
+                    </Text>
+                  )}
+                  {(pick.bvp_history as any).bb > 0 && (
+                    <Text style={{ color: COLORS.textMuted, fontSize: 12 }}>
+                      {(pick.bvp_history as any).bb} BB
+                    </Text>
+                  )}
+                </View>
+                {pick.bvp_lock_adjustment != null && pick.bvp_lock_adjustment !== 0 && (
+                  <Text style={{
+                    color: pick.bvp_lock_adjustment > 0 ? COLORS.neonGreen : COLORS.electricBlaze,
+                    fontSize: 11, fontWeight: "700", marginTop: 6, letterSpacing: 0.5,
+                  }}>
+                    {pick.bvp_lock_adjustment > 0 ? "+" : ""}
+                    {pick.bvp_lock_adjustment} Lock Score adjustment from BvP
+                  </Text>
+                )}
+              </View>
+            )}
+
             <Text style={styles.sectionLabel}>WHY THIS PICK</Text>
             <View style={styles.insightsCard}>
               {(pick.top_reasons && pick.top_reasons.length > 0
