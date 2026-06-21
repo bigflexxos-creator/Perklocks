@@ -2897,7 +2897,10 @@ async def on_startup():
         await db.players.create_index([("player_id", 1), ("sport", 1)], unique=True)
         await db.games.create_index([("game_id", 1), ("sport", 1)], unique=True)
         await db.player_game_logs.create_index([("player_id", 1), ("date", -1)])
-        await db.player_game_logs.create_index([("player_id", 1), ("game_id", 1)], unique=True, sparse=True)
+        # Composite index — NFL stores multiple rows per (player, game) keyed
+        # by stat_block (passing/rushing/receiving). Other sports have one
+        # row per (player, game). Non-unique to keep all sports working.
+        await db.player_game_logs.create_index([("player_id", 1), ("game_id", 1), ("stat_block", 1)])
         await db.season_totals.create_index([("player_id", 1), ("sport", 1), ("season", 1), ("competition", 1)])
         await db.team_form.create_index([("team_id", 1), ("sport", 1)])
         logger.info("Historical Sports Intelligence Engine wired to MongoDB")

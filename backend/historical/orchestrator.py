@@ -153,6 +153,9 @@ def _client_for(sport: str):
         if sport == "nba":
             from . import nba
             return nba
+        if sport == "nhl":
+            from . import nhl
+            return nhl
         if sport == "tennis":
             from . import tennis
             return tennis

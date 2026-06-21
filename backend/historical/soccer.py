@@ -49,9 +49,9 @@ def _competitions() -> list[str]:
 
 
 async def _api():
-    """Lazy-import the existing SoccerAPI wrapper."""
-    from soccer.client import SoccerAPI
-    return SoccerAPI()
+    """Lazy-import the existing FootballDataClient wrapper."""
+    from soccer.client import FootballDataClient
+    return FootballDataClient()
 
 
 async def backfill_current_season(db) -> dict:
