@@ -2194,21 +2194,35 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
 
 
 
-async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
+async def generate_all_picks(
+    date_str: Optional[str] = None,
+    sport_filter: Optional[str] = None,
+) -> list[dict]:
+    """Fetch picks for one or all sports.
+
+    Args:
+      date_str: pick_date ISO string; defaults to today (UTC).
+      sport_filter: when set (e.g. "MLB"), skip every other sport's fetcher.
+        Used by the dedicated MLB pregame loop that runs every 5 min during
+        the US afternoon window so MLB lines surface ~60-90 min pre-game
+        instead of ~5 min pre-game — without burning Odds API credits on
+        sports whose slates haven't moved.
+    """
     if not date_str:
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    sf = (sport_filter or "").lower()
+    def _want(s: str) -> bool:
+        return not sf or sf == s.lower()
     # Phase 1: fetch all sport-summary games (one call per sport-key, parallel).
-    game_results = await asyncio.gather(
-        fetch_mlb_picks(date_str),
-        fetch_nba_picks(date_str),
-        # fetch_wnba_picks(date_str),  # DISABLED — see SPORT_KEYS comment
-        fetch_nfl_picks(date_str),
-        fetch_soccer_picks(date_str),
-        fetch_tennis_picks(date_str),
-        fetch_ufc_picks(date_str),
-        fetch_kbo_picks(date_str),
-        return_exceptions=True,
-    )
+    fetch_jobs = []
+    if _want("MLB"): fetch_jobs.append(fetch_mlb_picks(date_str))
+    if _want("NBA"): fetch_jobs.append(fetch_nba_picks(date_str))
+    if _want("NFL"): fetch_jobs.append(fetch_nfl_picks(date_str))
+    if _want("Soccer"): fetch_jobs.append(fetch_soccer_picks(date_str))
+    if _want("Tennis"): fetch_jobs.append(fetch_tennis_picks(date_str))
+    if _want("UFC"): fetch_jobs.append(fetch_ufc_picks(date_str))
+    if _want("KBO"): fetch_jobs.append(fetch_kbo_picks(date_str))
+    game_results = await asyncio.gather(*fetch_jobs, return_exceptions=True) if fetch_jobs else []
     all_picks: list[dict] = []
     for r in game_results:
         if isinstance(r, list):
@@ -2216,7 +2230,8 @@ async def generate_all_picks(date_str: Optional[str] = None) -> list[dict]:
 
     # Phase 2: fetch event-level player props sequentially with small delays
     # to avoid The Odds API rate limit (1 req/sec on free tier).
-    for sport in ("MLB", "NBA", "Soccer"):
+    prop_sports = [s for s in ("MLB", "NBA", "Soccer") if _want(s)]
+    for sport in prop_sports:
         try:
             props = await _fetch_player_props_for_sport(sport)
             if props:
