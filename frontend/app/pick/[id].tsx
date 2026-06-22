@@ -13,6 +13,7 @@ import { SurvivabilityPanel } from "@/src/components/SurvivabilityPanel";
 import { LockV2Panel } from "@/src/components/LockV2Panel";
 import { MarketRankPanel } from "@/src/components/MarketRankPanel";
 import { ScorerBundlesPanel } from "@/src/components/ScorerBundlesPanel";
+import { SimulatorPanel } from "@/src/components/SimulatorPanel";
 import { getDisplayLockRounded } from "@/src/lib/lockScore";
 import { buildSlipText, shareSlip, saveSlipImage, copySlipText } from "@/src/lib/shareBetSlip";
 
@@ -297,6 +298,11 @@ export default function PickDetail() {
 
             {/* Survivability Engine — only renders for MLB hit props */}
             <SurvivabilityPanel pick={pick} />
+
+            {/* Monte Carlo Simulator — Phase A, MLB only. Shows 10k-run win
+                probability with 95% CI and disagreement signal vs the
+                blended model, plus any lock_score lift applied. */}
+            <SimulatorPanel pick={pick} />
 
             {/* Lock Engine V2 — Deep Thinking (Counter + Survival + Sim) — shadow mode */}
             <LockV2Panel pick={pick} />

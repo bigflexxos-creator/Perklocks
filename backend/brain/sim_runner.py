@@ -5,6 +5,7 @@ into the same `sport → simulator` map when Phase B ships.
 """
 from __future__ import annotations
 import logging
+import math
 from typing import Optional
 
 logger = logging.getLogger("lockscore.brain.sim_runner")
@@ -52,15 +53,61 @@ def simulate_pick(pick: dict) -> Optional[dict]:
     return None
 
 
+# Max ± lift the simulator can tilt `lock_score`. Kept small so it acts as a
+# nudge alongside player_form (±5) and bandit (±LIFT_MAX), never dominating
+# the engine. Sim disagreement is mapped through a soft curve so a 10-point
+# disagreement = ~+2 lift, 20 points = ~+3.5 lift, 30+ = clamps to ±SIM_LIFT_MAX.
+SIM_LIFT_MAX = 4.0
+
+# Threshold (in raw model-percentage points) below which we don't lift at all.
+# Anything inside ±SIM_NEUTRAL_BAND is treated as agreement → no lift.
+SIM_NEUTRAL_BAND = 5.0
+
+
+def _sim_lift_from_disagreement(disagreement: float) -> float:
+    """Map sim − model (percentage points) to a bounded ± lock_score lift.
+
+    Inside ±SIM_NEUTRAL_BAND → 0 lift.
+    Outside band → log-style decay so big disagreements get diminishing returns.
+    """
+    if disagreement is None:
+        return 0.0
+    abs_d = abs(disagreement)
+    if abs_d <= SIM_NEUTRAL_BAND:
+        return 0.0
+    # Soft saturating curve: 10pp → ~2.1, 20pp → ~3.4, 30pp → ~4.0
+    over = abs_d - SIM_NEUTRAL_BAND
+    lift = SIM_LIFT_MAX * (1 - math.exp(-over / 12.0))
+    return lift if disagreement > 0 else -lift
+
+
 def apply_simulations(picks: list[dict]) -> dict:
     """Run simulators across the slate. Mutates each pick in-place with
-    sim_* fields. Returns counts {applied, stronger, weaker, neutral}."""
-    counts = {"applied": 0, "stronger": 0, "weaker": 0, "neutral": 0}
+    sim_* fields AND tilts lock_score by ±SIM_LIFT_MAX based on the sim's
+    disagreement with the blended model. Returns counts."""
+    counts = {"applied": 0, "stronger": 0, "weaker": 0, "neutral": 0, "lifted_up": 0, "lifted_down": 0}
     for p in picks:
         sim = simulate_pick(p)
         if not sim:
             continue
         p.update(sim)
         counts["applied"] += 1
-        counts[sim.get("sim_signal", "neutral")] = counts.get(sim.get("sim_signal", "neutral"), 0) + 1
+        sig = sim.get("sim_signal", "neutral")
+        counts[sig] = counts.get(sig, 0) + 1
+
+        # ── Apply lock_score lift ──────────────────────────────────────
+        disagreement = float(sim.get("sim_disagreement_with_model") or 0.0)
+        lift = _sim_lift_from_disagreement(disagreement)
+        if abs(lift) >= 0.1:
+            try:
+                cur = float(p.get("lock_score") or 0.0)
+            except (TypeError, ValueError):
+                cur = 0.0
+            new_lock = max(0.0, min(99.0, cur + lift))
+            p["lock_score"] = round(new_lock, 1)
+            p["sim_lock_lift"] = round(lift, 2)
+            if lift > 0:
+                counts["lifted_up"] += 1
+            else:
+                counts["lifted_down"] += 1
     return counts

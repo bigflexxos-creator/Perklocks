@@ -96,6 +96,17 @@ export type Pick = {
     best_depth: "selection" | "event" | "search" | "league" | "home";
     search_query: string;
   }>;
+
+  // ─── Monte Carlo Simulator (Phase A — MLB only) ─────────────────────
+  sim_win_probability?: number;        // 0–100, P(win) from 10k MC runs
+  sim_ci_lower?: number;               // 95% Wilson CI lower bound (0–100)
+  sim_ci_upper?: number;               // 95% Wilson CI upper bound (0–100)
+  sim_runs?: number;                   // # of Monte Carlo iterations
+  sim_threshold?: number;              // over/under line being simulated
+  sim_is_under?: boolean;              // true if Under bet
+  sim_disagreement_with_model?: number;// sim_wp − blended model wp
+  sim_signal?: "stronger" | "weaker" | "neutral";
+  sim_lock_lift?: number;              // ± points applied to lock_score
 };
 
 export type User = { id: string; email: string; name?: string };
@@ -390,6 +401,34 @@ export const api = {
   },
   deleteParlay: (id: string) => request<{ deleted: boolean }>(`/parlay/${id}`, { method: "DELETE" }),
   pickAiExplain: (id: string) => request<{ explanation: string; source: string }>(`/picks/${id}/ai-explain`, { method: "POST" }),
+  pickSimulation: (id: string) =>
+    request<{
+      sim_win_probability: number;
+      sim_ci_lower: number;
+      sim_ci_upper: number;
+      sim_runs: number;
+      sim_threshold: number;
+      sim_is_under: boolean;
+      sim_disagreement_with_model: number;
+      sim_signal: "stronger" | "weaker" | "neutral";
+    }>(`/picks/${id}/simulation`),
+  simBacktest: (days: number = 30) =>
+    request<{
+      n: number;
+      days: number;
+      message?: string;
+      brier?: number;
+      log_loss?: number;
+      brier_skill_score?: number;
+      calibration?: Array<{
+        bucket: string;
+        n: number;
+        expected_pct: number;
+        observed_pct: number;
+        delta: number;
+      }>;
+      strategies?: Record<string, { bets: number; units: number; roi_pct: number }>;
+    }>(`/analytics/sim-backtest?days=${days}`),
   pickCoverage: (id: string, cohort: "teammates" | "league" = "teammates") =>
     request<{
       pick_id?: string;

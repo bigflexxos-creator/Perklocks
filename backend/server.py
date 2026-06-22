@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.22-tennis-totals-cap-top1-bandit-lift"
+DATA_VERSION = "2026.06.22-sim-mlb-phase-a-live"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -2727,6 +2727,18 @@ async def pick_simulation(
     if not sim:
         raise HTTPException(status_code=404, detail="Simulator could not route this market")
     return sim
+
+
+@api.get("/analytics/sim-backtest")
+async def sim_backtest_endpoint(
+    user: Annotated[UserPublic, Depends(current_user)],
+    days: int = 30,
+):
+    """Phase-A simulator backtest: calibration + strategy ROI against settled
+    MLB picks. Brier score, log-loss, Brier skill score, and 6-bucket
+    expected-vs-observed table. Powers the Strategy Lab simulator tab."""
+    from brain.sim_backtest import run_sim_backtest
+    return await run_sim_backtest(db, days=days)
 
 
 @api.get("/analytics/learned-weights")
