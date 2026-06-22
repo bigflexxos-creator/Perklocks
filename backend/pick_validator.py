@@ -146,7 +146,18 @@ async def validate_and_heal(db) -> dict:
         if compute_lock_score and wp is not None and (p.get("sport") or "") != "Tennis":
             factors_pct = p.get("factors") or {}
             if factors_pct:
-                factors = {k: v / 100.0 for k, v in factors_pct.items()}
+                # Coerce factor values to float — legacy DB rows occasionally
+                # have stringified percentages (e.g. "78") that break the
+                # division. Defensively cast + skip non-numeric values so the
+                # validator never crashes on schema drift.
+                factors = {}
+                for k, v in factors_pct.items():
+                    try:
+                        factors[k] = float(v) / 100.0
+                    except (TypeError, ValueError):
+                        continue
+                if not factors:
+                    continue
                 target_lock, _ = compute_lock_score(
                     factors, win_prob=wp, pick=p,
                 )

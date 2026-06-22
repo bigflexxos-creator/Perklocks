@@ -1138,7 +1138,29 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         logger.warning("Player Intelligence enrichment failed (continuing): %s", _pi_err)
 
     if safe_picks:
-        await db.picks.insert_many(safe_picks, ordered=False)
+        # ordered=False already lets pymongo continue past duplicate-key
+        # rows, but it STILL raises BulkWriteError at the end, aborting
+        # the caller. Catch + count + log so picks that DID land still
+        # commit cleanly. Most "duplicates" are picks that were already
+        # written by a parallel sport refresh (MLB pregame + full refresh
+        # racing), so the data is identical and the error is benign.
+        try:
+            await db.picks.insert_many(safe_picks, ordered=False)
+        except Exception as bulk_err:
+            # pymongo BulkWriteError exposes per-doc errors in .details
+            details = getattr(bulk_err, "details", None) or {}
+            n_inserted = int(details.get("nInserted", 0) or 0)
+            write_errors = details.get("writeErrors") or []
+            dup_errors = [e for e in write_errors if e.get("code") == 11000]
+            other_errors = [e for e in write_errors if e.get("code") != 11000]
+            if other_errors:
+                # Non-duplicate write errors are real bugs — re-raise.
+                logger.error("Unexpected pick insert errors: %s", other_errors[:3])
+                raise
+            logger.warning(
+                "Pick insert: %d inserted, %d duplicates skipped (already in DB).",
+                n_inserted, len(dup_errors),
+            )
     logger.info("Stored %d picks for %s", len(safe_picks), date_str)
     return len(safe_picks)
 
