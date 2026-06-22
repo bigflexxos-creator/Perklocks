@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.22-player-intel-learning-messi"
+DATA_VERSION = "2026.06.22-player-streak-badges"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -164,6 +164,53 @@ def _canonicalize_picks(picks: list[dict]) -> list[dict]:
     """Bulk variant of `_canonicalize_lock_score` — apply before returning
     any list of picks from an API endpoint."""
     return [_canonicalize_lock_score(p) for p in picks]
+
+
+async def _decorate_with_player_form(picks: list[dict]) -> list[dict]:
+    """Attach `player_form` data to each pick that references a player.
+
+    Reads from `player_profiles_v2` (live learning store updated every
+    refresh cycle). Each decorated pick gets:
+        player_form: { name, n_picks, hit_rate, last5_hit, last10_hit, current_streak }
+
+    Only attached when n_picks >= 2 — needs at least 2 samples for meaning.
+    Frontend uses this to render hot/cold streak badges on cards.
+    """
+    if not picks:
+        return picks
+    try:
+        from player_intel.resolver import extract_player_from_market
+    except Exception:
+        return picks
+    needed: set = set()
+    for p in picks:
+        name = extract_player_from_market(p.get("market", "") or "")
+        if name:
+            needed.add((p.get("sport") or "Soccer", name))
+    if not needed:
+        return picks
+    profile_map: dict = {}
+    or_clauses = [{"sport": s, "canonical_name": n} for s, n in needed]
+    async for prof in db.player_profiles_v2.find({"$or": or_clauses}):
+        profile_map[(prof.get("sport") or "Soccer", prof.get("canonical_name") or "")] = prof
+    for p in picks:
+        name = extract_player_from_market(p.get("market", "") or "")
+        if not name:
+            continue
+        prof = profile_map.get((p.get("sport") or "Soccer", name))
+        if not prof:
+            continue
+        if int(prof.get("n_picks") or 0) < 2:
+            continue
+        p["player_form"] = {
+            "name": name,
+            "n_picks": int(prof.get("n_picks") or 0),
+            "hit_rate": prof.get("hit_rate"),
+            "last5_hit": prof.get("last5_hit"),
+            "last10_hit": prof.get("last10_hit"),
+            "current_streak": int(prof.get("current_streak") or 0),
+        }
+    return picks
 
 
 def _filter_in_play_window(picks: list[dict]) -> list[dict]:
@@ -1584,6 +1631,7 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 # and when the user hasn't explicitly filtered by league.
                 if not league and sport and sport.lower() in ("soccer", "tennis"):
                     picks = _interleave_by_league(picks, top_n=20, max_per_round=1)
+    picks = await _decorate_with_player_form(picks)
     return {"picks": _canonicalize_picks(picks)}
 
 
