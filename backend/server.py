@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.22-sim-edge-badge-and-filter"
+DATA_VERSION = "2026.06.22-goalscorer-grade-all"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
