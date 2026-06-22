@@ -798,6 +798,24 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as e:
         logger.warning("Goalscorer dedup/limit skipped: %s", e)
 
+    # ── Per-Player Rolling Form (Phase 2 learning upgrade) ─────────────
+    # Apply each player's last-10 hot/cold streak as a ±5 lock_score
+    # nudge. Doesn't override the engine — just tilts toward players we've
+    # been recently right on and away from cold streaks.
+    try:
+        from player_form import apply_player_form
+        form_counts = await apply_player_form(picks, db)
+        if form_counts.get("applied", 0) > 0:
+            logger.info(
+                "Player Form applied to %d picks (🔥 hot=%d, ❄️ cold=%d, neutral=%d)",
+                form_counts.get("applied", 0),
+                form_counts.get("hot", 0),
+                form_counts.get("cold", 0),
+                form_counts.get("neutral", 0),
+            )
+    except Exception as e:
+        logger.warning("Player Form skipped: %s", e)
+
     # ── Sportsbook deep-link enrichment: attach home_team / away_team / pick
     # / fanduel_event_id / draftkings_event_id / etc. to every pick. These
     # power the "Add to Bet Slip" deep links from the parlay & detail screens

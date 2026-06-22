@@ -236,33 +236,79 @@ async def compute_model_performance(db, days: int = 30) -> dict[str, Any]:
 
 
 def _market_label(market: str | None) -> str:
-    """Group player-prop variants under their stat name."""
+    """Group player-prop variants under their stat name so per-(sport, market)
+    learning buckets actually accumulate enough samples to learn from.
+
+    Before this normalization expanded, raw player+line strings like
+    "Spencer Arrighetti (HOU) Over 15.5 Outs" became unique 1-pick buckets
+    that could never reach MIN_SAMPLES — killing the signal. The expanded
+    list below covers every market our pipeline generates (player props +
+    game lines + soccer specials).
+    """
     if not market:
         return "Other"
     m = market.lower()
-    if " hits" in m or m.endswith(" hits"):
-        return "MLB Hits"
+    # ── MLB hitter props (singular, mutually exclusive) ───────────────
+    if "hits + runs + rbis" in m or "h+r+rbi" in m:
+        return "MLB H+R+RBI"
     if "total bases" in m:
         return "MLB Total Bases"
-    if "home runs" in m:
+    if "home runs" in m or "home run" in m:
         return "MLB HRs"
+    if "rbis" in m:
+        return "MLB RBIs"
+    if "runs scored" in m or " runs " in m:
+        return "MLB Runs Scored"
+    if "stolen base" in m:
+        return "MLB Stolen Bases"
+    if " hits" in m or m.endswith(" hits"):
+        return "MLB Hits"
+    # ── MLB pitcher props ────────────────────────────────────────────
     if "strikeouts" in m:
         return "MLB Strikeouts"
+    if "outs recorded" in m or "outs " in m:
+        return "MLB Pitcher Outs"
+    if "earned runs" in m:
+        return "MLB Earned Runs"
+    if "walks" in m:
+        return "MLB Walks"
+    # ── NBA/WNBA player props ────────────────────────────────────────
+    if "points + rebounds + assists" in m or "pra" in m:
+        return "NBA PRA"
+    if "points + rebounds" in m or "points + assists" in m:
+        return "NBA Combo"
     if "points" in m and "total" not in m:
-        return "Player Points"
+        return "NBA Points"
     if "rebounds" in m:
-        return "Player Rebounds"
+        return "NBA Rebounds"
     if "assists" in m:
-        return "Player Assists"
+        return "NBA Assists"
+    if "threes" in m or " 3-pt" in m or "3pts made" in m:
+        return "NBA 3-Pointers"
+    # ── Soccer specials ──────────────────────────────────────────────
     if "anytime goal scorer" in m:
-        return "Soccer Anytime Goal Scorer"
+        return "Soccer Anytime Scorer"
+    if "first goal scorer" in m:
+        return "Soccer First Scorer"
+    if "to score or assist" in m:
+        return "Soccer Score-or-Assist"
+    if "both teams to score" in m or "btts" in m:
+        return "Soccer BTTS"
+    if "win or draw" in m or "double chance" in m:
+        return "Soccer Double Chance"
+    if "draw no bet" in m:
+        return "Soccer Draw No Bet"
+    # ── Tennis specials ──────────────────────────────────────────────
+    if "set winner" in m or " set " in m:
+        return "Tennis Set Markets"
+    if "games" in m and ("over" in m or "under" in m):
+        return "Tennis Game Totals"
+    # ── Game-level markets (cross-sport) ─────────────────────────────
     if "moneyline" in m:
         return "Moneyline"
-    if "win or draw" in m or "double chance" in m:
-        return "Double Chance"
     if "spread" in m or "run line" in m or "puck line" in m:
         return "Spread"
-    if "total" in m or "over/under" in m:
+    if "total" in m or "over/under" in m or "over " in m or "under " in m:
         return "Game Total O/U"
     return market[:40]
 
