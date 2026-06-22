@@ -116,6 +116,15 @@ export type Pick = {
   sim_recent_goal_rate?: number;       // Recent 'scored in N of last M' rate (%)
   sim_opp_concedes?: number;           // Opponent goals conceded / match
   sim_player_xg_per_game?: number;     // Player career xG/match (parsed)
+  // ─── Player Form (from live learning store) ─────────────────────────
+  player_form?: {
+    name: string;
+    n_picks: number;
+    hit_rate?: number;
+    last5_hit?: number;
+    last10_hit?: number;
+    current_streak?: number;            // +N consecutive wins, -N consecutive losses
+  };
 };
 
 export type User = { id: string; email: string; name?: string };

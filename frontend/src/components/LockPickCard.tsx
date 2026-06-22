@@ -115,6 +115,20 @@ export function LockPickCard({ pick }: { pick: Pick }) {
               </Text>
             </View>
           )}
+          {/* Player form streak — 🔥 for hot, ❄️ for cold. Sourced from
+              the live learning store (player_profiles_v2). Only shown for
+              players with ≥3 picks (signal stable) and clear streak (≥2). */}
+          {pick.player_form &&
+           pick.player_form.n_picks >= 3 &&
+           Math.abs(pick.player_form.current_streak ?? 0) >= 2 && (
+            <View style={[styles.streakBadge, (pick.player_form.current_streak ?? 0) > 0 ? styles.streakBadgeHot : styles.streakBadgeCold]}>
+              <Text style={styles.streakIcon}>{(pick.player_form.current_streak ?? 0) > 0 ? "🔥" : "❄️"}</Text>
+              <Text style={[styles.streakText, { color: (pick.player_form.current_streak ?? 0) > 0 ? "#FCA5A5" : "#93C5FD" }]}>
+                {(pick.player_form.current_streak ?? 0) > 0 ? "HOT" : "COLD"} · {Math.abs(pick.player_form.current_streak ?? 0)}
+                {(pick.player_form.current_streak ?? 0) > 0 ? "W" : "L"}
+              </Text>
+            </View>
+          )}
           {/* SIM EDGE chip — appears when the Monte Carlo simulator returns
               ≥85% win probability AND it's at least 5pp stronger than the
               blended model. Signals a high-confidence "the math really
@@ -314,6 +328,28 @@ const styles = StyleSheet.create({
   },
   simEdgeIcon: { fontSize: 10 },
   simEdgeText: { color: "#C4B5FD", fontSize: 9, fontWeight: "900", letterSpacing: 0.9 },
+  // ── Player streak (hot/cold) badge ──
+  streakBadge: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 5,
+    borderWidth: 1,
+    marginTop: 4,
+  },
+  streakBadgeHot: {
+    borderColor: "rgba(252, 165, 165, 0.55)",
+    backgroundColor: "rgba(252, 165, 165, 0.12)",
+  },
+  streakBadgeCold: {
+    borderColor: "rgba(147, 197, 253, 0.55)",
+    backgroundColor: "rgba(147, 197, 253, 0.12)",
+  },
+  streakIcon: { fontSize: 10 },
+  streakText: { fontSize: 9, fontWeight: "900", letterSpacing: 0.9 },
   market: { color: COLORS.textPrimary, fontSize: 17, fontWeight: "800", letterSpacing: -0.3 },
   metricsRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 18, marginBottom: 12 },
   metric: { flex: 1 },
