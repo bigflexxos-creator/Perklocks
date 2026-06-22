@@ -175,13 +175,17 @@ async def run_sim_backtest(db, days: int = 30, sport: str | None = None) -> dict
     all_rows = await cursor.to_list(length=5000)
 
     if not all_rows:
+        empty_by_sport = {}
+        if not sport:
+            for sp in SUPPORTED_SPORTS:
+                empty_by_sport[sp] = {"n": 0, "message": "No settled picks yet."}
         return {
             "n": 0,
             "days": days,
             "sport": sport,
             "message": "No settled picks with sim_win_probability yet. "
                        "Backtest will populate as picks settle.",
-            "by_sport": {} if not sport else None,
+            "by_sport": empty_by_sport if not sport else None,
         }
 
     agg = _compute_from_rows(all_rows)
