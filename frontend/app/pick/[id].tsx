@@ -371,7 +371,7 @@ export default function PickDetail() {
             <View style={styles.insightsCard}>
               {(pick.top_reasons && pick.top_reasons.length > 0
                 ? pick.top_reasons
-                : pick.key_insights.slice(0, 3)
+                : (pick.key_insights || []).slice(0, 3)
               ).map((reason, idx) => (
                 <View key={`reason-${idx}`} style={styles.reasonRow}>
                   <View style={[styles.reasonBadge, { backgroundColor: gradeColor + "22", borderColor: gradeColor }]}>
