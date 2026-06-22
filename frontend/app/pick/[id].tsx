@@ -14,6 +14,7 @@ import { LockV2Panel } from "@/src/components/LockV2Panel";
 import { MarketRankPanel } from "@/src/components/MarketRankPanel";
 import { ScorerBundlesPanel } from "@/src/components/ScorerBundlesPanel";
 import { SimulatorPanel } from "@/src/components/SimulatorPanel";
+import { PitcherH2HPanel } from "@/src/components/PitcherH2HPanel";
 import { getDisplayLockRounded } from "@/src/lib/lockScore";
 import { buildSlipText, shareSlip, saveSlipImage, copySlipText } from "@/src/lib/shareBetSlip";
 
@@ -97,7 +98,7 @@ export default function PickDetail() {
   // Detail screen always renders as "PICK BREAKDOWN" — Bet Killer was
   // deprecated and replaced by the Under-of-the-Day tab; every pick that
   // reaches the UI is a recommended pick post NO_BET filtering.
-  const gradeColor = pick ? GRADE_COLORS[pick.grade] : COLORS.textMuted;
+  const gradeColor = pick ? (GRADE_COLORS[pick.grade] || COLORS.textMuted) : COLORS.textMuted;
 
   return (
     <SafeAreaView
@@ -157,7 +158,7 @@ export default function PickDetail() {
             <View ref={shareCardRef} collapsable={false} style={styles.shareCardWrap}>
               <View style={styles.tagRow}>
                 <View style={[styles.tag, { backgroundColor: `${gradeColor}20`, borderColor: gradeColor }]}>
-                  <Text style={[styles.tagText, { color: gradeColor }]}>{pick.grade.toUpperCase()}</Text>
+                  <Text style={[styles.tagText, { color: gradeColor }]}>{(pick.grade || "Pick").toUpperCase()}</Text>
                 </View>
                 <Text style={styles.metaText}>
                   {pick.sport} · {pick.league}
@@ -313,6 +314,12 @@ export default function PickDetail() {
             {/* Scorer Bundles — synthesized 2+ Goals / Hat-Trick / Goal+Assist
                 Only renders for Soccer Anytime Goal Scorer picks. */}
             <ScorerBundlesPanel pick={pick} />
+
+            {/* Pitcher vs Team H2H — MLB Strikeout picks only.
+                Shows the pitcher's K history vs the specific opposing team
+                (career + last 5 starts). Renders nothing on non-MLB or
+                non-strikeout picks. */}
+            <PitcherH2HPanel pick={pick} />
 
             {/* Batter-vs-Pitcher card — MLB hit/total bases/HR props only.
                 Populated by /app/backend/mlb_bvp.py at pick-generation time
