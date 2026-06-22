@@ -103,8 +103,12 @@ def _qualification_mark(tournament: str) -> str:
     return ""
 
 
-async def fetch_today_matches(now: Optional[datetime] = None) -> list[dict]:
-    """Returns a list of match dicts for today.
+async def fetch_today_matches(now: Optional[datetime] = None, target_date: Optional[datetime] = None) -> list[dict]:
+    """Returns a list of match dicts for `target_date` (default = today's UTC date).
+
+    Pass `target_date` to scrape a future date (e.g. tomorrow) for night-before
+    visibility — TennisExplorer's URL supports `?year=...&month=...&day=...`
+    natively, so this is one extra HTTP call per day with no API credits used.
 
     Each match dict:
       {
@@ -123,7 +127,8 @@ async def fetch_today_matches(now: Optional[datetime] = None) -> list[dict]:
       }
     """
     now = now or datetime.now(timezone.utc)
-    cache_key = now.strftime("%Y-%m-%d")
+    target = target_date or now
+    cache_key = target.strftime("%Y-%m-%d")
     cached = _cache.get(cache_key)
     if cached and (time.time() - cached[0]) < _CACHE_TTL:
         return cached[1]
@@ -132,7 +137,7 @@ async def fetch_today_matches(now: Optional[datetime] = None) -> list[dict]:
     # returns the MAIN tour tournaments (Mallorca, Bad Homburg, Halle,
     # Queen's etc.). `type=all` perversely filters those out and only
     # returns UTR exhibitions + ITFs.
-    url = f"{_BASE}?year={now.year}&month={now.month:02d}&day={now.day:02d}"
+    url = f"{_BASE}?year={target.year}&month={target.month:02d}&day={target.day:02d}"
     headers = {
         "User-Agent": "Mozilla/5.0 PerksLocks/1.0 (https://perkslocks.com)",
         "Accept-Language": "en-US,en;q=0.9",
@@ -141,15 +146,18 @@ async def fetch_today_matches(now: Optional[datetime] = None) -> list[dict]:
         async with httpx.AsyncClient(timeout=_TIMEOUT, headers=headers) as cx:
             r = await cx.get(url, follow_redirects=True)
     except Exception as e:
-        logger.warning("tennis-extra scrape failed: %s", e)
+        logger.warning("tennis-extra scrape failed for %s: %s", cache_key, e)
         return []
     if r.status_code != 200:
-        logger.warning("tennis-extra HTTP %s", r.status_code)
+        logger.warning("tennis-extra HTTP %s for %s", r.status_code, cache_key)
         return []
 
-    matches = _parse_html(r.text, now)
+    # Pass `target` so commence times resolve relative to the target date,
+    # not the wall-clock now. Critical for tomorrow's matches — without this,
+    # a "14:00 CEST" tomorrow match would render with today's date stamp.
+    matches = _parse_html(r.text, target)
     _cache[cache_key] = (time.time(), matches)
-    logger.info("tennis-extra scrape: %d tour-grade matches parsed", len(matches))
+    logger.info("tennis-extra scrape (%s): %d tour-grade matches parsed", cache_key, len(matches))
     return matches
 
 

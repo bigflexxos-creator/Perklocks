@@ -15,7 +15,7 @@ So we:
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from .scraper import fetch_today_matches
@@ -38,8 +38,8 @@ _ALREADY_COVERED = (
 )
 
 
-def _pick_id(player_a: str, player_b: str, tournament: str, date_str: str) -> str:
-    raw = f"te|{date_str}|{tournament}|{player_a}|{player_b}".lower()
+def _pick_id(player_a: str, player_b: str, tournament: str, event_date: str) -> str:
+    raw = f"te|{event_date}|{tournament}|{player_a}|{player_b}".lower()
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
@@ -74,12 +74,40 @@ async def fetch_extra_tennis_picks(
     *,
     date_str: Optional[str] = None,
     include_challengers: bool = True,
+    days_ahead: int = 1,
 ) -> list[dict]:
-    """Top-level entry. Returns ready-to-store pick docs."""
+    """Top-level entry. Returns ready-to-store pick docs.
+
+    `days_ahead` controls how far forward we scrape. Default = 1 (today +
+    tomorrow). The user complaint "Why I don't see tennis picks earlier"
+    is solved by fetching tomorrow's matches tonight so the early-morning
+    UTC tennis matches (Eastbourne / Mallorca / Bad Homburg often start
+    9-11 AM UTC) appear in the feed the evening before with full lead time.
+
+    All picks tagged with `pick_date = date_str` (today) so they surface in
+    `/picks/today` immediately — only the `event_time` differs. The pick id
+    hash uses the match's *event_date* so today's "Smith vs Jones" and
+    tomorrow's "Smith vs Jones" never collide.
+    """
     now = datetime.now(timezone.utc)
     date_str = date_str or now.strftime("%Y-%m-%d")
 
-    matches = await fetch_today_matches(now)
+    # Build the list of dates to scrape: today, today+1, ..., today+days_ahead.
+    days = max(0, int(days_ahead))
+    scrape_dates = [now + timedelta(days=i) for i in range(days + 1)]
+
+    matches: list[dict] = []
+    for target in scrape_dates:
+        try:
+            day_matches = await fetch_today_matches(now=now, target_date=target)
+        except Exception:
+            day_matches = []
+        # Tag each match with its event_date so we can use it later for
+        # the pick id hash (prevents same-player collisions across days).
+        day_key = target.strftime("%Y-%m-%d")
+        for mm in day_matches:
+            mm["_event_date"] = day_key
+        matches.extend(day_matches)
     picks: list[dict] = []
     for m in matches:
         # Dedupe vs. The Odds API — skip tournaments we already pull.
@@ -144,7 +172,7 @@ async def fetch_extra_tennis_picks(
         dog_clean = _strip_seed(dog_name)
         event_label = f"{fav_clean} vs {dog_clean}"
 
-        pid = _pick_id(fav_clean, dog_clean, m["tournament"], date_str)
+        pid = _pick_id(fav_clean, dog_clean, m["tournament"], m.get("_event_date") or date_str)
 
         # Edge — vs vigorish-adjusted book. We don't have an independent
         # model on these picks; report 0% to be honest, but mark "no_edge_model".

@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.22-pitcher-h2h-ui"
+DATA_VERSION = "2026.06.22-tennis-48h-window"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -1478,15 +1478,36 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # small negative edge vs the sharp market. Carve out: any Tennis ML
     # with a strong lock (≥ 80) gets through with edge ≥ -3, so the
     # bandit's actual winning market surfaces consistently with the book.
+    #
+    # Additional carve-out: `tennis_extra` picks are book-anchored
+    # scrapes (TennisExplorer) with NO independent model — their reported
+    # "edge_percent" comes from a self-heal validator pass that compares
+    # win_prob vs book_implied, but those are intentionally equal upstream
+    # so the validator's negative-edge number is meaningless. Surface
+    # tennis_extra ML picks based purely on lock_score (≥ 80) so the
+    # 48-hour scraped slate shows up in the feed.
     tennis_ml_q = {
         "sport": "Tennis",
         "market": {"$regex": "moneyline", "$options": "i"},
         "no_bet": {"$ne": True},
-        "edge_percent": {"$gte": -3.0},
         "$or": [
-            {"lock_score": {"$gte": 80.0}},
-            {"lock_score_v2": {"$gte": 80.0}},
-            {"bandit_lift": {"$gt": 0}},   # still surface bandit-favored MLs even if lock < 80
+            # Path 1: standard Odds-API tennis ML — must clear -3 edge floor + strong lock
+            {
+                "edge_percent": {"$gte": -3.0},
+                "$or": [
+                    {"lock_score": {"$gte": 80.0}},
+                    {"lock_score_v2": {"$gte": 80.0}},
+                    {"bandit_lift": {"$gt": 0}},
+                ],
+            },
+            # Path 2: tennis_extra scraped picks — book-anchored, edge is meaningless
+            {
+                "source": {"$in": ["tennis_extra", "tennis_extra_model"]},
+                "$or": [
+                    {"lock_score": {"$gte": 80.0}},
+                    {"lock_score_v2": {"$gte": 80.0}},
+                ],
+            },
         ],
     }
     # ── MLB Pitcher-Strikeout carve-out (chalk-pricing exception) ─────
