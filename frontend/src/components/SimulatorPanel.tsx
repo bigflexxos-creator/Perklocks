@@ -17,7 +17,8 @@ import { COLORS } from "@/src/theme";
 import { api, Pick } from "@/src/lib/api";
 
 export function SimulatorPanel({ pick }: { pick: Pick }) {
-  const eligible = (pick.sport || "").toUpperCase() === "MLB";
+  const sport = (pick.sport || "").toUpperCase();
+  const eligible = ["MLB", "SOCCER", "NBA", "TENNIS"].includes(sport);
   const hasInline = typeof pick.sim_win_probability === "number";
   const [sim, setSim] = useState<{
     sim_win_probability: number;
@@ -26,6 +27,18 @@ export function SimulatorPanel({ pick }: { pick: Pick }) {
     sim_runs: number;
     sim_disagreement_with_model: number;
     sim_signal: "stronger" | "weaker" | "neutral";
+    sim_market_category?: string;
+    sim_expected_stat?: number;
+    sim_lambda?: number;
+    sim_expected_margin?: number;
+    sim_expected_total?: number;
+    sim_lambda_pick?: number;
+    sim_lambda_opp?: number;
+    sim_pick_serve_pct?: number;
+    sim_opp_serve_pct?: number;
+    sim_avg_total_games?: number;
+    sim_pick_match_win_pct?: number;
+    sim_alt_lines?: Record<string, number>;
   } | null>(hasInline ? {
     sim_win_probability: pick.sim_win_probability!,
     sim_ci_lower: pick.sim_ci_lower ?? 0,
@@ -33,6 +46,7 @@ export function SimulatorPanel({ pick }: { pick: Pick }) {
     sim_runs: pick.sim_runs ?? 0,
     sim_disagreement_with_model: pick.sim_disagreement_with_model ?? 0,
     sim_signal: (pick.sim_signal as any) ?? "neutral",
+    ...(pick as any),
   } : null);
   const [loading, setLoading] = useState(eligible && !hasInline);
   const [unavailable, setUnavailable] = useState(false);
@@ -58,7 +72,16 @@ export function SimulatorPanel({ pick }: { pick: Pick }) {
   }, [pick.id, eligible, hasInline]);
 
   if (!eligible) return null;
-  if (unavailable) return null; // silently skip for unsupported MLB markets
+  if (unavailable) return null; // silently skip for unsupported markets
+
+  const sportLabel =
+    sport === "MLB" ? "MLB Stats API priors"
+    : sport === "SOCCER" ? "Poisson goals (Dixon-Coles)"
+    : sport === "NBA" ? "per-possession outcomes"
+    : sport === "TENNIS" ? "per-point Markov chain"
+    : "";
+  const phaseLabel = sport === "MLB" ? "PHASE A" : "PHASE B";
+  const runsLabel = sim?.sim_runs?.toLocaleString() ?? "10,000";
 
   return (
     <View style={styles.wrap}>
@@ -66,21 +89,21 @@ export function SimulatorPanel({ pick }: { pick: Pick }) {
         <View style={styles.titleBlock}>
           <Text style={styles.sectionLabel}>MONTE CARLO SIMULATOR</Text>
           <Text style={styles.tagline}>
-            10,000-run game simulation using MLB Stats API priors.
+            {runsLabel}-run game simulation using {sportLabel}.
           </Text>
         </View>
         <View style={styles.insightChip}>
-          <Text style={styles.insightChipText}>PHASE A</Text>
+          <Text style={styles.insightChipText}>{phaseLabel}</Text>
         </View>
       </View>
 
       {loading ? (
         <View style={styles.loadingRow}>
           <ActivityIndicator size="small" color={COLORS.voltBlue} />
-          <Text style={styles.loadingText}>Running 10,000 simulations…</Text>
+          <Text style={styles.loadingText}>Running simulations…</Text>
         </View>
       ) : sim ? (
-        <SimulationBody sim={sim} lift={pick.sim_lock_lift} modelWp={pick.win_probability} />
+        <SimulationBody sim={sim} lift={pick.sim_lock_lift} modelWp={pick.win_probability} sport={sport} />
       ) : null}
     </View>
   );
@@ -90,10 +113,12 @@ function SimulationBody({
   sim,
   lift,
   modelWp,
+  sport,
 }: {
   sim: NonNullable<ReturnType<typeof useState<any>>[0]>;
   lift?: number;
   modelWp?: number;
+  sport: string;
 }) {
   const wp = Math.round((sim.sim_win_probability ?? 0) * 10) / 10;
   const ciLo = Math.round(sim.sim_ci_lower ?? 0);
@@ -156,6 +181,9 @@ function SimulationBody({
         </View>
       )}
 
+      {/* Sport-specific extras */}
+      <SportExtras sim={sim} sport={sport} />
+
       {/* Lock score lift */}
       {typeof lift === "number" && Math.abs(lift) >= 0.1 && (
         <View style={[styles.liftBanner, { borderColor: tint + "55", backgroundColor: tint + "08" }]}>
@@ -169,11 +197,54 @@ function SimulationBody({
       )}
 
       <Text style={styles.footnote}>
-        Hitter sims: per-AB Bernoulli using BA / HR-rate / RBI-rate over expected ABs.
-        Pitcher sims: per-batter-faced K-rate over expected BF. Player data from the
-        free MLB Stats API. 0 Odds credits used.
+        {sport === "MLB" && "Hitter sims: per-AB Bernoulli using BA / HR-rate / RBI-rate over expected ABs. Pitcher sims: per-batter-faced K-rate. Free MLB Stats API."}
+        {sport === "SOCCER" && "Poisson goal model with team attack × opponent defense × home advantage. Derived from xG ratings. Routes to ML / Totals / BTTS / ATGS."}
+        {sport === "NBA" && "Per-game λ calibrated to model WP at the line, then form/usage/matchup nudge. Includes alt-line sensitivity."}
+        {sport === "TENNIS" && "Per-point Markov chain across games, sets, tiebreaks. Serve quality calibrated to model match WP, then totals & set scores derive."}
       </Text>
     </>
+  );
+}
+
+function SportExtras({
+  sim,
+  sport,
+}: {
+  sim: NonNullable<ReturnType<typeof useState<any>>[0]>;
+  sport: string;
+}) {
+  // Render up to 3 sport-specific stats as a small compact row.
+  const cells: { label: string; value: string }[] = [];
+  if (sport === "MLB") return null;
+  if (sport === "SOCCER") {
+    if (typeof sim.sim_lambda_pick === "number") cells.push({ label: "λ PICK", value: sim.sim_lambda_pick.toFixed(2) });
+    if (typeof sim.sim_lambda_opp === "number") cells.push({ label: "λ OPP", value: sim.sim_lambda_opp.toFixed(2) });
+    if (sim.sim_market_category) cells.push({ label: "MARKET", value: String(sim.sim_market_category).toUpperCase() });
+  } else if (sport === "NBA") {
+    if (typeof sim.sim_expected_stat === "number") cells.push({ label: "PROJ", value: sim.sim_expected_stat.toFixed(1) });
+    if (typeof sim.sim_lambda === "number") cells.push({ label: "λ", value: sim.sim_lambda.toFixed(2) });
+    if (typeof sim.sim_expected_margin === "number") cells.push({ label: "MARGIN", value: `${sim.sim_expected_margin > 0 ? "+" : ""}${sim.sim_expected_margin.toFixed(1)}` });
+    if (typeof sim.sim_expected_total === "number") cells.push({ label: "PROJ TOTAL", value: sim.sim_expected_total.toFixed(1) });
+  } else if (sport === "TENNIS") {
+    if (typeof sim.sim_pick_serve_pct === "number") cells.push({ label: "PICK SRV", value: `${sim.sim_pick_serve_pct.toFixed(1)}%` });
+    if (typeof sim.sim_opp_serve_pct === "number") cells.push({ label: "OPP SRV", value: `${sim.sim_opp_serve_pct.toFixed(1)}%` });
+    if (typeof sim.sim_avg_total_games === "number") cells.push({ label: "AVG GAMES", value: sim.sim_avg_total_games.toFixed(1) });
+  }
+
+  if (cells.length === 0) return null;
+
+  return (
+    <View style={[styles.compareRow, { marginTop: 10 }]}>
+      {cells.map((c, idx) => (
+        <React.Fragment key={c.label}>
+          <View style={styles.compareCell}>
+            <Text style={styles.compareLabel}>{c.label}</Text>
+            <Text style={styles.compareValue}>{c.value}</Text>
+          </View>
+          {idx < cells.length - 1 && <View style={styles.compareDivider} />}
+        </React.Fragment>
+      ))}
+    </View>
   );
 }
 

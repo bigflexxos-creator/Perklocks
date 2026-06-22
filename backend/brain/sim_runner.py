@@ -12,14 +12,15 @@ logger = logging.getLogger("lockscore.brain.sim_runner")
 
 # Lazy import per sport — keeps the runner lightweight when only some sports
 # have simulators.
-_SPORTS_WITH_SIM = {"MLB"}
+_SPORTS_WITH_SIM = {"MLB", "Soccer", "NBA", "Tennis"}
 
 
 def _player_stats_from_pick(pick: dict) -> dict:
-    """Extract any player stats already enriched on the pick.
+    """Extract any player stats already enriched on the pick (MLB only).
 
     Reads from `mlb_bvp` enrichment + `player_intel` cache. Falls back to
-    league averages inside the simulator if these are missing.
+    league averages inside the simulator if these are missing. Soccer/NBA/
+    Tennis sims read directly from `pick.factors` instead.
     """
     stats: dict = {}
     bvp = pick.get("mlb_bvp") or {}
@@ -48,8 +49,18 @@ def simulate_pick(pick: dict) -> Optional[dict]:
             from brain.sim_mlb import simulate_mlb_pick
             stats = _player_stats_from_pick(pick)
             return simulate_mlb_pick(pick, stats)
+        if sport == "Soccer":
+            from brain.sim_soccer import simulate_soccer_pick
+            return simulate_soccer_pick(pick)
+        if sport == "NBA":
+            from brain.sim_nba import simulate_nba_pick
+            return simulate_nba_pick(pick)
+        if sport == "Tennis":
+            from brain.sim_tennis import simulate_tennis_pick
+            return simulate_tennis_pick(pick)
     except Exception as e:
-        logger.warning("Simulator failed for pick %s: %s", pick.get("id", "?")[:8], e)
+        logger.warning("Simulator failed for pick %s (sport=%s): %s",
+                       (pick.get("id") or "?")[:8], sport, e)
     return None
 
 

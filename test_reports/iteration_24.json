@@ -1,0 +1,45 @@
+{
+  "summary": "Phase B Monte Carlo Simulators (Soccer/NBA/Tennis) end-to-end verified. All 22 pytest cases pass (sim schemas for all 4 sports, UFC 404, backtest aggregate + sport filter, NBA/Tennis calibration within ±10pp, sim_runner routing, apply_simulations mutation, unit tests for moneyline/totals/btts/atgs/points/threes etc). Frontend SimulatorPanel renders correctly on Soccer (PHASE B + 'Poisson goals (Dixon-Coles)' + λ PICK/λ OPP/MARKET), NBA (PHASE B + 'per-possession' + MARGIN/PROJ/λ), Tennis (PHASE B + 'per-point Markov chain' + PICK SRV/OPP SRV/AVG GAMES), MLB (PHASE A + 'MLB Stats API' regression preserved). All existing panels (LockV2, MarketRank) still render. No red screen errors. Minor schema gap noted in sim-backtest empty-rows path.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/analytics/sim-backtest?days=30",
+        "issue": "When zero settled picks have sim_win_probability stored (current state), by_sport is returned as empty dict {} rather than populated with all 4 SUPPORTED_SPORTS keys (MLB/Soccer/NBA/Tennis) each carrying {n:0, message:'No settled picks yet.'}. The spec line says 'by_sport with keys MLB, Soccer, NBA, Tennis (each may show n=0 with message)'. Current behavior is functionally correct (frontend can fall back to aggregate message) but UI may want predictable keys. Fix in brain/sim_backtest.py lines 177-185: when all_rows is empty AND sport is None, populate by_sport with the per-sport n=0 placeholders the same way the populated branch does at lines 191-200."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "Global styles (pre-existing)", "issue": "Console warning: 'shadow*' style props are deprecated. Use \"boxShadow\". Not in sim files — pre-existing from earlier iterations, carried over from iteration_23. No new RN warnings introduced by Phase B."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_sim_phase_b.py",
+    "/app/test_reports/pytest/sim_phase_b.xml"
+  ],
+  "action_items": [
+    "Optional: populate by_sport with all 4 sport keys (n=0, message) in brain/sim_backtest.py when all_rows is empty and sport filter is None — matches spec wording exactly. Currently returns {} so frontend just shows the top-level n=0 message which is acceptable."
+  ],
+  "critical_code_review_comments": [
+    "sim_runner._SPORTS_WITH_SIM correctly extended to {MLB, Soccer, NBA, Tennis}; apply_simulations mutates picks in-place with sim_* fields and lock-score lift — verified in test_apply_simulations_mutates.",
+    "sim_nba uses _calibrate_lambda (bisection) anchored to model_wp at the line, plus ±5% factor adjustments — explains the deliberately tight delta (NBA pick 7a0eee4d shows sim_wp 61.5 vs model 60.5 = 1pp). Tennis uses serve-gap calibration the same way (Tennis pick 6fcdec67: 75.5 vs 74.6 = 0.9pp). Both within ±10pp guardrail as expected.",
+    "sim_soccer is independent Poisson (no calibration) — Soccer ATGS pick fc87a363 shows sim_wp 31.4 vs model 49.4 = -18pp 'weaker' signal. This is the documented value-add: surfaces totals/ATGS edge cases the matchup-aware model may overrate.",
+    "Tennis uses RUNS=3000 (not 10000) per file comment 'tennis is per-point heavy; smaller runs for speed'. Spec didn't mandate 10000 for Tennis, so acceptable. CI half-width is ~1.5pp at n=3000 which is fine.",
+    "SimulatorPanel correctly tagline-switches by sport (Poisson goals / per-possession / per-point Markov chain) and SportExtras component renders only the relevant cells per sport with no fallthrough.",
+    "Backtest endpoint accepts optional `sport` query param; when set, sport filter is applied to base_query and by_sport is None — correctly tested.",
+    "sim_backtest._compute_from_rows handles n=0 path by returning {n:0} without divide-by-zero; bucket logic and odds-to-payout conversion look sound."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sim_phase_b.py (new — 22 test cases covering Phase B)"
+  ],
+  "success_rate": {"backend": "100% (22/22 phase B tests + 6/6 phase A tests)", "frontend": "100% (4/4 sports render SimulatorPanel correctly with sport-specific extras)"},
+  "seed_data_creation": "None — used existing verified pick ids from review request + 1 NBA pick id 7a0eee4d-cb32-4bea-9517-dcca27bf0c4a discovered from db.picks.findOne({sport:'NBA'}).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Pick ids used: Soccer fc87a363-f776-5a6e-b107-bd8c8d099693 (Mikel Oyarzabal ATGS, sim_wp 31.4 vs model 49.4, weaker signal -18pp, λ_pick=1.48 λ_opp=1.02 cat=atgs), NBA 7a0eee4d-cb32-4bea-9517-dcca27bf0c4a (Spurs ML, sim 61.5 vs model 60.5, neutral, margin +3.19), Tennis 6fcdec67-aa21-4553-a802-3e26943d2839 (Pinnington Jones ML, sim 75.5 vs model 74.6, neutral, p_serve 65.7%, o_serve 60.3%, avg games 24.5), MLB 57f9f5a1-8d4b-530a-99f5-3ba5c186b718 (Yandy Diaz HRR, sim 88.1 vs model 82.6, stronger +5.5). UFC 6f44f599-6d99-430e-904a-ecfe0a3c4234 → 404 confirmed. Backtest n=0 across all sports (no settled picks with sim_wp yet — expected since sim just shipped). Tests live at /app/backend/tests/test_sim_phase_b.py.",
+  "rca_of_issue": "N/A — feature works as specified. Only minor schema nit on by_sport empty-rows path (see backend_issues.minor)."
+}

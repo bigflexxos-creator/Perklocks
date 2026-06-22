@@ -412,10 +412,11 @@ export const api = {
       sim_disagreement_with_model: number;
       sim_signal: "stronger" | "weaker" | "neutral";
     }>(`/picks/${id}/simulation`),
-  simBacktest: (days: number = 30) =>
+  simBacktest: (days: number = 30, sport?: string) =>
     request<{
       n: number;
       days: number;
+      sport?: string | null;
       message?: string;
       brier?: number;
       log_loss?: number;
@@ -428,7 +429,8 @@ export const api = {
         delta: number;
       }>;
       strategies?: Record<string, { bets: number; units: number; roi_pct: number }>;
-    }>(`/analytics/sim-backtest?days=${days}`),
+      by_sport?: Record<string, any>;
+    }>(`/analytics/sim-backtest?days=${days}${sport ? `&sport=${encodeURIComponent(sport)}` : ""}`),
   pickCoverage: (id: string, cohort: "teammates" | "league" = "teammates") =>
     request<{
       pick_id?: string;

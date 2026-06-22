@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.22-sim-mlb-phase-a-live"
+DATA_VERSION = "2026.06.22-sim-phase-b-soccer-nba-tennis"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -2715,13 +2715,14 @@ async def pick_simulation(
     user: Annotated[UserPublic, Depends(current_user)],
 ):
     """Run Monte Carlo on a single pick on demand. Returns sim output dict
-    with sim_win_probability, 95% Wilson CI, runs, threshold, disagreement
-    vs blended model. MLB only (Phase A); other sports return 404."""
+    with sim_win_probability, 95% Wilson CI, runs, market category,
+    disagreement vs blended model. Supports MLB, Soccer, NBA, Tennis."""
     pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
     if not pick:
         raise HTTPException(status_code=404, detail="Pick not found")
-    if (pick.get("sport") or "") != "MLB":
-        raise HTTPException(status_code=404, detail="Simulation not yet available for this sport (MLB only in Phase A)")
+    sport = pick.get("sport") or ""
+    if sport not in {"MLB", "Soccer", "NBA", "Tennis"}:
+        raise HTTPException(status_code=404, detail=f"Simulation not yet available for {sport or 'this sport'}")
     from brain.sim_runner import simulate_pick
     sim = simulate_pick(pick)
     if not sim:
@@ -2733,12 +2734,13 @@ async def pick_simulation(
 async def sim_backtest_endpoint(
     user: Annotated[UserPublic, Depends(current_user)],
     days: int = 30,
+    sport: str | None = None,
 ):
-    """Phase-A simulator backtest: calibration + strategy ROI against settled
-    MLB picks. Brier score, log-loss, Brier skill score, and 6-bucket
-    expected-vs-observed table. Powers the Strategy Lab simulator tab."""
+    """Simulator backtest with optional per-sport breakdown. Returns
+    calibration + strategy ROI against settled picks. When `sport` is None,
+    returns an aggregate plus per-sport sections."""
     from brain.sim_backtest import run_sim_backtest
-    return await run_sim_backtest(db, days=days)
+    return await run_sim_backtest(db, days=days, sport=sport)
 
 
 @api.get("/analytics/learned-weights")
