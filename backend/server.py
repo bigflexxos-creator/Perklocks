@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.22-history-final-score-backfill"
+DATA_VERSION = "2026.06.22-soccer-scorer-tabs-split"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -1179,9 +1179,16 @@ async def _ensure_today_picks() -> None:
 # pick's stored `market` string.
 _MARKET_REGEX = {
     # ── Soccer-specific families ──────────────────────────────────────────
-    "1x2":           r"\bmoneyline\b|\bwin or draw\b",
-    "btts":          r"both teams to score|\bbtts\b",
-    "goalscorer":    r"anytime goal scorer|first goal scorer|last goal scorer|to score or assist",
+    "1x2":             r"\bmoneyline\b|\bwin or draw\b",
+    "btts":            r"both teams to score|\bbtts\b",
+    # Split the original "goalscorer" catch-all into 3 distinct tokens so the
+    # Soccer tab has separate filter pills for Anytime / Score-or-Assist / FGS.
+    # The legacy `goalscorer` token stays as an OR of all three for any old
+    # links / analytics groupings that still reference it (back-compat).
+    "anytime_scorer":  r"anytime goal scorer",
+    "score_or_assist": r"to score or assist",
+    "first_goal_scorer": r"first goal scorer|last goal scorer",
+    "goalscorer":      r"anytime goal scorer|first goal scorer|last goal scorer|to score or assist",
 
     # ── Generic team markets ──────────────────────────────────────────────
     "moneyline":     r"\bmoneyline\b",
@@ -1232,10 +1239,12 @@ def _market_regex(token: str) -> str | None:
 # Sport → available market filter tokens. Drives the UI MarketSelector pills.
 SPORT_MARKETS = {
     "Soccer": [
-        {"token": "1x2",         "label": "1X2"},
-        {"token": "totals",      "label": "Over/Under"},
-        {"token": "btts",        "label": "BTTS"},
-        {"token": "goalscorer",  "label": "Goalscorer"},
+        {"token": "1x2",               "label": "1X2"},
+        {"token": "totals",            "label": "Over/Under"},
+        {"token": "btts",              "label": "BTTS"},
+        {"token": "anytime_scorer",    "label": "Anytime Scorer"},
+        {"token": "score_or_assist",   "label": "Score or Assist"},
+        {"token": "first_goal_scorer", "label": "FGS"},
     ],
     "NBA": [
         {"token": "moneyline",   "label": "Moneyline"},
