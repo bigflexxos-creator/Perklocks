@@ -386,7 +386,14 @@ function Header() {
         <Ionicons name="chevron-back" size={22} color={COLORS.textPrimary} />
       </Pressable>
       <Text style={styles.headerTitle}>Analytics</Text>
-      <View style={{ width: 32 }} />
+      <Pressable
+        onPress={() => router.push("/strategy-lab")}
+        hitSlop={12}
+        style={styles.backBtn}
+        testID="strategy-lab-btn"
+      >
+        <Ionicons name="flask-outline" size={22} color={COLORS.goldElite} />
+      </Pressable>
     </View>
   );
 }
