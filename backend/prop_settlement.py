@@ -863,6 +863,30 @@ async def _record(db, pick: dict, outcome: str, detail: dict, counts: dict):
         units_profit = -1.0 if outcome == "lost" else (0.0 if outcome == "push" else 0.91)
         clv = 0.0
         conf = None
+    # Build a `final_score` payload so the History UI can render a stat line
+    # for player props (was previously empty → "score unavailable" text + the
+    # user complaint "history don't show accurate data"). For player props the
+    # most relevant "score" is the player's actual stat (e.g. {"Aaron Judge
+    # Hits": 2}). For game-level props we'd already have score from settlement_engine.
+    final_score_payload: dict = {}
+    try:
+        player = (detail or {}).get("player") or ""
+        stat = (detail or {}).get("stat") or ""
+        value = (detail or {}).get("value")
+        line = (detail or {}).get("line")
+        if player and stat and value is not None:
+            label = f"{player} {stat.replace('_', ' ').title()}"
+            final_score_payload[label] = value
+            if line is not None:
+                final_score_payload["Line"] = line
+        elif (detail or {}).get("scorers") is not None:
+            # Goal-scorer pick — show goal scorers + own player's goal count
+            final_score_payload["Goals Scored"] = (detail or {}).get("scorers") or []
+            if player:
+                final_score_payload[player] = (detail or {}).get("player_goals", 0)
+    except Exception:
+        pass
+
     await db.picks.update_one(
         {"id": pick["id"]},
         {"$set": {
@@ -873,6 +897,7 @@ async def _record(db, pick: dict, outcome: str, detail: dict, counts: dict):
             "units_risked": 1.0 if outcome != "push" else 0.0,
             "units_profit": units_profit,
             "clv_value": clv,
+            **({"final_score": final_score_payload} if final_score_payload else {}),
             **({"confidence_bucket": conf} if conf else {}),
         }},
     )
