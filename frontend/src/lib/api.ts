@@ -131,6 +131,9 @@ export type PickFilters = {
   market?: string;
   /** League substring match. */
   league?: string;
+  /** When TRUE, show only picks where the Monte Carlo simulator hit ≥85%
+   *  AND agrees with the model by ≥5pp. Applied client-side. */
+  simEdgeOnly?: boolean;
 };
 
 export type SportMarket = { token: string; label: string };

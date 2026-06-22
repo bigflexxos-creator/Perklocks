@@ -115,6 +115,18 @@ export function LockPickCard({ pick }: { pick: Pick }) {
               </Text>
             </View>
           )}
+          {/* SIM EDGE chip — appears when the Monte Carlo simulator returns
+              ≥85% win probability AND it's at least 5pp stronger than the
+              blended model. Signals a high-confidence "the math really
+              loves this" finding. */}
+          {typeof pick.sim_win_probability === "number" &&
+           pick.sim_win_probability >= 85 &&
+           (pick.sim_disagreement_with_model ?? 0) >= 5 && (
+            <View style={styles.simEdgeBadge}>
+              <Text style={styles.simEdgeIcon}>🎲</Text>
+              <Text style={styles.simEdgeText}>SIM EDGE · {pick.sim_win_probability.toFixed(0)}%</Text>
+            </View>
+          )}
           <Text style={styles.market} numberOfLines={2}>{pick.market}</Text>
           {(pick as any).model_line === true && (
             <Text style={styles.modelLineText} numberOfLines={1}>
@@ -286,6 +298,22 @@ const styles = StyleSheet.create({
   },
   liveDot: { width: 6, height: 6, borderRadius: 3 },
   liveBadgeText: { fontSize: 10, fontWeight: "800", letterSpacing: 0.8, fontVariant: ["tabular-nums"] },
+  // SIM EDGE — high-confidence simulator agreement chip
+  simEdgeBadge: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 5,
+    borderWidth: 1,
+    borderColor: "rgba(167, 139, 250, 0.55)",
+    backgroundColor: "rgba(167, 139, 250, 0.12)",
+    marginTop: 4,
+  },
+  simEdgeIcon: { fontSize: 10 },
+  simEdgeText: { color: "#C4B5FD", fontSize: 9, fontWeight: "900", letterSpacing: 0.9 },
   market: { color: COLORS.textPrimary, fontSize: 17, fontWeight: "800", letterSpacing: -0.3 },
   metricsRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 18, marginBottom: 12 },
   metric: { flex: 1 },
