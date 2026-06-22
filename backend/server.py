@@ -816,6 +816,28 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as e:
         logger.warning("Player Form skipped: %s", e)
 
+    # ── Multi-Armed Bandit (Phase 3 learning upgrade) ──────────────────
+    # Thompson-sample each strategy arm's Beta posterior, then tilt picks
+    # belonging to currently-winning arms (+lift) and currently-losing
+    # arms (-lift) by up to ±LIFT_MAX lock points. This auto-discovers
+    # which combinations of lock/edge/odds/sport/market are hot RIGHT NOW
+    # without us hand-tuning thresholds.
+    try:
+        from bandit import sample_arms, apply_bandit_lift
+        sampled = await sample_arms(db)
+        if sampled:
+            bandit_counts = apply_bandit_lift(picks, sampled)
+            if bandit_counts.get("applied", 0) > 0:
+                logger.info(
+                    "Bandit (Thompson) applied to %d picks (↑%d ↓%d) across %d arms",
+                    bandit_counts.get("applied", 0),
+                    bandit_counts.get("lifted_up", 0),
+                    bandit_counts.get("lifted_down", 0),
+                    len(sampled),
+                )
+    except Exception as e:
+        logger.warning("Bandit lift skipped: %s", e)
+
     # ── Sportsbook deep-link enrichment: attach home_team / away_team / pick
     # / fanduel_event_id / draftkings_event_id / etc. to every pick. These
     # power the "Add to Bet Slip" deep links from the parlay & detail screens
@@ -2590,6 +2612,50 @@ async def learned_weights(user: Annotated[UserPublic, Depends(current_user)]):
     if not doc:
         return {"buckets": [], "calibration": [], "updated_at": None, "sample_size": 0}
     return doc
+
+
+@api.get("/analytics/bandit")
+async def bandit_state(user: Annotated[UserPublic, Depends(current_user)]):
+    """Phase-3 learning: Multi-Armed Bandit (Thompson sampling) arm states.
+
+    Returns every strategy arm with its Beta(α, β) posterior, n samples,
+    wins/losses, units P&L, ROI, posterior mean, and last Thompson sample.
+    Sorted by posterior mean descending.
+    """
+    arms = await db.bandit_arms.find({}, {"_id": 0}).sort("posterior_mean", -1).to_list(length=100)
+    return {"arms": arms, "n_arms": len(arms)}
+
+
+@api.get("/analytics/backtest")
+async def backtest_endpoint(
+    user: Annotated[UserPublic, Depends(current_user)],
+    days: int = 30,
+):
+    """Phase-3 back-test: replay every strategy arm against the last N days
+    of settled picks. Returns ROI, hit rate, max drawdown, Sharpe per arm."""
+    from backtest import backtest_arms
+    return await backtest_arms(db, days=days)
+
+
+@api.get("/analytics/backtest-custom")
+async def backtest_custom_endpoint(
+    user: Annotated[UserPublic, Depends(current_user)],
+    days: int = 30,
+    lock_floor: float = 0,
+    edge_floor: float = -100,
+    odds_min: int = -10000,
+    odds_max: int = 10000,
+    sport: Optional[str] = None,
+    market_keyword: Optional[str] = None,
+):
+    """Ad-hoc backtest with explicit filters — A/B-test new strategies
+    before promoting them to permanent bandit arms."""
+    from backtest import backtest_custom
+    return await backtest_custom(
+        db, days=days, lock_floor=lock_floor, edge_floor=edge_floor,
+        odds_min=odds_min, odds_max=odds_max, sport=sport,
+        market_keyword=market_keyword,
+    )
 
 
 @api.get("/analytics/v2")

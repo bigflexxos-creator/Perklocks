@@ -494,6 +494,26 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
     except Exception as e:
         logger.warning("Player Form recompute failed: %s", e)
 
+    # ── Phase 3 learning — Multi-Armed Bandit arm states refresh. ──────
+    # Rebuilds each strategy arm's Beta(α, β) posterior from every settled
+    # pick. Cheap aggregation. The next refresh will Thompson-sample these
+    # to decide which arms to favor.
+    try:
+        from bandit import refresh_arm_states
+        arm_states = await refresh_arm_states(db)
+        counts["bandit_arms"] = len(arm_states)
+        # Log top 3 arms by posterior mean for transparency
+        ranked = sorted(arm_states.values(),
+                        key=lambda s: s.get("posterior_mean", 0),
+                        reverse=True)
+        top_summary = ", ".join(
+            f"{s['arm']}={s['posterior_mean']:.2f}(n={s['n']})" for s in ranked[:3]
+        )
+        logger.info("Bandit arm states refreshed: %d arms · top: %s",
+                    len(arm_states), top_summary)
+    except Exception as e:
+        logger.warning("Bandit arm refresh failed: %s", e)
+
     # ── Self-healing math validator — silently corrects edge/implied/lock
     # drift, including any post-learning win-prob stacking. Pure DB-side
     # math, no external API calls, runs every settlement cycle.
