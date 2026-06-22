@@ -208,6 +208,22 @@ def to_picks_collection_doc(pred: dict) -> dict:
         friendly_market = f"{sel} to Win"
     else:
         friendly_market = sel or pred.get("market") or "Match Result"
+    # ── Convert model confidence → FAIR American odds. ────────────
+    # Previously this returned a hardcoded `book_odds=100` (even-money)
+    # on every pick, which was a bug a user spotted: "France not +100
+    # tomorrow" — the model thought France ≈96% to beat Iraq but the pick
+    # was published at +100 / 50% implied. That fake line was misleading
+    # because no sportsbook will ever offer France at +100 for that match.
+    #
+    # Now we derive the fair American line from the model's win prob and
+    # flag the pick as a model estimate (no real bookmaker line). Mirrors
+    # the tennis_extra fair-odds flow so the frontend "Extended Coverage"
+    # badge shows automatically.
+    prob_dec = max(0.001, min(0.999, conf / 100.0))
+    if prob_dec >= 0.5:
+        fair_odds = -round(100 * prob_dec / (1 - prob_dec))
+    else:
+        fair_odds = round(100 * (1 - prob_dec) / prob_dec)
     return {
         "id":               pred["id"],
         "sport":            "Soccer",
@@ -220,9 +236,12 @@ def to_picks_collection_doc(pred: dict) -> dict:
         # Previously was incorrectly stored as 0-1 decimal which made the UI
         # show "0.96%" instead of "96%".
         "win_probability":  round(conf, 1),
-        "implied_probability": 50.0,
-        "book_odds":        100,
-        "edge_percent":     round((conf - 50.0) / 5.0, 2),
+        # At fair odds, implied = model prob by definition.
+        "implied_probability": round(conf, 1),
+        "book_odds":        int(fair_odds),
+        # Edge is 0 at fair odds — we have no real market line to compare
+        # against. Honesty > fake green numbers.
+        "edge_percent":     0.0,
         "lock_score":       round(conf, 1),
         "grade":            _grade_from_conf(conf),
         "pick_date":        today,
@@ -233,6 +252,22 @@ def to_picks_collection_doc(pred: dict) -> dict:
         "source":           "soccer_v1",
         "model_version":    pred["model_version"],
         "created_at":       pred["created_at"],
+        # ── Fair-odds / Extended Coverage flags ───────────────────────
+        # No bookmaker carries this fixture (or we couldn't reach The Odds
+        # API). Mark explicitly so the UI shows the "Extended Coverage"
+        # badge and the user knows the price is a MODEL ESTIMATE — they
+        # must confirm at their sportsbook (which will be very different
+        # for chalk like France −2400).
+        "is_extra":         True,
+        "fair_odds_model":  True,
+        "bookmaker":        "Fair Odds (Model)",
+        "factors": {
+            "Coverage Source": (
+                "Soccer model fair-odds (The Odds API doesn't carry this fixture). "
+                "Confirm the line at your sportsbook before placing."
+            ),
+            "Model Confidence": f"Model puts {sel} at {round(conf)}% to win.",
+        },
     }
 
 
