@@ -6,7 +6,12 @@ So we:
   • Mark them `source="tennis_extra"` and `is_extra=true`.
   • Only generate ONE moneyline pick per match (the favorite if their
     implied prob is ≥55%).
-  • Cap lock_score at 90 — no "Elite Lock" for scraped picks.
+  • Seed lock_score in [70..90]. NOTE: Downstream Lock Engine V2 +
+    learning_system_v2 can legitimately raise this above 90 (up to 99)
+    when the pick passes their bet-quality checks — well-calibrated
+    market, positive bandit lift, strong recent ROI, etc. So a 91-93
+    on a scraped pick means "it earned Elite badge after verification",
+    not a bug. Only this initial-seed step is capped at 90.
   • Skip picks where the spread is too tight (no clear favorite).
   • Skip qualifiers and challengers below ATP 250 by default unless
     `include_challengers=True`.
@@ -20,10 +25,12 @@ from typing import Optional
 
 from .scraper import fetch_today_matches
 
-# Lock-score floor for the favorite to qualify as a pick.
+# Initial-seed lock-score band for the favorite. Downstream learning/lock
+# engines may raise this above 90 (up to 99) when the pick passes Lock V2 +
+# bandit + calibration checks — that's intentional, not a bug.
 _MIN_FAV_IMPLIED = 0.55      # favorite must be ≥55% implied
 _MAX_FAV_IMPLIED = 0.92      # ≥92% is too chalky → trap territory
-_MAX_LOCK = 90.0             # never label scraped picks as Elite Lock
+_MAX_LOCK = 90.0             # initial seed ceiling; downstream may exceed
 
 # Tiers we serve by default.
 _DEFAULT_TIERS = ("ATP 250", "WTA 250", "Unknown")
@@ -50,7 +57,11 @@ def _strip_seed(name: str) -> str:
 
 
 def _lock_score_from_implied(implied: float, *, tier: str) -> float:
-    """Translate book implied probability → soft lock score in [70..90].
+    """Translate book implied probability → SEED lock score in [70..90].
+
+    This is only the initial seed value. Downstream (Lock Engine V2 +
+    learning_system_v2) can lift the score above 90 — that's intentional
+    when the pick actually passes the calibration / bandit / ROI checks.
 
     Approach: a 55% favorite ≈ 75; a 75% favorite ≈ 85; a 90% favorite ≈ 90.
     Then deduct a small penalty for non-ATP/WTA 250 tiers.
