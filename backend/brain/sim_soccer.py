@@ -162,9 +162,11 @@ def simulate_soccer_pick(pick: dict) -> Optional[dict]:
         return None
 
     wins = 0
+    total_goals_dist: list[int] = []
     for _ in range(RUNS):
         gp = _poisson(lam_pick)
         go = _poisson(lam_opp)
+        total_goals_dist.append(gp + go)
         if cat == "moneyline":
             if gp > go:
                 wins += 1
@@ -211,6 +213,20 @@ def simulate_soccer_pick(pick: dict) -> Optional[dict]:
     else:
         signal = "neutral"
 
+    # Alt-line sensitivity for soccer totals (Over/Under N.5 goals)
+    alt_lines: dict = {}
+    threshold_out = None
+    is_under_out = None
+    if cat == "totals":
+        threshold_out = _extract_threshold(market)
+        is_under_out = _is_under(market)
+        for delta in (-1.5, -1.0, -0.5, 0.5, 1.0, 1.5):
+            alt = round(threshold_out + delta, 1)
+            if alt <= 0:
+                continue
+            over_hits = sum(1 for g in total_goals_dist if g > alt)
+            alt_lines[str(alt)] = round(over_hits / n * 100, 1)
+
     return {
         "sim_win_probability": sim_wp_pct,
         "sim_ci_lower": round(ci_lo * 100, 1),
@@ -219,6 +235,9 @@ def simulate_soccer_pick(pick: dict) -> Optional[dict]:
         "sim_lambda_pick": round(lam_pick, 3),
         "sim_lambda_opp": round(lam_opp, 3),
         "sim_market_category": cat,
+        "sim_threshold": threshold_out,
+        "sim_is_under": is_under_out,
+        "sim_alt_lines": alt_lines if alt_lines else None,
         "sim_disagreement_with_model": disagreement,
         "sim_signal": signal,
     }

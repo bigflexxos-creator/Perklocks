@@ -202,6 +202,17 @@ def simulate_mlb_pick(pick: dict, player_stats: dict | None = None) -> Optional[
     else:
         signal = "neutral"
 
+    # Alt-line sensitivity table: how does sim P(over) change ±0.5/±1.0/±1.5?
+    # Helps users see whether the line is the right one or alt-shopping has edge.
+    alt_lines: dict = {}
+    for delta in (-1.5, -1.0, -0.5, 0.5, 1.0, 1.5):
+        alt = round(threshold + delta, 1)
+        if alt < 0:
+            continue
+        over_hits = sum(1 for x in distribution if x > alt)
+        alt_lines[str(alt)] = round(over_hits / n * 100, 1)
+    expected_stat = sum(distribution) / max(1, n)
+
     return {
         "sim_win_probability": sim_wp_pct,
         "sim_ci_lower": round(ci_lo * 100, 1),
@@ -209,6 +220,8 @@ def simulate_mlb_pick(pick: dict, player_stats: dict | None = None) -> Optional[
         "sim_runs": n,
         "sim_threshold": threshold,
         "sim_is_under": is_under,
+        "sim_expected_stat": round(expected_stat, 2),
+        "sim_alt_lines": alt_lines,
         "sim_disagreement_with_model": disagreement,
         "sim_signal": signal,
     }

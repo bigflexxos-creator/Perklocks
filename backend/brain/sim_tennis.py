@@ -220,6 +220,16 @@ def simulate_tennis_pick(pick: dict) -> Optional[dict]:
     disagreement = round(sim_wp_pct - model_wp * 100, 2)
     avg_games = sum(total_games_dist) / max(1, len(total_games_dist))
 
+    # Alt-line sensitivity for totals markets (Over X.5 games at ±2, ±4 games)
+    alt_lines: dict = {}
+    if cat == "totals":
+        for delta in (-4.5, -2.5, -0.5, 0.5, 2.5, 4.5):
+            alt = round(threshold + delta, 1)
+            if alt <= 0:
+                continue
+            over_hits = sum(1 for g in total_games_dist if g > alt)
+            alt_lines[str(alt)] = round(over_hits / n * 100, 1)
+
     return {
         "sim_win_probability": sim_wp_pct,
         "sim_ci_lower": round(ci_lo * 100, 1),
@@ -230,6 +240,9 @@ def simulate_tennis_pick(pick: dict) -> Optional[dict]:
         "sim_avg_total_games": round(avg_games, 1),
         "sim_pick_match_win_pct": round(pick_match_wins / n * 100, 1),
         "sim_market_category": cat,
+        "sim_threshold": threshold if cat == "totals" else None,
+        "sim_is_under": is_under if cat == "totals" else None,
+        "sim_alt_lines": alt_lines if alt_lines else None,
         "sim_disagreement_with_model": disagreement,
         "sim_signal": _signal(disagreement),
     }

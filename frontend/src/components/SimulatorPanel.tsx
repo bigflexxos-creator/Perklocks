@@ -12,7 +12,7 @@
  * the fields are missing — e.g. older picks generated before sim went live.
  */
 import React, { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet } from "react-native";
 import { COLORS } from "@/src/theme";
 import { api, Pick } from "@/src/lib/api";
 
@@ -48,8 +48,12 @@ export function SimulatorPanel({ pick }: { pick: Pick }) {
     sim_signal: (pick.sim_signal as any) ?? "neutral",
     ...(pick as any),
   } : null);
-  const [loading, setLoading] = useState(eligible && !hasInline);
+  // Track failure state so we render NOTHING if no inline data + fetch failed
+  // (instead of a spinner that disappears, which looked broken).
   const [unavailable, setUnavailable] = useState(false);
+  // Show spinner ONLY in inline-missing case while we wait — but if it fails,
+  // skip rendering the panel entirely.
+  const [loading, setLoading] = useState(eligible && !hasInline);
 
   useEffect(() => {
     if (!eligible || hasInline) return;
@@ -72,7 +76,14 @@ export function SimulatorPanel({ pick }: { pick: Pick }) {
   }, [pick.id, eligible, hasInline]);
 
   if (!eligible) return null;
-  if (unavailable) return null; // silently skip for unsupported markets
+  // Silently skip rendering for picks where the sim can't route (e.g. niche
+  // markets like corners, cards, or unsupported player props). Prevents the
+  // "spinner → empty card" UX bug.
+  if (unavailable) return null;
+  // While we wait for the on-demand fetch, render NOTHING (not a spinner).
+  // The panel will pop in once data is ready. This avoids the misleading
+  // "still loading…" state that previously vanished into thin air.
+  if (loading && !sim) return null;
 
   const sportLabel =
     sport === "MLB" ? "MLB Stats API priors"
@@ -97,14 +108,9 @@ export function SimulatorPanel({ pick }: { pick: Pick }) {
         </View>
       </View>
 
-      {loading ? (
-        <View style={styles.loadingRow}>
-          <ActivityIndicator size="small" color={COLORS.voltBlue} />
-          <Text style={styles.loadingText}>Running simulations…</Text>
-        </View>
-      ) : sim ? (
-        <SimulationBody sim={sim} lift={pick.sim_lock_lift} modelWp={pick.win_probability} sport={sport} />
-      ) : null}
+      {sim && (
+        <SimulationBody sim={sim} lift={pick.sim_lock_lift} modelWp={pick.win_probability} sport={sport} threshold={pick.sim_threshold} />
+      )}
     </View>
   );
 }
@@ -114,11 +120,13 @@ function SimulationBody({
   lift,
   modelWp,
   sport,
+  threshold,
 }: {
   sim: NonNullable<ReturnType<typeof useState<any>>[0]>;
   lift?: number;
   modelWp?: number;
   sport: string;
+  threshold?: number;
 }) {
   const wp = Math.round((sim.sim_win_probability ?? 0) * 10) / 10;
   const ciLo = Math.round(sim.sim_ci_lower ?? 0);
@@ -184,6 +192,10 @@ function SimulationBody({
       {/* Sport-specific extras */}
       <SportExtras sim={sim} sport={sport} />
 
+      {/* Alt-line sensitivity table — shows P(over) at line ± 0.5 / 1.0 / 1.5
+          so users can spot value at alternate lines. */}
+      <AltLinesTable altLines={sim.sim_alt_lines} threshold={threshold ?? sim.sim_threshold} isUnder={sim.sim_is_under} />
+
       {/* Lock score lift */}
       {typeof lift === "number" && Math.abs(lift) >= 0.1 && (
         <View style={[styles.liftBanner, { borderColor: tint + "55", backgroundColor: tint + "08" }]}>
@@ -207,6 +219,65 @@ function SimulationBody({
         {sport === "TENNIS" && "Per-point Markov chain across games, sets, tiebreaks. Serve quality calibrated to model match WP, then totals & set scores derive."}
       </Text>
     </>
+  );
+}
+
+function AltLinesTable({
+  altLines,
+  threshold,
+  isUnder,
+}: {
+  altLines?: Record<string, number> | null;
+  threshold?: number | null;
+  isUnder?: boolean | null;
+}) {
+  if (!altLines || Object.keys(altLines).length === 0) return null;
+
+  // Sort lines numerically (smallest → largest)
+  const entries = Object.entries(altLines)
+    .map(([k, v]) => ({ line: parseFloat(k), pct: v }))
+    .filter((e) => !isNaN(e.line))
+    .sort((a, b) => a.line - b.line);
+  if (entries.length === 0) return null;
+
+  const dir = isUnder ? "Under" : "Over";
+
+  // Tint each row by win probability: green ≥60%, blue 40-60%, dim red <40%
+  const tintFor = (pct: number) =>
+    pct >= 60 ? COLORS.neonGreen :
+    pct >= 40 ? COLORS.voltBlue :
+    COLORS.electricBlaze;
+
+  return (
+    <View style={styles.altLinesBlock}>
+      <View style={styles.altLinesHeader}>
+        <Text style={styles.altLinesTitle}>ALT LINE SENSITIVITY</Text>
+        <Text style={styles.altLinesSub}>Sim P({dir} X) at adjacent lines</Text>
+      </View>
+      <View style={styles.altLinesGrid}>
+        {entries.map((e) => {
+          const isCurrent = threshold != null && Math.abs(e.line - threshold) < 0.05;
+          const tint = tintFor(e.pct);
+          return (
+            <View
+              key={e.line}
+              style={[
+                styles.altLineCell,
+                isCurrent && { borderColor: tint, backgroundColor: tint + "12" },
+              ]}
+            >
+              <Text style={[styles.altLineLabel, isCurrent && { color: tint }]}>
+                {dir} {e.line}
+              </Text>
+              <Text style={[styles.altLinePct, { color: tint }]}>
+                {e.pct.toFixed(0)}%
+              </Text>
+              {isCurrent && <Text style={styles.altLineCurrent}>BOOK LINE</Text>}
+            </View>
+          );
+        })}
+      </View>
+    </View>
   );
 }
 

@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.22-sim-soccer-double-chance-fix"
+DATA_VERSION = "2026.06.22-tennis-ml-carveout-broader"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -1415,21 +1415,22 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     }
     # ── Tennis Moneyline carve-out (bandit-hot exception) ──────────────
     # User report 2026-06-22: "Why I got so many tennis overs instead of
-    # moneyline?". The bandit told us Tennis ML is our HOTTEST arm
-    # (+13% ROI, Sharpe +1.11) but the edge ≥ 0 gate cut most of them
-    # because chalk tennis MLs (-200/-400) often produce small negative
-    # edge vs the sharp market. Carve out: Tennis MLs with positive
-    # bandit_lift (currently favored arm) get to pass with edge ≥ -2
-    # instead of ≥ 0, so the bandit's actual winning market surfaces.
+    # moneyline?" + "Still no money line tennis in app see spreads and
+    # I see money lines on website". The bandit told us Tennis ML is our
+    # HOTTEST arm (+13% ROI, Sharpe +1.11) but the edge ≥ 0 gate cuts
+    # most of them because chalk tennis MLs (-200/-400) often produce
+    # small negative edge vs the sharp market. Carve out: any Tennis ML
+    # with a strong lock (≥ 80) gets through with edge ≥ -3, so the
+    # bandit's actual winning market surfaces consistently with the book.
     tennis_ml_q = {
         "sport": "Tennis",
         "market": {"$regex": "moneyline", "$options": "i"},
         "no_bet": {"$ne": True},
-        "bandit_lift": {"$gt": 0},
-        "edge_percent": {"$gte": -2},
+        "edge_percent": {"$gte": -3.0},
         "$or": [
             {"lock_score": {"$gte": 80.0}},
             {"lock_score_v2": {"$gte": 80.0}},
+            {"bandit_lift": {"$gt": 0}},   # still surface bandit-favored MLs even if lock < 80
         ],
     }
     q: dict = {
