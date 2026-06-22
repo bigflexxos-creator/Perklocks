@@ -198,16 +198,46 @@ async def refresh_arm_states(db) -> dict[str, dict]:
     for s in states.values():
         s["alpha"] = PRIOR_ALPHA + s["wins"]
         s["beta"] = PRIOR_BETA + s["losses"]
-        decisive = s["wins"] + s["losses"]
         s["roi"] = round((s["units_profit"] * 100 / s["units_risked"]), 2) if s["units_risked"] else 0.0
         s["posterior_mean"] = round(s["alpha"] / (s["alpha"] + s["beta"]), 4)
         s["posterior_thompson"] = round(random.betavariate(s["alpha"], s["beta"]), 4)
         s["last_updated"] = now_iso
 
-    # Persist atomically: delete + bulk insert
-    await db.bandit_arms.delete_many({})
-    if states:
-        await db.bandit_arms.insert_many(list(states.values()))
+    # ─── SAFE PERSISTENCE ──────────────────────────────────────────────
+    # PREVIOUS BUG: `delete_many({})` followed by `insert_many` would WIPE
+    # the entire bandit table if the insert failed mid-flight, poisoning
+    # the learning state. Now we upsert each arm atomically (per-doc, so
+    # a single failure doesn't wipe anything) and only delete arms that
+    # are no longer in the live registry. Even if some upserts fail, the
+    # surviving state stays consistent.
+    failed_arms = []
+    for arm_name, s in states.items():
+        try:
+            await db.bandit_arms.replace_one(
+                {"arm": arm_name}, s, upsert=True
+            )
+        except Exception as e:
+            failed_arms.append((arm_name, str(e)[:120]))
+
+    if failed_arms:
+        # Don't raise — partial writes are fine. Log so we can monitor.
+        import logging
+        logging.getLogger("lockscore.bandit").warning(
+            "Bandit arm upsert failed for %d arms: %s",
+            len(failed_arms), failed_arms[:3],
+        )
+
+    # Clean up any arms that no longer exist in the live registry. Scoped
+    # to the `arm` field, so we never touch other collections.
+    live_names = list(states.keys())
+    if live_names:
+        try:
+            await db.bandit_arms.delete_many(
+                {"arm": {"$nin": live_names}}
+            )
+        except Exception:
+            pass  # cleanup is best-effort
+
     return states
 
 

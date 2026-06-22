@@ -375,17 +375,30 @@ def parlay_survival(legs: list[dict], correlation_haircut: bool = True) -> float
     correlation haircut: each additional leg from the same SPORT shaves
     1.5 % off the joint probability, and each leg from the same EVENT
     shaves 8 %.  (Crude but well-calibrated for typical parlay correlations.)
+
+    Hardened against malformed input — any leg without a usable win_probability
+    is skipped from the product (returns conservative answer rather than crash).
     """
-    if not legs:
+    if not legs or not isinstance(legs, list):
         return 1.0
     prob = 1.0
+    valid_legs = []
     for L in legs:
-        wp = max(0.01, min(0.99, float(L.get("win_probability") or 0) / 100.0))
-        prob *= wp
-    if correlation_haircut:
+        if not isinstance(L, dict):
+            continue
+        try:
+            wp_raw = L.get("win_probability")
+            if wp_raw is None:
+                continue
+            wp = max(0.01, min(0.99, float(wp_raw) / 100.0))
+            prob *= wp
+            valid_legs.append(L)
+        except (TypeError, ValueError):
+            continue
+    if correlation_haircut and valid_legs:
         from collections import Counter
-        sport_counts = Counter((L.get("sport") or "") for L in legs)
-        event_counts = Counter((L.get("event") or "") for L in legs)
+        sport_counts = Counter((L.get("sport") or "") for L in valid_legs)
+        event_counts = Counter((L.get("event") or "") for L in valid_legs)
         for sport, c in sport_counts.items():
             if c > 1:
                 prob *= (1.0 - 0.015) ** (c - 1)
