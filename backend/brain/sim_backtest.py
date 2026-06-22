@@ -1,21 +1,23 @@
-"""MLB Simulator backtest — validate Monte Carlo calibration vs settled picks.
+"""Simulator backtest — validate Monte Carlo calibration vs settled picks.
 
-For every settled MLB pick that has `sim_win_probability` stored, we compare
-the predicted P(win) against the actual outcome (WON/LOST). We bucket picks
-into 5 confidence bands (50–60, 60–70, 70–80, 80–90, 90+) and compute the
-*observed* hit rate per band. A well-calibrated simulator's observed rate
-should land inside the band (e.g., 60–70% band → ~65% hit rate).
+For every settled pick that has `sim_win_probability` stored, we compare
+predicted P(win) against actual outcomes (WON/LOST). Computes:
+  • Brier score, log-loss, Brier skill score vs naive-50%
+  • 6-bucket expected-vs-observed calibration table
+  • 4 strategy ROIs:
+    - always_bet: every pick where sim_wp set
+    - sim_confident_65: only bet sim_wp ≥ 65
+    - sim_stronger_signal: only bet picks where sim > model by 5+
+    - sim_weaker_signal_fade: fade picks the sim disagrees down on
 
-Also computes:
-  • Brier score (lower is better, 0.25 = naive)
-  • Log loss (lower is better)
-  • Brier skill score vs. always-50% baseline
-  • ROI when betting only sim-confident picks (sim_wp ≥ 65)
-  • ROI when betting only model-confident picks (no sim)
+Returns aggregate stats. When `sport` is None, also returns `by_sport`
+breakdown for each supported sport.
 """
 from __future__ import annotations
 import math
 from typing import Any
+
+SUPPORTED_SPORTS = ["MLB", "Soccer", "NBA", "Tennis"]
 
 
 def _bucket(p: float) -> str:
@@ -33,7 +35,6 @@ def _bucket(p: float) -> str:
 
 
 def _odds_to_payout(odds: float) -> float:
-    """American odds → net payout per 1u staked (e.g. +150 → 1.50, -110 → 0.909)."""
     try:
         o = float(odds)
     except (TypeError, ValueError):
@@ -43,33 +44,14 @@ def _odds_to_payout(odds: float) -> float:
     return o / 100.0 if o > 0 else 100.0 / abs(o)
 
 
-async def run_sim_backtest(db, days: int = 30) -> dict[str, Any]:
-    """Walk settled MLB picks that have sim_win_probability, compute calibration."""
-    from datetime import datetime, timedelta, timezone
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-
-    cursor = db.picks.find(
-        {
-            "sport": "MLB",
-            "status": {"$in": ["won", "lost"]},
-            "sim_win_probability": {"$exists": True, "$ne": None},
-            "settled_at": {"$gte": cutoff.isoformat()},
-        },
-        {
-            "_id": 0, "id": 1, "status": 1, "book_odds": 1, "market": 1,
-            "sim_win_probability": 1, "sim_signal": 1,
-            "win_probability": 1, "lock_score": 1,
-        },
-    ).limit(2000)
-
-    rows = await cursor.to_list(length=2000)
-
+def _compute_from_rows(rows: list[dict]) -> dict[str, Any]:
+    """Pure compute step over a row set — no DB access."""
     buckets: dict[str, dict[str, Any]] = {}
     brier_sum = 0.0
     logloss_sum = 0.0
-    sim_units = 0.0   # P&L when betting sim-confident picks (sim_wp ≥ 65)
+    sim_units = 0.0
     sim_bets = 0
-    model_units = 0.0  # P&L betting all (baseline)
+    model_units = 0.0
     model_bets = 0
     stronger_units = 0.0
     stronger_bets = 0
@@ -86,27 +68,18 @@ async def run_sim_backtest(db, days: int = 30) -> dict[str, Any]:
             continue
         p = max(0.001, min(0.999, sim_wp / 100.0))
         n += 1
-
-        # Brier + log-loss
         brier_sum += (p - actual) ** 2
         logloss_sum += -(actual * math.log(p) + (1 - actual) * math.log(1 - p))
-
         b = _bucket(sim_wp)
         bucket = buckets.setdefault(b, {"n": 0, "wins": 0, "sum_pred": 0.0})
         bucket["n"] += 1
         bucket["wins"] += int(actual)
         bucket["sum_pred"] += sim_wp
-
-        # Always bet (model baseline)
         model_units += payout if actual == 1.0 else -1.0
         model_bets += 1
-
-        # Sim-confident strategy: only bet picks where sim_wp ≥ 65
         if sim_wp >= 65.0:
             sim_units += payout if actual == 1.0 else -1.0
             sim_bets += 1
-
-        # Sim-disagreement strategies
         sig = r.get("sim_signal") or ""
         if sig == "stronger":
             stronger_units += payout if actual == 1.0 else -1.0
@@ -116,19 +89,11 @@ async def run_sim_backtest(db, days: int = 30) -> dict[str, Any]:
             weaker_bets += 1
 
     if n == 0:
-        return {
-            "n": 0,
-            "message": "No settled MLB picks with sim_win_probability yet. "
-                       "Backtest will populate as MLB picks settle.",
-            "days": days,
-        }
+        return {"n": 0}
 
-    # Naive Brier baseline: predict 0.5 always
     naive_brier = 0.25
     brier = brier_sum / n
     brier_skill = 1 - (brier / naive_brier)
-
-    # Bucket calibration table
     calibration = []
     for b in ["<50", "50-60", "60-70", "70-80", "80-90", "90+"]:
         if b not in buckets:
@@ -146,7 +111,6 @@ async def run_sim_backtest(db, days: int = 30) -> dict[str, Any]:
 
     return {
         "n": n,
-        "days": days,
         "brier": round(brier, 4),
         "log_loss": round(logloss_sum / n, 4),
         "brier_skill_score": round(brier_skill, 4),
@@ -174,3 +138,65 @@ async def run_sim_backtest(db, days: int = 30) -> dict[str, Any]:
             },
         },
     }
+
+
+async def run_sim_backtest(db, days: int = 30, sport: str | None = None) -> dict[str, Any]:
+    """Walk settled picks that have sim_win_probability stored, compute
+    calibration & strategy ROIs.
+
+    Args:
+        db:    Motor DB handle.
+        days:  Lookback window.
+        sport: If set, restrict to that sport. If None, returns aggregate +
+               per-sport breakdown in `by_sport`.
+    """
+    from datetime import datetime, timedelta, timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    base_query = {
+        "status": {"$in": ["won", "lost"]},
+        "sim_win_probability": {"$exists": True, "$ne": None},
+        "settled_at": {"$gte": cutoff.isoformat()},
+    }
+    if sport:
+        base_query["sport"] = sport
+    else:
+        base_query["sport"] = {"$in": SUPPORTED_SPORTS}
+
+    cursor = db.picks.find(
+        base_query,
+        {
+            "_id": 0, "id": 1, "sport": 1, "status": 1, "book_odds": 1, "market": 1,
+            "sim_win_probability": 1, "sim_signal": 1,
+            "win_probability": 1, "lock_score": 1,
+        },
+    ).limit(5000)
+
+    all_rows = await cursor.to_list(length=5000)
+
+    if not all_rows:
+        return {
+            "n": 0,
+            "days": days,
+            "sport": sport,
+            "message": "No settled picks with sim_win_probability yet. "
+                       "Backtest will populate as picks settle.",
+            "by_sport": {} if not sport else None,
+        }
+
+    agg = _compute_from_rows(all_rows)
+    agg["days"] = days
+    agg["sport"] = sport
+
+    if not sport:
+        by_sport: dict[str, Any] = {}
+        for sp in SUPPORTED_SPORTS:
+            rows_sp = [r for r in all_rows if r.get("sport") == sp]
+            if not rows_sp:
+                by_sport[sp] = {"n": 0, "message": "No settled picks yet."}
+                continue
+            res = _compute_from_rows(rows_sp)
+            by_sport[sp] = res
+        agg["by_sport"] = by_sport
+
+    return agg
