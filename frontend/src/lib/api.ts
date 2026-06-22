@@ -608,6 +608,40 @@ export const api = {
   }>("/analytics/v2"),
   analyticsV2Recompute: () => request<{ gated: boolean; total_settled: number; rows: number }>(
     "/analytics/v2/recompute", { method: "POST" }),
+
+  // ── Phase 3 — Multi-Armed Bandit (Thompson sampling) ───────────────
+  bandit: () => request<{
+    n_arms: number;
+    arms: Array<{
+      arm: string;
+      description: string;
+      n: number;
+      wins: number;
+      losses: number;
+      push: number;
+      units_risked: number;
+      units_profit: number;
+      roi: number;
+      alpha: number;
+      beta: number;
+      posterior_mean: number;
+      posterior_thompson: number;
+      last_updated: string;
+    }>;
+  }>("/analytics/bandit"),
+
+  backtest: (days: number = 30) => request<{
+    window_days: number;
+    n_picks: number;
+    ranked: string[];
+    arms: Record<string, {
+      description: string;
+      n: number; wins: number; losses: number; push: number;
+      hit_rate: number; units_risked: number; units_profit: number;
+      roi: number; max_drawdown: number; sharpe: number;
+      curve: Array<[string, number]>;
+    }>;
+  }>(`/analytics/backtest?days=${days}`),
 };
 
 export type AnalyticsRow = {
