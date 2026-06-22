@@ -482,6 +482,18 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
     except Exception as e:
         logger.warning("learning recompute failed: %s", e)
 
+    # ── Phase 2 learning — Per-Player Rolling Form (last-10 hot/cold). ─
+    # Updates the `player_form` collection so the next pick refresh can
+    # nudge lock_scores by ±5 based on each player's recent track record
+    # on our picks. Time-decayed (30-day half-life), shrinkage-stable.
+    try:
+        from player_form import recompute_player_form
+        form_rows = await recompute_player_form(db)
+        counts["player_form_rows"] = form_rows
+        logger.info("Player Form recomputed: %d player-market rows", form_rows)
+    except Exception as e:
+        logger.warning("Player Form recompute failed: %s", e)
+
     # ── Self-healing math validator — silently corrects edge/implied/lock
     # drift, including any post-learning win-prob stacking. Pure DB-side
     # math, no external API calls, runs every settlement cycle.
