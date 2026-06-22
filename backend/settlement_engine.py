@@ -226,16 +226,60 @@ def _match_score_for_pick(pick: dict, all_scores: list[dict]) -> Optional[dict]:
     return candidates[0] if candidates else None
 
 
-async def settle_due_picks(db) -> dict:
+async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict:
     """Find all pending picks whose game has completed, mark each as won/lost/push.
 
-    Returns counts: {settled, won, lost, push, skipped}.
+    Returns counts: {settled, won, lost, push, skipped, auto_voided}.
+
+    Args:
+      sport_filter: if set, only process picks for these sports. Used by the
+        MLB-only 5-min loop to avoid burning Odds API credits on
+        Soccer/Tennis/UFC/NBA on every tick (those use a 15-min cadence).
     """
-    cursor = db.picks.find({"status": {"$in": [None, "pending"]}}, {"_id": 0})
+    query: dict = {"status": {"$in": [None, "pending"]}}
+    if sport_filter:
+        query["sport"] = {"$in": list(sport_filter)}
+    cursor = db.picks.find(query, {"_id": 0})
     picks = await cursor.to_list(length=2000)
-    counts = {"settled": 0, "won": 0, "lost": 0, "push": 0, "skipped": 0, "props_pending": 0}
+    counts = {"settled": 0, "won": 0, "lost": 0, "push": 0, "skipped": 0, "props_pending": 0, "auto_voided": 0}
     if not picks:
         return counts
+
+    # ── Auto-void stale picks (>14 days past event_time) ──────────────
+    # Score APIs only expose recent games (3-14 day windows depending on
+    # sport), so beyond 14 days they truly can't be settled. User spec
+    # 2026-06-22: "I want bets to settle win loss so we can learn from
+    # picks" — auto-void is LAST RESORT after settlement has had 14 days
+    # of attempts. Bumped from 5d to 14d to maximize the learning signal.
+    now_utc_for_void = datetime.now(timezone.utc)
+    void_cutoff_iso = (now_utc_for_void - timedelta(days=14)).isoformat()
+    stale_ids: list[str] = []
+    for p in picks:
+        et = p.get("event_time") or ""
+        if not et:
+            continue
+        try:
+            iso = et[:-1] + "+00:00" if et.endswith("Z") else et
+            dt = datetime.fromisoformat(iso)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if (now_utc_for_void - dt).total_seconds() > 14 * 86400:
+                stale_ids.append(p.get("id"))
+        except Exception:
+            pass
+    if stale_ids:
+        res = await db.picks.update_many(
+            {"id": {"$in": stale_ids}, "status": {"$in": [None, "pending"]}},
+            {"$set": {
+                "status": "void",
+                "void_reason": "auto_void_stale_14d",
+                "settled_at": now_utc_for_void.isoformat(),
+            }},
+        )
+        counts["auto_voided"] = res.modified_count
+        # Remove voided picks from in-memory processing list
+        voided_set = set(stale_ids)
+        picks = [p for p in picks if p.get("id") not in voided_set]
 
     # Group by sport so we batch score fetches.
     by_sport: dict[str, list[dict]] = {}
@@ -255,7 +299,12 @@ async def settle_due_picks(db) -> dict:
         if sport == "MLB":
             try:
                 from mlb_live import fetch_mlb_scores
-                mlb_data = await fetch_mlb_scores(days_back=3)
+                # MLB pulled from MLB Stats API (free, 0 Odds credits).
+                # 14-day window: lets us settle stuck picks up to 2 weeks
+                # old so the learning engine gets real W/L signal instead
+                # of silent auto-voids. Per user 2026-06-22: "I want bets
+                # to settle win loss so we can learn from picks."
+                mlb_data = await fetch_mlb_scores(days_back=14)
                 if mlb_data:
                     all_scores.extend(mlb_data)
                     logger.info(
