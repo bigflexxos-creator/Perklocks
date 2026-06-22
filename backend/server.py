@@ -906,6 +906,25 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as e:
         logger.warning("Bandit lift skipped: %s", e)
 
+    # ── MLB Prop Simulator (Phase A) — Monte Carlo ─────────────────────
+    # Real game-mechanics simulation: per-AB outcome distribution from
+    # batter K/BB/BA/HR rates × opposing pitcher splits, distributed over
+    # expected ABs. 10k MC runs → P(win) + 95% Wilson CI. Replaces the
+    # broken "sim_pass" stress-test signal with empirical win probability.
+    try:
+        from brain.sim_runner import apply_simulations
+        sim_counts = apply_simulations(picks)
+        if sim_counts.get("applied", 0) > 0:
+            logger.info(
+                "MLB Simulator applied to %d picks (stronger=%d weaker=%d neutral=%d)",
+                sim_counts.get("applied", 0),
+                sim_counts.get("stronger", 0),
+                sim_counts.get("weaker", 0),
+                sim_counts.get("neutral", 0),
+            )
+    except Exception as e:
+        logger.warning("MLB Simulator skipped: %s", e)
+
     # ── Sportsbook deep-link enrichment: attach home_team / away_team / pick
     # / fanduel_event_id / draftkings_event_id / etc. to every pick. These
     # power the "Add to Bet Slip" deep links from the parlay & detail screens
@@ -2688,6 +2707,26 @@ async def model_performance(
     if backfill:
         await backfill_metrics(db)
     return await compute_model_performance(db, days=days)
+
+
+@api.get("/picks/{pick_id}/simulation")
+async def pick_simulation(
+    pick_id: str,
+    user: Annotated[UserPublic, Depends(current_user)],
+):
+    """Run Monte Carlo on a single pick on demand. Returns sim output dict
+    with sim_win_probability, 95% Wilson CI, runs, threshold, disagreement
+    vs blended model. MLB only (Phase A); other sports return 404."""
+    pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
+    if not pick:
+        raise HTTPException(status_code=404, detail="Pick not found")
+    if (pick.get("sport") or "") != "MLB":
+        raise HTTPException(status_code=404, detail="Simulation not yet available for this sport (MLB only in Phase A)")
+    from brain.sim_runner import simulate_pick
+    sim = simulate_pick(pick)
+    if not sim:
+        raise HTTPException(status_code=404, detail="Simulator could not route this market")
+    return sim
 
 
 @api.get("/analytics/learned-weights")
