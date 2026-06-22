@@ -130,6 +130,11 @@ def _classify_soccer_market(market: str) -> str:
         return "totals"
     if "both teams to score" in m or "btts" in m:
         return "btts"
+    # ── Double Chance (Win or Draw / Draw or Win) — MUST be checked BEFORE
+    # the bare "draw" classifier or it gets mis-routed and computes draw-only
+    # probability (sim ~24%) for a market that actually wins ~78% of the time.
+    if "win or draw" in m or "draw or win" in m or "double chance" in m:
+        return "double_chance"
     if "draw" == m.strip().split()[-1] or " draw" in m or "the draw" in m:
         return "draw"
     if "moneyline" in m or "to win" in m or "match winner" in m:
@@ -165,6 +170,10 @@ def simulate_soccer_pick(pick: dict) -> Optional[dict]:
                 wins += 1
         elif cat == "draw":
             if gp == go:
+                wins += 1
+        elif cat == "double_chance":
+            # Win or Draw — covers any non-loss outcome for the pick team.
+            if gp >= go:
                 wins += 1
         elif cat == "totals":
             line = _extract_threshold(market)
