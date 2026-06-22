@@ -190,7 +190,12 @@ def _match_score_for_pick(pick: dict, all_scores: list[dict]) -> Optional[dict]:
     pick_time = pick.get("event_time") or ""
     pick_dt = None
     try:
-        pick_dt = datetime.strptime(pick_time, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        # Permissive ISO parser — handles both `Z` and `+00:00` suffixes
+        # (tennis-extra emits the latter).
+        iso = pick_time[:-1] + "+00:00" if pick_time.endswith("Z") else pick_time
+        pick_dt = datetime.fromisoformat(iso)
+        if pick_dt.tzinfo is None:
+            pick_dt = pick_dt.replace(tzinfo=timezone.utc)
     except Exception:
         pass
 
@@ -203,7 +208,11 @@ def _match_score_for_pick(pick: dict, all_scores: list[dict]) -> Optional[dict]:
         # Pick the score whose commence_time is closest to the pick's event_time.
         def _delta(s):
             try:
-                st = datetime.strptime(s.get("commence_time", ""), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                ct = s.get("commence_time", "") or ""
+                iso2 = ct[:-1] + "+00:00" if ct.endswith("Z") else ct
+                st = datetime.fromisoformat(iso2)
+                if st.tzinfo is None:
+                    st = st.replace(tzinfo=timezone.utc)
                 return abs((st - pick_dt).total_seconds())
             except Exception:
                 return 10**9
@@ -265,26 +274,46 @@ async def settle_due_picks(db) -> dict:
                 await asyncio.sleep(0.6)  # throttle to avoid 429
         scores_cache[sport] = all_scores
 
-    # Only grade games that have actually FINISHED. Two safety checks:
-    #   1. event_time must be at least 3 hours in the past (baseball / tennis
-    #      can run long; this avoids grading in-progress games)
-    #   2. The Odds API score payload must include `completed: True`
+    # ── Settlement-eligibility window ──────────────────────────────
+    # Used to live at a blanket `3-hours-after-first-pitch` cutoff which
+    # delayed grading by 45-75 min after games actually ended. Now keyed by
+    # sport: how soon after first pitch is the game realistically over.
+    # The `completed: true` flag on the score payload is the primary signal —
+    # this min-elapsed gate just keeps us from racing against in-progress
+    # games when the upstream feed is briefly inconsistent.
+    MIN_ELAPSED_MIN: dict[str, int] = {
+        "MLB":    30,   # 9-inning game ≈ 2.5h but many end well before that
+        "NBA":    60,   # 48 min game ≈ 2h
+        "NFL":    90,   # 60 min game ≈ 3h
+        "Soccer": 100,  # 90 min + 10 min stoppage
+        "Tennis": 45,   # best-of-3 ≈ 90 min
+        "UFC":    20,   # most fights end well before the distance
+        "KBO":    30,
+    }
     now_utc = datetime.now(timezone.utc)
-    settle_cutoff = now_utc - timedelta(hours=3)
     for sport, sport_picks in by_sport.items():
         all_scores = scores_cache.get(sport, [])
         if not all_scores:
             continue
+        min_elapsed = timedelta(minutes=MIN_ELAPSED_MIN.get(sport, 30))
         for pick in sport_picks:
             # Skip player props — can't settle without player stats.
             if is_player_prop(pick):
                 counts["props_pending"] += 1
                 continue
-            # Game must have started long enough ago to have plausibly ended.
+            # Game must have started long enough ago to plausibly have ended.
             et = pick.get("event_time") or ""
             try:
-                dt = datetime.strptime(et, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                if dt > settle_cutoff:
+                # Permissive ISO parser handles both `Z` and `+00:00` suffix
+                # (tennis-extra scraper emits `+00:00`). The strict strptime
+                # used to fail for those → fell into the `except: pass`
+                # branch → graded picks against in-progress scores OR (more
+                # commonly) simply skipped them forever.
+                iso = et[:-1] + "+00:00" if et.endswith("Z") else et
+                dt = datetime.fromisoformat(iso)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if (now_utc - dt) < min_elapsed:
                     counts["skipped"] += 1
                     continue
             except Exception:
