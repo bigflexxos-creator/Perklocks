@@ -176,6 +176,41 @@ def _simulate_match_full(p_serve: float, o_serve: float, bo: int = SETS_BO3) -> 
     return total_games, pick_sets, opp_sets, p_games_total, o_games_total
 
 
+def _calibrate_serve_gap_for_spread(spread_line: float, target_cover_pct: float) -> tuple[float, float]:
+    """Bisect on serve gap so that P(margin > -spread_line) ≈ target_cover_pct.
+
+    For spread picks, the model's WP represents probability of COVERING THE
+    SPREAD (not winning the match). Calibrating against match_win_prob would
+    massively overstate the favorite's strength. This routine instead finds
+    the serve gap such that the SPREAD COVER rate matches the model.
+    """
+    if target_cover_pct >= 0.99:
+        return 0.78, 0.48
+    if target_cover_pct <= 0.01:
+        return 0.48, 0.78
+    lo, hi = -0.25, 0.25
+    for _ in range(14):
+        mid = (lo + hi) / 2
+        p_serve = LEAGUE_AVG_SERVE_PT_PCT + mid
+        o_serve = LEAGUE_AVG_SERVE_PT_PCT - mid
+        covers = 0
+        for _ in range(400):
+            _, ps, os_, pg, og = _simulate_match_full(p_serve, o_serve)
+            margin = pg - og
+            if margin > -spread_line:
+                covers += 1
+        cover_pct = covers / 400.0
+        if abs(cover_pct - target_cover_pct) < 0.02:
+            return p_serve, o_serve
+        # If covering happens too rarely, pick is stronger than we assumed
+        if cover_pct < target_cover_pct:
+            lo = mid
+        else:
+            hi = mid
+    final_gap = (lo + hi) / 2
+    return LEAGUE_AVG_SERVE_PT_PCT + final_gap, LEAGUE_AVG_SERVE_PT_PCT - final_gap
+
+
 def _calibrate_serve_gap(target_match_wp: float) -> tuple[float, float]:
     """Bisect on serve quality gap. Both players serve around 63% but we
     adjust until P(pick wins match) ≈ target. Returns (p_serve, o_serve).
@@ -231,13 +266,16 @@ def simulate_tennis_pick(pick: dict) -> Optional[dict]:
     # For game-spread markets we need to know who the spread is on relative
     # to the pick's main player so we can interpret the games margin correctly.
     spread_line = _extract_spread(market) if cat == "game_spread" else 0.0
-    # spread_player is whoever's name precedes the +/- in the market text.
-    # If that matches the pick's "team_for", they're the one with the spread.
-    # We assume the pick is ON the player named, so a -3.5 spread means
-    # they need to win by 4+ games; +3.5 means they can lose by up to 3.
 
-    # Calibrate serve qualities to match the model's WP
-    p_serve, o_serve = _calibrate_serve_gap(model_wp)
+    # Calibrate serve qualities to the model's WP. For SPREAD markets the
+    # model's WP is P(cover), NOT P(match win) — so we calibrate against
+    # the spread-cover rate, not match win rate. This was the bug that made
+    # +4.5 underdog spreads look like 65% winners (their match WP was much
+    # lower than their cover WP).
+    if cat == "game_spread":
+        p_serve, o_serve = _calibrate_serve_gap_for_spread(spread_line, model_wp)
+    else:
+        p_serve, o_serve = _calibrate_serve_gap(model_wp)
 
     threshold = _extract_threshold(market)
     is_under = _is_under(market)
