@@ -50,9 +50,33 @@ def _classify_tennis_market(market: str) -> str:
     m = (market or "").lower()
     if "moneyline" in m or "match winner" in m:
         return "moneyline"
+    # Game spread: "Hugo Gaston -3.5 Games (Alt)" or "Player -2.5 Spread"
+    # MUST be checked BEFORE the totals classifier since "games" appears in both.
+    if re.search(r"[-+]\d+(?:\.\d+)?\s*(?:games?|spread)", m):
+        return "game_spread"
     if "total games" in m or ("over " in m and "game" in m) or ("under " in m and "game" in m):
         return "totals"
     return "unknown"
+
+
+_SPREAD_RE = re.compile(r"([-+]\d+(?:\.\d+)?)\s*(?:games?|spread)", re.I)
+
+
+def _extract_spread(market: str) -> float:
+    """Extract the spread value (negative = favorite, positive = underdog)."""
+    m = _SPREAD_RE.search(market or "")
+    if not m:
+        return 0.0
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return 0.0
+
+
+def _extract_spread_player(market: str) -> str:
+    """Extract the player name preceding the spread number."""
+    m = re.match(r"^(.+?)\s+[-+]\d", (market or ""))
+    return m.group(1).strip() if m else ""
 
 
 def _simulate_game(server_pt_win: float) -> int:
@@ -124,19 +148,32 @@ def _simulate_set(p_serve: float, o_serve: float, pick_serves_first: bool) -> tu
 
 
 def _simulate_match(p_serve: float, o_serve: float, bo: int = SETS_BO3) -> tuple[int, int, int]:
+    """Backwards-compatible wrapper that returns (total_games, p_sets, o_sets)."""
+    total_games, p_sets, o_sets, _, _ = _simulate_match_full(p_serve, o_serve, bo)
+    return total_games, p_sets, o_sets
+
+
+def _simulate_match_full(p_serve: float, o_serve: float, bo: int = SETS_BO3) -> tuple[int, int, int, int, int]:
+    """Full simulation. Returns (total_games, p_sets, o_sets, p_games, o_games).
+    p_games / o_games are the cumulative game counts per player (needed for
+    game-spread markets like "Hugo Gaston -3.5 Games")."""
     pick_sets = opp_sets = 0
     total_games = 0
+    p_games_total = 0
+    o_games_total = 0
     pick_serves_first = True
     sets_to_win = (bo // 2) + 1
     while pick_sets < sets_to_win and opp_sets < sets_to_win:
         pg, og, pw = _simulate_set(p_serve, o_serve, pick_serves_first)
         total_games += pg + og
+        p_games_total += pg
+        o_games_total += og
         if pw == 1:
             pick_sets += 1
         else:
             opp_sets += 1
         pick_serves_first = not pick_serves_first
-    return total_games, pick_sets, opp_sets
+    return total_games, pick_sets, opp_sets, p_games_total, o_games_total
 
 
 def _calibrate_serve_gap(target_match_wp: float) -> tuple[float, float]:
@@ -191,6 +228,14 @@ def simulate_tennis_pick(pick: dict) -> Optional[dict]:
     if model_wp <= 0 or model_wp >= 1:
         model_wp = max(0.05, min(0.95, model_wp))
 
+    # For game-spread markets we need to know who the spread is on relative
+    # to the pick's main player so we can interpret the games margin correctly.
+    spread_line = _extract_spread(market) if cat == "game_spread" else 0.0
+    # spread_player is whoever's name precedes the +/- in the market text.
+    # If that matches the pick's "team_for", they're the one with the spread.
+    # We assume the pick is ON the player named, so a -3.5 spread means
+    # they need to win by 4+ games; +3.5 means they can lose by up to 3.
+
     # Calibrate serve qualities to match the model's WP
     p_serve, o_serve = _calibrate_serve_gap(model_wp)
 
@@ -200,9 +245,12 @@ def simulate_tennis_pick(pick: dict) -> Optional[dict]:
     wins = 0
     total_games_dist: list[int] = []
     pick_match_wins = 0
+    games_margin_dist: list[int] = []   # pick_games - opp_games (for spread analytics)
     for _ in range(RUNS):
-        total_games, p_sets, o_sets = _simulate_match(p_serve, o_serve)
+        # Simulate match returning total games AND game count per side
+        total_games, p_sets, o_sets, p_games, o_games = _simulate_match_full(p_serve, o_serve)
         total_games_dist.append(total_games)
+        games_margin_dist.append(p_games - o_games)
         pick_won = p_sets > o_sets
         if pick_won:
             pick_match_wins += 1
@@ -212,6 +260,14 @@ def simulate_tennis_pick(pick: dict) -> Optional[dict]:
         elif cat == "totals":
             if (total_games < threshold) if is_under else (total_games > threshold):
                 wins += 1
+        elif cat == "game_spread":
+            # Pick covers if (pick_games - opp_games) > -spread_line.
+            # Examples:
+            #   spread -3.5 → pick must win by 4+ → margin > 3.5
+            #   spread +3.5 → pick can lose by ≤3 → margin > -3.5
+            margin = p_games - o_games
+            if margin > -spread_line:
+                wins += 1
 
     n = RUNS
     p_win = wins / n
@@ -220,7 +276,7 @@ def simulate_tennis_pick(pick: dict) -> Optional[dict]:
     disagreement = round(sim_wp_pct - model_wp * 100, 2)
     avg_games = sum(total_games_dist) / max(1, len(total_games_dist))
 
-    # Alt-line sensitivity for totals markets (Over X.5 games at ±2, ±4 games)
+    # Alt-line sensitivity for totals + game-spread markets
     alt_lines: dict = {}
     if cat == "totals":
         for delta in (-4.5, -2.5, -0.5, 0.5, 2.5, 4.5):
@@ -229,8 +285,15 @@ def simulate_tennis_pick(pick: dict) -> Optional[dict]:
                 continue
             over_hits = sum(1 for g in total_games_dist if g > alt)
             alt_lines[str(alt)] = round(over_hits / n * 100, 1)
+    elif cat == "game_spread":
+        # Show sensitivity at adjacent spread lines (±1, ±2 games)
+        for delta in (-2.0, -1.0, 0.0, 1.0, 2.0):
+            alt = round(spread_line + delta, 1)
+            covers = sum(1 for margin in games_margin_dist if margin > -alt)
+            sign = "+" if alt > 0 else ""
+            alt_lines[f"{sign}{alt}"] = round(covers / n * 100, 1)
 
-    return {
+    payload = {
         "sim_win_probability": sim_wp_pct,
         "sim_ci_lower": round(ci_lo * 100, 1),
         "sim_ci_upper": round(ci_hi * 100, 1),
@@ -246,3 +309,7 @@ def simulate_tennis_pick(pick: dict) -> Optional[dict]:
         "sim_disagreement_with_model": disagreement,
         "sim_signal": _signal(disagreement),
     }
+    if cat == "game_spread":
+        payload["sim_spread_line"] = spread_line
+        payload["sim_avg_games_margin"] = round(sum(games_margin_dist) / max(1, n), 2)
+    return payload
