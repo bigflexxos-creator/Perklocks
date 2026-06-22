@@ -1,0 +1,41 @@
+{
+  "summary": "Soccer Goal Scorer (Phase B.1) simulator end-to-end verified. Backend: 14/14 pytest cases pass — ATGS schema (sim_market_category='scorer_atgs', sim_runs=10000, sim_player_xg, sim_p_score_2plus, sim_p_hattrick), λ-to-model_wp calibration within ±3pp on healthy WPs (Oyarzabal 49.4→48.9, Messi 53.3→52.2), key_insights regex parsers (Yildiz: xG/match 0.73 + shots 4.0 parsed; Nygren: recent_goal_rate 50%; Uzun: shots+recent), anomalous low-WP picks (Uzun/Yildiz/Nygren — model_wp=1%) all produce stronger signal with disagreement +48–+62pp as designed, non-scorer Soccer (Total Goals Over 2.5) correctly routes to team Poisson with cat='totals'+λ_pick/λ_opp, MLB/NBA/Tennis regression still passes. Frontend: SimulatorPanel correctly renders scorer-specific extras row (λ XG / 2+ GOALS / HAT-TRICK) and scorer-specific footnote ('Player-level Poisson goalscorer model…') for ATGS picks; renders team-level extras (λ PICK / λ OPP / MARKET) and team-level footnote for non-scorer Soccer markets; the STRONGER-THAN-MODEL signal pill correctly surfaces on the anomalous Yildiz pick (DELTA +48.6). One stale Metro bundle initially served old extras row — resolved by `supervisorctl restart expo`. No red screens. No new RN warnings.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "Global styles (pre-existing)", "issue": "Console warning: 'shadow*' style props are deprecated. Use 'boxShadow'. Carried over from iteration_24 — not introduced by Phase B.1 scorer sim work."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_soccer_scorer_sim.py",
+    "/app/test_reports/pytest/soccer_scorer_sim.xml"
+  ],
+  "action_items": [
+    "(Optional) Add explicit TypeScript fields (sim_player_xg, sim_p_score_2plus, sim_p_hattrick, sim_shots_per_game, sim_recent_goal_rate, sim_player_xg_per_game, sim_market_category) to the pickSimulation return type in /app/frontend/src/lib/api.ts (lines 413–423). Currently it only lists the legacy 8 fields, so callers lose static type-safety on the new scorer extras (works at runtime because TS types are stripped, but IDE intellisense and compile-time guards miss it).",
+    "(Optional) After deploying brain/sim_soccer_scorer.py, the Lock V2 backend at iteration_24 was still showing 'Sim Pass 100%' even on Yildiz where model_wp=1% disagrees with sim by +48pp — that may be a downstream Lock V2 sim-agreement scorer that should reflect the disagreement. Pre-existing surface area; mention so main agent can decide whether to surface this as a separate 'sim disagreement penalty' on V2."
+  ],
+  "critical_code_review_comments": [
+    "sim_soccer_scorer.py routing is clean — _classify_scorer_market correctly distinguishes ATGS / FGS / LGS / two_plus / hattrick. The 'to score' generic fallback at line 116 correctly catches markets like 'Mikel Oyarzabal Anytime Goal Scorer' even when 'anytime' isn't separately matched.",
+    "_estimate_player_lambda implements 3 fallback layers (model_wp calibration → key_insights priors → factor-based heuristic). Calibration via λ = -ln(1-p) is mathematically sound for ATGS (P(Poisson(λ)≥1) = 1 - e^-λ). For 2+/hat-trick markets, bisection (_bisect_lambda_for_atleast_k) correctly inverts the Poisson CDF.",
+    "Gamma-Poisson hierarchical sampling (line 253: random.gammavariate(alpha, lam/alpha)) gives parameter uncertainty without over-inflating runs — alpha=max(2.0, n_obs) defaults to 10 obs which matches the 'last 10 matches' insights cadence. Resulting CI half-width on Oyarzabal pick is ±1pp at 10k runs, which is reasonable.",
+    "FGS/LGS heuristic (line 273: wins = int(hits / 3)) is a coarse approximation — 'P(scores first) ≈ P(scores)/3'. Documented limitation; main agent should consider richer per-team scoring distribution later, but acceptable for v1.",
+    "sim_soccer.py routes scorer markets to sim_soccer_scorer at line 152 BEFORE running team Poisson — ensures no stale lambda_pick/lambda_opp leak into scorer sim output. Correctly verified: ATGS pick output has sim_player_xg but no sim_lambda_pick; Totals pick has sim_lambda_pick but no sim_player_xg.",
+    "SimulatorPanel SportExtras branch on `typeof sim.sim_player_xg === 'number'` cleanly distinguishes scorer vs. team Poisson presentation. Footnote ternary on sim.sim_market_category?.startsWith?.('scorer') correctly switches between the two footnotes.",
+    "api.ts Pick type (line ~111-118) DOES include sim_player_xg/sim_p_score_2plus/sim_p_hattrick/sim_player_xg_per_game on the Pick interface — but the pickSimulation request<T> return type at line ~413 still has the legacy 8-field shape. Runtime works because TypeScript types are erased, but compile-time safety on the new scorer fields is lost (minor type hygiene)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_soccer_scorer_sim.py (new — 14 tests)"
+  ],
+  "success_rate": {"backend": "100% (14/14 phase B.1 scorer tests pass + regression MLB/NBA/Tennis pass)", "frontend": "100% (ATGS scorer extras row, scorer footnote, team-level Poisson for non-scorer, STRONGER signal on anomalous low-WP all rendered correctly)"},
+  "seed_data_creation": "None — used existing live picks: Oyarzabal ATGS fc87a363-f776-5a6e-b107-bd8c8d099693 (model_wp 49.4 → sim 48.9), Messi ATGS 2fada0b5-cea7-5634-93a7-da8b9a7df446 (53.3 → 52.2), Uzun 5f040638-935c-41e0-b6e3-91d78ce049ad (1% → 63.2, Δ+62.2), Yildiz 30dd5324-4456-4c27-bb02-2923a014f82f (1% → 49.3, Δ+48.3), Nygren dbdf61da-c257-4cb8-9ce6-cec7e6041e83 (1% → 63.1, Δ+62.1), Total Goals Over 2.5 768b2830-63b9-46e7-aeea-828eca63f1cf (cat=totals, λ_pick 1.75 / λ_opp 1.21), plus regression MLB 57f9f5a1 / NBA 7a0eee4d / Tennis 6fcdec67.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase B.1 Soccer Goal Scorer simulator fully wired. Critical pick IDs and expected sim outputs are documented in seed_data_creation above. The pickSimulation endpoint returns scorer-specific fields (sim_player_xg, sim_p_score_2plus, sim_p_hattrick, sim_player_xg_per_game, sim_shots_per_game, sim_recent_goal_rate, sim_opp_concedes) only when sim_market_category starts with 'scorer_'. Non-scorer Soccer markets continue to return sim_lambda_pick/sim_lambda_opp + cat ∈ {totals,btts,moneyline,draw}. NOTE: if Expo bundle is restarted/rebuilt, give it ~10s before frontend verification — initial test run hit a stale Metro bundle which was resolved by `sudo supervisorctl restart expo`. The pickSimulation TS return type in api.ts (line 413) does not yet include the scorer fields — works at runtime, but main agent may want to extend the type for static safety.",
+  "rca_of_issue": "No bugs found in the goal-scorer simulator itself. During initial frontend run, only the legacy 'MARKET' cell rendered on the ATGS pick because Metro was serving a stale cached bundle that pre-dated SimulatorPanel.tsx scorer-extras changes. After `sudo supervisorctl restart expo` and waiting ~10s for Metro to rebundle, the full scorer-specific row (λ XG / 2+ GOALS / HAT-TRICK) and the scorer-specific footnote rendered correctly. Reproduction in production not expected since prod is a static build."
+}
