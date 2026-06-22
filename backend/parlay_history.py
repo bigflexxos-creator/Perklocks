@@ -124,28 +124,73 @@ async def resolve_saved_parlays(db) -> dict:
       • Any leg `lost` or `void` (anything not won/pending) → parlay lost
       • All legs `won` → parlay won (compute payout)
       • Otherwise → still live
+
+    Pick resilience: legs are first looked up by `pick_id`. If that pick has
+    been deleted (e.g. by a dedup or alt-line cleanup), we FALL BACK to an
+    identity match on the snapshotted (sport, event, market, selection)
+    stored at save time. This makes parlay history resilient to pick churn
+    — a leg can't get stuck "pending" forever just because its source
+    pick was wiped from the picks collection.
     """
     won = lost = updated = 0
     now = datetime.now(timezone.utc).isoformat()
     cursor = db.parlay_history.find({"status": "live"})
     async for parlay in cursor:
         leg_ids = parlay.get("leg_ids") or []
-        # Pull current status for each pick id.
+        legs_view = parlay.get("legs") or []
+
+        # Phase 1: direct lookup by pick_id
         picks = await db.picks.find(
             {"id": {"$in": leg_ids}}, {"id": 1, "status": 1}
         ).to_list(length=len(leg_ids))
         status_by_id = {p["id"]: p.get("status") for p in picks}
+
+        # Phase 2: for legs whose pick_id was deleted, fall back to
+        # identity match against the leg's stored snapshot.
         leg_status: list[str] = []
-        for lid in leg_ids:
-            leg_status.append(status_by_id.get(lid) or "pending")
+        rescued = 0
+        for i, lid in enumerate(leg_ids):
+            s = status_by_id.get(lid)
+            if s in ("won", "lost", "void", "push"):
+                leg_status.append(s)
+                continue
+            if s is None or s == "pending":
+                # Pick missing or still pending — try the snapshot fallback.
+                snap = legs_view[i] if i < len(legs_view) else {}
+                match_q = {
+                    "sport": snap.get("sport"),
+                    "event": snap.get("event"),
+                    "market": snap.get("market"),
+                    "status": {"$in": ["won", "lost", "void", "push"]},
+                }
+                # Selection narrows when present (helps with multi-pick events)
+                if snap.get("selection"):
+                    match_q["selection"] = snap.get("selection")
+                if not all(match_q.get(k) for k in ("sport", "event", "market")):
+                    leg_status.append(s or "pending")
+                    continue
+                match = await db.picks.find_one(match_q, {"status": 1})
+                if match:
+                    leg_status.append(match["status"])
+                    rescued += 1
+                else:
+                    leg_status.append(s or "pending")
+            else:
+                leg_status.append(s or "pending")
+
+        if rescued:
+            logger.info(
+                "Parlay %s: rescued %d legs via snapshot identity match",
+                parlay.get("id", "?")[:8], rescued,
+            )
+
         # Update snapshot leg statuses for display.
-        legs_view = parlay.get("legs") or []
         for i, lid in enumerate(leg_ids):
             if i < len(legs_view):
                 legs_view[i]["status"] = leg_status[i]
         wins = sum(1 for s in leg_status if s == "won")
         loss = sum(1 for s in leg_status if s in ("lost", "void"))
-        pending = sum(1 for s in leg_status if s not in ("won", "lost", "void"))
+        pending = sum(1 for s in leg_status if s not in ("won", "lost", "void", "push"))
         new_status = parlay["status"]
         settled_at = parlay.get("settled_at")
         payout = parlay.get("payout")
