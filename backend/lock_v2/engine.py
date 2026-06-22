@@ -184,13 +184,20 @@ def _survival_score(pick: dict[str, Any]) -> tuple[float, list[tuple[str, str, s
     implied = float(pick.get("implied_probability") or 0) / 100.0
     threshold = implied - 0.02
 
-    # Each scenario removes one edge type and applies a penalty to win_prob
+    # Each scenario removes one edge type and applies a penalty to win_prob.
+    # User report 2026-06-22: "Is the sim edge really working?" — data
+    # showed 388/388 settled picks had sim_pass = 100 because the penalties
+    # below were too small relative to the typical 5-8pp win_prob vs
+    # implied gap. Recalibrated up so the average pick lands at ~60-70%
+    # sim_pass with robust chalks at 80-100 and fragile longshots at 0-40
+    # — actual discriminatory signal instead of a constant +33 baked into
+    # every conviction score.
     scenarios = [
-        ("Surface edge",  0.025),
-        ("Form edge",     0.030),
-        ("Matchup edge",  0.025),
-        ("Market edge",   0.020),
-        ("Recent streak", 0.020),
+        ("Surface edge",  0.060),   # was 0.025 — covers tennis/soccer surface
+        ("Form edge",     0.080),   # was 0.030 — biggest signal we use
+        ("Matchup edge",  0.050),   # was 0.025
+        ("Market edge",   0.050),   # was 0.020
+        ("Recent streak", 0.040),   # was 0.020
     ]
     passes: list[tuple[str, bool, float]] = []
     for name, penalty in scenarios:
