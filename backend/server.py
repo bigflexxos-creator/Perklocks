@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.22-mlb-strikeout-carveout"
+DATA_VERSION = "2026.06.22-pitcher-h2h-ui"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -2803,6 +2803,48 @@ async def model_performance(
     if backfill:
         await backfill_metrics(db)
     return await compute_model_performance(db, days=days)
+
+
+@api.get("/picks/{pick_id}/pitcher-h2h")
+async def pick_pitcher_h2h(
+    pick_id: str,
+    user: Annotated[UserPublic, Depends(current_user)],
+):
+    """MLB strikeout pick → pitcher's historical K performance vs opposing team.
+
+    Returns: season K avg, vs-team K avg, last 5 starts vs the opposing team
+    (date, opp, K count, IP). Only resolves for MLB strikeout markets.
+    """
+    pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
+    if not pick:
+        raise HTTPException(status_code=404, detail="Pick not found")
+    if (pick.get("sport") or "") != "MLB" or "strikeout" not in (pick.get("market") or "").lower():
+        raise HTTPException(status_code=404, detail="Pitcher H2H available for MLB strikeout picks only")
+    # Extract pitcher name from "Gerrit Cole (NYY) Over 3.5 Strikeouts"
+    import re
+    market_str = pick.get("market") or ""
+    m = re.match(r"^([A-Z][^()]+?)\s*\(", market_str)
+    if not m:
+        # Fallback to selection field which is just the pitcher's name
+        sel = pick.get("selection") or ""
+        if not sel:
+            raise HTTPException(status_code=404, detail="Could not parse pitcher name")
+        pitcher = sel.strip()
+    else:
+        pitcher = m.group(1).strip()
+    # Opposing team — resolve via abbreviation in market parens
+    event = pick.get("event") or ""
+    pteam_m = re.search(r"\(([A-Z]{2,4})\)", market_str)
+    pteam = pteam_m.group(1) if pteam_m else ""
+    from mlb_pitcher_h2h import fetch_pitcher_h2h, resolve_opp_team_name
+    opp_team = resolve_opp_team_name(event, pteam) if pteam else None
+    if not opp_team:
+        # Last-resort: just default to the 2nd team in the event string
+        parts = re.split(r"\s+(?:@|vs)\s+", event)
+        opp_team = (parts[1].strip() if len(parts) == 2 else "").strip()
+    if not opp_team:
+        raise HTTPException(status_code=404, detail="Could not parse opponent team")
+    return await fetch_pitcher_h2h(pitcher, opp_team)
 
 
 @api.get("/picks/{pick_id}/simulation")

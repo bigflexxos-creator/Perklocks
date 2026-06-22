@@ -433,6 +433,23 @@ export const api = {
       sim_disagreement_with_model: number;
       sim_signal: "stronger" | "weaker" | "neutral";
     }>(`/picks/${id}/simulation`),
+  pitcherH2H: (id: string) =>
+    request<{
+      pitcher: string;
+      opp_team: string;
+      ok: boolean;
+      error?: string;
+      season_starts?: number;
+      season_avg_k?: number;
+      vs_team_starts?: number;
+      vs_team_avg_k?: number;
+      vs_team_recent?: Array<{
+        date: string;
+        opp: string;
+        k: number;
+        ip: string;
+      }>;
+    }>(`/picks/${id}/pitcher-h2h`),
   simBacktest: (days: number = 30, sport?: string) =>
     request<{
       n: number;
