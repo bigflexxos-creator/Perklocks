@@ -591,7 +591,7 @@ const styles = StyleSheet.create({
     borderBottomColor: COLORS.borderDefault,
   },
   dayLabel: {
-    color: COLORS.text,
+    color: COLORS.textPrimary,
     fontSize: 13,
     fontWeight: "900",
     letterSpacing: 1.4,
