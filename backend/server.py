@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.22-tennis-48h-window"
+DATA_VERSION = "2026.06.22-stable-tennis-ids"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -834,7 +834,22 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     namespace = uuid.UUID("00000000-0000-0000-0000-000000000001")
     for p in picks:
         ext = str(p.get("external_id") or "")
-        p["id"] = str(uuid.uuid5(namespace, ext)) if ext else str(uuid.uuid4())
+        if ext:
+            # Deterministic uuid5 from external_id (preferred — survives refreshes).
+            p["id"] = str(uuid.uuid5(namespace, ext))
+        elif p.get("id"):
+            # Upstream already assigned a stable id (e.g. tennis_extra's
+            # sha1 hash of te|event_date|tournament|players). Convert that
+            # into a uuid5 so the wire format matches all the other picks
+            # AND survives across refreshes — this keeps the user's "Save
+            # to Slip" links valid overnight when the same scraped match
+            # gets re-ingested 30 minutes later.
+            upstream_id = str(p["id"])
+            p["id"] = str(uuid.uuid5(namespace, f"upstream:{upstream_id}"))
+        else:
+            # Last resort: random uuid (churns each refresh — only used
+            # when the upstream didn't bother to set anything stable).
+            p["id"] = str(uuid.uuid4())
 
     # ── SportDB enrichment: pull live team-form into Soccer picks. Cached
     # league standings (24h TTL) keep the daily request count to ~10. The
