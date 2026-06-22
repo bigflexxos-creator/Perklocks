@@ -121,6 +121,11 @@ def _is_btts(market: str) -> Optional[bool]:
 
 def _classify_soccer_market(market: str) -> str:
     m = (market or "").lower()
+    # Scorer markets (ATGS / FGS / LGS / 2+ / hat-trick) → handled by sim_soccer_scorer
+    if ("anytime" in m and ("scorer" in m or "goal" in m)) or \
+       "first goal scorer" in m or "last goal scorer" in m or \
+       "to score 2" in m or "2+ goals" in m or "hat-trick" in m or "hat trick" in m:
+        return "scorer"
     if "total goals" in m or ("over " in m and "goals" in m) or ("under " in m and "goals" in m):
         return "totals"
     if "both teams to score" in m or "btts" in m:
@@ -129,8 +134,8 @@ def _classify_soccer_market(market: str) -> str:
         return "draw"
     if "moneyline" in m or "to win" in m or "match winner" in m:
         return "moneyline"
-    if "anytime" in m and ("scorer" in m or "goal" in m):
-        return "atgs"
+    if "to score" in m:   # generic fallback for "Player Name To Score" without "anytime"
+        return "scorer"
     return "unknown"
 
 
@@ -141,6 +146,11 @@ def simulate_soccer_pick(pick: dict) -> Optional[dict]:
     cat = _classify_soccer_market(market)
     if cat == "unknown":
         return None
+
+    # Route scorer markets to the dedicated player-level Poisson simulator
+    if cat == "scorer":
+        from brain.sim_soccer_scorer import simulate_soccer_scorer_pick
+        return simulate_soccer_scorer_pick(pick)
 
     lam_pick, lam_opp, _ = _derive_lambdas(pick)
     if lam_pick <= 0 or lam_opp <= 0:

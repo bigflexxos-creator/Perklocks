@@ -198,7 +198,11 @@ function SimulationBody({
 
       <Text style={styles.footnote}>
         {sport === "MLB" && "Hitter sims: per-AB Bernoulli using BA / HR-rate / RBI-rate over expected ABs. Pitcher sims: per-batter-faced K-rate. Free MLB Stats API."}
-        {sport === "SOCCER" && "Poisson goal model with team attack × opponent defense × home advantage. Derived from xG ratings. Routes to ML / Totals / BTTS / ATGS."}
+        {sport === "SOCCER" && (
+          sim?.sim_market_category?.startsWith?.("scorer")
+            ? "Player-level Poisson goalscorer model. Calibrates λ_player to model WP (or parses xG/shots/recent-form from key insights). Gamma-Poisson hierarchical adds parameter uncertainty for the CI."
+            : "Poisson goal model with team attack × opponent defense × home advantage. Derived from xG ratings. Routes to ML / Totals / BTTS / ATGS / Draw."
+        )}
         {sport === "NBA" && "Per-game λ calibrated to model WP at the line, then form/usage/matchup nudge. Includes alt-line sensitivity."}
         {sport === "TENNIS" && "Per-point Markov chain across games, sets, tiebreaks. Serve quality calibrated to model match WP, then totals & set scores derive."}
       </Text>
@@ -217,9 +221,19 @@ function SportExtras({
   const cells: { label: string; value: string }[] = [];
   if (sport === "MLB") return null;
   if (sport === "SOCCER") {
-    if (typeof sim.sim_lambda_pick === "number") cells.push({ label: "λ PICK", value: sim.sim_lambda_pick.toFixed(2) });
-    if (typeof sim.sim_lambda_opp === "number") cells.push({ label: "λ OPP", value: sim.sim_lambda_opp.toFixed(2) });
-    if (sim.sim_market_category) cells.push({ label: "MARKET", value: String(sim.sim_market_category).toUpperCase() });
+    // Scorer markets get richer evidence row (xG, 2+%, hat-trick%, shots/g, recent rate)
+    if (typeof sim.sim_player_xg === "number") {
+      cells.push({ label: "λ XG", value: sim.sim_player_xg.toFixed(2) });
+      if (typeof sim.sim_p_score_2plus === "number") cells.push({ label: "2+ GOALS", value: `${sim.sim_p_score_2plus.toFixed(1)}%` });
+      if (typeof sim.sim_p_hattrick === "number" && sim.sim_p_hattrick >= 0.5) cells.push({ label: "HAT-TRICK", value: `${sim.sim_p_hattrick.toFixed(1)}%` });
+      else if (typeof sim.sim_recent_goal_rate === "number") cells.push({ label: "RECENT GS", value: `${sim.sim_recent_goal_rate.toFixed(0)}%` });
+      else if (typeof sim.sim_shots_per_game === "number") cells.push({ label: "SHOTS/G", value: sim.sim_shots_per_game.toFixed(1) });
+    } else {
+      // Match-level Poisson markets (totals/btts/ML/draw)
+      if (typeof sim.sim_lambda_pick === "number") cells.push({ label: "λ PICK", value: sim.sim_lambda_pick.toFixed(2) });
+      if (typeof sim.sim_lambda_opp === "number") cells.push({ label: "λ OPP", value: sim.sim_lambda_opp.toFixed(2) });
+      if (sim.sim_market_category) cells.push({ label: "MARKET", value: String(sim.sim_market_category).toUpperCase() });
+    }
   } else if (sport === "NBA") {
     if (typeof sim.sim_expected_stat === "number") cells.push({ label: "PROJ", value: sim.sim_expected_stat.toFixed(1) });
     if (typeof sim.sim_lambda === "number") cells.push({ label: "λ", value: sim.sim_lambda.toFixed(2) });

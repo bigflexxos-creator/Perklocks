@@ -107,6 +107,15 @@ export type Pick = {
   sim_disagreement_with_model?: number;// sim_wp − blended model wp
   sim_signal?: "stronger" | "weaker" | "neutral";
   sim_lock_lift?: number;              // ± points applied to lock_score
+  // Soccer goal scorer specifics
+  sim_player_xg?: number;              // Player's expected goals this match
+  sim_expected_goals?: number;         // Sim mean over RUNS
+  sim_p_score_2plus?: number;          // P(scores 2+ goals) %
+  sim_p_hattrick?: number;             // P(scores 3+ goals) %
+  sim_shots_per_game?: number;         // Parsed from key_insights
+  sim_recent_goal_rate?: number;       // Recent 'scored in N of last M' rate (%)
+  sim_opp_concedes?: number;           // Opponent goals conceded / match
+  sim_player_xg_per_game?: number;     // Player career xG/match (parsed)
 };
 
 export type User = { id: string; email: string; name?: string };
