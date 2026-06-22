@@ -228,7 +228,25 @@ async def recompute_learned_weights(db) -> dict[str, Any]:
             "max_cal_delta": MAX_CAL_DELTA,
         },
     }
-    await db.learned_weights.replace_one({"_id": "current"}, payload, upsert=True)
+
+    # ─── DEFENSIVE WRITE ──────────────────────────────────────────────
+    # Never let a transient DB issue blow up the settlement cycle. If the
+    # write fails we keep the previous weights in DB (the cycle still has
+    # the in-memory `payload` it computed). Also guard against writing an
+    # obviously-empty/corrupt payload that would poison apply_learning.
+    if not isinstance(rows, list) or not isinstance(calibration, list):
+        logger.warning("Learning engine: refusing to persist malformed payload "
+                       "(rows=%s, cal=%s) — keeping previous weights.",
+                       type(rows).__name__, type(calibration).__name__)
+        return payload
+    try:
+        await db.learned_weights.replace_one(
+            {"_id": "current"}, payload, upsert=True
+        )
+    except Exception as e:
+        logger.warning("Learning engine: replace_one failed (%s) — "
+                       "previous weights retained.", str(e)[:160])
+        return payload
     active = sum(1 for r in rows if r["active"])
     logger.info("Learning engine recomputed: %d buckets (%d active) over %d picks",
                 len(rows), active, len(picks))
