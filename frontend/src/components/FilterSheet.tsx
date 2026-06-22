@@ -38,6 +38,10 @@ export function FilterSheet({
   const [minLock, setMinLock] = useState<number>(filters.minLock ?? 85);
   const [minImplied, setMinImplied] = useState<number>(filters.minImplied ?? 0);
   const [maxImplied, setMaxImplied] = useState<number>(filters.maxImplied ?? 100);
+  // Sim Edge toggle — when ON, only show picks where simulator returned ≥85%
+  // and agreed with model (signal=stronger/neutral). Lets users surface
+  // high-confidence Monte Carlo agreement.
+  const [simEdgeOnly, setSimEdgeOnly] = useState<boolean>(filters.simEdgeOnly ?? false);
 
   // Sync local state when the sheet opens with current external values.
   useEffect(() => {
@@ -45,13 +49,15 @@ export function FilterSheet({
       setMinLock(filters.minLock ?? 85);
       setMinImplied(filters.minImplied ?? 0);
       setMaxImplied(filters.maxImplied ?? 100);
+      setSimEdgeOnly(filters.simEdgeOnly ?? false);
     }
-  }, [visible, filters.minLock, filters.minImplied, filters.maxImplied]);
+  }, [visible, filters.minLock, filters.minImplied, filters.maxImplied, filters.simEdgeOnly]);
 
   const reset = () => {
     setMinLock(85);
     setMinImplied(0);
     setMaxImplied(100);
+    setSimEdgeOnly(false);
   };
 
   const apply = () => {
@@ -59,6 +65,7 @@ export function FilterSheet({
       minLock: minLock > 85 ? minLock : undefined,
       minImplied: minImplied > 0 ? minImplied : undefined,
       maxImplied: maxImplied < 100 ? maxImplied : undefined,
+      simEdgeOnly: simEdgeOnly || undefined,
     });
     onClose();
   };
@@ -67,6 +74,7 @@ export function FilterSheet({
     minLock > 85,
     minImplied > 0,
     maxImplied < 100,
+    simEdgeOnly,
   ].filter(Boolean).length;
 
   return (
@@ -183,6 +191,25 @@ export function FilterSheet({
           <Text style={styles.hint}>
             Lower implied = bigger payouts. Higher implied = chalkier safer picks.
           </Text>
+        </View>
+
+        {/* Sim Edge toggle — Monte Carlo agreement filter */}
+        <View style={styles.section}>
+          <Pressable
+            style={[styles.simEdgeRow, simEdgeOnly && styles.simEdgeRowActive]}
+            onPress={() => setSimEdgeOnly((v) => !v)}
+          >
+            <View style={styles.simEdgeLeft}>
+              <Text style={styles.simEdgeRowIcon}>🎲</Text>
+              <View>
+                <Text style={styles.simEdgeRowTitle}>SIM EDGE ONLY</Text>
+                <Text style={styles.simEdgeRowSub}>Show only picks where the simulator hit ≥85% and agrees with the model</Text>
+              </View>
+            </View>
+            <View style={[styles.simToggle, simEdgeOnly && styles.simToggleOn]}>
+              <View style={[styles.simToggleKnob, simEdgeOnly && styles.simToggleKnobOn]} />
+            </View>
+          </Pressable>
         </View>
 
         </ScrollView>
@@ -312,6 +339,53 @@ const styles = StyleSheet.create({
     marginTop: 8,
     lineHeight: 16,
   },
+  // ── Sim Edge toggle row ──
+  simEdgeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.borderDefault,
+    backgroundColor: "rgba(255,255,255,0.02)",
+  },
+  simEdgeRowActive: {
+    borderColor: "rgba(167,139,250,0.55)",
+    backgroundColor: "rgba(167,139,250,0.10)",
+  },
+  simEdgeLeft: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10 },
+  simEdgeRowIcon: { fontSize: 20 },
+  simEdgeRowTitle: {
+    color: COLORS.textPrimary,
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 0.9,
+  },
+  simEdgeRowSub: {
+    color: COLORS.textSecondary,
+    fontSize: 11,
+    fontWeight: "600",
+    lineHeight: 14,
+    marginTop: 2,
+    maxWidth: 220,
+  },
+  simToggle: {
+    width: 44,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: COLORS.borderDefault,
+    padding: 3,
+    justifyContent: "center",
+  },
+  simToggleOn: { backgroundColor: "#A78BFA" },
+  simToggleKnob: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: "#FFFFFF",
+  },
+  simToggleKnobOn: { transform: [{ translateX: 18 }] },
   actions: {
     flexDirection: "row",
     gap: 10,

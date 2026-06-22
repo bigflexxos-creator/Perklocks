@@ -135,7 +135,8 @@ export default function LocksScreen() {
   const activeFilterCount =
     (filters.minLock && filters.minLock > 85 ? 1 : 0) +
     (filters.minImplied ? 1 : 0) +
-    (filters.maxImplied && filters.maxImplied < 100 ? 1 : 0);
+    (filters.maxImplied && filters.maxImplied < 100 ? 1 : 0) +
+    (filters.simEdgeOnly ? 1 : 0);
 
   // Request-token guard: each call to load() captures a monotonically
   // increasing token. When the response arrives, we only commit state
@@ -167,11 +168,20 @@ export default function LocksScreen() {
       // games (e.g. batter Over 0.5 Hits) are still legitimate locks
       // that the user wants to see on the slate even after first pitch.
       let fresh = (picksRes.picks || []).filter((p: any) => p.sport !== "KBO");
-      // Extra defence: if the user requested a single sport, drop any
-      // picks not matching it (e.g. backend race that returned a
-      // mixed-sport slate). Skip for "All".
+      // Sport-mismatch guard
+      const requestedSport = sp;
       if (requestedSport && requestedSport.toLowerCase() !== "all") {
         fresh = fresh.filter((p: any) => p.sport === requestedSport);
+      }
+      // Sim Edge filter — show only picks where sim_wp ≥ 85 AND sim agrees
+      // with model by ≥5pp. Applied client-side since sim_* fields are
+      // already on the pick payload.
+      if (f.simEdgeOnly) {
+        fresh = fresh.filter((p: any) =>
+          typeof p.sim_win_probability === "number" &&
+          p.sim_win_probability >= 85 &&
+          (p.sim_disagreement_with_model ?? 0) >= 5,
+        );
       }
       setPicks(fresh);
       lastLoadedForSportRef.current = requestedSport;
