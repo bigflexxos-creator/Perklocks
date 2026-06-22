@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.22-player-streak-badges"
+DATA_VERSION = "2026.06.22-mlb-strikeout-carveout"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -1489,9 +1489,25 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             {"bandit_lift": {"$gt": 0}},   # still surface bandit-favored MLs even if lock < 80
         ],
     }
+    # ── MLB Pitcher-Strikeout carve-out (chalk-pricing exception) ─────
+    # User report 2026-06-22: "I'm not seeing no strikeout bets" + Gerrit
+    # Cole strikeout pick had lock=73.7 (strong) but edge=-6.87 (chalk-priced
+    # against). Elite pitchers' K-line markets are often priced sharp, but
+    # the lock score reflects the underlying probability accurately. Surface
+    # these when lock >= 70 even with slight negative edge.
+    mlb_k_q = {
+        "sport": "MLB",
+        "market": {"$regex": "strikeout", "$options": "i"},
+        "no_bet": {"$ne": True},
+        "edge_percent": {"$gte": -8.0},
+        "$or": [
+            {"lock_score": {"$gte": 70.0}},
+            {"lock_score_v2": {"$gte": 70.0}},
+        ],
+    }
     q: dict = {
         "pick_date": _today_str(),
-        "$or": [standard_q, elite_q, tennis_ml_q],
+        "$or": [standard_q, elite_q, tennis_ml_q, mlb_k_q],
     }
     if sport and sport.lower() != "all":
         q["sport"] = sport
