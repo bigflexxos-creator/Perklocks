@@ -552,6 +552,119 @@ async def _historical_winrates() -> dict:
 
 
 
+def _dedupe_and_limit_goalscorers(picks: list[dict]) -> list[dict]:
+    """Dedupe duplicate goalscorer picks and trim each event's slate.
+
+    Rule (per user 2026-06-22): "Top 3 goalscorers per match — unless more
+    are elite (≥70% win prob AND positive edge)."
+
+    Steps:
+      1) DEDUP: For each (event, player, market_family) combo where
+         market_family is one of:
+            - ATGS  (Anytime Goal Scorer + synthetic AGS from To-Score-or-Assist)
+            - FGS   (First Goal Scorer)
+            - SoA   (To Score or Assist)
+         keep only the single best pick (highest lock_score, ties broken by
+         best edge_percent). This kills the "same player 3-4× at different
+         book prices / synth duplicates" problem.
+      2) TRIM: Within each (event, market_family) group, sort by
+         win_probability DESC. Keep top 3 by default. Append any extras
+         that pass the elite override (win_probability ≥ 70% AND
+         edge_percent > 0). This bounds the goalscorer slate on marquee
+         games (Ghana @ England had 47 picks; expected ≤ ~5).
+    """
+    if not picks:
+        return picks
+    import re as _re
+
+    def _family(market: str) -> str:
+        ml = (market or "").lower()
+        if "first goal scorer" in ml: return "FGS"
+        if "anytime goal scorer" in ml: return "ATGS"
+        if "to score or assist" in ml: return "SoA"
+        return ""
+
+    # Extract a stable player name from market labels like "Harry Kane
+    # Anytime Goal Scorer" / "Bukayo Saka First Goal Scorer" / "Ollie
+    # Watkins To Score or Assist".
+    _SUFFIXES = (
+        " Anytime Goal Scorer",
+        " First Goal Scorer",
+        " To Score or Assist",
+    )
+    def _player_from_market(market: str) -> str:
+        m = market or ""
+        for suf in _SUFFIXES:
+            if m.endswith(suf):
+                return m[: -len(suf)].strip().lower()
+        # Fallback: strip the family suffix even if mid-string
+        return _re.sub(
+            r"\s*(anytime goal scorer|first goal scorer|to score or assist).*$",
+            "",
+            m, flags=_re.I,
+        ).strip().lower()
+
+    # Phase 1: dedup
+    by_key: dict[tuple, dict] = {}
+    rest: list[dict] = []
+    for p in picks:
+        fam = _family(p.get("market") or "")
+        if fam == "" or (p.get("sport") or "") != "Soccer":
+            rest.append(p)
+            continue
+        player = _player_from_market(p.get("market") or "")
+        key = (p.get("event") or "", player, fam)
+        existing = by_key.get(key)
+        if existing is None:
+            by_key[key] = p
+            continue
+        # Higher lock_score wins; ties → higher edge_percent
+        def _score(q: dict):
+            try: lock = float(q.get("lock_score") or 0)
+            except Exception: lock = 0.0
+            try: edge = float(q.get("edge_percent") or 0)
+            except Exception: edge = 0.0
+            return (lock, edge)
+        if _score(p) > _score(existing):
+            by_key[key] = p
+
+    # Phase 2: trim per (event, family) — Top 3 + elite-override
+    by_event_family: dict[tuple, list[dict]] = {}
+    for (event, _player, fam), p in by_key.items():
+        by_event_family.setdefault((event, fam), []).append(p)
+
+    kept: list[dict] = []
+    trimmed = 0
+    for (event, fam), group in by_event_family.items():
+        # Sort by win_probability DESC; ties broken by lock_score DESC.
+        def _sortkey(q: dict):
+            try: wp = float(q.get("win_probability") or 0)
+            except Exception: wp = 0.0
+            try: ls = float(q.get("lock_score") or 0)
+            except Exception: ls = 0.0
+            return (-wp, -ls)
+        group.sort(key=_sortkey)
+        top3 = group[:3]
+        extras: list[dict] = []
+        for q in group[3:]:
+            try:
+                wp = float(q.get("win_probability") or 0)
+                eg = float(q.get("edge_percent") or 0)
+            except Exception:
+                wp, eg = 0.0, 0.0
+            # Elite override: win prob ≥ 70% AND positive edge
+            if wp >= 70.0 and eg > 0:
+                extras.append(q)
+            else:
+                trimmed += 1
+        kept.extend(top3 + extras)
+    logger.info(
+        "Goalscorer dedup+trim: %d unique players × markets, %d trimmed",
+        len(by_key), trimmed,
+    )
+    return rest + kept
+
+
 async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> int:
     """Generate today's picks, replace any existing rows for that date.
 
@@ -667,6 +780,23 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
                     after_elite, before_elite)
     except Exception as e:
         logger.warning("Elite Player Boost skipped: %s", e)
+
+    # ── Goalscorer Dedup + Top-3-with-Elite-Override ───────────────────
+    # User report 2026-06-22: "Why is so many goalscorers for England game
+    # thought we doing top 3 unless it more that's elite 70+ win pct and
+    # have edge?". Root cause was two compounding bugs:
+    #   1) The same player got multiple Anytime Goal Scorer picks (one per
+    #      bookmaker quote, plus synthetic AGS picks created from each
+    #      To-Score-or-Assist quote in elite_players.py).
+    #   2) No event-level cap on how many goalscorer picks survived,
+    #      causing 47-pick blowouts on marquee international friendlies.
+    # Fix: dedup by (event, player, market_family), then trim each event's
+    # goalscorer slate to Top-3-by-win_probability + any extras meeting
+    # win≥70% AND edge>0 (the "elite override").
+    try:
+        picks = _dedupe_and_limit_goalscorers(picks)
+    except Exception as e:
+        logger.warning("Goalscorer dedup/limit skipped: %s", e)
 
     # ── Sportsbook deep-link enrichment: attach home_team / away_team / pick
     # / fanduel_event_id / draftkings_event_id / etc. to every pick. These
