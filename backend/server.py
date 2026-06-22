@@ -665,6 +665,63 @@ def _dedupe_and_limit_goalscorers(picks: list[dict]) -> list[dict]:
     return rest + kept
 
 
+def _cap_tennis_totals(picks: list[dict], max_per_side: int = 2) -> list[dict]:
+    """Cap Tennis alternate-line Total Games to top-N per (match, side).
+
+    User report 2026-06-22: "Why I got so many tennis overs instead of
+    moneyline?" The Odds API exposes 5-7 alt-line Total Games markets per
+    match (Over/Under 18.5, 19.5, 20.5, ...). Each survives the lock-floor
+    independently, flooding the slate while the lone Moneyline market —
+    which the bandit just told us is our HOTTEST tennis arm at +13% ROI /
+    Sharpe +1.11 — gets buried.
+
+    Fix: per (match, Over|Under), keep only the TOP-N alt-lines by
+    win_probability. Default 2 keeps the most informative lines without
+    drowning the matchup. Game-level Tennis Moneyline / Spread untouched.
+    """
+    if not picks:
+        return picks
+    import re as _re
+
+    def _is_tennis_total(p: dict) -> bool:
+        if (p.get("sport") or "") != "Tennis":
+            return False
+        m = (p.get("market") or "").lower()
+        return ("over " in m or "under " in m) and "games" in m
+
+    def _side(p: dict) -> str:
+        m = (p.get("market") or "").lower()
+        return "over" if "over " in m else "under"
+
+    by_key: dict[tuple, list[dict]] = {}
+    rest: list[dict] = []
+    for p in picks:
+        if _is_tennis_total(p):
+            key = (p.get("event") or "", _side(p))
+            by_key.setdefault(key, []).append(p)
+        else:
+            rest.append(p)
+
+    kept: list[dict] = []
+    trimmed = 0
+    for _key, group in by_key.items():
+        # Sort by win_probability DESC; ties broken by lock_score DESC.
+        def _sortkey(q: dict):
+            try: wp = float(q.get("win_probability") or 0)
+            except Exception: wp = 0.0
+            try: ls = float(q.get("lock_score") or 0)
+            except Exception: ls = 0.0
+            return (-wp, -ls)
+        group.sort(key=_sortkey)
+        kept.extend(group[:max_per_side])
+        trimmed += max(0, len(group) - max_per_side)
+    logger.info(
+        "Tennis Totals cap: %d (match, side) groups kept top-%d each, %d trimmed",
+        len(by_key), max_per_side, trimmed,
+    )
+    return rest + kept
+
+
 async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> int:
     """Generate today's picks, replace any existing rows for that date.
 
@@ -797,6 +854,17 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         picks = _dedupe_and_limit_goalscorers(picks)
     except Exception as e:
         logger.warning("Goalscorer dedup/limit skipped: %s", e)
+
+    # ── Tennis Totals cap (Top-1 alt-line per match per side) ──────────
+    # User report 2026-06-22: "still not seeing ml in tennis". The slate
+    # had 5 visible MLs but 28 Overs, ~5.6:1 ratio buried the Moneylines.
+    # Top-2 was still too many — tightening to Top-1 per (match, side)
+    # halves Tennis Overs again so MLs (which the bandit says are our
+    # hottest arm at +13% ROI) become visually prominent in the feed.
+    try:
+        picks = _cap_tennis_totals(picks, max_per_side=1)
+    except Exception as e:
+        logger.warning("Tennis Totals cap skipped: %s", e)
 
     # ── Per-Player Rolling Form (Phase 2 learning upgrade) ─────────────
     # Apply each player's last-10 hot/cold streak as a ±5 lock_score
@@ -1304,9 +1372,28 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             {"lock_score_v2": {"$gte": 80.0}},
         ],
     }
+    # ── Tennis Moneyline carve-out (bandit-hot exception) ──────────────
+    # User report 2026-06-22: "Why I got so many tennis overs instead of
+    # moneyline?". The bandit told us Tennis ML is our HOTTEST arm
+    # (+13% ROI, Sharpe +1.11) but the edge ≥ 0 gate cut most of them
+    # because chalk tennis MLs (-200/-400) often produce small negative
+    # edge vs the sharp market. Carve out: Tennis MLs with positive
+    # bandit_lift (currently favored arm) get to pass with edge ≥ -2
+    # instead of ≥ 0, so the bandit's actual winning market surfaces.
+    tennis_ml_q = {
+        "sport": "Tennis",
+        "market": {"$regex": "moneyline", "$options": "i"},
+        "no_bet": {"$ne": True},
+        "bandit_lift": {"$gt": 0},
+        "edge_percent": {"$gte": -2},
+        "$or": [
+            {"lock_score": {"$gte": 80.0}},
+            {"lock_score_v2": {"$gte": 80.0}},
+        ],
+    }
     q: dict = {
         "pick_date": _today_str(),
-        "$or": [standard_q, elite_q],
+        "$or": [standard_q, elite_q, tennis_ml_q],
     }
     if sport and sport.lower() != "all":
         q["sport"] = sport
