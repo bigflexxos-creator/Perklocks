@@ -52,9 +52,17 @@ _TIMEOUT = httpx.Timeout(15.0, connect=8.0)
 
 def _norm(name: str) -> str:
     """lowercase + strip diacritics + collapse punctuation to make name matches
-    forgiving (e.g. 'José Ramírez' == 'jose ramirez', 'A.J. Brown' == 'aj brown')."""
+    forgiving (e.g. 'José Ramírez' == 'jose ramirez', 'A.J. Brown' == 'aj brown').
+
+    Also strips parenthetical disambiguators that The Odds API attaches to
+    duplicate player names — e.g. 'Max Muncy (2002)' (year of birth) and
+    'Aaron Judge (NYY)' (team tag) — so they match the stats feed which
+    only stores the plain name."""
     if not name:
         return ""
+    # Strip parenthetical content FIRST so "Max Muncy (2002)" → "Max Muncy"
+    # and "Aaron Judge (NYY)" → "Aaron Judge".
+    name = re.sub(r"\([^)]*\)", " ", name)
     n = unicodedata.normalize("NFKD", name)
     n = "".join(c for c in n if not unicodedata.combining(c))
     n = n.lower()

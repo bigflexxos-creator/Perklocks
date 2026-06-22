@@ -2976,14 +2976,15 @@ async def _mlb_pregame_loop():
 
 
 async def _settlement_loop():
-    """Run settlement every 30 minutes.
+    """Run settlement every 5 minutes.
 
-    Previously 2 h — chosen to conserve Odds API credits. With MLB scores
-    now sourced from the free MLB Stats API (see mlb_live.py), the bulk
-    of settlement traffic costs ZERO Odds credits, so we can settle
-    aggressively (within ~30 min of game-end) without budget impact.
-    Non-MLB sports still use Odds API but they're a small minority of
-    pending picks at any given time.
+    Was 30 min, before that 2h. With MLB scores now sourced from the free
+    MLB Stats API (see mlb_live.py), the bulk of settlement traffic costs
+    ZERO Odds credits — so we can grade aggressively (within ~5 min of
+    `completed: true` from the upstream feed) without budget impact.
+    Non-MLB sports still hit Odds API but they're a small minority of
+    pending picks at any given time and the per-call throttle (0.6s) keeps
+    us under the rate limit.
 
     After each settlement run, also recompute Learning v2 state so the next
     pick refresh picks up updated market weights + band-gate raises.
@@ -3068,7 +3069,7 @@ async def _settlement_loop():
             break
         except Exception as e:
             logger.warning("Settlement loop error: %s", e)
-        await asyncio.sleep(1800)  # 30 minutes — MLB scores are free now
+        await asyncio.sleep(300)  # 5 minutes — settlement is cheap now (MLB Stats API is free, Odds API throttled)
 
 
 async def _weekly_model_tuning_loop():
