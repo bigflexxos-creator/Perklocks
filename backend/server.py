@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.21-5-parlay-copy-save-only"
+DATA_VERSION = "2026.06.22-tennis-totals-cap-top1-bandit-lift"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
