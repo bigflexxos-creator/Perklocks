@@ -100,9 +100,12 @@ async def get_active_players(sport: str) -> list[dict] | None:
 
 async def get_injuries(sport: str) -> list[dict] | None:
     s = sport.lower()
-    if s not in {"nba", "nfl", "mlb"}:
+    # MLB injury endpoint at /stats/json/Injuries has been deprecated by
+    # SportsDataIO (returns HTTP 404). NBA and NFL still serve it normally.
+    # We use BvP-derived form & lineup data for MLB injury context instead,
+    # so skipping the endpoint costs us nothing.
+    if s not in {"nba", "nfl"}:
         return None
-    # MLB injury endpoint is under /stats/, NFL+NBA also.
     return await _get(s, "/stats/json/Injuries", _TTL_INJURIES)
 
 
