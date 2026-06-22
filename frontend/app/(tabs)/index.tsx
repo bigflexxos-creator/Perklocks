@@ -168,8 +168,7 @@ export default function LocksScreen() {
       // games (e.g. batter Over 0.5 Hits) are still legitimate locks
       // that the user wants to see on the slate even after first pitch.
       let fresh = (picksRes.picks || []).filter((p: any) => p.sport !== "KBO");
-      // Sport-mismatch guard
-      const requestedSport = sp;
+      // Sport-mismatch guard (uses requestedSport declared at top of try block)
       if (requestedSport && requestedSport.toLowerCase() !== "all") {
         fresh = fresh.filter((p: any) => p.sport === requestedSport);
       }
