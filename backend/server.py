@@ -3106,23 +3106,34 @@ async def _mlb_pregame_loop():
 
 
 async def _settlement_loop():
-    """Run settlement every 5 minutes.
+    """Per-sport settlement cadence — fast where it's free, careful where it costs.
 
-    Was 30 min, before that 2h. With MLB scores now sourced from the free
-    MLB Stats API (see mlb_live.py), the bulk of settlement traffic costs
-    ZERO Odds credits — so we can grade aggressively (within ~5 min of
-    `completed: true` from the upstream feed) without budget impact.
-    Non-MLB sports still hit Odds API but they're a small minority of
-    pending picks at any given time and the per-call throttle (0.6s) keeps
-    us under the rate limit.
-
-    After each settlement run, also recompute Learning v2 state so the next
-    pick refresh picks up updated market weights + band-gate raises.
+      • MLB → every **60 seconds** (MLB Stats API is FREE, no Odds credits).
+        Picks settle within ~1 min of `completed: true` flipping on the feed.
+        User spec 2026-06-22: "I want bets to settle win loss so we can
+        learn from picks" — fast grading + 14-day fetch window means the
+        learning engine sees real W/L within minutes, not days.
+      • All other sports (Soccer/Tennis/UFC/NBA/NFL) → every **15 minutes**
+        (cost-aware — Odds API bills per call).
+      • Stale auto-void only after **14 days** (was 5) — gives picks the
+        max chance to actually grade W/L before being voided as
+        unresolvable. Voids only happen when score feeds truly don't expose
+        the data anymore.
     """
     await asyncio.sleep(60)  # let startup settle
+    FULL_INTERVAL_TICKS = 15   # full settlement every 15th tick = 15 min
+    tick = 0
     while True:
         try:
-            await settle_due_picks(db)
+            tick += 1
+            is_full = (tick % FULL_INTERVAL_TICKS == 0)
+            if is_full:
+                # Full settlement — all sports, runs Learning v2 afterward.
+                await settle_due_picks(db)
+            else:
+                # Cheap MLB-only tick — free upstream feed (MLB Stats API),
+                # no Odds credits burned.
+                await settle_due_picks(db, sport_filter=["MLB"])
             # Recompute Learning v2 immediately so new settlements feed
             # forward into the next pick generation cycle.
             try:
@@ -3199,7 +3210,7 @@ async def _settlement_loop():
             break
         except Exception as e:
             logger.warning("Settlement loop error: %s", e)
-        await asyncio.sleep(300)  # 5 minutes — settlement is cheap now (MLB Stats API is free, Odds API throttled)
+        await asyncio.sleep(60)  # 60 seconds — MLB grades within 1 min of game-end
 
 
 async def _weekly_model_tuning_loop():
