@@ -1,0 +1,28 @@
+{
+  "summary": "Frontend-only verification of Soccer xG Form (Understat) feature. All 3 acceptance criteria PASS. (1) xG FORM chip renders on Soccer tab — found 5 chips reading '🔥 xG FORM · HOT · +6pp', matching backend's 2 HOT + 3 COLD decorated picks (NEUTRAL correctly suppressed). (2) XGFormPanel on /pick/[id] renders all required fields for Harry Kane First Goal Scorer: kicker 'xG FORM · UNDERSTAT', player 'Harry Kane', 'Bayern Munich · Bundesliga 2025/26', HOT label + 🔥 + '+6pp lift' badge, 6 metrics laid out in 2 rows of 3 (GOALS 36 / xG 29.6 / GOALS/xG 1.70 overperforming; xG/90 1.12 / npxG/90 0.80 non-pen / SHOTS/90 4.5), and footnote 'Source: Understat · refreshed every 12 h · 2385 mins played'. (3) Non-goalscorer (MLB pick) detail page correctly hides the panel silently (404 from API → unsupported state → renders null). Backend sanity-curl confirmed: /api/picks/today?sport=Soccer returns 88 picks with 2 HOT + 3 COLD + 14 NEUTRAL understat_form blocks; /api/picks/{kane_id}/player-form returns full payload (HOT/95/+6pp, goals=36, xg=29.58, goals_over_xg=1.695); /api/picks/{mlb_id}/player-form → 404 as expected. League slug → pretty label mapping works ('Bundesliga' → 'Bundesliga'). ScorerBundlesPanel still co-renders above XGFormPanel on the same Harry Kane detail screen — no regression observed.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/tmp/03_chip.png (HOT chip on Harry Kane card)",
+    "/tmp/04_detail_top.png (pick detail with ScorerBundles + xG Panel visible)",
+    "/tmp/05_xg_panel.png (full XGFormPanel)",
+    "/tmp/06_mlb_detail.png (MLB pick — no xG panel rendered)"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "XGFormPanel uses `(Number(data.season) + 1) % 100` for the season suffix — works for 2025→26 but would print '00' instead of '00' for 2099→2100 transition (non-issue today, just noting).",
+    "Pretty league mapping in XGFormPanel covers only the 5 supported Understat leagues; falls back to the raw slug for anything else (correct, but worth keeping in sync if a 6th league is ever added)."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "100% (curl sanity)", "frontend": "100% (3/3 cases)" },
+  "seed_data_creation": "None — used pre-existing scraped Understat data and seeded demo user.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Soccer xG Form feature (iter40) is fully working end-to-end. Chip renders on LockPickCard for HOT/COLD only. Panel renders on /pick/[id] for any soccer goalscorer pick whose player is in the Understat Top 5 European leagues cache (`soccer_player_form` MongoDB collection, refreshed every 12h by background loop in server.py). Endpoint: GET /api/picks/{id}/player-form — 404s silently for non-goalscorer or unknown player. Manual refresh: POST /api/admin/refresh-soccer-player-form.",
+  "rca_of_issue": "N/A — no bugs found."
+}

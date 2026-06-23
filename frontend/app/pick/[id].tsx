@@ -15,6 +15,7 @@ import { MarketRankPanel } from "@/src/components/MarketRankPanel";
 import { ScorerBundlesPanel } from "@/src/components/ScorerBundlesPanel";
 import { SimulatorPanel } from "@/src/components/SimulatorPanel";
 import { PitcherH2HPanel } from "@/src/components/PitcherH2HPanel";
+import { XGFormPanel } from "@/src/components/XGFormPanel";
 import { getDisplayLockRounded } from "@/src/lib/lockScore";
 import { buildSlipText, shareSlip, saveSlipImage, copySlipText } from "@/src/lib/shareBetSlip";
 
@@ -314,6 +315,13 @@ export default function PickDetail() {
             {/* Scorer Bundles — synthesized 2+ Goals / Hat-Trick / Goal+Assist
                 Only renders for Soccer Anytime Goal Scorer picks. */}
             <ScorerBundlesPanel pick={pick} />
+
+            {/* xG Form — Understat-derived season form for soccer goalscorer
+                markets (Anytime, First, Score-or-Assist). Auto-hides for any
+                non-goalscorer pick or players outside the Top 5 European
+                leagues. Surfaces the math behind the HOT/COLD chip + the
+                ±6pp probability lift. */}
+            <XGFormPanel pickId={pick.id} />
 
             {/* Pitcher vs Team H2H — MLB Strikeout picks only.
                 Shows the pitcher's K history vs the specific opposing team

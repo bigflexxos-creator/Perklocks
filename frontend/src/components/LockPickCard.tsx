@@ -155,6 +155,43 @@ export function LockPickCard({ pick }: { pick: Pick }) {
               <Text style={styles.simEdgeText}>SIM EDGE · {pick.sim_win_probability.toFixed(0)}%</Text>
             </View>
           )}
+          {/* xG FORM chip — Understat-derived season form for soccer
+              goalscorer markets. Renders only HOT or COLD (we hide
+              NEUTRAL because every average player would otherwise
+              show a meaningless badge). The +6pp / −6pp lift is the
+              probability adjustment the engine applies to this leg. */}
+          {(pick as any).understat_form &&
+           ((pick as any).understat_form.label === "HOT" ||
+            (pick as any).understat_form.label === "COLD") && (
+            <View
+              style={[
+                styles.xgFormBadge,
+                (pick as any).understat_form.label === "HOT"
+                  ? styles.xgFormBadgeHot
+                  : styles.xgFormBadgeCold,
+              ]}
+              testID="xg-form-chip"
+            >
+              <Text style={styles.xgFormIcon}>
+                {(pick as any).understat_form.label === "HOT" ? "🔥" : "❄️"}
+              </Text>
+              <Text
+                style={[
+                  styles.xgFormText,
+                  {
+                    color:
+                      (pick as any).understat_form.label === "HOT"
+                        ? "#FCA5A5"
+                        : "#93C5FD",
+                  },
+                ]}
+              >
+                xG FORM · {(pick as any).understat_form.label}
+                {typeof (pick as any).understat_form.lift_pp === "number" &&
+                  ` · ${(pick as any).understat_form.lift_pp >= 0 ? "+" : ""}${(pick as any).understat_form.lift_pp.toFixed(0)}pp`}
+              </Text>
+            </View>
+          )}
           <Text style={styles.market} numberOfLines={2}>{pick.market}</Text>
           {(pick as any).model_line === true && (
             <Text style={styles.modelLineText} numberOfLines={1}>
@@ -364,6 +401,28 @@ const styles = StyleSheet.create({
   },
   streakIcon: { fontSize: 10 },
   streakText: { fontSize: 9, fontWeight: "900", letterSpacing: 0.9 },
+  // ── xG FORM badge (Understat-derived, soccer goalscorer markets) ──
+  xgFormBadge: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 5,
+    borderWidth: 1,
+    marginTop: 4,
+  },
+  xgFormBadgeHot: {
+    borderColor: "rgba(252, 165, 165, 0.55)",
+    backgroundColor: "rgba(252, 165, 165, 0.10)",
+  },
+  xgFormBadgeCold: {
+    borderColor: "rgba(147, 197, 253, 0.55)",
+    backgroundColor: "rgba(147, 197, 253, 0.10)",
+  },
+  xgFormIcon: { fontSize: 10 },
+  xgFormText: { fontSize: 9, fontWeight: "900", letterSpacing: 0.9 },
   market: { color: COLORS.textPrimary, fontSize: 17, fontWeight: "800", letterSpacing: -0.3 },
   metricsRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 18, marginBottom: 12 },
   metric: { flex: 1 },
