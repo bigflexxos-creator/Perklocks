@@ -450,7 +450,8 @@ export default function LocksScreen() {
               <>
                 <Text style={styles.emptyMsg} testID="empty-msg-filters">
                   Filters are hiding picks from the board. Clear them to see
-                  today&apos;s {stats?.total_picks ?? "full"} slate.
+                  today&apos;s full slate
+                  {typeof stats?.total_picks === "number" ? ` (${stats.total_picks} picks)` : ""}.
                 </Text>
                 <TouchableOpacity
                   onPress={clearAllNarrowingFilters}
