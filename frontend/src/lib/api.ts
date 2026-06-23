@@ -300,6 +300,33 @@ export const api = {
       auth: false,
     }),
   me: () => request<User>("/auth/me"),
+  playerForm: (pickId: string) =>
+    request<{
+      player_name: string;
+      team: string;
+      league: string;
+      season: string;
+      position: string;
+      games: number;
+      minutes: number;
+      goals: number;
+      xg: number;
+      npxg: number;
+      assists: number;
+      xa: number;
+      shots: number;
+      key_passes: number;
+      xg_per_90: number;
+      npxg_per_90: number;
+      goals_per_90: number;
+      shots_per_90: number;
+      goals_over_xg: number;
+      form_label: "HOT" | "COLD" | "NEUTRAL";
+      form_score: number;
+      form_lift: number;
+      updated_at: string | null;
+      source: string;
+    }>(`/picks/${pickId}/player-form`),
   version: () =>
     request<{ data_version: string; server_time: string; server_started_at: string }>(
       "/version",

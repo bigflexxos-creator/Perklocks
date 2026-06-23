@@ -240,6 +240,120 @@ async def _decorate_with_player_form(picks: list[dict]) -> list[dict]:
     return picks
 
 
+async def _decorate_with_understat_form(picks: list[dict]) -> list[dict]:
+    """Attach `understat_form` to soccer goalscorer-market picks.
+
+    Reads from `soccer_player_form` (Understat-backed, refreshed every
+    12h). Each decorated pick gets a compact subset suitable for the
+    HOT FORM / COLD chip on cards + the form panel in deep-dive:
+
+        understat_form: {
+          label: "HOT" | "COLD" | "NEUTRAL",
+          score: 0-100,
+          lift_pp: ±6 (probability lift in percentage points),
+          team:    str,
+          league:  str,
+          goals:   int,
+          games:   int,
+          xg:      float,
+          npxg_per_90:   float,
+          goals_over_xg: float,
+        }
+
+    Goalscorer-only — guards by `is_goalscorer_market()` from the
+    soccer_player_form module so non-scorer picks aren't decorated.
+    Defensive: any error is caught silently and picks pass through
+    untouched (this is purely additive UI metadata, not core data).
+    """
+    if not picks:
+        return picks
+    try:
+        from soccer_player_form import (
+            is_goalscorer_market,
+            canonicalize_name,
+            FORM_LIFT_HOT,
+            FORM_LIFT_COLD,
+        )
+        from player_intel.resolver import extract_player_from_market
+    except Exception:
+        return picks
+
+    # Collect canonicalised names once so we can do a single bulk query.
+    needed_canon: set[str] = set()
+    pick_names: dict[str, str] = {}   # pick_id → canonical name
+    for p in picks:
+        if not is_goalscorer_market(p):
+            continue
+        # Prefer the resolver — strips market suffix like "Anytime Goal
+        # Scorer" so "Lautaro Martinez Anytime Goal Scorer" reduces
+        # cleanly to "Lautaro Martinez". Fallback chain handles edge
+        # cases where the resolver returns nothing.
+        market_str = p.get("market", "") or ""
+        name = extract_player_from_market(market_str) or ""
+        if not name:
+            name = (p.get("player")
+                    or p.get("bet")
+                    or p.get("selection") or "")
+        name = (name or "").strip()
+        if not name or name.lower() in {"yes", "no", "over", "under"}:
+            continue
+        canon = canonicalize_name(name)
+        if not canon:
+            continue
+        needed_canon.add(canon)
+        pick_names[p.get("id") or p.get("_id") or ""] = canon
+
+    if not needed_canon:
+        return picks
+
+    try:
+        # Single bulk query — pull only fields we need into the chip.
+        proj = {
+            "name_canonical": 1, "player_name": 1, "team": 1, "league": 1,
+            "form_label": 1, "form_score": 1, "goals": 1, "games": 1,
+            "xg": 1, "npxg_per_90": 1, "goals_over_xg": 1, "_id": 0,
+        }
+        form_map: dict[str, dict] = {}
+        async for doc in db.soccer_player_form.find(
+            {"name_canonical": {"$in": list(needed_canon)}}, proj,
+        ):
+            # Most-recent record per canonical name wins on collision.
+            canon = doc.get("name_canonical") or ""
+            existing = form_map.get(canon)
+            if not existing or (doc.get("games") or 0) > (existing.get("games") or 0):
+                form_map[canon] = doc
+    except Exception:
+        return picks
+
+    for p in picks:
+        canon = pick_names.get(p.get("id") or p.get("_id") or "")
+        if not canon:
+            continue
+        doc = form_map.get(canon)
+        if not doc:
+            continue
+        label = doc.get("form_label") or "NEUTRAL"
+        lift_pp = 0.0
+        if label == "HOT":
+            lift_pp = FORM_LIFT_HOT * 100.0   # +6.0 pp
+        elif label == "COLD":
+            lift_pp = FORM_LIFT_COLD * 100.0  # -6.0 pp
+        p["understat_form"] = {
+            "label":         label,
+            "score":         doc.get("form_score"),
+            "lift_pp":       round(lift_pp, 2),
+            "player_name":   doc.get("player_name"),
+            "team":          doc.get("team"),
+            "league":        doc.get("league"),
+            "goals":         doc.get("goals"),
+            "games":         doc.get("games"),
+            "xg":            doc.get("xg"),
+            "npxg_per_90":   doc.get("npxg_per_90"),
+            "goals_over_xg": doc.get("goals_over_xg"),
+        }
+    return picks
+
+
 def _filter_in_play_window(picks: list[dict]) -> list[dict]:
     """Drop picks whose game has already started.
 
@@ -1780,6 +1894,7 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 if not league and sport and sport.lower() in ("soccer", "tennis"):
                     picks = _interleave_by_league(picks, top_n=20, max_per_round=1)
     picks = await _decorate_with_player_form(picks)
+    picks = await _decorate_with_understat_form(picks)
     return {"picks": _canonicalize_picks(picks)}
 
 
@@ -2982,6 +3097,103 @@ async def picks_probability(
     return unified_probability_report(pick)
 
 
+@api.get("/picks/{pick_id}/player-form")
+async def pick_player_form(
+    pick_id: str,
+    user: Annotated[UserPublic, Depends(current_user)],
+):
+    """Soccer goalscorer-market player form panel.
+
+    Surfaces the Understat-derived per-player season metrics (xG/90,
+    npxG/90, goals over xG, shots/90 + form classification) for the
+    player named in the goalscorer pick. Returns 404 cleanly if:
+      - The pick isn't a soccer goalscorer market
+      - The player isn't yet in the form DB (refresh hasn't run, or
+        player isn't in the Top 5 European leagues)
+
+    Form-based ±6% probability lift derived from this same row is
+    already baked into the pick's lock score; this endpoint is purely
+    for transparency / UI display in the deep-dive pane.
+    """
+    pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
+    if not pick:
+        raise HTTPException(status_code=404, detail="Pick not found")
+    from soccer_player_form import (
+        is_goalscorer_market, get_player_form, compute_form_lift,
+    )
+    if not is_goalscorer_market(pick):
+        raise HTTPException(
+            status_code=404,
+            detail="Player form available for soccer goalscorer markets only",
+        )
+    # Extract player name from the market string (strips suffixes like
+    # "Anytime Goal Scorer"). Goalscorer-pick `selection` is usually
+    # "Yes" / "No" so we rely on the resolver as the primary source.
+    try:
+        from player_intel.resolver import extract_player_from_market
+        player_name = extract_player_from_market(pick.get("market", "") or "") or ""
+    except Exception:
+        player_name = ""
+    if not player_name:
+        # Fallback chain — covers older picks where the player is in
+        # `player`/`bet`/`selection` and the market string has no name.
+        player_name = (
+            pick.get("player") or pick.get("bet")
+            or pick.get("selection") or ""
+        ).strip()
+    if not player_name or player_name.lower() in {"yes", "no", "over", "under"}:
+        raise HTTPException(status_code=404, detail="Pick has no resolvable player name")
+    form_doc = await get_player_form(db, player_name)
+    if not form_doc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No form data for {player_name} (not in Top 5 leagues, "
+                   "or form refresh hasn't completed yet)",
+        )
+    # Strip Mongo ObjectId-equivalent fields and serialise datetimes
+    updated_at = form_doc.get("updated_at")
+    if hasattr(updated_at, "isoformat"):
+        updated_at = updated_at.isoformat()
+    return {
+        "player_name":     form_doc.get("player_name"),
+        "team":            form_doc.get("team"),
+        "league":          form_doc.get("league"),
+        "season":          form_doc.get("season"),
+        "position":        form_doc.get("position"),
+        "games":           form_doc.get("games"),
+        "minutes":         form_doc.get("minutes"),
+        "goals":           form_doc.get("goals"),
+        "xg":              form_doc.get("xg"),
+        "npxg":            form_doc.get("npxg"),
+        "assists":         form_doc.get("assists"),
+        "xa":              form_doc.get("xa"),
+        "shots":           form_doc.get("shots"),
+        "key_passes":      form_doc.get("key_passes"),
+        "xg_per_90":       form_doc.get("xg_per_90"),
+        "npxg_per_90":     form_doc.get("npxg_per_90"),
+        "goals_per_90":    form_doc.get("goals_per_90"),
+        "shots_per_90":    form_doc.get("shots_per_90"),
+        "goals_over_xg":   form_doc.get("goals_over_xg"),
+        "form_label":      form_doc.get("form_label"),
+        "form_score":      form_doc.get("form_score"),
+        "form_lift":       compute_form_lift(form_doc),
+        "updated_at":      updated_at,
+        "source":          form_doc.get("source") or "understat",
+    }
+
+
+@api.post("/admin/refresh-soccer-player-form")
+async def admin_refresh_soccer_player_form(
+    user: Annotated[UserPublic, Depends(current_user)],
+):
+    """Manually kick the Understat scrape job. Used by ops + initial seed.
+
+    Returns the same summary dict the background loop logs every 12h.
+    Guarded by auth — any logged-in user can trigger because the cost
+    is bounded (5 Understat POSTs).
+    """
+    from soccer_player_form import refresh_soccer_player_form
+    return await refresh_soccer_player_form(db)
 
 
 @api.get("/picks/{pick_id}/pitcher-h2h")
@@ -3939,6 +4151,20 @@ async def on_startup():
         logger.info("Soccer pipeline scheduler armed (15-min pregame loop + 24h backfill loop)")
     except Exception as e:
         logger.warning("Soccer pipeline scheduler not armed: %s", e)
+    # ── Soccer Player Form (Understat) ──────────────────────────────
+    # Refreshes per-player season stats (xG, npxG, goals/xG ratio) for
+    # the Top 5 European leagues every 12h. Powers the HOT FORM /
+    # COLD chip on goalscorer cards + the ±6% form lift in the
+    # probability engine.
+    try:
+        from soccer_player_form import soccer_player_form_loop
+        await db.soccer_player_form.create_index("name_canonical")
+        await db.soccer_player_form.create_index([("league", 1), ("season", 1)])
+        await db.soccer_player_form.create_index([("updated_at", -1)])
+        asyncio.create_task(soccer_player_form_loop(db))
+        logger.info("Soccer Player Form (Understat) armed (12h loop, Top 5 leagues)")
+    except Exception as e:
+        logger.warning("Soccer Player Form scheduler not armed: %s", e)
     # ── MLB Lineup Verifier ─────────────────────────────────────────
     # Voids picks for scratched MLB players ~30 min before first pitch.
     try:
