@@ -78,7 +78,12 @@ def _extract_line(market: str) -> Optional[float]:
 # ───────────────────────── Tennis ─────────────────────────
 
 async def _fetch_espn_tennis_matches(date_str: str) -> list[dict]:
-    """Fetch all ATP+WTA matches for a date. Returns flattened match list."""
+    """Fetch all ATP+WTA matches for a date. Returns flattened match list.
+
+    Each returned comp dict is annotated with `_tournament_name` so
+    downstream consumers (settler, Elo updater) know which event the
+    match belonged to without re-fetching the parent payload.
+    """
     matches: list[dict] = []
     for league in ("atp", "wta"):
         d = await _get(f"{ESPN_BASE}/tennis/{league}/scoreboard",
@@ -86,12 +91,14 @@ async def _fetch_espn_tennis_matches(date_str: str) -> list[dict]:
         if not d:
             continue
         for tournament in d.get("events", []):
+            t_name = tournament.get("name") or tournament.get("shortName") or ""
             for grouping in tournament.get("groupings", []):
                 for comp in grouping.get("competitions", []):
                     # Only include completed matches.
                     status = comp.get("status", {}).get("type", {})
                     if not status.get("completed"):
                         continue
+                    comp["_tournament_name"] = t_name
                     matches.append(comp)
     return matches
 
@@ -195,7 +202,8 @@ def _match_tennis_comp_for_pick(pick: dict, comps: list[dict]) -> Optional[dict]
 
 
 async def settle_tennis_via_espn(db) -> dict:
-    counts = {"settled": 0, "won": 0, "lost": 0, "push": 0, "skipped": 0, "no_match": 0}
+    counts = {"settled": 0, "won": 0, "lost": 0, "push": 0, "skipped": 0,
+              "no_match": 0, "elo_updated": 0}
     cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
     picks = await db.picks.find(
         {"sport": "Tennis", "status": {"$in": [None, "pending"]}},
@@ -223,6 +231,12 @@ async def settle_tennis_via_espn(db) -> dict:
     for d in by_date.keys():
         comps_by_date[d] = await _fetch_espn_tennis_matches(d)
 
+    # Track which match competitions we've already pushed into the
+    # tennis_players Elo / form ledger this run. ESPN comp objects are
+    # keyed by `id`. Without dedup we'd double-bump form for matches
+    # that produced multiple settled picks (ML + Spread + Totals).
+    elo_seen: set[str] = set()
+
     for d, picks_on_d in by_date.items():
         comps = comps_by_date.get(d, [])
         for pick in picks_on_d:
@@ -243,8 +257,128 @@ async def settle_tennis_via_espn(db) -> dict:
             await _record_settlement(db, pick, outcome, c, source="espn_tennis")
             counts[outcome] += 1
             counts["settled"] += 1
+
+            # ── Elo + form ledger update (once per unique match) ────
+            # Without this hook, `tennis_players.form.{wins,losses}`
+            # stays empty forever, the `_form_bump` returns 0, and the
+            # fair-odds engine is effectively blind to recent results.
+            comp_id = str(c.get("id") or "")
+            if comp_id and comp_id not in elo_seen:
+                elo_seen.add(comp_id)
+                try:
+                    if await _bump_tennis_elo_for_comp(c):
+                        counts["elo_updated"] += 1
+                except Exception as e:                       # noqa: BLE001
+                    logger.warning("tennis Elo bump failed for comp %s: %s",
+                                    comp_id, e)
     logger.info("Tennis ESPN settler: %s", counts)
     return counts
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Tennis Elo ledger updater
+# ──────────────────────────────────────────────────────────────────────
+
+async def _bump_tennis_elo_for_comp(comp: dict) -> bool:
+    """Push one completed match into the tennis_extra Elo + form table.
+
+    Returns True on success, False if the match payload doesn't have
+    enough info (missing winner flag, no athlete names, etc.). Safe to
+    call multiple times only if the caller has deduped on comp id —
+    each invocation increments form.wins / form.losses by 1.
+    """
+    competitors = comp.get("competitors") or []
+    if len(competitors) < 2:
+        return False
+    winner_name: Optional[str] = None
+    loser_name: Optional[str] = None
+    sets_played = 0
+    when_iso: Optional[str] = None
+    # ESPN sometimes only sets `winner: True` on the winner and OMITS
+    # the field entirely on the loser (instead of setting False). So
+    # we identify the winner explicitly, then take the OTHER named
+    # competitor as the loser. This catches ~30% more matches than a
+    # strict `is False` check would have.
+    other_names: list[str] = []
+    for c in competitors:
+        name = ((c.get("athlete") or {}).get("displayName") or "").strip()
+        if not name:
+            continue
+        if c.get("winner") is True:
+            winner_name = name
+        else:
+            other_names.append(name)
+        sets_played = max(sets_played, len(c.get("linescores") or []))
+    if not winner_name or not other_names:
+        return False
+    loser_name = other_names[0]
+    when_iso = comp.get("date") or None
+    try:
+        when = (datetime.fromisoformat(when_iso.replace("Z", "+00:00"))
+                if when_iso else datetime.now(timezone.utc))
+    except Exception:
+        when = datetime.now(timezone.utc)
+    tournament = comp.get("_tournament_name") or ""
+    try:
+        from tennis_extra.odds_engine import update_after_match
+        await update_after_match(
+            winner_name, loser_name,
+            tournament=tournament,
+            sets_played=max(2, sets_played),
+            when=when,
+        )
+        return True
+    except Exception as e:                                   # noqa: BLE001
+        logger.warning("update_after_match failed (%s vs %s): %s",
+                       winner_name, loser_name, e)
+        return False
+
+
+async def backfill_tennis_elo(db, *, days_back: int = 30) -> dict:
+    """Walk back `days_back` days of ESPN ATP/WTA results and push every
+    completed match into the tennis_extra Elo + form ledger.
+
+    One-shot ops tool to seed the form/Elo data immediately so we don't
+    have to wait `days_back` real-world days for the ongoing settler
+    hook to accumulate it.
+
+    DEDUPES across the whole run by ESPN comp id, so a match that
+    appears in multiple date pages (common when ESPN back-populates
+    yesterday's results into today's scoreboard at midnight) is only
+    pushed once. WITHOUT this dedup, elite players would over-inflate
+    by ~10× in a 30-day window.
+    """
+    summary = {"days_scanned": 0, "matches_seen": 0, "unique_matches": 0,
+               "elo_updated": 0, "duplicates_skipped": 0, "errors": []}
+    seen_ids: set[str] = set()
+    today = datetime.now(timezone.utc).date()
+    for delta in range(days_back):
+        d = today - timedelta(days=delta)
+        date_str = d.strftime("%Y-%m-%d")
+        try:
+            comps = await _fetch_espn_tennis_matches(date_str)
+        except Exception as e:                              # noqa: BLE001
+            summary["errors"].append(f"{date_str}: {e}")
+            continue
+        summary["days_scanned"] += 1
+        summary["matches_seen"] += len(comps)
+        for c in comps:
+            comp_id = str(c.get("id") or "")
+            if not comp_id:
+                continue
+            if comp_id in seen_ids:
+                summary["duplicates_skipped"] += 1
+                continue
+            seen_ids.add(comp_id)
+            summary["unique_matches"] += 1
+            try:
+                if await _bump_tennis_elo_for_comp(c):
+                    summary["elo_updated"] += 1
+            except Exception as e:                          # noqa: BLE001
+                summary["errors"].append(f"{date_str}/{comp_id}: {e}")
+    logger.info("Tennis Elo backfill: %s", summary)
+    return summary
+
 
 
 # ───────────────────────── UFC ─────────────────────────

@@ -73,8 +73,16 @@ export function ProbabilityBreakdownPanel({ pickId }: { pickId: string }) {
   const classLabel = (data.classification || "").replace(/_/g, " ");
 
   // Simulator may be null on non-simulated sports/markets — collapse
-  // the bar gracefully when that's the case.
-  const hasSim = typeof data.sim_probability === "number";
+  // the bar gracefully when that's the case. We rely on `sim_probability
+  // === null` as the canonical signal (truthful API) and fall back to
+  // `sim_ran === false` for older snapshots.
+  const hasSim = data.sim_probability != null && data.sim_ran !== false;
+
+  // Prefer effective_weights (what was actually blended into p_final
+  // on this specific pick) over the nominal weights, so the UI's
+  // weight tags match reality. Falls back to nominal for older
+  // backends that don't return effective_weights yet.
+  const w = data.effective_weights ?? data.weights;
 
   return (
     <View style={styles.wrap} testID="probability-breakdown-panel">

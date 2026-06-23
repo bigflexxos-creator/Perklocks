@@ -284,21 +284,36 @@ def unified_probability_report(pick: dict) -> dict:
     p_final = ensemble(p_v1, p_v2, p_sim)
     p_calibrated = calibrate(p_final)
 
-    # ── Stability (cross-model consensus) ──────────────────────────
-    # If the simulator ran, prefer its CI-derived stability. If not,
-    # fall back to the v1/v2 agreement so MLB spread / no-sim markets
-    # don't get spuriously stuck at 0.0 just because no Monte Carlo
-    # was wired up. Spread of |p_v1 − p_v2| ≤ 0.05 → stability ≈ 0.90.
+    # ── Did the simulator actually run? ────────────────────────────
+    # `compute_sim_probability` returns `p_v2` as a stand-in when the
+    # simulator wasn't wired for this market (e.g. MLB ±1.5 spread,
+    # most non-MLB markets pre-Phase B). That stand-in keeps the
+    # ensemble math working, but it would be MISLEADING to surface a
+    # confident "Simulator: 64.6%" reading in the UI when no Monte
+    # Carlo actually executed. Track sim_ran so we can:
+    #   1) Return `sim_probability: null` to clients (truthful API).
+    #   2) Recompute effective weights as (0.30 v1 + 0.70 v2 + 0 sim)
+    #      so the UI's weight tags match what was actually blended.
+    #   3) Drop variance to null too (a 0.0 variance reads as "very
+    #      confident" but actually means "we never simulated").
     sim_p_raw = pick.get("sim_win_probability")
     sim_ran = isinstance(sim_p_raw, (int, float)) and sim_p_raw > 0
     if sim_ran:
         stability = sim_stability
+        effective_weights = {"v1": W_V1, "v2": W_V2, "sim": W_SIM}
     else:
         # Convert v1↔v2 disagreement into a [0..1] stability score.
         # Coefficient 4.0 maps a 25pp spread to stability=0 (max
         # disagreement), 0pp spread to stability=1.0.
         spread = abs(p_v1 - p_v2)
         stability = max(0.0, min(1.0, 1.0 - 4.0 * spread))
+        # When sim didn't run, p_sim==p_v2 so the 25% sim weight was
+        # effectively absorbed into v2. Reflect that for the UI.
+        effective_weights = {
+            "v1":  W_V1,
+            "v2":  round(W_V2 + W_SIM, 2),
+            "sim": 0.0,
+        }
 
     book_odds = pick.get("book_odds")
     implied = implied_probability_from_odds(book_odds)
@@ -308,16 +323,27 @@ def unified_probability_report(pick: dict) -> dict:
     return {
         "p_v1": round(p_v1, 4),
         "p_v2": round(p_v2, 4),
-        "sim_probability": round(p_sim, 4),
+        # When the simulator didn't run for this market, return None so
+        # clients can render an honest "not run" UI instead of a fake
+        # confident reading. Internally `p_sim` is still the v2 stand-in
+        # used for blending, but that's an implementation detail.
+        "sim_probability": round(p_sim, 4) if sim_ran else None,
         "p_final": round(p_final, 4),
         "p_calibrated": round(p_calibrated, 4),
         "edge": round(edge, 4),
         "classification": cls,
-        "simulator_variance": round(sim_variance, 6),
+        # Variance is null when sim didn't run (a 0.0 reading would be
+        # indistinguishable from "extremely confident sim").
+        "simulator_variance": round(sim_variance, 6) if sim_ran else None,
+        "sim_ran": sim_ran,
         # Aux fields (not in the strict spec, but UI-useful)
         "stability_score": round(stability, 4),
         "implied_probability": round(implied, 4),
+        # Nominal weights from spec — held constant for parity with
+        # historical reports. `effective_weights` reflects what was
+        # actually blended into p_final on this specific pick.
         "weights": {"v1": W_V1, "v2": W_V2, "sim": W_SIM},
+        "effective_weights": effective_weights,
         "calibration": {
             "fit_sample_size": _calib_get_curve().fit_sample_size,
             "last_fit_at": _calib_get_curve().last_fit_at,

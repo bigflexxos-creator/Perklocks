@@ -353,9 +353,11 @@ export const api = {
       edge: number;
       classification: string;
       simulator_variance: number | null;
+      sim_ran?: boolean;
       stability_score: number | null;
       implied_probability: number;
       weights: { v1: number; v2: number; sim: number };
+      effective_weights?: { v1: number; v2: number; sim: number };
       calibration: { fit_sample_size: number; last_fit_at: string | null };
     }>(`/picks/${pickId}/probability`),
   version: () =>
