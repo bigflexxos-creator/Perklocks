@@ -3251,6 +3251,28 @@ async def admin_refresh_soccer_player_form(
     return await refresh_soccer_player_form(db)
 
 
+@api.post("/admin/backfill-tennis-elo")
+async def admin_backfill_tennis_elo(
+    user: Annotated[UserPublic, Depends(current_user)],
+    days_back: int = 30,
+):
+    """One-shot ops tool to seed the tennis_extra Elo + form ledger
+    from the last `days_back` days of ESPN ATP/WTA results.
+
+    Without this, a freshly-deployed pod would have to wait for
+    `days_back` real-world days of settlement to accumulate any form
+    data. Calling this endpoint after deploy populates the ledger
+    immediately.
+
+    SAFE TO RE-RUN ONCE on a fresh DB. Re-running on a populated DB
+    will double-count form W/L (since `update_after_match` is
+    `$inc`-based) — only re-trigger if you've reset the
+    `tennis_players` collection first.
+    """
+    from espn_settlement import backfill_tennis_elo
+    return await backfill_tennis_elo(db, days_back=max(1, min(60, days_back)))
+
+
 @api.get("/picks/{pick_id}/pitcher-h2h")
 async def pick_pitcher_h2h(
     pick_id: str,
