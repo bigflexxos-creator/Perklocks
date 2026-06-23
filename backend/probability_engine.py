@@ -279,10 +279,26 @@ def unified_probability_report(pick: dict) -> dict:
     """
     p_v1 = compute_v1_probability(pick)
     p_v2 = compute_v2_probability(pick)
-    p_sim, sim_variance, stability = compute_sim_probability(pick)
+    p_sim, sim_variance, sim_stability = compute_sim_probability(pick)
 
     p_final = ensemble(p_v1, p_v2, p_sim)
     p_calibrated = calibrate(p_final)
+
+    # ── Stability (cross-model consensus) ──────────────────────────
+    # If the simulator ran, prefer its CI-derived stability. If not,
+    # fall back to the v1/v2 agreement so MLB spread / no-sim markets
+    # don't get spuriously stuck at 0.0 just because no Monte Carlo
+    # was wired up. Spread of |p_v1 − p_v2| ≤ 0.05 → stability ≈ 0.90.
+    sim_p_raw = pick.get("sim_win_probability")
+    sim_ran = isinstance(sim_p_raw, (int, float)) and sim_p_raw > 0
+    if sim_ran:
+        stability = sim_stability
+    else:
+        # Convert v1↔v2 disagreement into a [0..1] stability score.
+        # Coefficient 4.0 maps a 25pp spread to stability=0 (max
+        # disagreement), 0pp spread to stability=1.0.
+        spread = abs(p_v1 - p_v2)
+        stability = max(0.0, min(1.0, 1.0 - 4.0 * spread))
 
     book_odds = pick.get("book_odds")
     implied = implied_probability_from_odds(book_odds)

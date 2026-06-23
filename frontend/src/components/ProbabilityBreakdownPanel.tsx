@@ -61,10 +61,16 @@ export function ProbabilityBreakdownPanel({ pickId }: { pickId: string }) {
     : "#FCA5A5";
 
   const classColor =
-    data.classification === "PREMIUM" ? "#86EFAC"
-    : data.classification === "GOOD"   ? COLORS.voltBlue
-    : data.classification === "FADE"   ? "#FCA5A5"
-    : COLORS.textPrimary;
+    data.classification === "LOCK_99"  ? "#FFD700"        // gold for elite
+    : data.classification === "PREMIUM" ? "#86EFAC"        // green
+    : data.classification === "GOOD"    ? COLORS.voltBlue  // blue
+    : data.classification === "NORMAL"  ? COLORS.textPrimary
+    : data.classification === "FADE"    ? "#FCA5A5"        // red
+    : COLORS.textPrimary;                                  // unknown — neutral
+
+  // Pretty-print enum tokens like LOCK_99 → "LOCK 99" so the pill
+  // never renders raw snake_case from the backend.
+  const classLabel = (data.classification || "").replace(/_/g, " ");
 
   // Simulator may be null on non-simulated sports/markets — collapse
   // the bar gracefully when that's the case.
@@ -82,7 +88,7 @@ export function ProbabilityBreakdownPanel({ pickId }: { pickId: string }) {
         </View>
         <View style={[styles.classPill, { borderColor: classColor + "55", backgroundColor: classColor + "1A" }]}>
           <Text style={[styles.classText, { color: classColor }]}>
-            {data.classification}
+            {classLabel}
           </Text>
         </View>
       </View>
