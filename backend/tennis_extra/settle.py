@@ -108,8 +108,10 @@ def _parse_winners(html: str) -> list[dict]:
 
 async def settle_tennis_extra(db, *, days_back: int = 3) -> dict:
     """Walk back `days_back` days and settle any pending `tennis_extra` picks."""
-    today = datetime.now(timezone.utc).date()
+    now = datetime.now(timezone.utc)
+    today = now.date()
     won = lost = pushed = unmatched = 0
+    skipped_future = 0      # ← new: count picks left alone because the match hasn't finished
     for delta in range(0, days_back + 1):
         date_str = (today - timedelta(days=delta)).strftime("%Y-%m-%d")
         html = await _fetch_results_html(date_str)
@@ -129,6 +131,26 @@ async def settle_tennis_extra(db, *, days_back: int = 3) -> dict:
             "pick_date": date_str,
         })
         async for p in cursor:
+            # ── Guard: don't settle picks whose match hasn't finished ─
+            # The tennis_extra pipeline writes picks for TOMORROW with
+            # today's pick_date (so they appear on today's slate). Prior
+            # to this guard, those picks would get name-matched against
+            # today's completed results — declaring tomorrow's matches
+            # WON based on a different match today, by the same player.
+            # Wait at least 2h after start (longest singles ~3h, but
+            # most finish in 60-120 min).
+            et_raw = p.get("event_time") or ""
+            if et_raw:
+                try:
+                    et_clean = et_raw.replace("Z", "+00:00") if et_raw.endswith("Z") else et_raw
+                    match_start = datetime.fromisoformat(et_clean)
+                    if match_start.tzinfo is None:
+                        match_start = match_start.replace(tzinfo=timezone.utc)
+                    if match_start + timedelta(hours=2) > now:
+                        skipped_future += 1
+                        continue
+                except Exception:
+                    pass  # bad event_time — fall through to name match
             league = (p.get("league") or "").lower()
             results = idx.get(league)
             if not results:
@@ -141,18 +163,29 @@ async def settle_tennis_extra(db, *, days_back: int = 3) -> dict:
                     match = r
                     break
             if not match:
-                # Try last-name fallback.
-                sel_last = sel_norm.split()[0] if sel_norm else ""
-                for r in results:
-                    if sel_last and (sel_last in r["winner_norm"]
-                                       or sel_last in r["loser_norm"]):
-                        match = r
-                        break
+                # Token-overlap fallback — handles "Draper J." (sel) vs
+                # "Jack Draper" (Wimbledon result) by intersecting the
+                # tokenised names. We require BOTH a token match AND
+                # uniqueness — i.e. only one player on the day has that
+                # last name — to avoid the catastrophic Diallo / Quinn
+                # / Dimitrov tomorrow-vs-today collisions that flagged
+                # this bug.
+                sel_tokens = {t for t in sel_norm.split() if len(t) >= 3}
+                if sel_tokens:
+                    candidates = []
+                    for r in results:
+                        w_tokens = set(r["winner_norm"].split())
+                        l_tokens = set(r["loser_norm"].split())
+                        if sel_tokens & w_tokens or sel_tokens & l_tokens:
+                            candidates.append(r)
+                    if len(candidates) == 1:
+                        match = candidates[0]
             if not match:
                 unmatched += 1
                 continue
-            won_match = sel_norm in match["winner_norm"] or (
-                sel_norm and sel_norm.split()[0] in match["winner_norm"]
+            won_match = sel_norm in match["winner_norm"] or bool(
+                {t for t in sel_norm.split() if len(t) >= 3}
+                & set(match["winner_norm"].split())
             )
             status = "won" if won_match else "lost"
             await db.picks.update_one(
@@ -168,7 +201,8 @@ async def settle_tennis_extra(db, *, days_back: int = 3) -> dict:
                 won += 1
             else:
                 lost += 1
-    return {"won": won, "lost": lost, "pushed": pushed, "unmatched": unmatched}
+    return {"won": won, "lost": lost, "pushed": pushed,
+            "unmatched": unmatched, "skipped_future": skipped_future}
 
 
 async def tennis_extra_settler_loop(db) -> None:
