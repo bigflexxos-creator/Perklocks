@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.23-unified-probability-engine"
+DATA_VERSION = "2026.06.23-probability-canonical"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -165,6 +165,25 @@ def _canonicalize_lock_score(pick: dict) -> dict:
     # infrastructure stays in /app/backend/lock_calibration.py (curve fit,
     # analytics endpoint, auto-recalibrate) so the Confidence Calibration
     # analytics view still surfaces Expected vs Actual deltas for tuning.
+    #
+    # ── Unified Probability Engine attachment (iter37, 2026-06-23) ─────
+    # User: "Primary probability engine + optional transparency layer
+    # (same source of truth) — keeps Bieber-style 93+ locks consistent
+    # instead of splitting logic."
+    # We attach the engine's full breakdown to EVERY pick payload at
+    # serialisation time. The block under `pick["probability"]` is the
+    # canonical source for v1/v2/sim probabilities, p_final, p_calibrated,
+    # edge, and LOCK_99/PREMIUM/CHALK classification. Existing
+    # `lock_score` field is left untouched so Bieber still displays 93+
+    # — the engine merely sits underneath as the authoritative truth any
+    # consumer (frontend pick detail, parlay, analytics) can read without
+    # divergence. Same engine call drives /api/picks/{id}/probability
+    # and the inline block here, so they can never disagree.
+    try:
+        from probability_engine import unified_probability_report
+        pick["probability"] = unified_probability_report(pick)
+    except Exception as e:
+        logger.debug("probability_engine attach skipped: %s", e)
     return pick
 
 
@@ -2927,10 +2946,12 @@ async def picks_probability(
 ):
     """Unified Probability Engine breakdown for a single pick.
 
-    Returns v1 / v2 / sim probabilities, ensembled p_final, the
-    isotonic-calibrated p_calibrated, the canonical clamped edge,
-    and LOCK_99 / PREMIUM / NORMAL / CHALK classification. Additive —
-    does NOT mutate the pick's stored lock_score / edge_percent.
+    Same source of truth as the inline `pick.probability` block
+    attached to every pick by `_canonicalize_lock_score` — calling
+    this endpoint is functionally identical to reading
+    `/api/picks/today` and inspecting that pick's `probability` field.
+    Provided as a standalone endpoint for clients that only want the
+    breakdown without re-fetching the full pick payload.
     """
     pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
     if not pick:
