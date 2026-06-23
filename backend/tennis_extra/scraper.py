@@ -12,7 +12,7 @@ import asyncio
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta as _td
 from typing import Optional
 
 import httpx
@@ -249,10 +249,19 @@ def _parse_html(html: str, now: datetime) -> list[dict]:
 
 
 def _resolve_commence_time(time_str: Optional[str], now: datetime) -> str:
-    """TennisExplorer times appear as 'HH:MM' in CEST (their server clock,
-    Europe/Prague). Convert to UTC ISO 8601 for today's date.
+    """TennisExplorer publishes match times in **Europe/Prague** local time
+    (their server clock). The site shows CEST (UTC+2) in summer and CET
+    (UTC+1) in winter — DST switches the last Sunday of March / October.
 
-    If parsing fails, fall back to "today at noon UTC".
+    Previously this function hard-coded a UTC+2 offset, which silently
+    drifted by 1 hour every winter and produced wrong commence_time
+    stamps for ~5 months a year. We now use `zoneinfo("Europe/Prague")`
+    so DST transitions are handled by the standard tzdata, and we also
+    interpret `now` correctly even when the host clock isn't UTC (the
+    old `dt.fromtimestamp(dt.timestamp() - 2*3600)` path was timezone-
+    sensitive in subtle ways).
+
+    Fallback: "today at noon UTC" if parsing fails.
     """
     if not time_str:
         return now.replace(hour=12, minute=0, second=0, microsecond=0).isoformat()
@@ -260,10 +269,25 @@ def _resolve_commence_time(time_str: Optional[str], now: datetime) -> str:
     if not m:
         return now.replace(hour=12, minute=0, second=0, microsecond=0).isoformat()
     hh, mm = int(m.group(1)), int(m.group(2))
-    # CEST is UTC+2 (summer). Subtract 2h to get UTC.
-    dt = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-    dt = dt.fromtimestamp(dt.timestamp() - 2 * 3600, tz=timezone.utc)
-    return dt.isoformat()
+
+    # `now` is the date anchor (today or a target future date). We attach
+    # Europe/Prague TZ so the local-time → UTC conversion is DST-aware.
+    try:
+        from zoneinfo import ZoneInfo
+        prague_tz = ZoneInfo("Europe/Prague")
+        local_dt = datetime(
+            now.year, now.month, now.day,
+            hh, mm, 0, 0,
+            tzinfo=prague_tz,
+        )
+        utc_dt = local_dt.astimezone(timezone.utc)
+        return utc_dt.isoformat()
+    except Exception:
+        # Last-resort fallback if the tzdata isn't available on the host.
+        # Approximate CEST (UTC+2) — only used on a misconfigured box.
+        dt_naive = now.replace(hour=hh, minute=mm, second=0, microsecond=0, tzinfo=timezone.utc)
+        utc_dt = dt_naive - _td(hours=2)
+        return utc_dt.isoformat()
 
 
 def _infer_tier(tournament: str) -> str:
