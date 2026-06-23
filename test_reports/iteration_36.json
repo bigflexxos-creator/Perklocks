@@ -1,0 +1,38 @@
+{
+  "summary": "Unified Probability Engine (iter 36) fully validated. All 24 pytest cases pass: /api/picks/{id}/probability returns the complete spec schema (p_v1, p_v2, sim_probability, p_final, p_calibrated, edge, classification, simulator_variance) + aux (stability_score, implied_probability, weights, calibration). Ensemble math is exact (0.30*v1+0.45*v2+0.25*sim → 0.595 for the canonical example). Edge clamped to [-0.15, +0.40] confirmed at both extremes. Classification rules (LOCK_99 / PREMIUM / CHALK / NORMAL) match spec including precedence (PREMIUM beats CHALK label). Bieber-style high-implied pick classifies PREMIUM with negative-but-clamped edge as expected. Static source-code invariants verified: zero v1/v2 subtractions in probability_engine.py and compute_edge is the ONLY edge-defining function in that module. /api/version returns the required data_version stamp '2026.06.23-unified-probability-engine'. Regression clean: /api/picks/today returns 100+ picks, legacy lock_score / edge_percent fields preserved on every pick, tennis edges non-zero, MLB pitcher_h2h still returns 10 rows with full keyset. 404 returned for unknown pick id. No code changes required.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_probability_engine.py",
+    "/app/test_reports/pytest/iter36_probability_engine.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "probability_engine.py is 310 lines, well within the 700-line limit and cleanly layered (3 indep probabilities → ensemble → calibrate → edge → classify).",
+    "Engine is correctly additive — the endpoint reads the pick from DB read-only and returns a derived report; no mutation of stored lock_score / edge_percent.",
+    "ObjectId filter ({'_id': 0}) correctly applied in db.picks.find_one — no serialization risk.",
+    "All weights, thresholds, and clamps are module-level constants (W_V1/V2/SIM, EDGE_MIN/MAX, LOCK_99_*, PREMIUM_PROB, CHALK_IMPLIED) — easy to tune without touching logic.",
+    "implied_probability_from_odds defends against None / 0 odds (defaults to 0.5). Good.",
+    "Minor nit (non-blocking): unified_probability_report calls _calib_get_curve() three times per request (calibrate + 2x for the reported metadata). Could cache the curve handle locally; negligible perf impact since the curve object is already a process-level singleton."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_probability_engine.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (24/24 pytest)",
+    "frontend": "not tested (request was backend-only)"
+  },
+  "seed_data_creation": "None — used existing demo@lockscore.ai account and live /api/picks/today data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Reuse /app/backend/tests/test_probability_engine.py for any future regression on the Unified Probability Engine. Includes both HTTP (live pick) and pure-unit (deterministic math) coverage plus static-source-code invariants (no v1-v2 subtraction, single compute_edge function). If new edge-computing helpers are added to probability_engine.py, the test_compute_edge_is_only_edge_fn assertion will trip — update its allowlist intentionally.",
+  "rca_of_issue": "N/A — no defects found."
+}

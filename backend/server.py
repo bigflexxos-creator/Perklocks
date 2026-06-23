@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.23-tennis-extra-edge-fix"
+DATA_VERSION = "2026.06.23-unified-probability-engine"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -2919,6 +2919,26 @@ async def model_performance(
     if backfill:
         await backfill_metrics(db)
     return await compute_model_performance(db, days=days)
+
+@api.get("/picks/{pick_id}/probability")
+async def picks_probability(
+    pick_id: str,
+    user: Annotated[UserPublic, Depends(current_user)],
+):
+    """Unified Probability Engine breakdown for a single pick.
+
+    Returns v1 / v2 / sim probabilities, ensembled p_final, the
+    isotonic-calibrated p_calibrated, the canonical clamped edge,
+    and LOCK_99 / PREMIUM / NORMAL / CHALK classification. Additive —
+    does NOT mutate the pick's stored lock_score / edge_percent.
+    """
+    pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
+    if not pick:
+        raise HTTPException(status_code=404, detail="Pick not found")
+    from probability_engine import unified_probability_report
+    return unified_probability_report(pick)
+
+
 
 
 @api.get("/picks/{pick_id}/pitcher-h2h")
