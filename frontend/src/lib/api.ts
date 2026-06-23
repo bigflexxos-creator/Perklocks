@@ -148,6 +148,22 @@ export type PickFilters = {
 export type SportMarket = { token: string; label: string };
 export type SportLeague = { name: string; count: number };
 
+// xG Form A/B shadow analytics — one bucket per HOT/COLD/NEUTRAL form label.
+// Returned by `GET /api/analytics/xg-form-shadow`. Rendered on the
+// Analytics screen so the user can monitor whether the ±6pp form lift
+// would have improved hit rate before promoting it from shadow → live.
+export type XGFormBucket = {
+  n:             number;
+  won:           number;
+  lost:          number;
+  hit_rate:      number | null;   // % (won / n × 100)
+  avg_lock:      number | null;   // mean displayed lock_score
+  avg_shadow:    number | null;   // mean shadow lock_score (with lift)
+  brier_live:    number | null;   // mean squared error of live win prob
+  brier_shadow:  number | null;   // mean squared error of shadow win prob
+  delta_hit_pp:  number | null;   // hit_rate − NEUTRAL.hit_rate (pp)
+};
+
 // Parlay Optimizer V1 — Top 3 cards with health grade + reasoning
 export type ParlayCard = {
   label: "SAFE" | "BALANCED" | "AGGRESSIVE";
@@ -332,6 +348,18 @@ export const api = {
       "/version",
       { auth: false },
     ),
+  xgFormShadow: () =>
+    request<{
+      buckets: {
+        HOT:     XGFormBucket;
+        COLD:    XGFormBucket;
+        NEUTRAL: XGFormBucket;
+      };
+      promote_ready:   boolean;
+      promotion_rule:  string;
+      shadow_mode:     boolean;
+      generated_at:    string;
+    }>("/analytics/xg-form-shadow"),
   picksToday: (sport?: string, lineType?: LineType, sortKey?: SortKey, filters?: PickFilters, direction?: SortDirection) => {
     const qs = new URLSearchParams();
     if (sport && sport !== "All") qs.set("sport", sport);

@@ -9,6 +9,7 @@ import { router, Stack } from "expo-router";
 
 import { api, AnalyticsRow } from "@/src/lib/api";
 import { COLORS } from "@/src/theme";
+import { XGFormShadowCard } from "@/src/components/XGFormShadowCard";
 
 type Performance = Awaited<ReturnType<typeof api.modelPerformance>>;
 type Learned = Awaited<ReturnType<typeof api.learnedWeights>>;
@@ -188,6 +189,12 @@ export default function AnalyticsScreen() {
             </Text>
           </View>
         ))}
+
+        {/* xG Form ±6pp lift — Live A/B Shadow card. Renders even when
+            no goalscorer picks have settled yet (shows the seeding
+            progress towards the n=30 promotion threshold). Auto-hides
+            on network failures so it can never block the screen. */}
+        <XGFormShadowCard />
 
         {/* ── What the App Has Learned ── */}
         {learned && (learned.buckets?.length ?? 0) > 0 && (
