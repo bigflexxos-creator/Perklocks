@@ -5,7 +5,7 @@ import uuid
 import asyncio
 from datetime import datetime, timezone, timedelta, time as dtime
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, status
@@ -325,6 +325,7 @@ async def _decorate_with_understat_form(picks: list[dict]) -> list[dict]:
     except Exception:
         return picks
 
+    bulk_ops: list = []                                   # type: ignore[type-arg]
     for p in picks:
         canon = pick_names.get(p.get("id") or p.get("_id") or "")
         if not canon:
@@ -338,7 +339,26 @@ async def _decorate_with_understat_form(picks: list[dict]) -> list[dict]:
             lift_pp = FORM_LIFT_HOT * 100.0   # +6.0 pp
         elif label == "COLD":
             lift_pp = FORM_LIFT_COLD * 100.0  # -6.0 pp
-        p["understat_form"] = {
+
+        # ── Shadow A/B values ───────────────────────────────────────
+        # shadow_* fields show what the pick's lock_score / win prob
+        # WOULD be if the ±6pp form lift were applied live. The user-
+        # facing lock_score stays untouched until we have settlement
+        # data validating the lift correlates with hit rate. The
+        # analytics endpoint reads `understat_form.label` joined with
+        # `status` (won/lost) to compute hit rates per form bucket.
+        live_lock = p.get("lock_score")
+        if isinstance(live_lock, (int, float)):
+            shadow_lock = max(0.0, min(100.0, float(live_lock) + lift_pp))
+        else:
+            shadow_lock = None
+        live_wp = p.get("win_probability")
+        if isinstance(live_wp, (int, float)):
+            shadow_wp = max(1.0, min(99.0, float(live_wp) + lift_pp))
+        else:
+            shadow_wp = None
+
+        block = {
             "label":         label,
             "score":         doc.get("form_score"),
             "lift_pp":       round(lift_pp, 2),
@@ -350,7 +370,42 @@ async def _decorate_with_understat_form(picks: list[dict]) -> list[dict]:
             "xg":            doc.get("xg"),
             "npxg_per_90":   doc.get("npxg_per_90"),
             "goals_over_xg": doc.get("goals_over_xg"),
+            # Shadow A/B
+            "shadow_lock_score":      round(shadow_lock, 2) if shadow_lock is not None else None,
+            "shadow_win_probability": round(shadow_wp, 2) if shadow_wp is not None else None,
+            "shadow_mode":            True,
+            # Frozen-at-decorate-time so we can compute hit-rate later
+            "snapshot_taken_at":      datetime.now(timezone.utc).isoformat(),
         }
+        p["understat_form"] = block
+        # Persist on the pick document so settlement freezes the form
+        # snapshot for analytics. We dedupe by checking equality on
+        # label+score+lift — only re-write when something materially
+        # changed (player traded teams, slumped, etc.). This caps
+        # writes at <20 per /api/picks/today call.
+        existing = p.get("_persisted_understat_form")
+        if (not existing
+                or existing.get("label") != label
+                or existing.get("score") != block["score"]
+                or existing.get("lift_pp") != block["lift_pp"]):
+            pick_id = p.get("id") or p.get("_id")
+            if pick_id:
+                bulk_ops.append((pick_id, block))
+
+    if bulk_ops:
+        try:
+            from pymongo import UpdateOne
+            ops = [
+                UpdateOne(
+                    {"id": pid},
+                    {"$set": {"understat_form": blk}},
+                ) for pid, blk in bulk_ops
+            ]
+            await db.picks.bulk_write(ops, ordered=False)
+        except Exception:
+            # Pure additive metadata — never break /picks/today.
+            pass
+
     return picks
 
 
@@ -3444,6 +3499,129 @@ async def analytics_calibration_refit(user: Annotated[UserPublic, Depends(curren
     100-pick cadence)."""
     from lock_calibration import fit_from_db
     return await fit_from_db(db)
+
+
+@api.get("/analytics/xg-form-shadow")
+async def analytics_xg_form_shadow(
+    user: Annotated[UserPublic, Depends(current_user)],
+):
+    """xG Form A/B shadow report — does HOT form actually correlate
+    with higher hit rate?
+
+    Aggregates every settled soccer goalscorer pick that carries an
+    `understat_form` snapshot. Groups by `understat_form.label` and
+    reports:
+
+        n             : settled-sample size in the bucket
+        won / lost    : raw outcome counts
+        hit_rate      : empirical hit rate (won / settled)
+        avg_lock      : average displayed lock_score in the bucket
+        avg_shadow    : average shadow_lock_score (would-be lock with lift)
+        brier_live    : Brier score for live win_probability vs outcome
+        brier_shadow  : Brier score for shadow win_probability vs outcome
+        delta_hit     : observed hit-rate vs the NEUTRAL baseline (in pp)
+
+    The decision rule for promoting the lift from shadow → live is
+    SIMPLE: HOT.delta_hit >= +5pp AND COLD.delta_hit <= -5pp AND
+    n_HOT >= 30 AND n_COLD >= 30. Anything less is too thin a sample
+    to risk live deployment.
+    """
+    cur = db.picks.find(
+        {
+            "sport":           "Soccer",
+            "understat_form":  {"$exists": True},
+            "status":          {"$in": ["won", "lost"]},
+        },
+        {
+            "_id": 0,
+            "lock_score": 1,
+            "win_probability": 1,
+            "status": 1,
+            "understat_form.label": 1,
+            "understat_form.shadow_lock_score": 1,
+            "understat_form.shadow_win_probability": 1,
+        },
+    )
+
+    buckets: dict[str, dict] = {
+        "HOT":     {"n": 0, "won": 0, "lock_sum": 0.0, "shadow_sum": 0.0,
+                    "brier_live": 0.0, "brier_shadow": 0.0},
+        "COLD":    {"n": 0, "won": 0, "lock_sum": 0.0, "shadow_sum": 0.0,
+                    "brier_live": 0.0, "brier_shadow": 0.0},
+        "NEUTRAL": {"n": 0, "won": 0, "lock_sum": 0.0, "shadow_sum": 0.0,
+                    "brier_live": 0.0, "brier_shadow": 0.0},
+    }
+
+    async for pick in cur:
+        form = pick.get("understat_form") or {}
+        label = form.get("label") or "NEUTRAL"
+        if label not in buckets:
+            continue
+        b = buckets[label]
+        won = 1 if pick.get("status") == "won" else 0
+        b["n"]   += 1
+        b["won"] += won
+        lock_score = pick.get("lock_score") or 0
+        shadow_lock = form.get("shadow_lock_score") or lock_score
+        b["lock_sum"]   += float(lock_score)
+        b["shadow_sum"] += float(shadow_lock)
+        # Brier scores — quadratic loss between predicted prob and actual
+        wp_live   = float(pick.get("win_probability") or 0) / 100.0
+        wp_shadow = float(form.get("shadow_win_probability") or pick.get("win_probability") or 0) / 100.0
+        b["brier_live"]   += (wp_live   - won) ** 2
+        b["brier_shadow"] += (wp_shadow - won) ** 2
+
+    # Final aggregation + delta_hit baseline against NEUTRAL.
+    out: dict[str, Any] = {}
+    base_hit = 0.0
+    if buckets["NEUTRAL"]["n"] > 0:
+        base_hit = buckets["NEUTRAL"]["won"] / buckets["NEUTRAL"]["n"]
+    for label, b in buckets.items():
+        n = b["n"]
+        if n > 0:
+            hit_rate = b["won"] / n
+            out[label] = {
+                "n":             n,
+                "won":           b["won"],
+                "lost":          n - b["won"],
+                "hit_rate":      round(hit_rate * 100, 2),
+                "avg_lock":      round(b["lock_sum"]   / n, 2),
+                "avg_shadow":    round(b["shadow_sum"] / n, 2),
+                "brier_live":    round(b["brier_live"]   / n, 4),
+                "brier_shadow":  round(b["brier_shadow"] / n, 4),
+                "delta_hit_pp":  round((hit_rate - base_hit) * 100, 2),
+            }
+        else:
+            out[label] = {
+                "n":             0,
+                "won":           0,
+                "lost":          0,
+                "hit_rate":      None,
+                "avg_lock":      None,
+                "avg_shadow":    None,
+                "brier_live":    None,
+                "brier_shadow":  None,
+                "delta_hit_pp":  None,
+            }
+
+    # Decision flag — should the lift be promoted from shadow → live?
+    hot   = out["HOT"]
+    cold  = out["COLD"]
+    promote_ready = bool(
+        hot.get("n", 0) >= 30 and cold.get("n", 0) >= 30
+        and (hot.get("delta_hit_pp") or 0)  >= 5.0
+        and (cold.get("delta_hit_pp") or 0) <= -5.0
+    )
+
+    return {
+        "buckets":       out,
+        "promote_ready": promote_ready,
+        "promotion_rule": (
+            "HOT.delta ≥ +5pp AND COLD.delta ≤ −5pp AND n ≥ 30 in both"
+        ),
+        "shadow_mode":   True,
+        "generated_at":  datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @api.post("/analytics/buckets/recompute")

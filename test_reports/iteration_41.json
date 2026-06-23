@@ -1,0 +1,25 @@
+{
+  "summary": "Frontend-only validation of xG Form Shadow A/B card on Analytics screen. All 5 acceptance criteria pass: (1) XGFormShadowCard renders with kicker 'xG FORM · LIVE A/B SHADOW', title '±6pp Lift Validation', hint, and SHADOW MODE pill (READY TO PROMOTE absent as expected). (2) Seeding-phase block with hourglass + 'Awaiting settled goalscorer picks' copy renders; progress bars show 🔥 HOT 0/30 and ❄️ COLD 0/30; italic rule text reads 'HOT.delta ≥ +5pp AND COLD.delta ≤ −5pp AND n ≥ 30 in both'; Refresh button present. (3) Refresh button works — re-fetch keeps SHADOW MODE + 0/30 state. (4) Goalscorer deep-dive (Harry Kane First Goal Scorer) still renders XGFormPanel (testID xg-form-panel) with HOT chip and '+6pp lift' badge — no regression on per-pick form_lift. (5) Confidence Calibration table, What the App Has Learned section, and ROI hero metrics all render below/above the new card without errors. Two minor console warnings observed: 'shadow*' style props deprecated (pre-existing, not introduced by this change).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "shadow* style props", "issue": "Console warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' This is pre-existing (not in XGFormShadowCard which uses only borderWidth/backgroundColor). Reference: emitted on Analytics screen load before XGFormShadowCard mounts."}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "XGFormShadowCard auto-hides on error/loading silently — confirmed working as designed and does not block Analytics screen.",
+    "Code quality of XGFormShadowCard.tsx is clean: env-driven api call, proper testID, StyleSheet.create, all text wrapped in <Text>, no _id leakage."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (not retested — main agent curl-verified)", "frontend": "100%"},
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "XGFormShadowCard is mounted on /analytics directly under the 'Confidence Calibration' table. Currently in seeding phase (HOT=0, COLD=0, NEUTRAL=0 settled). Status pill will only flip to 'READY TO PROMOTE' once HOT.delta ≥ +5pp AND COLD.delta ≤ −5pp AND both n ≥ 30 — won't trigger until soccer goalscorer picks settle over multiple days.",
+  "rca_of_issue": ""
+}
