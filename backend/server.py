@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.23-midnight-rollover-fix"
+DATA_VERSION = "2026.06.23-tennis-alt-tab"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -1304,6 +1304,12 @@ _MARKET_REGEX = {
     "match_winner":  r"\bmoneyline\b|match winner|to win match",
     "sets":          r"\btotal sets\b|\bset winner\b|\bset score\b",
     "games_total":   r"\bgames over\b|\bgames under\b|\btotal games\b",
+    # NEW (2026-06-23): the user's "Tennis ALT" tab. Surface every
+    # tennis alt-spread + alt-total + (Alt)-tagged pick under one
+    # umbrella so the chalk-ladder game-handicap picks ("Fritz -3.0
+    # Spread", "Svitolina -3.5 Spread", "Under 21.0 Games (Alt)")
+    # have a dedicated home. Excludes plain Moneyline.
+    "tennis_alt":    r"\(alt\)|[+\-]\d+(?:\.\d+)?\s+spread|spread\b|\btotal games\b|games over|games under",
 
     # ── Broad catch-all (still used by analytics market-label grouping) ──
     "player_props":  r"hits|outs recorded|points|rebounds|assists|passing yards|rushing yards|receiving yards|touchdowns|goal scorer",
@@ -1350,7 +1356,8 @@ SPORT_MARKETS = {
         {"token": "pitcher_outs",           "label": "Outs Recorded"},
     ],
     "Tennis": [
-        {"token": "match_winner", "label": "Match Winner"},
+        {"token": "match_winner", "label": "Moneyline"},
+        {"token": "tennis_alt",   "label": "Alt"},
         {"token": "sets",         "label": "Sets"},
         {"token": "games_total",  "label": "Games O/U"},
     ],
@@ -1541,7 +1548,31 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             },
         ],
     }
-    # ── MLB Pitcher-Strikeout carve-out (chalk-pricing exception) ─────
+    # ── Tennis Alt-Line carve-out (chalk-ladder exception) ────────────
+    # User report 2026-06-23: "you deleted all the alt spread tennis
+    # after I told you to fix simulator add a tab under tennis (alt)
+    # that all alt spread tennis picks". Alt-spread + alt-total tennis
+    # picks (e.g. "Fritz -3.0 Spread", "Svitolina -3.5 Spread", "Under
+    # 21.0 Games (Alt)") are chalk-ladder bets where the FAVORED side
+    # is priced at -300 to -800. By construction these will register
+    # tiny / slightly-negative edge against the sharp market, so the
+    # default `edge_percent >= 0` gate erases them entirely. Surface
+    # them under a relaxed gate (edge >= -8 + lock >= 70) so the user's
+    # new "Alt" tab shows the chalkiest acceptable lines and the
+    # synthesized chalk-totals the sports engine builds for them.
+    tennis_alt_q = {
+        "sport": "Tennis",
+        "no_bet": {"$ne": True},
+        "$or": [
+            {"is_alt_prop": True},
+            {"market": {"$regex": r"\(alt\)|[+\-]\d+(\.\d+)?\s+spread|\bspread\b|total games|games over|games under", "$options": "i"}},
+        ],
+        "edge_percent": {"$gte": -8.0},
+        "$and": [{"$or": [
+            {"lock_score": {"$gte": 70.0}},
+            {"lock_score_v2": {"$gte": 70.0}},
+        ]}],
+    }
     # User report 2026-06-22: "I'm not seeing no strikeout bets" + Gerrit
     # Cole strikeout pick had lock=73.7 (strong) but edge=-6.87 (chalk-priced
     # against). Elite pitchers' K-line markets are often priced sharp, but
@@ -1559,7 +1590,7 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     }
     q: dict = {
         "pick_date": _today_str(),
-        "$or": [standard_q, elite_q, tennis_ml_q, mlb_k_q],
+        "$or": [standard_q, elite_q, tennis_ml_q, tennis_alt_q, mlb_k_q],
     }
     if sport and sport.lower() != "all":
         q["sport"] = sport

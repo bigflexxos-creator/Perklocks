@@ -85,6 +85,15 @@ SPORT_KEYS: dict[str, list[str]] = {
         # 500/250 grass swing (active mid-June through July)
         "tennis_atp_queens_club_champ", "tennis_wta_queens_club_champ",
         "tennis_atp_halle_open", "tennis_wta_german_open",
+        # Grass-court warmup tournaments (added 2026-06-23 — these are
+        # active right NOW in Wimbledon prep week and were missing,
+        # which is why the alt-spread tennis slate looked empty)
+        "tennis_atp_eastbourne", "tennis_wta_eastbourne",
+        "tennis_atp_mallorca_open",
+        "tennis_wta_bad_homburg_open",
+        "tennis_atp_stuttgart_open",
+        "tennis_wta_birmingham_classic", "tennis_wta_nottingham_open",
+        "tennis_atp_lyon_open", "tennis_atp_geneva_open",
         # Hard / clay shoulder events
         "tennis_atp_barcelona_open", "tennis_atp_hamburg_open",
         "tennis_atp_dubai", "tennis_wta_dubai",
