@@ -105,21 +105,21 @@ export function ProbabilityBreakdownPanel({ pickId }: { pickId: string }) {
       <ProbBar
         label="Model v1"
         sub="features-only"
-        weight={data.weights?.v1 ?? 0}
+        weight={w?.v1 ?? 0}
         prob={data.p_v1}
         tint="#7DD3FC"
       />
       <ProbBar
         label="Model v2"
         sub="learned + bandit"
-        weight={data.weights?.v2 ?? 0}
+        weight={w?.v2 ?? 0}
         prob={data.p_v2}
         tint={COLORS.voltBlue}
       />
       <ProbBar
         label="Simulator"
         sub={hasSim ? "Monte Carlo" : "not run"}
-        weight={hasSim ? (data.weights?.sim ?? 0) : 0}
+        weight={hasSim ? (w?.sim ?? 0) : 0}
         prob={hasSim ? (data.sim_probability as number) : 0}
         tint="#A78BFA"
         muted={!hasSim}
