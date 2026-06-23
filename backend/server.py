@@ -1859,6 +1859,17 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # same match (Anytime + First + Score-or-Assist all at lock 78.4).
     # Spec from user: "It should be the top 2".
     picks = _dedupe_goalscorer_per_event(picks, top_n=2)
+    # ── Canonicalize lock_score (V2 → primary) BEFORE sorting ──────────
+    # Without this, the sort uses the legacy V1 lock_score baked at pick
+    # creation time. But `_canonicalize_lock_score` (called at the very
+    # end) promotes lock_score_v2 to the displayed lock_score for ~25%
+    # of picks — so by the time the user sees them, they're labelled
+    # with HIGHER lock_scores than their position implies. The result:
+    # an MLB pick at displayed lock 93.8 ends up below a Soccer pick at
+    # displayed lock 92.5 — because the SORT keyed on the pick's stale
+    # V1 score of e.g. 80, not its displayed-V2 of 93.8. 63/124 sort
+    # inversions in the wild traced back to this exact ordering bug.
+    picks = _canonicalize_picks(picks)
     if day_offset is not None:
         target_day = (datetime.now(timezone.utc).date() + timedelta(days=day_offset)).isoformat()
         picks = [p for p in picks if (p.get("event_time") or "").startswith(target_day)]
@@ -1922,32 +1933,19 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         elif s == "implied":
             picks.sort(key=lambda p: (m * p.get("implied_probability", 0), -p.get("lock_score", 0)))
         else:  # "lock" (default)
-            # Pure lock_score sort — highest at top (or lowest at top if
-            # asc=true). NO bucket pre-sort so tomorrow's 95-lock outranks
-            # today's 75-lock — fixes the "have to scroll to find best
-            # lock" UX bug. Elite anchor only applied to default desc.
+            # Pure lock_score sort. The user's explicit ask: "It should
+            # take highest score" — sorting by Lock Score should be a
+            # strict ordering with no elite-player anchor, no league
+            # round-robin, no bucket pre-sort. If a smaller-league pick
+            # has a higher lock, it should win the top slot. Period.
+            #
+            # (League diversification still exists as a separate
+            # affordance via the explicit league filter — surfacing
+            # smaller leagues is the league pill's job, not the sort's.)
             if asc:
                 picks.sort(key=lambda p: p.get("lock_score", 0))
             else:
-                picks.sort(key=lambda p: (_elite_rank(p), -p.get("lock_score", 0)))
-                # ── League diversification — fixes "never saw Sweden league"
-                # When a single sport (esp. Soccer) has 4-6 leagues live but
-                # one tournament (FIFA WC, MLB, etc.) has 30+ picks dominating
-                # the lock_score leaderboard, smaller leagues like Superettan
-                # get buried at position 30+. Users never scroll that far and
-                # report "you don't carry those leagues".
-                #
-                # Solution: round-robin interleave by league across the FIRST
-                # screen-worth of picks (~20). Keeps the top ~6 elite/anchor
-                # picks at the very top (they're already de-ranked above), then
-                # rotates one pick per league so every active league is
-                # immediately visible. After the first ~20 slots we fall back
-                # to pure lock_score order.
-                #
-                # Only kicks in for multi-sport feeds with ≥3 distinct leagues
-                # and when the user hasn't explicitly filtered by league.
-                if not league and sport and sport.lower() in ("soccer", "tennis"):
-                    picks = _interleave_by_league(picks, top_n=20, max_per_round=1)
+                picks.sort(key=lambda p: -p.get("lock_score", 0))
     picks = await _decorate_with_player_form(picks)
     picks = await _decorate_with_understat_form(picks)
     return {"picks": _canonicalize_picks(picks)}
