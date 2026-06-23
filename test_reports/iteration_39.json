@@ -1,0 +1,35 @@
+{
+  "summary": "Frontend-only validation of the self-diagnostic empty-state on Locks (home) tab in PerksLocks app. All three reachable empty-state paths verified on mobile viewport (390x844) via Expo web preview at EXPO_PUBLIC_BACKEND_URL. (1) Empty + filter-active path: opened Filter sheet, dragged filter-min-lock slider to max and filter-max-implied down to ~5%, tapped APPLY → empty card surfaced with testID empty-msg-filters ('Filters are hiding picks from the board. Clear them to see today's 110 slate.') and testID empty-clear-filters CTA ('CLEAR ALL FILTERS'). Tapping the CTA reset filters and refilled the board (153 pick-card elements rendered). (2) Empty + wrong-sport path: tapped sport-chip-nba → empty card surfaced with testID empty-msg-wrong-sport ('No pregame NBA setups cleared the lock-score gate today — but 110 picks are live in other sports.') and testID empty-show-all CTA ('SHOW ALL 110 PICKS'). Tapping switched sport to All and refilled the board (153 pick cards). (3) Generic empty path could NOT be reached in a live test because backend has picks; verified via code review that the third branch in /app/frontend/app/(tabs)/index.tsx renders testID empty-msg-generic when filtersAreNarrowing is false AND (sport==='All' OR stats.total_picks===0). (4) Regression: default 'All' sport renders day-grouped LockPickCards correctly (TODAY · 40 GAMES, Tennis/MLB/Soccer cards visible). Cache-bust layers L2 and L3 both fired on first load (3 keys wiped, including locks_feed_prefs_v1) — confirming the cachebust.ts change works. No React Native red screen, no console errors (only benign shadow*/pointerEvents deprecation warnings from RN web).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Locks empty-state (filters branch)", "issues": ["Copy 'Clear them to see today\\'s 110 slate.' reads ungrammatically when stats.total_picks is a number — interpolating a count into 'today\\'s {n} slate' produces 'today\\'s 110 slate'. Consider 'today\\'s full 110-pick slate' or 'all 110 picks today'."]},
+      {"screen": "FilterSheet — MIN LOCK SCORE slider", "issues": ["Slider scale labels read '85 GOOD / 92 STRONG / 95 ELITE' but dragging to the right end shows '99+' in the value badge — the slider max appears to extend beyond the labelled 95 ELITE. Cosmetic only; functionally the higher value still produces the expected narrowing. Worth aligning the slider max with the label scale."]}
+    ],
+    "react_native_issues": [
+      {"component": "shadow* style props", "issue": "Console warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' Emitted on every screen render via RN web. Reference: any StyleSheet using shadowColor/shadowOffset/shadowOpacity/shadowRadius — main agent should migrate to RN 0.76+ boxShadow."},
+      {"component": "pointerEvents prop", "issue": "Console warning: 'props.pointerEvents is deprecated. Use style.pointerEvents'. Reference: /app/frontend/app/(tabs)/index.tsx:346 `<View style={styles.toast} pointerEvents=\"none\">` — move to style.pointerEvents."}
+    ]
+  },
+  "test_report_links": ["/tmp/02_locks_default.png", "/tmp/03_empty_nba.png", "/tmp/04_after_showall.png", "/tmp/06_filter_set.png", "/tmp/07_empty_filter.png", "/tmp/08_after_clear.png"],
+  "action_items": [
+    "(Optional copy polish) In /app/frontend/app/(tabs)/index.tsx around line 453, tighten the empty-msg-filters string — currently produces grammatically odd 'today\\'s 110 slate'. Suggest: 'Clear them to see today\\'s full slate ({stats?.total_picks ?? \"\"} picks).'",
+    "(Optional UI polish) Align FilterSheet MIN LOCK SCORE slider max with the '95 ELITE' label, or relabel the scale to acknowledge values up to ~99 are reachable.",
+    "(Cleanup, not blocking this iteration) Migrate shadow*/pointerEvents deprecations app-wide to silence RN web warnings."
+  ],
+  "critical_code_review_comments": [
+    "Empty-state branching logic in /app/frontend/app/(tabs)/index.tsx (filtersAreNarrowing → wrong-sport → generic) is correctly ordered: narrowing filters win over wrong-sport because the user's INTENT to filter is the more actionable cause.",
+    "clearAllNarrowingFilters() wisely only clears the predicate filters (setFilters({})) and preserves sport/sort/lineType — matches the inline comment and avoids surprising users by resetting context.",
+    "locks_feed_prefs_v1 correctly added to KNOWN_CACHE_KEYS in /app/frontend/src/lib/cachebust.ts — verified via console logs '[cachebust] wiped 3 keys' on first load.",
+    "APP_DATA_VERSION ('20260623-03-empty-board-self-diag') and backend DATA_VERSION ('2026.06.23-03-empty-board-cachebust') were both bumped — confirmed both L2 and L3 wipes ran on first launch."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (not in scope)", "frontend": "100% (3/3 reachable empty-state paths + 1 regression test passed)"},
+  "seed_data_creation": "None — used existing demo@lockscore.ai / demo123 credentials and live backend slate (110 picks, 153 pick-card elements rendered across day groups).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Self-diagnostic empty state on Locks tab is fully functional. testIDs in play: empty-board (container), empty-msg-filters / empty-clear-filters (filter path), empty-msg-wrong-sport / empty-show-all (wrong-sport path), empty-msg-generic (generic path — only reachable when backend returns 0 picks AND no filters AND sport='All'). To reproduce the filter empty state via Playwright: open locks-filter-button → drag filter-min-lock slider to right end (box.width-5, y=center) → optionally drag filter-max-implied to left → click filter-apply. To reproduce wrong-sport: click sport-chip-nba or sport-chip-nfl (both have 0 picks at current snapshot).",
+  "rca_of_issue": "Original P0 'empty board on deployed host' was a user-state issue (persisted sport tab on NBA/NFL with no picks, or stuck SIM EDGE filter). The fix is defensive UX rather than a code bug fix: instead of trying to locate WHY the user's persisted state went bad, the empty card now self-diagnoses and offers a 1-tap recovery. Verified end-to-end: stuck filter → CLEAR ALL FILTERS → board refills (153 cards); stuck on NBA → SHOW ALL 110 PICKS → board refills (153 cards). Combined with cachebust.ts adding locks_feed_prefs_v1 to KNOWN_CACHE_KEYS, future DATA_VERSION bumps will also clear the persisted sport tab so users get a fresh 'All' default."
+}

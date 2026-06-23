@@ -39,7 +39,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 // ─── Client-baked cache version (Layer 3) ───────────────────────────────────
 // Bump on every CLIENT-side data shape / content change.
 // Format: YYYYMMDD-N  so collisions are obvious in git history.
-export const APP_DATA_VERSION = "20260623-02-sim-edge-scorer-aware";
+export const APP_DATA_VERSION = "20260623-03-empty-board-self-diag";
 
 // ─── Backend-version snapshot (Layer 2 - stored after each /api/version call)
 const CLIENT_VERSION_KEY = "perkslocks.client_data_version";
@@ -49,6 +49,7 @@ const BACKEND_VERSION_KEY = "perkslocks.backend_data_version";
 const KNOWN_CACHE_KEYS = [
   "perkslocks.betslip.v1",          // BetSlipContext
   "perkslocks.parlay_prefs.v1",     // useParlayPreferences
+  "locks_feed_prefs_v1",            // Home tab persisted sport / sortKey / lineType
   // Add any new AsyncStorage keys here so a cache bust actually wipes them.
 ];
 
