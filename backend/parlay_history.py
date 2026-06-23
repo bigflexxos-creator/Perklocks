@@ -147,8 +147,16 @@ async def resolve_saved_parlays(db) -> dict:
 
         # Phase 2: for legs whose pick_id was deleted, fall back to
         # identity match against the leg's stored snapshot.
+        # Phase 3 (added 2026-06-23 — user bug "Bets In parlay tab not
+        # grading"): if BOTH the pick row is missing AND the snapshot
+        # identity match returns nothing, settle directly from the
+        # external game result (MLB Stats API for MLB, cached soccer
+        # match results for Soccer). This is the only way to recover
+        # legs whose source picks were wiped before the settler could
+        # mark them won/lost. See `parlay_leg_settle.py`.
         leg_status: list[str] = []
         rescued = 0
+        externally_settled = 0
         for i, lid in enumerate(leg_ids):
             s = status_by_id.get(lid)
             if s in ("won", "lost", "void", "push"):
@@ -173,15 +181,26 @@ async def resolve_saved_parlays(db) -> dict:
                 if match:
                     leg_status.append(match["status"])
                     rescued += 1
+                    continue
+                # Phase 3: external settlement adapter
+                try:
+                    from parlay_leg_settle import try_settle_leg_externally
+                    ext_status = await try_settle_leg_externally(snap)
+                except Exception as e:
+                    logger.warning("External leg settle failed: %s", e)
+                    ext_status = None
+                if ext_status in ("won", "lost", "void", "push"):
+                    leg_status.append(ext_status)
+                    externally_settled += 1
                 else:
                     leg_status.append(s or "pending")
             else:
                 leg_status.append(s or "pending")
 
-        if rescued:
+        if rescued or externally_settled:
             logger.info(
-                "Parlay %s: rescued %d legs via snapshot identity match",
-                parlay.get("id", "?")[:8], rescued,
+                "Parlay %s: rescued %d via snapshot, %d via external settle",
+                parlay.get("id", "?")[:8], rescued, externally_settled,
             )
 
         # Update snapshot leg statuses for display.

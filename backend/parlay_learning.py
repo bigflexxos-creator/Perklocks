@@ -59,6 +59,12 @@ async def record_parlay_shown(db, parlay_card: dict, *,
             return
         sig = _signature(legs)
         now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        # Stable id per signature so the `id_1` unique index never fires
+        # E11000 on subsequent shows of the same parlay card. Previously
+        # the insert path left `id=null` for every record, and the second
+        # parlay request floored the error log with duplicate-key warnings.
+        import hashlib as _hashlib
+        stable_id = f"plearn_{_hashlib.sha1(sig.encode()).hexdigest()[:14]}"
         leg_summary = [
             {
                 "pick_id":       L.get("id") or L.get("pick_id"),
@@ -75,6 +81,7 @@ async def record_parlay_shown(db, parlay_card: dict, *,
             {"signature": sig},
             {
                 "$setOnInsert": {
+                    "id":         stable_id,
                     "signature":  sig,
                     "legs":       leg_summary,
                     "leg_count":  len(legs),
