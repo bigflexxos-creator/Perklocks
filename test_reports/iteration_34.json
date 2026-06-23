@@ -1,0 +1,37 @@
+{
+  "summary": "Backend regression tests for the iter34 'revert calibration overlay' change all green (8 passed, 2 skipped due to slate composition, 0 failed). Verified: (1) /api/version returns data_version='2026.06.23-revert-calibration-overlay'; (2) /api/picks/today no longer stamps any pick with the 'raw_lock_score' field — apply_calibration() is fully removed from the read path (197 picks scanned, 0 carry the field); (3) Lock score distribution is back to raw model output — 196 Elite + 1 Premium picks on a 197-pick slate (vs the iter33 crush of 0/0), top of the board sits at 99.0; (4) No high-confidence pick (win_prob>=80, edge>-10) displays lock_score<70 — Pass-band crush is gone; (5) Source code review confirms server.py:_canonicalize_lock_score no longer references apply_calibration and carries a revert-note comment (lines 160-167 of server.py); (6) /api/analytics/calibration still returns band rows with Expected/Actual/Delta — analytics layer untouched as designed; (7) /api/picks/history still enforces the board floor (>=80 OR raw>=80 OR override OR alt+>=75) across all sports. SKIPPED (non-blocking, slate-composition): (a) The three pinned MLB strikeout headliners (Bieber Over 2.5, McClanahan Over 3.5, Avila Over 1.5) are not on today's board so we couldn't verify their exact raw scores (93.4 / 92.7 / 92.1) — the agent context confirmed these manually. Today's MLB picks (13 total) are hits+runs+RBIs/total-bases ALT lines, not strikeout pitcher props. (b) /api/picks/{id}/pitcher-h2h correctly 404s for non-strikeout MLB picks (route enforces sport=='MLB' AND 'strikeout' in market — server.py:2937) so without a strikeout pick on the board we can't exercise the happy path. The route handler is intact; iter33 verified it works when a strikeout pick is present.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_revert_calibration_iter34.py",
+    "/app/test_reports/pytest/iter34_revert_calibration.xml"
+  ],
+  "action_items": [
+    "OBSERVATIONAL ONLY (not a bug): Today's slate has 196/197 picks at Elite (>=90). This is the unfiltered raw model output the user explicitly asked for ('Bieber should still be a 90+'). If product later wants more lock_score dispersion, the calibration infrastructure is still in place under /app/backend/lock_calibration.py (apply_calibration, curve fit, /api/analytics/calibration) and could be re-wired with a softer blend weight — but the user's stated intent here is to keep raw scores, so no action needed unless product changes direction again.",
+    "OBSERVATIONAL ONLY: No MLB strikeout pick on the board today, so we couldn't programmatically verify Bieber=93.4, McClanahan=92.7, Avila=92.1. Re-run the iter34 test file once a strikeout pick lands on the board to confirm exact values, or accept the agent_to_agent_context_note confirmation (Bieber manually verified at 93.4)."
+  ],
+  "critical_code_review_comments": [
+    "server.py:_canonicalize_lock_score (lines 137-168) — clean revert; the comment block at 160-167 documents the iter33→iter34 history and points to where the calibration analytics still lives. Good audit trail.",
+    "lock_calibration.apply_calibration is now dead code in the read path but still referenced by the curve-fit / analytics layer. Worth a docstring update on apply_calibration noting it's no longer called from server response canonicalisation, so future readers don't assume it's wired in.",
+    "server.py remains 3930 lines — modularisation backlog item from iter32/iter33 still open."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_revert_calibration_iter34.py (new — 10 tests: 1 version, 4 picks-today, 1 server code check, 1 analytics, 3 regressions)"
+  ],
+  "success_rate": {
+    "backend": "100% (8/8 executed passed; 2 skipped due to board composition, not failures)",
+    "frontend": "not tested (backend-only review request per testing_type)"
+  },
+  "seed_data_creation": "None — used existing demo@lockscore.ai / demo123 and live today's-board state.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iter34 revert-calibration-overlay tests at /app/backend/tests/test_revert_calibration_iter34.py. Live board at test time: 197 picks (141 Soccer, 43 Tennis, 13 MLB), top lock_score 99.0, 0 picks carry the legacy 'raw_lock_score' field. Calibration curve is still fitting on 434 samples (lockscore.calibration log line at startup) — analytics endpoint is untouched and returns Expected/Actual/Delta. The MLB strikeout-headliner test and pitcher-h2h happy path both skipped solely because today's MLB slate contains no strikeout pitcher props (only hitter props like Springer Over 0.5 H+R+RBI); when strikeout picks land on the board, those two assertions will exercise. The test file mirrors the iter33 pattern (login fixture, tolerant pick unwrapping, dual EXPO_PUBLIC_BACKEND_URL/EXPO_BACKEND_URL env lookup) — reuse this skeleton for future calibration-related changes."
+}
