@@ -16,6 +16,7 @@ import { ScorerBundlesPanel } from "@/src/components/ScorerBundlesPanel";
 import { SimulatorPanel } from "@/src/components/SimulatorPanel";
 import { PitcherH2HPanel } from "@/src/components/PitcherH2HPanel";
 import { XGFormPanel } from "@/src/components/XGFormPanel";
+import { ProbabilityBreakdownPanel } from "@/src/components/ProbabilityBreakdownPanel";
 import { getDisplayLockRounded } from "@/src/lib/lockScore";
 import { buildSlipText, shareSlip, saveSlipImage, copySlipText } from "@/src/lib/shareBetSlip";
 
@@ -300,6 +301,13 @@ export default function PickDetail() {
 
             {/* Survivability Engine — only renders for MLB hit props */}
             <SurvivabilityPanel pick={pick} />
+
+            {/* Probability Breakdown — Unified Probability Engine math viewer.
+                Surfaces the three model inputs (v1, v2, simulator), their
+                blend weights, calibrated output, and resulting edge vs
+                market-implied. Displayed near the top so users see the
+                math that drives everything else below. */}
+            <ProbabilityBreakdownPanel pickId={pick.id} />
 
             {/* Monte Carlo Simulator — Phase A, MLB only. Shows 10k-run win
                 probability with 95% CI and disagreement signal vs the

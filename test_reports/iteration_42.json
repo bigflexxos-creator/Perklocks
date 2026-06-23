@@ -1,0 +1,33 @@
+{
+  "summary": "Frontend-only review of the new ProbabilityBreakdownPanel on /pick/[id]. Logged in as demo@lockscore.ai on the preview URL at 390×844 viewport. Panel (testID 'probability-breakdown-panel') renders correctly with header (UNIFIED PROBABILITY ENGINE / Probability Breakdown), classification pill, three input bars (Model v1 sky / Model v2 volt / Simulator purple) with weight tags (w=30%/45%/25%), divider, three blend rows (BLENDED p_final / CALIBRATED p_cal w/ 'isotonic fit · n=434' / MARKET IMPLIED), edge readout (+/-X.XXpp) with color-graded footnote, and stability progress bar. DOM ordering confirmed: FACTOR BREAKDOWN (y≈1551) → ProbabilityBreakdownPanel (y≈1841) → SimulatorPanel (Monte Carlo, PHASE A/B) → DEEP THINKING ENGINE (LockV2Panel) → Market Rank / Key Insights, matching the spec. Edge color grading verified on three picks: +40.00pp → green #86EFAC (rgb 134,239,172) with 'Strong overlay vs market'; +0.26pp → white textPrimary with 'Mild overlay'; -1.43pp → red #FCA5A5 (rgb 252,165,165) with 'Pricing in our favour weakening'. Classification pill correctly tints green for PREMIUM. Stability bar/label renders correctly (97/100, 99/100, and 0/100 — the 0 is genuine backend data). No red-screen errors, no crashes, panel gracefully integrates with the rest of the deep-dive screen and does not break sibling panels.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/picks/{id}/probability", "issue": "Returns classifications outside the spec'd PREMIUM/GOOD/FADE set — observed NORMAL (9/80) and LOCK_99 (4/80) in a sample of 80 picks; GOOD and FADE were never observed. The UI renders the literal label and falls back to textPrimary color, but the contract documented in the review request does not match the engine output."},
+      {"endpoint": "GET /api/picks/{id}/probability", "issue": "stability_score == 0.0 and simulator_variance == 0.0 returned for MLB Spread pick 70f3ebab (Reds +1.5) and 73aa3ee3 (Pirates +1.5) — UI renders '0/100' correctly, but a literal 0 on a PREMIUM/93-Lock pick looks like a data/engine glitch, not a UI bug."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Decide whether the panel's classification pill should map NORMAL / LOCK_99 to explicit colors (currently they render white via the textPrimary fallback). If the engine is the source of truth, update the spec; if PREMIUM/GOOD/FADE is canonical, normalise NORMAL→GOOD and LOCK_99→PREMIUM at the API edge.",
+    "Investigate why stability_score and simulator_variance are 0.0 on MLB ±1.5 Spread picks where the three inputs are clearly close together (v1 72.5%, v2 64.6%, sim 64.6%). Likely a backend computation issue in probability_engine.py for spread markets.",
+    "Verify the 'simulator not run' visual fallback once a pick with sim_probability=null is generated — none were found in the current 200-pick board (every probability response had a numeric sim). Code logic looks correct (muted opacity, 'not run' sub-label, 0-width bar, w=0%) but couldn't be exercised against live data."
+  ],
+  "critical_code_review_comments": [
+    "ProbabilityBreakdownPanel.tsx renders the classification text literally (e.g. {data.classification}). The pill color switch only handles PREMIUM/GOOD/FADE — any other engine label gets the white fallback. Consider an exhaustive switch or normalising the label before render.",
+    "Panel auto-hides only on thrown errors (catch → setErr(true) → return null) but still shows ActivityIndicator while loading. If /probability is slow on a pick, users see a stray spinner above the SimulatorPanel — minor UX nit."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (not tested in this iteration)", "frontend": "100%"},
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Probability Breakdown Panel is live and rendering correctly across MLB, Tennis, and Soccer picks. Test pick IDs used: 70f3ebab (MLB Reds +1.5, PREMIUM, edge +2.36pp, stab 0/100), 9aff618b (MLB Diaz over hits+runs+rbis, PREMIUM, edge -1.43pp red, stab 99/100), 491b0666 (Soccer Ronaldo First Goal, NORMAL classification, edge +40pp green, stab 99/100), 2375c179 (Tennis Katy Dunne, PREMIUM, edge +0.26pp white, stab 97/100). Login: demo@lockscore.ai / demo123 via SIGN IN button.",
+  "rca_of_issue": "No blocking bug. The two backend observations (NORMAL/LOCK_99 classifications outside the spec'd set, and stability_score=0 on Spread picks) are engine/data concerns, not UI defects. The panel itself handles every case gracefully — including the silent-hide on network failure (verified by reading the catch path; not exercised in live test since no requests failed)."
+}

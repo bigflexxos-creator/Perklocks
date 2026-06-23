@@ -343,6 +343,21 @@ export const api = {
       updated_at: string | null;
       source: string;
     }>(`/picks/${pickId}/player-form`),
+  pickProbability: (pickId: string) =>
+    request<{
+      p_v1: number;
+      p_v2: number;
+      sim_probability: number | null;
+      p_final: number;
+      p_calibrated: number;
+      edge: number;
+      classification: string;
+      simulator_variance: number | null;
+      stability_score: number | null;
+      implied_probability: number;
+      weights: { v1: number; v2: number; sim: number };
+      calibration: { fit_sample_size: number; last_fit_at: string | null };
+    }>(`/picks/${pickId}/probability`),
   version: () =>
     request<{ data_version: string; server_time: string; server_started_at: string }>(
       "/version",
