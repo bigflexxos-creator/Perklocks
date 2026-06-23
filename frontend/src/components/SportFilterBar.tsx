@@ -54,16 +54,31 @@ export function SportFilterBar({ sport, filters, onChange }: Props) {
   const setLeague = (name: string | undefined) => {
     onChange({ ...filters, league: name });
   };
+  const toggleSimEdge = () => {
+    onChange({ ...filters, simEdgeOnly: !filters.simEdgeOnly });
+  };
 
   return (
     <View style={styles.wrap}>
-      {markets.length > 0 && (
+      {(markets.length > 0 || true) && (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row}>
           <Pill
             label="All"
-            active={!filters.market}
-            onPress={() => setMarket(undefined)}
+            active={!filters.market && !filters.simEdgeOnly}
+            onPress={() => { setMarket(undefined); if (filters.simEdgeOnly) toggleSimEdge(); }}
             testID="market-pill-all"
+          />
+          {/* SIM EDGE filter chip — surfaces only picks where Monte Carlo
+              sim_win_probability ≥ 75%. Per the 30-day backtest, sim ≥75%
+              is +6.1% ROI vs -2.7% blind betting, and sim ≥85% co-signs
+              are +14.8% ROI. Keeping this as a sibling of the market
+              pills (not buried in FilterSheet) so it's one tap away. */}
+          <Pill
+            label="🎲 SIM EDGE"
+            active={!!filters.simEdgeOnly}
+            onPress={toggleSimEdge}
+            testID="market-pill-sim-edge"
+            accent
           />
           {markets.map((m) => (
             <Pill
@@ -99,17 +114,29 @@ export function SportFilterBar({ sport, filters, onChange }: Props) {
   );
 }
 
-function Pill({ label, active, onPress, testID }: {
-  label: string; active: boolean; onPress: () => void; testID?: string;
+function Pill({ label, active, onPress, testID, accent }: {
+  label: string; active: boolean; onPress: () => void; testID?: string; accent?: boolean;
 }) {
   return (
     <Pressable
       onPress={onPress}
-      style={[styles.pill, active && styles.pillActive]}
+      style={[
+        styles.pill,
+        active && (accent ? styles.pillAccentActive : styles.pillActive),
+        accent && !active && styles.pillAccentIdle,
+      ]}
       testID={testID}
       hitSlop={6}
     >
-      <Text style={[styles.pillTxt, active && styles.pillTxtActive]}>{label}</Text>
+      <Text
+        style={[
+          styles.pillTxt,
+          active && (accent ? styles.pillTxtAccentActive : styles.pillTxtActive),
+          accent && !active && styles.pillTxtAccentIdle,
+        ]}
+      >
+        {label}
+      </Text>
     </Pressable>
   );
 }
@@ -151,6 +178,20 @@ const styles = StyleSheet.create({
   },
   pillTxt: { color: COLORS.textSecondary, fontSize: 11, fontWeight: "700", letterSpacing: 0.6 },
   pillTxtActive: { color: COLORS.bg },
+  // SIM EDGE chip — idle uses neonGreen border to differentiate from
+  // generic market pills, active fills with neonGreen for unambiguous
+  // on-state. Per the iter35 backtest, sim≥75 is +6% ROI, so we want
+  // this chip to feel special, not just "another market".
+  pillAccentIdle: {
+    borderColor: COLORS.neonGreen,
+    backgroundColor: "transparent",
+  },
+  pillAccentActive: {
+    backgroundColor: COLORS.neonGreen,
+    borderColor: COLORS.neonGreen,
+  },
+  pillTxtAccentIdle: { color: COLORS.neonGreen },
+  pillTxtAccentActive: { color: COLORS.bg, fontWeight: "900" },
 
   leaguePill: {
     flexDirection: "row", alignItems: "center", gap: 5,

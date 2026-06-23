@@ -172,14 +172,16 @@ export default function LocksScreen() {
       if (requestedSport && requestedSport.toLowerCase() !== "all") {
         fresh = fresh.filter((p: any) => p.sport === requestedSport);
       }
-      // Sim Edge filter — show only picks where sim_wp ≥ 85 AND sim agrees
-      // with model by ≥5pp. Applied client-side since sim_* fields are
-      // already on the pick payload.
+      // Sim Edge filter — show only picks where the Monte Carlo simulator
+      // hit ≥75%. Per the iter35 sim-backtest, this threshold is +6.1%
+      // ROI vs -2.7% blind, and the 70-80% sim band actually settled at
+      // 87.5% real hit rate over the last 30 days. The earlier 85% +
+      // 5pp disagreement gate was too strict (≈ 2 picks/day vs ≈ 50
+      // picks/day at this threshold) and missed most of the edge.
       if (f.simEdgeOnly) {
         fresh = fresh.filter((p: any) =>
           typeof p.sim_win_probability === "number" &&
-          p.sim_win_probability >= 85 &&
-          (p.sim_disagreement_with_model ?? 0) >= 5,
+          p.sim_win_probability >= 75,
         );
       }
       setPicks(fresh);
