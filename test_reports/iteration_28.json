@@ -1,0 +1,33 @@
+{
+  "summary": "Verified the 2026-06-23 midnight-rollover fix. All 8 backend tests pass (100%). /api/version reports data_version='2026.06.23-midnight-rollover-fix'. /api/picks/today returns 100 picks across sports (Soccer=72, Tennis=12, MLB=8, UFC=8; NBA/NFL=0 which is seasonal). _ensure_today_picks() correctly uses 'count < 20' threshold (line 1245 of server.py). _daily_refresh_loop() ticks every 5 min (asyncio.sleep(300)), tracks last_refresh_date, and force-refreshes on UTC day rollover (lines 3464-3491). Regressions all green: MLB per-pick pitcher-h2h endpoint reachable (/api/picks/{id}/pitcher-h2h), Tennis 48h window includes 2026-06-24 events alongside today's, Tennis pick IDs are deterministic across consecutive reads.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_midnight_rollover_fix.py",
+    "/app/test_reports/pytest/midnight_rollover_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "_ensure_today_picks threshold of 20 is well-chosen: well below healthy day (100-500) but high enough that any handful of pre-seeded next-day Soccer picks won't suppress the refresh — correctly addresses the reported RCA.",
+    "_daily_refresh_loop tracks last_refresh_date and uses 5-min ticks with a tick_count==12 trigger for hourly cadence. This is sound, but tick_count is stored as a function attribute (getattr(_daily_refresh_loop, 'tick_count', 0)) — works but slightly unusual; a closure-local counter would be cleaner.",
+    "Backend log shows recurring 'deep_dive failed for pick ...: unsupported operand type(s) for +: int and str' warnings (~5 picks). Unrelated to the rollover fix but should be triaged — looks like a numeric/string mix in the deep-dive enrichment path.",
+    "Backend log shows 'Tennis Extra settler armed' and 'Soccer 24h backfill loop' running concurrently with the daily refresh loop — these are the pipelines that pre-seed next-day picks before midnight (the exact RCA root). The new threshold fix is the correct guard; no need to change the seeders themselves."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_midnight_rollover_fix.py (new file)"
+  ],
+  "success_rate": {"backend": "100% (8/8)", "frontend": "not tested (per request)"},
+  "seed_data_creation": "None. Used existing demo@lockscore.ai / demo123 credentials.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Picks endpoints require Bearer auth via POST /api/auth/login (returns access_token). Tennis picks use 'event_time' (not 'commence_time'). MLB pitcher H2H is per-pick at /api/picks/{pick_id}/pitcher-h2h, not /api/mlb/pitcher-h2h. /api/picks/today returns a bare list (not a wrapped object).",
+  "rca_of_issue": "RCA confirmed in code: Pre-fix, _ensure_today_picks gated refresh on `count == 0`. The Soccer 24h backfill loop and Tennis Extra settler pre-seed a small number of next-day picks before UTC midnight. After rollover the count was ~2 (not 0), so the gate falsely concluded the slate was seeded and skipped the refresh; the hourly _daily_refresh_loop didn't tick again for up to 59 min. Fix #1: threshold raised to `count < 20` (line 1245) so any 'thin' slate triggers refresh. Fix #2: _daily_refresh_loop ticks every 5 min and tracks last_refresh_date, force-refreshing on UTC date change (lines 3464-3491). Both fixes verified live: /api/picks/today now returns 100 picks for 2026-06-23 within ~5 min of UTC rollover."
+}
