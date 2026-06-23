@@ -85,21 +85,34 @@ class _Curve:
 
         With <50 historical samples, falls back to raw/100 (identity)
         so the system behaves like today until enough data accrues.
+
+        Sample-size shrinkage (added 2026-06-23 — user bug "Why would
+        this pick be considered a pass when everything looks good"):
+        with only 434 settled picks and 52 Elite-band samples, the raw
+        isotonic curve is over-confident and crushes legitimate strong
+        picks (e.g. Bieber Over 2.5 K's at -650, win_prob 82%, edge
+        -4.5%) from raw lock 90+ down to display 58. We shrink the
+        isotonic estimate toward the raw probability based on sample
+        size — at 500 samples we trust ~10% calibration, at 5000 we
+        trust it fully. This way the calibration overlay sharpens
+        gradually as data accumulates instead of slamming the dial.
         """
         if not self.has_curve():
             return max(0.0, min(1.0, float(raw_score) / 100.0))
         x = float(raw_score)
         if x <= self.knots_x[0]:
-            return self.knots_y[0]
-        if x >= self.knots_x[-1]:
-            return self.knots_y[-1]
-        # linear interpolation between bracketing knots
-        i = bisect.bisect_left(self.knots_x, x)
-        x0, x1 = self.knots_x[i - 1], self.knots_x[i]
-        y0, y1 = self.knots_y[i - 1], self.knots_y[i]
-        if x1 == x0:
-            return y0
-        return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+            iso = self.knots_y[0]
+        elif x >= self.knots_x[-1]:
+            iso = self.knots_y[-1]
+        else:
+            i = bisect.bisect_left(self.knots_x, x)
+            x0, x1 = self.knots_x[i - 1], self.knots_x[i]
+            y0, y1 = self.knots_y[i - 1], self.knots_y[i]
+            iso = y0 if x1 == x0 else y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+        # Shrinkage: blend isotonic toward raw_prob proportional to confidence
+        raw_prob = max(0.0, min(1.0, x / 100.0))
+        w_iso = min(1.0, self.fit_sample_size / 5000.0)  # 0..1 weight on calibration
+        return raw_prob * (1.0 - w_iso) + iso * w_iso
 
     def percentile_of(self, raw_score: float) -> float:
         """Return the historical CDF value (0..1) of raw_score.
@@ -340,8 +353,13 @@ def compute_display_lock_score(pick: dict) -> Optional[float]:
         edge = float(pick.get("edge_percent") or 0.0)
     except (TypeError, ValueError):
         edge = 0.0
-    # 0% edge → 50, +10% → 95, -5% → 27.5; clamp 0..100
-    edge_component = max(0.0, min(100.0, 50.0 + edge * 4.5))
+    # Soft slope so a -4.5% edge on a chalk pick (e.g. Bieber Over 2.5
+    # K's at -650) doesn't catastrophically erase the score. With the
+    # old +/- 4.5 slope a -4.5% edge produced a 30/100 component; the
+    # new +/- 2.0 slope produces a 41/100 floor (and 0% edge stays at
+    # 50). Win probability is captured via the calibration component
+    # so we don't need edge to do double duty.
+    edge_component = max(20.0, min(100.0, 50.0 + edge * 2.0))
 
     # 3. Model consensus (15%) — low variance across numeric factors = high consensus
     consensus_component = 60.0   # default neutral when no numeric factors available

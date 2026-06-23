@@ -1,0 +1,42 @@
+{
+  "summary": "Backend regression tests for the calibration-shrinkage / soft-edge fix all pass (12/12). Verified: (1) /api/version returns data_version='2026.06.23-calibration-shrinkage'; (2) Curve.transform at fit_sample_size=434 returns calibrated_prob ~0.89 for raw=92 — closer to 0.92 raw than to a 0.63 isotonic estimate (shrinkage weight 434/5000≈0.087 working as intended); (3) compute_display_lock_score on a synthetic Bieber-shaped pick {raw=92, edge=-4.47, factors {K9:93, matchup:81, workload:81}} returns >=65 (Speculative band, no longer Pass); (4) edge_component 20.0 floor holds even for extreme -50% edge — no catastrophic collapse; (5) /api/picks/today serves picks with both raw_lock_score and lock_score stamped; (6) regressions intact — /api/picks/history still board-floor (>=80 OR raw>=80 OR override OR alt+>=75), /api/analytics/calibration returns Expected/Actual/Delta rows, Tennis ALT tab responds, MLB pitcher-h2h responds via /api/picks/today?sport=mlb&tab=pitcher-h2h (the bare /api/picks/mlb/pitcher-h2h returns 404 — likely just a path naming preference, not a regression). OBSERVATIONAL FINDING (NOT BLOCKING the fix): 4 high-raw Tennis Moneyline picks (raw 91.5-91.9) still display 60.2-61.4 (Pass band). Their factor objects contain only string descriptions (Book Anchor / Tour Tier / Coverage Source prose) so consensus_component falls back to the neutral 60 default, bucket_sample_size is None (sample_component=0), and edge_percent is -9% to -11.7%. This is a separate class from the Bieber bug — flagging in case product wants similar relief for these.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/picks/today (Tennis ML chalk)", "issue": "4 high-raw tennis moneyline picks (raw 91.5-91.9, edge -9% to -11.7%, string-only factors, no bucket_n) still display 60.2-61.4 — same surface symptom as the Bieber bug for a different shape. The Bieber fix targeted picks with numeric factors (consensus boost) — these tennis picks bypass that path. Examples: Davidovich Fokina A. ML raw=91.9 disp=60.2; Quinn E. ML raw=91.5 disp=60.2; Draper J. ML raw=91.5 disp=60.3; Fery A. ML raw=91.7 disp=61.4."},
+      {"endpoint": "/api/picks/mlb/pitcher-h2h", "issue": "Bare path returns 404; pitcher-h2h is reachable via /api/picks/today?sport=mlb&tab=pitcher-h2h. Possibly intentional, flagging for confirmation."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_calibration_shrinkage_iter33.py",
+    "/app/test_reports/pytest/iter33_calibration_shrinkage.xml"
+  ],
+  "action_items": [
+    "Decide whether high-raw / negative-edge tennis ML picks with no numeric factors (Davidovich Fokina, Quinn, Draper, Fery moneylines) should also clear the Pass band, or whether their display is correct given the -9% to -11.7% edge against chalk pricing. If they should clear, options: (a) raise edge_component slope floor further, (b) raise consensus default above 60 when factors carry qualitative scoring tags, or (c) blend raw_lock_score directly into display when calibration sample is still small.",
+    "Confirm whether /api/picks/mlb/pitcher-h2h being 404 (only reachable as /api/picks/today?sport=mlb&tab=pitcher-h2h) is intentional or a missed route alias."
+  ],
+  "critical_code_review_comments": [
+    "lock_calibration.compute_display_lock_score: The 60.0 default consensus_component for picks lacking numeric factors silently penalises markets like tennis ML and moneyline-style picks whose factors layer is descriptive text. Consider parsing/tagging factors with a numeric score even for prose, or raising the default to ~75 when raw_lock_score is itself very high.",
+    "lock_calibration.py: shrinkage formula w_iso = fit_sample_size/5000 hard-codes 5000. Worth a module-level constant (e.g. FULL_TRUST_SAMPLE_SIZE) alongside MIN_FIT_SAMPLES and RECALIBRATE_EVERY for discoverability.",
+    "lock_calibration.compute_display_lock_score (~line 362): the edge slope (2.0) and floor (20.0) are now magic numbers in inline comments. Promote to constants like EDGE_SLOPE_PER_PCT and EDGE_COMPONENT_MIN so the next tweak isn't another line-by-line audit.",
+    "server.py remains 3941 lines per iter32 review — still on the modularisation backlog."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_calibration_shrinkage_iter33.py (new — 12 tests, 5 unit + 7 API integration)"
+  ],
+  "success_rate": {
+    "backend": "100% (12/12 passed)",
+    "frontend": "not tested (backend-only review request)"
+  },
+  "seed_data_creation": "None — used existing demo@lockscore.ai / demo123 credentials and live curve state (fit_sample_size=434).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iter33 calibration shrinkage tests at /app/backend/tests/test_calibration_shrinkage_iter33.py. Pattern monkeypatches the in-memory _Curve to deterministically control fit_sample_size + knots — reuse this for any future calibration tuning. Live curve at test time: 434 samples, 5 knots, fit_at=2026-06-23T05:10:43Z. Shrinkage weight at this sample size is 0.0868. Observational findings (non-blocking): 4 tennis ML picks (Davidovich Fokina/Quinn/Draper/Fery) with raw 91.5-91.9 still display 60.2-61.4 due to string-only factors + heavy negative edge. The Bieber fix uses numeric factors as the lever — these tennis picks bypass that lever. If main agent broadens the fix, retest with this same file.",
+  "rca_of_issue": "User reported a Shane Bieber Over 2.5 K's pick displayed at 58.7 (Pass band) despite raw_lock_score 90+, win_prob 82.2%, edge -4.47%, signal scores 93/81/81. Pre-fix, Curve.transform applied an over-aggressive isotonic estimate trained on only 434 settled picks, mapping raw 92 → calibrated ~0.63 → calib_component ~63; AND edge_component used slope 4.5 giving edge=-4.47 → 50 + (-4.47*4.5) = 29.9. Weighted: 0.4*63 + 0.25*29.9 + 0.15*88 + 0.10*0 + 0.10*65 = 25.2 + 7.5 + 13.2 + 0 + 6.5 = ~52, ~58 with quality. Post-fix: (a) Curve.transform now blends w_iso = fit_sample_size/5000 = 0.087 of isotonic with 0.913 of raw, so calib_component ≈ 88 for raw 92; (b) edge_component uses slope 2.0 with 20.0 floor → edge=-4.47 yields max(20, 50 + (-4.47*2.0)) = max(20, 41.06) = 41.06. New weighted: 0.4*88 + 0.25*41 + 0.15*88 + 0.10*0 + 0.10*65 = 35.2 + 10.3 + 13.2 + 0 + 6.5 = 65.2, ~68 with bandit/quality bumps — matches the manual verification of 67.9. Fix verified working for Bieber profile. Tennis ML carve-out flagged separately."
+}
