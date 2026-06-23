@@ -1,0 +1,42 @@
+{
+  "summary": "Backend-only verification of the parlay external-settlement adapter (data_version 2026.06.23-parlay-external-settle). 27/27 pytest cases pass. Confirmed: (1) /api/version returns the expected data_version; (2) parlay_leg_settle.try_settle_leg_externally correctly grades MLB Moneyline / +1.5 & -1.5 Spread / Total Runs Over/Under / Total Runs Push, and Soccer Moneyline / Total Goals Over/Under, while returning None (leave pending) for unsupported markets like Anytime Goal Scorer and unknown sports (TENNIS); (3) parlay_history.resolve_saved_parlays sources `try_settle_leg_externally` as Phase 3 fallback (source-asserted) and runs against the live Mongo without raising; (4) Target parlay p_e7a0f677d0298d is now status='lost' (legs_won=2 / legs_lost=1 / settled_at=2026-06-23T04:59:38Z); (5) /api/parlay/history returns 0 live parlays — all 4 settled (1 won, 3 lost); (6) Zero E11000 dup-key 'id_1' errors on parlay_history/parlay_learning since the server restarted at 05:03:37 — the 92 historic E11000 entries in the err.log are pre-fix or unrelated `picks` bulk-insert collisions (separate bug, see action items); (7) Regression smoke green: /api/picks/today returns picks, /api/picks/today?sport=Tennis&market=tennis_alt OK, /api/picks/markets/Tennis includes the Alt tab, pitcher-h2h returns 200. Three back-to-back /api/picks/parlay calls produced zero new E11000 lines on the parlay collections.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "lockscore_db.picks (bulk insert)", "issue": "Unrelated to iteration 31: large bursts of `E11000 duplicate key error collection: lockscore_db.picks index: id_1` on Soccer/World-Cup pick bulk-inserts (~16+ per batch). Pipeline retries same external_id picks without an upsert/skip. Pre-existing, NOT this fix's scope."},
+      {"endpoint": "/api/picks/parlay?sport=Tennis", "issue": "Sport filter is non-strict (returns mixed sports). Pre-existing, carried over from iteration 30."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_parlay_external_settle_iter31.py",
+    "/app/test_reports/pytest/iter31_parlay_external_settle.xml"
+  ],
+  "action_items": [
+    "(Optional, separate bug) Fix the picks-collection bulk-insert dup-key flood: switch the soccer/world-cup pipeline to use `update_many(upsert=True)` keyed on `external_id` or filter out already-existing ids before insert_many. This is the remaining E11000 noise in backend.err.log and is unrelated to the iteration-31 parlay-settlement fix.",
+    "(Optional) Add a unit test for MLB pitcher strikeouts via a mocked httpx boxscore response — currently we only exercise the early-return-None path for pitcher Ks because that needs a network mock for statsapi.mlb.com.",
+    "Main agent may self-test parlay grading; the target parlay p_e7a0f677d0298d is verified 'lost' end-to-end."
+  ],
+  "critical_code_review_comments": [
+    "parlay_leg_settle.py — clean, defensive (returns None whenever scores can't be confirmed unambiguously). Spread regex `re.search(r\"[+\\-]\\d+\\.\\d+\", market_lower)` only matches lines with decimal point — would silently miss `+2 Spread` whole-number lines if those ever ship. Worth keeping in mind.",
+    "parlay_leg_settle._settle_soccer_leg uses `from server import db` inside the call — creates an import-cycle risk for unit testing (mitigated in our tests via monkeypatch). For production it's fine but consider injecting db as a parameter for testability.",
+    "parlay_learning.record_parlay_shown stable_id derived from sha1(signature)[:14] is collision-safe for the lifetime of the app (~2^56 namespace per signature already-deterministic). Good fix.",
+    "parlay_history.resolve_saved_parlays Phase 3 wraps try_settle_leg_externally in try/except and logs the failure — won't crash the resolver if mlb_live is down. ✅",
+    "DATA_VERSION bumped to '2026.06.23-parlay-external-settle' — phones will wipe local pick cache as intended. ✅",
+    "server.py is ~3854 lines — still well over the 700-line guideline. Modularization remains overdue (carried over from iteration 29)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_parlay_external_settle_iter31.py (new pytest suite, 27 cases)"
+  ],
+  "success_rate": {"backend": "100% (27/27)", "frontend": "n/a (backend-only test request)"},
+  "seed_data_creation": "None. Used existing demo@lockscore.ai / demo123 and the live `parlay_history` collection (4 records, all now settled).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 31 fix verified. The parlay_history collection has 0 live + 1 won + 3 lost after resolve_saved_parlays ran. Target parlay p_e7a0f677d0298d is settled='lost'. Mock-based unit tests for parlay_leg_settle live at /app/backend/tests/test_parlay_external_settle_iter31.py — re-use them as regression. The picks-collection E11000 flood is the remaining noise source and is a separate, pre-existing pipeline bug. BASE_URL is loaded from /app/frontend/.env (EXPO_PUBLIC_BACKEND_URL). MONGO_URL/DB_NAME loaded via dotenv_values from /app/backend/.env in tests that need a Motor client outside the singleton event loop.",
+  "rca_of_issue": "User complaint 'Bets In parlay tab not grading': saved parlay legs reference pick_ids that get deleted from the picks collection between settlement passes (daily refresh wipes today's slate; settled legacy picks for past games also get dropped). resolve_saved_parlays had two phases (direct pick_id lookup + snapshot identity match) that both failed for these orphan legs, leaving the parlay perpetually 'live'. Fix: parlay_leg_settle.try_settle_leg_externally now grades MLB legs via the free MLB Stats API (fetched on-demand, 0 Odds credits) and Soccer legs via the cached soccer_matches Mongo collection (populated by the existing 24h backfill loop). parlay_history.resolve_saved_parlays calls this adapter as Phase 3 when both previous phases fail. Conservatively returns None (leave pending) when scores cannot be confirmed — wrong settle would be much worse than one extra cycle pending. Verified end-to-end: target parlay p_e7a0f677d0298d transitioned live→lost, and 0 live parlays remain in the collection."
+}
