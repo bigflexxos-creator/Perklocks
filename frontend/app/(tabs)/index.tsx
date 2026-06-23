@@ -13,6 +13,7 @@ import { ChipRow } from "@/src/components/ChipRow";
 import { FilterButton, FilterSheet } from "@/src/components/FilterSheet";
 import { SportFilterBar } from "@/src/components/SportFilterBar";
 import { StaleVersionBanner } from "@/src/components/StaleVersionBanner";
+import { StaleBuildBanner } from "@/src/components/StaleBuildBanner";
 import { storage } from "@/src/utils/storage";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 
@@ -319,6 +320,7 @@ export default function LocksScreen() {
         testIDPrefix="sport-chip"
       />
       <SportFilterBar sport={sport} filters={filters} onChange={setFilters} />
+      <StaleBuildBanner />
       <StaleVersionBanner onRefresh={() => load(sport, lineType, sortKey, filters, sortDir)} />
 
       {/* ── Cleaned-up controls row ──
