@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.23-probability-canonical"
+DATA_VERSION = "2026.06.23-soccer-scorer-carveout"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -1615,9 +1615,31 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             {"lock_score_v2": {"$gte": 70.0}},
         ],
     }
+    # ── Soccer Goal Scorer / Score-or-Assist carve-out ──────────────────
+    # User report 2026-06-23: "Goalscorers showing on soccer lab but not
+    # on the board — shouldn't Harry Kane and Ronaldo be on board?"
+    # Diagnosis: Ronaldo S-or-A lock=89.4 edge=-4.68%; Kane S-or-A
+    # lock=89.0 edge=-2.0%. Both have strong locks (≥85) but slightly
+    # negative edge because the book prices star strikers sharp. The
+    # standard_q `edge ≥ 0` gate erases them entirely. Mirrors the
+    # tennis ML / MLB strikeout chalk-pricing problem. Carve-out:
+    # surface Anytime Goal Scorer + First Goal Scorer + Score-or-Assist
+    # picks with strong locks (≥ 85) even at edge ≥ -6% so Kane,
+    # Ronaldo, Watkins, etc. land on the board alongside the Soccer
+    # Lab — same source of truth.
+    soccer_scorer_q = {
+        "sport": "Soccer",
+        "market": {"$regex": "goal scorer|score or assist|score & assist", "$options": "i"},
+        "no_bet": {"$ne": True},
+        "edge_percent": {"$gte": -6.0},
+        "$or": [
+            {"lock_score": {"$gte": 85.0}},
+            {"lock_score_v2": {"$gte": 85.0}},
+        ],
+    }
     q: dict = {
         "pick_date": _today_str(),
-        "$or": [standard_q, elite_q, tennis_ml_q, tennis_alt_q, mlb_k_q],
+        "$or": [standard_q, elite_q, tennis_ml_q, tennis_alt_q, mlb_k_q, soccer_scorer_q],
     }
     if sport and sport.lower() != "all":
         q["sport"] = sport
