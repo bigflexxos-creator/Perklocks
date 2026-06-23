@@ -139,6 +139,28 @@ export default function LocksScreen() {
     (filters.maxImplied && filters.maxImplied < 100 ? 1 : 0) +
     (filters.simEdgeOnly ? 1 : 0);
 
+  // Self-diagnostic: does the user have ANY narrowing filters active?
+  // This drives the empty-state CTA — if picks are zero but a filter is
+  // on, we surface "CLEAR FILTERS" instead of the generic "no locks"
+  // message. Recurring P0: users mis-toggle SIM EDGE or a sport-only
+  // market pill and the board goes empty with no explanation. Naming
+  // it `filtersAreNarrowing` (vs `hasActiveFilters`) so it's clear
+  // this is "user actively filtered something OUT", not "user set a
+  // preference".
+  const filtersAreNarrowing =
+    !!filters.simEdgeOnly ||
+    !!filters.market ||
+    !!filters.league ||
+    (typeof filters.minLock === "number" && filters.minLock > 85) ||
+    !!filters.minImplied ||
+    (typeof filters.maxImplied === "number" && filters.maxImplied < 100);
+
+  const clearAllNarrowingFilters = () => {
+    // Wipe only the narrowing predicates — keep sport / sort / lineType
+    // so the user doesn't lose their entire context.
+    setFilters({});
+  };
+
   // Request-token guard: each call to load() captures a monotonically
   // increasing token. When the response arrives, we only commit state
   // if the token still matches `latestLoadTokenRef.current` (i.e. no
@@ -411,14 +433,60 @@ export default function LocksScreen() {
             <ActivityIndicator color={COLORS.voltBlue} />
           </View>
         ) : picks.length === 0 ? (
-          <View style={styles.emptyCard}>
+          <View style={styles.emptyCard} testID="empty-board">
             <Ionicons name="lock-open-outline" size={42} color={COLORS.textMuted} />
             <Text style={styles.emptyTitle}>No locks on the board</Text>
-            <Text style={styles.emptyMsg}>
-              {sport === "All"
-                ? "All today's games are either started or below our lock-score gate."
-                : `No pregame ${sport} setups cleared the lock-score gate.`}
-            </Text>
+
+            {/* ── Self-diagnostic empty state ──
+                Recurring P0 ("App still not showing picks") usually has
+                one of three root causes: (1) user has a narrowing
+                filter on (SIM EDGE / market / lock floor) and forgot,
+                (2) user's persisted sport tab is on MLB/NBA/NFL which
+                has 0 picks today while Soccer/Tennis still do, or (3)
+                the slate genuinely has nothing live. We surface the
+                most likely cause + a 1-tap fix instead of a dead-end
+                "pull to refresh" message. */}
+            {filtersAreNarrowing ? (
+              <>
+                <Text style={styles.emptyMsg} testID="empty-msg-filters">
+                  Filters are hiding picks from the board. Clear them to see
+                  today&apos;s {stats?.total_picks ?? "full"} slate.
+                </Text>
+                <TouchableOpacity
+                  onPress={clearAllNarrowingFilters}
+                  style={styles.emptyCta}
+                  activeOpacity={0.8}
+                  testID="empty-clear-filters"
+                >
+                  <Text style={styles.emptyCtaTxt}>CLEAR ALL FILTERS</Text>
+                </TouchableOpacity>
+              </>
+            ) : sport !== "All" && (stats?.total_picks ?? 0) > 0 ? (
+              <>
+                <Text style={styles.emptyMsg} testID="empty-msg-wrong-sport">
+                  No pregame {sport} setups cleared the lock-score gate today —
+                  but {stats?.total_picks} pick{stats?.total_picks === 1 ? "" : "s"}{" "}
+                  {stats?.total_picks === 1 ? "is" : "are"} live in other sports.
+                </Text>
+                <TouchableOpacity
+                  onPress={() => setSport("All")}
+                  style={styles.emptyCta}
+                  activeOpacity={0.8}
+                  testID="empty-show-all"
+                >
+                  <Text style={styles.emptyCtaTxt}>
+                    SHOW ALL {stats?.total_picks} PICKS
+                  </Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <Text style={styles.emptyMsg} testID="empty-msg-generic">
+                {sport === "All"
+                  ? "All today's games are either started or below our lock-score gate."
+                  : `No pregame ${sport} setups cleared the lock-score gate.`}
+              </Text>
+            )}
+
             <View style={styles.emptyDivider} />
             <Text style={styles.emptyHintLabel}>
               {remaining > 0
@@ -426,7 +494,9 @@ export default function LocksScreen() {
                 : "PULL DOWN TO REFRESH"}
             </Text>
             <Text style={styles.emptyHintSub}>
-              Tip: try other sports — soccer + tennis often have late slates.
+              {filtersAreNarrowing
+                ? "Tip: SIM EDGE only surfaces sim ≥75%, which is a small slice of the board."
+                : "Tip: try other sports — soccer + tennis often have late slates."}
             </Text>
           </View>
         ) : (
@@ -573,6 +643,22 @@ const styles = StyleSheet.create({
     textAlign: "center",
     paddingHorizontal: 16,
     lineHeight: 16,
+  },
+  // Empty-state recovery CTA — the most-clicked button in the empty
+  // state. Bright voltBlue fill so the user can't miss it; replaces
+  // the dead-end "pull to refresh" hint as the primary affordance.
+  emptyCta: {
+    marginTop: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+    borderRadius: 10,
+    backgroundColor: COLORS.voltBlue,
+  },
+  emptyCtaTxt: {
+    color: "#0b0e16",
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 1.2,
   },
   soccerLabBtn: {
     flexDirection: "row",
