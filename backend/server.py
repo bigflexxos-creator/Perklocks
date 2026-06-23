@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.23-parlay-external-settle"
+DATA_VERSION = "2026.06.23-board-floor-all-sports"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -157,6 +157,25 @@ def _canonicalize_lock_score(pick: dict) -> dict:
             # Safe fallback — at minimum, surface the higher number even if
             # we can't re-grade. Prevents the card-vs-detail mismatch.
             pick["lock_score"] = round(min(99.0, v2), 1)
+    # ── Calibration overlay (added 2026-06-23, "CALIBRATION UPDATE ONLY") ──
+    # Replace the raw model lock_score with the calibrated 5-component
+    # blend ONLY for pending picks. Settled picks keep their original
+    # number so the analytics page (Expected vs Actual) reads true.
+    # The badges/UI/thresholds (85/90/95) are untouched — only the
+    # underlying numeric value better matches historical hit rates.
+    try:
+        from lock_calibration import apply_calibration
+        pick = apply_calibration(pick)
+        # Re-grade if the calibrated number changed badge tier
+        if "raw_lock_score" in pick:
+            try:
+                from sports_engine import _grade, _confidence
+                pick["grade"] = _grade(pick["lock_score"])
+                pick["confidence"] = _confidence(pick["lock_score"])
+            except Exception:
+                pass
+    except Exception as e:
+        logger.debug("Calibration overlay skipped: %s", e)
     return pick
 
 
@@ -2447,6 +2466,31 @@ async def picks_history(user: Annotated[UserPublic, Depends(current_user)],
         # the user-facing History tab or counted toward W/L stats.
         "status": {"$nin": ["void"]},
         "excluded_from_history": {"$ne": True},
+        # ── Board-floor gate (added 2026-06-23 — user complaint
+        # "Why are picks like this being graded shouldn't be in
+        # history wasn't on the board"). The pipeline generates
+        # picks for many markets that the LIVE feed filters out for
+        # low lock scores (Bosnia vs Switzerland "Score or Assist"
+        # picks at lock 67-75 etc.). Those picks settle and then
+        # leak into PICK HISTORY even though the user never saw
+        # them. Result: a Lost record that pollutes the hit-rate.
+        #
+        # Fix: only show in history picks that ACTUALLY crossed the
+        # surfacing floor (lock_score ≥ 80, matching the lowest
+        # carve-out floor used by /picks/today). Use raw_lock_score
+        # when present so the calibration overlay (which can lower
+        # the display number for pending picks) doesn't accidentally
+        # hide legitimate history rows. Settled picks were never
+        # recalibrated by design so `lock_score` is still the
+        # historical raw value for them.
+        "$or": [
+            {"lock_score": {"$gte": 80}},
+            {"raw_lock_score": {"$gte": 80}},
+            # Carve-out: elite-pitcher override picks were intentionally
+            # surfaced even at lock<80 with strong edge — preserve them.
+            {"elite_pitcher_override": True},
+            {"is_alt": True, "lock_score": {"$gte": 75}},
+        ],
     }
     cursor = db.picks.find(q, {"_id": 0}).sort("settled_at", -1).limit(2000)
     picks = await cursor.to_list(length=2000)
@@ -3117,6 +3161,27 @@ async def analytics_buckets(user: Annotated[UserPublic, Depends(current_user)]):
     return await get_buckets(db)
 
 
+@api.get("/analytics/calibration")
+async def analytics_calibration(user: Annotated[UserPublic, Depends(current_user)]):
+    """Lock-score calibration report — Expected vs Actual vs Delta per band.
+
+    Backs the user spec: "Show Expected Win %, Actual Win %, Calibration
+    Delta". Driven by the isotonic-regression curve fit nightly (or
+    every 100 newly-settled picks via the settlement loop).
+    """
+    from lock_calibration import calibration_report
+    return await calibration_report(db)
+
+
+@api.post("/analytics/calibration/refit")
+async def analytics_calibration_refit(user: Annotated[UserPublic, Depends(current_user)]):
+    """Manual trigger to refit the calibration curve right now (admin
+    safety valve — does the same thing the auto-loop does on a
+    100-pick cadence)."""
+    from lock_calibration import fit_from_db
+    return await fit_from_db(db)
+
+
 @api.post("/analytics/buckets/recompute")
 async def analytics_buckets_recompute(user: Annotated[UserPublic, Depends(current_user)]):
     """Force re-scan settled picks and rebuild all isolated learning buckets.
@@ -3629,6 +3694,17 @@ async def _settlement_loop():
                 await resolve_saved_parlays(db)
             except Exception as e:
                 logger.warning("Parlay history resolver error: %s", e)
+            # ── Auto-Recalibrate Lock Score Curve ───────────────────
+            # Every RECALIBRATE_EVERY (100) newly-settled picks the
+            # isotonic-regression curve is refit so the displayed
+            # confidence stays calibrated as the model evolves.
+            try:
+                from lock_calibration import maybe_recalibrate
+                summary = await maybe_recalibrate(db)
+                if summary:
+                    logger.info("Calibration auto-refit: %s", summary)
+            except Exception as e:
+                logger.warning("Calibration auto-refit error: %s", e)
             # Auto-Elite scorer discovery — promote players with 5+ picks
             # and 55%+ hit rate to auto_elite (protected slot in goalscorer cap).
             try:
@@ -3845,6 +3921,17 @@ async def on_startup():
         logger.info("Parlay History indices ready")
     except Exception as e:
         logger.warning("Parlay History setup failed: %s", e)
+    # ── Lock-Score Calibration Engine ───────────────────────────────
+    # Loads the persisted isotonic-regression curve (or fits one from
+    # the historical settled-pick set if no curve exists yet). The
+    # curve maps the raw model lock_score → calibrated probability so
+    # the displayed Elite/Premium/Strong bands actually match the
+    # observed hit rates.
+    try:
+        from lock_calibration import load_curve as _calib_load
+        await _calib_load(db)
+    except Exception as e:
+        logger.warning("Calibration curve load failed: %s", e)
     logger.info("PerksLocks AI started")
 
 
