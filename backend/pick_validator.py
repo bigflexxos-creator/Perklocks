@@ -100,8 +100,21 @@ async def validate_and_heal(db) -> dict:
         # 2) Reverse-stack: if `model_win_probability` exists, the original
         # model output is known — recompute the LEARNING-adjusted win_prob
         # from baseline + current bucket weight (single application).
+        #
+        # CARVE-OUT (added 2026-06-23 — user bug "Fix edge on tennis bets
+        # still not seeing none on board"): tennis_extra picks are
+        # book-anchored — their `win_probability` is intentionally set
+        # equal to the book's implied probability because we have no
+        # independent model for those scraped Eastbourne / Mallorca /
+        # Bad Homburg matches. Running the reverse-stack on them applies
+        # the Tennis ML bucket's negative learning weight on top of an
+        # already-honest probability and produces a phantom -9% to -12%
+        # edge that looks broken on the board. Skip the stack for them
+        # and keep edge ≈ 0 (which is the truth for book-anchored picks).
+        source = (p.get("source") or "").lower()
+        is_book_anchored = source in ("tennis_extra", "tennis_extra_model")
         model_wp = p.get("model_win_probability")
-        if model_wp is not None and bucket_index:
+        if model_wp is not None and bucket_index and not is_book_anchored:
             sport = p.get("sport") or ""
             label = _market_label(p.get("market"))
             bucket = bucket_index.get((sport, label))
@@ -119,9 +132,21 @@ async def validate_and_heal(db) -> dict:
                 counts["fixed_stack"] += 1
 
         # 3) Edge math = WP − implied. Recompute if drifted.
+        #
+        # For tennis_extra (book-anchored) picks, force edge = 0 instead
+        # of computing it from wp - implied. Otherwise tiny float drift
+        # between win_probability and implied_probability shows as a
+        # bogus -0.2% to -1% edge on the board. Honest edge for a
+        # book-anchored pick is 0.
         wp = p.get("win_probability")
         ip = p.get("implied_probability")
-        if wp is not None and ip is not None:
+        if is_book_anchored and wp is not None and ip is not None:
+            stored_edge = p.get("edge_percent")
+            if stored_edge is None or abs(stored_edge - 0.0) > 0.05:
+                updates["edge_percent"] = 0.0
+                p["edge_percent"] = 0.0
+                counts["fixed_edge"] += 1
+        elif wp is not None and ip is not None:
             expected_edge = round(wp - ip, 2)
             stored_edge = p.get("edge_percent")
             if stored_edge is None or abs(stored_edge - expected_edge) > 0.05:
