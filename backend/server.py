@@ -1810,6 +1810,25 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         "pick_date": _today_str(),
         "$or": [standard_q, elite_q, tennis_ml_q, tennis_alt_q, mlb_k_q, soccer_scorer_q],
     }
+    # ── User-supplied min_lock floor (global enforcement) ────────────
+    # Each sub-query above uses its own lock floor (70 for tennis ML,
+    # 85 for soccer scorers, 80 for elite anchors, etc.) tuned to its
+    # carve-out's chalk-pricing reality. But when the user EXPLICITLY
+    # slides the Min Lock filter to e.g. 95, those carve-out floors
+    # would silently leak 70-94 picks back into the feed. To honour
+    # the user's slider, we AND a global `lock_score >= min_lock`
+    # condition over every sub-query. Check both `lock_score` and
+    # `lock_score_v2` (same OR-of-both pattern used by every
+    # sub-query) so picks where V2 has caught up but V1 hasn't yet
+    # don't get filtered out wrongly. Default `floor` was already
+    # applied per-sub-query, so this is purely about the user's
+    # explicit override.
+    if min_lock is not None and float(min_lock) > 0:
+        user_floor = float(min_lock)
+        q["$and"] = [{"$or": [
+            {"lock_score":     {"$gte": user_floor}},
+            {"lock_score_v2":  {"$gte": user_floor}},
+        ]}]
     if sport and sport.lower() != "all":
         q["sport"] = sport
     if grade:
