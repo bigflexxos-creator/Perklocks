@@ -1,0 +1,39 @@
+{
+  "summary": "Backend-only verification of two fixes: (1) deep_dive.py defensive numeric coercion against non-numeric factor values, (2) parlay_optimizer.is_eligible_leg() alt-prop carve-out. 17/17 tests pass. /api/version returns data_version='2026.06.23-alt-parlay-eligible'. /api/picks/parlay?legs=5&window_hours=24 returned 4 legs with 2 Tennis ALT legs (Dalma Galfi Over 16.0, Leylah Fernandez Over 16.5). Standalone is_eligible_leg unit tests confirm: alt pick {lock=95, edge=2.0, wp=80} → True in standard mode; same pick without is_alt → False with 'edge +2.0% < +3%'. compute_confidence_score / compute_edge_score / compute_risk_score now handle string and None factor values without crashing. No 'deep_dive failed: unsupported operand' warnings observed in the last 10 minutes of backend.err.log. Regression: /api/picks/today returns 299 picks; /api/picks/today?sport=Tennis&market=tennis_alt returns 30+ picks; /api/picks/{id}/pitcher-h2h returns 200 for MLB pitcher picks.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/picks/parlay?sport=Tennis", "issue": "The `sport` query-param does NOT strictly restrict the returned legs — a Tennis-filtered request returned a Soccer leg (Ilves Tampere vs KuPS Kuopio). Pre-existing, NOT part of this fix. Worth a separate investigation."},
+      {"endpoint": "internal (parlay_history collection)", "issue": "record_parlay_shown fails with E11000 duplicate key error (id_1 dup key: { id: null }) on EVERY parlay request. Pre-existing — parlay records being inserted with id=null. Visible flood in backend.err.log. Suggest setting a UUID id or removing the index."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_alt_parlay_deep_dive_fix.py",
+    "/app/test_reports/pytest/alt_parlay_deepdive_fix.xml"
+  ],
+  "action_items": [
+    "(Optional) Investigate why /api/picks/parlay?sport=Tennis returns Soccer legs — pre-existing, NOT this fix's scope.",
+    "(Optional) Fix the parlay_history E11000 duplicate-key flood by generating an id (UUID) before inserting or dropping the unique id index.",
+    "Main agent can self-test deep_dive + alt parlay behavior — both verified end-to-end."
+  ],
+  "critical_code_review_comments": [
+    "deep_dive.py — try/except float() coercion applied in compute_edge_score, compute_confidence_score, compute_risk_score (and inside the factors loop). Clean and minimal. ✅",
+    "parlay_optimizer.is_eligible_leg() — alt-prop carve-out only lowers min_edge to 1.0% if it was higher; lock_score and win_probability gates remain unchanged. Safe. ✅",
+    "DATA_VERSION bumped to '2026.06.23-alt-parlay-eligible' — phones will wipe local pick cache as intended. ✅"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_alt_parlay_deep_dive_fix.py (new — pytest suite)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "n/a (not tested per request)"},
+  "seed_data_creation": "None. Used existing demo@lockscore.ai / demo123 and live picks pool (299 picks, 56 Tennis alt picks).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Pre-existing parlay_history duplicate-key flood (id=null) in backend.err.log on every /api/picks/parlay call — not blocking but noisy. Sport filter on parlay endpoint isn't strict (returns mixed sports). Both are out of scope for the 2026.06.23 fix. 17/17 alt-parlay + deep-dive regression tests at /app/backend/tests/test_alt_parlay_deep_dive_fix.py.",
+  "rca_of_issue": "Original deep_dive crash: scrapers (tennis_extra, soccer pipeline) populate `factors` with string descriptions (e.g., 'strong recent run' instead of a 0–100 score), so `sum(factors.values())` raised TypeError when the dict mixed ints and strings. Fix wraps each `float(v)` in try/except and skips non-numeric entries. Alt parlay issue: MIN_EDGE_PCT=3.0 (standard mode) excludes chalk-ladder alt-spread picks whose model edge is +1 to +2% by construction. Fix: when `pick.is_alt` or `pick.is_alt_prop` is truthy, drop min_edge to 1.0% only (lock/win_p gates unchanged), so chalkier alt picks make the parlay leg pool without forcing the user into high-risk mode."
+}

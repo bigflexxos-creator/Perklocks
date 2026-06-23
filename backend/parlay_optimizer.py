@@ -346,6 +346,20 @@ def is_eligible_leg(pick: dict, bucket_map: dict, *, high_risk: bool = False) ->
     min_lock = 75.0 if high_risk else MIN_LOCK_SCORE
     min_edge = 1.0 if high_risk else MIN_EDGE_PCT
 
+    # Alt-prop carve-out (added 2026-06-23 per user spec "Add ALT
+    # picks to the Parlay Optimizer's eligible legs"). Chalk-ladder
+    # alt-spread picks (e.g. "Svitolina -1.5 Games (Alt)") and the
+    # Tennis/MLB alt-total ladders are book-anchored chalkier-than-
+    # main-line bets where the FAVORED side is priced at -300 to
+    # -800 — by construction the model edge sits at +1 to +2%, well
+    # below the standard +3% gate. They have strong locks (≥95) and
+    # win-probabilities ≥75%, so they DESERVE to be in the parlay
+    # leg pool. Carve-out: any leg flagged `is_alt` (or legacy
+    # `is_alt_prop`) clears with min_edge of +1.0% without forcing
+    # the user into high-risk mode globally.
+    if (pick.get("is_alt") or pick.get("is_alt_prop")) and min_edge > 1.0:
+        min_edge = 1.0
+
     if lock < min_lock:
         return False, f"lock {lock:.0f} < {min_lock:.0f}"
     if edge < min_edge:

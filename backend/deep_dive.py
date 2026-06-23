@@ -41,7 +41,10 @@ def _clamp(v: float, lo: float = 0.0, hi: float = 100.0) -> float:
 def compute_edge_score(pick: dict) -> float:
     """0-100. Combines model edge with whether the line has moved toward us
     since we made the pick (line moved against = sharps agree = good)."""
-    edge = pick.get("edge_percent") or 0.0
+    try:
+        edge = float(pick.get("edge_percent") or 0.0)
+    except (TypeError, ValueError):
+        edge = 0.0
     # 0% edge → 50, +10% → 95, -5% → 25, +15%+ → cap at 99
     base = 50 + edge * 4.5
     odds_at = pick.get("odds_at_pick") or pick.get("book_odds")
@@ -49,11 +52,14 @@ def compute_edge_score(pick: dict) -> float:
     if odds_at and closing:
         # Convert both to implied prob; positive CLV = price got worse (line
         # moved into us) which is the sharps-agreed signal.
-        from analytics import american_to_implied_pct
-        ip_at = american_to_implied_pct(odds_at)
-        ip_close = american_to_implied_pct(closing)
-        clv = ip_close - ip_at
-        base += clv * 1.2   # +1pp CLV = +1.2 edge points
+        try:
+            from analytics import american_to_implied_pct
+            ip_at = american_to_implied_pct(odds_at)
+            ip_close = american_to_implied_pct(closing)
+            clv = float(ip_close) - float(ip_at)
+            base += clv * 1.2   # +1pp CLV = +1.2 edge points
+        except (TypeError, ValueError):
+            pass
     return round(_clamp(base), 1)
 
 
@@ -61,15 +67,29 @@ def compute_confidence_score(pick: dict, bucket_n: int = 0, bucket_hit_rate: flo
     """0-100. Combines win_probability, factor agreement (low variance), and
     historical bucket hit-rate."""
     wp = pick.get("win_probability") or 0.0   # 0..100 already
+    # Coerce in case upstream stored it as a string (some scraped sources do).
+    try:
+        wp = float(wp)
+    except (TypeError, ValueError):
+        wp = 0.0
     # Win-prob anchors the score: 50% → 50, 70% → 70, 90% → 90.
     base = wp
     # Factor agreement: lower variance = higher confidence.
+    # Some sources (e.g. tennis_extra scraper, soccer pipeline) store
+    # text descriptions in `factors.values()` instead of numeric scores.
+    # Coerce + skip non-numerics to prevent "int + str" crashes that
+    # silently wipe out the deep-dive enrichment for those picks.
     factors = pick.get("factors") or {}
     if factors:
-        values = list(factors.values())
-        if len(values) > 1:
-            mean = sum(values) / len(values)
-            var = sum((v - mean) ** 2 for v in values) / len(values)
+        numeric_values: list[float] = []
+        for v in factors.values():
+            try:
+                numeric_values.append(float(v))
+            except (TypeError, ValueError):
+                continue
+        if len(numeric_values) > 1:
+            mean = sum(numeric_values) / len(numeric_values)
+            var = sum((v - mean) ** 2 for v in numeric_values) / len(numeric_values)
             stdev = var ** 0.5    # 0..50 range typically
             # Low stdev → +5; high stdev → -5
             base += max(-5, min(5, (15 - stdev) * 0.5))
@@ -77,21 +97,30 @@ def compute_confidence_score(pick: dict, bucket_n: int = 0, bucket_hit_rate: flo
     if bucket_n >= MIN_BUCKET_SAMPLE and bucket_hit_rate:
         # If bucket's actual hit rate is HIGHER than the pick's model WP,
         # nudge up; if lower, nudge down. Capped ±5.
-        bias = bucket_hit_rate - wp
-        base += max(-5, min(5, bias * 0.2))
+        try:
+            bias = float(bucket_hit_rate) - wp
+            base += max(-5, min(5, bias * 0.2))
+        except (TypeError, ValueError):
+            pass
     return round(_clamp(base), 1)
 
 
 def compute_risk_score(pick: dict, bucket_n: int = 0) -> float:
     """0-100. HIGHER = riskier. We INVERT this so 100 = safest in callers."""
-    wp = pick.get("win_probability") or 0.0
+    try:
+        wp = float(pick.get("win_probability") or 0.0)
+    except (TypeError, ValueError):
+        wp = 0.0
     # Win-prob is the inverse: 90% → 20 risk, 50% → 60 risk, 30% → 80 risk.
     base = 100 - wp
     # Long shots get +10 risk (high variance).
     if pick.get("is_long_shot"):
         base += 10
     # Player props at +250 or worse (long shots) → +5.
-    book = pick.get("book_odds") or 0
+    try:
+        book = float(pick.get("book_odds") or 0)
+    except (TypeError, ValueError):
+        book = 0
     if book >= 250:
         base += 5
     # Heavy chalk moneylines (worse than -400) → +5 (small win for big loss).
