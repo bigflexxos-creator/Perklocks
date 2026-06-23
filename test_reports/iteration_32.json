@@ -1,0 +1,35 @@
+{
+  "summary": "Verified the board-floor universally applied fix. /api/version returns data_version='2026.06.23-board-floor-all-sports'. /api/picks/history?days=30 returns ZERO picks below the board floor across all 5 sports (per-sport min lock_score: MLB 80.2, Soccer 80.3, Tennis 81.1, UFC 83.4, NBA 83.5 — matches agent context). The user-cited Bosnia @ Switzerland 'Score or Assist' picks at lock 67/70/73/75 are confirmed removed from history. /api/analytics/model-performance loads cleanly and the same $or board-floor gate is in compute_model_performance (analytics.py:147-152). All regressions pass: calibration overlay on /picks/today (raw_lock_score + lock_score present), /api/analytics/calibration returns rows, MLB pitcher-h2h responds, Tennis ALT tab responds.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_board_floor_iter32.py",
+    "/app/test_reports/pytest/iter32.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py picks_history (line 2486-2493) and analytics.py compute_model_performance (line 147-152) use IDENTICAL $or gates — good. If a future market introduces another carve-out (e.g. survivor parlays, special promos), both blocks must be updated in lockstep. Consider extracting to a shared helper like sports_engine.board_floor_query() to prevent drift.",
+    "server.py is 3941 lines — should be split into focused modules (auth, picks, parlay, analytics, settle) per the 700-line guideline. Not a blocker for this fix, but flagged as ongoing tech debt.",
+    "DATA_VERSION bump is correct and will trigger AsyncStorage cache wipe on phones so users see updated history immediately."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_board_floor_iter32.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (15 passed, 1 skipped non-blocking)",
+    "frontend": "not tested (backend-only review request)"
+  },
+  "seed_data_creation": "None — used existing demo@lockscore.ai / demo123",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iter32 backend regression file is at /app/backend/tests/test_board_floor_iter32.py and reusable. The _is_board_floor_ok() helper mirrors the server-side $or gate (lock_score>=80 OR raw_lock_score>=80 OR elite_pitcher_override OR (is_alt AND lock_score>=75)) — reuse for future history/analytics validations. Per-sport min lock_score observed: MLB 80.2, Soccer 80.3, Tennis 81.1, UFC 83.4, NBA 83.5. History pick count was ~347 settled. Analytics endpoint /api/analytics/model-performance does not expose a flat total field, so cross-count check is skipped (acceptable).",
+  "rca_of_issue": "User saw Bosnia @ Switzerland 'Score or Assist' picks at lock 67/70/73/75 in PICK HISTORY despite never seeing them on the live board. RCA: the pipeline generated picks for many markets that /picks/today filtered out (lock_score < 80), but they still got settled by the background settler and surfaced via /picks/history which had no board-floor gate. Fix: added the same $or floor gate (lock_score>=80 OR raw_lock_score>=80 OR elite_pitcher_override OR is_alt+>=75) to both picks_history (server.py:2486) AND compute_model_performance (analytics.py:147). Verified: 0 sub-80 picks remain in history, all 5 sports respect the floor, Bosnia/Switzerland offenders gone, hit rate moved from 61.1%→61.3% as expected."
+}
