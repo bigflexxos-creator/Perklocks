@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.22-stable-tennis-ids"
+DATA_VERSION = "2026.06.23-midnight-rollover-fix"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -1228,9 +1228,25 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
 
 
 async def _ensure_today_picks() -> None:
+    """Seed picks for the current UTC day if the slate is empty or thin.
+
+    Edge case fixed 2026-06-23: at UTC midnight rollover, the Soccer
+    24h-backfill loop and other secondary pipelines (tennis_extra
+    settler, etc.) often pre-seed a handful of next-day picks BEFORE
+    midnight. After rollover, those few picks count as "today's slate"
+    and the old `count == 0` gate falsely thought we were already
+    seeded. Users saw a near-empty feed for up to an hour until the
+    next hourly tick. Threshold of 20 picks is well below any healthy
+    day (typically 100-500 picks across sports) so it acts as a
+    fast "empty enough → refresh" trigger without false positives.
+    """
     today = _today_str()
     count = await db.picks.count_documents({"pick_date": today})
-    if count == 0:
+    if count < 20:
+        logger.info(
+            "ensure_today_picks: only %d picks for %s — triggering refresh",
+            count, today,
+        )
         await _refresh_picks(today)
 
 
@@ -3433,22 +3449,52 @@ async def _daily_refresh_loop():
     burn The Odds API credits unexpectedly — but a 1-hour scheduler keeps
     the feed fresh as new lines drop, players get scratched, and previous
     games complete. Game-time sorting feels live instead of frozen.
+
+    Midnight-rollover safety: tracks the UTC date that was last refreshed
+    so when the day flips mid-loop, we trigger a fresh refresh
+    immediately for the new day instead of waiting up to 59 minutes for
+    the next hourly tick. Fixes the "where did all the picks go" bug
+    reported 2026-06-23 at 00:48 UTC.
     """
     try:
         await _ensure_today_picks()
     except Exception as e:
         logger.warning("Startup picks seed failed: %s", e)
+
+    last_refresh_date = _today_str()
     while True:
         try:
-            # 1-hour cadence — balances slate freshness against Odds API
-            # credit usage. The per-call rate limiter still owns the hard cap.
-            await asyncio.sleep(3600)
-            await _refresh_picks(_today_str())
+            # Short tick so we detect UTC day rollover within ~5 minutes
+            # instead of the old hourly cadence. The per-refresh code
+            # path is no-op when the slate is already full + fresh.
+            await asyncio.sleep(300)  # 5 min
+
+            current_date = _today_str()
+            if current_date != last_refresh_date:
+                # Day rolled over — force a refresh NOW so new-day picks
+                # show up within 5 minutes instead of waiting an hour.
+                logger.info(
+                    "Daily loop: UTC day rolled %s → %s, forcing refresh",
+                    last_refresh_date, current_date,
+                )
+                await _refresh_picks(current_date)
+                last_refresh_date = current_date
+                continue
+
+            # Hourly cadence for same-day freshness. We check
+            # `_should_refresh_by_clock` against the previous tick — if we've
+            # just crossed an hour boundary since last refresh, run.
+            # Simpler: just count ticks (12 ticks × 5 min = 60 min).
+            _daily_refresh_loop.tick_count = getattr(_daily_refresh_loop, "tick_count", 0) + 1
+            if _daily_refresh_loop.tick_count >= 12:
+                _daily_refresh_loop.tick_count = 0
+                await _refresh_picks(current_date)
+                last_refresh_date = current_date
         except asyncio.CancelledError:
             break
         except Exception as e:
             logger.warning("Periodic refresh failed: %s", e)
-            await asyncio.sleep(3600)
+            await asyncio.sleep(300)
 
 
 # ─── MLB Pregame Quick-Refresh Loop ─────────────────────────────────────
