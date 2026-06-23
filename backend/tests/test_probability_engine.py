@@ -76,7 +76,9 @@ class TestVersion:
         r = session.get(f"{BASE_URL}/api/version", timeout=15)
         assert r.status_code == 200
         body = r.json()
-        assert body.get("data_version") == "2026.06.23-unified-probability-engine"
+        # Updated iter37: stamp renamed to "probability-canonical" when the
+        # engine became the PRIMARY source-of-truth surfaced on every pick.
+        assert body.get("data_version") == "2026.06.23-probability-canonical"
 
 
 # ──────────────────────────────────────────────────────────────────────────

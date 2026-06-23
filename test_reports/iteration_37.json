@@ -1,0 +1,38 @@
+{
+  "summary": "Iter 37 Unified Probability Engine as PRIMARY source of truth — fully validated. All 44 pytest cases pass (20 new iter37 + 24 regression from iter36). Confirmed: every pick returned by /api/picks/today now carries an inline `probability` block with the full spec schema (p_v1, p_v2, sim_probability, p_final, p_calibrated, edge, classification, simulator_variance) and aux fields (stability_score, implied_probability, weights, calibration); bounds, clamps and ensemble identity (0.30*v1+0.45*v2+0.25*sim) verified on a 50-pick sample. Same-source-of-truth invariant holds: for 15 randomly sampled picks the inline `probability` block is byte-for-byte equal to GET /api/picks/{id}/probability (Python dict equality, deep). Bieber pick (1ba18d22-ec1e-54c3-86bf-cc601a72acd5) spot-checked: inline == endpoint and lock_score is still 93+ (no calibration crush). Legacy fields lock_score and edge_percent are preserved on every pick; lock_score is NOT being overwritten by p_calibrated*100. Static source invariants confirmed in /app/backend/server.py _canonicalize_lock_score (lines 182-186 call probability_engine.unified_probability_report and assign to pick['probability']); /app/backend/probability_engine.py still has compute_edge as the ONLY edge-defining function and zero v1/v2 subtractions. /api/version returns the new data_version='2026.06.23-probability-canonical'. Regressions clean: /api/picks/{id}/pitcher-h2h still returns 200 for MLB strikeout picks, tennis ALT tab still reachable (/api/picks/today?sport=Tennis 200, tennis ML picks still have non-zero edge_percent), and /api/picks/history rows still respect the >=80 lock_score floor.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_probability_canonical_iter37.py",
+    "/app/backend/tests/test_probability_engine.py",
+    "/app/test_reports/pytest/iter37_canonical.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "_canonicalize_lock_score (/app/backend/server.py:182-186) wraps the engine call in a broad try/except that only debug-logs failures — silent skip on the inline block could mask engine breakage in prod. Consider WARNING-level logging or a metric counter so a sudden absence of `probability` on the slate is visible.",
+    "Engine is correctly invoked on every read path through _canonicalize_lock_score → _canonicalize_picks, so /picks/today, /picks/bet-killer, /picks/under-of-the-day, etc. all get the inline block for free — good single-attach point.",
+    "Same source of truth verified empirically: /api/picks/{id}/probability handler at server.py:2942-2960 is a thin wrapper around the same unified_probability_report(pick) call, with no extra mutations. Both endpoints fetch the same DB pick (find_one with {'_id': 0}). Determinism is therefore the only requirement and the engine satisfies it (no RNG observed in unified_probability_report).",
+    "data_version stamp was bumped from '2026.06.23-unified-probability-engine' (iter36) to '2026.06.23-probability-canonical' (iter37) — both old & new test suites updated to track the canonical value.",
+    "Minor nit (unchanged from iter36): unified_probability_report calls _calib_get_curve() 3 times per pick. Now that this fires for EVERY pick on EVERY slate fetch (not just the standalone endpoint), the cost is multiplied by ~300 picks per /picks/today call. Process-level singleton makes it cheap, but worth verifying with a perf check on a cold-cache run."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_probability_canonical_iter37.py (new — 20 tests)",
+    "/app/backend/tests/test_probability_engine.py (updated data_version assertion to match new stamp)"
+  ],
+  "success_rate": {
+    "backend": "100% (44/44 pytest: 20 iter37 + 24 iter36 regression)",
+    "frontend": "not tested (request was backend-only)"
+  },
+  "seed_data_creation": "None — used existing demo@lockscore.ai account and live /api/picks/today data (301 picks in the slate).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "test_probability_canonical_iter37.py is the canonical regression for the inline-probability invariant. The key test is TestSameSourceOfTruth::test_invariant_inline_eq_endpoint, which catches any drift between the inline block on /api/picks/today and the standalone endpoint output. If the engine ever becomes non-deterministic (e.g. samples random noise) this test will start flaking — make any new randomness an explicit, seeded input. The iter36 file (test_probability_engine.py) is kept for engine-level unit coverage; do NOT delete it. data_version is hardcoded in both test files — update both if the stamp bumps again."
+}
