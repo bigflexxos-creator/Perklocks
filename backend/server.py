@@ -48,7 +48,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.23-calibration-shrinkage"
+DATA_VERSION = "2026.06.23-revert-calibration-overlay"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -157,25 +157,14 @@ def _canonicalize_lock_score(pick: dict) -> dict:
             # Safe fallback — at minimum, surface the higher number even if
             # we can't re-grade. Prevents the card-vs-detail mismatch.
             pick["lock_score"] = round(min(99.0, v2), 1)
-    # ── Calibration overlay (added 2026-06-23, "CALIBRATION UPDATE ONLY") ──
-    # Replace the raw model lock_score with the calibrated 5-component
-    # blend ONLY for pending picks. Settled picks keep their original
-    # number so the analytics page (Expected vs Actual) reads true.
-    # The badges/UI/thresholds (85/90/95) are untouched — only the
-    # underlying numeric value better matches historical hit rates.
-    try:
-        from lock_calibration import apply_calibration
-        pick = apply_calibration(pick)
-        # Re-grade if the calibrated number changed badge tier
-        if "raw_lock_score" in pick:
-            try:
-                from sports_engine import _grade, _confidence
-                pick["grade"] = _grade(pick["lock_score"])
-                pick["confidence"] = _confidence(pick["lock_score"])
-            except Exception:
-                pass
-    except Exception as e:
-        logger.debug("Calibration overlay skipped: %s", e)
+    # NOTE: calibration overlay was wired here in iter33 (blended a 5-component
+    # calibrated display score that crushed chalk-locks like Bieber from raw
+    # 92.7 down to display 67). User requested reverting on 2026-06-23
+    # ("Bieber should still be a 90+ at this line don't want to change app
+    # idea") — raw model score is the canonical display. Calibration
+    # infrastructure stays in /app/backend/lock_calibration.py (curve fit,
+    # analytics endpoint, auto-recalibrate) so the Confidence Calibration
+    # analytics view still surfaces Expected vs Actual deltas for tuning.
     return pick
 
 
