@@ -179,10 +179,28 @@ export default function LocksScreen() {
       // 87.5% real hit rate over the last 30 days. The earlier 85% +
       // 5pp disagreement gate was too strict (≈ 2 picks/day vs ≈ 50
       // picks/day at this threshold) and missed most of the edge.
+      //
+      // Market-aware threshold (iter40, 2026-06-23) — user bug "App
+      // still not showing picks" with SIM EDGE + Anytime Scorer both
+      // active. Goal-scorer markets (Anytime, FGS, Score-or-Assist)
+      // are structurally low-sim (~14% for FGS, ~50% for Anytime)
+      // because only one player wins per match. A flat ≥75% gate
+      // erases the entire category. Relax to ≥50% when the user is
+      // explicitly looking at a goal-scorer market — still gates
+      // out the bottom half, keeps the chalkiest scorers visible.
       if (f.simEdgeOnly) {
+        const market = (f.market || "").toLowerCase();
+        const isScorerMarket =
+          market.includes("scorer") ||
+          market.includes("score") ||
+          market.includes("anytime") ||
+          market.includes("fgs") ||
+          market.includes("first_goal") ||
+          market.includes("score_or_assist");
+        const simFloor = isScorerMarket ? 50 : 75;
         fresh = fresh.filter((p: any) =>
           typeof p.sim_win_probability === "number" &&
-          p.sim_win_probability >= 75,
+          p.sim_win_probability >= simFloor,
         );
       }
       setPicks(fresh);

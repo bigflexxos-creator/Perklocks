@@ -1,0 +1,33 @@
+{
+  "summary": "Iter 38 frontend SIM EDGE market-aware threshold fix — FULLY VERIFIED end-to-end. Manual UI walkthrough on /app (mobile viewport 390x844) reproduced the user-reported bug and confirmed the fix. Login via testIDs succeeds; Locks tab loads; Soccer chip works. Reproduced the exact failure mode against the live backend: /api/picks/today?sport=Soccer&market=anytime_scorer returns 30 picks with sim_win_probability in [7%, 64%] — ZERO clear the old 75% gate, but 13 clear the new 50% gate, exactly matching what the UI now renders. Scenarios validated (all on the Soccer tab with SIM EDGE active): (1) SIM EDGE alone → 27 cards rendered, no empty state. (2) SIM EDGE + Anytime Scorer → 13 cards (Harry Kane 62.7%, Ivan Toney 57.8%, Ollie Watkins 57.4%, Joao Felix 60%, Cristiano Ronaldo 63.4%, Ayoub El Kaabi…) — the user's exact 'No locks on the board' bug is fixed. (3) SIM EDGE + 1X2 (non-scorer) → 22 cards (= backend's count of Soccer 1x2 picks with sim≥75) — NO regression, 75% gate preserved. (4) SIM EDGE + Score or Assist → 13 cards (= backend's count of score_or_assist with sim≥50) — scorer relaxation correctly applied. Cachebust APP_DATA_VERSION verified in console logs as '20260623-02-sim-edge-scorer-aware' on launch. The simEdgeOnly conditional in /app/frontend/app/(tabs)/index.tsx lines 191-205 correctly matches all soccer scorer market tokens (anytime_scorer, score_or_assist, first_goal_scorer) and keeps simFloor=75 for 1x2/totals/btts. No backend code touched this iteration as expected.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "pointerEvents prop", "issue": "Console warns 'props.pointerEvents is deprecated. Use style.pointerEvents'. Likely on the toast View in (tabs)/index.tsx line ~324 (`<View style={styles.toast} pointerEvents=\"none\">`). Move pointerEvents into the StyleSheet. Reference: /app/frontend/app/(tabs)/index.tsx:324"},
+      {"component": "shadow* style props", "issue": "Console warns '\"shadow*\" style props are deprecated. Use \"boxShadow\".' fired on app launch. Sweep StyleSheets for shadowColor/shadowOffset/shadowOpacity/shadowRadius and migrate to boxShadow per RN 0.76+. Non-blocking but spams the console."}
+    ]
+  },
+  "test_report_links": [
+    "/app/test_reports/pytest/iter37_canonical.xml (last backend run — not re-run this iteration since request was frontend-only)"
+  ],
+  "action_items": [
+    "OPTIONAL FOLLOW-UP: SIM EDGE + FGS (first_goal_scorer) still returns 0 picks because every FGS pick has sim_win_probability between 7% and 16% (structurally — only one player scores first per match). The new 50% gate doesn't help FGS at all. Consider either (a) a 3rd, even-lower threshold for first_goal_scorer specifically (e.g. ≥10%), or (b) UX: hide the SIM EDGE chip / gray it out when the active market is FGS, since the combination is structurally impossible to satisfy. Not part of the user's reported bug — Anytime Scorer is now fixed — but the same class of issue.",
+    "Migrate deprecated `pointerEvents` prop and `shadow*` style props to silence console warnings (see react_native_issues)."
+  ],
+  "critical_code_review_comments": [
+    "The simEdgeOnly conditional (index.tsx:191-205) does substring matching against `f.market.toLowerCase()`. This is robust to the current token set (anytime_scorer, score_or_assist, first_goal_scorer all contain 'score'), but if a future market token includes 'score' without being a goal-scorer market (e.g. 'team_total_scored_first_half'), it would also drop to the 50% threshold. Acceptable for now; consider an allow-list constant `SCORER_MARKET_TOKENS` if more markets land.",
+    "Implementation matches the iter40 design: market-aware floor is the right surgical fix. No backend changes were needed because sim_win_probability is already present on every pick (verified in the API response).",
+    "Cachebust APP_DATA_VERSION bump triggers a Layer-3 wipe of the 2 known AsyncStorage keys on next launch — confirmed in console: `[cachebust] L3 wiped AsyncStorage — client data version: stored=\"none\" → current=\"20260623-02-sim-edge-scorer-aware\"`. Good.",
+    "User's note still applies: this only ships to the *preview* bundle. They must Deploy → Update Deployment for the production app to pick up this APP_DATA_VERSION; otherwise their installed binary will keep using the old simFloor=75 gate."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "n/a (frontend-only iteration)", "frontend": "100% (4/4 scenarios verified visually + numerically against backend ground truth)" },
+  "seed_data_creation": "None — used live /api/picks/today data (103 Soccer picks: 30 anytime_scorer, 15 score_or_assist, 15 first_goal_scorer, 35 1x2, 37 totals, 0 btts).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Soccer market tokens (canonical): 1x2, totals, btts, anytime_scorer, score_or_assist, first_goal_scorer. Sport chip testIDs are LOWERCASED (`sport-chip-soccer`, not `sport-chip-Soccer`). Market pill testIDs are NOT lowercased and use the raw token (`market-pill-anytime_scorer`, `market-pill-sim-edge`). The SIM EDGE pill is a SIBLING of the market pills (filters.simEdgeOnly) — both can be active at once. To reproduce the user's bug at any future date, run: GET /api/picks/today?sport=Soccer&market=anytime_scorer and count picks with sim_win_probability >= 75 vs >= 50; if both > 0 the fix is no longer exercised against that data window — use a quieter slate. The FGS-still-empty quirk (action item #1) is worth surfacing to the user proactively.",
+  "rca_of_issue": "REPRODUCED: with SIM EDGE chip ON and Anytime Scorer market chip ON, the Soccer feed was empty because the simEdgeOnly filter applied a flat sim_win_probability >= 75 gate, but Anytime Goal Scorer markets are structurally low-probability events (only one player wins per match), so the entire 30-pick Anytime Scorer slate sat in the 7%-64% band — 0 cleared 75. MITIGATION SHIPPED (iter40): /app/frontend/app/(tabs)/index.tsx now detects scorer-market tokens via substring match and relaxes the gate to ≥50%, surfacing 13 picks for the user instead of 0. Verified live."
+}
