@@ -59,6 +59,8 @@ def _american_combine(odds: list[int]) -> int:
 
 def _payout_per_unit(combined_odds: int, stake: float = 1.0) -> float:
     """Profit (not return) on a 1-unit stake."""
+    if not combined_odds:
+        return 0.0
     if combined_odds >= 100:
         return round(stake * combined_odds / 100.0, 2)
     return round(stake * 100.0 / abs(combined_odds), 2)
