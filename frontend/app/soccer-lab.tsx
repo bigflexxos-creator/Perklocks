@@ -12,7 +12,7 @@ import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator,
   RefreshControl, FlatList,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Stack, router as expoRouter, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS } from "@/src/theme";
@@ -44,6 +44,10 @@ export default function SoccerLabScreen() {
   const [leagueFilter, setLeagueFilter] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [leaguesMeta, setLeaguesMeta] = useState<{ count: number; age_sec: number } | null>(null);
+  // Lock-score floor chip (user-facing min-lock filter for the lab feed).
+  // The backend already filters at 78; this is a CLIENT-SIDE refinement
+  // so users can quickly narrow to 95+ / 99+ without a separate API call.
+  const [lockFloor, setLockFloor] = useState<number>(78);
 
   const load = useCallback(async () => {
     setError(null);
@@ -78,12 +82,20 @@ export default function SoccerLabScreen() {
   }, [load]);
 
   const picks = feed?.picks ?? [];
-  const filtered = leagueFilter
-    ? picks.filter((p) => (p.league || "").toLowerCase() === leagueFilter.toLowerCase())
-    : picks;
+  // Apply league + lock-floor filters client-side.
+  const filtered = picks.filter((p) => {
+    if (leagueFilter && (p.league || "").toLowerCase() !== leagueFilter.toLowerCase()) {
+      return false;
+    }
+    // Use displayed/governed lock if available — same canonical value
+    // the cards render.
+    const lock = getDisplayLock(p as any);
+    if (typeof lock === "number" && lock < lockFloor) return false;
+    return true;
+  });
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top + 6 }]}>
+    <SafeAreaView style={styles.root} edges={["top", "left", "right"]}>
       <Stack.Screen options={{ headerShown: false }} />
 
       {/* Header */}
@@ -105,6 +117,35 @@ export default function SoccerLabScreen() {
           <Ionicons name="refresh" size={20} color={COLORS.voltBlue} />
         </TouchableOpacity>
       </View>
+
+      {/* Lock-score floor chip strip — quick filter to 90+/95+/99+.
+          Mirrors the home-tab filter sheet so users can narrow the Lab
+          to elite-only picks with one tap. */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.lockChipRow}
+      >
+        {[78, 85, 90, 92, 95, 97, 99].map((v) => (
+          <TouchableOpacity
+            key={v}
+            onPress={() => setLockFloor(v)}
+            style={[
+              styles.lockChip,
+              lockFloor === v && styles.lockChipActive,
+            ]}
+            hitSlop={6}
+            testID={`lab-lock-floor-${v}`}
+          >
+            <Text style={[
+              styles.lockChipText,
+              lockFloor === v && styles.lockChipTextActive,
+            ]}>
+              {v === 78 ? "ALL" : `${v}+`}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
 
       {/* League chips */}
       {feed?.league_distribution && feed.league_distribution.length > 1 && (
@@ -173,7 +214,7 @@ export default function SoccerLabScreen() {
           }
         />
       )}
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -277,6 +318,37 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderWidth: 1,
     borderColor: COLORS.voltBlue + "55",
+  },
+  // ── Lock-score floor chip strip (sub-header) ──
+  lockChipRow: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 6,
+    gap: 6,
+  },
+  lockChip: {
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.borderDefault,
+    backgroundColor: "rgba(255,255,255,0.03)",
+    minHeight: 32,
+    justifyContent: "center",
+    marginRight: 6,
+  },
+  lockChipActive: {
+    borderColor: COLORS.goldElite,
+    backgroundColor: "rgba(255,215,0,0.18)",
+  },
+  lockChipText: {
+    color: COLORS.textSecondary,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.6,
+  },
+  lockChipTextActive: {
+    color: COLORS.goldElite,
   },
   headerTitle: {
     color: COLORS.textPrimary,
