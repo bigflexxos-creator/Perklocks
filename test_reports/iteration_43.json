@@ -1,0 +1,38 @@
+{
+  "summary": "Frontend-only verification of BetSlipContext stale-market-label heal fix. All three target scenarios PASSED on mobile viewport (390x844) against the public preview URL. (1) Stale-label heal — injected a synthetic bet slip into localStorage 'perkslocks.betslip.v1' with a REAL pick id but a fake market 'FAKE_STALE_MARKET_LABEL', book_odds=-999, lock_score=50. After reload + navigation to /slip, the slip auto-healed to the live backend values (market='Fery A. Moneyline', book_odds=-294, lock=92) AND the persisted localStorage payload was rewritten with the live pick. This confirms the expanded `changed` diff (market / book_odds / lock_score / win_probability / bet / selection / explanation) now triggers setPicks(refreshed) where the previous id+explanation-only diff would have silently kept the stale payload. (2) Stale-id drop — injected a fabricated id ('this-id-does-not-exist-12345'); api.pickDetail returned 404, the leg was filtered out, and the slip rendered empty + localStorage rewrote to '[]'. (3) No regression — clicked the real 'add-to-slip-button' on /pick/{realId}, slip showed correct live market/odds/lock and storage was persisted properly. The exact stale tennis markets the user reported (e.g. 'Tyra Caterina Grant -1.5 Spread') were the symptom of this bug; the fix now provably overwrites any drifted display field. Backend untouched per scope.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {
+        "component": "(global) RN-web text-node warning",
+        "issue": "Console error observed multiple times on /slip and /login: 'Unexpected text node: . A text node cannot be a child of a <View>.' Indicates a stray whitespace string rendered directly inside a <View> instead of a <Text>. Not blocking and unrelated to this bug fix, but should be tracked separately."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/test_reports/iteration_43.json"
+  ],
+  "action_items": [
+    "No action required for the bet slip stale-label heal fix — verified working on the preview build.",
+    "Optional follow-up: track down the RN-web 'text node cannot be a child of <View>' warning emitted on /slip and /login (see frontend_issues.react_native_issues)."
+  ],
+  "critical_code_review_comments": [
+    "BetSlipContext.hydrate refresh-on-mount catch-all silently drops a pick whenever api.pickDetail() throws — that covers 404 AND any network/5xx/401 failure. If the user briefly hits a backend hiccup or token-expiry mid-hydrate, their entire saved slip will be wiped from localStorage on next persist. Consider distinguishing 404 (intentional drop) from transient errors (preserve old pick rather than null it). Currently safe for the stale-label scenario, but a known foot-gun for connectivity edge cases."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "n/a (not in scope)",
+    "frontend": "100% (3/3 scenarios PASS)"
+  },
+  "seed_data_creation": "No DB seed. Test seeded localStorage entries only ('lockscore_token' = JSON-encoded JWT for demo@lockscore.ai, 'perkslocks.betslip.v1' = synthetic slip arrays). All in-browser only.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Real live pick id used for the heal test: 0d09e267-1a61-5e48-832b-30499b0f9985 ('Fery A. Moneyline', book_odds=-294, lock_score=92, sport=Tennis). To bypass UI login flakiness in the web preview, seed localStorage 'lockscore_token' with JSON.stringify(jwt) since src/utils/storage/index.web.ts wraps secureSet with JSON.stringify. The slip key 'perkslocks.betslip.v1' is written by BetSlipContext directly via AsyncStorage (no wrapper) so seed it as a raw JSON array string. Add-to-slip testID lives at testID='add-to-slip-button' on /pick/[id] only — there is NO add button on the Locks board screen.",
+  "rca_of_issue": "Original bug: BetSlipContext hydrate-refresh only set picks to the refreshed list if either length changed or some pick.id/pick.explanation differed. When the backend generator rotated the same pick_id to a different market label (e.g. when Odds API stopped exposing the spread market for a Tennis match), id stayed identical and explanation often stayed close enough that `changed` evaluated false → setPicks(refreshed) was skipped → the user kept seeing the stale market label even though the live backend would have served the correct one. Fix verified: the diff now also covers market, book_odds, lock_score, win_probability, bet, selection. Reproduction (post-fix): seed localStorage with a real pick id but garbage market/-999 odds/lock 50, hydrate /slip, observe live values reflected instantly and stale payload erased from storage. Confirmed both in DOM and in persisted state."
+}

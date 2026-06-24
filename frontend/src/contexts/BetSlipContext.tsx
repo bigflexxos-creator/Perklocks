@@ -65,9 +65,31 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
           }),
         );
         const refreshed = fresh.filter((p): p is Pick => p !== null);
-        // Only update state if something actually changed (avoid pointless renders).
+        // Detect ANY user-visible drift between the cached and the
+        // live payload — not just id/explanation. Bug history: a
+        // previous version of this diff only compared `id` and
+        // `explanation`, so when the same pick_id was re-keyed to a
+        // different market label by the generator (e.g. "Tyra Grant
+        // -1.5 Spread" rotated to "Tyra Grant Over 17.0 Games (Alt)"
+        // when the Odds API stopped exposing the spread market for
+        // that match), `changed` evaluated false and the slip kept
+        // showing the stale label forever. Comparing all display-
+        // relevant fields makes the slip always reflect the
+        // backend's current truth.
         const changed = refreshed.length !== initial.length ||
-          refreshed.some((p, i) => p.id !== initial[i]?.id || p.explanation !== initial[i]?.explanation);
+          refreshed.some((p, i) => {
+            const old = initial[i];
+            if (!old || p.id !== old.id) return true;
+            return (
+              p.market         !== old.market          ||
+              p.book_odds      !== old.book_odds       ||
+              p.lock_score     !== old.lock_score      ||
+              p.win_probability !== old.win_probability ||
+              p.bet            !== old.bet             ||
+              p.selection      !== old.selection       ||
+              p.explanation    !== old.explanation
+            );
+          });
         if (changed) setPicks(refreshed);
       } catch (e) {
         console.warn("[BetSlip] refresh-on-hydrate failed", e);
