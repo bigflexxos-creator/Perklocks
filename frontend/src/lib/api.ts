@@ -318,6 +318,10 @@ async function request<T>(
 }
 
 export const api = {
+  // Generic typed request helper — exposed so feature screens (e.g.
+  // admin dashboard) can call new endpoints without us having to add
+  // a wrapper for every single one.
+  request,
   register: (email: string, password: string, name?: string) =>
     request<{ access_token: string; user: User }>("/auth/register", {
       method: "POST",
