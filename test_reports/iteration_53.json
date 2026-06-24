@@ -1,0 +1,46 @@
+{
+  "summary": "Targeted backend regression for the iter53 patches on POST /api/auth/login. 16/16 pytest cases PASSED, including all 13 prior admin-dashboard regressions + 3 NEW assertions covering exactly what the patch shipped: (a) admin login response body now correctly returns user.role='admin' and user.status='active' (the iter52 bug is FIXED), (b) regular-user login returns user.role='user' and user.status='active', (c) suspended-user login is now hard-blocked at /api/auth/login with HTTP 403 (no JWT minted, no access_token in body), and (d) users.last_login_at is stamped to a fresh UTC ISO timestamp on every successful login and ADVANCES on each subsequent login. /auth/me round-trip still agrees with the login response. No regressions detected: overview gating, paginated users list, top-api-users sorted DESC, suspend->403/resume->200, self-suspend 409, api_usage tracker +=3 increments, owner auto-promotion of bossmanperkins@yahoo.com — all still green.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/admin/users",
+        "issue": "Carried over from iter52: default page_size remains 25 in admin_users_routes.py (PRD asks for 50). Frontend currently passes page_size=50 explicitly, so functional impact is nil — just a default mismatch."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_admin_dashboard.py",
+    "/app/test_reports/pytest/iter53_admin_dashboard.xml"
+  ],
+  "action_items": [
+    "No action needed — all three patches verified: (1) login forwards role+status from DB into UserPublic, (2) suspended users get 403 at /api/auth/login (no token issued), (3) users.last_login_at is stamped on each successful login. Safe to ship."
+  ],
+  "critical_code_review_comments": [
+    "server.py login() correctly reads doc.get('role') / doc.get('status') with safe defaults ('user' / 'active') so legacy rows without those fields still flow through.",
+    "Suspended-at-login check uses (doc.get('status') or 'active') == 'suspended' — handles None/missing safely.",
+    "last_login_at write uses datetime.now(timezone.utc).isoformat() (timezone-aware UTC), parseable by datetime.fromisoformat() on consumers. Good.",
+    "Minor nit: from datetime import datetime as _dt, timezone as _tz inside login() is a local re-import of the already-imported module-level symbols. Harmless but redundant — could be removed for cleanliness in a follow-up.",
+    "Minor nit: the last_login_at write is awaited BEFORE token issuance — if Mongo is briefly slow it adds a few ms of latency to login. Consider fire-and-forget (asyncio.create_task) if login throughput ever matters; today it's <5ms so leave it.",
+    "register() still does NOT pass role/status into UserPublic — defaults to 'user'/'active' which is correct for the register flow (new users are always non-admin/active), so this is fine as-is.",
+    "auth.get_current_user_from_db ALSO still blocks suspended users with 403 — defense in depth retained even if someone has a pre-suspension JWT in their pocket. Good."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_admin_dashboard.py (added TestLoginRoleForwarding class with 3 new tests; updated TestAdminLoginShape to assert role on the login body, not only /auth/me)"
+  ],
+  "success_rate": {
+    "backend": "100% (16/16 pytest cases passed; 13 regression + 3 new iter53-patch assertions)",
+    "frontend": "not_tested"
+  },
+  "seed_data_creation": "Test fixtures create throwaway TEST_-prefixed users + an admin promoted via direct Mongo update and a suspended victim; all torn down in fixture/test cleanup. No persistent seed data left behind.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "iter53 login patches are fully verified. Tests live in /app/backend/tests/test_admin_dashboard.py. Run with `cd /app && pytest backend/tests/test_admin_dashboard.py -v`. Backend at EXPO_BACKEND_URL (https://bet-edge-ai-1.preview.emergentagent.com), Mongo at MONGO_URL (lockscore_db). Suspended-login 403 is now enforced at BOTH /api/auth/login AND get_current_user_from_db (defense in depth). last_login_at is timezone-aware UTC ISO, parseable with datetime.fromisoformat(after_ts.replace('Z','+00:00')).",
+  "rca_of_issue": "iter52 finding (login response role='user' for admins) — root cause: server.py:88-95 built UserPublic without role/status, so the schema defaults applied. iter53 fix: server.py:101-108 now passes role=doc.get('role') or 'user', status=doc.get('status') or 'active'. Verified end-to-end: admin login body now contains user.role='admin'. Suspended-at-login fix: server.py:95-96 raises HTTPException(403) when doc.status=='suspended' BEFORE token creation, so no JWT is minted (verified — no access_token in 403 body). last_login_at stamping: server.py:110-114 db.users.update_one($set: last_login_at=now()) on every successful login (verified — fresh timestamp <60s old, advances across two logins)."
+}

@@ -341,12 +341,153 @@ class TestAdminLoginShape:
         assert "access_token" in body
         assert "user" in body
         user = body["user"]
-        # Login uses UserPublic — the role field default applies; we check the DB
-        # in-flight role is admin via /auth/me which IS read straight from DB.
+        # iter53 patch: login response must now carry role+status straight from DB.
+        assert user.get("role") == "admin", (
+            f"login response should show user.role='admin' for admins, got {user.get('role')!r}"
+        )
+        assert (user.get("status") or "active") == "active", (
+            f"login response should show user.status='active', got {user.get('status')!r}"
+        )
+        # And /auth/me agrees (read straight from DB).
         me = session.get(f"{BASE_URL}/api/auth/me", headers=_auth(body["access_token"]))
         assert me.status_code == 200
         me_body = me.json()
-        assert me_body.get("role") == "admin", (
-            f"/auth/me should show role=admin, got {me_body.get('role')}"
-        )
+        assert me_body.get("role") == "admin"
         assert (me_body.get("status") or "active") == "active"
+
+
+# ───── iter53 patch: login role/status forwarding + suspended 403 + last_login_at ─────
+class TestLoginRoleForwarding:
+    """Verify iter53 patches on POST /api/auth/login."""
+
+    def test_regular_user_login_returns_role_user_status_active(self, session):
+        """A freshly-registered, non-promoted user must come back as role=user, status=active."""
+        email = f"TEST_loginrole_{uuid.uuid4().hex[:8]}@example.com"
+        password = "RegularPw123!"
+        r = _register(session, email, password=password)
+        assert r.status_code == 201, r.text
+        uid = r.json()["user"]["id"]
+
+        r = _login(session, email, password)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        user = body["user"]
+        assert user.get("role") == "user", (
+            f"regular user login should show role='user', got {user.get('role')!r}"
+        )
+        assert user.get("status") == "active", (
+            f"regular user login should show status='active', got {user.get('status')!r}"
+        )
+        # And the response shape is otherwise sane.
+        for k in ("id", "email"):
+            assert k in user
+        assert "hashed_password" not in user
+
+        # Cleanup
+        try:
+            _dbsync.users.delete_one({"id": uid})
+            _dbsync.user_activity.delete_one({"user_id": uid})
+        except Exception:
+            pass
+
+    def test_suspended_user_login_returns_403(self, session, admin_ctx):
+        """Suspended users must NOT be able to mint a JWT — login returns 403."""
+        email = f"TEST_sus_login_{uuid.uuid4().hex[:8]}@example.com"
+        password = "SusPw123!"
+        r = _register(session, email, password=password)
+        assert r.status_code == 201, r.text
+        uid = r.json()["user"]["id"]
+
+        # Pre-suspend, login works (200 + token).
+        pre = _login(session, email, password)
+        assert pre.status_code == 200, f"pre-suspend login should 200, got {pre.status_code}"
+        assert "access_token" in pre.json()
+
+        # Suspend via admin endpoint
+        sr = session.post(
+            f"{BASE_URL}/api/admin/users/{uid}/status",
+            json={"status": "suspended"},
+            headers=_auth(admin_ctx["token"]),
+        )
+        assert sr.status_code == 200, sr.text
+        assert sr.json().get("status") == "suspended"
+
+        # Login MUST now 403, NOT 200
+        post = _login(session, email, password)
+        assert post.status_code == 403, (
+            f"suspended user login should 403, got {post.status_code} body={post.text!r}"
+        )
+        # No JWT leaked
+        try:
+            body = post.json()
+            assert "access_token" not in body, "suspended login must not return access_token"
+        except ValueError:
+            pass
+
+        # Cleanup
+        try:
+            _dbsync.users.delete_one({"id": uid})
+            _dbsync.user_activity.delete_one({"user_id": uid})
+        except Exception:
+            pass
+
+    def test_login_stamps_last_login_at(self, session):
+        """Every successful login bumps users.last_login_at to a fresh UTC ISO timestamp."""
+        from datetime import datetime, timezone, timedelta
+
+        email = f"TEST_lastlogin_{uuid.uuid4().hex[:8]}@example.com"
+        password = "StampPw123!"
+        r = _register(session, email, password=password)
+        assert r.status_code == 201, r.text
+        uid = r.json()["user"]["id"]
+
+        # Sanity: registration shouldn't have already stamped a last_login_at
+        # (only login should). If it did, that's fine — we just measure deltas.
+        before_doc = _dbsync.users.find_one({"id": uid}) or {}
+        before_ts = before_doc.get("last_login_at")
+
+        time.sleep(1.1)  # ensure visible delta
+        r2 = _login(session, email, password)
+        assert r2.status_code == 200, r2.text
+
+        # Mongo write is awaited inside the login handler, so it's present by the
+        # time the HTTP response returns. Still give a small beat for robustness.
+        time.sleep(0.3)
+        after_doc = _dbsync.users.find_one({"id": uid}) or {}
+        after_ts = after_doc.get("last_login_at")
+        assert after_ts, f"users.last_login_at not set after login; doc={after_doc}"
+
+        # Parse + assert it's recent (last 60s) and in UTC.
+        try:
+            parsed = datetime.fromisoformat(after_ts.replace("Z", "+00:00"))
+        except Exception as e:
+            pytest.fail(f"last_login_at not ISO-parseable: {after_ts!r} err={e}")
+        now = datetime.now(timezone.utc)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        delta = abs((now - parsed).total_seconds())
+        assert delta < 60, f"last_login_at not fresh: {after_ts} (delta={delta}s)"
+
+        # And must have advanced vs. the pre-login value if one existed.
+        if before_ts:
+            assert after_ts != before_ts, (
+                f"last_login_at not updated; before={before_ts} after={after_ts}"
+            )
+
+        # Login again, assert it advances again.
+        time.sleep(1.1)
+        r3 = _login(session, email, password)
+        assert r3.status_code == 200
+        time.sleep(0.3)
+        again = _dbsync.users.find_one({"id": uid}) or {}
+        again_ts = again.get("last_login_at")
+        assert again_ts and again_ts != after_ts, (
+            f"second login should bump last_login_at again; first={after_ts} second={again_ts}"
+        )
+
+        # Cleanup
+        try:
+            _dbsync.users.delete_one({"id": uid})
+            _dbsync.user_activity.delete_one({"user_id": uid})
+        except Exception:
+            pass
