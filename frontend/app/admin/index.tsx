@@ -84,7 +84,7 @@ export default function AdminDashboardScreen() {
   const loadUsers = useCallback(async (page = 1, q = "") => {
     setUsersLoading(true);
     try {
-      const qs = new URLSearchParams({ page: String(page), page_size: "25" });
+      const qs = new URLSearchParams({ page: String(page), page_size: "50" });
       if (q) qs.set("q", q);
       const r = await api.request<{ users: UserRow[]; total: number }>(
         `/admin/users?${qs.toString()}`,
@@ -305,7 +305,7 @@ export default function AdminDashboardScreen() {
         })}
 
         {/* Pagination */}
-        {usersTotal > 25 && (
+        {usersTotal > 50 && (
           <View style={styles.pager}>
             <Pressable
               disabled={userPage <= 1 || usersLoading}
@@ -315,12 +315,12 @@ export default function AdminDashboardScreen() {
               <Text style={styles.pagerBtnText}>PREV</Text>
             </Pressable>
             <Text style={styles.pagerLabel}>
-              Page {userPage} / {Math.max(1, Math.ceil(usersTotal / 25))}
+              Page {userPage} / {Math.max(1, Math.ceil(usersTotal / 50))}
             </Text>
             <Pressable
-              disabled={userPage * 25 >= usersTotal || usersLoading}
+              disabled={userPage * 50 >= usersTotal || usersLoading}
               onPress={() => loadUsers(userPage + 1, userQuery)}
-              style={[styles.pagerBtn, (userPage * 25 >= usersTotal) && { opacity: 0.4 }]}
+              style={[styles.pagerBtn, (userPage * 50 >= usersTotal) && { opacity: 0.4 }]}
             >
               <Text style={styles.pagerBtnText}>NEXT</Text>
             </Pressable>
