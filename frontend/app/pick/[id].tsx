@@ -15,6 +15,7 @@ import { MarketRankPanel } from "@/src/components/MarketRankPanel";
 import { ScorerBundlesPanel } from "@/src/components/ScorerBundlesPanel";
 import { SimulatorPanel } from "@/src/components/SimulatorPanel";
 import { RiskMeterPanel } from "@/src/components/RiskMeterPanel";
+import { EvidencePanel } from "@/src/components/EvidencePanel";
 import { PitcherH2HPanel } from "@/src/components/PitcherH2HPanel";
 import { XGFormPanel } from "@/src/components/XGFormPanel";
 import { ProbabilityBreakdownPanel } from "@/src/components/ProbabilityBreakdownPanel";
@@ -309,6 +310,13 @@ export default function PickDetail() {
                 market-implied. Displayed near the top so users see the
                 math that drives everything else below. */}
             <ProbabilityBreakdownPanel pickId={pick.id} />
+
+            {/* Universal Evidence System — surfaces the 4 separated metrics
+                (Probability / Edge / Evidence / Lock), the evidence tier
+                breakdown (HIGH/MED/LOW), and a tap-to-expand list of every
+                feature with full provenance. Hides itself if the pick
+                has no evidence_score yet (legacy pick pre-engine). */}
+            <EvidencePanel pick={pick as any} />
 
             {/* Monte Carlo Simulator — Phase A, MLB only. Shows 10k-run win
                 probability with 95% CI and disagreement signal vs the

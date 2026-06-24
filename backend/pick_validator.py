@@ -186,6 +186,18 @@ async def validate_and_heal(db) -> dict:
                 target_lock, _ = compute_lock_score(
                     factors, win_prob=wp, pick=p,
                 )
+                # ── Universal Evidence System governor ──
+                # If the pick has an `evidence_score` set, apply the same
+                # multiplier the engine applied at generation time. Without
+                # this, the validator's recompute writes back the un-governed
+                # raw target and erases the evidence haircut on every cycle.
+                ev_score = p.get("evidence_score")
+                if ev_score is not None:
+                    try:
+                        from evidence_engine import apply_lock_governor
+                        target_lock = apply_lock_governor(target_lock, int(ev_score))
+                    except Exception:
+                        pass
                 current_lock = p.get("lock_score") or 0
                 # The edge_percent is recomputed earlier in this same
                 # cycle — its drift cascades into lock_score even when

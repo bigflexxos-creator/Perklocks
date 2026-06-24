@@ -1,0 +1,91 @@
+{
+  "summary": "Universal Evidence System (Phase 1) verified end-to-end with one BLOCKER discovered. NEW: /app/backend/tests/test_evidence_engine_iter49.py — 16 cases (15 passed, 1 failed). The failure exposes a real user-visible governance leak: for ~60% of today's picks (89/149 — almost all Soccer + the Tennis canary 0d09e267) lock_score is STRICTLY GREATER than lock_score_raw, which violates rule 7 'evidence can only TEMPER, never INFLATE, the lock score.' RCA confirmed: pick_validator.py:235-236 writes a new lock_score (post-governance recompute) but never re-writes lock_score_raw, so the stored raw goes stale and the audit trail lies. The /pick/0d09e267 screen literally renders 'LOCK 92 / Raw 88 × 1.00' which is arithmetically impossible — admin inspector for the same id re-governs on the fly and correctly returns lock_score=87.5/raw=87.5/multiplier=1.00, so the two screens disagree to the user. All other contract checks pass: evidence_score in [0,100], multiplier in [0.70,1.00], lock clamped [0,99]; win_probability is unchanged by govern_pick (rule 7); admin /api/admin/pick-evidence/{id} returns the full inspector payload with the 4 separated metrics + tier_counts + top_features (with full provenance) + excluded_features + 404 on unknown id; explanation governor drops hype on score<40, detunes ('elite'→'strong', 'dominant'→'favored', 'lock'→'lean') on 40≤score<80, and passes through unchanged at score≥80; SIGNAL_LIMITED_FALLBACK fires when every insight is dropped. Validator self-heal still ran fixed_lock=185/376 (49%) this cycle, FAR from the 'near-zero after 2 cycles' the spec called for — same root cause: validator recompute is allowed to mutate the governed lock without re-running govern_pick, so every cycle it can drift back upward. REGRESSION: test_refactor_phase1_iter46 (19/19) + test_refactor_phase2a_analytics (19/19) + test_mlb_hitter_carveout_iter45 (12/12) all green. test_tennis_alt_tab_iter29 had 3 stale-assertion failures (asserts data_version='2026.06.23-tennis-alt-tab' and old 'tennis_alt' market name; the current shipped surface IS the new 4-pill structure ['match_winner','tennis_game_alt','sets','tennis_totals'] that iter47/48 already validated — these are stale tests, not regressions). FRONTEND (Playwright, mobile 390×844): EvidencePanel on /pick/{id} renders 'EVIDENCE' title, HIGH tier pill, 4-metric strip (PROB 71% / EDGE 0.0% / EVIDENCE 98 / LOCK 92), verdict line 'Backed by 1 evidence-grade feature (top: Monte Carlo simulator, 3,000 simulated outcomes)', tier badge row (HIGH 2 / MEDIUM 0 / LOW 0), and the 'Show evidence detail' toggle expands to show every feature with source + sample size (n=3000) + window. /admin/pick-evidence/{id} renders 4-metric card (with multiplier subtext + raw confidence-display line), TIER ROW, TOP FEATURES with cat/n/window/fresh/imp/rel/i×r/pass chips, EXCLUDED section, and SURFACED INSIGHTS — no crash. Deprecated 'shadow*' / 'pointerEvents' style props are still being warned (carryover, not from this iteration).",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/picks/today (data integrity)",
+        "issue": "lock_score > lock_score_raw on 89/149 picks (~60%) — pick_validator.py:235-236 updates lock_score post-recompute but never updates lock_score_raw, so the stored raw goes stale. Concrete example: pick 0d09e267-1a61-5e48-832b-30499b0f9985 returns lock_score=92.0, lock_score_raw=87.5, evidence_score=98, multiplier=1.0 (math: 87.5 × 1.0 = 87.5, NOT 92). This violates rule 7 ('evidence can only TEMPER, never INFLATE'). The /pick screen renders 'LOCK 92 / Raw 88 × 1.00' which is arithmetically impossible. Admin endpoint for the same id correctly returns 87.5/87.5 — so the two screens DISAGREE.",
+        "priority": "CRITICAL"
+      },
+      {
+        "endpoint": "pick_validator.py self-heal loop",
+        "issue": "fixed_lock=185/376 (49%) this cycle — the spec expects this to drop to near-zero after 2 cycles. Validator currently recomputes target_lock from freshly recomputed factors, applies the governor (line 196-200, good), but doesn't ALSO re-derive raw or write lock_score_raw, so on each cycle factor jitter can push the governed lock back up and the audit chain becomes incoherent. Suggested fix: instead of manually calling apply_lock_governor inside the validator, call evidence_engine.govern_pick(p, build_features_from_pick(p)) once per touched pick — that keeps lock_score, lock_score_raw, lock_score_v2, lock_score_v2_raw, and evidence_breakdown all in sync atomically.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "/api/picks/today",
+        "issue": "Several picks with evidence_score in the 50-60 range have governed lock_score values that round to clean 80-85 numerics (e.g., raw=75, governed=85; raw=70, governed=85.2). This is the same root cause as above (validator drift) but worth calling out separately — it makes Soccer picks look uniformly 'big' regardless of input strength."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "EvidencePanel.tsx / pick/[id].tsx",
+        "issue": "Lock card subtext renders 'Raw {lock_score_raw} × {multiplier}' verbatim, exposing the backend incoherence to users — observed 'Raw 88 × 1.00' next to a LOCK of 92. Once the backend writes lock_score_raw consistently the UI is fine, but worth a defensive frontend guard: if `lock_score_raw * multiplier !== lock_score` (within rounding), display only 'Raw {raw}' without the multiplier or hide the subtext.",
+        "testID": "(none — EvidencePanel has zero testIDs)",
+        "priority": "HIGH"
+      },
+      {
+        "component": "EvidencePanel.tsx",
+        "issue": "Component has ZERO testID attributes — verified by `grep testID EvidencePanel.tsx` returning nothing. The panel renders correctly but is untestable as black-box (Playwright must fall back to text content matching). Add: evidence-panel, evidence-tier-pill, evidence-metric-prob, evidence-metric-edge, evidence-metric-evidence, evidence-metric-lock, evidence-verdict, evidence-tier-high/med/low, evidence-show-detail-toggle, evidence-feature-row.",
+        "testID": "(missing)",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Pick detail vs Admin inspector for the same pick id",
+        "issue": "Public /pick/{id} reads the persisted DB value (post-validator), admin /api/admin/pick-evidence/{id} re-governs on read for the same id and returns different lock_score / lock_score_raw / evidence_score. For 0d09e267: pick screen shows LOCK 92, inspector shows Lock 87.5. The two screens currently DISAGREE to the user on the same pick.",
+        "affected_testIDs": ["pick-detail-lock-score", "(admin inspector has no testIDs)"]
+      }
+    ],
+    "design_issues": [
+      {
+        "screen": "/admin/pick-evidence/[id]",
+        "issues": [
+          "Admin inspector also has no testID attributes — same untestability issue as EvidencePanel.",
+          "DROPPED INSIGHTS section did not appear on the canary pick (none dropped — evidence was HIGH); intentional and correct, but consider rendering an empty-state placeholder so the section heading is discoverable."
+        ]
+      }
+    ],
+    "react_native_issues": [
+      {
+        "component": "Multiple (carryover, not new this iteration)",
+        "issue": "Console emits 'shadow* style props are deprecated. Use boxShadow.' and 'props.pointerEvents is deprecated. Use style.pointerEvents.' on every render. Not blocking but flagged."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_evidence_engine_iter49.py",
+    "/app/test_reports/pytest/iter49_evidence_engine.xml"
+  ],
+  "action_items": [
+    "FIX (CRITICAL): pick_validator.py — replace the manual `apply_lock_governor(target_lock, ev_score)` block (lines 194-200) + the `updates['lock_score'] = target_lock` write (line 235) with a single `govern_pick(p, build_features_from_pick(p))` call so lock_score AND lock_score_raw stay in lockstep. This will also drive fixed_lock toward zero on subsequent cycles.",
+    "FIX (CRITICAL): For picks already on the board today, run a one-shot re-governance pass so the 89 picks with raw<governed get their raw re-derived. Otherwise the UI will keep rendering 'Raw 88 × 1.00 = 92' until the next pick rebuild.",
+    "ADD: testID attributes throughout /app/frontend/src/components/EvidencePanel.tsx and /app/frontend/app/admin/pick-evidence/[id].tsx so the QA loop can detect future regressions without text-content matching.",
+    "ADD (defensive): in EvidencePanel.tsx lock-card subtext, guard against `lock_score_raw * multiplier !== lock_score` and hide the multiplier suffix until backend consistency is restored.",
+    "REFRESH: /app/backend/tests/test_tennis_alt_tab_iter29.py — 3 assertions are stale (data_version label + 'tennis_alt' market name). Rename them to assert the current 4-pill set ['match_winner','tennis_game_alt','sets','tennis_totals'] OR delete and rely on the iter47 phase-2a tests."
+  ],
+  "critical_code_review_comments": [
+    "evidence_engine.govern_pick is the right contract — single function, sport-agnostic, writes everything atomically. The validator should USE it rather than re-implementing half of it.",
+    "EvidencePanel.tsx (424 lines) is at the upper edge of the comfort window — extract the feature-row sub-component and the metric-strip into separate files when you next touch this file.",
+    "evidence_engine.py uses `min(1.0, abs(score_v) / 100.0)` to derive importance from factor magnitudes — this leaks the engine's confidence to the factor scale. Fine for Phase 1 but Phase 2 should let per-sport adapters set importance explicitly.",
+    "routes/admin_routes.py:48 — the on-the-fly governance branch SAVES nothing to DB ('history stays immutable'). That's correct, but it means the inspector and the persisted record will diverge for any pick the validator touched. The fix is upstream in the validator, not here.",
+    "server.py:1394-1408 catches per-pick governance failure and logs at WARNING but doesn't increment a counter — operator can't tell if 1 or 1000 picks silently fell through. Add a counter and surface in /api/picks/today response metadata."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_evidence_engine_iter49.py (new — 16 cases: contract checks against /api/picks/today + admin inspector + unit-level explanation governor + lock governor math + validator-governor parity check)"
+  ],
+  "success_rate": {
+    "backend": "94% (15/16 evidence-engine cases + 59/59 phase-1/phase-2a/MLB regression. 1 NEW failure exposes a real bug — lock_score_raw stale after validator self-heal. 3 separate failures in iter29 are stale test assertions, not regressions.)",
+    "frontend": "90% (EvidencePanel + Admin Inspector both render correctly with full structure; HIGH-priority UI bug: 'Raw 88 × 1.00' subtext is arithmetically inconsistent with displayed LOCK because of the backend issue — visible to end users)"
+  },
+  "seed_data_creation": "None — all assertions ran against the live board (149 picks today, including the canary 0d09e267 tennis pick).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "After the validator fix lands, re-run: pytest backend/tests/test_evidence_engine_iter49.py -v (this catches the lock_score > lock_score_raw regression definitively in TestPicksTodayEvidence::test_lock_score_raw_present_and_ge_governed). The canary pick id 0d09e267-1a61-5e48-832b-30499b0f9985 should after the fix return lock_score == lock_score_raw (both 87.5 with multiplier 1.00, ev_score 98). Also verify fixed_lock count in /var/log/supervisor/backend.err.log drops to <20 within 2 consecutive validator cycles. Stale iter29 tennis tests should be updated or retired in the same pass to keep the regression dashboard clean.",
+  "rca_of_issue": "BUG: lock_score > lock_score_raw on 60% of today's picks. ROOT CAUSE: pick_validator.py self-heal recomputes target_lock from current factor breakdown, applies apply_lock_governor(target_lock, ev_score) correctly (lines 196-200) so the WRITTEN lock_score is governed — but the function never updates lock_score_raw alongside it. So lock_score_raw stays frozen at whatever govern_pick wrote at generation time, while lock_score floats upward each validator cycle. REPRO: 1) GET /api/picks/today → find a pick where lock_score > lock_score_raw. 2) GET /api/admin/pick-evidence/{same_id} (this re-governs on read) → lock_score == lock_score_raw and BOTH differ from step 1. MITIGATION: replace lines 186-237 of pick_validator.py with a call to evidence_engine.govern_pick(p, build_features_from_pick(p)) wrapped in the existing drift-threshold and CLV penalty checks — govern_pick handles both raw and governed atomically, and writes lock_score_v2 too which the current code also misses."
+}

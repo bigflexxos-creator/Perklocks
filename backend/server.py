@@ -1389,6 +1389,31 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as _pi_err:
         logger.warning("Player Intelligence enrichment failed (continuing): %s", _pi_err)
 
+    # ── Universal Evidence System ── (2026-06-24)
+    # Run the explanation/lock governor on every pick before persistence.
+    # Adds: evidence_score, lock_score_raw, evidence_breakdown.
+    # Mutates: lock_score (= raw_lock × evidence_multiplier),
+    #          key_insights (filtered for hype + evidence-backed).
+    # Probability and edge are NEVER mutated.
+    try:
+        from evidence_engine import build_features_from_pick, govern_pick
+        governed_count = 0
+        for p in safe_picks:
+            try:
+                feats = build_features_from_pick(p)
+                govern_pick(p, feats)
+                governed_count += 1
+            except Exception as _per_pick_err:
+                # Per-pick failure must not abort the batch — if evidence
+                # extraction blows up on one weird pick we still want the
+                # others to persist. Surface the error in logs only.
+                logger.debug("Evidence governor failed on %s: %s",
+                             p.get("id"), _per_pick_err)
+        if governed_count:
+            logger.info("Evidence governor applied to %d picks", governed_count)
+    except Exception as _ev_err:
+        logger.warning("Evidence governor unavailable (continuing): %s", _ev_err)
+
     if safe_picks:
         # ordered=False already lets pymongo continue past duplicate-key
         # rows, but it STILL raises BulkWriteError at the end, aborting
@@ -1917,6 +1942,30 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # V1 score of e.g. 80, not its displayed-V2 of 93.8. 63/124 sort
     # inversions in the wild traced back to this exact ordering bug.
     picks = _canonicalize_picks(picks)
+
+    # ── Lazy Evidence Governance ── (Phase 1, 2026-06-24)
+    # Apply the Universal Evidence System to any pick missing an
+    # `evidence_score` — typically picks generated before the engine
+    # shipped. ONLY governs PENDING picks (we never re-write history
+    # by adjusting a settled pick's lock score post-hoc).
+    try:
+        from evidence_engine import build_features_from_pick, govern_pick
+        _gov_count = 0
+        for _p in picks:
+            if _p.get("evidence_score") is not None:
+                continue
+            if (_p.get("status") or "pending") != "pending":
+                continue
+            try:
+                govern_pick(_p, build_features_from_pick(_p))
+                _gov_count += 1
+            except Exception:
+                pass
+        if _gov_count:
+            logger.debug("Lazy evidence governance applied to %d picks", _gov_count)
+    except Exception as _lazy_ev_err:
+        logger.warning("Lazy evidence governance failed (continuing): %s", _lazy_ev_err)
+
     if day_offset is not None:
         target_day = (datetime.now(timezone.utc).date() + timedelta(days=day_offset)).isoformat()
         picks = [p for p in picks if (p.get("event_time") or "").startswith(target_day)]
@@ -2856,6 +2905,13 @@ async def pick_detail(pick_id: str,
     # Canonicalize lock_score → max(v1, v2) so detail view matches the home
     # feed card. Single source of truth — see `_canonicalize_lock_score` doc.
     pick = _canonicalize_lock_score(pick)
+    # Lazy evidence governance — see /api/picks/today for context.
+    if pick.get("evidence_score") is None and (pick.get("status") or "pending") == "pending":
+        try:
+            from evidence_engine import build_features_from_pick, govern_pick
+            govern_pick(pick, build_features_from_pick(pick))
+        except Exception as _ev_err:
+            logger.debug("Evidence governance failed in detail view: %s", _ev_err)
     if not pick.get("explanation"):
         from ai_engine import _fallback_explanation
         # Every pick reaching the UI is a recommended pick — always use the
