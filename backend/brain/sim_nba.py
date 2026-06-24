@@ -26,6 +26,8 @@ import random
 import re
 from typing import Optional
 
+from brain.sim_distribution import compute_percentiles
+
 RUNS = 10_000
 
 
@@ -266,6 +268,9 @@ def simulate_nba_pick(pick: dict) -> Optional[dict]:
         "sim_market_category": cat,
         "sim_disagreement_with_model": disagreement,
         "sim_signal": _signal(disagreement),
+        # Risk Meter — P10/P25/P50/P75/P90 of the projected stat
+        # distribution plus where the line sits within it.
+        **compute_percentiles(distribution, threshold=threshold),
     }
 
 

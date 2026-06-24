@@ -14,6 +14,7 @@ import { LockV2Panel } from "@/src/components/LockV2Panel";
 import { MarketRankPanel } from "@/src/components/MarketRankPanel";
 import { ScorerBundlesPanel } from "@/src/components/ScorerBundlesPanel";
 import { SimulatorPanel } from "@/src/components/SimulatorPanel";
+import { RiskMeterPanel } from "@/src/components/RiskMeterPanel";
 import { PitcherH2HPanel } from "@/src/components/PitcherH2HPanel";
 import { XGFormPanel } from "@/src/components/XGFormPanel";
 import { ProbabilityBreakdownPanel } from "@/src/components/ProbabilityBreakdownPanel";
@@ -314,6 +315,12 @@ export default function PickDetail() {
                 blended model, plus any lock_score lift applied. */}
             <SimulatorPanel pick={pick} />
 
+            {/* Risk Meter — visual P10/P50/P90 of the projected stat
+                distribution with the line marker positioned at its
+                quantile. Hides itself for ML / win markets that have
+                no integer distribution. */}
+            <RiskMeterPanel pick={pick} />
+
             {/* Lock Engine V2 — Deep Thinking (Counter + Survival + Sim) — shadow mode */}
             <LockV2Panel pick={pick} />
 
@@ -421,12 +428,22 @@ export default function PickDetail() {
 
             <Text style={styles.sectionLabel}>KEY INSIGHTS</Text>
             <View style={styles.insightsCard}>
-              {pick.key_insights.map((i, idx) => (
+              {/* Defensive: alt-line picks (esp. MLB pitcher/hitter
+                  alt-locks) occasionally arrive without a populated
+                  `key_insights` array — calling `.map` on undefined
+                  was crashing the whole deep-dive route. Coalesce so
+                  the section just renders empty instead of tanking. */}
+              {(pick.key_insights || []).map((i, idx) => (
                 <View key={idx} style={styles.bullet}>
                   <View style={[styles.bulletDot, { backgroundColor: gradeColor }]} />
                   <Text style={styles.bulletText}>{i}</Text>
                 </View>
               ))}
+              {(!pick.key_insights || pick.key_insights.length === 0) && (
+                <Text style={styles.factorEmpty}>
+                  No additional insights for this pick.
+                </Text>
+              )}
             </View>
 
             <View style={styles.sportsbookSection}>
