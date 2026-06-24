@@ -11,6 +11,7 @@ import { api, Pick, LineType, SortKey, SortDirection, PickFilters } from "@/src/
 import { LockPickCard } from "@/src/components/LockPickCard";
 import { ChipRow } from "@/src/components/ChipRow";
 import { FilterButton, FilterSheet } from "@/src/components/FilterSheet";
+import { GameFilterButton, GameFilterSheet } from "@/src/components/GameFilterSheet";
 import { SportFilterBar } from "@/src/components/SportFilterBar";
 import { StaleVersionBanner } from "@/src/components/StaleVersionBanner";
 import { StaleBuildBanner } from "@/src/components/StaleBuildBanner";
@@ -54,6 +55,7 @@ export default function LocksScreen() {
   const [sortDir, setSortDir] = useState<SortDirection>("desc");
   const [filters, setFilters] = useState<PickFilters>({});
   const [filterOpen, setFilterOpen] = useState(false);
+  const [gameFilterOpen, setGameFilterOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [stats, setStats] = useState<{ total_picks: number; elite_count: number; avg_edge_percent: number } | null>(null);
@@ -151,9 +153,17 @@ export default function LocksScreen() {
     !!filters.simEdgeOnly ||
     !!filters.market ||
     !!filters.league ||
+    !!filters.event ||
     (typeof filters.minLock === "number" && filters.minLock > 85) ||
     !!filters.minImplied ||
     (typeof filters.maxImplied === "number" && filters.maxImplied < 100);
+
+  // Render-time view of picks — applies the event filter so the user
+  // can drill into one game without losing the full slate from the
+  // GameFilterSheet's dropdown list.
+  const visiblePicks = filters.event
+    ? picks.filter((p) => (p.event || "") === filters.event)
+    : picks;
 
   const clearAllNarrowingFilters = () => {
     // Wipe only the narrowing predicates — keep sport / sort / lineType
@@ -195,6 +205,10 @@ export default function LocksScreen() {
       if (requestedSport && requestedSport.toLowerCase() !== "all") {
         fresh = fresh.filter((p: any) => p.sport === requestedSport);
       }
+      // NOTE: filters.event is applied at RENDER time (see `visiblePicks`
+      // below) — not here — so the GameFilterSheet always sees every
+      // game on the slate. Filtering here would shrink the sheet's
+      // dropdown to the currently-selected event only.
       // Sim Edge filter — show only picks where the Monte Carlo simulator
       // hit ≥75%. Per the iter35 sim-backtest, this threshold is +6.1%
       // ROI vs -2.7% blind, and the 70-80% sim band actually settled at
@@ -378,6 +392,14 @@ export default function LocksScreen() {
             testID="locks-filter-button"
           />
         </View>
+        {/* Per-game drill-down — opens the GameFilterSheet listing every
+            unique event on the slate. One tap narrows the board to a
+            single match (e.g. "PSG @ Arsenal"). */}
+        <GameFilterButton
+          onPress={() => setGameFilterOpen(true)}
+          activeEvent={filters.event}
+          totalGames={Array.from(new Set(picks.map(p => p.event).filter(Boolean))).length}
+        />
         <TouchableOpacity
           onPress={onRefresh}
           activeOpacity={0.7}
@@ -422,6 +444,17 @@ export default function LocksScreen() {
         onSortDirChange={setSortDir}
       />
 
+      {/* Game (event) drill-down sheet. Always sees the FULL slate
+          (`picks` — pre-event-filter) so the user can swap between
+          games without losing the dropdown. */}
+      <GameFilterSheet
+        visible={gameFilterOpen}
+        picks={picks}
+        activeEvent={filters.event}
+        onClose={() => setGameFilterOpen(false)}
+        onApply={(event) => setFilters({ ...filters, event })}
+      />
+
       <ScrollView
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl tintColor={COLORS.textPrimary} refreshing={refreshing} onRefresh={onRefresh} />}
@@ -432,7 +465,7 @@ export default function LocksScreen() {
           <View style={styles.center}>
             <ActivityIndicator color={COLORS.voltBlue} />
           </View>
-        ) : picks.length === 0 ? (
+        ) : visiblePicks.length === 0 ? (
           <View style={styles.emptyCard} testID="empty-board">
             <Ionicons name="lock-open-outline" size={42} color={COLORS.textMuted} />
             <Text style={styles.emptyTitle}>No locks on the board</Text>
@@ -504,15 +537,20 @@ export default function LocksScreen() {
           /* Picks render in the grouped block below */ null
         )}
         {/* Grouped render — replaces the flat list when picks exist. */}
-        {picks.length > 0 && groupPicksByDay(picks).map((group) => (
-          <View key={group.key} style={styles.dayGroup}>
-            <View style={styles.dayHeader}>
-              <Text style={styles.dayLabel}>{group.label}</Text>
-              <Text style={styles.dayCount}>{group.items.length} GAMES</Text>
+        {visiblePicks.length > 0 && groupPicksByDay(visiblePicks).map((group) => {
+          const uniqueEvents = new Set(group.items.map((p) => p.event || "")).size;
+          return (
+            <View key={group.key} style={styles.dayGroup}>
+              <View style={styles.dayHeader}>
+                <Text style={styles.dayLabel}>{group.label}</Text>
+                <Text style={styles.dayCount}>
+                  {uniqueEvents} {uniqueEvents === 1 ? "GAME" : "GAMES"} · {group.items.length} {group.items.length === 1 ? "PICK" : "PICKS"}
+                </Text>
+              </View>
+              {group.items.map((p) => <LockPickCard key={p.id} pick={p} />)}
             </View>
-            {group.items.map((p) => <LockPickCard key={p.id} pick={p} />)}
-          </View>
-        ))}
+          );
+        })}
       </ScrollView>
     </SafeAreaView>
   );

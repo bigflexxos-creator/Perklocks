@@ -45,7 +45,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.24-lab-filter-and-safearea-fix"
+DATA_VERSION = "2026.06.24-game-filter-sheet"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
