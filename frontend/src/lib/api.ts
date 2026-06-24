@@ -504,6 +504,19 @@ export const api = {
       sim_is_under: boolean;
       sim_disagreement_with_model: number;
       sim_signal: "stronger" | "weaker" | "neutral";
+      // Risk Meter — five-number summary of the projected stat
+      // distribution. Optional because pure ML picks have no
+      // meaningful integer distribution and skip these fields.
+      sim_pctl_p10?: number;
+      sim_pctl_p25?: number;
+      sim_pctl_p50?: number;
+      sim_pctl_p75?: number;
+      sim_pctl_p90?: number;
+      sim_pctl_min?: number;
+      sim_pctl_max?: number;
+      sim_pctl_line?: number;
+      sim_pctl_line_quantile_pct?: number;
+      sim_pctl_n?: number;
     }>(`/picks/${id}/simulation`),
   pitcherH2H: (id: string) =>
     request<{

@@ -1,0 +1,36 @@
+{
+  "summary": "Risk Meter feature verified end-to-end (backend + frontend). NEW: /app/backend/tests/test_risk_meter_iter48.py — 9 tests, 8 passed + 1 skipped (NBA — no NBA props on the board today, expected). Confirmed GET /api/picks/{id}/simulation now returns all 10 sim_pctl_* fields for MLB prop markets: the reference Rhett Lowder Over 2.5 Strikeouts pick (5dbb35ba…) returns p10=3, p50=5, p90=8, line=2.5, line_quantile_pct=8.9 — matches main agent's manual values exactly. A discovered MLB Hits prop (Christian Yelich Over 0.5 Hits) and an MLB H+R+RBI carve-out also returned numeric, monotonically-ordered percentile fields. Soccer + Tennis sim endpoints both return 200 with sim_win_probability present and sim_pctl_* fields explicitly None — the Risk Meter component's `typeof sim_pctl_p50 !== 'number'` guard correctly hides the panel for those sports. REGRESSION: Re-ran /app/backend/tests/test_refactor_phase1_iter46.py + /app/backend/tests/test_refactor_phase2a_analytics.py — 38/38 still green (parlay-history lifecycle, admin routes, MLB H+R+RBI carve-out, tennis market pills [match_winner, tennis_game_alt, sets, tennis_totals], 15-endpoint analytics surface). FRONTEND (Playwright, mobile 390×844): logged in via testID inputs, opened /pick/5dbb35ba…; the Risk Meter rendered with the 'RISK METER' title, a 'STRONG LOCK' verdict pill, 'Strikeouts · 10,000 Monte Carlo runs' subhead, horizontal band + LINE marker + axis ticks 'P10 · 3 / P50 · 5 / P90 · 8', verdict subtext 'Line clears in ~91% of simulated outcomes', and the 4-cell strip P25=4 / MEDIAN=5 / P75=6 / OVER 2.5 = 91.5%. No 'Cannot read properties of undefined' crash → the defensive `pick.key_insights || []` and `pick.factors || {}` guards held. Tennis deep-dive (Fery A. Moneyline, 0d09e267…) rendered cleanly without a Risk Meter section, also no crash.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_risk_meter_iter48.py",
+    "/app/test_reports/pytest/iter48_risk_meter.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "RiskMeterPanel.tsx (line 154) defaults lineQ to 50 when sim_pctl_line_quantile_pct is missing — this would mis-classify edge cases as COIN FLIP. Acceptable today since the field is always returned alongside the p50 numeric guard, but worth documenting that the guard short-circuits before this default ever applies.",
+    "RiskMeterPanel.tsx writes `verdictFor(lineQ, isUnder)` — `lineQuantilePct` is defined as '% of samples ≤ threshold'. For Overs, winPct = 100 - lineQ is correct (we win when samples EXCEED the line). For Unders, winPct = lineQ is correct (we win when samples are ≤ line, except the strict-equality edge case is muddled when samples are integers and the line is .5 — current implementation handles it via the 'samples ≤ threshold' boundary which is fine for half-lines but ambiguous for whole-number lines). Half-lines are the norm in props so not a blocker.",
+    "sim_distribution.compute_percentiles uses NumPy 'linear' interpolation by hand — correct, but the docstring says 'NumPy's default linear method' and they should stay aligned if NumPy ever changes its default (NumPy 1.22 made 'linear' the default; safe through current versions).",
+    "Frontend pick/[id].tsx now safely guards both `pick.factors` and `pick.key_insights` — good. There are still other arrays referenced un-guarded later (`pick.top_reasons` at line 402 — checked via length>0 fallback to key_insights, so OK)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_risk_meter_iter48.py (new — 9 cases: backend regression + Risk Meter percentile fields across MLB/Soccer/Tennis/NBA)"
+  ],
+  "success_rate": {
+    "backend": "100% (8/8 ran, 1 NBA skip — no NBA props on board; 38/38 regression passes)",
+    "frontend": "100% (Risk Meter renders for MLB strikeouts ALT LOCK with correct verdict + axis + 4-cell strip; ABSENT for Tennis Moneyline; no key_insights crash on either)"
+  },
+  "seed_data_creation": "None — all assertions ran against the live board.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Risk Meter pipeline is healthy. The pre-verified pick 5dbb35ba-fd3f-53b3-97cf-016ef468333a (Rhett Lowder Over 2.5 Strikeouts) is currently on the board with p10=3/p50=5/p90=8 — use it as the canary if Risk Meter regressions are suspected. NBA path is UNTESTED end-to-end because there were no NBA player-prop picks on the board today; if NBA picks reappear, re-run TestRiskMeterNBA from test_risk_meter_iter48.py. To run the new test suite: `EXPO_PUBLIC_BACKEND_URL=<url> pytest backend/tests/test_risk_meter_iter48.py -v`. The frontend Playwright flow requires logging in via the demo creds before navigating to /pick/{id} — direct localStorage stashing won't survive the cachebust loop that fires on cold load (it wipes any non-app-managed keys). Use the testIDs login-email-input / login-password-input / login-submit-button.",
+  "rca_of_issue": "N/A — feature-addition verification, no bug under investigation."
+}

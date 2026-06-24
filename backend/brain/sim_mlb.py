@@ -20,6 +20,8 @@ import random
 import re
 from typing import Optional
 
+from brain.sim_distribution import compute_percentiles
+
 RUNS = 10_000               # Monte Carlo iterations per pick
 EXPECTED_ABS_HITTER = 4.2   # lineup-spot avg
 EXPECTED_BF_PITCHER = 22.0  # ~ 5-6 innings × 3.7 BF/inning
@@ -224,4 +226,8 @@ def simulate_mlb_pick(pick: dict, player_stats: dict | None = None) -> Optional[
         "sim_alt_lines": alt_lines,
         "sim_disagreement_with_model": disagreement,
         "sim_signal": signal,
+        # Risk Meter — five-number summary of the underlying stat
+        # distribution so the UI can render a P10–P90 spread with the
+        # line marker positioned at sim_pctl_line_quantile_pct.
+        **compute_percentiles(distribution, threshold=threshold),
     }
