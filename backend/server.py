@@ -3075,17 +3075,24 @@ async def mlb_live(user: Annotated[UserPublic, Depends(current_user)]):
         date_part = ""
         if commence and len(commence) >= 10:
             date_part = commence[:10]
-        if date_part:
-            out[f"{ev_key}|{date_part}"] = entry
-        # Backward-compat key — but ONLY for live or today's-pre-game lookups.
-        # Avoid stamping a finished game over a future game with same teams.
-        # Strategy: only set the plain key if there isn't already one with
-        # better signal (live > pre > final).
-        existing = out.get(ev_key)
+        # Signal ranking — LIVE > pre-game > FINAL. Used for both the
+        # bare-key fallback (so today's live game beats yesterday's
+        # FINAL of the same matchup) AND the dated key (because late-
+        # night yesterday-PT games carry today's UTC date, so they
+        # collide with today's daytime games on the same UTC dated key
+        # — without ranking we'd serve yesterday's FINAL).
         def _signal(e: dict) -> int:
             if e.get("is_live"): return 3
             if not e.get("is_final"): return 2  # upcoming/preview
             return 1                              # final
+        if date_part:
+            dated_key = f"{ev_key}|{date_part}"
+            existing_dated = out.get(dated_key)
+            if not existing_dated or _signal(entry) > _signal(existing_dated):
+                out[dated_key] = entry
+        # Backward-compat key — but ONLY for live or today's-pre-game lookups.
+        # Avoid stamping a finished game over a future game with same teams.
+        existing = out.get(ev_key)
         if not existing or _signal(entry) > _signal(existing):
             out[ev_key] = entry
         if g.get("id"):
