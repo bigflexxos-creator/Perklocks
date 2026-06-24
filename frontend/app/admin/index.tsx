@@ -13,7 +13,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import {
   View, Text, StyleSheet, ScrollView, ActivityIndicator,
-  RefreshControl, Pressable,
+  RefreshControl, Pressable, TextInput, Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, router as expoRouter } from "expo-router";
@@ -34,6 +34,12 @@ type TopUser = {
   role: string; status: string; api_calls: number; last_call_at?: string;
 };
 
+type UserRow = {
+  id: string; email: string; name: string | null;
+  created_at: string | null; role: string; status: string;
+  last_login_at?: string | null;
+};
+
 export default function AdminDashboardScreen() {
   const { user } = useAuth();
   const [overview, setOverview] = useState<OverviewResp | null>(null);
@@ -41,6 +47,14 @@ export default function AdminDashboardScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // ── User list state ──
+  const [users, setUsers] = useState<UserRow[]>([]);
+  const [usersTotal, setUsersTotal] = useState(0);
+  const [userQuery, setUserQuery] = useState("");
+  const [userPage, setUserPage] = useState(1);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [mutating, setMutating] = useState<string | null>(null);  // user_id currently being toggled
 
   // Guard — non-admins shouldn't ever land here, but if they navigate
   // by URL we route them home.
@@ -67,7 +81,47 @@ export default function AdminDashboardScreen() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  const loadUsers = useCallback(async (page = 1, q = "") => {
+    setUsersLoading(true);
+    try {
+      const qs = new URLSearchParams({ page: String(page), page_size: "25" });
+      if (q) qs.set("q", q);
+      const r = await api.request<{ users: UserRow[]; total: number }>(
+        `/admin/users?${qs.toString()}`,
+      );
+      setUsers(r.users || []);
+      setUsersTotal(r.total || 0);
+      setUserPage(page);
+    } catch (e: any) {
+      setErr(e?.message || "Failed to load users");
+    } finally {
+      setUsersLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); loadUsers(1, ""); }, [load, loadUsers]);
+
+  // Toggle suspended ↔ active. Optimistic update with rollback on error
+  // so the user feels instant feedback.
+  const toggleSuspend = async (row: UserRow) => {
+    const next = row.status === "suspended" ? "active" : "suspended";
+    setMutating(row.id);
+    const prev = users;
+    setUsers((arr) => arr.map((u) => u.id === row.id ? { ...u, status: next } : u));
+    try {
+      await api.request(`/admin/users/${row.id}/status`, {
+        method: "POST",
+        body: { status: next },
+      });
+      // Refresh overview tile counts since suspended count changed.
+      api.request<OverviewResp>("/admin/overview").then(setOverview).catch(() => {});
+    } catch (e: any) {
+      setUsers(prev);
+      setErr(e?.message || "Failed to update status");
+    } finally {
+      setMutating(null);
+    }
+  };
 
   const onRefresh = () => { setRefreshing(true); load(); };
 
@@ -177,6 +231,100 @@ export default function AdminDashboardScreen() {
               </Text>
             </View>
           ))
+        )}
+
+        {/* ── User list with pause/resume toggle ── */}
+        <View style={{ flexDirection: "row", alignItems: "center", marginTop: 22, marginBottom: 8 }}>
+          <Text style={[styles.sectionTitle, { marginBottom: 0, flex: 1 }]}>
+            ALL USERS ({usersTotal})
+          </Text>
+          {usersLoading && <ActivityIndicator size="small" color={COLORS.voltBlue} />}
+        </View>
+        <View style={styles.searchBox}>
+          <Ionicons name="search" size={16} color={COLORS.textMuted} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search email or name…"
+            placeholderTextColor={COLORS.textMuted}
+            value={userQuery}
+            onChangeText={(t) => { setUserQuery(t); loadUsers(1, t); }}
+            autoCorrect={false}
+            autoCapitalize="none"
+          />
+          {userQuery.length > 0 && (
+            <Pressable hitSlop={6} onPress={() => { setUserQuery(""); loadUsers(1, ""); }}>
+              <Ionicons name="close-circle" size={18} color={COLORS.textMuted} />
+            </Pressable>
+          )}
+        </View>
+
+        {users.map((row) => {
+          const isSuspended = row.status === "suspended";
+          const isSelf = row.id === user?.id;
+          return (
+            <View key={row.id} style={[styles.userRow, isSuspended && { borderColor: COLORS.warmRed }]}>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <Text style={styles.userEmail} numberOfLines={1}>{row.email}</Text>
+                  {row.role === "admin" && (
+                    <View style={styles.adminBadge}>
+                      <Text style={styles.adminBadgeText}>ADMIN</Text>
+                    </View>
+                  )}
+                  {isSuspended && (
+                    <View style={[styles.adminBadge, { backgroundColor: COLORS.warmRed }]}>
+                      <Text style={styles.adminBadgeText}>PAUSED</Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={styles.userSub}>
+                  {row.name || "—"}
+                  {row.created_at ? ` · joined ${String(row.created_at).slice(0, 10)}` : ""}
+                </Text>
+              </View>
+              <Pressable
+                onPress={() => toggleSuspend(row)}
+                disabled={isSelf || mutating === row.id}
+                style={[
+                  styles.pauseBtn,
+                  isSuspended ? styles.pauseBtnResume : styles.pauseBtnSuspend,
+                  isSelf && { opacity: 0.3 },
+                ]}
+                testID={`admin-toggle-${row.id}`}
+              >
+                {mutating === row.id ? (
+                  <ActivityIndicator size="small" color="#000" />
+                ) : (
+                  <Text style={styles.pauseBtnText}>
+                    {isSelf ? "YOU" : isSuspended ? "RESUME" : "PAUSE"}
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          );
+        })}
+
+        {/* Pagination */}
+        {usersTotal > 25 && (
+          <View style={styles.pager}>
+            <Pressable
+              disabled={userPage <= 1 || usersLoading}
+              onPress={() => loadUsers(userPage - 1, userQuery)}
+              style={[styles.pagerBtn, (userPage <= 1) && { opacity: 0.4 }]}
+            >
+              <Text style={styles.pagerBtnText}>PREV</Text>
+            </Pressable>
+            <Text style={styles.pagerLabel}>
+              Page {userPage} / {Math.max(1, Math.ceil(usersTotal / 25))}
+            </Text>
+            <Pressable
+              disabled={userPage * 25 >= usersTotal || usersLoading}
+              onPress={() => loadUsers(userPage + 1, userQuery)}
+              style={[styles.pagerBtn, (userPage * 25 >= usersTotal) && { opacity: 0.4 }]}
+            >
+              <Text style={styles.pagerBtnText}>NEXT</Text>
+            </Pressable>
+          </View>
         )}
 
         <View style={{ height: 40 }} />
@@ -292,4 +440,33 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   emptyText: { color: COLORS.textMuted, fontSize: 12, textAlign: "center" },
+  searchBox: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10,
+    borderWidth: 1, borderColor: COLORS.borderDefault,
+    backgroundColor: COLORS.surface, marginBottom: 8,
+  },
+  searchInput: {
+    flex: 1, color: COLORS.textPrimary, fontSize: 14, paddingVertical: 0,
+    ...Platform.select({ web: { outlineWidth: 0 } as any, default: {} }),
+  },
+  pauseBtn: {
+    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8,
+    minWidth: 80, alignItems: "center", justifyContent: "center",
+  },
+  pauseBtnSuspend: { backgroundColor: COLORS.warmRed },
+  pauseBtnResume: { backgroundColor: COLORS.signalGreen },
+  pauseBtnText: { color: "#000", fontSize: 11, fontWeight: "900", letterSpacing: 0.8 },
+  pager: {
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    marginTop: 12, paddingHorizontal: 4,
+  },
+  pagerBtn: {
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8,
+    borderWidth: 1, borderColor: COLORS.voltBlue,
+  },
+  pagerBtnText: {
+    color: COLORS.voltBlue, fontSize: 11, fontWeight: "900", letterSpacing: 0.8,
+  },
+  pagerLabel: { color: COLORS.textSecondary, fontSize: 12, fontWeight: "700" },
 });
