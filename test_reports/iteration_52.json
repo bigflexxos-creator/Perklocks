@@ -1,0 +1,57 @@
+{
+  "summary": "Backend-only test of Admin Dashboard (iter52). 13/13 pytest cases PASSED — overview admin/non-admin gating, paginated users list (page_size=50), top-api-users sorted DESC, suspend->403/resume->200 round-trip on subsequent /api/* calls, self-suspension blocked with 409, API-usage tracker middleware increments user_activity.api_calls by ≥3 across 3 GETs, owner auto-promotion of bossmanperkins@yahoo.com confirmed (role=admin, status=active in lockscore_db). One real production bug found OUTSIDE pytest scope: POST /api/auth/login response payload returns user.role='user' even for admin accounts (UserPublic constructed without role/status in server.py). /api/auth/me returns the correct 'admin' — so frontend MUST read role from /auth/me or refetch after login, or backend must be patched.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/auth/login",
+        "issue": "Response payload's `user.role` and `user.status` are always defaults ('user'/'active') even when the DB doc has role='admin'. Caused by server.py L93-94 constructing UserPublic without passing role/status from doc. Spec explicitly requires 'user.role=admin in response'. The admin dashboard route gating works (it re-reads from DB via /auth/me), but a frontend that gates the Admin nav off the login payload will hide the dashboard from real admins. Fix: pass role=doc.get('role','user'), status=doc.get('status','active') into UserPublic in BOTH register and login.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/auth/login",
+        "issue": "Suspended users can still successfully login (200 + JWT). Only downstream /api/* calls 403. Not strictly broken (auth.get_current_user_from_db blocks them), but UX would be cleaner if login itself returned 403 with 'Account suspended'. server.py L88-95 should check `doc.get('status') == 'suspended'` before issuing a token."
+      },
+      {
+        "endpoint": "GET /api/admin/users",
+        "issue": "Default page_size is 25 (admin_users_routes.py L103) but the PRD asks for 50. Frontend should pass page_size=50 explicitly OR backend default should be raised to 50. Not a bug — just a default mismatch with spec."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_admin_dashboard.py",
+    "/app/test_reports/pytest/iter52_admin_dashboard.xml"
+  ],
+  "action_items": [
+    "Patch server.py register/login to populate role+status on UserPublic from the Mongo doc so the login response correctly shows user.role='admin' for admin accounts.",
+    "(Optional polish) Reject login for suspended accounts at /api/auth/login with 403 instead of letting them mint a JWT they can't use.",
+    "(Optional polish) Bump default page_size to 50 in /api/admin/users to match the PRD, or have the frontend pass page_size=50 explicitly."
+  ],
+  "critical_code_review_comments": [
+    "auth.py looks clean; require_admin_user correctly composes get_current_user_from_db + role check.",
+    "admin_users_routes.py correctly excludes _id and hashed_password projection on the list endpoint.",
+    "_track_user_api_usage middleware is fire-and-forget with try/except — won't break the API surface if Mongo hiccups. Skips /version, /auth/login, /auth/register as designed.",
+    "Owner-promote-at-startup is idempotent (update_one with no upsert). Confirmed bossmanperkins@yahoo.com row exists and is role=admin.",
+    "Self-suspend protection works (409). Self-demote-last-admin also guarded in admin_set_role.",
+    "Suspended users get 403 on every authenticated endpoint via get_current_user_from_db — confirmed end-to-end with /auth/me round-trip."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_admin_dashboard.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (13/13 pytest cases passed; 1 separate spec deviation found via probe — login response role)",
+    "frontend": "not_tested"
+  },
+  "seed_data_creation": "Test fixtures create throwaway users with TEST_ prefix and direct-Mongo promotion to admin; all cleaned up in fixture teardown. No persistent seed data left behind.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "If main agent fixes the auth/login UserPublic role/status passthrough, the login-response role bug can be regression-tested with a 5-line probe: register → mongo update {role:admin} → re-login → assert resp['user']['role']=='admin'. The existing test_admin_dashboard.py covers everything else. To run: `cd /app && pytest backend/tests/test_admin_dashboard.py -v`. Backend on https://bet-edge-ai-1.preview.emergentagent.com, MONGO_URL=mongodb://localhost:27017, DB_NAME=lockscore_db.",
+  "rca_of_issue": "Login-response role bug: server.py:88-95 builds UserPublic(id, email, name, created_at) without passing role/status. UserPublic schema (auth.py:34-40) defaults role='user', status='active', so admins get role='user' in the login payload. Fix is a 1-line change: add role=doc.get('role','user'), status=doc.get('status','active') to both register and login UserPublic constructors."
+}
