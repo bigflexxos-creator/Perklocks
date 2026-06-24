@@ -1499,13 +1499,21 @@ _MARKET_REGEX = {
     # ── Tennis ────────────────────────────────────────────────────────────
     "match_winner":  r"\bmoneyline\b|match winner|to win match",
     "sets":          r"\btotal sets\b|\bset winner\b|\bset score\b",
-    "games_total":   r"\bgames over\b|\bgames under\b|\btotal games\b",
-    # NEW (2026-06-23): the user's "Tennis ALT" tab. Surface every
-    # tennis alt-spread + alt-total + (Alt)-tagged pick under one
-    # umbrella so the chalk-ladder game-handicap picks ("Fritz -3.0
-    # Spread", "Svitolina -3.5 Spread", "Under 21.0 Games (Alt)")
-    # have a dedicated home. Excludes plain Moneyline.
-    "tennis_alt":    r"\(alt\)|[+\-]\d+(?:\.\d+)?\s+spread|spread\b|\btotal games\b|games over|games under",
+
+    # NEW (2026-06-24): User restructured Tennis tabs into 4 cleanly-
+    # separated families. The previous catch-all "Alt" tab mixed player
+    # game-spreads, total-game alts, and plain totals into one
+    # confusing bucket. Now:
+    #   • Game Alt Line (tennis_game_alt) → ONLY player spread alts.
+    #     Pattern: "<Name> +/-N.N Games (Alt)"  or  "<Name> +/-N.N Spread".
+    #     Disambiguated by the explicit +/- sign right before the games/
+    #     spread number — total Overs/Unders use no sign so they don't
+    #     collide.
+    #   • Totals (tennis_totals) → regular total-game lines AND alt
+    #     total-game lines, all under one umbrella.
+    #     Patterns: "Total Games Over/Under X.X" + "Over/Under X.X Games (Alt)".
+    "tennis_game_alt": r"[+\-]\d+(?:\.\d+)?\s+games\s*\(alt\)|[+\-]\d+(?:\.\d+)?\s+spread\b",
+    "tennis_totals":   r"\btotal games\b|^\s*(?:over|under)\s+\d+(?:\.\d+)?\s+games\b",
 
     # ── Broad catch-all (still used by analytics market-label grouping) ──
     "player_props":  r"hits|outs recorded|points|rebounds|assists|passing yards|rushing yards|receiving yards|touchdowns|goal scorer",
@@ -1552,10 +1560,10 @@ SPORT_MARKETS = {
         {"token": "pitcher_outs",           "label": "Outs Recorded"},
     ],
     "Tennis": [
-        {"token": "match_winner", "label": "Moneyline"},
-        {"token": "tennis_alt",   "label": "Alt"},
-        {"token": "sets",         "label": "Sets"},
-        {"token": "games_total",  "label": "Games O/U"},
+        {"token": "match_winner",    "label": "Moneyline"},
+        {"token": "tennis_game_alt", "label": "Game Alt Line"},
+        {"token": "sets",            "label": "Sets"},
+        {"token": "tennis_totals",   "label": "Totals"},
     ],
 }
 
