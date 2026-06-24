@@ -1,0 +1,32 @@
+{
+  "summary": "Phase-1 server.py decomposition (deps.py + routes/parlay_history_routes.py + routes/admin_routes.py) regression-tested end-to-end. All 19 pytest cases passed in 31s against the public EXPO_PUBLIC_BACKEND_URL with demo@lockscore.ai. The 4 extracted parlay-history endpoints and 5 extracted admin endpoints all return correct status codes and payload shapes; the parlay save→detail→delete lifecycle was exercised against a real optimizer leg-set and the saved doc is correctly stripped of Mongo `_id`. Regression on picks/today (full board + MLB + Tennis), tennis market pill tokens [match_winner, tennis_game_alt, sets, tennis_totals], tennis_game_alt and tennis_totals filters, MLB H+R+RBI carve-out, deep-dive pick, parlay optimizer, and /api/analytics/xg-form-shadow all still pass. Backend boot logs show clean mount messages with no warnings: 'Parlay-History routes mounted at /api/parlay/*' and 'Admin routes mounted at /api/admin/*'. Zero behavior change confirmed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_refactor_phase1_iter46.py",
+    "/app/test_reports/pytest/iter46_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is still 4,330 lines — Phase-1 only shaved ~140 lines. Recommend continuing extraction (e.g., /api/picks/* family, /api/auth/* family) since the deps.py pattern is now proven.",
+    "routes/parlay_history_routes.py and routes/admin_routes.py both do their data-layer imports INSIDE the handler body (e.g., `from parlay_history import save_parlay` inside parlay_save). This works and avoids any potential circular-import risk, but the import cost is paid on every request. Consider hoisting to module-level once you're confident no cycles exist — current request volumes make this purely a cleanup concern, not a correctness issue.",
+    "deps.py uses fallback strings ('mongodb://localhost:27017', 'perkslocks_production') for MONGO_URL/DB_NAME. The system prompt explicitly says 'Omit default values so missing config fails fast'. The comment on line 38-39 calls this out as intentional for prod safety — flag for product owner alignment, not a refactor bug."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_refactor_phase1_iter46.py (new — 19 regression cases)"
+  ],
+  "success_rate": {"backend": "100% (19/19)", "frontend": "not tested (skipped per request)"},
+  "seed_data_creation": "Test created and then deleted a single TEST parlay (p_<hash> derived from optimizer legs) — DB is clean post-test.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase-1 refactor verified clean. If/when Phase-2 (further server.py extraction) lands, reuse /app/backend/tests/test_refactor_phase1_iter46.py as a regression suite — it exercises auth, parlay-history CRUD, all 5 admin endpoints, and 8 regression hot-spots in /api/picks/*. EXPO_PUBLIC_BACKEND_URL is the key in /app/frontend/.env (not EXPO_BACKEND_URL — the test file falls back across both).",
+  "rca_of_issue": "N/A — pure internal refactor, no behavior change. All extracted routes verified against live backend at https://bet-edge-ai-1.preview.emergentagent.com with demo creds."
+}

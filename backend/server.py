@@ -26,15 +26,12 @@ from sports_engine import generate_all_picks  # noqa: E402
 from ai_engine import explain_pick, analyze_loss  # noqa: E402
 from settlement_engine import settle_due_picks  # noqa: E402
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-logger = logging.getLogger("lockscore")
-
-# Production-safe env loading with sane fallbacks so deployment doesn't crash
-# if env vars aren't set on the production environment.
-mongo_url = os.environ.get("MONGO_URL") or "mongodb://localhost:27017"
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ.get("DB_NAME") or "perkslocks_production"]
+# Shared deps (Mongo, logger, current_user) live in deps.py so route
+# modules under backend/routes/ can import them without circular refs
+# back into server.py. We re-bind the symbols here so existing code in
+# this file (and any third-party import like `from server import db`)
+# keeps working unchanged.
+from deps import db, client, logger, current_user, strip_mongo as _strip_mongo  # noqa: E402
 
 app = FastAPI(title="PerksLocks AI")
 api = APIRouter(prefix="/api")
@@ -65,11 +62,8 @@ async def get_version():
 
 
 # ────────────────────── Auth ──────────────────────
-
-async def current_user(
-    token: Annotated[Optional[str], Depends(oauth2_scheme)],
-) -> UserPublic:
-    return await get_current_user_from_db(db, token)
+# `current_user` lives in deps.py and is imported above. Keeping
+# this section header as a navigational marker.
 
 
 @api.post("/auth/register", response_model=Token, status_code=201)
@@ -3288,40 +3282,10 @@ async def pick_player_form(
     }
 
 
-@api.post("/admin/refresh-soccer-player-form")
-async def admin_refresh_soccer_player_form(
-    user: Annotated[UserPublic, Depends(current_user)],
-):
-    """Manually kick the Understat scrape job. Used by ops + initial seed.
-
-    Returns the same summary dict the background loop logs every 12h.
-    Guarded by auth — any logged-in user can trigger because the cost
-    is bounded (5 Understat POSTs).
-    """
-    from soccer_player_form import refresh_soccer_player_form
-    return await refresh_soccer_player_form(db)
-
-
-@api.post("/admin/backfill-tennis-elo")
-async def admin_backfill_tennis_elo(
-    user: Annotated[UserPublic, Depends(current_user)],
-    days_back: int = 30,
-):
-    """One-shot ops tool to seed the tennis_extra Elo + form ledger
-    from the last `days_back` days of ESPN ATP/WTA results.
-
-    Without this, a freshly-deployed pod would have to wait for
-    `days_back` real-world days of settlement to accumulate any form
-    data. Calling this endpoint after deploy populates the ledger
-    immediately.
-
-    SAFE TO RE-RUN ONCE on a fresh DB. Re-running on a populated DB
-    will double-count form W/L (since `update_after_match` is
-    `$inc`-based) — only re-trigger if you've reset the
-    `tennis_players` collection first.
-    """
-    from espn_settlement import backfill_tennis_elo
-    return await backfill_tennis_elo(db, days_back=max(1, min(60, days_back)))
+# Soccer/Tennis admin ops endpoints
+# (`/admin/refresh-soccer-player-form` + `/admin/backfill-tennis-elo`)
+# now live in `routes/admin_routes.py`. Mounted in the app-wiring
+# section near the bottom of this file.
 
 
 @api.get("/picks/{pick_id}/pitcher-h2h")
@@ -3755,135 +3719,17 @@ async def root():
 
 
 # ────────────────────── Historical Sports Intelligence Engine ──────────────────────
-# Admin endpoints to trigger backfills and inspect player form. The Lock Engine
-# itself reads from this engine via historical.lookup.get_player_form — no API
-# call needed.
-
-class HistoricalBackfillRequest(BaseModel):
-    sports: list[str] | None = None  # default: all 5 sports
-    mode: str = "backfill"           # "backfill" | "incremental"
-    days: int | None = None          # incremental: how many days back (default 3)
-
-
-@api.post("/admin/historical/backfill")
-async def historical_backfill(req: HistoricalBackfillRequest,
-                              user: Annotated[UserPublic, Depends(current_user)] = None):
-    """Trigger a current-season backfill (or incremental sync) for one or
-    more sports. Returns per-sport summary.
-
-    Note: Soccer (football-data.org) is paced at 6.5s/req due to the strict
-    10 req/min free-tier limit — a full backfill of 8 competitions can take
-    ~3-5 minutes. Other sports complete much faster.
-    """
-    # Auth required; user identity available via `user`. No admin restriction
-    # in dev — tighten via email allow-list later if needed.
-    try:
-        from historical.orchestrator import backfill_current_season, incremental_sync
-    except Exception as e:
-        raise HTTPException(500, f"Historical engine not loaded: {e}")
-    sports = req.sports or ["mlb", "nba", "nfl", "nhl", "soccer"]
-    if req.mode == "incremental":
-        # Allow custom lookback window for incremental syncs (default 3 days).
-        from datetime import timedelta as _td
-        since_override = None
-        if req.days and req.days > 0:
-            since_override = datetime.now(timezone.utc) - _td(days=int(req.days))
-        out = await incremental_sync(sports=sports, since_override=since_override)
-    else:
-        out = await backfill_current_season(sports=sports)
-    return {"mode": req.mode, "sports": sports, "results": out}
-
-
-@api.get("/admin/historical/status")
-async def historical_status(user: Annotated[UserPublic, Depends(current_user)] = None):
-    """Quick summary of what's stored in the historical engine."""
-    counts = {}
-    for col in ("players", "games", "player_game_logs", "season_totals", "team_form"):
-        try:
-            counts[col] = await db[col].estimated_document_count()
-        except Exception:
-            counts[col] = -1
-    last_syncs = {}
-    async for doc in db.historical_meta.find({}):
-        last_syncs[doc.get("_id")] = doc.get("last_sync")
-    return {"collections": counts, "last_syncs": last_syncs}
-
-
-@api.get("/admin/historical/player-form")
-async def historical_player_form(sport: str, name: str, market: Optional[str] = None,
-                                  user: Annotated[UserPublic, Depends(current_user)] = None):
-    """Look up the stored form summary for a player (debug + transparency)."""
-    try:
-        from historical.lookup import get_player_form
-        out = await get_player_form(sport, name, market_hint=market)
-        return out or {"found": False, "sport": sport, "name": name}
-    except Exception as e:
-        raise HTTPException(500, f"lookup failed: {e}")
+# Admin endpoints for Historical Engine (backfill / status / player-form
+# lookup) now live in `routes/admin_routes.py`. The Lock Engine itself
+# still reads from this engine via `historical.lookup.get_player_form`
+# — no API call needed.
 
 
 # ────────────────────── Parlay History (Save-on-Tap) ──────────────────────
 # User taps "Save" on a generated parlay → we persist it and track the
-# status of every leg until all settle. Frontend can then filter live /
-# won / lost parlays.
-
-class SaveParlayRequest(BaseModel):
-    legs: list[dict]                  # the full pick objects from /api/picks/parlay
-    mode: str = "standard"
-    stake: float = 1.0
-
-
-@api.post("/parlay/save")
-async def parlay_save(req: SaveParlayRequest,
-                       user: Annotated[UserPublic, Depends(current_user)]):
-    try:
-        from parlay_history import save_parlay
-        doc = await save_parlay(db, user_id=user.id,
-                                  legs=req.legs, mode=req.mode,
-                                  stake=req.stake)
-        return _strip_mongo(doc)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        logger.exception("save_parlay failed")
-        raise HTTPException(500, f"save failed: {e}")
-
-
-@api.get("/parlay/history")
-async def parlay_history_list(user: Annotated[UserPublic, Depends(current_user)],
-                                filter: Optional[str] = None,
-                                limit: int = 50):
-    """List the user's saved parlays. `filter` = won | live | lost | all."""
-    try:
-        from parlay_history import list_history
-        rows = await list_history(db, user_id=user.id,
-                                    status_filter=filter, limit=limit)
-        return {"parlays": rows, "count": len(rows)}
-    except Exception as e:
-        raise HTTPException(500, f"list failed: {e}")
-
-
-@api.get("/parlay/{parlay_id}")
-async def parlay_detail(parlay_id: str,
-                          user: Annotated[UserPublic, Depends(current_user)]):
-    from parlay_history import get_parlay
-    doc = await get_parlay(db, user_id=user.id, parlay_id=parlay_id)
-    if not doc:
-        raise HTTPException(404, "parlay not found")
-    return doc
-
-
-@api.delete("/parlay/{parlay_id}")
-async def parlay_remove(parlay_id: str,
-                          user: Annotated[UserPublic, Depends(current_user)]):
-    from parlay_history import delete_parlay
-    ok = await delete_parlay(db, user_id=user.id, parlay_id=parlay_id)
-    return {"deleted": ok}
-
-
-def _strip_mongo(doc: dict) -> dict:
-    if doc and "_id" in doc:
-        doc = {k: v for k, v in doc.items() if k != "_id"}
-    return doc
+# status of every leg until all settle. Endpoints now live in
+# `routes/parlay_history_routes.py`. The data-layer module
+# (`parlay_history.py`) is unchanged.
 
 
 # ────────────────────── App wiring ──────────────────────
@@ -3972,6 +3818,21 @@ except Exception as _pi_mount_err:
     logger.warning("Player Intelligence failed to mount, continuing without it: %s", _pi_mount_err)
 
 app.include_router(api)
+
+# ── Extracted route modules (2026-06-24 monolith decomposition) ─────
+# Each module owns its own APIRouter with prefix="/api" so the routes
+# resolve to the same paths they had before extraction. Add new
+# include_router() calls here as more endpoint families get pulled
+# out of server.py.
+try:
+    from routes import parlay_history_routes, admin_routes
+    app.include_router(parlay_history_routes.router)
+    logger.info("Parlay-History routes mounted at /api/parlay/*")
+    app.include_router(admin_routes.router)
+    logger.info("Admin routes mounted at /api/admin/*")
+except Exception as _routes_mount_err:
+    logger.exception("Extracted route modules failed to mount: %s", _routes_mount_err)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
