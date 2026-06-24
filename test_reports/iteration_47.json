@@ -1,0 +1,35 @@
+{
+  "summary": "Phase-2a analytics extraction (server.py → routes/analytics_routes.py) verified end-to-end. All 15 extracted analytics endpoints (10 GET + 5 POST) return 200 with expected payload shapes against the public EXPO_PUBLIC_BACKEND_URL using demo@lockscore.ai. The /api/analytics/v2 payload correctly carries changes_log, profit_by_sport, and profit_by_bet_type. /api/analytics/xg-form-shadow exposes the HOT/COLD/NEUTRAL bucket structure and the boolean promote_ready flag with promotion_rule text. /api/analytics/learn returns the required active_buckets / picks_adjusted / sample_size triple as ints. POST snapshots (buckets/recompute → buckets/rollback?snapshot_index=1) round-trip cleanly. Backend boot log includes the expected mount line: 'Analytics routes mounted at /api/analytics/* (15 endpoints)' immediately after the Phase-1 mounts. server.py contains zero residual @api.get/@api.post /analytics route decorators — the deletion was complete (3,973 lines, matches problem statement). All 19 Phase-1 regression cases (parlay-history CRUD lifecycle, admin endpoints, tennis pill tokens, MLB carve-out, deep-dive, parlay optimizer) also re-passed. Net: 38/38 backend tests green, zero behavior change confirmed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_refactor_phase2a_analytics.py",
+    "/app/backend/tests/test_refactor_phase1_iter46.py",
+    "/app/test_reports/pytest/iter47_phase2a_analytics.xml",
+    "/app/test_reports/pytest/iter47_phase1_rerun.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "routes/analytics_routes.py keeps the in-handler import pattern (e.g., `from analytics import compute_model_performance` inside the handler body) consistent with Phase-1 modules. Same trade-off applies: safe but pays import cost per request. Consider hoisting once cycles are proven impossible.",
+    "/api/analytics/v2 inlines two non-trivial aggregation pipelines (~70 lines). Extract to learning_system_v2.profit_by_sport() / profit_by_bet_type() helpers to keep the route file thin (currently 409 lines, mostly fine, but the inline aggregations are the only logic in the file that isn't a one-line delegate).",
+    "server.py is now 3,973 lines — Phase-1+2a shaved 496 lines total. The picks/* family (still in server.py) was intentionally deferred per main agent note; flag for Phase-2b.",
+    "deps.py still uses fallback strings ('mongodb://localhost:27017', 'perkslocks_production') for MONGO_URL/DB_NAME — carried over from Phase-1. System prompt prefers fail-fast; flag for product owner alignment, not a refactor bug."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_refactor_phase2a_analytics.py (new — 19 regression cases for the 15 analytics endpoints + 4 Phase-1/carve-out spot checks)"
+  ],
+  "success_rate": {"backend": "100% (38/38 across phase-1 + phase-2a suites)", "frontend": "not tested (skipped per request)"},
+  "seed_data_creation": "No persistent test data created. POST /analytics/learn / /v2/recompute / /buckets/recompute / /calibration/refit mutate aggregate state only and run as part of the normal background loop — no cleanup required.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "When Phase-2b (picks/* extraction) lands, re-run BOTH /app/backend/tests/test_refactor_phase1_iter46.py and /app/backend/tests/test_refactor_phase2a_analytics.py as the regression baseline before writing new picks-route tests. Phase-2a confirmed analytics_routes.router is correctly included via app.include_router() AFTER the api sub-router is mounted (server.py:3461 includes api, 3469-3475 includes the routes/ modules), so any new route modules should follow that ordering. The 5 POST analytics endpoints are slow-ish (5-15s each for refit/recompute) but always return 200 — give them ≥60s timeouts.",
+  "rca_of_issue": "N/A — pure refactor verification, no bug under investigation. Phase-2a confirmed clean."
+}

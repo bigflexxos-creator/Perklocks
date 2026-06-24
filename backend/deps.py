@@ -58,6 +58,14 @@ async def current_user(
 
 
 # ── small shared utilities ────────────────────────────────────────────
+def today_str() -> str:
+    """UTC YYYY-MM-DD — the canonical `pick_date` value used across
+    every collection. Imported by route modules to avoid a circular
+    dependency back into server.py for this trivial helper."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
 def strip_mongo(doc: dict) -> dict:
     """Drop the internal `_id` field from a Mongo document before
     returning it via the API. Mirrors the legacy `_strip_mongo`
