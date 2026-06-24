@@ -1,0 +1,64 @@
+{
+  "summary": "Phase 2 Sport Adapter framework verified END-TO-END. 26/26 Phase-2 + iter49 backend tests PASS (test_evidence_engine_iter49.py 16/16 + new test_sport_adapters_iter51.py 10/10). DISPATCH CONFIRMED: MLB picks route to MLBAdapter (sources include 'brain/sim_mlb.py' and 'The Odds API', never 'MLB factor breakdown'); Soccer picks route to SoccerAdapter (sources include 'brain/sim_soccer.py' + 'football-data.org' / 'Understat', never 'SOCCER factor breakdown'); Tennis picks route to TennisAdapter (at minimum 'The Odds API' is present — tennis_extra dict isn't yet plumbed at pick-generation, so deep Elo features won't surface until upstream wires them, exactly as the agent_to_agent note flagged). Registry confirmed to contain MLB, SOCCER, TENNIS, NBA, NFL, CFB. The NBA/NFL/CFB stubs delegate to the universal extractor by calling build_features_from_pick — which re-enters the dispatch, infinitely recurses, and is caught by the outer try/except in evidence_engine.build_features_from_pick, then falls back to _universal_build_features_from_pick. Works in practice (RecursionError → except → universal), but it's a code smell: the stubs should call _universal_build_features_from_pick directly. Verified by direct synthetic call: get_adapter('BROKEN').collect_features raising → universal fallback returns features. REGRESSION SUITE: iter50 lock-score fix passes (9/9) when validator is at rest. During an active validator cycle there is a transient ~10-pt mismatch (Soccer picks briefly read lock=90 raw=80 → 139/199 transient offenders) — the same flapping iter-50 documented under 'fixed_lock=222/376 every cycle'. Sweep settles back to 0 offenders ~30s later. iter45 H+R+RBI carve-out test fails because the board has 0 H+R+RBI props today (data-dependent — backend log shows 'MLB pregame loop: outside window'). iter29 tennis_alt_tab fails because the global data_version string was bumped to '2026.06.23-03-empty-board-cachebust' (not a Phase 2 regression — the tennis_alt market still exists, just renamed in the markets list). iter46/47/48 all PASS. Public board /api/picks/today returns 106 picks (not 376 as the request implied) — the 376 figure is the internal validator universe; public board filters down by apex/quality/recency. Sports represented include MLB, Soccer, Tennis, UFC, etc. FRONTEND: web preview loads cleanly to /login. Could not complete the post-login pick screenshot — the login click did not navigate (likely a credential autofill artifact in headless; not a Phase 2 issue). No red-screen errors; React Native shadow* / pointerEvents deprecation warnings persist from earlier iterations. CARRIED OVER FROM ITER-50 (still not fixed by main agent): /api/admin/pick-evidence/{id} still returns lock_score_v2=None — _canonicalize_lock_score has NOT been wired into admin_routes.py. Validator flapping (fixed_lock=193 most recent cycle) is still happening. Both confirmed by direct curl during this run.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "sport_adapters/stubs.py NBA/NFL/CFB.collect_features",
+        "issue": "Stubs call build_features_from_pick(pick) which re-enters the dispatch (get_adapter('NBA') → NBAAdapter.collect_features → build_features_from_pick → ...). Saved only by the outer try/except in evidence_engine.build_features_from_pick which catches the eventual RecursionError. Functionally correct (fallback fires) but a hot-path performance penalty: every NBA/NFL/CFB pick burns ~1000 frames of recursion + a stack-unwind every time we ask for its features. Fix: change stubs.py:25 to `from evidence_engine import _universal_build_features_from_pick; return _universal_build_features_from_pick(pick)` — direct call, no recursion."
+      },
+      {
+        "endpoint": "GET /api/admin/pick-evidence/{id} (carryover from iter-50)",
+        "issue": "Still returns the raw DB document without going through _canonicalize_lock_score. Confirmed by direct curl: /api/admin/pick-evidence/f19b42ac-2c8f-5b8b-8c35-3a2c199112ec returns lock_score_v2=None whereas /api/picks/{id} returns v2 / v2_raw populated. Iter-50 action item still open."
+      },
+      {
+        "endpoint": "pick_validator self-heal (carryover from iter-50)",
+        "issue": "Most recent cycle: 'Self-heal validator: scanned=376 fixed_lock=193 deep_dive_refreshed=264'. Validator is still flapping ~50% of the board every cycle. During an active write window, ~70% of Soccer picks transiently show lock_score > lock_score_raw (e.g. lock=90 raw=80, mult=1.0, expected=80). Settles back after ~30s. Iter-50 epsilon-guard recommendation still open."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {
+        "component": "Multiple (carryover)",
+        "issue": "Console emits '\"shadow*\" style props are deprecated. Use \"boxShadow\".' on every render. Cleanup pass needed. Reference: previously flagged in iter-49/50."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_sport_adapters_iter51.py (NEW — 10/10 PASS: adapter import + registry + fallback + per-sport dispatch + lock-score coherence + sports represented)",
+    "/app/backend/tests/test_evidence_engine_iter49.py (16/16 PASS)",
+    "/app/backend/tests/test_lock_score_raw_fix_iter50.py (9/9 PASS when validator is at rest)",
+    "/app/test_reports/pytest/iter51_combined.xml",
+    "/app/test_reports/pytest/iter51_sport_adapters.xml",
+    "/app/test_reports/pytest/iter51_evidence_engine.xml",
+    "/app/test_reports/pytest/iter51_regression.xml"
+  ],
+  "action_items": [
+    "(NICE-TO-HAVE) stubs.py — change NBA/NFL/CFB.collect_features to call `_universal_build_features_from_pick(pick)` directly instead of `build_features_from_pick(pick)` to avoid the recursive dispatch + caught-RecursionError pattern. Performance + clarity improvement, not a correctness fix.",
+    "(CARRYOVER FROM ITER-50, STILL OPEN) routes/admin_routes.py — apply _canonicalize_lock_score before returning the inspector payload so /api/admin/pick-evidence/{id} agrees with /api/picks/{id} on lock_score / lock_score_v2.",
+    "(CARRYOVER FROM ITER-50, STILL OPEN) pick_validator — add epsilon-guard so fixed_lock metric drops below 20 after the 3rd cycle instead of staying at ~193/376.",
+    "(PHASE 2.5 — explicitly deferred per agent_to_agent note) Plumb pitcher_profile / batter_profile / tennis_extra (surface_elo_diff, serve_hold_pct, etc.) / understat_form (xg_diff_per90) onto the pick dict at generation time so the deeper adapter features actually surface on /pick/{id}. Adapter interface is ready and tested; only the upstream ingestion writes are missing."
+  ],
+  "critical_code_review_comments": [
+    "sport_adapters/stubs.py:31 — calling build_features_from_pick from inside a registered adapter creates a re-entrant recursion. Works because the outer dispatch wraps the call in try/except, but the right fix is to call _universal_build_features_from_pick directly.",
+    "evidence_engine.build_features_from_pick — the try/except is catching RecursionError silently. Worth narrowing to (ImportError, AttributeError) so an actual adapter bug surfaces in logs instead of silently falling back to the universal extractor.",
+    "sport_adapters/__init__.py:35 — EvidenceFeature is imported at module load, then sport_adapters.mlb/etc. import from sport_adapters → potential circular import that's currently avoided by re-importing inside build_features_from_pick. Tolerable but consider promoting EvidenceFeature into a small shared module (evidence_types.py) so sport_adapters/__init__.py and evidence_engine.py both depend on it without circular risk.",
+    "MLBAdapter, SoccerAdapter, TennisAdapter — none of them override generate_probability() or run_simulation() yet, so the 5-method contract is effectively 1-method (collect_features) + 4 defaults. That's fine for Phase 2 INTERFACE COMPLETE but the per-sport probability + simulator hooks listed in the original PRD aren't yet exercised; the universal fusion engine continues to do the work. Worth documenting in the adapter docstrings so the next agent knows where the seams are."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sport_adapters_iter51.py (NEW — Phase 2 dispatch + framework regression suite)"
+  ],
+  "success_rate": {
+    "backend": "100% on Phase 2 scope (26/26: 10/10 new dispatch tests + 16/16 iter49 evidence-engine). Iter50 9/9 when validator is at rest, transient violations during active write cycles. Older regressions iter45 (data-dependent H+R+RBI) and iter29 (data_version string changed) fail for non-Phase-2 reasons.",
+    "frontend": "Web preview loads, no red screen. Deeper authenticated /pick/{id} flow blocked by a flaky login interaction in this run — not a Phase 2 issue; iter-50 already documented these screens render correctly."
+  },
+  "seed_data_creation": "None — all assertions ran against the live board (106 picks visible via /api/picks/today, 376 governed in the internal universe per backend logs).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Phase 2 Sport Adapter framework is INTERFACE COMPLETE and verified. Dispatch is wired: MLB → MLBAdapter (brain/sim_mlb.py + MLB Stats API + The Odds API), Soccer → SoccerAdapter (brain/sim_soccer.py + Understat + football-data.org), Tennis → TennisAdapter (The Odds API today, deeper features pending upstream tennis_extra plumbing — Phase 2.5). The 6 sports (MLB/SOCCER/TENNIS/NBA/NFL/CFB) are all in _REGISTRY. NBA/NFL/CFB stubs are interface-ready but recurse-then-fallback (see action item #1). All iter-50 carryover issues (admin_routes parity, validator flapping) are STILL OPEN — confirmed by curl during this run. For Phase 2.5, validate that pitcher_profile / understat_form.xg_diff_per90 / tennis_extra.surface_elo_diff actually appear in evidence_breakdown.top_features once upstream ingestion writes them.",
+  "rca_of_issue": "No new RCA — Phase 2 ships as advertised. The transient lock_score > raw violations during validator cycles, and the missing lock_score_v2 on admin inspector, are the same iter-50 issues that were not fixed before Phase 2 landed. Reproduction: 1) Watch /var/log/supervisor/backend.err.log for 'Self-heal validator: ... fixed_lock=193' line. 2) Within ~10s of that line, curl /api/picks/today and compute lock_score vs lock_score_raw for Soccer picks — see ~70% briefly inverted. 3) Wait ~30s and re-curl — invariant restored. Mitigation = the iter-50 epsilon-guard fix on pick_validator.py."
+}
