@@ -146,6 +146,10 @@ export type PickFilters = {
   market?: string;
   /** League substring match. */
   league?: string;
+  /** Specific event/game filter (e.g. "PSG @ Arsenal"). Applied
+   *  client-side so it instantly narrows the visible board to a single
+   *  match without a backend round-trip. */
+  event?: string;
   /** When TRUE, show only picks where the Monte Carlo simulator hit ≥85%
    *  AND agrees with the model by ≥5pp. Applied client-side. */
   simEdgeOnly?: boolean;
