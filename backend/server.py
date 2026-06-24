@@ -45,7 +45,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.24-gs-engine-v2-shadow"
+DATA_VERSION = "2026.06.24-gs-v2-shadow-capture-wired"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -1620,7 +1620,119 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
                 n_inserted, len(dup_errors),
             )
     logger.info("Stored %d picks for %s", len(safe_picks), date_str)
+    # ── GoalScorer Engine v2 shadow capture ──
+    # Best-effort: log a v2 prediction for every soccer goalscorer pick
+    # that just landed so calibration data starts accumulating. NEVER
+    # raises — strictly shadow.
+    try:
+        await _shadow_capture_gs_v2(safe_picks)
+    except Exception as e:
+        logger.debug("gs_v2 shadow capture failed (non-fatal): %s", e)
     return len(safe_picks)
+
+
+async def _shadow_capture_gs_v2(picks: list[dict]) -> None:
+    """Run the v2 engine on every soccer goalscorer pick and store the
+    prediction. Pure shadow mode — has no effect on the live board.
+
+    Hooked in by user request 2026-06-24 ("hook v2's store_prediction
+    into the soccer prop generator so calibration data starts
+    accumulating").
+    """
+    from goal_scorer_engine_v2 import (
+        PlayerFeatures, compute_probabilities, store_prediction,
+        get_calibration_factor,
+    )
+
+    gs_markets = ("anytime goal scorer", "first goal scorer",
+                  "last goal scorer", "to score or assist")
+    n_stored = 0
+    for p in picks or []:
+        if p.get("sport") != "Soccer":
+            continue
+        market_l = (p.get("market") or "").lower()
+        if not any(kw in market_l for kw in gs_markets):
+            continue
+        try:
+            # Pull form row (xG / xA / minutes / position / form_score).
+            player = (p.get("selection") or "").strip()
+            if not player:
+                continue
+            form = await db.soccer_player_form.find_one(
+                {"name_canonical": player.lower()}
+            ) or {}
+            event = p.get("event") or ""
+            # Parse "Away @ Home".
+            away_team = home_team = ""
+            if " @ " in event:
+                away_team, home_team = [x.strip() for x in event.split(" @ ", 1)]
+            # Heuristic: if player_team metadata isn't set, fall back to
+            # the form-row team and infer opponent from the event string.
+            player_team = (
+                p.get("player_team")
+                or form.get("team")
+                or home_team
+            )
+            opponent = away_team if player_team == home_team else home_team
+
+            features = PlayerFeatures(
+                player=player,
+                team=player_team or "",
+                opponent=opponent or "",
+                league=p.get("league") or "",
+                xG=float(form.get("xg") or 0.0),
+                xA=float(form.get("xa") or 0.0),
+                shot_volume=float(form.get("shots_per_90") or 0.0),
+                shot_quality=(
+                    float(form.get("xg_per_90") or 0.0)
+                    / max(0.01, float(form.get("shots_per_90") or 0.01))
+                ),
+                minutes_played=int(form.get("minutes") or 0),
+                games_played=int(form.get("games") or 0),
+                starts=int(form.get("games") or 0),
+                position=str(form.get("position") or "FW"),
+                # Sensible defaults when full feature pipeline isn't wired
+                # yet — pick-generator only fires for players the book
+                # lists, so "starting_xi" is the right prior for them.
+                lineup_confidence="starting_xi",
+                recent_form=float(form.get("form_score") or 50) / 100.0,
+                minutes_projection=80,
+            )
+            cal = await get_calibration_factor(
+                db,
+                league=features.league or "GLOBAL",
+                market="p_anytime",
+            )
+            outputs = compute_probabilities(features, calibration_mult=cal)
+
+            # Stash book price for residual report.
+            book_market_key = (
+                "anytime" if "anytime" in market_l else
+                "first"   if "first goal scorer" in market_l else
+                "last"    if "last goal scorer" in market_l else
+                "score_or_assist" if "to score or assist" in market_l else
+                "anytime"
+            )
+            await store_prediction(
+                db,
+                fixture_id=p.get("external_id") or p.get("id"),
+                event=event,
+                player=player,
+                team=player_team or "",
+                opponent=opponent or "",
+                league=features.league or "",
+                outputs=outputs,
+                book_prices={book_market_key: p.get("book_odds")},
+            )
+            n_stored += 1
+        except Exception as inner:
+            # Per-pick failure must never break the batch.
+            logger.debug("gs_v2 shadow capture skipped %s: %s",
+                         p.get("id"), inner)
+            continue
+    if n_stored:
+        logger.info("gs_v2 shadow capture: %d soccer goalscorer predictions stored",
+                    n_stored)
 
 
 async def _ensure_today_picks() -> None:
