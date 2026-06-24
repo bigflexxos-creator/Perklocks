@@ -24,6 +24,52 @@ router = APIRouter(prefix="/api")
 
 
 # ────────────────────── Soccer / Tennis ops ──────────────────────
+@router.get("/admin/pick-evidence/{pick_id}")
+async def admin_pick_evidence(
+    pick_id: str,
+    user: Annotated[UserPublic, Depends(current_user)],
+):
+    """Inspector for the Universal Evidence System (Phase 1).
+
+    Returns the full evidence_breakdown for a given pick — every
+    feature with its envelope (value / sample_size / lookback_days /
+    source / freshness / reliability / tier / passes_governor), the
+    raw and governed lock scores, the evidence multiplier, and any
+    insights that got dropped because the evidence didn't support
+    them. If the pick has no `evidence_score` yet (legacy pick),
+    governs it on-the-fly so the inspector still works.
+    """
+    pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
+    if not pick:
+        raise HTTPException(status_code=404, detail="Pick not found")
+    # On-the-fly governance for old picks. We DON'T persist the change
+    # here — settled picks must keep their stored lock score so history
+    # stays immutable.
+    if pick.get("evidence_score") is None:
+        try:
+            from evidence_engine import build_features_from_pick, govern_pick
+            govern_pick(pick, build_features_from_pick(pick))
+        except Exception as e:
+            raise HTTPException(500, f"Evidence governance failed: {e}")
+    return {
+        "pick_id":              pick.get("id"),
+        "sport":                pick.get("sport"),
+        "market":               pick.get("market"),
+        "player_name":          pick.get("player_name"),
+        "event":                pick.get("event"),
+        # The 4 separated metrics — rule 6.
+        "probability_pct":      pick.get("win_probability"),
+        "edge_pct":             pick.get("edge_percent"),
+        "evidence_score":       pick.get("evidence_score"),
+        "lock_score":           pick.get("lock_score"),
+        "lock_score_raw":       pick.get("lock_score_raw"),
+        # Full audit trail — rule 8.
+        "evidence_breakdown":   pick.get("evidence_breakdown") or {},
+        "key_insights":         pick.get("key_insights") or [],
+        "status":               pick.get("status") or "pending",
+    }
+
+
 @router.post("/admin/refresh-soccer-player-form")
 async def admin_refresh_soccer_player_form(
     user: Annotated[UserPublic, Depends(current_user)],

@@ -518,6 +518,22 @@ export const api = {
       sim_pctl_line_quantile_pct?: number;
       sim_pctl_n?: number;
     }>(`/picks/${id}/simulation`),
+  pickEvidenceInspector: (id: string) =>
+    request<{
+      pick_id: string;
+      sport: string;
+      market: string;
+      player_name: string | null;
+      event: string;
+      probability_pct: number | null;
+      edge_pct: number | null;
+      evidence_score: number | null;
+      lock_score: number | null;
+      lock_score_raw: number | null;
+      evidence_breakdown: Record<string, any>;
+      key_insights: string[];
+      status: string;
+    }>(`/admin/pick-evidence/${id}`),
   pitcherH2H: (id: string) =>
     request<{
       pitcher: string;
