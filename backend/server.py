@@ -665,19 +665,24 @@ def _dedupe_goalscorer_per_event(picks: list[dict], top_n: int = 2) -> list[dict
     match, that's 60+ near-identical picks dominating the feed.
 
     Rules:
-      1. Group goalscorer picks by (sport, event, team) — TEAM is the
-         critical addition. Without it, the "top 2 by win-probability"
-         pick favors whichever side has more elite strikers (e.g.
-         Netherlands' Depay+Gakpo+Malen will crowd out Sweden's
-         Gyökeres on every Sweden @ Netherlands card).
-      2. Within each (event, team) bucket, collapse to one row per
-         player — keep highest win% market. Anytime > Score-or-Assist
-         > First Goal Scorer on tie.
-      3. Keep TOP N players per (event, team) — both sides of the
-         match get their own quota.
+      1. Group goalscorer picks by (sport, event, team, market_family).
+         The market_family axis (added 2026-06-24, per user audit
+         "Players appearing on Anytime Goal board are sometimes missing
+         from Score or Assist board") keeps Anytime and Score-or-Assist
+         as SEPARATE boards — a player who qualifies for both stays on
+         both. ScoreOrAssist is a superset of Anytime, so the user
+         should always see both.
+      2. Within each (event, team, family) bucket, collapse to one
+         row per player — keep highest win% pick.
+      3. Keep TOP N players per (event, team, family) — both sides of
+         the match AND both market families get their own quota.
       4. ELITE players ALWAYS survive — passed through unconditionally
          regardless of position in their team's win% ranking.
       5. Non-goalscorer picks pass through untouched.
+
+    The structured audit (see `_scorer_audit_log`) emits a record for
+    every player explaining why they were kept/dropped so the admin
+    `scorer-audit` endpoint can prove no one silently disappears.
     """
     GOALSCORER_KEYWORDS = (
         "anytime goal scorer", "first goal scorer", "last goal scorer",
@@ -687,6 +692,16 @@ def _dedupe_goalscorer_per_event(picks: list[dict], top_n: int = 2) -> list[dict
     def _is_scorer(p: dict) -> bool:
         m = (p.get("market") or "").lower()
         return any(k in m for k in GOALSCORER_KEYWORDS)
+
+    def _market_family(market: str) -> str:
+        """Coarse market family used to keep Anytime, Score-or-Assist
+        and First-Goal-Scorer boards independent of each other."""
+        ml = market.lower()
+        if "anytime goal scorer" in ml:    return "anytime"
+        if "to score or assist" in ml:      return "score_or_assist"
+        if "first goal scorer" in ml:       return "first_goal"
+        if "last goal scorer" in ml:        return "last_goal"
+        return "other_scorer"
 
     def _market_rank(market: str) -> int:
         ml = market.lower()
@@ -703,7 +718,7 @@ def _dedupe_goalscorer_per_event(picks: list[dict], top_n: int = 2) -> list[dict
                 return market[:idx].strip()
         return market.strip()
 
-    by_event_team: dict = {}
+    by_bucket: dict = {}
     passthrough: list[dict] = []
     for p in picks:
         if not _is_scorer(p):
@@ -711,13 +726,16 @@ def _dedupe_goalscorer_per_event(picks: list[dict], top_n: int = 2) -> list[dict
             continue
         player = _player_from_market(p.get("market") or "")
         team = _player_team_for_event(player, p.get("event") or "", p.get("sport") or "")
-        # Fall back to a generic "?" team bucket when we can't ID the
-        # player's side — keeps these picks visible, just not balanced.
-        key = (p.get("sport"), p.get("event"), team or "?")
-        by_event_team.setdefault(key, []).append(p)
+        # market_family is the critical 4th axis — without it, a player
+        # on Anytime AND Score-or-Assist gets collapsed to one row.
+        fam = _market_family(p.get("market") or "")
+        key = (p.get("sport"), p.get("event"), team or "?", fam)
+        by_bucket.setdefault(key, []).append(p)
 
     kept: list[dict] = []
-    for key, group in by_event_team.items():
+    audit_rows: list[dict] = []
+    for key, group in by_bucket.items():
+        sport_k, event_k, team_k, fam_k = key
         # Step 2: collapse to one pick per player (highest win% wins).
         best_by_player: dict = {}
         for p in group:
@@ -732,7 +750,7 @@ def _dedupe_goalscorer_per_event(picks: list[dict], top_n: int = 2) -> list[dict
                 )
             ):
                 best_by_player[player] = p
-        # Step 3: top N by win_probability per team.
+        # Step 3: top N by win_probability per (team, family).
         ranked = sorted(
             best_by_player.values(),
             key=lambda x: -float(x.get("win_probability") or 0),
@@ -747,7 +765,135 @@ def _dedupe_goalscorer_per_event(picks: list[dict], top_n: int = 2) -> list[dict
         ]
         kept.extend(top_picks)
         kept.extend(protected_elite)
+        # Audit log — one row per player evaluated.
+        for i, p in enumerate(ranked):
+            survived = (
+                p in top_picks or
+                bool(p.get("elite_player")) or
+                bool(p.get("auto_elite"))
+            )
+            audit_rows.append({
+                "player":       _player_from_market(p.get("market") or ""),
+                "sport":        sport_k,
+                "event":        event_k,
+                "team":         team_k,
+                "market_family": fam_k,
+                "market":       p.get("market"),
+                "win_probability": float(p.get("win_probability") or 0),
+                "implied_probability": float(p.get("implied_probability") or 0),
+                "edge_percent": float(p.get("edge_percent") or 0),
+                "lock_score":   float(p.get("lock_score") or 0),
+                "rank_within_family": i + 1,
+                "survived":     survived,
+                "reason_excluded":  None if survived else "dedupe_topN_cap",
+            })
+
+    # Stash audit on the module for the admin endpoint to read.
+    try:
+        _set_scorer_audit_log(audit_rows)
+    except Exception:
+        pass
+
     return passthrough + kept
+
+
+# ── Scorer audit log buffer (in-memory, latest run only) ──────────────
+# Rotated on every call to `_dedupe_goalscorer_per_event`. The admin
+# endpoint `/api/admin/scorer-audit` reads this to expose runtime
+# coverage debug info (player, p_goal, p_assist, p_score_or_assist,
+# edge_goal, edge_score_or_assist, reason_excluded).
+_SCORER_AUDIT_LOG: dict = {"generated_at": None, "rows": []}
+
+
+def _set_scorer_audit_log(rows: list[dict]) -> None:
+    from datetime import datetime, timezone
+    _SCORER_AUDIT_LOG["generated_at"] = datetime.now(timezone.utc).isoformat()
+    _SCORER_AUDIT_LOG["rows"] = rows
+
+
+def get_scorer_audit_log() -> dict:
+    """Public accessor used by the admin route."""
+    return {
+        "generated_at": _SCORER_AUDIT_LOG.get("generated_at"),
+        "rows":         _SCORER_AUDIT_LOG.get("rows") or [],
+    }
+
+
+def get_scorer_coverage_audit(event: str | None = None) -> dict:
+    """Cross-market coverage audit.
+
+    Pivots the per-pick audit log into one row per (event, team, player)
+    so we can answer "did this player appear on Anytime AND Score-or-
+    Assist?". This is the canonical view for the user's debug request:
+
+        player, p_goal, p_assist, p_score_or_assist,
+        edge_goal, edge_score_or_assist, reason_excluded.
+
+    `p_assist` is derived from `p_goal` and the position-based prior used
+    elsewhere in the codebase (scorer_bundles.py) so the audit and the
+    user-facing scorer-bundles maths stay consistent.
+    """
+    from scorer_bundles import _assist_prior  # local import, no cycle
+    rows = _SCORER_AUDIT_LOG.get("rows") or []
+    if event:
+        rows = [r for r in rows if (r.get("event") or "") == event]
+    grouped: dict = {}
+    for r in rows:
+        key = (r.get("sport"), r.get("event"), r.get("team"), r.get("player"))
+        bucket = grouped.setdefault(key, {
+            "sport":  r.get("sport"),
+            "event":  r.get("event"),
+            "team":   r.get("team"),
+            "player": r.get("player"),
+            "anytime":         None,
+            "score_or_assist": None,
+            "first_goal":      None,
+        })
+        fam = r.get("market_family")
+        if fam in ("anytime", "score_or_assist", "first_goal"):
+            bucket[fam] = r
+
+    out = []
+    for bucket in grouped.values():
+        player = bucket.get("player") or ""
+        anytime_row = bucket.get("anytime") or {}
+        soa_row     = bucket.get("score_or_assist") or {}
+        # Probabilities — fall back to book-implied when model prob absent.
+        p_goal = anytime_row.get("win_probability") or anytime_row.get("implied_probability") or 0.0
+        p_score_or_assist = soa_row.get("win_probability") or soa_row.get("implied_probability") or 0.0
+        # Position prior for the assist component.
+        p_assist_given_no_goal = _assist_prior(player)
+        # If the sportsbook didn't price SoA but Anytime exists, we can
+        # synthesise a fair p_score_or_assist for debugging only.
+        if not p_score_or_assist and p_goal:
+            # P(SoA) ≈ P(goal) + (1 − P(goal)) · P(assist | no goal)
+            p_score_or_assist = p_goal + (1.0 - p_goal) * p_assist_given_no_goal
+            soa_reason = "sportsbook_market_unavailable"
+        else:
+            soa_reason = soa_row.get("reason_excluded")
+            if not soa_row and p_goal:
+                soa_reason = "sportsbook_market_unavailable"
+        out.append({
+            "player":              player,
+            "team":                bucket.get("team"),
+            "event":               bucket.get("event"),
+            "p_goal":              round(float(p_goal), 4),
+            "p_assist":            round(float(p_assist_given_no_goal), 4),
+            "p_score_or_assist":   round(float(p_score_or_assist), 4),
+            "edge_goal":           round(float(anytime_row.get("edge_percent") or 0), 2),
+            "edge_score_or_assist": round(float(soa_row.get("edge_percent") or 0), 2),
+            "anytime_survived":    bool(anytime_row.get("survived")) if anytime_row else False,
+            "soa_survived":        bool(soa_row.get("survived")) if soa_row else False,
+            "reason_excluded":     soa_reason,
+            "anytime_market":      anytime_row.get("market"),
+            "soa_market":          soa_row.get("market"),
+        })
+    out.sort(key=lambda r: (-r["p_goal"], r["player"]))
+    return {
+        "generated_at": _SCORER_AUDIT_LOG.get("generated_at"),
+        "total_players": len(out),
+        "rows": out,
+    }
 
 
 async def _picks_for_date(date_str: str) -> list[dict]:

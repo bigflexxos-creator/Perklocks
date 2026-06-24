@@ -174,3 +174,44 @@ async def historical_player_form(
         return out or {"found": False, "sport": sport, "name": name}
     except Exception as e:
         raise HTTPException(500, f"lookup failed: {e}")
+
+
+# ────────────────────── Scorer-coverage audit ──────────────────────
+@router.get("/admin/scorer-audit")
+async def admin_scorer_audit(
+    event: Optional[str] = None,
+    user: Annotated[UserPublic, Depends(current_user)] = None,
+):
+    """Per-event soccer scorer-board coverage audit.
+
+    Answers the user request "no eligible Anytime Goal player silently
+    disappears from Score or Assist". For every player evaluated in
+    the most recent refresh of the slate, returns:
+
+        player, team, event,
+        p_goal, p_assist, p_score_or_assist,
+        edge_goal, edge_score_or_assist,
+        anytime_survived, soa_survived,
+        reason_excluded,
+        anytime_market, soa_market.
+
+    Pass `?event=Manchester United @ Arsenal` to scope to a single
+    match — defaults to the entire current slate audit.
+    """
+    try:
+        from server import get_scorer_coverage_audit
+        return get_scorer_coverage_audit(event=event)
+    except Exception as e:
+        raise HTTPException(500, f"scorer audit failed: {e}")
+
+
+@router.get("/admin/scorer-audit/raw")
+async def admin_scorer_audit_raw(
+    user: Annotated[UserPublic, Depends(current_user)] = None,
+):
+    """Raw per-pick audit log (one row per pick evaluated)."""
+    try:
+        from server import get_scorer_audit_log
+        return get_scorer_audit_log()
+    except Exception as e:
+        raise HTTPException(500, f"scorer audit raw failed: {e}")
