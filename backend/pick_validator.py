@@ -341,6 +341,15 @@ async def validate_and_heal(db) -> dict:
                         gp_copy.pop("lock_score_raw", None)
                         gp_copy.pop("lock_score_v2_raw", None)
                         _gp(gp_copy, _bf(gp_copy))
+                        # Epsilon guard — only count this as a true
+                        # "fixed_lock" mutation if the lock score
+                        # actually changed by >= 0.5. Otherwise we
+                        # churn the DB every cycle and falsely inflate
+                        # the fixed_lock metric (iter-50 secondary).
+                        new_lock = gp_copy.get("lock_score")
+                        if new_lock is None or abs(float(new_lock) - float(cur_lock or 0)) < 0.5:
+                            # No real change — skip the write entirely.
+                            raise StopIteration("no-op")
                         for fld in (
                             "lock_score", "lock_score_raw",
                             "lock_score_v2", "lock_score_v2_raw",
@@ -351,6 +360,8 @@ async def validate_and_heal(db) -> dict:
                             if v is not None:
                                 updates[fld] = v
                                 p[fld] = v
+                except StopIteration:
+                    pass
                 except Exception:
                     pass
 

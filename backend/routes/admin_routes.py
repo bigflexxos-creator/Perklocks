@@ -42,6 +42,14 @@ async def admin_pick_evidence(
     pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
     if not pick:
         raise HTTPException(status_code=404, detail="Pick not found")
+    # Apply the SAME canonicalization the public /api/picks/{id} endpoint
+    # uses so the inspector can't disagree with what the user sees on the
+    # deep-dive screen (iter-50 finding #1).
+    try:
+        from server import _canonicalize_lock_score
+        pick = _canonicalize_lock_score(pick)
+    except Exception:
+        pass
     # On-the-fly governance for old picks. We DON'T persist the change
     # here — settled picks must keep their stored lock score so history
     # stays immutable.
