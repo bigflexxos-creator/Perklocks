@@ -40,6 +40,13 @@ SPORT_KEYS: dict[str, list[str]] = {
     "NBA": ["basketball_nba"],
     # "WNBA": ["basketball_wnba"],  # DISABLED — killing ROI (-31% Player Points)
     "NFL": ["americanfootball_nfl", "americanfootball_nfl_preseason"],
+    # CFB (College Football) — Week 0 is mid-late August. The Odds API
+    # key `americanfootball_ncaaf` covers FBS (and some FCS) games.
+    # We piggyback on the NFL pipeline architecture — same markets,
+    # same lock thresholds, same probability engine — and add CFB-
+    # specific signals (returning production, transfer portal, SoS)
+    # in a follow-up session once a CFB-data provider key lands.
+    "CFB": ["americanfootball_ncaaf"],
     # UFC / MMA — The Odds API uses one combined MMA key (covers UFC events).
     "UFC": ["mma_mixed_martial_arts"],
     # KBO disabled per user request 2026-06-18 — no new picks generated;
@@ -423,6 +430,7 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
         "NBA": 80,
         "WNBA": 78,
         "NFL": 80,
+        "CFB": 80,
         "Soccer": 75,  # most "Soccer" non-prop picks are h2h on weak leagues
         "Tennis": 72,
         "UFC": 72,
@@ -433,6 +441,7 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
         "NBA": 0.54,
         "WNBA": 0.54,
         "NFL": 0.54,
+        "CFB": 0.54,
         "Soccer": 0.50,
         "Tennis": 0.48,
         "UFC": 0.48,
@@ -918,7 +927,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
 
 
 def _unit(sport: str) -> str:
-    return {"MLB": "Runs", "NBA": "Points", "NFL": "Points",
+    return {"MLB": "Runs", "NBA": "Points", "NFL": "Points", "CFB": "Points",
             "Soccer": "Goals", "Tennis": "Games",
             "UFC": "Rounds", "KBO": "Runs",
             "WNBA": "Points"}.get(sport, "Points")
@@ -1003,6 +1012,7 @@ LEAGUE_LABELS: dict[str, str] = {
     "basketball_wnba": "WNBA",
     "americanfootball_nfl": "NFL",
     "americanfootball_nfl_preseason": "NFL Preseason",
+    "americanfootball_ncaaf": "CFB",
     # UFC / MMA
     "mma_mixed_martial_arts": "UFC / MMA",
     # KBO
@@ -1128,6 +1138,16 @@ async def fetch_nba_picks(date_str: str) -> list[dict]:
 
 async def fetch_nfl_picks(date_str: str) -> list[dict]:
     return await _fetch_picks_for_sport("NFL", date_str)
+
+
+async def fetch_cfb_picks(date_str: str) -> list[dict]:
+    """College Football pick generator. Same NFL pipeline (ML/Spread/
+    Total + props via Odds API), just keyed on `americanfootball_ncaaf`.
+    CFB-specific features (returning production, transfer portal, SoS)
+    plug in via a follow-up enrichment layer when a CFB-data API key
+    lands. Foundation: ensure CFB games surface on the board the
+    moment Odds API has them (typically mid-August)."""
+    return await _fetch_picks_for_sport("CFB", date_str)
 
 
 async def fetch_soccer_picks(date_str: str) -> list[dict]:
@@ -2261,6 +2281,7 @@ async def generate_all_picks(
     if _want("MLB"): fetch_jobs.append(fetch_mlb_picks(date_str))
     if _want("NBA"): fetch_jobs.append(fetch_nba_picks(date_str))
     if _want("NFL"): fetch_jobs.append(fetch_nfl_picks(date_str))
+    if _want("CFB"): fetch_jobs.append(fetch_cfb_picks(date_str))
     if _want("Soccer"): fetch_jobs.append(fetch_soccer_picks(date_str))
     if _want("Tennis"): fetch_jobs.append(fetch_tennis_picks(date_str))
     if _want("UFC"): fetch_jobs.append(fetch_ufc_picks(date_str))
