@@ -411,6 +411,37 @@ def govern_pick(
 
 # ── Sport-agnostic feature builder (used by all sports during Phase 1) ─
 def build_features_from_pick(pick: dict) -> list[EvidenceFeature]:
+    """Phase 2 dispatch — defer to the per-sport SportAdapter when one
+    is registered, fall back to the sport-agnostic universal extractor
+    otherwise.
+
+    The sport-specific adapters (sport_adapters/mlb.py, soccer.py,
+    tennis.py) pull DEEPER data than this generic fallback — pitcher
+    rolling K/9, Understat xG diffs, surface-specific Elo gaps, etc.
+    NBA / NFL / CFB use the generic fallback until live ingestion
+    lands for those seasons.
+    """
+    # Avoid the import at module top-level — sport_adapters/* imports
+    # back from evidence_engine for the EvidenceFeature dataclass.
+    try:
+        # Trigger sport_adapter registrations on first call.
+        import sport_adapters.mlb     # noqa: F401
+        import sport_adapters.soccer  # noqa: F401
+        import sport_adapters.tennis  # noqa: F401
+        import sport_adapters.stubs   # noqa: F401
+        from sport_adapters import get_adapter
+        sport = (pick.get("sport") or "").upper()
+        adapter = get_adapter(sport)
+        if adapter and getattr(adapter, "SPORT", "") not in ("", "*"):
+            return adapter.collect_features(pick)
+    except Exception:
+        # Any adapter import / dispatch error falls back to the
+        # universal extractor — never break governance.
+        pass
+    return _universal_build_features_from_pick(pick)
+
+
+def _universal_build_features_from_pick(pick: dict) -> list[EvidenceFeature]:
     """Phase 1 best-effort feature extractor — reads whatever
     provenance the existing pick generator already populates and
     wraps it in the EvidenceFeature envelope.
