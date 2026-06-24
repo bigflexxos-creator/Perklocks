@@ -90,8 +90,28 @@ async def login(payload: UserLogin):
     doc = await db.users.find_one({"email": payload.email.lower()})
     if not doc or not verify_password(payload.password, doc["hashed_password"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    public = UserPublic(id=doc["id"], email=doc["email"], name=doc.get("name"),
-                        created_at=doc.get("created_at"))
+    # Reject suspended users at login itself so they never get a usable
+    # JWT (cleaner UX than letting them in then 403ing everything).
+    if (doc.get("status") or "active") == "suspended":
+        raise HTTPException(status_code=403, detail="Account suspended. Contact support.")
+    # Forward role/status so the frontend can gate admin UI off the
+    # login response (iter52 testing-agent bug: previous version dropped
+    # these fields, so the "ADMIN DASHBOARD" tile only appeared after a
+    # /auth/me refresh).
+    public = UserPublic(
+        id=doc["id"],
+        email=doc["email"],
+        name=doc.get("name"),
+        created_at=doc.get("created_at"),
+        role=doc.get("role") or "user",
+        status=doc.get("status") or "active",
+    )
+    # Stamp last_login_at for the dashboard's active-24h tile.
+    from datetime import datetime as _dt, timezone as _tz
+    await db.users.update_one(
+        {"id": doc["id"]},
+        {"$set": {"last_login_at": _dt.now(_tz.utc).isoformat()}},
+    )
     return Token(access_token=create_access_token(doc["id"]), user=public)
 
 
