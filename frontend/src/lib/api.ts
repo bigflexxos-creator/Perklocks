@@ -60,6 +60,12 @@ export type Pick = {
   survival_score?: number;
   evidence_score?: number;
   conviction_score?: number;
+  // STICKY 95+ pin — picks that ever crossed 95 lock_score get pinned
+  // to the board across refresh cycles so users who saw a 99-lock can
+  // always find it. `lock_score_peak` carries the all-time-high.
+  pinned?: boolean;
+  lock_score_peak?: number;
+  lock_score_raw?: number;
 
   // ─── Sportsbook Mapping Engine (book-agnostic + per-book deep links) ──
   selection_v2?: {

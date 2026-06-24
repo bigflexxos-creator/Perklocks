@@ -1359,12 +1359,22 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     # same UUID5 from a prior day, then insert fresh.
     # When sport_filter is set (e.g. MLB pregame loop), scope the wipe to
     # just that sport so the other sports' rows stay intact.
+    #
+    # ── STICKY 95+ PINS ──
+    # Picks that ever crossed 95 lock_score_peak are PINNED — they survive
+    # refresh wipes so a user who saw a 99-lock pick yesterday can still
+    # find it on today's board (possibly with a "LINE MOVED" indicator if
+    # the new generation produced a different version of the same pick).
+    _pin_filter = {"$or": [
+        {"lock_score_peak": {"$exists": False}},
+        {"lock_score_peak": {"$lt": 95}},
+    ]}
     if sport_filter:
-        await db.picks.delete_many({"pick_date": date_str, "sport": sport_filter})
-        await db.picks.delete_many({"id": {"$in": list(seen_ids)}, "sport": sport_filter})
+        await db.picks.delete_many({"pick_date": date_str, "sport": sport_filter, **_pin_filter})
+        await db.picks.delete_many({"id": {"$in": list(seen_ids)}, "sport": sport_filter, **_pin_filter})
     else:
-        await db.picks.delete_many({"pick_date": date_str})
-        await db.picks.delete_many({"id": {"$in": list(seen_ids)}})
+        await db.picks.delete_many({"pick_date": date_str, **_pin_filter})
+        await db.picks.delete_many({"id": {"$in": list(seen_ids)}, **_pin_filter})
     # Defensive write: drop malformed pick docs (missing required fields)
     # so a single broken doc never aborts the entire batch insert. Required
     # fields: id, sport, event_time, market, book_odds.

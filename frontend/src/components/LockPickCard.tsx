@@ -129,6 +129,18 @@ export function LockPickCard({ pick }: { pick: Pick }) {
               </Text>
             </View>
           )}
+          {/* PINNED 95+ peak badge — once a pick crosses 95 lock_score on
+              any refresh cycle, it stays on the board across subsequent
+              refreshes so users who saw a 99-lock pick can always find it.
+              Shows the peak that earned the pin so users know whether the
+              current line is still the same as when it was added to slip. */}
+          {(pick as any).pinned && (pick as any).lock_score_peak != null && (
+            <View style={styles.pinBadge}>
+              <Text style={styles.pinBadgeText}>
+                📌 PEAK {Math.round((pick as any).lock_score_peak)}
+              </Text>
+            </View>
+          )}
           {/* Player form streak — 🔥 for hot, ❄️ for cold. Sourced from
               the live learning store (player_profiles_v2). Only shown for
               players with ≥3 picks (signal stable) and clear streak (≥2). */}
@@ -363,6 +375,22 @@ const styles = StyleSheet.create({
   },
   liveDot: { width: 6, height: 6, borderRadius: 3 },
   liveBadgeText: { fontSize: 10, fontWeight: "800", letterSpacing: 0.8, fontVariant: ["tabular-nums"] },
+  pinBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.neonGreen,
+    backgroundColor: COLORS.neonGreen + "1A",
+    marginLeft: 6,
+  },
+  pinBadgeText: {
+    color: COLORS.neonGreen,
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+    fontVariant: ["tabular-nums"],
+  },
   // SIM EDGE — high-confidence simulator agreement chip
   simEdgeBadge: {
     alignSelf: "flex-start",

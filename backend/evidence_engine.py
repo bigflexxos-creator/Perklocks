@@ -361,7 +361,20 @@ def govern_pick(
     )
 
     pick["evidence_score"] = score
+    # ── Lock-score PEAK tracking (sticky 99-locks) ──
+    # Once a pick crosses 95 on any refresh cycle, it stays pinned
+    # through subsequent refreshes. govern_pick is called on every
+    # cycle so updating peak here keeps it monotonically increasing.
     if raw_lock is not None:
+        new_lock = float(governed_lock if governed_lock is not None else raw_lock)
+        prev_peak = pick.get("lock_score_peak")
+        try:
+            prev_peak = float(prev_peak) if prev_peak is not None else 0.0
+        except Exception:
+            prev_peak = 0.0
+        pick["lock_score_peak"] = round(max(new_lock, prev_peak), 1)
+        if pick["lock_score_peak"] >= 95.0:
+            pick["pinned"] = True
         pick["lock_score_raw"] = round(float(raw_lock), 1)
         pick["lock_score"]      = governed_lock
     if raw_lock_v2 is not None:
