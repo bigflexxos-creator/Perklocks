@@ -370,6 +370,23 @@ def govern_pick(
         # number and erase the haircut.
         pick["lock_score_v2_raw"] = round(float(raw_lock_v2), 1)
         pick["lock_score_v2"]      = governed_lock_v2
+    # ── Lock-score canonical alignment ──
+    # The read path applies `lock_score = max(v1, v2)` (see
+    # `_canonicalize_lock_score` in server.py). If V2 wins that max,
+    # the persisted lock_score_raw must ALSO track V2's raw — otherwise
+    # the inspector reports "Lock 92 > Raw 87.5" (the iter-49 canary
+    # corruption) because lock_score_raw was only tracking V1.
+    canonical_lock = pick.get("lock_score")
+    canonical_v2   = pick.get("lock_score_v2")
+    if (
+        canonical_lock is not None and canonical_v2 is not None
+        and float(canonical_v2) > float(canonical_lock)
+    ):
+        pick["lock_score"]      = canonical_v2
+        # Match the V2 raw so audit math reconciles: raw × mult = lock
+        v2_raw = pick.get("lock_score_v2_raw") or raw_lock_v2
+        if v2_raw is not None:
+            pick["lock_score_raw"] = round(float(v2_raw), 1)
     pick["key_insights"] = insights_out
 
     pick["evidence_breakdown"] = {

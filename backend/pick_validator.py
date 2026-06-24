@@ -187,17 +187,28 @@ async def validate_and_heal(db) -> dict:
                     factors, win_prob=wp, pick=p,
                 )
                 # ── Universal Evidence System governor ──
-                # If the pick has an `evidence_score` set, apply the same
-                # multiplier the engine applied at generation time. Without
-                # this, the validator's recompute writes back the un-governed
-                # raw target and erases the evidence haircut on every cycle.
-                ev_score = p.get("evidence_score")
-                if ev_score is not None:
-                    try:
-                        from evidence_engine import apply_lock_governor
-                        target_lock = apply_lock_governor(target_lock, int(ev_score))
-                    except Exception:
-                        pass
+                # Apply the FULL govern_pick pass — not just the lock
+                # multiplier — so lock_score_raw, lock_score_v2,
+                # lock_score_v2_raw, and evidence_breakdown all stay
+                # in lockstep with lock_score. The earlier approach
+                # only multiplied target_lock and left lock_score_raw
+                # frozen at generation-time, which caused the
+                # validator to fight itself and push lock_score above
+                # lock_score_raw across cycles (89 of 376 picks
+                # corrupt as of iter-49).
+                #
+                # NOTE: governance is applied AT THE END of this block,
+                # AFTER drift-capping and CLV demotion. Reordering: those
+                # later steps mutate target_lock (raise it to enforce the
+                # 10-pt drift cap, lower it via CLV) — if we governed
+                # BEFORE those mutations, target_lock would diverge from
+                # lock_score_raw and the audit would show
+                # lock_score > lock_score_raw (the iter-49 canary bug).
+                _gov_lock_raw = None
+                _gov_lock_v2 = None
+                _gov_lock_v2_raw = None
+                _gov_evidence = None
+                _gov_breakdown = None
                 current_lock = p.get("lock_score") or 0
                 # The edge_percent is recomputed earlier in this same
                 # cycle — its drift cascades into lock_score even when
@@ -232,8 +243,54 @@ async def validate_and_heal(db) -> dict:
                         target_lock = max(60.0, target_lock - 5.0)
                     elif clv < -0.5:
                         target_lock = max(60.0, target_lock - 2.0)
+
+                    # ── Universal Evidence System — applied LAST so the
+                    # drift cap + CLV demotion above have already settled
+                    # target_lock into its FINAL raw value. govern_pick
+                    # records this as lock_score_raw and writes the
+                    # governed value into lock_score. Without this
+                    # ordering, target_lock could be raised by the drift
+                    # cap AFTER governance and end up > lock_score_raw
+                    # (the iter-49 canary corruption).
+                    try:
+                        from evidence_engine import (
+                            build_features_from_pick, govern_pick,
+                        )
+                        p_copy = dict(p)
+                        p_copy["lock_score"] = target_lock
+                        p_copy.pop("lock_score_raw", None)
+                        p_copy.pop("lock_score_v2_raw", None)
+                        govern_pick(p_copy, build_features_from_pick(p_copy))
+                        target_lock = p_copy.get("lock_score", target_lock)
+                        _gov_lock_raw     = p_copy.get("lock_score_raw")
+                        _gov_lock_v2      = p_copy.get("lock_score_v2")
+                        _gov_lock_v2_raw  = p_copy.get("lock_score_v2_raw")
+                        _gov_evidence     = p_copy.get("evidence_score")
+                        _gov_breakdown    = p_copy.get("evidence_breakdown")
+                    except Exception:
+                        pass
+
                     updates["lock_score"] = target_lock
                     p["lock_score"] = target_lock
+                    # ── Persist the full governance payload alongside
+                    # the new lock_score so the audit trail (raw,
+                    # multiplier, breakdown, evidence_score, V2 raw)
+                    # stays in lockstep across every validator pass.
+                    if _gov_lock_raw is not None:
+                        updates["lock_score_raw"] = _gov_lock_raw
+                        p["lock_score_raw"] = _gov_lock_raw
+                    if _gov_lock_v2 is not None:
+                        updates["lock_score_v2"] = _gov_lock_v2
+                        p["lock_score_v2"] = _gov_lock_v2
+                    if _gov_lock_v2_raw is not None:
+                        updates["lock_score_v2_raw"] = _gov_lock_v2_raw
+                        p["lock_score_v2_raw"] = _gov_lock_v2_raw
+                    if _gov_evidence is not None:
+                        updates["evidence_score"] = _gov_evidence
+                        p["evidence_score"] = _gov_evidence
+                    if _gov_breakdown:
+                        updates["evidence_breakdown"] = _gov_breakdown
+                        p["evidence_breakdown"] = _gov_breakdown
                     counts["fixed_lock"] += 1
                     # ── CRITICAL: re-sync grade + confidence to the new
                     # lock_score so the UI badge ("Elite Lock", "Strong
@@ -256,6 +313,46 @@ async def validate_and_heal(db) -> dict:
                         # reason, leaving grade alone is better than
                         # raising — pick still has SOME label.
                         pass
+
+                # ── Unconditional governance coherence pass ──
+                # Run regardless of whether the drift cap fired. Without
+                # this, corruption introduced by ANY upstream mutation
+                # (V2 shadow tagging, learning-engine apply_learning,
+                # CLV grade reshuffles) leaks into the DB and we end up
+                # with lock_score > lock_score_raw (iter-49 canary bug).
+                # govern_pick is idempotent — when the pick is already
+                # coherent, this is a no-op write.
+                try:
+                    from evidence_engine import (
+                        build_features_from_pick as _bf,
+                        govern_pick as _gp,
+                    )
+                    cur_lock = p.get("lock_score")
+                    cur_raw  = p.get("lock_score_raw")
+                    needs_regovern = (
+                        cur_lock is not None and cur_raw is not None and
+                        float(cur_lock) > float(cur_raw) + 0.5
+                    )
+                    if needs_regovern:
+                        # Strip stale governance so the recompute treats
+                        # the CURRENT lock_score (which equals
+                        # post-drift-cap value) as the new raw.
+                        gp_copy = dict(p)
+                        gp_copy.pop("lock_score_raw", None)
+                        gp_copy.pop("lock_score_v2_raw", None)
+                        _gp(gp_copy, _bf(gp_copy))
+                        for fld in (
+                            "lock_score", "lock_score_raw",
+                            "lock_score_v2", "lock_score_v2_raw",
+                            "evidence_score", "evidence_breakdown",
+                            "key_insights",
+                        ):
+                            v = gp_copy.get(fld)
+                            if v is not None:
+                                updates[fld] = v
+                                p[fld] = v
+                except Exception:
+                    pass
 
         # 5) Grade + Confidence consistency — ALWAYS reconcile the badge
         # labels with the CURRENT lock_score, regardless of whether the
