@@ -1945,10 +1945,14 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             if implied < _SOCCER_PROP_MIN_IMPLIED:
                 continue
         elif mk == "player_to_score_or_assist":
-            # Score-or-assist has a HIGHER implied prob than goal-scorer-only
-            # (either action wins) — require 30%+ which still gives us value
-            # picks but filters lottery tickets.
-            if implied < 0.30:
+            # SoA is a SUPERSET of Anytime Goal Scorer (either action wins),
+            # so its implied probability is ALWAYS ≥ Anytime's. Using a
+            # stricter threshold than Anytime silently drops players who
+            # qualify for Anytime but whose book-priced SoA happens to sit
+            # just below the SoA-specific gate (e.g. Anytime 24% passes,
+            # SoA 28% fails 0.30 floor). Audit fix 2026-06-24: equalise
+            # thresholds — if Anytime passes, SoA must also pass.
+            if implied < _SOCCER_PROP_MIN_IMPLIED:
                 continue
         elif mk == "mma_method_of_victory":
             # Method of victory is inherently a low-implied market (each
