@@ -205,13 +205,90 @@ async def admin_scorer_audit(
         raise HTTPException(500, f"scorer audit failed: {e}")
 
 
-@router.get("/admin/scorer-audit/raw")
-async def admin_scorer_audit_raw(
+# ────────────────────── GoalScorer Engine v2 ──────────────────────
+@router.get("/admin/gs-engine-v2/preview")
+async def gs_engine_v2_preview(
+    player: str,
+    team: str,
+    opponent: str,
+    league: str = "",
     user: Annotated[UserPublic, Depends(current_user)] = None,
 ):
-    """Raw per-pick audit log (one row per pick evaluated)."""
-    try:
-        from server import get_scorer_audit_log
-        return get_scorer_audit_log()
-    except Exception as e:
-        raise HTTPException(500, f"scorer audit raw failed: {e}")
+    """Run the v2 engine on-demand for one player.
+
+    Pulls features from soccer_player_form + a few priors and returns
+    the full prop suite plus feature provenance. Read-only — useful
+    when comparing the shadow engine to the live board.
+    """
+    from goal_scorer_engine_v2 import (
+        PlayerFeatures, compute_probabilities, get_calibration_factor,
+    )
+    form = await db.soccer_player_form.find_one({"name_canonical": player.lower()})
+    f = PlayerFeatures(
+        player=player, team=team, opponent=opponent, league=league,
+        xG=float((form or {}).get("xg") or 0.0),
+        xA=float((form or {}).get("xa") or 0.0),
+        shot_volume=float((form or {}).get("shots_per_90") or 0.0),
+        shot_quality=float((form or {}).get("xg_per_90") or 0.0)
+                     / max(0.01, float((form or {}).get("shots_per_90") or 0.01)),
+        minutes_played=int((form or {}).get("minutes") or 0),
+        games_played=int((form or {}).get("games") or 0),
+        starts=int((form or {}).get("games") or 0),
+        position=str((form or {}).get("position") or "FW"),
+        recent_form=float((form or {}).get("form_score") or 50) / 100.0,
+    )
+    cal = await get_calibration_factor(db, league=league or "GLOBAL", market="p_anytime")
+    out = compute_probabilities(f, calibration_mult=cal)
+    return {
+        "player":         player,
+        "team":           team,
+        "opponent":       opponent,
+        "calibration":    cal,
+        "outputs":        {
+            "p_anytime":         out.p_anytime,
+            "p_first":           out.p_first,
+            "p_last":            out.p_last,
+            "p_2plus":           out.p_2plus,
+            "p_score_or_assist": out.p_score_or_assist,
+        },
+        "lam_player":       out.lam_player,
+        "lam_match":        out.lam_match,
+        "expected_minutes": out.expected_minutes,
+        "goal_share":       out.goal_share,
+        "team_xG":          out.team_xG,
+        "feature_snapshot": out.feature_snapshot,
+        "feature_source":   out.feature_source,
+        "engine_version":   out.engine_version,
+        "calibration_version": out.calibration_version,
+    }
+
+
+@router.post("/admin/gs-engine-v2/grade")
+async def gs_engine_v2_grade(
+    user: Annotated[UserPublic, Depends(current_user)] = None,
+):
+    """Trigger the FotMob-backed grading + calibration refit on demand."""
+    from goal_scorer_engine_v2 import grade_pending_predictions
+    return await grade_pending_predictions(db)
+
+
+@router.get("/admin/gs-engine-v2/calibration")
+async def gs_engine_v2_calibration(
+    user: Annotated[UserPublic, Depends(current_user)] = None,
+):
+    rows = []
+    async for r in db.gs_v2_calibration.find({}, {"_id": 0}):
+        rows.append(r)
+    return {"rows": rows, "n": len(rows)}
+
+
+@router.get("/admin/gs-engine-v2/residual")
+async def gs_engine_v2_residual(
+    league: Optional[str] = None,
+    market: str = "p_anytime",
+    days_back: int = 30,
+    user: Annotated[UserPublic, Depends(current_user)] = None,
+):
+    from goal_scorer_engine_v2 import market_residual_report
+    return await market_residual_report(db, league=league, market=market,
+                                         days_back=days_back)
