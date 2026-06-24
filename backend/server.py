@@ -3840,6 +3840,10 @@ try:
     logger.info("Parlay-History routes mounted at /api/parlay/*")
     app.include_router(admin_routes.router)
     logger.info("Admin routes mounted at /api/admin/*")
+    # Admin user-management dashboard routes (added 2026-06-24).
+    from routes import admin_users_routes
+    app.include_router(admin_users_routes.router)
+    logger.info("Admin Users dashboard routes mounted at /api/admin/users/*")
     app.include_router(analytics_routes.router)
     logger.info("Analytics routes mounted at /api/analytics/* (15 endpoints)")
 except Exception as _routes_mount_err:
@@ -3905,6 +3909,56 @@ class _ReliabilityMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(_ReliabilityMiddleware)
+
+
+@app.middleware("http")
+async def _track_user_api_usage(request, call_next):
+    """Bump a per-user counter on every authenticated /api request.
+
+    Powers the admin dashboard's "top API users" ranking. Cheap
+    (fire-and-forget update_one with upsert) — never blocks the response.
+    Best-effort: any failure here is silently swallowed so a tracker bug
+    can't break the API surface.
+    """
+    response = await call_next(request)
+    try:
+        path = str(request.url.path)
+        if not path.startswith("/api/"):
+            return response
+        # Skip cheap probes / public endpoints — they'd dwarf real usage.
+        if path in ("/api/version", "/api/auth/login", "/api/auth/register"):
+            return response
+        auth_h = request.headers.get("authorization") or ""
+        if not auth_h.lower().startswith("bearer "):
+            return response
+        from auth import JWT_SECRET, JWT_ALGORITHM
+        import jwt as _jwt
+        try:
+            payload = _jwt.decode(auth_h[7:], JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        except Exception:
+            return response
+        uid = payload.get("sub")
+        if not uid:
+            return response
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+        await db.user_activity.update_one(
+            {"user_id": uid},
+            {
+                "$inc": {"api_calls": 1, f"by_path.{path.replace('.', '_')}": 1},
+                "$set": {"last_call_at": now_iso, "last_path": path},
+            },
+            upsert=True,
+        )
+        # Also bump user's `last_login_at` style "last_seen" field so the
+        # overview can show active_24h accurately.
+        await db.users.update_one(
+            {"id": uid},
+            {"$set": {"last_login_at": now_iso}},
+        )
+    except Exception:
+        pass
+    return response
 
 
 @app.middleware("http")
@@ -4334,6 +4388,26 @@ async def on_startup():
         await _calib_load(db)
     except Exception as e:
         logger.warning("Calibration curve load failed: %s", e)
+
+    # Seed/promote the platform owner as admin (user request 2026-06-24).
+    # Idempotent: only promotes — never creates the account if it doesn't
+    # already exist. The owner must register first via the normal flow,
+    # then they auto-become admin on next backend boot.
+    try:
+        OWNER_EMAIL = "bossmanperkins@yahoo.com"
+        await db.users.update_one(
+            {"email": OWNER_EMAIL},
+            {"$set": {"role": "admin", "status": "active"}},
+        )
+    except Exception as e:
+        logger.warning("Owner admin promotion failed: %s", e)
+
+    # Index for the API-usage tracker — fast top-N lookups.
+    try:
+        await db.user_activity.create_index([("api_calls", -1)])
+        await db.user_activity.create_index("user_id", unique=True)
+    except Exception:
+        pass
     logger.info("PerksLocks AI started")
 
 
