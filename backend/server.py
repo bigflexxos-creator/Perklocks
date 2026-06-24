@@ -3162,19 +3162,17 @@ async def stats_summary(user: Annotated[UserPublic, Depends(current_user)]):
             "avg_edge_percent": avg_edge, "by_sport": by_sport}
 
 
-@api.get("/analytics/model-performance")
-async def model_performance(
-    user: Annotated[UserPublic, Depends(current_user)],
-    days: int = 30,
-    backfill: bool = True,
-):
-    """Auto-tracked model performance: ROI, CLV, Edge, calibration. Does NOT
-    require the user to log any bets — every generated pick is simulated as
-    a 1u flat stake."""
-    from analytics import backfill_metrics, compute_model_performance
-    if backfill:
-        await backfill_metrics(db)
-    return await compute_model_performance(db, days=days)
+# ── Analytics endpoints moved to routes/analytics_routes.py ──────────
+# 15 endpoints relocated during Phase-2 monolith decomposition:
+#   /analytics/model-performance, /analytics/sim-backtest,
+#   /analytics/learned-weights, /analytics/bandit, /analytics/backtest,
+#   /analytics/backtest-custom, /analytics/v2, /analytics/v2/recompute,
+#   /analytics/buckets, /analytics/calibration,
+#   /analytics/calibration/refit, /analytics/xg-form-shadow,
+#   /analytics/buckets/recompute, /analytics/buckets/rollback,
+#   /analytics/learn
+
+
 
 @api.get("/picks/{pick_id}/probability")
 async def picks_probability(
@@ -3351,366 +3349,9 @@ async def pick_simulation(
     return sim
 
 
-@api.get("/analytics/sim-backtest")
-async def sim_backtest_endpoint(
-    user: Annotated[UserPublic, Depends(current_user)],
-    days: int = 30,
-    sport: str | None = None,
-):
-    """Simulator backtest with optional per-sport breakdown. Returns
-    calibration + strategy ROI against settled picks. When `sport` is None,
-    returns an aggregate plus per-sport sections."""
-    from brain.sim_backtest import run_sim_backtest
-    return await run_sim_backtest(db, days=days, sport=sport)
-
-
-@api.get("/analytics/learned-weights")
-async def learned_weights(user: Annotated[UserPublic, Depends(current_user)]):
-    """What the self-tuning engine has learned from past picks. Used by the
-    Analytics screen to surface every active bucket weight + calibration
-    correction the engine is currently applying to new picks."""
-    doc = await db.learned_weights.find_one({"_id": "current"}, {"_id": 0})
-    if not doc:
-        return {"buckets": [], "calibration": [], "updated_at": None, "sample_size": 0}
-    return doc
-
-
-@api.get("/analytics/bandit")
-async def bandit_state(user: Annotated[UserPublic, Depends(current_user)]):
-    """Phase-3 learning: Multi-Armed Bandit (Thompson sampling) arm states.
-
-    Returns every strategy arm with its Beta(α, β) posterior, n samples,
-    wins/losses, units P&L, ROI, posterior mean, and last Thompson sample.
-    Sorted by posterior mean descending.
-    """
-    arms = await db.bandit_arms.find({}, {"_id": 0}).sort("posterior_mean", -1).to_list(length=100)
-    return {"arms": arms, "n_arms": len(arms)}
-
-
-@api.get("/analytics/backtest")
-async def backtest_endpoint(
-    user: Annotated[UserPublic, Depends(current_user)],
-    days: int = 30,
-):
-    """Phase-3 back-test: replay every strategy arm against the last N days
-    of settled picks. Returns ROI, hit rate, max drawdown, Sharpe per arm."""
-    from backtest import backtest_arms
-    return await backtest_arms(db, days=days)
-
-
-@api.get("/analytics/backtest-custom")
-async def backtest_custom_endpoint(
-    user: Annotated[UserPublic, Depends(current_user)],
-    days: int = 30,
-    lock_floor: float = 0,
-    edge_floor: float = -100,
-    odds_min: int = -10000,
-    odds_max: int = 10000,
-    sport: Optional[str] = None,
-    market_keyword: Optional[str] = None,
-):
-    """Ad-hoc backtest with explicit filters — A/B-test new strategies
-    before promoting them to permanent bandit arms."""
-    from backtest import backtest_custom
-    return await backtest_custom(
-        db, days=days, lock_floor=lock_floor, edge_floor=edge_floor,
-        odds_min=odds_min, odds_max=odds_max, sport=sport,
-        market_keyword=market_keyword,
-    )
-
-
-@api.get("/analytics/v2")
-async def analytics_v2(user: Annotated[UserPublic, Depends(current_user)]):
-    """Learning System v2 dashboard payload.
-
-    Returns: market performance rows, band calibration, market weights,
-    learning changes log (last 30), and high-level totals. Used by the new
-    Analytics dashboard sections."""
-    state = await db.learning_state.find_one({"_id": "learning_v2_state"},
-                                             {"_id": 0}) or {}
-    # Last 30 audit log entries (most recent first).
-    log = await db.learning_log.find({}, {"_id": 0}).sort(
-        "ts", -1
-    ).to_list(length=30)
-    state["changes_log"] = log
-    # Sport-level profit summary.
-    sport_rows: dict[str, dict] = {}
-    async for p in db.picks.aggregate([
-        {"$match": {"status": {"$in": ["won", "lost", "push"]}}},
-        {"$group": {
-            "_id": "$sport",
-            "n": {"$sum": 1},
-            "won": {"$sum": {"$cond": [{"$eq": ["$status", "won"]}, 1, 0]}},
-            "lost": {"$sum": {"$cond": [{"$eq": ["$status", "lost"]}, 1, 0]}},
-            "units_risked": {"$sum": {"$ifNull": ["$units_risked", 0]}},
-            "units_profit": {"$sum": {"$ifNull": ["$units_profit", 0]}},
-            "clv_avg": {"$avg": "$clv_value"},
-        }},
-    ]):
-        s = p["_id"]
-        risked = p.get("units_risked") or 0
-        profit = p.get("units_profit") or 0
-        sport_rows[s] = {
-            "sport": s,
-            "n": p["n"], "won": p["won"], "lost": p["lost"],
-            "units_risked": round(risked, 2),
-            "units_profit": round(profit, 2),
-            "roi_pct": round((profit / risked * 100.0) if risked else 0, 2),
-            "hit_rate_pct": round((p["won"] / (p["won"] + p["lost"]) * 100.0)
-                                  if (p["won"] + p["lost"]) else 0, 2),
-            "clv_avg": round(p.get("clv_avg") or 0, 2),
-        }
-    state["profit_by_sport"] = list(sport_rows.values())
-
-    # Bet-Type breakdown — STRAIGHT (1.0u) / REDUCED (0.5u) / PARLAY (0.25u)
-    # ROI is now weighted per spec so heavy chalk doesn't distort the metric.
-    bt_rows: dict[str, dict] = {}
-    async for p in db.picks.aggregate([
-        {"$match": {"status": {"$in": ["won", "lost", "push"]}}},
-        {"$group": {
-            "_id": {"$ifNull": ["$bet_type", "STRAIGHT"]},
-            "n": {"$sum": 1},
-            "won": {"$sum": {"$cond": [{"$eq": ["$status", "won"]}, 1, 0]}},
-            "lost": {"$sum": {"$cond": [{"$eq": ["$status", "lost"]}, 1, 0]}},
-            "units_risked": {"$sum": {"$ifNull": ["$units_risked", 0]}},
-            "units_profit": {"$sum": {"$ifNull": ["$units_profit", 0]}},
-        }},
-    ]):
-        bt = p["_id"]
-        risked = p.get("units_risked") or 0
-        profit = p.get("units_profit") or 0
-        bt_rows[bt] = {
-            "bet_type": bt,
-            "n": p["n"], "won": p["won"], "lost": p["lost"],
-            "units_risked": round(risked, 2),
-            "units_profit": round(profit, 2),
-            "roi_pct": round((profit / risked * 100.0) if risked else 0, 2),
-            "hit_rate_pct": round((p["won"] / (p["won"] + p["lost"]) * 100.0)
-                                  if (p["won"] + p["lost"]) else 0, 2),
-        }
-    state["profit_by_bet_type"] = list(bt_rows.values())
-    return state
-
-
-@api.post("/analytics/v2/recompute")
-async def analytics_v2_recompute(user: Annotated[UserPublic, Depends(current_user)]):
-    """Force re-run of the v2 learning aggregation (market perf, calibration,
-    band gates, market weights, audit log). Returns the new state summary."""
-    from learning_system_v2 import recompute_and_persist
-    return await recompute_and_persist(db)
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# Isolated learning buckets (sport × market_type × prop_type)
-# ANALYTICS-ONLY: see /app/backend/learning_buckets.py — does NOT influence
-# predictions, lock scores, or confidence outputs. Pure dashboard.
-# ──────────────────────────────────────────────────────────────────────────
-
-@api.get("/analytics/buckets")
-async def analytics_buckets(user: Annotated[UserPublic, Depends(current_user)]):
-    """Return per-sport, per-market-type, per-prop-type bucket performance.
-
-    NEVER influences live predictions. Pure analytics for monitoring how
-    each isolated learning group is performing.
-    """
-    from learning_buckets import get_buckets
-    return await get_buckets(db)
-
-
-@api.get("/analytics/calibration")
-async def analytics_calibration(user: Annotated[UserPublic, Depends(current_user)]):
-    """Lock-score calibration report — Expected vs Actual vs Delta per band.
-
-    Backs the user spec: "Show Expected Win %, Actual Win %, Calibration
-    Delta". Driven by the isotonic-regression curve fit nightly (or
-    every 100 newly-settled picks via the settlement loop).
-    """
-    from lock_calibration import calibration_report
-    return await calibration_report(db)
-
-
-@api.post("/analytics/calibration/refit")
-async def analytics_calibration_refit(user: Annotated[UserPublic, Depends(current_user)]):
-    """Manual trigger to refit the calibration curve right now (admin
-    safety valve — does the same thing the auto-loop does on a
-    100-pick cadence)."""
-    from lock_calibration import fit_from_db
-    return await fit_from_db(db)
-
-
-@api.get("/analytics/xg-form-shadow")
-async def analytics_xg_form_shadow(
-    user: Annotated[UserPublic, Depends(current_user)],
-):
-    """xG Form A/B shadow report — does HOT form actually correlate
-    with higher hit rate?
-
-    Aggregates every settled soccer goalscorer pick that carries an
-    `understat_form` snapshot. Groups by `understat_form.label` and
-    reports:
-
-        n             : settled-sample size in the bucket
-        won / lost    : raw outcome counts
-        hit_rate      : empirical hit rate (won / settled)
-        avg_lock      : average displayed lock_score in the bucket
-        avg_shadow    : average shadow_lock_score (would-be lock with lift)
-        brier_live    : Brier score for live win_probability vs outcome
-        brier_shadow  : Brier score for shadow win_probability vs outcome
-        delta_hit     : observed hit-rate vs the NEUTRAL baseline (in pp)
-
-    The decision rule for promoting the lift from shadow → live is
-    SIMPLE: HOT.delta_hit >= +5pp AND COLD.delta_hit <= -5pp AND
-    n_HOT >= 30 AND n_COLD >= 30. Anything less is too thin a sample
-    to risk live deployment.
-    """
-    cur = db.picks.find(
-        {
-            "sport":           "Soccer",
-            "understat_form":  {"$exists": True},
-            "status":          {"$in": ["won", "lost"]},
-        },
-        {
-            "_id": 0,
-            "lock_score": 1,
-            "win_probability": 1,
-            "status": 1,
-            "understat_form.label": 1,
-            "understat_form.shadow_lock_score": 1,
-            "understat_form.shadow_win_probability": 1,
-        },
-    )
-
-    buckets: dict[str, dict] = {
-        "HOT":     {"n": 0, "won": 0, "lock_sum": 0.0, "shadow_sum": 0.0,
-                    "brier_live": 0.0, "brier_shadow": 0.0},
-        "COLD":    {"n": 0, "won": 0, "lock_sum": 0.0, "shadow_sum": 0.0,
-                    "brier_live": 0.0, "brier_shadow": 0.0},
-        "NEUTRAL": {"n": 0, "won": 0, "lock_sum": 0.0, "shadow_sum": 0.0,
-                    "brier_live": 0.0, "brier_shadow": 0.0},
-    }
-
-    async for pick in cur:
-        form = pick.get("understat_form") or {}
-        label = form.get("label") or "NEUTRAL"
-        if label not in buckets:
-            continue
-        b = buckets[label]
-        won = 1 if pick.get("status") == "won" else 0
-        b["n"]   += 1
-        b["won"] += won
-        lock_score = pick.get("lock_score") or 0
-        shadow_lock = form.get("shadow_lock_score") or lock_score
-        b["lock_sum"]   += float(lock_score)
-        b["shadow_sum"] += float(shadow_lock)
-        # Brier scores — quadratic loss between predicted prob and actual
-        wp_live   = float(pick.get("win_probability") or 0) / 100.0
-        wp_shadow = float(form.get("shadow_win_probability") or pick.get("win_probability") or 0) / 100.0
-        b["brier_live"]   += (wp_live   - won) ** 2
-        b["brier_shadow"] += (wp_shadow - won) ** 2
-
-    # Final aggregation + delta_hit baseline against NEUTRAL.
-    out: dict[str, Any] = {}
-    base_hit = 0.0
-    if buckets["NEUTRAL"]["n"] > 0:
-        base_hit = buckets["NEUTRAL"]["won"] / buckets["NEUTRAL"]["n"]
-    for label, b in buckets.items():
-        n = b["n"]
-        if n > 0:
-            hit_rate = b["won"] / n
-            out[label] = {
-                "n":             n,
-                "won":           b["won"],
-                "lost":          n - b["won"],
-                "hit_rate":      round(hit_rate * 100, 2),
-                "avg_lock":      round(b["lock_sum"]   / n, 2),
-                "avg_shadow":    round(b["shadow_sum"] / n, 2),
-                "brier_live":    round(b["brier_live"]   / n, 4),
-                "brier_shadow":  round(b["brier_shadow"] / n, 4),
-                "delta_hit_pp":  round((hit_rate - base_hit) * 100, 2),
-            }
-        else:
-            out[label] = {
-                "n":             0,
-                "won":           0,
-                "lost":          0,
-                "hit_rate":      None,
-                "avg_lock":      None,
-                "avg_shadow":    None,
-                "brier_live":    None,
-                "brier_shadow":  None,
-                "delta_hit_pp":  None,
-            }
-
-    # Decision flag — should the lift be promoted from shadow → live?
-    hot   = out["HOT"]
-    cold  = out["COLD"]
-    promote_ready = bool(
-        hot.get("n", 0) >= 30 and cold.get("n", 0) >= 30
-        and (hot.get("delta_hit_pp") or 0)  >= 5.0
-        and (cold.get("delta_hit_pp") or 0) <= -5.0
-    )
-
-    return {
-        "buckets":       out,
-        "promote_ready": promote_ready,
-        "promotion_rule": (
-            "HOT.delta ≥ +5pp AND COLD.delta ≤ −5pp AND n ≥ 30 in both"
-        ),
-        "shadow_mode":   True,
-        "generated_at":  datetime.now(timezone.utc).isoformat(),
-    }
-
-
-@api.post("/analytics/buckets/recompute")
-async def analytics_buckets_recompute(user: Annotated[UserPublic, Depends(current_user)]):
-    """Force re-scan settled picks and rebuild all isolated learning buckets.
-
-    Snapshots the previous state for rollback (keeps last 5). Analytics-only.
-    """
-    from learning_buckets import recompute_buckets
-    return await recompute_buckets(db)
-
-
-@api.post("/analytics/buckets/rollback")
-async def analytics_buckets_rollback(
-    user: Annotated[UserPublic, Depends(current_user)],
-    snapshot_index: int = 1,
-):
-    """Restore the Nth-most-recent bucket snapshot. snapshot_index=1 = the
-    previous version, =2 = two versions ago. Analytics-only."""
-    from learning_buckets import rollback_buckets
-    return await rollback_buckets(db, snapshot_index=max(1, min(5, int(snapshot_index or 1))))
-
-
-@api.post("/analytics/learn")
-async def learn_now(user: Annotated[UserPublic, Depends(current_user)]):
-    """Force a recompute of learned weights and re-apply to today's picks."""
-    from learning_engine import recompute_learned_weights, apply_learning
-    weights = await recompute_learned_weights(db)
-    # Apply to all picks generated for today that haven't been settled.
-    cursor = db.picks.find(
-        {"pick_date": _today_str(), "status": {"$in": [None, "pending"]}},
-        {"_id": 0},
-    )
-    adjusted = 0
-    async for p in cursor:
-        before = p.get("win_probability")
-        await apply_learning(db, p)
-        if p.get("learning") and p.get("win_probability") != before:
-            adjusted += 1
-            await db.picks.update_one(
-                {"id": p["id"]},
-                {"$set": {
-                    "win_probability": p["win_probability"],
-                    "lock_score": p.get("lock_score"),
-                    "edge_percent": p.get("edge_percent"),
-                    "implied_probability": p.get("implied_probability"),
-                    "learning": p.get("learning"),
-                }},
-            )
-    return {"active_buckets": sum(1 for b in weights.get("buckets", []) if b.get("active")),
-            "picks_adjusted": adjusted,
-            "sample_size": weights.get("sample_size", 0)}
+# ── Analytics endpoints (15 endpoints) ─────────────────────────────
+# Moved to routes/analytics_routes.py during Phase-2 monolith
+# decomposition. Mounted via app.include_router() below.
 
 
 @api.get("/")
@@ -3825,11 +3466,13 @@ app.include_router(api)
 # include_router() calls here as more endpoint families get pulled
 # out of server.py.
 try:
-    from routes import parlay_history_routes, admin_routes
+    from routes import parlay_history_routes, admin_routes, analytics_routes
     app.include_router(parlay_history_routes.router)
     logger.info("Parlay-History routes mounted at /api/parlay/*")
     app.include_router(admin_routes.router)
     logger.info("Admin routes mounted at /api/admin/*")
+    app.include_router(analytics_routes.router)
+    logger.info("Analytics routes mounted at /api/analytics/* (15 endpoints)")
 except Exception as _routes_mount_err:
     logger.exception("Extracted route modules failed to mount: %s", _routes_mount_err)
 
