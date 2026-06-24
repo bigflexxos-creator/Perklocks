@@ -144,6 +144,28 @@ export function FilterSheet({
             maximumTrackTintColor={COLORS.borderDefault}
             thumbTintColor={Platform.OS === "android" ? COLORS.goldElite : undefined}
           />
+          {/* Tap-able preset chips — work on every platform including web
+              preview where the slider's custom touch handlers don't always
+              register a drag. User can always set a precise floor with one
+              tap. The currently-selected preset is highlighted. */}
+          <View style={styles.presetRow}>
+            {[85, 90, 92, 95, 97, 99].map((v) => {
+              const isActive = Math.round(minLock) === v;
+              return (
+                <Pressable
+                  key={v}
+                  testID={`filter-min-lock-preset-${v}`}
+                  onPress={() => setMinLock(v)}
+                  style={[styles.presetChip, isActive && styles.presetChipActive]}
+                  hitSlop={6}
+                >
+                  <Text style={[styles.presetChipText, isActive && styles.presetChipTextActive]}>
+                    {v === 85 ? "ALL" : `${v}+`}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
           <View style={styles.scaleRow}>
             <Text style={styles.scaleLabel}>85 GOOD</Text>
             <Text style={styles.scaleLabel}>92 STRONG</Text>
@@ -315,6 +337,39 @@ const styles = StyleSheet.create({
     fontWeight: "900",
   },
   slider: { width: "100%", height: 36 },
+  // ── Lock-score preset chip strip ──
+  presetRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 6,
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  presetChip: {
+    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.borderDefault,
+    backgroundColor: "rgba(255,255,255,0.03)",
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 36,
+  },
+  presetChipActive: {
+    borderColor: COLORS.goldElite,
+    backgroundColor: "rgba(255,215,0,0.18)",
+  },
+  presetChipText: {
+    color: COLORS.textSecondary,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.6,
+  },
+  presetChipTextActive: {
+    color: COLORS.goldElite,
+  },
   scaleRow: {
     flexDirection: "row",
     justifyContent: "space-between",
