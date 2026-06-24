@@ -85,16 +85,28 @@ async def _settle_mlb_leg(leg: dict) -> Optional[str]:
     if not games:
         return None
 
-    # Pick the matching game — exact team-name match + completed/final.
-    game = None
-    for g in games:
-        if not g.get("completed"):
-            continue
-        if g.get("home_team") == home_team_name and g.get("away_team") == away_team_name:
-            game = g
-            break
-    if not game:
-        return None  # Not completed yet (or different naming) → leave pending.
+    # When two teams play a series, multiple completed games will match
+    # by team name (e.g. Brewers @ Braves can have 3 in a 14-day window).
+    # Pick the game whose start time is closest to the leg's stored
+    # `event_time`. Falls back to the first completed match if no event
+    # time is available.
+    leg_event_time = _parse_iso(leg.get("event_time") or leg.get("commence_time"))
+    candidates = [
+        g for g in games
+        if g.get("completed")
+        and g.get("home_team") == home_team_name
+        and g.get("away_team") == away_team_name
+    ]
+    if not candidates:
+        return None
+    if leg_event_time and len(candidates) > 1:
+        def _delta(g: dict) -> float:
+            ct = _parse_iso(g.get("commence_time"))
+            if not ct:
+                return 1e18
+            return abs((ct - leg_event_time).total_seconds())
+        candidates.sort(key=_delta)
+    game = candidates[0]
 
     # Pull scores
     home_score = None
@@ -211,9 +223,15 @@ async def _fetch_pitcher_strikeouts_from_boxscore(game_pk: Optional[str], pitche
     Returns None on any failure (network, JSON shape, name mismatch)."""
     if not game_pk or not pitcher_name:
         return None
+    # The internal id stored by `fetch_mlb_scores` is prefixed with
+    # "mlb_" (e.g. "mlb_824908") so it never collides with other sport
+    # ids. The MLB Stats API needs the bare numeric gamePk, so strip it.
+    gp = str(game_pk)
+    if gp.startswith("mlb_"):
+        gp = gp[4:]
     try:
         import httpx
-        url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"
+        url = f"https://statsapi.mlb.com/api/v1/game/{gp}/boxscore"
         async with httpx.AsyncClient(timeout=12.0) as cx:
             r = await cx.get(url)
         if r.status_code != 200:
@@ -246,19 +264,43 @@ async def _fetch_pitcher_strikeouts_from_boxscore(game_pk: Optional[str], pitche
 # ──────────────────────────────────────────────────────────────────────────
 
 async def _settle_soccer_leg(leg: dict) -> Optional[str]:
-    """Best-effort soccer leg settlement from the cached soccer match
-    results the pipeline already pulls from football-data.org.
+    """Best-effort soccer leg settlement.
 
-    Supported markets (no scorer data needed):
-        • Moneyline
-        • Win or Draw / Double Chance
+    Primary path (added 2026-06-24): ESPN soccer scoreboard + summary.
+    ESPN exposes finished scores AND goal events across a broad set of
+    leagues (WC, Big-5, Brazil, Mexico, Argentina, …) without auth,
+    which lets us settle:
+        • Moneyline / Win or Draw / Double Chance
         • Total Goals Over/Under
-    Markets NOT supported (require scorer events):
+        • Both Teams to Score
         • Anytime Goal Scorer
-        • First Goal Scorer
-        • To Score or Assist
-    For unsupported markets, returns None (leave pending).
+
+    Fallback path: legacy cached soccer_matches mongo collection
+    (populated by older builds — kept so unit tests still pass and so a
+    network-degraded ESPN doesn't kill settlement).
     """
+    if not (leg.get("event") and leg.get("market")):
+        return None
+    # ESPN primary
+    try:
+        from soccer_espn_settle import settle_soccer_leg as _espn_settle
+        result = await _espn_settle(leg)
+        if result in ("won", "lost", "void", "push"):
+            return result
+    except Exception as e:
+        logger.warning("ESPN soccer settle failed for %s / %s: %s",
+                       leg.get("event"), leg.get("market"), e)
+
+    # Legacy fallback: cached soccer_matches mongo collection. Kept for
+    # backward-compat — the existing unit tests stub `from server import
+    # db` so this path remains exercised.
+    return await _settle_soccer_leg_legacy(leg)
+
+
+async def _settle_soccer_leg_legacy(leg: dict) -> Optional[str]:
+    """Original soccer settler from the cached `soccer_matches`
+    collection. Kept as a fallback when ESPN is unavailable / when
+    older parlay snapshots reference markets ESPN doesn't cover."""
     event = (leg.get("event") or "").strip()
     market = (leg.get("market") or "").strip()
     selection = (leg.get("selection") or "").strip()
@@ -266,7 +308,8 @@ async def _settle_soccer_leg(leg: dict) -> Optional[str]:
         return None
     market_lower = market.lower()
 
-    # Skip player-prop markets — no free scorer feed wired.
+    # Skip player-prop markets — ESPN already attempted these and we
+    # don't have a scorer feed in the legacy mongo cache.
     if "goal scorer" in market_lower or "score or assist" in market_lower or "score & assist" in market_lower:
         return None
 
@@ -353,3 +396,22 @@ async def _settle_soccer_leg(leg: dict) -> Optional[str]:
 def _escape(s: str) -> str:
     """Escape a string for safe use in a Mongo regex."""
     return re.sub(r"([.*+?^${}()|[\]\\])", r"\\\1", s)
+
+
+def _parse_iso(s: Optional[object]) -> Optional["datetime"]:
+    """Tolerantly parse an ISO-8601 timestamp from a string or datetime.
+    Returns None on any parse failure."""
+    from datetime import datetime
+    if s is None:
+        return None
+    if isinstance(s, datetime):
+        return s
+    ss = str(s).strip()
+    if not ss:
+        return None
+    try:
+        if ss.endswith("Z"):
+            ss = ss[:-1] + "+00:00"
+        return datetime.fromisoformat(ss)
+    except Exception:
+        return None
