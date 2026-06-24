@@ -134,7 +134,18 @@ async def resolve_saved_parlays(db) -> dict:
     """
     won = lost = updated = 0
     now = datetime.now(timezone.utc).isoformat()
-    cursor = db.parlay_history.find({"status": "live"})
+    # Walk EVERY parlay with at least one non-terminal leg — not just live ones.
+    # Previously this only walked `status: "live"`, which abandoned the
+    # remaining pending legs of any parlay that had already lost (one
+    # bad leg killed the parlay → remaining legs stayed PENDING forever
+    # in the user's history view). Each leg deserves its own final
+    # outcome regardless of whether the parent parlay can still pay.
+    cursor = db.parlay_history.find({
+        "$or": [
+            {"status": "live"},
+            {"legs": {"$elemMatch": {"status": {"$in": [None, "pending", "live"]}}}},
+        ]
+    })
     async for parlay in cursor:
         leg_ids = parlay.get("leg_ids") or []
         legs_view = parlay.get("legs") or []
