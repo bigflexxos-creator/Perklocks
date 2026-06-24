@@ -45,7 +45,7 @@ api = APIRouter(prefix="/api")
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.24-soccer-fotmob-fallback"
+DATA_VERSION = "2026.06.24-gs-engine-v2-shadow"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
