@@ -291,6 +291,19 @@ async def _settle_soccer_leg(leg: dict) -> Optional[str]:
         logger.warning("ESPN soccer settle failed for %s / %s: %s",
                        leg.get("event"), leg.get("market"), e)
 
+    # FotMob fallback — universal coverage (Finnish Veikkausliiga,
+    # Lithuanian A Lyga, every league in the world). ESPN-first is
+    # preferred because ESPN's public API is more stable / less likely
+    # to add bot protection.
+    try:
+        from soccer_fotmob_settle import settle_soccer_leg as _fotmob_settle
+        result = await _fotmob_settle(leg)
+        if result in ("won", "lost", "void", "push"):
+            return result
+    except Exception as e:
+        logger.warning("FotMob soccer settle failed for %s / %s: %s",
+                       leg.get("event"), leg.get("market"), e)
+
     # Legacy fallback: cached soccer_matches mongo collection. Kept for
     # backward-compat — the existing unit tests stub `from server import
     # db` so this path remains exercised.
