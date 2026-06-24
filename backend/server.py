@@ -158,6 +158,19 @@ def _canonicalize_lock_score(pick: dict) -> dict:
                 # lock_score so the iter-49 canary stays green.
                 v2_raw = pick["lock_score"]
             pick["lock_score_raw"] = round(min(99.0, float(v2_raw)), 1)
+            # Re-align evidence_breakdown.multiplier with the NEW
+            # (lock / raw) ratio so the admin inspector math reconciles
+            # post-promotion (iter-50 finding #3). Without this, V1's
+            # multiplier sticks around while lock/raw report V2's pair.
+            try:
+                eb = pick.get("evidence_breakdown")
+                if isinstance(eb, dict) and pick["lock_score_raw"] > 0:
+                    new_mult = pick["lock_score"] / pick["lock_score_raw"]
+                    eb["multiplier"]    = round(new_mult, 3)
+                    eb["lock_raw"]      = pick["lock_score_raw"]
+                    eb["lock_governed"] = pick["lock_score"]
+            except Exception:
+                pass
         except Exception:
             # Safe fallback — at minimum, surface the higher number even if
             # we can't re-grade. Prevents the card-vs-detail mismatch.
@@ -2944,10 +2957,23 @@ async def pick_ai_explain(pick_id: str,
     pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
     if not pick:
         raise HTTPException(status_code=404, detail="Pick not found")
-    # If we already cached a real AI explanation, return it.
+    # If we already cached a real AI explanation, scrub any stale lock-score
+    # / win-probability NUMERIC references from it before returning. The
+    # numbers can shift via the Evidence Governor and read-time V2
+    # canonicalization, so the live values come from the response payload
+    # itself — never from cached narrative text (iter-50 finding #2).
     cached = pick.get("explanation_ai")
     if cached:
-        return {"explanation": cached, "source": "cached"}
+        import re as _re
+        scrubbed = _re.sub(
+            r"\b(Lock(?:\s*Score)?|Win(?:\s*Probability)?|Edge)\s*[:=]?\s*"
+            r"[\-+]?\d+(?:\.\d+)?\s*%?",
+            "",
+            cached,
+            flags=_re.IGNORECASE,
+        )
+        scrubbed = _re.sub(r"\s{2,}", " ", scrubbed).strip(" |·,;-")
+        return {"explanation": scrubbed or cached, "source": "cached"}
     # All picks reaching the UI are recommended picks (NO_BET filter removed
     # the bad ones). Always generate the "why to BET" explanation.
     text, real = await explain_pick(pick)
