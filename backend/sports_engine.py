@@ -2115,6 +2115,12 @@ _PROPS_PER_KEY_CAP = {
     "soccer_fifa_club_world_cup": 10,
     "soccer_uefa_champs_league": 10,
     "soccer_uefa_europa_league": 6,
+    # MLB has ~15 games/day. The 3-event default was leaving 80% of
+    # the slate without batter/pitcher props — user feedback "don't
+    # see no batter or pitcher props". Bumping to 10 covers most days'
+    # full slate. Each event = 1 Odds API request, so 10 keeps the
+    # cost bounded.
+    "baseball_mlb": 10,
 }
 _DEFAULT_PROPS_PER_KEY = 3
 
