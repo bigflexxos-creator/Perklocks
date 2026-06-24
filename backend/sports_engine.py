@@ -1495,10 +1495,30 @@ def _build_tennis_alt_picks(
     # multiple risk tiers (e.g., -833, -500, -300) per match —
     # user spec: "you can get lower odds up -500".
     spread_outs = _alt_outcomes_for_market(alt_payload, "alternate_spreads")
-    if spread_outs and favored:
-        # Underdog name (the OTHER team)
-        underdog = away if favored == home else home
-        for side, take in ((favored, 3), (underdog, 2)):
+    if not spread_outs:
+        logger.debug(
+            "Tennis alt spreads: empty outcomes for %s vs %s (event %s)",
+            home, away, event_id,
+        )
+    if spread_outs:
+        # Determine which side is favored. If h2h didn't resolve (e.g.
+        # h2h market missing from this event's payload, or matchup is
+        # near-pick-em), fall back to building BOTH sides — bug
+        # history: with no `favored` the entire spread loop was
+        # skipped, producing 0 tennis spread picks across 4 days even
+        # though Odds API was returning alternate_spreads cleanly.
+        # User feedback: "I'm good on alt totals for now I rather
+        # have alt spread".
+        sides_to_build: list[tuple[str, int]]
+        if favored:
+            underdog = away if favored == home else home
+            sides_to_build = [(favored, 3), (underdog, 2)]
+        else:
+            # Even matchup or h2h-missing — build a tighter ladder for
+            # both sides (2 each) and let the lock_score / edge filter
+            # decide which ones survive the validator.
+            sides_to_build = [(home, 2), (away, 2)]
+        for side, take in sides_to_build:
             picks_for_side = _pick_sweet_spot_alts(spread_outs, side_name=side, limit=take)
             for pick_obj in picks_for_side:
                 line = pick_obj.get("point")
