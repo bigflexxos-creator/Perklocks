@@ -36,6 +36,8 @@ class UserPublic(BaseModel):
     email: EmailStr
     name: Optional[str] = None
     created_at: Optional[str] = None
+    role: Optional[str] = "user"           # "user" | "admin"
+    status: Optional[str] = "active"       # "active" | "suspended"
 
 
 class Token(BaseModel):
@@ -93,4 +95,27 @@ async def get_current_user_from_db(
     doc = await db["users"].find_one({"id": user_id}, {"_id": 0, "hashed_password": 0})
     if not doc:
         raise credentials_exc
+    # Reject suspended accounts at auth time so every endpoint is protected.
+    if (doc.get("status") or "active") == "suspended":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account suspended. Contact support.",
+        )
+    # Default role/status so legacy users (created before this field
+    # was added) still validate.
+    doc.setdefault("role", "user")
+    doc.setdefault("status", "active")
     return UserPublic(**doc)
+
+
+async def require_admin_user(
+    db: AsyncIOMotorDatabase, token: Optional[str]
+) -> UserPublic:
+    """Dependency: same as `get_current_user_from_db` but 403s on non-admin."""
+    user = await get_current_user_from_db(db, token)
+    if (user.role or "user") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin role required",
+        )
+    return user

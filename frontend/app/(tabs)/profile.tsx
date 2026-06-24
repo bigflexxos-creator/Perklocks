@@ -138,6 +138,19 @@ export default function ProfileScreen() {
           <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
         </Pressable>
 
+        {/* Admin Dashboard — owner-only. Hidden for regular users. */}
+        {((user as { role?: string } | null)?.role === "admin") && (
+          <Pressable
+            testID="admin-button"
+            onPress={() => router.push("/admin")}
+            style={[styles.actionBtn, styles.actionBtnPrimary]}
+          >
+            <Ionicons name="shield-checkmark" size={18} color={COLORS.goldElite} />
+            <Text style={[styles.actionText, { color: COLORS.goldElite }]}>ADMIN DASHBOARD</Text>
+            <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+          </Pressable>
+        )}
+
         <Pressable
           testID="history-button"
           onPress={() => router.push("/history")}
