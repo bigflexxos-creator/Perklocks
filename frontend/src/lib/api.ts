@@ -151,8 +151,13 @@ export type PickFilters = {
    *  match without a backend round-trip. */
   event?: string;
   /** When TRUE, show only picks where the Monte Carlo simulator hit ≥85%
-   *  AND agrees with the model by ≥5pp. Applied client-side. */
+   *  AND agrees with the model by ≥5pp. Applied client-side.
+   *  DEPRECATED in favour of `simEdgeFloor` (2026-06-24) — kept for
+   *  backward compat with old persisted filter state. */
   simEdgeOnly?: boolean;
+  /** Sim Edge floor (0–100). When > 0, hide picks below this Monte
+   *  Carlo win-probability threshold. 0 / undefined = no filter. */
+  simEdgeFloor?: number;
 };
 
 export type SportMarket = { token: string; label: string };

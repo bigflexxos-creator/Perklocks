@@ -38,10 +38,19 @@ export function FilterSheet({
   const [minLock, setMinLock] = useState<number>(filters.minLock ?? 85);
   const [minImplied, setMinImplied] = useState<number>(filters.minImplied ?? 0);
   const [maxImplied, setMaxImplied] = useState<number>(filters.maxImplied ?? 100);
-  // Sim Edge toggle — when ON, only show picks where simulator returned ≥85%
-  // and agreed with model (signal=stronger/neutral). Lets users surface
-  // high-confidence Monte Carlo agreement.
-  const [simEdgeOnly, setSimEdgeOnly] = useState<boolean>(filters.simEdgeOnly ?? false);
+  // Sim Edge floor (replaces the old binary toggle, 2026-06-24).
+  // User feedback: "Sim edge blocking a lot of picks I just wanted it
+  // to able to be filtered." The old toggle hard-gated everything below
+  // 75% (or 50% for scorer markets). Now the user picks an explicit
+  // floor — 0 means no filter, higher = stricter. Backward-compat: a
+  // legacy `simEdgeOnly: true` lands as a 75% floor.
+  const _initialSimFloor =
+    typeof filters.simEdgeFloor === "number"
+      ? filters.simEdgeFloor
+      : filters.simEdgeOnly
+        ? 75
+        : 0;
+  const [simEdgeFloor, setSimEdgeFloor] = useState<number>(_initialSimFloor);
 
   // Sync local state when the sheet opens with current external values.
   useEffect(() => {
@@ -49,15 +58,21 @@ export function FilterSheet({
       setMinLock(filters.minLock ?? 85);
       setMinImplied(filters.minImplied ?? 0);
       setMaxImplied(filters.maxImplied ?? 100);
-      setSimEdgeOnly(filters.simEdgeOnly ?? false);
+      const next =
+        typeof filters.simEdgeFloor === "number"
+          ? filters.simEdgeFloor
+          : filters.simEdgeOnly
+            ? 75
+            : 0;
+      setSimEdgeFloor(next);
     }
-  }, [visible, filters.minLock, filters.minImplied, filters.maxImplied, filters.simEdgeOnly]);
+  }, [visible, filters.minLock, filters.minImplied, filters.maxImplied, filters.simEdgeOnly, filters.simEdgeFloor]);
 
   const reset = () => {
     setMinLock(85);
     setMinImplied(0);
     setMaxImplied(100);
-    setSimEdgeOnly(false);
+    setSimEdgeFloor(0);
   };
 
   const apply = () => {
@@ -65,7 +80,9 @@ export function FilterSheet({
       minLock: minLock > 85 ? minLock : undefined,
       minImplied: minImplied > 0 ? minImplied : undefined,
       maxImplied: maxImplied < 100 ? maxImplied : undefined,
-      simEdgeOnly: simEdgeOnly || undefined,
+      // Legacy field cleared so it can't fight the new floor.
+      simEdgeOnly: undefined,
+      simEdgeFloor: simEdgeFloor > 0 ? simEdgeFloor : undefined,
     });
     onClose();
   };
@@ -74,7 +91,7 @@ export function FilterSheet({
     minLock > 85,
     minImplied > 0,
     maxImplied < 100,
-    simEdgeOnly,
+    simEdgeFloor > 0,
   ].filter(Boolean).length;
 
   return (
@@ -215,23 +232,42 @@ export function FilterSheet({
           </Text>
         </View>
 
-        {/* Sim Edge toggle — Monte Carlo agreement filter */}
+        {/* Sim Edge floor — Monte Carlo agreement (adjustable threshold,
+            replaces the old binary toggle 2026-06-24). OFF = no filter. */}
         <View style={styles.section}>
-          <Pressable
-            style={[styles.simEdgeRow, simEdgeOnly && styles.simEdgeRowActive]}
-            onPress={() => setSimEdgeOnly((v) => !v)}
-          >
-            <View style={styles.simEdgeLeft}>
+          <View style={styles.sectionHeader}>
+            <View style={styles.sectionTitleRow}>
               <Text style={styles.simEdgeRowIcon}>🎲</Text>
-              <View>
-                <Text style={styles.simEdgeRowTitle}>SIM EDGE ONLY</Text>
-                <Text style={styles.simEdgeRowSub}>Show only picks where the simulator hit ≥85% and agrees with the model</Text>
-              </View>
+              <Text style={styles.sectionTitle}>SIM EDGE FLOOR</Text>
             </View>
-            <View style={[styles.simToggle, simEdgeOnly && styles.simToggleOn]}>
-              <View style={[styles.simToggleKnob, simEdgeOnly && styles.simToggleKnobOn]} />
-            </View>
-          </Pressable>
+            <Text style={styles.value}>
+              {simEdgeFloor > 0 ? `${simEdgeFloor}%+` : "OFF"}
+            </Text>
+          </View>
+          <Text style={styles.hint}>
+            Hide picks below this Monte Carlo win rate. OFF = no filter.
+          </Text>
+          <View style={styles.presetRow}>
+            {[0, 50, 60, 70, 75, 80, 85].map((v) => {
+              const isActive = simEdgeFloor === v;
+              return (
+                <Pressable
+                  key={v}
+                  testID={`filter-sim-edge-floor-${v}`}
+                  onPress={() => setSimEdgeFloor(v)}
+                  style={[styles.presetChip, isActive && styles.presetChipActive]}
+                  hitSlop={6}
+                >
+                  <Text style={[
+                    styles.presetChipText,
+                    isActive && styles.presetChipTextActive,
+                  ]}>
+                    {v === 0 ? "OFF" : `${v}+`}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
         </View>
 
         </ScrollView>

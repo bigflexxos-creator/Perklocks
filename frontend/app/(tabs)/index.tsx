@@ -139,7 +139,7 @@ export default function LocksScreen() {
     (filters.minLock && filters.minLock > 85 ? 1 : 0) +
     (filters.minImplied ? 1 : 0) +
     (filters.maxImplied && filters.maxImplied < 100 ? 1 : 0) +
-    (filters.simEdgeOnly ? 1 : 0);
+    ((typeof filters.simEdgeFloor === "number" && filters.simEdgeFloor > 0) || filters.simEdgeOnly ? 1 : 0);
 
   // Self-diagnostic: does the user have ANY narrowing filters active?
   // This drives the empty-state CTA — if picks are zero but a filter is
@@ -150,7 +150,7 @@ export default function LocksScreen() {
   // this is "user actively filtered something OUT", not "user set a
   // preference".
   const filtersAreNarrowing =
-    !!filters.simEdgeOnly ||
+    (!!filters.simEdgeOnly || (typeof filters.simEdgeFloor === "number" && filters.simEdgeFloor > 0)) ||
     !!filters.market ||
     !!filters.league ||
     !!filters.event ||
@@ -209,31 +209,19 @@ export default function LocksScreen() {
       // below) — not here — so the GameFilterSheet always sees every
       // game on the slate. Filtering here would shrink the sheet's
       // dropdown to the currently-selected event only.
-      // Sim Edge filter — show only picks where the Monte Carlo simulator
-      // hit ≥75%. Per the iter35 sim-backtest, this threshold is +6.1%
-      // ROI vs -2.7% blind, and the 70-80% sim band actually settled at
-      // 87.5% real hit rate over the last 30 days. The earlier 85% +
-      // 5pp disagreement gate was too strict (≈ 2 picks/day vs ≈ 50
-      // picks/day at this threshold) and missed most of the edge.
-      //
-      // Market-aware threshold (iter40, 2026-06-23) — user bug "App
-      // still not showing picks" with SIM EDGE + Anytime Scorer both
-      // active. Goal-scorer markets (Anytime, FGS, Score-or-Assist)
-      // are structurally low-sim (~14% for FGS, ~50% for Anytime)
-      // because only one player wins per match. A flat ≥75% gate
-      // erases the entire category. Relax to ≥50% when the user is
-      // explicitly looking at a goal-scorer market — still gates
-      // out the bottom half, keeps the chalkiest scorers visible.
-      if (f.simEdgeOnly) {
-        const market = (f.market || "").toLowerCase();
-        const isScorerMarket =
-          market.includes("scorer") ||
-          market.includes("score") ||
-          market.includes("anytime") ||
-          market.includes("fgs") ||
-          market.includes("first_goal") ||
-          market.includes("score_or_assist");
-        const simFloor = isScorerMarket ? 50 : 75;
+      // Sim Edge floor (replaces the old binary toggle 2026-06-24, user
+      // feedback: "Sim edge blocking a lot of picks — I just wanted it
+      // to able to be filtered"). User now picks their own floor via
+      // the FilterSheet chip strip. Backward-compat: legacy
+      // `simEdgeOnly: true` from older client state still works via the
+      // FilterSheet's initialiser which maps it to 75.
+      const simFloor =
+        typeof f.simEdgeFloor === "number" && f.simEdgeFloor > 0
+          ? f.simEdgeFloor
+          : f.simEdgeOnly
+            ? 75
+            : 0;
+      if (simFloor > 0) {
         fresh = fresh.filter((p: any) =>
           typeof p.sim_win_probability === "number" &&
           p.sim_win_probability >= simFloor,
