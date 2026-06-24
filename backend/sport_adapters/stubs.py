@@ -23,12 +23,11 @@ class _SeasonStubAdapter(SportAdapter):
     FUTURE_FEATURES: tuple[str, ...] = ()
 
     def collect_features(self, pick: dict) -> list[EvidenceFeature]:
-        # Fall back to the universal extractor — emits features for
-        # whatever provenance the pick already carries (factors, sim,
-        # learning, edge). Phase 2 lands the deeper sport-specific
-        # pulls; until then the universal extractor keeps governance
-        # working end-to-end.
-        return build_features_from_pick(pick)
+        # Bypass the dispatcher and go DIRECT to the universal
+        # extractor — avoids the recursion path (stub → dispatcher →
+        # stub again caught by `except Exception`) and burns no frames.
+        from evidence_engine import _universal_build_features_from_pick
+        return _universal_build_features_from_pick(pick)
 
 
 class NBAAdapter(_SeasonStubAdapter):
