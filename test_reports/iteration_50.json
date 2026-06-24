@@ -1,0 +1,101 @@
+{
+  "summary": "Iter-50 re-test of the lock_score > lock_score_raw fix. PRIMARY ASSERTION ✅: test_evidence_engine_iter49.py — 16/16 PASS including the canary TestPicksTodayEvidence::test_lock_score_raw_present_and_ge_governed (was failing in iter49). Sweep on /api/picks/today?limit=400 (376 picks): 0 picks with lock_score > lock_score_raw + 0.5 — main agent's headline claim holds. Canary pick 0d09e267 on /api/picks/{id} now returns lock=92 / raw=92 / mult=1.0 / ev=98 — coherent ✅. NEW BLOCKER FOUND ❌: /api/admin/pick-evidence/0d09e267 returns lock=87.5 / raw=87.5 / lock_score_v2=None — DISAGREES with /api/picks/{id} (92/92). RCA: admin_routes.py:42 reads the raw DB document and does NOT call _canonicalize_lock_score(), so the V2-promotion that happens at read-time on /api/picks/{id} is invisible to the inspector. The two screens still SHOW DIFFERENT NUMBERS to the user — the original iter-49 user-visible bug is only half fixed. FRONTEND CONFIRMED: /pick/0d09e267 hero displays LOCK 92 BUT the 'WHY THIS PICK' narrative immediately below reads '**Lock Score: 87.5 | Win Probability: 70.6%**' (stale LLM explanation generated against the pre-fix lock score — never regenerated). So a SINGLE pick screen now disagrees with ITSELF (92 in hero, 87.5 in narrative). /admin/pick-evidence/0d09e267 screen shows Lock 87.5 — disagrees with the public pick screen's 92. Audit math: 3/10 random sampled picks had raw == governed but multiplier displayed as 0.85 / 0.93 (e.g. pick 4705b8d7 raw=90 mult=0.85 gov=90, v2_governed=40.5 — V1_raw was promoted up to satisfy the rule, but the displayed multiplier wasn't updated). The user-facing 'Raw N × Mult = ?' math no longer reconciles for these. Validator self-heal still reports fixed_lock=222/376 every cycle in /var/log/supervisor/backend.err.log — main agent expected this to drop to <20 by the 3rd cycle; instead it's stable at ~60%. The unconditional re-governance coherence pass IS preserving raw>=gov (good) but the validator is still WRITING raw/gov every cycle without convergence. REGRESSION: 58/61 pre-iter49 backend tests pass (test_refactor_phase1_iter46 19/19, test_refactor_phase2a_analytics 19/19, test_risk_meter_iter48 8/8 + skips, test_mlb_hitter_carveout_iter45 11/12 — the 1 failure is a data-dependent H+R+RBI carveout that requires MLB pregame window to be active; backend log shows 'MLB pregame loop: outside window UTC 15:00-23:00, sleeping' — not a regression from iter-50). win_probability is preserved by govern_pick (unit-tested via build_features_from_pick + govern_pick clone — 0/10 mutations). Hype-word filtering still strips elite/dominant/automatic/massive-edge on low-evidence picks (only 0 violations across the board). React Native deprecation warnings (shadow* / pointerEvents) carry over from earlier iterations.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/admin/pick-evidence/{pick_id}",
+        "issue": "Returns the RAW DB document without calling _canonicalize_lock_score(), so the V2-promotion logic added in iter-50 fix (d) (server.py _canonicalize_lock_score) is bypassed. Concrete: canary pick 0d09e267 → /api/picks/{id} returns lock=92/raw=92/v2=92/v2_raw=92, but /api/admin/pick-evidence/{id} returns lock=87.5/raw=87.5/lock_score_v2=None (DB-stored V1 values). The two screens DISAGREE for the same pick id. FIX: in routes/admin_routes.py line 42, wrap the find_one result with `from server import _canonicalize_lock_score; pick = _canonicalize_lock_score(pick)` before returning. Then lock_score, lock_score_raw and lock_score_v2 will match what users see on the public /pick/{id} screen.",
+        "priority": "CRITICAL"
+      },
+      {
+        "endpoint": "pick_validator self-heal loop",
+        "issue": "fixed_lock=222/376 (59%) is still being reported every cycle in /var/log/supervisor/backend.err.log (most recent cycle: 'Self-heal validator: scanned=376 fixed_lock=222 deep_dive_refreshed=222'). Main agent expected this to drop to near-zero by the 3rd cycle. The coherence pass IS preserving raw>=gov (sweep confirms 0 offenders) but the validator is still flagging 60% of picks as needing a fix every cycle, churning DB writes, eviction caches, and deep-dive recomputes. Likely cause: the unconditional re-governance pass detects raw!=gov within rounding (e.g. 87.5 vs 87.4) and re-writes; or the factor jitter on each cycle nudges target_lock by >0 vs stored. Suggest comparing the WRITE inputs to stored before issuing the update, and ONLY incrementing fixed_lock when an actual delta > epsilon was applied.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "/api/picks/today canonicalize multiplier coherence",
+        "issue": "When _canonicalize_lock_score promotes lock_score (and lock_score_raw) at read time, evidence_breakdown.multiplier is NOT updated to match. Sample: pick 4705b8d7-135a-53c9-b165-cdf1c1896d31 returns raw=90, mult=0.85, gov=90 (math 90×0.85=76.5≠90); pick d14a1168 raw=85 mult=0.93 gov=85 (math 79.05≠85); pick bc979ec0 raw=95 mult=0.93 gov=95 (math 88.35≠95). The rule raw>=gov holds, but the displayed multiplier no longer reflects what was actually applied — a defensive frontend that computes `raw × mult` (e.g. for an 'expected lock' tooltip) will get a wrong answer. Fix: when canonicalize promotes lock_score, also set evidence_breakdown.multiplier = (lock_score / lock_score_raw) clamped to [0.70, 1.00], or pick the matching v1/v2 multiplier."
+      },
+      {
+        "endpoint": "Cached LLM explanation",
+        "issue": "Picks store a 'Why This Pick' narrative that was generated against the OLD lock score. After iter-50 promotes lock to 92, the narrative text still says '**Lock Score: 87.5 | Win Probability: 70.6%**' (visible on /pick/0d09e267). Need to either (a) regenerate the explanation when lock_score changes by >2 points, or (b) strip the numeric lock score from the narrative and render it only from the live data, or (c) one-shot regenerate explanations for all today's picks now that lock scores have settled."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "/pick/[id].tsx — 'WHY THIS PICK' card",
+        "issue": "Hero displays LOCK 92 (live data), but the narrative immediately below reads '**Lock Score: 87.5 | Win Probability: 70.6%**' (cached LLM text from before iter-50). Single screen now contradicts itself. Either render the lock from live data only or hide the numeric lock from the narrative.",
+        "testID": "(none — narrative card has no testID)",
+        "priority": "HIGH"
+      },
+      {
+        "component": "/admin/pick-evidence/[id].tsx",
+        "issue": "For canary 0d09e267 the inspector shows Lock 87.5 (because the admin API returns the raw DB value), while the public /pick/{id} screen shows LOCK 92. Same pick, two values. Root cause is the backend admin endpoint, but the user-visible symptom is on this frontend screen.",
+        "testID": "(none)",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Public /pick/{id} vs Admin /admin/pick-evidence/{id} for the SAME pick",
+        "issue": "/api/picks/{id} returns the canonicalized payload (lock=92 / raw=92 / v2=92 — V2 promoted at read time). /api/admin/pick-evidence/{id} returns the raw DB row (lock=87.5 / raw=87.5 / v2=None — V1 stored). Disagreement: 4.5 lock-points and the entire V2 envelope is missing. Repro: GET /api/picks/0d09e267-1a61-5e48-832b-30499b0f9985 then GET /api/admin/pick-evidence/0d09e267-1a61-5e48-832b-30499b0f9985.",
+        "affected_testIDs": ["(no testIDs on EvidencePanel or AdminInspector)"]
+      },
+      {
+        "flow": "Pick hero metric strip vs cached LLM narrative on /pick/{id}",
+        "issue": "Hero strip and EvidencePanel both read live (live=92), narrative card was stored at generation time (stored=87.5). Two values on one screen for the same metric.",
+        "affected_testIDs": ["evidence-metric-lock (proposed)", "(narrative card has no testID)"]
+      }
+    ],
+    "design_issues": [
+      {
+        "screen": "/pick/[id] and /admin/pick-evidence/[id]",
+        "issues": [
+          "Neither screen has testID attributes — same finding as iter-49, still unaddressed. Add evidence-panel + evidence-metric-{prob,edge,evidence,lock} + admin-inspector-lock + admin-inspector-evidence so future regressions can be caught by selector instead of text-content matching."
+        ]
+      }
+    ],
+    "react_native_issues": [
+      {
+        "component": "Multiple (carryover from earlier iterations)",
+        "issue": "Console still emits 'shadow* style props are deprecated. Use boxShadow.' and 'props.pointerEvents is deprecated. Use style.pointerEvents.' on every render. Not blocking but should be addressed in a cleanup pass."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_evidence_engine_iter49.py (16/16 PASS including the iter-49 canary)",
+    "/app/backend/tests/test_lock_score_raw_fix_iter50.py (NEW — 6/9 PASS; 3 fails surface real issues: audit math, canary inspector parity, 5-random inspector parity)",
+    "/app/test_reports/pytest/iter50_evidence_engine.xml",
+    "/app/test_reports/pytest/iter50_lock_score_fix.xml"
+  ],
+  "action_items": [
+    "FIX (CRITICAL): routes/admin_routes.py:42 — apply _canonicalize_lock_score to the result before returning. One-line change: `pick = _canonicalize_lock_score(pick)` after the find_one. This brings the admin inspector into parity with /api/picks/{id} and eliminates the user-visible disagreement on the canary 0d09e267.",
+    "FIX (CRITICAL): /pick/[id].tsx — the 'WHY THIS PICK' narrative still embeds the stale 'Lock Score: 87.5' text. Either regenerate the narrative when lock changes by >2 pts, strip the numeric from the cached text, or run a one-shot regeneration script for today's 376 picks now that lock scores are stable.",
+    "FIX (HIGH): pick_validator — fixed_lock=222/376 every cycle means the unconditional re-governance pass is mutating ~60% of picks even when no real coherence violation exists. Add an epsilon guard (e.g. only write when |new_lock - stored_lock| > 0.5) so the metric truly drops to near-zero on subsequent cycles.",
+    "FIX (HIGH): _canonicalize_lock_score — when promoting lock_score / lock_score_raw to V2, also update evidence_breakdown.multiplier so `raw × mult ≈ gov` holds for downstream consumers. Currently shows mult=0.85 alongside raw==gov==90 which can't be reconciled.",
+    "ADD: testID attributes on /pick/[id] hero (evidence-metric-lock, why-this-pick-card), EvidencePanel (evidence-panel, evidence-metric-*), and /admin/pick-evidence/[id] (admin-inspector-lock, admin-inspector-raw) so future regressions can be caught by Playwright without text-content matching."
+  ],
+  "critical_code_review_comments": [
+    "admin_routes.py:42-67 — bypasses _canonicalize_lock_score and exposes raw DB rows. The whole point of a single canonical serializer is defeated if some endpoints opt out. Either every public endpoint goes through it or it should be applied at the model layer.",
+    "server.py _canonicalize_lock_score — V2 promotion updates lock_score AND lock_score_raw but leaves evidence_breakdown.multiplier and evidence_breakdown.tier_counts pointing at V1 values, so the audit trail no longer reconciles with the headline number. Worth doing a single 'fix everything' pass when V2 wins instead of touching just the two numbers.",
+    "pick_validator unconditional re-governance pass — runs every cycle, idempotent at the data layer but NOT at the bookkeeping layer (fixed_lock metric keeps incrementing). Either skip the write when the diff is below epsilon or change the metric to count actual deltas, not re-evaluations.",
+    "evidence_engine.govern_pick — when V2_governed > V1_governed promotes lock_score=V2 + lock_score_raw=V2_raw atomically (good), but doesn't also promote evidence_breakdown.multiplier or evidence_breakdown.top_features to V2's view. Audit math then looks broken to anyone reading the breakdown.",
+    "Cached LLM explanations are now a data-coherence liability: every numeric in the explanation has to either be regenerated whenever the underlying pick changes, or stripped from the cached blob and rendered from live data at view time. Right now stale text overrules live values on the user's screen."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_lock_score_raw_fix_iter50.py (NEW — 9 cases covering sweep, audit math, canary parity, random inspector parity, win_probability stability, win_probability immutability under govern_pick, hype filtering)"
+  ],
+  "success_rate": {
+    "backend": "82% (test_evidence_engine_iter49 16/16 PASS — the canary test is FIXED ✅; test_lock_score_raw_fix_iter50 6/9 PASS — 3 fails are real issues: inspector parity on canary, audit math math doesn't reconcile after promotion, 5-random inspector parity; regression 58/61 — 1 fail is data-dependent MLB H+R+RBI, not a regression)",
+    "frontend": "70% (hero metric strip & EvidencePanel are now coherent with live data, but narrative card on /pick/{id} still shows stale 'Lock Score: 87.5' alongside hero LOCK 92; admin inspector shows 87.5 while public pick shows 92)"
+  },
+  "seed_data_creation": "None — all assertions ran against the live board (376 picks today, canary 0d09e267 still on the board).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "After main agent applies _canonicalize_lock_score in admin_routes.py and refreshes the narrative cache, re-run: (1) pytest backend/tests/test_lock_score_raw_fix_iter50.py -v — TestCanaryPick::test_canary_pick_inspector_parity + TestInspectorParityRandom::test_five_random_picks_consistent must turn green. (2) Visit /pick/0d09e267 and confirm hero AND narrative both show 92 (no '87.5' anywhere on the page). (3) Visit /admin/pick-evidence/0d09e267 and confirm Lock = 92 (not 87.5). (4) Check /var/log/supervisor/backend.err.log over 3 consecutive validator cycles — fixed_lock count should be <20 by cycle 3. Sweep test (TestSweepCoherence::test_zero_picks_with_governed_gt_raw) is the headline regression — keep it green.",
+  "rca_of_issue": "Three independent symptoms with a shared root: the iter-50 fix added V2-promotion to _canonicalize_lock_score (read-time, server.py) but did NOT (a) apply it to admin_routes.py (which reads raw DB rows), (b) regenerate the cached LLM 'Why This Pick' explanations that embed the lock_score literal, or (c) update evidence_breakdown.multiplier when canonicalize promotes lock_score / lock_score_raw. Net effect: /api/picks/{id} shows the post-promotion view (LOCK 92), /api/admin/pick-evidence/{id} shows the DB view (LOCK 87.5), and the cached narrative shows whatever was stored when the pick was first generated (LOCK 87.5). Three layers of stale data, three different numbers, all visible to the same user navigating between the two screens. REPRODUCTION: 1) curl GET /api/picks/0d09e267-1a61-5e48-832b-30499b0f9985 → lock_score=92, lock_score_raw=92. 2) curl GET /api/admin/pick-evidence/0d09e267-1a61-5e48-832b-30499b0f9985 → lock_score=87.5, lock_score_raw=87.5. 3) Open /pick/0d09e267 in the web preview after logging in → hero shows LOCK 92, narrative reads 'Lock Score: 87.5'. MITIGATION: Patch admin_routes.py to call _canonicalize_lock_score; either run a one-shot script to regenerate explanations for today's picks, or strip the numeric from the cached narrative and let the UI inject the live value at render time; in _canonicalize_lock_score, also update evidence_breakdown.multiplier = (lock_score / lock_score_raw) clamped to [0.70, 1.00] when promoting."
+}

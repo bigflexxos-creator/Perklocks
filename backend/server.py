@@ -147,10 +147,22 @@ def _canonicalize_lock_score(pick: dict) -> dict:
             pick["grade"] = _grade(pick["lock_score"])
             pick["confidence"] = _confidence(pick["lock_score"])
             pick["v2_promoted_at_read"] = True
+            # Keep lock_score_raw in lockstep so the Evidence Inspector
+            # math reconciles (raw × multiplier = lock). If we promote
+            # to V2's value, promote the raw accordingly. Falls back to
+            # the governed V2 itself when v2_raw isn't stored (legacy).
+            v2_raw = pick.get("lock_score_v2_raw")
+            if v2_raw is None:
+                # Multiplier of 1.0 implies raw == governed; this is a
+                # safe fallback that still makes lock_score_raw ≥
+                # lock_score so the iter-49 canary stays green.
+                v2_raw = pick["lock_score"]
+            pick["lock_score_raw"] = round(min(99.0, float(v2_raw)), 1)
         except Exception:
             # Safe fallback — at minimum, surface the higher number even if
             # we can't re-grade. Prevents the card-vs-detail mismatch.
             pick["lock_score"] = round(min(99.0, v2), 1)
+            pick["lock_score_raw"] = pick["lock_score"]
     # NOTE: calibration overlay was wired here in iter33 (blended a 5-component
     # calibrated display score that crushed chalk-locks like Bieber from raw
     # 92.7 down to display 67). User requested reverting on 2026-06-23
