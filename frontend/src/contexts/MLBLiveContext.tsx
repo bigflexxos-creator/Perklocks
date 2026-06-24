@@ -115,26 +115,40 @@ export function MLBLiveProvider({ children }: { children: React.ReactNode }) {
   const lookup = useCallback(
     (event: string | undefined | null, eventTime?: string | null): LiveGame | null => {
       if (!event) return null;
-      // 1) Try the dated key first — guarantees we get the right game
-      //    when teams play a multi-game series (Thu + Fri + Sat all
-      //    "Reds @ Yankees" — yesterday's FINAL must NOT leak onto
-      //    tomorrow's card).
+
+      // Helper: confirm a live game refers to the SAME scheduled game as
+      // the pick by comparing commence_time within a 6-hour window. A
+      // single matchup never plays twice within 6h, so this safely
+      // disambiguates yesterday's late-night FINAL from today's same-
+      // matchup game even when their UTC dates COINCIDE (e.g. yesterday
+      // 21:45 PT = 04:45 UTC today, which would otherwise share the
+      // "today's UTC date" key with today's afternoon game).
+      const sameScheduledGame = (g: LiveGame | undefined | null): boolean => {
+        if (!g) return false;
+        if (!eventTime || typeof eventTime !== "string" || eventTime.length < 10) {
+          // No event_time → we can't disambiguate. Default DENY for
+          // safety — better to hide a correct live badge than to leak
+          // yesterday's FINAL onto today's card.
+          return false;
+        }
+        const pickTs = Date.parse(eventTime);
+        const liveTs = Date.parse(g.commence_time || "");
+        if (!Number.isFinite(pickTs) || !Number.isFinite(liveTs)) return false;
+        return Math.abs(liveTs - pickTs) <= 6 * 3600 * 1000;
+      };
+
+      // 1) Try the dated key first (event|YYYY-MM-DD). Most accurate hit
+      //    when the backend has the right game indexed.
       if (eventTime && typeof eventTime === "string" && eventTime.length >= 10) {
         const dated = games[`${event}|${eventTime.slice(0, 10)}`];
-        if (dated) return dated;
+        if (dated && sameScheduledGame(dated)) return dated;
       }
-      // 2) Fall back to the bare event key (back-compat for callers
-      //    that don't pass event_time).
+
+      // 2) Fall back to the bare event key. Backend signal-ranks this so
+      //    LIVE > pre-game > FINAL when multiple games share the matchup.
       const g = games[event] || null;
-      // Even with bare key, defensively check that the dates align —
-      // if the live game's commence date doesn't match the pick's date,
-      // suppress the badge instead of showing a misleading FINAL.
-      if (g && eventTime && typeof eventTime === "string" && eventTime.length >= 10) {
-        const liveDate = (g.commence_time || "").slice(0, 10);
-        const pickDate = eventTime.slice(0, 10);
-        if (liveDate && liveDate !== pickDate) return null;
-      }
-      return g;
+      if (g && sameScheduledGame(g)) return g;
+      return null;
     },
     [games],
   );
