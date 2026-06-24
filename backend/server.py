@@ -1806,9 +1806,35 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             {"lock_score_v2": {"$gte": 85.0}},
         ],
     }
+    # ── MLB Hitter alt-lock carve-out ──────────────────────────────
+    # User report 2026-06-24: "Where are the hitters at for ATL/SD —
+    # I don't see no 1H, HR, RBI". Diagnosis: Hits / Hits+Runs+RBIs /
+    # HR / RBI / Total Bases ALT-LOCK picks (Over 0.5 lines) are
+    # generated with implied prob ~94% (chalky -1500ish odds), but
+    # the standard lock formula scores chalky alt-locks at 55-61 —
+    # well below the board's 80 floor. Net effect: zero hitter alt-
+    # locks ever surface. Same shape as the MLB pitcher-K and Soccer-
+    # scorer carve-outs: surface alt-lock hitter props at lock ≥ 70
+    # with edge tolerance to -3% (alt locks are chalky by design).
+    mlb_hitter_q = {
+        "sport": "MLB",
+        "market": {
+            "$regex": r"hits\s*\+\s*runs\s*\+\s*rbis?|\bhits?\b|home runs|\brbis?\b|total bases",
+            "$options": "i",
+        },
+        # Exclude pitcher markets so the regex above doesn't accidentally
+        # double-count strikeouts (already covered by mlb_k_q).
+        "$nor": [{"market": {"$regex": "strikeout|outs recorded", "$options": "i"}}],
+        "no_bet": {"$ne": True},
+        "edge_percent": {"$gte": -3.0},
+        "$or": [
+            {"lock_score": {"$gte": 70.0}},
+            {"lock_score_v2": {"$gte": 70.0}},
+        ],
+    }
     q: dict = {
         "pick_date": _today_str(),
-        "$or": [standard_q, elite_q, tennis_ml_q, tennis_alt_q, mlb_k_q, soccer_scorer_q],
+        "$or": [standard_q, elite_q, tennis_ml_q, tennis_alt_q, mlb_k_q, mlb_hitter_q, soccer_scorer_q],
     }
     # ── User-supplied min_lock floor (global enforcement) ────────────
     # Each sub-query above uses its own lock floor (70 for tennis ML,

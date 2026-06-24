@@ -1185,6 +1185,16 @@ PLAYER_PROP_MARKETS = {
         # both as `batter_hits_runs_rbis` + `_alternate`.
         "batter_hits_runs_rbis",
         "batter_hits_runs_rbis_alternate",
+        # Standalone HR / RBI / Total Bases — added 2026-06-24 per user
+        # request ("where are 1H, HR, RBI" — board was returning ONLY
+        # hits + combo H+R+RBI because these three keys weren't in the
+        # fetch list). Each has an alt variant for the near-lock floor.
+        "batter_home_runs",
+        "batter_home_runs_alternate",
+        "batter_rbis",
+        "batter_rbis_alternate",
+        "batter_total_bases",
+        "batter_total_bases_alternate",
         # Pitcher strikeout markets — added 2026-06-18 per user request.
         # The Odds API exposes these as `pitcher_strikeouts` + alt-line variant.
         "pitcher_strikeouts", "pitcher_strikeouts_alternate",
@@ -1232,6 +1242,9 @@ PLAYER_PROP_MARKETS = {
 _ALT_PROP_MARKETS = {
     "batter_hits_alternate",
     "batter_hits_runs_rbis_alternate",  # MLB Hits+Runs+RBIs alt (lower line)
+    "batter_home_runs_alternate",       # MLB HR alt (added 2026-06-24)
+    "batter_rbis_alternate",            # MLB RBI alt (added 2026-06-24)
+    "batter_total_bases_alternate",     # MLB TB alt (added 2026-06-24)
     "pitcher_strikeouts_alternate",   # MLB pitcher Ks alt (lower line, high implied)
     "player_points_alternate", "player_rebounds_alternate",
     "player_assists_alternate",
@@ -1814,6 +1827,8 @@ def _prop_market_label(market_key: str, side: str, point: float | None) -> str:
         "batter_hits": "Hits",
         "batter_hits_runs_rbis": "Hits + Runs + RBIs",
         "batter_home_runs": "Home Runs",
+        "batter_rbis": "RBIs",
+        "batter_total_bases": "Total Bases",
         "pitcher_strikeouts": "Strikeouts",
         "pitcher_outs": "Outs Recorded",
         "player_points": "Points", "player_rebounds": "Rebounds",
