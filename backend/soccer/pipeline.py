@@ -29,6 +29,12 @@ from .normalize import (
     status_is_pregame,
 )
 from .predictor import build_prediction, to_picks_collection_doc
+from .real_odds import (
+    _FD_TO_ODDS_KEY,
+    _index_events_by_team_pair,
+    fetch_odds_for_sport,
+    lookup_real_odds,
+)
 
 logger = logging.getLogger("lockscore.soccer.pipeline")
 
@@ -103,6 +109,50 @@ async def run_prediction_pipeline(db) -> dict:
     # Build predictions + dual-write. For each fixture, kick off the
     # H2H lookup concurrently — these are tiny GETs and the 24h cache
     # means each unique team pair only hits the API once per day.
+    # ── Real-odds prefetch ────────────────────────────────────────
+    # Map each distinct competition in today's slate to its Odds API
+    # sport_key (when one exists), then fetch all live h2h events for
+    # those sports in parallel. Result: a per-competition lookup table
+    # `{frozenset({home, away}): odds_event}` we can hit per fixture
+    # below without any extra API calls.
+    # Without this, every soccer pick falls through to synthetic "Fair
+    # Odds (Model)" — which is why Netherlands @ Tunisia was showing
+    # -2400 instead of FanDuel's actual -909. (Fixed 2026-06-25.)
+    odds_sport_keys: list[str] = []
+    seen_keys: set[str] = set()
+    for code in comp_codes:
+        sk = _FD_TO_ODDS_KEY.get(code)
+        if sk and sk not in seen_keys:
+            seen_keys.add(sk)
+            odds_sport_keys.append(sk)
+
+    odds_events_by_sport: dict[str, list[dict]] = {}
+    if odds_sport_keys:
+        try:
+            odds_results = await asyncio.gather(
+                *[fetch_odds_for_sport(sk) for sk in odds_sport_keys],
+                return_exceptions=True,
+            )
+            for sk, res in zip(odds_sport_keys, odds_results):
+                if isinstance(res, Exception):
+                    logger.warning("Odds fetch failed for %s: %s", sk, res)
+                    odds_events_by_sport[sk] = []
+                else:
+                    odds_events_by_sport[sk] = res or []
+            total_evs = sum(len(v) for v in odds_events_by_sport.values())
+            logger.info(
+                "Soccer real-odds prefetch: %d sport_keys → %d live events",
+                len(odds_sport_keys), total_evs,
+            )
+        except Exception as e:
+            logger.warning("Real-odds prefetch failed: %s", e)
+
+    # Index events by team-pair frozenset per sport_key for O(1) lookup.
+    odds_index_by_sport = {
+        sk: _index_events_by_team_pair(evs)
+        for sk, evs in odds_events_by_sport.items()
+    }
+
     upserts_pred: list[dict] = []
     upserts_pick: list[dict] = []
     # Fan out H2H calls in parallel, capped to one per fixture.
@@ -121,8 +171,23 @@ async def run_prediction_pipeline(db) -> dict:
         if pred is None:
             continue
         upserts_pred.append(pred)
+        # Resolve real book odds (FanDuel/DK/MGM) before falling back
+        # to the model's fair-odds estimate.
+        real_odds = None
+        comp_code = ((raw.get("competition") or {}).get("code")) or ""
+        sport_key = _FD_TO_ODDS_KEY.get(comp_code)
+        if sport_key and sport_key in odds_index_by_sport:
+            home_team = (raw.get("homeTeam") or {}).get("name") or ""
+            away_team = (raw.get("awayTeam") or {}).get("name") or ""
+            sel_team = pred.get("selection") or ""
+            real_odds = lookup_real_odds(
+                odds_index_by_sport[sport_key],
+                home_team_name=home_team,
+                away_team_name=away_team,
+                selection_team_name=sel_team,
+            )
         if (pred.get("confidence") or 0) >= 85.0:
-            upserts_pick.append(to_picks_collection_doc(pred))
+            upserts_pick.append(to_picks_collection_doc(pred, real_odds=real_odds))
         # Synthesize Over 1.5 Goals from team strengths (no Odds API
         # dependency). Only emits when the Poisson model is confident
         # the goal floor will clear — see make_over_1_5_pick().

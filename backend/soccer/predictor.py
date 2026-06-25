@@ -192,8 +192,15 @@ def build_prediction(fixture_raw: dict, standings_index: dict[int, dict],
     }
 
 
-def to_picks_collection_doc(pred: dict) -> dict:
-    """Convert a soccer prediction into the existing `picks` schema."""
+def to_picks_collection_doc(pred: dict, real_odds: dict | None = None) -> dict:
+    """Convert a soccer prediction into the existing `picks` schema.
+
+    If ``real_odds`` is provided (resolved by ``soccer.real_odds``), the
+    pick will carry the actual FanDuel/DraftKings/BetMGM American line
+    AND the corresponding edge percent — instead of the previous
+    fair-odds-only synthetic estimate. ``real_odds`` schema is the same
+    object returned by :func:`soccer.real_odds.lookup_real_odds`.
+    """
     conf = float(pred.get("confidence") or 0)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     # ── User-friendly market label.
@@ -224,7 +231,32 @@ def to_picks_collection_doc(pred: dict) -> dict:
         fair_odds = -round(100 * prob_dec / (1 - prob_dec))
     else:
         fair_odds = round(100 * (1 - prob_dec) / prob_dec)
-    return {
+
+    # ── Prefer REAL book odds when available ──────────────────────
+    # The Odds API was queried upstream by the pipeline. If a real
+    # FanDuel/DraftKings/BetMGM line came back, use it and compute
+    # genuine edge against the book's implied price. Otherwise fall
+    # back to the model's fair-odds estimate + Extended Coverage flag.
+    using_real = bool(real_odds and real_odds.get("book_odds") is not None)
+    if using_real:
+        book_odds         = int(real_odds["book_odds"])
+        book_implied_pct  = float(real_odds["implied_probability"])
+        bookmaker_label   = str(real_odds.get("bookmaker") or "Sportsbook")
+        edge_pct          = round(conf - book_implied_pct, 2)
+        is_extra_flag     = False
+        fair_only_flag    = False
+        # Sample multi-book quote dict for the sportsbook_mapper.
+        all_books         = real_odds.get("all_books") or {}
+    else:
+        book_odds         = int(fair_odds)
+        book_implied_pct  = round(conf, 1)  # At fair odds, implied == model
+        bookmaker_label   = "Fair Odds (Model)"
+        edge_pct          = 0.0
+        is_extra_flag     = True
+        fair_only_flag    = True
+        all_books         = {}
+
+    doc = {
         "id":               pred["id"],
         "sport":            "Soccer",
         "league":           pred.get("league") or "Soccer",
@@ -233,15 +265,10 @@ def to_picks_collection_doc(pred: dict) -> dict:
         "market":           friendly_market,
         "selection":        sel,
         # Win probability stored as 0-100 percentage (matches main pipeline).
-        # Previously was incorrectly stored as 0-1 decimal which made the UI
-        # show "0.96%" instead of "96%".
         "win_probability":  round(conf, 1),
-        # At fair odds, implied = model prob by definition.
-        "implied_probability": round(conf, 1),
-        "book_odds":        int(fair_odds),
-        # Edge is 0 at fair odds — we have no real market line to compare
-        # against. Honesty > fake green numbers.
-        "edge_percent":     0.0,
+        "implied_probability": book_implied_pct,
+        "book_odds":        book_odds,
+        "edge_percent":     edge_pct,
         "lock_score":       round(conf, 1),
         "grade":            _grade_from_conf(conf),
         "pick_date":        today,
@@ -252,23 +279,27 @@ def to_picks_collection_doc(pred: dict) -> dict:
         "source":           "soccer_v1",
         "model_version":    pred["model_version"],
         "created_at":       pred["created_at"],
-        # ── Fair-odds / Extended Coverage flags ───────────────────────
-        # No bookmaker carries this fixture (or we couldn't reach The Odds
-        # API). Mark explicitly so the UI shows the "Extended Coverage"
-        # badge and the user knows the price is a MODEL ESTIMATE — they
-        # must confirm at their sportsbook (which will be very different
-        # for chalk like France −2400).
-        "is_extra":         True,
-        "fair_odds_model":  True,
-        "bookmaker":        "Fair Odds (Model)",
+        # ── Real-vs-Fair flags ─────────────────────────────────────
+        # `is_extra=True` ONLY when we couldn't find a real book line
+        # → the pick goes to Extended Coverage. With real odds, the
+        # pick flows into the regular Locks board like any other.
+        "is_extra":         is_extra_flag,
+        "fair_odds_model":  fair_only_flag,
+        "bookmaker":        bookmaker_label,
         "factors": {
             "Coverage Source": (
+                f"Real book odds via {bookmaker_label}"
+                if using_real else
                 "Soccer model fair-odds (The Odds API doesn't carry this fixture). "
                 "Confirm the line at your sportsbook before placing."
             ),
             "Model Confidence": f"Model puts {sel} at {round(conf)}% to win.",
         },
     }
+    if using_real and all_books:
+        # Multi-book deep-link sources for the sportsbook_mapper.
+        doc["all_book_odds"] = all_books
+    return doc
 
 
 def _grade_from_conf(c: float) -> str:
