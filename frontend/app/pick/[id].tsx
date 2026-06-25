@@ -19,6 +19,7 @@ import { EvidencePanel } from "@/src/components/EvidencePanel";
 import { PitcherH2HPanel } from "@/src/components/PitcherH2HPanel";
 import { XGFormPanel } from "@/src/components/XGFormPanel";
 import { ProbabilityBreakdownPanel } from "@/src/components/ProbabilityBreakdownPanel";
+import { MarkdownText } from "@/src/components/MarkdownText";
 import { getDisplayLockRounded } from "@/src/lib/lockScore";
 import { buildSlipText, shareSlip, saveSlipImage, copySlipText } from "@/src/lib/shareBetSlip";
 
@@ -262,7 +263,7 @@ export default function PickDetail() {
             </Text>
             <View style={styles.explainCard}>
               {pick.explanation ? (
-                <Text style={styles.explainText}>{pick.explanation}</Text>
+                <MarkdownText style={styles.explainText}>{pick.explanation}</MarkdownText>
               ) : (
                 <View style={styles.aiLoading}>
                   <ActivityIndicator size="small" color={COLORS.voltBlue} />
@@ -343,8 +344,11 @@ export default function PickDetail() {
                 markets (Anytime, First, Score-or-Assist). Auto-hides for any
                 non-goalscorer pick or players outside the Top 5 European
                 leagues. Surfaces the math behind the HOT/COLD chip + the
-                ±6pp probability lift. */}
-            <XGFormPanel pickId={pick.id} />
+                ±6pp probability lift. Gated by sport==SOCCER to stop the 4×
+                duplicate 404 fetches that fired for every MLB pick view. */}
+            {String(pick.sport || "").toUpperCase() === "SOCCER" && (
+              <XGFormPanel pickId={pick.id} />
+            )}
 
             {/* Pitcher vs Team H2H — MLB Strikeout picks only.
                 Shows the pitcher's K history vs the specific opposing team
