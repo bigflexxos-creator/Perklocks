@@ -4474,6 +4474,26 @@ async def on_startup():
         logger.info("NBA + NFL player_db (free ESPN public) armed — daily roster + stats + injuries refresh")
     except Exception as e:
         logger.warning("NBA/NFL player_db loop failed to start: %s", e)
+    # ── Tennis ATP Free Player Database (Phase 3, Sackmann mirror) ─
+    # Bulk-load 10y of ATP match data from the TML-Database mirror
+    # (Sackmann format). One full refresh per week (data upstream
+    # updates ~weekly after each tournament concludes). Cold-start
+    # 180 sec post-boot so it doesn't compete with NBA/NFL loops.
+    try:
+        from player_db.ingestors.tennis_sackmann import refresh_atp
+        async def _tennis_player_db_loop() -> None:
+            await asyncio.sleep(180)
+            while True:
+                try:
+                    summary = await refresh_atp(db, years=10)
+                    logger.info("Tennis ATP player_db weekly refresh: %s", summary)
+                except Exception as e:
+                    logger.warning("Tennis ATP player_db refresh failed: %s", e)
+                await asyncio.sleep(7 * 24 * 60 * 60)
+        asyncio.create_task(_tennis_player_db_loop())
+        logger.info("Tennis ATP player_db (free Sackmann mirror) armed — weekly 10y match-history refresh")
+    except Exception as e:
+        logger.warning("Tennis ATP player_db loop failed to start: %s", e)
     # ── Tennis Extra Settler ────────────────────────────────────────
     # Settles Mallorca/Eastbourne/Challenger picks from TennisExplorer
     # results page. Runs every 30 min, walks back 3 days.
