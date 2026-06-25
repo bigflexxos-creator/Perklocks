@@ -4479,8 +4479,10 @@ async def on_startup():
     # (Sackmann format). One full refresh per week (data upstream
     # updates ~weekly after each tournament concludes). Cold-start
     # 180 sec post-boot so it doesn't compete with NBA/NFL loops.
+    # Also includes WTA via ESPN rankings (Phase 3.5).
     try:
         from player_db.ingestors.tennis_sackmann import refresh_atp
+        from player_db.ingestors.espn_public import refresh_wta
         async def _tennis_player_db_loop() -> None:
             await asyncio.sleep(180)
             while True:
@@ -4489,11 +4491,16 @@ async def on_startup():
                     logger.info("Tennis ATP player_db weekly refresh: %s", summary)
                 except Exception as e:
                     logger.warning("Tennis ATP player_db refresh failed: %s", e)
+                try:
+                    wta_summary = await refresh_wta(db)
+                    logger.info("Tennis WTA player_db weekly refresh: %s", wta_summary)
+                except Exception as e:
+                    logger.warning("Tennis WTA player_db refresh failed: %s", e)
                 await asyncio.sleep(7 * 24 * 60 * 60)
         asyncio.create_task(_tennis_player_db_loop())
-        logger.info("Tennis ATP player_db (free Sackmann mirror) armed — weekly 10y match-history refresh")
+        logger.info("Tennis ATP + WTA player_db armed — weekly refresh (Sackmann + ESPN)")
     except Exception as e:
-        logger.warning("Tennis ATP player_db loop failed to start: %s", e)
+        logger.warning("Tennis player_db loop failed to start: %s", e)
     # ── Tennis Extra Settler ────────────────────────────────────────
     # Settles Mallorca/Eastbourne/Challenger picks from TennisExplorer
     # results page. Runs every 30 min, walks back 3 days.

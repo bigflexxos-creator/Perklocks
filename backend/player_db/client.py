@@ -25,28 +25,49 @@ def _canonical(name: str) -> str:
     return (name or "").strip().lower()
 
 
-async def find_player(sport: str, name: str) -> dict | None:
+async def find_player(sport: str, name: str, team: str | None = None) -> dict | None:
     """Local-first lookup by canonical name. Last-name fallback for
-    half-name picks ('Mahomes' → 'Patrick Mahomes')."""
+    half-name picks ('Mahomes' → 'Patrick Mahomes').
+
+    `team` is an optional abbreviation hint (e.g. 'MIN', 'KC') used to
+    disambiguate when multiple players share the same exact name —
+    e.g. Justin Jefferson (Vikings WR) vs Justin Jefferson (Browns LB).
+    """
     s = (sport or "").lower()
     target = _canonical(name)
     if not target:
         return None
-    # Exact canonical match
+    # Exact canonical match — if a team hint is given and multiple docs
+    # exist, prefer the one whose team matches.
+    if team:
+        row = await db.players.find_one(
+            {"sport": s, "canonical_name": target, "team": team.upper()},
+            {"_id": 0},
+        )
+        if row:
+            return row
     row = await db.players.find_one(
         {"sport": s, "canonical_name": target}, {"_id": 0}
     )
     if row:
         return row
-    # Last-name fallback
+    # Last-name fallback (with optional team filter)
     last = target.split()[-1] if target else ""
     if last:
-        row = await db.players.find_one(
-            {"sport": s, "last_name": {"$regex": f"^{last}$", "$options": "i"}},
-            {"_id": 0},
-        )
+        q: dict = {"sport": s, "last_name": {"$regex": f"^{last}$", "$options": "i"}}
+        if team:
+            q["team"] = team.upper()
+        row = await db.players.find_one(q, {"_id": 0})
         if row:
             return row
+        # Last attempt: drop team filter
+        if team:
+            row = await db.players.find_one(
+                {"sport": s, "last_name": {"$regex": f"^{last}$", "$options": "i"}},
+                {"_id": 0},
+            )
+            if row:
+                return row
     return None
 
 
@@ -75,7 +96,7 @@ async def enrich_profile(profile: dict) -> dict:
     # Phase 3: Tennis resolves locally (Sackmann-format match data).
     # Remaining sports (soccer, MMA, etc.) fall back to legacy
     # SportsDataIO until their ingestors land.
-    if sport not in ("mlb", "nba", "nfl", "tennis"):
+    if sport not in ("mlb", "nba", "nfl", "tennis", "wta", "atp"):
         try:
             from player_intel.sportsdataio_client import enrich_profile as legacy
             return await legacy(profile)
@@ -84,7 +105,10 @@ async def enrich_profile(profile: dict) -> dict:
             return profile
 
     try:
-        row = await find_player(sport, name)
+        # Pass team hint so picks for "Justin Jefferson" with team=MIN
+        # resolve to the Vikings WR, not the Browns LB.
+        team_hint = profile.get("team") or None
+        row = await find_player(sport, name, team=team_hint)
         if row:
             # Position — only overwrite when seed didn't pin one.
             if row.get("position") and (
@@ -112,7 +136,7 @@ async def enrich_profile(profile: dict) -> dict:
                 if row.get("throws"):
                     profile["throws"] = row["throws"]
                 profile["mlb_id"]    = row.get("mlb_id") or row.get("player_id")
-            elif sport == "tennis":
+            elif sport in ("tennis", "atp", "wta"):
                 # Hand (L/R), nationality, surface splits, win %, rank
                 if row.get("hand"):
                     profile["hand"] = row["hand"]
@@ -120,11 +144,14 @@ async def enrich_profile(profile: dict) -> dict:
                     profile["ioc"] = row["ioc"]
                 if row.get("rank") is not None:
                     profile["rank"] = row["rank"]
+                if row.get("rank_points") is not None:
+                    profile["rank_points"] = row["rank_points"]
                 if row.get("win_pct") is not None:
                     profile["win_pct"] = row["win_pct"]
                 if row.get("surface_splits"):
                     profile["surface_splits"] = row["surface_splits"]
                 profile["tennis_player_id"] = row.get("player_id")
+                profile["tour"] = row.get("tour")
             else:
                 profile["espn_id"]   = row.get("espn_id") or row.get("player_id")
             profile["player_db_status"]      = row.get("status")

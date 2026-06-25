@@ -340,3 +340,107 @@ async def refresh_nfl(db: AsyncIOMotorDatabase, season: int | None = None) -> di
     return await _refresh_league(
         db, sport="nfl", sport_slug="football", league_slug="nfl", season=season,
     )
+
+
+# ── WTA tennis (Phase 3.5) ─────────────────────────────────────────
+# Sackmann's TML-Database mirror is ATP-only. ESPN exposes the WTA
+# tour under sport=tennis, league=wta. Same /teams → /roster pattern
+# does NOT apply (tennis has no teams), so we use the rankings feed
+# as the player universe and enrich each via /athletes/{id}.
+async def refresh_wta(db: AsyncIOMotorDatabase, season: int | None = None) -> dict:
+    """WTA player DB via ESPN rankings + athlete endpoints.
+
+    ESPN exposes:
+      • /tennis/wta/rankings    → top ~150 WTA players in ranked order
+      • Athletes include id, name, flag (URL with country code), DOB
+    """
+    started = time.time()
+    season = season or datetime.now(timezone.utc).year
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        # Correct ESPN path: tennis/wta/rankings (NOT ?league=wta).
+        data = await _get(
+            client,
+            f"{_SITE_API}/tennis/wta/rankings",
+        )
+        athletes: list[dict] = []
+        if data:
+            for rank_list in data.get("rankings", []):
+                for entry in rank_list.get("ranks", []):
+                    ath = entry.get("athlete") or {}
+                    if ath.get("id"):
+                        ath["_wta_rank"] = entry.get("current")
+                        ath["_wta_points"] = entry.get("points")
+                        athletes.append(ath)
+        if not athletes:
+            return {"ok": False, "reason": "wta_rankings_empty", "sport": "wta"}
+
+        upserted = 0
+        for ath in athletes:
+            athlete_id = ath.get("id")
+            name = ath.get("displayName") or ath.get("fullName") or ""
+            try:
+                aid = int(athlete_id)
+            except (TypeError, ValueError):
+                continue
+            if not name:
+                continue
+            # Flag URL contains the 3-letter country code as the filename:
+            #   .../countries/500/blr.png → BLR. Extract that for IOC.
+            ioc = None
+            flag_url = ath.get("flag")
+            if isinstance(flag_url, str) and flag_url:
+                try:
+                    tail = flag_url.rsplit("/", 1)[-1].split(".")[0]
+                    if len(tail) == 3 and tail.isalpha():
+                        ioc = tail.upper()
+                except Exception:
+                    pass
+            ioc = ioc or ath.get("birthCountry")
+            # ESPN sometimes returns headshot as a dict {"href":"..."} and
+            # other times as a plain URL string — handle both.
+            _hs = ath.get("headshot")
+            if isinstance(_hs, dict):
+                photo = _hs.get("href")
+            elif isinstance(_hs, str):
+                photo = _hs
+            else:
+                photo = None
+            photo = photo or f"https://a.espncdn.com/i/headshots/tennis/players/full/{aid}.png"
+            player_doc = {
+                "sport":          "wta",
+                "tour":           "wta",
+                "player_id":      str(aid),       # match tennis schema
+                "espn_id":        aid,
+                "name":           name,
+                "canonical_name": _canonical(name),
+                "first_name":     ath.get("firstName"),
+                "last_name":      ath.get("lastName"),
+                "ioc":            ioc,
+                "hand":           (ath.get("hand") or {}).get("type") if isinstance(ath.get("hand"), dict) else None,
+                "height":         ath.get("displayHeight") or ath.get("height"),
+                "weight_lb":      ath.get("weight"),
+                "birth_date":     ath.get("dateOfBirth"),
+                "rank":           ath.get("_wta_rank"),
+                "rank_points":    ath.get("_wta_points"),
+                "photo_url":      photo,
+                "source":         "espn_public",
+                "updated_at":     datetime.now(timezone.utc).isoformat(),
+            }
+            await db.players.update_one(
+                {"sport": "wta", "player_id": str(aid)},
+                {"$set": player_doc, "$setOnInsert": {"created_at": datetime.now(timezone.utc).isoformat()}},
+                upsert=True,
+            )
+            upserted += 1
+
+    await _ensure_indexes(db)
+
+    summary = {
+        "ok": True,
+        "sport": "wta",
+        "season": season,
+        "players_upserted": upserted,
+        "elapsed_sec": round(time.time() - started, 1),
+    }
+    logger.info("ESPN WTA player_db refresh: %s", summary)
+    return summary
