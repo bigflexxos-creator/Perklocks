@@ -20,11 +20,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
+from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorDatabase
+
+load_dotenv()
 
 from brain.nrfi_yrfi_model import (
     nrfi_yrfi_model,
@@ -37,6 +41,8 @@ from brain.nrfi_yrfi_model import (
 logger = logging.getLogger("lockscore.nrfi_engine")
 
 _MLB_BASE = "https://statsapi.mlb.com/api/v1"
+_ODDS_BASE = "https://api.the-odds-api.com/v4"
+_ODDS_KEY = os.environ.get("THE_ODDS_API_KEY", "")
 _TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 _HEADERS = {"User-Agent": "PerksLocks/1.0"}
 
@@ -125,6 +131,120 @@ async def _lineup_top3_ops(db: AsyncIOMotorDatabase, team_abbr: str) -> float | 
     return round(sum(top3) / 3.0, 3)
 
 
+def _american_to_implied(price: int | float) -> float:
+    """Convert American odds (-110, +120) → implied probability."""
+    p = float(price)
+    if p > 0:
+        return 100.0 / (p + 100.0)
+    return -p / (-p + 100.0)
+
+
+async def _fetch_sportsbook_nrfi(
+    client: httpx.AsyncClient, event_id: str,
+) -> dict | None:
+    """Pull 1st-inning total market from The Odds API and return the
+    cross-book consensus implied probabilities for NRFI / YRFI.
+
+    Returns:
+        {
+          "nrfi_implied": 0.55,           # under-0.5 runs consensus
+          "yrfi_implied": 0.45,           # over-0.5 runs consensus
+          "best_price_nrfi": -115,        # sharpest book on NRFI
+          "best_price_yrfi": +110,        # sharpest book on YRFI
+          "books_count": 9,
+        } or None when no book offers the market.
+    """
+    if not _ODDS_KEY:
+        return None
+    url = f"{_ODDS_BASE}/sports/baseball_mlb/events/{event_id}/odds"
+    params = {
+        "apiKey": _ODDS_KEY,
+        "regions": "us",
+        "markets": "totals_1st_1_innings",
+        "oddsFormat": "american",
+    }
+    try:
+        r = await client.get(url, params=params, timeout=_TIMEOUT)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+    except Exception as e:
+        logger.debug("Odds API NRFI fetch failed for %s: %s", event_id, e)
+        return None
+
+    overs: list[float] = []   # over-0.5 = YRFI
+    unders: list[float] = []  # under-0.5 = NRFI
+    best_under = best_over = None
+    for b in data.get("bookmakers") or []:
+        for m in b.get("markets") or []:
+            if m.get("key") != "totals_1st_1_innings":
+                continue
+            for o in m.get("outcomes") or []:
+                if (o.get("point") or 0) != 0.5:
+                    continue
+                price = o.get("price")
+                if price is None:
+                    continue
+                name = (o.get("name") or "").lower()
+                imp = _american_to_implied(price)
+                if name == "under":
+                    unders.append(imp)
+                    if best_under is None or price > best_under:
+                        best_under = price
+                elif name == "over":
+                    overs.append(imp)
+                    if best_over is None or price > best_over:
+                        best_over = price
+    if not unders or not overs:
+        return None
+    # Median across books = consensus. Then no-vig normalize the pair.
+    unders.sort(); overs.sort()
+    med_u = unders[len(unders) // 2]
+    med_o = overs[len(overs) // 2]
+    total = med_u + med_o
+    if total <= 0:
+        return None
+    nrfi_imp = med_u / total
+    yrfi_imp = med_o / total
+    return {
+        "nrfi_implied":     round(nrfi_imp, 4),
+        "yrfi_implied":     round(yrfi_imp, 4),
+        "best_price_nrfi":  best_under,
+        "best_price_yrfi":  best_over,
+        "books_count":      max(len(unders), len(overs)),
+    }
+
+
+async def _find_odds_event_id(
+    client: httpx.AsyncClient, home_team: str, away_team: str,
+) -> str | None:
+    """Match an MLB Stats API game to The Odds API event id by team
+    name. Cached per refresh."""
+    if not _ODDS_KEY:
+        return None
+    url = f"{_ODDS_BASE}/sports/baseball_mlb/events"
+    try:
+        r = await client.get(url, params={"apiKey": _ODDS_KEY, "dateFormat": "iso"}, timeout=_TIMEOUT)
+        if r.status_code != 200:
+            return None
+        # MLB Stats API uses abbreviations (LAD) while Odds API uses
+        # full names (Los Angeles Dodgers). Match on the abbreviation
+        # being a substring of either team name. Loose but works.
+        for ev in r.json():
+            h = (ev.get("home_team") or "").lower()
+            a = (ev.get("away_team") or "").lower()
+            if home_team.lower() in h or away_team.lower() in a:
+                return ev.get("id")
+            # Try matching by city/short name
+            for token in (home_team, away_team):
+                if any(t.lower() in h or t.lower() in a for t in [token]):
+                    return ev.get("id")
+    except Exception as e:
+        logger.debug("Odds API event lookup failed: %s", e)
+    return None
+
+
+
 async def _build_game_inputs(
     db: AsyncIOMotorDatabase, game: dict,
 ) -> dict | None:
@@ -204,13 +324,17 @@ def _grade_from_lock(lock: float) -> str:
 
 async def _upsert_pick(
     db: AsyncIOMotorDatabase, base: dict, side: str, prob: float,
-    model_out: dict,
+    model_out: dict, true_edge: float | None = None,
+    sportsbook: dict | None = None,
 ) -> None:
     """One pick per side (NRFI or YRFI). Idempotent — keyed by
-    (game_pk, market)."""
+    (game_pk, market). When `sportsbook` is non-None we use the
+    real book implied prob as the edge baseline; otherwise the
+    legacy edge-vs-50% fair baseline."""
     lock = _prob_to_lock_score(prob)
     grade = _grade_from_lock(lock)
     market_label = "NRFI (No Run in 1st Inning)" if side == "NRFI" else "YRFI (Yes Run in 1st Inning)"
+    edge_pct = round((true_edge or model_out["edge_signal"]) * 100, 2)
     pick_id = f"nrfi-{base['game_pk']}-{side.lower()}"
     doc = {
         "_id": pick_id,
@@ -229,9 +353,9 @@ async def _upsert_pick(
         "grade": grade,
         "win_probability": round(prob * 100, 1),
         "implied_probability": round(prob * 100, 1),
-        "edge_percent": round(model_out["edge_signal"] * 100, 2)
-                        if side == "NRFI"
-                        else round(-model_out["edge_signal"] * 100, 2),
+        "edge_percent": edge_pct,
+        "edge_source": "sportsbook_consensus" if sportsbook else "fair_50_50",
+        "sportsbook_consensus": sportsbook,  # null if no book offered NRFI
         "home_team": base["home_team"],
         "away_team": base["away_team"],
         "event_time": base["event_time"],
@@ -264,29 +388,66 @@ async def generate_nrfi_yrfi_picks(db: AsyncIOMotorDatabase) -> dict:
     date_iso = _today_str()
     async with httpx.AsyncClient(headers=_HEADERS) as client:
         games = await _fetch_schedule(client, date_iso)
+        # Pre-fetch the Odds API event list once and build a name→id index
+        odds_index: dict[str, str] = {}
+        if _ODDS_KEY:
+            try:
+                r = await client.get(
+                    f"{_ODDS_BASE}/sports/baseball_mlb/events",
+                    params={"apiKey": _ODDS_KEY, "dateFormat": "iso"},
+                    timeout=_TIMEOUT,
+                )
+                if r.status_code == 200:
+                    for ev in r.json():
+                        h = (ev.get("home_team") or "").lower()
+                        a = (ev.get("away_team") or "").lower()
+                        odds_index[f"{h}|{a}"] = ev.get("id")
+            except Exception as e:
+                logger.debug("Odds API event index failed: %s", e)
 
-    if not games:
-        return {"ok": True, "reason": "no_games", "date": date_iso, "picks": 0}
+        if not games:
+            return {"ok": True, "reason": "no_games", "date": date_iso, "picks": 0}
 
-    n_eligible = 0
-    n_picks = 0
-    n_skipped = 0
-    for g in games:
-        base = await _build_game_inputs(db, g)
-        if not base:
-            n_skipped += 1
-            continue
-        out = nrfi_yrfi_model(base["model_inputs"])
-        n_eligible += 1
-        nrfi = out["nrfi_prob"]
-        yrfi = out["yrfi_prob"]
-        # Surface whichever side beats the EDGE_THRESHOLD over fair 0.50
-        if nrfi >= 0.50 + EDGE_THRESHOLD:
-            await _upsert_pick(db, base, "NRFI", nrfi, out)
-            n_picks += 1
-        elif yrfi >= 0.50 + EDGE_THRESHOLD:
-            await _upsert_pick(db, base, "YRFI", yrfi, out)
-            n_picks += 1
+        n_eligible = 0
+        n_picks = 0
+        n_skipped = 0
+        n_with_sportsbook = 0
+        for g in games:
+            base = await _build_game_inputs(db, g)
+            if not base:
+                n_skipped += 1
+                continue
+            out = nrfi_yrfi_model(base["model_inputs"])
+            n_eligible += 1
+
+            # Try matching with The Odds API for true book-implied edge
+            home_full = ((g.get("teams") or {}).get("home") or {}).get("team", {}).get("name", "")
+            away_full = ((g.get("teams") or {}).get("away") or {}).get("team", {}).get("name", "")
+            event_id = odds_index.get(f"{home_full.lower()}|{away_full.lower()}")
+            sportsbook = None
+            if event_id:
+                sportsbook = await _fetch_sportsbook_nrfi(client, event_id)
+                if sportsbook:
+                    n_with_sportsbook += 1
+            base["sportsbook"] = sportsbook
+
+            nrfi = out["nrfi_prob"]
+            yrfi = out["yrfi_prob"]
+            # If we have real sportsbook odds, true edge = our_prob - book_implied
+            # Otherwise fall back to edge vs 0.50 fair (legacy behavior)
+            if sportsbook:
+                true_edge_nrfi = nrfi - sportsbook["nrfi_implied"]
+                true_edge_yrfi = yrfi - sportsbook["yrfi_implied"]
+            else:
+                true_edge_nrfi = nrfi - 0.50
+                true_edge_yrfi = yrfi - 0.50
+
+            if true_edge_nrfi >= EDGE_THRESHOLD and true_edge_nrfi >= true_edge_yrfi:
+                await _upsert_pick(db, base, "NRFI", nrfi, out, true_edge_nrfi, sportsbook)
+                n_picks += 1
+            elif true_edge_yrfi >= EDGE_THRESHOLD:
+                await _upsert_pick(db, base, "YRFI", yrfi, out, true_edge_yrfi, sportsbook)
+                n_picks += 1
 
     elapsed = (datetime.now(timezone.utc) - started).total_seconds()
     summary = {
@@ -295,6 +456,7 @@ async def generate_nrfi_yrfi_picks(db: AsyncIOMotorDatabase) -> dict:
         "games_scanned": len(games),
         "eligible": n_eligible,
         "skipped_missing_data": n_skipped,
+        "with_sportsbook_odds": n_with_sportsbook,
         "picks_generated": n_picks,
         "elapsed_sec": round(elapsed, 1),
     }

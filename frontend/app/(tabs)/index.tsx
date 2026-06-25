@@ -419,6 +419,21 @@ export default function LocksScreen() {
           <Text style={styles.soccerLabChevron}>›</Text>
         </TouchableOpacity>
       )}
+      {sport === "MLB" && (
+        <TouchableOpacity
+          onPress={() => router.push("/nrfi-yrfi" as any)}
+          style={styles.nrfiBtn}
+          activeOpacity={0.8}
+          testID="nrfi-yrfi-cta"
+        >
+          <Text style={styles.nrfiIcon}>🥎</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.nrfiTitle}>NRFI / YRFI</Text>
+            <Text style={styles.nrfiSub}>1st-inning model · pitcher × lineup × park</Text>
+          </View>
+          <Text style={styles.soccerLabChevron}>›</Text>
+        </TouchableOpacity>
+      )}
       <FilterSheet
         visible={filterOpen}
         onClose={() => setFilterOpen(false)}
@@ -699,6 +714,34 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.voltBlue + "55",
     backgroundColor: COLORS.voltBlue + "10",
+  },
+  // NRFI/YRFI CTA — same shape as soccerLabBtn but amber-themed so it
+  // reads as a sibling discovery surface, not a duplicate.
+  nrfiBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginHorizontal: 20,
+    marginTop: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#f59e0b55",
+    backgroundColor: "#f59e0b10",
+  },
+  nrfiIcon: { fontSize: 22 },
+  nrfiTitle: {
+    color: COLORS.textPrimary,
+    fontSize: 13,
+    fontWeight: "900",
+    letterSpacing: 0.8,
+  },
+  nrfiSub: {
+    color: COLORS.textMuted,
+    fontSize: 11,
+    fontWeight: "600",
+    marginTop: 1,
   },
   // Sort row holds the SortSelector plus the visible UPDATE button.
   sortRow: { flexDirection: "row", alignItems: "center" },
