@@ -712,6 +712,37 @@ export const api = {
       }>;
       league_distribution: Array<{ league: string; count: number }>;
     }>(`/soccer-lab/feed?limit=${limit}&min_lock=${min_lock}&sport=${encodeURIComponent(sport)}`),
+  nrfiYrfi: () =>
+    request<{
+      count: number;
+      category: string;
+      picks: Array<{
+        id: string;
+        sport: string;
+        market: string;
+        side: "NRFI" | "YRFI";
+        lock_score: number;
+        grade: string;
+        win_probability: number;
+        edge_percent: number;
+        match: string;
+        home_team: string;
+        away_team: string;
+        event_time: string;
+        key_insights: string[];
+        model_inputs: {
+          league_base: number;
+          pitcher_factor: number;
+          lineup_top_factor: number;
+          park_factor: number;
+        };
+        model_output: {
+          expected_runs_1st_inning: number;
+          nrfi_prob: number;
+          yrfi_prob: number;
+        };
+      }>;
+    }>("/picks/nrfi-yrfi"),
   refresh: () => request<{
     refreshed: boolean;
     count: number;
