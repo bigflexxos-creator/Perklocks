@@ -227,59 +227,69 @@ async def refresh_player_profiles(db) -> dict:
         )
         n_learned_updates += 1
 
-    # 4) SportsDataIO enrichment — augment NBA/NFL/MLB profiles with real
-    #    position + team + injury status. Only hits players in the
-    #    SLATE-RECENT window (last 7 days), so we burn at most ~50-200
-    #    calls/day even on the busiest sports week.
+    # 4) Player metadata enrichment — augment NBA/NFL/MLB profiles with
+    #    real position + team + injury status.
+    #
+    #    Phase 1 (2026-06-25): MLB now resolved via the local free-source
+    #    player_db (MLB Stats API) — zero quota cost, faster lookups,
+    #    deeper data (bats/throws, full season splits). NBA/NFL still
+    #    route through the legacy SportsDataIO client until their
+    #    ingestors land in Phase 2.
     try:
-        from .sportsdataio_client import enrich_profile, SPORTSDATAIO_KEY
-        if SPORTSDATAIO_KEY:
-            recent_cutoff = (_dt.datetime.now(_dt.timezone.utc)
-                             - _dt.timedelta(days=7)).isoformat()
-            # Find recent player picks for NBA/NFL/MLB to scope the enrichment
-            recent_names_by_sport: dict[str, set[str]] = {
-                "NBA": set(), "NFL": set(), "MLB": set(),
-            }
-            from .resolver import extract_player_from_market as _epm
-            async for p in db.picks.find(
-                {"sport": {"$in": list(recent_names_by_sport.keys())},
-                 "event_time": {"$gte": recent_cutoff}},
-                {"_id": 0, "sport": 1, "market": 1},
-            ):
-                n = _epm(p.get("market") or "")
-                if n:
-                    recent_names_by_sport[p["sport"]].add(n)
-            enriched_n = 0
-            for sport_u, name_set in recent_names_by_sport.items():
-                for nm in name_set:
-                    prof = await db[COLLECTION].find_one(
-                        {"sport": sport_u, "canonical_name": nm}
-                    )
-                    if not prof:
-                        # Materialize a stub so SportsDataIO has something
-                        # to enrich against.
-                        prof = {
-                            "canonical_name": nm, "sport": sport_u,
-                            "aliases": [nm], "archetype": None,
-                            "archetype_source": "auto", "source": "auto",
-                        }
-                    prof.pop("_id", None)
-                    await enrich_profile(prof)
-                    prof["updated_at"] = _dt.datetime.now(
-                        _dt.timezone.utc
-                    ).isoformat()
-                    await db[COLLECTION].update_one(
-                        {"sport": sport_u, "canonical_name": nm},
-                        {"$set": prof},
-                        upsert=True,
-                    )
-                    enriched_n += 1
-            logger.info(
-                "Player Intelligence SportsDataIO enrichment: %d profiles updated",
-                enriched_n,
-            )
+        from player_db.client import enrich_profile as local_enrich
+        from .sportsdataio_client import SPORTSDATAIO_KEY
+        recent_cutoff = (_dt.datetime.now(_dt.timezone.utc)
+                         - _dt.timedelta(days=7)).isoformat()
+        recent_names_by_sport: dict[str, set[str]] = {
+            "NBA": set(), "NFL": set(), "MLB": set(),
+        }
+        from .resolver import extract_player_from_market as _epm
+        async for p in db.picks.find(
+            {"sport": {"$in": list(recent_names_by_sport.keys())},
+             "event_time": {"$gte": recent_cutoff}},
+            {"_id": 0, "sport": 1, "market": 1},
+        ):
+            n = _epm(p.get("market") or "")
+            if n:
+                recent_names_by_sport[p["sport"]].add(n)
+        enriched_n = 0
+        # MLB → local DB (always on, no key gate). NBA/NFL → legacy
+        # SportsDataIO if its key is present.
+        for sport_u, name_set in recent_names_by_sport.items():
+            if sport_u != "MLB" and not SPORTSDATAIO_KEY:
+                continue
+            for nm in name_set:
+                prof = await db[COLLECTION].find_one(
+                    {"sport": sport_u, "canonical_name": nm}
+                )
+                if not prof:
+                    prof = {
+                        "canonical_name": nm, "sport": sport_u,
+                        "aliases": [nm], "archetype": None,
+                        "archetype_source": "auto", "source": "auto",
+                    }
+                prof.pop("_id", None)
+                # Phase-1 router: MLB uses local DB; everyone else goes
+                # to the legacy enrich path (which itself routes through
+                # SportsDataIO).
+                await local_enrich(prof)
+                prof["updated_at"] = _dt.datetime.now(
+                    _dt.timezone.utc
+                ).isoformat()
+                await db[COLLECTION].update_one(
+                    {"sport": sport_u, "canonical_name": nm},
+                    {"$set": prof},
+                    upsert=True,
+                )
+                enriched_n += 1
+        logger.info(
+            "Player Intelligence enrichment: %d profiles updated "
+            "(MLB→local player_db, NBA/NFL→SportsDataIO%s)",
+            enriched_n,
+            "" if SPORTSDATAIO_KEY else " [SKIPPED — no key]",
+        )
     except Exception as e:
-        logger.warning("SportsDataIO enrichment skipped: %s", e)
+        logger.warning("Player metadata enrichment skipped: %s", e)
 
     # 5) Rebuild the in-memory resolver index from the full DB snapshot so
     #    learned aliases become immediately visible to enrichment.
