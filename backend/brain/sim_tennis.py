@@ -22,7 +22,7 @@ import random
 import re
 from typing import Optional
 
-RUNS = 15_000   # bumped from 3k → 15k per user request 2026-06-25; tennis per-point
+RUNS = 20_000
                 # sim is heavier so runtime ≈ 5x but still finishes in the pipeline window
 SETS_BO3 = 3
 

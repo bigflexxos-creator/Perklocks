@@ -20,7 +20,7 @@ import random
 import re
 from typing import Optional
 
-RUNS = 15_000
+RUNS = 20_000
 
 # League calibration
 LEAGUE_AVG_TEAM_XG_PER_GAME = 1.45
