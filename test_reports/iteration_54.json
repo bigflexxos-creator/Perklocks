@@ -1,0 +1,27 @@
+{
+  "summary": "Frontend-only verification of the APP_DATA_VERSION bump ('20260623-03-empty-board-self-diag' → '20260625-01-stale-banner-bump') intended to suppress the StaleBuildBanner. After clearing Metro/.metro-cache and restarting Expo (the initially-served bundle still had the old constant baked in), the home tab no longer renders the yellow 'This deploy is 2 days behind' banner. Console confirms the new APP_DATA_VERSION is active. Backend /api/version returns server_time=2026-06-25T02:02:26Z and data_version=2026.06.24-admin-dashboard, so the banner's diff calculation now yields 0 (≤ 1 → suppressed). Home tab renders correctly: PERKSLOCKS header, sport chips, FILTER button, GAME/UPDATE controls, and lock cards visible.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/tmp/home_after_bump.png"
+  ],
+  "action_items": [
+    "(Done by tester) Metro/.metro-cache was holding the old APP_DATA_VERSION; required `rm -rf /app/frontend/.metro-cache` + `sudo supervisorctl restart expo` before the bump took effect on the preview. Production Publish/Deploy re-bundles from source so this is a preview-only artifact, but worth knowing: if the main agent re-tests immediately after a cachebust.ts edit and still sees the old version in console, it's metro cache, not a logic bug."
+  ],
+  "critical_code_review_comments": [
+    "StaleBuildBanner.buildDateFromAppVersion() correctly parses '20260625-01-stale-banner-bump' → Date.UTC(2026, 5, 25) (month is 0-indexed, mm-1=5 = June). Logic confirmed: with server_time on the same UTC day, daysBetween() returns 0 → diff <= 1 → component returns null. ✓",
+    "Minor: StaleBuildBanner relies on serverDate falling back to `new Date()` if ver.server_time is missing. This is defensive but could mask a broken /api/version. Not a regression for this fix."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (frontend-only request)", "frontend": "100%"},
+  "seed_data_creation": "none",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "APP_DATA_VERSION lives in /app/frontend/src/lib/cachebust.ts. Format YYYYMMDD-NN-slug. StaleBuildBanner suppresses when diff (server UTC day - build UTC day) ≤ 1. If the banner appears unexpectedly after a bump on the preview, FIRST check the browser console for `[cachebust] ... → <version>` — that's the version actually baked into the served bundle. If it shows the OLD version, it's Metro cache: `rm -rf /app/frontend/.metro-cache && sudo supervisorctl restart expo`. Backend /api/version verified live: data_version=2026.06.24-admin-dashboard, server_time UTC 2026-06-25.",
+  "rca_of_issue": "User saw 'This deploy is 2 days behind' because the previously-deployed bundle had APP_DATA_VERSION='20260623-...' baked in. Banner computed diff = (server 2026-06-25 UTC) - (build 2026-06-23 UTC) = 2 days → rendered. Main agent's fix: bump APP_DATA_VERSION to '20260625-01-stale-banner-bump'. Verified on preview after Metro cache clear: new version is now in the bundle, banner is suppressed (diff=0). User must hit 'Deploy → Update Deployment' in Emergent to push this new bundle to bet-edge-ai-1.emergent.host for the banner to disappear in production."
+}
