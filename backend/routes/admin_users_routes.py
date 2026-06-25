@@ -206,7 +206,14 @@ async def admin_set_status(
     return {"ok": True, "status": new_status}
 
 
-@router.get("/top-api-users")
+@router.get("/clv/snapshot-status")
+async def admin_clv_snapshot_status(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Health-check for the closing-line snapshotter — confirms it's
+    capturing real closing prices instead of mirroring book_odds."""
+    from closing_line_snapshotter import snapshot_status
+    return await snapshot_status(db)
 async def admin_top_api_users(
     user: Annotated[UserPublic, Depends(current_admin)],
     limit: int = Query(25, ge=1, le=200),

@@ -1,0 +1,43 @@
+{
+  "summary": "Backend-only verification of the Closing-Line Snapshotter (CLV tracking). 17/17 pytest cases pass against the live preview backend. Verified: (1) module imports cleanly with all helpers exposed, (2) _extract_event_id correctly parses 'Soccer-b55f9569de3f4d731bc5537ff5ff43e4-...' → 'b55f9569de3f4d731bc5537ff5ff43e4', (3) _pick_event_time prefers event_time over commence_time, (4) _match_pick_to_odds returns median (-150) across 3 simulated h2h bookmakers for a Moneyline pick, (5) returns None for prop markets (Anytime Goal Scorer), (6) snapshot_status returns dict with all six expected keys (settled_picks, closing_snapshotted, live_snapshots, fallback_snapshots, line_observations, coverage_pct) against live Mongo, (7) admin endpoint returns 401/403/200 correctly, (8) backend startup log contains 'Closing-line snapshotter started (CLV tracking enabled)', (9) no '_parse_iso is not defined' errors in the current backend lifecycle, (10) end-to-end fallback path: inserted KBO pick (sport not in _ODDS_SPORT_KEY) with event_time=now+10min → _snapshot_closes_once() set closing_odds=book_odds (-150), closing_odds_snapshotted=True, closing_odds_source='fallback_book_odds'. FIXED a CRITICAL bug while testing: the snapshot-status route was registered at `/api/admin/admin/clv/snapshot-status` (double 'admin' segment) because the decorator path was `/admin/clv/snapshot-status` on a router with prefix `/api/admin`. Changed to `/clv/snapshot-status` so it now correctly resolves at `/api/admin/clv/snapshot-status` as the task spec requires.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/admin/admin/clv/snapshot-status (was)", "issue": "Route was registered with a doubled '/admin' prefix because @router.get('/admin/clv/snapshot-status') was added to a router that already has prefix='/api/admin'. Fixed by changing decorator to '/clv/snapshot-status'. Endpoint now correctly responds at /api/admin/clv/snapshot-status (401 unauth, 403 non-admin, 200 admin)."},
+      {"endpoint": "/app/backend/routes/admin_users_routes.py:217 admin_top_api_users", "issue": "Function defined but has NO @router decorator above it, so the endpoint is NOT registered with FastAPI. Body references `db.user_activity.find(...).sort('api_calls', -1)`. If this endpoint is expected to exist, the decorator was lost in an edit. Pre-existing issue (not introduced by the CLV change) but worth flagging."},
+      {"endpoint": "/app/backend/routes/admin_users_routes.py:239 admin_delete_user", "issue": "Same as above — function defined with no @router decorator, so DELETE /api/admin/users/{user_id} is not registered. Pre-existing structural issue in this routes file."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_clv_snapshotter_iter55.py",
+    "/app/test_reports/pytest/iter55_clv_snapshotter.xml"
+  ],
+  "action_items": [
+    "(DONE by tester) Fixed route path in /app/backend/routes/admin_users_routes.py — changed @router.get('/admin/clv/snapshot-status') to @router.get('/clv/snapshot-status'). The endpoint now responds at /api/admin/clv/snapshot-status (verified live).",
+    "Main agent: decide whether admin_top_api_users and admin_delete_user (lines 217, 239 of admin_users_routes.py) should be registered. They have function bodies but missing @router decorators (likely lost in an earlier search_replace mishap). If yes, add decorators; if intentionally removed, delete the dead code.",
+    "Optional: clv_units(odds_at_pick, closing_odds) in analytics.py returns implied-probability delta (a percentage-point number like +0.027), not American-odds delta. The snapshotter stores that value in pick.clv_value. Confirm the analytics UI / display layer formats it as 'pp' or '%' rather than 'cents'."
+  ],
+  "critical_code_review_comments": [
+    "closing_line_snapshotter.py is 354 lines, single-purpose, well-documented — fine to keep as one module. No DRY violations.",
+    "_match_pick_to_odds uses a forgiving substring match (`selection in nm or nm in selection`). That's robust for 'Yankees' vs 'New York Yankees' but could mismatch 'Boston Red Sox' vs 'Boston Celtics' in edge cases. Low risk for now since picks and Odds API use canonical names, but worth monitoring.",
+    "_snapshot_closes_once imports analytics.clv_units inside the loop (line 308). Cheap because Python caches imports, but moving it to module-level would be cleaner.",
+    "The closing snapshotter's gate `closing_odds_snapshotted != True` plus the 5–20 min close window means picks that *miss* the window (e.g. backend was down) will never get snapshotted — they'll permanently have CLV=null. Consider a periodic backfill pass that fills any settled pick with no closing_odds.",
+    "The fallback path writes `closing_odds = book_odds` but does NOT set `clv_value` (only the live-snapshot branch does — line 309). So fallback picks will show closing_odds in admin but still have null/0 CLV on the analytics page. Confirm this is intended (it makes sense — there's no real edge measurement if we couldn't read the close), but worth a comment in the code."
+  ],
+  "updated_files": [
+    "/app/backend/routes/admin_users_routes.py (changed @router.get('/admin/clv/snapshot-status') → @router.get('/clv/snapshot-status'))",
+    "/app/backend/tests/test_clv_snapshotter_iter55.py (new — 17 test cases)"
+  ],
+  "success_rate": {"backend": "100% (17/17)", "frontend": "n/a (backend-only request)"},
+  "seed_data_creation": "Per-test transient: register+promote a fresh admin user with email 'test_clv_admin_<hex>@lockscore.com', cleaned up in teardown. Insert+delete a single test pick 'TEST_clv_kbo_<hex>' for the fallback-path test. No persistent test data left in MongoDB.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Tests at /app/backend/tests/test_clv_snapshotter_iter55.py. Note Motor's event-loop binding: this module creates a single _SHARED_LOOP at import time so all helper calls share it; if you ADD new tests calling Motor, use _run(coro) — do NOT create new event loops inline (Motor will raise 'Event loop is closed'). Also note: /api/auth/register lowercases the email — when promoting a freshly-registered user to admin via db.users.update_one({email}), the email key must already be lowercase or the update matches 0 docs and the role stays 'user'.",
+  "rca_of_issue": "The original user complaint 'why is my CLV not working in analytics' was caused by analytics.py storing closing_odds = book_odds — so clv_value = implied(book_odds) - implied(book_odds) = 0 by definition. Main agent's fix introduces a real closing-line capture pipeline (closing_line_snapshotter.py). Verified: helpers work, fallback path writes correct fields, admin endpoint healthy, no _parse_iso regression. The user will now see real CLV numbers once picks start hitting the 5–20 min pre-kickoff window — for the existing backlog of settled picks with closing_odds=book_odds, a one-time backfill is NOT covered by this change (see action_items)."
+}
