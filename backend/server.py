@@ -2122,12 +2122,26 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             },
             # Path 2: tennis_extra scraped picks — book-anchored, edge is meaningless
             {
-                "source": {"$in": ["tennis_extra", "tennis_extra_model"]},
+                "source": {"$in": ["tennis_extra", "tennis_extra_model", "tennis_real_odds"]},
                 "$or": [
                     {"lock_score": {"$gte": 80.0}},
                     {"lock_score_v2": {"$gte": 80.0}},
                 ],
             },
+        ],
+    }
+    # ── Tennis Extended Coverage carve-out (user request 2026-06-25) ─
+    # Surface ALL tennis_extra picks on the main board (not just
+    # Moneyline) so users see the full slate at a glance. The frontend
+    # renders an "EXT" badge on these so it's obvious the line came
+    # from a TennisExplorer scrape rather than a US sportsbook.
+    tennis_extra_q = {
+        "sport": "Tennis",
+        "source": {"$in": ["tennis_extra", "tennis_extra_model"]},
+        "no_bet": {"$ne": True},
+        "$or": [
+            {"lock_score": {"$gte": 75.0}},
+            {"lock_score_v2": {"$gte": 75.0}},
         ],
     }
     # ── Tennis Alt-Line carve-out (chalk-ladder exception) ────────────
@@ -2253,7 +2267,7 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         # Exclude special-tab markets (NRFI/YRFI lives in its own MLB
         # sub-tab — user explicitly asked to keep these off the main board).
         "hide_from_main_board": {"$ne": True},
-        "$or": [standard_q, elite_q, tennis_ml_q, tennis_alt_q, mlb_k_q, mlb_hitter_q, soccer_scorer_q, high_lock_bypass_q],
+        "$or": [standard_q, elite_q, tennis_ml_q, tennis_alt_q, tennis_extra_q, mlb_k_q, mlb_hitter_q, soccer_scorer_q, high_lock_bypass_q],
     }
     # ── User-supplied min_lock floor (global enforcement) ────────────
     # Each sub-query above uses its own lock floor (70 for tennis ML,
