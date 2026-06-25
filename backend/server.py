@@ -1951,6 +1951,53 @@ SPORT_MARKETS = {
 }
 
 
+# ── Lite-payload field strip list (perf, 2026-06-25) ──
+# Fields heavy enough to dominate `/picks/today` payload size BUT only
+# consumed by the pick-detail screen, never rendered on the home cards.
+# Stripped when ?lite=true is passed. Detail screen calls /api/picks/{id}
+# separately and still gets the full fat document.
+#
+# Audit on 170 picks (1.5 MB total payload):
+#   sportsbook_mapping        428 KB / 27.8% — book deep-link metadata
+#   evidence_breakdown        236 KB / 15.3% — Universal Evidence narrative
+#   v2_reasons                 79 KB /  5.1% — Lock V2 explainers
+#   probability                74 KB /  4.8% — Monte Carlo full distribution
+#   selection_v2               73 KB /  4.7% — V2 lock-band derivation
+#   brain                      56 KB /  3.7% — internal ranker debug
+#   key_insights               53 KB /  3.4% — AI key bullets
+#   top_reasons / learning     57 KB /  3.7% — explainer payloads
+#   factors / lock_components  45 KB /  3.0% — lock decomposition
+#   sim_alt_lines               9 KB /  0.6% — alt-line ladder data
+#   *_event_id (5 books)       29 KB /  1.9% — sportsbook deep-link IDs
+#
+# After lite strip: ~300 KB payload (5x smaller).
+_LITE_STRIPPED_FIELDS = frozenset({
+    "sportsbook_mapping",
+    "evidence_breakdown",
+    "v2_reasons",
+    "probability",
+    "selection_v2",
+    "brain",
+    "key_insights",
+    "top_reasons",
+    "learning",
+    "factors",
+    "lock_components",
+    "sim_alt_lines",
+    "fanduel_event_id",
+    "draftkings_event_id",
+    "betmgm_event_id",
+    "caesars_event_id",
+    "pointsbet_event_id",
+})
+
+
+def _strip_for_lite(pick: dict) -> dict:
+    """Remove detail-only heavy fields so home-feed payload is small.
+    Returns a new dict — does NOT mutate the input."""
+    return {k: v for k, v in pick.items() if k not in _LITE_STRIPPED_FIELDS}
+
+
 @api.get("/picks/today")
 async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                       sport: Optional[str] = None,
@@ -1963,7 +2010,8 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                       min_implied: Optional[float] = None,
                       max_implied: Optional[float] = None,
                       market: Optional[str] = None,
-                      league: Optional[str] = None):
+                      league: Optional[str] = None,
+                      lite: Optional[bool] = False):
     """Top picks from today's 72-hour window (lock score >= 85).
     Filters:
       - `min_lock`: only show picks with lock_score >= this value.
@@ -2388,7 +2436,10 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 picks.sort(key=lambda p: -p.get("lock_score", 0))
     picks = await _decorate_with_player_form(picks)
     picks = await _decorate_with_understat_form(picks)
-    return {"picks": _canonicalize_picks(picks)}
+    canonical = _canonicalize_picks(picks)
+    if lite:
+        canonical = [_strip_for_lite(p) for p in canonical]
+    return {"picks": canonical}
 
 
 @api.get("/picks/bet-killer", deprecated=True)

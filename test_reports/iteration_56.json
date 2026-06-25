@@ -1,0 +1,43 @@
+{
+  "summary": "Lite payload optimization for /api/picks/today verified end-to-end. Backend tests: 9/10 PASS (1 pre-existing data issue unrelated to lite). Measured 76.9% payload reduction (1,470,952 → 340,041 bytes) across 170 picks. All 17 stripped fields confirmed removed from lite, all home-card fields preserved, lock_score/win_probability/edge_percent/grade match exactly between fat and lite payloads. Frontend home tab loads lite payload, sport filters (MLB→154KB, Soccer→300KB) trigger fresh lite calls, all pick cards render correctly with grade badges, lock scores, win %, edge %, implied %, odds, no NaN/undefined. Pick detail page tap loads /api/picks/{id} (9.6KB full document) and renders enriched data: Why-This-Pick narrative, Factor Breakdown, Unified Probability Engine with Model v1/v2/Simulator weights — all detail-only heavy fields still available where needed. Optimization works exactly as designed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/picks/today", "issue": "One Netherlands Soccer ML pick (id 54c38992-0e55-5e1b-5cbe-2394fbf06966) has pick=null. Pre-existing in fat payload too — unrelated to lite optimization. Likely a synth-anchor data quality bug in elite_players pipeline."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "Deprecated style props", "issue": "Console warning: 'shadow*' style props are deprecated. Use 'boxShadow'. Reference: various components (preexisting, not caused by this change)"},
+      {"component": "Deprecated prop", "issue": "Console warning: props.pointerEvents is deprecated. Use style.pointerEvents (preexisting, not caused by this change)"}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_lite_payload_iter56.py",
+    "/app/test_reports/pytest/iter56_lite_payload.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Investigate why pick id 54c38992-0e55-5e1b-5cbe-2394fbf06966 (Netherlands to Win) has pick=null in BOTH fat and lite payloads — appears to be an elite-anchor synth bug, not a lite-strip regression",
+    "OPTIONAL (low priority): Migrate deprecated React Native style props (shadow*, pointerEvents) to current API — preexisting warnings, no functional impact"
+  ],
+  "critical_code_review_comments": [
+    "The lite implementation is clean: a frozenset of stripped field names + a small _strip_for_lite helper applied once at the end of the response pipeline (server.py:1974-1998, 2440-2441). Non-mutating, easy to extend.",
+    "Frontend always sets lite=true unconditionally (api.ts:415) — perfect, because the detail screen does NOT use api.picksToday(), it calls /api/picks/{id} which returns the full document.",
+    "Verified LockPickCard.tsx references zero stripped field names (only comments mention them) — the lite payload contract is correctly observed.",
+    "Parity check passed: lock_score, grade, win_probability, edge_percent are byte-identical between fat and lite responses across all 170 picks."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_lite_payload_iter56.py (new)",
+    "/app/test_reports/iteration_56.json (new)",
+    "/app/test_reports/pytest/iter56_lite_payload.xml (new)"
+  ],
+  "success_rate": {"backend": "90% (9/10 tests; the 1 failure is a pre-existing data quality issue, not a lite regression)", "frontend": "100% (home loads, filters work, detail page intact, no NaN/undefined)"},
+  "seed_data_creation": "None — used existing demo@lockscore.ai / demo123 credentials from /app/memory/test_credentials.md",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Lite payload feature is shipped and stable. /api/picks/today?lite=true strips 17 detail-only fields, /api/picks/today (no param) is fully backward compatible, /api/picks/{id} unaffected. Reusable pytest suite at /app/backend/tests/test_lite_payload_iter56.py — run with EXPO_PUBLIC_BACKEND_URL env var. The one Netherlands-to-Win pick with pick=null is pre-existing (also in fat).",
+  "rca_of_issue": "No regression. Original payload bloat root cause: detail-only heavy fields (sportsbook_mapping ~28%, evidence_breakdown ~15%, v2_reasons, probability, selection_v2, brain, key_insights, top_reasons, learning, factors, lock_components, sim_alt_lines, 5 *_event_id fields) were ~80% of the /picks/today response but never rendered by LockPickCard home card. Fix correctly strips them when lite=true and routes detail-page consumption to /api/picks/{id} which still returns the full document. Measured reduction: 1.47 MB → 340 KB (76.9%)."
+}

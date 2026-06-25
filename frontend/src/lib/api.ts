@@ -407,6 +407,12 @@ export const api = {
     if (filters?.maxImplied != null) qs.set("max_implied", String(filters.maxImplied));
     if (filters?.market) qs.set("market", filters.market);
     if (filters?.league) qs.set("league", filters.league);
+    // Lite payload — strip detail-only fields (sportsbook_mapping,
+    // evidence_breakdown, probability, etc). 5x smaller payload
+    // (~1.5MB → ~300KB) for a much snappier home tab. The pick-detail
+    // screen calls /api/picks/{id} separately and still gets the full
+    // document, so no UX regression. (Perf, 2026-06-25.)
+    qs.set("lite", "true");
     const q = qs.toString();
     return request<{ picks: Pick[] }>(`/picks/today${q ? `?${q}` : ""}`);
   },
