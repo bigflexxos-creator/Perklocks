@@ -48,6 +48,22 @@ from deps import db, client, logger, current_user, strip_mongo as _strip_mongo  
 app = FastAPI(title="PerksLocks AI")
 api = APIRouter(prefix="/api")
 
+# ── Picks routes (Phase 1 of server.py decomposition, 2026-06-25) ──
+# Mounted EARLY so its concrete routes (/picks/all, /picks/nrfi-yrfi,
+# /picks/markets/{sport}, /picks/refresh-status) take precedence over
+# the /picks/{pick_id} catch-all defined further down in this file.
+# FastAPI matches routes in registration order — first one wins.
+try:
+    from routes.picks_routes import router as _picks_router_phase1
+    api.include_router(_picks_router_phase1)
+except Exception as _picks_mount_err:
+    # Module-level imports below depend on server module loading even
+    # if the router file has a bug — log + continue rather than crash.
+    import logging as _lg
+    _lg.getLogger("lockscore").warning(
+        "Picks routes (Phase 1) failed to mount: %s", _picks_mount_err,
+    )
+
 
 # ────────────────────── Data version (cache-bust signal) ──────────────────────
 # Bump `DATA_VERSION` whenever a backend change requires phones to wipe their
@@ -1935,78 +1951,6 @@ SPORT_MARKETS = {
 }
 
 
-@api.get("/picks/markets/{sport}")
-async def markets_for_sport(
-    user: Annotated[UserPublic, Depends(current_user)],
-    sport: str,
-):
-    """Return the dynamic market list + active leagues for a given sport.
-    Used by the Locks tab to populate the MarketSelector + League pills.
-
-    Critically, the league `count` MUST be computed from the SAME pick
-    universe that `/picks/today` serves — i.e. after `_filter_in_play_window`
-    drops games that have already started. Otherwise the chip shows
-    "MLB · Props · 28" but the filtered list only contains 21 picks, leaving
-    the user staring at an empty state with a non-zero counter (the exact
-    bug a user reported on the production app build).
-    """
-    markets = SPORT_MARKETS.get(sport, [])
-    # Pull every pick for the sport today (raw — no qualification filter
-    # here so chips remain stable across the same universe as /picks/today),
-    # then apply the play-window filter and group in-Python.
-    raw = await db.picks.find(
-        {"sport": sport, "pick_date": _today_str()},
-        {"_id": 0, "league": 1, "event_time": 1, "lock_score": 1,
-         "is_under_lock": 1, "no_bet": 1, "edge_percent": 1,
-         "elite_player": 1},
-    ).to_list(length=1000)
-    # Apply the same qualification logic /picks/today uses so the chip
-    # count exactly matches the visible slate. NB: `is_under_lock` is
-    # intentionally NOT excluded — under-style locks (e.g. "Total Games
-    # Under 28.5") are still high-confidence picks that belong in the
-    # sport tab, matching the relaxed filter in /picks/today.
-    def _qualifies(p: dict) -> bool:
-        if p.get("no_bet") is True:
-            return False
-        elite = bool(p.get("elite_player"))
-        lock = float(p.get("lock_score") or 0)
-        edge = float(p.get("edge_percent") or 0)
-        # Same OR logic as /picks/today: base lock-score gate OR elite bypass.
-        if elite:
-            return True
-        return lock >= 85 and edge >= 0
-    raw = [p for p in raw if _qualifies(p)]
-    raw = _filter_in_play_window(raw)
-    counts: dict[str, int] = {}
-    for p in raw:
-        lg = p.get("league")
-        if not lg:
-            continue
-        counts[lg] = counts.get(lg, 0) + 1
-    leagues = [{"name": name, "count": c}
-               for name, c in sorted(counts.items(), key=lambda kv: -kv[1])]
-    return {"sport": sport, "markets": markets, "leagues": leagues}
-
-
-@api.get("/picks/nrfi-yrfi")
-async def picks_nrfi_yrfi(user: Annotated[UserPublic, Depends(current_user)]):
-    """Dedicated MLB NRFI/YRFI feed — these picks are intentionally
-    excluded from the main /picks/today board (`hide_from_main_board`
-    flag). Returns today's slate with full model audit-trail so the UI
-    can show λ₁, pitcher/lineup/park factors per pick.
-    """
-    q = {
-        "pick_date": _today_str(),
-        "category": "nrfi_yrfi",
-    }
-    cursor = db.picks.find(q, {"_id": 0}).sort("lock_score", -1).limit(50)
-    rows = await cursor.to_list(length=50)
-    rows = _filter_in_play_window(rows)
-    rows = [_canonicalize_lock_score(r) for r in rows]
-    return {"picks": rows, "count": len(rows), "category": "nrfi_yrfi"}
-
-
-
 @api.get("/picks/today")
 async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                       sport: Optional[str] = None,
@@ -2445,17 +2389,6 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     picks = await _decorate_with_player_form(picks)
     picks = await _decorate_with_understat_form(picks)
     return {"picks": _canonicalize_picks(picks)}
-
-
-@api.get("/picks/all")
-async def picks_all(user: Annotated[UserPublic, Depends(current_user)],
-                    sport: Optional[str] = None):
-    await _ensure_today_picks()
-    q: dict = {"pick_date": _today_str()}
-    if sport and sport.lower() != "all":
-        q["sport"] = sport
-    cursor = db.picks.find(q, {"_id": 0}).sort("lock_score", -1).limit(200)
-    return {"picks": _canonicalize_picks(await cursor.to_list(length=200))}
 
 
 @api.get("/picks/bet-killer", deprecated=True)
@@ -3282,20 +3215,6 @@ async def picks_history(user: Annotated[UserPublic, Depends(current_user)],
     }
 
 
-@api.get("/picks/refresh-status")
-async def refresh_status_pre(user: Annotated[UserPublic, Depends(current_user)]):
-    """Return the user's current refresh cooldown WITHOUT triggering a
-    refresh (zero Odds API cost). Declared BEFORE /picks/{pick_id} so
-    FastAPI's route matching doesn't capture the literal segment as an
-    ID. Logic lives in _cooldown_payload() further down."""
-    now = datetime.now(timezone.utc)
-    user_doc = await db.users.find_one(
-        {"id": user.id}, {"_id": 0, "last_refresh_at": 1},
-    )
-    last_iso = (user_doc or {}).get("last_refresh_at")
-    return _cooldown_payload(last_iso, now)
-
-
 @api.get("/picks/{pick_id}")
 async def pick_detail(pick_id: str,
                       user: Annotated[UserPublic, Depends(current_user)]):
@@ -3933,6 +3852,13 @@ try:
     logger.info("Player Intelligence mounted at /api/player-intel/*")
 except Exception as _pi_mount_err:
     logger.warning("Player Intelligence failed to mount, continuing without it: %s", _pi_mount_err)
+
+# ── Picks routes (Phase 1 of server.py decomposition, 2026-06-25) ──
+# NOTE: The router is now mounted EARLY (right after `api = APIRouter()`
+# at the top of this file) so its concrete routes take precedence over
+# the /picks/{pick_id} catch-all. This block is kept as a no-op marker
+# so future Phase 2/3 extraction can chain here.
+_picks_phase2_placeholder = True
 
 app.include_router(api)
 
