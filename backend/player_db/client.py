@@ -33,6 +33,7 @@ async def find_player(sport: str, name: str, team: str | None = None) -> dict | 
     disambiguate when multiple players share the same exact name —
     e.g. Justin Jefferson (Vikings WR) vs Justin Jefferson (Browns LB).
     """
+    import re as _re   # local import — module load order safety
     s = (sport or "").lower()
     target = _canonical(name)
     if not target:
@@ -54,7 +55,11 @@ async def find_player(sport: str, name: str, team: str | None = None) -> dict | 
     # Last-name fallback (with optional team filter)
     last = target.split()[-1] if target else ""
     if last:
-        q: dict = {"sport": s, "last_name": {"$regex": f"^{last}$", "$options": "i"}}
+        # Defensive escape — `last` is internal-only today but a
+        # request-controlled name could reach this path via a future
+        # endpoint. Cheap to escape, eliminates any regex-injection risk.
+        last_pattern = f"^{_re.escape(last)}$"
+        q: dict = {"sport": s, "last_name": {"$regex": last_pattern, "$options": "i"}}
         if team:
             q["team"] = team.upper()
         row = await db.players.find_one(q, {"_id": 0})
@@ -63,7 +68,7 @@ async def find_player(sport: str, name: str, team: str | None = None) -> dict | 
         # Last attempt: drop team filter
         if team:
             row = await db.players.find_one(
-                {"sport": s, "last_name": {"$regex": f"^{last}$", "$options": "i"}},
+                {"sport": s, "last_name": {"$regex": last_pattern, "$options": "i"}},
                 {"_id": 0},
             )
             if row:

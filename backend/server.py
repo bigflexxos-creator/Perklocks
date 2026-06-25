@@ -78,8 +78,14 @@ async def get_version():
 # this section header as a navigational marker.
 
 
+# SEC P3-C (2026-06-25): per-IP throttle on registration. 5 new accounts
+# per IP per minute (burst 3) — enough for a legit user to fix a typo'd
+# email but blocks scripted account-spam abuse.
+_register_throttle = rate_limit(rate_per_min=5, burst=3, scope="ip")
+
+
 @api.post("/auth/register", response_model=Token, status_code=201)
-async def register(payload: UserCreate):
+async def register(payload: UserCreate, _throttle: None = Depends(_register_throttle)):
     existing = await db.users.find_one({"email": payload.email.lower()})
     if existing:
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -3950,9 +3956,27 @@ try:
 except Exception as _routes_mount_err:
     logger.exception("Extracted route modules failed to mount: %s", _routes_mount_err)
 
+# SEC P3-B (2026-06-25): Replace `allow_origins=["*"]` + credentials with
+# a regex allowlist that covers:
+#   • Expo/Metro dev (localhost, 127.0.0.1 on any port)
+#   • Emergent preview + deployed domains (*.emergentagent.com,
+#     *.preview.emergentagent.com, *.emergent.host)
+#   • An optional comma-separated EXTRA_CORS_ORIGINS env var for any
+#     custom prod domain that gets added later
+# Wildcard `*` was browser-safe because all auth is Bearer (not cookie),
+# but the audit flagged it as a hardening miss — locking it down here.
+_extra_origins = [o.strip() for o in (os.environ.get("EXTRA_CORS_ORIGINS") or "").split(",") if o.strip()]
+_allow_origin_regex = (
+    r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?"
+    r"|https://([a-z0-9-]+\.)?emergentagent\.com"
+    r"|https://([a-z0-9-]+\.)?preview\.emergentagent\.com"
+    r"|https://([a-z0-9-]+\.)?emergent\.host"
+    r")$"
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_extra_origins,                 # explicit prod domains (env-controlled)
+    allow_origin_regex=_allow_origin_regex,       # dev + Emergent preview/deploy
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
