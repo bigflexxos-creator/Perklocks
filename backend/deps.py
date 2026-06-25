@@ -48,6 +48,7 @@ from auth import (  # noqa: E402
     UserPublic,
     get_current_user_from_db,
     oauth2_scheme,
+    require_admin_user,
 )
 
 
@@ -55,6 +56,15 @@ async def current_user(
     token: Annotated[Optional[str], Depends(oauth2_scheme)],
 ) -> UserPublic:
     return await get_current_user_from_db(db, token)
+
+
+async def current_admin(
+    token: Annotated[Optional[str], Depends(oauth2_scheme)],
+) -> UserPublic:
+    """RBAC gate — 403s on non-admin. Use for every /api/admin/* route
+    that mutates state, triggers paid third-party calls, or exposes
+    operator-only data (SEC-003, fixed 2026-06-25)."""
+    return await require_admin_user(db, token)
 
 
 # ── small shared utilities ────────────────────────────────────────────

@@ -11,11 +11,22 @@ from jwt import ExpiredSignatureError, InvalidTokenError
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, EmailStr, Field
 
-# JWT secret with production fallback so deployment doesn't crash if the env
-# var isn't set. The env var is still preferred — this is a safety net.
-JWT_SECRET = os.environ.get("JWT_SECRET") or "perkslocks_prod_jwt_secret_a8h3kdj29sl1nf03kp5_change_via_env_for_better_security"
+# JWT secret MUST be set via environment. No source fallback — a committed
+# placeholder allows token forgery (SEC-001, fixed 2026-06-25). If
+# JWT_SECRET is missing or obviously weak, refuse to boot rather than
+# silently using a guessable key.
+_JWT_SECRET_RAW = os.environ.get("JWT_SECRET")
+if not _JWT_SECRET_RAW or len(_JWT_SECRET_RAW) < 32 or "change-me" in _JWT_SECRET_RAW.lower():
+    raise RuntimeError(
+        "JWT_SECRET env var missing or weak (< 32 chars or contains 'change-me'). "
+        "Generate a strong secret with `python -c \"import secrets; print(secrets.token_urlsafe(64))\"` "
+        "and set it in backend/.env before starting the server."
+    )
+JWT_SECRET = _JWT_SECRET_RAW
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRES_MINUTES = int(os.environ.get("JWT_EXPIRES_MINUTES", "43200"))
+JWT_ISSUER   = os.environ.get("JWT_ISSUER", "perkslocks")
+JWT_AUDIENCE = os.environ.get("JWT_AUDIENCE", "perkslocks-app")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
@@ -63,6 +74,8 @@ def create_access_token(subject: str) -> str:
         "sub": subject,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=JWT_EXPIRES_MINUTES)).timestamp()),
+        "iss": JWT_ISSUER,
+        "aud": JWT_AUDIENCE,
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
@@ -78,7 +91,13 @@ async def get_current_user_from_db(
     if not token:
         raise credentials_exc
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(
+            token,
+            JWT_SECRET,
+            algorithms=[JWT_ALGORITHM],
+            audience=JWT_AUDIENCE,
+            issuer=JWT_ISSUER,
+        )
     except ExpiredSignatureError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
