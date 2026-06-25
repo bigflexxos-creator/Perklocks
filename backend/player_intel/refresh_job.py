@@ -231,13 +231,14 @@ async def refresh_player_profiles(db) -> dict:
     #    real position + team + injury status.
     #
     #    Phase 1 (2026-06-25): MLB now resolved via the local free-source
-    #    player_db (MLB Stats API) — zero quota cost, faster lookups,
-    #    deeper data (bats/throws, full season splits). NBA/NFL still
-    #    route through the legacy SportsDataIO client until their
-    #    ingestors land in Phase 2.
+    #    player_db (MLB Stats API) — zero quota cost.
+    #    Phase 2 (2026-06-25): NBA + NFL also resolved via the local
+    #    free-source player_db (ESPN public endpoints).
+    #    SportsDataIO is now only used for sports we haven't ingested
+    #    yet (none, in practice — Phase 2 closes the loop for the
+    #    legacy SDIO surface).
     try:
         from player_db.client import enrich_profile as local_enrich
-        from .sportsdataio_client import SPORTSDATAIO_KEY
         recent_cutoff = (_dt.datetime.now(_dt.timezone.utc)
                          - _dt.timedelta(days=7)).isoformat()
         recent_names_by_sport: dict[str, set[str]] = {
@@ -253,11 +254,7 @@ async def refresh_player_profiles(db) -> dict:
             if n:
                 recent_names_by_sport[p["sport"]].add(n)
         enriched_n = 0
-        # MLB → local DB (always on, no key gate). NBA/NFL → legacy
-        # SportsDataIO if its key is present.
         for sport_u, name_set in recent_names_by_sport.items():
-            if sport_u != "MLB" and not SPORTSDATAIO_KEY:
-                continue
             for nm in name_set:
                 prof = await db[COLLECTION].find_one(
                     {"sport": sport_u, "canonical_name": nm}
@@ -269,9 +266,6 @@ async def refresh_player_profiles(db) -> dict:
                         "archetype_source": "auto", "source": "auto",
                     }
                 prof.pop("_id", None)
-                # Phase-1 router: MLB uses local DB; everyone else goes
-                # to the legacy enrich path (which itself routes through
-                # SportsDataIO).
                 await local_enrich(prof)
                 prof["updated_at"] = _dt.datetime.now(
                     _dt.timezone.utc
@@ -284,9 +278,8 @@ async def refresh_player_profiles(db) -> dict:
                 enriched_n += 1
         logger.info(
             "Player Intelligence enrichment: %d profiles updated "
-            "(MLB→local player_db, NBA/NFL→SportsDataIO%s)",
+            "(MLB→MLB Stats API, NBA/NFL→ESPN public — all free sources)",
             enriched_n,
-            "" if SPORTSDATAIO_KEY else " [SKIPPED — no key]",
         )
     except Exception as e:
         logger.warning("Player metadata enrichment skipped: %s", e)

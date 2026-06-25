@@ -174,10 +174,12 @@ async def _ingest_one_player(
             {"$set": {
                 "sport": "mlb",
                 "mlb_id": person_id,
+                "player_id": person_id,           # align with NBA/NFL schema
                 "canonical_name": _canonical(name),
                 "season": season,
                 "batting": stats.get("batting"),
                 "pitching": stats.get("pitching"),
+                "source": "mlb_stats_api",
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }},
             upsert=True,
@@ -260,7 +262,9 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     `mlb_id` uniqueness is partial — the same Mongo collection is also
     used by the legacy Player Intelligence module which may store docs
     without an mlb_id (e.g. soccer/tennis), and a plain unique index
-    would collide on multiple `null` mlb_id values."""
+    would collide on multiple `null` mlb_id values. The player_stats
+    `(sport, player_id, season)` index is created by the espn_public
+    ingestor since it's shared across sports."""
     await db.players.create_index([("sport", 1), ("canonical_name", 1)])
     await db.players.create_index(
         [("sport", 1), ("mlb_id", 1)],
@@ -269,7 +273,4 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
         name="sport_1_mlb_id_1_partial",
     )
     await db.players.create_index([("sport", 1), ("last_name", 1)])
-    await db.player_stats.create_index(
-        [("sport", 1), ("mlb_id", 1), ("season", 1)], unique=True,
-    )
     await db.injuries.create_index([("sport", 1), ("canonical_name", 1)])

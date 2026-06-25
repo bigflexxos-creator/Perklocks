@@ -4452,6 +4452,28 @@ async def on_startup():
         logger.info("MLB player_db (free MLB Stats API) armed — daily roster + stats refresh")
     except Exception as e:
         logger.warning("MLB player_db loop failed to start: %s", e)
+    # ── NBA + NFL Free Player Database (Phase 2, ESPN public) ──────
+    # Daily refresh from ESPN's public site.api endpoints. NBA = 30
+    # teams × ~17 players. NFL = 32 teams × ~90 players. Cold-start
+    # 60 sec post-boot, then every 24h. Zero quota cost.
+    try:
+        from player_db.ingestors.espn_public import refresh_nba, refresh_nfl
+        async def _espn_player_db_loop() -> None:
+            await asyncio.sleep(60)
+            while True:
+                for sport_name, fn in (("NBA", refresh_nba), ("NFL", refresh_nfl)):
+                    try:
+                        summary = await fn(db)
+                        logger.info("%s player_db nightly refresh: %s", sport_name, summary)
+                    except Exception as e:
+                        logger.warning("%s player_db refresh failed: %s", sport_name, e)
+                    # Stagger the two leagues by 5s so we don't double-tax ESPN.
+                    await asyncio.sleep(5)
+                await asyncio.sleep(24 * 60 * 60)
+        asyncio.create_task(_espn_player_db_loop())
+        logger.info("NBA + NFL player_db (free ESPN public) armed — daily roster + stats + injuries refresh")
+    except Exception as e:
+        logger.warning("NBA/NFL player_db loop failed to start: %s", e)
     # ── Tennis Extra Settler ────────────────────────────────────────
     # Settles Mallorca/Eastbourne/Challenger picks from TennisExplorer
     # results page. Runs every 30 min, walks back 3 days.
