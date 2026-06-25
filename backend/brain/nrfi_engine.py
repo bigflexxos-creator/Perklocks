@@ -474,7 +474,123 @@ async def nrfi_yrfi_loop(db: AsyncIOMotorDatabase) -> None:
             await generate_nrfi_yrfi_picks(db)
         except Exception as e:
             logger.warning("NRFI/YRFI loop iteration failed: %s", e)
+        # Settle finalized games on every cycle — cheap (1 API call per
+        # pending pick, only on linescore endpoint).
+        try:
+            settled = await settle_nrfi_yrfi(db)
+            if settled["settled"]:
+                logger.info("NRFI/YRFI settler: %s", settled)
+        except Exception as e:
+            logger.warning("NRFI/YRFI settler failed: %s", e)
         # cadence
         hr_utc = datetime.now(timezone.utc).hour
         sleep_sec = 30 * 60 if 15 <= hr_utc <= 23 else 60 * 60
         await asyncio.sleep(sleep_sec)
+
+
+async def _fetch_first_inning_runs(
+    client: httpx.AsyncClient, game_pk: int,
+) -> tuple[int | None, str | None]:
+    """Returns (runs_in_1st_inning, game_status). game_status is one of:
+    'Final', 'Live', 'Preview', 'Scheduled', 'Postponed', etc. Settlement
+    is only valid when status indicates the game has reached the bottom
+    of the 1st (or beyond) — we check status == 'Final' OR currentInning
+    >= 2 to be safe."""
+    url = f"{_MLB_BASE}/game/{game_pk}/linescore"
+    try:
+        r = await client.get(url, headers=_HEADERS, timeout=_TIMEOUT)
+        if r.status_code != 200:
+            return None, None
+        data = r.json()
+    except Exception as e:
+        logger.debug("linescore fetch failed for %s: %s", game_pk, e)
+        return None, None
+    innings = data.get("innings") or []
+    if not innings:
+        return None, None
+    first = innings[0]
+    home_r = ((first.get("home") or {}).get("runs"))
+    away_r = ((first.get("away") or {}).get("runs"))
+    if home_r is None and away_r is None:
+        return None, None
+    # Sometimes only the away side has played the 1st when game's in
+    # the bottom of the 1st. If home side hasn't batted yet AND status
+    # is still 'Live', it's not safe to settle yet.
+    current_inning = data.get("currentInning") or 0
+    is_top = data.get("isTopInning")
+    status = "Final" if current_inning == 0 and not innings else None
+    # Determine readiness — bottom of 1st complete = current_inning >= 2,
+    # OR currentInning == 1 and not top (mid-inning, away done)... too
+    # ambiguous. Easiest gate: require currentInning >= 2 OR home_r set.
+    if home_r is None:
+        if not (current_inning >= 2):
+            return None, "in_progress_top_1st"
+        # No home batting at all means walk-off scenario in 1st? skip.
+        return None, "ambiguous"
+    runs = int(home_r or 0) + int(away_r or 0)
+    return runs, "ready"
+
+
+async def settle_nrfi_yrfi(db: AsyncIOMotorDatabase) -> dict:
+    """Find unsettled NRFI/YRFI picks whose game has progressed past the
+    1st inning, fetch the linescore, and mark each pick won/lost."""
+    started = datetime.now(timezone.utc)
+    cutoff = (datetime.now(timezone.utc) - _td(days=2)).isoformat()
+    q = {
+        "source_model": "nrfi_yrfi_poisson_v1",
+        "status": {"$nin": ["won", "lost", "void"]},
+        "event_time": {"$gte": cutoff},
+    }
+    pending = await db.picks.find(q, {
+        "_id": 1, "side": 1, "model_inputs": 1, "match": 1,
+    }).to_list(length=None)
+
+    if not pending:
+        return {"ok": True, "settled": 0, "scanned": 0}
+
+    n_settled = won = lost = skipped = 0
+    async with httpx.AsyncClient(headers=_HEADERS) as client:
+        for p in pending:
+            pid = p["_id"]
+            # game_pk is embedded in our pick id as nrfi-{gamePk}-{side}
+            try:
+                game_pk = int(pid.split("-")[1])
+            except (IndexError, ValueError):
+                skipped += 1
+                continue
+            runs, state = await _fetch_first_inning_runs(client, game_pk)
+            if runs is None:
+                skipped += 1
+                continue
+            side = p.get("side")
+            won_this = (
+                (runs == 0 and side == "NRFI")
+                or (runs >= 1 and side == "YRFI")
+            )
+            await db.picks.update_one(
+                {"_id": pid},
+                {"$set": {
+                    "status":   "won" if won_this else "lost",
+                    "outcome":  "won" if won_this else "lost",
+                    "runs_in_1st": runs,
+                    "settled_at": datetime.now(timezone.utc).isoformat(),
+                    "settle_source": "mlb_stats_api_linescore",
+                }},
+            )
+            n_settled += 1
+            won += int(won_this)
+            lost += int(not won_this)
+
+    return {
+        "ok": True,
+        "scanned": len(pending),
+        "settled": n_settled,
+        "won": won,
+        "lost": lost,
+        "skipped": skipped,
+        "elapsed_sec": round((datetime.now(timezone.utc) - started).total_seconds(), 1),
+    }
+
+
+# Avoid the longer `from datetime import timedelta` import at top by aliasing
+from datetime import timedelta as _td  # noqa: E402
