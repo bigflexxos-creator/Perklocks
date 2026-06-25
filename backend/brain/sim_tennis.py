@@ -22,7 +22,8 @@ import random
 import re
 from typing import Optional
 
-RUNS = 3_000   # tennis is per-point heavy; smaller runs for speed
+RUNS = 15_000   # bumped from 3k → 15k per user request 2026-06-25; tennis per-point
+                # sim is heavier so runtime ≈ 5x but still finishes in the pipeline window
 SETS_BO3 = 3
 
 LEAGUE_AVG_SERVE_PT_PCT = 0.63

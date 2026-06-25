@@ -28,7 +28,7 @@ from typing import Optional
 
 from brain.sim_distribution import compute_percentiles
 
-RUNS = 10_000
+RUNS = 15_000
 
 
 def _wilson_ci(p: float, n: int, z: float = 1.96) -> tuple[float, float]:

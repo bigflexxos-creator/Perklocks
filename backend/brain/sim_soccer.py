@@ -24,7 +24,7 @@ import random
 import re
 from typing import Optional
 
-RUNS = 10_000
+RUNS = 15_000
 
 # League calibration constants.
 LEAGUE_AVG_TOTAL = 2.75   # goals per match (top 5 leagues)
