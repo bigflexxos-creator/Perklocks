@@ -1,0 +1,44 @@
+{
+  "summary": "Investigated user bug 'Certain pick breakdown not loading like Matthew Boyd on app'. CANNOT REPRODUCE. Both Matthew Boyd picks (50b36be6 Over 2.5 Strikeouts ALT LOCK & 9484153a Over 14.5 Outs Recorded) AND a non-Boyd MLB pick (7369dce9 Red Sox +1.5 Spread) all load fully end-to-end on the web preview after authenticating as demo@lockscore.ai. Every panel renders with populated data: Header, Lock Score (94/94/95), Expected Win, Edge, Confidence, BOOK IMPLIED/ODDS, Share row, WHY THIS PICK explanation, FACTOR BREAKDOWN bars, UNIFIED PROBABILITY ENGINE, EVIDENCE, MONTE CARLO SIMULATOR + ALT LINE SENSITIVITY, RISK METER, DEEP THINKING (LockV2), MARKET COMPETITION, PITCHER vs TEAM (shown only for strikeout pick, correctly hidden for Outs Recorded by design), numbered reasons, CONFIDENCE/EDGE/RISK chips, KEY INSIGHTS, SHARE THIS PICK, disclaimer. Total scroll-content height ~5557px, body innerText ~5325-5396 chars for both Boyd picks. No JS errors (page_errors=[]), no stuck spinners post-load.",
+  "rca_of_issue": "ROOT-CAUSE HYPOTHESIS: The user is almost certainly hitting a STALE CLIENT CACHE on their device. The web preview's console showed an explicit cachebust firing on this session: '[cachebust] L2 wiped AsyncStorage — backend data version: stored=\"none\" → current=\"2026.06.24-admin-dashboard\"'. The pick/[id].tsx file contains TWO defensive coalesce blocks with comments specifically about alt-line picks (e.g. tennis Tommy Paul, MLB pitcher/hitter alt-locks) crashing the route with 'Cannot convert undefined value to object' when factors/key_insights were missing (lines 280-301 and 437-454). The Matthew Boyd Over 2.5 Strikeouts pick IS an ALT LOCK — exactly the class of pick referenced in the comments. A pre-cachebust client without those defensive coalesces would have crashed on this exact pick. Iteration 56's lite=true did NOT cause this — the detail route calls /api/picks/{id} (full payload), confirmed via network trace returning 200 with all 90 fields populated. Recommend: (a) confirm user is on the latest client build; (b) if they reproduce, capture their React Native red-screen / JS stack trace to identify which panel actually crashes.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/picks/{id}/player-form", "issue": "Returns 404 for every pick where it is called. XGFormPanel calls this on EVERY pick (not just soccer goalscorer) producing 3 console 'Failed to load resource: 404' errors per detail page render. Panel correctly hides UI but creates noise."},
+      {"endpoint": "GET /api/picks/{id}/simulation", "issue": "Returns 404 for non-MLB-prop picks. SimulatorPanel calls it on Red Sox spread pick producing 404 noise. Same pattern as player-form."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "WHY THIS PICK / explainCard (pick/[id].tsx line 263-275)", "issue": "AI-generated markdown explanation for Boyd Over 2.5 Strikeouts renders literally — '## Why This Pick?' and '**Elite matchup edge**' show as raw text instead of rendered markdown. Boyd Over 14.5 Outs Recorded uses plain-text fallback (no markdown) and renders fine. The Strikeouts ALT LOCK pick triggers the live AI re-explain (ai_pending=true) and Claude returns markdown which is dumped into a <Text> component verbatim. From a user perspective, the breakdown can look 'broken' / unfinished.", "testID": "n/a (raw Text)", "priority": "MEDIUM"},
+      {"component": "PitcherH2HPanel H2H K AVG empty state", "issue": "Shows em-dash '—' with 'no history' label which is technically correct (no prior starts vs the Mets) but visually looks like a missing/loading value. Consider rendering a clearer 'N/A · first matchup' badge.", "testID": "n/a", "priority": "LOW"}
+    ],
+    "integration_issues": [
+      {"flow": "Panel → backend endpoint visibility", "issue": "XGFormPanel and SimulatorPanel fire requests universally; ideally gate the fetch by sport/market like PitcherH2HPanel does (isMlbStrikeout pre-check). Avoids 404 spam and saves a roundtrip per non-applicable pick.", "affected_testIDs": []}
+    ],
+    "design_issues": [
+      {"screen": "Pick detail (web)", "issues": ["Console warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\"' fires repeatedly — React Native Web 0.19+ deprecation. Recommend audit StyleSheet shadows app-wide."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/tmp/boyd_top.png", "/tmp/boyd_bottom.png", "/tmp/boyd2_top.png", "/tmp/boyd2_bottom.png", "/tmp/non_boyd.png"],
+  "action_items": [
+    "REPLY TO USER: bug is NOT reproducible on current build for either Matthew Boyd pick. Ask them to (a) force-quit and re-open the app to trigger the cachebust wipe (iteration 56), (b) screenshot what they're seeing, and (c) share any red-screen / error toast.",
+    "Add a markdown renderer (react-native-markdown-display or simple regex) for the WHY THIS PICK explainCard so AI-returned ## headings and **bold** render properly — this is the most likely user-visible 'broken' symptom.",
+    "Gate XGFormPanel network fetch behind a sport/market check (Soccer + goalscorer markets) the same way PitcherH2HPanel does; eliminates 404 noise.",
+    "Gate SimulatorPanel network fetch similarly (MLB props only).",
+    "Audit deprecated shadow* style props app-wide; migrate to boxShadow for RN Web 0.19+ compatibility."
+  ],
+  "critical_code_review_comments": [
+    "pick/[id].tsx is 671 lines — over the 700 soft cap is approaching; consider extracting the BentoCell + ScoreChip + share-action row + market panel-list into sub-components.",
+    "pick/[id].tsx lines 285 & 444 contain defensive `|| {}` / `|| []` coalesces with comments referencing past crashes from alt-line picks (the exact pick class user reported). Strongly suggests there was previously a real bug here, now patched — but ensure the patch shipped to all client builds via cachebust version bump (which iteration 56 did).",
+    "Both XGFormPanel and SimulatorPanel hit network universally then render nothing — wastes requests and pollutes console. Should mirror PitcherH2HPanel's `if (!eligible) return null;` early-out pattern BEFORE the useEffect fetch.",
+    "WHY THIS PICK uses a plain <Text> to render AI markdown — no markdown parser. Fragile UX for any pick where the AI returns formatted output."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100% (Boyd picks load cleanly)"},
+  "seed_data_creation": "None — used existing demo@lockscore.ai user and existing pick IDs.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "If user re-reports: (1) ask for THEIR exact build version / app store version, (2) confirm they did a fresh app open since the iteration 56 cachebust deploy, (3) capture their JS stack / red-screen. The web preview at /pick/50b36be6-aefe-53d2-85a6-9f0170162990 with demo@lockscore.ai/demo123 works perfectly. Use `localStorage.setItem('lockscore_token', JSON.stringify(token))` (JSON.stringify is mandatory — confirmed)."
+}
