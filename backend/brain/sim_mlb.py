@@ -22,7 +22,7 @@ from typing import Optional
 
 from brain.sim_distribution import compute_percentiles
 
-RUNS = 15_000               # Monte Carlo iterations per pick
+RUNS = 20_000
 EXPECTED_ABS_HITTER = 4.2   # lineup-spot avg
 EXPECTED_BF_PITCHER = 22.0  # ~ 5-6 innings × 3.7 BF/inning
 

@@ -23,12 +23,13 @@ Markets routed:
 from __future__ import annotations
 import math
 import random
+import numpy as np
 import re
 from typing import Optional
 
 from brain.sim_distribution import compute_percentiles
 
-RUNS = 15_000
+RUNS = 20_000
 
 
 def _wilson_ci(p: float, n: int, z: float = 1.96) -> tuple[float, float]:
@@ -181,7 +182,7 @@ def simulate_nba_pick(pick: dict) -> Optional[dict]:
         # Apply small form adjustment
         recent = _factor(pick, "Recent Form (L10)", 50.0)
         mu *= 0.95 + (recent / 100.0) * 0.10
-        wins = sum(1 for _ in range(RUNS) if random.gauss(mu, sigma) > 0)
+        wins = int(np.sum(np.random.normal(mu, sigma, RUNS) > 0))
         p_win = wins / RUNS
         ci_lo, ci_hi = _wilson_ci(p_win, RUNS)
         sim_wp_pct = round(p_win * 100, 1)
@@ -204,7 +205,11 @@ def simulate_nba_pick(pick: dict) -> Optional[dict]:
         target = 1.0 - model_wp if is_under else model_wp
         z = _norminv(target)
         mu = threshold + z * sigma
-        wins = sum(1 for _ in range(RUNS) if (random.gauss(mu, sigma) > threshold) != is_under)
+        samples = np.random.normal(mu, sigma, RUNS)
+        # XOR-style toggle on `is_under` — over: sample > threshold wins;
+        # under: sample <= threshold wins (push-rare in continuous space).
+        won_mask = (samples > threshold) ^ is_under
+        wins = int(np.sum(won_mask))
         p_win = wins / RUNS
         ci_lo, ci_hi = _wilson_ci(p_win, RUNS)
         sim_wp_pct = round(p_win * 100, 1)
@@ -233,12 +238,16 @@ def simulate_nba_pick(pick: dict) -> Optional[dict]:
 
     if count_dist == "normal":
         sigma = max(2.0, math.sqrt(lam) * 1.5)
-        distribution = [max(0, int(round(random.gauss(lam, sigma)))) for _ in range(RUNS)]
+        # Vectorised — clip to non-negative integer counts.
+        distribution = np.clip(np.round(np.random.normal(lam, sigma, RUNS)), 0, None).astype(int)
     else:
-        distribution = [_poisson(lam) for _ in range(RUNS)]
+        distribution = np.random.poisson(lam, RUNS)
 
-    wins = sum(1 for x in distribution if (x < threshold if is_under else x > threshold))
-    n = len(distribution)
+    if is_under:
+        wins = int(np.sum(distribution < threshold))
+    else:
+        wins = int(np.sum(distribution > threshold))
+    n = RUNS
     p_win = wins / n
     ci_lo, ci_hi = _wilson_ci(p_win, n)
     sim_wp_pct = round(p_win * 100, 1)
