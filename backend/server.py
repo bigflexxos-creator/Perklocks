@@ -167,6 +167,7 @@ def _canonicalize_lock_score(pick: dict) -> dict:
             pick["grade"] = _grade(pick["lock_score"])
             pick["confidence"] = _confidence(pick["lock_score"])
             pick["v2_promoted_at_read"] = True
+            pick["_grade_refreshed_at_read"] = True
             # Keep lock_score_raw in lockstep so the Evidence Inspector
             # math reconciles (raw × multiplier = lock). If we promote
             # to V2's value, promote the raw accordingly. Falls back to
@@ -223,6 +224,22 @@ def _canonicalize_lock_score(pick: dict) -> dict:
         pick["probability"] = unified_probability_report(pick)
     except Exception as e:
         logger.debug("probability_engine attach skipped: %s", e)
+    # ── ALWAYS re-derive grade/confidence from the FINAL lock_score ──
+    # Previously only re-derived when V2 > V1. But picks whose `lock_score`
+    # was bumped post-creation by lazy evidence governance (or by the
+    # validator self-heal pass) kept their PRE-bump grade string in the
+    # DB — so the badge said "PASS" even when lock_score = 95+. User
+    # report 2026-06-25: "App tripping again still showing locks as pass."
+    # Idempotent: if grade is already correct, this rewrites it to the
+    # same string. The DB is left untouched (this is a read-time fix).
+    try:
+        from sports_engine import _grade as _re_grade, _confidence as _re_conf
+        final_lock = float(pick.get("lock_score") or 0)
+        if final_lock > 0:
+            pick["grade"]      = _re_grade(final_lock)
+            pick["confidence"] = _re_conf(final_lock)
+    except Exception as _re_err:
+        logger.debug("grade re-derive skipped: %s", _re_err)
     return pick
 
 
@@ -2114,11 +2131,18 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # against). Elite pitchers' K-line markets are often priced sharp, but
     # the lock score reflects the underlying probability accurately. Surface
     # these when lock >= 70 even with slight negative edge.
+    #
+    # 2026-06-25 update: Re-widened edge floor from -8 → -12 because chalk
+    # K props like Seth Lugo Over 2.5 K's (lock 94.5, edge -8.4) and Bryce
+    # Miller Over 3.5 K's (lock 94.8, edge -7.2) were appearing in the MLB
+    # Lab but missing from the home board. User: "not putting lock bets on
+    # board but they in the lab like strikeouts." Lab uses lock >= 78 with
+    # no edge gate — board now matches that universe for the K market.
     mlb_k_q = {
         "sport": "MLB",
         "market": {"$regex": "strikeout", "$options": "i"},
         "no_bet": {"$ne": True},
-        "edge_percent": {"$gte": -8.0},
+        "edge_percent": {"$gte": -12.0},
         "$or": [
             {"lock_score": {"$gte": 70.0}},
             {"lock_score_v2": {"$gte": 70.0}},
@@ -2156,6 +2180,12 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # locks ever surface. Same shape as the MLB pitcher-K and Soccer-
     # scorer carve-outs: surface alt-lock hitter props at lock ≥ 70
     # with edge tolerance to -3% (alt locks are chalky by design).
+    #
+    # 2026-06-25 update: Re-widened edge floor from -3 → -10 because
+    # chalk Hits+Runs+RBIs alt-locks (e.g. Yandy Diaz Over 0.5 HRR at
+    # lock 94.8, edge -7.7) were visible in the MLB Lab but missing from
+    # the home board. Lab universe is the source of truth — board now
+    # matches it for hitter props.
     mlb_hitter_q = {
         "sport": "MLB",
         "market": {
@@ -2166,15 +2196,32 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         # double-count strikeouts (already covered by mlb_k_q).
         "$nor": [{"market": {"$regex": "strikeout|outs recorded", "$options": "i"}}],
         "no_bet": {"$ne": True},
-        "edge_percent": {"$gte": -3.0},
+        "edge_percent": {"$gte": -10.0},
         "$or": [
             {"lock_score": {"$gte": 70.0}},
             {"lock_score_v2": {"$gte": 70.0}},
         ],
     }
+    # ── Universal high-lock bypass ───────────────────────────────────
+    # Any pick with lock_score ≥ 90 (or v2 ≥ 90) surfaces on the board
+    # regardless of edge sign. Rationale: lock_score is the canonical
+    # confidence signal — a Lock-band pick (90+) is by definition one
+    # we're highly confident in, and chalk-priced props (negative edge
+    # by construction) shouldn't be hidden just because the book agrees
+    # with us. This mirrors the Soccer/MLB Lab universe (lock ≥ 78, no
+    # edge gate) so the board stops disagreeing with the Lab.
+    # User report 2026-06-25: "not putting lock bets on board but they
+    # in the lab like strikeouts".
+    high_lock_bypass_q = {
+        "no_bet": {"$ne": True},
+        "$or": [
+            {"lock_score":    {"$gte": 90.0}},
+            {"lock_score_v2": {"$gte": 90.0}},
+        ],
+    }
     q: dict = {
         "pick_date": _today_str(),
-        "$or": [standard_q, elite_q, tennis_ml_q, tennis_alt_q, mlb_k_q, mlb_hitter_q, soccer_scorer_q],
+        "$or": [standard_q, elite_q, tennis_ml_q, tennis_alt_q, mlb_k_q, mlb_hitter_q, soccer_scorer_q, high_lock_bypass_q],
     }
     # ── User-supplied min_lock floor (global enforcement) ────────────
     # Each sub-query above uses its own lock floor (70 for tennis ML,

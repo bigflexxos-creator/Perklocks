@@ -400,6 +400,20 @@ def govern_pick(
         v2_raw = pick.get("lock_score_v2_raw") or raw_lock_v2
         if v2_raw is not None:
             pick["lock_score_raw"] = round(float(v2_raw), 1)
+    # ── Re-derive grade + confidence against the final (governed +
+    #    canonicalized) lock_score. Without this, a pick whose governance
+    #    multiplier drags lock below its original band still displays the
+    #    PRE-governance badge (user saw "PASS · Lock 82" because the grade
+    #    text was set at pick-creation against the ungoverned 88 — bug
+    #    flagged 2026-06-25). Idempotent — always agrees with displayed
+    #    lock_score.
+    try:
+        from sports_engine import _grade as _re_grade, _confidence as _re_conf
+        final_lock = float(pick.get("lock_score") or 0)
+        pick["grade"]      = _re_grade(final_lock)
+        pick["confidence"] = _re_conf(final_lock)
+    except Exception:
+        pass
     pick["key_insights"] = insights_out
 
     pick["evidence_breakdown"] = {
