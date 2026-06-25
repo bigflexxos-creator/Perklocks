@@ -2576,7 +2576,7 @@ async def pick_rollover(user: Annotated[UserPublic, Depends(current_user)],
         if regex:
             base_q["market"] = {"$regex": regex, "$options": "i"}
     if league:
-        base_q["league"] = {"$regex": str(league).replace("\\", ""), "$options": "i"}
+        base_q["league"] = {"$regex": re.escape(str(league)), "$options": "i"}  # SEC-004 (4th site, missed in first pass)
 
     # Rollover = "most likely to hit" → require POSITIVE expected value. A
     # negative-edge pick (model WP < book implied) is a bad bet — must never
