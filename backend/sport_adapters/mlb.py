@@ -183,7 +183,13 @@ class MLBAdapter(SportAdapter):
             ))
 
         # ── Universal market edge — always include if present ──
-        edge = pick.get("edge_percent")
+        # Prefer edge_percent_raw if Phase-3 shrinkage has been applied — without
+        # this, repeated govern_pick calls feed the SHRUNK edge back into the
+        # feature builder → lower importance → lower evidence_score → more
+        # shrinkage next pass → compounding collapse to market consensus.
+        edge = pick.get("edge_percent_raw")
+        if edge is None:
+            edge = pick.get("edge_percent")
         if edge is not None:
             try:
                 e = float(edge)
