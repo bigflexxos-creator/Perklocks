@@ -4428,6 +4428,20 @@ async def on_startup():
         await db.user_activity.create_index("user_id", unique=True)
     except Exception:
         pass
+    # Closing-line snapshotter + line-history observer (CLV fix 2026-06-25).
+    # Two independent background loops that finally populate `closing_odds`
+    # with REAL closing prices so the analytics page's CLV column stops
+    # reading zero.
+    try:
+        from closing_line_snapshotter import (
+            line_observer_loop, closing_snapshotter_loop,
+        )
+        asyncio.create_task(line_observer_loop(db))
+        asyncio.create_task(closing_snapshotter_loop(db))
+        logger.info("Closing-line snapshotter started (CLV tracking enabled)")
+    except Exception as e:
+        logger.warning("CLV snapshotter failed to start: %s", e)
+
     logger.info("PerksLocks AI started")
 
 
