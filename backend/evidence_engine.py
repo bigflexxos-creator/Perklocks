@@ -123,6 +123,95 @@ _RELIABILITY_BY_TIER: dict[Tier, float] = {
 # explanation_text to be shown to the user.
 EXPLANATION_GOVERNOR_THRESHOLD = 0.30
 
+# ── Probability shrinkage (Phase 3) ────────────────────────────────
+# Bayesian shrinkage of the model's win probability TOWARD the market-
+# implied probability when our evidence is weak. Formula:
+#
+#   p_shrunk = w × p_model + (1 - w) × p_implied
+#   w = SHRINKAGE_FLOOR + (1 - SHRINKAGE_FLOOR) × (evidence_score / 100)
+#
+# With FLOOR=0.30 we get:
+#   evidence_score=  0 → w=0.30  (no evidence → still 30% model pull,
+#                                  70% pulled back to market consensus)
+#   evidence_score= 50 → w=0.65  (balanced blend)
+#   evidence_score=100 → w=1.00  (HIGH evidence → trust model fully)
+#
+# This makes edge claims honest: a low-evidence "80% win prob, +250"
+# pick gets shrunk toward the book's 28.6% implied so the displayed
+# edge stops false-advertising large alpha that the data can't back.
+#
+# Critically — the shrinkage applies AFTER calibration (the isotonic
+# fit), so we shrink the CALIBRATED probability toward implied. The
+# displayed edge math then matches `edge = win_probability − implied`
+# exactly, no double-correction.
+SHRINKAGE_FLOOR = 0.30
+# Number of strong features at which we consider evidence "saturated"
+# for shrinkage purposes. Below this, the shrinkage weight is
+# discounted by a "breadth penalty" so a single high-quality feature
+# doesn't give us full model trust. Calibrated against the median
+# feature count produced by sport_adapters/* (MLB ~4, Soccer ~5).
+SHRINKAGE_BREADTH_TARGET = 3.0
+
+
+def probability_shrinkage_weight(
+    score: int,
+    feature_count: int | None = None,
+) -> float:
+    """Return the model-trust weight `w` for the given evidence_score
+    and (optionally) feature breadth. Always in [SHRINKAGE_FLOOR, 1.0].
+
+    The weight blends two ideas:
+      1. Per-feature quality (the existing `evidence_score`).
+      2. Quantity of features — we shouldn't fully trust the model
+         off a single data point, no matter how clean. ``breadth``
+         linearly saturates at SHRINKAGE_BREADTH_TARGET features.
+
+    Backwards compatible: callers that don't pass ``feature_count``
+    get the pure-quality weight (1.0 breadth assumed).
+    """
+    s = max(0, min(100, int(score)))
+    base = SHRINKAGE_FLOOR + (1.0 - SHRINKAGE_FLOOR) * (s / 100.0)
+    if feature_count is None:
+        return round(base, 4)
+    breadth = min(1.0, max(0, int(feature_count)) / SHRINKAGE_BREADTH_TARGET)
+    # Breadth scales the *bonus* above the floor, never below it.
+    # So a 1-feature pick keeps at least floor + 1/3 × (base - floor).
+    w = SHRINKAGE_FLOOR + (base - SHRINKAGE_FLOOR) * breadth
+    return round(w, 4)
+
+
+def apply_probability_shrinkage(
+    p_model: float | None,
+    p_implied: float | None,
+    score: int,
+    feature_count: int | None = None,
+) -> tuple[float | None, float]:
+    """Shrink ``p_model`` toward ``p_implied`` based on evidence_score
+    AND feature breadth.
+
+    Both probabilities are expected in 0..100 PERCENT units (matching
+    the rest of the codebase's `win_probability=78.1` convention).
+
+    Returns ``(p_shrunk, weight)``. If either input is missing or
+    non-finite, returns ``(p_model, weight)`` unchanged so the caller
+    can drop in without null-handling boilerplate.
+    """
+    w = probability_shrinkage_weight(score, feature_count)
+    try:
+        pm = float(p_model) if p_model is not None else None
+        pi = float(p_implied) if p_implied is not None else None
+    except (TypeError, ValueError):
+        return p_model, w
+    if pm is None or pi is None:
+        return p_model, w
+    # Clamp p_implied to (0.5, 99.5) — degenerate book lines like
+    # 0% or 100% implied would lock us to a single point and erase
+    # all signal. Practically books never quote outside ~2%/98%.
+    pi = max(0.5, min(99.5, pi))
+    shrunk = w * pm + (1.0 - w) * pi
+    return round(max(0.0, min(100.0, shrunk)), 2), w
+
+
 # Words we won't show unless evidence is HIGH. Stripped or downgraded
 # automatically — keeps the engine honest even if a per-sport adapter
 # accidentally produced hype.
@@ -361,6 +450,62 @@ def govern_pick(
     )
 
     pick["evidence_score"] = score
+
+    # ── Phase 3: Reliability-weighted probability shrinkage ──────────
+    # Shrink the displayed win_probability toward the market-implied
+    # probability based on how much we trust our evidence. Idempotent —
+    # `win_probability_raw` always tracks the pre-shrinkage value so
+    # subsequent refreshes shrink the ORIGINAL model output, not the
+    # already-shrunk one. (Without this, repeated refreshes would
+    # compound the shrinkage and converge the prob to the market.)
+    raw_wp = pick.get("win_probability_raw")
+    if raw_wp is None:
+        # First pass — capture the model's original probability before
+        # we overwrite the displayed `win_probability`.
+        raw_wp = pick.get("win_probability")
+        if raw_wp is not None:
+            try:
+                pick["win_probability_raw"] = round(float(raw_wp), 2)
+            except (TypeError, ValueError):
+                pick["win_probability_raw"] = raw_wp
+    if raw_wp is not None:
+        # Edge math uses the BOOK's implied probability. Most picks
+        # already have `implied_probability` populated upstream; fall
+        # back to deriving from `book_odds` if not.
+        p_implied = pick.get("implied_probability")
+        if p_implied is None and pick.get("book_odds") is not None:
+            try:
+                odds = float(pick["book_odds"])
+                p_implied = (
+                    100.0 * (-odds / (-odds + 100.0)) if odds < 0
+                    else 100.0 * (100.0 / (odds + 100.0))
+                )
+            except (TypeError, ValueError, ZeroDivisionError):
+                p_implied = None
+
+        p_shrunk, weight = apply_probability_shrinkage(
+            raw_wp, p_implied, score, feature_count=len(features),
+        )
+        if p_shrunk is not None:
+            try:
+                wp_raw_f = float(raw_wp)
+                pick["win_probability"] = p_shrunk
+                pick["probability_shrinkage_weight"] = round(weight, 3)
+                pick["probability_shrinkage_delta"] = round(p_shrunk - wp_raw_f, 2)
+                # Re-derive edge against shrunk probability so the
+                # displayed alpha matches the displayed prob. Capture
+                # the pre-shrinkage edge in *_raw for the audit trail.
+                if p_implied is not None and pick.get("edge_percent") is not None:
+                    try:
+                        prev_edge = float(pick["edge_percent"])
+                        if "edge_percent_raw" not in pick:
+                            pick["edge_percent_raw"] = round(prev_edge, 2)
+                    except (TypeError, ValueError):
+                        pass
+                    pick["edge_percent"] = round(p_shrunk - float(p_implied), 2)
+            except (TypeError, ValueError):
+                pass
+
     # ── Lock-score PEAK tracking (sticky 99-locks) ──
     # Once a pick crosses 95 on any refresh cycle, it stays pinned
     # through subsequent refreshes. govern_pick is called on every
@@ -425,6 +570,18 @@ def govern_pick(
             "HIGH":   sum(1 for f in features if f.tier == "HIGH"),
             "MEDIUM": sum(1 for f in features if f.tier == "MEDIUM"),
             "LOW":    sum(1 for f in features if f.tier == "LOW"),
+        },
+        # Phase 3 shrinkage transparency — surfaces the exact math
+        # so the admin inspector + frontend can show the user how
+        # much their displayed win probability has been pulled
+        # toward the market consensus.
+        "probability_shrinkage": {
+            "weight":         pick.get("probability_shrinkage_weight"),
+            "p_model_raw":    pick.get("win_probability_raw"),
+            "p_shrunk":       pick.get("win_probability"),
+            "delta_pp":       pick.get("probability_shrinkage_delta"),
+            "edge_raw":       pick.get("edge_percent_raw"),
+            "edge_shrunk":    pick.get("edge_percent"),
         },
         "top_features":      [f.to_audit_dict() for f in sorted_feats[:8]],
         "excluded_features": [f.to_audit_dict() for f in sorted_feats
@@ -602,7 +759,14 @@ def _universal_build_features_from_pick(pick: dict) -> list[EvidenceFeature]:
         ))
 
     # 6) Edge — universal market feature.
-    edge = pick.get("edge_percent")
+    # Prefer `edge_percent_raw` if present (Phase 3 shrinkage preserved
+    # the model's original edge here). Without this, repeated
+    # govern_pick calls would feed the SHRUNK edge back into the feature
+    # builder → smaller importance → lower evidence_score → MORE
+    # shrinkage on the next pass → compounding collapse to market.
+    edge = pick.get("edge_percent_raw")
+    if edge is None:
+        edge = pick.get("edge_percent")
     if edge is not None:
         try:
             edge_f = float(edge)
@@ -630,8 +794,11 @@ __all__ = [
     "evidence_multiplier",
     "apply_lock_governor",
     "apply_explanation_governor",
+    "apply_probability_shrinkage",
+    "probability_shrinkage_weight",
     "govern_pick",
     "build_features_from_pick",
     "EXPLANATION_GOVERNOR_THRESHOLD",
+    "SHRINKAGE_FLOOR",
     "SIGNAL_LIMITED_FALLBACK",
 ]

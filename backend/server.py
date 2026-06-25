@@ -3276,7 +3276,21 @@ async def pick_detail(pick_id: str,
     # feed card. Single source of truth — see `_canonicalize_lock_score` doc.
     pick = _canonicalize_lock_score(pick)
     # Lazy evidence governance — see /api/picks/today for context.
-    if pick.get("evidence_score") is None and (pick.get("status") or "pending") == "pending":
+    # Phase-3 trigger (2026-06-25): also re-govern when the pick was
+    # generated PRE-shrinkage (i.e. has no `win_probability_raw` yet).
+    # Without this, existing DB picks never get the new shrinkage math
+    # applied — they'd carry the un-shrunk model probability until the
+    # next refresh cycle deletes and re-creates them (which can take
+    # hours for slow-cadence leagues).
+    needs_govern = (
+        (pick.get("evidence_score") is None and (pick.get("status") or "pending") == "pending")
+        or (
+            pick.get("win_probability") is not None
+            and pick.get("win_probability_raw") is None
+            and pick.get("implied_probability") is not None
+        )
+    )
+    if needs_govern:
         try:
             from evidence_engine import build_features_from_pick, govern_pick
             govern_pick(pick, build_features_from_pick(pick))

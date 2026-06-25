@@ -198,7 +198,11 @@ class TestWinProbabilityUntouched:
             assert 0.0 <= float(wp) <= 100.0, f"win_probability out of range: {wp}"
 
     def test_win_probability_not_mutated_by_govern(self, picks_today):
-        """Re-running govern_pick must not touch win_probability (rule 7)."""
+        """Phase 3 (2026-06-25): `win_probability` IS now mutated by
+        shrinkage, but the raw value is preserved in
+        `win_probability_raw` and re-running governance is idempotent.
+        Verifies: `win_probability_raw` is invariant + shrinkage doesn't
+        compound across repeated runs."""
         import sys
         sys.path.insert(0, "/app/backend")
         from evidence_engine import govern_pick, build_features_from_pick
@@ -207,10 +211,18 @@ class TestWinProbabilityUntouched:
             wp = p.get("win_probability")
             if wp is None:
                 continue
+            original_raw = p.get("win_probability_raw")
+            expected_raw = float(original_raw if original_raw is not None else wp)
             clone = dict(p)
             govern_pick(clone, build_features_from_pick(clone))
-            assert clone.get("win_probability") == wp, \
-                f"win_probability mutated for pick {p.get('id')}"
+            assert clone.get("win_probability_raw") == pytest.approx(expected_raw, abs=0.05), \
+                f"win_probability_raw drifted on pick {p.get('id')}"
+            # Re-run — must be idempotent.
+            second = dict(clone)
+            govern_pick(second, build_features_from_pick(second))
+            assert second["win_probability"] == pytest.approx(
+                clone["win_probability"], abs=0.05,
+            ), f"shrinkage compounded for pick {p.get('id')}"
             checked += 1
         assert checked >= 3
 
