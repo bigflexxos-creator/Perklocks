@@ -24,6 +24,10 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from .scraper import fetch_today_matches
+from .real_odds import (
+    fetch_all_tennis_events,
+    lookup_real_odds_for_match,
+)
 
 # Initial-seed lock-score band for the favorite. Downstream learning/lock
 # engines may raise this above 90 (up to 99) when the pick passes Lock V2 +
@@ -119,6 +123,19 @@ async def fetch_extra_tennis_picks(
         for mm in day_matches:
             mm["_event_date"] = day_key
         matches.extend(day_matches)
+
+    # ── Real-odds prefetch (2026-06-25) ──────────────────────────────
+    # Pull every active tennis tournament's h2h events from The Odds API
+    # in one shot. We use the result below per-match to promote
+    # tennis_extra picks to the main board with real FanDuel/DK/MGM
+    # lines when a US sportsbook actually carries the match — fixes
+    # "Why is Osaka only tennis pick really on the board?" user report
+    # by automatically promoting ATP/WTA matches whenever the books
+    # start quoting them (e.g. Wimbledon ramp-up).
+    try:
+        live_odds_events = await fetch_all_tennis_events()
+    except Exception as _ro_err:
+        live_odds_events = []
     picks: list[dict] = []
     for m in matches:
         # Dedupe vs. The Odds API — skip tournaments we already pull.
@@ -185,11 +202,46 @@ async def fetch_extra_tennis_picks(
 
         pid = _pick_id(fav_clean, dog_clean, m["tournament"], m.get("_event_date") or date_str)
 
-        # Edge — vs vigorish-adjusted book. We don't have an independent
-        # model on these picks; report 0% to be honest, but mark "no_edge_model".
-        edge_pct = 0.0
+        # ── Real-odds promotion (2026-06-25) ────────────────────────
+        # Before falling back to the scrape's TennisExplorer odds,
+        # check if a US sportsbook actually carries this match. If
+        # FanDuel/DK/MGM have a line, REPLACE the scraped odds with
+        # the real one, recompute edge, and promote the pick out of
+        # Extended Coverage into the main board.
+        real_odds = lookup_real_odds_for_match(
+            live_odds_events,
+            player_a=fav_clean,
+            player_b=dog_clean,
+            selection_player=fav_clean,
+        ) if live_odds_events else None
+        using_real = bool(real_odds and real_odds.get("book_odds") is not None)
 
-        picks.append({
+        if using_real:
+            book_odds_final     = int(real_odds["book_odds"])
+            implied_final       = float(real_odds["implied_probability"])
+            bookmaker_final     = str(real_odds["bookmaker"])
+            # Edge = our (no-vig) model probability vs the book's
+            # vig-included implied probability. Genuine value signal.
+            edge_pct            = round(fav_implied * 100.0 - implied_final, 2)
+            is_extra_flag       = False
+            fair_only_flag      = False
+            source_label        = "tennis_real_odds"
+            no_edge_model_flag  = False
+            coverage_note       = f"Real book odds via {bookmaker_final}."
+            all_books           = real_odds.get("all_books") or {}
+        else:
+            book_odds_final     = int(fav_odds)
+            implied_final       = round(fav_implied * 100.0, 2)
+            bookmaker_final     = "Sportsbook"
+            edge_pct            = 0.0
+            is_extra_flag       = True
+            fair_only_flag      = is_model_pick
+            source_label        = "tennis_extra_model" if is_model_pick else "tennis_extra"
+            no_edge_model_flag  = not is_model_pick
+            coverage_note       = "TennisExplorer scrape (Odds API doesn't carry this tournament)."
+            all_books           = {}
+
+        pick_doc = {
             "id": pid,
             "sport": "Tennis",
             "league": m["tournament"],
@@ -199,8 +251,8 @@ async def fetch_extra_tennis_picks(
             "market": f"{fav_clean} Moneyline",
             "selection": fav_clean,
             "pick_side": fav_clean,
-            "book_odds": int(fav_odds),
-            "implied_probability": round(fav_implied * 100.0, 2),
+            "book_odds": book_odds_final,
+            "implied_probability": implied_final,
             "win_probability": round(fav_implied * 100.0, 2),
             "model_win_probability": round(fav_implied * 100.0, 2),
             "edge_percent": edge_pct,
@@ -210,17 +262,21 @@ async def fetch_extra_tennis_picks(
             "factors": {
                 "Book Anchor": f"Market consensus puts {fav_clean} at {round(fav_implied*100)}% to win.",
                 "Tour Tier": f"{tier} — settlement risk slightly higher than top tour.",
-                "Coverage Source": "TennisExplorer scrape (Odds API doesn't carry this tournament).",
+                "Coverage Source": coverage_note,
             },
             "is_alt": False,
-            "is_extra": True,
-            "source": "tennis_extra_model" if is_model_pick else "tennis_extra",
-            "fair_odds_model": is_model_pick,
+            "is_extra": is_extra_flag,
+            "source": source_label,
+            "fair_odds_model": fair_only_flag,
             "model_components": model_components if is_model_pick else None,
             "auto_settle": False,
             "pick_date": date_str,
             "status": "pending",
-            "no_edge_model": not is_model_pick,
-        })
+            "no_edge_model": no_edge_model_flag,
+            "bookmaker": bookmaker_final,
+        }
+        if using_real and all_books:
+            pick_doc["all_book_odds"] = all_books
+        picks.append(pick_doc)
 
     return picks
