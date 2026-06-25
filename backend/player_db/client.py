@@ -72,9 +72,10 @@ async def enrich_profile(profile: dict) -> dict:
 
     # Phase 1: MLB has a local source (MLB Stats API).
     # Phase 2: NBA + NFL now also resolve locally (ESPN public).
-    # Remaining sports (soccer, tennis, etc.) fall back to legacy
+    # Phase 3: Tennis resolves locally (Sackmann-format match data).
+    # Remaining sports (soccer, MMA, etc.) fall back to legacy
     # SportsDataIO until their ingestors land.
-    if sport not in ("mlb", "nba", "nfl"):
+    if sport not in ("mlb", "nba", "nfl", "tennis"):
         try:
             from player_intel.sportsdataio_client import enrich_profile as legacy
             return await legacy(profile)
@@ -104,13 +105,26 @@ async def enrich_profile(profile: dict) -> dict:
                 profile["photo_url"] = row["photo_url"]
             if row.get("jersey"):
                 profile["jersey"] = row["jersey"]
-            # MLB-only handedness fields
+            # Sport-specific extras
             if sport == "mlb":
                 if row.get("bats"):
                     profile["bats"] = row["bats"]
                 if row.get("throws"):
                     profile["throws"] = row["throws"]
                 profile["mlb_id"]    = row.get("mlb_id") or row.get("player_id")
+            elif sport == "tennis":
+                # Hand (L/R), nationality, surface splits, win %, rank
+                if row.get("hand"):
+                    profile["hand"] = row["hand"]
+                if row.get("ioc"):
+                    profile["ioc"] = row["ioc"]
+                if row.get("rank") is not None:
+                    profile["rank"] = row["rank"]
+                if row.get("win_pct") is not None:
+                    profile["win_pct"] = row["win_pct"]
+                if row.get("surface_splits"):
+                    profile["surface_splits"] = row["surface_splits"]
+                profile["tennis_player_id"] = row.get("player_id")
             else:
                 profile["espn_id"]   = row.get("espn_id") or row.get("player_id")
             profile["player_db_status"]      = row.get("status")
