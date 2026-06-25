@@ -96,7 +96,7 @@ export function LockPickCard({ pick }: { pick: Pick }) {
             )}
             {(pick as any).is_extra && (
               <View style={styles.extraTag}>
-                <Text style={styles.extraTagText}>📡 EXTENDED</Text>
+                <Text style={styles.extraTagText}>EXT</Text>
               </View>
             )}
             <Text style={styles.league} numberOfLines={1}>{pick.league}</Text>
@@ -349,13 +349,17 @@ const styles = StyleSheet.create({
   },
   tagText: { color: COLORS.textPrimary, fontSize: 10, fontWeight: "800", letterSpacing: 1.2 },
   extraTag: {
-    paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4,
-    borderWidth: 1, borderColor: COLORS.voltBlue + "66",
-    backgroundColor: COLORS.voltBlue + "18",
+    // Visually distinct from ELITE/STRONG/grade badges — orange-amber
+    // so users instantly recognize "this pick's line came from a
+    // TennisExplorer scrape, not a US sportsbook". The amber palette
+    // signals "use with caution" without screaming red.
+    paddingHorizontal: 7, paddingVertical: 3, borderRadius: 4,
+    borderWidth: 1, borderColor: "#FFA94D",
+    backgroundColor: "#FFA94D22",
   },
   extraTagText: {
-    color: COLORS.voltBlue, fontSize: 9, fontWeight: "800",
-    letterSpacing: 0.8,
+    color: "#FFA94D", fontSize: 10, fontWeight: "900",
+    letterSpacing: 1.2,
   },
   league: { color: COLORS.textMuted, fontSize: 11, fontWeight: "600", flex: 1 },
   event: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 2, fontWeight: "500" },
