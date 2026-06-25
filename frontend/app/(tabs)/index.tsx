@@ -181,6 +181,14 @@ export default function LocksScreen() {
   // itself but can we stop this".
   const latestLoadTokenRef = useRef(0);
   const lastLoadedForSportRef = useRef<string>("");
+  // Last filter signature painted on screen. We use this to flush the
+  // picks array IMMEDIATELY when the user changes ANY narrowing
+  // filter (market pill / league pill / game pill) — without this,
+  // the previous filter's picks linger on screen while the new fetch
+  // is in flight, making H+R+RBI picks appear under the Strikeouts
+  // pill etc. (user report 2026-06-25: "make organized hit run rbi be
+  // under strikeouts sometimes" / "takes me back to the main tab").
+  const lastFilterSignatureRef = useRef<string>("");
 
   const load = useCallback(async (s: string, lt: LineType, sk: SortKey, f: PickFilters, dir: SortDirection) => {
     const myToken = latestLoadTokenRef.current + 1;
@@ -255,13 +263,17 @@ export default function LocksScreen() {
   }, []);
 
   useEffect(() => {
-    // Wipe stale picks the moment the user changes sport so the wrong
-    // tab can NEVER be shown for even a single frame. Only triggers
-    // when the new sport differs from what's currently painted —
-    // otherwise we'd needlessly clear identical data.
-    if (lastLoadedForSportRef.current && lastLoadedForSportRef.current !== sport) {
+    // Wipe stale picks the moment the user changes sport OR any
+    // narrowing filter (market / league / event) so the wrong tab can
+    // NEVER be shown for even a single frame. Without this, a previous
+    // fetch's picks remain visible while the new fetch is in-flight,
+    // producing the "H+R+RBI under Strikeouts" visual leak that users
+    // (rightly) interpret as broken filtering.
+    const sig = `${sport}|${filters.market || ""}|${filters.league || ""}|${filters.event || ""}`;
+    if (lastFilterSignatureRef.current && lastFilterSignatureRef.current !== sig) {
       setPicks([]);
     }
+    lastFilterSignatureRef.current = sig;
     setLoading(true);
     load(sport, lineType, sortKey, filters, sortDir);
   }, [sport, lineType, sortKey, filters, sortDir, load]);
@@ -355,8 +367,13 @@ export default function LocksScreen() {
         options={SPORTS}
         active={sport}
         onChange={(s) => {
-          // Reset sport-specific filters when switching sports.
-          setFilters((f) => ({ ...f, market: undefined, league: undefined }));
+          // Reset sport-specific narrowing filters when switching sports.
+          // `event`, `market`, and `league` are all sport-bound — a
+          // Phillies game doesn't exist on NBA night, an MLB strikeouts
+          // market doesn't exist for NFL, etc. Carrying them across
+          // sport switches produces empty-board confusion ("took me
+          // back to main tab" complaint, 2026-06-25).
+          setFilters((f) => ({ ...f, market: undefined, league: undefined, event: undefined }));
           setSport(s);
         }}
         testIDPrefix="sport-chip"
