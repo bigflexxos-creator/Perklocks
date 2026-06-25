@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from auth import UserPublic
-from deps import current_user, db
+from deps import current_admin, db
 
 router = APIRouter(prefix="/api")
 
@@ -27,7 +27,7 @@ router = APIRouter(prefix="/api")
 @router.get("/admin/pick-evidence/{pick_id}")
 async def admin_pick_evidence(
     pick_id: str,
-    user: Annotated[UserPublic, Depends(current_user)],
+    user: Annotated[UserPublic, Depends(current_admin)],
 ):
     """Inspector for the Universal Evidence System (Phase 1).
 
@@ -80,7 +80,7 @@ async def admin_pick_evidence(
 
 @router.post("/admin/refresh-soccer-player-form")
 async def admin_refresh_soccer_player_form(
-    user: Annotated[UserPublic, Depends(current_user)],
+    user: Annotated[UserPublic, Depends(current_admin)],
 ):
     """Manually kick the Understat scrape job. Used by ops + initial
     seed. Returns the same summary dict the background loop logs every
@@ -93,7 +93,7 @@ async def admin_refresh_soccer_player_form(
 
 @router.post("/admin/backfill-tennis-elo")
 async def admin_backfill_tennis_elo(
-    user: Annotated[UserPublic, Depends(current_user)],
+    user: Annotated[UserPublic, Depends(current_admin)],
     days_back: int = 30,
 ):
     """One-shot ops tool to seed the tennis_extra Elo + form ledger
@@ -118,7 +118,7 @@ class HistoricalBackfillRequest(BaseModel):
 @router.post("/admin/historical/backfill")
 async def historical_backfill(
     req: HistoricalBackfillRequest,
-    user: Annotated[UserPublic, Depends(current_user)] = None,
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
 ):
     """Trigger a current-season backfill (or incremental sync) for one
     or more sports. Returns per-sport summary.
@@ -145,7 +145,7 @@ async def historical_backfill(
 
 @router.get("/admin/historical/status")
 async def historical_status(
-    user: Annotated[UserPublic, Depends(current_user)] = None,
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
 ):
     """Quick summary of what's stored in the historical engine."""
     counts = {}
@@ -165,7 +165,7 @@ async def historical_player_form(
     sport: str,
     name: str,
     market: Optional[str] = None,
-    user: Annotated[UserPublic, Depends(current_user)] = None,
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
 ):
     """Look up the stored form summary for a player (debug + transparency)."""
     try:
@@ -180,7 +180,7 @@ async def historical_player_form(
 @router.get("/admin/scorer-audit")
 async def admin_scorer_audit(
     event: Optional[str] = None,
-    user: Annotated[UserPublic, Depends(current_user)] = None,
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
 ):
     """Per-event soccer scorer-board coverage audit.
 
@@ -212,7 +212,7 @@ async def gs_engine_v2_preview(
     team: str,
     opponent: str,
     league: str = "",
-    user: Annotated[UserPublic, Depends(current_user)] = None,
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
 ):
     """Run the v2 engine on-demand for one player.
 
@@ -265,7 +265,7 @@ async def gs_engine_v2_preview(
 
 @router.post("/admin/gs-engine-v2/grade")
 async def gs_engine_v2_grade(
-    user: Annotated[UserPublic, Depends(current_user)] = None,
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
 ):
     """Trigger the FotMob-backed grading + calibration refit on demand."""
     from goal_scorer_engine_v2 import grade_pending_predictions
@@ -274,7 +274,7 @@ async def gs_engine_v2_grade(
 
 @router.get("/admin/gs-engine-v2/calibration")
 async def gs_engine_v2_calibration(
-    user: Annotated[UserPublic, Depends(current_user)] = None,
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
 ):
     rows = []
     async for r in db.gs_v2_calibration.find({}, {"_id": 0}):
@@ -287,7 +287,7 @@ async def gs_engine_v2_residual(
     league: Optional[str] = None,
     market: str = "p_anytime",
     days_back: int = 30,
-    user: Annotated[UserPublic, Depends(current_user)] = None,
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
 ):
     from goal_scorer_engine_v2 import market_residual_report
     return await market_residual_report(db, league=league, market=market,

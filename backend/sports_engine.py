@@ -27,12 +27,12 @@ import httpx
 
 logger = logging.getLogger(__name__)
 # Odds API key resolution: prefer THE_ODDS_API_KEY env var (the recommended
-# production path) and fall back to the verified working paid key the user
-# explicitly authorized hardcoding. The fallback exists because some
-# deployment environments inject a different (free-tier / exhausted) key
-# which surfaces as OUT_OF_USAGE_CREDITS errors — having a known-good
-# default keeps the app self-healing.
-ODDS_KEY = os.environ.get("THE_ODDS_API_KEY") or "bdb565ece766d72de1ffc5e4d0e834bd"
+# Odds API key MUST be provided via env. No source fallback — a committed
+# key is a leak vector (SEC-002, fixed 2026-06-25). If missing, the
+# downstream HTTP layer will surface the misconfiguration as a 401 to the
+# operator rather than silently using a stale (potentially exhausted /
+# rotated) key.
+ODDS_KEY = os.environ.get("THE_ODDS_API_KEY") or ""
 BASE = "https://api.the-odds-api.com/v4"
 
 SPORT_KEYS: dict[str, list[str]] = {

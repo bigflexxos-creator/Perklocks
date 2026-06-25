@@ -1,6 +1,7 @@
 """LockScore AI — Sports Betting Intelligence backend."""
 import os
 import logging
+import re
 import uuid
 import asyncio
 from datetime import datetime, timezone, timedelta, time as dtime
@@ -23,6 +24,17 @@ from auth import (  # noqa: E402
     get_current_user_from_db, oauth2_scheme,
 )
 from sports_engine import generate_all_picks  # noqa: E402
+from rate_limit import rate_limit  # noqa: E402
+
+# Per-IP login throttle: 10 attempts/min, burst 5 — blocks credential
+# brute-force while letting a user fat-finger their password without
+# being locked out. (SEC-005, 2026-06-25.)
+_login_throttle = rate_limit(rate_per_min=10, burst=5, scope="ip")
+# Per-user compute throttle for heavy endpoints (parlay, analytics
+# recompute, Monte Carlo sims). 30 req/min, burst 10 — generous for
+# normal UI flow, hard cap on scripted abuse that would burn CPU /
+# paid third-party quota.
+_compute_throttle = rate_limit(rate_per_min=30, burst=10, scope="user")
 from ai_engine import explain_pick, analyze_loss  # noqa: E402
 from settlement_engine import settle_due_picks  # noqa: E402
 
@@ -86,7 +98,7 @@ async def register(payload: UserCreate):
 
 
 @api.post("/auth/login", response_model=Token)
-async def login(payload: UserLogin):
+async def login(payload: UserLogin, _throttle: None = Depends(_login_throttle)):
     doc = await db.users.find_one({"email": payload.email.lower()})
     if not doc or not verify_password(payload.password, doc["hashed_password"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -2266,9 +2278,9 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         if regex:
             q["market"] = {"$regex": regex, "$options": "i"}
     if league:
-        # League names come from The Odds API e.g. "Premier League", "MLS",
-        # "MLB". Loose substring match keeps the UI simple.
-        q["league"] = {"$regex": str(league).replace("\\", ""), "$options": "i"}
+        # SEC-004: re.escape user input so metacharacters can't trigger
+        # catastrophic regex backtracking (ReDoS) against MongoDB.
+        q["league"] = {"$regex": re.escape(str(league)), "$options": "i"}
     cursor = db.picks.find(q, {"_id": 0}).sort("lock_score", -1).limit(200)
     picks = await cursor.to_list(length=200)
     # Hide picks for games that have already started (see _filter_in_play_window).
@@ -2459,7 +2471,7 @@ async def under_of_the_day(user: Annotated[UserPublic, Depends(current_user)],
         if regex:
             q["market"] = {"$regex": regex, "$options": "i"}
     if league:
-        q["league"] = {"$regex": str(league).replace("\\", ""), "$options": "i"}
+        q["league"] = {"$regex": re.escape(str(league)), "$options": "i"}  # SEC-004
     s = (sort or "lock").lower()
     if s == "time":
         cursor = db.picks.find(q, {"_id": 0}).sort("event_time", 1).limit(50)
@@ -2843,7 +2855,7 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
             market_filter = {"market": {"$regex": regex, "$options": "i"}}
     league_filter: dict = {}
     if league:
-        league_filter = {"league": {"$regex": str(league).replace("\\", ""), "$options": "i"}}
+        league_filter = {"league": {"$regex": re.escape(str(league)), "$options": "i"}}  # SEC-004
 
     target_legs = (
         max(10, min(20, max(1, int(legs or 10)))) if is_high_risk else
