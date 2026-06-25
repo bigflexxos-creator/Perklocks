@@ -70,9 +70,11 @@ async def enrich_profile(profile: dict) -> dict:
     if not sport or not name:
         return profile
 
-    # Phase 1: MLB has a local source. NBA/NFL still go through the
-    # legacy SportsDataIO client until their ingestors land.
-    if sport != "mlb":
+    # Phase 1: MLB has a local source (MLB Stats API).
+    # Phase 2: NBA + NFL now also resolve locally (ESPN public).
+    # Remaining sports (soccer, tennis, etc.) fall back to legacy
+    # SportsDataIO until their ingestors land.
+    if sport not in ("mlb", "nba", "nfl"):
         try:
             from player_intel.sportsdataio_client import enrich_profile as legacy
             return await legacy(profile)
@@ -100,18 +102,24 @@ async def enrich_profile(profile: dict) -> dict:
                 profile["birth_date"] = row["birth_date"]
             if row.get("photo_url"):
                 profile["photo_url"] = row["photo_url"]
-            if row.get("bats"):
-                profile["bats"] = row["bats"]
-            if row.get("throws"):
-                profile["throws"] = row["throws"]
-            profile["mlb_id"]                = row.get("mlb_id")
+            if row.get("jersey"):
+                profile["jersey"] = row["jersey"]
+            # MLB-only handedness fields
+            if sport == "mlb":
+                if row.get("bats"):
+                    profile["bats"] = row["bats"]
+                if row.get("throws"):
+                    profile["throws"] = row["throws"]
+                profile["mlb_id"]    = row.get("mlb_id") or row.get("player_id")
+            else:
+                profile["espn_id"]   = row.get("espn_id") or row.get("player_id")
             profile["player_db_status"]      = row.get("status")
-            profile["player_db_source"]      = "mlb_stats_api"
+            profile["player_db_source"]      = row.get("source") or "player_db"
             profile["player_db_enriched_at"] = int(time.time())
         injury = await find_injury(sport, name)
         if injury:
             profile["injury_status"]      = injury.get("status") or "questionable"
-            profile["injury_description"] = injury.get("status")
+            profile["injury_description"] = injury.get("description") or injury.get("status")
             profile["injury_updated"]     = injury.get("updated_at")
         else:
             profile["injury_status"] = profile.get("injury_status") or "healthy"
