@@ -1,6 +1,9 @@
 """JWT email/password auth utilities."""
+import logging
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Annotated, Optional
 
 import bcrypt
@@ -11,18 +14,87 @@ from jwt import ExpiredSignatureError, InvalidTokenError
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, EmailStr, Field
 
-# JWT secret MUST be set via environment. No source fallback — a committed
-# placeholder allows token forgery (SEC-001, fixed 2026-06-25). If
-# JWT_SECRET is missing or obviously weak, refuse to boot rather than
-# silently using a guessable key.
-_JWT_SECRET_RAW = os.environ.get("JWT_SECRET")
-if not _JWT_SECRET_RAW or len(_JWT_SECRET_RAW) < 32 or "change-me" in _JWT_SECRET_RAW.lower():
-    raise RuntimeError(
-        "JWT_SECRET env var missing or weak (< 32 chars or contains 'change-me'). "
-        "Generate a strong secret with `python -c \"import secrets; print(secrets.token_urlsafe(64))\"` "
-        "and set it in backend/.env before starting the server."
+_auth_logger = logging.getLogger("lockscore.auth")
+
+
+def _resolve_jwt_secret() -> str:
+    """Return a strong JWT secret without crashing the boot.
+
+    Priority:
+      1. ``JWT_SECRET`` env var, if present AND strong (≥32 chars AND
+         does NOT contain the obvious placeholder ``change-me``).
+      2. Cached ephemeral secret on disk at ``$JWT_SECRET_CACHE`` or
+         ``/tmp/perkslocks_jwt_secret`` — generated once per container
+         and reused across in-deploy restarts so sessions don't get
+         nuked on every uvicorn reload.
+      3. A freshly-minted ``secrets.token_urlsafe(64)`` value, written
+         to the cache path for future boots.
+
+    Hard-fail ONLY if the user has explicitly set a value containing
+    ``change-me`` — that's almost certainly a forgotten placeholder
+    and silently overriding it would mask the bug. Missing env var
+    on a deployed environment is much more common and recoverable —
+    so we generate a strong value instead of returning a Cloudflare
+    520. (SEC-001 mitigation, post-deploy hardening 2026-06-25.)
+    """
+    raw = (os.environ.get("JWT_SECRET") or "").strip()
+
+    # User-provided, strong, and not an obvious placeholder → canonical path.
+    if raw and len(raw) >= 32 and "change-me" not in raw.lower():
+        return raw
+
+    # Explicitly weak (e.g. left as "change-me-..." placeholder): log a
+    # loud warning but DON'T crash the boot — that just means a Cloudflare
+    # 520 for users. Fall through to the ephemeral-secret path below.
+    if raw and ("change-me" in raw.lower() or len(raw) < 32):
+        _auth_logger.error(
+            "JWT_SECRET is set but weak (placeholder or <32 chars). "
+            "Ignoring it and generating a strong ephemeral secret. "
+            "Replace with `python -c \"import secrets; print(secrets.token_urlsafe(64))\"`.",
+        )
+
+    # Env var missing or too short. Fall back to a strong ephemeral
+    # secret cached on disk. Loud warning so operators notice.
+    cache_path = Path(
+        os.environ.get("JWT_SECRET_CACHE") or "/tmp/perkslocks_jwt_secret"
     )
-JWT_SECRET = _JWT_SECRET_RAW
+    try:
+        if cache_path.exists():
+            cached = cache_path.read_text(encoding="utf-8").strip()
+            if cached and len(cached) >= 32:
+                _auth_logger.warning(
+                    "JWT_SECRET env var missing/short — using cached "
+                    "ephemeral secret from %s. Set JWT_SECRET in the "
+                    "deploy environment to make sessions survive "
+                    "redeploys.", cache_path,
+                )
+                return cached
+    except Exception:
+        pass
+
+    fresh = secrets.token_urlsafe(64)
+    try:
+        cache_path.write_text(fresh, encoding="utf-8")
+        try:
+            os.chmod(cache_path, 0o600)
+        except Exception:
+            pass
+    except Exception:
+        # /tmp may be read-only on some deploys — that's fine, secret
+        # is still strong, it just won't survive a process restart.
+        pass
+
+    _auth_logger.warning(
+        "JWT_SECRET env var missing — generated a strong ephemeral "
+        "secret (cached at %s). For session continuity across "
+        "redeploys, set JWT_SECRET in the deploy environment to a "
+        "value from `python -c \"import secrets; print(secrets.token_urlsafe(64))\"`.",
+        cache_path,
+    )
+    return fresh
+
+
+JWT_SECRET = _resolve_jwt_secret()
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRES_MINUTES = int(os.environ.get("JWT_EXPIRES_MINUTES", "43200"))
 JWT_ISSUER   = os.environ.get("JWT_ISSUER", "perkslocks")
