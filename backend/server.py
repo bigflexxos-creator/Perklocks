@@ -1982,6 +1982,25 @@ async def markets_for_sport(
     return {"sport": sport, "markets": markets, "leagues": leagues}
 
 
+@api.get("/picks/nrfi-yrfi")
+async def picks_nrfi_yrfi(user: Annotated[UserPublic, Depends(current_user)]):
+    """Dedicated MLB NRFI/YRFI feed — these picks are intentionally
+    excluded from the main /picks/today board (`hide_from_main_board`
+    flag). Returns today's slate with full model audit-trail so the UI
+    can show λ₁, pitcher/lineup/park factors per pick.
+    """
+    q = {
+        "pick_date": _today_str(),
+        "category": "nrfi_yrfi",
+    }
+    cursor = db.picks.find(q, {"_id": 0}).sort("lock_score", -1).limit(50)
+    rows = await cursor.to_list(length=50)
+    rows = _filter_in_play_window(rows)
+    rows = [_canonicalize_lock_score(r) for r in rows]
+    return {"picks": rows, "count": len(rows), "category": "nrfi_yrfi"}
+
+
+
 @api.get("/picks/today")
 async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                       sport: Optional[str] = None,
@@ -2233,6 +2252,9 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     }
     q: dict = {
         "pick_date": _today_str(),
+        # Exclude special-tab markets (NRFI/YRFI lives in its own MLB
+        # sub-tab — user explicitly asked to keep these off the main board).
+        "hide_from_main_board": {"$ne": True},
         "$or": [standard_q, elite_q, tennis_ml_q, tennis_alt_q, mlb_k_q, mlb_hitter_q, soccer_scorer_q, high_lock_bypass_q],
     }
     # ── User-supplied min_lock floor (global enforcement) ────────────
@@ -4430,6 +4452,15 @@ async def on_startup():
         logger.info("MLB lineup verifier armed (5-min loop, 30-min pre-game)")
     except Exception as e:
         logger.warning("MLB lineup verifier failed to start: %s", e)
+    # ── NRFI / YRFI 1st-Inning Picks ────────────────────────────────
+    # Poisson model on free MLB Stats API data — generates one
+    # NRFI or YRFI pick per game when edge >= 4% over fair.
+    try:
+        from brain.nrfi_engine import nrfi_yrfi_loop
+        asyncio.create_task(nrfi_yrfi_loop(db))
+        logger.info("NRFI/YRFI pick generator armed (30-min loop during pregame)")
+    except Exception as e:
+        logger.warning("NRFI/YRFI loop failed to start: %s", e)
     # ── MLB Free Player Database (replaces SportsDataIO for MLB) ────
     # Daily nightly refresh of the free MLB Stats API roster + season
     # stats + injuries. Replaces ~80% of the SportsDataIO surface for
