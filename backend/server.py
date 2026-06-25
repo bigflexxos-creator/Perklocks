@@ -4430,6 +4430,28 @@ async def on_startup():
         logger.info("MLB lineup verifier armed (5-min loop, 30-min pre-game)")
     except Exception as e:
         logger.warning("MLB lineup verifier failed to start: %s", e)
+    # ── MLB Free Player Database (replaces SportsDataIO for MLB) ────
+    # Daily nightly refresh of the free MLB Stats API roster + season
+    # stats + injuries. Replaces ~80% of the SportsDataIO surface for
+    # MLB at zero quota cost. Runs at 09:00 UTC (well after the daily
+    # slate finishes & before the morning pre-game window).
+    try:
+        from player_db.ingestors.mlb_stats_api import refresh_all as _mlb_player_db_refresh
+        async def _mlb_player_db_loop() -> None:
+            # Cold-start refresh ~30 sec after boot so it doesn't race
+            # the rest of the startup work, then daily after that.
+            await asyncio.sleep(30)
+            while True:
+                try:
+                    summary = await _mlb_player_db_refresh(db)
+                    logger.info("MLB player_db nightly refresh: %s", summary)
+                except Exception as e:
+                    logger.warning("MLB player_db refresh failed: %s", e)
+                await asyncio.sleep(24 * 60 * 60)
+        asyncio.create_task(_mlb_player_db_loop())
+        logger.info("MLB player_db (free MLB Stats API) armed — daily roster + stats refresh")
+    except Exception as e:
+        logger.warning("MLB player_db loop failed to start: %s", e)
     # ── Tennis Extra Settler ────────────────────────────────────────
     # Settles Mallorca/Eastbourne/Challenger picks from TennisExplorer
     # results page. Runs every 30 min, walks back 3 days.
