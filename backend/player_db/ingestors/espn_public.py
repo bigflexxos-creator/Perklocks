@@ -342,6 +342,19 @@ async def refresh_nfl(db: AsyncIOMotorDatabase, season: int | None = None) -> di
     )
 
 
+async def refresh_cfb(db: AsyncIOMotorDatabase, season: int | None = None) -> dict:
+    """College Football (FBS) via ESPN public. 130+ FBS teams, ~95
+    players each. Heavier than NBA/NFL but still completes in ~3 min
+    over the free endpoints."""
+    return await _refresh_league(
+        db,
+        sport="cfb",
+        sport_slug="football",
+        league_slug="college-football",
+        season=season,
+    )
+
+
 # ── WTA tennis (Phase 3.5) ─────────────────────────────────────────
 # Sackmann's TML-Database mirror is ATP-only. ESPN exposes the WTA
 # tour under sport=tennis, league=wta. Same /teams → /roster pattern
