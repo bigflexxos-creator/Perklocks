@@ -4452,28 +4452,34 @@ async def on_startup():
         logger.info("MLB player_db (free MLB Stats API) armed — daily roster + stats refresh")
     except Exception as e:
         logger.warning("MLB player_db loop failed to start: %s", e)
-    # ── NBA + NFL Free Player Database (Phase 2, ESPN public) ──────
-    # Daily refresh from ESPN's public site.api endpoints. NBA = 30
-    # teams × ~17 players. NFL = 32 teams × ~90 players. Cold-start
-    # 60 sec post-boot, then every 24h. Zero quota cost.
+    # ── NBA + NFL + CFB Free Player Database (Phase 2/4, ESPN public) ─
+    # Daily refresh from ESPN's public site.api endpoints.
+    #   NBA = 30 teams × ~17 players ≈ 600 active
+    #   NFL = 32 teams × ~90 players ≈ 2,900 active (incl. practice squads)
+    #   CFB = 130+ FBS teams × ~95 players ≈ 12k+ players (heavier — runs
+    #         daily but takes ~3 min vs <15s for NBA/NFL)
     try:
-        from player_db.ingestors.espn_public import refresh_nba, refresh_nfl
+        from player_db.ingestors.espn_public import refresh_nba, refresh_nfl, refresh_cfb
         async def _espn_player_db_loop() -> None:
             await asyncio.sleep(60)
             while True:
-                for sport_name, fn in (("NBA", refresh_nba), ("NFL", refresh_nfl)):
+                for sport_name, fn in (
+                    ("NBA", refresh_nba),
+                    ("NFL", refresh_nfl),
+                    ("CFB", refresh_cfb),
+                ):
                     try:
                         summary = await fn(db)
                         logger.info("%s player_db nightly refresh: %s", sport_name, summary)
                     except Exception as e:
                         logger.warning("%s player_db refresh failed: %s", sport_name, e)
-                    # Stagger the two leagues by 5s so we don't double-tax ESPN.
+                    # Stagger leagues by 5s so we don't double-tax ESPN.
                     await asyncio.sleep(5)
                 await asyncio.sleep(24 * 60 * 60)
         asyncio.create_task(_espn_player_db_loop())
-        logger.info("NBA + NFL player_db (free ESPN public) armed — daily roster + stats + injuries refresh")
+        logger.info("NBA + NFL + CFB player_db (free ESPN public) armed — daily roster + stats + injuries refresh")
     except Exception as e:
-        logger.warning("NBA/NFL player_db loop failed to start: %s", e)
+        logger.warning("NBA/NFL/CFB player_db loop failed to start: %s", e)
     # ── Tennis ATP Free Player Database (Phase 3, Sackmann mirror) ─
     # Bulk-load 10y of ATP match data from the TML-Database mirror
     # (Sackmann format). One full refresh per week (data upstream
