@@ -293,6 +293,10 @@ async def _snapshot_closes_once(db) -> dict:
                         "closing_odds_snapshotted":  True,
                         "closing_odds_source":       "fallback_book_odds",
                         "closing_odds_at":           _now_utc(),
+                        # No real close captured → CLV is undefined. Set
+                        # 0 so the analytics page doesn't display NaN
+                        # but the fallback source field flags it as such.
+                        "clv_value":                 0.0,
                     }},
                 )
             continue

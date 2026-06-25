@@ -214,6 +214,9 @@ async def admin_clv_snapshot_status(
     capturing real closing prices instead of mirroring book_odds."""
     from closing_line_snapshotter import snapshot_status
     return await snapshot_status(db)
+
+
+@router.get("/top-api-users")
 async def admin_top_api_users(
     user: Annotated[UserPublic, Depends(current_admin)],
     limit: int = Query(25, ge=1, le=200),
@@ -236,6 +239,9 @@ async def admin_top_api_users(
             "endpoints_top": r.get("endpoints_top") or [],
         })
     return {"top": rows}
+
+
+@router.delete("/users/{user_id}")
 async def admin_delete_user(
     user_id: str,
     user: Annotated[UserPublic, Depends(current_admin)]
