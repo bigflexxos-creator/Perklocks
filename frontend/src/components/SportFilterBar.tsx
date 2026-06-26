@@ -13,6 +13,7 @@ import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
 import { api, PickFilters, SportLeague, SportMarket } from "@/src/lib/api";
+import { useFilters } from "@/src/stores/useFilters";
 import { COLORS } from "@/src/theme";
 
 const SUPPORTED = new Set(["Soccer", "NBA", "NFL", "MLB", "Tennis"]);
@@ -24,6 +25,18 @@ type Props = {
 };
 
 export function SportFilterBar({ sport, filters, onChange }: Props) {
+  // ── Multi-select via the global filter store ──
+  // MUST be called at the top — hooks can't be conditional. Aliased
+  // setters to avoid colliding with the local useState below.
+  const {
+    state: storeState,
+    toggleMarket, toggleLeague,
+    setMarkets: setStoreMarkets,
+    setLeagues: setStoreLeagues,
+  } = useFilters();
+  const selectedMarkets = storeState.markets;
+  const selectedLeagues = storeState.leagues;
+
   const [markets, setMarkets] = useState<SportMarket[]>([]);
   const [leagues, setLeagues] = useState<SportLeague[]>([]);
 
@@ -48,11 +61,37 @@ export function SportFilterBar({ sport, filters, onChange }: Props) {
 
   if (!SUPPORTED.has(sport)) return null;
 
-  const setMarket = (token: string | undefined) => {
-    onChange({ ...filters, market: token });
+  // Tapping a chip ADDS it to the array; tapping again REMOVES it.
+  // Tapping "All" clears the array. This replaces the old exclusive
+  // single-select. Legacy callbacks still fire for `filters.market` /
+  // `filters.league` so older consumers (parlay etc.) keep working
+  // until they're migrated to the store.
+
+  const onTapMarket = (token: string) => {
+    toggleMarket(token);
+    // Keep legacy single-field `filters.market` in sync with the FIRST
+    // selected market so any consumer that still reads it sees something
+    // sensible. When the toggle clears everything, fall back to undefined.
+    const after = selectedMarkets.includes(token)
+      ? selectedMarkets.filter((m) => m !== token)
+      : [...selectedMarkets, token];
+    onChange({ ...filters, market: after[0] });
   };
-  const setLeague = (name: string | undefined) => {
-    onChange({ ...filters, league: name });
+  const clearMarkets = () => {
+    setStoreMarkets([]);
+    if (filters.simEdgeOnly) toggleSimEdge();
+    onChange({ ...filters, market: undefined });
+  };
+  const onTapLeague = (name: string) => {
+    toggleLeague(name);
+    const after = selectedLeagues.includes(name)
+      ? selectedLeagues.filter((m) => m !== name)
+      : [...selectedLeagues, name];
+    onChange({ ...filters, league: after[0] });
+  };
+  const clearLeagues = () => {
+    setStoreLeagues([]);
+    onChange({ ...filters, league: undefined });
   };
   const toggleSimEdge = () => {
     onChange({ ...filters, simEdgeOnly: !filters.simEdgeOnly });
@@ -64,8 +103,8 @@ export function SportFilterBar({ sport, filters, onChange }: Props) {
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row}>
           <Pill
             label="All"
-            active={!filters.market && !filters.simEdgeOnly}
-            onPress={() => { setMarket(undefined); if (filters.simEdgeOnly) toggleSimEdge(); }}
+            active={selectedMarkets.length === 0 && !filters.simEdgeOnly}
+            onPress={() => { clearMarkets(); }}
             testID="market-pill-all"
           />
           {/* SIM EDGE filter chip — surfaces only picks where Monte Carlo
@@ -84,8 +123,8 @@ export function SportFilterBar({ sport, filters, onChange }: Props) {
             <Pill
               key={m.token}
               label={m.label}
-              active={filters.market === m.token}
-              onPress={() => setMarket(m.token)}
+              active={selectedMarkets.includes(m.token)}
+              onPress={() => onTapMarket(m.token)}
               testID={`market-pill-${m.token}`}
             />
           ))}
@@ -96,16 +135,16 @@ export function SportFilterBar({ sport, filters, onChange }: Props) {
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row}>
           <LeaguePill
             label="All leagues"
-            active={!filters.league}
-            onPress={() => setLeague(undefined)}
+            active={selectedLeagues.length === 0}
+            onPress={() => clearLeagues()}
           />
           {leagues.slice(0, 12).map((l) => (
             <LeaguePill
               key={l.name}
               label={l.name}
               count={l.count}
-              active={filters.league === l.name}
-              onPress={() => setLeague(l.name)}
+              active={selectedLeagues.includes(l.name)}
+              onPress={() => onTapLeague(l.name)}
             />
           ))}
         </ScrollView>
