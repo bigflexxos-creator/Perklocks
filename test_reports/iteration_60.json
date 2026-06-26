@@ -1,0 +1,39 @@
+{
+  "summary": "Iter 60 verification (canonicalize-max + synth scorers + FilterSheet preservation). Backend: 13 PASSED / 7 SKIPPED in /app/backend/tests/test_iter60_canonicalize_and_synth.py. The canonicalize_lock_score MAX(v1,v2,raw,peak) guard is in effect at API serialization. Elite players present in today's slate (Salah 97, Vinicius 95, Memphis 99, Gakpo 97, Messi 99, Ronaldo 99, Lukaku 99, Toney 99, Kane 99, Watkins 95) ALL surface at >=95 — verified through /api/picks/today?sport=Soccer&market=Anytime%20Goal%20Scorer. Leonardo (99, is_synthetic_scorer=true, CSL) and Fábio Abreu (93, CSL) are confirmed present as synth picks. /api/picks/{id}/lock-breakdown now returns the new sim_anchor block with sim_win_probability / sim_lock_anchor / lock_anchored_to_sim fields. Frontend: After restarting Expo to flush a stale Metro bundle, the FilterSheet preservation fix is VERIFIED working: Tap MLB chip -> Tap Hits market pill (URL=?sport=MLB&market=batter_hits) -> Open FILTER -> change min-lock to 90 -> Apply. Resulting URL is ?sport=MLB&min_lock=90&market=batter_hits (market preserved) and the Hits pill remains visually active. Client version cachebust bumped to 20260626-05-filter-preserve-market on the post-restart bundle.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter60_canonicalize_and_synth.py",
+    "/app/test_reports/pytest/iter60_canonicalize_synth.xml"
+  ],
+  "action_items": [
+    "Confirm production deploy pipeline restarts/rebuilds Expo Metro bundle on FilterSheet changes — initial Playwright run hit a STALE bundle (client version 20260626-03-sim-floor-anchor-v2 missing the preserve-market fix) and the FilterSheet wiped market=batter_hits. After `sudo supervisorctl restart expo` the new bundle (20260626-05-filter-preserve-market) shipped and the fix works correctly. Document this in deploy notes so future iterations don't ship the regression to real users.",
+    "OPTIONAL: Add an explicit test entry for the 6 CSL scorers (Silva Felipe, Gustavo, Ange Kouame, Guy Mbenza, Shihao Wei, Silva Wellington) once the CSL fixture window guarantees them on-slate — currently they SKIP because no CSL fixtures landed in today's pregame window. Leonardo + Fábio Abreu DID surface (99 / 93) and assert correctly."
+  ],
+  "critical_code_review_comments": [
+    "_canonicalize_lock_score (server.py L171-320) correctly takes MAX(v1,v2,raw,peak) and additionally enforces a hard 95 floor for elite_player picks. Verified across 132 home picks + 115 scorer-tab picks — zero violations of the invariant lock_score >= max(shadow_fields).",
+    "FilterSheet.apply() (FilterSheet.tsx L78-97) correctly spreads `...filters` before patching the sheet's own knobs. The user's `market`, `league`, `event`, `team` survive an Apply that only changes min-lock / sim-edge / sort. Verified end-to-end via Playwright on a real mobile viewport.",
+    "lock_v2/routes.py L163-208: lock-breakdown endpoint exposes sim_anchor with all 9 fields incl. sim_win_probability, sim_lock_anchor, sim_signal, lock_anchored_to_sim, elite_player flags. Endpoint path is /api/picks/{id}/lock-breakdown (NOT /api/lock-v2/picks/{id}/lock-breakdown — main agent's review request had wrong prefix, but the route works).",
+    "Stale Metro bundle blind-spot: the FilterSheet code on disk had the fix but the served JS bundle was an older snapshot. Without a forced restart, the user keeps seeing the bug. Suggest the main agent add a build-version assertion to the smoke check (e.g. fail if window.__APP_VERSION__ doesn't match package.json) so the next CI run catches this."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter60_canonicalize_and_synth.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (13/13 active tests passing, 7 environment-dependent skips for elite/CSL players not on today's slate)",
+    "frontend": "100% (FilterSheet market preservation verified via Playwright after Expo bundle rebuild)"
+  },
+  "seed_data_creation": "None. Tests reuse the seeded demo@lockscore.ai user. No DB writes.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Active client version after Expo restart: 20260626-05-filter-preserve-market. Backend data_version: 2026.06.26-canonical-max-v4. If a future Playwright run shows the FilterSheet bug reappearing, FIRST `sudo supervisorctl restart expo`, wait 15s, and re-run — the Metro bundle on /app/frontend/.metro-cache can lag. Backend tests use the existing demo Bearer flow via the auth_headers fixture in test_iter60_canonicalize_and_synth.py — reusable for regression.",
+  "rca_of_issue": "User complaint chain: (1) lock_score drift for elite scorers (Vinicius/Salah/Mbappé/Haaland showing 55-65). Root cause: 30+ writers across evidence_engine, validator, learning_v2, govern_pick, lazy governance, bandit, player_form mutate lock_score independently — any of them can transiently demote v1 while v2/raw/peak hold the true anchors. Fix: read-time canonicalize-max in server.py:_canonicalize_lock_score takes max(v1,v2,raw,peak) and clamps to 99, plus an elite_player belt-and-suspenders 95 floor. VERIFIED — zero elites below 95 in the slate. (2) FilterSheet wiped market on Apply. Root cause: previous version of apply() built a fresh object only from sheet-owned knobs (minLock/minImplied/maxImplied/simEdgeFloor), dropping market/league/event. Fix (FilterSheet.tsx L78-97): spread ...filters first, then override the sheet-owned knobs. VERIFIED working on a fresh bundle. Initial Playwright run failed because the served bundle was stale; after restarting Expo the new bundle deployed and the test passed."
+}
