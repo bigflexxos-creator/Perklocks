@@ -33,8 +33,18 @@ from fastapi import APIRouter, Depends
 
 from auth import UserPublic
 from deps import current_user, db, today_str
+from rate_limit import rate_limit
 
 router = APIRouter(prefix="/api")
+
+# ── SEC-002 (2026-06-26) ─────────────────────────────────────────────
+# Per-user throttle for the 4 expensive recompute / refit / learn
+# endpoints below. 30 req/min, burst 10 — generous for legit admin
+# dashboard use but blocks scripted abuse that would re-run the
+# isotonic calibration fit, Thompson bandit reseed, or full-pick
+# learning sweep on every keystroke. Mirrors the `_compute_throttle`
+# scope=user policy applied elsewhere in server.py.
+_analytics_throttle = rate_limit(rate_per_min=30, burst=10, scope="user")
 
 
 @router.get("/analytics/model-performance")
