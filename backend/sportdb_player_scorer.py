@@ -593,6 +593,15 @@ def _prob_to_lock(prob: float, rate: dict) -> float:
     We anchor lock to the probability but penalise low sample sizes (< 5
     matches) and reward high ratings. Caps at 88 for any model-only pick —
     we never claim full conviction without a market signal.
+
+    TOP-SCORER FLOOR: any player with ≥8 goals this season is mathematically
+    a league top-scorer tier (Fabio Abreu / Yuning Zhang / Felipe Silva
+    territory). These players get a lock floor of 80 (Playable tier)
+    regardless of opponent — they're the guys you bet on every match.
+    Per user feedback: "shouldn't [Fabio Abreu] be close to 99 lock?"
+    99 is mathematically impossible for anytime-scorer (Poisson cap ~70%
+    even for Haaland-tier), but 80+ matches the user's intuition that
+    league-leading scorers should always sit in the actionable tier.
     """
     base = 60 + (prob - 0.28) * 100   # 60 at floor, +1 per +1% prob
     if rate.get("matches", 0) < 5:
@@ -601,6 +610,17 @@ def _prob_to_lock(prob: float, rate: dict) -> float:
         base += 3
     if rate.get("rating", 0) >= 7.0:
         base += 2
+    # Top-scorer floor: ≥8 goals is top-5 territory in any league.
+    if rate.get("goals", 0) >= 8:
+        base = max(base, 82.0)
+    elif rate.get("goals", 0) >= 5:
+        # 5-7 goals = top-15 territory — get a smaller floor
+        base = max(base, 72.0)
+    # Top-scorer ceiling — league-leading scorers (≥10g) can sit slightly
+    # above the standard model-only 88 cap, capped at 92. They never reach
+    # 99 because anytime-scorer is bounded by Poisson (~70% max).
+    if rate.get("goals", 0) >= 10:
+        return float(max(55.0, min(base, 92.0)))
     return float(max(55.0, min(base, 88.0)))
 
 
@@ -618,6 +638,14 @@ def _build_insights(player: dict, rate: dict, defence_mult: float,
                      opp_form: Optional[dict], lam: float, prob: float) -> list[str]:
     out: list[str] = []
     pname = _format_player_name(player, rate)
+    # ── Tier tag ── shown FIRST so users see the calibre at a glance.
+    goals = rate.get("goals", 0)
+    if goals >= 10:
+        out.append(f"🏆 GOLDEN BOOT TIER ({goals} goals this season) — league-leading scorer, always playable.")
+    elif goals >= 8:
+        out.append(f"🥇 LEAGUE TOP-5 SCORER ({goals} goals this season).")
+    elif goals >= 5:
+        out.append(f"🥈 LEAGUE TOP-15 SCORER ({goals} goals this season).")
     out.append(
         f"📈 {pname}: {rate['goals']} goal{'s' if rate['goals'] != 1 else ''} "
         f"in {rate['matches']} matches → {rate['rate_per_match']*100:.0f}% per-game scoring rate."
@@ -639,6 +667,11 @@ def _build_insights(player: dict, rate: dict, defence_mult: float,
     out.append(
         f"🎲 Model: λ={lam:.2f} expected goals → P(anytime) = 1 - e^-λ = {prob*100:.1f}%. "
         f"No bookmaker line — model-only signal."
+    )
+    out.append(
+        "ℹ️ Why not 99 lock? Anytime-scorer is mathematically capped at ~70% even for "
+        "Haaland-tier players. A goalscorer at 36% prob still misses 64% of games — "
+        "great VALUE bet but not a lock. Locks 80+ = always playable; 92 is the synth ceiling."
     )
     return out
 
