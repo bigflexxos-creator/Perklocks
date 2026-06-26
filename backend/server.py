@@ -73,7 +73,7 @@ except Exception as _picks_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.26-sim-floor-anchor-v2"
+DATA_VERSION = "2026.06.26-csl-tier-fix-v3"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -272,6 +272,8 @@ def _canonicalize_lock_score(pick: dict) -> dict:
         if final_lock > 0:
             pick["grade"]      = _re_grade(final_lock)
             pick["confidence"] = _re_conf(final_lock)
+    except Exception as _re_err:
+        logger.debug("grade re-derive skipped: %s", _re_err)
     # ── ELITE PLAYER FLOOR — final read-time guard ────────────────────
     # Belt-and-suspenders enforcement: any pick flagged `elite_player=True`
     # (Salah, Mbappé, Haaland, Messi, Kane, Ronaldo, Judge, Sinner, etc.)

@@ -39,7 +39,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 // ─── Client-baked cache version (Layer 3) ───────────────────────────────────
 // Bump on every CLIENT-side data shape / content change.
 // Format: YYYYMMDD-N  so collisions are obvious in git history.
-export const APP_DATA_VERSION = "20260626-03-sim-floor-anchor-v2";
+export const APP_DATA_VERSION = "20260626-04-csl-tier-fix-v3";
 
 // ─── Backend-version snapshot (Layer 2 - stored after each /api/version call)
 const CLIENT_VERSION_KEY = "perkslocks.client_data_version";
