@@ -614,6 +614,10 @@ async def _picks_for_side(
             "event": f"{away_team} @ {home_team}",
             "market": f"{player_full_name} Anytime Goal Scorer",
             "selection": player_full_name,
+            # `player_name` is what LockPickCard renders as the headline —
+            # surface explicitly so the synthetic pick shows the player's
+            # name instead of "?" in the home feed (iter-62 fix).
+            "player_name": player_full_name,
             "home_team": home_team,
             "away_team": away_team,
             "player_team": team_name,
@@ -994,7 +998,7 @@ _LEAGUE_LABELS = {
     "ligue-1:Wt4ehJpS":         "Ligue 1",
     "eredivisie:8H1huJyM":      "Eredivisie",
     "liga-portugal:KMabNT3K":   "Liga Portugal",
-    "super-league:nc9yRmcn":    "Chinese Super League",
+    "super-league:nc9yRmcn":    "China Super League",
     "mls:CQv5qrFt":             "MLS",
     "serie-a-betano:Yq4hUnzQ":  "Brasileirão Série A",
     "serie-b:vRtLP6rs":         "Brasileirão Série B",
