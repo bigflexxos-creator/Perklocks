@@ -175,11 +175,27 @@ async def pick_lock_breakdown(
         "agreement_score", "lock_score_v2", "tier_v2",
         "is_apex", "apex_blockers", "v2_reasons",
     )
+    # Sim-anchor audit fields: lets the UI explain that the lock score
+    # combines (a) historical/tier evidence with (b) the 20K-run Monte
+    # Carlo consensus. Lock 95-99 ≠ 95-99% win prob — it's an evidence
+    # composite where sim is one corroborating factor.
+    sim_anchor = {
+        "sim_win_probability":    pick.get("sim_win_probability"),
+        "sim_runs":               pick.get("sim_runs"),
+        "sim_lock_anchor":        pick.get("sim_lock_anchor"),
+        "sim_signal":             pick.get("sim_signal"),
+        "lock_anchored_to_sim":   pick.get("lock_anchored_to_sim", False),
+        "sim_ci_lower":           pick.get("sim_ci_lower"),
+        "sim_ci_upper":           pick.get("sim_ci_upper"),
+        "elite_player":           pick.get("elite_player", False),
+        "elite_player_name":      pick.get("elite_player_name"),
+    }
     if pick.get("lock_score_v2") is not None:
         return {
             "pick_id":    pick_id,
             "v2_enabled": V2_ENABLED,
             "shadow":     {k: pick.get(k) for k in shadow_keys},
+            "sim_anchor": sim_anchor,
             "live_computed": False,
         }
     live = compute_v2_shadow(pick)
@@ -187,5 +203,6 @@ async def pick_lock_breakdown(
         "pick_id":       pick_id,
         "v2_enabled":    V2_ENABLED,
         "shadow":        live,
+        "sim_anchor":    sim_anchor,
         "live_computed": True,
     }
