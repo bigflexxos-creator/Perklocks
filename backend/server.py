@@ -4209,6 +4209,10 @@ try:
     logger.info("Admin Users dashboard routes mounted at /api/admin/users/*")
     app.include_router(analytics_routes.router)
     logger.info("Analytics routes mounted at /api/analytics/* (15 endpoints)")
+    # NFL High-Hit-Rate + ATD engines (added 2026-06-26).
+    from routes import nfl_routes
+    app.include_router(nfl_routes.router)
+    logger.info("NFL engines mounted at /api/nfl/safe-bets + /api/nfl/atd/*")
 except Exception as _routes_mount_err:
     logger.exception("Extracted route modules failed to mount: %s", _routes_mount_err)
 
