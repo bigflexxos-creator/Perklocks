@@ -38,15 +38,21 @@ async def _get(cx: httpx.AsyncClient, path: str, params: dict | None = None) -> 
     return None
 
 
-async def backfill_current_season(db) -> dict:
-    """Walk the season schedule day-by-day, upserting completed games
+async def backfill_season(db, season: int) -> dict:
+    """Walk a specific season day-by-day, upserting completed games
     and boxscore stats. Skips games not yet Final.
 
-    Idempotent: re-runs only fetch boxscores for games we don't already
-    have logged as Final."""
+    Used by the multi-season backfill orchestrator. Idempotent: re-runs
+    only fetch boxscores for games we don't already have logged as Final.
+
+    For the CURRENT season, cuts off at today (since future games haven't
+    happened). For PAST seasons, walks the full Mar–Nov window.
+    """
+    season = int(season)
     today = datetime.now(timezone.utc).date()
-    season_start = datetime(_CURRENT_SEASON, 3, 20).date()  # ~ spring training end
-    cutoff = min(today, datetime(_CURRENT_SEASON, 11, 5).date())  # World Series end-ish
+    season_start = datetime(season, 3, 1).date()        # cover spring training
+    season_end = datetime(season, 11, 15).date()        # cover World Series
+    cutoff = min(today, season_end) if season >= today.year else season_end
 
     games_seen = games_inserted = logs_inserted = 0
 
@@ -90,11 +96,16 @@ async def backfill_current_season(db) -> dict:
                         await asyncio.sleep(_PACE)
             d += timedelta(days=1)
     return {
-        "season": _CURRENT_SEASON,
+        "season": season,
         "games_seen": games_seen,
         "games_inserted": games_inserted,
         "player_logs_inserted": logs_inserted,
     }
+
+
+async def backfill_current_season(db) -> dict:
+    """Backward-compatible wrapper — backfills the current season only."""
+    return await backfill_season(db, _CURRENT_SEASON)
 
 
 async def incremental_sync(db, since: Optional[datetime] = None) -> dict:

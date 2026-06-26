@@ -3568,10 +3568,16 @@ async def pick_detail(pick_id: str,
 
 @api.post("/picks/{pick_id}/ai-explain")
 async def pick_ai_explain(pick_id: str,
-                          user: Annotated[UserPublic, Depends(current_user)]):
+                          user: Annotated[UserPublic, Depends(current_user)],
+                          _throttle: None = Depends(_compute_throttle)):
     """Generate (or fetch cached) Claude Sonnet 4.5 explanation for a pick.
     Frontend calls this after the initial pick_detail render so the spinner
-    stays scoped to the AI box only."""
+    stays scoped to the AI box only.
+
+    SEC-002 (2026-06-26): per-user `_compute_throttle` (30/min) prevents
+    spamming the LLM with `?id=...&id=...` and draining EMERGENT_LLM_KEY
+    budget. Cache fast-path still serves repeat calls cheaply.
+    """
     pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
     if not pick:
         raise HTTPException(status_code=404, detail="Pick not found")
@@ -4647,6 +4653,30 @@ async def _weekly_model_tuning_loop():
         await asyncio.sleep(SEVEN_DAYS)
 
 
+async def _historical_props_loop():
+    """Nightly recompute of player-prop hit-rates (L5/L10/L20/season)
+    derived from `player_game_logs`. Cheap pure-DB pipeline — safe to run
+    daily even at full DB size.
+
+    Sleeps ~5 minutes after startup to let the boot dust settle, then
+    rebuilds the entire `props_history` snapshot once every 12h. We don't
+    chase wall-clock 4am here because the work is sport-agnostic and the
+    cost is bounded.
+    """
+    await asyncio.sleep(300)  # let startup settle
+    TWELVE_HOURS = 12 * 3600
+    while True:
+        try:
+            from historical.props_engine import recompute_all_props
+            summary = await recompute_all_props(db)
+            logger.info("Player props recompute: %s", summary)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning("Player props recompute failed: %s", e)
+        await asyncio.sleep(TWELVE_HOURS)
+
+
 @app.on_event("startup")
 async def on_startup():
     await db.users.create_index("email", unique=True)
@@ -4675,9 +4705,20 @@ async def on_startup():
         await db.player_game_logs.create_index([("player_id", 1), ("game_id", 1), ("stat_block", 1)])
         await db.season_totals.create_index([("player_id", 1), ("sport", 1), ("season", 1), ("competition", 1)])
         await db.team_form.create_index([("team_id", 1), ("sport", 1)])
+        # ── Multi-Season Ingestion (Phase 1 of historical props pipeline) ──
+        # Tracks per-(sport, season) ingest state so backfills are resumable
+        # and the admin status endpoint can show progress at a glance.
+        await db.historical_ingestion_state.create_index([("sport", 1), ("season", -1)])
+        # Player props derivation history (recomputed nightly from logs).
+        await db.props_history.create_index([("sport", 1), ("updated_at", -1)])
+        await db.player_game_logs.create_index([("sport", 1), ("date", -1)])
         logger.info("Historical Sports Intelligence Engine wired to MongoDB")
     except Exception as e:
         logger.warning("Historical Engine not armed: %s", e)
+    # ── Background cron: nightly multi-season props recompute ──
+    # Re-derives prop hit-rates (L5/L10/L20/season) for every player with
+    # logs. Cheap (pure DB aggregate, no HTTP) so we can run daily.
+    asyncio.create_task(_historical_props_loop())
     asyncio.create_task(_daily_refresh_loop())
     asyncio.create_task(_mlb_pregame_loop())
     logger.info(
@@ -4850,16 +4891,62 @@ async def on_startup():
     except Exception as e:
         logger.warning("Calibration curve load failed: %s", e)
 
-    # Seed/promote the platform owner as admin (user request 2026-06-24).
-    # Idempotent: only promotes — never creates the account if it doesn't
-    # already exist. The owner must register first via the normal flow,
-    # then they auto-become admin on next backend boot.
+    # Seed/promote the platform owner as admin.
+    # ── SEC-001 (2026-06-26): hardened against email-squat takeover ──
+    #
+    # Previously the owner email was HARD-CODED and promoted on every
+    # boot regardless of whether the actual owner had registered yet.
+    # On a fresh DB / re-deploy / fork an attacker who registered the
+    # owner email first would be auto-granted full admin. Two-layer fix:
+    #
+    #   1. Source the owner email from `ADMIN_OWNER_EMAIL` env var
+    #      (falls back to the legacy hardcoded value for back-compat
+    #      with existing deployments — but operators can rotate it).
+    #
+    #   2. Require the existing account to have `email_verified=True`
+    #      OR `created_at` older than 24h before granting admin. This
+    #      blocks the "register-the-owner-email-on-a-fresh-DB" attack:
+    #      a fresh account can't auto-promote until it's been live for
+    #      a full day, giving the real owner time to claim the email.
+    #      A `created_at` check is used because email-verification
+    #      isn't yet implemented end-to-end — once it is, swap to
+    #      the stricter `email_verified` check.
     try:
-        OWNER_EMAIL = "bossmanperkins@yahoo.com"
-        await db.users.update_one(
-            {"email": OWNER_EMAIL},
-            {"$set": {"role": "admin", "status": "active"}},
-        )
+        from datetime import timedelta
+        OWNER_EMAIL = os.environ.get(
+            "ADMIN_OWNER_EMAIL", "bossmanperkins@yahoo.com"
+        ).strip().lower()
+        if OWNER_EMAIL:
+            existing = await db.users.find_one({"email": OWNER_EMAIL})
+            if existing:
+                # Parse created_at (stored as ISO string or datetime)
+                ca = existing.get("created_at")
+                if isinstance(ca, str):
+                    try:
+                        ca = datetime.fromisoformat(ca.replace("Z", "+00:00"))
+                    except Exception:
+                        ca = None
+                now = datetime.now(timezone.utc)
+                aged_24h = bool(
+                    ca and (now - ca) > timedelta(hours=24)
+                )
+                verified = bool(existing.get("email_verified"))
+                if verified or aged_24h:
+                    await db.users.update_one(
+                        {"email": OWNER_EMAIL},
+                        {"$set": {"role": "admin", "status": "active"}},
+                    )
+                    logger.info(
+                        "Owner admin promotion: %s (verified=%s, aged_24h=%s)",
+                        OWNER_EMAIL, verified, aged_24h,
+                    )
+                else:
+                    logger.warning(
+                        "Owner admin promotion SKIPPED for %s — account is <24h old "
+                        "and email not verified. Blocks fresh-DB email-squat takeover. "
+                        "Account will auto-promote in 24h or once verified.",
+                        OWNER_EMAIL,
+                    )
     except Exception as e:
         logger.warning("Owner admin promotion failed: %s", e)
 

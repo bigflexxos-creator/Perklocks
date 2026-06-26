@@ -176,6 +176,157 @@ async def historical_player_form(
         raise HTTPException(500, f"lookup failed: {e}")
 
 
+# ──── Multi-Season Backfill (5+ year historical ingestion) ────
+class MultiSeasonBackfillRequest(BaseModel):
+    sports: list[str] | None = None      # default: ['mlb','nba','nfl','soccer','tennis','cfb']
+    seasons: list[int] | None = None     # explicit season list; else use lookback
+    lookback: int = 5                    # default: 5 seasons back
+    skip_if_done: bool = True            # skip (sport, season) marked done
+
+
+@router.post("/admin/historical/backfill-seasons")
+async def historical_backfill_seasons(
+    req: MultiSeasonBackfillRequest,
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+):
+    """Backfill multiple historical seasons for one or more sports.
+
+    Phase 1 wires MLB end-to-end. Other sports return a "no multi-season
+    client yet" stub until Phase 2 ports them. Resumable via the
+    `historical_ingestion_state` collection — interrupted runs pick up
+    where they left off.
+
+    Heads up: MLB full 5-year backfill walks ~1,200 days × ~15 games/day
+    = ~18k boxscore fetches paced at 5/sec. Roughly 60 minutes on cold DB.
+    Re-runs that hit `skip_if_done` finish in seconds.
+    """
+    try:
+        from historical.multi_season import backfill_seasons
+    except Exception as e:
+        raise HTTPException(500, f"Multi-season engine not loaded: {e}")
+
+    # Kick off in background — the HTTP request returns immediately so
+    # the admin doesn't hit a gateway timeout on a 60-minute ingest.
+    import asyncio
+    asyncio.create_task(backfill_seasons(
+        db,
+        sports=req.sports,
+        seasons=req.seasons,
+        lookback=max(1, min(10, int(req.lookback))),
+        skip_if_done=bool(req.skip_if_done),
+    ))
+    return {
+        "queued": True,
+        "sports": req.sports or ["mlb", "nba", "nfl", "soccer", "tennis", "cfb"],
+        "seasons": req.seasons,
+        "lookback": req.lookback,
+        "skip_if_done": req.skip_if_done,
+        "note": "Backfill runs in background. Poll /api/admin/historical/ingestion-status.",
+    }
+
+
+@router.get("/admin/historical/ingestion-status")
+async def historical_ingestion_status(
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+):
+    """Per-(sport, season) ingestion state. Used by ops to verify
+    progress of a long-running multi-season backfill."""
+    try:
+        from historical.multi_season import get_ingestion_status
+        return await get_ingestion_status(db)
+    except Exception as e:
+        raise HTTPException(500, f"ingestion status failed: {e}")
+
+
+# ──── Player Props Engine (derives hit-rates from game logs) ────
+@router.get("/admin/historical/props/catalog")
+async def historical_props_catalog(
+    sport: Optional[str] = None,
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+):
+    """List every supported player-prop market across all sports.
+
+    Pass `?sport=mlb` to scope to one sport. Returned shape matches
+    PLAYER_PROPS_CATALOG entries (key, sport, label, stat, default_lines,
+    direction, role_filter).
+    """
+    from historical.props_engine import get_catalog
+    rows = get_catalog(sport)
+    return {"total": len(rows), "sport_filter": sport, "props": rows}
+
+
+@router.get("/admin/historical/props/hitrate")
+async def historical_props_hitrate(
+    sport: str,
+    player_id: str,
+    stat: str,
+    line: float,
+    window: int = 10,
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+):
+    """Compute the L`window` hit-rate for (player, stat, line).
+
+    Reads from `player_game_logs`. Example:
+      GET /api/admin/historical/props/hitrate?sport=mlb&player_id=605141
+                                              &stat=hits&line=0.5&window=10
+    """
+    from historical.props_engine import compute_player_hitrate
+    # MLB Stats API uses int player IDs — coerce when possible.
+    try:
+        pid: object = int(player_id)
+    except (TypeError, ValueError):
+        pid = player_id
+    out = await compute_player_hitrate(
+        db, player_id=pid, sport=sport, stat=stat,
+        line=float(line), window=max(1, min(50, int(window))),
+    )
+    return out
+
+
+@router.get("/admin/historical/props/summary")
+async def historical_props_summary(
+    sport: str,
+    player_id: str,
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+):
+    """Full L5/L10/L20/season hit-rate matrix for one player across all
+    catalog props in their sport. Reads from `props_history` if a recent
+    snapshot exists; falls back to live computation otherwise.
+    """
+    from historical.props_engine import (
+        get_player_props_snapshot, compute_player_props_summary,
+    )
+    try:
+        pid: object = int(player_id)
+    except (TypeError, ValueError):
+        pid = player_id
+    snap = await get_player_props_snapshot(db, player_id=pid, sport=sport)
+    if snap:
+        return {**snap, "from_cache": True}
+    # No snapshot yet — compute live (slower).
+    live = await compute_player_props_summary(db, player_id=pid, sport=sport)
+    return {**live, "from_cache": False}
+
+
+class PropsRecomputeRequest(BaseModel):
+    sport: Optional[str] = None
+    limit: Optional[int] = None
+
+
+@router.post("/admin/historical/props/recompute")
+async def historical_props_recompute(
+    req: PropsRecomputeRequest,
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+):
+    """Bulk-recompute the props snapshot for every player with logs.
+
+    `sport` scopes to one sport; omit for all. `limit` caps how many
+    players we hit this run (useful for nightly incremental refreshes).
+    """
+    from historical.props_engine import recompute_all_props
+    return await recompute_all_props(db, sport=req.sport, limit=req.limit)
+
+
 # ────────────────────── Scorer-coverage audit ──────────────────────
 @router.get("/admin/scorer-audit")
 async def admin_scorer_audit(
