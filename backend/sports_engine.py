@@ -114,48 +114,131 @@ SPORT_KEYS: dict[str, list[str]] = {
 _ACTIVE_KEYS: set[str] = set()
 _ACTIVE_LOADED = False
 
-# Circuit breaker: once the Odds API returns OUT_OF_USAGE_CREDITS or invalid key,
-# stop hammering it for the rest of this process. Saves quota across container
-# restarts and prevents log spam during deployment when quota is exhausted.
+# Circuit breaker: once the Odds API repeatedly fails (bad key, exhausted
+# quota, network outage), stop hammering it for the rest of this process.
+# Saves quota across container restarts AND prevents the 90-second hang on
+# `/api/picks/today` that was caused by sequentially looping 50+ sport
+# endpoints — each timing out at 15s — when the credentials were rotated
+# out from under us.
 _API_DISABLED = False
 _API_DISABLED_REASON = ""
+# Rolling counters so a single transient 5xx doesn't trip the breaker, but
+# a sustained outage (or a bad/missing key) does — fast.
+_API_401_STREAK = 0          # consecutive 401s
+_API_FAIL_STREAK = 0         # consecutive non-200s of any kind
+_API_TOTAL_OK = 0
+_API_TOTAL_FAIL = 0
+_API_LAST_ERR = ""
+# Thresholds: trip after 2 consecutive 401s (almost certainly auth) OR 8
+# consecutive failures of any kind (sustained outage). 2/8 is intentionally
+# tight because any further calls during a real outage just waste time.
+_API_401_TRIP = 2
+_API_FAIL_TRIP = 8
 
 # Concurrency throttle: cap parallel Odds API calls so we don't trip the
 # per-second rate limit (429 EXCEEDED_FREQ_LIMIT) on bulk refresh.
 _API_SEM = asyncio.Semaphore(4)
 
 
+def get_odds_api_status() -> dict:
+    """Diagnostic snapshot for the admin endpoint. Helps the operator
+    confirm whether the Odds API key in production is healthy without
+    having to dig through container logs."""
+    key = ODDS_KEY or ""
+    return {
+        "has_key": bool(key),
+        "key_tail": (f"...{key[-4:]}" if len(key) >= 4 else ""),
+        "disabled": _API_DISABLED,
+        "disabled_reason": _API_DISABLED_REASON,
+        "consecutive_401s": _API_401_STREAK,
+        "consecutive_failures": _API_FAIL_STREAK,
+        "total_ok": _API_TOTAL_OK,
+        "total_fail": _API_TOTAL_FAIL,
+        "last_error": _API_LAST_ERR[:200],
+    }
+
+
+def reset_odds_api_circuit() -> dict:
+    """Manually re-arm the circuit breaker. Call this from the admin
+    endpoint AFTER rotating THE_ODDS_API_KEY in production secrets so
+    the next refresh actually tries the new key instead of staying
+    permanently disabled from the previous failures.
+    """
+    global _API_DISABLED, _API_DISABLED_REASON, _API_401_STREAK, _API_FAIL_STREAK, _API_LAST_ERR
+    _API_DISABLED = False
+    _API_DISABLED_REASON = ""
+    _API_401_STREAK = 0
+    _API_FAIL_STREAK = 0
+    _API_LAST_ERR = ""
+    logger.info("Odds API circuit breaker re-armed by admin request")
+    return get_odds_api_status()
+
+
 async def _get(url: str, params: dict) -> list | dict | None:
     global _API_DISABLED, _API_DISABLED_REASON
+    global _API_401_STREAK, _API_FAIL_STREAK, _API_TOTAL_OK, _API_TOTAL_FAIL, _API_LAST_ERR
     if not ODDS_KEY or _API_DISABLED:
         return None
     params = {**params, "apiKey": ODDS_KEY}
     async with _API_SEM:
         try:
-            async with httpx.AsyncClient(timeout=15) as cx:
+            # Shorter timeout (8s) so a stalled endpoint doesn't pin the
+            # entire refresh loop. With the failure streak breaker tripping
+            # at 8 consecutive errors, the worst-case stall is ~64s — but
+            # in practice it trips after 16-32s once it sees the pattern.
+            async with httpx.AsyncClient(timeout=8) as cx:
                 r = await cx.get(url, params=params)
                 if r.status_code == 401:
                     body = r.text[:200]
-                    # Permanent failure modes — disable for the rest of the
-                    # process so we stop burning time/log noise.
-                    if "OUT_OF_USAGE_CREDITS" in body or "INVALID_API_KEY" in body:
+                    _API_401_STREAK += 1
+                    _API_FAIL_STREAK += 1
+                    _API_TOTAL_FAIL += 1
+                    _API_LAST_ERR = f"401: {body}"
+                    # ANY repeat 401 is auth failure — trip the breaker so
+                    # we stop burning 8s per endpoint × 50 endpoints (the
+                    # exact production hang the operator hit). Previously
+                    # we only tripped on specific error strings, which the
+                    # Odds API sometimes phrases differently across regions
+                    # (e.g. "Unknown API key" vs "INVALID_API_KEY").
+                    if _API_401_STREAK >= _API_401_TRIP:
                         _API_DISABLED = True
-                        _API_DISABLED_REASON = body[:120]
-                        logger.error("Odds API disabled: %s", _API_DISABLED_REASON)
+                        _API_DISABLED_REASON = f"401 streak ({_API_401_STREAK}): {body[:120]}"
+                        logger.error("Odds API circuit OPEN — auth failure: %s", _API_DISABLED_REASON)
                     else:
-                        logger.warning("OddsAPI %s -> 401 %s", url, body)
+                        logger.warning("OddsAPI %s -> 401 (streak=%d) %s", url, _API_401_STREAK, body)
                     return None
                 if r.status_code == 429:
+                    _API_FAIL_STREAK += 1
+                    _API_TOTAL_FAIL += 1
+                    _API_LAST_ERR = "429: rate limited"
                     # Brief backoff so the next call in the burst doesn't also trip.
                     await asyncio.sleep(1.2)
                     logger.warning("OddsAPI %s -> 429 (rate limited)", url)
                     return None
                 if r.status_code != 200:
+                    _API_FAIL_STREAK += 1
+                    _API_TOTAL_FAIL += 1
+                    _API_LAST_ERR = f"{r.status_code}: {r.text[:160]}"
                     logger.warning("OddsAPI %s -> %s %s", url, r.status_code, r.text[:160])
+                    if _API_FAIL_STREAK >= _API_FAIL_TRIP:
+                        _API_DISABLED = True
+                        _API_DISABLED_REASON = f"fail streak ({_API_FAIL_STREAK}): {_API_LAST_ERR[:120]}"
+                        logger.error("Odds API circuit OPEN — outage: %s", _API_DISABLED_REASON)
                     return None
+                # Success — reset streaks but keep the totals for diagnostics.
+                _API_401_STREAK = 0
+                _API_FAIL_STREAK = 0
+                _API_TOTAL_OK += 1
                 return r.json()
         except Exception as e:
+            _API_FAIL_STREAK += 1
+            _API_TOTAL_FAIL += 1
+            _API_LAST_ERR = f"exc: {e}"
             logger.warning("OddsAPI error %s: %s", url, e)
+            if _API_FAIL_STREAK >= _API_FAIL_TRIP:
+                _API_DISABLED = True
+                _API_DISABLED_REASON = f"exception streak: {str(e)[:120]}"
+                logger.error("Odds API circuit OPEN — network errors: %s", _API_DISABLED_REASON)
             return None
 
 
