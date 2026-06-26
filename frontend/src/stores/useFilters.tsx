@@ -132,8 +132,12 @@ function reducer(state: FilterState, action: Action): FilterState {
 // ─────────────────────────── Storage glue ───────────────────────────
 
 // Schema version baked into the key — bump when shape changes to invalidate
-// old serialised state on disk.
-const STORAGE_KEY = "perkslocks_filters_v2";
+// old serialised state on disk. v3 (2026-06-26): user reported Soccer feed
+// going empty with no obvious active filter — symptom was stale persisted
+// arrays from earlier sessions silently restricting the slate. Bumping
+// the key drops the old snapshot on every device and gives users a
+// clean filter state on next launch.
+const STORAGE_KEY = "perkslocks_filters_v3";
 
 async function loadPersisted(): Promise<Partial<FilterState> | null> {
   try {
