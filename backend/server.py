@@ -73,7 +73,7 @@ except Exception as _picks_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.26-csl-goalscorer-visibility-v5"
+DATA_VERSION = "2026.06.26-detail-lock-recanon-v6"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -2111,6 +2111,7 @@ def _strip_for_lite(pick: dict) -> dict:
 @api.get("/picks/today")
 async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                       sport: Optional[str] = None,
+                      sports: Optional[str] = None,          # NEW: CSV multi-select
                       grade: Optional[str] = None,
                       day_offset: Optional[int] = None,
                       line_type: Optional[str] = None,
@@ -2120,26 +2121,51 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                       min_implied: Optional[float] = None,
                       max_implied: Optional[float] = None,
                       market: Optional[str] = None,
+                      markets: Optional[str] = None,         # NEW: CSV multi-select
                       league: Optional[str] = None,
+                      leagues: Optional[str] = None,         # NEW: CSV multi-select
+                      game_ids: Optional[str] = None,        # NEW: CSV multi-select
+                      events: Optional[str] = None,          # NEW: pipe-separated multi-select
+                      search: Optional[str] = None,          # NEW: free-text search
                       lite: Optional[bool] = False):
     """Top picks from today's 72-hour window (lock score >= 85).
-    Filters:
-      - `min_lock`: only show picks with lock_score >= this value.
-      - `min_implied` / `max_implied`: only show picks whose implied
-        probability falls in [min, max] (units: %, e.g. 60 → 90).
-      - `market`: filter by market family token (see /picks/markets/{sport}).
-      - `league`: substring-match against pick.league.
-    Sort options:
-      - "lock" / None (default): highest lock_score first
-      - "time": soonest kickoff first
-      - "edge": biggest model edge first
-      - "win": highest model win-probability first
-      - "implied": highest implied probability first (safest first)
-    Direction:
-      - "desc" (default): highest value at top — user's "best lock first" intent
-      - "asc": lowest value at top (useful for finding longshots / weakest)
+
+    Filtering supports BOTH legacy singular params and the new multi-select
+    CSV params (added 2026-06-26 for the unified filter store):
+
+      Single (legacy)        Multi-select (new)
+      ---------------        ------------------
+      sport=MLB              sports=MLB,Soccer,Tennis
+      league=EPL             leagues=EPL,La Liga
+      market=Hits            markets=Hits,RBIs
+      (n/a)                  game_ids=evt_abc,evt_def
+      (n/a)                  events=Yankees @ Red Sox|Dodgers @ Mets
+      (n/a)                  q=jefferson         (free-text contains)
+
+    When both are present, results are the UNION (`$in` query). Empty
+    arrays = no filter.
     """
     await _ensure_today_picks()
+    # ── Normalise the multi-select params to lists, merging with legacy ──
+    def _split_csv(s: Optional[str]) -> list[str]:
+        if not s:
+            return []
+        return [x.strip() for x in s.split(",") if x.strip()]
+
+    def _split_pipe(s: Optional[str]) -> list[str]:
+        if not s:
+            return []
+        return [x.strip() for x in s.split("|") if x.strip()]
+
+    sport_list = _split_csv(sports) or ([sport] if sport else [])
+    league_list = _split_csv(leagues) or ([league] if league else [])
+    market_list = _split_csv(markets) or ([market] if market else [])
+    game_id_list = _split_csv(game_ids)
+    event_list = _split_pipe(events)
+    # Treat as filtered if EITHER the legacy single value OR the new
+    # multi-select array is populated. This drives the default-floor relax.
+    has_market_filter = bool(market_list)
+    has_league_filter = bool(league_list)
     # When the user explicitly filters by a single market, relax the default
     # 85+ lock floor — they're narrowing the pool themselves and want to see
     # everything that matches their selection.
@@ -2151,7 +2177,7 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # not showing alt on website or app" — drop floor to 55 for alt so
     # the synthesized lines surface.
     lt = (line_type or "").lower()
-    default_floor = 75.0 if market else (55.0 if lt == "alt" else 85.0)
+    default_floor = 75.0 if has_market_filter else (55.0 if lt == "alt" else 85.0)
     floor = max(default_floor, float(min_lock)) if min_lock is not None else default_floor
     # ── Auto-relax floor when the slate is genuinely thin ──────────────
     # User complaint 2026-06-26: "only 1 game showing up". Root cause was
@@ -2163,7 +2189,8 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # this on the unfiltered "All" feed (no market / league / day_offset
     # narrowing) where the user expects the full slate.
     auto_relaxed_from: Optional[float] = None
-    if (min_lock is None and market is None and league is None
+    if (min_lock is None and not has_market_filter and not has_league_filter
+            and not game_id_list and not event_list and not search
             and not day_offset and not grade and lt != "alt"):
         try:
             _td = _today_str()
@@ -2494,8 +2521,15 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             {"lock_score":     {"$gte": user_floor}},
             {"lock_score_v2":  {"$gte": user_floor}},
         ]}]
-    if sport and sport.lower() != "all":
-        q["sport"] = sport
+    if sport_list:
+        # Multi-select sports: accept ANY of the provided values, but only
+        # if the caller isn't asking for the wildcard "All". Filtering to
+        # ["All"] is a no-op (legacy behaviour).
+        scoped = [s for s in sport_list if s and s.lower() != "all"]
+        if len(scoped) == 1:
+            q["sport"] = scoped[0]
+        elif len(scoped) > 1:
+            q["sport"] = {"$in": scoped}
     if grade:
         q["grade"] = grade
     lt = (line_type or "").lower()
@@ -2513,14 +2547,51 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # Market family filter — uses the same labelling we use in analytics so
     # the same token works on every sport (e.g. "moneyline", "spread",
     # "game_total", "btts", "1x2", "goalscorer", "player_points", etc.).
-    if market:
-        regex = _market_regex(market)
-        if regex:
-            q["market"] = {"$regex": regex, "$options": "i"}
-    if league:
+    if market_list:
+        # Multi-select markets: combine each market token's regex with
+        # an OR. Falls back to the legacy single `_market_regex` path if
+        # only one market is supplied.
+        regexes = [r for r in (_market_regex(m) for m in market_list) if r]
+        if len(regexes) == 1:
+            q["market"] = {"$regex": regexes[0], "$options": "i"}
+        elif len(regexes) > 1:
+            q["market"] = {"$regex": "|".join(f"(?:{r})" for r in regexes), "$options": "i"}
+    if league_list:
         # SEC-004: re.escape user input so metacharacters can't trigger
         # catastrophic regex backtracking (ReDoS) against MongoDB.
-        q["league"] = {"$regex": re.escape(str(league)), "$options": "i"}
+        # Multi-select: OR-regex across all chosen leagues.
+        league_patterns = [re.escape(str(lg)) for lg in league_list]
+        if len(league_patterns) == 1:
+            q["league"] = {"$regex": league_patterns[0], "$options": "i"}
+        elif len(league_patterns) > 1:
+            q["league"] = {"$regex": "|".join(league_patterns), "$options": "i"}
+    # Multi-game filter — game_ids / events come from the new UI's
+    # multi-game selection on the event-grouped view.
+    if game_id_list:
+        # `event_id` on picks is the canonical join key (sportsbook event).
+        q["$and"] = (q.get("$and") or []) + [{
+            "$or": [
+                {"event_id": {"$in": game_id_list}},
+                {"game_id": {"$in": game_id_list}},
+            ],
+        }]
+    if event_list:
+        # Display-string fallback (e.g. "Yankees @ Red Sox"). Useful when
+        # the upstream feed didn't include a stable event_id.
+        q["$and"] = (q.get("$and") or []) + [{"event": {"$in": event_list}}]
+    # Free-text search across player name, event, market label. Case-
+    # insensitive, regex-escaped to defang ReDoS.
+    if search:
+        s_pat = re.escape(str(search).strip())
+        if s_pat:
+            q["$and"] = (q.get("$and") or []) + [{
+                "$or": [
+                    {"player_name": {"$regex": s_pat, "$options": "i"}},
+                    {"event":       {"$regex": s_pat, "$options": "i"}},
+                    {"market":      {"$regex": s_pat, "$options": "i"}},
+                    {"selection":   {"$regex": s_pat, "$options": "i"}},
+                ],
+            }]
     # ── Sort by CANONICAL lock score, not the stale v1 ────────────────
     # Picks like Silva Felipe (v1=55 due to validator drift but v2=98)
     # were getting sorted to the BOTTOM of the result limit and
@@ -3553,6 +3624,12 @@ async def pick_detail(pick_id: str,
         try:
             from evidence_engine import build_features_from_pick, govern_pick
             govern_pick(pick, build_features_from_pick(pick))
+            # govern_pick can DEMOTE lock_score / lock_score_v2 below the
+            # raw/peak shadows (CSL synthetic goalscorers hit this — they
+            # land at lock=99 raw/peak but govern_pick recomputes ~77
+            # against a missing book line). Re-canonicalize so the
+            # detail view matches the home feed card again.
+            pick = _canonicalize_lock_score(pick)
         except Exception as _ev_err:
             logger.debug("Evidence governance failed in detail view: %s", _ev_err)
     if not pick.get("explanation"):
