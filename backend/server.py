@@ -73,7 +73,7 @@ except Exception as _picks_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.26-odds-circuit-breaker-hard"
+DATA_VERSION = "2026.06.26-admin-heal-button-2"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -1223,7 +1223,43 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         logger.info("Refreshing picks for %s · sport_filter=%s", date_str, sport_filter)
     else:
         logger.info("Refreshing picks for %s", date_str)
+    # ── Odds API circuit breaker observability + soft re-arm ─────────
+    # If the breaker tripped earlier this process (e.g. transient outage,
+    # or operator rotating THE_ODDS_API_KEY mid-day), give it ONE shot
+    # to recover. Worst-case cost: 16s stall (2 × 8s timeout) before the
+    # breaker re-trips. That's acceptable once per refresh cycle and the
+    # only path to self-healing without a manual `/admin/odds-circuit/reset`
+    # call. Operator can always observe state via /api/admin/odds-diagnostic.
+    try:
+        from sports_engine import get_odds_api_status, reset_odds_api_circuit
+        st_before = get_odds_api_status()
+        if st_before.get("disabled"):
+            logger.warning(
+                "Refresh starting with Odds API circuit OPEN (%s) — soft re-arming for one retry",
+                st_before.get("disabled_reason", "?"),
+            )
+            reset_odds_api_circuit()
+        else:
+            logger.info(
+                "Odds API state pre-refresh: has_key=%s ok=%d fail=%d streak_401=%d",
+                st_before.get("has_key"), st_before.get("total_ok", 0),
+                st_before.get("total_fail", 0), st_before.get("consecutive_401s", 0),
+            )
+    except Exception as _odds_st_err:
+        logger.debug("Could not read Odds API status: %s", _odds_st_err)
     picks = await generate_all_picks(date_str, sport_filter=sport_filter)
+    # Post-refresh observability so the operator can spot a slate that
+    # came back smaller than expected without having to tail logs.
+    try:
+        from sports_engine import get_odds_api_status
+        st_after = get_odds_api_status()
+        logger.info(
+            "Refresh done: %d raw picks | Odds API ok=%d fail=%d disabled=%s",
+            len(picks or []), st_after.get("total_ok", 0),
+            st_after.get("total_fail", 0), st_after.get("disabled"),
+        )
+    except Exception:
+        pass
     if not picks:
         if sport_filter:
             logger.info(

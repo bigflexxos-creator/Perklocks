@@ -397,3 +397,45 @@ async def admin_force_refresh(
         "circuit_state_after_reset": pre_state,
         "message": "Refresh queued. Poll /api/admin/odds-diagnostic in ~45s.",
     }
+
+
+@router.get("/admin/picks/heal")
+async def admin_picks_heal(
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+):
+    """One-click healing endpoint (GET so it works from a browser URL bar).
+
+    Performs the full triage sequence in a single call:
+      1. Snapshot Odds API state (so operator can see WHY it was broken).
+      2. Reset the circuit breaker.
+      3. Queue a background refresh of today's picks.
+      4. Return the pre-state + queued status.
+
+    Designed for the "production board is empty, fix it NOW" scenario.
+    Hit this URL while logged in as admin in the browser; the response
+    JSON tells you exactly what was wrong. Poll `/api/admin/odds-diagnostic`
+    ~45s later to see the result.
+    """
+    import asyncio
+    from sports_engine import get_odds_api_status, reset_odds_api_circuit
+    pre_state = get_odds_api_status()
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    pre_count = await db.picks.count_documents({"pick_date": today_str})
+    # Reset breaker and queue refresh
+    reset_odds_api_circuit()
+    from server import _refresh_picks
+    asyncio.create_task(_refresh_picks(today_str))
+    return {
+        "healing_queued": True,
+        "date": today_str,
+        "pre_state": {
+            "odds_api": pre_state,
+            "picks_today_count": pre_count,
+        },
+        "next_step": "Wait 45s, then refresh app or check /api/admin/odds-diagnostic",
+        "common_causes": [
+            "THE_ODDS_API_KEY missing/wrong in production secrets",
+            "Quota exhausted (free tier = 500/month)",
+            "Network blip caused the breaker to trip (this endpoint resets it)",
+        ],
+    }
