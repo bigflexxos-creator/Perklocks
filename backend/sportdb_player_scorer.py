@@ -1041,6 +1041,20 @@ def _prob_to_lock(prob: float, rate: dict) -> float:
     decade) should hit 95+ even if they're slow-starting the current
     season — they're STILL the best anytime-scorer pick in their match.
 
+    ── PROBABILITY-DRIVEN OVERRIDE (CSL/MLS/J-League/lower-tier fix) ──
+    For leagues where SportDB lacks rich career data (CSL, MLS, lower
+    divisions etc.) the career_goals tier collapses to D (~58 lock) even
+    when the model + simulation say the player has a 45-65% chance to
+    score. Per user 2026-06-26: "with china super league I gave you their
+    history we should be able to create 95-99 lock picks with history".
+    Solution: when the model probability is strong, lift to the tier the
+    probability earns — current-season goals + sim consensus IS history.
+
+      prob ≥ 0.60  →  Tier S+ floor (95+)   "near-lock — top scorer-rank pick"
+      prob ≥ 0.50  →  Tier S  floor (92+)   "premium model lock"
+      prob ≥ 0.42  →  Tier A  floor (88+)   "strong evidence"
+      prob ≥ 0.35  →  Tier B  floor (80+)   "above-average"
+
     Tier classification (uses both weighted multi-season rate AND career
     goal total — covers both "currently hot" and "lifetime star" cases):
 
@@ -1075,17 +1089,31 @@ def _prob_to_lock(prob: float, rate: dict) -> float:
         if r >= 0.15: return ("C",  68.0)
         return ("D", 58.0)
 
+    # ── PROBABILITY-DRIVEN TIER FLOOR ─────────────────────────────────
+    # Maps the model's win probability into the tier ladder so a
+    # 60%-to-score player IS a Tier S+ pick even if SportDB has no
+    # career data on him (CSL/MLS top scorer-rank case).
+    def tier_from_prob(p: float) -> tuple[str, float]:
+        if p >= 0.60: return ("S+", 96.0)
+        if p >= 0.50: return ("S",  92.0)
+        if p >= 0.42: return ("A",  88.0)
+        if p >= 0.35: return ("B",  80.0)
+        return ("D", 58.0)
+
     t1, b1 = tier_from_career(career_goals)
     t2, b2 = tier_from_rate(weighted_rate)
-    base = max(b1, b2)
+    t3, b3 = tier_from_prob(prob)
+    base = max(b1, b2, b3)
     # Quality adjustments
     if rating >= 7.5:
         base += 2
     elif rating >= 7.0:
         base += 1
     if matches and matches < 5 and not (career_goals >= 25):
-        # Small-sample penalty ONLY if no career anchor (rookies / unknowns).
-        base -= 6
+        # Small-sample penalty ONLY if no career anchor AND prob is weak
+        # (would otherwise punish CSL top scorers with 3-game samples).
+        if prob < 0.42:
+            base -= 6
     # Matchup adjustment using probability (encodes opponent defence).
     if prob >= 0.55:
         base += 3
