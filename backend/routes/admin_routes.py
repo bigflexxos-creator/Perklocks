@@ -292,3 +292,108 @@ async def gs_engine_v2_residual(
     from goal_scorer_engine_v2 import market_residual_report
     return await market_residual_report(db, league=league, market=market,
                                          days_back=days_back)
+
+
+
+# ────────────────────── Odds API circuit / diagnostics ──────────────────────
+@router.get("/admin/odds-diagnostic")
+async def odds_diagnostic(
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+):
+    """Production health probe for The Odds API.
+
+    Exposes everything the operator needs to triage a "no picks" outage
+    WITHOUT having to dig through container logs:
+
+      • Whether THE_ODDS_API_KEY is loaded (and the last 4 chars so they
+        can confirm which key is active vs. their dashboard).
+      • Circuit-breaker state (open/closed + the exact reason it tripped).
+      • Streak + total counters so they can see WHY it tripped (e.g.
+        2 consecutive 401s = auth, 8 timeouts = network outage).
+      • Counts of picks in the DB scoped to today so the operator can
+        immediately tell whether the issue is generation (no new picks)
+        or surfacing (picks exist but filters hide them).
+
+    Returned object is intentionally JSON-safe with no PII. Admin-only.
+    """
+    from sports_engine import get_odds_api_status
+    status = get_odds_api_status()
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    total_today = await db.picks.count_documents({"pick_date": today_str})
+    high_lock_today = await db.picks.count_documents({
+        "pick_date": today_str,
+        "$or": [
+            {"lock_score": {"$gte": 85}},
+            {"lock_score_v2": {"$gte": 85}},
+        ],
+    })
+    # Latest 3 picks across the DB so the operator can spot-check freshness
+    latest = []
+    cursor = db.picks.find(
+        {},
+        {"_id": 0, "sport": 1, "market": 1, "lock_score": 1,
+         "lock_score_v2": 1, "created_at": 1, "event_time": 1, "pick_date": 1},
+    ).sort("created_at", -1).limit(3)
+    async for p in cursor:
+        latest.append(p)
+    return {
+        "odds_api": status,
+        "picks_today_total": total_today,
+        "picks_today_high_lock": high_lock_today,
+        "today_utc": today_str,
+        "latest_picks_sample": latest,
+    }
+
+
+@router.post("/admin/odds-circuit/reset")
+async def odds_circuit_reset(
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+):
+    """Re-arm the Odds API circuit breaker.
+
+    Call this AFTER rotating `THE_ODDS_API_KEY` in production secrets.
+    Without this, the next `/api/picks/today` refresh will still skip
+    every Odds API call because the breaker is latched OPEN from the
+    failures with the previous key.
+
+    Returns the post-reset status so the operator can verify the breaker
+    is closed before triggering a refresh.
+    """
+    from sports_engine import reset_odds_api_circuit
+    return reset_odds_api_circuit()
+
+
+@router.post("/admin/picks/force-refresh")
+async def admin_force_refresh(
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+):
+    """Admin-only emergency refresh.
+
+    Bypasses the per-user 1-hour cooldown enforced by `/api/picks/refresh`
+    AND auto-resets the Odds API circuit breaker first. Use this as the
+    one-shot fix after rotating `THE_ODDS_API_KEY` in production secrets:
+
+        1. Push new key to production env vars
+        2. Restart backend (or wait for the new pod to come up)
+        3. POST /api/admin/picks/force-refresh   ← this endpoint
+        4. Wait ~45s, then GET /api/admin/odds-diagnostic to verify
+           `total_ok > 0` and `picks_today_total > 0`
+
+    Returns immediately; the refresh runs in the background.
+    """
+    import asyncio
+    from sports_engine import reset_odds_api_circuit
+    # Re-arm the breaker first — pointless to refresh if it's still open.
+    pre_state = reset_odds_api_circuit()
+    # Lazy import to avoid circular dep at module load.
+    from server import _refresh_picks, _today_str
+    asyncio.create_task(_refresh_picks(_today_str()))
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    existing = await db.picks.count_documents({"pick_date": today_str})
+    return {
+        "queued": True,
+        "date": today_str,
+        "existing_count": existing,
+        "circuit_state_after_reset": pre_state,
+        "message": "Refresh queued. Poll /api/admin/odds-diagnostic in ~45s.",
+    }
