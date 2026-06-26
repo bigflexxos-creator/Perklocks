@@ -192,7 +192,11 @@ async def validate_and_heal(db) -> dict:
             # canonical value — we skip the lock-anchor recompute but still
             # run steps 5 (grade/confidence reconcile) and 6 (deep-dive).
             _skip_lock_anchor = bool(
-                p.get("elite_player") or p.get("lock_anchored_to_sim")
+                p.get("elite_player")
+                or p.get("lock_anchored_to_sim")
+                or p.get("is_model_only")
+                or p.get("is_synthetic_scorer")
+                or (p.get("source") or "").startswith("sportdb_scorer")
             )
             factors_pct = {} if _skip_lock_anchor else (p.get("factors") or {})
             if factors_pct:
