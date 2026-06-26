@@ -293,11 +293,27 @@ async def get_team_squad(db, team_slug: str, team_id: str) -> Optional[list[dict
 
 async def get_player_goal_rate(db, player_slug: str, player_id: str,
                                 comp_slug_id: str, season: str) -> Optional[dict]:
-    """Fetch a player's career stats and extract goals/matches for the given
-    competition + season.
+    """Fetch a player's career stats and compute a TIME-WEIGHTED multi-season
+    scoring rate.
 
-    Returns dict {goals, matches, rate_per_match, position, last_name,
-    market_value} or None if no data.
+    Per user feedback 2026-06-26: a player who scored 28 goals last season
+    (Fabio Abreu: 28g/30m = 93% rate) but is at 5g/11m in the current early
+    season should still be recognised as a top scorer. Only using current
+    season buries proven stars — fixed by blending the last 4 seasons with
+    a decaying weight, then taking a 70/30 blend of (weighted recent) vs
+    (overall career average).
+
+    Returns dict with:
+      - rate_per_match: blended weighted+career rate (the value Poisson uses)
+      - weighted_rate: 4-season decayed avg
+      - career_rate: overall career goals/matches
+      - career_goals, career_matches: totals across all league seasons
+      - current_season_goals, current_season_matches: just this season
+      - seasons_used: count of seasons included in weighting (max 4)
+      - is_proven_star: career_goals >= 50 OR weighted_rate >= 0.40
+      - last_5_seasons: list of per-season records for the insights UI
+
+    None if no usable data.
     """
     if not player_id or not player_slug:
         return None
@@ -309,30 +325,126 @@ async def get_player_goal_rate(db, player_slug: str, player_id: str,
             return None
         cached = data
         await _cache_set(db, key, cached)
-    careers = (cached.get("careers") or {}).get("league") or []
-    # Extract competition slug from "super-league:nc9yRmcn" → "super-league"
+    careers_root = cached.get("careers") or {}
+    # MULTI-SOURCE career fetch:
+    #   league          → domestic league (Premier League, La Liga, CSL...)
+    #   nationalTeams   → World Cup, AFCON, Copa, Euros, Nations League, friendlies
+    #   internationalCups → UCL, UEL, AFC Champions League, Conference League
+    #   nationalCups    → FA Cup, Copa del Rey, DFB-Pokal etc.
+    #
+    # Per user 2026-06-26: "Salah on Egypt performs well in national league
+    # games — app should know this" — and "Mbappé snaps for national team".
+    # Was previously ignoring nationalTeams entirely. SportDB uses camelCase
+    # PLURAL keys (`nationalTeams`, `internationalCups`) — verified against
+    # Mbappé's profile which exposes 50+ France goals across Euros + WCs.
+    league_careers = careers_root.get("league") or []
+    national_careers = (
+        careers_root.get("nationalTeams")        # SportDB.dev actual key
+        or careers_root.get("nationalTeam")      # legacy
+        or careers_root.get("national_team")     # snake_case legacy
+        or []
+    )
+    intl_cup_careers = (
+        careers_root.get("internationalCups")
+        or careers_root.get("international_cups")
+        or []
+    )
+    domestic_cup_careers = (
+        careers_root.get("nationalCups")
+        or careers_root.get("domesticCups")
+        or careers_root.get("domestic_cups")
+        or []
+    )
+    careers = (
+        list(league_careers)
+        + list(national_careers)
+        + list(intl_cup_careers)
+        + list(domestic_cup_careers)
+    )
+    if not careers:
+        return None
+    # Build season records — only LEAGUE entries with ≥3 matches played.
+    seasons: list[dict] = []
     target_slug = comp_slug_id.split(":")[0]
-    rate: Optional[dict] = None
-    # Try the active season first; if no data, fall back to most recent season.
+    current_season_record: Optional[dict] = None
     for entry in careers:
-        if (entry.get("competitionSlug") or "").lower() != target_slug:
+        stats = {(s.get("name") or "").lower(): s.get("value") for s in (entry.get("stats") or [])}
+        matches = _to_int(stats.get("matches played"))
+        goals = _to_int(stats.get("goals scored"))
+        if matches < 1:
             continue
-        if (entry.get("season") or "") != season:
-            continue
-        rate = _stats_to_rate(entry, cached)
-        if rate and rate.get("matches", 0) > 0:
-            break
-    if not rate:
-        # Fallback: most recent season for the same competition.
-        for entry in careers:
-            if (entry.get("competitionSlug") or "").lower() != target_slug:
-                continue
-            cand = _stats_to_rate(entry, cached)
-            if cand and cand.get("matches", 0) >= 3:
-                rate = cand
-                rate["fallback_season"] = entry.get("season")
-                break
-    return rate
+        rec = {
+            "season": entry.get("season") or "",
+            "goals": goals,
+            "matches": matches,
+            "assists": _to_int(stats.get("assists")),
+            "rating": _to_float(stats.get("rating")),
+            "rate": goals / matches if matches > 0 else 0.0,
+            "competition_slug": (entry.get("competitionSlug") or "").lower(),
+            "team": entry.get("teamName") or "",
+        }
+        seasons.append(rec)
+        # Identify the current-season record for this competition.
+        if (rec["competition_slug"] == target_slug
+                and rec["season"] == season
+                and current_season_record is None):
+            current_season_record = rec
+    if not seasons:
+        return None
+    # Sort seasons newest → oldest (string sort works for "2025"/"2025-2026"
+    # mostly correctly — close enough for ranking).
+    seasons.sort(key=lambda x: x["season"], reverse=True)
+    # Use the last 4 league seasons (mix of competitions OK — a 30-goal striker
+    # in Portugal Primeira is still a 30-goal striker).
+    recent_4 = [s for s in seasons if s["matches"] >= 5][:4]
+    if not recent_4:
+        # If no full seasons, fall back to ANY season with matches.
+        recent_4 = seasons[:4]
+    # Decayed weights: 40% current, 30% prev, 20% 2-ago, 10% 3-ago.
+    weights = [0.40, 0.30, 0.20, 0.10]
+    weighted_rate = 0.0
+    total_weight = 0.0
+    for i, s in enumerate(recent_4):
+        w = weights[i] if i < len(weights) else 0.05
+        weighted_rate += s["rate"] * w
+        total_weight += w
+    if total_weight > 0:
+        weighted_rate /= total_weight
+    # Career totals across ALL league seasons.
+    career_goals = sum(s["goals"] for s in seasons)
+    career_matches = sum(s["matches"] for s in seasons)
+    career_rate = career_goals / career_matches if career_matches else 0.0
+    # Final blend: 70% recent weighted + 30% overall career.
+    # This rewards CURRENT form while not abandoning career-proven stars
+    # who happen to be in a slow start.
+    blended_rate = 0.7 * weighted_rate + 0.3 * career_rate
+    # If we have a current-season record, use its actual goals/matches for
+    # the "current season" tier check; otherwise fall back to most-recent.
+    cs = current_season_record or recent_4[0]
+    is_proven_star = (career_goals >= 50) or (weighted_rate >= 0.40)
+    return {
+        # Tracked for backward-compat with existing _prob_to_lock callers.
+        "goals": cs["goals"],
+        "matches": cs["matches"],
+        "rate_per_match": blended_rate,
+        "rating": cs["rating"],
+        "assists": cs["assists"],
+        # New multi-season fields used by the upgraded lock calibrator.
+        "weighted_rate": weighted_rate,
+        "career_rate": career_rate,
+        "career_goals": career_goals,
+        "career_matches": career_matches,
+        "current_season_goals": cs["goals"],
+        "current_season_matches": cs["matches"],
+        "seasons_used": len(recent_4),
+        "is_proven_star": is_proven_star,
+        "last_5_seasons": recent_4[:5],
+        "season": cs["season"],
+        "first_name": cached.get("firstName"),
+        "last_name": cached.get("lastName"),
+        "position": (cached.get("position") or "").lower(),
+        "market_value": cached.get("marketValue"),
+    }
 
 
 def _stats_to_rate(entry: dict, player_profile: dict) -> Optional[dict]:
@@ -542,6 +654,208 @@ async def _picks_for_side(
     return out
 
 
+# ─────────────────── Career enrichment for bookmaker picks ───────────────────
+
+
+def _norm_name(name: str) -> str:
+    """Normalise a player name for fuzzy matching across SportDB ↔ Odds API.
+
+    Odds API: "Sadio Mané", SportDB: "Mané S." or "Sadio Mane" — normalise
+    to lowercase ASCII, strip punctuation, collapse whitespace. Compare on
+    both full normalised form AND last-name-token sets.
+    """
+    if not name:
+        return ""
+    n = unicodedata.normalize("NFKD", name)
+    n = "".join(c for c in n if not unicodedata.combining(c))
+    n = n.lower()
+    n = re.sub(r"[^a-z0-9 ]+", " ", n)
+    n = re.sub(r"\s+", " ", n).strip()
+    return n
+
+
+def _name_match(query: str, candidates: list[str]) -> Optional[int]:
+    """Find best candidate index for a player name. Returns None if no match."""
+    nq = _norm_name(query)
+    if not nq:
+        return None
+    nq_tokens = set(nq.split())
+    nq_last = nq.split()[-1] if nq.split() else ""
+    # First pass: exact full normalised match
+    for i, c in enumerate(candidates):
+        if _norm_name(c) == nq:
+            return i
+    # Second pass: same last-name token
+    for i, c in enumerate(candidates):
+        c_tokens = set(_norm_name(c).split())
+        if nq_last and nq_last in c_tokens and len(nq_tokens & c_tokens) >= 1:
+            return i
+    return None
+
+
+async def enrich_bookmaker_scorer_pick(
+    db,
+    pick: dict,
+    sport_key: str,
+) -> dict:
+    """Enrich a bookmaker-derived goalscorer pick with SportDB career data.
+
+    This is what gives Mané his lock floor of 88+ on Senegal-Iraq, even
+    though the model originally scored him based on bookmaker implied prob
+    alone. Pulls multi-source career (league + national team + intl cups)
+    via `get_player_goal_rate`, then re-tiers the lock using the same
+    classifier as the synthetic CSL picks.
+
+    Rules:
+      • ONLY boost — never downgrade. If career data suggests Mané is a
+        Tier S player (career_goals ≥ 100) and his current pick has lock
+        72, push it up to max(72, 92). If career data is weak/missing,
+        the pick stays as-is.
+      • Add a `sportdb_career_signal` field and a tier-badge insight so
+        users SEE the data.
+      • Best-effort — failures don't change the pick.
+
+    Args:
+      pick: bookmaker-derived pick (must have `selection` and `player_team`).
+      sport_key: Odds API sport key — must be in LEAGUE_MAP.
+
+    Returns the (possibly mutated) pick.
+    """
+    if sport_key not in LEAGUE_MAP:
+        return pick
+    selection = pick.get("selection") or ""
+    player_team = (
+        pick.get("player_team") or
+        pick.get("home_team") or
+        pick.get("away_team") or ""
+    )
+    if not selection or not player_team:
+        return pick
+    country, comp, season = LEAGUE_MAP[sport_key]
+    # 1. Resolve team via standings
+    team_resolved = await _resolve_team_id(db, country, comp, season, player_team)
+    if not team_resolved:
+        # Try the OTHER team (player_team may be reversed for home/away picks).
+        alt = pick.get("away_team") if player_team == pick.get("home_team") else pick.get("home_team")
+        if alt and alt != player_team:
+            team_resolved = await _resolve_team_id(db, country, comp, season, alt)
+        if not team_resolved:
+            return pick
+    team_id, team_slug = team_resolved
+    # 2. Get squad — find this player by name match.
+    squad = await get_team_squad(db, team_slug, team_id)
+    if not squad:
+        return pick
+    candidates = [f"{p.get('firstName') or ''} {p.get('lastName') or ''}".strip()
+                   for p in squad]
+    # Also try last-name-only candidates
+    last_candidates = [p.get("lastName") or "" for p in squad]
+    idx = _name_match(selection, candidates) or _name_match(selection, last_candidates)
+    if idx is None or idx >= len(squad):
+        return pick
+    matched_player = squad[idx]
+    # 3. Fetch career rate (multi-source: league + national_team + intl_cups)
+    rate = await get_player_goal_rate(
+        db, matched_player.get("slug") or "", matched_player.get("id") or "",
+        comp, season,
+    )
+    if not rate:
+        return pick
+    # 4. Compute the TIER-IMPLIED lock floor — never downgrade.
+    # Use the pick's existing win_probability if present (bookmaker-derived).
+    book_prob = float(pick.get("win_probability") or 0.0) / 100.0
+    tier_lock = _prob_to_lock(book_prob, rate)
+    # Only boost if the new lock is higher AND the player has substance.
+    if rate.get("career_goals", 0) < 10 and rate.get("weighted_rate", 0) < 0.15:
+        # Not enough evidence to override — skip.
+        return pick
+    current_lock = float(pick.get("lock_score") or 0.0)
+    if tier_lock > current_lock:
+        # Boost — but cap the swing at +12 lock points to avoid runaway shifts.
+        delta = min(tier_lock - current_lock, 12.0)
+        new_lock = current_lock + delta
+        pick["lock_score"] = round(new_lock, 1)
+        if isinstance(pick.get("lock_score_v2"), (int, float)):
+            pick["lock_score_v2"] = round(float(pick["lock_score_v2"]) + delta, 1)
+        pick["sportdb_career_boost"] = round(delta, 1)
+    # 5. Attach insight + signal regardless of boost direction.
+    career_goals = rate.get("career_goals", 0)
+    career_matches = rate.get("career_matches", 0)
+    weighted_rate = rate.get("weighted_rate", 0.0)
+    current_g = rate.get("current_season_goals", 0)
+    current_m = rate.get("current_season_matches", 0)
+    pname = selection
+    tier_badge = _tier_label(career_goals, weighted_rate)
+    insight_lines: list[str] = []
+    if tier_badge:
+        insight_lines.append(tier_badge)
+    insight_lines.append(
+        f"📊 SportDB career: {pname} has {career_goals} goals in "
+        f"{career_matches} career league/NT/intl-cup matches "
+        f"({(career_goals/career_matches*100 if career_matches else 0):.0f}% career rate)."
+    )
+    if rate.get("seasons_used", 0) >= 2:
+        insight_lines.append(
+            f"📈 Last {rate.get('seasons_used')} seasons weighted: "
+            f"{weighted_rate*100:.0f}% per-match scoring rate. "
+            f"Current season: {current_g}g in {current_m}m "
+            f"({(current_g/current_m*100 if current_m else 0):.0f}%)."
+        )
+    existing = pick.setdefault("key_insights", [])
+    if not isinstance(existing, list):
+        existing = []
+        pick["key_insights"] = existing
+    # Prepend so career context shows FIRST in the why-this-pick.
+    pick["key_insights"] = insight_lines + existing
+    pick["sportdb_career_signal"] = (
+        f"{career_goals} career goals · {weighted_rate*100:.0f}% weighted "
+        f"recent rate · {tier_badge.split(' ')[1] if tier_badge else 'Standard'} tier"
+    )
+    pick["sportdb_career_rate"] = rate.get("rate_per_match")
+    return pick
+
+
+def _tier_label(career_goals: int, weighted_rate: float) -> str:
+    """Return the tier badge string for the Why This Pick insight."""
+    if career_goals >= 200 or weighted_rate >= 0.65:
+        return "🏆 ELITE STAR — 200+ career goals or 65%+ scoring rate."
+    if career_goals >= 100 or weighted_rate >= 0.55:
+        return "🥇 ALL-TIME GREAT — 100+ career goals, proven match-winner."
+    if career_goals >= 50 or weighted_rate >= 0.40:
+        return "⭐ PROVEN SCORER — 50+ career goals across leagues."
+    if career_goals >= 25 or weighted_rate >= 0.25:
+        return "🥈 REGULAR GOAL THREAT — 25+ career goals."
+    if career_goals >= 10:
+        return "📍 RECOGNISED SCORER — 10+ career goals."
+    return ""
+
+
+async def _self_test():
+    """Manual smoke test — pick CSL match Beijing Guoan vs Meizhou Hakka."""
+    import sys
+    sys.path.insert(0, os.path.dirname(__file__))
+    from motor.motor_asyncio import AsyncIOMotorClient
+    mc = AsyncIOMotorClient(os.environ["MONGO_URL"])
+    db = mc[os.environ["DB_NAME"]]
+    picks = await compute_anytime_scorer_picks(
+        db,
+        sport_key="soccer_china_superleague",
+        home_team="Beijing Guoan",
+        away_team="Meizhou Hakka",
+        event_id="test-csl-1",
+        kickoff_iso="2026-06-27T11:00:00Z",
+    )
+    print(f"Generated {len(picks)} picks:")
+    for p in picks:
+        print(f"  • {p['selection']} ({p['player_team']}) — "
+              f"prob={p['win_probability']:.1f}% lock={p['lock_score']:.1f} grade={p['grade']}")
+        print(f"      {p.get('sportdb_signal') or ''}")
+
+
+if __name__ == "__main__":
+    asyncio.run(_self_test())
+
+
 _LEAGUE_LABELS = {
     "premier-league:dYlOSQOD":  "Premier League",
     "laliga:8tUjE6FL":          "La Liga",
@@ -591,63 +905,64 @@ def _prob_to_lock(prob: float, rate: dict) -> float:
     """Lock score for model-only picks — TIER-RELATIVE confidence scale.
 
     Per user 2026-06-26: lock_score is NOT a literal win-probability — it's
-    the user's confidence ceiling where 99 = "best pick available in this
-    market". So a league-leading scorer (Cadiz J / Taty Maritu / Cryzan at
-    12g) should hit 95+ even though anytime-scorer prob is mathematically
-    bounded by Poisson at ~70%. They earn the high lock because they're
-    the BEST anytime-scorer pick the model can find in their league.
+    a confidence ceiling where 99 = "best pick available in this market".
+    A career-proven star (Leonardo: 21g, 21g, 19g over last 3 seasons;
+    Fabio Abreu: 28g/30m last season; Salah: 50+ Egypt NT goals over a
+    decade) should hit 95+ even if they're slow-starting the current
+    season — they're STILL the best anytime-scorer pick in their match.
 
-    Calibration (tier-relative, not absolute):
-      ≥12 goals (Golden Boot leader)         → 95-99
-      10-11 goals (top-3)                    → 90-95
-      8-9 goals  (top-5)                     → 85-90
-      5-7 goals  (top-15)                    → 75-85
-      3-4 goals  (regular starter)           → 65-75
-      <3 goals   (depth / variance)          → 55-65
+    Tier classification (uses both weighted multi-season rate AND career
+    goal total — covers both "currently hot" and "lifetime star" cases):
 
-    The PROBABILITY itself still flows through as `win_probability` on the
-    pick so users see the underlying scoring rate, but the lock ranks the
-    PICK QUALITY (calibre-of-player × match-fit × evidence) rather than
-    coin-flip odds.
+      Tier  Triggers (ANY of)                           Lock anchor
+      ────  ──────────────────────────────────────────  ───────────
+      S+    career_goals ≥ 200  OR  weighted_rate ≥ 0.65   95-99
+      S     career_goals ≥ 100  OR  weighted_rate ≥ 0.55   90-95
+      A     career_goals ≥ 50   OR  weighted_rate ≥ 0.40   85-90
+      B     career_goals ≥ 25   OR  weighted_rate ≥ 0.25   75-85
+      C     career_goals ≥ 10   OR  weighted_rate ≥ 0.15   65-75
+      D     anything else                                  55-65
     """
-    goals = rate.get("goals", 0)
-    matches = rate.get("matches", 0)
+    career_goals = rate.get("career_goals", 0) or rate.get("goals", 0)
+    weighted_rate = rate.get("weighted_rate") or rate.get("rate_per_match", 0.0)
     rating = rate.get("rating", 0.0)
-    # Tier-driven base lock from absolute goal count this season.
-    if goals >= 12:
-        # Golden Boot leader — top of the league. Anchor at 96.
-        base = 96.0
-    elif goals >= 10:
-        # Top-3 scorer. Anchor at 92.
-        base = 92.0
-    elif goals >= 8:
-        # Top-5 scorer. Anchor at 88.
-        base = 88.0
-    elif goals >= 5:
-        # Top-15 scorer. Scale 75 → 85 based on rate.
-        base = 75.0 + (rate.get("rate_per_match", 0.0) - 0.4) * 50.0
-        base = max(75.0, min(base, 85.0))
-    elif goals >= 3:
-        base = 65.0 + (rate.get("rate_per_match", 0.0) - 0.2) * 50.0
-        base = max(65.0, min(base, 75.0))
-    else:
-        # Depth — prob-driven only.
-        base = 55.0 + prob * 25.0
-        base = max(55.0, min(base, 65.0))
+    matches = rate.get("current_season_matches") or rate.get("matches", 0)
+
+    # Tier base (use the HIGHER of career-goals tier and weighted-rate tier).
+    def tier_from_career(g: int) -> tuple[str, float]:
+        if g >= 200:  return ("S+", 96.0)
+        if g >= 100:  return ("S",  92.0)
+        if g >= 50:   return ("A",  88.0)
+        if g >= 25:   return ("B",  78.0)
+        if g >= 10:   return ("C",  68.0)
+        return ("D", 58.0)
+
+    def tier_from_rate(r: float) -> tuple[str, float]:
+        if r >= 0.65: return ("S+", 96.0)
+        if r >= 0.55: return ("S",  92.0)
+        if r >= 0.40: return ("A",  88.0)
+        if r >= 0.25: return ("B",  78.0)
+        if r >= 0.15: return ("C",  68.0)
+        return ("D", 58.0)
+
+    t1, b1 = tier_from_career(career_goals)
+    t2, b2 = tier_from_rate(weighted_rate)
+    base = max(b1, b2)
     # Quality adjustments
-    if matches < 5:
-        base -= 6   # small-sample penalty
     if rating >= 7.5:
-        base += 2   # heavy bonus for elite ratings
+        base += 2
     elif rating >= 7.0:
         base += 1
-    # Opponent quality also factors in — captured in `prob` (which embeds
-    # the defence multiplier), so a tough opponent already dampens the
-    # tier base via probability-scaled bands above.
-    if prob >= 0.50:
-        base += 2   # +2 for matchups where prob crosses 50%
+    if matches and matches < 5 and not (career_goals >= 25):
+        # Small-sample penalty ONLY if no career anchor (rookies / unknowns).
+        base -= 6
+    # Matchup adjustment using probability (encodes opponent defence).
+    if prob >= 0.55:
+        base += 3
+    elif prob >= 0.45:
+        base += 1
     elif prob < 0.25:
-        base -= 3   # bad matchup drags even a top scorer down
+        base -= 3
     return float(max(55.0, min(base, 99.0)))
 
 

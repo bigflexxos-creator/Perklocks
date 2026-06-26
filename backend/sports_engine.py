@@ -2518,6 +2518,60 @@ async def generate_all_picks(
     except Exception as _xg_err:
         logger.warning("SportDB xG enrichment skipped: %s", _xg_err)
 
+    # ─── Phase 2.6: Career-history enrichment for ALL goalscorer picks ───
+    # User 2026-06-26: "pull history for players" — every player named on a
+    # goalscorer / score-or-assist / first-scorer pick gets a SportDB career
+    # lookup. The tier classifier in sportdb_player_scorer._prob_to_lock
+    # then re-anchors the lock_score using career_goals + weighted_rate
+    # across the player's last 4 seasons (league + national team + intl cups
+    # combined). Examples that this catches:
+    #   • Mané at Senegal: National Team tab shows 30+ Egypt goals → Tier S
+    #   • Leonardo at Shanghai Port: 21g+21g+19g last 3 → Tier S
+    #   • Fabio Abreu at Beijing Guoan: 28g/30m last season → Tier S
+    # Bookmaker picks only get BOOSTED (never downgraded) so this is a pure
+    # quality lift. Best-effort wrapper so it never blocks the slate.
+    try:
+        from server import db as _db
+        import sportdb_player_scorer as _sps
+        _label_to_key2 = {v.lower(): k for k, v in LEAGUE_LABELS.items()
+                          if k.startswith("soccer_")}
+        # Goalscorer-style markets we want to enrich
+        _scorer_market_substrings = (
+            "anytime goal scorer", "to score or assist",
+            "first goal scorer", "scorer", "score or assist",
+        )
+        scorer_picks = [
+            p for p in all_picks
+            if p.get("sport") == "Soccer"
+            and any(s in (p.get("market") or "").lower() for s in _scorer_market_substrings)
+            and not p.get("is_synthetic_scorer")  # synth picks already have career data
+        ]
+        boosted_count = 0
+        for p in scorer_picks:
+            sport_key = p.get("sport_key") or _label_to_key2.get(
+                (p.get("league") or "").lower()
+            )
+            # League · Props strip — `league` field for props is "Premier League · Props"
+            if not sport_key:
+                lbl = (p.get("league") or "").lower().replace(" · props", "").strip()
+                sport_key = _label_to_key2.get(lbl)
+            if not sport_key:
+                continue
+            try:
+                before = p.get("lock_score") or 0.0
+                await _sps.enrich_bookmaker_scorer_pick(_db, p, sport_key)
+                after = p.get("lock_score") or 0.0
+                if after > before:
+                    boosted_count += 1
+            except Exception as _sc_err:
+                logger.debug("Career enrich for %s failed: %s",
+                             p.get("selection") or p.get("id"), _sc_err)
+        if boosted_count:
+            logger.info("SportDB career enrichment: %d goalscorer picks boosted",
+                        boosted_count)
+    except Exception as _sc_err2:
+        logger.warning("SportDB career enrichment skipped: %s", _sc_err2)
+
     # ─── Dedupe highly-correlated picks ───
     # Books offer both "Player Over 0.5 Hits" AND "Player Over 0.5 Total
     # Bases" — these are basically the same bet (a hit guarantees a total
