@@ -73,7 +73,7 @@ except Exception as _picks_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.26-admin-heal-button-2"
+DATA_VERSION = "2026.06.26-auto-relax-thin-slate"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -2079,6 +2079,65 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     lt = (line_type or "").lower()
     default_floor = 75.0 if market else (55.0 if lt == "alt" else 85.0)
     floor = max(default_floor, float(min_lock)) if min_lock is not None else default_floor
+    # ── Auto-relax floor when the slate is genuinely thin ──────────────
+    # User complaint 2026-06-26: "only 1 game showing up". Root cause was
+    # genuine low slate (off-season for several sports, only 14 picks in
+    # DB on that day, 3 high-lock, in-play filter cuts most of those).
+    # Rather than show a near-empty board, count how many picks pass the
+    # strict floor; if it's <8, progressively relax to 75 → 65 → 55 so
+    # the user always sees at least some actionable picks. We only do
+    # this on the unfiltered "All" feed (no market / league / day_offset
+    # narrowing) where the user expects the full slate.
+    auto_relaxed_from: Optional[float] = None
+    if (min_lock is None and market is None and league is None
+            and not day_offset and not grade and lt != "alt"):
+        try:
+            _td = _today_str()
+            count_at_floor = await db.picks.count_documents({
+                "pick_date": _td,
+                "$or": [
+                    {"lock_score": {"$gte": floor}},
+                    {"lock_score_v2": {"$gte": floor}},
+                ],
+                "no_bet": {"$ne": True},
+                "edge_percent": {"$gte": 0},
+            })
+            # Try lower floors only if the strict slate is meaningfully thin.
+            # 8 is the cutoff because below that you can't even build a
+            # 3-leg parlay variety, which defeats the product purpose.
+            if count_at_floor < 8:
+                for relaxed in (75.0, 65.0, 55.0):
+                    if relaxed >= floor:
+                        continue
+                    relaxed_count = await db.picks.count_documents({
+                        "pick_date": _td,
+                        "$or": [
+                            {"lock_score": {"$gte": relaxed}},
+                            {"lock_score_v2": {"$gte": relaxed}},
+                        ],
+                        "no_bet": {"$ne": True},
+                        "edge_percent": {"$gte": 0},
+                    })
+                    if relaxed_count >= 8:
+                        auto_relaxed_from = floor
+                        floor = relaxed
+                        logger.info(
+                            "Home feed auto-relaxed floor %s → %s (was %d picks, now %d)",
+                            auto_relaxed_from, floor, count_at_floor, relaxed_count,
+                        )
+                        break
+                else:
+                    # Even at 55 it's thin; pin floor at 55 anyway so the
+                    # user at least sees everything in the DB.
+                    if floor > 55.0:
+                        auto_relaxed_from = floor
+                        floor = 55.0
+                        logger.info(
+                            "Home feed auto-relaxed floor %s → 55 (slate thin across all bands)",
+                            auto_relaxed_from,
+                        )
+        except Exception as _relax_err:
+            logger.debug("Auto-relax probe failed (non-fatal): %s", _relax_err)
     # Two-bucket query:
     #  • Standard picks: must pass lock floor + edge >= 0 + not no_bet
     #  • Elite-player anchors (Mbappé, Haaland, Messi, Kane, Ronaldo synth FGS
