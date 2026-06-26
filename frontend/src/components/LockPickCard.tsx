@@ -99,6 +99,11 @@ export function LockPickCard({ pick }: { pick: Pick }) {
                 <Text style={styles.extraTagText}>EXT</Text>
               </View>
             )}
+            {(pick as any).is_model_only && (
+              <View style={styles.modelTag}>
+                <Text style={styles.modelTagText}>MODEL</Text>
+              </View>
+            )}
             <Text style={styles.league} numberOfLines={1}>{pick.league}</Text>
             <View style={[styles.gradePill, { borderColor: gradeColor, backgroundColor: gradeColor + "18" }]}>
               <Text style={[styles.gradePillText, { color: gradeColor }]} numberOfLines={1}>
@@ -359,6 +364,20 @@ const styles = StyleSheet.create({
   },
   extraTagText: {
     color: "#FFA94D", fontSize: 10, fontWeight: "900",
+    letterSpacing: 1.2,
+  },
+  // ── MODEL badge — for synthetic picks where no bookmaker line exists.
+  // Examples: CSL anytime-goal-scorer picks built from SportDB stats.
+  // Purple palette signals "data-driven derivation" — distinct from EXT
+  // (line scrape) and ELITE (player tier). Lets the user instantly know
+  // there's no real market price to compare edge against.
+  modelTag: {
+    paddingHorizontal: 7, paddingVertical: 3, borderRadius: 4,
+    borderWidth: 1, borderColor: "#A78BFA",
+    backgroundColor: "#A78BFA22",
+  },
+  modelTagText: {
+    color: "#A78BFA", fontSize: 10, fontWeight: "900",
     letterSpacing: 1.2,
   },
   league: { color: COLORS.textMuted, fontSize: 11, fontWeight: "600", flex: 1 },
