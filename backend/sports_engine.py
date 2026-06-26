@@ -2154,8 +2154,18 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             except Exception:
                 pass
         lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
-        if is_elite_scorer and lock < 78.0:
-            lock = 78.0
+        # ── Elite floor: 88 (was 78) ──
+        # User report 2026-06-26: "Haaland, Kane, Mbappé, Messi not under every
+        # tab — only score-or-assist tab — then you put randoms under anytime
+        # goal". Root cause: previous floor of 78 sat BELOW the home board's
+        # default 85 min_lock, so stars were being filtered out at display
+        # time. The 88 floor guarantees every ELITE_PLAYERS hit clears the
+        # board cutoff regardless of which market they're priced for. Multi-
+        # source career enrichment can still push them HIGHER (Mbappé → 98)
+        # via the post-build pass in generate_all_picks; this floor is just
+        # the safety net for when that enrichment fails or is skipped.
+        if is_elite_scorer and lock < 88.0:
+            lock = 88.0
         label_point = None if mk in ("player_goal_scorer_anytime", "player_to_score_or_assist", "player_first_goal_scorer", "mma_method_of_victory") else point
         if mk == "player_goal_scorer_anytime":
             market_label = f"{player} Anytime Goal Scorer"
