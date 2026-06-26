@@ -445,21 +445,33 @@ def compute_components(pick: dict) -> TennisComponents:
     )
 
     # NO_BET reason — populated so we can log which gate dropped a pick.
-    # Heavy-chalk Tennis moneylines (book ≤ -500) and alt-line picks are
-    # exempt from the strict 5% edge gate — for these the "lock" rationale
-    # is player class / line softness, not raw edge. Per user spec:
-    # "OK to use alt lines and moneyline -500 and under when building
-    # Tennis Locks."
+    #
+    # ── 2026-06-26 USER PRINCIPLE: locks must EARN their tier ──
+    # Previously every tennis ML bypassed the edge gate (the "is_chalk_ml
+    # = is_ml" blanket exception). That let -300 / -500 chalk MLs slip
+    # into the slate at Lock+ tier purely because the book was short —
+    # not because we had evidence the line was soft. User explicitly
+    # asked (2026-06-26): "Make sure no locks ml or apex picks are being
+    # locked just because of spread and high odds."
+    #
+    # New rule: the ML anchor path is ONLY available when the pick has
+    # an actual market edge of ≥ 2% (a softness signal) OR is heavy
+    # chalk (book ≤ -500, where the win prob is so high it overwhelms
+    # the small juice). Mid-chalk MLs (Gauff -137, Fritz -230, Paul
+    # -210) now go through the standard gate and have to clear the 5%
+    # edge floor like every other market — preventing the "Coco Gauff
+    # -6.5 spread is 99 lock → therefore her ML must be APEX" cross-
+    # market promotion the user pointed out.
     book_odds = pick.get("book_odds")
     market_l = (pick.get("market") or "").lower()
     is_ml = ("moneyline" in market_l) or market_l.startswith("h2h") or market_l == "winner"
-    # Treat ALL tennis MLs as anchor path — books are highly accurate on 1v1
-    # markets so the chalk-ML exception (-500+) should extend to every ML.
-    # Without this, moderate-chalk MLs (Fritz -230, Paul -210, Pegula -167)
-    # all failed the 5% edge gate even when survivability + form were elite.
-    # User complaint: "why don't tennis produce money line picks" → root
-    # cause was the post-build edge gate, NOT the per-pick edge floor.
-    is_chalk_ml = is_ml
+    # Try to parse American odds — used for the heavy-chalk carve-out only.
+    try:
+        american_odds = int(pick.get("american_odds") or pick.get("book_odds") or 0)
+    except (TypeError, ValueError):
+        american_odds = 0
+    is_heavy_chalk_ml = is_ml and american_odds <= -500
+    is_chalk_ml = is_ml and (is_heavy_chalk_ml or comp.market_edge >= 2.0)
     is_alt = ("alt" in market_l) or ("alt" in (pick.get("line_type") or "").lower())
 
     if not (is_chalk_ml or is_alt):
