@@ -40,6 +40,23 @@ type UserRow = {
   last_login_at?: string | null;
 };
 
+type OddsDiag = {
+  odds_api: {
+    has_key: boolean;
+    key_tail: string;
+    disabled: boolean;
+    disabled_reason: string;
+    consecutive_401s: number;
+    consecutive_failures: number;
+    total_ok: number;
+    total_fail: number;
+    last_error: string;
+  };
+  picks_today_total: number;
+  picks_today_high_lock: number;
+  today_utc: string;
+};
+
 export default function AdminDashboardScreen() {
   const { user } = useAuth();
   const [overview, setOverview] = useState<OverviewResp | null>(null);
@@ -56,6 +73,11 @@ export default function AdminDashboardScreen() {
   const [usersLoading, setUsersLoading] = useState(false);
   const [mutating, setMutating] = useState<string | null>(null);  // user_id currently being toggled
 
+  // ── Odds API diagnostic + heal state ──
+  const [oddsDiag, setOddsDiag] = useState<OddsDiag | null>(null);
+  const [healing, setHealing] = useState(false);
+  const [healMsg, setHealMsg] = useState<string | null>(null);
+
   // Guard — non-admins shouldn't ever land here, but if they navigate
   // by URL we route them home.
   useEffect(() => {
@@ -67,12 +89,14 @@ export default function AdminDashboardScreen() {
   const load = useCallback(async () => {
     setErr(null);
     try {
-      const [o, t] = await Promise.all([
+      const [o, t, diag] = await Promise.all([
         api.request<OverviewResp>("/admin/overview"),
         api.request<{ top: TopUser[] }>("/admin/top-api-users?limit=25"),
+        api.request<OddsDiag>("/admin/odds-diagnostic").catch(() => null),
       ]);
       setOverview(o);
       setTop(t?.top || []);
+      setOddsDiag(diag as OddsDiag | null);
     } catch (e: any) {
       setErr(e?.message || "Failed to load");
     } finally {
@@ -124,6 +148,26 @@ export default function AdminDashboardScreen() {
   };
 
   const onRefresh = () => { setRefreshing(true); load(); };
+
+  // ── Heal Picks: one-tap circuit-breaker reset + force refresh ──
+  const onHeal = useCallback(async () => {
+    setHealing(true);
+    setHealMsg(null);
+    try {
+      await api.request("/admin/picks/heal");
+      setHealMsg("Healing queued. Picks will reload in ~45s — pull to refresh.");
+      // Refresh diagnostic after 45s so we see the effect
+      setTimeout(() => {
+        api.request<OddsDiag>("/admin/odds-diagnostic")
+          .then(setOddsDiag)
+          .catch(() => {});
+      }, 45000);
+    } catch (e: any) {
+      setHealMsg(e?.message || "Heal failed — check console");
+    } finally {
+      setHealing(false);
+    }
+  }, []);
 
   if (loading) {
     return (
@@ -188,6 +232,85 @@ export default function AdminDashboardScreen() {
           <Tile label="PARLAYS 24h"  value={a?.parlays_24h ?? 0} />
           <Tile label="PARLAYS ALL"  value={a?.parlays_total ?? 0} />
         </View>
+
+        {/* ── Odds API Health + Heal button ── */}
+        {oddsDiag && oddsDiag.odds_api && (
+          <>
+            <Text style={[styles.sectionTitle, { marginTop: 22 }]}>
+              ODDS API HEALTH
+            </Text>
+            <View style={styles.healthCard}>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 8 }}>
+                <Text style={styles.healthLabel}>STATUS</Text>
+                <View style={[
+                  styles.statusPill,
+                  oddsDiag?.odds_api?.disabled
+                    ? { backgroundColor: COLORS.warmRed }
+                    : oddsDiag?.odds_api?.has_key
+                      ? { backgroundColor: COLORS.signalGreen }
+                      : { backgroundColor: COLORS.warmRed },
+                ]}>
+                  <Text style={styles.statusPillText}>
+                    {oddsDiag?.odds_api?.disabled
+                      ? "CIRCUIT OPEN"
+                      : oddsDiag?.odds_api?.has_key
+                        ? "OK"
+                        : "NO KEY"}
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.healthRow}>
+                <Text style={styles.healthLabel}>KEY</Text>
+                <Text style={styles.healthVal}>
+                  {oddsDiag?.odds_api?.has_key
+                    ? `loaded ${oddsDiag?.odds_api?.key_tail || ""}`
+                    : "MISSING — set THE_ODDS_API_KEY in Secrets"}
+                </Text>
+              </View>
+              <View style={styles.healthRow}>
+                <Text style={styles.healthLabel}>SUCCESS / FAIL</Text>
+                <Text style={styles.healthVal}>
+                  {oddsDiag?.odds_api?.total_ok ?? 0} ok · {oddsDiag?.odds_api?.total_fail ?? 0} fail
+                </Text>
+              </View>
+              <View style={styles.healthRow}>
+                <Text style={styles.healthLabel}>PICKS IN DB</Text>
+                <Text style={styles.healthVal}>
+                  {oddsDiag?.picks_today_total ?? 0} total · {oddsDiag?.picks_today_high_lock ?? 0} high-lock
+                </Text>
+              </View>
+              {oddsDiag?.odds_api?.disabled && oddsDiag?.odds_api?.disabled_reason && (
+                <View style={styles.healthRow}>
+                  <Text style={styles.healthLabel}>REASON</Text>
+                  <Text style={[styles.healthVal, { color: COLORS.warmRed }]} numberOfLines={2}>
+                    {oddsDiag.odds_api.disabled_reason}
+                  </Text>
+                </View>
+              )}
+              <Pressable
+                onPress={onHeal}
+                disabled={healing}
+                style={[styles.healBtn, healing && { opacity: 0.5 }]}
+              >
+                {healing ? (
+                  <ActivityIndicator color="#000" />
+                ) : (
+                  <>
+                    <Ionicons name="medkit" size={16} color="#000" />
+                    <Text style={styles.healBtnText}>HEAL PICKS NOW</Text>
+                  </>
+                )}
+              </Pressable>
+              {healMsg && (
+                <Text style={styles.healMsg}>{healMsg}</Text>
+              )}
+              <Text style={styles.healHint}>
+                Resets the Odds API circuit breaker and force-refreshes today&apos;s picks.
+                Use this after rotating THE_ODDS_API_KEY or if the board is unexpectedly empty.
+              </Text>
+            </View>
+          </>
+        )}
 
         {/* ── Top API consumers ── */}
         <Text style={[styles.sectionTitle, { marginTop: 22 }]}>
@@ -469,4 +592,48 @@ const styles = StyleSheet.create({
     color: COLORS.voltBlue, fontSize: 11, fontWeight: "900", letterSpacing: 0.8,
   },
   pagerLabel: { color: COLORS.textSecondary, fontSize: 12, fontWeight: "700" },
+
+  // ── Odds API Health card ──
+  healthCard: {
+    padding: 14, borderRadius: 12, borderWidth: 1,
+    borderColor: COLORS.borderDefault, backgroundColor: COLORS.surface,
+    marginBottom: 8,
+  },
+  healthRow: {
+    flexDirection: "row", justifyContent: "space-between",
+    alignItems: "center", paddingVertical: 4,
+  },
+  healthLabel: {
+    color: COLORS.textMuted, fontSize: 10,
+    fontWeight: "800", letterSpacing: 0.8,
+  },
+  healthVal: {
+    color: COLORS.textPrimary, fontSize: 12,
+    fontWeight: "600", flex: 1, textAlign: "right",
+  },
+  statusPill: {
+    paddingHorizontal: 10, paddingVertical: 4,
+    borderRadius: 8, alignItems: "center", justifyContent: "center",
+  },
+  statusPillText: {
+    color: "#000", fontSize: 10,
+    fontWeight: "900", letterSpacing: 0.8,
+  },
+  healBtn: {
+    marginTop: 12, paddingVertical: 12, borderRadius: 10,
+    backgroundColor: COLORS.goldElite,
+    flexDirection: "row", alignItems: "center", justifyContent: "center",
+    gap: 8,
+  },
+  healBtnText: {
+    color: "#000", fontSize: 13, fontWeight: "900", letterSpacing: 0.8,
+  },
+  healMsg: {
+    color: COLORS.signalGreen, fontSize: 12, marginTop: 8,
+    textAlign: "center", fontWeight: "600",
+  },
+  healHint: {
+    color: COLORS.textMuted, fontSize: 11, marginTop: 8,
+    lineHeight: 16, textAlign: "center",
+  },
 });
