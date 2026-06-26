@@ -218,6 +218,46 @@ def _norm(name: str) -> str:
     return n
 
 
+# ── Legacy / rebranded team-name aliases ───────────────────────────────
+# Odds API often keeps stale legacy club names ("Shandong Luneng", which
+# rebranded to "Shandong Taishan" years ago). SportDB uses the modern
+# name. Without this mapping the team resolver fails fuzzy-match because
+# the extra word "Luneng" widens the edit distance past containment.
+#
+# Each entry is a normalised-input → normalised-canonical mapping. Add
+# new aliases here when a CSL / Chinese / Saudi / Brazilian team name
+# fails to resolve (most common rebrand cases).
+_TEAM_NAME_ALIASES: dict[str, str] = {
+    # China Super League rebrands
+    "shandong luneng taishan":      "shandong taishan",
+    "shandong luneng":              "shandong taishan",
+    "shanghai sipg":                "shanghai port",
+    "guangzhou evergrande":         "guangzhou",
+    "guangzhou evergrande taobao":  "guangzhou",
+    "jiangsu suning":               "jiangsu",
+    "tianjin tianhai":              "tianjin",
+    "tianjin teda":                 "tianjin jinmen tiger",
+    "tianjin quanjian":             "tianjin tigers",
+    "beijing renhe":                "beijing",
+    "beijing guoan":                "beijing",
+    "dalian yifang":                "dalian pro",
+    "dalian aerbin":                "dalian pro",
+    "guangzhou r f":                "guangzhou city",
+    "wuhan zall":                   "wuhan three towns",
+    # Saudi / others can be added here as they're encountered.
+}
+
+
+def _apply_team_alias(team_name: str) -> str:
+    """Map a known legacy/rebranded team name to its modern canonical
+    name. Returns the original string unchanged if no alias hits."""
+    if not team_name:
+        return team_name
+    nq = _norm(team_name)
+    canonical = _TEAM_NAME_ALIASES.get(nq)
+    return canonical if canonical else team_name
+
+
 async def _resolve_team_id(db, country_slug: str, comp_slug: str, season: str,
                             team_name: str) -> Optional[tuple[str, str]]:
     """Find (team_id, team_slug) by matching against the league's standings.
@@ -237,6 +277,12 @@ async def _resolve_team_id(db, country_slug: str, comp_slug: str, season: str,
             await _cache_set(db, cache_key, cached)
     if not isinstance(cached, list):
         return None
+    # Apply rebranded-team alias BEFORE normalising — Odds API uses legacy
+    # club names ("Shandong Luneng Taishan FC") while SportDB has the
+    # modern names ("Shandong Taishan"). Without this the fuzzy match
+    # fails and the team's entire forward roster gets skipped — meaning
+    # players like Cryzan never get synthetic goalscorer picks.
+    team_name = _apply_team_alias(team_name)
     nq = _norm(team_name)
     if not nq:
         return None
