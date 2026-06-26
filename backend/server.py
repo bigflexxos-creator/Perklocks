@@ -272,8 +272,36 @@ def _canonicalize_lock_score(pick: dict) -> dict:
         if final_lock > 0:
             pick["grade"]      = _re_grade(final_lock)
             pick["confidence"] = _re_conf(final_lock)
-    except Exception as _re_err:
-        logger.debug("grade re-derive skipped: %s", _re_err)
+    # ── ELITE PLAYER FLOOR — final read-time guard ────────────────────
+    # Belt-and-suspenders enforcement: any pick flagged `elite_player=True`
+    # (Salah, Mbappé, Haaland, Messi, Kane, Ronaldo, Judge, Sinner, etc.)
+    # is ALWAYS surfaced at the 95+ Strong Lock floor regardless of what
+    # the underlying lock_score / lock_score_v2 fields hold. This survives
+    # validator drift, learning-loop demotions, and stale governed values
+    # — the user repeatedly asked for elites to appear under every market
+    # tab at lock 95+ "because lock score reflects reputation/history,
+    # not raw win probability" (2026-06-26).
+    try:
+        if pick.get("elite_player"):
+            cur_lock = float(pick.get("lock_score") or 0)
+            if cur_lock < 95.0:
+                from sports_engine import _grade as _eg, _confidence as _ec
+                # Lift to max(95, peak) so a pick that previously hit 99
+                # stays at 99 — never demote below an earlier peak.
+                try:
+                    peak = float(pick.get("lock_score_peak") or 0)
+                except Exception:
+                    peak = 0
+                new_lock = round(min(99.0, max(95.0, peak)), 1)
+                pick["lock_score"]      = new_lock
+                pick["lock_score_raw"]  = new_lock
+                pick["lock_score_v2"]   = max(pick.get("lock_score_v2") or 0, new_lock)
+                pick["grade"]           = _eg(new_lock)
+                pick["confidence"]      = _ec(new_lock)
+                pick["pinned"]          = True
+                pick["elite_floor_applied_at_read"] = True
+    except Exception as _ef_err:
+        logger.debug("elite floor enforcement skipped: %s", _ef_err)
     return pick
 
 
