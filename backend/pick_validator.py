@@ -169,6 +169,30 @@ async def validate_and_heal(db) -> dict:
         # Also widen the diff tolerance from 1.0 → 4.0 so micro-jitter in
         # factor recomputation doesn't trigger pointless rewrites.
         if compute_lock_score and wp is not None and (p.get("sport") or "") != "Tennis":
+            # See ANCHOR CARVE-OUTS comment in step 4 below.
+            _is_model_only = bool(
+                p.get("elite_player")
+                or p.get("lock_anchored_to_sim")
+                or p.get("is_model_only")
+                or p.get("is_synthetic_scorer")
+                or (p.get("source") or "").startswith("sportdb_scorer")
+            )
+            # For model-only / sim-anchored / elite picks: their edge_percent
+            # is meaningless (no real bookmaker line to compute against).
+            # The validator's edge re-computation drives those values to
+            # ~-8% which then trips the `edge_percent >= 0` gate on the
+            # home feed and silently hides Silva Felipe / Guy Mbenza / Wei
+            # Shihao etc. Pin those to 0 instead of letting the validator
+            # write a meaningless negative number.
+            if _is_model_only:
+                try:
+                    _edge_now = float(p.get("edge_percent") or 0)
+                except (TypeError, ValueError):
+                    _edge_now = 0.0
+                if _edge_now < 0:
+                    p["edge_percent"] = 0.0
+                    p["edge_zeroed_reason"] = "model_only_no_real_book"
+                    updates += 1
             # ── ANCHOR CARVE-OUTS ─────────────────────────────────────────
             # Two pick categories whose lock_score is intentionally NOT a
             # direct function of factors+win_prob — re-running the generic
