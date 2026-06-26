@@ -9,6 +9,7 @@ import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { AuthProvider } from "@/src/contexts/AuthContext";
 import { BetSlipProvider } from "@/src/contexts/BetSlipContext";
 import { MLBLiveProvider } from "@/src/contexts/MLBLiveContext";
+import { FiltersProvider } from "@/src/stores/useFilters";
 import { ErrorBoundary } from "@/src/components/ErrorBoundary";
 import {
   runCacheBustIfNeeded,
@@ -67,12 +68,14 @@ export default function RootLayout() {
       <ErrorBoundary>
         <SafeAreaProvider>
           <AuthProvider>
-            <BetSlipProvider>
-              <MLBLiveProvider>
-                <StatusBar style="light" />
-                <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0A0A0A" } }} />
-              </MLBLiveProvider>
-            </BetSlipProvider>
+            <FiltersProvider>
+              <BetSlipProvider>
+                <MLBLiveProvider>
+                  <StatusBar style="light" />
+                  <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0A0A0A" } }} />
+                </MLBLiveProvider>
+              </BetSlipProvider>
+            </FiltersProvider>
           </AuthProvider>
         </SafeAreaProvider>
       </ErrorBoundary>
