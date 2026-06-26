@@ -2370,30 +2370,65 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
             sport, key, len(upcoming), len(selected), cap,
             anchor_count, elite_count,
         )
+        # Soccer leagues where the bookmaker rarely / never publishes player
+        # markets — for these we ALWAYS run the SportDB synthetic scorer
+        # engine alongside whatever bookmaker payload we get back, so top
+        # scorers based on multi-season career history (e.g. Leonardo's
+        # 21/21/19 goal seasons in CSL, Fábio Abreu's 28-goal Beijing Guoan
+        # campaign) surface even when the book technically published a
+        # spread or moneyline for the match. User explicitly requested
+        # this 2026-06-26: "yes auto-include lower leagues".
+        _ALWAYS_SYNTH_SOCCER_KEYS = {
+            "soccer_china_superleague",
+            "soccer_china_league_one",
+            "soccer_japan_j1_league",
+            "soccer_japan_j2_league",
+            "soccer_korea_k_league_1",
+            "soccer_usa_mls",
+            "soccer_argentina_primera_division",
+            "soccer_brazil_serie_b",
+            "soccer_brazil_campeonato",
+            "soccer_finland_veikkausliiga",
+            "soccer_sweden_allsvenskan",
+            "soccer_sweden_superettan",
+            "soccer_norway_eliteserien",
+            "soccer_denmark_superliga",
+            "soccer_australia_aleague",
+            "soccer_mexico_ligamx",
+            "soccer_portugal_primeira_liga",
+        }
         for _, ev in selected:
             await asyncio.sleep(1.1)  # space requests under rate limit
             payload = await _fetch_event_props_payload(sport, key, ev["id"])
-            if isinstance(payload, dict) and payload.get("bookmakers"):
+            book_had_player_markets = isinstance(payload, dict) and bool(payload.get("bookmakers"))
+            if book_had_player_markets:
                 payload["id"] = ev["id"]
                 rng = random.Random(abs(hash(ev["id"])) % 10000)
                 all_picks.extend(_props_picks_from_event(
                     sport, LEAGUE_LABELS.get(key, sport), payload,
                     ev["commence_time"], rng))
-            elif sport == "Soccer":
-                # No bookmaker player markets — fall back to the SportDB
-                # synthetic anytime-goal-scorer model. This is the ONLY way
-                # to get player props for leagues like CSL / MLS / J-League
-                # where bookmakers don't bother publishing per-player odds.
-                # Tagged as `is_model_only=True` so the frontend renders a
-                # MODEL badge and excludes them from edge-based metrics.
+            # ── ALSO run the SportDB synth-scorer engine when:
+            #   (a) the bookmaker didn't return player markets at all, OR
+            #   (b) this is a lower-tier league in _ALWAYS_SYNTH_SOCCER_KEYS
+            #       where bookmaker coverage is sparse / favourites-only and
+            #       the user wants top-scorer picks based on career history
+            #       regardless of book coverage.
+            should_run_synth = (
+                sport == "Soccer"
+                and (not book_had_player_markets or key in _ALWAYS_SYNTH_SOCCER_KEYS)
+            )
+            if should_run_synth:
                 try:
                     synth_picks = await _synthetic_soccer_scorer_picks(
                         key, ev,
                     )
                     if synth_picks:
                         logger.info(
-                            "Synthetic scorer picks for %s/%s evt %s: %d",
+                            "Synthetic scorer picks for %s/%s evt %s: %d "
+                            "(book_had_player_markets=%s, always_synth=%s)",
                             sport, key, ev.get("id"), len(synth_picks),
+                            book_had_player_markets,
+                            key in _ALWAYS_SYNTH_SOCCER_KEYS,
                         )
                         all_picks.extend(synth_picks)
                 except Exception as _synth_err:
