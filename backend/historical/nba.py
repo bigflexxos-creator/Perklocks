@@ -65,20 +65,25 @@ async def _get(cx: httpx.AsyncClient, path: str, params: dict | None = None) -> 
     return None
 
 
-async def backfill_current_season(db) -> dict:
-    """Page through games for the current NBA season and store stats."""
+async def backfill_season(db, season: int) -> dict:
+    """Page through games + stats for a specific NBA season.
+
+    NBA season convention: pass the calendar year the season ENDS in
+    (e.g. season=2025 → 2024-25 season). balldontlie.io expects this.
+    """
+    season = int(season)
     games_seen = 0
     games_inserted = 0
     logs_inserted = 0
     errors: list[str] = []
 
     async with httpx.AsyncClient(timeout=_TIMEOUT, headers=_headers()) as cx:
-        # ── 1) Games for current season ─────────────────────
+        # ── 1) Games for the requested season ─────────────────────
         cursor: Optional[int] = None
         page_count = 0
         max_pages = int(os.environ.get("HIST_NBA_MAX_PAGES", "40"))
         while True:
-            params = {"seasons[]": _CURRENT_SEASON, "per_page": _PAGE_SIZE}
+            params = {"seasons[]": season, "per_page": _PAGE_SIZE}
             if cursor:
                 params["cursor"] = cursor
             data = await _get(cx, "/games", params)
@@ -99,6 +104,7 @@ async def backfill_current_season(db) -> dict:
                     {"$set": {
                         "sport": "nba",
                         "date": g.get("date"),
+                        "season": season,
                         "home": home.get("full_name"),
                         "away": away.get("full_name"),
                         "result": {"home": g.get("home_team_score"), "away": g.get("visitor_team_score")},
@@ -113,12 +119,12 @@ async def backfill_current_season(db) -> dict:
             if not cursor or page_count >= max_pages:
                 break
 
-        # ── 2) Stats (per-player per-game) ─────────────────────
+        # ── 2) Stats (per-player per-game) for the requested season ─────
         cursor = None
         page_count = 0
         max_pages = int(os.environ.get("HIST_NBA_STATS_PAGES", "60"))
         while True:
-            params = {"seasons[]": _CURRENT_SEASON, "per_page": _PAGE_SIZE}
+            params = {"seasons[]": season, "per_page": _PAGE_SIZE}
             if cursor:
                 params["cursor"] = cursor
             data = await _get(cx, "/stats", params)
@@ -144,19 +150,24 @@ async def backfill_current_season(db) -> dict:
                     }},
                     upsert=True,
                 )
+                pts = s.get("pts") or 0
+                reb = s.get("reb") or 0
+                ast = s.get("ast") or 0
                 await db.player_game_logs.update_one(
                     {"player_id": f"bd_{pid}", "game_id": f"bd_{game.get('id')}"},
                     {"$set": {
                         "player_id": f"bd_{pid}",
                         "game_id": f"bd_{game.get('id')}",
                         "sport": "nba",
+                        "season": season,
                         "date": game.get("date"),
                         "team": team.get("full_name"),
                         "name": full_name,
                         "minutes": s.get("min"),
-                        "points": s.get("pts"),
-                        "rebounds": s.get("reb"),
-                        "assists": s.get("ast"),
+                        "points": pts,
+                        "rebounds": reb,
+                        "assists": ast,
+                        "pra": (pts or 0) + (reb or 0) + (ast or 0),
                         "steals": s.get("stl"),
                         "blocks": s.get("blk"),
                         "threes_made": s.get("fg3m"),
@@ -175,12 +186,17 @@ async def backfill_current_season(db) -> dict:
                 break
 
     return {
-        "season": _CURRENT_SEASON,
+        "season": season,
         "games_seen": games_seen,
         "games_inserted": games_inserted,
         "player_logs_inserted": logs_inserted,
         "errors": errors[:10],
     }
+
+
+async def backfill_current_season(db) -> dict:
+    """Backward-compatible wrapper — backfills the current NBA season."""
+    return await backfill_season(db, _CURRENT_SEASON)
 
 
 async def incremental_sync(db, since: Optional[datetime] = None) -> dict:
