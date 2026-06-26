@@ -285,6 +285,10 @@ export default function LocksScreen() {
     filterStore.sports, filterStore.leagues, filterStore.markets,
     filterStore.gameIds, filterStore.searchText,
   ]);
+
+  useEffect(() => {
+    // Wipe stale picks the moment the user changes sport OR any
+    // narrowing filter (market / league / event) so the wrong tab can
     // NEVER be shown for even a single frame. Without this, a previous
     // fetch's picks remain visible while the new fetch is in-flight,
     // producing the "H+R+RBI under Strikeouts" visual leak that users
