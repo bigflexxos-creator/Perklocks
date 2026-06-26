@@ -1,0 +1,41 @@
+{
+  "summary": "Backend-only verification of iter 59 SportDB-driven features: (1) Universal Synthetic Anytime Goal Scorer pipeline (sportdb_player_scorer.py) for ~25 non-bookmaker-covered soccer leagues; (2) xG-sharpened soccer totals enrichment (sportdb_xg_totals.py) integrated into sports_engine.generate_all_picks. Created /app/backend/tests/test_sportdb_scorer_xg_iter59.py with 16 tests across 5 classes. 15 PASSED, 1 SKIPPED (informational: today's slate happened to contain no synthetic scorer picks at test time, which is expected behaviour and not a regression). /api/version returns the expected data_version '2026.06.26-sportdb-scorer-xg'. Module imports cleanly with full documented public surface (LEAGUE_MAP=25 leagues incl. CSL/J-League/MLS/K-League, compute_anytime_scorer_picks, SYNTH_MIN_PROB=0.22, SYNTH_MAX_PROB=0.70; enrich_totals_pick_with_xg, _is_totals_pick, get_team_xg_profile all callable). /api/picks/today and /api/picks/today?lite=true respond <2s and 200 OK (≈ 0.05-0.4s in measured runs) — no regression from the xG enrichment integration. _is_totals_pick correctly classifies Over/Under and rejects ML/scorer markets. Admin endpoints (/api/admin/odds-diagnostic, /api/admin/picks/heal, /api/admin/odds-circuit/reset) still auth-gate correctly (401 unauth, 403 demo non-admin). Demo login (demo@lockscore.ai/demo123) and pick detail endpoint still return enriched payloads. No backend errors related to sportdb_player_scorer or sportdb_xg_totals in supervisor logs — only benign WatchFiles reload notifications.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_sportdb_scorer_xg_iter59.py",
+    "/app/test_reports/pytest/iter59_sportdb_scorer_xg.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "sportdb_player_scorer.LEAGUE_MAP covers all 25 documented leagues incl. the primary 'bookmakers don't expose player markets' targets (CSL, J-League, K-League 1, A-League, Eliteserien, Allsvenskan, Veikkausliiga, Danish Superliga, MLS, Brasileirão A+B, Liga MX, Argentina Primera, Saudi Pro League).",
+    "Synthetic scorer pick payload carries the correct downstream tags — is_model_only=true, is_synthetic_scorer=true, source='sportdb_scorer_v1', market='Anytime Goal Scorer (Model)', lock_score capped at 88 — matching the LockPickCard.tsx MODEL badge contract.",
+    "xG enrichment is correctly wrapped in try/except at sports_engine.py L2472-2505 — any SportDB failure logs a warning but does NOT block slate generation (verified by current empty xG signal not affecting /api/picks/today response shape or speed).",
+    "sportdb_xg_totals.enrich_totals_pick_with_xg correctly clamps lock_score adjustments to [55, 95] and mutates in-place without changing selection/market/book_odds — matches documented intent of 'same bet, better-calibrated'.",
+    "sportdb_xg_totals._extract_line parses 'Over 2.5' / 'Under 2.5' correctly via token-wise float parse, with fallback to pick['line'] field.",
+    "Minor: sportdb_xg_totals.py imports the private _resolve_team_id from sportdb_player_scorer (cross-module private API usage). Works but couples the two modules tightly — consider promoting _resolve_team_id to a public helper if it gets reused further.",
+    "Daily-budget counters (_DAILY_LIMIT=200 in scorer, =250 in xG) are module-local — they don't share a global counter, so a busy day could burn 450 SportDB credits combined before either tripped. Acceptable per design (12-30 day caching mitigates), just flagging for awareness.",
+    "Per-request _REQUEST_DELAY=0.6s + Semaphore(2) keeps both modules within the 1 req/sec SportDB rate ceiling — good.",
+    "No mongo _id leakage in /api/picks/today?lite=true sample (top 25 picks verified)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sportdb_scorer_xg_iter59.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (15/15 passing, 1 informational skip)",
+    "frontend": "N/A — backend-only request"
+  },
+  "seed_data_creation": "None. Tests reuse the existing demo@lockscore.ai user. No DB writes performed.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "iter 59 release tagged data_version='2026.06.26-sportdb-scorer-xg'. /api/picks endpoints now AUTH-REQUIRED — tests must pass the demo Bearer token (fixture auth_headers handles this) or expect 401. Slate response shape is {\"picks\": [...]} dict, not raw list — test helper _picks_list(payload) normalises both shapes. Synth-scorer slate inclusion is environment-dependent (depends on whether the soccer pipeline's synthetic fallback fired for any in-window CSL/J-League/MLS event when the slate was last refreshed); the carry-tags test is intentionally skip-on-empty rather than fail-on-empty. The test file is reusable for future regression — just bump the EXPECTED_DATA_VERSION constant when main agent ships a new release tag.",
+  "rca_of_issue": "N/A — this was a feature verification pass. No failing behaviour found in any of the new SportDB modules or their wiring into sports_engine."
+}

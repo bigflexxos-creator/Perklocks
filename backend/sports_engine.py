@@ -2355,7 +2355,61 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                 all_picks.extend(_props_picks_from_event(
                     sport, LEAGUE_LABELS.get(key, sport), payload,
                     ev["commence_time"], rng))
+            elif sport == "Soccer":
+                # No bookmaker player markets — fall back to the SportDB
+                # synthetic anytime-goal-scorer model. This is the ONLY way
+                # to get player props for leagues like CSL / MLS / J-League
+                # where bookmakers don't bother publishing per-player odds.
+                # Tagged as `is_model_only=True` so the frontend renders a
+                # MODEL badge and excludes them from edge-based metrics.
+                try:
+                    synth_picks = await _synthetic_soccer_scorer_picks(
+                        key, ev,
+                    )
+                    if synth_picks:
+                        logger.info(
+                            "Synthetic scorer picks for %s/%s evt %s: %d",
+                            sport, key, ev.get("id"), len(synth_picks),
+                        )
+                        all_picks.extend(synth_picks)
+                except Exception as _synth_err:
+                    logger.warning("Synthetic scorer for %s failed: %s",
+                                   ev.get("id"), _synth_err)
     return all_picks
+
+
+async def _synthetic_soccer_scorer_picks(sport_key: str, ev: dict) -> list[dict]:
+    """Bridge to sportdb_player_scorer. Imported lazily so the dependency is
+    soft — if the module fails to import or the SportDB key isn't set,
+    sports_engine still works."""
+    try:
+        import sportdb_player_scorer as sps
+    except Exception:
+        return []
+    if sport_key not in sps.LEAGUE_MAP:
+        return []
+    # Resolve team-form (standings) for the opponent defence multiplier.
+    # This costs zero NEW credits if the standings are already cached by
+    # sportdb_client's daily refresh.
+    home_form = None
+    away_form = None
+    try:
+        from server import db as _db  # late import to avoid circular dep
+        from sportdb_client import lookup_team_form
+        home_form = await lookup_team_form(_db, ev.get("home_team") or "")
+        away_form = await lookup_team_form(_db, ev.get("away_team") or "")
+    except Exception:
+        # Non-fatal — defence multiplier defaults to neutral.
+        pass
+    from server import db as _db
+    return await sps.compute_anytime_scorer_picks(
+        _db, sport_key=sport_key,
+        home_team=ev.get("home_team") or "",
+        away_team=ev.get("away_team") or "",
+        event_id=ev.get("id") or "",
+        kickoff_iso=ev.get("commence_time") or "",
+        home_form=home_form, away_form=away_form,
+    )
 
 
 
@@ -2408,6 +2462,48 @@ async def generate_all_picks(
     for p in all_picks:
         p["pick_date"] = date_str
         p["created_at"] = datetime.now(timezone.utc).isoformat()
+
+    # ─── Phase 2.5: SportDB xG enrichment for soccer totals ───
+    # Sharpen Over/Under picks using SportDB Expected-Goals data from each
+    # team's last 5 matches. Boost lock_score when xG agrees with the pick
+    # direction, temper when xG disagrees. Adds a clear sportdb_signal so
+    # users see exactly what xG numbers are driving the adjustment.
+    # Best-effort — failures don't block the slate.
+    try:
+        from server import db as _db
+        import sportdb_xg_totals as _xg
+        # Reverse LEAGUE_LABELS so we can resolve sport_key from league name.
+        _label_to_key = {v.lower(): k for k, v in LEAGUE_LABELS.items()
+                          if k.startswith("soccer_")}
+        soccer_totals = [
+            p for p in all_picks
+            if p.get("sport") == "Soccer" and _xg._is_totals_pick(p)
+        ]
+        enriched_count = 0
+        for p in soccer_totals:
+            sport_key = p.get("sport_key") or _label_to_key.get(
+                (p.get("league") or "").lower()
+            )
+            if not sport_key:
+                continue
+            home_team = p.get("home_team") or ""
+            away_team = p.get("away_team") or ""
+            if not home_team or not away_team:
+                continue
+            try:
+                await _xg.enrich_totals_pick_with_xg(
+                    _db, p, sport_key, home_team, away_team,
+                )
+                enriched_count += 1
+            except Exception as _xg_pick_err:
+                logger.debug("xG enrich for %s failed: %s",
+                             p.get("event") or p.get("id"), _xg_pick_err)
+        if enriched_count:
+            logger.info("SportDB xG enrichment: %d soccer totals picks adjusted",
+                        enriched_count)
+    except Exception as _xg_err:
+        logger.warning("SportDB xG enrichment skipped: %s", _xg_err)
+
     # ─── Dedupe highly-correlated picks ───
     # Books offer both "Player Over 0.5 Hits" AND "Player Over 0.5 Total
     # Bases" — these are basically the same bet (a hit guarantees a total
