@@ -495,7 +495,12 @@ async def _picks_for_side(
             "pick_id": f"synth_csl_{event_id}_{player.get('id')}",
             "sport": "Soccer",
             "league": _LEAGUE_LABELS.get(comp, "Soccer"),
-            "market": "Anytime Goal Scorer (Model)",
+            # `event` string mirrors the format used by the bookmaker-derived
+            # soccer picks (`"Away @ Home"`) so the home board, dedupe, and
+            # group-by-event UI treat these synthetic picks identically to
+            # the real ones — no special-casing needed downstream.
+            "event": f"{away_team} @ {home_team}",
+            "market": f"{player_full_name} Anytime Goal Scorer",
             "selection": player_full_name,
             "home_team": home_team,
             "away_team": away_team,
@@ -504,6 +509,10 @@ async def _picks_for_side(
             "event_time": kickoff_iso,
             "book_odds": implied_odds,
             "book_implied_prob": prob,
+            # `implied_probability` is the field name the dedupe step 5
+            # market-favourite check reads — surface it explicitly so the
+            # downstream guard recognises high-confidence synth picks.
+            "implied_probability": round(prob * 100, 1),
             "win_probability": round(prob * 100, 1),
             "win_probability_raw": round(prob * 100, 1),
             "sim_win_probability": round(prob * 100, 1),
@@ -511,9 +520,12 @@ async def _picks_for_side(
             "lock_score": _prob_to_lock(prob, rate),
             "lock_score_v2": _prob_to_lock(prob, rate),
             "grade": _prob_to_grade(prob),
+            "confidence": _prob_to_grade(prob),
+            "status": "pending",
             "no_bet": False,
             "is_model_only": True,         # frontend renders MODEL badge
             "is_synthetic_scorer": True,   # specific tag for filtering
+            "is_long_shot": True,           # treat like other goalscorer picks
             "source": "sportdb_scorer_v1",
             # Why this pick — surfaced verbatim in the UI.
             "key_insights": _build_insights(player, rate, defence_mult, opp_form, lam, prob),

@@ -2182,7 +2182,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 if team_label and team_label not in market_label:
                     # Insert tag right after the player name.
                     market_label = market_label.replace(player, f"{player} ({team_label})", 1)
-        picks.append(_build_pick(
+        new_pick = _build_pick(
             sport=sport, league=f"{league} · Props", event=f"{away} @ {home}",
             event_time=commence,
             market=market_label,
@@ -2199,7 +2199,21 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             # away_team / home_team_id / away_team_id natively (MLB only).
             home_team_name=home,
             away_team_name=away,
-        ))
+        )
+        # Persist the elite flag on the pick so:
+        #   1. `_dedupe_goalscorer_per_event` protects elites from being
+        #      culled by the top-N cap (user report: "I see Dieng but not
+        #      Mané or Ismaïla Sarr in the Senegal game" — Mané WAS in
+        #      ELITE_PLAYERS but the flag was computed locally and never
+        #      attached to the pick, so the dedupe couldn't see it).
+        #   2. The `/picks/today` elite_q (server.py) carve-out can surface
+        #      marquee names even when edge is slightly negative.
+        # Setting this for both static elites (ELITE_PLAYERS list) and the
+        # market-derived "this player is the bookmaker's top-priced scorer"
+        # detection further below.
+        if new_pick is not None and is_elite_scorer:
+            new_pick["elite_player"] = True
+        picks.append(new_pick)
     # Tag every Under pick so the main Locks feed can exclude them and the
     # dedicated "Under of the Day" tab can surface them. Anything where the
     # bettor needs the line to go UNDER (Totals, Game Total, alt-prop totals)

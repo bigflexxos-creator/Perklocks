@@ -73,7 +73,7 @@ except Exception as _picks_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.26-sportdb-scorer-xg"
+DATA_VERSION = "2026.06.26-elite-scorer-fix-csl-confirm"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -728,7 +728,7 @@ def _interleave_by_league(picks: list[dict], top_n: int = 20,
     return head + interleaved + leftover
 
 
-def _dedupe_goalscorer_per_event(picks: list[dict], top_n: int = 2) -> list[dict]:
+def _dedupe_goalscorer_per_event(picks: list[dict], top_n: int = 3) -> list[dict]:
     """Per-team-in-match cap on goalscorer / score-or-assist picks.
 
     The pick engine generates THREE variants per qualifying player
@@ -747,9 +747,19 @@ def _dedupe_goalscorer_per_event(picks: list[dict], top_n: int = 2) -> list[dict
          row per player — keep highest win% pick.
       3. Keep TOP N players per (event, team, family) — both sides of
          the match AND both market families get their own quota.
+         Default raised from 2 → 3 (2026-06-26) so marquee scorers like
+         Mané / Sarr / Ndiaye in the same team all survive when they're
+         all near +100 implied.
       4. ELITE players ALWAYS survive — passed through unconditionally
          regardless of position in their team's win% ranking.
-      5. Non-goalscorer picks pass through untouched.
+      5. MARKET-CONFIRMED FAVOURITES ALSO SURVIVE — any player whose
+         book implied probability ≥ 40% (price ≤ +150) is a top-tier
+         scoring threat the bookmaker is pricing as a primary option.
+         Surfacing them regardless of model rank fixes the user-reported
+         bug "I see Dieng but not Mané or Ismaïla Sarr" (all three are
+         priced near +100 = 50% implied; model rank shouldn't bury a
+         50%-implied star scorer).
+      6. Non-goalscorer picks pass through untouched.
 
     The structured audit (see `_scorer_audit_log`) emits a record for
     every player explaining why they were kept/dropped so the admin
@@ -834,8 +844,24 @@ def _dedupe_goalscorer_per_event(picks: list[dict], top_n: int = 2) -> list[dict
             p for p in ranked[top_n:]
             if (p.get("elite_player") or p.get("auto_elite"))
         ]
+        # Step 5: market-confirmed favourites also survive. ANY player
+        # with book implied probability >= 40% is being priced as a
+        # primary scoring threat by sharp UK/EU books. We trust the
+        # bookmaker's price more than our model's win_probability rank
+        # for marquee scorers — bug report: "I see Dieng but not Mané or
+        # Ismaïla Sarr" — all three were +100 (50% implied), all in the
+        # same Senegal squad, but our model rank kept only Dieng. This
+        # rule ensures any 40%+ implied scorer always reaches the board.
+        protected_market_fav = [
+            p for p in ranked[top_n:]
+            if (
+                p not in protected_elite
+                and float(p.get("implied_probability") or 0) >= 40.0
+            )
+        ]
         kept.extend(top_picks)
         kept.extend(protected_elite)
+        kept.extend(protected_market_fav)
         # Audit log — one row per player evaluated.
         for i, p in enumerate(ranked):
             survived = (
