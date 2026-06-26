@@ -73,7 +73,7 @@ except Exception as _picks_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.26-multi-source-career"
+DATA_VERSION = "2026.06.26-gk-quality-enrichment"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 

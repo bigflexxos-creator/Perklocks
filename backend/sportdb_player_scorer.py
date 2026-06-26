@@ -830,6 +830,136 @@ def _tier_label(career_goals: int, weighted_rate: float) -> str:
     return ""
 
 
+# ─────────────────── Opposition GK quality enrichment ───────────────────
+
+
+async def get_team_top_goalkeeper(db, country: str, comp: str, season: str,
+                                   team_name: str) -> Optional[dict]:
+    """Find the OPPOSITION team's #1 goalkeeper and return their season rating.
+
+    Returns {name, rating, matches, slug, id} or None if no GK data available.
+    The "#1 GK" is whoever has the most matches played in the league — same
+    way coaches actually pick their starter.
+
+    Cached 7 days (the GK stats refresh slowly).
+    """
+    if not team_name:
+        return None
+    cache_key = f"top_gk:{country}:{comp}:{season}:{_norm(team_name)}"
+    cached = await _cache_get(db, cache_key, _PLAYER_TTL)
+    if cached is not None:
+        return cached if cached else None
+    team_resolved = await _resolve_team_id(db, country, comp, season, team_name)
+    if not team_resolved:
+        return None
+    team_id, team_slug = team_resolved
+    # Pull the full squad (cached separately for 24h)
+    full_squad = await _get(f"/team/{team_slug}/{team_id}", db=db)
+    if not isinstance(full_squad, dict):
+        return None
+    squad_groups = full_squad.get("squad") or []
+    gks: list[dict] = []
+    for grp in squad_groups:
+        if (grp.get("tournamentType") or "").lower() != "league":
+            continue
+        for p in (grp.get("players") or []):
+            if (p.get("position") or "").lower() == "goalkeepers":
+                gks.append(p)
+    if not gks:
+        await _cache_set(db, cache_key, {})  # cache "no data" so we don't re-probe
+        return None
+    # For each GK, fetch their season rating. Cap at the top 3 by jersey
+    # number (lower = likely starter). Most teams have 2-3 GKs total.
+    candidates = []
+    for gk in gks[:3]:
+        rate = await get_player_goal_rate(
+            db, gk.get("slug") or "", gk.get("id") or "", comp, season,
+        )
+        if rate and rate.get("current_season_matches", 0) >= 3:
+            candidates.append({
+                "name": f"{gk.get('firstName') or ''} {gk.get('lastName') or ''}".strip(),
+                "rating": rate.get("rating", 6.5),
+                "matches": rate.get("current_season_matches", 0),
+                "slug": gk.get("slug"),
+                "id": gk.get("id"),
+            })
+    if not candidates:
+        await _cache_set(db, cache_key, {})
+        return None
+    # Top GK = most matches (starter), tie-break by rating
+    candidates.sort(key=lambda x: (-x["matches"], -x["rating"]))
+    result = candidates[0]
+    await _cache_set(db, cache_key, result)
+    return result
+
+
+def _gk_lock_adjustment(gk_rating: float) -> tuple[float, str]:
+    """Translate GK rating to a lock-score adjustment + descriptive label.
+
+    Returns (delta, tier_label).
+    Strong GK depresses opposing-scorer probability — lock penalty.
+    Weak GK boosts opposing-scorer probability — lock boost.
+    """
+    if gk_rating >= 7.3:
+        return (-3.0, f"🛡️ ELITE GK ({gk_rating:.1f}/10) — tough to score on")
+    if gk_rating >= 7.0:
+        return (-1.5, f"🛡️ Above-average GK ({gk_rating:.1f}/10)")
+    if gk_rating >= 6.7:
+        return (0.0, f"🟰 Average GK ({gk_rating:.1f}/10)")
+    if gk_rating >= 6.4:
+        return (+1.5, f"⚠️ Below-average GK ({gk_rating:.1f}/10) — exploitable")
+    return (+3.0, f"🚪 Poor GK ({gk_rating:.1f}/10) — leaky net")
+
+
+async def enrich_pick_with_gk_quality(
+    db, pick: dict, sport_key: str,
+) -> dict:
+    """Adjust a goalscorer pick's lock_score based on the opposition GK rating.
+
+    Player_team and opposition_team are derived from the pick's home/away
+    fields. Best-effort — failures don't touch the pick.
+    """
+    if sport_key not in LEAGUE_MAP:
+        return pick
+    country, comp, season = LEAGUE_MAP[sport_key]
+    # Determine which side the scorer is on, then opposition is the OTHER team.
+    player_team = pick.get("player_team") or ""
+    home_team = pick.get("home_team") or ""
+    away_team = pick.get("away_team") or ""
+    if not player_team or not home_team or not away_team:
+        return pick
+    if _norm(player_team) == _norm(home_team):
+        opp_team = away_team
+    elif _norm(player_team) == _norm(away_team):
+        opp_team = home_team
+    else:
+        # Best guess — assume player's on the home side if we can't tell
+        opp_team = away_team if _norm(player_team) in _norm(home_team) else home_team
+    gk = await get_team_top_goalkeeper(db, country, comp, season, opp_team)
+    if not gk:
+        return pick
+    delta, label = _gk_lock_adjustment(float(gk.get("rating", 6.5)))
+    # Apply the adjustment (clamp to 55-99 range)
+    for k in ("lock_score", "lock_score_v2"):
+        v = pick.get(k)
+        if isinstance(v, (int, float)):
+            pick[k] = round(max(55.0, min(float(v) + delta, 99.0)), 1)
+    # Surface the GK insight
+    insight = f"{label} — {gk.get('name')} on {opp_team}. Lock {'+' if delta >= 0 else ''}{delta:.1f}."
+    existing = pick.setdefault("key_insights", [])
+    if isinstance(existing, list):
+        # Insert AFTER the tier badge / career signal (which are first)
+        # so the GK note follows the player-quality context.
+        existing.insert(min(2, len(existing)), insight)
+    pick["sportdb_gk_signal"] = (
+        f"Opposing GK {gk.get('name')} rating {gk.get('rating'):.1f}/10 "
+        f"({gk.get('matches')} matches) → lock {delta:+.1f}"
+    )
+    pick["sportdb_gk_rating"] = gk.get("rating")
+    pick["sportdb_gk_adjustment"] = delta
+    return pick
+
+
 async def _self_test():
     """Manual smoke test — pick CSL match Beijing Guoan vs Meizhou Hakka."""
     import sys
