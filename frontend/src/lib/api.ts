@@ -287,6 +287,32 @@ async function request<T>(
         try { data = text ? JSON.parse(text) : {}; }
         catch { data = { detail: text }; }
         if (!res.ok) {
+          // ── 401 auto-recover (2026-06-26) ───────────────────────
+          // A 401 means our stored token is invalid — either the
+          // session expired, OR (more commonly) the backend rotated
+          // JWT_SECRET so every token signed with the old secret is
+          // now dead. Without this branch, the request handler
+          // throws → home tab catches it silently → user sees an
+          // empty "no locks on board" with no path forward, since
+          // their token stays in storage and every refresh hits
+          // 401 again. Fix: drop the dead token + fire a global
+          // event the AuthContext listens to so the app bounces
+          // back to /login. Skips on the auth endpoints themselves
+          // (a bad login attempt is a legitimate 401 we want the
+          // caller to handle, not redirect).
+          if (res.status === 401 && !path.startsWith("/auth/") && opts.auth !== false) {
+            try { await setToken(null); } catch {}
+            try {
+              // Fire a custom global event for the AuthContext to
+              // pick up. Wrapped in try/catch so it's a no-op in
+              // any runtime that lacks `EventTarget`.
+              if (typeof globalThis !== "undefined" && (globalThis as any).dispatchEvent) {
+                (globalThis as any).dispatchEvent(
+                  new CustomEvent("perkslocks:auth-expired", { detail: { path } }),
+                );
+              }
+            } catch {}
+          }
           // 4xx errors are intentional — don't retry (e.g. 401 means bad
           // creds, retrying won't help). Only retry 5xx + 408 + 429.
           const shouldRetry = res.status >= 500 || res.status === 408 || res.status === 429;
