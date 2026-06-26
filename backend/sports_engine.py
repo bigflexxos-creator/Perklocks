@@ -2547,6 +2547,7 @@ async def generate_all_picks(
             and not p.get("is_synthetic_scorer")  # synth picks already have career data
         ]
         boosted_count = 0
+        gk_adjusted_count = 0
         for p in scorer_picks:
             sport_key = p.get("sport_key") or _label_to_key2.get(
                 (p.get("league") or "").lower()
@@ -2566,9 +2567,22 @@ async def generate_all_picks(
             except Exception as _sc_err:
                 logger.debug("Career enrich for %s failed: %s",
                              p.get("selection") or p.get("id"), _sc_err)
-        if boosted_count:
-            logger.info("SportDB career enrichment: %d goalscorer picks boosted",
-                        boosted_count)
+            # Opposition GK quality enrichment — strong GK depresses scorer
+            # prob, weak GK boosts it. Best-effort, never blocks.
+            try:
+                gk_before = p.get("lock_score") or 0.0
+                await _sps.enrich_pick_with_gk_quality(_db, p, sport_key)
+                gk_after = p.get("lock_score") or 0.0
+                if gk_after != gk_before:
+                    gk_adjusted_count += 1
+            except Exception as _gk_err:
+                logger.debug("GK enrich for %s failed: %s",
+                             p.get("selection") or p.get("id"), _gk_err)
+        if boosted_count or gk_adjusted_count:
+            logger.info(
+                "SportDB scorer enrichment: %d career-boosted, %d GK-adjusted",
+                boosted_count, gk_adjusted_count,
+            )
     except Exception as _sc_err2:
         logger.warning("SportDB career enrichment skipped: %s", _sc_err2)
 
