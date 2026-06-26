@@ -426,8 +426,12 @@ export const api = {
     const qs = new URLSearchParams();
     if (sport && sport !== "All") qs.set("sport", sport);
     if (lineType && lineType !== "both") qs.set("line_type", lineType);
-    if (sortKey && sortKey !== "lock") qs.set("sort", sortKey);
-    if (direction && direction !== "desc") qs.set("direction", direction);
+    // Always emit `sort` — the backend default is `time`, not `lock`, so
+    // omitting `sort=lock` silently flips us to chronological order and
+    // the "Sort: Lock High→Low" pill stops actually applying.
+    // (Bug 2026-06-26: "filter by lock doesn't work, time/win pct do".)
+    if (sortKey) qs.set("sort", sortKey);
+    if (direction) qs.set("direction", direction);
     if (filters?.minLock != null && filters.minLock > 85) qs.set("min_lock", String(filters.minLock));
     if (filters?.minImplied != null) qs.set("min_implied", String(filters.minImplied));
     if (filters?.maxImplied != null) qs.set("max_implied", String(filters.maxImplied));
