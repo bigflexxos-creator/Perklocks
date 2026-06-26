@@ -73,7 +73,7 @@ except Exception as _picks_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.26-team-alias-rebrand-v7"
+DATA_VERSION = "2026.06.26-winprob-flip-guard-v8"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -322,6 +322,36 @@ def _canonicalize_lock_score(pick: dict) -> dict:
                 pick["elite_floor_applied_at_read"] = True
     except Exception as _ef_err:
         logger.debug("elite floor enforcement skipped: %s", _ef_err)
+    # ── Win-probability sign-flip guard (2026-06-26) ───────────────────
+    # Bug surfaced in deployed app: ALT LOCK strikeout picks showed
+    # Lock 99 + Win 19.8% + Implied 83.3% (the WIN field was carrying the
+    # *complement* of the true probability — i.e. the "fade" side's
+    # probability for an Over alt). The Lock model correctly graded these
+    # as Elite Locks but win_probability was 1 − p.
+    #
+    # Defensive read-time fix: if lock_score is ≥ 80 AND implied_prob is
+    # also ≥ 70%, the model agrees this is a chalk lock. In that scenario
+    # a sub-50 win_probability is INTERNALLY INCONSISTENT and almost
+    # certainly a sign-flipped survivor from an older alt-line writer.
+    # We flip it back to (100 − win_prob) so the card stops showing
+    # 19.8% next to a 99 Lock badge. The original (flipped) value is
+    # preserved on `win_probability_pre_flip` for forensics.
+    try:
+        ls_for_chk = float(pick.get("lock_score") or 0)
+        wp_for_chk = float(pick.get("win_probability") or 0)
+        imp_for_chk = float(pick.get("implied_probability") or pick.get("book_implied_prob") or 0)
+        if ls_for_chk >= 80.0 and imp_for_chk >= 70.0 and 0 < wp_for_chk < 50.0:
+            pick["win_probability_pre_flip"] = wp_for_chk
+            pick["win_probability"] = round(max(0.0, min(99.9, 100.0 - wp_for_chk)), 2)
+            # Edge needs to re-derive against the corrected win_prob, else
+            # the card still shows a huge negative edge.
+            try:
+                pick["edge_percent"] = round(pick["win_probability"] - imp_for_chk, 2)
+            except Exception:
+                pass
+            pick["_win_prob_sign_flipped_at_read"] = True
+    except Exception as _wp_err:
+        logger.debug("win-probability flip guard skipped: %s", _wp_err)
     return pick
 
 
