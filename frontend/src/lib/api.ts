@@ -422,7 +422,7 @@ export const api = {
       shadow_mode:     boolean;
       generated_at:    string;
     }>("/analytics/xg-form-shadow"),
-  picksToday: (sport?: string, lineType?: LineType, sortKey?: SortKey, filters?: PickFilters, direction?: SortDirection) => {
+  picksToday: (sport?: string, lineType?: LineType, sortKey?: SortKey, filters?: PickFilters, direction?: SortDirection, extra?: { sports?: string[]; leagues?: string[]; markets?: string[]; gameIds?: string[]; search?: string }) => {
     const qs = new URLSearchParams();
     if (sport && sport !== "All") qs.set("sport", sport);
     if (lineType && lineType !== "both") qs.set("line_type", lineType);
@@ -432,6 +432,14 @@ export const api = {
     // (Bug 2026-06-26: "filter by lock doesn't work, time/win pct do".)
     if (sortKey) qs.set("sort", sortKey);
     if (direction) qs.set("direction", direction);
+    // ── New unified multi-select params (CSV) ───────────────────
+    // Forwarded from the global `useFilters` store. Empty arrays
+    // are no-ops; backend treats absence as "all".
+    if (extra?.sports?.length)   qs.set("sports",   extra.sports.join(","));
+    if (extra?.leagues?.length)  qs.set("leagues",  extra.leagues.join(","));
+    if (extra?.markets?.length)  qs.set("markets",  extra.markets.join(","));
+    if (extra?.gameIds?.length)  qs.set("game_ids", extra.gameIds.join(","));
+    if (extra?.search)           qs.set("search",   extra.search);
     if (filters?.minLock != null && filters.minLock > 85) qs.set("min_lock", String(filters.minLock));
     if (filters?.minImplied != null) qs.set("min_implied", String(filters.minImplied));
     if (filters?.maxImplied != null) qs.set("max_implied", String(filters.maxImplied));

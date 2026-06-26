@@ -17,6 +17,7 @@ import { StaleVersionBanner } from "@/src/components/StaleVersionBanner";
 import { StaleBuildBanner } from "@/src/components/StaleBuildBanner";
 import { storage } from "@/src/utils/storage";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
+import { useFilters } from "@/src/stores/useFilters";
 
 const PREFS_KEY = "locks_feed_prefs_v1";
 type FeedPrefs = { sport?: string; sortKey?: SortKey; lineType?: LineType };
@@ -41,6 +42,11 @@ function formatCountdown(seconds: number): string {
 }
 
 export default function LocksScreen() {
+  // Global filter store — multi-select arrays + AsyncStorage persistence.
+  // Sport pills / market pills / league pills write to this store. The
+  // load() effect reads back the arrays and forwards them as CSV to the
+  // picksToday() backend call (2026-06-26 unified filter refactor).
+  const { state: filterStore } = useFilters();
   const [picks, setPicks] = useState<Pick[]>([]);
   const [sport, setSport] = useState<string>("All");
   const [lineType, setLineType] = useState<LineType>("both");
@@ -198,7 +204,17 @@ export default function LocksScreen() {
     const requestedSport = s;
     try {
       const [picksRes, statsRes] = await Promise.all([
-        api.picksToday(s, lt, sk, f, dir),
+        api.picksToday(s, lt, sk, f, dir, {
+          // Forward multi-select arrays from the global store. Backend
+          // accepts these via the new CSV params (`sports=`, `leagues=`,
+          // `markets=`, `game_ids=`, `search=`). When all arrays are
+          // empty the URL stays exactly as it was — full backward-compat.
+          sports:   filterStore.sports,
+          leagues:  filterStore.leagues,
+          markets:  filterStore.markets,
+          gameIds:  filterStore.gameIds,
+          search:   filterStore.searchText || undefined,
+        }),
         api.stats().catch(() => null),
       ]);
       // Discard if a newer load was fired after we sent this one.
@@ -260,11 +276,15 @@ export default function LocksScreen() {
         setRefreshing(false);
       }
     }
-  }, []);
-
-  useEffect(() => {
-    // Wipe stale picks the moment the user changes sport OR any
-    // narrowing filter (market / league / event) so the wrong tab can
+  }, [
+    // load() captures filterStore.{sports,leagues,markets,gameIds,searchText}
+    // via its closure on each render. We MUST list them here so React
+    // recreates the callback whenever the store changes — otherwise the
+    // first-render's empty arrays are baked in forever and clicking
+    // chips never affects the fetched picks.
+    filterStore.sports, filterStore.leagues, filterStore.markets,
+    filterStore.gameIds, filterStore.searchText,
+  ]);
     // NEVER be shown for even a single frame. Without this, a previous
     // fetch's picks remain visible while the new fetch is in-flight,
     // producing the "H+R+RBI under Strikeouts" visual leak that users
@@ -276,7 +296,18 @@ export default function LocksScreen() {
     lastFilterSignatureRef.current = sig;
     setLoading(true);
     load(sport, lineType, sortKey, filters, sortDir);
-  }, [sport, lineType, sortKey, filters, sortDir, load]);
+  }, [
+    sport, lineType, sortKey, filters, sortDir, load,
+    // Re-fire when ANY multi-select dimension changes — sports/leagues/
+    // markets/games/search. JSON.stringify keeps the dep array stable so
+    // React doesn't fire on every render, only when the arrays actually
+    // mutate.
+    JSON.stringify(filterStore.sports),
+    JSON.stringify(filterStore.leagues),
+    JSON.stringify(filterStore.markets),
+    JSON.stringify(filterStore.gameIds),
+    filterStore.searchText,
+  ]);
 
   // Smart refetch on screen focus: hit /api/picks/today again every time the
   // user opens the Locks tab, but skip if the last successful fetch was less
