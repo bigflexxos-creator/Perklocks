@@ -2521,8 +2521,28 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         # SEC-004: re.escape user input so metacharacters can't trigger
         # catastrophic regex backtracking (ReDoS) against MongoDB.
         q["league"] = {"$regex": re.escape(str(league)), "$options": "i"}
-    cursor = db.picks.find(q, {"_id": 0}).sort("lock_score", -1).limit(200)
-    picks = await cursor.to_list(length=200)
+    # ── Sort by CANONICAL lock score, not the stale v1 ────────────────
+    # Picks like Silva Felipe (v1=55 due to validator drift but v2=98)
+    # were getting sorted to the BOTTOM of the result limit and
+    # silently truncated off the home feed even though their canonical
+    # API lock is 98. Sort by lock_score_v2 DESC, lock_score DESC
+    # tiebreaker — v2 is updated every refresh cycle to the true
+    # current score so this matches what the user will see in the UI.
+    #
+    # LIMIT raised to 2000 (2026-06-26, user: "bring the pick limit up"):
+    # the daily slate hovers ~500-700 picks across all sports + tabs,
+    # and per-sport tabs (Soccer = 200+) plus lower-tier league synth
+    # picks need headroom or CSL/MLS/Veikkausliiga get truncated. 2000
+    # is well above max-realistic and removes the silent-cut footgun.
+    cursor = db.picks.find(q, {"_id": 0}).sort(
+        [("lock_score_v2", -1), ("lock_score", -1)]
+    ).limit(2000)
+    # length=2000 matches the cursor.limit() above. Earlier this was
+    # length=200 which silently capped the result list even when the
+    # cursor was configured for 2000 — that's the actual reason CSL /
+    # MLS / Veikkausliiga synth scorers were missing from the home
+    # feed (2026-06-26).
+    picks = await cursor.to_list(length=2000)
     # Hide picks for games that have already started (see _filter_in_play_window).
     picks = _filter_in_play_window(picks)
     # ── Cross-pipeline GAME OUTCOME dedupe ───────────────────────────────
@@ -2542,7 +2562,7 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # would clog the feed with 3 rows of identical lock score for the
     # same match (Anytime + First + Score-or-Assist all at lock 78.4).
     # Spec from user: "It should be the top 2".
-    picks = _dedupe_goalscorer_per_event(picks, top_n=2)
+    picks = _dedupe_goalscorer_per_event(picks, top_n=4)
     # ── Canonicalize lock_score (V2 → primary) BEFORE sorting ──────────
     # Without this, the sort uses the legacy V1 lock_score baked at pick
     # creation time. But `_canonicalize_lock_score` (called at the very
