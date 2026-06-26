@@ -76,7 +76,16 @@ export function FilterSheet({
   };
 
   const apply = () => {
+    // CRITICAL: spread the existing `filters` first so we PRESERVE
+    // `market` / `league` / `event` / `team` etc. that live OUTSIDE
+    // this sheet (set by the market-pill row + game-filter sheet).
+    // Without the spread, applying the FilterSheet (which only owns
+    // lock-time / implied / sim-edge) silently wipes the user's
+    // active market & game selection — user reported 2026-06-26:
+    // "I can be on baseball hits and try to lock time etc to sort it
+    // take me back to main tab".
     onApply({
+      ...filters,
       minLock: minLock > 85 ? minLock : undefined,
       minImplied: minImplied > 0 ? minImplied : undefined,
       maxImplied: maxImplied < 100 ? maxImplied : undefined,

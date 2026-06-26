@@ -73,7 +73,7 @@ except Exception as _picks_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.26-csl-tier-fix-v3"
+DATA_VERSION = "2026.06.26-canonical-max-v4"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -194,10 +194,28 @@ def _canonicalize_lock_score(pick: dict) -> dict:
         v2 = float(pick.get("lock_score_v2") or 0)
     except Exception:
         v2 = 0.0
-    if v2 > v1:
+    try:
+        raw = float(pick.get("lock_score_raw") or 0)
+    except Exception:
+        raw = 0.0
+    try:
+        peak = float(pick.get("lock_score_peak") or 0)
+    except Exception:
+        peak = 0.0
+    # ── Canonical lock_score = MAX of all shadow fields ────────────────
+    # Multiple writers across the codebase (evidence_engine, validator,
+    # learning_v2, govern_pick, lazy governance, bandit, player_form) all
+    # touch lock_score independently. ANY of them can transiently lower
+    # the displayed v1 — but v2 / raw / peak hold the "true" computed
+    # anchors. Taking the MAX is the single read-time source of truth
+    # that recovers from every demotion path without us having to add a
+    # carve-out to all 30+ writers. (2026-06-26: user fix for recurring
+    # CSL/elite lock demotion bug.)
+    canonical = max(v1, v2, raw, peak)
+    if canonical > v1 + 0.05:
         try:
             from sports_engine import _grade, _confidence
-            pick["lock_score"] = round(min(99.0, v2), 1)
+            pick["lock_score"] = round(min(99.0, canonical), 1)
             pick["grade"] = _grade(pick["lock_score"])
             pick["confidence"] = _confidence(pick["lock_score"])
             pick["v2_promoted_at_read"] = True
@@ -2505,6 +2523,13 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # `evidence_score` — typically picks generated before the engine
     # shipped. ONLY governs PENDING picks (we never re-write history
     # by adjusting a settled pick's lock score post-hoc).
+    #
+    # CARVE-OUT (2026-06-26): same skip list as the validator carve-out
+    # — elite players, sim-anchored picks, model-only SportDB scorers
+    # have their lock_score determined by a non-evidence anchor (career
+    # history tier, 20K-run sim consensus, or rep-based floor). The
+    # evidence governor's multiplier would silently demote these picks
+    # on every request, undoing the anchor each refresh. Skip them.
     try:
         from evidence_engine import build_features_from_pick, govern_pick
         _gov_count = 0
@@ -2512,6 +2537,14 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             if _p.get("evidence_score") is not None:
                 continue
             if (_p.get("status") or "pending") != "pending":
+                continue
+            if (
+                _p.get("elite_player")
+                or _p.get("lock_anchored_to_sim")
+                or _p.get("is_model_only")
+                or _p.get("is_synthetic_scorer")
+                or (_p.get("source") or "").startswith("sportdb_scorer")
+            ):
                 continue
             try:
                 govern_pick(_p, build_features_from_pick(_p))
@@ -2522,6 +2555,10 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             logger.debug("Lazy evidence governance applied to %d picks", _gov_count)
     except Exception as _lazy_ev_err:
         logger.warning("Lazy evidence governance failed (continuing): %s", _lazy_ev_err)
+
+    # Re-canonicalize AFTER governance so any v2 promotion that the
+    # governance step might have stale-overwritten is restored.
+    picks = _canonicalize_picks(picks)
 
     if day_offset is not None:
         target_day = (datetime.now(timezone.utc).date() + timedelta(days=day_offset)).isoformat()
