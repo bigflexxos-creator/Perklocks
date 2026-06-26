@@ -588,40 +588,67 @@ def _prob_to_american(p: float) -> int:
 
 
 def _prob_to_lock(prob: float, rate: dict) -> float:
-    """Lock score for model-only picks.
+    """Lock score for model-only picks — TIER-RELATIVE confidence scale.
 
-    We anchor lock to the probability but penalise low sample sizes (< 5
-    matches) and reward high ratings. Caps at 88 for any model-only pick —
-    we never claim full conviction without a market signal.
+    Per user 2026-06-26: lock_score is NOT a literal win-probability — it's
+    the user's confidence ceiling where 99 = "best pick available in this
+    market". So a league-leading scorer (Cadiz J / Taty Maritu / Cryzan at
+    12g) should hit 95+ even though anytime-scorer prob is mathematically
+    bounded by Poisson at ~70%. They earn the high lock because they're
+    the BEST anytime-scorer pick the model can find in their league.
 
-    TOP-SCORER FLOOR: any player with ≥8 goals this season is mathematically
-    a league top-scorer tier (Fabio Abreu / Yuning Zhang / Felipe Silva
-    territory). These players get a lock floor of 80 (Playable tier)
-    regardless of opponent — they're the guys you bet on every match.
-    Per user feedback: "shouldn't [Fabio Abreu] be close to 99 lock?"
-    99 is mathematically impossible for anytime-scorer (Poisson cap ~70%
-    even for Haaland-tier), but 80+ matches the user's intuition that
-    league-leading scorers should always sit in the actionable tier.
+    Calibration (tier-relative, not absolute):
+      ≥12 goals (Golden Boot leader)         → 95-99
+      10-11 goals (top-3)                    → 90-95
+      8-9 goals  (top-5)                     → 85-90
+      5-7 goals  (top-15)                    → 75-85
+      3-4 goals  (regular starter)           → 65-75
+      <3 goals   (depth / variance)          → 55-65
+
+    The PROBABILITY itself still flows through as `win_probability` on the
+    pick so users see the underlying scoring rate, but the lock ranks the
+    PICK QUALITY (calibre-of-player × match-fit × evidence) rather than
+    coin-flip odds.
     """
-    base = 60 + (prob - 0.28) * 100   # 60 at floor, +1 per +1% prob
-    if rate.get("matches", 0) < 5:
-        base -= 8
-    elif rate.get("matches", 0) >= 12:
-        base += 3
-    if rate.get("rating", 0) >= 7.0:
-        base += 2
-    # Top-scorer floor: ≥8 goals is top-5 territory in any league.
-    if rate.get("goals", 0) >= 8:
-        base = max(base, 82.0)
-    elif rate.get("goals", 0) >= 5:
-        # 5-7 goals = top-15 territory — get a smaller floor
-        base = max(base, 72.0)
-    # Top-scorer ceiling — league-leading scorers (≥10g) can sit slightly
-    # above the standard model-only 88 cap, capped at 92. They never reach
-    # 99 because anytime-scorer is bounded by Poisson (~70% max).
-    if rate.get("goals", 0) >= 10:
-        return float(max(55.0, min(base, 92.0)))
-    return float(max(55.0, min(base, 88.0)))
+    goals = rate.get("goals", 0)
+    matches = rate.get("matches", 0)
+    rating = rate.get("rating", 0.0)
+    # Tier-driven base lock from absolute goal count this season.
+    if goals >= 12:
+        # Golden Boot leader — top of the league. Anchor at 96.
+        base = 96.0
+    elif goals >= 10:
+        # Top-3 scorer. Anchor at 92.
+        base = 92.0
+    elif goals >= 8:
+        # Top-5 scorer. Anchor at 88.
+        base = 88.0
+    elif goals >= 5:
+        # Top-15 scorer. Scale 75 → 85 based on rate.
+        base = 75.0 + (rate.get("rate_per_match", 0.0) - 0.4) * 50.0
+        base = max(75.0, min(base, 85.0))
+    elif goals >= 3:
+        base = 65.0 + (rate.get("rate_per_match", 0.0) - 0.2) * 50.0
+        base = max(65.0, min(base, 75.0))
+    else:
+        # Depth — prob-driven only.
+        base = 55.0 + prob * 25.0
+        base = max(55.0, min(base, 65.0))
+    # Quality adjustments
+    if matches < 5:
+        base -= 6   # small-sample penalty
+    if rating >= 7.5:
+        base += 2   # heavy bonus for elite ratings
+    elif rating >= 7.0:
+        base += 1
+    # Opponent quality also factors in — captured in `prob` (which embeds
+    # the defence multiplier), so a tough opponent already dampens the
+    # tier base via probability-scaled bands above.
+    if prob >= 0.50:
+        base += 2   # +2 for matchups where prob crosses 50%
+    elif prob < 0.25:
+        base -= 3   # bad matchup drags even a top scorer down
+    return float(max(55.0, min(base, 99.0)))
 
 
 def _prob_to_grade(prob: float) -> str:
@@ -667,11 +694,6 @@ def _build_insights(player: dict, rate: dict, defence_mult: float,
     out.append(
         f"🎲 Model: λ={lam:.2f} expected goals → P(anytime) = 1 - e^-λ = {prob*100:.1f}%. "
         f"No bookmaker line — model-only signal."
-    )
-    out.append(
-        "ℹ️ Why not 99 lock? Anytime-scorer is mathematically capped at ~70% even for "
-        "Haaland-tier players. A goalscorer at 36% prob still misses 64% of games — "
-        "great VALUE bet but not a lock. Locks 80+ = always playable; 92 is the synth ceiling."
     )
     return out
 
