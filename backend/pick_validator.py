@@ -169,7 +169,32 @@ async def validate_and_heal(db) -> dict:
         # Also widen the diff tolerance from 1.0 → 4.0 so micro-jitter in
         # factor recomputation doesn't trigger pointless rewrites.
         if compute_lock_score and wp is not None and (p.get("sport") or "") != "Tennis":
-            factors_pct = p.get("factors") or {}
+            # ── ANCHOR CARVE-OUTS ─────────────────────────────────────────
+            # Two pick categories whose lock_score is intentionally NOT a
+            # direct function of factors+win_prob — re-running the generic
+            # formula here would systematically over-write the anchor that
+            # gave the pick its current lock value:
+            #
+            #   1. ELITE PLAYERS (Salah, Mbappé, Haaland, Messi, Kane, Judge,
+            #      Sinner, etc.): elite_players.apply_elite_boost sets a 95+
+            #      floor based on REPUTATION + CAREER HISTORY, independent of
+            #      sim WP. Without this carve-out the validator demoted Salah
+            #      95 → 51 on a goalscorer prop where sim WP was 37%
+            #      (2026-06-26 user report).
+            #
+            #   2. SIM-ANCHORED picks: brain.sim_runner.apply_simulations sets
+            #      lock_score from the 20K-run Monte Carlo consensus AND
+            #      pins lock_score_raw = lock_score with multiplier 1.0.
+            #      Validator re-derivation would undo this consensus on the
+            #      very next cycle.
+            #
+            # For both categories the pre-anchored lock is trusted as the
+            # canonical value — we skip the lock-anchor recompute but still
+            # run steps 5 (grade/confidence reconcile) and 6 (deep-dive).
+            _skip_lock_anchor = bool(
+                p.get("elite_player") or p.get("lock_anchored_to_sim")
+            )
+            factors_pct = {} if _skip_lock_anchor else (p.get("factors") or {})
             if factors_pct:
                 # Coerce factor values to float — legacy DB rows occasionally
                 # have stringified percentages (e.g. "78") that break the
