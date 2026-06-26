@@ -54,23 +54,36 @@ async def _api():
     return FootballDataClient()
 
 
-async def backfill_current_season(db) -> dict:
-    """Pull current-season scorers + standings for each tracked competition.
+async def backfill_season(db, season: int) -> dict:
+    """Pull scorers + standings for ONE specific season for each tracked
+    competition.
 
-    Designed to be re-runnable. Each request is paced at ~6.5s to stay under
-    the 10/min ceiling even on a noisy network.
+    football-data.org expects the `season` parameter as the calendar year
+    the season STARTS in (so 2024-25 EPL → season=2024).
+
+    Free-tier reality: the API allows current-season + 1 prior season for
+    top competitions. Older seasons will 403 — we capture the error and
+    move on so the multi-season orchestrator can still mark the run done.
     """
+    season = int(season)
     api = await _api()
     comps = _competitions()
     scorers_inserted = teams_seen = 0
     errors: list[str] = []
+    tier_blocked: list[str] = []
 
     try:
         for comp in comps:
-            # ── 1) Top scorers (season totals) ─────────────────────
+            # ── 1) Top scorers ─────────────────────
             try:
-                data = await api._request(f"/competitions/{comp}/scorers", {"limit": 100})
-                season = ((data.get("season") or {}).get("startDate") or "")[:4] or str(datetime.utcnow().year)
+                data = await api._request(
+                    f"/competitions/{comp}/scorers",
+                    {"limit": 100, "season": season},
+                )
+                returned_season = (
+                    ((data.get("season") or {}).get("startDate") or "")[:4]
+                    or str(season)
+                )
                 for s in data.get("scorers", []):
                     player = s.get("player") or {}
                     team = s.get("team") or {}
@@ -90,11 +103,12 @@ async def backfill_current_season(db) -> dict:
                         upsert=True,
                     )
                     await db.season_totals.update_one(
-                        {"player_id": f"fd_{pid}", "sport": "soccer", "season": season, "competition": comp},
+                        {"player_id": f"fd_{pid}", "sport": "soccer",
+                         "season": returned_season, "competition": comp},
                         {"$set": {
                             "player_id": f"fd_{pid}",
                             "sport": "soccer",
-                            "season": season,
+                            "season": returned_season,
                             "competition": comp,
                             "team": team.get("name"),
                             "name": player.get("name"),
@@ -108,12 +122,19 @@ async def backfill_current_season(db) -> dict:
                     )
                     scorers_inserted += 1
             except Exception as e:
-                errors.append(f"{comp} scorers: {str(e)[:100]}")
+                msg = str(e)[:200]
+                if "403" in msg or "tier" in msg.lower() or "restricted" in msg.lower():
+                    tier_blocked.append(f"{comp} scorers")
+                else:
+                    errors.append(f"{comp} scorers: {msg}")
             await asyncio.sleep(_PACE)
 
-            # ── 2) Standings (team form proxy) ─────────────────────
+            # ── 2) Standings ─────────────────────
             try:
-                std = await api._request(f"/competitions/{comp}/standings")
+                std = await api._request(
+                    f"/competitions/{comp}/standings",
+                    {"season": season},
+                )
                 for table_block in std.get("standings", []):
                     if table_block.get("type") != "TOTAL":
                         continue
@@ -123,11 +144,13 @@ async def backfill_current_season(db) -> dict:
                         if not tid:
                             continue
                         await db.team_form.update_one(
-                            {"team_id": f"fd_{tid}", "sport": "soccer", "competition": comp},
+                            {"team_id": f"fd_{tid}", "sport": "soccer",
+                             "competition": comp, "season": season},
                             {"$set": {
                                 "team_id": f"fd_{tid}",
                                 "sport": "soccer",
                                 "competition": comp,
+                                "season": season,
                                 "name": team.get("name"),
                                 "played": row.get("playedGames"),
                                 "won": row.get("won"),
@@ -136,7 +159,7 @@ async def backfill_current_season(db) -> dict:
                                 "goals_for": row.get("goalsFor"),
                                 "goals_against": row.get("goalsAgainst"),
                                 "points": row.get("points"),
-                                "form": row.get("form"),  # e.g. 'WWDLW'
+                                "form": row.get("form"),
                                 "ppm": ((row.get("points") or 0) / max(1, row.get("playedGames") or 1)),
                                 "updated_at": datetime.now(timezone.utc).isoformat(),
                             }},
@@ -144,7 +167,11 @@ async def backfill_current_season(db) -> dict:
                         )
                         teams_seen += 1
             except Exception as e:
-                errors.append(f"{comp} standings: {str(e)[:100]}")
+                msg = str(e)[:200]
+                if "403" in msg or "tier" in msg.lower() or "restricted" in msg.lower():
+                    tier_blocked.append(f"{comp} standings")
+                else:
+                    errors.append(f"{comp} standings: {msg}")
             await asyncio.sleep(_PACE)
     finally:
         try:
@@ -153,11 +180,19 @@ async def backfill_current_season(db) -> dict:
             pass
 
     return {
+        "season": season,
         "competitions": comps,
         "scorer_rows_upserted": scorers_inserted,
         "team_rows_upserted": teams_seen,
         "errors": errors[:10],
+        "tier_blocked": tier_blocked,  # free tier doesn't unlock this season
     }
+
+
+async def backfill_current_season(db) -> dict:
+    """Backward-compatible wrapper — backfills the current (most recent) season."""
+    season = datetime.utcnow().year
+    return await backfill_season(db, season)
 
 
 async def incremental_sync(db, since: Optional[datetime] = None) -> dict:

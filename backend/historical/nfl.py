@@ -49,8 +49,13 @@ async def _get(cx: httpx.AsyncClient, path: str, params: dict | None = None) -> 
     return None
 
 
-async def backfill_current_season(db) -> dict:
-    """Walk the scoreboard week-by-week for the current season."""
+async def backfill_season(db, season: int) -> dict:
+    """Walk the scoreboard week-by-week for a specific NFL season.
+
+    Pass the calendar year the season STARTS in (NFL convention).
+    For past seasons we walk all 18 regular weeks + 5 postseason weeks.
+    """
+    season = int(season)
     games_seen = games_inserted = logs_inserted = 0
     errors: list[str] = []
 
@@ -62,7 +67,7 @@ async def backfill_current_season(db) -> dict:
                 if games_inserted >= max_weeks * 16:
                     break
                 data = await _get(cx, "/scoreboard",
-                                  {"seasontype": season_type, "week": wk, "year": _CURRENT_SEASON})
+                                  {"seasontype": season_type, "week": wk, "year": season})
                 await asyncio.sleep(_PACE)
                 if not data:
                     continue
@@ -88,22 +93,27 @@ async def backfill_current_season(db) -> dict:
                                 "away": _safe_int(away.get("score")),
                             },
                             "status": "Final",
-                            "season": _CURRENT_SEASON,
+                            "season": season,
                             "week": wk,
                         }},
                         upsert=True,
                     )
                     games_inserted += 1
-                    n = await _ingest_summary(cx, db, gid)
+                    n = await _ingest_summary(cx, db, gid, season=season)
                     logs_inserted += n
                     await asyncio.sleep(_PACE)
     return {
-        "season": _CURRENT_SEASON,
+        "season": season,
         "games_seen": games_seen,
         "games_inserted": games_inserted,
         "player_logs_inserted": logs_inserted,
         "errors": errors[:10],
     }
+
+
+async def backfill_current_season(db) -> dict:
+    """Backward-compatible wrapper — backfills the current NFL season."""
+    return await backfill_season(db, _CURRENT_SEASON)
 
 
 async def incremental_sync(db, since: Optional[datetime] = None) -> dict:
@@ -149,7 +159,7 @@ def _safe_int(v) -> Optional[int]:
         return None
 
 
-async def _ingest_summary(cx: httpx.AsyncClient, db, event_id) -> int:
+async def _ingest_summary(cx: httpx.AsyncClient, db, event_id, season: Optional[int] = None) -> int:
     """Pull the boxscore summary for a single event and store per-player stats."""
     if not event_id:
         return 0
@@ -190,7 +200,15 @@ async def _ingest_summary(cx: httpx.AsyncClient, db, event_id) -> int:
                     "team": team_name,
                     "stat_block": stat_name,
                 }
+                if season is not None:
+                    log_doc["season"] = int(season)
+                # Map ESPN labels into normalized prop-engine field names.
+                # Engine reads: passing_yards, passing_tds, rushing_yards,
+                # receiving_yards, receptions, any_td. We mirror BOTH the
+                # nfl_* legacy fields and the normalized fields so existing
+                # readers + props_engine stay in sync.
                 log_doc.update({f"nfl_{k}": v for k, v in mapped.items()})
+                _normalize_nfl_stats(stat_name, mapped, log_doc)
                 await db.player_game_logs.update_one(
                     {"player_id": f"espn_{pid}", "game_id": f"espn_{event_id}", "stat_block": stat_name},
                     {"$set": log_doc},
@@ -198,3 +216,55 @@ async def _ingest_summary(cx: httpx.AsyncClient, db, event_id) -> int:
                 )
                 inserted += 1
     return inserted
+
+
+def _normalize_nfl_stats(stat_name: str, mapped: dict, log_doc: dict) -> None:
+    """Map ESPN per-block labels into normalized prop-engine fields.
+
+    ESPN groups stats by stat_block name (passing/rushing/receiving/etc).
+    The labels vary by block. This populates passing_yards, passing_tds,
+    rushing_yards, receiving_yards, receptions, any_td so the props
+    engine can read consistently across all games regardless of how ESPN
+    laid out its boxscore that week.
+    """
+    def _to_int(v) -> Optional[int]:
+        try:
+            return int(str(v).replace(",", "").strip())
+        except (TypeError, ValueError):
+            return None
+
+    def _yds_from_label(prefix: str) -> Optional[int]:
+        # ESPN uses different label keys per block: "yds", "rec yds", "passing yards"
+        for k in ("yds", "yards", f"{prefix} yds", f"{prefix} yards"):
+            if k in mapped:
+                v = _to_int(mapped[k])
+                if v is not None:
+                    return v
+        return None
+
+    if stat_name == "passing":
+        py = _yds_from_label("passing")
+        if py is not None:
+            log_doc["passing_yards"] = py
+        # TDs label commonly: "td"
+        td = _to_int(mapped.get("td"))
+        if td is not None:
+            log_doc["passing_tds"] = td
+            log_doc["any_td"] = max(int(log_doc.get("any_td") or 0), 1 if td > 0 else 0)
+    elif stat_name == "rushing":
+        ry = _yds_from_label("rushing")
+        if ry is not None:
+            log_doc["rushing_yards"] = ry
+        td = _to_int(mapped.get("td"))
+        if td is not None and td > 0:
+            log_doc["any_td"] = 1
+    elif stat_name == "receiving":
+        rcy = _yds_from_label("receiving")
+        if rcy is not None:
+            log_doc["receiving_yards"] = rcy
+        rec = _to_int(mapped.get("rec"))
+        if rec is not None:
+            log_doc["receptions"] = rec
+        td = _to_int(mapped.get("td"))
+        if td is not None and td > 0:
+            log_doc["any_td"] = 1
