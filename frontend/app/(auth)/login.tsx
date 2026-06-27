@@ -13,7 +13,7 @@ import { useAuth } from "@/src/contexts/AuthContext";
 // Stadium / PL composite — same artwork used by the Expo splash screen
 // so launch → login feels like one continuous brand moment.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const BRAND_BG = require("@/assets/images/brand-bg-v4.png");
+const BRAND_BG = require("@/assets/images/brand-bg-v5.png");
 
 export default function Login() {
   const router = useRouter();
