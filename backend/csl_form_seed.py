@@ -71,7 +71,7 @@ _GOLDEN_BOOTS: list[dict] = [
     {"season": 2020, "player": "Cédric Bakambu",  "team": "Beijing Guoan",                  "goals": 14},
     {"season": 2021, "player": "Júnior Negrão",   "team": "Changchun Yatai",                "goals": 14},
     {"season": 2022, "player": "Marcão",          "team": "Wuhan Three Towns",              "goals": 27},
-    {"season": 2023, "player": "Leonardo",        "team": "Changchun Yatai / Zhejiang",     "goals": 19},
+    {"season": 2023, "player": "Leonardo",        "team": "Shanghai Port",                 "goals": 19},  # 2026 transfer: Zhejiang → Shanghai Port
     {"season": 2024, "player": "Wu Lei",          "team": "Shanghai Port",                  "goals": 34},
     {"season": 2025, "player": "Fábio Abreu",     "team": "Beijing Guoan",                  "goals": 28},
 ]
