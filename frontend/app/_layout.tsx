@@ -49,7 +49,7 @@ export default function RootLayout() {
   useEffect(() => {
     (async () => {
       try {
-        const asset = Asset.fromModule(require("@/assets/images/brand-bg-v7.png"));
+        const asset = Asset.fromModule(require("@/assets/images/brand-bg-v7.jpg"));
         await asset.downloadAsync();
         setBgUri(asset.localUri || asset.uri);
       } catch (e) {
@@ -58,19 +58,24 @@ export default function RootLayout() {
     })();
   }, []);
 
-  // On web, paint the bg directly on <body> via inline style so it
-  // can never be covered by stacking-context surprises.
+  // On web, paint the bg on <html> (not body) so it doesn't repaint on every
+  // scroll inside the app's ScrollViews. We deliberately use `scroll`
+  // (default) instead of `fixed` — `fixed` on mobile Safari forces a full
+  // viewport repaint per scroll frame and tanks scroll perf catastrophically.
+  // `<html>` is large enough to not need parallax fixing.
   useEffect(() => {
     if (Platform.OS !== "web" || !bgUri) return;
-    const prev = document.body.style.cssText;
-    document.body.style.backgroundImage = `url("${bgUri}")`;
-    document.body.style.backgroundSize = "cover";
-    document.body.style.backgroundPosition = "center center";
-    document.body.style.backgroundRepeat = "no-repeat";
-    document.body.style.backgroundAttachment = "fixed";
-    document.body.style.backgroundColor = "#08090f";
+    const html = document.documentElement;
+    const prev = html.style.cssText;
+    html.style.backgroundImage = `url("${bgUri}")`;
+    html.style.backgroundSize = "cover";
+    html.style.backgroundPosition = "center top";
+    html.style.backgroundRepeat = "no-repeat";
+    html.style.backgroundColor = "#08090f";
+    // Keep body fully transparent so the html paint shows through.
+    document.body.style.backgroundColor = "transparent";
     return () => {
-      document.body.style.cssText = prev;
+      html.style.cssText = prev;
     };
   }, [bgUri]);
 
