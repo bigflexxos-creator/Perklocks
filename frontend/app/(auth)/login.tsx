@@ -133,11 +133,11 @@ export default function Login() {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLORS.bg },
   scrim: {
-    // Subtle dark scrim over the brand background so the form fields
-    // remain legible. 55% opacity reads as "stadium glow" rather than
-    // washing out the artwork entirely.
+    // 40% dark scrim — login is the brand moment so we keep the
+    // athletes / stadium clearly visible while the form sits in a
+    // glassy mid-tone above.
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: "rgba(0,0,0,0.40)",
   },
   scroll: { padding: 24, paddingTop: 40, paddingBottom: 60 },
   brand: { alignItems: "center", marginBottom: 40 },
