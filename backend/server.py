@@ -1239,8 +1239,15 @@ def _dedupe_and_limit_goalscorers(picks: list[dict]) -> list[dict]:
                 eg = float(q.get("edge_percent") or 0)
             except Exception:
                 wp, eg = 0.0, 0.0
-            # Elite override: win prob ≥ 70% AND positive edge
-            if wp >= 70.0 and eg > 0:
+            # Elite override:
+            #   1) win prob ≥ 70% AND positive edge (book-favorite tier)
+            #   2) elite_protect=True (curated CSL elite seed —
+            #      Cryzan, Felipe Sousa, Fábio Abreu, Leonardo, Wu Lei,
+            #      Júnior Negrão, Cédric Bakambu, Wesley Moraes, etc.)
+            #      Synthetic picks have edge=0 so the 70%+edge clause
+            #      can never catch them — without this elite_protect
+            #      clause they get silently trimmed at top-3 cap.
+            if (wp >= 70.0 and eg > 0) or q.get("elite_protect"):
                 extras.append(q)
             else:
                 trimmed += 1
@@ -1736,6 +1743,26 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     else:
         await db.picks.delete_many({"pick_date": date_str, **_pin_filter})
         await db.picks.delete_many({"id": {"$in": list(seen_ids)}, **_pin_filter})
+    # ── ID-COLLISION FRESH-OVERWRITE ──
+    # If the current refresh re-generates a pick whose `id` is ALSO a
+    # sticky 95+ pin in DB, the existing row blocks the new insert
+    # (mongo `id` unique index → duplicate key error → silently
+    # skipped). The user then sees the STALE lock_score from days
+    # ago — e.g. Fábio Abreu landed at lock_score=55.7 (post-evidence
+    # demotion from the previous cycle) while the new cycle would have
+    # set it to 95.0 via the elite-protect clamp. Fix: ALWAYS delete
+    # any existing pick whose `id` is about to be re-inserted by this
+    # refresh, regardless of the sticky-pin filter. The peak metadata
+    # is preserved on the new pick (peak_lock_score is propagated
+    # through the synth + clamp pipeline), so the "highest-ever lock"
+    # invariant still holds.
+    if seen_ids:
+        if sport_filter:
+            await db.picks.delete_many(
+                {"id": {"$in": list(seen_ids)}, "sport": sport_filter}
+            )
+        else:
+            await db.picks.delete_many({"id": {"$in": list(seen_ids)}})
     # Defensive write: drop malformed pick docs (missing required fields)
     # so a single broken doc never aborts the entire batch insert. Required
     # fields: id, sport, event_time, market, book_odds.
@@ -1810,6 +1837,43 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as _ev_err:
         logger.warning("Evidence governor unavailable (continuing): %s", _ev_err)
 
+    # ── Elite-protect lock-floor pass ──
+    # CSL seed-tier players (Cryzan, Felipe Sousa, Fábio Abreu,
+    # Leonardo, Wu Lei, Negrão, Bakambu, etc.) are tagged with
+    # `lock_floor` and `elite_protect` by thesportsdb_scorer. The
+    # bandit + brain + learning_v2 routinely shave 2-5 lock points
+    # off these synthetics. Re-apply the floor as the very last step
+    # so the user-curated elite players ALWAYS land on the board at
+    # their reputation-based lock score.
+    try:
+        elite_clamped = 0
+        for p in safe_picks:
+            floor = p.get("lock_floor")
+            if not floor or not p.get("elite_protect"):
+                continue
+            try:
+                floor_f = float(floor)
+            except (TypeError, ValueError):
+                continue
+            updated = False
+            for k in ("lock_score", "lock_score_v2", "raw_lock_score", "peak_lock_score"):
+                try:
+                    cur = float(p.get(k) or 0)
+                except (TypeError, ValueError):
+                    cur = 0.0
+                if cur < floor_f:
+                    p[k] = floor_f
+                    updated = True
+            if updated:
+                p["grade"] = "A" if floor_f >= 88 else ("B" if floor_f >= 80 else "C")
+                p["confidence"] = p["grade"]
+                elite_clamped += 1
+        if elite_clamped:
+            logger.info("Elite lock-floor clamp: %d synthetic CSL picks restored",
+                        elite_clamped)
+    except Exception as _ef_err:
+        logger.warning("Elite lock-floor clamp failed: %s", _ef_err)
+
     if safe_picks:
         # ordered=False already lets pymongo continue past duplicate-key
         # rows, but it STILL raises BulkWriteError at the end, aborting
@@ -1835,6 +1899,19 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
                 n_inserted, len(dup_errors),
             )
     logger.info("Stored %d picks for %s", len(safe_picks), date_str)
+    # ── CSL Guaranteed Elite Injection ──
+    # The standard refresh pipeline (learning + bandit + brain + evidence
+    # governor + dedupe trims) systematically drops CSL synth picks even
+    # when they're tagged elite. We re-run the synthesizer for every CSL
+    # event today AFTER the main pipeline lands and force-inject any
+    # missing elites into the DB so the user always sees Cryzan, Felipe
+    # Sousa, Fábio Abreu, Leonardo, Wu Lei, Júnior Negrão, Cédric
+    # Bakambu, Wesley Moraes, Oscar Taty Maritu, Zhang Yuning, Marcão,
+    # and any other hot-form scorer in `csl_form_seed.py`.
+    try:
+        await _ensure_csl_elite_picks(date_str)
+    except Exception as e:
+        logger.warning("CSL elite-inject failed (non-fatal): %s", e)
     # ── GoalScorer Engine v2 shadow capture ──
     # Best-effort: log a v2 prediction for every soccer goalscorer pick
     # that just landed so calibration data starts accumulating. NEVER
@@ -1844,6 +1921,104 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as e:
         logger.debug("gs_v2 shadow capture failed (non-fatal): %s", e)
     return len(safe_picks)
+
+
+async def _ensure_csl_elite_picks(date_str: str) -> None:
+    """Force-inject any missing CSL elite goalscorer picks for today.
+
+    Runs AFTER the main refresh pipeline. For every CSL event today:
+      1. Pull the existing goalscorer player_names from DB.
+      2. Re-synthesize via `thesportsdb_scorer.compute_anytime_scorer_picks`.
+      3. Any seed-tagged elite player (`elite_protect=True` AND `lock_floor`)
+         that's MISSING from DB → insert directly with the synthesizer's
+         lock_score (already floor-clamped at the elite tier).
+
+    This is a "guarantee" pass — the upstream filters won't see these
+    picks again so they can't trim/demote them.
+    """
+    import thesportsdb_scorer as _tsdb
+    # Pull today's CSL events (from any picks already in DB that have CSL league)
+    # De-dupe by NORMALIZED event name — the same match may appear in DB
+    # under multiple event_id values (real Odds API uuid, the event name
+    # itself, and a missing/dash event_id for team-totals picks).
+    events_seen: dict[str, dict] = {}
+    cur = db.picks.find(
+        {"pick_date": date_str, "league": "China Super League"},
+        {"_id": 0, "event": 1, "event_id": 1, "event_time": 1, "home_team": 1, "away_team": 1},
+    )
+    async for p in cur:
+        ev_name = p.get("event") or ""
+        if not ev_name:
+            continue
+        key = ev_name.strip().lower()
+        if key in events_seen:
+            # Promote real event_id over "-" or the event-name string if we see one
+            existing = events_seen[key]
+            eid = p.get("event_id")
+            if eid and eid != ev_name and (not existing.get("event_id") or existing["event_id"] in ("-", ev_name)):
+                existing["event_id"] = eid
+            continue
+        ht = p.get("home_team") or ""
+        at = p.get("away_team") or ""
+        # Parse "Away @ Home" if home/away missing
+        if (not ht or not at) and " @ " in ev_name:
+            at, ht = ev_name.split(" @ ", 1)
+        if not ht or not at:
+            continue
+        events_seen[key] = {
+            "event_id": p.get("event_id") or ev_name,
+            "event": ev_name,
+            "home_team": ht, "away_team": at,
+            "event_time": p.get("event_time"),
+        }
+
+    if not events_seen:
+        return
+
+    injected = 0
+    for ev in events_seen.values():
+        try:
+            tsdb_picks = await _tsdb.compute_anytime_scorer_picks(
+                db,
+                home_team=ev["home_team"], away_team=ev["away_team"],
+                event_id=ev["event_id"], kickoff_iso=ev["event_time"] or "",
+                league="China Super League", sport_key="soccer_china_superleague",
+                max_per_side=5,
+            )
+        except Exception as e:
+            logger.warning("CSL elite re-synth failed for %s: %s", ev["event"], e)
+            continue
+        # Only elite_protect picks survive this guarantee pass
+        elites = [p for p in tsdb_picks if p.get("elite_protect")]
+        if not elites:
+            continue
+        # Filter out elites already in DB (by player_name + event)
+        existing_names: set[str] = set()
+        cur2 = db.picks.find(
+            {"pick_date": date_str, "event_id": ev["event_id"],
+             "market": {"$regex": "Anytime Goal Scorer"}},
+            {"_id": 0, "player_name": 1},
+        )
+        async for d in cur2:
+            nm = (d.get("player_name") or "").lower()
+            if nm:
+                existing_names.add(nm)
+        missing = [p for p in elites if (p.get("player_name") or "").lower() not in existing_names]
+        if not missing:
+            continue
+        # Stamp pick_date + insert
+        for p in missing:
+            p["pick_date"] = date_str
+            p["force_injected"] = True   # diagnostic — these bypass the pipeline
+        try:
+            await db.picks.insert_many(missing, ordered=False)
+            injected += len(missing)
+        except Exception as bulk_err:
+            details = getattr(bulk_err, "details", None) or {}
+            n_inserted = int(details.get("nInserted", 0) or 0)
+            injected += n_inserted
+    if injected:
+        logger.info("CSL elite-inject: %d picks force-injected post-pipeline", injected)
 
 
 async def _shadow_capture_gs_v2(picks: list[dict]) -> None:
