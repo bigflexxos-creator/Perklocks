@@ -300,10 +300,37 @@ async def pick_rollover(
     # appear in Rollover regardless of lock_score.
     base_q["edge_percent"] = {"$gte": 0}
 
-    # Always exclude Soccer goalscorer markets from Rollover.
+    # ── ALWAYS EXCLUDE GOALSCORER + SOCCER PROP MARKETS FROM ROLLOVER ──
+    # User feedback 2026-06-27 after a losing day: "don't put goalscorers
+    # on rollover especially not a fgs". Anytime / First / Last Goal
+    # Scorer, To Score or Assist, hat-tricks, score 2+, and any
+    # `<Player> to score…` variant carry HIGH VARIANCE (50-65% hit-rate
+    # for top strikers, ~10-15% for FGS) that's fundamentally unsuitable
+    # for a survivability-mode parlay. Belt-and-braces regex — covers
+    # every market label combination we've seen in production.
     existing_market_q = base_q.pop("market", None)
     goalscorer_block = {
-        "market": {"$not": {"$regex": r"goal scorer|to score or assist", "$options": "i"}},
+        "market": {
+            "$not": {
+                "$regex": (
+                    r"goal scorer"          # Anytime / First / Last Goal Scorer
+                    r"|to score or assist"  # AGSoA classic
+                    r"|score or assist"     # variant without "to"
+                    r"|score and assist"    # & variant
+                    r"|score & assist"
+                    r"|to score 2"          # Player to score 2+
+                    r"|to score 3"          # Player to score 3+ / hat trick
+                    r"|hat-trick"
+                    r"|hattrick"
+                    r"|hat trick"
+                    r"|first goal"          # First Goal of match (player)
+                    r"|last goal"           # Last Goal of match (player)
+                    r"|winning goal"        # Player to score winning goal
+                    r"|to assist"           # Player to register an assist
+                ),
+                "$options": "i",
+            },
+        },
     }
     if existing_market_q:
         base_q["$and"] = [{"market": existing_market_q}, goalscorer_block]
