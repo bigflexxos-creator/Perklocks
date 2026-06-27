@@ -107,12 +107,11 @@ export default function RootLayout() {
 }
 
 const styles = StyleSheet.create({
-  // 78% dark wash over the brand image — preserves the stadium glow at the
-  // edges but lets card surfaces (which use COLORS.surface = #141414) read
-  // crisply on top. Higher alpha than the login screen (55%) because the
-  // tabbed content is denser.
+  // 50% dark wash over the brand image — lets the athletes / stadium
+  // glow remain clearly visible while keeping content cards legible.
+  // (Cards use COLORS.surface = #141414 which is opaque on its own.)
   brandScrim: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.78)",
+    backgroundColor: "rgba(0,0,0,0.50)",
   },
 });
