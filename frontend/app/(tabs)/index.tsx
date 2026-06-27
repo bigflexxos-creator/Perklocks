@@ -46,7 +46,12 @@ export default function LocksScreen() {
   // Sport pills / market pills / league pills write to this store. The
   // load() effect reads back the arrays and forwards them as CSV to the
   // picksToday() backend call (2026-06-26 unified filter refactor).
-  const { state: filterStore } = useFilters();
+  //
+  // `hydrated` flips true ONLY after AsyncStorage finishes restoring the
+  // persisted snapshot. We gate the very first picks fetch on it so we
+  // don't fire twice (once with defaults, again with restored state)
+  // — that's what caused the "picks show then disappear" flicker.
+  const { state: filterStore, hydrated: filtersHydrated } = useFilters();
   const [picks, setPicks] = useState<Pick[]>([]);
   const [sport, setSport] = useState<string>("All");
   const [lineType, setLineType] = useState<LineType>("both");
@@ -299,9 +304,23 @@ export default function LocksScreen() {
     }
     lastFilterSignatureRef.current = sig;
     setLoading(true);
+    if (!prefsHydrated) return;
+    // Don't fire the picks fetch until the AsyncStorage-persisted filter
+    // store has finished hydrating. Otherwise we hit the API twice on
+    // cold start (once with default filters, once with the restored ones)
+    // and the UI shows picks → wipes them → shows the restored set.
+    //
+    // CRITICAL: `filtersHydrated` and `prefsHydrated` are in the dep
+    // array. Without them, a fresh-install cold start (no persisted
+    // state on disk) would hydrate without dispatching any state change
+    // — the array deps stay `[]` → effect never re-fires → picks never
+    // load → user sees an infinite spinner. Listing the hydration
+    // flags as deps guarantees a re-fire the moment hydration finishes.
+    if (!filtersHydrated) return;
     load(sport, lineType, sortKey, filters, sortDir);
   }, [
     sport, lineType, sortKey, filters, sortDir, load,
+    prefsHydrated, filtersHydrated,
     // Re-fire when ANY multi-select dimension changes — sports/leagues/
     // markets/games/search. JSON.stringify keeps the dep array stable so
     // React doesn't fire on every render, only when the arrays actually
