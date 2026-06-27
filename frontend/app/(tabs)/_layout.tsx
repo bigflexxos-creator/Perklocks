@@ -21,6 +21,9 @@ export default function TabsLayout() {
     <Tabs
       screenOptions={{
         headerShown: false,
+        // Default scene background is white on web/Expo Go; force transparent
+        // so the global ImageBackground in app/_layout.tsx shows through every tab.
+        sceneStyle: { backgroundColor: "transparent" },
         tabBarStyle: {
           backgroundColor: "rgba(10,10,10,0.96)",
           borderTopColor: COLORS.borderDefault,
