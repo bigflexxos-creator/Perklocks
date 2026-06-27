@@ -13,7 +13,7 @@ import { useAuth } from "@/src/contexts/AuthContext";
 // Stadium / PL composite — same artwork used by the Expo splash screen
 // so launch → login feels like one continuous brand moment.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const BRAND_BG = require("@/assets/images/splash-bg.png");
+const BRAND_BG = require("@/assets/images/brand-bg-v4.png");
 
 export default function Login() {
   const router = useRouter();
@@ -131,13 +131,13 @@ export default function Login() {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: COLORS.bg },
+  safe: { flex: 1, backgroundColor: "transparent" },
   scrim: {
-    // 40% dark scrim — login is the brand moment so we keep the
+    // 35% dark scrim — login is the brand moment so we keep the
     // athletes / stadium clearly visible while the form sits in a
     // glassy mid-tone above.
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.40)",
+    backgroundColor: "rgba(0,0,0,0.35)",
   },
   scroll: { padding: 24, paddingTop: 40, paddingBottom: 60 },
   brand: { alignItems: "center", marginBottom: 40 },

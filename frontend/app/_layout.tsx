@@ -81,7 +81,7 @@ export default function RootLayout() {
                       visual identity from splash → login → tabs.
                   */}
                   <ImageBackground
-                    source={require("@/assets/images/splash-bg.png")}
+                    source={require("@/assets/images/brand-bg-v4.png")}
                     resizeMode="cover"
                     style={StyleSheet.absoluteFillObject}
                   >
@@ -107,11 +107,13 @@ export default function RootLayout() {
 }
 
 const styles = StyleSheet.create({
-  // Light 15% scrim — the splash-bg.png already has a 60% black overlay
-  // baked in so it reads as moody from any tab. Just a touch more
-  // depth here.
+  // Light scrim on top of brand-bg-v4.png (which has ~78% brightness applied
+  // at build time). Keeps athlete silhouettes + stadium glow visible while
+  // ensuring foreground text/cards keep AAA contrast on every tab.
+  // applied at build time). Keeps athlete silhouettes + stadium glow visible
+  // while ensuring foreground text/cards keep AAA contrast on every tab.
   brandScrim: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.15)",
+    backgroundColor: "rgba(0,0,0,0.25)",
   },
 });
