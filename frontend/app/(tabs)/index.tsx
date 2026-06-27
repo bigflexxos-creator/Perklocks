@@ -274,6 +274,20 @@ export default function LocksScreen() {
       // the FilterSheet chip strip. Backward-compat: legacy
       // `simEdgeOnly: true` from older client state still works via the
       // FilterSheet's initialiser which maps it to 75.
+      //
+      // 2026-06-27: SYNTHETIC PICKS ARE EXEMPT.
+      // Synthetic CSL goalscorers (Cryzan, Felipe Silva, Fábio Abreu,
+      // Leonardo, Bakambu, Negrão, Wesley Moraes, etc.) use a closed-
+      // form Poisson model — there's no 10k-run Monte Carlo so
+      // `sim_win_probability` is whatever the Poisson math returned
+      // (32-65%). Stale `simEdgeFloor=75` state from a previous mobile
+      // session would silently strip every single one of them and the
+      // user lands on "No locks on the board" even though the API
+      // returned 9 picks. Bypass the floor for any pick tagged
+      // `synthetic` or `force_injected` — the user clearly opted in
+      // by selecting CSL + Anytime Goal Scorer, and the lock_score is
+      // already the source of truth for confidence (97 for tier-1
+      // Golden Boot winners).
       const simFloor =
         typeof f.simEdgeFloor === "number" && f.simEdgeFloor > 0
           ? f.simEdgeFloor
@@ -282,8 +296,13 @@ export default function LocksScreen() {
             : 0;
       if (simFloor > 0) {
         fresh = fresh.filter((p: any) =>
-          typeof p.sim_win_probability === "number" &&
-          p.sim_win_probability >= simFloor,
+          // Synthetic picks bypass the Sim Edge floor entirely.
+          p.synthetic === true ||
+          p.force_injected === true ||
+          (p.synthetic_source && String(p.synthetic_source).length > 0) ||
+          // Real picks: keep if they meet the sim floor.
+          (typeof p.sim_win_probability === "number" &&
+            p.sim_win_probability >= simFloor),
         );
       }
       setPicks(fresh);

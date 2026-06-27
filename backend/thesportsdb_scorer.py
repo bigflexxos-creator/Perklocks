@@ -714,6 +714,18 @@ async def compute_anytime_scorer_picks(
                 "no_bet": False,
                 "synthetic": True,
                 "synthetic_source": "thesportsdb",
+                # ── Sim-Edge compatibility ──
+                # The home tab's "Sim Edge ≥ X%" filter (default 75%
+                # when toggled) drops every pick whose `sim_win_probability`
+                # is missing or numeric-NaN. Without this field, our
+                # synthetic CSL goalscorer picks would silently disappear
+                # whenever the user has Sim Edge active — they'd see
+                # the empty state "No locks on the board · Tip: SIM EDGE
+                # only surfaces sim ≥75%". We mirror our Poisson
+                # win_probability into `sim_win_probability` so the filter
+                # treats the Poisson model as a 1st-class simulator
+                # (which it is — closed-form alternative to Monte Carlo).
+                "sim_win_probability": round(prob * 100, 2),
                 "elite_tier": elite_floor,    # diagnostic — None | 85 | 90 | 95
                 "samples": {
                     "matches": stats["matches"],
