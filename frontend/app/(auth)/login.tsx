@@ -2,12 +2,18 @@ import React, { useState } from "react";
 import {
   View, Text, TextInput, Pressable, StyleSheet,
   KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator,
+  ImageBackground,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS } from "@/src/theme";
 import { useAuth } from "@/src/contexts/AuthContext";
+
+// Stadium / PL composite — same artwork used by the Expo splash screen
+// so launch → login feels like one continuous brand moment.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const BRAND_BG = require("@/assets/images/splash-bg.png");
 
 export default function Login() {
   const router = useRouter();
@@ -31,7 +37,11 @@ export default function Login() {
   };
 
   return (
-    <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+    <ImageBackground source={BRAND_BG} resizeMode="cover" style={styles.safe}>
+      {/* Subtle dark scrim so the form fields stay legible on top of the
+          stadium background. */}
+      <View style={styles.scrim} />
+      <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         style={{ flex: 1 }}
@@ -115,12 +125,20 @@ export default function Login() {
           </Pressable>
         </ScrollView>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+      </SafeAreaView>
+    </ImageBackground>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLORS.bg },
+  scrim: {
+    // Subtle dark scrim over the brand background so the form fields
+    // remain legible. 55% opacity reads as "stadium glow" rather than
+    // washing out the artwork entirely.
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.55)",
+  },
   scroll: { padding: 24, paddingTop: 40, paddingBottom: 60 },
   brand: { alignItems: "center", marginBottom: 40 },
   logoBox: {

@@ -31,9 +31,8 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 240,
-          "resizeMode": "contain",
+          "image": "./assets/images/splash-bg.png",
+          "resizeMode": "cover",
           "backgroundColor": "#000000"
         }
       ],
