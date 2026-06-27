@@ -458,7 +458,8 @@ export default function LocksScreen() {
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
         <View>
-          <Text style={styles.brand}>PERKSLOCKS</Text>
+          <Text style={styles.brand}>PERKLOCKS</Text>
+          <Text style={styles.tagline}>LOCK IN. CASH OUT.</Text>
           <Text style={styles.date}>
             Today&apos;s Locks · {new Date().toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}
           </Text>
@@ -795,6 +796,7 @@ const styles = StyleSheet.create({
   header: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 14,
     flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end" },
   brand: { fontSize: 22, fontWeight: "900", color: COLORS.textPrimary, letterSpacing: 3 },
+  tagline: { fontSize: 10, fontWeight: "700", color: COLORS.goldElite, letterSpacing: 2.4, marginTop: 2, marginBottom: 2 },
   date: { fontSize: 11, color: COLORS.textMuted, fontWeight: "600", marginTop: 4, letterSpacing: 0.5 },
   updatedLabel: { fontSize: 10, color: COLORS.neonGreen, fontWeight: "700", marginTop: 4, letterSpacing: 0.4 },
   cooldownLabel: { fontSize: 10, color: COLORS.goldElite, fontWeight: "700", marginTop: 2, letterSpacing: 0.4 },

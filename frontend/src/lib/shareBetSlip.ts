@@ -22,7 +22,7 @@ import * as MediaLibrary from "expo-media-library";
 import * as Clipboard from "expo-clipboard";
 import { captureRef } from "react-native-view-shot";
 
-export const APP_NAME = "PerksLocks";
+export const APP_NAME = "PerkLocks";
 
 export type SlipLeg = {
   sport?: string;
@@ -213,7 +213,7 @@ export async function saveSlipImage(viewRef: any): Promise<boolean> {
   if (Platform.OS === "web") {
     Alert.alert(
       "Not available on web",
-      "Open PerksLocks on iOS or Android to save the betslip image to Photos.",
+      "Open PerkLocks on iOS or Android to save the betslip image to Photos.",
     );
     return false;
   }

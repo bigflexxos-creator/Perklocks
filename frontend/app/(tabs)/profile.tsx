@@ -182,7 +182,7 @@ export default function ProfileScreen() {
         </Pressable>
 
         <Text style={styles.footerNote}>
-          PerksLocks v1.0 · Daily auto-refresh at 06:00 UTC{"\n"}
+          PerkLocks v1.0 · Daily auto-refresh at 06:00 UTC{"\n"}
           All picks are probabilistic — never guaranteed.{"\n\n"}
           Build: {APP_DATA_VERSION}  ·  Backend: {BACKEND_URL_DISPLAY}
         </Text>

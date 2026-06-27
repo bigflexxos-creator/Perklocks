@@ -45,7 +45,7 @@ from settlement_engine import settle_due_picks  # noqa: E402
 # keeps working unchanged.
 from deps import db, client, logger, current_user, strip_mongo as _strip_mongo  # noqa: E402
 
-app = FastAPI(title="PerksLocks AI")
+app = FastAPI(title="PerkLocks AI")
 api = APIRouter(prefix="/api")
 
 # ── Picks routes (Phase 1 + Phase 2 + Phase 3 — full extraction) ──
@@ -77,7 +77,7 @@ except Exception as _picks_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.27-csl-elite-goalscorers-v9"
+DATA_VERSION = "2026.06.27-perklocks-rebrand-v10"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -2557,7 +2557,7 @@ async def stats_summary(user: Annotated[UserPublic, Depends(current_user)]):
 
 @api.get("/")
 async def root():
-    return {"ok": True, "service": "PerksLocks AI", "date": _today_str()}
+    return {"ok": True, "service": "PerkLocks AI", "date": _today_str()}
 
 
 # ────────────────────── Historical Sports Intelligence Engine ──────────────────────
@@ -3447,7 +3447,7 @@ async def on_startup():
     except Exception as e:
         logger.warning("CLV snapshotter failed to start: %s", e)
 
-    logger.info("PerksLocks AI started")
+    logger.info("PerkLocks AI started")
 
 
 @app.on_event("shutdown")
