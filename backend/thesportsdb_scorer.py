@@ -574,9 +574,68 @@ async def compute_anytime_scorer_picks(
             else:
                 logger.info("TheSportsDB: empty roster for %s (%s)", team_name, team_id)
                 continue
+        else:
+            # Roster IS populated by TheSportsDB — append any seeded
+            # elite players for this team that aren't already in the
+            # roster. Handles cases like a transfer (Leonardo moved
+            # Zhejiang → Shanghai Port for the 2026 season) where the
+            # TheSportsDB v1 API hasn't yet caught up to the move so
+            # the new team's roster doesn't list them, and the OLD
+            # team's roster still lists them. Without this merge, the
+            # transferred star would never surface for their new team.
+            try:
+                from csl_form_seed import (
+                    iter_team_seed_players,
+                    _PLAYER_ALIASES,
+                    _norm as _seed_norm,
+                )
+                seed_players = iter_team_seed_players(team_name)
+                # Index existing roster by normalized name AND any known
+                # alias so "Felipe Silva" (TheSportsDB) and "Felipe Sousa"
+                # (seed alias) don't both end up as separate roster
+                # entries. Same for Wesley ↔ Wesley Moraes.
+                def _expand_aliases(name: str) -> set[str]:
+                    n = _seed_norm(name)
+                    out_a = {n}
+                    if n in _PLAYER_ALIASES:
+                        out_a.add(_PLAYER_ALIASES[n])
+                    for k, v in _PLAYER_ALIASES.items():
+                        if v == n:
+                            out_a.add(k)
+                    return out_a
+
+                existing_names: set[str] = set()
+                for p in roster:
+                    existing_names |= _expand_aliases(p.get("strPlayer") or "")
+
+                added = 0
+                for sp in seed_players:
+                    nm = (sp.get("strPlayer") or "")
+                    norm_variants = _expand_aliases(nm)
+                    if not (norm_variants & existing_names):
+                        roster.append(sp)
+                        existing_names |= norm_variants
+                        added += 1
+                if added:
+                    logger.info(
+                        "TheSportsDB: merged %d seed players into %s roster (transfers/missing-from-API)",
+                        added, team_name,
+                    )
+            except Exception:
+                pass
 
         candidates: list[tuple[float, dict, dict]] = []  # (prob, player, stats)
+        # Block list — players who have been transferred away from this
+        # team but TheSportsDB roster hasn't caught up yet (e.g. Leonardo
+        # moved Zhejiang → Shanghai Port for the 2026 season).
+        try:
+            from csl_form_seed import is_player_blocked_on_team as _is_blocked
+        except Exception:
+            _is_blocked = lambda _p, _t: False
         for p in roster:
+            # Skip transferred-away players first
+            if _is_blocked(p.get("strPlayer") or "", team_name):
+                continue
             prio, _ = _position_prior(p.get("strPosition") or "")
             # Skip clearly-ineligible roles (GK, defenders, defensive
             # midfielders). prio == 3 = "Midfielder" / "Central
