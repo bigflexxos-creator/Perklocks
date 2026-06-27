@@ -213,7 +213,19 @@ def apply_elite_boost(picks: list[dict]) -> list[dict]:
         haystack = f"{p.get('selection') or ''} {p.get('market') or ''}"
         canonical = find_elite_player(sport, haystack)
         if not canonical:
-            p["elite_player"] = False
+            # PRESERVE upstream elite_player=True tag. Synthetic
+            # CSL goalscorer picks (Cryzan, Felipe Sousa, Fábio
+            # Abreu, Leonardo, Wu Lei, Júnior Negrão, Cédric Bakambu,
+            # Wesley Moraes, …) are tagged elite_player=True by
+            # thesportsdb_scorer.py with their OWN reputation-based
+            # `lock_floor`. The ELITE_PLAYERS list here is curated for
+            # top-5 European leagues + World Cup stars and intentionally
+            # doesn't include CSL — we must NOT reset that flag to False
+            # or the pick_validator's edge-zeroing carve-out + the
+            # _dedupe_and_limit_goalscorers elite override both fail and
+            # the pick gets silently trimmed at top-3.
+            if not p.get("elite_player"):
+                p["elite_player"] = False
             continue
         # Extra safety check for Tennis spreads / Soccer ML: confirm the
         # selection text actually contains the elite player name. The event

@@ -2287,6 +2287,12 @@ _PROPS_PER_KEY_CAP = {
     # full slate. Each event = 1 Odds API request, so 10 keeps the
     # cost bounded.
     "baseball_mlb": 10,
+    # CSL slate is 7-9 matches/day and the user wants ALL elite
+    # scorers (Cryzan, Felipe Sousa, Fábio Abreu, Leonardo, Wu Lei,
+    # Negrão, Bakambu, etc.) on the board. The synthesis fallback
+    # is free (no Odds API cost) so we lift the cap to 10.
+    "soccer_china_superleague": 10,
+    "soccer_china_league_one":   10,
 }
 _DEFAULT_PROPS_PER_KEY = 3
 
