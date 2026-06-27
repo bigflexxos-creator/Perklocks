@@ -1,0 +1,40 @@
+{
+  "summary": "Phase-2 picks-route extraction (server.py → routes/picks_routes.py) verified — 23/23 backend pytest cases passed. All 11 moved routes (`/picks/under-of-the-day`, `/picks/rollover`, `/picks/settle`, `/picks/history`, `/picks/{pick_id}`, `/picks/{pick_id}/ai-explain`, `/picks/{pick_id}/loss-analysis`, `/picks/{pick_id}/probability`, `/picks/{pick_id}/player-form`, `/picks/{pick_id}/pitcher-h2h`, `/picks/{pick_id}/simulation`) round-trip with identical payload shapes (rollover_version='v2', survivability block intact, history.stats has all 7 documented keys, ai-explain.source ∈ {cached,live,fallback}, loss-analysis.source='skip' for pending picks, player-form & pitcher-h2h return 404 with reason for non-matching markets, simulation returns 200 for MLB and 404 for non-supported sports). Critical static-route precedence verified: `/picks/today`, `/picks/parlay`, `/picks/refresh` still 200 (NOT shadowed by the new `/{pick_id}` route), and Phase-1 routes (`/picks/all`, `/picks/nrfi-yrfi`, `/picks/markets/NFL`, `/picks/refresh-status`) also 200. Sort params `lock|time|edge` on under-of-the-day all honoured. No regression detected from the extraction.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/picks/settle", "issue": "Endpoint takes ~91s end-to-end on a cold cache; public ingress proxy times out at ~60s and returns 502 (the route itself returns 200 with full counters via internal call). NOT a refactor regression — pre-existing slow path (backend log: 'SLOW POST /api/picks/settle → 200 in 91301ms'). Test was made tolerant by falling back to internal URL when proxy 502s, but real users hitting this from mobile may also see proxy timeouts. Consider making settle async / dispatch to a background task and return 202 immediately."},
+      {"endpoint": "settlement_engine validator", "issue": "Backend log emits `WARNING - validator failed: unsupported operand type(s) for +=: 'dict' and 'int'` during /api/picks/settle. Settlement still completes successfully but the validator step is silently broken. Pre-existing — unrelated to Phase-2 extraction."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_refactor_phase2_picks_iter62.py",
+    "/app/test_reports/pytest/iter62_phase2_picks.xml"
+  ],
+  "action_items": [
+    "(non-blocking) Investigate `validator failed: unsupported operand type(s) for +=: 'dict' and 'int'` warning emitted by settlement engine — pre-existing, NOT introduced by Phase 2 but should be tracked.",
+    "(non-blocking) /api/picks/settle takes ~91s on a cold cache and exceeds the public ingress 60s timeout. Consider converting to a background task pattern (return 202 + job_id) so mobile clients don't 502."
+  ],
+  "critical_code_review_comments": [
+    "routes/picks_routes.py correctly registers all static segments (`/under-of-the-day`, `/rollover`, `/settle`, `/history`, plus Phase-1 set) BEFORE the parameterized `/{pick_id}` — verified by /picks/today, /picks/parlay, /picks/refresh still resolving to their server.py handlers (none captured as pick_id='today'/'parlay'/'refresh').",
+    "Lazy imports inside each handler (`from server import …`) correctly avoid the cyclic import that would otherwise occur because server.py mounts this router via app.include_router(_picks_router_phases) near the bottom of its own module load.",
+    "`_compute_throttle = rate_limit(rate_per_min=30, burst=10, scope='user')` instantiates a SEPARATE rate-limiter from the one in server.py, so the 30/min budget for ai-explain is independent of any internal flows — matches the design comment in the file.",
+    "SEC-004 (`re.escape(league)`) is preserved in both /under-of-the-day and /rollover query construction — good.",
+    "Soccer-goalscorer block in /rollover uses `$and` only when an existing market regex is also active — branch logic looks correct, didn't break the default 'no market filter' path (verified by 200 + 3-pick payload in test)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_refactor_phase2_picks_iter62.py (new — 23 pytest cases covering all moved + monolith-resident + Phase-1 routes)"
+  ],
+  "success_rate": {"backend": "100% (23/23)", "frontend": "N/A — not tested per request"},
+  "seed_data_creation": "None — used existing seeded demo user (demo@lockscore.ai / demo123) and existing picks on today's slate (sample pick id 822337ea-dd5c-5918-b4f9-78c869e41744 selected from /picks/today).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase 3 will extract /picks/today (~600 lines), /picks/parlay (~330 lines), /picks/refresh from server.py — when that drop lands, the existing test_refactor_phase2_picks_iter62.py file already covers those three under TestMonolithStillExists and will continue to be valid (just rename or move the class). Also be aware: settle endpoint takes ~90s cold, fallback to http://localhost:8001 when public ingress 502s.",
+  "rca_of_issue": "N/A — no failures. Initial test run showed 1 timeout on /api/picks/settle which was correctly diagnosed as a public-ingress proxy timeout (route returns 200 with full counters dict via internal call, 91s elapsed). Test was updated to retry via the internal URL after a 502; final run is 23/23 green."
+}
