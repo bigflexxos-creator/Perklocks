@@ -107,11 +107,11 @@ export default function RootLayout() {
 }
 
 const styles = StyleSheet.create({
-  // 50% dark wash over the brand image — lets the athletes / stadium
-  // glow remain clearly visible while keeping content cards legible.
-  // (Cards use COLORS.surface = #141414 which is opaque on its own.)
+  // Light 15% scrim — the splash-bg.png already has a 60% black overlay
+  // baked in so it reads as moody from any tab. Just a touch more
+  // depth here.
   brandScrim: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.50)",
+    backgroundColor: "rgba(0,0,0,0.15)",
   },
 });
