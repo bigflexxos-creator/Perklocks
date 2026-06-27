@@ -596,8 +596,6 @@ async def compute_anytime_scorer_picks(
 
     home_resolved = await _resolve_team_id(db, country, comp, season, home_team)
     away_resolved = await _resolve_team_id(db, country, comp, season, away_team)
-    if not home_resolved and not away_resolved:
-        return []
 
     picks: list[dict] = []
     if home_resolved:
@@ -614,6 +612,43 @@ async def compute_anytime_scorer_picks(
             home_team=home_team, away_team=away_team, kickoff_iso=kickoff_iso,
             max_count=max_per_side,
         ))
+
+    # ── TheSportsDB fallback (2026-06-27) ──
+    # When sportdb.dev produced zero picks (quota exhausted on their
+    # free plan returns 402 → empty squad → empty picks), fall back to
+    # the user-paid TheSportsDB v1 API for roster + team-strength data.
+    # This keeps lower-tier leagues (CSL, MLS, J-League…) on the board
+    # even when our primary data source is throttled. Top leagues
+    # (EPL, La Liga, …) where sportdb.dev was producing picks before
+    # are UNAFFECTED — this only kicks in when picks == 0.
+    if not picks:
+        try:
+            import thesportsdb_scorer as _tsdb
+            # Use the USER-FACING league label so picks land under the same
+            # league name the frontend / SportFilterBar uses (e.g. "China
+            # Super League" not "super-league:nc9yRmcn"). Falls back to
+            # the internal `comp` slug if we don't have a label mapping.
+            try:
+                from sports_engine import LEAGUE_LABELS as _LL
+                league_label = _LL.get(sport_key, comp)
+            except Exception:
+                league_label = comp
+            tsdb_picks = await _tsdb.compute_anytime_scorer_picks(
+                db,
+                home_team=home_team, away_team=away_team,
+                event_id=event_id, kickoff_iso=kickoff_iso,
+                league=league_label, sport_key=sport_key,
+                max_per_side=max_per_side,
+            )
+            if tsdb_picks:
+                logger.info(
+                    "TheSportsDB fallback produced %d goalscorer picks for %s @ %s",
+                    len(tsdb_picks), away_team, home_team,
+                )
+                picks.extend(tsdb_picks)
+        except Exception as e:
+            logger.warning("TheSportsDB fallback failed for %s @ %s: %s",
+                           away_team, home_team, e)
     return picks
 
 
