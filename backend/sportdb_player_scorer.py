@@ -193,6 +193,22 @@ async def _cache_get(db, key: str, ttl: timedelta) -> Optional[Any]:
     return doc.get("data")
 
 
+async def _cache_get_stale_ok(db, key: str) -> Optional[Any]:
+    """Return cached data IGNORING the TTL — used as a last-resort
+    fallback when the live SportDB fetch fails (HTTP 402 / 429 / network
+    error). Keeps lower-tier leagues like CSL on the board even when the
+    upstream API throttles us; the data may be a few weeks old but a
+    striker's career goal rate doesn't move materially in that window.
+    Returns None if there's no cache entry at all.
+    """
+    if db is None:
+        return None
+    doc = await db.sportdb_scorer_cache.find_one({"_id": key})
+    if not doc:
+        return None
+    return doc.get("data")
+
+
 async def _cache_set(db, key: str, data: Any):
     if db is None or data is None:
         return
@@ -316,6 +332,14 @@ async def get_team_squad(db, team_slug: str, team_id: str) -> Optional[list[dict
         return cached
     data = await _get(f"/team/{team_slug}/{team_id}", db=db)
     if not isinstance(data, dict):
+        # Live fetch failed (likely 402/429). Fall back to STALE cache
+        # so leagues like CSL stay on the board through API outages.
+        # A squad doesn't change materially week-to-week; serving the
+        # last known list is far better than dropping every CSL pick.
+        stale = await _cache_get_stale_ok(db, key)
+        if isinstance(stale, list) and stale:
+            logger.info("SportDB squad fetch failed for %s — serving %d stale-cached players", team_slug, len(stale))
+            return stale
         return None
     # Squad is grouped by tournament. We want the LEAGUE squad (not cup-only).
     squad_groups = data.get("squad") or []
@@ -368,9 +392,20 @@ async def get_player_goal_rate(db, player_slug: str, player_id: str,
     if cached is None:
         data = await _get(f"/player/{player_slug}/{player_id}", db=db)
         if not isinstance(data, dict):
-            return None
-        cached = data
-        await _cache_set(db, key, cached)
+            # Live fetch failed (likely 402/429). Fall back to STALE
+            # cache so synthetic-scorer leagues (CSL, MLS, J-League, …)
+            # don't go dark just because SportDB throttled today. A
+            # striker's career rate barely moves week-to-week, so a
+            # 2-month-old snapshot is still a strong signal.
+            stale = await _cache_get_stale_ok(db, key)
+            if isinstance(stale, dict):
+                logger.info("SportDB player fetch failed for %s — using stale cache", player_slug)
+                cached = stale
+            else:
+                return None
+        else:
+            cached = data
+            await _cache_set(db, key, cached)
     careers_root = cached.get("careers") or {}
     # MULTI-SOURCE career fetch:
     #   league          → domestic league (Premier League, La Liga, CSL...)
