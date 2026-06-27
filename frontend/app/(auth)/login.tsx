@@ -2,18 +2,12 @@ import React, { useState } from "react";
 import {
   View, Text, TextInput, Pressable, StyleSheet,
   KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator,
-  ImageBackground,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS } from "@/src/theme";
 import { useAuth } from "@/src/contexts/AuthContext";
-
-// Stadium / PL composite — same artwork used by the Expo splash screen
-// so launch → login feels like one continuous brand moment.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const BRAND_BG = require("@/assets/images/brand-bg-v5.png");
 
 export default function Login() {
   const router = useRouter();
@@ -37,10 +31,7 @@ export default function Login() {
   };
 
   return (
-    <ImageBackground source={BRAND_BG} resizeMode="cover" style={styles.safe}>
-      {/* Subtle dark scrim so the form fields stay legible on top of the
-          stadium background. */}
-      <View style={styles.scrim} />
+    <View style={styles.safe}>
       <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -126,19 +117,12 @@ export default function Login() {
         </ScrollView>
       </KeyboardAvoidingView>
       </SafeAreaView>
-    </ImageBackground>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: "transparent" },
-  scrim: {
-    // 35% dark scrim — login is the brand moment so we keep the
-    // athletes / stadium clearly visible while the form sits in a
-    // glassy mid-tone above.
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.35)",
-  },
   scroll: { padding: 24, paddingTop: 40, paddingBottom: 60 },
   brand: { alignItems: "center", marginBottom: 40 },
   logoBox: {

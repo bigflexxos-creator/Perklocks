@@ -1,10 +1,24 @@
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect, useState } from "react";
-import { ImageBackground, StyleSheet, View } from "react-native";
+import { Image, Platform, StyleSheet, View } from "react-native";
+import { Asset } from "expo-asset";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { ThemeProvider, DefaultTheme } from "@react-navigation/native";
+
+// React Navigation theme that paints all card backgrounds transparent so
+// the global PerkLocks backdrop (set on <body> on web, rendered as <Image>
+// on native) shows through every Stack & Tab screen.
+const TransparentTheme = {
+  ...DefaultTheme,
+  colors: {
+    ...DefaultTheme.colors,
+    background: "transparent",
+    card: "transparent",
+  },
+};
 
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { AuthProvider } from "@/src/contexts/AuthContext";
@@ -27,6 +41,38 @@ SplashScreen.preventAutoHideAsync();
 export default function RootLayout() {
   const [loaded, error] = useIconFonts();
   const [cacheBustDone, setCacheBustDone] = useState(false);
+  const [bgUri, setBgUri] = useState<string | null>(null);
+
+  // Resolve the brand background to a URI we can use as a CSS background
+  // on web (RN-Web's <Image> mis-sets opacity:0 inside React Navigation's
+  // nested stacking contexts and the bg never appears).
+  useEffect(() => {
+    (async () => {
+      try {
+        const asset = Asset.fromModule(require("@/assets/images/brand-bg-v7.png"));
+        await asset.downloadAsync();
+        setBgUri(asset.localUri || asset.uri);
+      } catch (e) {
+        console.warn("[bg] failed to resolve asset", e);
+      }
+    })();
+  }, []);
+
+  // On web, paint the bg directly on <body> via inline style so it
+  // can never be covered by stacking-context surprises.
+  useEffect(() => {
+    if (Platform.OS !== "web" || !bgUri) return;
+    const prev = document.body.style.cssText;
+    document.body.style.backgroundImage = `url("${bgUri}")`;
+    document.body.style.backgroundSize = "cover";
+    document.body.style.backgroundPosition = "center center";
+    document.body.style.backgroundRepeat = "no-repeat";
+    document.body.style.backgroundAttachment = "fixed";
+    document.body.style.backgroundColor = "#08090f";
+    return () => {
+      document.body.style.cssText = prev;
+    };
+  }, [bgUri]);
 
   // Run the cache buster BEFORE any provider mounts so the BetSlipContext
   // hydrates from a clean slate when a data-version bump occurs. This is
@@ -65,37 +111,35 @@ export default function RootLayout() {
   if ((!loaded && !error) || !cacheBustDone) return null;
 
   return (
-    <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#000" }}>
+    <GestureHandlerRootView style={{ flex: 1 }}>
       <ErrorBoundary>
-        <SafeAreaProvider>
+        <SafeAreaProvider style={{ backgroundColor: "transparent" }}>
+          {/* ── Global branded backdrop ──
+              On web the bg is painted on <body> via useEffect (see above)
+              so it can never be covered by React Navigation's nested
+              stacking contexts. On native we render a fixed Image. */}
+          {Platform.OS !== "web" && bgUri && (
+            <Image
+              source={{ uri: bgUri }}
+              resizeMode="cover"
+              style={styles.bgImage}
+              fadeDuration={0}
+            />
+          )}
+          <View style={styles.brandScrim} pointerEvents="none" />
           <AuthProvider>
             <FiltersProvider>
               <BetSlipProvider>
                 <MLBLiveProvider>
                   <StatusBar style="light" />
-                  {/* ── Global branded backdrop ──
-                      Renders the stadium / phone-mockup composite behind every
-                      route. Stack `contentStyle` is transparent so each
-                      screen's content sits on top of this single shared image,
-                      avoiding bundle-size duplication and giving a continuous
-                      visual identity from splash → login → tabs.
-                  */}
-                  <ImageBackground
-                    source={require("@/assets/images/brand-bg-v5.png")}
-                    resizeMode="cover"
-                    style={StyleSheet.absoluteFillObject}
-                  >
-                    <View style={styles.brandScrim} />
-                  </ImageBackground>
-                  <Stack
-                    screenOptions={{
-                      headerShown: false,
-                      // Transparent so the global ImageBackground above shows
-                      // through. Each screen still paints its own translucent
-                      // dark scrim via its `safe` style.
-                      contentStyle: { backgroundColor: "transparent" },
-                    }}
-                  />
+                  <ThemeProvider value={TransparentTheme}>
+                    <Stack
+                      screenOptions={{
+                        headerShown: false,
+                        contentStyle: { backgroundColor: "transparent" },
+                      }}
+                    />
+                  </ThemeProvider>
                 </MLBLiveProvider>
               </BetSlipProvider>
             </FiltersProvider>
@@ -107,10 +151,17 @@ export default function RootLayout() {
 }
 
 const styles = StyleSheet.create({
-  // Light scrim on top of brand-bg-v5.png (custom designed dark backdrop
-  // with gold lock motif). Just a 10% tint to push slight depth.
+  bgImage: {
+    position: "absolute",
+    top: 0, left: 0, right: 0, bottom: 0,
+    width: "100%",
+    height: "100%",
+    zIndex: 0,
+    opacity: 1,
+  },
   brandScrim: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.10)",
+    backgroundColor: "rgba(0,0,0,0.30)",
+    zIndex: 1,
   },
 });
