@@ -52,7 +52,18 @@ export default function LocksScreen() {
   // persisted snapshot. We gate the very first picks fetch on it so we
   // don't fire twice (once with defaults, again with restored state)
   // — that's what caused the "picks show then disappear" flicker.
-  const { state: filterStore, hydrated: filtersHydrated, setEvents, resetAll: resetAllFilters } = useFilters();
+  const {
+    state: filterStore,
+    hydrated: filtersHydrated,
+    setEvents,
+    setLeagues: setStoreLeagues,
+    setMarkets: setStoreMarkets,
+    setGames:   setStoreGames,
+    resetAll: resetAllFilters,
+  } = useFilters();
+  // Alias — keeps the sport-switch handler readable. Same underlying
+  // store setter as `setEvents`.
+  const setStoreEvents = setEvents;
   const [picks, setPicks] = useState<Pick[]>([]);
   const [sport, setSport] = useState<string>("All");
   const [lineType, setLineType] = useState<LineType>("both");
@@ -312,12 +323,30 @@ export default function LocksScreen() {
 
   useEffect(() => {
     // Wipe stale picks the moment the user changes sport OR any
-    // narrowing filter (market / league / event) so the wrong tab can
-    // NEVER be shown for even a single frame. Without this, a previous
-    // fetch's picks remain visible while the new fetch is in-flight,
-    // producing the "H+R+RBI under Strikeouts" visual leak that users
-    // (rightly) interpret as broken filtering.
-    const sig = `${sport}|${filters.market || ""}|${filters.league || ""}|${filters.event || ""}`;
+    // narrowing filter (market / league / event / store arrays) so
+    // the wrong tab can NEVER be shown for even a single frame.
+    // Without this, a previous fetch's picks remain visible while the
+    // new fetch is in-flight, producing the "H+R+RBI under Strikeouts"
+    // visual leak that users (rightly) interpret as broken filtering.
+    //
+    // CRITICAL (2026-06-27): include the FULL multi-select store
+    // signature too — leagues / markets / gameIds / events. The
+    // previous sig (sport + local filters only) missed multi-select
+    // changes, so when the persistent store hydrated late on cold
+    // start (or the user toggled a chip), the previous slate kept
+    // rendering until the new fetch landed → "picks showing up
+    // then leaving" complaint.
+    const sig = [
+      sport,
+      filters.market || "",
+      filters.league || "",
+      filters.event || "",
+      filterStore.leagues.join(","),
+      filterStore.markets.join(","),
+      filterStore.gameIds.join(","),
+      filterStore.events.join(","),
+      filterStore.searchText || "",
+    ].join("|");
     if (lastFilterSignatureRef.current && lastFilterSignatureRef.current !== sig) {
       setPicks([]);
     }
@@ -341,13 +370,14 @@ export default function LocksScreen() {
     sport, lineType, sortKey, filters, sortDir, load,
     prefsHydrated, filtersHydrated,
     // Re-fire when ANY multi-select dimension changes — sports/leagues/
-    // markets/games/search. JSON.stringify keeps the dep array stable so
-    // React doesn't fire on every render, only when the arrays actually
-    // mutate.
+    // markets/games/events/search. JSON.stringify keeps the dep array
+    // stable so React doesn't fire on every render, only when the
+    // arrays actually mutate.
     JSON.stringify(filterStore.sports),
     JSON.stringify(filterStore.leagues),
     JSON.stringify(filterStore.markets),
     JSON.stringify(filterStore.gameIds),
+    JSON.stringify(filterStore.events),
     filterStore.searchText,
   ]);
 
@@ -454,6 +484,20 @@ export default function LocksScreen() {
           // sport switches produces empty-board confusion ("took me
           // back to main tab" complaint, 2026-06-25).
           setFilters((f) => ({ ...f, market: undefined, league: undefined, event: undefined }));
+          // CRITICAL (2026-06-27): the persistent multi-select store
+          // ALSO holds sport-bound arrays (`leagues`, `markets`,
+          // `gameIds`, `events`). On a sport switch they're nearly
+          // always stale — an MLB "Yankees @ Red Sox" event has no
+          // Soccer counterpart, an NFL "Touchdown Scorer" market
+          // doesn't exist for Tennis. Leaving them in the store
+          // makes the backend filter Soccer picks down to zero
+          // (verified bug: persisted `events=Yankees @ Red Sox`
+          // returns 0 Soccer picks). Wipe them here in sync with
+          // the local `filters` reset above.
+          setStoreLeagues([]);
+          setStoreMarkets([]);
+          setStoreGames([]);
+          setStoreEvents([]);
           setSport(s);
         }}
         testIDPrefix="sport-chip"
@@ -486,24 +530,6 @@ export default function LocksScreen() {
           activeEventsCount={filterStore.events.length}
           totalGames={Array.from(new Set(picks.map(p => p.event).filter(Boolean))).length}
         />
-        {/* Master "RESET FILTERS" — wipes the persistent AsyncStorage
-            filter store (sports / leagues / markets / events / search /
-            min-lock / min-implied / sim-edge floors) AND the legacy
-            local `filters` state. Shown only when at least ONE narrowing
-            predicate is active so it doesn't clutter the controls row
-            when there's nothing to clear. */}
-        {filtersAreNarrowing && (
-          <TouchableOpacity
-            onPress={clearAllNarrowingFilters}
-            activeOpacity={0.7}
-            style={styles.resetAllBtn}
-            accessibilityLabel="Reset all filters"
-            testID="locks-reset-all-filters"
-          >
-            <Ionicons name="close-circle" size={13} color={COLORS.electricBlaze} />
-            <Text style={styles.resetAllBtnTxt}>RESET</Text>
-          </TouchableOpacity>
-        )}
         <TouchableOpacity
           onPress={onRefresh}
           activeOpacity={0.7}

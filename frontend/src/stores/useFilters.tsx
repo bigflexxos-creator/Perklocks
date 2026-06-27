@@ -132,12 +132,22 @@ function reducer(state: FilterState, action: Action): FilterState {
 // ─────────────────────────── Storage glue ───────────────────────────
 
 // Schema version baked into the key — bump when shape changes to invalidate
-// old serialised state on disk. v3 (2026-06-26): user reported Soccer feed
-// going empty with no obvious active filter — symptom was stale persisted
-// arrays from earlier sessions silently restricting the slate. Bumping
-// the key drops the old snapshot on every device and gives users a
-// clean filter state on next launch.
-const STORAGE_KEY = "perkslocks_filters_v3";
+// old serialised state on disk.
+//
+// v4 (2026-06-27): "Picks showing up then leaving" + "no CSL goalscorers
+// on board" — root cause was stale persisted sport-bound arrays
+// (`leagues`, `markets`, `gameIds`, `events`) from a previous MLB/NFL
+// session silently restricting the backend query to zero matches when
+// the user switched to Soccer. Fix lives in index.tsx (sport-switch
+// also clears these arrays), AND we bump the schema key so users on
+// devices with stale v3 state get a clean slate on next launch
+// regardless of whether they trigger a sport change.
+//
+// v3 (2026-06-26): user reported Soccer feed going empty with no
+// obvious active filter — symptom was stale persisted arrays from
+// earlier sessions silently restricting the slate. Bumping the key
+// drops the old snapshot on every device.
+const STORAGE_KEY = "perkslocks_filters_v4";
 
 async function loadPersisted(): Promise<Partial<FilterState> | null> {
   try {
