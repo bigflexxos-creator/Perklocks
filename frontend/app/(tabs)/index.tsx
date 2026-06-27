@@ -13,6 +13,7 @@ import { ChipRow } from "@/src/components/ChipRow";
 import { FilterButton, FilterSheet } from "@/src/components/FilterSheet";
 import { GameFilterButton, GameFilterSheet } from "@/src/components/GameFilterSheet";
 import { SportFilterBar } from "@/src/components/SportFilterBar";
+import { NFLIntelligenceSection } from "@/src/components/NFLIntelligenceSection";
 import { StaleVersionBanner } from "@/src/components/StaleVersionBanner";
 import { StaleBuildBanner } from "@/src/components/StaleBuildBanner";
 import { storage } from "@/src/utils/storage";
@@ -51,7 +52,7 @@ export default function LocksScreen() {
   // persisted snapshot. We gate the very first picks fetch on it so we
   // don't fire twice (once with defaults, again with restored state)
   // — that's what caused the "picks show then disappear" flicker.
-  const { state: filterStore, hydrated: filtersHydrated } = useFilters();
+  const { state: filterStore, hydrated: filtersHydrated, setEvents, resetAll: resetAllFilters } = useFilters();
   const [picks, setPicks] = useState<Pick[]>([]);
   const [sport, setSport] = useState<string>("All");
   const [lineType, setLineType] = useState<LineType>("both");
@@ -79,6 +80,10 @@ export default function LocksScreen() {
   const [remaining, setRemaining] = useState<number>(0); // seconds until next refresh
   const [, forceTick] = useState(0);
   const [prefsHydrated, setPrefsHydrated] = useState(false);
+  // NFL Intelligence row refresh — increment to force the three NFL
+  // feeds (safe-bets, atd, game-bets) to re-fetch. Driven by
+  // pull-to-refresh + the UPDATE button.
+  const [nflRefreshTick, setNflRefreshTick] = useState(0);
 
   // Hydrate persisted feed prefs (sport, sort, lineType) on mount so the
   // user's last view sticks across sessions.
@@ -165,6 +170,10 @@ export default function LocksScreen() {
     !!filters.market ||
     !!filters.league ||
     !!filters.event ||
+    filterStore.events.length > 0 ||
+    filterStore.markets.length > 0 ||
+    filterStore.leagues.length > 0 ||
+    filterStore.gameIds.length > 0 ||
     (typeof filters.minLock === "number" && filters.minLock > 85) ||
     !!filters.minImplied ||
     (typeof filters.maxImplied === "number" && filters.maxImplied < 100);
@@ -172,14 +181,24 @@ export default function LocksScreen() {
   // Render-time view of picks — applies the event filter so the user
   // can drill into one game without losing the full slate from the
   // GameFilterSheet's dropdown list.
-  const visiblePicks = filters.event
-    ? picks.filter((p) => (p.event || "") === filters.event)
-    : picks;
+  //
+  // 2026-06-27 multi-select: a non-empty `filterStore.events` array
+  // takes precedence over the legacy single `filters.event`. When the
+  // user picks multiple games via the GameFilterSheet, every pick on
+  // any of those events is kept; empty array = ALL events.
+  const visiblePicks = filterStore.events.length > 0
+    ? picks.filter((p) => filterStore.events.includes(p.event || ""))
+    : filters.event
+      ? picks.filter((p) => (p.event || "") === filters.event)
+      : picks;
 
   const clearAllNarrowingFilters = () => {
-    // Wipe only the narrowing predicates — keep sport / sort / lineType
-    // so the user doesn't lose their entire context.
+    // Wipe BOTH local pick-filters AND the persisted multi-select
+    // arrays in the global store. Sport + sort + lineType are
+    // preserved (those are view prefs, not filters). User can hit
+    // RESET ALL on the top bar to wipe the store completely.
     setFilters({});
+    resetAllFilters();
   };
 
   // Request-token guard: each call to load() captures a monotonically
@@ -341,7 +360,14 @@ export default function LocksScreen() {
     30_000,
   );
 
-  const onRefresh = () => { setRefreshing(true); load(sport, lineType, sortKey, filters, sortDir); };
+  const onRefresh = () => {
+    setRefreshing(true);
+    load(sport, lineType, sortKey, filters, sortDir);
+    // Also bump the NFL-intelligence tick so the three NFL feature rows
+    // re-fetch in lockstep with the picks feed. Pull-to-refresh now
+    // refreshes EVERYTHING on screen, not just the locks list.
+    setNflRefreshTick((n) => n + 1);
+  };
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -457,8 +483,27 @@ export default function LocksScreen() {
         <GameFilterButton
           onPress={() => setGameFilterOpen(true)}
           activeEvent={filters.event}
+          activeEventsCount={filterStore.events.length}
           totalGames={Array.from(new Set(picks.map(p => p.event).filter(Boolean))).length}
         />
+        {/* Master "RESET FILTERS" — wipes the persistent AsyncStorage
+            filter store (sports / leagues / markets / events / search /
+            min-lock / min-implied / sim-edge floors) AND the legacy
+            local `filters` state. Shown only when at least ONE narrowing
+            predicate is active so it doesn't clutter the controls row
+            when there's nothing to clear. */}
+        {filtersAreNarrowing && (
+          <TouchableOpacity
+            onPress={clearAllNarrowingFilters}
+            activeOpacity={0.7}
+            style={styles.resetAllBtn}
+            accessibilityLabel="Reset all filters"
+            testID="locks-reset-all-filters"
+          >
+            <Ionicons name="close-circle" size={13} color={COLORS.electricBlaze} />
+            <Text style={styles.resetAllBtnTxt}>RESET</Text>
+          </TouchableOpacity>
+        )}
         <TouchableOpacity
           onPress={onRefresh}
           activeOpacity={0.7}
@@ -490,6 +535,14 @@ export default function LocksScreen() {
           <Text style={styles.soccerLabChevron}>›</Text>
         </TouchableOpacity>
       )}
+      {/* ── NFL Intelligence — three feature rows surfacing the new
+          Safe-Locks, ATD-Leaderboard, and Game-Bets engines. Only shown
+          on NFL or when NFL is one of the active sports in the multi-
+          select. Re-fetches each row on user-triggered refresh via the
+          shared `refreshTick`. */}
+      {(sport === "NFL" || filterStore.sports.includes("NFL")) && (
+        <NFLIntelligenceSection refreshTick={nflRefreshTick} />
+      )}
       {sport === "MLB" && (
         <TouchableOpacity
           onPress={() => router.push("/nrfi-yrfi" as any)}
@@ -520,13 +573,25 @@ export default function LocksScreen() {
 
       {/* Game (event) drill-down sheet. Always sees the FULL slate
           (`picks` — pre-event-filter) so the user can swap between
-          games without losing the dropdown. */}
+          games without losing the dropdown.
+          Multi-select wired to the global filter store's `events`
+          array. The legacy `filters.event` single-select is still
+          synced so older empty-state CTAs etc. keep working. */}
       <GameFilterSheet
         visible={gameFilterOpen}
         picks={picks}
+        activeEvents={filterStore.events}
         activeEvent={filters.event}
         onClose={() => setGameFilterOpen(false)}
-        onApply={(event) => setFilters({ ...filters, event })}
+        onApplyEvents={(events) => {
+          setEvents(events);
+          // Keep `filters.event` synced to the FIRST chosen event (or
+          // clear it) so the lazy single-event consumers (empty-state
+          // CTAs, game-pill label) stay in lockstep. When multiple
+          // events are picked, leave `filters.event` undefined so the
+          // legacy code falls through to the store-driven path.
+          setFilters({ ...filters, event: events.length === 1 ? events[0] : undefined });
+        }}
       />
 
       <ScrollView
@@ -835,6 +900,30 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "900",
     letterSpacing: 1.2,
+  },
+  // Reset-all-filters pill — destructive accent, only shown when any
+  // narrowing predicate is active. Placed between the GameFilter
+  // button and the UPDATE button on the controls row.
+  resetAllBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.electricBlaze,
+    backgroundColor: COLORS.electricBlaze + "12",
+    marginLeft: 8,
+    marginRight: 8,
+    marginBottom: 10,
+    minHeight: 30,
+  },
+  resetAllBtnTxt: {
+    color: COLORS.electricBlaze,
+    fontSize: 10.5,
+    fontWeight: "900",
+    letterSpacing: 1.0,
   },
   // Date-section grouping for the Locks feed.
   dayGroup: { marginBottom: 4 },

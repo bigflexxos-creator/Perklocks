@@ -1,0 +1,34 @@
+{
+  "summary": "Verified the 3 new feature drops in iter 61: NFL Game-Bets engine backend routes (predict ml/spread/total, safe-alts, teams, safe-bets), NFL Intelligence Section on the home tab, multi-select Game filter sheet, and the Reset-Filters pill. Backend: 8/8 pytest cases passed (all NFL game-engine endpoints return 200 with full documented shape, probabilities sum to 1.0, ratings include all required fields). Frontend (mobile viewport 390x844, demo@lockscore.ai login): NFL chip reveals 'nfl-intel-section' containing all 3 horizontal subsections (safe-locks gold, atd-leaderboard red, game-bets blue) — Game-Bets correctly shows 'No upcoming NFL matchups on the slate' off-season fallback. Switching back to 'All' hides the section. Multi-game filter opened with 65 selectable rows; tapping two rows updated the sheet subtitle to '2 of 65 games selected', the apply button to 'APPLY · 2', and after apply the trigger pill read '2 GAMES' and the picks feed narrowed from 111 → 18 picks confined to the two chosen events. The red RESET pill appeared after applying, tapping it cleared the multi-select (pill disappeared, trigger reverted to 'GAME · 65', full slate restored).",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "global styles", "issue": "Console warns: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' Multiple emits during app boot. Pre-existing, not introduced by this iteration but worth migrating."},
+      {"component": "global props", "issue": "Console warns: 'props.pointerEvents is deprecated. Use style.pointerEvents' — pre-existing, not from this drop."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_nfl_games_engine_iter61.py",
+    "/app/test_reports/pytest/iter61_nfl_games_engine.xml"
+  ],
+  "action_items": [
+    "(non-blocking) Migrate any remaining `shadow*` style props to `boxShadow` and `pointerEvents` from prop to style across the codebase to silence deprecation warnings (pre-existing, not blocking this drop)."
+  ],
+  "critical_code_review_comments": [
+    "nfl_game_engine.safe_alt_locks does NOT include `spread` or `total` keys in the returned dict — caller routes only consume `ml_pick`, `spread_pick`, `total_pick`, `expected_margin`, `expected_total`, `home_rating`, `away_rating`, so OK, but consider adding the originally evaluated spread/total ladder positions to the slot dicts for downstream debugging.",
+    "nfl_game_engine._team_ratings caches at module level with no per-DB scope; safe for current single-DB deployment.",
+    "predict_game returns reject={'team_no_rating(...)'} when one team is missing — routes already promote to HTTP 422, good. For ml market this fires when calling unknown team names — verified by happy-path on 'Seattle Seahawks' vs 'Houston Texans'."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_nfl_games_engine_iter61.py (new test file)"
+  ],
+  "success_rate": { "backend": "100% (8/8)", "frontend": "100% (3/3 flows)" },
+  "seed_data_creation": "None — used existing seeded demo user demo@lockscore.ai / demo123 and existing NFL game results in the `games` collection.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend endpoints used valid NFL team names: 'Seattle Seahawks', 'Houston Texans'. The /games/safe-bets endpoint legitimately returns count=0 / bets=[] during NFL off-season — both backend (matchups_evaluated=0) and frontend (GAME BETS row shows fallback copy) handle this gracefully. Multi-game filter requires ≥2 events on the slate to exercise; current slate has 65, so test reliably works.",
+  "rca_of_issue": "N/A — no failing flows."
+}
