@@ -208,7 +208,7 @@ function Metric({ label, value, color = COLORS.textPrimary }: { label: string; v
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: COLORS.bg },
+  safe: { flex: 1, backgroundColor: "transparent" },
   header: {
     paddingHorizontal: 20, paddingTop: 8, paddingBottom: 14,
     flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end",

@@ -100,7 +100,7 @@ export default function Register() {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: COLORS.bg },
+  safe: { flex: 1, backgroundColor: "transparent" },
   scroll: { padding: 24, paddingTop: 60, paddingBottom: 60 },
   title: { fontSize: 32, fontWeight: "900", color: COLORS.textPrimary, letterSpacing: -1, marginBottom: 6 },
   subtitle: { fontSize: 14, color: COLORS.textSecondary, marginBottom: 30 },

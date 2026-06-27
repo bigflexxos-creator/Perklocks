@@ -17,7 +17,7 @@ export default function TabsLayout() {
   }, [loading, user]);
 
   return (
-    <View style={{ flex: 1, backgroundColor: COLORS.bg }}>
+    <View style={{ flex: 1, backgroundColor: "transparent" }}>
     <Tabs
       screenOptions={{
         headerShown: false,
