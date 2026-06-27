@@ -916,6 +916,116 @@ export const api = {
       curve: Array<[string, number]>;
     }>;
   }>(`/analytics/backtest?days=${days}`),
+
+  // ─────────────────────────── NFL Intelligence ───────────────────────────
+  // Three engines, all read-only, all return TRUE probability (no edge).
+  //   • nflSafeBets         — top-N player-prop locks ranked by hit rate
+  //   • nflAtdLeaderboard   — ranked P(TD ≥ 1) for every eligible player
+  //   • nflGameSafeBets     — best ML / Spread / Total locks across all
+  //                            upcoming NFL matchups in one shot
+  // Surface these in the home tab as "NFL Intelligence" feature cards.
+  nflSafeBets: (limit: number = 10, minProbability: number = 0.78) =>
+    request<NFLSafeBetsResponse>(
+      `/nfl/safe-bets?limit=${limit}&min_probability=${minProbability}`,
+    ),
+  nflAtdLeaderboard: (
+    limit: number = 20,
+    minProbability: number = 0.30,
+    minOpportunityRating: "low" | "med" | "high" = "med",
+  ) =>
+    request<NFLAtdLeaderboardResponse>(
+      `/nfl/atd/leaderboard?limit=${limit}&min_probability=${minProbability}&min_opportunity_rating=${minOpportunityRating}`,
+    ),
+  nflGameSafeBets: (limit: number = 10, minProbability: number = 0.78) =>
+    request<NFLGameSafeBetsResponse>(
+      `/nfl/games/safe-bets?limit=${limit}&min_probability=${minProbability}`,
+    ),
+  nflTeamLeaderboard: (limit: number = 32) =>
+    request<{
+      league_ppg: number;
+      n_teams: number;
+      teams: Array<{
+        team: string; rating: number; ppg: number; opp_ppg: number;
+        win_rate: number; n_games: number;
+      }>;
+    }>(`/nfl/games/teams?limit=${limit}`),
+};
+
+// ─── NFL response types (shared with screens that render the cards) ───
+export type NFLSafePick = {
+  probability: number;
+  probability_empirical?: number;
+  confidence: number;
+  median: number;
+  mean: number;
+  floor_p10: number;
+  std: number;
+  volatility_cv?: number;
+  sample_size: number;
+  hits: number;
+  total_attempts?: number;
+  prop: string;
+  line: number;
+  player_id: string;
+  player_name: string;
+  team: string;
+  market: string;
+  reason: string;
+  implied_american_odds?: number;
+};
+export type NFLSafeBetsResponse = {
+  total_candidates: number;
+  passed_filters: number;
+  rejected: Record<string, number>;
+  rules: Record<string, unknown>;
+  picks: NFLSafePick[];
+};
+
+export type NFLAtdPick = {
+  player_id: string;
+  player_name: string;
+  team: string;
+  opponent?: string | null;
+  td_probability: number;
+  confidence: number;
+  opportunity_rating: "low" | "med" | "high" | string;
+  weighted_touches_recent: number;
+  weighted_tds_recent: number;
+  is_rb_archetype?: boolean;
+  sample_games: number;
+  reasons: string[];
+};
+export type NFLAtdLeaderboardResponse = {
+  total_candidates: number;
+  passed_filters: number;
+  rejected: Record<string, number>;
+  rules: Record<string, unknown>;
+  league_means?: Record<string, number>;
+  picks: NFLAtdPick[];
+};
+
+export type NFLGamePick = {
+  matchup: string;
+  market: "moneyline" | "spread" | "total" | string;
+  favored?: string;
+  expected_margin?: number;
+  expected_total?: number;
+  true_probability: number;
+  pick: {
+    market: string;
+    team?: string;
+    opponent?: string;
+    spread?: number;
+    total?: number;
+    side?: string;
+    true_probability: number;
+  };
+};
+export type NFLGameSafeBetsResponse = {
+  count: number;
+  min_probability: number;
+  matchups_evaluated: number;
+  bets: NFLGamePick[];
 };
 
 export type AnalyticsRow = {

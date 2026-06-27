@@ -1,19 +1,22 @@
 /**
  * GameFilterSheet — Modal sheet listing every unique game on today's
- * board so the user can narrow the Locks feed to a single match.
+ * board so the user can narrow the Locks feed to one OR MORE matches.
  *
- * UX:
- *   • Opens via a "Filter by Game" button on the home tab.
- *   • Lists every (event, pick_count) in the currently-loaded slate,
- *     sorted by pick_count desc → highest-action games first.
- *   • Search box at the top filters the list as the user types
- *     (matches team names case-insensitively).
- *   • "All Games" row at the top resets the filter.
- *   • Selected row gets a gold check + accent border.
- *   • Apply commits `filters.event` back to the parent and closes.
+ * Multi-select (2026-06-27 upgrade):
+ *   • User can tap multiple games — each toggles inclusion in the
+ *     persistent `events: string[]` array on the global filter store.
+ *   • Selected count is shown in the title and on the trigger pill.
+ *   • Apply commits the chosen events back through `onApply(events[])`.
+ *   • "Reset" clears the selection inside the sheet (does NOT touch
+ *     other filters — there's a master "RESET ALL FILTERS" elsewhere
+ *     on the home tab for that).
  *
- * Cross-platform: pure RN primitives (View / Pressable / TextInput).
- * No web-only libraries.
+ * Backward-compat: prior single-select API (`activeEvent: string`,
+ *   `onApply: (event?: string) => void`) is preserved on the component
+ *   under `legacy*` props so any caller that hasn't migrated still
+ *   works (mapped to a 1-element selection internally).
+ *
+ * Cross-platform: pure RN primitives. No web-only libraries.
  */
 import React, { useMemo, useState } from "react";
 import {
@@ -26,10 +29,17 @@ import type { Pick } from "@/src/lib/api";
 
 type Props = {
   visible:    boolean;
-  picks:      Pick[];            // currently-loaded slate (any sport)
-  activeEvent?: string;          // currently-applied event filter
+  picks:      Pick[];             // currently-loaded slate (any sport)
+  /** Multi-select: events currently active in the filter store. */
+  activeEvents?: string[];
+  /** Legacy: single active event. Used if `activeEvents` not provided. */
+  activeEvent?: string;
   onClose:    () => void;
-  onApply:    (event: string | undefined) => void;
+  /** Multi-select callback — receives the full new array. Preferred. */
+  onApplyEvents?: (events: string[]) => void;
+  /** Legacy single-select callback — emits the FIRST selected event or
+   *  undefined when cleared. Kept for older home-tab call sites. */
+  onApply?:   (event: string | undefined) => void;
 };
 
 type Row = { event: string; sport: string; count: number };
@@ -47,18 +57,27 @@ function _groupByEvent(picks: Pick[]): Row[] {
 }
 
 export function GameFilterSheet({
-  visible, picks, activeEvent, onClose, onApply,
+  visible, picks, activeEvents, activeEvent, onClose, onApplyEvents, onApply,
 }: Props) {
   const [query, setQuery] = useState("");
-  const [picked, setPicked] = useState<string | undefined>(activeEvent);
+  // Local multi-select state. Seeded from either the new `activeEvents`
+  // array OR the legacy single `activeEvent` prop (which we wrap into
+  // a 1-element array).
+  const initial = useMemo<Set<string>>(() => {
+    if (activeEvents && activeEvents.length) return new Set(activeEvents);
+    if (activeEvent) return new Set([activeEvent]);
+    return new Set();
+  }, [activeEvents, activeEvent]);
+  const [picked, setPicked] = useState<Set<string>>(initial);
 
   // Re-sync local state when the sheet opens with the parent's filter.
   React.useEffect(() => {
     if (visible) {
-      setPicked(activeEvent);
+      setPicked(new Set(initial));
       setQuery("");
     }
-  }, [visible, activeEvent]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
 
   const rows = useMemo(() => _groupByEvent(picks), [picks]);
   const filtered = useMemo(() => {
@@ -67,12 +86,24 @@ export function GameFilterSheet({
     return rows.filter(r => r.event.toLowerCase().includes(q));
   }, [rows, query]);
 
+  const toggle = (event: string) => {
+    setPicked(prev => {
+      const next = new Set(prev);
+      if (next.has(event)) next.delete(event);
+      else next.add(event);
+      return next;
+    });
+  };
+
   const apply = () => {
-    onApply(picked);
+    const arr = Array.from(picked);
+    if (onApplyEvents) onApplyEvents(arr);
+    if (onApply) onApply(arr.length ? arr[0] : undefined);
     onClose();
   };
 
-  const reset = () => setPicked(undefined);
+  const reset = () => setPicked(new Set());
+  const pickedCount = picked.size;
 
   return (
     <Modal
@@ -88,9 +119,18 @@ export function GameFilterSheet({
 
           {/* Title */}
           <View style={styles.titleRow}>
-            <Text style={styles.title}>FILTER BY GAME</Text>
+            <View style={styles.titleHeaderRow}>
+              <Text style={styles.title}>FILTER BY GAME</Text>
+              {pickedCount > 0 && (
+                <View style={styles.countBadge}>
+                  <Text style={styles.countBadgeText}>{pickedCount}</Text>
+                </View>
+              )}
+            </View>
             <Text style={styles.subtitle}>
-              {rows.length} {rows.length === 1 ? "game" : "games"} on the slate
+              {pickedCount > 0
+                ? `${pickedCount} of ${rows.length} game${rows.length === 1 ? "" : "s"} selected`
+                : `${rows.length} ${rows.length === 1 ? "game" : "games"} on the slate · tap to select multiple`}
             </Text>
           </View>
 
@@ -120,27 +160,28 @@ export function GameFilterSheet({
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
-            {/* "All Games" reset row */}
+            {/* "All Games" row — clears the selection. Active state =
+                user has nothing picked, which means "show everything". */}
             <Pressable
-              onPress={() => setPicked(undefined)}
-              style={[styles.row, !picked && styles.rowActive]}
+              onPress={() => setPicked(new Set())}
+              style={[styles.row, pickedCount === 0 && styles.rowActive]}
               testID="game-filter-row-all"
             >
               <View style={{ flex: 1 }}>
                 <Text style={styles.rowTitle}>All Games</Text>
                 <Text style={styles.rowSub}>Show every match on the board</Text>
               </View>
-              {!picked && (
+              {pickedCount === 0 && (
                 <Ionicons name="checkmark-circle" size={20} color={COLORS.goldElite} />
               )}
             </Pressable>
 
             {filtered.map((r) => {
-              const active = picked === r.event;
+              const active = picked.has(r.event);
               return (
                 <Pressable
                   key={r.event}
-                  onPress={() => setPicked(r.event)}
+                  onPress={() => toggle(r.event)}
                   style={[styles.row, active && styles.rowActive]}
                   testID={`game-filter-row-${r.event.replace(/\s+/g, "_")}`}
                 >
@@ -152,8 +193,12 @@ export function GameFilterSheet({
                       {r.sport} · {r.count} {r.count === 1 ? "pick" : "picks"}
                     </Text>
                   </View>
-                  {active && (
+                  {/* Multi-select checkbox indicator. Empty box when
+                      inactive, gold check-circle when picked. */}
+                  {active ? (
                     <Ionicons name="checkmark-circle" size={20} color={COLORS.goldElite} />
+                  ) : (
+                    <Ionicons name="ellipse-outline" size={20} color={COLORS.borderDefault} />
                   )}
                 </Pressable>
               );
@@ -175,7 +220,7 @@ export function GameFilterSheet({
               style={[styles.btn, styles.btnGhost]}
               testID="game-filter-reset"
             >
-              <Text style={styles.btnGhostText}>RESET</Text>
+              <Text style={styles.btnGhostText}>CLEAR</Text>
             </Pressable>
             <Pressable
               onPress={apply}
@@ -183,7 +228,9 @@ export function GameFilterSheet({
               testID="game-filter-apply"
             >
               <Text style={styles.btnPrimaryText}>
-                {picked ? "APPLY" : "CLEAR FILTER"}
+                {pickedCount > 0
+                  ? `APPLY · ${pickedCount}`
+                  : "SHOW ALL GAMES"}
               </Text>
             </Pressable>
           </View>
@@ -221,11 +268,31 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     paddingBottom: 6,
   },
+  titleHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
   title: {
     color: COLORS.textPrimary,
     fontSize: 16,
     fontWeight: "900",
     letterSpacing: 1.2,
+  },
+  countBadge: {
+    backgroundColor: COLORS.goldElite,
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: 6,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  countBadgeText: {
+    color: "#000",
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 0.4,
   },
   subtitle: {
     color: COLORS.textMuted,
@@ -339,22 +406,41 @@ const styles = StyleSheet.create({
 
 /** Trigger button — paired with the FilterButton on the home tab. */
 export function GameFilterButton({
-  onPress, activeEvent, totalGames,
-}: { onPress: () => void; activeEvent?: string; totalGames: number }) {
+  onPress, activeEvent, activeEventsCount = 0, totalGames,
+}: {
+  onPress: () => void;
+  /** Legacy: single active event label (still rendered when count<=1). */
+  activeEvent?: string;
+  /** Multi-select count from the global filter store. */
+  activeEventsCount?: number;
+  totalGames: number;
+}) {
+  const isActive = activeEventsCount > 0 || !!activeEvent;
+  let label: string;
+  if (activeEventsCount > 1) {
+    label = `${activeEventsCount} GAMES`;
+  } else if (activeEventsCount === 1) {
+    // Legacy single-event display preserved for the 1-event case.
+    label = activeEvent ? _shortenEvent(activeEvent) : "1 GAME";
+  } else if (activeEvent) {
+    label = _shortenEvent(activeEvent);
+  } else {
+    label = `GAME · ${totalGames}`;
+  }
   return (
     <Pressable
       onPress={onPress}
-      style={[styles_btn.wrap, !!activeEvent && styles_btn.wrapActive]}
+      style={[styles_btn.wrap, isActive && styles_btn.wrapActive]}
       hitSlop={8}
       testID="game-filter-button"
     >
       <Ionicons
-        name={activeEvent ? "football" : "football-outline"}
+        name={isActive ? "football" : "football-outline"}
         size={14}
-        color={activeEvent ? COLORS.goldElite : COLORS.textSecondary}
+        color={isActive ? COLORS.goldElite : COLORS.textSecondary}
       />
-      <Text style={[styles_btn.text, !!activeEvent && styles_btn.textActive]} numberOfLines={1}>
-        {activeEvent ? _shortenEvent(activeEvent) : `GAME · ${totalGames}`}
+      <Text style={[styles_btn.text, isActive && styles_btn.textActive]} numberOfLines={1}>
+        {label}
       </Text>
     </Pressable>
   );
