@@ -77,7 +77,7 @@ except Exception as _picks_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.26-winprob-flip-guard-v8"
+DATA_VERSION = "2026.06.27-csl-elite-goalscorers-v9"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 

@@ -134,6 +134,14 @@ function reducer(state: FilterState, action: Action): FilterState {
 // Schema version baked into the key — bump when shape changes to invalidate
 // old serialised state on disk.
 //
+// v5 (2026-06-27): "Goalscorers showing on web not app" — mobile devices
+// had v4 state persisted from sessions BEFORE the CSL elite-inject fix
+// landed. Their cached `markets` / `leagues` arrays were restricting the
+// /picks/today query to a set that excluded the freshly-inserted CSL
+// goalscorer picks. Bumping the storage key drops the stale snapshot
+// on every device's next launch so all installs share the same clean
+// "no narrowing filter" default.
+//
 // v4 (2026-06-27): "Picks showing up then leaving" + "no CSL goalscorers
 // on board" — root cause was stale persisted sport-bound arrays
 // (`leagues`, `markets`, `gameIds`, `events`) from a previous MLB/NFL
@@ -147,7 +155,7 @@ function reducer(state: FilterState, action: Action): FilterState {
 // obvious active filter — symptom was stale persisted arrays from
 // earlier sessions silently restricting the slate. Bumping the key
 // drops the old snapshot on every device.
-const STORAGE_KEY = "perkslocks_filters_v4";
+const STORAGE_KEY = "perkslocks_filters_v5";
 
 async function loadPersisted(): Promise<Partial<FilterState> | null> {
   try {

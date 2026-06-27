@@ -39,7 +39,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 // ─── Client-baked cache version (Layer 3) ───────────────────────────────────
 // Bump on every CLIENT-side data shape / content change.
 // Format: YYYYMMDD-N  so collisions are obvious in git history.
-export const APP_DATA_VERSION = "20260627-12-multiselect-sport-clear";
+export const APP_DATA_VERSION = "20260627-13-csl-elite-goalscorers";
 
 // ─── Backend-version snapshot (Layer 2 - stored after each /api/version call)
 const CLIENT_VERSION_KEY = "perkslocks.client_data_version";
@@ -50,6 +50,15 @@ const KNOWN_CACHE_KEYS = [
   "perkslocks.betslip.v1",          // BetSlipContext
   "perkslocks.parlay_prefs.v1",     // useParlayPreferences
   "locks_feed_prefs_v1",            // Home tab persisted sport / sortKey / lineType
+  // ── Persisted filter store ──
+  // useFilters.tsx schema-versioned key. Listing ALL historical versions
+  // here so a cache bust wipes orphaned restrictive filter state from
+  // any previous version of the app — critical for "Goalscorers showing
+  // on web not app" where mobile had pre-fix v4 state that hid the new
+  // CSL elites.
+  "perkslocks_filters_v3",
+  "perkslocks_filters_v4",
+  "perkslocks_filters_v5",
   // Add any new AsyncStorage keys here so a cache bust actually wipes them.
 ];
 
