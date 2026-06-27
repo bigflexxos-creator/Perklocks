@@ -1,6 +1,7 @@
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect, useState } from "react";
+import { ImageBackground, StyleSheet, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -64,7 +65,7 @@ export default function RootLayout() {
   if ((!loaded && !error) || !cacheBustDone) return null;
 
   return (
-    <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#0A0A0A" }}>
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#000" }}>
       <ErrorBoundary>
         <SafeAreaProvider>
           <AuthProvider>
@@ -72,7 +73,29 @@ export default function RootLayout() {
               <BetSlipProvider>
                 <MLBLiveProvider>
                   <StatusBar style="light" />
-                  <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0A0A0A" } }} />
+                  {/* ── Global branded backdrop ──
+                      Renders the stadium / phone-mockup composite behind every
+                      route. Stack `contentStyle` is transparent so each
+                      screen's content sits on top of this single shared image,
+                      avoiding bundle-size duplication and giving a continuous
+                      visual identity from splash → login → tabs.
+                  */}
+                  <ImageBackground
+                    source={require("@/assets/images/splash-bg.png")}
+                    resizeMode="cover"
+                    style={StyleSheet.absoluteFillObject}
+                  >
+                    <View style={styles.brandScrim} />
+                  </ImageBackground>
+                  <Stack
+                    screenOptions={{
+                      headerShown: false,
+                      // Transparent so the global ImageBackground above shows
+                      // through. Each screen still paints its own translucent
+                      // dark scrim via its `safe` style.
+                      contentStyle: { backgroundColor: "transparent" },
+                    }}
+                  />
                 </MLBLiveProvider>
               </BetSlipProvider>
             </FiltersProvider>
@@ -82,3 +105,14 @@ export default function RootLayout() {
     </GestureHandlerRootView>
   );
 }
+
+const styles = StyleSheet.create({
+  // 78% dark wash over the brand image — preserves the stadium glow at the
+  // edges but lets card surfaces (which use COLORS.surface = #141414) read
+  // crisply on top. Higher alpha than the login screen (55%) because the
+  // tabbed content is denser.
+  brandScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.78)",
+  },
+});

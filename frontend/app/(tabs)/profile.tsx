@@ -201,7 +201,7 @@ function BigStat({ label, value, color = COLORS.textPrimary }: { label: string; 
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: COLORS.bg },
+  safe: { flex: 1, backgroundColor: "transparent" },
   content: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 30 },
   title: { fontSize: 22, fontWeight: "900", color: COLORS.textPrimary, letterSpacing: 3, marginBottom: 18 },
   userCard: {

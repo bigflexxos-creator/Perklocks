@@ -792,7 +792,10 @@ function StatTile({ label, value, color = COLORS.textPrimary }: { label: string;
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: COLORS.bg },
+  // `safe` is the screen-root container. backgroundColor is "transparent"
+  // so the global ImageBackground in app/_layout.tsx (the PerkLocks stadium
+  // composite + scrim) shows through every tab.
+  safe: { flex: 1, backgroundColor: "transparent" },
   header: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 14,
     flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end" },
   brand: { fontSize: 22, fontWeight: "900", color: COLORS.textPrimary, letterSpacing: 3 },
