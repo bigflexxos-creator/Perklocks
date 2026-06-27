@@ -1,0 +1,40 @@
+{
+  "summary": "Phase-3 picks-route extraction (server.py → routes/picks_routes.py) verified — 43/43 pytest cases green. All four newly-moved routes work: GET /api/picks/today returns {picks:[...]} with full decoration (lock_score, probability, event) across 14 filter/sort param combos (sports, leagues, markets, events, game_ids, search, min_lock, sort∈{lock,time,edge,win,implied}, direction, line_type∈{main,alt,both}, lite); GET /api/picks/parlay returns the {parlay, parlays, window_hours, rank, sport_mode} envelope with alternates ≤5 per card across standard/3-legs, high_risk/10-legs, advanced.safer/4-legs, advanced.ev/6-legs, single-sport NFL, custom MLB+Soccer, window_hours=4 ladder, locked_ids pinning, and rank 2/3 cycling; GET /api/picks/bet-killer returns exactly {picks:[]} with HTTP 200; POST /api/picks/refresh returns the full {refreshed, queued, count, date, cooldown_seconds, next_refresh_at, last_refresh_at} envelope on first call and the soft rate-limit shape {rate_limited:true, retry_after_minutes, refreshed:false, …} on the second call within 1 h (HTTP 200, NOT 4xx). CRITICAL static-route precedence confirmed: the relocated /{pick_id} catch-all at line 1766 is below all static segments (/today line 683, /bet-killer 1357, /parlay 1366, /refresh 1703, plus Phase-1+2 segments) — none of /today, /parlay, /bet-killer, /refresh returned 'Pick not found'. Phase 1+2 regression panel (/api/picks/all, /nrfi-yrfi, /markets/NFL, /refresh-status, /under-of-the-day, /rollover, /history?days=7, POST /settle, /{id}, /{id}/probability, /{id}/simulation, /{id}/ai-explain, /{id}/loss-analysis) all 200. No new regressions introduced by Phase 3.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/picks/settle", "issue": "Pre-existing (Phase 2 report): cold-cache run ~91s exceeds public ingress 60s timeout. In this run the proxy returned 200 within budget, but the test still falls back to http://localhost:8001 on 502/504. NOT a Phase-3 regression."},
+      {"endpoint": "settlement_engine validator", "issue": "Pre-existing WARNING in backend log: `validator failed: unsupported operand type(s) for +=: 'dict' and 'int'`. Settlement still completes. NOT a Phase-3 regression."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_refactor_phase3_picks_iter63.py",
+    "/app/test_reports/pytest/iter63_phase3_picks.xml"
+  ],
+  "action_items": [
+    "(non-blocking, carried from iter 62) Convert POST /api/picks/settle to background-task pattern (return 202 + job_id) so mobile clients don't hit the 60s public-ingress ceiling on a cold cache.",
+    "(non-blocking, carried from iter 62) Investigate settlement validator `dict += int` TypeError emitted as WARNING."
+  ],
+  "critical_code_review_comments": [
+    "Route ordering verified by `grep -n '@router\\.' picks_routes.py`: all static segments (lines 72-1752: /all, /nrfi-yrfi, /markets/{sport}, /refresh-status, /under-of-the-day, /rollover, /settle, /history, /today, /bet-killer, /parlay, /refresh) precede the parameterized /{pick_id} block (line 1766) — FastAPI will resolve static segments first, so the previously-observed 'Pick not found' shadowing risk is eliminated.",
+    "Lazy `from server import …` inside each handler preserved (e.g. /refresh imports `_today_str`, `_refresh_picks` lazily). Cyclic-import safety is maintained.",
+    "/refresh correctly uses asyncio.create_task(_refresh_picks(...)) and marks cooldown BEFORE returning, so the second call within the cooldown window always reflects rate-limited state regardless of background task completion. Soft rate limit returns HTTP 200 (not 429) — matches the design contract that the mobile client expects {rate_limited:true} in-band.",
+    "/bet-killer is correctly tagged `deprecated=True` and returns the documented {picks:[]} stub — both shape and status code preserved post-extraction.",
+    "Parlay envelope keys (parlay, parlays, window_hours, rank, sport_mode) confirmed across all 6 mode/sub-mode combinations; alternates list ≤5 per card; alternates_count present."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_refactor_phase3_picks_iter63.py (new — 43 pytest cases covering /today filters & sorts, /parlay modes/legs/rank cycle/locked_ids, /bet-killer stub, /refresh soft rate limit, Phase 1+2 regression panel, /{pick_id} parameterized routes)"
+  ],
+  "success_rate": {"backend": "100% (43/43)", "frontend": "N/A — frontend testing skipped per request"},
+  "seed_data_creation": "None — used seeded demo user (demo@lockscore.ai/demo123) and existing slate. Sample pick id sourced live from /api/picks/today.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase 3 of the picks-routes extraction is complete and clean. The /{pick_id} relocation to line 1766 closes the only structural risk in the extraction. If Phase 4 ever touches /picks/refresh or /picks/parlay, re-run test_refactor_phase3_picks_iter63.py — the soft rate-limit test is tolerant of a pre-existing cooldown (first call may already return rate_limited:true if a recent refresh was queued, which the test handles).",
+  "rca_of_issue": "N/A — no failures."
+}
