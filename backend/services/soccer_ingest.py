@@ -168,11 +168,22 @@ async def _ingest_understat_league(client: httpx.AsyncClient, league: str,
 # ─────────────────────────── ESPN ───────────────────────────
 async def _ingest_espn_league(client: httpx.AsyncClient, league_code: str,
                               label: str) -> dict[str, Any]:
-    """Reuses the same pattern as `csl_espn_live` for any soccer league:
-    pull teams → active rosters → record into registry."""
+    """Two-pass ESPN roster fetch:
+       1. `site.api.espn.com/.../teams/{id}/roster` — works for non-EU
+          leagues (CSL, MLS, Liga MX, J1, KSA, etc.).
+       2. `sports.core.api.espn.com/v2/.../teams/{id}/athletes` — required
+          for the Big-5 European leagues + UCL/Europa whose `roster`
+          endpoint returns an empty athletes list (ESPN siloes EU player
+          data behind the deeper core API).
+    """
     summary = {"source": f"espn:{league_code}", "teams": 0, "active_players": 0, "errors": 0}
     teams_url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league_code}/teams"
     roster_tpl = "https://site.api.espn.com/apis/site/v2/sports/soccer/{lg}/teams/{tid}/roster"
+    season_yr = _current_season() + 1  # ESPN core uses season-end year
+    core_tpl = (
+        "https://sports.core.api.espn.com/v2/sports/soccer/leagues/{lg}/"
+        "seasons/{yr}/teams/{tid}/athletes"
+    )
     try:
         r = await client.get(teams_url, headers={"User-Agent": "PerkLocks-AI/1.0 (ESPN public)"})
         r.raise_for_status()
@@ -193,12 +204,17 @@ async def _ingest_espn_league(client: httpx.AsyncClient, league_code: str,
     sem = asyncio.Semaphore(6)
     async def _one(team: dict) -> int:
         async with sem:
-            url = roster_tpl.format(lg=league_code, tid=team["id"])
+            count = 0
+            # Pass 1 — site.api roster
             try:
-                rr = await client.get(url, headers={"User-Agent": "PerkLocks-AI/1.0"})
+                rr = await client.get(
+                    roster_tpl.format(lg=league_code, tid=team["id"]),
+                    headers={"User-Agent": "PerkLocks-AI/1.0"},
+                )
                 rr.raise_for_status()
-                count = 0
                 for a in rr.json().get("athletes", []):
+                    if not isinstance(a, dict):
+                        continue
                     status = (a.get("status") or {}).get("name") or "Active"
                     if status.lower() in ("inactive", "suspended", "retired"):
                         continue
@@ -216,10 +232,53 @@ async def _ingest_espn_league(client: httpx.AsyncClient, league_code: str,
                         },
                     )
                     count += 1
-                return count
             except Exception as e:
-                logger.debug(f"ESPN soccer roster fail {league_code}/{team['id']}: {e}")
-                return 0
+                logger.debug(f"ESPN soccer pass1 fail {league_code}/{team['id']}: {e}")
+            # Pass 2 — core.api athletes (Big-5 + UCL fallback)
+            if count == 0:
+                try:
+                    cr = await client.get(
+                        core_tpl.format(lg=league_code, yr=season_yr, tid=team["id"]),
+                        params={"limit": 100},
+                        headers={"User-Agent": "PerkLocks-AI/1.0"},
+                    )
+                    cr.raise_for_status()
+                    items = cr.json().get("items", [])
+                    # Each item is {$ref: ".../athletes/{id}?lang=en"}
+                    refs = [it.get("$ref") for it in items if it.get("$ref")]
+                    # Resolve in parallel with a small concurrency cap.
+                    sub_sem = asyncio.Semaphore(8)
+                    async def _resolve_one(ref):
+                        async with sub_sem:
+                            try:
+                                ar = await client.get(ref, headers={"User-Agent": "PerkLocks-AI/1.0"})
+                                ar.raise_for_status()
+                                return ar.json()
+                            except Exception:
+                                return None
+                    athletes = await asyncio.gather(*(_resolve_one(r) for r in refs))
+                    for a in athletes:
+                        if not a:
+                            continue
+                        name = a.get("fullName") or a.get("displayName") or ""
+                        if not name:
+                            continue
+                        active_registry.record_active(
+                            "soccer", f"espn_core:{league_code}", name,
+                            team=f"{label} — {team['name']}",
+                            status=a.get("status") or "Active",
+                            raw={
+                                "league": label,
+                                "espn_id": a.get("id"),
+                                "position": (a.get("position") or {}).get("abbreviation"),
+                                "age": a.get("age"),
+                                "season": season_yr,
+                            },
+                        )
+                        count += 1
+                except Exception as e:
+                    logger.debug(f"ESPN soccer pass2 fail {league_code}/{team['id']}: {e}")
+            return count
     counts = await asyncio.gather(*(_one(t) for t in teams))
     summary["active_players"] = sum(counts)
     return summary

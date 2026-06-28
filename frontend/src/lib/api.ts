@@ -131,6 +131,44 @@ export type Pick = {
     last10_hit?: number;
     current_streak?: number;            // +N consecutive wins, -N consecutive losses
   };
+
+  // ─── "Why this pick?" rationale (built by backend/pick_enrichment.py)
+  // Universal shape across all sports — fields populated vary per source.
+  // Rendered as the collapsible audit panel on LockPickCard.
+  pick_rationale?: PickRationale;
+};
+
+export type PickRationale = {
+  summary?: string;
+  data_source?: string;
+  engine?: string;               // e.g. "mlb_hitter_intel" when MLB intel ran
+  evidence?: string[];           // ✅ "Why we like it" bullets
+  concerns?: string[];           // ⚠️ "Watch-outs" bullets
+  espn_rank?: number | null;     // soccer-scorer leaderboard rank
+  stats_this_season?: Record<string, any> | null;
+  model_win_prob_pct?: number;
+  edge_percent?: number;
+  lock_score?: number;
+  // MLB hitter-intel only
+  matchup?: {
+    batter?: string;
+    batter_hand?: string;
+    pitcher?: string;
+    pitcher_hand?: string;
+    ballpark?: string | null;
+    is_home?: boolean;
+    batting_order?: number | null;
+  };
+  splits?: Record<string, number | null>;
+  pitcher_quality?: Record<string, number | null>;
+  recent_form?: Record<string, number | null>;
+  multipliers?: Record<string, number>;
+  base_form_pct?: number;
+  final_hit_prob_pct?: number;
+  confidence_score?: number;     // 0–100, MLB intel
+  lean?: "OVER" | "UNDER" | "PASS" | string;
+  edge_pct_points?: number;
+  model_prob?: number;
 };
 
 export type User = { id: string; email: string; name?: string };
