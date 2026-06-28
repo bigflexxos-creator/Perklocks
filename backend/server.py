@@ -106,6 +106,21 @@ async def get_version():
     }
 
 
+@api.get("/health")
+@api.get("/healthz")
+@api.get("/ready")
+async def get_health():
+    """Liveness/readiness probe — Kubernetes pings this to decide whether
+    to restart the container. CRITICAL: must be FAST (<50ms), MUST never
+    return 4xx, and MUST never touch the DB or any external service.
+    User report (2026-06-28): deployed app showed `GET /api/health → 404`
+    in the access log — the missing endpoint was a candidate for the
+    container being repeatedly marked unhealthy and restarted, which
+    explained the "server keeps going down" experience.
+    Also serves /healthz and /ready for k8s/gcp/aws probe conventions."""
+    return {"status": "ok", "ts": datetime.now(timezone.utc).isoformat()}
+
+
 # ────────────────────── Auth ──────────────────────
 # `current_user` lives in deps.py and is imported above. Keeping
 # this section header as a navigational marker.
@@ -3325,6 +3340,37 @@ async def _historical_props_loop():
 
 @app.on_event("startup")
 async def on_startup():
+    # ── DEFERRED STARTUP (2026-06-28) ─────────────────────────────────
+    # In production (emergent.host), all 20+ background loops fired at
+    # T+0 and ran concurrently in a single worker, blocking HTTP
+    # requests for 8+ seconds and triggering Cloudflare 520s. We now
+    # stagger the heavy loops with `_defer(n)` helper — each sleeps n
+    # seconds before doing its first heavy fetch, spreading CPU load
+    # over the first ~2 minutes of boot. The HTTP server can serve
+    # /api/version, /api/auth/login, /api/picks/today from second 1.
+    # User report (2026-06-28): "Seems like server keeps going down
+    # on expo go app" → preview returns /api/version in 0.29s while
+    # the deployed origin took 8.4s.
+    # `STARTUP_DEFER_SECONDS` env var lets you tune the base delay
+    # without redeploying (defaults to 8 — safe across all envs).
+    DEFER_BASE = float(os.environ.get("STARTUP_DEFER_SECONDS", "8"))
+
+    def _deferred_task(coro_factory, delay: float):
+        """Schedule `coro_factory()` to run after a `delay` second sleep.
+        `coro_factory` is a callable returning a fresh coroutine (we
+        accept a callable rather than the coroutine itself so it isn't
+        instantiated until we're ready to execute it — avoids the
+        'coroutine was never awaited' warning on shutdown)."""
+        async def _runner():
+            try:
+                await asyncio.sleep(delay)
+                await coro_factory()
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.warning("Deferred startup task failed (delay=%.1fs): %s", delay, e)
+        return asyncio.create_task(_runner())
+
     await db.users.create_index("email", unique=True)
     await db.picks.create_index([("pick_date", 1), ("sport", 1)])
     await db.picks.create_index([("pick_date", 1), ("lock_score", -1)])
@@ -3364,9 +3410,25 @@ async def on_startup():
     # ── Background cron: nightly multi-season props recompute ──
     # Re-derives prop hit-rates (L5/L10/L20/season) for every player with
     # logs. Cheap (pure DB aggregate, no HTTP) so we can run daily.
+    # ── BACKGROUND LOOP SCHEDULING (DEFERRED) ────────────────────────
+    # The first few seconds after boot are the most fragile in
+    # production. We schedule each loop with a staggered delay so the
+    # HTTP server can bind, the resilience middleware can warm up, and
+    # the first /api/* requests can be served BEFORE the heavy
+    # enrichment + ingest pipelines start hammering CPU.
+    #
+    #   T+ 0 — lightweight maintenance loops (historical props, refresh)
+    #   T+ 8 — MLB pregame loop, settlement
+    #   T+16 — weekly model tuning
+    #   T+24 — soccer pipeline + backfill
+    #   T+32 — soccer player form (Understat)
+    #   T+40 — MLB lineup verifier, NRFI/YRFI
+    #   T+48 — Player DB refreshers
+    #   T+56 — Services loop, tennis player DB
+    #   T+64 — Line observer / closing snapshotter (line shopping)
     asyncio.create_task(_historical_props_loop())
     asyncio.create_task(_daily_refresh_loop())
-    asyncio.create_task(_mlb_pregame_loop())
+    _deferred_task(_mlb_pregame_loop,                       DEFER_BASE * 1)
     logger.info(
         "MLB pregame quick-refresh loop armed (%d-sec cadence during UTC %02d:00–%02d:00)",
         _MLB_QUICK_REFRESH_INTERVAL,
