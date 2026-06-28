@@ -66,6 +66,14 @@ export default function LocksScreen() {
   // store setter as `setEvents`.
   const setStoreEvents = setEvents;
   const [picks, setPicks] = useState<Pick[]>([]);
+  // Network error state — set when /api/picks/today fails (e.g. Cloudflare
+  // 520 during a backend uvicorn --reload window). When non-null, we DO
+  // NOT clear the existing `picks` array; we just overlay a retry banner
+  // so the user keeps seeing the last good slate instead of staring at
+  // "No locks on the board" while the backend bounces. User report
+  // 2026-06-28: "login and picks are intermittently failing with
+  // Cloudflare ... do NOT clear existing picks."
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [sport, setSport] = useState<string>("All");
   const [lineType, setLineType] = useState<LineType>("both");
   // Default sort = "lock" descending so the user immediately sees the
@@ -256,6 +264,8 @@ export default function LocksScreen() {
       ]);
       // Discard if a newer load was fired after we sent this one.
       if (myToken !== latestLoadTokenRef.current) return;
+      // Clear any prior load-error banner — we got a clean response.
+      setLoadError(null);
       // Defensive client-side filter — protect users from production
       // backends that haven't yet deployed the KBO removal. We do NOT
       // filter by event_time here because player props for in-progress
@@ -323,8 +333,22 @@ export default function LocksScreen() {
         }
       }
       setLastLoadedAt(new Date());
-    } catch (e) {
-      console.warn("load locks", e);
+    } catch (e: any) {
+      // CRITICAL (2026-06-28): preserve previously loaded picks on a
+      // network failure (e.g. Cloudflare 520 during a uvicorn --reload
+      // window). We deliberately DO NOT call setPicks([]). Instead we
+      // surface a lightweight retry banner over the cached slate so
+      // the user keeps seeing the last good picks and can tap to
+      // recover.
+      if (myToken === latestLoadTokenRef.current) {
+        const msg = (e && e.message) ? String(e.message) : "Network error";
+        // Strip noisy CF 520 HTML if the body bled through.
+        const cleanMsg = /520|cloudflare|origin web server/i.test(msg)
+          ? "Connection hiccup — tap to retry."
+          : msg.length > 140 ? msg.slice(0, 140) + "…" : msg;
+        setLoadError(cleanMsg);
+        console.warn("load locks failed (cached picks kept):", e);
+      }
     } finally {
       // Only clear loading flags if this is still the latest request.
       if (myToken === latestLoadTokenRef.current) {
@@ -357,17 +381,16 @@ export default function LocksScreen() {
     // start (or the user toggled a chip), the previous slate kept
     // rendering until the new fetch landed → "picks showing up
     // then leaving" complaint.
-    const sig = [
-      sport,
-      filters.market || "",
-      filters.league || "",
-      filters.event || "",
-      filterStore.leagues.join(","),
-      filterStore.markets.join(","),
-      filterStore.gameIds.join(","),
-      filterStore.events.join(","),
-      filterStore.searchText || "",
-    ].join("|");
+    // CHANGED 2026-06-28: wipe picks ONLY when the SPORT actually changes.
+    // Previously we wiped on every filter-signature change (market,
+    // league, event, multi-select arrays). That meant a network blip
+    // mid-fetch left the user staring at "No locks on the board" with
+    // no way back to their cached slate. Per user spec: "If picks
+    // request fails: show cached picks, show retry button, do NOT
+    // clear existing picks."  Market/league/event filters apply at
+    // render time (see `visiblePicks` below), so leaving the picks
+    // array untouched during filter tweaks is safe — and resilient.
+    const sig = sport;
     if (lastFilterSignatureRef.current && lastFilterSignatureRef.current !== sig) {
       setPicks([]);
     }
@@ -656,6 +679,46 @@ export default function LocksScreen() {
         showsVerticalScrollIndicator={false}
         testID="locks-scroll"
       >
+        {/* RETRY BANNER (2026-06-28): renders on top of cached picks
+            when the last /api/picks/today fetch failed (e.g. Cloudflare
+            520 during a worker reload). Tapping triggers an immediate
+            re-fetch; cached picks remain visible underneath so the
+            user is never dumped into an empty board on a transient
+            network blip. */}
+        {!!loadError && (
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => {
+              setLoadError(null);
+              setRefreshing(true);
+              load(sport, lineType, sortKey, filters, sortDir);
+            }}
+            style={{
+              backgroundColor: "rgba(255, 88, 88, 0.15)",
+              borderColor: "rgba(255, 88, 88, 0.55)",
+              borderWidth: 1,
+              borderRadius: 12,
+              paddingHorizontal: 14,
+              paddingVertical: 12,
+              marginBottom: 14,
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
+            <View style={{ flex: 1, marginRight: 12 }}>
+              <Text style={{ color: "#ffb4b4", fontWeight: "700", fontSize: 13 }}>
+                Connection hiccup
+              </Text>
+              <Text style={{ color: "rgba(255,255,255,0.78)", fontSize: 12, marginTop: 2 }}>
+                Showing your last good slate. Tap to retry.
+              </Text>
+            </View>
+            <Text style={{ color: "#ffb4b4", fontWeight: "800", fontSize: 13 }}>
+              RETRY ↻
+            </Text>
+          </TouchableOpacity>
+        )}
         {loading ? (
           <View style={styles.center}>
             <ActivityIndicator color={COLORS.voltBlue} />

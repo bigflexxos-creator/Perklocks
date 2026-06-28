@@ -2368,6 +2368,20 @@ _LITE_STRIPPED_FIELDS = frozenset({
     "betmgm_event_id",
     "caesars_event_id",
     "pointsbet_event_id",
+    # ── Added 2026-06-28 (Cloudflare 520 hardening, target <300KB) ──
+    # These were still bleeding into the lite payload at 11-18 KB each.
+    # All are detail-only (NOT rendered on the collapsed home card —
+    # `player_form`, `apex_blockers`, `understat_form`, `tier_v2` were
+    # intentionally KEPT because LockPickCard renders HOT/COLD streak
+    # badges, xG-form chips, and the near-miss banner from them).
+    "external_id",              # 15 KB — bookmaker dedupe key
+    "tennis_components",        # 13 KB — V2 component breakdown
+    "player_intel",             # 11 KB — detail screen only
+    "calibration_band_warning", # 7 KB  — admin-only narrative
+    "marquee_reason",           # 3 KB  — verbose AI string, summary already shown
+    "deep_dive_warning",        # detail screen only
+    "historical_signal",        # detail screen only
+    "bandit_arms_matched",      # bandit debug
 })
 
 
@@ -2879,6 +2893,30 @@ class _ReliabilityMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(_ReliabilityMiddleware)
+
+
+# ─── Gzip compression (2026-06-28) ──────────────────────────────────────
+# JSON compresses ~85% — turns 518 KB lite payload into ~75 KB over the
+# wire. Critical for mobile users on cellular networks where the heavy
+# uncompressed payload was the most likely trigger for Cloudflare 520
+# (origin slow → CF edge timeout). Min size 500 bytes so tiny responses
+# (version, refresh-status) skip the gzip overhead.
+from starlette.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=5)
+
+
+# ─── Outermost resilience layer (2026-06-28) ────────────────────────────
+# Adds JSON-coerce on /api/*, structured access logs, 85s wall-clock
+# timeout (under CF's 100s edge timeout), and a FastAPI-level exception
+# handler as a belt-and-suspenders fallback. This is the OUTERMOST
+# middleware so it sees EVERY response (incl. those that bypass the
+# inner _ReliabilityMiddleware via mounts). See backend/middleware/
+# resilience.py for the full rationale.
+try:
+    from middleware.resilience import install as _install_resilience
+    _install_resilience(app)
+except Exception as _res_exc:
+    logger.warning("Failed to install resilience middleware: %s", _res_exc)
 
 
 @app.middleware("http")
