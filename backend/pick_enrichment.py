@@ -163,6 +163,46 @@ def _build_rationale(pick: dict, sport: str, name: str) -> dict[str, Any]:
         except Exception:
             pass
 
+    # CFB: pull cached CollegeFootballData ratings + portal + returning
+    # production. Team(s) are parsed from `pick.event` ("Alabama @ Auburn").
+    # The team carrying the pick is preferred via `pick.team` when set,
+    # otherwise we fall back to the home team of the matchup string.
+    if sport == "cfb":
+        try:
+            from services import cfb_rationale
+            from server import db as _live_db
+            team_for_pick = (pick.get("team") or "").strip()
+            opponent = ""
+            event = pick.get("event") or ""
+            if "@" in event:
+                away, _, home = event.partition("@")
+                away = away.strip()
+                home = home.strip()
+                if not team_for_pick:
+                    team_for_pick = home
+                opponent = away if team_for_pick == home else home
+            cfb = cfb_rationale.build_cfb_rationale_sync(
+                _live_db, team_for_pick, opponent=opponent or None,
+                player_name=name,
+            )
+            if cfb:
+                # Replace summary if CFB has a richer one
+                if cfb.get("summary"):
+                    rationale["summary"] = cfb["summary"]
+                # Merge evidence + concerns (CFB block lives alongside
+                # universal model/edge bullets)
+                rationale["evidence"].extend(cfb.get("evidence") or [])
+                rationale["concerns"].extend(cfb.get("concerns") or [])
+                # Attach CFB-specific structured blocks for the UI
+                for k in ("team_quality", "matchup", "returning_production", "portal"):
+                    v = cfb.get(k)
+                    if v:
+                        rationale[k] = v
+                rationale["data_source"] = "collegefootballdata"
+                rationale["engine"] = "cfb_rationale"
+        except Exception as e:
+            logger.debug(f"CFB rationale build skipped for {name}: {e}")
+
     # Win-prob and edge framing — universally useful.
     wp = pick.get("win_probability")
     edge = pick.get("edge_percent")

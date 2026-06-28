@@ -772,3 +772,53 @@ async def admin_services_soccer_refresh(
     failures vs ESPN coverage."""
     from services import soccer_ingest
     return await soccer_ingest.refresh(db)
+
+
+# ──────────────────── CFB (CollegeFootballData.com) ──────────────────
+@router.post("/admin/services-cfb-refresh")
+async def admin_services_cfb_refresh(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    year: Optional[int] = None,
+):
+    """Force a CFB ingestion sweep against the CollegeFootballData free
+    public API. Caches:
+      • Returning Production per team
+      • Transfer Portal entries
+      • SP+ ratings (overall / off / def / SoS)
+      • FBS team metadata
+    Returns per-dataset row counts so we can confirm the API key is
+    working before relying on the rationale enrichment downstream."""
+    from services import cfb_ingest
+    return await cfb_ingest.refresh_all(db, year=year)
+
+
+@router.get("/admin/services-cfb-team")
+async def admin_services_cfb_team(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    team: str,
+    year: Optional[int] = None,
+):
+    """Debug lookup: returns the cached CFBD profile for a given school
+    (SP+ ratings, returning production, team metadata). Use to audit
+    why a CFB pick produced (or didn't produce) the rationale you
+    expected on the home card."""
+    from services import cfb_ingest
+    return await cfb_ingest.get_team_record(db, team, year=year)
+
+
+@router.get("/admin/services-cfb-rationale")
+async def admin_services_cfb_rationale(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    team: str,
+    opponent: Optional[str] = None,
+    player: Optional[str] = None,
+    year: Optional[int] = None,
+):
+    """Build the full CFB rationale dict for an arbitrary team/opponent/
+    player. Lets us preview what the pick card will show before the
+    season opens (since no live CFB picks land on the board until
+    August)."""
+    from services import cfb_rationale
+    return await cfb_rationale.build_cfb_rationale(
+        db, team, opponent=opponent, player_name=player, year=year,
+    )

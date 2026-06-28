@@ -57,6 +57,19 @@ api = APIRouter(prefix="/api")
 # /bet-killer) are declared BEFORE the parameterized `/{pick_id}`
 # catch-all inside picks_routes.py, so FastAPI matches the literal
 # segments correctly.
+# Parlay generation lives in its own router (2026-06-28 extraction).
+# MUST mount BEFORE picks_routes — picks_routes registers a `/{pick_id}`
+# catch-all that would otherwise match `/parlay` and 404 "Pick not
+# found". Routers are evaluated in include_router() order.
+try:
+    from routes.parlay_routes import router as _parlay_router
+    api.include_router(_parlay_router)
+    logger.info("Parlay routes mounted at /api/picks/parlay")
+except Exception as _parlay_mount_err:
+    logger.warning(
+        "Parlay routes failed to mount: %s", _parlay_mount_err,
+    )
+
 try:
     from routes.picks_routes import router as _picks_router
     api.include_router(_picks_router)
@@ -3351,7 +3364,7 @@ async def on_startup():
     # Every source funnels into `services.active_registry` which then
     # answers `is_active(sport, name)` for the picks pipeline.
     try:
-        from services import active_registry as _registry, nba_ingest, nfl_ingest, soccer_ingest
+        from services import active_registry as _registry, nba_ingest, nfl_ingest, soccer_ingest, cfb_ingest
         await _registry.hydrate_from_db(db)
 
         async def _services_loop():
@@ -3360,11 +3373,13 @@ async def on_startup():
                 nba_ingest.loop(db),
                 nfl_ingest.loop(db),
                 soccer_ingest.loop(db),
+                cfb_ingest.loop(db),
             )
         asyncio.create_task(_services_loop())
         logger.info(
             "services/ multi-source ingestion armed — NBA (ESPN+BBR+nba.com) + "
-            "NFL (ESPN+nfl.com) + Soccer (Understat + ESPN 18 leagues) every 24h"
+            "NFL (ESPN+nfl.com) + Soccer (Understat + ESPN 18 leagues) + "
+            "CFB (CollegeFootballData) every 24h"
         )
     except Exception as e:
         logger.warning("services/ ingestion layer failed to start: %s", e)
