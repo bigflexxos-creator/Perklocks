@@ -337,29 +337,40 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
                 </Text>
               </View>
             )}
-            {rationale!.lean &&
-              (rationale!.lean === "OVER" || rationale!.lean === "UNDER") && (
+            {/* LEAN chip — only show when the model lean AGREES with
+                the pick direction. On an "Over 0.5 Hits" line with
+                LEAN UNDER, the chip looked contradictory on a 99-Lock
+                pick; the agreeing case (LEAN OVER on Over) reinforces
+                user confidence. Disagreement still gets surfaced
+                inside the expanded panel via the summary line. */}
+            {(() => {
+              const lean = rationale!.lean;
+              if (lean !== "OVER" && lean !== "UNDER") return null;
+              const mkt = (pick.market || "").toLowerCase();
+              const isOverPick = /\bover\b/.test(mkt);
+              const isUnderPick = /\bunder\b/.test(mkt);
+              const agrees =
+                (lean === "OVER" && isOverPick) ||
+                (lean === "UNDER" && isUnderPick);
+              if (!agrees) return null;
+              return (
                 <View
                   style={[
                     styles.whyLeanChip,
-                    rationale!.lean === "OVER"
-                      ? styles.whyLeanChipOver
-                      : styles.whyLeanChipUnder,
+                    lean === "OVER" ? styles.whyLeanChipOver : styles.whyLeanChipUnder,
                   ]}
                 >
                   <Text
                     style={[
                       styles.whyLeanChipText,
-                      {
-                        color:
-                          rationale!.lean === "OVER" ? "#86EFAC" : "#FCA5A5",
-                      },
+                      { color: lean === "OVER" ? "#86EFAC" : "#FCA5A5" },
                     ]}
                   >
-                    LEAN {rationale!.lean}
+                    LEAN {lean}
                   </Text>
                 </View>
-              )}
+              );
+            })()}
             <Text style={styles.whyChevron}>{whyOpen ? "▴" : "▾"}</Text>
           </Pressable>
 
