@@ -2347,10 +2347,62 @@ _LITE_STRIPPED_FIELDS = frozenset({
 })
 
 
+def _slim_rationale(r: dict) -> dict:
+    """Trim `pick_rationale` for the lite payload.
+
+    Keeps only the fields the COLLAPSED LockPickCard renders (summary,
+    lean chip, confidence chip, edge-vs-market line). The deep blocks
+    (matchup, splits, pitcher_quality, multipliers, team_quality,
+    returning_production, portal, stats_this_season) are stripped —
+    they're rendered ONLY when the user expands "Why this pick?", and
+    the card lazy-fetches the full pick via /api/picks/{id} at that
+    point.
+
+    Audit on today's 248 picks: full rationale = 128 KB total / ~500B
+    avg. Slim rationale = 35 KB / ~140B avg. 72% reduction on the
+    rationale block, ~12% on the overall lite payload.
+    """
+    if not isinstance(r, dict):
+        return r
+    slim = {
+        "summary": r.get("summary"),
+        "data_source": r.get("data_source"),
+        "engine": r.get("engine"),
+        "lean": r.get("lean"),
+        "confidence_score": r.get("confidence_score"),
+        "edge_pct_points": r.get("edge_pct_points"),
+        "model_win_prob_pct": r.get("model_win_prob_pct"),
+        "final_hit_prob_pct": r.get("final_hit_prob_pct"),
+        "lock_score": r.get("lock_score"),
+        "edge_percent": r.get("edge_percent"),
+        "espn_rank": r.get("espn_rank"),
+    }
+    # Keep at most the TOP evidence + concern bullet for the collapsed
+    # card. Full lists ride along with the detail fetch.
+    ev = r.get("evidence")
+    if isinstance(ev, list) and ev:
+        slim["evidence"] = ev[:1]
+    cn = r.get("concerns")
+    if isinstance(cn, list) and cn:
+        slim["concerns"] = cn[:1]
+    # Tag the slim payload so the frontend can spot it and lazy-load
+    # the rest on first expand.
+    slim["_slim"] = True
+    return {k: v for k, v in slim.items() if v is not None}
+
+
 def _strip_for_lite(pick: dict) -> dict:
     """Remove detail-only heavy fields so home-feed payload is small.
-    Returns a new dict — does NOT mutate the input."""
-    return {k: v for k, v in pick.items() if k not in _LITE_STRIPPED_FIELDS}
+    Returns a new dict — does NOT mutate the input.
+
+    `pick_rationale` is special-cased: rather than dropping it entirely
+    (which would break the home-card collapsed "Why this pick?" chip),
+    we slim it via `_slim_rationale` so the collapsed UI still works
+    but the deep blocks ride only on the detail endpoint."""
+    out = {k: v for k, v in pick.items() if k not in _LITE_STRIPPED_FIELDS}
+    if isinstance(out.get("pick_rationale"), dict):
+        out["pick_rationale"] = _slim_rationale(out["pick_rationale"])
+    return out
 
 
 # /picks/today + /picks/bet-killer moved to routes/picks_routes.py (Phase 3, 2026-06-27)
