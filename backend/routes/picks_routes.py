@@ -766,7 +766,18 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             return []
         return [x.strip() for x in s.split("|") if x.strip()]
 
-    sport_list = _split_csv(sports) or ([sport] if sport else [])
+    # ── HARD GUARD (2026-06-28): when an explicit single `sport=` is
+    # provided in the query string, it ALWAYS overrides the multi-select
+    # `sports=` array. This protects users on stale client bundles where
+    # a leftover `sports=["Soccer"]` (or any sport) in their persisted
+    # filter store was silently overriding the sport-tab they just
+    # tapped, leaving e.g. the MLB tab showing nothing because the
+    # backend was filtering to "Soccer" regardless.
+    # User report: "now only showing soccer please fix".
+    if sport:
+        sport_list = [sport]
+    else:
+        sport_list = _split_csv(sports)
     league_list = _split_csv(leagues) or ([league] if league else [])
     market_list = _split_csv(markets) or ([market] if market else [])
     game_id_list = _split_csv(game_ids)
