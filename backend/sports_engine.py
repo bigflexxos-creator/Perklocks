@@ -1503,9 +1503,32 @@ def _synthesize_chalk_alt_totals(api_outcomes: list[dict]) -> list[dict]:
     Returned synthetic outcomes mirror the real API shape so
     `_pick_sweet_spot_alts` consumes them unchanged. Each carries
     `_synthesized=True` so the pick layer can label them
-    ("model-extrapolated from market ladder")."""
+    ("model-extrapolated from market ladder").
+
+    ── PHYSICAL-MIN GUARDRAIL (2026-06-28) ──
+    A tennis match has a HARD mathematical floor for total games:
+      • Best-of-3 set (ATP/WTA Tour): min 12 games (6-0, 6-0)
+      • Best-of-5 set (Grand Slam men): min 18 games (6-0, 6-0, 6-0)
+    And a soft ceiling (a 5-set marathon tops out around 70-80 games;
+    anything past 50 is so rare the chalk line is meaningless).
+
+    Without bounds the extrapolator was emitting "Over 7.5 Games (Alt)"
+    at 99 lock score — a bet you literally cannot lose on a Wimbledon
+    match (Mochizuki @ Basing 2026-06-29). User report: "a tennis
+    game is at least 12 games". We clamp synthesized totals to:
+      • Over:  never below 14.5 (1 game below worst-case 6-0 bagel for
+               best-of-3; still leaves room for retirement edge cases)
+      • Under: never above 45.5 (5-set Wimbledon median total is ~38,
+               above 45 the chalk is meaningless)
+    Real bookmaker outcomes above/below these bounds are still passed
+    through unchanged — only SYNTHESIZED rows are dropped.
+    """
     if not api_outcomes:
         return []
+
+    # Hard min/max for synthesized lines — see PHYSICAL-MIN GUARDRAIL.
+    SYNTH_OVER_FLOOR  = 14.5
+    SYNTH_UNDER_CEIL  = 45.5
 
     # Slope fit per side: rows sorted by point ascending; compute the
     # average local slope in implied-probability space.
@@ -1549,6 +1572,12 @@ def _synthesize_chalk_alt_totals(api_outcomes: list[dict]) -> list[dict]:
             # Stay on .5 grid (real sportsbook convention).
             if abs((new_pt * 2) - round(new_pt * 2)) > 0.01:
                 continue
+            # PHYSICAL-MIN GUARDRAIL — drop synthesized lines outside the
+            # achievable range for any tennis match.
+            if side_name == "Over" and new_pt < SYNTH_OVER_FLOOR:
+                break  # all further steps go even lower → skip them all
+            if side_name == "Under" and new_pt > SYNTH_UNDER_CEIL:
+                break
             # Probability moves UP in the chalk direction.
             new_imp = base_imp + slope * step
             # Cap at 97 % (anything chalkier is junk juice).
