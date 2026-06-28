@@ -3319,6 +3319,31 @@ async def on_startup():
         logger.info("CSL ESPN Live (free public ESPN) armed — 12h cadence, blocks retired players")
     except Exception as e:
         logger.warning("CSL ESPN Live loop failed to start: %s", e)
+
+    # ── Unified `services/` ingestion layer (user-requested 2026-06-27) ─
+    # Free-only multi-source player registry. ESPN public is the
+    # always-on primary; Basketball-Reference + nfl.com layer on as
+    # enrichment when reachable; nba.com/stats + PFR are best-effort
+    # (datacenter-blocked today but light up behind residential proxy).
+    # Every source funnels into `services.active_registry` which then
+    # answers `is_active(sport, name)` for the picks pipeline.
+    try:
+        from services import active_registry as _registry, nba_ingest, nfl_ingest
+        await _registry.hydrate_from_db(db)
+
+        async def _services_loop():
+            await asyncio.sleep(30)   # tiny grace period for startup
+            await asyncio.gather(
+                nba_ingest.loop(db),
+                nfl_ingest.loop(db),
+            )
+        asyncio.create_task(_services_loop())
+        logger.info(
+            "services/ multi-source ingestion armed — NBA (ESPN+BBR) + "
+            "NFL (ESPN+nfl.com) every 24h, registry hydrated from MongoDB"
+        )
+    except Exception as e:
+        logger.warning("services/ ingestion layer failed to start: %s", e)
     # ── Tennis ATP Free Player Database (Phase 3, Sackmann mirror) ─
     # Bulk-load 10y of ATP match data from the TML-Database mirror
     # (Sackmann format). One full refresh per week (data upstream

@@ -652,3 +652,60 @@ async def admin_csl_active_check(
         ),
         "live_form": live,
     }
+
+
+# ──────────────────── services/ multi-source ingestion ────────────────────
+@router.get("/admin/services-registry-status")
+async def admin_services_registry_status(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Inspect the unified active-player registry that backs the
+    `services/` multi-source ingestion layer (NBA + NFL today; soccer
+    coming in Phase 2). Reports per-sport totals and which free sources
+    successfully reported in the last refresh."""
+    from services import active_registry
+    return active_registry.snapshot_state()
+
+
+@router.post("/admin/services-nba-refresh")
+async def admin_services_nba_refresh(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Force an NBA refresh across ESPN + BBR + nba.com/stats. Logs the
+    per-source row counts; useful after adding a residential proxy or
+    confirming BBR/PFR scraping headers still work."""
+    from services import nba_ingest
+    return await nba_ingest.refresh(db)
+
+
+@router.post("/admin/services-nfl-refresh")
+async def admin_services_nfl_refresh(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Force an NFL refresh across ESPN + nfl.com + PFR."""
+    from services import nfl_ingest
+    return await nfl_ingest.refresh(db)
+
+
+@router.get("/admin/services-active-check")
+async def admin_services_active_check(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    sport: str,
+    name: str,
+):
+    """Debug: ask the unified registry whether a specific player is
+    currently active for the given sport. Useful during seed audits."""
+    from services import active_registry
+    verdict = active_registry.is_active(sport, name)
+    rec = active_registry.get_record(sport, name)
+    return {
+        "sport": sport,
+        "query": name,
+        "active": verdict,
+        "interpretation": (
+            "active" if verdict is True
+            else "not active / retired / never seen" if verdict is False
+            else "unknown (data missing or stale)"
+        ),
+        "record": rec,
+    }
