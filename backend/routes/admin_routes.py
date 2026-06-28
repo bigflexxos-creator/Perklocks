@@ -760,3 +760,15 @@ async def admin_mlb_hitter_lean(
     )
     lean = engine.lean_and_edge(m, market_implied_prob, line=line)
     return {**lean, "rationale": m.to_rationale()}
+
+
+@router.post("/admin/services-soccer-refresh")
+async def admin_services_soccer_refresh(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Force a soccer refresh across Understat (top-5 European leagues),
+    ESPN public (18 other competitions), and FotMob (best-effort).
+    Returns per-league row counts so we can audit Understat decoding
+    failures vs ESPN coverage."""
+    from services import soccer_ingest
+    return await soccer_ingest.refresh(db)
