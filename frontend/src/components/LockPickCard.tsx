@@ -1,14 +1,31 @@
-import React from "react";
-import { View, Text, StyleSheet, Pressable } from "react-native";
+import React, { useState, useCallback } from "react";
+import { View, Text, StyleSheet, Pressable, Platform, LayoutAnimation, UIManager } from "react-native";
 import { useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
-import { Pick } from "@/src/lib/api";
+import { Pick, PickRationale } from "@/src/lib/api";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { useMLBLive } from "@/src/contexts/MLBLiveContext";
 import { getDisplayLock } from "@/src/lib/lockScore";
 
 export function LockPickCard({ pick }: { pick: Pick }) {
   const router = useRouter();
+  const [whyOpen, setWhyOpen] = useState(false);
+  const toggleWhy = useCallback(() => {
+    if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
+      UIManager.setLayoutAnimationEnabledExperimental(true);
+    }
+    // Subtle expand/collapse — skip on web where layout anim can flicker.
+    if (Platform.OS !== "web") {
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    }
+    setWhyOpen((v) => !v);
+  }, []);
+  const rationale: PickRationale | undefined = (pick as any).pick_rationale;
+  const hasRationale =
+    !!rationale &&
+    ((rationale.evidence?.length ?? 0) > 0 ||
+      (rationale.concerns?.length ?? 0) > 0 ||
+      !!rationale.summary);
   const gradeColor = GRADE_COLORS[pick.grade] || COLORS.textMuted;
   // Edge color — green when EITHER our model edge is positive OR the
   // Monte Carlo simulator endorses the pick at ≥75% (chalk picks like
@@ -270,6 +287,145 @@ export function LockPickCard({ pick }: { pick: Pick }) {
         <Text style={styles.lockNote}>Lock = Bet Quality · Win = Expected Hit Rate</Text>
         <Text style={styles.confidence}>{pick.confidence}</Text>
       </View>
+
+      {hasRationale && (
+        <View style={styles.whyWrap}>
+          <Pressable
+            testID={`why-toggle-${pick.id}`}
+            onPress={toggleWhy}
+            hitSlop={6}
+            style={({ pressed }) => [
+              styles.whyToggleRow,
+              pressed && { opacity: 0.7 },
+            ]}
+          >
+            <Text style={styles.whyIcon}>💡</Text>
+            <Text style={styles.whyToggleLabel}>Why this pick?</Text>
+            {rationale!.confidence_score != null && (
+              <View style={styles.whyConfChip}>
+                <Text style={styles.whyConfChipText}>
+                  {Math.round(rationale!.confidence_score)}/100
+                </Text>
+              </View>
+            )}
+            {rationale!.lean &&
+              (rationale!.lean === "OVER" || rationale!.lean === "UNDER") && (
+                <View
+                  style={[
+                    styles.whyLeanChip,
+                    rationale!.lean === "OVER"
+                      ? styles.whyLeanChipOver
+                      : styles.whyLeanChipUnder,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.whyLeanChipText,
+                      {
+                        color:
+                          rationale!.lean === "OVER" ? "#86EFAC" : "#FCA5A5",
+                      },
+                    ]}
+                  >
+                    LEAN {rationale!.lean}
+                  </Text>
+                </View>
+              )}
+            <Text style={styles.whyChevron}>{whyOpen ? "▴" : "▾"}</Text>
+          </Pressable>
+
+          {whyOpen && (
+            <View style={styles.whyBody} testID={`why-body-${pick.id}`}>
+              {!!rationale!.summary && (
+                <Text style={styles.whySummary}>{rationale!.summary}</Text>
+              )}
+
+              {rationale!.matchup && (rationale!.matchup.pitcher ||
+                rationale!.matchup.ballpark) && (
+                <View style={styles.whyMatchupRow}>
+                  {!!rationale!.matchup.pitcher && (
+                    <Text style={styles.whyMatchupChip}>
+                      vs {rationale!.matchup.pitcher}
+                      {rationale!.matchup.pitcher_hand
+                        ? ` (${rationale!.matchup.pitcher_hand}HP)`
+                        : ""}
+                    </Text>
+                  )}
+                  {!!rationale!.matchup.ballpark && (
+                    <Text style={styles.whyMatchupChip}>
+                      🏟 {rationale!.matchup.ballpark}
+                    </Text>
+                  )}
+                  {rationale!.matchup.batting_order != null && (
+                    <Text style={styles.whyMatchupChip}>
+                      #{rationale!.matchup.batting_order} in order
+                    </Text>
+                  )}
+                </View>
+              )}
+
+              {(rationale!.evidence?.length ?? 0) > 0 && (
+                <View style={styles.whySection}>
+                  <Text style={styles.whySectionLabel}>WHY WE LIKE IT</Text>
+                  {rationale!.evidence!.slice(0, 4).map((e, i) => (
+                    <Text key={`ev-${i}`} style={styles.whyBullet}>
+                      {e}
+                    </Text>
+                  ))}
+                </View>
+              )}
+
+              {(rationale!.concerns?.length ?? 0) > 0 && (
+                <View style={styles.whySection}>
+                  <Text style={styles.whySectionLabel}>WATCH-OUTS</Text>
+                  {rationale!.concerns!.slice(0, 3).map((c, i) => (
+                    <Text key={`cn-${i}`} style={styles.whyBulletConcern}>
+                      {c}
+                    </Text>
+                  ))}
+                </View>
+              )}
+
+              {rationale!.final_hit_prob_pct != null && (
+                <Text style={styles.whyMetaLine}>
+                  Engine prob: {rationale!.final_hit_prob_pct.toFixed(1)}%
+                  {rationale!.edge_pct_points != null && (
+                    <Text style={{ color: COLORS.textMuted }}>
+                      {"  ·  Edge vs market: "}
+                      <Text
+                        style={{
+                          color:
+                            rationale!.edge_pct_points > 0
+                              ? COLORS.neonGreen
+                              : COLORS.electricBlaze,
+                          fontWeight: "800",
+                        }}
+                      >
+                        {rationale!.edge_pct_points > 0 ? "+" : ""}
+                        {rationale!.edge_pct_points.toFixed(1)}pp
+                      </Text>
+                    </Text>
+                  )}
+                </Text>
+              )}
+
+              {rationale!.espn_rank != null && (
+                <Text style={styles.whyMetaLine}>
+                  ESPN scorer rank ·{" "}
+                  <Text style={{ color: COLORS.voltBlue, fontWeight: "800" }}>
+                    #{rationale!.espn_rank}
+                  </Text>
+                </Text>
+              )}
+
+              <Text style={styles.whySource}>
+                Source: {rationale!.data_source || "model"}
+                {rationale!.engine ? ` · ${rationale!.engine}` : ""}
+              </Text>
+            </View>
+          )}
+        </View>
+      )}
     </Pressable>
   );
 }
@@ -573,4 +729,127 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   confidence: { fontSize: 10, color: COLORS.textMuted, fontWeight: "700", letterSpacing: 0.8 },
+
+  // ── "Why this pick?" rationale expansion ────────────────────────────
+  whyWrap: {
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.borderDefault,
+  },
+  whyToggleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 4,
+  },
+  whyIcon: { fontSize: 12 },
+  whyToggleLabel: {
+    color: COLORS.textPrimary,
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.4,
+    flex: 1,
+  },
+  whyConfChip: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: COLORS.voltBlue + "66",
+    backgroundColor: COLORS.voltBlue + "12",
+  },
+  whyConfChipText: {
+    color: COLORS.voltBlue,
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+    fontVariant: ["tabular-nums"],
+  },
+  whyLeanChip: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+  },
+  whyLeanChipOver: {
+    borderColor: "rgba(134, 239, 172, 0.55)",
+    backgroundColor: "rgba(134, 239, 172, 0.12)",
+  },
+  whyLeanChipUnder: {
+    borderColor: "rgba(252, 165, 165, 0.55)",
+    backgroundColor: "rgba(252, 165, 165, 0.12)",
+  },
+  whyLeanChipText: {
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.8,
+  },
+  whyChevron: {
+    color: COLORS.textMuted,
+    fontSize: 14,
+    fontWeight: "900",
+    minWidth: 14,
+    textAlign: "center",
+  },
+  whyBody: {
+    marginTop: 10,
+    paddingTop: 4,
+    gap: 8,
+  },
+  whySummary: {
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    lineHeight: 17,
+    fontStyle: "italic",
+  },
+  whyMatchupRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  whyMatchupChip: {
+    color: COLORS.textSecondary,
+    fontSize: 10.5,
+    fontWeight: "700",
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 4,
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderWidth: 1,
+    borderColor: COLORS.borderDefault,
+  },
+  whySection: { gap: 3 },
+  whySectionLabel: {
+    color: COLORS.textMuted,
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 1.3,
+    marginBottom: 2,
+  },
+  whyBullet: {
+    color: COLORS.textPrimary,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "500",
+  },
+  whyBulletConcern: {
+    color: "#FCA5A5",
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "500",
+  },
+  whyMetaLine: {
+    color: COLORS.textSecondary,
+    fontSize: 11,
+    fontWeight: "700",
+    fontVariant: ["tabular-nums"],
+  },
+  whySource: {
+    color: COLORS.textMuted,
+    fontSize: 9,
+    fontWeight: "700",
+    letterSpacing: 0.6,
+    marginTop: 2,
+  },
 });

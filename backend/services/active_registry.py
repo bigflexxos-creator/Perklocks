@@ -231,7 +231,7 @@ def is_active(sport: str, name: str) -> Optional[bool]:
     if rec is None:
         # tolerant matcher
         for k, v in bucket.items():
-            if _name_match(key, k):
+            if _name_match_for_sport(sport, key, k):
                 rec = v
                 break
     if rec is None:
@@ -252,6 +252,39 @@ def is_active(sport: str, name: str) -> Optional[bool]:
     return True
 
 
+def _name_match_for_sport(sport: str, query: str, candidate: str) -> bool:
+    """Stricter matcher for soccer where single-token names (`Vinicius`,
+    `Pelé`, `Maradona`) frequently collide between completely different
+    eras / clubs. For soccer we require either:
+        * exact match, OR
+        * matching last name AND ≥1 shared other token (handles
+          'Vinicius Junior' ↔ 'Vinícius Júnior' but not 'Vinicius Silva')
+
+    Other sports use the looser shared matcher (Crysan/Cryzan, etc.).
+    """
+    if sport == "soccer":
+        if query == candidate:
+            return True
+        qt, ct = query.split(), candidate.split()
+        if not qt or not ct:
+            return False
+        # Soccer specifically: require last-name match
+        if qt[-1] != ct[-1]:
+            return False
+        # If both are multi-token, also require at least one other shared token
+        if len(qt) > 1 and len(ct) > 1:
+            return bool(set(qt[:-1]) & set(ct[:-1]))
+        # Single-token side: still require exact-on-last-name PLUS the
+        # other side must also be exactly that token (no other tokens).
+        # Otherwise "Vinicius" would match "Vinicius Silva" wrongly.
+        if len(qt) == 1 and len(ct) > 1:
+            return False
+        if len(ct) == 1 and len(qt) > 1:
+            return False
+        return True   # both single-token, same value
+    return _name_match(query, candidate)
+
+
 def get_record(sport: str, name: str) -> Optional[dict]:
     sport = (sport or "").lower()
     bucket = _registry.get(sport)
@@ -261,7 +294,7 @@ def get_record(sport: str, name: str) -> Optional[dict]:
     rec = bucket.get(key)
     if rec is None:
         for k, v in bucket.items():
-            if _name_match(key, k):
+            if _name_match_for_sport(sport, key, k):
                 rec = v
                 break
     return rec
