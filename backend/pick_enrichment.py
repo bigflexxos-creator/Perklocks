@@ -207,26 +207,78 @@ def _build_rationale(pick: dict, sport: str, name: str) -> dict[str, Any]:
         except Exception as e:
             logger.debug(f"CFB rationale build skipped for {name}: {e}")
 
-    # Win-prob and edge framing — universally useful.
+    # ── SPORT-SPECIFIC RATIONALE (2026-06-28) ───────────────────────
+    # Build sport-aware evidence FIRST so the generic
+    # "Model gives X% win prob" bullet only fires as a fallback when
+    # no sport-specific data is available. Today's slate breakdown:
+    #   • MLB pitcher props (K's, Outs, Walks, ER) → fetch_pitcher_h2h
+    #   • MLB team picks (ML/RL/Total)             → matchup_resolver
+    #   • Tennis ML / Totals                       → tennis_players ELO
+    # Soccer goalscorer / MLB hit / CFB picks already have their own
+    # rationale builders above and skip this layer.
+    sport_specific_added = False
+    try:
+        from services import sport_rationale
+        ss = sport_rationale.build_sport_specific_sync(pick, sport, name)
+        if ss.get("evidence") or ss.get("concerns"):
+            rationale["evidence"].extend(ss.get("evidence") or [])
+            rationale["concerns"].extend(ss.get("concerns") or [])
+            rationale["engine"] = rationale.get("engine") or f"sport_rationale.{sport}"
+            sport_specific_added = True
+    except Exception as e:
+        logger.debug(f"sport_rationale failed for {sport}/{name}: {e}")
+
+    # Win-prob and edge framing — only as a last-resort SOFT fallback
+    # (down-graded post-user-feedback 2026-06-28). We no longer emit
+    # the generic "💯 Model gives X% — high confidence" because it
+    # reads identically across all sports → users perceived it as
+    # boilerplate. When the sport-specific layer can't speak, we'd
+    # rather omit the WHY-WE-LIKE-IT block than fill it with a generic
+    # bullet. The expanded panel will still show the model summary
+    # line + edge chip — the data is there, just not in cardboard
+    # "high confidence" prose.
     wp = pick.get("win_probability")
     edge = pick.get("edge_percent")
-    if isinstance(wp, (int, float)):
-        if wp >= 65:
-            rationale["evidence"].append(f"💯 Model gives {wp:.1f}% win prob — high confidence")
-        elif wp <= 35:
-            rationale["concerns"].append(f"📉 Model gives only {wp:.1f}% win prob — longshot")
-    if isinstance(edge, (int, float)) and edge >= 5.0:
-        rationale["evidence"].append(f"📊 Edge vs market: +{edge:.1f}%")
-    elif isinstance(edge, (int, float)) and edge <= -2.0:
-        rationale["concerns"].append(f"📊 Negative edge vs market: {edge:.1f}%")
+    # Concerns are still informative — a true "longshot" / "negative
+    # edge" callout is sport-agnostic, helpful, and short.
+    if not sport_specific_added:
+        if isinstance(wp, (int, float)) and wp <= 30:
+            rationale["concerns"].append(f"📉 Longshot — model gives only {wp:.1f}% win prob")
+        if isinstance(edge, (int, float)) and edge <= -5.0:
+            rationale["concerns"].append(f"📊 Heavy chalk — negative edge vs market ({edge:.1f}%)")
 
     # Existing pick_rationale (e.g. CSL synth picks already built one in
     # sportdb_player_scorer) wins — don't overwrite a richer source.
     existing = pick.get("pick_rationale")
     if isinstance(existing, dict) and existing.get("evidence"):
-        # Merge our additions onto the existing block.
-        existing.setdefault("evidence", []).extend(rationale["evidence"])
-        existing.setdefault("concerns", []).extend(rationale["concerns"])
+        # Prune the legacy generic bullets ("Model gives X% win prob",
+        # "Edge vs market: +N%") off the existing block before merging
+        # — otherwise re-enrichment passes preserve them indefinitely,
+        # defeating the sport-specific layer. We identify them by their
+        # leading emoji + canonical phrasing.
+        def _is_generic(line: str) -> bool:
+            return (
+                "Model gives" in line
+                or "Edge vs market" in line
+                or "Negative edge vs market" in line
+            )
+        existing["evidence"] = [
+            e for e in (existing.get("evidence") or []) if not _is_generic(e)
+        ]
+        existing["concerns"] = [
+            c for c in (existing.get("concerns") or []) if not _is_generic(c)
+        ]
+        # Merge our additions onto the existing block, de-duped.
+        for e in rationale["evidence"]:
+            if e not in existing["evidence"]:
+                existing["evidence"].append(e)
+        for c in rationale["concerns"]:
+            if c not in existing["concerns"]:
+                existing["concerns"].append(c)
+        # Adopt the new engine tag when sport_rationale fired — so the
+        # rationale block self-documents which layer produced it.
+        if rationale.get("engine") and not existing.get("engine"):
+            existing["engine"] = rationale["engine"]
         return existing
 
     # Compose a one-line summary fallback.
