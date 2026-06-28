@@ -699,20 +699,46 @@ async def _picks_for_side(
     out: list[dict] = []
     # ── ESPN live active-player filter (user request 2026-06-27) ──
     # For CSL specifically, ESPN's `chn.1` endpoints give us the
-    # authoritative active roster + leaders. Any candidate whose name
-    # ESPN explicitly marks as INACTIVE (e.g. Guy Mbenza after a transfer)
-    # is dropped here BEFORE we waste a SportDB lookup on them. Unknown
-    # players (not in ESPN cache) pass through — legacy heuristics still
-    # apply so we never accidentally nuke an entire match's pick board.
+    # authoritative active roster + leaders. Three roles for CSL picks:
+    #
+    #   1. `csl_filter_active`  → drop retired / transferred-out players
+    #   2. `csl_get_live_form`  → override SportDB rates with live goals/matches
+    #   3. `csl_get_rank`       → ESPN scorer rank (1 = top of leaderboard).
+    #                             Used to (a) demote positional-fallback picks
+    #                             with no real goals and (b) write a rich
+    #                             `pick_rationale` block explaining WHY this
+    #                             player got picked over teammates.
     csl_filter_active: Optional["callable"] = None  # type: ignore
     csl_get_live_form: Optional["callable"] = None  # type: ignore
+    csl_live_mod = None
     if (comp or "").lower().startswith("china:") or comp == "soccer_china_superleague":
         try:
             import csl_espn_live as _csl_live
+            csl_live_mod = _csl_live
             csl_filter_active = _csl_live.is_player_currently_active
             csl_get_live_form = _csl_live.get_live_form
         except Exception:
             csl_filter_active = None
+
+    def _csl_espn_rank(name: str) -> Optional[int]:
+        """Returns 1-indexed scorer rank from the live ESPN board, or None
+        when the player isn't on the leaderboard (= no goals this season)."""
+        if csl_live_mod is None:
+            return None
+        try:
+            rows = [
+                v for v in csl_live_mod._scorer_index.values()
+                if (v.get("goals") or 0) > 0
+            ]
+            rows.sort(key=lambda r: (r.get("goals") or 0), reverse=True)
+            n_key = csl_live_mod._norm(name)
+            for i, r in enumerate(rows, 1):
+                k = csl_live_mod._norm(r.get("name") or "")
+                if k == n_key or csl_live_mod._name_match(n_key, k):
+                    return i
+        except Exception:
+            return None
+        return None
 
     for player in candidates:
         # ── CSL retired-player block ──
@@ -735,6 +761,7 @@ async def _picks_for_side(
         # If ESPN has a current-season scoring rate for this player, prefer
         # it over SportDB / seed data — ESPN is the most authoritative
         # source for "what's happening THIS season".
+        live = None
         if csl_get_live_form is not None:
             live = csl_get_live_form(
                 _format_player_name(player, rate) or player.get("name") or ""
@@ -747,6 +774,20 @@ async def _picks_for_side(
                     "source": live["source"],
                 }
         if not rate:
+            continue
+        # ── Positional-fallback hard-block for CSL ──
+        # When ESPN data is loaded for CSL, drop any pick whose rate came
+        # purely from the position+jersey heuristic AND who hasn't scored
+        # a real goal this season per ESPN. This is the root cause of the
+        # "Di Gao (0 goals, rate=0.68 from positional fallback)" picks the
+        # user flagged on 2026-06-28.
+        is_csl = (comp or "").lower().startswith("china:") or comp == "soccer_china_superleague"
+        from_fallback = bool(rate.get("from_fallback") or rate.get("position_fallback"))
+        if is_csl and from_fallback and live is None:
+            logger.info(
+                "CSL ESPN: dropping positional-fallback pick %s — no ESPN scoring evidence",
+                player.get("name"),
+            )
             continue
         base = rate["rate_per_match"]
         if base <= 0.0:
@@ -761,6 +802,82 @@ async def _picks_for_side(
         # Synthesise a market-style line. We have no bookmaker, so emit a
         # "MODEL-ONLY" tag and store the implied price equivalent.
         implied_odds = _prob_to_american(prob)
+
+        # ── Pick rationale (user education, 2026-06-28) ──
+        # Surface a structured "why this pick" block so the UI can render
+        # an evidence-based card instead of the vague "Market prices Yes
+        # at 49%" line that previously made Di-Gao-tier picks indistinguishable
+        # from Crysan-tier picks. ESPN rank is the single most-important
+        # signal here — picks above rank ~25 are real scoring threats,
+        # everything below is a positional reach.
+        espn_rank = _csl_espn_rank(player_full_name) if is_csl else None
+        recent_form = None
+        if is_csl:
+            try:
+                import csl_form_seed as _seed
+                recent_form = _seed.get_player_form(player_full_name, team_name)
+            except Exception:
+                recent_form = None
+        evidence_tags: list[str] = []
+        concern_tags: list[str] = []
+        if espn_rank is not None:
+            if espn_rank <= 5:
+                evidence_tags.append(f"🥇 ESPN #{espn_rank} scorer in CSL this season")
+            elif espn_rank <= 15:
+                evidence_tags.append(f"📈 ESPN #{espn_rank} CSL scorer — top-tier threat")
+            elif espn_rank <= 25:
+                evidence_tags.append(f"⚽ ESPN #{espn_rank} CSL scorer — consistent contributor")
+            else:
+                concern_tags.append(f"⚠️ Outside ESPN top-25 (rank #{espn_rank}) — secondary threat")
+        elif is_csl:
+            concern_tags.append("⚠️ Not on ESPN's current CSL scorer leaderboard")
+        if live and (live.get("goals") or 0) > 0:
+            evidence_tags.append(
+                f"📊 {int(live['goals'])} goals in {live['matches']} CSL matches this season"
+                f" ({live['rate_per_match']:.2f} per match)"
+            )
+        elif rate.get("from_seed"):
+            evidence_tags.append(
+                f"🌱 Recent form: {rate.get('goals',0)} goals in {rate.get('matches',0)} apps (last 5)"
+            )
+        elif rate.get("from_fallback"):
+            concern_tags.append("🟡 Pick built on position+jersey heuristic only (no goal record)")
+        if recent_form and (recent_form.get("goals") or 0) >= 3:
+            evidence_tags.append(
+                f"🔥 Hot streak: {recent_form['goals']} goals in last {recent_form['apps']} apps"
+            )
+        if defence_mult >= 1.10:
+            evidence_tags.append(
+                f"🛡️ Opponent defence concedes {defence_mult:.2f}× league avg — favourable matchup"
+            )
+        elif defence_mult <= 0.90:
+            concern_tags.append(
+                f"🛡️ Opponent defence below league avg ({defence_mult:.2f}×) — tough match"
+            )
+        if rate.get("source") == "espn_chn1_live":
+            evidence_tags.append("✅ Live data: ESPN CSL leaderboard")
+
+        rationale_summary = (
+            f"{player_full_name}: λ={lam:.2f} goals → {prob*100:.0f}% to score. "
+            + (
+                f"Ranked #{espn_rank} active CSL scorer." if espn_rank
+                else "Outside ESPN top scorers — pick rests on positional/seed data."
+            )
+        )
+        pick_rationale = {
+            "summary": rationale_summary,
+            "espn_rank": espn_rank,
+            "goals_this_season": (live or {}).get("goals") if live else rate.get("goals"),
+            "matches_this_season": (live or {}).get("matches") if live else rate.get("matches"),
+            "rate_per_match": round(rate["rate_per_match"], 3),
+            "poisson_lambda": round(lam, 3),
+            "anytime_prob_pct": round(prob * 100, 1),
+            "opponent_defence_mult": round(defence_mult, 3),
+            "recent_form": recent_form,                # last-5 from seed if any
+            "data_source": rate.get("source") or "sportdb_heuristic",
+            "evidence": evidence_tags,
+            "concerns": concern_tags,
+        }
         pick = {
             # Unique-ish: event + player; downstream dedupe handles collisions.
             "id": f"synth_csl_{event_id}_{player.get('id')}",
@@ -804,7 +921,13 @@ async def _picks_for_side(
             "is_long_shot": True,           # treat like other goalscorer picks
             "source": "sportdb_scorer_v1",
             # Why this pick — surfaced verbatim in the UI.
-            "key_insights": _build_insights(player, rate, defence_mult, opp_form, lam, prob),
+            "key_insights": (evidence_tags + concern_tags) or _build_insights(player, rate, defence_mult, opp_form, lam, prob),
+            # Structured "show your work" block. The UI renders this as a
+            # collapsible "Why this pick?" panel so users can audit the
+            # math (ESPN rank, λ, defence multiplier, recent form) instead
+            # of just trusting a black-box probability. Added 2026-06-28
+            # in response to user feedback about Di-Gao-tier mystery picks.
+            "pick_rationale": pick_rationale,
             "sportdb_signal": (
                 f"📊 SportDB: {player_full_name} has scored {rate['goals']} goal"
                 f"{'s' if rate['goals'] != 1 else ''} in {rate['matches']} "
