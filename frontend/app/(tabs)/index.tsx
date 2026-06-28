@@ -317,6 +317,20 @@ export default function LocksScreen() {
             p.sim_win_probability >= simFloor),
         );
       }
+      // CRITICAL (2026-06-28): if the new response came back EMPTY but
+      // we already had cached picks for the same sport filter, treat
+      // it as a transient "slate refreshing" signal and KEEP the cached
+      // picks visible. The backend refresh briefly returns picks=[] for
+      // <100ms during the atomic-swap window; without this guard the
+      // user sees their slate vanish to "No locks on the board" every
+      // refresh tick. Per user spec: "do NOT clear existing picks".
+      const lastSport = lastLoadedForSportRef.current;
+      const sameFilter = lastSport === requestedSport;
+      if (fresh.length === 0 && picks.length > 0 && sameFilter) {
+        setLoadError("Slate refreshing… showing your cached picks. Tap to retry.");
+        // Skip setPicks([]) — keep cached.
+        return;
+      }
       setPicks(fresh);
       lastLoadedForSportRef.current = requestedSport;
       // Stats: if backend hasn't deployed KBO removal yet, recompute the
