@@ -56,6 +56,7 @@ export default function LocksScreen() {
     state: filterStore,
     hydrated: filtersHydrated,
     setEvents,
+    setSports:  setStoreSports,
     setLeagues: setStoreLeagues,
     setMarkets: setStoreMarkets,
     setGames:   setStoreGames,
@@ -185,6 +186,7 @@ export default function LocksScreen() {
     filterStore.markets.length > 0 ||
     filterStore.leagues.length > 0 ||
     filterStore.gameIds.length > 0 ||
+    filterStore.sports.length > 0 ||   // ← include multi-sport so empty state offers CLEAR FILTERS
     (typeof filters.minLock === "number" && filters.minLock > 85) ||
     !!filters.minImplied ||
     (typeof filters.maxImplied === "number" && filters.maxImplied < 100);
@@ -518,6 +520,14 @@ export default function LocksScreen() {
           setStoreMarkets([]);
           setStoreGames([]);
           setStoreEvents([]);
+          // CRITICAL BUG FIX (2026-06-28): also clear the persisted multi-
+          // select `sports` array on a single-sport tap. Without this, a
+          // stale value (e.g., `sports=["NBA"]` carried over from a prior
+          // multi-select session) was OVERRIDING the tapped `sport=MLB`
+          // on the backend, returning 0 picks and dumping the user into
+          // the "No locks on the board → SHOW ALL X PICKS" empty state
+          // (user report: "soccer mlb etc no picks").
+          setStoreSports([]);
           setSport(s);
         }}
         testIDPrefix="sport-chip"
