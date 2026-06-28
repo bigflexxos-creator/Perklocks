@@ -709,3 +709,54 @@ async def admin_services_active_check(
         ),
         "record": rec,
     }
+
+
+# ──────────────────── MLB Hitter Prop Intelligence Engine ────────────────────
+@router.get("/admin/mlb-hitter-intel")
+async def admin_mlb_hitter_intel(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    batter_id: int,
+    pitcher_id: int,
+    ballpark: Optional[str] = None,
+    batting_order: Optional[int] = None,
+    is_home: bool = True,
+    season: Optional[int] = None,
+):
+    """Run the MLB Hitter Prop Intelligence engine for an arbitrary
+    batter × pitcher matchup. Returns the full rationale block (splits,
+    pitcher quality, ballpark factor, recent form, multipliers, final
+    hit prob, confidence). Lets you eyeball any matchup before slate
+    lock — answers the user's "show me WHY this pick made the board".
+    """
+    from services import mlb_hitter_intel as engine
+    m = await engine.build_matchup(
+        db, batter_id, pitcher_id,
+        ballpark=ballpark, batting_order=batting_order,
+        is_home=is_home, season=season,
+    )
+    return m.to_rationale()
+
+
+@router.get("/admin/mlb-hitter-lean")
+async def admin_mlb_hitter_lean(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    batter_id: int,
+    pitcher_id: int,
+    market_implied_prob: float,
+    line: float = 0.5,
+    ballpark: Optional[str] = None,
+    batting_order: Optional[int] = None,
+    is_home: bool = True,
+    season: Optional[int] = None,
+):
+    """Run the engine AND return an OVER/UNDER lean + edge vs the given
+    sportsbook implied probability. `line` defaults to 0.5 (Anytime Hit
+    prop). Pass 1.5 for "Over 1.5 Hits", etc."""
+    from services import mlb_hitter_intel as engine
+    m = await engine.build_matchup(
+        db, batter_id, pitcher_id,
+        ballpark=ballpark, batting_order=batting_order,
+        is_home=is_home, season=season,
+    )
+    lean = engine.lean_and_edge(m, market_implied_prob, line=line)
+    return {**lean, "rationale": m.to_rationale()}
