@@ -1774,32 +1774,44 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         {"lock_score_peak": {"$exists": False}},
         {"lock_score_peak": {"$lt": 95}},
     ]}
-    if sport_filter:
-        await db.picks.delete_many({"pick_date": date_str, "sport": sport_filter, **_pin_filter})
-        await db.picks.delete_many({"id": {"$in": list(seen_ids)}, "sport": sport_filter, **_pin_filter})
-    else:
-        await db.picks.delete_many({"pick_date": date_str, **_pin_filter})
-        await db.picks.delete_many({"id": {"$in": list(seen_ids)}, **_pin_filter})
-    # ── ID-COLLISION FRESH-OVERWRITE ──
-    # If the current refresh re-generates a pick whose `id` is ALSO a
-    # sticky 95+ pin in DB, the existing row blocks the new insert
-    # (mongo `id` unique index → duplicate key error → silently
-    # skipped). The user then sees the STALE lock_score from days
-    # ago — e.g. Fábio Abreu landed at lock_score=55.7 (post-evidence
-    # demotion from the previous cycle) while the new cycle would have
-    # set it to 95.0 via the elite-protect clamp. Fix: ALWAYS delete
-    # any existing pick whose `id` is about to be re-inserted by this
-    # refresh, regardless of the sticky-pin filter. The peak metadata
-    # is preserved on the new pick (peak_lock_score is propagated
-    # through the synth + clamp pipeline), so the "highest-ever lock"
-    # invariant still holds.
-    if seen_ids:
+    # ATOMIC-SWAP DEFERRAL (2026-06-28): we used to run delete_many HERE,
+    # BEFORE the enrichment passes below (Lock V2, Player Intel, Evidence
+    # Governor, MLB Simulator, Sportsbook Mapping, Deep Dive, Brain,
+    # Auto-Elite). With ~200 picks that pipeline takes 10-30s — and the
+    # DB sits EMPTY for the entire window, so `/api/picks/today` returns
+    # `{"picks":[]}` and users see "No locks on the board" every time
+    # the refresh fires. Build a deferred-delete closure that we'll call
+    # RIGHT BEFORE insert_many — gap shrinks from ~20s to <100ms.
+    # User report (2026-06-28): "They come back when I play with tabs
+    # but not staying"  ← classic symptom of catching the populated
+    # window between refresh cycles.
+    async def _apply_atomic_delete():
         if sport_filter:
-            await db.picks.delete_many(
-                {"id": {"$in": list(seen_ids)}, "sport": sport_filter}
-            )
+            await db.picks.delete_many({"pick_date": date_str, "sport": sport_filter, **_pin_filter})
+            await db.picks.delete_many({"id": {"$in": list(seen_ids)}, "sport": sport_filter, **_pin_filter})
         else:
-            await db.picks.delete_many({"id": {"$in": list(seen_ids)}})
+            await db.picks.delete_many({"pick_date": date_str, **_pin_filter})
+            await db.picks.delete_many({"id": {"$in": list(seen_ids)}, **_pin_filter})
+        # ── ID-COLLISION FRESH-OVERWRITE ──
+        # If the current refresh re-generates a pick whose `id` is ALSO a
+        # sticky 95+ pin in DB, the existing row blocks the new insert
+        # (mongo `id` unique index → duplicate key error → silently
+        # skipped). The user then sees the STALE lock_score from days
+        # ago — e.g. Fábio Abreu landed at lock_score=55.7 (post-evidence
+        # demotion from the previous cycle) while the new cycle would have
+        # set it to 95.0 via the elite-protect clamp. Fix: ALWAYS delete
+        # any existing pick whose `id` is about to be re-inserted by this
+        # refresh, regardless of the sticky-pin filter. The peak metadata
+        # is preserved on the new pick (peak_lock_score is propagated
+        # through the synth + clamp pipeline), so the "highest-ever lock"
+        # invariant still holds.
+        if seen_ids:
+            if sport_filter:
+                await db.picks.delete_many(
+                    {"id": {"$in": list(seen_ids)}, "sport": sport_filter}
+                )
+            else:
+                await db.picks.delete_many({"id": {"$in": list(seen_ids)}})
     # Defensive write: drop malformed pick docs (missing required fields)
     # so a single broken doc never aborts the entire batch insert. Required
     # fields: id, sport, event_time, market, book_odds.
@@ -1935,6 +1947,13 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         logger.warning("Pick enrichment failed (continuing): %s", _enr_err)
 
     if safe_picks:
+        # ATOMIC-SWAP: do the wipe NOW, immediately before the insert.
+        # The enrichment passes above ran on in-memory `safe_picks` —
+        # the DB still has the PREVIOUS slate visible to clients this
+        # entire time, so users never see "No locks on the board" mid-
+        # refresh. Gap between delete + insert is now <100ms instead of
+        # the old 10-30s.
+        await _apply_atomic_delete()
         # ordered=False already lets pymongo continue past duplicate-key
         # rows, but it STILL raises BulkWriteError at the end, aborting
         # the caller. Catch + count + log so picks that DID land still
