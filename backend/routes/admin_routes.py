@@ -590,3 +590,65 @@ async def admin_picks_heal(
             "Network blip caused the breaker to trip (this endpoint resets it)",
         ],
     }
+
+
+# ────────────────────── CSL ESPN Live (retired-player filter) ──────────────────────
+@router.get("/admin/csl-espn-status")
+async def admin_csl_espn_status(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Inspect the in-memory CSL ESPN cache used to block retired players
+    from synth goal-scorer picks. Includes the top-10 current-season
+    scorers with their ESPN active flag — verifies live data is flowing.
+
+    Wired 2026-06-27 in response to user feedback that retired players
+    (e.g. Guy Mbenza after his transfer) were landing on the board.
+    """
+    import csl_espn_live
+    return csl_espn_live.snapshot_state()
+
+
+class _CSLRefreshOut(BaseModel):
+    ok: bool
+    season: Optional[str] = None
+    teams: Optional[int] = None
+    players_active: Optional[int] = None
+    scorer_rows: Optional[int] = None
+    inactive_seen: Optional[int] = None
+    elapsed_sec: Optional[float] = None
+    refreshed_at: Optional[str] = None
+    reason: Optional[str] = None
+
+
+@router.post("/admin/csl-espn-refresh", response_model=_CSLRefreshOut)
+async def admin_csl_espn_refresh(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Force an immediate refresh of the CSL ESPN cache (bypasses 12-h
+    scheduler). Use after a known transfer / retirement is reported."""
+    import csl_espn_live
+    summary = await csl_espn_live.refresh(db)
+    return _CSLRefreshOut(**summary)
+
+
+@router.get("/admin/csl-active-check")
+async def admin_csl_active_check(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    name: str,
+):
+    """Quick lookup: is this player currently active in CSL per ESPN?
+    Returns the verdict + raw match info so we can debug false-positive
+    or false-negative blocks during seed-data audits."""
+    import csl_espn_live
+    verdict = csl_espn_live.is_player_currently_active(name)
+    live = csl_espn_live.get_live_form(name)
+    return {
+        "query": name,
+        "active": verdict,                       # True / False / None
+        "interpretation": (
+            "active in CSL" if verdict is True
+            else "NOT active / retired / transferred out" if verdict is False
+            else "unknown (data missing or stale)"
+        ),
+        "live_form": live,
+    }
