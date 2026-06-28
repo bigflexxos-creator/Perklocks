@@ -2,14 +2,24 @@ import React, { useState, useCallback } from "react";
 import { View, Text, StyleSheet, Pressable, Platform, LayoutAnimation, UIManager } from "react-native";
 import { useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
-import { Pick, PickRationale } from "@/src/lib/api";
+import { Pick, PickRationale, api } from "@/src/lib/api";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { useMLBLive } from "@/src/contexts/MLBLiveContext";
 import { getDisplayLock } from "@/src/lib/lockScore";
 
-export function LockPickCard({ pick }: { pick: Pick }) {
+function LockPickCardImpl({ pick }: { pick: Pick }) {
   const router = useRouter();
   const [whyOpen, setWhyOpen] = useState(false);
+  // The lite payload trims `pick_rationale` to summary + lean + top
+  // evidence bullet. The deep blocks (matchup, splits, pitcher_quality,
+  // multipliers) live on the detail endpoint and are lazy-fetched on
+  // first expand below. Cached in component state so a re-expand
+  // doesn't re-fetch.
+  const [deepRationale, setDeepRationale] = useState<PickRationale | null>(null);
+  const [deepLoading, setDeepLoading] = useState(false);
+  const slimRationale: PickRationale | undefined = (pick as any).pick_rationale;
+  const isSlim = !!(slimRationale && (slimRationale as any)._slim);
+  const rationale: PickRationale | undefined = deepRationale || slimRationale;
   const toggleWhy = useCallback(() => {
     if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
       UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -18,9 +28,28 @@ export function LockPickCard({ pick }: { pick: Pick }) {
     if (Platform.OS !== "web") {
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     }
-    setWhyOpen((v) => !v);
-  }, []);
-  const rationale: PickRationale | undefined = (pick as any).pick_rationale;
+    setWhyOpen((v) => {
+      const next = !v;
+      // First-time expand on a slim pick → fetch the full doc to get
+      // the deep rationale. Subsequent expands hit cached state.
+      if (next && isSlim && !deepRationale && !deepLoading) {
+        setDeepLoading(true);
+        api.pickDetail(pick.id)
+          .then((full) => {
+            const r = (full as any).pick_rationale;
+            if (r && typeof r === "object") {
+              setDeepRationale(r);
+            }
+          })
+          .catch(() => {
+            // Network failure is non-fatal — the slim payload still
+            // renders the summary + lean + top evidence bullet.
+          })
+          .finally(() => setDeepLoading(false));
+      }
+      return next;
+    });
+  }, [isSlim, deepRationale, deepLoading, pick.id]);
   const hasRationale =
     !!rationale &&
     ((rationale.evidence?.length ?? 0) > 0 ||
@@ -622,6 +651,51 @@ function Metric({ label, value, color }: { label: string; value: string; color: 
     </View>
   );
 }
+
+// ── React.memo wrapper ─────────────────────────────────────────────
+// 248 cards on the home feed → without memoization, every parent state
+// change (filter toggle, sport switch, periodic refetch) re-renders
+// EVERY card. Profile showed ~50 ms wasted per render pass.
+//
+// Custom equality: compare only the fields the card actually paints.
+// We deliberately ignore deep arrays like `pick_rationale.evidence`
+// (they're stable references after `setPicks(fresh)`, and the deep
+// rationale is fetched lazily into local state — so it's invisible to
+// the parent's pick prop).
+function arePropsEqual(prev: { pick: Pick }, next: { pick: Pick }): boolean {
+  const a = prev.pick;
+  const b = next.pick;
+  if (a === b) return true;                  // referential — fast path
+  if (a.id !== b.id) return false;
+  // Numeric fields the card paints
+  if (a.lock_score !== b.lock_score) return false;
+  if (a.edge_percent !== b.edge_percent) return false;
+  if (a.win_probability !== b.win_probability) return false;
+  if (a.implied_probability !== b.implied_probability) return false;
+  if (a.american_odds !== b.american_odds) return false;
+  if (a.lock_score_v2 !== b.lock_score_v2) return false;
+  if (a.lock_score_peak !== b.lock_score_peak) return false;
+  // String / enum fields
+  if (a.grade !== b.grade) return false;
+  if (a.market !== b.market) return false;
+  if (a.event !== b.event) return false;
+  if (a.event_time !== b.event_time) return false;
+  if (a.league !== b.league) return false;
+  if (a.tier_v2 !== b.tier_v2) return false;
+  // Boolean flags
+  if (a.is_apex !== b.is_apex) return false;
+  if (a.elite_player !== b.elite_player) return false;
+  if (a.pinned !== b.pinned) return false;
+  if ((a as any).is_extra !== (b as any).is_extra) return false;
+  if ((a as any).is_model_only !== (b as any).is_model_only) return false;
+  // pick_rationale: identity check is enough — backend serializer
+  // re-emits the dict on every refresh, so a NEW object means new
+  // content. We don't need a deep compare.
+  if ((a as any).pick_rationale !== (b as any).pick_rationale) return false;
+  return true;
+}
+
+export const LockPickCard = React.memo(LockPickCardImpl, arePropsEqual);
 
 const styles = StyleSheet.create({
   card: {
