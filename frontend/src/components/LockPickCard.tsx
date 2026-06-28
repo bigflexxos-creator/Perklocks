@@ -364,6 +364,177 @@ export function LockPickCard({ pick }: { pick: Pick }) {
                 </View>
               )}
 
+              {/* ── MLB Splits table — vs LHP/RHP for the batter,
+                   vs LHB/RHB for the pitcher. Side that matters in this
+                   matchup is bolded based on the opposing hand. */}
+              {rationale!.splits && (
+                (() => {
+                  const sp = rationale!.splits!;
+                  const m = rationale!.matchup || {};
+                  const pH = (m.pitcher_hand || "").toUpperCase().charAt(0);
+                  const bH = (m.batter_hand || "").toUpperCase().charAt(0);
+                  // The batter sees the pitcher's hand → that's the split
+                  // that matters for the batter. Vice versa for the pitcher.
+                  const batterVsActiveHand = pH === "L"
+                    ? sp.batter_vs_lhp_avg
+                    : pH === "R"
+                      ? sp.batter_vs_rhp_avg
+                      : null;
+                  const pitcherVsActiveHand = bH === "L"
+                    ? sp.pitcher_vs_lhb_avg
+                    : bH === "R"
+                      ? sp.pitcher_vs_rhb_avg
+                      : bH === "S"
+                        // Switch-hitter takes the opposite-side split
+                        ? (pH === "L" ? sp.pitcher_vs_rhb_avg : sp.pitcher_vs_lhb_avg)
+                        : null;
+                  const hasAny =
+                    sp.batter_vs_lhp_avg != null ||
+                    sp.batter_vs_rhp_avg != null ||
+                    sp.pitcher_vs_lhb_avg != null ||
+                    sp.pitcher_vs_rhb_avg != null;
+                  if (!hasAny) return null;
+                  const cell = (v: number | null | undefined, isActive: boolean) => (
+                    <Text
+                      style={[
+                        styles.whySplitCell,
+                        isActive && styles.whySplitCellActive,
+                      ]}
+                    >
+                      {v == null ? "—" : v.toFixed(3).replace(/^0/, "")}
+                    </Text>
+                  );
+                  return (
+                    <View style={styles.whySection}>
+                      <Text style={styles.whySectionLabel}>SPLITS · vs HAND</Text>
+                      <View style={styles.whySplitRow}>
+                        <Text style={styles.whySplitLabel}>Batter avg</Text>
+                        <View style={styles.whySplitCellsRow}>
+                          <Text style={styles.whySplitColTag}>vs LHP</Text>
+                          {cell(sp.batter_vs_lhp_avg, pH === "L")}
+                          <Text style={styles.whySplitColTag}>vs RHP</Text>
+                          {cell(sp.batter_vs_rhp_avg, pH === "R")}
+                        </View>
+                      </View>
+                      <View style={styles.whySplitRow}>
+                        <Text style={styles.whySplitLabel}>Pitcher BAA</Text>
+                        <View style={styles.whySplitCellsRow}>
+                          <Text style={styles.whySplitColTag}>vs LHB</Text>
+                          {cell(sp.pitcher_vs_lhb_avg, bH === "L" || (bH === "S" && pH === "R"))}
+                          <Text style={styles.whySplitColTag}>vs RHB</Text>
+                          {cell(sp.pitcher_vs_rhb_avg, bH === "R" || (bH === "S" && pH === "L"))}
+                        </View>
+                      </View>
+                      {batterVsActiveHand != null && pitcherVsActiveHand != null && (
+                        <Text style={styles.whySplitHint}>
+                          This matchup: batter hits{" "}
+                          <Text style={styles.whySplitHintBold}>
+                            {batterVsActiveHand.toFixed(3).replace(/^0/, "")}
+                          </Text>{" "}
+                          vs {pH}HP · pitcher allows{" "}
+                          <Text style={styles.whySplitHintBold}>
+                            {pitcherVsActiveHand.toFixed(3).replace(/^0/, "")}
+                          </Text>{" "}
+                          to {bH}HB
+                        </Text>
+                      )}
+                    </View>
+                  );
+                })()
+              )}
+
+              {/* ── Pitcher quality (ERA / WHIP / K/9 / BB/9 / H/9) */}
+              {rationale!.pitcher_quality && (
+                (() => {
+                  const pq = rationale!.pitcher_quality!;
+                  const chips: { label: string; v: number | null | undefined; fmt: (x: number) => string; ok: (x: number) => boolean }[] = [
+                    { label: "ERA",  v: pq.era,      fmt: (x) => x.toFixed(2), ok: (x) => x < 3.50 },
+                    { label: "WHIP", v: pq.whip,     fmt: (x) => x.toFixed(2), ok: (x) => x < 1.20 },
+                    { label: "K/9",  v: pq.k_per_9,  fmt: (x) => x.toFixed(1), ok: (x) => x > 9.0 },
+                    { label: "BB/9", v: pq.bb_per_9, fmt: (x) => x.toFixed(1), ok: (x) => x < 3.0 },
+                    { label: "H/9",  v: pq.h_per_9,  fmt: (x) => x.toFixed(1), ok: (x) => x < 8.0 },
+                  ].filter((c) => c.v != null && !isNaN(c.v as number));
+                  if (chips.length === 0) return null;
+                  return (
+                    <View style={styles.whySection}>
+                      <Text style={styles.whySectionLabel}>PITCHER QUALITY</Text>
+                      <View style={styles.whyPqRow}>
+                        {chips.map((c) => (
+                          <View
+                            key={c.label}
+                            style={[
+                              styles.whyPqChip,
+                              c.ok(c.v as number)
+                                ? styles.whyPqChipGood
+                                : styles.whyPqChipBad,
+                            ]}
+                          >
+                            <Text style={styles.whyPqChipLabel}>{c.label}</Text>
+                            <Text
+                              style={[
+                                styles.whyPqChipVal,
+                                {
+                                  color: c.ok(c.v as number) ? "#FCA5A5" : "#86EFAC",
+                                  // Good pitcher = bad for the batter (red).
+                                  // Bad pitcher = good for the batter (green).
+                                },
+                              ]}
+                            >
+                              {c.fmt(c.v as number)}
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
+                    </View>
+                  );
+                })()
+              )}
+
+              {/* ── Engine multipliers (platoon / pitcher / park / form / home-away) */}
+              {rationale!.multipliers && (
+                (() => {
+                  const ms = rationale!.multipliers!;
+                  const order: { key: string; label: string }[] = [
+                    { key: "platoon",        label: "Platoon" },
+                    { key: "pitcher_quality", label: "Pitcher" },
+                    { key: "park",           label: "Park" },
+                    { key: "recent_form",    label: "Form" },
+                    { key: "home_away",      label: "Home/Away" },
+                  ];
+                  const rows = order
+                    .map((r) => ({ ...r, v: ms[r.key] }))
+                    .filter((r) => typeof r.v === "number" && !isNaN(r.v));
+                  if (rows.length === 0) return null;
+                  return (
+                    <View style={styles.whySection}>
+                      <Text style={styles.whySectionLabel}>MODEL ADJUSTMENTS</Text>
+                      <View style={styles.whyMultRow}>
+                        {rows.map((r) => {
+                          const pct = ((r.v as number) - 1) * 100;
+                          const isUp = pct > 0.5;
+                          const isDown = pct < -0.5;
+                          return (
+                            <View key={r.key} style={styles.whyMultChip}>
+                              <Text style={styles.whyMultLabel}>{r.label}</Text>
+                              <Text
+                                style={[
+                                  styles.whyMultVal,
+                                  isUp && { color: COLORS.neonGreen },
+                                  isDown && { color: "#FCA5A5" },
+                                ]}
+                              >
+                                {pct >= 0 ? "+" : ""}
+                                {pct.toFixed(1)}%
+                              </Text>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  );
+                })()
+              )}
+
               {(rationale!.evidence?.length ?? 0) > 0 && (
                 <View style={styles.whySection}>
                   <Text style={styles.whySectionLabel}>WHY WE LIKE IT</Text>
@@ -818,6 +989,128 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.05)",
     borderWidth: 1,
     borderColor: COLORS.borderDefault,
+  },
+
+  // ── MLB Splits table (vs LHP/RHP, vs LHB/RHB) ─────────────────
+  whySplitRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 3,
+  },
+  whySplitLabel: {
+    color: COLORS.textMuted,
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.4,
+    minWidth: 78,
+  },
+  whySplitCellsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  whySplitColTag: {
+    color: COLORS.textMuted,
+    fontSize: 9,
+    fontWeight: "700",
+    letterSpacing: 0.6,
+  },
+  whySplitCell: {
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    fontWeight: "700",
+    fontVariant: ["tabular-nums"],
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 3,
+    minWidth: 44,
+    textAlign: "center",
+  },
+  whySplitCellActive: {
+    color: COLORS.voltBlue,
+    backgroundColor: COLORS.voltBlue + "14",
+    fontWeight: "900",
+  },
+  whySplitHint: {
+    color: COLORS.textMuted,
+    fontSize: 10.5,
+    fontStyle: "italic",
+    marginTop: 4,
+    lineHeight: 14,
+  },
+  whySplitHintBold: {
+    color: COLORS.voltBlue,
+    fontWeight: "900",
+    fontStyle: "normal",
+    fontVariant: ["tabular-nums"],
+  },
+
+  // ── Pitcher Quality chips (ERA / WHIP / K/9 / BB/9 / H/9) ──────
+  whyPqRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  whyPqChip: {
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 4,
+    borderWidth: 1,
+    minWidth: 52,
+    alignItems: "center",
+  },
+  whyPqChipGood: {
+    // Good pitcher → bad for batter → red border
+    borderColor: "rgba(252, 165, 165, 0.45)",
+    backgroundColor: "rgba(252, 165, 165, 0.08)",
+  },
+  whyPqChipBad: {
+    // Bad pitcher → good for batter → green border
+    borderColor: "rgba(134, 239, 172, 0.45)",
+    backgroundColor: "rgba(134, 239, 172, 0.08)",
+  },
+  whyPqChipLabel: {
+    color: COLORS.textMuted,
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.5,
+  },
+  whyPqChipVal: {
+    fontSize: 12,
+    fontWeight: "900",
+    fontVariant: ["tabular-nums"],
+    marginTop: 1,
+  },
+
+  // ── Engine Multipliers (platoon, pitcher, park, form, home/away) ──
+  whyMultRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  whyMultChip: {
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 4,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: 1,
+    borderColor: COLORS.borderDefault,
+    alignItems: "center",
+    minWidth: 60,
+  },
+  whyMultLabel: {
+    color: COLORS.textMuted,
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.5,
+  },
+  whyMultVal: {
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    fontWeight: "900",
+    fontVariant: ["tabular-nums"],
+    marginTop: 1,
   },
   whySection: { gap: 3 },
   whySectionLabel: {
