@@ -192,7 +192,7 @@ async def validate_and_heal(db) -> dict:
                 if _edge_now < 0:
                     p["edge_percent"] = 0.0
                     p["edge_zeroed_reason"] = "model_only_no_real_book"
-                    updates += 1
+                    counts["fixed_edge"] += 1
             # ── ANCHOR CARVE-OUTS ─────────────────────────────────────────
             # Two pick categories whose lock_score is intentionally NOT a
             # direct function of factors+win_prob — re-running the generic
