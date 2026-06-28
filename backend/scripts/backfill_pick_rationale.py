@@ -74,10 +74,11 @@ async def main() -> int:
     enriched = 0
     blocked = 0
     skipped = 0
+    mlb_intel = 0
     seen = 0
 
     async def flush(batch: list[dict]) -> None:
-        nonlocal enriched, blocked, skipped
+        nonlocal enriched, blocked, skipped, mlb_intel
         if not batch:
             return
         # Run the in-memory enricher on the batch
@@ -85,6 +86,7 @@ async def main() -> int:
         enriched += counts.get("enriched", 0)
         blocked += counts.get("blocked_inactive", 0)
         skipped += counts.get("skipped_team_pick", 0)
+        mlb_intel += counts.get("mlb_intel", 0)
         # Persist each pick's new rationale + validation flags.
         for pick in batch:
             update: dict[str, Any] = {}
@@ -116,6 +118,7 @@ async def main() -> int:
     print(f"  enriched      : {enriched}")
     print(f"  blocked inactive: {blocked}")
     print(f"  team picks    : {skipped}")
+    print(f"  MLB intel deep : {mlb_intel}")
     return 0
 
 

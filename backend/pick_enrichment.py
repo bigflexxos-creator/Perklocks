@@ -62,7 +62,11 @@ def _extract_player_name(pick: dict) -> Optional[str]:
     market = (pick.get("market") or "")
     for sep in (" - ", " Over ", " Under ", " Anytime ", " To Score", " To Record"):
         if sep in market:
-            return market.split(sep, 1)[0].strip()
+            raw = market.split(sep, 1)[0].strip()
+            # Strip trailing "(BAL)" / "(NYY)" team-tag suffix that MLB
+            # markets carry — keeps the resolver lookup clean.
+            import re as _re
+            return _re.sub(r"\s*\([A-Z]{2,4}\)\s*$", "", raw).strip()
     return None
 
 
@@ -347,6 +351,23 @@ def _run_mlb_intel(picks: list[dict]) -> int:
         return sum(1 for r in results if r)
 
     try:
+        # If we're already inside a running event loop (the normal case
+        # when pick_enrichment is called from the async refresh handler),
+        # spinning up a nested loop fails with "Cannot run the event
+        # loop while another loop is running". Run on a worker thread
+        # so it gets its own asyncio.run() context.
+        import concurrent.futures
+        try:
+            import asyncio as _asyncio
+            _asyncio.get_running_loop()
+            inside_loop = True
+        except RuntimeError:
+            inside_loop = False
+        if inside_loop:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                future = ex.submit(lambda: asyncio.run(_all()))
+                return future.result(timeout=120)
+        # No running loop — original sync path works.
         loop = asyncio.new_event_loop()
         try:
             return loop.run_until_complete(_all())
