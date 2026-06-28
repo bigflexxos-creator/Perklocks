@@ -72,56 +72,38 @@ def _extract_player_name(pick: dict) -> Optional[str]:
 
 # ─── Rationale builder ──────────────────────────────────────────────
 def _build_team_rationale(pick: dict, sport: Optional[str]) -> dict:
-    """Build a minimal rationale for TEAM-LEVEL picks (Tennis games totals,
-    MLB Moneyline, Soccer 1X2, NFL spread, etc.) so the LockPickCard's
-    "Why this pick?" toggle has something to render. Without this, the
-    toggle silently disappears on totals/spreads and users see an
-    inconsistent UX across sports."""
-    sport = sport or _detect_sport(pick) or ""
-    market = pick.get("market") or ""
-    event = pick.get("event") or ""
-    wp = pick.get("win_probability")
-    edge = pick.get("edge_percent")
-    rationale: dict = {
+    """Build a sport-specific rationale for TEAM-LEVEL picks (MLB ML/RL,
+    Soccer 1X2, NBA/NFL spreads, Tennis totals, etc.).
+
+    HARD RULE (2026-06-28, user feedback "Why this pick is still generic"):
+    NEVER emit generic boilerplate like:
+      • "MLB · Spread: model 69% confidence"
+      • "⚾ MLB: Pick · Event"
+      • "📉 Longshot — model gives only X% win prob"
+    These are not evidence — they restate what the card header already
+    shows and degrade trust. The frontend's `hasRationale` check (in
+    LockPickCard.tsx) hides the "Why this pick?" toggle entirely when
+    summary + evidence + concerns are all empty, so returning an empty
+    rationale produces a CLEAN card without a misleading toggle.
+
+    For now we return a stub. Sport-specific team rationale (e.g. MLB
+    pitcher matchup from `mlb_matchup_resolver_cache`, soccer xG-vs-xGA,
+    NFL line trends) is generated async downstream in
+    `services/sport_rationale.build_sport_specific` and merged in via
+    the deep enrichment loop — that builder DOES emit real, factual
+    bullets (e.g. "⚾ Red Sox: facing Gerrit Cole today — opportunity
+    to hit a rated arm"). If that pass doesn't find any real signal,
+    the toggle stays hidden, which is the correct UX.
+    """
+    return {
         "summary": "",
         "data_source": pick.get("source") or "model",
         "evidence": [],
         "concerns": [],
-        "model_win_prob_pct": wp,
-        "edge_percent": edge,
+        "model_win_prob_pct": pick.get("win_probability"),
+        "edge_percent": pick.get("edge_percent"),
         "lock_score": pick.get("lock_score"),
     }
-    sport_label = {
-        "mlb": "MLB", "nba": "NBA", "nfl": "NFL", "cfb": "CFB",
-        "tennis": "Tennis", "soccer": "Soccer", "ufc": "UFC", "nhl": "NHL",
-    }.get(sport, (sport or "Pick").upper())
-    sport_emoji = {
-        "mlb": "⚾", "nba": "🏀", "nfl": "🏈", "cfb": "🏈",
-        "tennis": "🎾", "soccer": "⚽", "ufc": "🥊", "nhl": "🏒",
-    }.get(sport, "🎯")
-    if event:
-        rationale["evidence"].append(
-            f"{sport_emoji} {sport_label}: {market} · {event}"
-        )
-    elif market:
-        rationale["evidence"].append(
-            f"{sport_emoji} {sport_label}: {market}"
-        )
-    if isinstance(wp, (int, float)) and wp <= 30:
-        rationale["concerns"].append(
-            f"📉 Longshot — model gives only {wp:.1f}% win prob"
-        )
-    if isinstance(edge, (int, float)) and edge <= -5.0:
-        rationale["concerns"].append(
-            f"📊 Heavy chalk — negative edge vs market ({edge:.1f}%)"
-        )
-    if isinstance(wp, (int, float)):
-        rationale["summary"] = (
-            f"{sport_label} · {market}: model {wp:.0f}% confidence"
-        )
-    else:
-        rationale["summary"] = f"{sport_label} · {market}"
-    return rationale
 
 
 def _build_rationale(pick: dict, sport: str, name: str) -> dict[str, Any]:
@@ -354,7 +336,8 @@ def enrich_picks_with_active_registry(picks: list[dict]) -> dict[str, int]:
 
     Returns counts: {enriched, blocked_inactive, skipped_team_pick, mlb_intel}.
     """
-    import asyncio, re
+    import asyncio  # noqa: F401
+    import re
     counts = {"enriched": 0, "blocked_inactive": 0, "skipped_team_pick": 0, "mlb_intel": 0}
     try:
         from services import active_registry
