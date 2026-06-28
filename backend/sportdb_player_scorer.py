@@ -697,11 +697,55 @@ async def _picks_for_side(
     defence_mult = min(opp_concede_rate / 1.30, 1.60)
 
     out: list[dict] = []
+    # ── ESPN live active-player filter (user request 2026-06-27) ──
+    # For CSL specifically, ESPN's `chn.1` endpoints give us the
+    # authoritative active roster + leaders. Any candidate whose name
+    # ESPN explicitly marks as INACTIVE (e.g. Guy Mbenza after a transfer)
+    # is dropped here BEFORE we waste a SportDB lookup on them. Unknown
+    # players (not in ESPN cache) pass through — legacy heuristics still
+    # apply so we never accidentally nuke an entire match's pick board.
+    csl_filter_active: Optional["callable"] = None  # type: ignore
+    csl_get_live_form: Optional["callable"] = None  # type: ignore
+    if (comp or "").lower().startswith("china:") or comp == "soccer_china_superleague":
+        try:
+            import csl_espn_live as _csl_live
+            csl_filter_active = _csl_live.is_player_currently_active
+            csl_get_live_form = _csl_live.get_live_form
+        except Exception:
+            csl_filter_active = None
+
     for player in candidates:
+        # ── CSL retired-player block ──
+        if csl_filter_active is not None:
+            verdict = csl_filter_active(
+                _format_player_name(player, None) or player.get("name") or "",
+                team_hint=team_name,
+            )
+            if verdict is False:
+                logger.debug(
+                    "CSL ESPN: dropping inactive player %s (team=%s)",
+                    player.get("name"), team_name,
+                )
+                continue  # ESPN says this player is not active → skip
         rate = await get_player_goal_rate(
             db, player.get("slug") or "", player.get("id") or "",
             comp, season,
         )
+        # ── ESPN-derived form override ──
+        # If ESPN has a current-season scoring rate for this player, prefer
+        # it over SportDB / seed data — ESPN is the most authoritative
+        # source for "what's happening THIS season".
+        if csl_get_live_form is not None:
+            live = csl_get_live_form(
+                _format_player_name(player, rate) or player.get("name") or ""
+            )
+            if live and (live.get("matches") or 0) >= 3 and (live.get("rate_per_match") or 0) > 0:
+                rate = {
+                    "rate_per_match": live["rate_per_match"],
+                    "goals": live["goals"],
+                    "matches": live["matches"],
+                    "source": live["source"],
+                }
         if not rate:
             continue
         base = rate["rate_per_match"]

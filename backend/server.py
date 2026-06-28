@@ -3303,6 +3303,22 @@ async def on_startup():
         logger.info("NBA + NFL + CFB player_db (free ESPN public) armed — daily roster + stats + injuries refresh")
     except Exception as e:
         logger.warning("NBA/NFL/CFB player_db loop failed to start: %s", e)
+
+    # ── CSL ESPN Live (retired-player filter, user-requested 2026-06-27) ─
+    # ESPN's free public soccer endpoints provide the authoritative ACTIVE
+    # roster + current-season top scorers for the Chinese Super League.
+    # We use this to BLOCK retired / transferred-out players (e.g. Guy
+    # Mbenza) from ever landing on a goalscorer pick. Refreshes every 12h.
+    try:
+        import csl_espn_live
+        # Hydrate from MongoDB FIRST so the synth scorer pipeline sees
+        # last-known data before the first network refresh completes.
+        await csl_espn_live.hydrate_from_db(db)
+        # Kick off background refresh loop (idempotent).
+        csl_espn_live.arm_scheduler(db)
+        logger.info("CSL ESPN Live (free public ESPN) armed — 12h cadence, blocks retired players")
+    except Exception as e:
+        logger.warning("CSL ESPN Live loop failed to start: %s", e)
     # ── Tennis ATP Free Player Database (Phase 3, Sackmann mirror) ─
     # Bulk-load 10y of ATP match data from the TML-Database mirror
     # (Sackmann format). One full refresh per week (data upstream
