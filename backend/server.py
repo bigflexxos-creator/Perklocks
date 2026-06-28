@@ -1874,6 +1874,29 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as _ef_err:
         logger.warning("Elite lock-floor clamp failed: %s", _ef_err)
 
+    # ── Universal ESPN-backed pick enrichment ── (2026-06-28)
+    # Runs across ALL sports. Adds `pick_rationale` (structured "show your
+    # work" data) to every player pick, validates NBA + NFL picks against
+    # the `services.active_registry` (drops retired/inactive players),
+    # and merges any sport-specific rationale (e.g. CSL ESPN rank).
+    # User feedback driving this: "ESPN data should be in pipeline for
+    # all sports" + "I want education behind goalscorer, not just random
+    # picks". Picks tagged `validation_block` are dropped before persist.
+    try:
+        from pick_enrichment import enrich_picks_with_active_registry
+        en_counts = enrich_picks_with_active_registry(safe_picks)
+        # Drop inactive-player picks BEFORE persistence.
+        if en_counts.get("blocked_inactive"):
+            safe_picks = [p for p in safe_picks if not p.get("validation_block")]
+        logger.info(
+            "Pick enrichment: %d enriched, %d blocked (inactive), %d skipped (team picks)",
+            en_counts.get("enriched", 0),
+            en_counts.get("blocked_inactive", 0),
+            en_counts.get("skipped_team_pick", 0),
+        )
+    except Exception as _enr_err:
+        logger.warning("Pick enrichment failed (continuing): %s", _enr_err)
+
     if safe_picks:
         # ordered=False already lets pymongo continue past duplicate-key
         # rows, but it STILL raises BulkWriteError at the end, aborting
