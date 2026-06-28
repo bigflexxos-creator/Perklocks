@@ -380,10 +380,27 @@ def _levenshtein_le1(a: str, b: str) -> bool:
 
 
 def is_player_currently_active(name: str, *, team_hint: Optional[str] = None) -> Optional[bool]:
-    """Returns True if ESPN has the player on a CSL roster as Active, False if
-    we have evidence they are INACTIVE (e.g. explicit ESPN active=False, or
-    NOT present anywhere in current CSL roster + scorer indexes), or None
-    when we just don't have a fresh-enough snapshot to decide.
+    """Returns True if ESPN has evidence the player is currently playing in
+    CSL, False only if we have *strong* evidence they are not, or None when
+    data is too stale to decide.
+
+    Evidence model (per user feedback 2026-06-27 — initial pass over-blocked
+    Guy Mbenza who has 9 goals this season despite ESPN core API setting
+    `active: false` on his athlete document; that flag is unreliable):
+
+      ┌──────────────────────────────────────────────────┬──────────┐
+      │ Found in any active CSL roster                   │ → True   │
+      │ Found in season leaders (any goals/assists)      │ → True   │   ← Guy Mbenza
+      │ Tolerant match in either index (Crysan/Cryzan)   │ → True   │
+      │ Not present anywhere in roster or leaders        │ → False  │   ← retired
+      │ Stale snapshot (> DATA_STALE_AFTER)              │ → None   │
+      └──────────────────────────────────────────────────┴──────────┘
+
+    Critically: the ESPN `active` flag on the athlete document is IGNORED.
+    Real-world testing showed it returns `false` for plenty of currently-
+    scoring players (likely an inactive-this-week vs season-retired
+    semantic). The presence of a season-leaders entry is the stronger
+    signal — you only get on that list by actually scoring goals.
     """
     if not name:
         return None
@@ -399,16 +416,14 @@ def is_player_currently_active(name: str, *, team_hint: Optional[str] = None) ->
     for k in _active_index.keys():
         if _name_match(key, k):
             return True
-    # Leader doc evidence — explicit hit OR tolerant match.
-    leader = _scorer_index.get(key)
-    if leader is None:
-        for k, ld in _scorer_index.items():
-            if _name_match(key, k):
-                leader = ld
-                break
-    if leader is not None:
-        return bool(leader.get("active"))
-    # Not present anywhere → not active in CSL.
+    # Leader doc → ACTIVE (presence on the leaderboard implies they've
+    # been scoring this season; the ESPN active flag is unreliable).
+    if key in _scorer_index:
+        return True
+    for k in _scorer_index.keys():
+        if _name_match(key, k):
+            return True
+    # Not present anywhere → considered inactive in CSL.
     return False
 
 
