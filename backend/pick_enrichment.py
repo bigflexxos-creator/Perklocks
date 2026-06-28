@@ -71,6 +71,59 @@ def _extract_player_name(pick: dict) -> Optional[str]:
 
 
 # ─── Rationale builder ──────────────────────────────────────────────
+def _build_team_rationale(pick: dict, sport: Optional[str]) -> dict:
+    """Build a minimal rationale for TEAM-LEVEL picks (Tennis games totals,
+    MLB Moneyline, Soccer 1X2, NFL spread, etc.) so the LockPickCard's
+    "Why this pick?" toggle has something to render. Without this, the
+    toggle silently disappears on totals/spreads and users see an
+    inconsistent UX across sports."""
+    sport = sport or _detect_sport(pick) or ""
+    market = pick.get("market") or ""
+    event = pick.get("event") or ""
+    wp = pick.get("win_probability")
+    edge = pick.get("edge_percent")
+    rationale: dict = {
+        "summary": "",
+        "data_source": pick.get("source") or "model",
+        "evidence": [],
+        "concerns": [],
+        "model_win_prob_pct": wp,
+        "edge_percent": edge,
+        "lock_score": pick.get("lock_score"),
+    }
+    sport_label = {
+        "mlb": "MLB", "nba": "NBA", "nfl": "NFL", "cfb": "CFB",
+        "tennis": "Tennis", "soccer": "Soccer", "ufc": "UFC", "nhl": "NHL",
+    }.get(sport, (sport or "Pick").upper())
+    sport_emoji = {
+        "mlb": "⚾", "nba": "🏀", "nfl": "🏈", "cfb": "🏈",
+        "tennis": "🎾", "soccer": "⚽", "ufc": "🥊", "nhl": "🏒",
+    }.get(sport, "🎯")
+    if event:
+        rationale["evidence"].append(
+            f"{sport_emoji} {sport_label}: {market} · {event}"
+        )
+    elif market:
+        rationale["evidence"].append(
+            f"{sport_emoji} {sport_label}: {market}"
+        )
+    if isinstance(wp, (int, float)) and wp <= 30:
+        rationale["concerns"].append(
+            f"📉 Longshot — model gives only {wp:.1f}% win prob"
+        )
+    if isinstance(edge, (int, float)) and edge <= -5.0:
+        rationale["concerns"].append(
+            f"📊 Heavy chalk — negative edge vs market ({edge:.1f}%)"
+        )
+    if isinstance(wp, (int, float)):
+        rationale["summary"] = (
+            f"{sport_label} · {market}: model {wp:.0f}% confidence"
+        )
+    else:
+        rationale["summary"] = f"{sport_label} · {market}"
+    return rationale
+
+
 def _build_rationale(pick: dict, sport: str, name: str) -> dict[str, Any]:
     """Build a structured rationale for a player-prop pick using whatever
     sources we have for the given sport. Always returns a dict so the
@@ -315,6 +368,14 @@ def enrich_picks_with_active_registry(picks: list[dict]) -> dict[str, int]:
         sport = _detect_sport(pick)
         name = _extract_player_name(pick)
         if not name or not sport:
+            # Team-level pick (no player) — still attach a minimal rationale
+            # so the "Why this pick?" toggle has SOMETHING to show. Without
+            # this, Tennis totals / MLB MLs / Soccer 1X2 lines render with no
+            # toggle at all and users think the feature is broken.
+            try:
+                pick["pick_rationale"] = _build_team_rationale(pick, sport)
+            except Exception as e:
+                logger.debug(f"team rationale build failed: {e}")
             counts["skipped_team_pick"] += 1
             continue
         if active_registry is not None and sport in ("nba", "nfl"):
