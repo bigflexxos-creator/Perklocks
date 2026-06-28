@@ -184,6 +184,30 @@ def _today_str() -> str:
 # spreads/totals/moneyline: no live picks, period.
 _PREGAME_GRACE_SECONDS = 2 * 60
 
+# How long AFTER a game's listed start time we still surface its picks.
+# Player props (Hits, K's, etc.) are bookable through live betting at every
+# major sportsbook, so for in-progress games we keep the picks visible until
+# typical end-of-game. Hard ceiling caps at typical game duration + 30 min
+# safety margin. The `no_bet` flag (set by the settler when MLB Stats API
+# reports `Final`) takes precedence — anything settled disappears immediately
+# regardless of this window.
+#
+# Tunable from `/api/admin/services-runtime` if needed.
+_IN_PLAY_GRACE_BY_SPORT: dict[str, int] = {
+    "MLB":    4 * 3600,    # avg game 3:00, extras can push to 4:00
+    "NBA":    3 * 3600,    # avg 2:15 + halftime + OT margin
+    "NFL":    4 * 3600,    # avg 3:10 + 2-min warnings + commercials
+    "CFB":    4 * 3600,
+    "NHL":    3 * 3600,
+    "Soccer": int(2.5 * 3600),  # 90 min + stoppage + ET/PK
+    "Tennis": 5 * 3600,    # best-of-5 GS matches can run 5+ hours
+    "UFC":    int(1.5 * 3600),
+    "MMA":    int(1.5 * 3600),
+}
+# Default for unknown sports — split the difference. Most pick types settle
+# within 3.5h so this is safer than dropping at +2min.
+_IN_PLAY_GRACE_DEFAULT = int(3.5 * 3600)
+
 
 def _canonicalize_lock_score(pick: dict) -> dict:
     """Promote V2 → primary lock_score at READ time so every endpoint
