@@ -24,7 +24,36 @@ export default function Login() {
       await signIn(email.trim().toLowerCase(), password);
       router.replace("/(tabs)");
     } catch (e: any) {
-      setError(e?.message || "Sign in failed");
+      // CRITICAL (2026-06-28): the backend is behind Cloudflare. When the
+      // origin briefly drops (uvicorn worker reload during a backend code
+      // change, a heavy enrichment loop pegging CPU, etc.) CF returns a
+      // raw HTML "Error 520" page. Our auth client passes the response
+      // body straight through as `e.message`, so the user saw the full
+      // CF page text rendered in red — the screen looked broken even
+      // though their next retry would succeed.
+      // Detect this class of failure and surface a short, accurate,
+      // actionable message instead.
+      const raw = e?.message ? String(e.message) : "";
+      const isCfHiccup =
+        /520|cloudflare|origin web server|could not parse|malformed http/i.test(raw) ||
+        /<html|<!doctype/i.test(raw);
+      const isNetwork =
+        /network request failed|failed to fetch|timeout|aborted/i.test(raw);
+      let msg: string;
+      if (isCfHiccup) {
+        msg = "Connection hiccup — please tap Sign In again. (Server briefly restarting.)";
+      } else if (isNetwork) {
+        msg = "Network error — check your connection and tap Sign In again.";
+      } else if (raw.length > 160) {
+        // Any other absurdly long error (likely raw HTML/server dump) →
+        // truncate so it doesn't dominate the screen.
+        msg = raw.slice(0, 140) + "…";
+      } else if (raw) {
+        msg = raw;
+      } else {
+        msg = "Sign in failed — please try again.";
+      }
+      setError(msg);
     } finally {
       setLoading(false);
     }
