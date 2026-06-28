@@ -3351,7 +3351,7 @@ async def on_startup():
     # Every source funnels into `services.active_registry` which then
     # answers `is_active(sport, name)` for the picks pipeline.
     try:
-        from services import active_registry as _registry, nba_ingest, nfl_ingest
+        from services import active_registry as _registry, nba_ingest, nfl_ingest, soccer_ingest
         await _registry.hydrate_from_db(db)
 
         async def _services_loop():
@@ -3359,11 +3359,12 @@ async def on_startup():
             await asyncio.gather(
                 nba_ingest.loop(db),
                 nfl_ingest.loop(db),
+                soccer_ingest.loop(db),
             )
         asyncio.create_task(_services_loop())
         logger.info(
-            "services/ multi-source ingestion armed — NBA (ESPN+BBR) + "
-            "NFL (ESPN+nfl.com) every 24h, registry hydrated from MongoDB"
+            "services/ multi-source ingestion armed — NBA (ESPN+BBR+nba.com) + "
+            "NFL (ESPN+nfl.com) + Soccer (Understat + ESPN 18 leagues) every 24h"
         )
     except Exception as e:
         logger.warning("services/ ingestion layer failed to start: %s", e)

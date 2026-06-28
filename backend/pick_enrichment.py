@@ -203,40 +203,115 @@ def enrich_picks_with_active_registry(picks: list[dict]) -> dict[str, int]:
       * Marks `validation_block` reasons on picks whose player is
         confirmed INACTIVE — caller may drop these before persistence.
 
-    Returns counts: {enriched, blocked_inactive, skipped_team_pick}.
+    Returns counts: {enriched, blocked_inactive, skipped_team_pick, mlb_intel}.
     """
-    counts = {"enriched": 0, "blocked_inactive": 0, "skipped_team_pick": 0}
+    import asyncio, re
+    counts = {"enriched": 0, "blocked_inactive": 0, "skipped_team_pick": 0, "mlb_intel": 0}
     try:
         from services import active_registry
     except Exception:
         active_registry = None  # type: ignore
 
+    # MLB hit-prop matchup intel — runs synchronously via asyncio.run on a
+    # collected batch so we don't fire one task per pick.
+    mlb_hit_picks: list[dict] = []
     for pick in picks:
         sport = _detect_sport(pick)
         name = _extract_player_name(pick)
         if not name or not sport:
             counts["skipped_team_pick"] += 1
             continue
-
-        # ── Active-roster gate (NBA / NFL only for now) ──
         if active_registry is not None and sport in ("nba", "nfl"):
             verdict = active_registry.is_active(sport, name)
             if verdict is False:
-                # Mark for downstream dropping but never silently delete —
-                # caller decides whether to skip insertion or keep with a
-                # `validation_block` flag for analytics.
                 pick["validation_block"] = "inactive_player"
                 pick["validation_block_reason"] = (
                     f"{name} not found in ESPN active {sport.upper()} roster + season leaders"
                 )
                 counts["blocked_inactive"] += 1
                 continue
-
-        # ── Pick rationale (every player pick) ──
         try:
             pick["pick_rationale"] = _build_rationale(pick, sport, name)
             counts["enriched"] += 1
         except Exception as e:
             logger.debug(f"rationale build failed for {name} ({sport}): {e}")
+        # Queue MLB hit-prop matchups for deep enrichment
+        if sport == "mlb" and re.search(r"hit", (pick.get("market") or ""), re.IGNORECASE):
+            mlb_hit_picks.append(pick)
 
+    if mlb_hit_picks:
+        counts["mlb_intel"] = _run_mlb_intel(mlb_hit_picks)
     return counts
+
+
+def _run_mlb_intel(picks: list[dict]) -> int:
+    """Resolves batter/pitcher IDs and runs the mlb_hitter_intel engine for
+    each MLB hit-prop pick. Attaches the structured rationale dict back
+    onto each pick. Runs the async work inside a fresh event loop because
+    the surrounding `enrich_picks_with_active_registry` is sync."""
+    import asyncio
+    try:
+        from server import db  # noqa: F401  (re-use the running app's mongo handle)
+    except Exception:
+        return 0
+    from services import mlb_hitter_intel, mlb_matchup_resolver
+
+    async def _one(pick: dict) -> bool:
+        name = _extract_player_name(pick)
+        event = pick.get("event") or ""
+        evt_time = pick.get("event_time") or ""
+        if not (name and event and evt_time):
+            return False
+        try:
+            resolved = await mlb_matchup_resolver.resolve_matchup(db, name, event, evt_time)
+            if not resolved:
+                return False
+            m = await mlb_hitter_intel.build_matchup(
+                db,
+                batter_id=resolved["batter_id"],
+                pitcher_id=resolved["pitcher_id"],
+                batter_name=name,
+                pitcher_name=resolved.get("pitcher_name") or "",
+                batter_team=resolved.get("batter_team") or "",
+                pitcher_team=resolved.get("pitcher_team") or "",
+                ballpark=resolved.get("ballpark"),
+                batting_order=resolved.get("batting_order"),
+                is_home=resolved.get("is_home", True),
+            )
+            # Replace the lightweight rationale with the full matchup model
+            pick["pick_rationale"] = m.to_rationale()
+            # Add a market-aware lean (line = 0.5 / 1.5 / 2.5 parsed from market)
+            line = 0.5
+            mlower = (pick.get("market") or "").lower()
+            mlin = __import__("re").search(r"(\d+(?:\.\d+)?)", mlower)
+            if mlin:
+                try:
+                    line = float(mlin.group(1))
+                except Exception:
+                    pass
+            market_p = pick.get("implied_probability")
+            if isinstance(market_p, (int, float)):
+                if market_p > 1.0:
+                    market_p = market_p / 100.0
+                lean = mlb_hitter_intel.lean_and_edge(m, market_p, line=line)
+                pick["pick_rationale"]["lean"] = lean["lean"]
+                pick["pick_rationale"]["edge_pct_points"] = lean["edge_pct_points"]
+                pick["pick_rationale"]["model_prob"] = lean["model_prob"]
+            return True
+        except Exception as e:
+            logger.debug(f"mlb_intel build failed for {name}: {e}")
+            return False
+
+    async def _all():
+        results = await asyncio.gather(*(_one(p) for p in picks), return_exceptions=False)
+        return sum(1 for r in results if r)
+
+    try:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(_all())
+        finally:
+            loop.close()
+    except Exception as e:
+        logger.warning(f"mlb_intel batch failed: {e}")
+        return 0
