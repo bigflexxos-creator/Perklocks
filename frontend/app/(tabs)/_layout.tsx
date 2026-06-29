@@ -31,7 +31,7 @@ export default function TabsLayout() {
   const isWeb = Platform.OS === "web";
 
   return (
-    <View style={{ flex: 1, backgroundColor: "transparent" }}>
+    <View testID="perklocks-tabs-root" nativeID="perklocks-tabs-root" style={{ flex: 1, backgroundColor: "#0a0a0a", overflow: "hidden" }}>
     <Tabs
       screenOptions={{
         headerShown: false,
