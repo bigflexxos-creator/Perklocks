@@ -38,7 +38,43 @@ logger = logging.getLogger("lockscore")
 # Production-safe env loading with sane fallbacks so deployment doesn't
 # crash if env vars aren't set on the production environment.
 _mongo_url = os.environ.get("MONGO_URL") or "mongodb://localhost:27017"
-client = AsyncIOMotorClient(_mongo_url)
+
+# ── CONNECTION POOL HARDENING (2026-06-28) ────────────────────────────
+# Emergent support flagged that the deployed MONGO_URL had
+# `?maxPoolSize=5` appended, while this backend runs 20+ concurrent
+# sports engines (MLB Intel, Soccer pipeline, Player Intelligence,
+# Settlement loop, Validator, Brain, etc.). With a 5-connection ceiling
+# they starve each other → operations queue → /api/picks/today times
+# out on Cloudflare → user sees "picks fail to load/save".
+#
+# We pass explicit pool + timeout kwargs to the Motor client. PyMongo
+# rule: KWARGS take precedence over URI query params, so even if the
+# secret still has `maxPoolSize=5`, the values below win.
+#
+# Tuning rationale:
+#   • maxPoolSize=20  — one connection per concurrent engine, +headroom
+#   • minPoolSize=2   — keep at least 2 warm so the first request after
+#                       idle doesn't pay full TCP+TLS handshake latency
+#   • serverSelectionTimeoutMS=10000 — bail in 10s instead of the 30s
+#                       default; matches our outer 85s middleware budget
+#   • connectTimeoutMS=10000         — same as above for new sockets
+#   • socketTimeoutMS=60000          — heavy aggregations (632-pick
+#                       validator) take 20-40s; 60s gives margin
+#   • waitQueueTimeoutMS=15000       — if all 20 sockets are busy,
+#                       FAIL FAST instead of holding the request open
+#                       indefinitely (the silent-timeout symptom)
+#   • retryWrites=True               — auto-retry one transient write
+client = AsyncIOMotorClient(
+    _mongo_url,
+    maxPoolSize=int(os.environ.get("MONGO_MAX_POOL_SIZE", "20")),
+    minPoolSize=int(os.environ.get("MONGO_MIN_POOL_SIZE", "2")),
+    serverSelectionTimeoutMS=int(os.environ.get("MONGO_SERVER_SEL_TIMEOUT_MS", "10000")),
+    connectTimeoutMS=int(os.environ.get("MONGO_CONNECT_TIMEOUT_MS", "10000")),
+    socketTimeoutMS=int(os.environ.get("MONGO_SOCKET_TIMEOUT_MS", "60000")),
+    waitQueueTimeoutMS=int(os.environ.get("MONGO_WAIT_QUEUE_TIMEOUT_MS", "15000")),
+    retryWrites=True,
+    appname="perklocks-api",
+)
 db = client[os.environ.get("DB_NAME") or "perkslocks_production"]
 
 # ── auth dependency ───────────────────────────────────────────────────
