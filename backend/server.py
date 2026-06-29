@@ -3434,8 +3434,8 @@ async def on_startup():
         _MLB_QUICK_REFRESH_INTERVAL,
         _MLB_WINDOW_START_UTC_HOUR, _MLB_WINDOW_END_UTC_HOUR,
     )
-    asyncio.create_task(_settlement_loop())
-    asyncio.create_task(_weekly_model_tuning_loop())
+    _deferred_task(_settlement_loop,                        DEFER_BASE * 1)
+    _deferred_task(_weekly_model_tuning_loop,               DEFER_BASE * 2)
     # Soccer module: pregame pipeline every 15 min (user choice 3A — no
     # live loop). Try/except so a soccer init failure doesn't break the
     # rest of the backend startup.
@@ -3448,8 +3448,8 @@ async def on_startup():
         await db.soccer_predictions.create_index("fixture_id")
         await db.soccer_predictions.create_index("correct")
         await db.soccer_accuracy.create_index("_id")
-        asyncio.create_task(soccer_pipeline_loop(db))
-        asyncio.create_task(soccer_backfill_loop(db))
+        _deferred_task(lambda: soccer_pipeline_loop(db),     DEFER_BASE * 3)
+        _deferred_task(lambda: soccer_backfill_loop(db),     DEFER_BASE * 3)
         logger.info("Soccer pipeline scheduler armed (15-min pregame loop + 24h backfill loop)")
     except Exception as e:
         logger.warning("Soccer pipeline scheduler not armed: %s", e)
@@ -3463,7 +3463,7 @@ async def on_startup():
         await db.soccer_player_form.create_index("name_canonical")
         await db.soccer_player_form.create_index([("league", 1), ("season", 1)])
         await db.soccer_player_form.create_index([("updated_at", -1)])
-        asyncio.create_task(soccer_player_form_loop(db))
+        _deferred_task(lambda: soccer_player_form_loop(db),  DEFER_BASE * 4)
         logger.info("Soccer Player Form (Understat) armed (12h loop, Top 5 leagues)")
     except Exception as e:
         logger.warning("Soccer Player Form scheduler not armed: %s", e)
@@ -3471,7 +3471,7 @@ async def on_startup():
     # Voids picks for scratched MLB players ~30 min before first pitch.
     try:
         from mlb_lineup import lineup_verifier_loop
-        asyncio.create_task(lineup_verifier_loop(db, _today_str))
+        _deferred_task(lambda: lineup_verifier_loop(db, _today_str), DEFER_BASE * 5)
         logger.info("MLB lineup verifier armed (5-min loop, 30-min pre-game)")
     except Exception as e:
         logger.warning("MLB lineup verifier failed to start: %s", e)
@@ -3480,7 +3480,7 @@ async def on_startup():
     # NRFI or YRFI pick per game when edge >= 4% over fair.
     try:
         from brain.nrfi_engine import nrfi_yrfi_loop
-        asyncio.create_task(nrfi_yrfi_loop(db))
+        _deferred_task(lambda: nrfi_yrfi_loop(db),           DEFER_BASE * 5)
         logger.info("NRFI/YRFI pick generator armed (30-min loop during pregame)")
     except Exception as e:
         logger.warning("NRFI/YRFI loop failed to start: %s", e)
@@ -3610,7 +3610,7 @@ async def on_startup():
     # results page. Runs every 30 min, walks back 3 days.
     try:
         from tennis_extra.settle import tennis_extra_settler_loop
-        asyncio.create_task(tennis_extra_settler_loop(db))
+        _deferred_task(lambda: tennis_extra_settler_loop(db), DEFER_BASE * 6)
         logger.info("Tennis Extra settler armed (30-min loop)")
     except Exception as e:
         logger.warning("Tennis Extra settler failed to start: %s", e)
@@ -3716,8 +3716,8 @@ async def on_startup():
         from closing_line_snapshotter import (
             line_observer_loop, closing_snapshotter_loop,
         )
-        asyncio.create_task(line_observer_loop(db))
-        asyncio.create_task(closing_snapshotter_loop(db))
+        _deferred_task(lambda: line_observer_loop(db),       DEFER_BASE * 7)
+        _deferred_task(lambda: closing_snapshotter_loop(db), DEFER_BASE * 7)
         logger.info("Closing-line snapshotter started (CLV tracking enabled)")
     except Exception as e:
         logger.warning("CLV snapshotter failed to start: %s", e)
