@@ -8,14 +8,15 @@ import { storage } from "@/src/utils/storage";
 //   3. Empty string as last resort (relative URL)
 //
 // ── PUBLISHED-APP PIN OVERRIDE (2026-06-29) ──
-// User report: the production deployed backend at emergent.host is 29x
-// slower than the dev preview, returns Cloudflare 520s, and can't keep
-// up with the picks fetch. As a temporary workaround until Emergent's
-// infra team rebalances the deployed container, we ship the published
-// bundle pinned to the healthy preview URL. Set
-// `FORCE_PREVIEW_BACKEND = false` to restore the previous "use own
-// origin" behavior once the production backend recovers.
-const FORCE_PREVIEW_BACKEND = true;
+// Earlier today the production deployed backend at emergent.host was
+// 29x slower than the dev preview and returning Cloudflare 520s, so we
+// temporarily shipped the published bundle pinned to the healthy
+// preview URL. Emergent support fixed the production backend
+// (maxPoolSize → 20, Grow resource tier, SPORTDB_API_KEY corrected,
+// deferred startup deployed). Production now responds in <500ms.
+// FORCE_PREVIEW_BACKEND is back to FALSE so the published app routes
+// to its proper production backend.
+const FORCE_PREVIEW_BACKEND = false;
 const PINNED_PREVIEW_URL = "https://bet-edge-ai-1.preview.emergentagent.com";
 
 function resolveBaseUrl(): string {
