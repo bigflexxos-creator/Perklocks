@@ -39,7 +39,12 @@ export default function TabsLayout() {
         freezeOnBlur: true,
         lazy: true,
         tabBarStyle: {
-          backgroundColor: "rgba(10,10,10,0.96)",
+          // Solid (no alpha) so inactive-tab content behind the bar can't
+          // bleed through the bottom strip. User report 2026-06-29:
+          // "bottom row making bleed" — the 4% alpha at 0.96 was enough
+          // to silhouette the Locks slate under the tab bar when Profile
+          // was active.
+          backgroundColor: "#0a0a0a",
           borderTopColor: COLORS.borderDefault,
           borderTopWidth: 1,
           height: 64 + insets.bottom,
