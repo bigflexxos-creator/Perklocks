@@ -6,7 +6,20 @@ import { storage } from "@/src/utils/storage";
 //      automatically uses its own production domain (Emergent serves /api/* from
 //      the same origin)
 //   3. Empty string as last resort (relative URL)
+//
+// ── PUBLISHED-APP PIN OVERRIDE (2026-06-29) ──
+// User report: the production deployed backend at emergent.host is 29x
+// slower than the dev preview, returns Cloudflare 520s, and can't keep
+// up with the picks fetch. As a temporary workaround until Emergent's
+// infra team rebalances the deployed container, we ship the published
+// bundle pinned to the healthy preview URL. Set
+// `FORCE_PREVIEW_BACKEND = false` to restore the previous "use own
+// origin" behavior once the production backend recovers.
+const FORCE_PREVIEW_BACKEND = true;
+const PINNED_PREVIEW_URL = "https://bet-edge-ai-1.preview.emergentagent.com";
+
 function resolveBaseUrl(): string {
+  if (FORCE_PREVIEW_BACKEND) return PINNED_PREVIEW_URL;
   const envUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
   if (envUrl && envUrl.trim().length > 0) {
     // Avoid pinning the bundle to the dev preview URL in production builds.
