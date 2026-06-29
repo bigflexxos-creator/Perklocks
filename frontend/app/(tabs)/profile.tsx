@@ -80,7 +80,11 @@ export default function ProfileScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
         <Text style={styles.title}>PROFILE</Text>
 
         <View style={styles.userCard}>
@@ -202,7 +206,20 @@ function BigStat({ label, value, color = COLORS.textPrimary }: { label: string; 
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: "rgba(10,10,10,0.92)" },
-  content: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 30 },
+  // CRITICAL (2026-06-29 v21): the Profile screen's content (~700px tall)
+  // is much shorter than the viewport (~900px). Without an opaque
+  // backgroundColor on the ScrollView itself, the empty area below the
+  // last section was TRANSPARENT — letting the inactive Locks tab (the
+  // last tab visited) bleed through. Locks doesn't have this bug
+  // because its 200+ pick cards always overfill the viewport. Fix:
+  //   • Give the ScrollView its OWN opaque background
+  //   • Give content `flexGrow: 1` so its area extends to fill the
+  //     viewport even when there isn't enough content to overflow
+  scrollView: { flex: 1, backgroundColor: "rgba(10,10,10,0.92)" },
+  content: {
+    paddingHorizontal: 20, paddingTop: 8, paddingBottom: 30,
+    flexGrow: 1,
+  },
   title: { fontSize: 22, fontWeight: "900", color: COLORS.textPrimary, letterSpacing: 3, marginBottom: 18 },
   userCard: {
     flexDirection: "row", alignItems: "center", gap: 14, padding: 18,
