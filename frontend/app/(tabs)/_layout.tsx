@@ -21,16 +21,21 @@ export default function TabsLayout() {
     <Tabs
       screenOptions={{
         headerShown: false,
-        // Default scene background is white on web/Expo Go; force transparent
-        // so the global ImageBackground in app/_layout.tsx shows through every tab.
-        sceneStyle: { backgroundColor: "transparent" },
-        // CRITICAL (2026-06-29): with transparent scenes, INACTIVE tabs were
-        // painting through the active tab → user saw "Profile" content
-        // stacked on top of "Locks" when switching tabs. Two-layer fix:
-        //   1. freezeOnBlur — pauses inactive tab rendering (no overdraw)
-        //   2. lazy — defers mount until first focus (faster first paint)
-        // We keep `unmountOnBlur` OFF so scroll position / form state
-        // survives tab switches; freezing is enough to fix the visual bug.
+        // CRITICAL (2026-06-29 v19): give every tab scene a SOLID dark
+        // background. We previously used `transparent` to let the
+        // global PerkLocks branded ImageBackground (in app/_layout.tsx)
+        // show through every tab, but on the web build this caused
+        // every inactive tab to paint through the active one — user
+        // saw Profile content stacked on top of Locks etc.
+        // The 96 % opacity here:
+        //   • Keeps the brand bg visible at the screen edges & in
+        //     between cards (cards themselves are rgba surfaces),
+        //   • But makes the SCENE itself opaque enough that no
+        //     inactive tab can bleed through.
+        // freezeOnBlur + lazy stay on for native (RN bottom-tabs),
+        // and the solid scene bg covers the web build where freeze
+        // semantics don't apply the same way.
+        sceneStyle: { backgroundColor: "rgba(10,10,10,0.94)" },
         freezeOnBlur: true,
         lazy: true,
         tabBarStyle: {
