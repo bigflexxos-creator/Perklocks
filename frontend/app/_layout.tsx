@@ -79,6 +79,41 @@ export default function RootLayout() {
     };
   }, [bgUri]);
 
+  // CRITICAL (2026-06-29 v26): React Navigation v7's bottom-tab navigator on
+  // web marks INACTIVE tab scenes with `aria-hidden="true"` but does NOT
+  // visually hide them — they stay `display: flex` and `visibility: visible`,
+  // so they paint THROUGH the active scene (user reported "screens jumble
+  // together" / "bleeding"). `freezeOnBlur`, `unmountOnBlur` (removed in v7),
+  // and opaque sceneStyle backgrounds all failed because RN-Web's stacking
+  // contexts let translucent rgba pixels bleed regardless.
+  //
+  // Surgical fix: inject ONE CSS rule that hides any element with
+  // `aria-hidden="true"` ONLY inside the tabs navigator (scoped via the
+  // `#perklocks-tabs-root` nativeID set on the wrapping View in
+  // `app/(tabs)/_layout.tsx`). We deliberately do NOT touch aria-hidden
+  // elsewhere, because the Stack navigator also marks the inactive
+  // `(tabs)` route group as aria-hidden during `(auth)/login →
+  // (tabs)/index` transitions — a broader rule would keep the tabs DOM
+  // permanently hidden after login (regression observed 2026-06-29).
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    const styleEl = document.createElement("style");
+    styleEl.setAttribute("data-perklocks-tab-fix", "v26");
+    styleEl.innerHTML = `
+      /* Hide inactive tab scenes (react-navigation v7 web) so they cannot
+         bleed through the active scene's transparent layers. Scoped to
+         the tabs root so we don't break Stack-level aria-hidden during
+         auth → tabs transitions. */
+      #perklocks-tabs-root [aria-hidden="true"] {
+        display: none !important;
+      }
+    `;
+    document.head.appendChild(styleEl);
+    return () => {
+      styleEl.remove();
+    };
+  }, []);
+
   // Run the cache buster BEFORE any provider mounts so the BetSlipContext
   // hydrates from a clean slate when a data-version bump occurs. This is
   // what kills the "Marozsan 41-6" / other stale-pick artifacts that get
