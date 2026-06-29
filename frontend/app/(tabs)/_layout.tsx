@@ -1,5 +1,5 @@
 import React, { useEffect } from "react";
-import { View } from "react-native";
+import { View, Platform } from "react-native";
 import { Tabs, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -15,6 +15,20 @@ export default function TabsLayout() {
   useEffect(() => {
     if (!loading && !user) router.replace("/(auth)/login");
   }, [loading, user]);
+
+  // CRITICAL (2026-06-29 v24): on react-native-web, ALL tab screens
+  // render into the DOM simultaneously with `display:block` and the
+  // active one painted on top. `freezeOnBlur` only freezes the React
+  // render tree, not the DOM — so the inactive tabs are still visible
+  // through any non-100%-opaque pixel. Even with our solid backgrounds,
+  // sub-pixel anti-aliasing + the Emergent preview chrome was letting
+  // multiple tabs (Locks + Rollover + Parlay) all show through at once.
+  // The bulletproof fix on web is `unmountOnBlur: true` — inactive tabs
+  // are physically REMOVED from the DOM tree, so they literally cannot
+  // bleed through anything. We keep this off on native (iOS/Android)
+  // because there freezeOnBlur is enough AND we want to preserve scroll
+  // position / form state across tab switches.
+  const isWeb = Platform.OS === "web";
 
   return (
     <View style={{ flex: 1, backgroundColor: "transparent" }}>
@@ -36,7 +50,10 @@ export default function TabsLayout() {
         // and the solid scene bg covers the web build where freeze
         // semantics don't apply the same way.
         sceneStyle: { backgroundColor: "rgba(10,10,10,0.94)" },
+        // freezeOnBlur is enough on native; on web we need to actually
+        // unmount inactive tabs (see comment above on `isWeb`).
         freezeOnBlur: true,
+        unmountOnBlur: isWeb,
         lazy: true,
         tabBarStyle: {
           // Solid (no alpha) so inactive-tab content behind the bar can't
