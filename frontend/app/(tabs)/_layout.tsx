@@ -24,6 +24,15 @@ export default function TabsLayout() {
         // Default scene background is white on web/Expo Go; force transparent
         // so the global ImageBackground in app/_layout.tsx shows through every tab.
         sceneStyle: { backgroundColor: "transparent" },
+        // CRITICAL (2026-06-29): with transparent scenes, INACTIVE tabs were
+        // painting through the active tab → user saw "Profile" content
+        // stacked on top of "Locks" when switching tabs. Two-layer fix:
+        //   1. freezeOnBlur — pauses inactive tab rendering (no overdraw)
+        //   2. lazy — defers mount until first focus (faster first paint)
+        // We keep `unmountOnBlur` OFF so scroll position / form state
+        // survives tab switches; freezing is enough to fix the visual bug.
+        freezeOnBlur: true,
+        lazy: true,
         tabBarStyle: {
           backgroundColor: "rgba(10,10,10,0.96)",
           borderTopColor: COLORS.borderDefault,
