@@ -580,11 +580,29 @@ async def _settle_group(cx, db, sport: str, date_str: str, batch: list[dict], co
 
     # Resolve game lookups once.
     if sport == "MLB":
+        # CRITICAL (2026-06-29): The pick's event_time is UTC. A 8 PM ET game
+        # has UTC date = next day (00:16 UTC), but MLB Stats API files the
+        # schedule under the *local* US calendar date. The original code
+        # only fell back to date-1 when the primary date returned ZERO games
+        # — but a busy slate of late games means date `D` always returns
+        # SOME games (other matchups happening that UTC date), so the
+        # fallback never fires and every late ET game (Cardinals @ Royals,
+        # Yankees, Mets late-slates, Dodgers/Giants/Padres) stays pending
+        # forever. Fix: ALWAYS merge both `date_str` and `date_str - 1`
+        # so cross-midnight games are found regardless of which date their
+        # other games happen to fall on.
         games = await _mlb_games_on(cx, date_str)
-        # also try the day before, since some games end after midnight UTC
-        if not games:
+        try:
             prev = (datetime.fromisoformat(date_str) - timedelta(days=1)).strftime("%Y-%m-%d")
-            games = await _mlb_games_on(cx, prev)
+            prev_games = await _mlb_games_on(cx, prev)
+            # Dedupe by gamePk (same game won't appear in both responses but
+            # be defensive).
+            seen = {g.get("gamePk") for g in games}
+            for g in prev_games:
+                if g.get("gamePk") not in seen:
+                    games.append(g)
+        except Exception as e:
+            logger.warning("MLB prev-day fetch failed for %s: %s", date_str, e)
         boxscores: dict[int, dict] = {}
         for p in batch:
             stat_key = _stat_key_for_market(p["market"] or "")
@@ -662,19 +680,28 @@ async def _settle_group(cx, db, sport: str, date_str: str, batch: list[dict], co
         ]
         events: list[dict] = []
         event_league_map: dict[str, str] = {}  # event_id → league code
+        # CRITICAL (2026-06-29): UTC date drift — a 8 PM ET game has UTC date
+        # = next day. Always check BOTH `date_str` and `date_str - 1` so
+        # cross-midnight European/South American matches are settled.
+        try:
+            prev_str = (datetime.fromisoformat(date_str) - timedelta(days=1)).strftime("%Y-%m-%d")
+            date_candidates = [date_str, prev_str]
+        except Exception:
+            date_candidates = [date_str]
         for sl in soccer_leagues:
             sport_path, league = sl.split("/", 1)
-            try:
-                ev = await _espn_scoreboard(cx, sport_path, league, date_str)
-                if ev:
-                    for e in ev:
-                        eid = str(e.get("id") or "")
-                        if eid and eid not in event_league_map:
-                            event_league_map[eid] = league
-                    events.extend(ev)
-            except Exception:
-                pass
-            await asyncio.sleep(0.05)  # 33 leagues @ 0.05s = 1.6s overhead, ESPN tolerates this
+            for d in date_candidates:
+                try:
+                    ev = await _espn_scoreboard(cx, sport_path, league, d)
+                    if ev:
+                        for e in ev:
+                            eid = str(e.get("id") or "")
+                            if eid and eid not in event_league_map:
+                                event_league_map[eid] = league
+                                events.append(e)
+                except Exception:
+                    pass
+                await asyncio.sleep(0.04)
         summaries: dict[str, dict] = {}
         for p in batch:
             stat_key = _stat_key_for_market(p["market"] or "")
@@ -749,11 +776,23 @@ async def _settle_group(cx, db, sport: str, date_str: str, batch: list[dict], co
     if not sport_path:
         counts["skipped"] += len(batch)
         return
-    events = await _espn_scoreboard(cx, sport_path, league, date_str)
-    if not events:
-        # Try previous day for late-night games (UTC drift).
-        prev = (datetime.fromisoformat(date_str) - timedelta(days=1)).strftime("%Y-%m-%d")
-        events = await _espn_scoreboard(cx, sport_path, league, prev)
+    # CRITICAL (2026-06-29): UTC date drift — same fix as MLB / Soccer.
+    # Always pull BOTH `date_str` and `date_str - 1` so late-night ET games
+    # (NBA West Coast 10 PM PT, NHL late starts, NFL Monday Night)
+    # get found regardless of which UTC date they fall under.
+    events: list[dict] = []
+    try:
+        prev_str = (datetime.fromisoformat(date_str) - timedelta(days=1)).strftime("%Y-%m-%d")
+    except Exception:
+        prev_str = None
+    seen_event_ids: set = set()
+    for d in [date_str, prev_str] if prev_str else [date_str]:
+        evs = await _espn_scoreboard(cx, sport_path, league, d) or []
+        for e in evs:
+            eid = str(e.get("id") or "")
+            if eid and eid not in seen_event_ids:
+                seen_event_ids.add(eid)
+                events.append(e)
     summaries: dict[str, dict] = {}
     for p in batch:
         stat_key = _stat_key_for_market(p["market"] or "")
