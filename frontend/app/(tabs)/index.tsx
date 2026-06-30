@@ -636,6 +636,24 @@ export default function LocksScreen() {
       {(sport === "NFL" || filterStore.sports.includes("NFL")) && (
         <NFLIntelligenceSection refreshTick={nflRefreshTick} />
       )}
+      {/* NFL ATD CTA — full-screen Anytime-TD leaderboard with Top 5 /
+          Full Board toggle. Mirrors the MLB NRFI/YRFI CTA pattern.
+          Backed by /api/nfl/atd/leaderboard. */}
+      {sport === "NFL" && (
+        <TouchableOpacity
+          onPress={() => router.push("/atd" as any)}
+          style={styles.nrfiBtn}
+          activeOpacity={0.8}
+          testID="nfl-atd-cta"
+        >
+          <Text style={styles.nrfiIcon}>🏈</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.nrfiTitle}>ATD PICKS</Text>
+            <Text style={styles.nrfiSub}>Top 5 anytime-TD scorers · touches × opp × archetype</Text>
+          </View>
+          <Text style={styles.soccerLabChevron}>›</Text>
+        </TouchableOpacity>
+      )}
       {sport === "MLB" && (
         <TouchableOpacity
           onPress={() => router.push("/nrfi-yrfi" as any)}

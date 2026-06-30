@@ -213,3 +213,14 @@ by td_probability across the slate — no extra flatten needed).
 Jacobs 66.5%, Kyren Williams 63.6%, James Cook 62.5%.
 
 Cache key bumped to `20260630-nfl-atd-chip-v41`.
+
+## NFL ATD — Repositioned as CTA Under NFL Section (2026-06-30)
+Per user: "No it should be under nfl tab".
+
+**Changes:**
+- Removed the `🏈 ATD` pill from `SportFilterBar.tsx` (was a market-row chip)
+- Added a full-width `🏈 ATD PICKS` CTA button in `app/(tabs)/index.tsx`
+  right below the `NFLIntelligenceSection`, only when `sport === "NFL"`,
+  mirroring the existing MLB NRFI/YRFI button style
+- Tap → routes to `/atd` (the Top-5 / Full-Board screen)
+- Cache key bumped to `20260630-nfl-atd-cta-v42`
