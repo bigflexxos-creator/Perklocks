@@ -382,47 +382,29 @@ def _block_reason(pick: dict) -> str | None:
 
 
 def _apply_display_cap(pick: dict) -> None:
-    """Cap the displayed lock_score for goalscorer Anytime picks so they
-    don't appear as `Elite Lock 95` when their true calibrated hit rate
-    is closer to 25-45%."""
-    sport = (pick.get("sport") or "").lower()
-    market = (pick.get("market") or "")
-    if sport != "soccer" or not _SOCCER_ANYTIME_SCORER_RE.search(market):
-        return
-    # ── Elite-player exemption (2026-06-30, code-review HIGH follow-up) ─
-    # The 75-cap was calibrated against the broad Anytime Goal Scorer
-    # universe (~25-45% historical hit rate). Marquee elites like
-    # Mbappé, Haaland, Kane, Messi, Ronaldo, Salah hit Anytime at
-    # 55-75% per match — capping their Lock to 75 mis-prices them and
-    # contradicts the user's reputation-floor design ("Lock score
-    # reflects reputation/history, not raw win prob"). Elites already
-    # get hit by the coherence cap when their edge is negative, so
-    # this exemption only saves +EV elite picks from over-capping.
-    if pick.get("elite_player"):
-        return
-    # NOTE: must cap ALL shadow lock fields (`lock_score_raw`,
-    # `lock_score_peak`) too, otherwise `_canonicalize_lock_score` does
-    # `max(v1, v2, raw, peak)` at read time and silently RESTORES the
-    # uncapped value, defeating this cap. Code-review HIGH 2026-06-30.
-    for field in ("lock_score", "lock_score_v2", "lock_score_raw", "lock_score_peak"):
-        v = pick.get(field)
-        if isinstance(v, (int, float)) and v > ANYTIME_SCORER_DISPLAY_CAP:
-            pick[field] = ANYTIME_SCORER_DISPLAY_CAP
-    # Mark the hard ceiling so canonicalize/elite-floor read-time logic
-    # cannot promote past this cap.
-    existing_ceiling = pick.get("coherence_cap_ceiling")
-    if (not isinstance(existing_ceiling, (int, float))
-            or ANYTIME_SCORER_DISPLAY_CAP < existing_ceiling):
-        pick["coherence_cap_ceiling"] = float(ANYTIME_SCORER_DISPLAY_CAP)
-    # If the tier was "Elite Lock", demote to "Solid Lock" so the
-    # frontend renders the right color/badge.
-    tier = pick.get("tier_v2") or pick.get("tier")
-    if tier and "elite" in str(tier).lower():
-        pick["tier_v2"] = "Solid Lock"
-        pick["tier"] = "Solid Lock"
-    pick["display_capped_reason"] = (
-        "anytime_scorer_calibration_cap"
-    )
+    """RETIRED (2026-06-30, user clarification).
+
+    This rule used to cap soccer Anytime Goal Scorer lock_score at 75
+    on the theory that "Anytime hits 25-45% historically so it
+    shouldn't read as Elite Lock 95". But that conflates Lock Score
+    with win probability — the user's design is explicit:
+
+        Lock Score = the deep-thinking engine's confidence signal.
+        It reflects reputation, market context, model conviction,
+        and historical reliability — NOT raw hit-rate.
+
+    A pick can carry Lock 95-99 even if the model's win probability
+    is 50%, because the engine's conviction comes from signal
+    stacking, not from mirroring win_prob. The Anytime calibration
+    cap was demoting deep-thinking lock scores for both elite AND
+    non-elite picks alike, which silently overrode the engine's
+    output.
+
+    Kept as a no-op so callers don't break; the read-time canonicalize
+    clamp still honours `coherence_cap_ceiling` for any pick that
+    has one set by other paths.
+    """
+    return
 
 
 def _apply_elite_scorer_anchor(pick: dict) -> None:
@@ -499,72 +481,43 @@ def _coerce_float(v):
 
 
 def _apply_lockscore_coherence(pick: dict) -> None:
-    """Hard cap lock_score / lock_score_v2 / lock_score_peak so the card
-    math is internally consistent.
+    """Cap lock_score / lock_score_v2 / lock_score_peak ONLY on the
+    negative-edge guard.
 
-    Three guardrails (2026-06-30 Mbappé bug):
-      1. Negative edge → max lock_score = NEG_EDGE_LOCK_CAP_SOFT (70)
-         If edge ≤ -3% → max = NEG_EDGE_LOCK_CAP_HARSH (60)
-      2. win_probability < 0.65 → max lock_score = LOW_WINPROB_LOCK_CAP (75)
-      3. Soccer goalscorer family w/ player_form.games_logged == 0
-         (no real recent-form data) → max lock_score = NO_FORM_DATA_LOCK_CAP (78)
+    Design note (2026-06-30, user clarification):
+      Lock Score is the DEEP-THINKING ENGINE'S confidence signal — it
+      reflects reputation, market context, model conviction, and
+      historical reliability. It is NOT a win-probability mirror.
 
-    These are NOT generation gates — generation already runs. This caps
-    the DISPLAYED number so the card doesn't lie. Generation will be
-    re-calibrated in a separate pass.
+      An Mbappé Anytime Scorer pick can legitimately carry Lock 99
+      while having a 50-55% raw win probability, because the engine's
+      conviction is anchored in reputation + signal stacking, not
+      raw conversion math. Capping lock_score based on win_probability
+      or games_logged thresholds contradicts that design.
 
-    Elite-player exemption (2026-06-30 follow-up): for `elite_player=True`
-    with POSITIVE edge, skip rules 2 and 3 so marquee scorers
-    (Mbappé / Kane / Haaland / etc.) keep their reputation-floor Lock
-    of 99. Rule 1 (negative edge) STILL fires — we don't want a
-    superstar with a clearly bad number to display Lock 99. Same
-    spirit as `_apply_display_cap`'s elite skip.
+      Two prior cap rules have been RETIRED:
+        ▸ LOW_WINPROB cap (75 when wp < 0.65)
+        ▸ NO_FORM_DATA cap (78 when player_form.games_logged < 1)
+
+      Only the negative-edge cap remains, and it's defense-in-depth:
+      `apply_quality_gate` already HARD-DROPS picks with edge < 0
+      from the board, but the detail endpoint also re-applies this
+      function so cached pick docs that surface via other paths
+      can't show "Elite Lock 99 / Edge -6%".
     """
     edge = _coerce_float(pick.get("edge_percent"))
-    wp = _coerce_float(pick.get("win_probability"))
-    # Some pipelines store win_probability as 0-100, others as 0-1.
-    if wp is not None and wp > 1.5:
-        wp = wp / 100.0
-
-    is_elite = bool(pick.get("elite_player"))
-    has_positive_edge = edge is not None and edge >= 0
 
     cap = None
     reason = None
 
-    # 1. Negative edge → demote. ALWAYS applies, even to elites.
+    # Negative edge → demote (defense-in-depth; primary handling is
+    # the negative_edge_dropped hard filter in apply_quality_gate).
     if edge is not None and edge <= -3:
         cap = NEG_EDGE_LOCK_CAP_HARSH
         reason = "harsh_negative_edge"
     elif edge is not None and edge < 0:
         cap = NEG_EDGE_LOCK_CAP_SOFT
         reason = "negative_edge"
-
-    # 2. Low model win probability → demote.
-    #    SKIP for elite players with positive edge — their reputation
-    #    floor overrides raw model win-prob (e.g. Mbappé Anytime is
-    #    a 50% real-world prob market but reputation says Lock 99).
-    if wp is not None and wp < ELITE_LOCK_FLOOR_PROB:
-        if not (is_elite and has_positive_edge):
-            if cap is None or LOW_WINPROB_LOCK_CAP < cap:
-                cap = LOW_WINPROB_LOCK_CAP
-                reason = "win_prob_below_elite_floor"
-
-    # 3. Soccer scorer with no real recent-form data → demote.
-    #    SKIP for elite players with positive edge — their reputation
-    #    + Understat coverage anchor stands in for the pick-history
-    #    `player_form.games_logged` (which is often 0 because their
-    #    legacy player_profile is sparse, not because they're unknown).
-    sport = (pick.get("sport") or "").lower()
-    market = (pick.get("market") or "")
-    if sport == "soccer" and _SOCCER_GOALSCORER_FAMILY_RE.search(market):
-        pf = pick.get("player_form") or {}
-        games_logged = _coerce_float(pf.get("games_logged"))
-        if games_logged is not None and games_logged < 1:
-            if not (is_elite and has_positive_edge):
-                if cap is None or NO_FORM_DATA_LOCK_CAP < cap:
-                    cap = NO_FORM_DATA_LOCK_CAP
-                    reason = "no_recent_form_data"
 
     if cap is None:
         return
