@@ -380,6 +380,77 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
 
           {whyOpen && (
             <View style={styles.whyBody} testID={`why-body-${pick.id}`}>
+              {/* ── Soccer Goalscorer Matchup Engine v3 — chip row + bullets.
+                   Populated by /app/backend/goalscorer_matchup.py whenever
+                   the pick is a soccer anytime/first/last goal scorer or
+                   to-score-or-assist market. Surfaces the user-spec'd
+                   explainability: matchup grade, starter prob, expected
+                   minutes, role, penalty taker, xG form, and the
+                   bullet-point "why_this_pick" reasoning. */}
+              {(pick as any).matchup_score != null && (
+                <View style={styles.whyMatchupRow}>
+                  <Text
+                    style={[
+                      styles.whyMatchupChip,
+                      styles.matchupGradeChip,
+                      gradeChipStyle(((pick as any).matchup_grade) || "C"),
+                    ]}
+                  >
+                    Matchup {(pick as any).matchup_grade || "C"} · {Number((pick as any).matchup_score).toFixed(0)}
+                  </Text>
+                  {(pick as any).starter_probability != null && (
+                    <Text style={styles.whyMatchupChip}>
+                      👤 {Math.round(Number((pick as any).starter_probability) * 100)}% start
+                    </Text>
+                  )}
+                  {(pick as any).expected_minutes != null && (
+                    <Text style={styles.whyMatchupChip}>
+                      ⏱ {Math.round(Number((pick as any).expected_minutes))}′ exp
+                    </Text>
+                  )}
+                  {!!(pick as any).role && (
+                    <Text style={styles.whyMatchupChip}>{String((pick as any).role)}</Text>
+                  )}
+                  {(pick as any).penalty_taker === true && (
+                    <Text style={styles.whyMatchupChip}>⚽ PK taker</Text>
+                  )}
+                  {(pick as any).xG_form != null && Number((pick as any).xG_form) > 0 && (
+                    <Text style={styles.whyMatchupChip}>
+                      xG/90 {Number((pick as any).xG_form).toFixed(2)}
+                    </Text>
+                  )}
+                </View>
+              )}
+
+              {Array.isArray((pick as any).why_this_pick) &&
+                ((pick as any).why_this_pick as string[]).length > 0 && (
+                  <View style={styles.whyMatchupBullets}>
+                    {((pick as any).why_this_pick as string[])
+                      .slice(0, 6)
+                      .map((b, i) => (
+                        <Text key={`why-${i}`} style={styles.whyMatchupBullet}>
+                          • {b}
+                        </Text>
+                      ))}
+                  </View>
+                )}
+
+              {Array.isArray((pick as any).why_not_this_pick) &&
+                ((pick as any).why_not_this_pick as string[]).length > 0 && (
+                  <View style={styles.whyMatchupBullets}>
+                    {((pick as any).why_not_this_pick as string[])
+                      .slice(0, 4)
+                      .map((b, i) => (
+                        <Text
+                          key={`whynot-${i}`}
+                          style={[styles.whyMatchupBullet, styles.whyMatchupBulletNegative]}
+                        >
+                          ⚠️ {b}
+                        </Text>
+                      ))}
+                  </View>
+                )}
+
               {!!rationale!.summary && (
                 <Text style={styles.whySummary}>{rationale!.summary}</Text>
               )}
@@ -711,6 +782,20 @@ function arePropsEqual(prev: { pick: Pick }, next: { pick: Pick }): boolean {
 }
 
 export const LockPickCard = React.memo(LockPickCardImpl, arePropsEqual);
+
+// ── Matchup-grade chip color helper ─────────────────────────────────
+// Maps the goalscorer matchup engine's A+..F grade to a styles row so
+// the chip lights up green/yellow/red. Returns an empty object when
+// the grade is unknown so React Native ignores it cleanly.
+function gradeChipStyle(grade: string) {
+  const g = (grade || "").toUpperCase();
+  if (g === "A+" || g === "A") return styles.matchupGradeA;
+  if (g === "B+" || g === "B") return styles.matchupGradeB;
+  if (g === "C+" || g === "C") return styles.matchupGradeC;
+  if (g === "D") return styles.matchupGradeD;
+  if (g === "F") return styles.matchupGradeF;
+  return {};
+}
 
 const styles = StyleSheet.create({
   card: {
@@ -1078,6 +1163,48 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.05)",
     borderWidth: 1,
     borderColor: COLORS.borderDefault,
+  },
+  // ── Goalscorer Matchup Engine v3 — header chip ──
+  matchupGradeChip: {
+    fontWeight: "800",
+    letterSpacing: 0.4,
+  },
+  matchupGradeA: {
+    color: "#0a0a0a",
+    backgroundColor: "rgba(74, 222, 128, 0.92)",
+    borderColor: "rgba(74, 222, 128, 0.45)",
+  },
+  matchupGradeB: {
+    color: "#0a0a0a",
+    backgroundColor: "rgba(132, 204, 22, 0.85)",
+    borderColor: "rgba(132, 204, 22, 0.45)",
+  },
+  matchupGradeC: {
+    color: "#0a0a0a",
+    backgroundColor: "rgba(234, 179, 8, 0.85)",
+    borderColor: "rgba(234, 179, 8, 0.45)",
+  },
+  matchupGradeD: {
+    color: "#f5f5f5",
+    backgroundColor: "rgba(249, 115, 22, 0.78)",
+    borderColor: "rgba(249, 115, 22, 0.45)",
+  },
+  matchupGradeF: {
+    color: "#f5f5f5",
+    backgroundColor: "rgba(239, 68, 68, 0.80)",
+    borderColor: "rgba(239, 68, 68, 0.45)",
+  },
+  whyMatchupBullets: {
+    gap: 3,
+    marginTop: 2,
+  },
+  whyMatchupBullet: {
+    color: COLORS.textSecondary,
+    fontSize: 11.5,
+    lineHeight: 16,
+  },
+  whyMatchupBulletNegative: {
+    color: "#fca5a5",
   },
 
   // ── MLB Splits table (vs LHP/RHP, vs LHB/RHB) ─────────────────

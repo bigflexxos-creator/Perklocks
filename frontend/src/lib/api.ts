@@ -150,6 +150,27 @@ export type Pick = {
   // Universal shape across all sports — fields populated vary per source.
   // Rendered as the collapsible audit panel on LockPickCard.
   pick_rationale?: PickRationale;
+
+  // ─── Goalscorer Matchup Engine v3 (soccer goalscorer picks only) ────
+  // Populated by /app/backend/goalscorer_matchup.py at API read time
+  // for any Soccer pick whose market is anytime/first/last goal scorer
+  // or "to score or assist". Renders inside the "Why this pick?" panel.
+  matchup_score?: number;          // 0..100 final score (post-penalty)
+  matchup_raw_score?: number;      // 0..100 pre-penalty
+  matchup_confidence?: number;     // 0..1
+  matchup_grade?: string;          // "A+" .. "F"
+  matchup_subscore?: number;
+  opportunity_subscore?: number;
+  form_subscore?: number;
+  historical_subscore?: number;
+  starter_probability?: number;    // 0..1
+  expected_minutes?: number;       // 0..90
+  role?: string | null;            // "ST" / "FW" / "CAM" etc.
+  penalty_taker?: boolean;
+  xG_form?: number;                // xG per 90
+  market_rank?: number | null;
+  why_this_pick?: string[];
+  why_not_this_pick?: string[];
 };
 
 export type PickRationale = {

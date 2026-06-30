@@ -1304,6 +1304,29 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # Surfacing only the single mathematically-best candidate per team
     # is the user's mandate (2026-06-29).
     picks = _dedupe_goalscorer_per_event(picks, top_n=1)
+    # ── Goalscorer Matchup Engine v3 (2026-06-30) ──────────────────
+    # Matchup-first ranking layer on top of the curated/synth/book-derived
+    # goalscorer picks. Applies the user-mandated weights
+    # (35% matchup / 30% opportunity / 20% form / 15% historical),
+    # confidence penalties (bench / minutes / market disagreement /
+    # missing data), national-team squad gate (Toney filtered for
+    # England if not in current 26-man squad), and explainability fields
+    # (`matchup_score`, `why_this_pick`, `starter_probability`, etc.).
+    #
+    # Picks with low confidence / not in announced squad are DROPPED
+    # at this stage — eliminates the "random scorer names" the user
+    # reported (Gyökeres/Isak/Toney appearing for fixtures they aren't
+    # in). Elite-protected picks (curated CSL synth seeds, etc.) bypass
+    # the drop guard via the `elite_protect` flag.
+    try:
+        from goalscorer_matchup import annotate_picks_async
+        from deps import db as _matchup_db  # async motor handle
+        picks = await annotate_picks_async(picks, _matchup_db, apply_drop=True)
+    except Exception as me:
+        import logging
+        logging.getLogger("lockscore").warning(
+            "Goalscorer matchup engine skipped (continuing): %s", me
+        )
     # ── Canonicalize lock_score (V2 → primary) BEFORE sorting ──────────
     # Without this, the sort uses the legacy V1 lock_score baked at pick
     # creation time. But `_canonicalize_lock_score` (called at the very
