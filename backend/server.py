@@ -3780,6 +3780,35 @@ async def on_startup():
     except Exception as e:
         logger.warning("alt_lines_feed failed to start: %s", e)
 
+    # Second alt-line source: prop-line.com (free Player Props API).
+    # Covers MLB / NBA / NFL / NHL / NCAAF / NCAAB / Tennis / Golf /
+    # 30+ soccer leagues with deep alt-line ladders (batter_total_bases,
+    # batter_2plus_rbis, batter_2plus_home_runs, NFL alt yards, tennis
+    # total_games, etc.) the Odds API doesn't carry for free. Stored in
+    # `propline_alt_lines`; the quality-gate validator unions both
+    # collections at query time and takes best-of-book.
+    try:
+        from propline_feed import (
+            ensure_propline_indices, refresh_propline_alt_lines,
+        )
+
+        async def _propline_loop():
+            try:
+                await ensure_propline_indices(db)
+            except Exception as ie:
+                logger.warning("propline indices failed: %s", ie)
+            while True:
+                try:
+                    await refresh_propline_alt_lines(db)
+                except Exception as re_:
+                    logger.warning("propline refresh error: %s", re_)
+                await asyncio.sleep(480)  # 8 min — free API, slightly tighter than Odds API
+
+        _deferred_task(_propline_loop, DEFER_BASE * 10)
+        logger.info("Propline alt-line feed armed (DK+FD+BetMGM+BetRivers+Bovada, 8-min cadence)")
+    except Exception as e:
+        logger.warning("propline_feed failed to start: %s", e)
+
     logger.info("PerkLocks AI started")
 
 
