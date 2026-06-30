@@ -39,7 +39,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 // ─── Client-baked cache version (Layer 3) ───────────────────────────────────
 // Bump on every CLIENT-side data shape / content change.
 // Format: YYYYMMDD-N  so collisions are obvious in git history.
-export const APP_DATA_VERSION = "20260630-hr-mlb-banner-v37";
+export const APP_DATA_VERSION = "20260630-hr-small-cta-v38";
 
 // ─── Backend-version snapshot (Layer 2 - stored after each /api/version call)
 const CLIENT_VERSION_KEY = "perkslocks.client_data_version";
