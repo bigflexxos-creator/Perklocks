@@ -96,6 +96,23 @@ _MLB_BLOCKED_MARKET_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ── Tennis quality controls (2026-06-29) ──────────────────────────────
+# Backtest over 178 graded tennis picks:
+#   • Odds in -120..-149 (47 picks)        → 44.7% win  (coin-flip)
+#   • Alt-total Over ≥ 33 games (8 picks)  → 25.0% win
+#   • Alt-total Under ≤ 22 games (10 picks) → 30.0% win
+#   • Heavy chalk ≤ -300 (57)              → 86.0% ✅
+#   • Lock-Score 95+ (22)                  → 86.4% ✅
+#   • Alt Over 14.5/16.5 Games (24)        → 91.7% ✅
+# So we keep the winners and prune the coin-flip strip.
+_TENNIS_COIN_FLIP_ODDS = (-149, -120)  # inclusive both — historical 44.7%
+_TENNIS_LONGSHOT_TOTAL_RE = re.compile(
+    r"(over\s+(33|34|35|36|37|38|39|4\d)(\.5)?\s+games"
+    r"|under\s+(22|21|20|19|18|17|16|15|14|13|12|11|10|\d)(\.5)?\s+games"
+    r")",
+    re.IGNORECASE,
+)
+
 
 def _displayed_lock_score(pick: dict) -> float:
     """Match the same V2-promotion logic used by `_canonicalize_picks`:
@@ -144,6 +161,25 @@ def _block_reason(pick: dict) -> str | None:
     #    by single-event variance — a single bunt single torches a YRFI.
     if sport == "mlb" and _MLB_BLOCKED_MARKET_RE.search(market):
         return "mlb_low_winrate_market"
+
+    # 4. Tennis quality controls (2026-06-29):
+    #
+    #    (a) Coin-flip odds band — book_odds in [-149, -120] historically
+    #        win at 44.7% (47 sample), worse than just flipping a coin.
+    #        These are "barely-favorites" priced like locks; the market
+    #        knows something we don't. Drop them.
+    #
+    #    (b) Long-shot game-total alt-lines (Over ≥ 33, Under ≤ 22).
+    #        Historical 25-33% — pure variance, single break of serve
+    #        decides it.
+    if sport == "tennis":
+        odds = pick.get("book_odds")
+        if isinstance(odds, (int, float)):
+            lo, hi = _TENNIS_COIN_FLIP_ODDS
+            if lo <= int(odds) <= hi:
+                return "tennis_coin_flip_odds_band_44pct_historical"
+        if _TENNIS_LONGSHOT_TOTAL_RE.search(market):
+            return "tennis_longshot_alt_total"
 
     return None
 
