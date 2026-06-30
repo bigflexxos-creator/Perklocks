@@ -146,3 +146,19 @@ MLB game with full matchup context.
   (HR-friendly park, HOT 6 HR last 15G, wind out to CF 10 mph, 90°F)
 - Pete Alonso vs HR-prone pitcher — A+ 85.4
 - 15 games / 73 picks / 10.5s build time (subsequent calls < 100ms cached)
+
+## MLB HR — Banner Repositioned (2026-06-30)
+Per user feedback: "Don't want top 5 each game, want top 5 for the day. Want
+under MLB tab" + "should be after Outs Recorded".
+
+**Changes:**
+- Removed the standalone HR tab from the bottom tab bar (`href: null`)
+- Created `/app/frontend/src/components/MLBHRBanner.tsx`
+- Banner mounts INSIDE the Locks tab when `sport === "MLB"`, positioned
+  AFTER the NRFI/YRFI CTA (which sits after the Outs Recorded market)
+- Flattens every game's HR picks, sorts by `hr_score` desc, shows TOP 5
+  across the WHOLE DAY (not 5 per game)
+- Tap drills into full `/hr` slate (the deep-link route is still mounted
+  but hidden from the tab bar)
+
+**Cache version:** `20260630-hr-mlb-banner-v37` (auto-wipes stale clients).
