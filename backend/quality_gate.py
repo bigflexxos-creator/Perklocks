@@ -950,6 +950,33 @@ async def _drop_tennis_synthetic_lines(
         if is_over and float(line) < 11.0:
             stats["tennis_synthetic_lines_dropped"] += 1
             continue
+
+        # ── CHALK-PRICE FLOOR (user-visible bug, 2026-06-30):
+        # Even when the LINE is plausible (e.g. Over 15.5), the
+        # PRICE on our chalk picks (-499, -711, etc.) doesn't exist
+        # on any real book for a tennis alt-game-total. Real-world
+        # references on Bovada/DraftKings/FanDuel:
+        #   ▸ Main total: ~-110 to -150 max
+        #   ▸ 2-rung-below-main alt: ~-200 to -250 max
+        #   ▸ 3+ rungs below: not offered (book closes the market)
+        # PrizePicks "carries" deep alt rungs but pays flat ±0 — so
+        # the listed -499/-711 simply doesn't exist anywhere. Drop
+        # any Tennis Over (Alt) priced at -250 or worse — pure
+        # synthetic chalk.
+        # NOTE: pick odds live under several field names depending on
+        # the generator; check all common locations.
+        price = None
+        for field in ("price", "book_odds", "odds_at_pick", "american_odds", "odds"):
+            v = p.get(field)
+            if v is not None:
+                try:
+                    price = int(v)
+                    break
+                except (ValueError, TypeError):
+                    continue
+        if is_over and price is not None and price <= -250:
+            stats["tennis_synthetic_lines_dropped"] += 1
+            continue
         event = p.get("event") or ""
         event_tokens = _event_tokens_from_pick_event(event)
         if not event_tokens:
