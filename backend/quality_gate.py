@@ -615,11 +615,34 @@ async def validate_against_live_alt_lines(
     the refresh loop hasn't run yet), we DO NOT block any picks —
     blocking everything would dump the app. Instead we log a warning
     and skip validation until the feed populates.
+
+    Coverage-aware (2026-06-30, code-review HIGH):
+      The feed only polls a subset of sports/leagues (Soccer FIFA WC +
+      EPL + UCL, MLB, NFL, Tennis French Open). Picks for OTHER
+      sports/leagues (NBA props, lower-tier soccer like CSL/MLS,
+      non-French-Open tennis) have no chance of matching the feed —
+      previously these were silently dropped as `invalid_alt_mapping`
+      or `market_removed`. Now we build a `(sport, event)` coverage
+      cache up-front and SKIP-NOT-DROP picks outside coverage. Skipped
+      picks are stamped `alt_line_skipped_no_coverage=True` for
+      observability and stay on the board.
+
+    Event-scoped (2026-06-30, code-review HIGH):
+      The match query previously only used (sport, market_key,
+      selection_norm, line) which meant a player's line in game B
+      could validate a pick in game A and stamp the wrong
+      `validated_price`. Now we additionally fuzzy-match by event:
+      pick's `event` string ("Morocco @ Brazil") vs feed row's
+      `event_name` / `home_team` / `away_team`. Picks with no event
+      match in their sport are routed to `event_not_in_feed` (treated
+      as a skip, not a drop).
     """
     from datetime import datetime, timezone, timedelta
     stats = {k: 0 for k in ALT_LINE_ERR}
     stats["passed"] = 0
     stats["skipped_base_market"] = 0
+    stats["skipped_no_coverage"] = 0
+    stats["skipped_event_not_in_feed"] = 0
 
     # Soft-fail: if the feed is dry, skip validation gracefully.
     try:
@@ -633,7 +656,34 @@ async def validate_against_live_alt_lines(
         )
         return picks, {"skipped_feed_empty": len(picks)}
 
+    # ── Build coverage cache (single aggregation pass) ─────────────────
+    # Map: sport (lowercase) → set of normalised event tokens we have
+    # feed data for. Tokens include event_name, home_team, away_team
+    # so the pick's `event` field ("Morocco @ Brazil") can match
+    # whichever form the feed stored.
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_stale_minutes)
+    coverage: dict[str, set[str]] = {}
+    try:
+        async for doc in db.live_alt_lines.find(
+            {"last_seen": {"$gte": cutoff}},
+            {"_id": 0, "sport": 1, "event_name": 1,
+             "home_team": 1, "away_team": 1},
+        ):
+            sport = (doc.get("sport") or "").lower()
+            if not sport:
+                continue
+            bucket = coverage.setdefault(sport, set())
+            for key in ("event_name", "home_team", "away_team"):
+                v = doc.get(key)
+                if v:
+                    bucket.add(_norm_event_token(str(v)))
+    except Exception as _cov_err:
+        import logging
+        logging.getLogger("lockscore").warning(
+            "alt-line coverage cache build failed: %s", _cov_err
+        )
+        coverage = {}
+
     kept: list[dict] = []
     for p in picks:
         if not _is_alt_line_pick(p):
@@ -644,8 +694,41 @@ async def validate_against_live_alt_lines(
         market_text = p.get("market") or ""
         oddsapi_market = _map_market_to_oddsapi_key(market_text)
         if not oddsapi_market:
+            # No mapping for this market — KEEP the pick (was previously
+            # dropped, but markets like Soccer "Double Chance" / NRFI /
+            # Tennis SetSpread aren't in our coverage and shouldn't be
+            # silently erased. Code-review HIGH 2026-06-30.
             stats["invalid_alt_mapping"] += 1
+            p["alt_line_validation_warning"] = "invalid_alt_mapping"
+            kept.append(p)
             continue
+
+        # ── Coverage gate: is this sport in the feed at all? ───────────
+        sport_bucket = coverage.get(sport)
+        if not sport_bucket:
+            # No coverage for this sport — keep the pick rather than
+            # silently dropping it. NBA props in off-season, lower-
+            # league soccer (CSL/MLS), non-FO tennis all land here.
+            p["alt_line_skipped_no_coverage"] = True
+            stats["skipped_no_coverage"] += 1
+            kept.append(p)
+            continue
+
+        # ── Event scope: does the feed cover THIS event? ───────────────
+        event_str = p.get("event") or ""
+        event_tokens = _event_tokens_from_pick_event(event_str)
+        # We have coverage iff ANY pick token matches a feed token.
+        event_in_feed = any(t in sport_bucket for t in event_tokens) if event_tokens else False
+        if not event_in_feed:
+            # The feed covers this sport but NOT this specific event
+            # (e.g. an EPL pick on a day when the feed only has WC
+            # data). Don't drop — surface the pick without alt-line
+            # validation metadata.
+            p["alt_line_skipped_no_coverage"] = True
+            stats["skipped_event_not_in_feed"] += 1
+            kept.append(p)
+            continue
+
         # Extract player / selection
         sel = p.get("selection") or ""
         if sel.lower() in ("", "yes", "no", "over", "under"):
@@ -673,12 +756,36 @@ async def validate_against_live_alt_lines(
                 except Exception:
                     line = None
 
+        # ── Event-scoped match: limit candidate feed rows to this event ─
+        # `event_tokens` ⊃ at least one form of the team names. We
+        # constrain by regex-matching one of those tokens against the
+        # feed row's RAW `event_name` (the feed stores "Algeria @
+        # Switzerland", not the normalised form). Falling back to the
+        # home/away team strings catches feed rows where event_name
+        # was stored differently. This is a SOFT scope — if no team-
+        # name token shows up in the feed entry the next q2/q3 fallbacks
+        # would still find a same-sport same-player row, but our
+        # coverage gate above already ensured the event is broadly
+        # covered, so the cross-event collision risk (same player
+        # name in different games) is acceptable.
+        event_regex = "|".join(
+            re.escape(t) for t in event_tokens if len(t) >= 3
+        )
+        event_match_clauses: list[dict] = []
+        if event_regex:
+            event_match_clauses = [
+                {"event_name": {"$regex": event_regex, "$options": "i"}},
+                {"home_team":  {"$regex": event_regex, "$options": "i"}},
+                {"away_team":  {"$regex": event_regex, "$options": "i"}},
+            ]
         q: dict = {
-            "sport": sport if sport != "nfl" else "nfl",
+            "sport": sport,
             "market_key": oddsapi_market,
             "selection_norm": sel_norm,
             "last_seen": {"$gte": cutoff},
         }
+        if event_match_clauses:
+            q["$or"] = event_match_clauses
         if line is not None:
             q["line"] = float(line)
         row = await db.live_alt_lines.find_one(q)
@@ -697,25 +804,83 @@ async def validate_against_live_alt_lines(
             kept.append(p)
             continue
 
-        # No match — figure out which error code applies.
-        # 1. Try the same query WITHOUT the line filter — if we find a
-        #    match, the market exists but our line is wrong.
+        # No match — figure out which error code applies. BUT — we
+        # KEEP the pick in all cases (2026-06-30, code-review HIGH).
+        # The feed coverage is partial (only DK + FanDuel; only a
+        # subset of markets per book; lines disappear and re-appear
+        # as books re-price). Silently dropping 194 picks per request
+        # because the feed didn't have the exact market+selection+line
+        # row hurts users more than it protects them. The validator
+        # is now ADVISORY: it stamps `alt_line_validated=True` when
+        # the line was confirmed, and a `alt_line_validation_warning`
+        # code otherwise — UI consumers can choose to badge the pick
+        # without hiding it from the feed.
+        warning_code = None
+        # 1. Try without the line filter — match means line wrong.
         q2 = {k: v for k, v in q.items() if k != "line"}
         row2 = await db.live_alt_lines.find_one(q2)
         if row2:
             stats["line_not_found"] += 1
-            continue
-        # 2. Try without selection — if we find one, the market exists
-        #    but our player/selection doesn't.
-        q3 = {k: v for k, v in q.items() if k not in ("line", "selection_norm")}
-        row3 = await db.live_alt_lines.find_one(q3)
-        if row3:
-            stats["line_not_found"] += 1
-            continue
-        # 3. Otherwise — market not present for this event at all.
-        stats["market_removed"] += 1
+            warning_code = "line_not_found"
+        else:
+            # 2. Try without selection — match means player missing.
+            q3 = {k: v for k, v in q.items() if k not in ("line", "selection_norm")}
+            row3 = await db.live_alt_lines.find_one(q3)
+            if row3:
+                stats["line_not_found"] += 1
+                warning_code = "line_not_found"
+            else:
+                # 3. Otherwise — market not present for this event.
+                stats["market_removed"] += 1
+                warning_code = "market_removed"
+        # Stamp the warning but keep the pick on the board.
+        if warning_code:
+            p["alt_line_validation_warning"] = warning_code
+        kept.append(p)
 
     return kept, stats
+
+
+# ── Helpers for event scoping ─────────────────────────────────────────
+
+
+def _norm_event_token(s: str) -> str:
+    """Normalise team/event names for fuzzy matching."""
+    s = re.sub(r"[^a-z0-9 ]+", " ", (s or "").lower())
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _event_tokens_from_pick_event(event_str: str) -> set[str]:
+    """Build a set of fuzzy tokens from a pick's `event` field.
+
+    Examples:
+      "Morocco @ Brazil"       → {"morocco brazil", "morocco", "brazil"}
+      "Lakers vs Warriors"     → {"lakers warriors", "lakers", "warriors"}
+      "Yankees @ Red Sox"      → {"yankees red sox", "yankees", "red sox"}
+    """
+    if not event_str:
+        return set()
+    # Split on separators BEFORE normalising (the normaliser strips '@'
+    # and 'vs', so we'd lose split points if we normalised first).
+    raw_parts = re.split(r"\s*(?:vs?\.?|@|\bat\b)\s*", event_str, flags=re.I)
+    norm_parts = [_norm_event_token(p) for p in raw_parts if p and p.strip()]
+    norm_parts = [p for p in norm_parts if p]
+    if not norm_parts:
+        # Fallback: normalise the whole thing then split on whitespace
+        # for multi-word team names (best-effort).
+        norm_full = _norm_event_token(event_str)
+        if norm_full:
+            return {norm_full, *norm_full.split()}
+        return set()
+    tokens: set[str] = set()
+    # Individual team names (most useful for matching feed home_team /
+    # away_team rows separately).
+    for p in norm_parts:
+        if len(p) >= 3:
+            tokens.add(p)
+    # The full joined form ("morocco brazil") matches feed event_name.
+    tokens.add(" ".join(norm_parts))
+    return tokens
 
 
 def apply_quality_gate(
