@@ -33,12 +33,15 @@ router = APIRouter(prefix="/api/nfl")
 @router.get("/safe-bets")
 async def nfl_safe_bets(
     limit: int = Query(10, ge=1, le=50),
-    min_probability: float = Query(0.78, ge=0.5, le=0.99),
+    min_probability: float = Query(0.62, ge=0.5, le=0.99),
 ):
-    """Top NFL player-prop locks ranked by TRUE probability, not edge.
+    """Top NFL player-prop locks in the TRUE-VALUE BAND (-200 to -450).
 
-    Default `min_probability=0.78` (≈ -355 American odds). The user-locked
-    "preferred" range is `≥ 0.857` (-600 American or shorter).
+    NEW (2026-06-29 v2): Default `min_probability=0.62` (≈ -163 American)
+    surfaces real value, not extreme chalk. The engine internally targets
+    the [0.67, 0.82] band first (≈ -200 to -456) and falls back to
+    [0.62, 0.67) if nothing better is available. Picks above 0.86 (-614)
+    are hard-rejected — user mandate to filter out trap-juice chalk.
     """
     try:
         from nfl_safe_engine import compute_safe_bets

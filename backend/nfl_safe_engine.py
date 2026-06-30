@@ -35,29 +35,51 @@ from typing import Any, Optional
 logger = logging.getLogger("lockscore.nfl_safe")
 
 
-# ── ALT RULES (hard guardrails — user-locked) ──
-MIN_GAMES_SAMPLE = 5      # never recommend with fewer game logs
-MIN_ATTEMPTS_TOTAL = 10   # never recommend < 10 opportunities total (volume floor)
-MIN_PROBABILITY = 0.78    # ≈ -355 American odds floor
-PREF_PROBABILITY = 0.857  # ≈ -600 American odds — "preferred" zone
-MAX_VOLATILITY_CV = 0.85  # std / mean — reject erratic players
-ONE_OUTLIER_DROP = 0.15   # if removing top value drops hit-rate by >15%, reject
+# ── ALT RULES (hard guardrails — user-locked 2026-06-29 v2) ──
+#
+# The original gate set (`probability ≥ 0.78`, `floor_p10 ≥ line`) was
+# producing extreme chalk: Trevor Lawrence 149.5+ Passing Yds at -1250
+# (93%) and Jonathan Taylor 1.5+ Receptions at -1200 (92%). Those are
+# "lay $12.50 to win $1" lines that no sharp bettor would touch — high
+# certainty, zero value.
+#
+# New mandate: SURFACE PROPS IN THE TRUE-VALUE BAND.
+#   Target probability:    [0.67, 0.82]   →  -200 to -456 American odds
+#   Acceptable secondary:  [0.62, 0.67)   →  -163 to -200 (mild stretch)
+#   Reject hard-chalk:     ≥ 0.86         →  ≤ -614  (no juice >> value)
+#
+# Algorithm: for each (player, prop) walk the alt-line ladder, pick the
+# HIGHEST line whose empirical hit rate lands inside the target band.
+# This naturally avoids ultra-low lines (which inflate probability to
+# 95%+ chalk) while still leveraging the player's recent form.
+MIN_GAMES_SAMPLE = 5         # never recommend with fewer game logs
+MIN_ATTEMPTS_TOTAL = 10      # volume floor
+TARGET_PROB_MIN = 0.67       # ≈ -200 American
+TARGET_PROB_MAX = 0.82       # ≈ -456 American
+ACCEPTABLE_PROB_MIN = 0.62   # ≈ -163 (fallback band when target is empty)
+HARD_CHALK_CUTOFF = 0.86     # any line with prob ≥ this is REJECTED outright
+MAX_VOLATILITY_CV = 0.85
+ONE_OUTLIER_DROP = 0.15
 
 # Window we evaluate from each player's recent history (most recent N games).
 EVAL_WINDOW = 17  # 1 full season
 
+# Legacy aliases (still referenced by routes & rules block in response).
+MIN_PROBABILITY = TARGET_PROB_MIN
+PREF_PROBABILITY = TARGET_PROB_MAX
 
-# ── Alternate line ladders (the "safe" zone — much lower than book book) ──
-# Engine outputs the safest hit per ladder. UI / odds layer matches against
-# actual sportsbook offerings.
 
+# ── Alternate line ladders ─────────────────────────────────────────────
+# Expanded toward HIGHER lines so we can find the true-value zone for
+# elite players (a 17/17 hitter at 149.5 might be 11/17 at 224.5 = 65%
+# = -185 American = excellent value).
 ALT_LINES: dict[str, list[float]] = {
-    "rushing_yards":    [9.5, 14.5, 19.5, 24.5, 34.5, 49.5],
-    "receiving_yards":  [9.5, 14.5, 19.5, 24.5, 34.5, 49.5],
-    "receptions":       [0.5, 1.5, 2.5, 3.5],
-    "passing_yards":    [149.5, 174.5, 199.5, 224.5, 249.5],
-    "passing_tds":      [0.5, 1.5],
-    "any_td":           [0.5],   # anytime TD
+    "rushing_yards":    [9.5, 14.5, 19.5, 24.5, 34.5, 49.5, 64.5, 79.5, 99.5],
+    "receiving_yards":  [9.5, 14.5, 19.5, 24.5, 34.5, 49.5, 64.5, 79.5, 99.5],
+    "receptions":       [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5],
+    "passing_yards":    [149.5, 174.5, 199.5, 224.5, 249.5, 274.5, 299.5],
+    "passing_tds":      [0.5, 1.5, 2.5],
+    "any_td":           [0.5],   # anytime TD — single line
 }
 
 
@@ -184,7 +206,6 @@ async def _gather_player_logs(
             td = _to_int(r.get("nfl_td")) or 0
             tgts = _to_int(r.get("nfl_tgts")) or 0
             car = _to_int(r.get("nfl_car")) or 0
-            opp = tgts + car
             if not existing:
                 by_game[gid] = {
                     "game_id": gid, "date": r.get("date"),
@@ -211,7 +232,17 @@ def _evaluate(
     opportunities: list[int],
     line: float,
 ) -> Optional[dict]:
-    """Apply ALT RULES + compute hit probability for a (values, line) set."""
+    """Compute hit probability for a (values, line) set.
+
+    NOTE (2026-06-29 v2): The previous gates (`median ≥ line`,
+    `floor_p10 ≥ line`, `probability ≥ 0.78`) were the ROOT CAUSE of the
+    extreme chalk we were surfacing. Forcing `floor_p10 ≥ line` mechanically
+    pushes the selected line DOWN to whatever a player hits ~100% of the
+    time (Trevor Lawrence p10 floor = 167.6 → 149.5+ at 17/17 = -1250).
+    The new pipeline evaluates the raw probability and lets the caller
+    decide which BAND to surface — gates here only reject obvious-junk
+    (sample, volume, volatility, outlier-driven).
+    """
     n = len(values)
     if n < MIN_GAMES_SAMPLE:
         return {"reject": f"sample_too_small({n})"}
@@ -232,18 +263,11 @@ def _evaluate(
         if rate_full - rate_no_top > ONE_OUTLIER_DROP:
             return {"reject": "outlier_inflated"}
 
-    if med_v < line:
-        return {"reject": f"median_below_line({med_v:.1f}<{line})"}
-    if floor_v < line:
-        return {"reject": f"floor_below_line(p10={floor_v:.1f}<{line})"}
-
     # Empirical hit rate (this is our headline true-probability number).
     hits = sum(1 for v in values if v > line)
     prob_empirical = hits / n
 
-    # Apply a small Bayesian shrink to the empirical rate so 5/5 doesn't
-    # bluff to 100%. Beta(8, 2) prior — mildly optimistic for picks that
-    # already passed every other gate.
+    # Bayesian shrink — Beta(8, 2) prior so 5/5 doesn't bluff to 100%.
     a, b = 8.0, 2.0
     prob_shrunk = (hits + a) / (n + a + b)
     # Take the SMALLER of the two so we don't over-promise.
@@ -262,9 +286,6 @@ def _evaluate(
 
     confidence = max(0.0, probability - volatility_penalty - uncertainty_penalty)
 
-    if probability < MIN_PROBABILITY:
-        return {"reject": f"probability_below_threshold({probability:.2f})"}
-
     return {
         "probability": round(probability, 4),
         "probability_empirical": round(prob_empirical, 4),
@@ -279,6 +300,93 @@ def _evaluate(
         "min_attempts": min((o for o in opportunities if o), default=0),
         "total_attempts": total_opp,
     }
+
+
+def _prob_to_american(p: float) -> int:
+    """Convert hit probability → no-vig American odds (sportsbook layer
+    will add ~5-7% juice on top)."""
+    p = max(0.01, min(0.99, p))
+    if p >= 0.5:
+        return int(round(-100 * p / (1 - p)))
+    return int(round(100 * (1 - p) / p))
+
+
+def _select_value_line(
+    values: list[float],
+    opportunities: list[int],
+    lines: list[float],
+) -> Optional[dict]:
+    """Pick the line that lands inside the TRUE-VALUE BAND.
+
+    Strategy:
+      1. Evaluate EVERY line in the ladder.
+      2. Reject hard-chalk (prob ≥ HARD_CHALK_CUTOFF) — those are -600+
+         juice traps the user explicitly asked us to filter out.
+      3. Prefer lines inside the TARGET band [0.67, 0.82].
+         If multiple lines fit, take the HIGHEST line (more informative,
+         less juice, biggest payout per $).
+      4. If nothing fits the target band, fall back to ACCEPTABLE
+         [0.62, 0.67) — a slight value-stretch but still safe.
+      5. Otherwise no pick for this player+prop.
+    """
+    target: list[dict] = []
+    acceptable: list[dict] = []
+    rejected_chalk = 0
+    rejected_low = 0
+    last_reject_reason: Optional[str] = None
+
+    for line in sorted(lines):  # walk low → high
+        ev = _evaluate(values, opportunities, line)
+        if not ev:
+            continue
+        if ev.get("reject"):
+            last_reject_reason = ev["reject"]
+            continue
+        p = ev["probability"]
+        # Hard floor — never surface picks below ACCEPTABLE_PROB_MIN.
+        if p < ACCEPTABLE_PROB_MIN:
+            rejected_low += 1
+            continue
+        # Hard chalk — explicit user mandate: NO -450+ juice on safe locks.
+        # Anything in [HARD_CHALK_CUTOFF, 1.0) is dropped from the pool.
+        if p >= HARD_CHALK_CUTOFF:
+            rejected_chalk += 1
+            continue
+        ev["line"] = line
+        # TARGET band is BOUNDED on both sides: [TARGET_PROB_MIN, TARGET_PROB_MAX].
+        # Anything above TARGET_PROB_MAX (but still below hard chalk) is
+        # considered "stretch chalk" — it's allowed in the pool but ranked
+        # BELOW the target band so we prefer true value.
+        if TARGET_PROB_MIN <= p <= TARGET_PROB_MAX:
+            ev["band_score"] = 2  # best
+            target.append(ev)
+        elif p < TARGET_PROB_MIN:
+            ev["band_score"] = 1  # acceptable stretch (more variance)
+            acceptable.append(ev)
+        else:
+            ev["band_score"] = 0  # stretch-chalk — only used if nothing better
+            acceptable.append(ev)
+
+    pool = target or acceptable
+    if not pool:
+        return {"reject": last_reject_reason or "no_line_in_value_band"}
+
+    # Within the chosen pool, prefer (a) higher band_score, then
+    # (b) HIGHEST line (max payout / information density), then
+    # (c) lowest CV (most stable performer).
+    pool.sort(
+        key=lambda r: (r.get("band_score", 0), r["line"], -r["volatility_cv"]),
+        reverse=True,
+    )
+    chosen = pool[0]
+    chosen["band"] = (
+        "target" if chosen.get("band_score") == 2
+        else "acceptable" if chosen.get("band_score") == 1
+        else "stretch_chalk"
+    )
+    chosen["rejected_chalk_lines"] = rejected_chalk
+    chosen["rejected_low_lines"] = rejected_low
+    return chosen
 
 
 def _market_label(prop: str, line: float) -> str:
@@ -305,16 +413,35 @@ def _reason(stats: dict, prop: str, line: float) -> str:
     return " · ".join(parts)
 
 
+def _why(stats: dict, prop: str, line: float, american: int) -> str:
+    """Compact rationale chip for the card UI.
+
+    Format keeps it ≤ ~70 chars: `L17 12/17 (71%) · -243 · med 244 · CV 0.18 · 305 opps`
+    """
+    n = stats["sample_size"]
+    hits = stats["hits"]
+    pct = round(stats["probability"] * 100)
+    cv = stats["volatility_cv"]
+    med = stats["median"]
+    opps = stats["total_attempts"]
+    odds_str = f"+{american}" if american > 0 else str(american)
+    return (
+        f"L{n} {hits}/{n} ({pct}%) · {odds_str} · med {med} · CV {cv:.2f} · {opps} opps"
+    )
+
+
 async def compute_safe_bets(
     db,
     *,
     limit: int = 10,
-    min_probability: float = MIN_PROBABILITY,
+    min_probability: float = TARGET_PROB_MIN,
 ) -> dict:
     """Main entry point.
 
-    Returns top-N highest-confidence NFL player-prop locks across rushing,
-    receiving, receptions, passing yards, passing TDs, and ATD markets.
+    Returns top-N highest-confidence NFL player-prop locks. NEW (v2):
+    surfaces picks in the TRUE-VALUE BAND (-200 to -450) instead of
+    extreme chalk. Caller-provided `min_probability` is honored as a
+    soft floor — anything below `ACCEPTABLE_PROB_MIN` is still rejected.
     """
     # Find players with logs in our active blocks.
     blocks = ["rushing", "receiving", "passing"]
@@ -352,10 +479,14 @@ async def compute_safe_bets(
     results: list[dict] = []
     rejects: dict[str, int] = {}
 
+    # Effective floor — never go below ACCEPTABLE_PROB_MIN regardless of
+    # caller-provided min_probability.
+    effective_min = max(ACCEPTABLE_PROB_MIN, float(min_probability or 0))
+
     for (pid, prop), meta in candidates.items():
         logs = await _gather_player_logs(db, pid, prop)
         if len(logs) < MIN_GAMES_SAMPLE:
-            rejects[f"too_few_logs"] = rejects.get("too_few_logs", 0) + 1
+            rejects["too_few_logs"] = rejects.get("too_few_logs", 0) + 1
             continue
         vals: list[float] = []
         opps: list[int] = []
@@ -369,41 +500,38 @@ async def compute_safe_bets(
             rejects["values_missing"] = rejects.get("values_missing", 0) + 1
             continue
         lines = ALT_LINES.get(prop) or []
-        # Walk lines from highest to lowest; keep the best (highest line)
-        # that still passes ALL gates — that's the most informative line
-        # for a "safe" pick (UI can derive lower lines from this one).
-        best: Optional[dict] = None
-        for line in sorted(lines, reverse=True):
-            ev = _evaluate(vals, opps, line)
-            if not ev or ev.get("reject"):
-                if ev:
-                    rejects[ev["reject"].split("(")[0]] = (
-                        rejects.get(ev["reject"].split("(")[0], 0) + 1
-                    )
-                continue
-            # We have a pass. Take the HIGHEST passing line.
-            best = {**ev, "prop": prop, "line": line, **meta}
-            break
 
+        best = _select_value_line(vals, opps, lines)
         if not best:
             continue
-
-        # Apply min-probability cutoff (caller-overridable).
-        if best["probability"] < min_probability:
+        if best.get("reject"):
+            key = best["reject"].split("(")[0]
+            rejects[key] = rejects.get(key, 0) + 1
             continue
 
-        best["market"] = _market_label(prop, best["line"])
-        best["reason"] = _reason(best, prop, best["line"])
-        # Sportsbook-friendly American odds threshold equivalence.
-        p = best["probability"]
-        if p >= 0.5:
-            best["implied_american_odds"] = int(round(-100 * p / (1 - p)))
-        else:
-            best["implied_american_odds"] = int(round(100 * (1 - p) / p))
+        # Final probability filter (cap-honored).
+        if best["probability"] < effective_min:
+            continue
+
+        american = _prob_to_american(best["probability"])
+        best.update({
+            **meta,
+            "prop": prop,
+            "market": _market_label(prop, best["line"]),
+            "reason": _reason(best, prop, best["line"]),
+            "why": _why(best, prop, best["line"], american),
+            "implied_american_odds": american,
+        })
         results.append(best)
 
-    # Sort by confidence desc, break ties by probability desc.
-    results.sort(key=lambda r: (r["confidence"], r["probability"]), reverse=True)
+    # Sort by: (1) preference for TARGET band over acceptable, then
+    # (2) confidence desc, then (3) probability desc.
+    band_rank = {"target": 1, "acceptable": 0}
+    results.sort(
+        key=lambda r: (band_rank.get(r.get("band", "acceptable"), 0),
+                       r["confidence"], r["probability"]),
+        reverse=True,
+    )
     return {
         "total_candidates": len(candidates),
         "passed_filters": len(results),
@@ -411,12 +539,12 @@ async def compute_safe_bets(
         "rules": {
             "min_games_sample": MIN_GAMES_SAMPLE,
             "min_attempts_total": MIN_ATTEMPTS_TOTAL,
-            "min_probability": min_probability,
-            "preferred_probability": PREF_PROBABILITY,
+            "target_prob_min": TARGET_PROB_MIN,
+            "target_prob_max": TARGET_PROB_MAX,
+            "acceptable_prob_min": ACCEPTABLE_PROB_MIN,
+            "hard_chalk_cutoff": HARD_CHALK_CUTOFF,
             "max_volatility_cv": MAX_VOLATILITY_CV,
             "one_outlier_drop": ONE_OUTLIER_DROP,
-            "median_must_exceed_line": True,
-            "floor_p10_must_exceed_line": True,
         },
         "picks": results[: max(1, int(limit))],
     }
