@@ -89,12 +89,14 @@ export default function TabsLayout() {
           tabBarButtonTestID: "tab-rollover",
         }}
       />
+      {/* HR slate now surfaced INSIDE the MLB filter view (see
+          components/MLBHRBanner.tsx + app/hr.tsx full-screen detail).
+          Tab is hidden from the tab bar via href:null. */}
       <Tabs.Screen
         name="hr"
         options={{
+          href: null,
           title: "HR",
-          tabBarIcon: ({ color, size }) => <Ionicons name="baseball" color={color} size={size} />,
-          tabBarButtonTestID: "tab-hr",
         }}
       />
       <Tabs.Screen
@@ -108,7 +110,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="under"
         options={{
-          title: "UNDER LOCK",
+          title: "UNDER",
           tabBarIcon: ({ color, size }) => <Ionicons name="trending-down" color={color} size={size} />,
           tabBarButtonTestID: "tab-under-of-day",
         }}
