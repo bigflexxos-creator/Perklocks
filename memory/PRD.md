@@ -68,3 +68,42 @@ MongoDB collections: `players`, `games`, `player_game_logs`, `season_totals`, `t
 Runs ALONGSIDE `elite_players.py` / `auto_elite.py` (per user spec — never replaces).
 Each player-prop pick is enriched with `player_form` data and a soft ±1.5 nudge
 based on hot/cold trend + consistency (min 3 logged games to react).
+
+## Goalscorer Matchup Engine v3 (2026-06-30)
+User mandate: "PerkLocks goalscorer engine feels like it is choosing players from
+historical averages instead of evaluating the actual match."
+
+**New modules:**
+- `/app/backend/goalscorer_matchup.py` — matchup-first scoring engine
+- `/app/backend/national_team_squads.py` — curated 26-man matchday squads
+
+**Weights (per user spec):**
+- Matchup     = 35%
+- Opportunity = 30%
+- Form        = 20%
+- Historical  = 15%
+
+**Confidence penalties:** bench risk · expected minutes <60 · market disagreement
+· missing data · not in national squad · recent injury · short rest.
+
+**Explainability fields surfaced on every soccer goalscorer pick:**
+`matchup_score`, `matchup_grade` (A+..F), `starter_probability`,
+`expected_minutes`, `role`, `penalty_taker`, `xG_form`, `market_rank`,
+`why_this_pick[]`, `why_not_this_pick[]`.
+
+**Filter behaviour:** picks with confidence < 0.45 OR score < 28 OR player
+not in announced national team squad are DROPPED (unless `elite_protect`
+flag is set).
+
+**Wired into:** `/app/backend/routes/picks_routes.py` after
+`_dedupe_goalscorer_per_event` — runs on every `/api/picks/today` request.
+
+**UI:** `/app/frontend/src/components/LockPickCard.tsx` renders a grade chip
+(green/yellow/red) plus starter %, expected minutes, role, PK flag, xG/90,
+and the bullet-point "why" / "why-not" reasons inside the "Why this pick?"
+panel.
+
+**Smoke-tested outcomes (Sweden @ France slate):**
+- Mbappé: A grade, 83.5, with full why-this-pick bullets
+- Ivan Toney: DROPPED via squad gate (not in England's announced squad)
+- Lukaku (Belgium away vs Senegal): F grade 32.6 — properly demoted
