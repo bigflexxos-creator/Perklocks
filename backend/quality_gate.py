@@ -389,6 +389,17 @@ def _apply_display_cap(pick: dict) -> None:
     market = (pick.get("market") or "")
     if sport != "soccer" or not _SOCCER_ANYTIME_SCORER_RE.search(market):
         return
+    # ── Elite-player exemption (2026-06-30, code-review HIGH follow-up) ─
+    # The 75-cap was calibrated against the broad Anytime Goal Scorer
+    # universe (~25-45% historical hit rate). Marquee elites like
+    # Mbappé, Haaland, Kane, Messi, Ronaldo, Salah hit Anytime at
+    # 55-75% per match — capping their Lock to 75 mis-prices them and
+    # contradicts the user's reputation-floor design ("Lock score
+    # reflects reputation/history, not raw win prob"). Elites already
+    # get hit by the coherence cap when their edge is negative, so
+    # this exemption only saves +EV elite picks from over-capping.
+    if pick.get("elite_player"):
+        return
     # NOTE: must cap ALL shadow lock fields (`lock_score_raw`,
     # `lock_score_peak`) too, otherwise `_canonicalize_lock_score` does
     # `max(v1, v2, raw, peak)` at read time and silently RESTORES the
@@ -501,6 +512,13 @@ def _apply_lockscore_coherence(pick: dict) -> None:
     These are NOT generation gates — generation already runs. This caps
     the DISPLAYED number so the card doesn't lie. Generation will be
     re-calibrated in a separate pass.
+
+    Elite-player exemption (2026-06-30 follow-up): for `elite_player=True`
+    with POSITIVE edge, skip rules 2 and 3 so marquee scorers
+    (Mbappé / Kane / Haaland / etc.) keep their reputation-floor Lock
+    of 99. Rule 1 (negative edge) STILL fires — we don't want a
+    superstar with a clearly bad number to display Lock 99. Same
+    spirit as `_apply_display_cap`'s elite skip.
     """
     edge = _coerce_float(pick.get("edge_percent"))
     wp = _coerce_float(pick.get("win_probability"))
@@ -508,10 +526,13 @@ def _apply_lockscore_coherence(pick: dict) -> None:
     if wp is not None and wp > 1.5:
         wp = wp / 100.0
 
+    is_elite = bool(pick.get("elite_player"))
+    has_positive_edge = edge is not None and edge >= 0
+
     cap = None
     reason = None
 
-    # 1. Negative edge → demote.
+    # 1. Negative edge → demote. ALWAYS applies, even to elites.
     if edge is not None and edge <= -3:
         cap = NEG_EDGE_LOCK_CAP_HARSH
         reason = "harsh_negative_edge"
@@ -520,21 +541,30 @@ def _apply_lockscore_coherence(pick: dict) -> None:
         reason = "negative_edge"
 
     # 2. Low model win probability → demote.
+    #    SKIP for elite players with positive edge — their reputation
+    #    floor overrides raw model win-prob (e.g. Mbappé Anytime is
+    #    a 50% real-world prob market but reputation says Lock 99).
     if wp is not None and wp < ELITE_LOCK_FLOOR_PROB:
-        if cap is None or LOW_WINPROB_LOCK_CAP < cap:
-            cap = LOW_WINPROB_LOCK_CAP
-            reason = "win_prob_below_elite_floor"
+        if not (is_elite and has_positive_edge):
+            if cap is None or LOW_WINPROB_LOCK_CAP < cap:
+                cap = LOW_WINPROB_LOCK_CAP
+                reason = "win_prob_below_elite_floor"
 
     # 3. Soccer scorer with no real recent-form data → demote.
+    #    SKIP for elite players with positive edge — their reputation
+    #    + Understat coverage anchor stands in for the pick-history
+    #    `player_form.games_logged` (which is often 0 because their
+    #    legacy player_profile is sparse, not because they're unknown).
     sport = (pick.get("sport") or "").lower()
     market = (pick.get("market") or "")
     if sport == "soccer" and _SOCCER_GOALSCORER_FAMILY_RE.search(market):
         pf = pick.get("player_form") or {}
         games_logged = _coerce_float(pf.get("games_logged"))
         if games_logged is not None and games_logged < 1:
-            if cap is None or NO_FORM_DATA_LOCK_CAP < cap:
-                cap = NO_FORM_DATA_LOCK_CAP
-                reason = "no_recent_form_data"
+            if not (is_elite and has_positive_edge):
+                if cap is None or NO_FORM_DATA_LOCK_CAP < cap:
+                    cap = NO_FORM_DATA_LOCK_CAP
+                    reason = "no_recent_form_data"
 
     if cap is None:
         return
