@@ -107,3 +107,42 @@ panel.
 - Mbappé: A grade, 83.5, with full why-this-pick bullets
 - Ivan Toney: DROPPED via squad gate (not in England's announced squad)
 - Lukaku (Belgium away vs Senegal): F grade 32.6 — properly demoted
+
+## MLB Home-Run Tab (2026-06-30)
+New tab in the mobile app surfacing the 3–5 highest-conviction HR hitters per
+MLB game with full matchup context.
+
+**Endpoint:** `GET /api/mlb/hr-slate` (auth required)
+
+**Engine modules:**
+- `/app/backend/services/mlb_hr_intel.py` — HR probability + scoring
+- `/app/backend/routes/mlb_hr_routes.py` — FastAPI route + 25-min cache
+
+**Scoring factors (multiplicative on LEAGUE_HR_PER_PA = 3.3%):**
+- **Park HR factor** — Statcast 2023-25 averaged. Coors 1.27, Yankee 1.22,
+  Citizens Bank 1.12, Petco 0.86, Oracle 0.78, etc.
+- **Pitcher HR/9** — from MLB Stats API season stats; clamps 0.55..1.85.
+- **Batter power profile** — ISO + barrel% + HR/PA blend (50%/30%/20%).
+- **Recent form** — last 15 games HR rate; HOT (≥0.30/g) = +20%.
+- **Wind** — Open-Meteo (free, no key) projected onto stadium HR axis
+  (home→CF compass bearing). Out-to-CF wind boosts up to +25%.
+- **Temperature** — every 10°F above 70°F = +3% carry, capped ±10%.
+- **Roof** — closed_dome zeros out all weather effects.
+- **Platoon (LHP/RHP)** — +8% opposite-hand boost, −5% same-hand penalty.
+- **H2H BvP** — shrinkage blend when ≥6 PA (data feed wired in v2).
+
+**Confidence floor:** hr_score ≥ 45 to surface (≈10% individual HR probability).
+
+**Frontend:**
+- `/app/frontend/app/(tabs)/hr.tsx` — new tab "HR" (baseball icon, between
+  Rollover and Parlay)
+- Per-game card: away @ home, venue, park factor, wind/temp/roof chips,
+  both probable SPs with HR/9, then up to 5 batter rows
+- Each batter row: grade chip (A+..C+ color-coded), HR%, score, season HR,
+  last-15 form, and 4–6 bullet-point why-this-pick rationale
+
+**Verified on 2026-06-30 slate:**
+- Kyle Schwarber vs Bubba Chandler @ Citizens Bank Park — A+ 99.2, 33.1% HR
+  (HR-friendly park, HOT 6 HR last 15G, wind out to CF 10 mph, 90°F)
+- Pete Alonso vs HR-prone pitcher — A+ 85.4
+- 15 games / 73 picks / 10.5s build time (subsequent calls < 100ms cached)

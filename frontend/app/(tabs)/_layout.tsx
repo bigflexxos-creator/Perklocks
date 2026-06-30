@@ -90,6 +90,14 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="hr"
+        options={{
+          title: "HR",
+          tabBarIcon: ({ color, size }) => <Ionicons name="baseball" color={color} size={size} />,
+          tabBarButtonTestID: "tab-hr",
+        }}
+      />
+      <Tabs.Screen
         name="parlay"
         options={{
           title: "PARLAY",

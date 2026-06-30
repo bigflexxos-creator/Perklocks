@@ -2877,6 +2877,12 @@ try:
     from routes import nfl_routes
     app.include_router(nfl_routes.router)
     logger.info("NFL engines mounted at /api/nfl/safe-bets + /api/nfl/atd/*")
+    # MLB Home-Run intelligence tab (added 2026-06-30).
+    # Backs the new HR tab in the mobile app — Statcast park × pitcher
+    # HR/9 × batter ISO/HR-PA × Open-Meteo wind/temp × H2H BvP.
+    from routes import mlb_hr_routes
+    app.include_router(mlb_hr_routes.router)
+    logger.info("MLB HR intelligence mounted at /api/mlb/hr-slate")
 except Exception as _routes_mount_err:
     logger.exception("Extracted route modules failed to mount: %s", _routes_mount_err)
 
