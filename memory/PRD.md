@@ -189,3 +189,27 @@ day so add option where app take the 5 best".
 
 Toggle is right under the screen header. Cache key bumped to
 `20260630-hr-top5-day-v40`.
+
+## NFL ATD — Mirror of HR UX (2026-06-30)
+Per user: "I want to do same thing with nfl for atd".
+
+**New files:**
+- `/app/frontend/app/(tabs)/atd.tsx` — full-screen NFL Anytime-TD slate
+  with "🔥 Top 5 Today" (default) and "📋 Full Board" toggle modes.
+  Mirrors `hr.tsx` shape: header back-arrow, mode toggle row, grade chips
+  (A+..C), opportunity rating chip, touches/TDs/sample chips, and
+  bullet rationale rows.
+- Hidden tab `atd` mounted in `(tabs)/_layout.tsx` (`href: null`) so the
+  deep-link route works without exposing a tab icon.
+- New `🏈 ATD` pill in `SportFilterBar.tsx` that's only rendered when
+  `sport === "NFL"`, sitting alongside Receiving / Rushing / Receptions
+  / Passing pills, routing to `/atd` on tap (same pattern as the MLB HR
+  chip).
+
+**Data source:** existing `GET /api/nfl/atd/leaderboard` (already ranked
+by td_probability across the slate — no extra flatten needed).
+
+**Live sanity:** Christian McCaffrey 70.4%, Jonathan Taylor 69.1%, Josh
+Jacobs 66.5%, Kyren Williams 63.6%, James Cook 62.5%.
+
+Cache key bumped to `20260630-nfl-atd-chip-v41`.

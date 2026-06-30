@@ -144,6 +144,19 @@ export function SportFilterBar({ sport, filters, onChange }: Props) {
               accent
             />
           )}
+          {/* NFL Anytime-Touchdown chip — same pattern as MLB HR. Lives
+              in the market row next to Receiving / Rushing / Receptions /
+              Passing pills, but taps route to /atd (top-5 slate view)
+              instead of filtering. Backed by /api/nfl/atd/leaderboard. */}
+          {sport === "NFL" && (
+            <Pill
+              label="🏈 ATD"
+              active={false}
+              onPress={() => { try { router.push("/atd" as any); } catch {} }}
+              testID="market-pill-atd"
+              accent
+            />
+          )}
         </ScrollView>
       )}
 

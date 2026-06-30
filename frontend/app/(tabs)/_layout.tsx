@@ -99,6 +99,15 @@ export default function TabsLayout() {
           title: "HR",
         }}
       />
+      {/* NFL ATD slate — hidden tab route accessed via the 🏈 ATD chip
+          in SportFilterBar when sport === "NFL". See app/(tabs)/atd.tsx. */}
+      <Tabs.Screen
+        name="atd"
+        options={{
+          href: null,
+          title: "ATD",
+        }}
+      />
       <Tabs.Screen
         name="parlay"
         options={{
