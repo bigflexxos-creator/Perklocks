@@ -1086,6 +1086,17 @@ def apply_quality_gate(
 
     Also applies in-place display caps (e.g. Anytime-Scorer lock_score
     clamped to 75 so it doesn't read as "Elite Lock 95") on kept picks.
+
+    Negative-edge HARD DROP (2026-06-30, user request):
+      The coherence cap pipeline (`_apply_lockscore_coherence`) used
+      to DEMOTE -EV picks from Lock 99 → 60. But a pick with
+      `edge_percent < 0` is, by the model's own math, a losing bet —
+      so it shouldn't be on the recommendation board at all. The cap
+      ladder is now reserved for edge-coherence on read paths
+      (detail view, history) that need to stay consistent with cached
+      pick documents; the BOARD itself drops -EV picks unconditionally.
+      Exception: NaN / missing edge_percent → keep (we couldn't compute
+      EV, don't drop in the dark).
     """
     kept: list[dict] = []
     blocked_counts: dict[str, int] = {}
@@ -1100,6 +1111,27 @@ def apply_quality_gate(
             # coherence guardrails (negative edge / low win_prob).
             _apply_display_cap(p)
             _apply_lockscore_coherence(p)
+            # ── Negative-edge HARD DROP ────────────────────────────────
+            # Anchor + caps may have RE-COMPUTED edge_percent (e.g. the
+            # elite anchor re-derives edge for Anytime markets), so this
+            # check fires AFTER all transformations. Threshold is
+            # strict (< 0) — covers the user's screenshot case
+            # (Tennis Over 17.5 / Under 23.5 at -6% edge).
+            try:
+                edge = float(p.get("edge_percent"))
+                if edge < 0:
+                    blocked_counts["negative_edge_dropped"] = (
+                        blocked_counts.get("negative_edge_dropped", 0) + 1
+                    )
+                    if tag_blocked:
+                        p["quality_gate_block_reason"] = "negative_edge"
+                        kept.append(p)
+                    continue
+            except (TypeError, ValueError):
+                # Missing/NaN edge — keep the pick (don't drop in the
+                # dark). Coherence cap already pinned its lock_score
+                # appropriately.
+                pass
             kept.append(p)
             continue
         blocked_counts[reason] = blocked_counts.get(reason, 0) + 1
