@@ -571,14 +571,33 @@ def _espn_did_score_goal(summary: dict, player_name: str) -> Optional[bool]:
         return None
     plays = list(summary.get("scoringPlays") or summary.get("plays") or [])
     # Also pull Goal-type rows out of keyEvents (modern shape).
+    # CRITICAL (2026-06-30 user-reported): ESPN labels goal events with
+    # subtype suffixes — `"Goal"`, `"Goal - Header"`, `"Goal - Penalty"`,
+    # `"Goal - Free Kick"`, `"Goal - Own Goal"`, `"Goal - Volley"`, etc.
+    # The original `== "goal"` check missed every header and PK goal —
+    # Kane scored a header vs Panama, we marked him 0-goals → LOST. Fix:
+    # `startswith("goal")` so all goal subtypes are picked up.
     for ev in summary.get("keyEvents") or []:
-        if (ev.get("type") or {}).get("text", "").lower() == "goal":
+        if (ev.get("type") or {}).get("text", "").strip().lower().startswith("goal"):
             plays.append(ev)
-    if not plays:
-        return None
-    found_first: Optional[str] = None
     found_any = False
+    found_first: Optional[str] = None
     for p in plays:
+        # ─── Sportsbook exclusions (universal across all books) ───────
+        # Own goals do NOT count toward the player's goalscorer market —
+        # the goal credits to the OPPOSING team, not to the player who
+        # touched it. Disallowed / cancelled / VAR-overturned goals also
+        # don't count. Skip those plays entirely.
+        type_text = ((p.get("type") or {}).get("text") or "").lower()
+        play_text = ((p.get("text") or "") + " " + (p.get("name") or "")).lower()
+        if "own goal" in type_text or "own goal" in play_text:
+            continue
+        if any(k in type_text or k in play_text for k in (
+            "cancelled", "canceled", "disallowed", "ruled out",
+            "var overturn", "no goal", "chalked off",
+        )):
+            continue
+
         ath_blocks = (p.get("athletes") or p.get("participants") or
                       p.get("athletesInvolved") or [])
         scorer_name = None
@@ -619,8 +638,11 @@ def _espn_did_score_or_assist(summary: dict, player_name: str) -> Optional[bool]
     if not summary:
         return None
     plays = list(summary.get("scoringPlays") or summary.get("plays") or [])
+    # CRITICAL (2026-06-30): same Goal-subtype fix as `_espn_did_score_goal`.
+    # ESPN labels goal events `"Goal"`, `"Goal - Header"`, `"Goal - Penalty"`,
+    # etc. — match by prefix so headers / penalties / free-kicks all count.
     for ev in summary.get("keyEvents") or []:
-        if (ev.get("type") or {}).get("text", "").lower() == "goal":
+        if (ev.get("type") or {}).get("text", "").strip().lower().startswith("goal"):
             plays.append(ev)
     if not plays:
         return None
