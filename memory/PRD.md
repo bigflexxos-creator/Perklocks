@@ -174,3 +174,18 @@ Per user feedback: "Like hits and strikeouts got hr should be next to them".
 - Pill is NOT a filter — `onPress` calls `router.push("/hr")` to open the
   dedicated HR slate screen, leaving the picks list untouched
 - Cache key bumped to `20260630-hr-chip-v39`
+
+## MLB HR — Top 5 of the Day default + toggle (2026-06-30, final UX)
+Per user: "Still showing top 5 hr each game I want the 3–5 for the whole
+day so add option where app take the 5 best".
+
+**`hr.tsx` refactored to 2-mode view:**
+- **"🔥 Top 5 Today" (default)** — flattens every game's HR picks into one
+  pool, sorts by hr_score desc, surfaces the TOP 5 across the slate. Each
+  card shows the matchup context inline (venue · park · temp · wind ·
+  roof · opposing SP HR/9 · why-this-pick bullets).
+- **"📋 By Game" (toggle)** — original per-game layout with up to 5 picks
+  per game.
+
+Toggle is right under the screen header. Cache key bumped to
+`20260630-hr-top5-day-v40`.
