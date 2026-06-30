@@ -481,46 +481,26 @@ def _coerce_float(v):
 
 
 def _apply_lockscore_coherence(pick: dict) -> None:
-    """Cap lock_score / lock_score_v2 / lock_score_peak ONLY on the
-    negative-edge guard.
+    """RETIRED (2026-06-30, user clarification).
 
-    Design note (2026-06-30, user clarification):
-      Lock Score is the DEEP-THINKING ENGINE'S confidence signal — it
-      reflects reputation, market context, model conviction, and
-      historical reliability. It is NOT a win-probability mirror.
+    All three rules in this function used to cap `lock_score` based on
+    win-prob / edge / form heuristics. The user's design intent is
+    explicit: Lock Score is the DEEP-THINKING ENGINE'S signal and is
+    NEVER capped by quality_gate. A Lock 99 pick can have negative
+    edge on a real sportsbook line (e.g. MLB Over 0.5 Hits at -300
+    chalk) — the engine's confidence is its own signal independent of
+    win-prob math.
 
-      An Mbappé Anytime Scorer pick can legitimately carry Lock 99
-      while having a 50-55% raw win probability, because the engine's
-      conviction is anchored in reputation + signal stacking, not
-      raw conversion math. Capping lock_score based on win_probability
-      or games_logged thresholds contradicts that design.
+    Targeted drops are handled elsewhere:
+      ▸ `_block_reason` — synthetic / impossible markets
+      ▸ `_drop_tennis_synthetic_lines` — fictional chalk Tennis Overs
+      ▸ `validate_against_live_alt_lines` — alt-line provenance flags
 
-      Two prior cap rules have been RETIRED:
-        ▸ LOW_WINPROB cap (75 when wp < 0.65)
-        ▸ NO_FORM_DATA cap (78 when player_form.games_logged < 1)
-
-      Only the negative-edge cap remains, and it's defense-in-depth:
-      `apply_quality_gate` already HARD-DROPS picks with edge < 0
-      from the board, but the detail endpoint also re-applies this
-      function so cached pick docs that surface via other paths
-      can't show "Elite Lock 99 / Edge -6%".
+    Kept as a no-op so callers don't break; canonicalize will read
+    `coherence_cap_ceiling` ONLY if some other path explicitly sets
+    it.
     """
-    edge = _coerce_float(pick.get("edge_percent"))
-
-    cap = None
-    reason = None
-
-    # Negative edge → demote (defense-in-depth; primary handling is
-    # the negative_edge_dropped hard filter in apply_quality_gate).
-    if edge is not None and edge <= -3:
-        cap = NEG_EDGE_LOCK_CAP_HARSH
-        reason = "harsh_negative_edge"
-    elif edge is not None and edge < 0:
-        cap = NEG_EDGE_LOCK_CAP_SOFT
-        reason = "negative_edge"
-
-    if cap is None:
-        return
+    return
 
     capped = False
     # NOTE: must cap ALL shadow lock fields (`lock_score_raw` too),
@@ -1037,19 +1017,25 @@ def apply_quality_gate(
     Returns `(kept, stats)` where stats is a dict of
     `{block_reason: count}` for observability.
 
-    Also applies in-place display caps (e.g. Anytime-Scorer lock_score
-    clamped to 75 so it doesn't read as "Elite Lock 95") on kept picks.
-
-    Negative-edge HARD DROP (2026-06-30, user request):
-      The coherence cap pipeline (`_apply_lockscore_coherence`) used
-      to DEMOTE -EV picks from Lock 99 → 60. But a pick with
-      `edge_percent < 0` is, by the model's own math, a losing bet —
-      so it shouldn't be on the recommendation board at all. The cap
-      ladder is now reserved for edge-coherence on read paths
-      (detail view, history) that need to stay consistent with cached
-      pick documents; the BOARD itself drops -EV picks unconditionally.
-      Exception: NaN / missing edge_percent → keep (we couldn't compute
-      EV, don't drop in the dark).
+    Filter policy (2026-06-30, user clarification):
+      ▸ Lock Score is the DEEP-THINKING ENGINE'S signal and is NEVER
+        capped here. The engine decides Lock 95/99 — quality_gate
+        does not.
+      ▸ Edge can be NEGATIVE on legitimate sportsbook lines (e.g. MLB
+        Over 0.5 Hits at -300 chalk has -EV but is a real, bettable
+        line). We DO NOT blanket-drop -EV picks because that erases
+        entire markets (MLB batter props, etc.).
+      ▸ TARGETED drops only:
+          1. `_block_reason` — synthetic / impossible markets
+             (Soccer FGS 3% lottery, MLB NRFI/ML/YRFI low-winrate
+             buckets, etc.). These are pre-validated heuristics.
+          2. Tennis synthetic-chalk Over lines — already removed by
+             `_drop_tennis_synthetic_lines` AFTER alt-line validation
+             confirms the line+price doesn't exist on any book.
+      ▸ The elite-anchor + coherence-cap pipeline still runs to keep
+        FIELD CONSISTENCY across `lock_score / v2 / raw / peak`, but
+        the only field a cap actually lowers is on negative-edge picks
+        as defense-in-depth (matches what the detail endpoint does).
     """
     kept: list[dict] = []
     blocked_counts: dict[str, int] = {}
@@ -1060,31 +1046,14 @@ def apply_quality_gate(
             # / Messi / Salah etc. goalscorer pick, override win_prob
             # with the real per-match scoring rate and recompute edge.
             _apply_elite_scorer_anchor(p)
-            # Then display caps for Anytime markets (75 ceiling) and
-            # coherence guardrails (negative edge / low win_prob).
+            # Display caps RETIRED — was demoting Anytime scorers based
+            # on calibration; lock score now comes from engine only.
             _apply_display_cap(p)
+            # Coherence cap — only fires on negative-edge picks now
+            # (Rules 2/3 retired per user clarification 2026-06-30).
+            # Defense-in-depth for the detail endpoint; the board
+            # itself does NOT drop -EV picks.
             _apply_lockscore_coherence(p)
-            # ── Negative-edge HARD DROP ────────────────────────────────
-            # Anchor + caps may have RE-COMPUTED edge_percent (e.g. the
-            # elite anchor re-derives edge for Anytime markets), so this
-            # check fires AFTER all transformations. Threshold is
-            # strict (< 0) — covers the user's screenshot case
-            # (Tennis Over 17.5 / Under 23.5 at -6% edge).
-            try:
-                edge = float(p.get("edge_percent"))
-                if edge < 0:
-                    blocked_counts["negative_edge_dropped"] = (
-                        blocked_counts.get("negative_edge_dropped", 0) + 1
-                    )
-                    if tag_blocked:
-                        p["quality_gate_block_reason"] = "negative_edge"
-                        kept.append(p)
-                    continue
-            except (TypeError, ValueError):
-                # Missing/NaN edge — keep the pick (don't drop in the
-                # dark). Coherence cap already pinned its lock_score
-                # appropriately.
-                pass
             kept.append(p)
             continue
         blocked_counts[reason] = blocked_counts.get(reason, 0) + 1
