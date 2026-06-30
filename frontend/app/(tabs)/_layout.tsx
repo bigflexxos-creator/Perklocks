@@ -1,5 +1,5 @@
 import React, { useEffect } from "react";
-import { View, Platform } from "react-native";
+import { View } from "react-native";
 import { Tabs, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -16,19 +16,20 @@ export default function TabsLayout() {
     if (!loading && !user) router.replace("/(auth)/login");
   }, [loading, user]);
 
-  // CRITICAL (2026-06-29 v24): on react-native-web, ALL tab screens
-  // render into the DOM simultaneously with `display:block` and the
-  // active one painted on top. `freezeOnBlur` only freezes the React
-  // render tree, not the DOM — so the inactive tabs are still visible
-  // through any non-100%-opaque pixel. Even with our solid backgrounds,
-  // sub-pixel anti-aliasing + the Emergent preview chrome was letting
-  // multiple tabs (Locks + Rollover + Parlay) all show through at once.
-  // The bulletproof fix on web is `unmountOnBlur: true` — inactive tabs
-  // are physically REMOVED from the DOM tree, so they literally cannot
-  // bleed through anything. We keep this off on native (iOS/Android)
-  // because there freezeOnBlur is enough AND we want to preserve scroll
-  // position / form state across tab switches.
-  const isWeb = Platform.OS === "web";
+  // CRITICAL (2026-06-30 v25 — permanent fix):
+  //   `unmountOnBlur: true` on web was causing the "app keeps
+  //   crashing while going through tabs" report. Each tab switch
+  //   destroyed and re-mounted the inactive screen, which:
+  //     1. Aborted in-flight `/api/picks/today` fetches mid-stream
+  //     2. Triggered setState() on already-unmounted components
+  //     3. Re-ran every screen's load effect from scratch, slamming
+  //        the backend on every tab tap
+  //   We rely on the CSS injection in `useEffect` below
+  //   (`[aria-hidden="true"] { display: none !important; }`) to hide
+  //   inactive tabs at the DOM level instead — the screens stay
+  //   mounted and frozen, no unmount cycle, no race conditions.
+  //   `freezeOnBlur: true` + `lazy: true` give us the React-tree
+  //   freeze on native too.
 
   return (
     <View testID="perklocks-tabs-root" nativeID="perklocks-tabs-root" style={{ flex: 1, backgroundColor: "#0a0a0a", overflow: "hidden" }}>
@@ -46,14 +47,13 @@ export default function TabsLayout() {
         //     between cards (cards themselves are rgba surfaces),
         //   • But makes the SCENE itself opaque enough that no
         //     inactive tab can bleed through.
-        // freezeOnBlur + lazy stay on for native (RN bottom-tabs),
-        // and the solid scene bg covers the web build where freeze
-        // semantics don't apply the same way.
-        sceneStyle: { backgroundColor: "rgba(10,10,10,0.94)" },
-        // freezeOnBlur is enough on native; on web we need to actually
-        // unmount inactive tabs (see comment above on `isWeb`).
+        // freezeOnBlur freezes the React tree on both platforms; we
+        // do NOT unmount on web because that triggers the crash-on-tab
+        // bug (mid-fetch unmounts → setState on unmounted component).
+        // Instead, inactive tabs are hidden via the global CSS
+        // injection below (`[aria-hidden="true"] { display: none }`).
         freezeOnBlur: true,
-        unmountOnBlur: isWeb,
+        unmountOnBlur: false,
         lazy: true,
         tabBarStyle: {
           // Solid (no alpha) so inactive-tab content behind the bar can't
