@@ -394,6 +394,170 @@ def _espn_player_stat(summary: dict, player_name: str, stat_key: str) -> Optiona
     return None
 
 
+def _espn_player_started(summary: dict, player_name: str) -> Optional[bool]:
+    """Did the named player START the match (in the starting XI)?
+
+    Sportsbook rule for First/Last Goal Scorer markets (universal across
+    DraftKings / FanDuel / Bet365 / Pinnacle / BetMGM / Caesars):
+      "If the named player does NOT start the match (or, for First
+       Goal Scorer, comes on after the first goal is scored), the bet
+       is VOID."
+
+    Reasoning: a substitute who enters in the 60th minute had zero
+    chance of scoring the 12th-minute opening goal — grading that as
+    a LOSS would be unfair. Every regulated book voids those bets.
+
+    Returns:
+      True  → player was a STARTER (in starting XI)
+      False → player was a substitute / DNP / not in starting XI
+      None  → couldn't tell (ESPN didn't expose starter flags) — caller
+              should fall back to the appearance check.
+    """
+    if not summary:
+        return None
+
+    found_any_starter_flag = False
+    # Modern ESPN shape: boxscore.players[*].roster[*].starter
+    for side in (summary.get("boxscore") or {}).get("players") or []:
+        for entry in side.get("roster") or []:
+            ath = entry.get("athlete") or {}
+            nm = ath.get("displayName") or ath.get("shortName") or ""
+            if not nm:
+                continue
+            # Track whether ANY entry has a starter flag — if not, ESPN
+            # didn't expose lineups for this match and we can't decide.
+            if entry.get("starter") is not None or entry.get("startingLineup") is not None:
+                found_any_starter_flag = True
+            if _names_match(player_name, nm):
+                # `starter: true` (modern) or `startingLineup: true` (legacy)
+                if entry.get("starter") is True or entry.get("startingLineup") is True:
+                    return True
+                # If the row exists but is NOT flagged as starter, they
+                # were a sub or DNP — explicit False.
+                if found_any_starter_flag:
+                    return False
+
+    # Older shape: top-level rosters[*].formation / lineup
+    for team in summary.get("rosters") or []:
+        # Some ESPN endpoints carry `entries`/`roster` with `starter` or
+        # `position.startingLineup`. Defensive on both shapes.
+        for entry in (team.get("roster") or team.get("entries") or []):
+            ath = entry.get("athlete") or entry.get("person") or {}
+            nm = ath.get("displayName") or ath.get("shortName") or ""
+            if not nm:
+                continue
+            if entry.get("starter") is not None or entry.get("startingLineup") is not None:
+                found_any_starter_flag = True
+            if _names_match(player_name, nm):
+                if entry.get("starter") is True or entry.get("startingLineup") is True:
+                    return True
+                if found_any_starter_flag:
+                    return False
+
+    return None  # unknown — caller decides fallback behavior
+
+
+def _espn_player_appeared(summary: dict, player_name: str) -> Optional[bool]:
+    """Did the named player participate in this match?
+
+    Sportsbook rule (universal across DraftKings / FanDuel / Bet365 /
+    BetMGM / Caesars / Pinnacle): if a named player DOES NOT take the
+    field — i.e. they're not in the starting XI AND don't come on as a
+    substitute — all single-player props referencing that player are
+    VOIDED (push, money refunded). They CANNOT be graded as LOSS.
+
+    We check four signals in this order:
+      1. `boxscore.players[*].statistics` rows — only listed if the
+         player got minutes.
+      2. `boxscore.players[*].roster[*].didNotPlay` / `subbedIn` flag.
+      3. ESPN sometimes only flags it via `rosters[*].players[*].active`.
+      4. As a last resort, look at the `keyEvents` / `scoringPlays`
+         participants — if the player's name appears as a goal scorer,
+         assister, card recipient, or sub-in event, they played.
+
+    Returns:
+      True  → player definitely appeared
+      False → player definitely DID NOT appear (DNP — pick should VOID)
+      None  → couldn't tell (ESPN didn't expose the roster); fall back
+              to existing score/no-score grading (safer than auto-VOID
+              every pick where ESPN's roster feed is empty).
+    """
+    if not summary:
+        return None
+
+    # 1+2: boxscore players → statistics rows / didNotPlay flags.
+    saw_any_roster = False
+    for side in (summary.get("boxscore") or {}).get("players") or []:
+        # Per-side may be a dict with `statistics` (top-level) or
+        # `roster` (per-player) — handle both.
+        for grp in side.get("statistics") or []:
+            for ath_row in grp.get("athletes") or []:
+                ath = ath_row.get("athlete") or {}
+                nm = ath.get("displayName") or ath.get("shortName") or ""
+                if not nm:
+                    continue
+                saw_any_roster = True
+                if _names_match(player_name, nm):
+                    return True
+        for entry in side.get("roster") or []:
+            ath = entry.get("athlete") or {}
+            nm = ath.get("displayName") or ath.get("shortName") or ""
+            if not nm:
+                continue
+            saw_any_roster = True
+            if _names_match(player_name, nm):
+                # If the row says they DNP, return False; else True.
+                dnp = entry.get("didNotPlay") or entry.get("dnp")
+                if dnp is True:
+                    return False
+                return True
+
+    # 3: top-level rosters[] (older shape, still present on some leagues).
+    for team in summary.get("rosters") or []:
+        for entry in team.get("roster") or []:
+            ath = entry.get("athlete") or entry.get("person") or {}
+            nm = ath.get("displayName") or ath.get("shortName") or ""
+            if not nm:
+                continue
+            saw_any_roster = True
+            if _names_match(player_name, nm):
+                dnp = entry.get("didNotPlay") or entry.get("dnp")
+                if dnp is True:
+                    return False
+                # If `active=False` they were unused sub — still didn't play.
+                if entry.get("active") is False:
+                    return False
+                return True
+
+    # 4: keyEvents / scoringPlays / plays — if their name appears in ANY
+    # participation event (goal, assist, card, substitution-in), they played.
+    plays = list(summary.get("scoringPlays") or summary.get("plays") or [])
+    for ev in summary.get("keyEvents") or []:
+        plays.append(ev)
+    for p in plays:
+        for block in (p.get("athletes") or p.get("participants") or
+                      p.get("athletesInvolved") or []):
+            ath = block.get("athlete") or block
+            nm = ath.get("displayName") or ath.get("name") or ""
+            if nm and _names_match(player_name, nm):
+                return True
+        text = (p.get("text") or "") + " " + (p.get("name") or "")
+        # Substitution events: "Substitution, Team. Player In for Player Out."
+        if re.search(r"substitut", text, re.IGNORECASE):
+            for m in re.finditer(
+                r"([A-ZÀ-ÿ][\w'.-]+(?:\s+[A-ZÀ-ÿ][\w'.-]+)+)",
+                text,
+            ):
+                if _names_match(player_name, m.group(1)):
+                    return True
+
+    # If we saw a roster but our player wasn't in it → confirmed DNP.
+    # If we couldn't read any roster → unknown.
+    if saw_any_roster:
+        return False
+    return None
+
+
 def _espn_did_score_goal(summary: dict, player_name: str) -> Optional[bool]:
     """For Anytime/First Goal Scorer markets in Soccer/NHL.
 
@@ -739,6 +903,33 @@ async def _settle_group(cx, db, sport: str, date_str: str, batch: list[dict], co
             if not player:
                 counts["skipped"] += 1
                 continue
+
+            # ─── DNP-VOID CHECK (user-reported 2026-06-30) ────────────────
+            # Sportsbook rule (every major book follows this): if a named
+            # player DOES NOT take the field — not in starting XI AND
+            # never subs in — all single-player props for that player
+            # are VOIDED (push, money refunded). They CANNOT be settled
+            # as a LOSS.
+            #
+            # Real-world example from user feedback: "Messi FGS settled
+            # as LOSS but he didn't start that game" — Inter Miami listed
+            # him as `subjectToHealthAndSafety` / late scratch, so his
+            # FGS pick should have been VOID, not LOST.
+            #
+            # We run this BEFORE any score/assist grading so DNPs always
+            # resolve to VOID. If ESPN doesn't expose enough roster data
+            # to determine participation (returns None), we fall through
+            # to the existing logic — safer than auto-voiding everything
+            # on incomplete API data.
+            appeared = _espn_player_appeared(summary, player)
+            if appeared is False:
+                await _record(db, p, "void",
+                              {"player": player, "stat": "dnp_void",
+                               "value": 0, "line": 0.5,
+                               "void_reason": "player_did_not_play"},
+                              counts)
+                continue
+
             # ─── Per-user feedback 2026-06-22: "Don't drop the goalscorer
             # I just want them to grade in history" ────────────────────────
             # Previously the engine VOIDED any goalscorer pick whose player
@@ -764,7 +955,25 @@ async def _settle_group(cx, db, sport: str, date_str: str, batch: list[dict], co
             scored_any, first_name = result if isinstance(result, tuple) else (result, None)
             if stat_key == "soccer.anytime":
                 outcome = "won" if scored_any else "lost"
-            else:  # first
+            else:  # first / last goal scorer
+                # ─── STARTER-ONLY RULE for FGS/LGS (user-reported 2026-06-30) ──
+                # Every regulated sportsbook voids First / Last Goal
+                # Scorer bets if the named player did NOT start the
+                # match. Example from user feedback: Messi was a sub
+                # who came on in the 2nd half and scored — the FGS
+                # pick should be VOID, not LOST. He had zero chance
+                # of scoring the first goal because he wasn't on the
+                # pitch yet.
+                started = _espn_player_started(summary, player)
+                if started is False:
+                    await _record(db, p, "void",
+                                  {"player": player, "stat": "fgs_substitute_void",
+                                   "value": 0, "line": 0.5,
+                                   "void_reason": "first_goal_scorer_player_did_not_start"},
+                                  counts)
+                    continue
+                # If `started is None` we don't have lineup data — grade
+                # via the normal first-scorer match (safer than auto-VOID).
                 outcome = "won" if first_name and _names_match(player, first_name) else "lost"
             await _record(db, p, outcome,
                           {"player": player, "stat": "goals", "value": 1 if scored_any else 0, "line": 0.5},
