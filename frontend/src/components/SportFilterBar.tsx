@@ -11,6 +11,7 @@
 import React, { useEffect, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 
 import { api, PickFilters, SportLeague, SportMarket } from "@/src/lib/api";
 import { useFilters } from "@/src/stores/useFilters";
@@ -25,6 +26,7 @@ type Props = {
 };
 
 export function SportFilterBar({ sport, filters, onChange }: Props) {
+  const router = useRouter();
   // ── Multi-select via the global filter store ──
   // MUST be called at the top — hooks can't be conditional. Aliased
   // setters to avoid colliding with the local useState below.
@@ -128,6 +130,20 @@ export function SportFilterBar({ sport, filters, onChange }: Props) {
               testID={`market-pill-${m.token}`}
             />
           ))}
+          {/* MLB Home-Run chip — special-case navigation (NOT a filter).
+              Sits alongside Hits / H+R+RBI / Strikeouts / Outs Recorded
+              so the user sees it in the same chip row, but tapping it
+              routes to the dedicated /hr slate screen instead of
+              filtering picks. Backed by /api/mlb/hr-slate. */}
+          {sport === "MLB" && (
+            <Pill
+              label="🚀 HR"
+              active={false}
+              onPress={() => { try { router.push("/hr" as any); } catch {} }}
+              testID="market-pill-hr"
+              accent
+            />
+          )}
         </ScrollView>
       )}
 

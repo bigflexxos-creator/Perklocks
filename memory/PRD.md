@@ -162,3 +162,15 @@ under MLB tab" + "should be after Outs Recorded".
   but hidden from the tab bar)
 
 **Cache version:** `20260630-hr-mlb-banner-v37` (auto-wipes stale clients).
+
+## MLB HR — Chip in Market Pill Row (2026-06-30, final placement)
+Per user feedback: "Like hits and strikeouts got hr should be next to them".
+
+**Implementation:**
+- Removed the inline `MLBHRBanner` CTA from `app/(tabs)/index.tsx`
+- Added a special-case `"🚀 HR"` pill into `SportFilterBar.tsx`, rendered
+  only when `sport === "MLB"`, placed AFTER the existing market pills
+  (Moneyline · Run Line · Totals · Hits · H+R+RBI · Strikeouts · Outs Recorded)
+- Pill is NOT a filter — `onPress` calls `router.push("/hr")` to open the
+  dedicated HR slate screen, leaving the picks list untouched
+- Cache key bumped to `20260630-hr-chip-v39`

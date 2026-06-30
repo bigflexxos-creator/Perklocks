@@ -14,7 +14,6 @@ import { FilterButton, FilterSheet } from "@/src/components/FilterSheet";
 import { GameFilterButton, GameFilterSheet } from "@/src/components/GameFilterSheet";
 import { SportFilterBar } from "@/src/components/SportFilterBar";
 import { NFLIntelligenceSection } from "@/src/components/NFLIntelligenceSection";
-import { MLBHRBanner } from "@/src/components/MLBHRBanner";
 import { StaleVersionBanner } from "@/src/components/StaleVersionBanner";
 import { StaleBuildBanner } from "@/src/components/StaleBuildBanner";
 import { storage } from "@/src/utils/storage";
@@ -652,14 +651,8 @@ export default function LocksScreen() {
           <Text style={styles.soccerLabChevron}>›</Text>
         </TouchableOpacity>
       )}
-      {/* MLB Home-Run Top-5 banner (added 2026-06-30).
-          Surfaced inside the MLB filter view, positioned AFTER the
-          NRFI/YRFI CTA (which sits after the "Outs Recorded" market
-          section the user referenced). Self-fetches the slate from
-          /api/mlb/hr-slate, flattens every game's picks across the
-          day, sorts by hr_score desc, and shows the top 5 nationally.
-          Tap drills into the full slate at /hr. */}
-      {sport === "MLB" && <MLBHRBanner />}
+      {/* HR entry point moved to SportFilterBar — appears as a "🚀 HR"
+          chip next to Hits / H+R+RBI / Strikeouts / Outs Recorded. */}
       <FilterSheet
         visible={filterOpen}
         onClose={() => setFilterOpen(false)}
