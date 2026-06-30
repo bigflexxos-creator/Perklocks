@@ -1548,8 +1548,32 @@ async def pick_detail(
     if not pick:
         raise HTTPException(status_code=404, detail="Pick not found")
     from server import _canonicalize_lock_score  # lazy
-    # Canonicalize lock_score → max(v1, v2) so detail view matches the
-    # home feed card. Single source of truth.
+    # ── Quality-gate caps BEFORE canonicalize (2026-06-30 fix) ──────────
+    # The detail endpoint must run the same cap pipeline as /picks/today,
+    # otherwise the displayed Lock 60 on the home card "magically"
+    # turns back into Lock 95 in the detail view. Sequence mirrors
+    # `apply_quality_gate` in quality_gate.py:
+    #   1. _apply_elite_scorer_anchor — sets anchor win_prob / edge
+    #      for elite scorers on Anytime markets.
+    #   2. _apply_display_cap — Anytime calibration cap (75) for non-
+    #      elite picks; sets coherence_cap_ceiling.
+    #   3. _apply_lockscore_coherence — neg-edge cap (60/70) +
+    #      low-wp cap (75) + no-form-data cap (78); sets
+    #      coherence_cap_ceiling.
+    # After this, `_canonicalize_lock_score` will honour the ceiling
+    # via its `min(max(...), ceiling)` clamp added in fix #2.
+    try:
+        from quality_gate import (
+            _apply_display_cap, _apply_elite_scorer_anchor,
+            _apply_lockscore_coherence,
+        )
+        _apply_elite_scorer_anchor(pick)
+        _apply_display_cap(pick)
+        _apply_lockscore_coherence(pick)
+    except Exception as _qg_err:
+        logger.debug("Quality-gate caps failed on /picks/{id}: %s", _qg_err)
+    # Canonicalize lock_score → max(v1, v2) clamped by coherence ceiling
+    # so detail view matches the home feed card. Single source of truth.
     pick = _canonicalize_lock_score(pick)
     # Lazy evidence governance — see /api/picks/today for context.
     # Phase-3 trigger (2026-06-25): also re-govern when the pick was
