@@ -37,7 +37,89 @@ import re
 from typing import Iterable, Optional
 
 
-# ─── Tunables (mirror the historical-data-derived thresholds) ───────
+# Error codes for alt-line validation failures (user spec 2026-06-30):
+#   line_not_found       — pick's (sport, market, line) has no live row
+#   market_removed       — market_key not in live feed for this event
+#   stale_odds           — last_seen older than 15 min
+#   invalid_alt_mapping  — pick references an alt-line market we don't
+#                          map cleanly to an Odds API market key
+ALT_LINE_ERR = ("line_not_found", "market_removed",
+                "stale_odds", "invalid_alt_mapping")
+
+
+# Map our internal market labels → Odds API market_key. If we generate
+# a pick on an alt-line market that's NOT in this map, the pick is
+# rejected with `invalid_alt_mapping` — we won't ship a pick we can't
+# validate.
+INTERNAL_TO_ODDSAPI_MARKET: dict[str, str] = {
+    # Soccer
+    "anytime goal scorer":    "player_goal_scorer_anytime",
+    "anytime scorer":         "player_goal_scorer_anytime",
+    "first goal scorer":      "player_first_goal_scorer",
+    "first scorer":           "player_first_goal_scorer",
+    "to score or assist":     "player_to_score_or_assist",
+    "score or assist":        "player_to_score_or_assist",
+    # MLB alt
+    "alt hits":               "batter_hits_alternate",
+    "batter hits over":       "batter_hits_alternate",
+    "batter hits alt":        "batter_hits_alternate",
+    "total bases over":       "batter_total_bases_alternate",
+    "alt total bases":        "batter_total_bases_alternate",
+    "pitcher strikeouts over":"pitcher_strikeouts_alternate",
+    "alt strikeouts":         "pitcher_strikeouts_alternate",
+    # NFL alt
+    "passing yards over":     "player_pass_yds_alternate",
+    "alt passing yards":      "player_pass_yds_alternate",
+    "rushing yards over":     "player_rush_yds_alternate",
+    "alt rushing yards":      "player_rush_yds_alternate",
+    "receiving yards over":   "player_reception_alternate",
+    "anytime touchdown":      "player_anytime_td",
+    "anytime td":             "player_anytime_td",
+    # Tennis alt
+    "total games over":       "alternate_totals_games",
+    "total games under":      "alternate_totals_games",
+    "alt games spread":       "alternate_spreads_games",
+}
+
+
+def _map_market_to_oddsapi_key(internal_market: str) -> Optional[str]:
+    """Best-effort map from our pick's `market` text to an Odds API key.
+    Returns None if we can't classify it as an alt-line — caller decides
+    whether to flag as `invalid_alt_mapping` or skip validation entirely
+    (for non-alt-line markets like ML / Spread / base Total)."""
+    if not internal_market:
+        return None
+    m = internal_market.lower()
+    for needle, mkey in INTERNAL_TO_ODDSAPI_MARKET.items():
+        if needle in m:
+            return mkey
+    return None
+
+
+def _is_alt_line_pick(pick: dict) -> bool:
+    """Should this pick be validated against the live alt-line feed?"""
+    mkt = (pick.get("market") or "").lower()
+    if not mkt:
+        return False
+    # Base markets (ML, base spread, base total) are NOT alt-lines and
+    # come from the regular odds API path — skip them here.
+    if any(k in mkt for k in ("moneyline", "h2h", "run line", "spread")):
+        # Spread / run line can be base or alt — only flag as alt if the
+        # caller has explicitly tagged it `alt_line: true`.
+        if pick.get("alt_line") is True:
+            return True
+        return False
+    # All goalscorer + alt-* + anytime-TD markets are alt-lines.
+    if any(k in mkt for k in (
+        "goal scorer", "anytime", "first scorer", "last scorer",
+        "to score", "score or assist",
+        "alt ", "alternate", "over ", "under ",
+        "passing yards", "rushing yards", "receiving yards",
+        "total bases", "hits", "strikeouts", "outs recorded",
+        "total games",
+    )):
+        return True
+    return False
 _INVERTED_LOCK_BAND = (65.0, 75.0)   # ≥65 and <75 — historical 12.8%
 
 _SOCCER_GOALSCORER_FAMILY_RE = re.compile(
@@ -456,6 +538,123 @@ def _apply_lockscore_coherence(pick: dict) -> None:
             if pick.get(badge_field):
                 pick[badge_field] = None
         pick.setdefault("coherence_caps", []).append(reason)
+
+
+async def validate_against_live_alt_lines(
+    picks: list[dict], db, *, max_stale_minutes: int = 15,
+) -> tuple[list[dict], dict]:
+    """Post-fetch validation: every alt-line pick must match a live row
+    in `live_alt_lines`. Picks that don't are removed.
+
+    Returns (kept, stats) where stats is `{error_code: count}` with the
+    four user-specified codes: line_not_found / market_removed /
+    stale_odds / invalid_alt_mapping.
+
+    Soft-fail design: if the live_alt_lines collection is empty (e.g.
+    the refresh loop hasn't run yet), we DO NOT block any picks —
+    blocking everything would dump the app. Instead we log a warning
+    and skip validation until the feed populates.
+    """
+    from datetime import datetime, timezone, timedelta
+    stats = {k: 0 for k in ALT_LINE_ERR}
+    stats["passed"] = 0
+    stats["skipped_base_market"] = 0
+
+    # Soft-fail: if the feed is dry, skip validation gracefully.
+    try:
+        feed_count = await db.live_alt_lines.estimated_document_count()
+    except Exception:
+        feed_count = 0
+    if feed_count == 0:
+        import logging
+        logging.getLogger("lockscore").warning(
+            "alt-line validation skipped — live_alt_lines is empty"
+        )
+        return picks, {"skipped_feed_empty": len(picks)}
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_stale_minutes)
+    kept: list[dict] = []
+    for p in picks:
+        if not _is_alt_line_pick(p):
+            stats["skipped_base_market"] += 1
+            kept.append(p)
+            continue
+        sport = (p.get("sport") or "").lower()
+        market_text = p.get("market") or ""
+        oddsapi_market = _map_market_to_oddsapi_key(market_text)
+        if not oddsapi_market:
+            stats["invalid_alt_mapping"] += 1
+            continue
+        # Extract player / selection
+        sel = p.get("selection") or ""
+        if sel.lower() in ("", "yes", "no", "over", "under"):
+            # For Yes/Over/etc., the player/team name is in the market text.
+            sel = market_text
+            # Strip suffixes like "Anytime Goal Scorer"
+            for suffix in (
+                " Anytime Goal Scorer", " First Goal Scorer",
+                " Last Goal Scorer", " To Score or Assist",
+                " Anytime Touchdown", " Anytime TD",
+            ):
+                if sel.endswith(suffix):
+                    sel = sel[: -len(suffix)].strip()
+                    break
+        sel_norm = re.sub(r"\s+", " ",
+                          re.sub(r"[^a-z0-9 ]+", " ", sel.lower())).strip()
+
+        line = p.get("line")
+        if line is None:
+            # Try common alt-extract: market "Over 0.5 Hits" → 0.5
+            m = re.search(r"(?:over|under)\s+([\d.]+)", market_text, re.I)
+            if m:
+                try:
+                    line = float(m.group(1))
+                except Exception:
+                    line = None
+
+        q: dict = {
+            "sport": sport if sport != "nfl" else "nfl",
+            "market_key": oddsapi_market,
+            "selection_norm": sel_norm,
+            "last_seen": {"$gte": cutoff},
+        }
+        if line is not None:
+            q["line"] = float(line)
+        row = await db.live_alt_lines.find_one(q)
+        if row:
+            # Pass: stamp the validation metadata on the pick.
+            p["alt_line_validated"] = True
+            p["validated_sportsbook"] = row.get("sportsbook")
+            p["validated_market_id"] = row.get("market_id")
+            p["validated_selection_id"] = row.get("selection_id")
+            p["validated_price"] = row.get("price")
+            p["validated_last_seen"] = (
+                row.get("last_seen").isoformat()
+                if hasattr(row.get("last_seen"), "isoformat") else None
+            )
+            stats["passed"] += 1
+            kept.append(p)
+            continue
+
+        # No match — figure out which error code applies.
+        # 1. Try the same query WITHOUT the line filter — if we find a
+        #    match, the market exists but our line is wrong.
+        q2 = {k: v for k, v in q.items() if k != "line"}
+        row2 = await db.live_alt_lines.find_one(q2)
+        if row2:
+            stats["line_not_found"] += 1
+            continue
+        # 2. Try without selection — if we find one, the market exists
+        #    but our player/selection doesn't.
+        q3 = {k: v for k, v in q.items() if k not in ("line", "selection_norm")}
+        row3 = await db.live_alt_lines.find_one(q3)
+        if row3:
+            stats["line_not_found"] += 1
+            continue
+        # 3. Otherwise — market not present for this event at all.
+        stats["market_removed"] += 1
+
+    return kept, stats
 
 
 def apply_quality_gate(

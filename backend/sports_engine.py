@@ -1694,14 +1694,17 @@ def _build_tennis_alt_picks(
                     is_alt_prop=True,
                 ))
 
-    # ── Alt totals: up to 3 chalky Over OR Under lines. Combines real
-    # bookmaker outcomes with SYNTHESIZED chalkier alts (extrapolated
-    # below/above the API ladder) so users see the full sportsbook
-    # ladder including chalkier safer lines the API doesn't propagate.
+    # ── Alt totals (2026-06-30 user mandate — NO SYNTHETIC LINES) ──────
+    # Previously this combined real bookmaker outcomes with SYNTHESIZED
+    # chalkier alts (extrapolated above/below the API ladder). The user
+    # explicitly disabled synthesis: only show lines that exist on the
+    # live sportsbook board. The validation gate in `quality_gate.py`
+    # cross-checks every alt pick against `live_alt_lines` — synthesized
+    # lines would fail validation and get rejected anyway.
     api_total_outs = _alt_outcomes_for_market(alt_payload, "alternate_totals")
     if api_total_outs:
-        # Merge real + synthesized — synthesized go in chalk direction.
-        total_outs = list(api_total_outs) + _synthesize_chalk_alt_totals(api_total_outs)
+        # REAL book outcomes only — no `_synthesize_chalk_alt_totals` call.
+        total_outs = list(api_total_outs)
         for side in ("Over", "Under"):
             picks_for_side = _pick_sweet_spot_alts(total_outs, side_name=side, limit=4)
             for pick_obj in picks_for_side:
@@ -1716,14 +1719,11 @@ def _build_tennis_alt_picks(
                 lock, breakdown = compute_lock_score(
                     factors, win_prob=mp * 100, edge_percent=(mp * 100 - imp * 100)
                 )
-                # Tag synthesized picks in their insights + external_id
-                # so the consumer can distinguish them from real-book alts.
-                is_synth = bool(pick_obj.get("_synthesized"))
-                synth_tag = "-synth" if is_synth else ""
+                # Real-book alts only — no synthesized tagging needed.
+                is_synth = False
+                synth_tag = ""
                 source_note = (
-                    " (model-extrapolated from market ladder)"
-                    if is_synth
-                    else f" — book implies {imp*100:.0f}% hit rate"
+                    f" — book implies {imp*100:.0f}% hit rate"
                 )
                 out_picks.append(_build_pick(
                     sport="Tennis", league=league_label, event=f"{away} @ {home}",

@@ -1264,12 +1264,24 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # patch; the underlying generation models will be recalibrated in a
     # later pass. Logged counts surface in `quality_gate_blocked`.
     try:
-        from quality_gate import apply_quality_gate
+        from quality_gate import apply_quality_gate, validate_against_live_alt_lines
         picks, qg_blocked = apply_quality_gate(picks)
         if qg_blocked:
             import logging
             logging.getLogger("lockscore").info(
                 "QualityGate blocked on /picks/today: %s", qg_blocked,
+            )
+        # Live alt-line validation (2026-06-30 user mandate — no synthetic
+        # lines). Soft-fail if feed empty so we don't accidentally dump
+        # the entire board during a feed outage.
+        picks, alt_stats = await validate_against_live_alt_lines(picks, db)
+        rejected_alt = sum(v for k, v in alt_stats.items()
+                           if k in ("line_not_found", "market_removed",
+                                    "stale_odds", "invalid_alt_mapping"))
+        if rejected_alt:
+            import logging
+            logging.getLogger("lockscore").info(
+                "AltLineValidator on /picks/today: %s", alt_stats,
             )
     except Exception as qg_err:
         import logging
