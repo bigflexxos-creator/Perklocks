@@ -177,15 +177,23 @@ async def _find_form_doc(db, player_name: str) -> Optional[dict]:
                 cn = (c.get("name_canonical") or "").split()
                 if not cn:
                     continue
-                # Last name must literally match (the regex above also
-                # matches middle-name-as-last cases, filter strictly).
-                if cn[-1] != last:
-                    # Hyphenated case: cn[-1] might be "mbappelottin"
-                    # while last is "mbappe" — accept startswith.
-                    if not cn[-1].startswith(last) and last not in cn:
-                        continue
+                # ── STRICT LAST-NAME GUARD ────────────────────────────
+                # The regex `\bjunior\b` above matches "Junior Messias"
+                # (where 'junior' is the FIRST name) just as eagerly as
+                # "Vinicius Junior" (where it's the LAST name). Only
+                # accept candidates where the LAST token of the
+                # canonical name matches our search last name — with
+                # a hyphenated allowance (Mbappe-Lottin →
+                # cn[-1]="mbappelottin" startswith "mbappe"). The old
+                # `last in cn` fallback was the source of the
+                # "Joao Junior → Junior Messias" false positive
+                # (code-review HIGH 2026-06-30).
+                if cn[-1] != last and not cn[-1].startswith(last):
+                    continue
                 if first_initial and cn[0][:1] == first_initial:
-                    # Also prefer where first names share more chars.
+                    # Strong match: surname agrees AND first-name
+                    # initials agree. Further refine by full first-name
+                    # overlap if available.
                     if cn[0].startswith(parts[0]) or parts[0].startswith(cn[0]):
                         return c
                     best = best or c
@@ -238,12 +246,27 @@ async def real_scoring_streak(db, player_name: str) -> Optional[dict]:
     anchor = _ELITE_ANCHOR.get(norm_spaces)
     if anchor is None:
         # Also try last-name match on the anchor table (handles
-        # "Kylian Mbappé Lottin" inputs etc.).
-        last = norm_spaces.split()[-1] if norm_spaces else ""
-        for key, val in _ELITE_ANCHOR.items():
-            if last and key.split()[-1] == last:
-                anchor = val
-                break
+        # "Kylian Mbappé Lottin" inputs etc.) — but ONLY when both the
+        # last name AND the first-name initial agree. Without the
+        # initial check, any "… Junior" pick would inherit Vinícius
+        # Júnior's HOT streak, any "… Ronaldo" would inherit Cristiano
+        # Ronaldo's, etc. (Code-review HIGH finding 2026-06-30.)
+        parts = norm_spaces.split() if norm_spaces else []
+        last = parts[-1] if parts else ""
+        first_initial = parts[0][:1] if len(parts) >= 2 and parts[0] else ""
+        # Require BOTH parts (multi-token query name) AND a clear initial
+        # — single-token inputs like "Ronaldo" are ambiguous and should
+        # NOT be matched via this fallback.
+        if last and first_initial and len(parts) >= 2:
+            for key, val in _ELITE_ANCHOR.items():
+                key_parts = key.split()
+                if not key_parts:
+                    continue
+                key_last = key_parts[-1]
+                key_first_initial = key_parts[0][:1] if key_parts[0] else ""
+                if key_last == last and key_first_initial == first_initial:
+                    anchor = val
+                    break
     if anchor is not None:
         label, streak = anchor
         return {
