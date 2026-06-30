@@ -395,6 +395,23 @@ async def pick_rollover(
         ]
 
     picks = _filter_in_play_window(picks)
+    # ── Quality Gate (2026-06-29) — same backtest-driven filter as
+    # /picks/today. Rollover is supposed to be our SAFEST pick of the
+    # day, so this layer is even more critical here. Drops:
+    #   • Soccer goalscorers (4.8% historical)
+    #   • Lock-score 65-74 (12.8% — inverted calibration)
+    #   • MLB Moneyline / NRFI / YRFI (sub-50%)
+    try:
+        from quality_gate import apply_quality_gate
+        picks, qg_blocked = apply_quality_gate(picks)
+        if qg_blocked:
+            import logging
+            logging.getLogger("lockscore").info(
+                "QualityGate blocked on /picks/rollover: %s", qg_blocked,
+            )
+    except Exception as qg_err:
+        import logging
+        logging.getLogger("lockscore").warning("QualityGate skipped (rollover): %s", qg_err)
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=24)
 
@@ -1236,6 +1253,27 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     picks = await cursor.to_list(length=2000)
     # Hide picks for games that have already started (see _filter_in_play_window).
     picks = _filter_in_play_window(picks)
+    # ── Quality Gate (2026-06-29) ───────────────────────────────────────
+    # Backtest over 1,499 graded picks revealed three categories
+    # dragging headline win % from ~72% down to 47.2%:
+    #   • Soccer goalscorers (anytime/first/last) — 4.8% win
+    #   • Lock-score band 65-74 — 12.8% win (calibration is INVERTED;
+    #     the 50-64 band is at 59.9%)
+    #   • MLB Moneyline / NRFI / YRFI — sub-50% historical
+    # Filtering them at the read layer is the cheap "stop the bleeding"
+    # patch; the underlying generation models will be recalibrated in a
+    # later pass. Logged counts surface in `quality_gate_blocked`.
+    try:
+        from quality_gate import apply_quality_gate
+        picks, qg_blocked = apply_quality_gate(picks)
+        if qg_blocked:
+            import logging
+            logging.getLogger("lockscore").info(
+                "QualityGate blocked on /picks/today: %s", qg_blocked,
+            )
+    except Exception as qg_err:
+        import logging
+        logging.getLogger("lockscore").warning("QualityGate skipped: %s", qg_err)
     # ── Cross-pipeline GAME OUTCOME dedupe ───────────────────────────────
     # The main pipeline (sports_engine.py) and the soccer pipeline
     # (soccer/predictor.py) BOTH write into `picks`. They can produce
@@ -1247,13 +1285,13 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # confidence side per game, preferring Win-or-Draw / Double Chance
     # over straight Moneyline (draw safety net = lower variance).
     picks = _dedupe_game_outcome_picks(picks)
-    # Goalscorer pick cap — per match, surface at most the TOP 2 unique
-    # players from the goalscorer family (Anytime / First / Last / To
-    # Score or Assist). Without this dedupe a single player like Musiala
-    # would clog the feed with 3 rows of identical lock score for the
-    # same match (Anytime + First + Score-or-Assist all at lock 78.4).
-    # Spec from user: "It should be the top 2".
-    picks = _dedupe_goalscorer_per_event(picks, top_n=4)
+    # Goalscorer pick cap — per match, surface at most the TOP 1 unique
+    # player per (team × market_family). Was top_n=4 — but the backtest
+    # over 397 graded goalscorer picks showed elite players win Anytime
+    # at ~27% while the 2nd/3rd/4th-best options bottom out under 10%.
+    # Surfacing only the single mathematically-best candidate per team
+    # is the user's mandate (2026-06-29).
+    picks = _dedupe_goalscorer_per_event(picks, top_n=1)
     # ── Canonicalize lock_score (V2 → primary) BEFORE sorting ──────────
     # Without this, the sort uses the legacy V1 lock_score baked at pick
     # creation time. But `_canonicalize_lock_score` (called at the very
