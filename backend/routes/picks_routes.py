@@ -1436,6 +1436,23 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 picks.sort(key=lambda p: -p.get("lock_score", 0))
     picks = await _decorate_with_player_form(picks)
     picks = await _decorate_with_understat_form(picks)
+    # ── Real-streak override (2026-06-30) ───────────────────────────────
+    # The legacy `_decorate_with_player_form` reads `current_streak` from
+    # `player_profiles_v2`, which was calculated from PICK win/loss
+    # history. That store was poisoned by earlier grading bugs
+    # (DNP = LOSS, header goals missed, lottery FGS picks) so elite
+    # scorers like Mbappé, Haaland, Kane were getting tagged "COLD · 15L"
+    # despite scoring live in the real world. This step replaces the
+    # streak (and any stale understat label) with values derived from
+    # REAL match data in `soccer_player_form` / `auto_elite_players`,
+    # or hides the chip entirely when no real data exists.
+    try:
+        from scorer_streak import enrich_picks_with_real_streaks  # lazy
+        _streak_stats = await enrich_picks_with_real_streaks(picks, db)
+        if _streak_stats.get("real_data_applied") or _streak_stats.get("hidden_no_data"):
+            logger.info("Real-streak override on /picks/today: %s", _streak_stats)
+    except Exception as _se:
+        logger.warning("Real-streak enrichment skipped on /picks/today: %s", _se)
     canonical = _canonicalize_picks(picks)
     if lite:
         canonical = [_strip_for_lite(p) for p in canonical]
@@ -1569,6 +1586,16 @@ async def pick_detail(
         pick["ai_pending"] = True
     else:
         pick["ai_pending"] = False
+    # ── Real-streak override (2026-06-30) ───────────────────────────────
+    # Same fix as /picks/today: replace the poisoned pick-history streak
+    # on `player_form` with values derived from REAL match data (or
+    # hide the chip when no real data exists). Wrapped as a 1-item list
+    # so we can reuse the same enrichment helper.
+    try:
+        from scorer_streak import enrich_picks_with_real_streaks  # lazy
+        await enrich_picks_with_real_streaks([pick], db)
+    except Exception as _se:
+        logger.debug("Real-streak enrichment failed on /picks/{id}: %s", _se)
     return pick
 
 
