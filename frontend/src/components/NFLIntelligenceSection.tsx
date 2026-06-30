@@ -64,7 +64,7 @@ function SafeLocksRow({ refreshTick }: { refreshTick: number }) {
       setLoading(true);
       setError(null);
       try {
-        const res = await api.nflSafeBets(8, 0.78);
+        const res = await api.nflSafeBets(8, 0.62);
         if (!cancel) setData(res.picks || []);
       } catch (e: any) {
         if (!cancel) setError(e?.message || "Failed to load");
@@ -106,8 +106,10 @@ function SafeLocksRow({ refreshTick }: { refreshTick: number }) {
 
 function SafeLockCard({ pick }: { pick: NFLSafePick }) {
   const pct = Math.round(pick.probability * 100);
+  const inTargetBand = pick.band === "target";
+  const borderColor = inTargetBand ? COLORS.goldElite : "#9aa0a6";
   return (
-    <View style={[styles.card, { borderColor: COLORS.goldElite }]} testID={`nfl-safe-lock-${pick.player_id}`}>
+    <View style={[styles.card, { borderColor }]} testID={`nfl-safe-lock-${pick.player_id}`}>
       <View style={styles.cardHeader}>
         <Text style={styles.cardProb}>{pct}%</Text>
         <Text style={styles.cardOdds}>
@@ -120,12 +122,16 @@ function SafeLockCard({ pick }: { pick: NFLSafePick }) {
       <Text style={styles.cardTeam} numberOfLines={1}>{pick.team}</Text>
       <View style={styles.divider} />
       <Text style={styles.cardMarket} numberOfLines={2}>{pick.market}</Text>
-      <Text style={styles.cardStat} numberOfLines={1}>
-        L{pick.sample_size} · {pick.hits}/{pick.sample_size} hit
+      {/* WHY chip — compact rationale (v2 2026-06-29). Falls back to the
+          legacy `reason` field if `why` isn't present (old API clients). */}
+      <Text style={styles.cardWhy} numberOfLines={3}>
+        {pick.why || `L${pick.sample_size} · ${pick.hits}/${pick.sample_size} hit · med ${pick.median}`}
       </Text>
-      <Text style={styles.cardStat} numberOfLines={1}>
-        med {pick.median} · floor {pick.floor_p10}
-      </Text>
+      {pick.band && pick.band !== "target" ? (
+        <Text style={styles.cardBandTag} numberOfLines={1}>
+          {pick.band === "acceptable" ? "VALUE STRETCH" : "STRETCH CHALK"}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -449,6 +455,30 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     letterSpacing: 0.3,
     marginTop: 1,
+  },
+  // WHY chip — small block of compact stats so the user can see the
+  // matchup / volume rationale behind each safe-lock at a glance.
+  cardWhy: {
+    color: COLORS.textPrimary,
+    fontSize: 10.5,
+    lineHeight: 14,
+    fontWeight: "600",
+    letterSpacing: 0.15,
+    marginTop: 4,
+    opacity: 0.92,
+  },
+  cardBandTag: {
+    color: "#fbbf24",
+    fontSize: 9.5,
+    fontWeight: "900",
+    letterSpacing: 0.8,
+    marginTop: 4,
+    borderColor: "#fbbf24",
+    borderWidth: 1,
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
+    borderRadius: 3,
+    alignSelf: "flex-start",
   },
   tagRow: {
     flexDirection: "row",

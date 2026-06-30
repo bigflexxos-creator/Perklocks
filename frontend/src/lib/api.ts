@@ -1023,6 +1023,10 @@ export type NFLSafePick = {
   team: string;
   market: string;
   reason: string;
+  /** Compact rationale chip rendered under the card. v2 (2026-06-29). */
+  why?: string;
+  /** "target" = -200..-456 sweet-spot band, "acceptable" = -163..-200 (mild stretch). */
+  band?: "target" | "acceptable" | string;
   implied_american_odds?: number;
 };
 export type NFLSafeBetsResponse = {
