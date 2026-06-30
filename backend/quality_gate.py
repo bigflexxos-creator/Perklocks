@@ -644,15 +644,19 @@ async def validate_against_live_alt_lines(
     stats["skipped_no_coverage"] = 0
     stats["skipped_event_not_in_feed"] = 0
 
-    # Soft-fail: if the feed is dry, skip validation gracefully.
+    # Soft-fail: if BOTH feeds are dry, skip validation gracefully.
     try:
         feed_count = await db.live_alt_lines.estimated_document_count()
     except Exception:
         feed_count = 0
-    if feed_count == 0:
+    try:
+        propline_count = await db.propline_alt_lines.estimated_document_count()
+    except Exception:
+        propline_count = 0
+    if feed_count == 0 and propline_count == 0:
         import logging
         logging.getLogger("lockscore").warning(
-            "alt-line validation skipped — live_alt_lines is empty"
+            "alt-line validation skipped — both feeds empty"
         )
         return picks, {"skipped_feed_empty": len(picks)}
 
@@ -660,29 +664,32 @@ async def validate_against_live_alt_lines(
     # Map: sport (lowercase) → set of normalised event tokens we have
     # feed data for. Tokens include event_name, home_team, away_team
     # so the pick's `event` field ("Morocco @ Brazil") can match
-    # whichever form the feed stored.
+    # whichever form the feed stored. Pulls from BOTH live_alt_lines
+    # (The Odds API) AND propline_alt_lines (prop-line.com) so cross-
+    # source coverage shows up uniformly.
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_stale_minutes)
     coverage: dict[str, set[str]] = {}
-    try:
-        async for doc in db.live_alt_lines.find(
-            {"last_seen": {"$gte": cutoff}},
-            {"_id": 0, "sport": 1, "event_name": 1,
-             "home_team": 1, "away_team": 1},
-        ):
-            sport = (doc.get("sport") or "").lower()
-            if not sport:
-                continue
-            bucket = coverage.setdefault(sport, set())
-            for key in ("event_name", "home_team", "away_team"):
-                v = doc.get(key)
-                if v:
-                    bucket.add(_norm_event_token(str(v)))
-    except Exception as _cov_err:
-        import logging
-        logging.getLogger("lockscore").warning(
-            "alt-line coverage cache build failed: %s", _cov_err
-        )
-        coverage = {}
+    for coll_name in ("live_alt_lines", "propline_alt_lines"):
+        try:
+            async for doc in db[coll_name].find(
+                {"last_seen": {"$gte": cutoff}},
+                {"_id": 0, "sport": 1, "event_name": 1,
+                 "home_team": 1, "away_team": 1},
+            ):
+                sport = (doc.get("sport") or "").lower()
+                if not sport:
+                    continue
+                bucket = coverage.setdefault(sport, set())
+                for key in ("event_name", "home_team", "away_team"):
+                    v = doc.get(key)
+                    if v:
+                        bucket.add(_norm_event_token(str(v)))
+        except Exception as _cov_err:
+            import logging
+            logging.getLogger("lockscore").warning(
+                "alt-line coverage cache build failed (%s): %s",
+                coll_name, _cov_err,
+            )
 
     kept: list[dict] = []
     for p in picks:
@@ -788,11 +795,21 @@ async def validate_against_live_alt_lines(
             q["$or"] = event_match_clauses
         if line is not None:
             q["line"] = float(line)
-        row = await db.live_alt_lines.find_one(q)
+        # ── Query BOTH feeds; best-of-book price wins ─────────────────
+        # Order: live_alt_lines (The Odds API — DK+FD canonical) first,
+        # propline_alt_lines (prop-line.com — broader coverage including
+        # BetMGM/BetRivers/Bovada) as the fallback / cross-check. If
+        # both have a row, take the one with the BETTER PRICE for the
+        # user (higher payout odds — least negative on chalk, most
+        # positive on dogs). Code-2026-06-30: prop-line integration.
+        row_a = await db.live_alt_lines.find_one(q)
+        row_b = await db.propline_alt_lines.find_one(q)
+        row = _best_of_two(row_a, row_b)
         if row:
             # Pass: stamp the validation metadata on the pick.
             p["alt_line_validated"] = True
             p["validated_sportsbook"] = row.get("sportsbook")
+            p["validated_source"] = row.get("source", "odds_api")
             p["validated_market_id"] = row.get("market_id")
             p["validated_selection_id"] = row.get("selection_id")
             p["validated_price"] = row.get("price")
@@ -818,14 +835,25 @@ async def validate_against_live_alt_lines(
         warning_code = None
         # 1. Try without the line filter — match means line wrong.
         q2 = {k: v for k, v in q.items() if k != "line"}
-        row2 = await db.live_alt_lines.find_one(q2)
+        row2_a = await db.live_alt_lines.find_one(q2)
+        row2_b = await db.propline_alt_lines.find_one(q2)
+        row2 = row2_a or row2_b
         if row2:
             stats["line_not_found"] += 1
             warning_code = "line_not_found"
+            # Capture the nearest real line on the pick so the UI /
+            # synthetic-line dropper downstream can use it.
+            try:
+                p["closest_real_line"] = row2.get("line")
+                p["closest_real_price"] = row2.get("price")
+            except Exception:
+                pass
         else:
             # 2. Try without selection — match means player missing.
             q3 = {k: v for k, v in q.items() if k not in ("line", "selection_norm")}
-            row3 = await db.live_alt_lines.find_one(q3)
+            row3_a = await db.live_alt_lines.find_one(q3)
+            row3_b = await db.propline_alt_lines.find_one(q3)
+            row3 = row3_a or row3_b
             if row3:
                 stats["line_not_found"] += 1
                 warning_code = "line_not_found"
@@ -838,7 +866,145 @@ async def validate_against_live_alt_lines(
             p["alt_line_validation_warning"] = warning_code
         kept.append(p)
 
-    return kept, stats
+    # ── Tennis synthetic-line HARD DROP ────────────────────────────────
+    # Before returning, sweep Tennis total_games / totals picks: if our
+    # generator's `line` is more than ±3 games away from ANY live line
+    # for that event, the line is "made up" — drop it. This is the
+    # surgical fix for the user's "made-up chalk Tennis Over lines"
+    # complaint. We only drop when we have GROUND TRUTH (live line
+    # exists for the event) so non-FO events without coverage stay
+    # advisory-only. Code 2026-06-30 — uses propline + odds-api union.
+    kept_filtered, drop_stats = await _drop_tennis_synthetic_lines(kept, db, cutoff)
+    for k, v in drop_stats.items():
+        stats[k] = stats.get(k, 0) + v
+    return kept_filtered, stats
+
+
+def _best_of_two(row_a, row_b):
+    """Pick the higher-price (user-friendlier) of two feed rows."""
+    if not row_a:
+        return row_b
+    if not row_b:
+        return row_a
+    try:
+        pa = int(row_a.get("price") or 0)
+        pb = int(row_b.get("price") or 0)
+        # American odds: a higher number is always better for the user.
+        # (-200 < -150 < +100 < +200).
+        return row_a if pa >= pb else row_b
+    except Exception:
+        return row_a
+
+
+async def _drop_tennis_synthetic_lines(
+    picks: list[dict], db, cutoff,
+) -> tuple[list[dict], dict]:
+    """HARD-DROP Tennis total_games / totals picks whose `line` is
+    fictional — i.e. more than ±3 games away from any real live line
+    on the same event.
+
+    Only drops when we HAVE coverage of the event in either feed (so
+    we know we're comparing against ground truth). When there's no
+    coverage, the pick stays on the board with whatever advisory
+    warning the main validator added.
+    """
+    stats = {"tennis_synthetic_lines_dropped": 0}
+    out: list[dict] = []
+    # Cache per-(event, market) live line set so we don't re-query.
+    line_cache: dict[tuple[str, str], list[float]] = {}
+    for p in picks:
+        sport = (p.get("sport") or "").lower()
+        market = p.get("market") or ""
+        if sport != "tennis" or "(Alt)" not in market:
+            out.append(p)
+            continue
+        # Extract the line — picks usually have it on `line` or in the
+        # market text. Handle BOTH totals form ("Over 15.5 Games (Alt)")
+        # AND spread form ("Iga Swiatek -3.5 Games (Alt)"). The
+        # synthetic-line check only applies to FULL-MATCH TOTALS;
+        # spreads have a wider legitimate range and are out of scope.
+        is_total = bool(re.search(r"\b(?:over|under)\s+[\d.]+", market, re.I))
+        if not is_total:
+            # Player-spread alt picks ("X -3.5 Games (Alt)") — out of
+            # scope of this synthetic-totals rule. Pass through with
+            # whatever advisory warning the main validator added.
+            out.append(p)
+            continue
+        line = p.get("line")
+        if line is None:
+            m = re.search(r"(?:over|under)\s+([\d.]+)", market, re.I)
+            if m:
+                try:
+                    line = float(m.group(1))
+                except Exception:
+                    line = None
+        if line is None:
+            out.append(p)
+            continue
+        # ── ABSOLUTE FLOOR: tennis full-match games is at LEAST 12
+        # (6-0 6-0 = 12 games). Any "Over N Games" with N < 11 is
+        # physically guaranteed to hit (or push at exactly 12). No
+        # sportsbook offers those lines — they're synthetic by
+        # construction. Drop unconditionally, no coverage check needed.
+        is_over = bool(re.search(r"\bover\b", market, re.I))
+        if is_over and float(line) < 11.0:
+            stats["tennis_synthetic_lines_dropped"] += 1
+            continue
+        event = p.get("event") or ""
+        event_tokens = _event_tokens_from_pick_event(event)
+        if not event_tokens:
+            out.append(p)
+            continue
+        # Tennis Games → total_games (DFS alt ladder) / totals (retail
+        # main). Both are legitimate ground truth.
+        market_keys = ["total_games", "totals", "alternate_totals_games"]
+        # Build event-scoped query — same fuzzy match as main validator.
+        event_regex = "|".join(re.escape(t) for t in event_tokens if len(t) >= 3)
+        cache_key = (event_regex, "|".join(market_keys))
+        live_lines = line_cache.get(cache_key)
+        if live_lines is None:
+            live_lines = []
+            for coll in ("live_alt_lines", "propline_alt_lines"):
+                try:
+                    cur = db[coll].find(
+                        {
+                            "sport": "tennis",
+                            "market_key": {"$in": market_keys},
+                            "last_seen": {"$gte": cutoff},
+                            "$or": [
+                                {"event_name": {"$regex": event_regex, "$options": "i"}},
+                                {"home_team":  {"$regex": event_regex, "$options": "i"}},
+                                {"away_team":  {"$regex": event_regex, "$options": "i"}},
+                            ],
+                        },
+                        {"_id": 0, "line": 1},
+                    )
+                    async for r in cur:
+                        ln = r.get("line")
+                        if ln is not None:
+                            try:
+                                live_lines.append(float(ln))
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+            line_cache[cache_key] = live_lines
+        if not live_lines:
+            # No coverage — leave the pick alone (let advisory warning
+            # do its job).
+            out.append(p)
+            continue
+        # Drop if our line is more than ±3 from every live line.
+        try:
+            min_dist = min(abs(float(line) - lv) for lv in live_lines)
+        except Exception:
+            min_dist = 0
+        if min_dist > 3.0:
+            stats["tennis_synthetic_lines_dropped"] += 1
+            # DON'T append — this pick is fiction.
+            continue
+        out.append(p)
+    return out, stats
 
 
 # ── Helpers for event scoping ─────────────────────────────────────────
