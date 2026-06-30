@@ -268,6 +268,20 @@ def _canonicalize_lock_score(pick: dict) -> dict:
     # carve-out to all 30+ writers. (2026-06-26: user fix for recurring
     # CSL/elite lock demotion bug.)
     canonical = max(v1, v2, raw, peak)
+    # ── Coherence cap ceiling (2026-06-30, code-review HIGH) ───────────
+    # `quality_gate._apply_lockscore_coherence` and `_apply_display_cap`
+    # set `coherence_cap_ceiling` when they DELIBERATELY lower a pick's
+    # lock_score (e.g. negative-edge Mbappé → cap at 60, anytime-scorer
+    # display cap → 75). Without this clamp the `max()` above silently
+    # promotes the uncapped lock_score_raw / peak back above the cap,
+    # so a −EV pick still displays "Lock 99 / Elite" — exactly the
+    # Mbappé bug the gate is supposed to prevent.
+    try:
+        ceiling = pick.get("coherence_cap_ceiling")
+        if isinstance(ceiling, (int, float)) and ceiling > 0:
+            canonical = min(canonical, float(ceiling))
+    except Exception:
+        pass
     if canonical > v1 + 0.05:
         try:
             from sports_engine import _grade, _confidence
@@ -357,10 +371,22 @@ def _canonicalize_lock_score(pick: dict) -> dict:
     # — the user repeatedly asked for elites to appear under every market
     # tab at lock 95+ "because lock score reflects reputation/history,
     # not raw win probability" (2026-06-26).
+    #
+    # IMPORTANT (2026-06-30, code-review HIGH): the quality-gate
+    # coherence cap (e.g. negative-edge Mbappé → 60) is a DELIBERATE
+    # demotion that must win over the elite floor — otherwise a −EV
+    # superstar pick still shows "Lock 95+ Elite". When
+    # `coherence_cap_ceiling` is set BELOW 95, we skip the floor lift
+    # entirely. The cap value remains the displayed lock_score from the
+    # canonicalize step above.
     try:
         if pick.get("elite_player"):
             cur_lock = float(pick.get("lock_score") or 0)
-            if cur_lock < 95.0:
+            try:
+                cap_ceiling = float(pick.get("coherence_cap_ceiling") or 0)
+            except Exception:
+                cap_ceiling = 0.0
+            if cur_lock < 95.0 and not (cap_ceiling > 0 and cap_ceiling < 95.0):
                 from sports_engine import _grade as _eg, _confidence as _ec
                 # Lift to max(95, peak) so a pick that previously hit 99
                 # stays at 99 — never demote below an earlier peak.
@@ -368,7 +394,12 @@ def _canonicalize_lock_score(pick: dict) -> dict:
                     peak = float(pick.get("lock_score_peak") or 0)
                 except Exception:
                     peak = 0
-                new_lock = round(min(99.0, max(95.0, peak)), 1)
+                # Even when no cap is set, never lift past a cap ceiling
+                # of 95+ (defensive: cap=95 should still be honoured).
+                target = max(95.0, peak)
+                if cap_ceiling > 0:
+                    target = min(target, cap_ceiling)
+                new_lock = round(min(99.0, target), 1)
                 pick["lock_score"]      = new_lock
                 pick["lock_score_raw"]  = new_lock
                 pick["lock_score_v2"]   = max(pick.get("lock_score_v2") or 0, new_lock)

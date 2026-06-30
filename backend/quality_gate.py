@@ -389,10 +389,20 @@ def _apply_display_cap(pick: dict) -> None:
     market = (pick.get("market") or "")
     if sport != "soccer" or not _SOCCER_ANYTIME_SCORER_RE.search(market):
         return
-    for field in ("lock_score", "lock_score_v2"):
+    # NOTE: must cap ALL shadow lock fields (`lock_score_raw`,
+    # `lock_score_peak`) too, otherwise `_canonicalize_lock_score` does
+    # `max(v1, v2, raw, peak)` at read time and silently RESTORES the
+    # uncapped value, defeating this cap. Code-review HIGH 2026-06-30.
+    for field in ("lock_score", "lock_score_v2", "lock_score_raw", "lock_score_peak"):
         v = pick.get(field)
         if isinstance(v, (int, float)) and v > ANYTIME_SCORER_DISPLAY_CAP:
             pick[field] = ANYTIME_SCORER_DISPLAY_CAP
+    # Mark the hard ceiling so canonicalize/elite-floor read-time logic
+    # cannot promote past this cap.
+    existing_ceiling = pick.get("coherence_cap_ceiling")
+    if (not isinstance(existing_ceiling, (int, float))
+            or ANYTIME_SCORER_DISPLAY_CAP < existing_ceiling):
+        pick["coherence_cap_ceiling"] = float(ANYTIME_SCORER_DISPLAY_CAP)
     # If the tier was "Elite Lock", demote to "Solid Lock" so the
     # frontend renders the right color/badge.
     tier = pick.get("tier_v2") or pick.get("tier")
@@ -530,12 +540,24 @@ def _apply_lockscore_coherence(pick: dict) -> None:
         return
 
     capped = False
-    for field in ("lock_score", "lock_score_v2", "lock_score_peak"):
+    # NOTE: must cap ALL shadow lock fields (`lock_score_raw` too),
+    # otherwise `_canonicalize_lock_score` does `max(v1, v2, raw, peak)`
+    # at read time and silently RESTORES the uncapped value, defeating
+    # this cap. Code-review HIGH 2026-06-30.
+    for field in ("lock_score", "lock_score_v2",
+                  "lock_score_raw", "lock_score_peak"):
         v = pick.get(field)
         if isinstance(v, (int, float)) and v > cap:
             pick[field] = round(float(cap), 1)
             capped = True
     if capped:
+        # Record the hard ceiling so `_canonicalize_lock_score` and the
+        # elite-floor logic can honour it (otherwise the elite-floor
+        # would bump back to 95 and the max() would re-promote).
+        existing_ceiling = pick.get("coherence_cap_ceiling")
+        if (not isinstance(existing_ceiling, (int, float))
+                or cap < existing_ceiling):
+            pick["coherence_cap_ceiling"] = float(cap)
         # Demote tier label to match the lower number — so the UI
         # doesn't paint a "PEAK 99" gold badge on a 60-cap pick.
         for tier_field in ("tier_v2", "tier"):
