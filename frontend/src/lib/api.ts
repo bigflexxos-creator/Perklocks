@@ -416,10 +416,65 @@ async function request<T>(
   return exec();
 }
 
+// ── MLB HR Slate types — mirror of GameHRSlate / HRHitter in
+//    /app/backend/services/mlb_hr_intel.py. Keep in-step with backend.
+export type HRHitter = {
+  batter_id: number;
+  batter_name: string;
+  team: string;
+  opponent: string;
+  is_home: boolean;
+  hr_probability: number;
+  hr_score: number;
+  grade: string;
+  park_mult: number;     park_label: string;
+  pitcher_mult: number;  pitcher_label: string;
+  batter_power_mult: number; batter_power_label: string;
+  recent_form_mult: number;  recent_form_label: string;
+  weather_mult: number;  weather_label: string;
+  temp_mult: number;     temp_label: string;
+  platoon_mult: number;  platoon_label: string;
+  h2h_mult: number;      h2h_label: string;
+  season_hr?: number;
+  iso?: number;
+  last_15_hrs?: number;
+  last_15_games?: number;
+  h2h_hr?: number;
+  h2h_pa?: number;
+  batter_hand?: string;
+  why_this_pick?: string[];
+  book_hr_odds?: number | null;
+  book_hr_implied_pct?: number | null;
+};
+export type GameHRSlate = {
+  game_id: string;
+  home_team: string;
+  away_team: string;
+  venue: string;
+  commence_time: string;
+  pitcher_home_name: string;
+  pitcher_home_id: number | null;
+  pitcher_home_hr9: number | null;
+  pitcher_away_name: string;
+  pitcher_away_id: number | null;
+  pitcher_away_hr9: number | null;
+  temp_f: number | null;
+  wind_mph: number | null;
+  wind_deg: number | null;
+  wind_blowing_label: string;
+  roof_status: string;
+  park_hr_factor: number;
+  park_hr_label: string;
+  picks: HRHitter[];
+};
+export type HRSlateResponse = {
+  date: string;
+  as_of: string;
+  games: GameHRSlate[];
+  total_picks: number;
+};
+
 export const api = {
-  // Generic typed request helper — exposed so feature screens (e.g.
-  // admin dashboard) can call new endpoints without us having to add
-  // a wrapper for every single one.
   request,
   register: (email: string, password: string, name?: string) =>
     request<{ access_token: string; user: User }>("/auth/register", {
@@ -904,6 +959,15 @@ export const api = {
     avg_edge_percent: number;
     by_sport: { sport: string; count: number; avg_lock: number; avg_edge: number; elite_count: number }[];
   }>("/stats/summary"),
+  // MLB HR slate (added 2026-06-30) — backs the new "HR" tab.
+  // Each game returns its weather/park/pitcher context plus up to 5
+  // top batter HR projections with full explainability bullets.
+  hrSlate: (opts?: { date?: string; refresh?: boolean }) => {
+    const q: string[] = [];
+    if (opts?.date) q.push(`date=${encodeURIComponent(opts.date)}`);
+    if (opts?.refresh) q.push("refresh=true");
+    return request<HRSlateResponse>(`/mlb/hr-slate${q.length ? "?" + q.join("&") : ""}`);
+  },
   modelPerformance: () => request<{
     as_of: string;
     totals: {
