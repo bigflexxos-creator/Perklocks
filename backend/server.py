@@ -3722,6 +3722,33 @@ async def on_startup():
     except Exception as e:
         logger.warning("CLV snapshotter failed to start: %s", e)
 
+    # Live alt-line feed (2026-06-30 user mandate — no synthetic lines).
+    # Pulls real DK + FanDuel alt-line markets from The Odds API every
+    # 10 min and stores them in `live_alt_lines` with TTL. The quality
+    # gate validates every alt-line pick against this collection — any
+    # pick whose (sportsbook, market_key, selection, line) isn't in the
+    # live feed within the last 15 min is REJECTED with one of:
+    #   line_not_found / market_removed / stale_odds / invalid_alt_mapping.
+    try:
+        from alt_lines_feed import ensure_indices, refresh_alt_lines
+
+        async def _alt_lines_loop():
+            try:
+                await ensure_indices(db)
+            except Exception as ie:
+                logger.warning("alt_lines indices failed: %s", ie)
+            while True:
+                try:
+                    await refresh_alt_lines(db)
+                except Exception as re_:
+                    logger.warning("alt_lines refresh error: %s", re_)
+                await asyncio.sleep(600)  # 10 min
+
+        _deferred_task(_alt_lines_loop, DEFER_BASE * 8)
+        logger.info("Live alt-line feed armed (DK + FanDuel via Odds API, 10-min cadence)")
+    except Exception as e:
+        logger.warning("alt_lines_feed failed to start: %s", e)
+
     logger.info("PerkLocks AI started")
 
 
