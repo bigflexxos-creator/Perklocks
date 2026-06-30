@@ -192,9 +192,11 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
               </Text>
             </View>
           )}
-          {/* Player form streak — 🔥 for hot, ❄️ for cold. Sourced from
-              the live learning store (player_profiles_v2). Only shown for
-              players with ≥3 picks (signal stable) and clear streak (≥2). */}
+          {/* Player form streak — 🔥 for hot, ❄️ for cold. Soccer
+              goalscorer markets now read from REAL Understat match
+              data (streak_source: "understat" / "elite_anchor") and
+              show a "FORM" suffix instead of W/L. Other sports keep
+              the legacy pick-history W/L semantics. */}
           {pick.player_form &&
            pick.player_form.n_picks >= 3 &&
            Math.abs(pick.player_form.current_streak ?? 0) >= 2 && (
@@ -202,7 +204,9 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
               <Text style={styles.streakIcon}>{(pick.player_form.current_streak ?? 0) > 0 ? "🔥" : "❄️"}</Text>
               <Text style={[styles.streakText, { color: (pick.player_form.current_streak ?? 0) > 0 ? "#FCA5A5" : "#93C5FD" }]}>
                 {(pick.player_form.current_streak ?? 0) > 0 ? "HOT" : "COLD"} · {Math.abs(pick.player_form.current_streak ?? 0)}
-                {(pick.player_form.current_streak ?? 0) > 0 ? "W" : "L"}
+                {(["understat", "elite_anchor"].includes(((pick.player_form as any).streak_source) || ""))
+                  ? " FORM"
+                  : ((pick.player_form.current_streak ?? 0) > 0 ? "W" : "L")}
               </Text>
             </View>
           )}

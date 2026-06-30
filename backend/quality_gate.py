@@ -453,6 +453,15 @@ def _apply_elite_scorer_anchor(pick: dict) -> None:
     # Always suppress false cold tag for elites.
     pick["suppress_cold_tag"] = True
     pick["player_elite_anchored"] = True
+    # CRITICAL (2026-06-30 user audit): the streak chip ("COLD · 15L")
+    # was computed from POISONED pick history (pre-fix Goal-Header /
+    # DNP-LOSS bugs). The user's mandate: "I want to keep the current
+    # streaks but accurate ones". So we DO NOT zero them here — the
+    # `enrich_picks_with_real_streaks` step (in picks_routes.py, after
+    # quality_gate) replaces them with REAL match data from
+    # `soccer_player_form` (Understat per-match). For non-elite picks
+    # outside that pipeline, the streak stays as-is. Anchor flag still
+    # gets set so the suppress_cold_tag UI signal is available if needed.
     for blob_field in ("historical_signal", "player_profile_pp", "deep_dive_v2"):
         blob = pick.get(blob_field)
         if isinstance(blob, dict):

@@ -280,13 +280,26 @@ def simulate_soccer_scorer_pick(pick: dict) -> Optional[dict]:
     elif cat == "lgs":
         wins = int(hits / 3)
     elif cat == "score_or_assist":
-        # P(score OR assist) ≈ P(score) + P(assist) - P(score AND assist).
-        # Empirically across top-5 leagues: assist rate per match ≈ 0.6×
-        # goal rate for forwards/attacking-mids, with low overlap (≈10%).
-        # So P(SoA) ≈ P(score)×1.55 capped at 0.95. We apply on the
-        # per-run hit signal to preserve CI correctness.
-        boosted = min(RUNS, int(hits * 1.55))
-        wins = boosted
+        # P(score OR assist) using proper probability math, not naïve
+        # multiplication that clamps to 100%.
+        #
+        # Bug (2026-06-30, user-reported): previous formula was
+        #   `wins = min(RUNS, int(hits * 1.55))`
+        # which clamped to 100% whenever score rate exceeded ~65%, so
+        # the card showed "SIM EDGE 100%" for any elite striker —
+        # mathematically impossible (no event is ever 100%).
+        #
+        # Correct formula treats score and assist as semi-independent:
+        #   P(SoA) = P(score) + P(assist | NOT scoring) × (1 − P(score))
+        # Empirically for top-5-league forwards/attacking mids:
+        #   P(assist | not scoring) ≈ 0.27 (about 0.6× of score rate)
+        # Hard-capped at 0.92 because nothing in football is certain
+        # — even Haaland's career score-or-assist rate is ~82%.
+        ASSIST_INDEPENDENT_RATE = 0.27
+        p_score = hits / max(1, RUNS)
+        p_soa = p_score + ASSIST_INDEPENDENT_RATE * (1 - p_score)
+        p_soa = min(0.92, p_soa)  # hard cap — never display 100%
+        wins = int(round(p_soa * RUNS))
     else:
         wins = hits
 
