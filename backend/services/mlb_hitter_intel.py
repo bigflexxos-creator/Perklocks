@@ -229,6 +229,18 @@ class HitterMatchup:
             },
             "base_form_pct": round(self.base_form * 100, 1),
             "final_hit_prob_pct": round(self.final_hit_prob * 100, 1),
+            # Separated market sub-scores (2026-07-01 spec) — always
+            # attached so downstream UI/analytics can show which market
+            # this pick was actually built for.
+            "market_scores": {
+                "p_hit_pct": round(self.p_hit_score * 100, 1),
+                "p_rbi_pct": round(self.p_rbi_score * 100, 1),
+                "p_run_pct": round(self.p_run_score * 100, 1),
+            },
+            "vegas_context": {
+                "team_implied_runs": self.team_implied_runs,
+                "obp_in_front": self.obp_in_front,
+            },
             "confidence_score": _confidence_from_inputs(self),
             "evidence": self.advantages,
             "concerns": self.disadvantages,
@@ -627,13 +639,20 @@ def _score_run(m: "HitterMatchup") -> float:
 def _confidence_hitter(m: "HitterMatchup", score: float) -> float:
     """Confidence 0..1 combining score magnitude + data completeness."""
     completeness = 0.0
-    if m.pitcher.k_pct is not None:      completeness += 0.20
-    if m.pitcher.whip is not None:       completeness += 0.20
-    if m.batter.season_avg is not None:  completeness += 0.15
-    if m.batter.obp is not None:         completeness += 0.15
-    if m.team_implied_runs is not None:  completeness += 0.15
-    if m.obp_in_front is not None:       completeness += 0.10
-    if m.batting_order is not None:      completeness += 0.05
+    if m.pitcher.k_pct is not None:
+        completeness += 0.20
+    if m.pitcher.whip is not None:
+        completeness += 0.20
+    if m.batter.season_avg is not None:
+        completeness += 0.15
+    if m.batter.obp is not None:
+        completeness += 0.15
+    if m.team_implied_runs is not None:
+        completeness += 0.15
+    if m.obp_in_front is not None:
+        completeness += 0.10
+    if m.batting_order is not None:
+        completeness += 0.05
     conf = 0.35 * (score - 0.3) / 0.4 + 0.65 * completeness
     return max(0.0, min(1.0, conf))
 
@@ -667,9 +686,12 @@ async def build_matchup(
     Caches the resulting matchup in Mongo for 6 h."""
     if strict:
         missing = []
-        if not pitcher_id:                 missing.append("pitcher_id")
-        if batting_order is None:          missing.append("batting_order")
-        if team_implied_runs is None:      missing.append("team_implied_runs")
+        if not pitcher_id:
+            missing.append("pitcher_id")
+        if batting_order is None:
+            missing.append("batting_order")
+        if team_implied_runs is None:
+            missing.append("team_implied_runs")
         if missing:
             raise HitterContextMissing(
                 f"cannot score {batter_name or batter_id}: missing {', '.join(missing)}"

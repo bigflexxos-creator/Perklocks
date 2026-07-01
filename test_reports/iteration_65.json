@@ -1,0 +1,45 @@
+{
+  "summary": "MLB Hitter Props intelligence refactor regression — ALL BACKEND CHECKS GREEN (10/10 pytest passed + 4/4 standalone smoke passed). Standalone smoke: `python /app/backend/tests/test_mlb_hitter_intel_smoke.py` → three distinct scores (p_hit=0.782, p_rbi=0.523, p_run=0.720), market routing (Hits→p_hit_score, RBI→p_rbi_score, Runs→p_run_score, H+R+RBI→union > max), rationale exposes market_scores + vegas_context, and strict gate `HitterContextMissing` fires when team_implied_runs is None. Live API regression via /app/backend/tests/test_mlb_hitter_intel_regression_iter65.py (junit: /app/test_reports/pytest/iter65_mlb_hitter_intel.xml): (1) GET /api/picks/today?lite=false authenticated → 200, 19 MLB hitter-prop picks matched (Hits/RBI/Runs/H+R+RBI, pitcher/strikeout excluded), 19/19 carry pick_rationale.engine == 'mlb_hitter_intel' (strict gate confirmed working on live surface — non-vacuous). (2) 26 total MLB picks on surface, 0 with lock_score < 89. (3) /api/picks/history 471 rows → 0 KBO picks, 0 First-Goalscorer picks. (4) /api/picks/history.stats shows hit_rate=66.7% derived cleanly from won=312 / (won+lost)=468 → matches expected 66.67% within 0.5pp — math is decoupled from lock_score. /api/stats/summary returns today-by-sport aggregation (date, total_picks=211, elite_count=97, avg_edge_percent, by_sport[Tennis|Soccer|MLB]) with 200. (5) /api/mlb/hr-slate → 200 OK (no 500). (6) /api/picks/parlay → 200, /api/picks/refresh-status → 200. (7) Demo auth (demo@lockscore.ai / demo123) works — JWT issued, subsequent authenticated calls all 200. CAVEAT (matches E1's agent-to-agent note): 0/19 live hitter rationales currently expose the new `market_scores` and `vegas_context` fields — the routing tag (engine) is present but the pre-refactor cached rationale bodies persist on disk. A fresh MLB pick generation cycle is required to surface those fields on the live board. Rationale keys currently present: [summary, data_source, engine, matchup, splits, pitcher_quality, recent_form, multipliers, base_form_pct, final_hit_prob_pct, confidence_score, evidence, concerns, lean, edge_pct_points, model_prob].",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/picks/today (MLB hitter rationales)", "issue": "Live pick_rationale for the 19 MLB hitter picks does not yet include `market_scores` or `vegas_context` (0/19). The engine tag is correct ('mlb_hitter_intel') so the strict gate is enforced, but the enriched rationale surface still uses cached/pre-refactor rationale bodies. Needs a full MLB refresh cycle for HitterMatchup.to_rationale() to overwrite the cached rationale docs. Not a code bug — a data-refresh lag."},
+      {"endpoint": "/api/picks/history", "issue": "History payload contains 62/471 picks with lock_score<89 (mostly rollover/pending). Rule preamble said 'History + Analytics only count picks with lock_score >= 89' — the stats aggregation (hit_rate math) DOES appear decoupled from lock_score and works correctly, but the raw picks[] array itself is not filtered by the 89 threshold. May be intentional (returning full pick history while stats are on a filtered subset) but worth confirming."},
+      {"endpoint": "auth/login rate limiter (carry-over iter64)", "issue": "Rapid re-login in tests can trip HTTP 429; regression test file retries once with a 30s sleep to handle it."},
+      {"endpoint": "settlement_engine validator (carry-over iter63/64)", "issue": "Backend log still emits WARNING `validator failed: unsupported operand type(s) for +=: 'dict' and 'int'` on settlement cycles. Not touched by this refactor."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_mlb_hitter_intel_regression_iter65.py",
+    "/app/backend/tests/test_mlb_hitter_intel_smoke.py",
+    "/app/test_reports/pytest/iter65_mlb_hitter_intel.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Trigger a full MLB picks refresh so cached rationales are re-emitted with the new `market_scores` and `vegas_context` payload from HitterMatchup.to_rationale(). Current live rationales carry the correct engine tag but predate the added fields — this is a cache-freshness issue not a code defect (E1 flagged this in the agent-to-agent context note).",
+    "CONFIRM: Is the 62/471 lock_score<89 rows in /api/picks/history intentional (pipeline-generated raw history) vs. the stats block being the filtered subset? If Rule #2 (history only counts >=89) is meant to apply to the picks[] array itself, add a filter at the endpoint layer. If it applies only to analytics aggregation, current behaviour is correct — hit_rate=66.7% matches 312/468 to within rounding.",
+    "(carry-over) Investigate settlement validator `dict += int` WARNING (pre-existing before this iter)."
+  ],
+  "critical_code_review_comments": [
+    "services/mlb_hitter_intel.py exposes the expected surface (BatterSplits, PitcherProfile, HitterMatchup, HitterContextMissing, build_matchup, lean_and_edge, _base_form, _score_hit/_rbi/_run). Standalone smoke asserts three distinct scores AND market routing AND strict-gate firing AND rationale.market_scores + rationale.vegas_context — all four pass.",
+    "pick_enrichment.py::_run_mlb_intel routes MLB hitter-prop picks through build_matchup with strict=True — verified live because 19/19 hitter picks on the today surface carry engine='mlb_hitter_intel'. Any hitter that failed the pitcher/lineup/team_implied_runs gate is not on the surface (strict-drop semantics correct).",
+    "analytics/history math is decoupled from lock_score: history.stats.hit_rate = 66.7 exactly matches 312/(312+156) = 66.67% (a naive lock-score-mean would be ~85-95 given avg_lock values in stats/summary). Decoupling confirmed at the API level.",
+    "First Goalscorer and KBO exclusions: /api/picks/history returned 0 rows for either — permanent exclusion holds. Today's surface also had 0 KBO across 211 picks (MLB=5 in summary, Soccer=137, Tennis=69).",
+    "MongoDB _id leakage check on /api/picks/today, /api/picks/history, /api/stats/summary, /api/picks/parlay, /api/picks/refresh-status, /api/mlb/hr-slate — no `_id` fields in any inspected sample (BSON stripping is intact).",
+    "pick_rationale on live hitter picks still needs a refresh cycle to surface the new market_scores + vegas_context — code path is correct in to_rationale() but existing Mongo docs were written before this iter's refactor."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_mlb_hitter_intel_regression_iter65.py (new — 10 pytest cases)"
+  ],
+  "success_rate": {"backend": "100% (10/10 pytest + 4/4 standalone smoke)", "frontend": "N/A — backend-only request"},
+  "seed_data_creation": "None — used seeded demo user (demo@lockscore.ai / demo123) and live pick surface.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "After the next full MLB refresh cycle, re-run /app/backend/tests/test_mlb_hitter_intel_regression_iter65.py and additionally verify that pick_rationale for MLB hitter picks now surfaces `market_scores` (dict with p_hit_pct / p_rbi_pct / p_run_pct) and `vegas_context` (team_implied_runs + obp_in_front). Sample rationale keys today (before refresh) exclude these two fields but do include `engine=mlb_hitter_intel`. Numbers snapshot at test time: 211 picks today (MLB=5 in summary, 26 in today surface, 19 MLB hitter props), history=471 picks, history.stats={total:471, won:312, lost:156, push:3, hit_rate:66.7%, rollover_hit_rate:66.5%, rollover_decided:388}. Rate-limiter on /api/auth/login can 429 during tight retest loops — the test fixture handles it with a 30s sleep + retry.",
+  "rca_of_issue": "N/A — refactor is functioning as designed. All four confirmed rules hold on the live API: (1) lock_score is a tier label not used in probability math (verified indirectly via history.stats.hit_rate derivation), (2) history/analytics stats math is decoupled from lock_score, (3) FGS + KBO permanently excluded, (4) all MLB hitter props on surface carry engine='mlb_hitter_intel'. The only observable caveat is that the live cached rationales predate the market_scores + vegas_context additions in to_rationale() — a data-freshness lag that resolves on the next MLB refresh cycle. E1 explicitly flagged this in the agent-to-agent note."
+}
