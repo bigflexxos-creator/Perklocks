@@ -95,7 +95,26 @@ def rank_candidates(picks: list[dict], memory: BrainMemory) -> dict:
     for p in picks:
         brain = p.setdefault("brain", {})
         edge_n = _normalize_edge(p.get("edge_percent") or 0.0)
-        conf = float(brain.get("confidence_calibrated") or (p.get("lock_score", 0) / 100.0))
+        # Confidence input MUST come from a real probability, not from
+        # `lock_score`. Per product spec (2026-07-01): lock_score is a
+        # tier label (Elite / Strong / Standard), NOT a probability, so
+        # we cannot divide it by 100 and pretend it's a P(win). Preference
+        # order: brain.confidence_calibrated → pick.win_probability →
+        # pick.raw_win_probability → neutral 0.5.
+        conf_raw = (
+            brain.get("confidence_calibrated")
+            if brain.get("confidence_calibrated") is not None
+            else (p.get("win_probability") or p.get("raw_win_probability"))
+        )
+        try:
+            conf = float(conf_raw) if conf_raw is not None else 0.5
+        except (TypeError, ValueError):
+            conf = 0.5
+        # win_probability is 0..100 in some pick shapes and 0..1 in others.
+        # Normalise once here so the ranker always sees 0..1.
+        if conf > 1.0:
+            conf = conf / 100.0
+        conf = max(0.0, min(1.0, conf))
         # Bucket ROI lookup (selection_v2.market.family preferred)
         sv2 = p.get("selection_v2") or {}
         family = (sv2.get("market") or {}).get("family") or "other"
