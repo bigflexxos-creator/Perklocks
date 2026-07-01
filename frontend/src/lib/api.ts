@@ -307,7 +307,7 @@ async function _fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numb
 
 async function request<T>(
   path: string,
-  opts: { method?: string; body?: any; auth?: boolean } = {},
+  opts: { method?: string; body?: any; auth?: boolean; timeoutMs?: number } = {},
 ): Promise<T> {
   const method = (opts.method || "GET").toUpperCase();
   const url = `${BASE_URL}/api${path}`;
@@ -354,7 +354,7 @@ async function request<T>(
     let lastErr: any = null;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
-        const res = await _fetchWithTimeout(finalUrl, init, REQUEST_TIMEOUT_MS);
+        const res = await _fetchWithTimeout(finalUrl, init, opts.timeoutMs ?? REQUEST_TIMEOUT_MS);
         const text = await res.text();
         let data: any = {};
         try { data = text ? JSON.parse(text) : {}; }
@@ -966,7 +966,14 @@ export const api = {
     const q: string[] = [];
     if (opts?.date) q.push(`date=${encodeURIComponent(opts.date)}`);
     if (opts?.refresh) q.push("refresh=true");
-    return request<HRSlateResponse>(`/mlb/hr-slate${q.length ? "?" + q.join("&") : ""}`);
+    // Cold slate builds take ~9-12s (Statcast + MLB Stats API + Open-Meteo
+    // fan-outs) so we lengthen the client timeout here from the default
+    // 10s to 30s. Warm cache hits return in <100ms so the 30s ceiling
+    // is basically only for the first request of the day.
+    return request<HRSlateResponse>(
+      `/mlb/hr-slate${q.length ? "?" + q.join("&") : ""}`,
+      { timeoutMs: 30_000 } as any,
+    );
   },
   modelPerformance: () => request<{
     as_of: string;

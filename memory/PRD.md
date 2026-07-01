@@ -224,3 +224,34 @@ Per user: "No it should be under nfl tab".
   mirroring the existing MLB NRFI/YRFI button style
 - Tap → routes to `/atd` (the Top-5 / Full-Board screen)
 - Cache key bumped to `20260630-nfl-atd-cta-v42`
+
+## Lock Score Fully Decoupled from Probability (2026-07-01)
+Per user mandate: "My 99 Lock system is getting treated as a probability
+value in analytics. I need it separated completely from win probability."
+
+**Product spec now enforced:**
+- `lock_score` = classification/tier label (Elite / Premium / Strong /
+  Standard / Speculative / Pass), NEVER a probability
+- `win_probability` = ONLY from the model output
+- `lock_score` MUST NOT feed averages, ROI, or probability calculations
+
+**Backend fixes:**
+- `brain/candidates.py`: removed the `p["lock_score"] / 100` fallback that
+  was polluting the ranker's confidence input. Now sources confidence
+  from `brain.confidence_calibrated → win_probability → raw_win_probability
+  → 0.5`, never from lock_score.
+- `analytics._lock_calibration()`: rebuilt to emit tier-level performance
+  only (count / hit_rate / ROI / avg_lock_score for reference), removed
+  the `expected`/`delta` columns that inflated the illusion that
+  lock_score was an expected probability.
+
+**Frontend fixes:**
+- `app/analytics.tsx` calibration table: dropped the EXPECTED / Δ columns,
+  now renders TIER · N · HIT % · ROI %. ROI is now the actionable signal
+  per tier, not a broken "over-promise" delta.
+
+**Live sanity (post-fix analytics.calibration payload):**
+- Elite (95+):     N=145, hit 69.7%, ROI +9.07%   ← positive tier ROI
+- Premium (90-94): N=290, hit 61.7%, ROI -9.32%
+- Strong (85-89):  N=351, hit 56.1%, ROI -13.63%
+- No `delta` or `expected` fields in payload ✓

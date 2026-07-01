@@ -168,24 +168,29 @@ export default function AnalyticsScreen() {
         {/* ── Calibration audit ── */}
         <SectionHeader title="Confidence Calibration" hint="Does Lock Score predict reality?" />
         <View style={styles.tableHeader}>
-          <Text style={[styles.th, { flex: 1.6 }]}>BAND</Text>
+          <Text style={[styles.th, { flex: 1.7 }]}>TIER</Text>
           <Text style={[styles.th, { flex: 0.7, textAlign: "right" }]}>N</Text>
-          <Text style={[styles.th, { flex: 1, textAlign: "right" }]}>EXPECTED</Text>
-          <Text style={[styles.th, { flex: 1, textAlign: "right" }]}>ACTUAL</Text>
-          <Text style={[styles.th, { flex: 1, textAlign: "right" }]}>Δ</Text>
+          <Text style={[styles.th, { flex: 1, textAlign: "right" }]}>HIT %</Text>
+          <Text style={[styles.th, { flex: 1, textAlign: "right" }]}>ROI %</Text>
         </View>
         {data.calibration.map((c) => (
           <View key={c.band} style={styles.tableRow}>
-            <Text style={[styles.td, { flex: 1.6, color: COLORS.textPrimary, fontWeight: "600" }]}>{c.band}</Text>
-            <Text style={[styles.td, { flex: 0.7, textAlign: "right" }]}>{c.count}</Text>
-            <Text style={[styles.td, { flex: 1, textAlign: "right" }]}>{fmt(c.avg_lock_score, 1)}%</Text>
-            <Text style={[styles.td, { flex: 1, textAlign: "right", color: COLORS.textPrimary }]}>
-              {fmt(c.actual_hit_rate, 1)}%
+            <Text style={[styles.td, { flex: 1.7, color: COLORS.textPrimary, fontWeight: "600" }]}>
+              {c.band}
             </Text>
+            <Text style={[styles.td, { flex: 0.7, textAlign: "right" }]}>{c.count}</Text>
+            <Text style={[styles.td, { flex: 1, textAlign: "right", color: COLORS.textPrimary }]}>
+              {fmt((c as any).hit_rate ?? c.actual_hit_rate, 1)}%
+            </Text>
+            {/* ROI% — pulled from the new tier-only calibration payload
+                (2026-07-01). We no longer render EXPECTED / Δ columns
+                because `lock_score` is a TIER LABEL, NOT a probability,
+                so comparing it against hit-rate produced misleading
+                "over-promised" deltas. */}
             <Text style={[
               styles.td, { flex: 1, textAlign: "right", fontWeight: "700",
-                color: c.delta >= 0 ? COLORS.neonGreen : COLORS.electricBlaze }]}>
-              {sign(c.delta)}{fmt(c.delta, 1)}
+                color: ((c as any).roi_pct ?? 0) >= 0 ? COLORS.neonGreen : COLORS.electricBlaze }]}>
+              {sign((c as any).roi_pct ?? 0)}{fmt((c as any).roi_pct ?? 0, 1)}%
             </Text>
           </View>
         ))}

@@ -370,11 +370,29 @@ def _group(picks: list[dict], key_fn) -> list[dict]:
 
 
 def _lock_calibration(picks: list[dict]) -> list[dict]:
-    """How accurate are our lock-score bands really?
-    Returns rows aligned with confidence buckets, ordered from highest band down."""
+    """Per-tier performance breakdown.
+
+    IMPORTANT (2026-07-01 product spec): `lock_score` is a TIER LABEL
+    (Elite / Premium / Strong / Standard / Speculative / Pass), NOT a
+    probability. Prior to today this function was subtracting the
+    average lock_score from the hit-rate as if lock_score represented
+    an expected win-probability — that produced false-negative "delta"
+    signals like "Elite 95+ hit only 69%" (as if 95 was a 95% expectation).
+
+    The corrected view shows, per tier:
+      • count of settled picks
+      • actual hit rate (%)
+      • actual ROI (%)
+      • average lock_score inside the tier (label-average — informational only)
+    NO "expected" column, NO "delta" column, NO probability inference.
+    """
     order = ["Elite (95+)", "Premium (90-94)", "Strong (85-89)",
              "Standard (80-84)", "Speculative (70-79)", "Pass (<70)"]
-    buckets: dict[str, dict] = {k: {"count": 0, "wins": 0, "losses": 0, "lock_sum": 0.0} for k in order}
+    buckets: dict[str, dict] = {
+        k: {"count": 0, "wins": 0, "losses": 0, "lock_sum": 0.0,
+            "units_risked": 0.0, "units_profit": 0.0}
+        for k in order
+    }
     for p in picks:
         bk = p.get("confidence_bucket") or confidence_bucket(p.get("lock_score"))
         if bk not in buckets:
@@ -383,25 +401,40 @@ def _lock_calibration(picks: list[dict]) -> list[dict]:
             continue
         b = buckets[bk]
         b["count"] += 1
+        # lock_sum is retained ONLY so we can surface the average tier
+        # value in the UI for transparency — it is NEVER compared to
+        # hit-rate or ROI.
         b["lock_sum"] += p.get("lock_score") or 0.0
+        stake = float(p.get("units_risked") or 1.0)
+        b["units_risked"] += stake
+        b["units_profit"] += float(p.get("units_profit") or 0.0)
         if p["status"] == "won":
             b["wins"] += 1
         elif p["status"] == "lost":
             b["losses"] += 1
+
     rows = []
     for k in order:
         b = buckets[k]
         if b["count"] == 0:
             continue
         decisive = b["wins"] + b["losses"]
-        actual = _safe_div(b["wins"] * 100, decisive)
-        expected = round(b["lock_sum"] / b["count"], 1) if b["count"] else 0
+        hit_rate = _safe_div(b["wins"] * 100, decisive)
+        roi = _safe_div(b["units_profit"] * 100, b["units_risked"])
+        avg_lock = round(b["lock_sum"] / b["count"], 1) if b["count"] else 0
         rows.append({
-            "band": k,
-            "count": b["count"],
-            "avg_lock_score": expected,
-            "actual_hit_rate": actual,
-            "delta": round(actual - expected, 2),  # negative = lock score over-promised
+            "band":            k,
+            "count":           b["count"],
+            "wins":            b["wins"],
+            "losses":          b["losses"],
+            "hit_rate":        hit_rate,
+            "roi_pct":         round(roi, 2),
+            "avg_lock_score":  avg_lock,       # tier-label average (NOT a probability)
+            # Legacy fields retained for backwards compat with older UI
+            # rows that still reference `actual_hit_rate` — but `delta`
+            # is intentionally REMOVED per 2026-07-01 spec so the UI
+            # stops rendering the misleading "expected vs actual" column.
+            "actual_hit_rate": hit_rate,
         })
     return rows
 
