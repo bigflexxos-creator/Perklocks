@@ -134,27 +134,63 @@ async def compute_model_performance(db, days: int = 30) -> dict[str, Any]:
     # Without this filter, those picks polluted ROI / CLV / win-rate stats
     # even though they were already hidden from the History tab.
     #
-    # Board-floor gate (added 2026-06-23 — user complaint "Why are picks
-    # like this being graded shouldn't be in history wasn't on the
-    # board"). Only count picks that ACTUALLY crossed the surfacing
-    # floor (lock_score ≥ 80). Picks generated below that floor never
-    # appeared in the live feed and shouldn't pollute ROI / hit-rate /
-    # calibration analytics. Settled picks are NOT recalibrated by
-    # design so `lock_score` is the historical raw value for them.
+    # Board-floor gate (2026-07-01, per user: "89 lowers shouldn't be
+    # graded because it's never on board I see a bunch of them In history
+    # also the history is affecting analytic tab such as h r rbi is not
+    # correct"). Only count picks that ACTUALLY crossed the surfacing
+    # floor (lock_score ≥ 89 for standard picks; alt-line picks at ≥85
+    # since they surface via the alt-lock carve-out). Everything below
+    # gets EXCLUDED from ROI / hit-rate / calibration analytics — those
+    # picks either never appeared on the board or came from experimental
+    # low-floor pathways (ALT LOCK carve-outs, sub-boards, etc.) that
+    # the user does not consider part of the graded product.
+    #
+    # ADDITIONAL DEFENSIVE FILTERS (2026-07-01, per user: "Make sure you
+    # delete first goalscorer and kbo from history and analytic tab
+    # such and fix the anytime goal scorer history and analytic tab
+    # with accuracy since we only give top 3"):
+    #   • First Goal Scorer  — market removed from product, must not
+    #     pollute historical analytics.
+    #   • Last  Goal Scorer  — same reasoning (low-signal market).
+    #   • KBO / Korean baseball — out of product scope.
+    #   • Anytime Goal Scorer with lock_score < 85 — never surfaced to
+    #     the top-3 slots the user sees; only true top-3 (lock ≥ 85)
+    #     count toward analytics.
+    #
+    # NOTE: This is intentionally aggressive. Lower-lock experimental
+    # picks are still WRITTEN to the DB (so we can measure their long-
+    # run edge), but they never enter these analytics views.
+    exclusion_filters = [
+        # First / Last Goal Scorer — market retired from analytics.
+        {"market": {"$not": {"$regex": r"First Goal Scorer|Last Goal Scorer",
+                              "$options": "i"}}},
+        # KBO / Korean baseball — out of product scope.
+        {"league": {"$not": {"$regex": r"KBO|Korean", "$options": "i"}}},
+        # Anytime Goal Scorer at lock<85 = never on top-3 board.
+        {"$or": [
+            {"market": {"$not": {"$regex": r"Anytime Goal Scorer",
+                                  "$options": "i"}}},
+            {"lock_score": {"$gte": 85}},
+        ]},
+    ]
     cursor = db.picks.find(
         {"status": {"$in": ["won", "lost", "push"]},
          "excluded_from_history": {"$ne": True},
-         "$or": [
-             {"lock_score": {"$gte": 80}},
-             {"raw_lock_score": {"$gte": 80}},
-             {"elite_pitcher_override": True},
-             {"is_alt": True, "lock_score": {"$gte": 75}},
+         "$and": [
+             *exclusion_filters,
+             {"$or": [
+                 {"lock_score": {"$gte": 89}},
+                 {"raw_lock_score": {"$gte": 89}},
+                 {"elite_pitcher_override": True},
+                 {"is_alt": True, "lock_score": {"$gte": 85}},
+             ]},
          ]},
         {"_id": 0, "sport": 1, "market": 1, "status": 1, "lock_score": 1,
          "win_probability": 1, "edge_percent": 1, "book_odds": 1,
          "odds_at_pick": 1, "closing_odds": 1, "units_profit": 1,
          "settled_at": 1, "commence_time": 1, "event_time": 1,
-         "confidence_bucket": 1},
+         "confidence_bucket": 1, "raw_lock_score": 1, "is_alt": 1,
+         "elite_pitcher_override": 1, "league": 1},
     )
     picks = await cursor.to_list(length=10_000)
 

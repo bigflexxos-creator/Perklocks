@@ -255,3 +255,40 @@ value in analytics. I need it separated completely from win probability."
 - Premium (90-94): N=290, hit 61.7%, ROI -9.32%
 - Strong (85-89):  N=351, hit 56.1%, ROI -13.63%
 - No `delta` or `expected` fields in payload ✓
+
+## History + Analytics Deep Cleanup (2026-07-01)
+Per user: "Make sure you delete first goalscorer and kbo from history
+and analytic tab such and fix the anytime goal scorer history and
+analytic tab with accuracy since we only give top 3".
+
+**DB backfill (one-time, all previously-settled picks):**
+- 1,073 First Goal Scorer picks → `excluded_from_history=True`
+- 197 Anytime Goal Scorer picks with lock_score < 85 → excluded
+- 0 KBO / Korean baseball (none in DB, defensive filter added anyway)
+- 0 Last Goal Scorer (none in DB, added to exclusion regex)
+
+**Ongoing defensive filters added to both endpoints:**
+- `GET /api/analytics/model-performance` (`analytics.py`)
+- `GET /api/picks/history` (`routes/picks_routes.py`)
+
+Both now EXCLUDE:
+- Markets matching `First Goal Scorer` or `Last Goal Scorer`
+- Leagues matching `KBO` or `Korean`
+- Anytime Goal Scorer with `lock_score < 85` (only true top-3 count)
+- Any pick with `lock_score < 89` (per prior directive) unless
+  is_alt-with-lock≥85 or elite_pitcher_override
+
+**Impact metrics (analytics/model-performance):**
+| Metric | Before | After |
+|--------|--------|-------|
+| Settled picks | 842 | **495** |
+| Hit rate | 59.8% | **67.1%** |
+| ROI | -8.75% | **-3.92%** |
+| Elite (95+) tier ROI | +9.07% | **+4.01%** |
+| Soccer Anytime Scorer ROI | contaminated | **+47.24% on 8 picks** |
+| First Goal Scorer count | 351 | **0** |
+
+**Known remaining ROI bleeders (product-model issue, NOT analytics):**
+- MLB H+R+RBI: 27.6% hit / -66% ROI on 29 picks
+- MLB Strikeouts: 56% hit / -32% ROI on 16 picks
+- MLB Hits: 67% hit / -6% ROI on 116 picks
