@@ -406,23 +406,65 @@ def _run_mlb_intel(picks: list[dict]) -> int:
             resolved = await mlb_matchup_resolver.resolve_matchup(db, name, event, evt_time)
             if not resolved:
                 return False
-            m = await mlb_hitter_intel.build_matchup(
-                db,
-                batter_id=resolved["batter_id"],
-                pitcher_id=resolved["pitcher_id"],
-                batter_name=name,
-                pitcher_name=resolved.get("pitcher_name") or "",
-                batter_team=resolved.get("batter_team") or "",
-                pitcher_team=resolved.get("pitcher_team") or "",
-                ballpark=resolved.get("ballpark"),
-                batting_order=resolved.get("batting_order"),
-                is_home=resolved.get("is_home", True),
+
+            # ── Vegas + lineup context (2026-07-01 spec: "remove any
+            #    logic that selects hitters without pitcher + lineup +
+            #    Vegas context"). Team-implied runs derived from the
+            #    game total × ~0.5 (share of totals). OBP-in-front
+            #    pulled from resolver when it can compute it.
+            batting_order = resolved.get("batting_order")
+            team_implied_runs = (
+                pick.get("team_implied_runs")
+                or resolved.get("team_implied_runs")
             )
+            if not team_implied_runs:
+                game_total = pick.get("game_total") or resolved.get("game_total")
+                if game_total:
+                    # Split 50/50 as a floor; over-side team share can
+                    # be refined once we wire moneyline share (v2).
+                    team_implied_runs = float(game_total) / 2.0
+            obp_in_front = pick.get("obp_in_front") or resolved.get("obp_in_front")
+
+            try:
+                m = await mlb_hitter_intel.build_matchup(
+                    db,
+                    batter_id=resolved["batter_id"],
+                    pitcher_id=resolved["pitcher_id"],
+                    batter_name=name,
+                    pitcher_name=resolved.get("pitcher_name") or "",
+                    batter_team=resolved.get("batter_team") or "",
+                    pitcher_team=resolved.get("pitcher_team") or "",
+                    ballpark=resolved.get("ballpark"),
+                    batting_order=batting_order,
+                    is_home=resolved.get("is_home", True),
+                    team_implied_runs=team_implied_runs,
+                    obp_in_front=obp_in_front,
+                    strict=True,
+                )
+            except mlb_hitter_intel.HitterContextMissing as ctx_err:
+                # DROP the pick — per user 2026-07-01 spec, hitters must
+                # never be selected without pitcher + lineup + Vegas
+                # context. Flag it so the ranker de-prioritises it.
+                pick["_hitter_context_missing"] = str(ctx_err)
+                pick["excluded_from_surface"] = True
+                logger.info("hitter_intel gated pick out: %s | %s", name, ctx_err)
+                return False
+
             # Replace the lightweight rationale with the full matchup model
             pick["pick_rationale"] = m.to_rationale()
-            # Add a market-aware lean (line = 0.5 / 1.5 / 2.5 parsed from market)
+
+            # Attach the three sub-scores onto the pick itself so
+            # downstream rankers/analytics can inspect them.
+            pick["hitter_scores"] = {
+                "p_hit": m.p_hit_score,
+                "p_rbi": m.p_rbi_score,
+                "p_run": m.p_run_score,
+            }
+
+            # Market-aware lean.
             line = 0.5
-            mlower = (pick.get("market") or "").lower()
+            market_label = pick.get("market") or ""
+            mlower = market_label.lower()
             mlin = __import__("re").search(r"(\d+(?:\.\d+)?)", mlower)
             if mlin:
                 try:
@@ -433,10 +475,13 @@ def _run_mlb_intel(picks: list[dict]) -> int:
             if isinstance(market_p, (int, float)):
                 if market_p > 1.0:
                     market_p = market_p / 100.0
-                lean = mlb_hitter_intel.lean_and_edge(m, market_p, line=line)
+                lean = mlb_hitter_intel.lean_and_edge(
+                    m, market_p, line=line, market=market_label,
+                )
                 pick["pick_rationale"]["lean"] = lean["lean"]
                 pick["pick_rationale"]["edge_pct_points"] = lean["edge_pct_points"]
                 pick["pick_rationale"]["model_prob"] = lean["model_prob"]
+                pick["pick_rationale"]["sub_scores"] = lean.get("sub_scores")
             return True
         except Exception as e:
             logger.debug(f"mlb_intel build failed for {name}: {e}")

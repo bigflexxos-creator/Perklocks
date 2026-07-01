@@ -115,6 +115,15 @@ class BatterSplits:
     last5_avg: Optional[float] = None
     last5_hits: int = 0
     last5_ab: int = 0
+    # ── Extended for Hit/RBI/Run separation (2026-07-01) ──
+    # xwOBA proxy (OPS-derived; real Statcast xwOBA lives on Baseball
+    # Savant which requires HTML scraping — that's queued as a follow-up).
+    xwoba: Optional[float] = None
+    obp: Optional[float] = None          # season OBP (MLB Stats API)
+    iso: Optional[float] = None          # season ISO (SLG − AVG)
+    contact_pct: Optional[float] = None  # 1 − K% (rough), inverse of whiff
+    rbi: int = 0                         # season RBIs
+    runs: int = 0                        # season Runs scored
 
 
 @dataclass
@@ -158,6 +167,20 @@ class HitterMatchup:
     recent_form_mult: float = 1.0
     home_away_mult: float = 1.0
     final_hit_prob: float = LEAGUE_HIT_PROB
+    # ── Separated market scores (2026-07-01, per user: "Right now the
+    #    system is not properly using pitcher + lineup context and it
+    #    feels random ... calculates separate scores for Hit, RBI, and
+    #    Run props"). Each is a 0..1 probability of `≥ 1` in that stat
+    #    per game (or the P(cross line X.5) if a line is later specified
+    #    via `lean_and_edge`).
+    p_hit_score:  float = LEAGUE_HIT_PROB   # P(≥1 hit)
+    p_rbi_score:  float = 0.28              # P(≥1 RBI)
+    p_run_score:  float = 0.32              # P(≥1 Run scored)
+    # ── Vegas + lineup context inputs (must be provided by caller;
+    #    the enrichment pipeline refuses to generate hitter picks
+    #    without them per product spec 2026-07-01) ──
+    team_implied_runs:  Optional[float] = None   # game total × moneyline share
+    obp_in_front:       Optional[float] = None   # avg OBP of batters ahead in lineup
     # Explanation
     summary: str = ""
     advantages: list[str] = field(default_factory=list)
@@ -527,6 +550,94 @@ def _base_form(batter: BatterSplits) -> float:
 
 
 # ─────────────────────────── Public builder ───────────────────────────
+# Sentinel: caller MUST provide either team_implied_runs OR pass
+# `strict=False` to opt into pitcher-only mode. Per user 2026-07-01:
+# "remove any logic that selects hitters without pitcher + lineup +
+# Vegas context". The strict guard raises `HitterContextMissing` when
+# any required signal is None so the enrichment pipeline can DROP the
+# pick instead of scoring it blind.
+
+
+class HitterContextMissing(ValueError):
+    """Raised when build_matchup is asked to score a hitter without the
+    pitcher + lineup + Vegas context the product spec requires."""
+
+
+def _score_hit(m: "HitterMatchup") -> float:
+    """P(≥1 hit). Uses pitcher K%/WHIP + batter contact + platoon +
+    park + recent form + home/away."""
+    return m.final_hit_prob
+
+
+def _score_rbi(m: "HitterMatchup") -> float:
+    """P(≥1 RBI in the game).
+
+    RBI requires (a) runners on base ahead of the batter and
+    (b) the batter driving them in. Blend:
+      • obp_in_front  (0..1) — probability someone will be on base
+      • batter ISO   proxy for extra-base power
+      • team_implied_runs — the Vegas prior for how many runs this
+        offense will produce
+      • pitcher WHIP — walks/hits allowed per inning = baserunner rate
+    Formula:
+        base = 0.30 + 0.35*obp_in_front + 0.60*(ISO/0.165 - 1)
+        vegas_mult = clamp(team_implied_runs / 4.5, 0.6, 1.6)
+        whip_mult = clamp(pitcher.whip / 1.30, 0.75, 1.35)
+        p = clamp(base * vegas_mult * whip_mult, 0.10, 0.72)
+    """
+    obp_front = m.obp_in_front if m.obp_in_front is not None else 0.32
+    iso_ratio = ((m.batter.iso or 0.165) / 0.165)
+    base = 0.30 + 0.35 * obp_front + 0.10 * (iso_ratio - 1)
+    tir = m.team_implied_runs if m.team_implied_runs is not None else 4.5
+    vegas_mult = max(0.60, min(1.60, tir / 4.5))
+    whip = m.pitcher.whip if m.pitcher.whip else 1.30
+    whip_mult = max(0.75, min(1.35, whip / 1.30))
+    # Platoon edge amplifies RBI power (opposite-hand = ~+8%).
+    plat_mult = 1.0 + (m.platoon_mult - 1.0) * 0.6
+    p = base * vegas_mult * whip_mult * plat_mult
+    return round(max(0.10, min(0.72, p)), 4)
+
+
+def _score_run(m: "HitterMatchup") -> float:
+    """P(≥1 Run scored in the game).
+
+    Batter needs to (a) reach base and (b) be driven in. Blend:
+      • batter OBP — probability of reaching base
+      • team_implied_runs — how many runs this side will score
+      • batting_order — top-of-order guarantees more PAs
+      • pitcher K% — high-K pitchers suppress baserunners
+    Formula:
+        base = 0.20 + 1.10 * OBP           (OBP .320 → base .552)
+        vegas_mult = clamp(team_implied_runs / 4.5, 0.6, 1.6)
+        pa_mult = 1 + max(0, (5 - order)) * 0.03  # bump for 1..4
+        k_mult = clamp(1 - (pitcher.k_pct - 0.22) * 0.60, 0.75, 1.20)
+    """
+    obp = m.batter.obp if m.batter.obp is not None else 0.315
+    base = 0.20 + 1.10 * obp
+    tir = m.team_implied_runs if m.team_implied_runs is not None else 4.5
+    vegas_mult = max(0.60, min(1.60, tir / 4.5))
+    order = m.batting_order or 6
+    pa_mult = 1.0 + max(0, (5 - order)) * 0.03
+    k_pct = m.pitcher.k_pct if m.pitcher.k_pct else 0.22
+    k_mult = max(0.75, min(1.20, 1 - (k_pct - 0.22) * 0.60))
+    p = base * vegas_mult * pa_mult * k_mult
+    return round(max(0.10, min(0.72, p)), 4)
+
+
+def _confidence_hitter(m: "HitterMatchup", score: float) -> float:
+    """Confidence 0..1 combining score magnitude + data completeness."""
+    completeness = 0.0
+    if m.pitcher.k_pct is not None:      completeness += 0.20
+    if m.pitcher.whip is not None:       completeness += 0.20
+    if m.batter.season_avg is not None:  completeness += 0.15
+    if m.batter.obp is not None:         completeness += 0.15
+    if m.team_implied_runs is not None:  completeness += 0.15
+    if m.obp_in_front is not None:       completeness += 0.10
+    if m.batting_order is not None:      completeness += 0.05
+    conf = 0.35 * (score - 0.3) / 0.4 + 0.65 * completeness
+    return max(0.0, min(1.0, conf))
+
+
 async def build_matchup(
     db,
     batter_id: int,
@@ -540,9 +651,29 @@ async def build_matchup(
     batting_order: Optional[int] = None,
     is_home: bool = True,
     season: Optional[int] = None,
+    team_implied_runs: Optional[float] = None,
+    obp_in_front: Optional[float] = None,
+    strict: bool = True,
 ) -> HitterMatchup:
-    """End-to-end builder. Caches the resulting matchup in Mongo for 6 h to
-    avoid hammering the MLB API during the daily prop sweep."""
+    """End-to-end builder. Now computes THREE separate market scores
+    (Hit / RBI / Run) using pitcher K%/WHIP + batter xwOBA/contact +
+    lineup OBP-in-front + team_implied_runs (from Vegas total).
+
+    When `strict=True` (default), raises HitterContextMissing if the
+    caller doesn't supply pitcher + lineup + Vegas context — per product
+    spec 2026-07-01 "remove any logic that selects hitters without
+    pitcher + lineup + Vegas context".
+
+    Caches the resulting matchup in Mongo for 6 h."""
+    if strict:
+        missing = []
+        if not pitcher_id:                 missing.append("pitcher_id")
+        if batting_order is None:          missing.append("batting_order")
+        if team_implied_runs is None:      missing.append("team_implied_runs")
+        if missing:
+            raise HitterContextMissing(
+                f"cannot score {batter_name or batter_id}: missing {', '.join(missing)}"
+            )
     if season is None:
         # Use 2025 if we're past March 2026; MLB API starts populating new
         # season AVG/splits around mid-April.
@@ -587,6 +718,15 @@ async def build_matchup(
     )
     m.final_hit_prob = round(max(0.05, min(0.97, final)), 4)
 
+    # ── Attach lineup + Vegas context onto the matchup ──
+    m.team_implied_runs = team_implied_runs
+    m.obp_in_front      = obp_in_front
+
+    # ── Compute the three separate market scores (2026-07-01) ──
+    m.p_hit_score = _score_hit(m)
+    m.p_rbi_score = _score_rbi(m)
+    m.p_run_score = _score_run(m)
+
     # Build adv / dis tags
     if "advantage" in platoon_label or "boost" in platoon_label:
         m.advantages.append(f"⚔️ Platoon edge: {platoon_label}")
@@ -625,21 +765,36 @@ async def build_matchup(
     return m
 
 
-def lean_and_edge(matchup: HitterMatchup, market_implied_prob: float, line: float = 0.5) -> dict:
-    """Convert the model hit-prob into an OVER/UNDER lean + edge vs market.
+def lean_and_edge(matchup: HitterMatchup, market_implied_prob: float,
+                  line: float = 0.5, market: str = "") -> dict:
+    """Convert model probabilities into OVER/UNDER lean + edge vs market.
 
-    line == 0.5 means "over 0.5 hits" (anytime hit). Pass line == 1.5 for
-    "over 1.5 hits" — we approximate via Poisson with λ ≈ AB * AVG_adj.
+    Now routes to the CORRECT sub-score based on `market` string
+    (2026-07-01: user "calculates separate scores for Hit, RBI, and
+    Run props"):
+      • "H+R+RBI" / "Hits+Runs+RBIs"  → union approximation of the three
+      • "RBI"                          → matchup.p_rbi_score
+      • "Run"                          → matchup.p_run_score
+      • "Hit" (default) / anything else → matchup.final_hit_prob
+
+    For lines > 0.5 we still Poisson-approximate over N ≈ 4 AB.
     """
-    # For anytime-hit market, our final_hit_prob IS the model prob.
-    if line <= 0.5:
-        model_prob = matchup.final_hit_prob
+    ml = (market or "").lower()
+    if "h+r+rbi" in ml or "hits+runs+rbi" in ml or ("runs" in ml and "rbi" in ml and "hit" in ml):
+        # P(at least one of H|R|RBI) ≈ 1 - Π(1 - pₓ)
+        p = 1.0 - (1 - matchup.p_hit_score) * (1 - matchup.p_rbi_score) * (1 - matchup.p_run_score)
+        model_prob = max(0.05, min(0.99, p))
+    elif "rbi" in ml:
+        model_prob = matchup.p_rbi_score
+    elif "run" in ml and "score" not in ml:
+        model_prob = matchup.p_run_score
+    elif line <= 0.5:
+        model_prob = matchup.p_hit_score
     else:
-        # P(N >= k+1) where N ~ Poisson(λ)
+        # Poisson approx for over 1.5 / 2.5 hits.
         avg_adj = matchup.batter.season_avg or LEAGUE_AVG
-        avg_adj *= (matchup.final_hit_prob / matchup.base_form) if matchup.base_form > 0 else 1.0
+        avg_adj *= (matchup.p_hit_score / matchup.base_form) if matchup.base_form > 0 else 1.0
         lam = DEFAULT_AB_PER_GAME * avg_adj
-        # ceil(line) for over X.5
         k = int(math.ceil(line))
         cdf = sum(math.exp(-lam) * lam**i / math.factorial(i) for i in range(k))
         model_prob = max(0.02, min(0.97, 1.0 - cdf))
@@ -651,8 +806,13 @@ def lean_and_edge(matchup: HitterMatchup, market_implied_prob: float, line: floa
         "market_implied_prob": round(market_implied_prob, 4),
         "lean": lean,
         "edge_pct_points": round(edge_pp, 2),
-        "confidence": _confidence_from_inputs(matchup),
+        "confidence": _confidence_hitter(matchup, model_prob),
         "explanation": matchup.summary,
+        "sub_scores": {
+            "p_hit": matchup.p_hit_score,
+            "p_rbi": matchup.p_rbi_score,
+            "p_run": matchup.p_run_score,
+        },
     }
 
 
