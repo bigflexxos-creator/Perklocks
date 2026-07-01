@@ -540,26 +540,35 @@ async def picks_history(
         # W/L stats.
         "status": {"$nin": ["void"]},
         "excluded_from_history": {"$ne": True},
-        # ── Board-floor gate (added 2026-06-23). Picks for many
-        # markets that the LIVE feed filters out for low lock scores
-        # (Bosnia vs Switzerland "Score or Assist" picks at lock
-        # 67-75 etc.) settle and then leak into PICK HISTORY even
-        # though the user never saw them. Result: a Lost record
-        # that pollutes the hit-rate.
+        # ── Board-floor gate (2026-07-01 update). Picks for many markets
+        # that the LIVE feed filters out for low lock scores settle and
+        # then leak into PICK HISTORY even though the user never saw them.
+        # Result: a Lost record that pollutes the hit-rate.
         #
-        # Fix: only show in history picks that ACTUALLY crossed the
-        # surfacing floor (lock_score ≥ 80, matching the lowest
-        # carve-out floor used by /picks/today). Use raw_lock_score
-        # when present so the calibration overlay (which can lower
-        # the display number for pending picks) doesn't accidentally
-        # hide legitimate history rows.
-        "$or": [
-            {"lock_score": {"$gte": 80}},
-            {"raw_lock_score": {"$gte": 80}},
-            # Carve-out: elite-pitcher override picks were intentionally
-            # surfaced even at lock<80 with strong edge — preserve them.
-            {"elite_pitcher_override": True},
-            {"is_alt": True, "lock_score": {"$gte": 75}},
+        # Fix (per user 2026-07-01 "89 lowers shouldn't be graded because
+        # it's never on board"): only show in history picks that ACTUALLY
+        # crossed the surfacing floor (lock_score ≥ 89 for standard picks;
+        # alt-line carve-outs at ≥85). AND exclude off-scope markets:
+        #   • First / Last Goal Scorer — retired from product
+        #   • KBO / Korean baseball — out of scope
+        #   • Anytime Goal Scorer < 85 — never surfaced to top-3
+        "$and": [
+            {"market": {"$not": {"$regex":
+                r"First Goal Scorer|Last Goal Scorer", "$options": "i"}}},
+            {"league": {"$not": {"$regex": r"KBO|Korean", "$options": "i"}}},
+            {"$or": [
+                {"market": {"$not": {"$regex": r"Anytime Goal Scorer",
+                                      "$options": "i"}}},
+                {"lock_score": {"$gte": 85}},
+            ]},
+            {"$or": [
+                {"lock_score": {"$gte": 89}},
+                {"raw_lock_score": {"$gte": 89}},
+                # Carve-out: elite-pitcher override picks were intentionally
+                # surfaced even at lower lock with strong edge — preserve them.
+                {"elite_pitcher_override": True},
+                {"is_alt": True, "lock_score": {"$gte": 85}},
+            ]},
         ],
     }
     cursor = db.picks.find(q, {"_id": 0}).sort("settled_at", -1).limit(2000)
