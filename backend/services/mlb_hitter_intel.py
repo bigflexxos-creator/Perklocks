@@ -115,6 +115,12 @@ class BatterSplits:
     last5_avg: Optional[float] = None
     last5_hits: int = 0
     last5_ab: int = 0
+    last10_avg: Optional[float] = None
+    last10_hits: int = 0
+    last10_ab: int = 0
+    last20_avg: Optional[float] = None
+    last20_hits: int = 0
+    last20_ab: int = 0
     # ── Extended for Hit/RBI/Run separation (2026-07-01) ──
     # xwOBA proxy (OPS-derived; real Statcast xwOBA lives on Baseball
     # Savant which requires HTML scraping — that's queued as a follow-up).
@@ -219,6 +225,12 @@ class HitterMatchup:
                 "last5_avg": self.batter.last5_avg,
                 "last5_hits": self.batter.last5_hits,
                 "last5_ab": self.batter.last5_ab,
+                "last10_avg": self.batter.last10_avg,
+                "last10_hits": self.batter.last10_hits,
+                "last10_ab": self.batter.last10_ab,
+                "last20_avg": self.batter.last20_avg,
+                "last20_hits": self.batter.last20_hits,
+                "last20_ab": self.batter.last20_ab,
             },
             "multipliers": {
                 "platoon": round(self.platoon_mult, 3),
@@ -347,6 +359,12 @@ async def fetch_batter_splits(client: httpx.AsyncClient, batter_id: int,
     for s in data.get("stats", []):
         for sp in s.get("splits", []):
             games.append(sp.get("stat") or {})
+    # Rolling recent-form windows — L5 / L10 / L20. The MLB Stats API
+    # gameLog is ordered chronologically, so slicing the last N gives us
+    # the most recent N games. Users want to see multiple time windows
+    # (2026-07-02 spec: "change all of generic why this pick with real
+    # data like h2h l5 l10 l20 etc") so the card can show a hot/cold
+    # arc rather than a single L5 snapshot.
     last5 = games[-5:]
     hits = sum(int(g.get("hits") or 0) for g in last5)
     ab = sum(int(g.get("atBats") or 0) for g in last5)
@@ -354,6 +372,20 @@ async def fetch_batter_splits(client: httpx.AsyncClient, batter_id: int,
     bs.last5_ab = ab
     if ab > 0:
         bs.last5_avg = round(hits / ab, 3)
+    last10 = games[-10:]
+    h10 = sum(int(g.get("hits") or 0) for g in last10)
+    ab10 = sum(int(g.get("atBats") or 0) for g in last10)
+    bs.last10_hits = h10
+    bs.last10_ab = ab10
+    if ab10 > 0:
+        bs.last10_avg = round(h10 / ab10, 3)
+    last20 = games[-20:]
+    h20 = sum(int(g.get("hits") or 0) for g in last20)
+    ab20 = sum(int(g.get("atBats") or 0) for g in last20)
+    bs.last20_hits = h20
+    bs.last20_ab = ab20
+    if ab20 > 0:
+        bs.last20_avg = round(h20 / ab20, 3)
     return bs
 
 

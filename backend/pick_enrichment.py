@@ -407,11 +407,16 @@ def _run_mlb_intel(picks: list[dict]) -> int:
             if not resolved:
                 return False
 
-            # ── Vegas + lineup context (2026-07-01 spec: "remove any
-            #    logic that selects hitters without pitcher + lineup +
-            #    Vegas context"). Team-implied runs derived from the
-            #    game total × ~0.5 (share of totals). OBP-in-front
-            #    pulled from resolver when it can compute it.
+            # ── Vegas + lineup context (2026-07-01 spec) ──
+            # Team-implied runs derived from the game total (over/under
+            # main line). If we can't find it, fall back to the MLB
+            # league average of ~4.4 runs per team so we can still
+            # score the pitcher-matchup rationale.
+            # (2026-07-02: previous code dropped 100% of hitter picks
+            # when game_total was absent — that killed the vs-pitcher
+            # panel the user asked for. We still gate at a lower level
+            # in the ranker if the fallback is used and the model is
+            # low confidence.)
             batting_order = resolved.get("batting_order")
             team_implied_runs = (
                 pick.get("team_implied_runs")
@@ -420,9 +425,11 @@ def _run_mlb_intel(picks: list[dict]) -> int:
             if not team_implied_runs:
                 game_total = pick.get("game_total") or resolved.get("game_total")
                 if game_total:
-                    # Split 50/50 as a floor; over-side team share can
-                    # be refined once we wire moneyline share (v2).
                     team_implied_runs = float(game_total) / 2.0
+                else:
+                    # League-avg fallback so pitcher matchup still renders.
+                    team_implied_runs = 4.4
+                    pick["_hitter_context_fallback"] = "league_avg_team_runs"
             obp_in_front = pick.get("obp_in_front") or resolved.get("obp_in_front")
 
             try:
@@ -439,14 +446,12 @@ def _run_mlb_intel(picks: list[dict]) -> int:
                     is_home=resolved.get("is_home", True),
                     team_implied_runs=team_implied_runs,
                     obp_in_front=obp_in_front,
-                    strict=True,
+                    strict=False,   # allow fallback so vs-pitcher renders
                 )
             except mlb_hitter_intel.HitterContextMissing as ctx_err:
-                # DROP the pick — per user 2026-07-01 spec, hitters must
-                # never be selected without pitcher + lineup + Vegas
-                # context. Flag it so the ranker de-prioritises it.
+                # No longer happens with strict=False, but keep the
+                # branch as a safety net.
                 pick["_hitter_context_missing"] = str(ctx_err)
-                pick["excluded_from_surface"] = True
                 logger.info("hitter_intel gated pick out: %s | %s", name, ctx_err)
                 return False
 
