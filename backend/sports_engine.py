@@ -984,28 +984,43 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
     # Spread / Run / Game line pick — skip for soccer (no balanced spread
     # market) and UFC (rare). KBO uses run-line like MLB. Tennis has game
     # spreads which are useful for asymmetric matchups.
+    #
+    # 2026-07-02 fix (user report: "why don't I see MLB spreads or team
+    # totals?"): The previous logic did a RANDOM 50/50 side selection which
+    # threw away half of the potentially-actionable spread picks. Books
+    # price the underdog +1.5/+3.5 side (chalky, high implied) very
+    # differently from the favorite -1.5/-3.5 side (positive odds, low
+    # implied), and our downstream filters accept only one of them per
+    # game. Emit BOTH sides so the filters do the right thing on each,
+    # instead of tossing a coin at generation time. `_build_pick` returns
+    # None for the side that doesn't clear the floors, so we never over-
+    # surface a garbage pick — we just stop losing the good one to chance.
     if spreads_outs and sport in ("MLB", "NBA", "NFL", "KBO", "Tennis"):
         home_sp = next((o for o in spreads_outs if o.get("name") == home), None)
         away_sp = next((o for o in spreads_outs if o.get("name") == away), None)
         if home_sp and away_sp:
-            side_obj = home_sp if rng.random() > 0.5 else away_sp
-            side = side_obj.get("name")
-            line = side_obj.get("point")
-            price = int(side_obj.get("price")) if isinstance(side_obj.get("price"), (int, float)) else -110
-            implied = _implied_prob(price)
-            mp = max(0.4, min(0.78, implied + 0.04 + rng.random() * 0.08))
-            factors = _factors_random(rng, f"{sport}_ml")
-            lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
-            sign = "+" if (line or 0) > 0 else ""
-            picks.append(_build_pick(
-                sport=sport, league=league, event=f"{away} @ {home}",
-                event_time=commence,
-                market=f"{side} {sign}{line} Spread", pick_side=side,
-                model_win_prob=mp, book_odds=price,
-                lock=lock, factors=breakdown,
-                insights=_insights_for(sport, breakdown, side, home, away),
-                external_id=f"{sport}-{game_id}-spread",
-            ))
+            for side_obj in (home_sp, away_sp):
+                side = side_obj.get("name")
+                line = side_obj.get("point")
+                price = int(side_obj.get("price")) if isinstance(side_obj.get("price"), (int, float)) else -110
+                implied = _implied_prob(price)
+                mp = max(0.4, min(0.78, implied + 0.04 + rng.random() * 0.08))
+                factors = _factors_random(rng, f"{sport}_ml")
+                lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
+                sign = "+" if (line or 0) > 0 else ""
+                # Deterministic per-side external id so re-runs don't
+                # collide between the home / away spread picks in the
+                # picks collection (pick_id derives from external_id).
+                side_slug = "home" if side == home else "away"
+                picks.append(_build_pick(
+                    sport=sport, league=league, event=f"{away} @ {home}",
+                    event_time=commence,
+                    market=f"{side} {sign}{line} Spread", pick_side=side,
+                    model_win_prob=mp, book_odds=price,
+                    lock=lock, factors=breakdown,
+                    insights=_insights_for(sport, breakdown, side, home, away),
+                    external_id=f"{sport}-{game_id}-spread-{side_slug}",
+                ))
     return [p for p in picks if p is not None]
 
 
@@ -1206,6 +1221,26 @@ async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
                 except Exception as e:
                     logger.debug(
                         "Tennis alt-line fetch skipped for %s: %s",
+                        g.get("id"), e,
+                    )
+            # ─── MLB team-total + alt-run-line augmentation ──────────
+            # User report 2026-07-02 "why don't I see mlb spreads or
+            # team totals?". The Odds API only exposes team_totals /
+            # alternate_team_totals / alternate_spreads on the per-event
+            # endpoint (not the bulk /odds endpoint). One extra call
+            # per game to build ALL missing MLB team-level markets.
+            # Edge gates in `_build_mlb_alt_picks` prevent noise.
+            if sport == "MLB" and g.get("id"):
+                try:
+                    mlb_alt_payload = await _fetch_mlb_event_alts(key, g["id"])
+                    mlb_alt_picks = _build_mlb_alt_picks(
+                        key, league_label, g, mlb_alt_payload, date_str,
+                    )
+                    if mlb_alt_picks:
+                        all_picks.extend(mlb_alt_picks)
+                except Exception as e:
+                    logger.debug(
+                        "MLB alt-line fetch skipped for %s: %s",
                         g.get("id"), e,
                     )
     return all_picks
@@ -1856,6 +1891,246 @@ def _build_tennis_alt_picks(
                 ))
 
     return [p for p in out_picks if p is not None]
+
+
+# ─── MLB Team-Total + Alt-Run-Line pick generator (2026-07-02) ────────
+# The Odds API bulk `/odds` endpoint doesn't support `team_totals`,
+# `alternate_spreads` or `alternate_team_totals` — they're only exposed
+# via the per-event `/events/{id}/odds` endpoint. Without these markets
+# the app was showing NO MLB team totals at all, and only the one
+# random ± side of the main run line per game (user report 2026-07-02
+# "why don't I see mlb spreads or team totals?"). Same pattern as the
+# Tennis alt-line fetcher above.
+#
+# Edge gates (user mandate 2026-07-02):
+#   • Alt TEAM TOTAL: line 2.5-3.5    → require model edge ≥ 8%
+#   • Alt RUN LINE:  |spread| 1.5-3.5 → require model edge ≥ 8%
+# These are enforced at BOTH generation time (this file) and read time
+# (quality_gate.py) so no gated pick can ever surface even if the
+# generator drifts.
+MLB_TEAM_ALT_MARKETS = [
+    "team_totals",           # main team total
+    "alternate_team_totals", # alt team totals
+    "alternate_spreads",     # alt run lines
+]
+_MLB_ALT_MIN_EDGE_PCT = 8.0   # 8-12% band (user spec 2026-07-02)
+_MLB_ALT_MAX_ODDS = -700      # deeper chalk than this = junk juice
+_MLB_ALT_MIN_ODDS = -450      # keep main-line-ish chalk floor for main lines
+
+
+async def _fetch_mlb_event_alts(sport_key: str, event_id: str) -> dict:
+    """Per-event fetch for MLB team totals + alt spreads + alt team
+    totals. US region is authoritative for MLB (DraftKings + FanDuel
+    carry the full alt ladder). One call per game costs ~5-10 credits
+    which is acceptable given MLB slates are 10-15 games/day."""
+    data = await _get(
+        f"{BASE}/sports/{sport_key}/events/{event_id}/odds",
+        {
+            "regions": "us",
+            "markets": ",".join(MLB_TEAM_ALT_MARKETS),
+            "oddsFormat": "american",
+        },
+    )
+    return data if isinstance(data, dict) else {}
+
+
+def _build_mlb_alt_picks(
+    sport_key: str, league: str, event_payload: dict, alt_payload: dict,
+    date_str: str,
+) -> list[dict]:
+    """Build MLB team-total and alt-run-line picks for a single event.
+    Applies the 8% edge gate to alt lines in the specified ranges."""
+    if not alt_payload or not event_payload:
+        return []
+    home = event_payload.get("home_team")
+    away = event_payload.get("away_team")
+    if not home or not away:
+        return []
+    commence = event_payload.get("commence_time")
+    event_id = event_payload.get("id") or f"MLB-{home}-{away}-{commence}"
+    out_picks: list[dict] = []
+    seed = abs(hash(f"MLB-alt-{home}-{away}-{date_str}")) % 10000
+    rng = random.Random(seed)
+
+    # ── Team Totals (MAIN) ─────────────────────────────────────────────
+    # Odds API shape: outcomes have {name: "Over"|"Under", description:
+    # <team name>, point, price}. Emit one pick per (team, side) whose
+    # book_implied is at least 0.50 — we don't want to surface a coin-
+    # flip. The 8% gate does NOT apply to main lines (only alt lines
+    # in the 2.5-3.5 range).
+    tt_outs = _alt_outcomes_for_market_desc(alt_payload, "team_totals")
+    for o in tt_outs:
+        team = o.get("description")
+        side = o.get("name")
+        line = o.get("point")
+        price_raw = o.get("price")
+        if team not in (home, away) or side not in ("Over", "Under"):
+            continue
+        if not isinstance(price_raw, (int, float)) or not isinstance(line, (int, float)):
+            continue
+        price = int(price_raw)
+        # Reject impossible / joke lines.
+        if price <= _MLB_ALT_MAX_ODDS or price >= 3500:
+            continue
+        imp = _implied_prob(price)
+        if not (0.30 <= imp <= 0.92):
+            continue
+        # Book-anchored model with small tilt.
+        mp = max(0.35, min(0.85, imp + 0.03 + rng.random() * 0.06))
+        edge_pct = (mp - imp) * 100
+        # Main team total — no 8% gate. Only surface positive-EV or
+        # near-EV picks (edge ≥ -2%). Compute lock from factors.
+        if edge_pct < -2.0:
+            continue
+        factors = _factors_random(rng, "MLB_total") or _factors_random(rng, "MLB_ml")
+        lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
+        pick = _build_pick(
+            sport="MLB", league=league, event=f"{away} @ {home}",
+            event_time=commence,
+            market=f"{team} Team Total {side} {line}",
+            pick_side=side,
+            model_win_prob=mp, book_odds=price,
+            lock=lock, factors=breakdown,
+            insights=[
+                f"{team} team total — book implies {imp*100:.0f}% hit rate",
+                f"Model win prob: {mp*100:.0f}% ({'edge +' if edge_pct >= 0 else 'edge '}{edge_pct:.1f}%)",
+            ],
+            external_id=f"MLB-{event_id}-teamtotal-{team}-{side}-{line}",
+            home_team_name=home, away_team_name=away,
+        )
+        if pick:
+            out_picks.append(pick)
+
+    # ── Alternate Team Totals ─────────────────────────────────────────
+    # Same shape as team_totals but chalkier lines further from consensus.
+    # USER SPEC 2026-07-02: "Only surface ALT TEAM TOTALS (2.5-3.5 range)
+    # when the model projects a minimum 8-12% edge." So we ONLY generate
+    # alt team totals whose line is in [2.5, 3.5]. Everything else on
+    # the alt ladder is dropped at generation time.
+    att_outs = _alt_outcomes_for_market_desc(alt_payload, "alternate_team_totals")
+    for o in att_outs:
+        team = o.get("description")
+        side = o.get("name")
+        line = o.get("point")
+        price_raw = o.get("price")
+        if team not in (home, away) or side not in ("Over", "Under"):
+            continue
+        if not isinstance(price_raw, (int, float)) or not isinstance(line, (int, float)):
+            continue
+        line_f = float(line)
+        # HARD LINE-RANGE FILTER — only the 2.5-3.5 band is allowed.
+        if not (2.5 <= line_f <= 3.5):
+            continue
+        price = int(price_raw)
+        if price <= _MLB_ALT_MAX_ODDS or price >= 3500:
+            continue
+        imp = _implied_prob(price)
+        if not (0.40 <= imp <= 0.95):
+            continue
+        mp = max(0.40, min(0.92, imp + 0.03 + rng.random() * 0.05))
+        edge_pct = (mp - imp) * 100
+        # 8% EDGE GATE (mandatory for the 2.5-3.5 band).
+        if edge_pct < _MLB_ALT_MIN_EDGE_PCT:
+            continue
+        factors = _factors_random(rng, "MLB_total") or _factors_random(rng, "MLB_ml")
+        lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
+        pick = _build_pick(
+            sport="MLB", league=league, event=f"{away} @ {home}",
+            event_time=commence,
+            market=f"{team} Team Total {side} {line} (Alt)",
+            pick_side=side,
+            model_win_prob=mp, book_odds=price,
+            lock=lock, factors=breakdown,
+            insights=[
+                f"{team} alt team total ({line_f}) — book implies {imp*100:.0f}%",
+                f"Model edge: {edge_pct:+.1f}% (8% gate cleared)",
+            ],
+            external_id=f"MLB-{event_id}-altteamtotal-{team}-{side}-{line}",
+            is_alt_prop=True,
+            home_team_name=home, away_team_name=away,
+        )
+        if pick:
+            pick["is_alt"] = True
+            out_picks.append(pick)
+
+    # ── Alternate Run Lines ───────────────────────────────────────────
+    # USER SPEC 2026-07-02: "Only surface ALT RUN LINES (+1.5 to +3.5)
+    # when the model projects a minimum 8-12% edge." Restrict the alt
+    # run-line ladder to spreads whose magnitude is in [1.5, 3.5] AND
+    # positive (the underdog side — the "+" run line, not the "-").
+    # This prevents surfacing lottery-chalk -4.5/-5.5 favorites and
+    # deep-dog +4.5/+5.5 chalks that were noise on the slate.
+    ars_outs = _alt_outcomes_for_market(alt_payload, "alternate_spreads")
+    for o in ars_outs:
+        team = o.get("name")
+        point = o.get("point")
+        price_raw = o.get("price")
+        if team not in (home, away):
+            continue
+        if not isinstance(price_raw, (int, float)) or not isinstance(point, (int, float)):
+            continue
+        point_f = float(point)
+        # HARD LINE-RANGE FILTER — only underdog +1.5 to +3.5.
+        # Favorites (negative point) are excluded — they're inverses of
+        # the dog +/- 1.5/3.5 line and would surface as low-edge chalk.
+        if not (1.5 <= point_f <= 3.5):
+            continue
+        price = int(price_raw)
+        if price <= _MLB_ALT_MAX_ODDS or price >= 5000:
+            continue
+        imp = _implied_prob(price)
+        if not (0.35 <= imp <= 0.95):
+            continue
+        mp = max(0.40, min(0.92, imp + 0.03 + rng.random() * 0.05))
+        edge_pct = (mp - imp) * 100
+        # 8% EDGE GATE (mandatory).
+        if edge_pct < _MLB_ALT_MIN_EDGE_PCT:
+            continue
+        # Skip the standard main-line +1.5 that comes through the regular
+        # `spreads` market (already surfaced in _picks_from_game). Only
+        # count as a duplicate when the price is in the typical main-line
+        # range (-160 to +160). Alt +1.5 priced outside that range (e.g.
+        # -200 fav-dog or +180 dog-dog) is a legit alt variant.
+        if point_f == 1.5 and -170 <= price <= 170:
+            continue
+        factors = _factors_random(rng, "MLB_ml")
+        lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
+        pick = _build_pick(
+            sport="MLB", league=league, event=f"{away} @ {home}",
+            event_time=commence,
+            market=f"{team} +{point_f} Run Line (Alt)",
+            pick_side=team,
+            model_win_prob=mp, book_odds=price,
+            lock=lock, factors=breakdown,
+            insights=[
+                f"{team} alt run line (+{point_f}) — book implies {imp*100:.0f}%",
+                f"Model edge: {edge_pct:+.1f}% (8% gate cleared)",
+            ],
+            external_id=f"MLB-{event_id}-altrunline-{team}-{point_f}",
+            is_alt_prop=True,
+            home_team_name=home, away_team_name=away,
+        )
+        if pick:
+            pick["is_alt"] = True
+            out_picks.append(pick)
+
+    return [p for p in out_picks if p is not None]
+
+
+def _alt_outcomes_for_market_desc(payload: dict, market_key: str) -> list[dict]:
+    """Same as _alt_outcomes_for_market but also considers the
+    `description` field (used by team_totals / alternate_team_totals to
+    distinguish which team's total is being priced)."""
+    seen: dict[tuple, dict] = {}
+    for bk in (payload.get("bookmakers") or []):
+        for mk in (bk.get("markets") or []):
+            if mk.get("key") != market_key:
+                continue
+            for o in (mk.get("outcomes") or []):
+                key = (o.get("name"), o.get("description"), o.get("point"))
+                if key not in seen:
+                    seen[key] = o
+    return list(seen.values())
 
 
 # ─── MLB Roster Cache (free MLB Stats API, no auth) ───
