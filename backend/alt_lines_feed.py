@@ -202,6 +202,20 @@ async def _discover_active_tennis_tournaments(cx: httpx.AsyncClient) -> list[tup
 
     We refresh this every alt-line cycle so the moment Wimbledon → US Open
     → Cincinnati flip, we pick up the new tour automatically."""
+    return await _discover_active_sports_by_prefix(cx, "tennis_")
+
+
+async def _discover_active_soccer_leagues(cx: httpx.AsyncClient) -> list[tuple[str, str]]:
+    """Same as tennis auto-discovery but for soccer. Handles the fact
+    that our static SPORT_CONFIG only covers World Cup / EPL / UCL —
+    when those are out of season we miss MLS, Copa America,
+    Bundesliga, Serie A, Ligue 1, Liga MX, Champ League, etc. entirely.
+
+    2026-07-01 addition per user Task E."""
+    return await _discover_active_sports_by_prefix(cx, "soccer_")
+
+
+async def _discover_active_sports_by_prefix(cx: httpx.AsyncClient, prefix: str) -> list[tuple[str, str]]:
     if not ODDS_API_KEY:
         return []
     try:
@@ -214,22 +228,31 @@ async def _discover_active_tennis_tournaments(cx: httpx.AsyncClient) -> list[tup
             return []
         catalog = r.json() or []
     except Exception as e:
-        logger.warning("tennis discovery failed: %s", e)
+        logger.warning("sports auto-discovery (%s) failed: %s", prefix, e)
         return []
     out: list[tuple[str, str]] = []
     for s in catalog:
         key = s.get("key") or ""
-        if not key.startswith("tennis_"):
+        if not key.startswith(prefix):
             continue
         if not s.get("active"):
             continue
-        # cfg_key mirrors the Odds API key so downstream logic can
-        # short-circuit "startswith('tennis')" branches unchanged.
         out.append((key, key))
     if out:
-        logger.info("tennis auto-discovery: %d active tournaments (%s)",
-                    len(out), ", ".join(k for _, k in out))
+        logger.info("%s auto-discovery: %d active (%s)",
+                    prefix.rstrip("_"), len(out), ", ".join(k for _, k in out))
     return out
+
+
+# The set of markets we want for every ACTIVE soccer league auto-
+# discovered at runtime. Same three markets we hardcoded for the static
+# WC/EPL/UCL entries. Anytime GS is the marquee; To-Score-or-Assist
+# doubles the coverage; alternate_totals gives us the O/U 2.5 goals.
+SOCCER_MARKETS = [
+    "player_goal_scorer_anytime",
+    "player_to_score_or_assist",
+    "alternate_totals",
+]
 
 
 async def refresh_alt_lines(db: AsyncIOMotorDatabase) -> dict:
@@ -243,11 +266,28 @@ async def refresh_alt_lines(db: AsyncIOMotorDatabase) -> dict:
 
     async with httpx.AsyncClient(headers={"User-Agent": "PerkLocks/1.0"}) as cx:
         # Build the effective config on each cycle: static entries +
-        # dynamically-discovered active tennis tournaments (2026-07-01).
+        # dynamically-discovered active tennis + soccer tournaments
+        # (2026-07-01 auto-discovery).
         effective_config = dict(SPORT_CONFIG)
         for cfg_key, sport_key in await _discover_active_tennis_tournaments(cx):
             effective_config[cfg_key] = (sport_key, TENNIS_MARKETS)
             stats["tennis_tournaments"] += 1
+        # Soccer auto-discovery — replaces static WC/EPL/UCL entries
+        # with WHATEVER leagues are live right now. Static entries stay
+        # in SPORT_CONFIG so they act as a safety net if the catalog
+        # endpoint fails.
+        discovered_soccer = 0
+        for cfg_key, sport_key in await _discover_active_soccer_leagues(cx):
+            # Only add if not already covered by the static config (to
+            # avoid double-fetching EPL/WC/UCL when they ARE active).
+            already_covered = any(
+                sk == sport_key for _, (sk, _) in effective_config.items()
+            )
+            if already_covered:
+                continue
+            effective_config[cfg_key] = (sport_key, SOCCER_MARKETS)
+            discovered_soccer += 1
+        stats["soccer_leagues_discovered"] = discovered_soccer
 
         for cfg_key, (sport_key, markets) in effective_config.items():
             events = await _fetch_events(cx, sport_key)

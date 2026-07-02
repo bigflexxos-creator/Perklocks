@@ -301,22 +301,23 @@ _MLB_BLOCKED_MARKET_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Soccer markets banned from ALL surfaces (not just rollover). User
-# spec 2026-06-30: "no goalscorers period." Data confirms 4-15% hit
-# rate across FGS / AGS / To-Score-or-Assist / hat-tricks.
-_SOCCER_ALL_SCORER_RE = re.compile(
-    r"(goal\s*scorer"
-    r"|to\s+score\s+or\s+assist"
-    r"|to\s+score\s+and\s+assist"
-    r"|score\s+or\s+assist"
-    r"|score\s+&\s+assist"
+# Soccer scorer markets — the DATA shows a split within this family:
+#   • Anytime Goal Scorer      → 15.5% overall, 27.3% for ELITE scorers ✓ SURFACE
+#   • First / Last Goal Scorer → 3.0% (lottery pricing)                 ✗ BANNED
+#   • Hat-trick / Score 2+/3+  → 4-8% (compound variance)               ✗ BANNED
+#   • To Score or Assist       → mid — kept with lock floor             ✓ SURFACE
+#
+# The 2026-07-01 "ban all goalscorers" regex was over-broad. Restoring
+# surgical bans: FGS/LGS + hat-tricks/2+/3+ + winning-goal only.
+_SOCCER_LOTTERY_SCORER_RE = re.compile(
+    r"(first\s+goal\s+scorer"
+    r"|last\s+goal\s+scorer"
+    r"|first\s+goal\b"
+    r"|last\s+goal\b"
+    r"|winning\s+goal"
     r"|hat[\s-]?trick"
     r"|to\s+score\s+2"
     r"|to\s+score\s+3"
-    r"|first\s+goal"
-    r"|last\s+goal"
-    r"|winning\s+goal"
-    r"|to\s+assist\b"
     r")",
     re.IGNORECASE,
 )
@@ -363,17 +364,23 @@ def _block_reason(pick: dict) -> str | None:
     sport = (pick.get("sport") or "").lower()
     market = (pick.get("market") or "")
 
-    # 1. Soccer scorer/assist family — 2026-07-01 policy: BAN ALL of it.
-    #    User: "no goalscorers period." Data audit (1,441 picks) confirms
-    #    the entire family (FGS, LGS, AGS, To-Score-or-Assist, hat-tricks,
-    #    winning-goal, score-2+, score-3+) hits at 4-15%.
+    # 1. Soccer scorer/assist family — surgical ban (2026-07-01 revised).
+    #    User feedback confirms my earlier "ban all" was over-broad:
+    #      • FGS / LGS / hat-trick / winning-goal / score-2+ / score-3+
+    #        → BANNED (3-8% hit rate lottery pricing)
+    #      • Anytime Goal Scorer (AGS)
+    #        → SURFACE, gated by lock floor (elite scorers only)
+    #      • To Score or Assist
+    #        → SURFACE, gated by lock floor
     if sport == "soccer":
-        if _SOCCER_ALL_SCORER_RE.search(market):
-            return "soccer_scorer_family_banned_2026-07-01"
-        # Legacy check preserved for defensive redundancy — the family
-        # regex above should catch these first.
-        if _SOCCER_FIRST_LAST_SCORER_RE.search(market):
-            return "first_last_scorer_3pct_lottery"
+        if _SOCCER_LOTTERY_SCORER_RE.search(market):
+            return "soccer_lottery_scorer_banned_2026-07-01"
+        # AGS + To-Score-or-Assist go through the existing lock-floor gate.
+        if _SOCCER_ANYTIME_SCORER_RE.search(market):
+            ls = _displayed_lock_score(pick)
+            if ls < ANYTIME_SCORER_MIN_LOCK:
+                return f"anytime_scorer_below_lock_floor_{int(ANYTIME_SCORER_MIN_LOCK)}"
+            # passes — caller may cap display lock score
 
     # 2. Inverted lock-score band (65-74). Historical 12.8% is BELOW the
     #    50-64 band (59.9%) — the calibration is broken in this strip.
