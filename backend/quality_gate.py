@@ -282,6 +282,8 @@ ELITE_LOCK_FLOOR_PROB = 0.65     # below this, never tag "Elite Lock"
 
 # MLB markets that historically underperform — these are coin-flips at
 # best so they pull our headline win % below the user's 75-80% target.
+# Updated 2026-07-01 after 1,441-pick history audit:
+#   • Moneyline: 44.0%  • NRFI/YRFI: 41.5%  • H+R+RBI: 35.6%
 _MLB_BLOCKED_MARKET_RE = re.compile(
     r"(moneyline"
     r"|h2h\b"
@@ -289,9 +291,45 @@ _MLB_BLOCKED_MARKET_RE = re.compile(
     r"|yrfi"
     r"|first\s+inning"
     r"|no\s+runs"
+    # H+R+RBI family — 35.6% historically, the worst MLB market
+    r"|hits\s*\+\s*runs\s*\+\s*rbi"
+    r"|h\s*\+\s*r\s*\+\s*rbi"
+    r"|hits,\s*runs\s*(?:and|&|,)?\s*rbi"
+    r"|hits\s+runs\s+rbi"
+    r"|hits\s*&\s*runs\s*&\s*rbi"
     r")",
     re.IGNORECASE,
 )
+
+# Soccer markets banned from ALL surfaces (not just rollover). User
+# spec 2026-06-30: "no goalscorers period." Data confirms 4-15% hit
+# rate across FGS / AGS / To-Score-or-Assist / hat-tricks.
+_SOCCER_ALL_SCORER_RE = re.compile(
+    r"(goal\s*scorer"
+    r"|to\s+score\s+or\s+assist"
+    r"|to\s+score\s+and\s+assist"
+    r"|score\s+or\s+assist"
+    r"|score\s+&\s+assist"
+    r"|hat[\s-]?trick"
+    r"|to\s+score\s+2"
+    r"|to\s+score\s+3"
+    r"|first\s+goal"
+    r"|last\s+goal"
+    r"|winning\s+goal"
+    r"|to\s+assist\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# Lock-score DEAD ZONE (2026-07-01 audit): 80-84 band hits at just
+# 47.6% (n=63) — inverted calibration. Never surface these.
+_LOCK_DEAD_ZONE_LO = 80
+_LOCK_DEAD_ZONE_HI = 85
+
+# Odds DEAD ZONE (2026-07-01 audit): -140 to -110 hits at 48.2%
+# (n=139) — the "barely favourite" trap.
+_ODDS_DEAD_ZONE_LO = -140
+_ODDS_DEAD_ZONE_HI = -110
 
 # ── Tennis quality controls (2026-06-29) ──────────────────────────────
 # Backtest over 178 graded tennis picks:
@@ -325,27 +363,17 @@ def _block_reason(pick: dict) -> str | None:
     sport = (pick.get("sport") or "").lower()
     market = (pick.get("market") or "")
 
-    # 1. Soccer goalscorer family — historical data showed 4.8% win across
-    #    396 picks, but the breakdown revealed the REAL issue:
-    #
-    #      First / Last Goal Scorer  →  3.0%  (lottery odds; mis-priced)
-    #      Anytime Scorer            → 15.5% (27.3% for ELITE players)
-    #
-    #    So we don't nuke the whole family — we block ONLY First/Last
-    #    Scorer (the lottery markets that were mascarading as Elite Locks)
-    #    and keep Anytime / Score-or-Assist, governed by:
-    #      (a) lock_score >= ANYTIME_SCORER_MIN_LOCK so only top-1
-    #          mathematically-best candidates pass
-    #      (b) display cap (handled in `apply_quality_gate`) so they
-    #          read as "Solid Lock" / longshot, not Elite Lock 95
+    # 1. Soccer scorer/assist family — 2026-07-01 policy: BAN ALL of it.
+    #    User: "no goalscorers period." Data audit (1,441 picks) confirms
+    #    the entire family (FGS, LGS, AGS, To-Score-or-Assist, hat-tricks,
+    #    winning-goal, score-2+, score-3+) hits at 4-15%.
     if sport == "soccer":
+        if _SOCCER_ALL_SCORER_RE.search(market):
+            return "soccer_scorer_family_banned_2026-07-01"
+        # Legacy check preserved for defensive redundancy — the family
+        # regex above should catch these first.
         if _SOCCER_FIRST_LAST_SCORER_RE.search(market):
             return "first_last_scorer_3pct_lottery"
-        if _SOCCER_ANYTIME_SCORER_RE.search(market):
-            ls = _displayed_lock_score(pick)
-            if ls < ANYTIME_SCORER_MIN_LOCK:
-                return f"anytime_scorer_below_lock_floor_{int(ANYTIME_SCORER_MIN_LOCK)}"
-            # passes — but caller should cap display lock score
 
     # 2. Inverted lock-score band (65-74). Historical 12.8% is BELOW the
     #    50-64 band (59.9%) — the calibration is broken in this strip.
@@ -354,8 +382,25 @@ def _block_reason(pick: dict) -> str | None:
     if lo <= ls < hi:
         return f"inverted_lock_band_{int(lo)}_{int(hi-1)}_12pct_historical"
 
-    # 3. Sub-50% MLB markets (Moneyline, NRFI/YRFI). These are decided
-    #    by single-event variance — a single bunt single torches a YRFI.
+    # 2b. Lock-score DEAD ZONE 80-84 (2026-07-01 audit). Hits at 47.6%
+    #     over 63 graded picks — worse than random and worse than the
+    #     70-79 band above/below it (inverted calibration on the ML
+    #     model's high-uncertainty region).
+    if _LOCK_DEAD_ZONE_LO <= ls < _LOCK_DEAD_ZONE_HI:
+        return f"lock_dead_zone_{_LOCK_DEAD_ZONE_LO}_{_LOCK_DEAD_ZONE_HI-1}_47pct"
+
+    # 2c. Odds DEAD ZONE -140 to -110 (2026-07-01 audit). Hits at 48.2%
+    #     over 139 picks — "barely favourite" trap.
+    odds = pick.get("book_odds")
+    if isinstance(odds, (int, float)):
+        if _ODDS_DEAD_ZONE_LO <= float(odds) < _ODDS_DEAD_ZONE_HI:
+            return f"odds_dead_zone_{_ODDS_DEAD_ZONE_LO}_{_ODDS_DEAD_ZONE_HI}_48pct"
+
+    # 3. Sub-50% MLB markets (Moneyline, NRFI/YRFI, H+R+RBI). All decided
+    #    by single-event variance:
+    #      • Moneyline 44.0% (baseball is chaotic)
+    #      • NRFI/YRFI 41.5% (single bunt single torches YRFI)
+    #      • H+R+RBI   35.6% (3-way variance compounds)
     if sport == "mlb" and _MLB_BLOCKED_MARKET_RE.search(market):
         return "mlb_low_winrate_market"
 
