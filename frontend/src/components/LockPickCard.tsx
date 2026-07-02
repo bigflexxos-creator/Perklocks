@@ -605,6 +605,57 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
                 })()
               )}
 
+              {/* ── Recent Form rolling windows (L5 / L10 / L20) ────
+                   Real batter game-log data from MLB Stats API. Each
+                   window shows AVG + hits/AB so users can see if the
+                   batter is hot (L5 > L20) or cooling off. */}
+              {rationale!.recent_form && (
+                (() => {
+                  const rf = rationale!.recent_form as Record<string, number | null>;
+                  const windows: { label: string; avg: number | null; hits: number | null; ab: number | null }[] = [
+                    { label: "L5",  avg: rf.last5_avg,  hits: rf.last5_hits,  ab: rf.last5_ab  },
+                    { label: "L10", avg: rf.last10_avg, hits: rf.last10_hits, ab: rf.last10_ab },
+                    { label: "L20", avg: rf.last20_avg, hits: rf.last20_hits, ab: rf.last20_ab },
+                  ].filter((w) => w.avg != null && w.ab != null && (w.ab as number) > 0);
+                  if (windows.length === 0) return null;
+                  return (
+                    <View style={styles.whySection}>
+                      <Text style={styles.whySectionLabel}>RECENT FORM</Text>
+                      <View style={styles.whyPqRow}>
+                        {windows.map((w) => {
+                          const isHot = (w.avg as number) >= 0.300;
+                          const isCold = (w.avg as number) < 0.230;
+                          return (
+                            <View
+                              key={w.label}
+                              style={[
+                                styles.whyPqChip,
+                                isHot && styles.whyPqChipBad,
+                                isCold && styles.whyPqChipGood,
+                              ]}
+                            >
+                              <Text style={styles.whyPqChipLabel}>{w.label}</Text>
+                              <Text
+                                style={[
+                                  styles.whyPqChipVal,
+                                  isHot && { color: "#86EFAC" },
+                                  isCold && { color: "#FCA5A5" },
+                                ]}
+                              >
+                                {(w.avg as number).toFixed(3).replace(/^0/, "")}
+                              </Text>
+                              <Text style={[styles.whyPqChipLabel, { fontSize: 9, opacity: 0.7 }]}>
+                                {w.hits}/{w.ab}
+                              </Text>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  );
+                })()
+              )}
+
               {/* ── Engine multipliers (platoon / pitcher / park / form / home-away) */}
               {rationale!.multipliers && (
                 (() => {

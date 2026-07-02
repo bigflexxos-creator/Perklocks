@@ -90,7 +90,7 @@ except Exception as _picks_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.07.02-mlb-team-total-tab-v23"
+DATA_VERSION = "2026.07.02-mlb-hitter-intel-l5l10l20-v24"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 

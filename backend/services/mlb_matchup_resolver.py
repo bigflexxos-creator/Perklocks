@@ -58,18 +58,42 @@ async def resolve_matchup(
     except Exception:
         pass
 
+    # 2026-07-02 bug fix (user report: "vs pitcher not showing on Hits
+    # cards"): MLB Stats API groups games by *local* game date, but our
+    # pick's `event_time_iso` is in UTC. For games starting 7-11 PM ET
+    # (e.g. late Twins @ Astros), the UTC ISO string bumps into the
+    # NEXT calendar day (e.g. `2026-07-02T00:11:00Z` for a game that
+    # MLB Stats indexes under 2026-07-01). Search a small window
+    # around the target date so we find the game regardless of DST /
+    # timezone drift.
+    tried_dates = []
+    try:
+        base = datetime.fromisoformat(date_str)
+        from datetime import timedelta
+        window = [
+            (base - timedelta(days=1)).date().isoformat(),
+            date_str,
+            (base + timedelta(days=1)).date().isoformat(),
+        ]
+    except Exception:
+        window = [date_str]
+
     async with httpx.AsyncClient(timeout=12.0) as client:
-        try:
-            r = await client.get(f"{MLB_BASE}/schedule", params={
-                "sportId": 1, "date": date_str,
-                "hydrate": "probablePitcher,venue,team",
-            })
-            r.raise_for_status()
-            games = []
-            for d in r.json().get("dates", []):
-                games.extend(d.get("games", []))
-        except Exception as e:
-            logger.debug(f"schedule fetch fail {date_str}: {e}")
+        games: list[dict] = []
+        for ds in window:
+            tried_dates.append(ds)
+            try:
+                r = await client.get(f"{MLB_BASE}/schedule", params={
+                    "sportId": 1, "date": ds,
+                    "hydrate": "probablePitcher,venue,team",
+                })
+                r.raise_for_status()
+                for d in r.json().get("dates", []):
+                    games.extend(d.get("games", []))
+            except Exception as e:
+                logger.debug(f"schedule fetch fail {ds}: {e}")
+                continue
+        if not games:
             return None
 
         # Match game by team names (tolerant, DIRECTION-AGNOSTIC).
