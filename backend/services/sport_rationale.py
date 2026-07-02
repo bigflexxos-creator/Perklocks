@@ -297,6 +297,31 @@ async def build_sport_specific(
             out["evidence"].extend(r.get("evidence") or [])
             out["concerns"].extend(r.get("concerns") or [])
 
+    # NFL (2026-07-01 season prep — player prop evidence from ESPN
+    # season stats + last-5 game logs. Team markets fall through to
+    # the universal edge summary.)
+    elif sport == "nfl":
+        try:
+            from services import nfl_rationale
+            if player_name and nfl_rationale.is_nfl_player_prop(market):
+                r = await nfl_rationale.build_nfl_rationale(db, pick, player_name)
+                out["evidence"].extend(r.get("evidence") or [])
+                out["concerns"].extend(r.get("concerns") or [])
+        except Exception as e:
+            logger.debug("NFL rationale failed: %s", e)
+
+    # NBA (2026-07-01 season prep — season-avg PPG/RPG/APG/PRA
+    # comparisons + minutes context. Game-log persistence TBD.)
+    elif sport == "nba":
+        try:
+            from services import nba_rationale
+            if player_name and nba_rationale.is_nba_player_prop(market):
+                r = await nba_rationale.build_nba_rationale(db, pick, player_name)
+                out["evidence"].extend(r.get("evidence") or [])
+                out["concerns"].extend(r.get("concerns") or [])
+        except Exception as e:
+            logger.debug("NBA rationale failed: %s", e)
+
     # Tennis
     elif is_tennis_market(sport):
         r = await build_tennis_rationale(db, pick)
