@@ -90,7 +90,7 @@ except Exception as _picks_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.07.02-mlb-alt-edge-gate-v22"
+DATA_VERSION = "2026.07.02-mlb-team-total-tab-v23"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -2297,6 +2297,12 @@ _MARKET_REGEX = {
     "spread":        r"[+\-]\d+(\.\d+)?\s+spread\b|\bspread\b",
     "run_line":      r"\brun line\b|[+\-]\d+(\.\d+)?\s+spread\b",  # MLB run line ≡ spread
 
+    # ── Team totals (MLB — main + alt) ────────────────────────────────
+    # Matches "Yankees Team Total Over 4.5" AND "Red Sox Team Total
+    # Under 3.5 (Alt)". Anchored on the phrase "Team Total" so it
+    # doesn't collide with the game-total `totals` token above.
+    "team_total":    r"\bteam total\b",
+
     # ── Game totals ONLY (must START with "Total <stat>") ─────────────────
     # This intentionally does NOT match "Total Bases", "Player … Total …",
     # or alt-prop Over/Under player markets. Game totals only.
@@ -2381,6 +2387,7 @@ SPORT_MARKETS = {
         {"token": "moneyline",   "label": "Moneyline"},
         {"token": "run_line",    "label": "Run Line"},
         {"token": "totals",      "label": "Totals"},
+        {"token": "team_total",  "label": "Team Total"},
         {"token": "batter_hits",            "label": "Hits"},
         # H+R+RBI chip removed 2026-07-02 per user — market is
         # globally banned in quality_gate.py (35.6% hit rate) so
