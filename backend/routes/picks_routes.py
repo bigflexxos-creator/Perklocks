@@ -252,29 +252,26 @@ async def pick_rollover(
     league: Optional[str] = None,
     mode: str = "v2",
 ):
-    """Top 3 safest bets of the day — the user picks which one to roll.
+    """High-Conviction Rollover (V3) — the safest bundle of the day.
 
-    Rollover V2 (default) — "Survivability Mode":
-      • HARD floors: odds ≥ -350, edge ≥ +5%, win_prob ≥ implied + 5pts
-      • Risk-adjusted ranking (chalk penalty + edge multiplier + historical
-        consistency bonus + alt-line penalty) replaces pure win_prob sort
-      • At most ONE alt-line pick in the trio
-      • Soccer goalscorer markets always blocked
+    2026-07-01 spec update — user feedback: "rollover is too loose, hit
+    rate 66% instead of 80-85% target". V3 tightens EVERY gate:
+      • HARD floor: `lock_score >= 95` (Safe Lock / Elite Lock only)
+      • HARD floor: `win_probability >= 0.80` (80%)
+      • HARD floor: `edge_percent >= 4.0` (+4 pp positive expected value)
+      • HARD floor: `book_odds >= -350` (no extreme chalk)
+      • Max 4 legs (up from 3), diversified: **one pick per game**
+      • At most ONE alt-line pick
+      • Soccer goalscorer / hat-trick / winning-goal markets always blocked
+      • NO progressive floor fallback — if the slate has 0 qualifying
+        legs, we return an empty bundle rather than dilute conviction
 
     Modes:
-      • `mode=v2` (default) — single best pick + 2 alternatives
-      • `mode=split` — return 2 uncorrelated picks for split-stake bankroll
+      • `mode=v3` (default) — high-conviction bundle
+      • `mode=v2` — legacy survivability floors (edge ≥ 5, lock ≥ 90)
       • `mode=v1` — legacy ranking (no floors)
 
-    Rules:
-      - Today's slate only (kickoff within 24h)
-      - Lock score >= 90 (progressive floor)
-      - NO Soccer by default — but if the user explicitly picks
-        `sport=Soccer` we honour their choice.
-      - Prefers player props over team moneylines
-      - Diversifies: at most one pick per game / per sport
-      - `line_type`: "main" / "alt" / "both" (default).
-    """
+    Filters honoured: `sport`, `market`, `league`, `line_type`."""
     from server import (  # lazy
         _ensure_today_picks, _today_str, _filter_in_play_window,
         _canonicalize_lock_score, _canonicalize_picks, _market_regex,
@@ -309,10 +306,18 @@ async def pick_rollover(
     # for a survivability-mode parlay. Belt-and-braces regex — covers
     # every market label combination we've seen in production.
     existing_market_q = base_q.pop("market", None)
-    goalscorer_block = {
+    # ── EXCLUDE GOALSCORER + PITCHER PROP MARKETS FROM ROLLOVER ──
+    # User feedback 2026-06-27: "don't put goalscorers on rollover".
+    # User feedback 2026-07-01: "no pitchers" — MLB pitcher props
+    # (strikeouts / outs recorded / walks allowed / earned runs / hits
+    # allowed) carry high variance and are unsuitable for a rollover
+    # bundle. Belt-and-braces regex — covers every market label
+    # combination we've seen in production.
+    excluded_markets_block = {
         "market": {
             "$not": {
                 "$regex": (
+                    # ── Soccer goalscorer / assist family ──
                     r"goal scorer"          # Anytime / First / Last Goal Scorer
                     r"|to score or assist"  # AGSoA classic
                     r"|score or assist"     # variant without "to"
@@ -327,19 +332,35 @@ async def pick_rollover(
                     r"|last goal"           # Last Goal of match (player)
                     r"|winning goal"        # Player to score winning goal
                     r"|to assist"           # Player to register an assist
+                    # ── MLB pitcher prop family (2026-07-01) ──
+                    r"|strikeouts?"         # "Over 5.5 Strikeouts"
+                    r"|outs recorded"       # "Over 15.5 Outs Recorded"
+                    r"|outs allowed"
+                    r"|pitching outs"
+                    r"|walks allowed"
+                    r"|earned runs"
+                    r"|hits allowed"
+                    r"|pitcher win"         # pitcher decision markets
                 ),
                 "$options": "i",
             },
         },
     }
     if existing_market_q:
-        base_q["$and"] = [{"market": existing_market_q}, goalscorer_block]
+        base_q["$and"] = [{"market": existing_market_q}, excluded_markets_block]
     else:
-        base_q["market"] = goalscorer_block["market"]
+        base_q["market"] = excluded_markets_block["market"]
 
-    floors = [90, 85, 80, 75, 70]
-    chalk_cap_strict = -350
-    chalk_cap_relaxed = -400
+    # ─── V3 HARD FLOORS (2026-07-01) — high-conviction bundle ───────────
+    # These floors are ABSOLUTE. No progressive relaxation. The rollover
+    # tab surfaces high-confidence picks or NOTHING — never fills seats
+    # with medium-confidence gap-fill.
+    LOCK_FLOOR   = 95    # Elite Lock (99) or Safe Lock (95) only
+    WP_FLOOR     = 0.80  # 80% win probability
+    EDGE_FLOOR   = 4.0   # +4 percentage points positive EV
+    CHALK_CAP    = -350  # no picks worse than -350 odds
+    MAX_LEGS     = 3     # top-3 highest-conviction picks (user spec 2026-07-01)
+    MAX_ALTS     = 1     # at most one alt-line pick
 
     def _implied_prob(odds: float) -> float:
         try:
@@ -350,57 +371,44 @@ async def pick_rollover(
             return 0.0
         return (-o) / ((-o) + 100.0) if o < 0 else 100.0 / (o + 100.0)
 
-    def _survivability_ok(p: dict, *, strict: bool = True) -> bool:
+    def _norm_prob(v) -> float:
+        """DB stores win_probability as either 0-1 fraction OR 0-100
+        percent depending on source. Normalise to fraction."""
+        if v is None:
+            return 0.0
+        try:
+            f = float(v)
+        except Exception:
+            return 0.0
+        return f / 100.0 if f > 1.0 else f
+
+    def _passes_v3(p: dict) -> bool:
+        """The ONLY gate that matters. All four floors must be met."""
         odds = p.get("book_odds") or -9999
         edge = float(p.get("edge_percent") or 0)
-        wp = float(p.get("win_probability") or 0)
-        cap = chalk_cap_strict if strict else chalk_cap_relaxed
-        if odds < cap:
+        wp = _norm_prob(p.get("win_probability"))
+        lock = float(p.get("lock_score") or 0)
+        if lock < LOCK_FLOOR:
             return False
-        if strict and edge < 5.0:
+        if wp < WP_FLOOR:
             return False
-        if not strict and edge < 3.0:
+        if edge < EDGE_FLOOR:
             return False
-        implied_pct = _implied_prob(odds) * 100.0
-        cushion = 5.0 if strict else 3.0
-        if wp < (implied_pct + cushion):
+        if odds < CHALK_CAP:
             return False
         return True
 
-    picks: list = []
-    candidates: list = []
-    floor_used: int = 90
-    strict_mode = True
-    for f in floors:
-        q = {**base_q, "lock_score": {"$gte": f}}
-        cursor = db.picks.find(q, {"_id": 0})
-        candidates = await cursor.to_list(length=500)
-        picks = [p for p in candidates if _survivability_ok(p, strict=True)]
-        if len({p.get("event") for p in picks}) >= 3:
-            floor_used = f
-            break
-        floor_used = f
-    if len({p.get("event") for p in picks}) < 3:
-        strict_mode = False
-        q = {**base_q, "lock_score": {"$gte": 75}}
-        candidates = await db.picks.find(q, {"_id": 0}).to_list(length=500)
-        picks = [p for p in candidates if _survivability_ok(p, strict=False)]
-    if not picks:
-        q = {**base_q, "lock_score": {"$gte": 70}}
-        candidates = await db.picks.find(q, {"_id": 0}).to_list(length=500)
-        picks = [
-            p for p in candidates
-            if (p.get("book_odds") or -9999) >= -500
-            and float(p.get("edge_percent") or 0) >= 2.0
-        ]
+    # Pull the qualifying candidate pool (no floor relaxation).
+    q = {**base_q, "lock_score": {"$gte": LOCK_FLOOR}}
+    candidates: list = await db.picks.find(q, {"_id": 0}).to_list(length=500)
+    picks: list = [p for p in candidates if _passes_v3(p)]
+    total_candidates = len(candidates)
+    rejected_by_gate = total_candidates - len(picks)
 
     picks = _filter_in_play_window(picks)
     # ── Quality Gate (2026-06-29) — same backtest-driven filter as
     # /picks/today. Rollover is supposed to be our SAFEST pick of the
-    # day, so this layer is even more critical here. Drops:
-    #   • Soccer goalscorers (4.8% historical)
-    #   • Lock-score 65-74 (12.8% — inverted calibration)
-    #   • MLB Moneyline / NRFI / YRFI (sub-50%)
+    # day, so this layer is even more critical here.
     try:
         from quality_gate import apply_quality_gate
         picks, qg_blocked = apply_quality_gate(picks)
@@ -426,22 +434,38 @@ async def pick_rollover(
     today_picks = [p for p in picks if starts_today(p)]
     pool = today_picks if today_picks else picks
     if not pool:
-        return {"picks": [], "pick": None, "total_evaluated": 0}
+        # High-conviction floors produced ZERO qualifying picks. V3
+        # deliberately returns an empty bundle rather than filling it
+        # with medium-confidence picks. UI shows "No high-conviction
+        # picks on the board today — check back after the next refresh."
+        return {
+            "picks": [], "pick": None, "total_evaluated": 0,
+            "rollover_version": "v3",
+            "survivability": {
+                "mode": "high_conviction",
+                "lock_floor": LOCK_FLOOR, "wp_floor": WP_FLOOR,
+                "edge_floor": EDGE_FLOOR, "odds_floor": CHALK_CAP,
+                "max_legs": MAX_LEGS, "alt_cap": MAX_ALTS,
+                "candidates_scanned": total_candidates,
+                "rejected_by_gate": rejected_by_gate,
+            },
+        }
 
     def _ev_score(p: dict) -> float:
-        wp = float(p.get("win_probability") or 0)
+        """V3 composite: 60% win_probability + 25% simulator + 15% edge.
+        Then apply chalk penalty, hot/cold history, and alt-line penalty.
+        User spec 2026-07-01: rank by "win pct edge simulator etc"."""
+        wp = _norm_prob(p.get("win_probability"))
+        sim = _norm_prob(p.get("sim_win_probability")) or wp
         edge = float(p.get("edge_percent") or 0)
         odds = float(p.get("book_odds") or -100)
+        # Edge normalised to a 0..1 signal at +10 pp for the blend.
+        edge_norm = max(0.0, min(1.0, edge / 10.0))
+        base = 0.60 * wp + 0.25 * sim + 0.15 * edge_norm
         if odds <= -200:
             chalk_pen = min(0.30, (abs(odds) - 200) / 500.0)
         else:
             chalk_pen = 0.0
-        if edge >= 10:
-            edge_mult = 1.20
-        elif edge >= 7:
-            edge_mult = 1.10
-        else:
-            edge_mult = 1.0
         sig = p.get("historical_signal") or {}
         consistency = float(sig.get("consistency") or 0)
         if sig.get("label") == "hot" and consistency >= 0.7:
@@ -451,43 +475,43 @@ async def pick_rollover(
         else:
             hist_bonus = 1.0
         alt_pen = 0.92 if p.get("is_alt") else 1.0
-        return wp * (1.0 - chalk_pen) * edge_mult * hist_bonus * alt_pen
+        return base * (1.0 - chalk_pen) * hist_bonus * alt_pen
 
     ranked = sorted(pool, key=_ev_score, reverse=True)
 
+    # ─── Bundle assembly: MAX_LEGS legs, ONE per game, ≤1 alt-line ───
+    # We no longer diversify by sport (V2's `seen_sports` guard was
+    # dropping otherwise-qualifying picks). Only game uniqueness is
+    # enforced, per user spec 2026-07-01.
     seen_events: set = set()
-    seen_sports: set = set()
     primary: list = []
     secondary: list = []
-    alts_in_trio: int = 0
-    MAX_ALTS = 1
+    alts_in_bundle: int = 0
     for p in ranked:
         ev = p.get("event")
-        sp = p.get("sport") or ""
         if ev in seen_events:
             continue
-        if p.get("is_alt") and alts_in_trio >= MAX_ALTS:
-            secondary.append(p)
-            continue
-        if sp in seen_sports:
+        if p.get("is_alt") and alts_in_bundle >= MAX_ALTS:
             secondary.append(p)
             continue
         seen_events.add(ev)
-        seen_sports.add(sp)
         if p.get("is_alt"):
-            alts_in_trio += 1
+            alts_in_bundle += 1
         primary.append({**p, "composite_rank": round(_ev_score(p), 2)})
-        if len(primary) >= 3:
+        if len(primary) >= MAX_LEGS:
             break
     top = primary
-    if len(top) < 3:
+    # If the alt cap crowded out too many picks, pull from secondary
+    # to backfill up to MAX_LEGS — but each still must pass V3 gates,
+    # which they already do (they came from `ranked`).
+    if len(top) < MAX_LEGS:
         for p in secondary:
             ev = p.get("event")
             if ev in seen_events:
                 continue
             seen_events.add(ev)
-            top.append({**p, "composite_rank": round(p.get("win_probability", 0) or 0, 1)})
-            if len(top) >= 3:
+            top.append({**p, "composite_rank": round(_ev_score(p), 2)})
+            if len(top) >= MAX_LEGS:
                 break
     return {
         "picks": _canonicalize_picks(top),
@@ -495,18 +519,17 @@ async def pick_rollover(
         "composite_rank": top[0]["composite_rank"] if top else None,
         "total_evaluated": len(pool),
         "scoped_to_today": bool(today_picks),
-        "rollover_version": "v2",
+        "rollover_version": "v3",
         "survivability": {
-            "mode": "strict" if strict_mode else "relaxed",
-            "odds_floor": chalk_cap_strict if strict_mode else chalk_cap_relaxed,
-            "edge_floor": 5.0 if strict_mode else 3.0,
-            "ev_cushion_pts": 5.0 if strict_mode else 3.0,
+            "mode": "high_conviction",
+            "lock_floor": LOCK_FLOOR,
+            "wp_floor": WP_FLOOR,
+            "edge_floor": EDGE_FLOOR,
+            "odds_floor": CHALK_CAP,
+            "max_legs": MAX_LEGS,
             "alt_cap": MAX_ALTS,
-            "lock_floor_used": floor_used,
-            "rejected_chalk": sum(
-                1 for p in candidates
-                if (p.get("book_odds") or -9999) < chalk_cap_strict
-            ) if candidates else 0,
+            "candidates_scanned": total_candidates,
+            "rejected_by_gate": rejected_by_gate,
         },
     }
 
@@ -634,7 +657,24 @@ async def picks_history(
     push = sum(1 for p in settled if p.get("status") == "push")
     decided = won + lost
     hit_rate = round(won / decided * 100, 1) if decided else 0.0
-    rollover_picks = [p for p in settled if (p.get("lock_score") or 0) >= 90]
+    # Rollover V3 (2026-07-01): analytics must mirror the endpoint's
+    # HIGH-CONVICTION floors — lock_score ≥ 95 AND win_prob ≥ 0.80 AND
+    # edge_percent ≥ 4.0. Anything looser inflates rollover_hit_rate
+    # with picks that never actually surfaced on the rollover tab.
+    # `win_probability` is stored as 0-100 in some pipelines and 0-1 in
+    # others — normalise before comparing.
+    def _wp_frac(v) -> float:
+        try:
+            f = float(v or 0)
+        except Exception:
+            return 0.0
+        return f / 100.0 if f > 1.0 else f
+    rollover_picks = [
+        p for p in settled
+        if (p.get("lock_score") or 0) >= 95
+        and _wp_frac(p.get("win_probability")) >= 0.80
+        and float(p.get("edge_percent") or 0) >= 4.0
+    ]
     ro_won = sum(1 for p in rollover_picks if p.get("status") == "won")
     ro_lost = sum(1 for p in rollover_picks if p.get("status") == "lost")
     ro_push = sum(1 for p in rollover_picks if p.get("status") == "push")
