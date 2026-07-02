@@ -327,6 +327,23 @@ _SOCCER_LOTTERY_SCORER_RE = re.compile(
 _LOCK_DEAD_ZONE_LO = 80
 _LOCK_DEAD_ZONE_HI = 85
 
+# MLB alt-line edge-gate regexes (2026-07-02 user spec):
+#   • Alt TEAM TOTAL: e.g. "Yankees Team Total Over 3.5" / "Team Total Under 2.5"
+#   • Alt RUN LINE:   e.g. "Yankees +1.5 Spread", "Team +2.5 (Alt)",
+#                     "Alt Run Line +3.5", "Braves -1.5 Run Line"
+# The numeric group captures the LINE / SPREAD magnitude for range checks.
+_ALT_TEAM_TOTAL_RE = re.compile(
+    r"team\s+total\s+(?:over|under)\s+(\d+\.?\d*)",
+    re.IGNORECASE,
+)
+_ALT_RUN_LINE_RE = re.compile(
+    # Matches "+1.5 Run Line", "-2.5 Spread", "+3.5 (Alt)", "Run Line +1.5",
+    # "Spread +2.5". Capture group 1 is always the signed magnitude.
+    r"[+\-](\d+\.?\d*)\s*(?:run\s*line|spread|\(alt\))"
+    r"|(?:run\s*line|spread)\s*[+\-]?(\d+\.?\d*)",
+    re.IGNORECASE,
+)
+
 # Odds DEAD ZONE (2026-07-01 audit): -140 to -110 hits at 48.2%
 # (n=139) — the "barely favourite" trap.
 _ODDS_DEAD_ZONE_LO = -140
@@ -414,6 +431,41 @@ def _block_reason(pick: dict) -> str | None:
     #      • H+R+RBI   35.6% (3-way variance compounds)
     if sport == "mlb" and _MLB_BLOCKED_MARKET_RE.search(market):
         return "mlb_low_winrate_market"
+
+    # 3b. MLB ALT-LINE EDGE GATES (2026-07-02 user spec):
+    #     Only surface these alt families when the model projects an
+    #     8%+ edge over implied probability. User: "Prioritize
+    #     high-probability cash rates over volume."
+    #
+    #       • ALT TEAM TOTALS in the 2.5-3.5 range → require edge ≥ 8%
+    #       • ALT RUN LINES  +1.5 to +3.5 spread → require edge ≥ 8%
+    #
+    #     Enforced only when the pick is flagged `is_alt` — main-line
+    #     versions of these markets fall through unchanged.
+    if sport == "mlb" and pick.get("is_alt"):
+        edge = float(pick.get("edge_percent") or 0)
+        m_lower = market.lower()
+        # Team totals — "Team Total Over 3.5" / "Team Total Under 2.5"
+        alt_total_match = _ALT_TEAM_TOTAL_RE.search(market)
+        if alt_total_match:
+            try:
+                line = float(alt_total_match.group(1))
+                if 2.5 <= line <= 3.5 and edge < 8.0:
+                    return f"mlb_alt_team_total_edge_below_8pct_line_{line}"
+            except Exception:
+                pass
+        # Run lines — "+1.5 Spread", "Team +2.5 (Alt)", "Alt Run Line +3.5"
+        alt_rl_match = _ALT_RUN_LINE_RE.search(market)
+        if alt_rl_match:
+            try:
+                # Get whichever group captured the number
+                num_str = next((g for g in alt_rl_match.groups() if g), None)
+                if num_str:
+                    spread = abs(float(num_str))
+                    if 1.5 <= spread <= 3.5 and edge < 8.0:
+                        return f"mlb_alt_run_line_edge_below_8pct_spread_{spread}"
+            except Exception:
+                pass
 
     # 4. Tennis quality controls (2026-06-29):
     #
