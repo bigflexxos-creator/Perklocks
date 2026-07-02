@@ -90,7 +90,7 @@ except Exception as _picks_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.07.02-restore-ags-soccer-autodiscovery-v19"
+DATA_VERSION = "2026.07.02-hr-diversify-drop-hrrbi-chip-v20"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -2382,7 +2382,9 @@ SPORT_MARKETS = {
         {"token": "run_line",    "label": "Run Line"},
         {"token": "totals",      "label": "Totals"},
         {"token": "batter_hits",            "label": "Hits"},
-        {"token": "batter_hits_runs_rbis",  "label": "H+R+RBI"},
+        # H+R+RBI chip removed 2026-07-02 per user — market is
+        # globally banned in quality_gate.py (35.6% hit rate) so
+        # having a chip that returns 0 picks was breaking the UI.
         {"token": "pitcher_strikeouts",     "label": "Strikeouts"},
         {"token": "pitcher_outs",           "label": "Outs Recorded"},
     ],

@@ -88,7 +88,29 @@ function flattenTopOfDay(games: GameHRSlate[], topN = 5): FlatPick[] {
     }
   }
   all.sort((a, b) => b.hr_score - a.hr_score);
-  return all.slice(0, topN);
+  // 2026-07-02 fix — user: "should not have 3 ppl from same game in top".
+  // Enforce ONE HR pick per game in the Top-N view. The Yankees lineup
+  // (or any bopper team) was crowding out ATL, HOU, LAD, etc. Diversify
+  // by taking the top HR-scored batter from each unique game_id first,
+  // then fill remaining slots from the rest if we run short.
+  const seenGames = new Set<string>();
+  const diversified: FlatPick[] = [];
+  for (const p of all) {
+    if (seenGames.has(p._game_id)) continue;
+    seenGames.add(p._game_id);
+    diversified.push(p);
+    if (diversified.length >= topN) break;
+  }
+  // If we don't have enough unique games (rare — happens on light MLB
+  // slates), backfill with the next-best picks regardless of game.
+  if (diversified.length < topN) {
+    for (const p of all) {
+      if (diversified.includes(p)) continue;
+      diversified.push(p);
+      if (diversified.length >= topN) break;
+    }
+  }
+  return diversified;
 }
 
 // ── Single flat pick card (top-of-day mode) ───────────────────
