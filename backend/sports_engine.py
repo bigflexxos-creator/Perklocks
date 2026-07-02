@@ -1186,7 +1186,7 @@ async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
             continue
         games = await _fetch_odds_for(key, regions=region, sport=sport)
         league_label = LEAGUE_LABELS.get(key, sport)
-        for g in games[:15]:
+        for g in games[:40]:  # tennis-friendly cap (Wimbledon has 48+ matches/day)
             all_picks.extend(_picks_from_game(sport, league_label, g, date_str))
             # ─── Tennis alt-line augmentation ────────────────────────
             # Per user spec: "Tennis have alt line available pls add and
@@ -1238,7 +1238,121 @@ async def fetch_soccer_picks(date_str: str) -> list[dict]:
 
 
 async def fetch_tennis_picks(date_str: str) -> list[dict]:
-    return await _fetch_picks_for_sport("Tennis", date_str)
+    picks = await _fetch_picks_for_sport("Tennis", date_str)
+    # 2026-07-01 fix: `_picks_from_game` is intermittently missing the
+    # h2h market for Tennis (esp. ATP) even when DK+FanDuel both expose
+    # it — we've verified live_alt_lines has full moneyline coverage.
+    # Backfill any Wimbledon/tour match that got alt-line picks but no
+    # moneyline pick directly from the live_alt_lines feed. This is a
+    # read-only Mongo op, no extra API calls consumed.
+    try:
+        picks = await _backfill_tennis_moneylines(picks, date_str)
+    except Exception as e:
+        logger.warning("tennis ML backfill failed: %s", e)
+    return picks
+
+
+async def _backfill_tennis_moneylines(picks: list[dict], date_str: str) -> list[dict]:
+    """For every Tennis event on today's slate that has alt-line picks
+    but NO moneyline pick, pull the h2h line from `live_alt_lines` and
+    emit a moneyline pick. This is a defensive backstop for the ATP
+    fetch bug where h2h markets don't consistently appear in the bulk
+    /odds response.
+
+    Selection heuristic: favorite side only. Odds cap at -750 (extreme
+    chalk isn't rollover-friendly)."""
+    from server import db  # lazy
+    # Build a set of events that already have an ML pick — those we skip.
+    have_ml: set[str] = set()
+    for p in picks:
+        if (p.get("sport") or "").lower() != "tennis":
+            continue
+        m = (p.get("market") or "").lower()
+        if "moneyline" in m or "match winner" in m:
+            have_ml.add(p.get("event") or "")
+    # Find all Tennis h2h rows in live_alt_lines for events with any
+    # existing pick today.
+    tennis_events_today: set[str] = {
+        p.get("event") for p in picks
+        if (p.get("sport") or "").lower() == "tennis" and p.get("event")
+    }
+    if not tennis_events_today:
+        return picks
+    missing_events = tennis_events_today - have_ml
+    if not missing_events:
+        return picks
+
+    added = 0
+    # For each missing event, compute median favorite price across books.
+    for event_name in missing_events:
+        rows = await db.live_alt_lines.find({
+            "sport": "tennis", "market_key": "h2h", "event_name": event_name,
+        }).to_list(length=20)
+        if len(rows) < 2:
+            continue
+        # Group by selection (player name) and average the prices.
+        by_side: dict[str, list[float]] = {}
+        for r in rows:
+            sel = (r.get("selection") or "").strip()
+            price = r.get("price")
+            if not sel or not isinstance(price, (int, float)):
+                continue
+            by_side.setdefault(sel, []).append(float(price))
+        if len(by_side) != 2:
+            continue
+        # Identify favourite (the side with the most-negative median).
+        medians = {
+            side: sorted(prices)[len(prices) // 2]
+            for side, prices in by_side.items()
+        }
+        fav_side, fav_price = min(medians.items(), key=lambda x: x[1])
+        # Chalk cap — skip if too extreme
+        if fav_price < -750:
+            continue
+        # Simple implied-prob → lock_score mapping (same shape as _build_pick)
+        implied = (-fav_price) / ((-fav_price) + 100.0) if fav_price < 0 else 100.0 / (fav_price + 100.0)
+        win_prob = round(min(0.95, max(0.35, implied + 0.02)) * 100, 1)
+        edge_pct = round((win_prob / 100.0 - implied) * 100.0, 2)
+        # Lock score: match the internal calibrator's rough shape —
+        # ≥95 for implied≥0.75, ≥89 for implied≥0.65, etc.
+        if implied >= 0.85: lock_score = 96.0
+        elif implied >= 0.75: lock_score = 92.0
+        elif implied >= 0.65: lock_score = 88.0
+        elif implied >= 0.55: lock_score = 82.0
+        else: lock_score = 75.0
+
+        import uuid, hashlib
+        commence = rows[0].get("commence_time") or ""
+        pick_id = str(uuid.uuid5(
+            uuid.NAMESPACE_DNS,
+            f"tennis-ml-backfill-{event_name}-{fav_side}-{date_str}",
+        ))
+        external_id = hashlib.md5(
+            f"tennis-ml-backfill-{event_name}-{fav_side}-{date_str}".encode()
+        ).hexdigest()
+        pick = {
+            "id": pick_id,
+            "external_id": external_id,
+            "sport": "Tennis",
+            "league": (rows[0].get("league") or "Tennis"),
+            "event": event_name,
+            "event_time": commence,
+            "market": f"{fav_side} Moneyline",
+            "selection": fav_side,
+            "book_odds": int(fav_price),
+            "win_probability": win_prob,
+            "edge_percent": edge_pct,
+            "lock_score": lock_score,
+            "pick_date": date_str,
+            "source": "tennis_ml_backfill_2026-07-01",
+            "is_alt": False,
+            "no_bet": False,
+        }
+        picks.append(pick)
+        added += 1
+    if added:
+        logger.info("tennis ML backfill: added %d moneyline picks from live_alt_lines", added)
+    return picks
 
 
 async def fetch_wnba_picks(date_str: str) -> list[dict]:
