@@ -72,14 +72,31 @@ async def resolve_matchup(
             logger.debug(f"schedule fetch fail {date_str}: {e}")
             return None
 
-        # Match game by team names (tolerant)
+        # Match game by team names (tolerant, DIRECTION-AGNOSTIC).
+        # 2026-07-02 bug fix: Odds API and MLB Stats API sometimes
+        # disagree on home/away ordering (e.g. Odds says "Milwaukee @
+        # Cincinnati" but MLB Stats says home=Milwaukee). We now match
+        # each side against BOTH candidates and detect the swap.
         target_home, target_away = _norm(home_name), _norm(away_name)
         game = None
+        _swapped = False
         for g in games:
             h = _norm((g.get("teams") or {}).get("home", {}).get("team", {}).get("name", ""))
             a = _norm((g.get("teams") or {}).get("away", {}).get("team", {}).get("name", ""))
-            if (target_home in h or h in target_home) and (target_away in a or a in target_away):
+            straight = ((target_home in h or h in target_home)
+                        and (target_away in a or a in target_away))
+            reversed_ = ((target_home in a or a in target_home)
+                         and (target_away in h or h in target_away))
+            if straight:
                 game = g; break
+            if reversed_:
+                game = g
+                _swapped = True
+                logger.info(
+                    "mlb_matchup_resolver: home/away swap detected for '%s @ %s' — MLB API says home=%s, away=%s",
+                    away_name, home_name, h, a,
+                )
+                break
         if not game:
             return None
         home_team = game.get("teams", {}).get("home", {})
