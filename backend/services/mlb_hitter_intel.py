@@ -683,15 +683,22 @@ async def build_matchup(
     spec 2026-07-01 "remove any logic that selects hitters without
     pitcher + lineup + Vegas context".
 
-    Caches the resulting matchup in Mongo for 6 h."""
+    Caches the resulting matchup in Mongo for 6 h.
+
+    2026-07-02 relaxation: `strict` now only requires pitcher +
+    team_implied_runs. Batting order comes from the MLB lineup card
+    which isn't published until ~1-2h before first pitch — enforcing
+    it during pick generation (hours pre-game) was killing 100% of
+    hitter rationales. Batting_order becomes a bonus refinement when
+    available; picks generated before lineup posts still get full
+    pitcher-vs-batter evidence."""
     if strict:
         missing = []
         if not pitcher_id:
             missing.append("pitcher_id")
-        if batting_order is None:
-            missing.append("batting_order")
         if team_implied_runs is None:
             missing.append("team_implied_runs")
+        # batting_order is best-effort — not a hard requirement anymore.
         if missing:
             raise HitterContextMissing(
                 f"cannot score {batter_name or batter_id}: missing {', '.join(missing)}"
