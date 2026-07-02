@@ -382,17 +382,21 @@ def _block_reason(pick: dict) -> str | None:
     if lo <= ls < hi:
         return f"inverted_lock_band_{int(lo)}_{int(hi-1)}_12pct_historical"
 
-    # 2b. Lock-score DEAD ZONE 80-84 (2026-07-01 audit). Hits at 47.6%
-    #     over 63 graded picks — worse than random and worse than the
-    #     70-79 band above/below it (inverted calibration on the ML
-    #     model's high-uncertainty region).
-    if _LOCK_DEAD_ZONE_LO <= ls < _LOCK_DEAD_ZONE_HI:
+    # 2b. Lock-score DEAD ZONE 80-84 (2026-07-01 audit). Overall hits at
+    #     47.6% but the sample is DOMINATED by MLB + Soccer where
+    #     calibration is inverted. Tennis + NBA + NFL have no bad data
+    #     in this band — the ban would over-block their legitimate
+    #     medium-favorite picks (e.g. Wimbledon -185 chalks). So we
+    #     scope this ban to just the sports with the actual regression.
+    if sport in ("mlb", "soccer") and _LOCK_DEAD_ZONE_LO <= ls < _LOCK_DEAD_ZONE_HI:
         return f"lock_dead_zone_{_LOCK_DEAD_ZONE_LO}_{_LOCK_DEAD_ZONE_HI-1}_47pct"
 
     # 2c. Odds DEAD ZONE -140 to -110 (2026-07-01 audit). Hits at 48.2%
-    #     over 139 picks — "barely favourite" trap.
+    #     over 139 picks — "barely favourite" trap. Same MLB/Soccer
+    #     scope caveat as 2b; Tennis moneylines at these odds actually
+    #     hit 62.5% historically, so we exempt Tennis + NBA + NFL.
     odds = pick.get("book_odds")
-    if isinstance(odds, (int, float)):
+    if isinstance(odds, (int, float)) and sport in ("mlb", "soccer"):
         if _ODDS_DEAD_ZONE_LO <= float(odds) < _ODDS_DEAD_ZONE_HI:
             return f"odds_dead_zone_{_ODDS_DEAD_ZONE_LO}_{_ODDS_DEAD_ZONE_HI}_48pct"
 
