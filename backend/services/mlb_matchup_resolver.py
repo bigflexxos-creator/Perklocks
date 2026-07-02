@@ -101,9 +101,16 @@ async def resolve_matchup(
         # disagree on home/away ordering (e.g. Odds says "Milwaukee @
         # Cincinnati" but MLB Stats says home=Milwaukee). We now match
         # each side against BOTH candidates and detect the swap.
+        #
+        # 2026-07-02 bug fix #2 (user report: "still using yesterday's
+        # pitchers"): When the same two teams play a series, the 3-day
+        # window returns MULTIPLE games (yesterday + today + tomorrow).
+        # The original loop grabbed the FIRST match — usually
+        # yesterday's game with yesterday's pitcher. Fix: collect ALL
+        # matching candidates, then pick the one whose gameDate is
+        # closest to the pick's event_time_iso.
         target_home, target_away = _norm(home_name), _norm(away_name)
-        game = None
-        _swapped = False
+        candidates: list[tuple[dict, bool]] = []   # (game, is_swapped)
         for g in games:
             h = _norm((g.get("teams") or {}).get("home", {}).get("team", {}).get("name", ""))
             a = _norm((g.get("teams") or {}).get("away", {}).get("team", {}).get("name", ""))
@@ -112,17 +119,47 @@ async def resolve_matchup(
             reversed_ = ((target_home in a or a in target_home)
                          and (target_away in h or h in target_away))
             if straight:
-                game = g; break
-            if reversed_:
-                game = g
-                _swapped = True
-                logger.info(
-                    "mlb_matchup_resolver: home/away swap detected for '%s @ %s' — MLB API says home=%s, away=%s",
-                    away_name, home_name, h, a,
-                )
-                break
-        if not game:
+                candidates.append((g, False))
+            elif reversed_:
+                candidates.append((g, True))
+        if not candidates:
             return None
+        # Pick the candidate whose gameDate is closest to event_time_iso.
+        try:
+            target_ts = datetime.fromisoformat(event_time_iso.replace("Z", "+00:00"))
+        except Exception:
+            target_ts = None
+
+        def _game_ts(g: dict):
+            gd = g.get("gameDate")
+            if not gd:
+                return None
+            try:
+                return datetime.fromisoformat(gd.replace("Z", "+00:00"))
+            except Exception:
+                return None
+
+        if target_ts is not None:
+            candidates.sort(
+                key=lambda gs: abs((_game_ts(gs[0]) - target_ts).total_seconds())
+                if _game_ts(gs[0]) is not None
+                else 10**12
+            )
+        game, _swapped = candidates[0]
+        if _swapped:
+            logger.info(
+                "mlb_matchup_resolver: home/away swap detected for '%s @ %s'",
+                away_name, home_name,
+            )
+        # Log the resolved game so we can audit series mix-ups quickly.
+        try:
+            _gd = game.get("gameDate")
+            logger.info(
+                "mlb_matchup_resolver: picked game gameDate=%s for pick event_time=%s (window=%s)",
+                _gd, event_time_iso, tried_dates,
+            )
+        except Exception:
+            pass
         home_team = game.get("teams", {}).get("home", {})
         away_team = game.get("teams", {}).get("away", {})
         venue = (game.get("venue") or {}).get("name") or ""
