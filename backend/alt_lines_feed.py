@@ -65,6 +65,12 @@ ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 BOOKMAKERS = "draftkings,fanduel"
 
 # Sports → (odds_api_sport_key, [markets])
+# NOTE: for TENNIS we don't hard-code tournaments here. The `SPORT_CONFIG`
+# dict is expanded at runtime by `_discover_active_tennis_tournaments`
+# (called from `refresh_alt_lines`) which queries The Odds API's
+# `/v4/sports` catalog and injects any `active=True` ATP/WTA event key.
+# This way we automatically pick up whichever Slam / ATP-Masters / WTA-1000
+# is running without a manual code change. (2026-07-01 fix)
 SPORT_CONFIG: dict[str, tuple[str, list[str]]] = {
     "soccer_world_cup": (
         "soccer_fifa_world_cup",
@@ -92,11 +98,14 @@ SPORT_CONFIG: dict[str, tuple[str, list[str]]] = {
         ["player_pass_yds_alternate", "player_rush_yds_alternate",
          "player_anytime_td", "player_reception_alternate"],
     ),
-    "tennis_atp": (
-        "tennis_atp_french_open",
-        ["alternate_totals_games", "alternate_spreads_games"],
-    ),
+    # Tennis entries are inserted dynamically — see comment above.
 }
+
+# The set of markets we want for every ACTIVE tennis tournament.
+# `h2h` is the moneyline (match winner) — the winningest tennis market
+# in our history at 66.7%. Alt totals and alt spreads capture the
+# "26 games over/under" and "+3.5 games handicap" style bets.
+TENNIS_MARKETS = ["h2h", "alternate_totals_games", "alternate_spreads_games"]
 
 
 def _norm(name: str) -> str:
@@ -186,16 +195,61 @@ async def _fetch_event_odds_individual(cx: httpx.AsyncClient, sport_key: str,
     return combined_meta
 
 
+async def _discover_active_tennis_tournaments(cx: httpx.AsyncClient) -> list[tuple[str, str]]:
+    """Query The Odds API `/v4/sports` catalog and return every active
+    tennis tournament (both ATP and WTA). Returns `(cfg_key, sport_key)`
+    tuples suitable for injection into SPORT_CONFIG at runtime.
+
+    We refresh this every alt-line cycle so the moment Wimbledon → US Open
+    → Cincinnati flip, we pick up the new tour automatically."""
+    if not ODDS_API_KEY:
+        return []
+    try:
+        r = await cx.get(
+            f"{ODDS_API_BASE}/sports",
+            params={"apiKey": ODDS_API_KEY, "all": "true"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return []
+        catalog = r.json() or []
+    except Exception as e:
+        logger.warning("tennis discovery failed: %s", e)
+        return []
+    out: list[tuple[str, str]] = []
+    for s in catalog:
+        key = s.get("key") or ""
+        if not key.startswith("tennis_"):
+            continue
+        if not s.get("active"):
+            continue
+        # cfg_key mirrors the Odds API key so downstream logic can
+        # short-circuit "startswith('tennis')" branches unchanged.
+        out.append((key, key))
+    if out:
+        logger.info("tennis auto-discovery: %d active tournaments (%s)",
+                    len(out), ", ".join(k for _, k in out))
+    return out
+
+
 async def refresh_alt_lines(db: AsyncIOMotorDatabase) -> dict:
     """Pull alt-line markets for all active events across configured sports."""
     if not ODDS_API_KEY:
         return {"ok": False, "reason": "no_api_key"}
 
-    stats = {"sports": 0, "events": 0, "rows": 0, "errors": 0}
+    stats = {"sports": 0, "events": 0, "rows": 0, "errors": 0,
+             "tennis_tournaments": 0}
     now = datetime.now(timezone.utc)
 
     async with httpx.AsyncClient(headers={"User-Agent": "PerkLocks/1.0"}) as cx:
-        for cfg_key, (sport_key, markets) in SPORT_CONFIG.items():
+        # Build the effective config on each cycle: static entries +
+        # dynamically-discovered active tennis tournaments (2026-07-01).
+        effective_config = dict(SPORT_CONFIG)
+        for cfg_key, sport_key in await _discover_active_tennis_tournaments(cx):
+            effective_config[cfg_key] = (sport_key, TENNIS_MARKETS)
+            stats["tennis_tournaments"] += 1
+
+        for cfg_key, (sport_key, markets) in effective_config.items():
             events = await _fetch_events(cx, sport_key)
             if not events:
                 continue
