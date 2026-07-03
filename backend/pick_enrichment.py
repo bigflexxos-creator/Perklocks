@@ -260,6 +260,14 @@ def _build_rationale(pick: dict, sport: str, name: str) -> dict[str, Any]:
             rationale["concerns"].extend(ss.get("concerns") or [])
             rationale["engine"] = rationale.get("engine") or f"sport_rationale.{sport}"
             sport_specific_added = True
+        # Merge sport-specific rolling form (L5/L10/L20) if the builder
+        # produced it — used for MLB pitchers, NBA/NFL players, etc.
+        # The LockPickCard chip renders `pick_rationale.recent_form`.
+        if ss.get("recent_form"):
+            existing_rf = rationale.get("recent_form") or {}
+            merged_rf = dict(existing_rf)
+            merged_rf.update(ss["recent_form"])
+            rationale["recent_form"] = merged_rf
     except Exception as e:
         logger.debug(f"sport_rationale failed for {sport}/{name}: {e}")
 

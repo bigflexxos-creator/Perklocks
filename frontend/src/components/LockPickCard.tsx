@@ -606,25 +606,89 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
               )}
 
               {/* ── Recent Form rolling windows (L5 / L10 / L20) ────
-                   Real batter game-log data from MLB Stats API. Each
-                   window shows AVG + hits/AB so users can see if the
-                   batter is hot (L5 > L20) or cooling off. */}
+                   Real player game-log data. Format depends on engine:
+                   • MLB HITTERS → "5/5" (games with ≥1 hit / games)
+                   • MLB PITCHERS → "5.4 K/GS" (K's per start)
+                   Same data structure, different display for readability. */}
               {rationale!.recent_form && (
                 (() => {
-                  const rf = rationale!.recent_form as Record<string, number | null>;
-                  const windows: { label: string; avg: number | null; hits: number | null; ab: number | null }[] = [
-                    { label: "L5",  avg: rf.last5_avg,  hits: rf.last5_hits,  ab: rf.last5_ab  },
-                    { label: "L10", avg: rf.last10_avg, hits: rf.last10_hits, ab: rf.last10_ab },
-                    { label: "L20", avg: rf.last20_avg, hits: rf.last20_hits, ab: rf.last20_ab },
-                  ].filter((w) => w.avg != null && w.ab != null && (w.ab as number) > 0);
+                  const rf = rationale!.recent_form as Record<string, unknown>;
+                  const engine = String(rf.engine || "");
+                  const isPitcher = engine === "mlb_pitcher_intel";
+                  const windows: {
+                    label: string;
+                    avg: number | null;
+                    gwh: number | null;
+                    gp: number | null;
+                    era: number | null;
+                  }[] = [
+                    {
+                      label: "L5",
+                      avg: (rf.last5_avg as number) ?? null,
+                      gwh: (rf.last5_games_with_hit as number) ?? null,
+                      gp: (rf.last5_games_played as number) ?? null,
+                      era: (rf.last5_era as number) ?? null,
+                    },
+                    {
+                      label: "L10",
+                      avg: (rf.last10_avg as number) ?? null,
+                      gwh: (rf.last10_games_with_hit as number) ?? null,
+                      gp: (rf.last10_games_played as number) ?? null,
+                      era: (rf.last10_era as number) ?? null,
+                    },
+                    {
+                      label: "L20",
+                      avg: (rf.last20_avg as number) ?? null,
+                      gwh: (rf.last20_games_with_hit as number) ?? null,
+                      gp: (rf.last20_games_played as number) ?? null,
+                      era: (rf.last20_era as number) ?? null,
+                    },
+                  ].filter((w) => w.avg != null && w.gp != null && (w.gp as number) > 0);
                   if (windows.length === 0) return null;
+                  const sectionLabel = isPitcher
+                    ? "RECENT FORM · K PER START"
+                    : "RECENT FORM · HITS PER GAME";
                   return (
                     <View style={styles.whySection}>
-                      <Text style={styles.whySectionLabel}>RECENT FORM</Text>
+                      <Text style={styles.whySectionLabel}>{sectionLabel}</Text>
                       <View style={styles.whyPqRow}>
                         {windows.map((w) => {
-                          const isHot = (w.avg as number) >= 0.300;
-                          const isCold = (w.avg as number) < 0.230;
+                          if (isPitcher) {
+                            // Pitcher chip — main number is avg K/start,
+                            // color code by absolute K rate (hot ≥ 8, cold < 5).
+                            const isHot = (w.avg as number) >= 8.0;
+                            const isCold = (w.avg as number) < 5.0;
+                            return (
+                              <View
+                                key={w.label}
+                                style={[
+                                  styles.whyPqChip,
+                                  isHot && styles.whyPqChipBad,
+                                  isCold && styles.whyPqChipGood,
+                                ]}
+                              >
+                                <Text style={styles.whyPqChipLabel}>{w.label}</Text>
+                                <Text
+                                  style={[
+                                    styles.whyPqChipVal,
+                                    isHot && { color: "#86EFAC" },
+                                    isCold && { color: "#FCA5A5" },
+                                  ]}
+                                >
+                                  {(w.avg as number).toFixed(1)}
+                                </Text>
+                                <Text style={[styles.whyPqChipLabel, { fontSize: 9, opacity: 0.7 }]}>
+                                  {w.gp} GS · {w.era ? `${(w.era as number).toFixed(2)} ERA` : "—"}
+                                </Text>
+                              </View>
+                            );
+                          }
+                          // Hitter chip — games-with-hit / games-played.
+                          const gp = (w.gp as number) || 1;
+                          const gwh = (w.gwh as number) || 0;
+                          const gwh_rate = gwh / gp;
+                          const isHot = gwh_rate >= 0.75;
+                          const isCold = gwh_rate < 0.50;
                           return (
                             <View
                               key={w.label}
@@ -642,10 +706,10 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
                                   isCold && { color: "#FCA5A5" },
                                 ]}
                               >
-                                {(w.avg as number).toFixed(3).replace(/^0/, "")}
+                                {gwh}/{gp}
                               </Text>
                               <Text style={[styles.whyPqChipLabel, { fontSize: 9, opacity: 0.7 }]}>
-                                {w.hits}/{w.ab}
+                                {(w.avg as number).toFixed(3).replace(/^0/, "")} avg
                               </Text>
                             </View>
                           );

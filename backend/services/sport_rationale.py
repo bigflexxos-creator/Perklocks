@@ -144,6 +144,36 @@ async def build_mlb_pitcher_rationale(
                 f"📅 {vs_starts} prior starts vs {opp} — {vs_avg_k:.1f} K avg"
             )
 
+    # L5/L10/L20 rolling form windows (user spec 2026-07-03 —
+    # "L5 L10 L20 should be universal for all bets"). We pass these
+    # through as `recent_form` so the same LockPickCard chip renders
+    # the same way it does for hitters. Each window shows:
+    #   • starts  → games in the window
+    #   • avg_k   → strikeouts per start
+    #   • era     → earned run avg over the window
+    l5, l10, l20 = data.get("last5"), data.get("last10"), data.get("last20")
+    out["recent_form"] = {
+        "last5_avg": l5.get("avg_k") if l5 else None,
+        "last5_games_played": l5.get("starts") if l5 else 0,
+        "last5_games_with_hit": l5.get("total_k") if l5 else 0,   # total K's over L5 (used as "score" for chip)
+        "last5_hits": l5.get("total_k") if l5 else 0,
+        "last5_ab": l5.get("starts") if l5 else 0,
+        "last5_era": l5.get("era") if l5 else None,
+        "last10_avg": l10.get("avg_k") if l10 else None,
+        "last10_games_played": l10.get("starts") if l10 else 0,
+        "last10_games_with_hit": l10.get("total_k") if l10 else 0,
+        "last10_hits": l10.get("total_k") if l10 else 0,
+        "last10_ab": l10.get("starts") if l10 else 0,
+        "last10_era": l10.get("era") if l10 else None,
+        "last20_avg": l20.get("avg_k") if l20 else None,
+        "last20_games_played": l20.get("starts") if l20 else 0,
+        "last20_games_with_hit": l20.get("total_k") if l20 else 0,
+        "last20_hits": l20.get("total_k") if l20 else 0,
+        "last20_ab": l20.get("starts") if l20 else 0,
+        "last20_era": l20.get("era") if l20 else None,
+        "engine": "mlb_pitcher_intel",
+    }
+
     return out
 
 
@@ -280,9 +310,10 @@ async def build_tennis_rationale(db, pick: dict) -> dict[str, list[str]]:
 async def build_sport_specific(
     db, pick: dict, sport: str, player_name: Optional[str] = None,
 ) -> dict[str, list[str]]:
-    """Single entry point. Returns {evidence, concerns} bullets keyed
-    to the sport+market signature. Empty lists if no builder matches."""
-    out: dict[str, list[str]] = {"evidence": [], "concerns": []}
+    """Single entry point. Returns {evidence, concerns, recent_form}
+    bullets keyed to the sport+market signature. Empty lists if no
+    builder matches."""
+    out: dict[str, Any] = {"evidence": [], "concerns": [], "recent_form": {}}
     sport = (sport or "").lower()
     market = pick.get("market") or ""
 
@@ -292,6 +323,11 @@ async def build_sport_specific(
             r = await build_mlb_pitcher_rationale(pick, player_name)
             out["evidence"].extend(r.get("evidence") or [])
             out["concerns"].extend(r.get("concerns") or [])
+            # Merge pitcher L5/L10/L20 rolling form so the LockPickCard
+            # renders the same "RECENT FORM · L5 / L10 / L20" chips for
+            # pitcher props that we render for hitters.
+            if r.get("recent_form"):
+                out["recent_form"] = r["recent_form"]
         elif is_mlb_team_market(market, player_name or ""):
             r = await build_mlb_team_rationale(db, pick)
             out["evidence"].extend(r.get("evidence") or [])
@@ -364,4 +400,4 @@ def build_sport_specific_sync(
         return asyncio.run(build_sport_specific(db, pick, sport, player_name))
     except Exception as e:
         logger.debug("sport_rationale sync wrap failed: %s", e)
-        return {"evidence": [], "concerns": []}
+        return {"evidence": [], "concerns": [], "recent_form": {}}
