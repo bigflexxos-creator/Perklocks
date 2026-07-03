@@ -2114,7 +2114,59 @@ def _build_mlb_alt_picks(
             pick["is_alt"] = True
             out_picks.append(pick)
 
-    return [p for p in out_picks if p is not None]
+    # ── Contradiction dedupe (user report 2026-07-03: "too many alt
+    # total Over and Unders for same game — that's a contradiction").
+    # For each team in a game, the app must commit to ONE side per
+    # market family. Group by (team, market_family) and keep only the
+    # highest-edge pick. This eliminates the "Yankees Over 3.5 AND
+    # Yankees Under 3.5" self-cancellation.
+    #
+    # market_family taxonomy:
+    #   • "team_total_main"  → "{team} Team Total (Over|Under) X.Y"
+    #   • "team_total_alt"   → "... (Alt)"
+    #   • "run_line_alt"     → "{team} +N.N Run Line (Alt)"
+    # We KEEP main + alt separately (they're different bet products),
+    # but ban Over-vs-Under within each family.
+    def _family_key(p: dict) -> tuple:
+        m = p.get("market") or ""
+        if "Team Total" in m and "(Alt)" in m:
+            family = "team_total_alt"
+        elif "Team Total" in m:
+            family = "team_total_main"
+        elif "Run Line" in m and "(Alt)" in m:
+            family = "run_line_alt"
+        else:
+            return None
+        # Extract team from market: "{team} Team Total ..." or
+        # "{team} +N Run Line ...". Both start with team name up to
+        # the first "Team" / "+" / "-" token.
+        team_hint = None
+        for t in (home, away):
+            if t and m.startswith(t):
+                team_hint = t
+                break
+        return (family, team_hint) if team_hint else None
+
+    best_by_key: dict[tuple, dict] = {}
+    unkeyed: list[dict] = []
+    for p in out_picks:
+        if not p:
+            continue
+        k = _family_key(p)
+        if k is None:
+            unkeyed.append(p)
+            continue
+        edge = float(p.get("edge_percent") or 0)
+        cur = best_by_key.get(k)
+        if cur is None or edge > float(cur.get("edge_percent") or 0):
+            best_by_key[k] = p
+    deduped = list(best_by_key.values()) + unkeyed
+    if len(deduped) < len([p for p in out_picks if p]):
+        logger.info(
+            "MLB alt-line dedupe: %d → %d picks (removed contradictory sides)",
+            len([p for p in out_picks if p]), len(deduped),
+        )
+    return [p for p in deduped if p is not None]
 
 
 def _alt_outcomes_for_market_desc(payload: dict, market_key: str) -> list[dict]:
