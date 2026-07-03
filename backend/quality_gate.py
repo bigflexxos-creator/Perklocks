@@ -438,6 +438,37 @@ def _block_reason(pick: dict) -> str | None:
                 )
                 if not evidence or not has_scorer_evidence:
                     return "anytime_scorer_no_form_evidence"
+            # Rule 5: Synthetic-source block for uncovered leagues.
+            # (2026-07-03 user report: "why not picking Bjerkeboo and
+            # Uhre" — the app only picks up players from stale
+            # TheSportsDB rosters for non-Top-5/CSL leagues. The
+            # league's real top scorers are missing from our data
+            # sources entirely.) When the pick is a positional-fallback
+            # synthetic (samples.from_fallback == True) AND the league
+            # isn't in our covered set, drop it — the pick has no
+            # signal, just a random forward from an incomplete roster.
+            if not is_elite:
+                samples = pick.get("samples") or {}
+                is_synthetic_fallback = (
+                    pick.get("synthetic") is True
+                    and (samples.get("from_fallback") is True
+                         or (samples.get("goals") or 0) == 0)
+                )
+                covered_leagues = {
+                    "premier league", "la liga", "serie a", "bundesliga",
+                    "ligue 1", "mls", "china super league",
+                    "uefa champions league", "uefa europa league",
+                    "uefa conference league", "brasileirão", "brasileirao",
+                    "j1 league", "eredivisie", "primeira liga",
+                    "championship", "efl championship",
+                }
+                pick_league = (pick.get("league") or "").lower()
+                league_covered = any(cl in pick_league for cl in covered_leagues)
+                if is_synthetic_fallback and not league_covered:
+                    return (
+                        f"anytime_scorer_synthetic_uncovered_league_"
+                        f"{pick.get('league') or 'unknown'}"
+                    )
             # passes — caller may cap display lock score
 
     # 2. Inverted lock-score band (65-74). Historical 12.8% is BELOW the
