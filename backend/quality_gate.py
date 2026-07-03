@@ -417,12 +417,24 @@ def _block_reason(pick: dict) -> str | None:
                     f"anytime_scorer_lock_engine_disagreement_v1_{int(v1_ls)}"
                     f"_v2_{int(v2_ls)}"
                 )
-            # Rule 3: never surface an AGS pick with negative edge —
-            # applies to EVERYONE including elites (a losing bet is a
-            # losing bet, no matter how famous the striker).
+            # Rule 3: Edge check.
+            #   • NON-elites: block below -3% edge. Small tolerance
+            #     covers players not on the anchor list who our engine
+            #     may under-estimate (Toney, David, Doku, Lukaku, etc.).
+            #     Below -3% is a real negative-EV signal → block.
+            #   • ELITES: allow edge as low as -7% because AGS is a
+            #     lottery-priced +200-ish market where our model can
+            #     under-estimate proven finishers vs the book, and
+            #     the ceiling upside justifies a small edge dip.
+            # (2026-07-03 user report: "why did anytime goalscorer
+            # disappear smh" — floors initially at 0/-6 wiped too much.
+            # Relaxed to -3/-7 to keep Persson-style noise blocked but
+            # let elite + emerging stars surface.)
             edge = pick.get("edge_percent")
-            if isinstance(edge, (int, float)) and edge < 0:
-                return f"anytime_scorer_negative_edge_{edge:.1f}pct"
+            if isinstance(edge, (int, float)):
+                floor = -7.0 if is_elite else -3.0
+                if edge < floor:
+                    return f"anytime_scorer_negative_edge_{edge:.1f}pct"
             # Rule 4: for NON-elites, require real evidence in the
             # rationale. Elite anchor list players skip this because
             # their high-confidence anchor IS the evidence.
