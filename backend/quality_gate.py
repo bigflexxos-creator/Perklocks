@@ -394,9 +394,50 @@ def _block_reason(pick: dict) -> str | None:
             return "soccer_lottery_scorer_banned_2026-07-01"
         # AGS + To-Score-or-Assist go through the existing lock-floor gate.
         if _SOCCER_ANYTIME_SCORER_RE.search(market):
+            # ── AGS coherence gate (2026-07-02 — user report:
+            # "how did the app generate Persson over the top scorers,
+            # make it make sense"). V2 was inflating scores on players
+            # with no real form data; V1 stayed honest and low. Both
+            # signals must agree — UNLESS the player is on the elite-
+            # anchor list, where V1's low value is expected (the V1
+            # engine doesn't know about anchors, V2 does).
+            v1_ls = float(pick.get("lock_score") or 0)
+            v2_ls = float(pick.get("lock_score_v2") or 0)
             ls = _displayed_lock_score(pick)
+            player_name = _extract_player_from_pick(pick)
+            is_elite = _elite_anchor_rate(player_name, market) is not None
+            # Rule 1: displayed lock must clear floor.
             if ls < ANYTIME_SCORER_MIN_LOCK:
                 return f"anytime_scorer_below_lock_floor_{int(ANYTIME_SCORER_MIN_LOCK)}"
+            # Rule 2: engine disagreement — non-elites only.
+            if (not is_elite
+                    and v1_ls > 0
+                    and abs(v2_ls - v1_ls) > 12.0):
+                return (
+                    f"anytime_scorer_lock_engine_disagreement_v1_{int(v1_ls)}"
+                    f"_v2_{int(v2_ls)}"
+                )
+            # Rule 3: never surface an AGS pick with negative edge —
+            # applies to EVERYONE including elites (a losing bet is a
+            # losing bet, no matter how famous the striker).
+            edge = pick.get("edge_percent")
+            if isinstance(edge, (int, float)) and edge < 0:
+                return f"anytime_scorer_negative_edge_{edge:.1f}pct"
+            # Rule 4: for NON-elites, require real evidence in the
+            # rationale. Elite anchor list players skip this because
+            # their high-confidence anchor IS the evidence.
+            if not is_elite:
+                pr = pick.get("pick_rationale") or {}
+                evidence = pr.get("evidence") or []
+                has_scorer_evidence = any(
+                    any(k in (e or "").lower() for k in (
+                        "rank", "leader", "goals", "goal/", "per match",
+                        "per 90", "scored", "top scorer", "form",
+                    ))
+                    for e in evidence
+                )
+                if not evidence or not has_scorer_evidence:
+                    return "anytime_scorer_no_form_evidence"
             # passes — caller may cap display lock score
 
     # 2. Inverted lock-score band (65-74). Historical 12.8% is BELOW the

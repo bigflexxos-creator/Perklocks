@@ -12,14 +12,16 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSPhotoLibraryAddUsageDescription": "Save betslip images to your Photos to share."
-      }
+      },
+      "bundleIdentifier": "app.emergent.betedgeai11ae77c4f"
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#000"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.emergent.betedgeai.c7c4p1"
     },
     "web": {
       "bundler": "metro",
