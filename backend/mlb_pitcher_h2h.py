@@ -150,6 +150,7 @@ async def fetch_pitcher_h2h(pitcher_name: str, opp_team_name: str) -> dict:
     vs_team_k = 0
     vs_team_starts = 0
     recent_vs_team = []
+    all_starts: list[dict] = []   # chronological list of ALL starts this season
     for sp in splits:
         st = sp.get("stat") or {}
         op = (sp.get("opponent") or {}).get("name") or ""
@@ -163,6 +164,12 @@ async def fetch_pitcher_h2h(pitcher_name: str, opp_team_name: str) -> dict:
         if is_start:
             total_starts += 1
             total_k += k
+            all_starts.append({
+                "date": date, "opp": op, "k": k, "ip": ip_float,
+                "er": int(st.get("earnedRuns") or 0),
+                "h": int(st.get("hits") or 0),
+                "bb": int(st.get("baseOnBalls") or 0),
+            })
         # Match vs opp team
         if tid and op_id == tid:
             vs_team_starts += 1
@@ -174,10 +181,35 @@ async def fetch_pitcher_h2h(pitcher_name: str, opp_team_name: str) -> dict:
                 "ip": str(ip),
             })
 
+    # ─── L5/L10/L20 rolling windows (user spec 2026-07-03) ────
+    # Sort starts by date ascending, then slice last N. Provide
+    # K/IP averages for each window so the pick card can show
+    # a hot/cold arc across the pitcher's rolling form.
+    all_starts.sort(key=lambda s: s.get("date") or "")
+
+    def _win(n: int) -> dict:
+        w = all_starts[-n:]
+        if not w:
+            return {"starts": 0}
+        gk = sum(s["k"] for s in w)
+        gip = sum(s["ip"] for s in w)
+        ger = sum(s["er"] for s in w)
+        return {
+            "starts": len(w),
+            "avg_k": round(gk / len(w), 2),
+            "total_k": gk,
+            "avg_ip": round(gip / len(w), 2),
+            "era": round(9.0 * ger / gip, 2) if gip > 0 else None,
+        }
+    l5, l10, l20 = _win(5), _win(10), _win(20)
+
     out["ok"] = True
     out["season_starts"] = total_starts
     out["season_avg_k"] = round(total_k / total_starts, 2) if total_starts else 0
     out["vs_team_starts"] = vs_team_starts
     out["vs_team_avg_k"] = round(vs_team_k / vs_team_starts, 2) if vs_team_starts else 0
     out["vs_team_recent"] = sorted(recent_vs_team, key=lambda x: x["date"], reverse=True)[:5]
+    out["last5"] = l5
+    out["last10"] = l10
+    out["last20"] = l20
     return out

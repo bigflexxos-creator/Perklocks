@@ -90,7 +90,7 @@ except Exception as _picks_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.07.02-ags-coherence-gate-v25"
+DATA_VERSION = "2026.07.03-l5l10l20-hitter-pitcher-v26"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 

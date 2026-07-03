@@ -115,12 +115,18 @@ class BatterSplits:
     last5_avg: Optional[float] = None
     last5_hits: int = 0
     last5_ab: int = 0
+    last5_games_with_hit: int = 0    # ← games where batter had ≥1 hit
+    last5_games_played: int = 0
     last10_avg: Optional[float] = None
     last10_hits: int = 0
     last10_ab: int = 0
+    last10_games_with_hit: int = 0
+    last10_games_played: int = 0
     last20_avg: Optional[float] = None
     last20_hits: int = 0
     last20_ab: int = 0
+    last20_games_with_hit: int = 0
+    last20_games_played: int = 0
     # ── Extended for Hit/RBI/Run separation (2026-07-01) ──
     # xwOBA proxy (OPS-derived; real Statcast xwOBA lives on Baseball
     # Savant which requires HTML scraping — that's queued as a follow-up).
@@ -225,12 +231,18 @@ class HitterMatchup:
                 "last5_avg": self.batter.last5_avg,
                 "last5_hits": self.batter.last5_hits,
                 "last5_ab": self.batter.last5_ab,
+                "last5_games_with_hit": self.batter.last5_games_with_hit,
+                "last5_games_played": self.batter.last5_games_played,
                 "last10_avg": self.batter.last10_avg,
                 "last10_hits": self.batter.last10_hits,
                 "last10_ab": self.batter.last10_ab,
+                "last10_games_with_hit": self.batter.last10_games_with_hit,
+                "last10_games_played": self.batter.last10_games_played,
                 "last20_avg": self.batter.last20_avg,
                 "last20_hits": self.batter.last20_hits,
                 "last20_ab": self.batter.last20_ab,
+                "last20_games_with_hit": self.batter.last20_games_with_hit,
+                "last20_games_played": self.batter.last20_games_played,
             },
             "multipliers": {
                 "platoon": round(self.platoon_mult, 3),
@@ -370,6 +382,8 @@ async def fetch_batter_splits(client: httpx.AsyncClient, batter_id: int,
     ab = sum(int(g.get("atBats") or 0) for g in last5)
     bs.last5_hits = hits
     bs.last5_ab = ab
+    bs.last5_games_played = len(last5)
+    bs.last5_games_with_hit = sum(1 for g in last5 if int(g.get("hits") or 0) >= 1)
     if ab > 0:
         bs.last5_avg = round(hits / ab, 3)
     last10 = games[-10:]
@@ -377,6 +391,8 @@ async def fetch_batter_splits(client: httpx.AsyncClient, batter_id: int,
     ab10 = sum(int(g.get("atBats") or 0) for g in last10)
     bs.last10_hits = h10
     bs.last10_ab = ab10
+    bs.last10_games_played = len(last10)
+    bs.last10_games_with_hit = sum(1 for g in last10 if int(g.get("hits") or 0) >= 1)
     if ab10 > 0:
         bs.last10_avg = round(h10 / ab10, 3)
     last20 = games[-20:]
@@ -384,6 +400,8 @@ async def fetch_batter_splits(client: httpx.AsyncClient, batter_id: int,
     ab20 = sum(int(g.get("atBats") or 0) for g in last20)
     bs.last20_hits = h20
     bs.last20_ab = ab20
+    bs.last20_games_played = len(last20)
+    bs.last20_games_with_hit = sum(1 for g in last20 if int(g.get("hits") or 0) >= 1)
     if ab20 > 0:
         bs.last20_avg = round(h20 / ab20, 3)
     return bs
