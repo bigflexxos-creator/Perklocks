@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import timedelta as _timedelta
 from typing import Optional
 
 logger = logging.getLogger("lockscore.parlay_leg_settle")
@@ -46,10 +47,120 @@ async def try_settle_leg_externally(leg: dict) -> Optional[str]:
         return await _settle_mlb_leg(leg)
     if sport == "SOCCER":
         return await _settle_soccer_leg(leg)
-    # Tennis/UFC/NBA fallback — we don't have free external sources wired
-    # for those yet, so just return None (leave pending). Tennis/UFC have
-    # their own ESPN settlers that operate on the `picks` collection,
-    # which can rescue these if the pick row hasn't been wiped.
+    if sport == "TENNIS":
+        return await _settle_tennis_leg_via_espn(leg)
+    if sport in ("UFC", "MMA"):
+        return await _settle_ufc_leg_via_espn(leg)
+    # NBA / NFL / WNBA / CFB — no orphan-safe external settler yet.
+    # These sports' picks are settled directly via the picks-table
+    # ESPN settlers (`espn_settlement.py`). If the source pick was
+    # wiped, we return None (leave pending). Users can force a
+    # re-settle via /api/parlay/{id}/resettle which walks a broader
+    # score-lookup, or the resolver will pick it up next cycle if
+    # the pick row is later restored by the daily refresh.
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Tennis (ESPN scoreboard)
+# ──────────────────────────────────────────────────────────────────────────
+
+async def _settle_tennis_leg_via_espn(leg: dict) -> Optional[str]:
+    """Grade a tennis parlay leg from the ESPN ATP/WTA scoreboard.
+
+    Supported markets:
+        • Moneyline
+        • Spread (Games handicap)
+        • Total Games Over/Under (incl. Alt lines like "Over 16.0 Games (Alt)")
+
+    Uses the existing `espn_settlement` helpers so behaviour matches the
+    picks-table Tennis settler exactly.
+    """
+    event = (leg.get("event") or "").strip()
+    market = (leg.get("market") or "").strip()
+    if not event or not market:
+        return None
+    event_time = leg.get("event_time") or leg.get("commence_time")
+    dt = _parse_iso(event_time)
+    if not dt:
+        return None
+    try:
+        from espn_settlement import (
+            _fetch_espn_tennis_matches, _match_tennis_comp_for_pick,
+            _tennis_pick_outcome,
+        )
+    except Exception:
+        return None
+    # Tennis matches sometimes span 2 UTC dates (evening ET → next-day UTC).
+    # Probe the scheduled day plus ±1 to be safe.
+    dates_to_try = [
+        dt.strftime("%Y-%m-%d"),
+        (dt + _timedelta(days=1)).strftime("%Y-%m-%d"),
+        (dt - _timedelta(days=1)).strftime("%Y-%m-%d"),
+    ]
+    for d in dates_to_try:
+        comps = await _fetch_espn_tennis_matches(d)
+        if not comps:
+            continue
+        pick_shape = {
+            "market": market,
+            "selection": leg.get("selection") or "",
+            "event": event,
+        }
+        c = _match_tennis_comp_for_pick(pick_shape, comps)
+        if c:
+            outcome = _tennis_pick_outcome(pick_shape, c)
+            if outcome in ("won", "lost", "push"):
+                return outcome
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# UFC / MMA (ESPN scoreboard)
+# ──────────────────────────────────────────────────────────────────────────
+
+async def _settle_ufc_leg_via_espn(leg: dict) -> Optional[str]:
+    """Grade a UFC parlay leg from the ESPN MMA scoreboard.
+
+    Supported markets:
+        • Moneyline
+        • Method of victory (KO/TKO, Submission, Decision)
+    """
+    event = (leg.get("event") or "").strip()
+    market = (leg.get("market") or "").strip()
+    if not event or not market:
+        return None
+    event_time = leg.get("event_time") or leg.get("commence_time")
+    dt = _parse_iso(event_time)
+    if not dt:
+        return None
+    try:
+        from espn_settlement import (
+            _fetch_espn_ufc_fights, _match_ufc_fight_for_pick,
+            _ufc_pick_outcome,
+        )
+    except Exception:
+        return None
+    # UFC cards routinely start Sat evening ET and finish Sun UTC — probe ±1.
+    dates_to_try = [
+        dt.strftime("%Y-%m-%d"),
+        (dt + _timedelta(days=1)).strftime("%Y-%m-%d"),
+        (dt - _timedelta(days=1)).strftime("%Y-%m-%d"),
+    ]
+    pick_shape = {
+        "market": market,
+        "selection": leg.get("selection") or "",
+        "event": event,
+    }
+    for d in dates_to_try:
+        fights = await _fetch_espn_ufc_fights(d)
+        if not fights:
+            continue
+        f = _match_ufc_fight_for_pick(pick_shape, fights)
+        if f:
+            outcome = _ufc_pick_outcome(pick_shape, f)
+            if outcome in ("won", "lost", "push"):
+                return outcome
     return None
 
 
