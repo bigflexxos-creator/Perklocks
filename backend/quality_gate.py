@@ -512,6 +512,30 @@ def _block_reason(pick: dict) -> str | None:
                         f"anytime_scorer_synthetic_uncovered_league_"
                         f"{pick.get('league') or 'unknown'}"
                     )
+            # Rule 6: CSL-specific — verify the player is on the ESPN
+            # scorer leaderboard OR in the active roster. This kills
+            # Odds-API ghost players (Ange Samuel, Marcão, Júnior
+            # Negrão) who bookmakers list but who have no goals or
+            # roster entry in our ESPN feed. Real CSL scorers (Guy
+            # Mbenza, Crysan, Oscar Taty Maritu, Rafael Ratão, etc.)
+            # pass. User report 2026-07-04: "Cls goalscorer still
+            # wrong who is ange Samuel how do you got him over
+            # mbenza". Ange Samuel is a ghost pick with a bogus book
+            # line; Mbenza is a top-5 CSL scorer (9 goals in 16
+            # games) and MUST always beat ghost picks.
+            pick_league_lc_final = (pick.get("league") or "").lower()
+            if "china" in pick_league_lc_final and "super league" in pick_league_lc_final:
+                try:
+                    import csl_espn_live as _csl_live
+                    verdict = _csl_live.is_player_currently_active(
+                        player_name or "",
+                    )
+                    if verdict is False:
+                        return "anytime_scorer_csl_not_on_leaderboard"
+                except Exception:
+                    # Never let a CSL lookup crash the whole gate —
+                    # fall through when the ESPN feed is unavailable.
+                    pass
             # passes — caller may cap display lock score
 
     # 2. Inverted lock-score band (65-74). Historical 12.8% is BELOW the
