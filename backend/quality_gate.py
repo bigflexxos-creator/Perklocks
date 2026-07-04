@@ -249,7 +249,15 @@ def _extract_player_from_pick(pick: dict) -> str:
     # If selection is "Yes" / "No", the player is in the market title.
     if sel.lower() in ("", "yes", "no"):
         # Strip "Anytime Goal Scorer", "First Goal Scorer", etc.
+        # Handle both "X Anytime Goal Scorer" (space separator, book-
+        # format) and "X - Anytime Goal Scorer" (dash separator,
+        # Odds API + ESPN-leaderboard format).
         for suffix in (
+            " - Anytime Goal Scorer", " - Anytime Scorer",
+            " - First Goal Scorer", " - First Scorer",
+            " - Last Goal Scorer", " - Last Scorer",
+            " - To Score or Assist", " - To Score",
+            " - Score or Assist",
             " Anytime Goal Scorer", " Anytime Scorer",
             " First Goal Scorer", " First Scorer",
             " Last Goal Scorer", " Last Scorer",
@@ -257,8 +265,10 @@ def _extract_player_from_pick(pick: dict) -> str:
             " Score or Assist",
         ):
             if mkt.endswith(suffix):
-                return mkt[: -len(suffix)].strip()
-        return mkt
+                # Strip trailing dashes/whitespace so name matches
+                # the ESPN roster ("Guy Mbenza" not "Guy Mbenza -").
+                return mkt[: -len(suffix)].strip().rstrip(" -").strip()
+        return mkt.strip().rstrip(" -").strip()
     return sel
 
 # ─── Lock-score coherence caps (2026-06-30 — Mbappé bug) ─────────────
@@ -456,15 +466,21 @@ def _block_reason(pick: dict) -> str | None:
             #   • Non-trusted: block below -3%. Small tolerance
             #     covers emerging stars our model may under-value,
             #     while still blocking clearly negative-EV noise.
-            # (2026-07-04 user report: "still not seeing CSL scorer"
-            # — CSL book pricing on 2026-07-04 slate ran edge=-7.9%
-            # for every player, wiping the surface. Raised trusted
-            # floor to -8% so genuine form-covered picks surface.)
-            edge = pick.get("edge_percent")
-            if isinstance(edge, (int, float)):
-                floor = -8.0 if trust_scorer else -3.0
-                if edge < floor:
-                    return f"anytime_scorer_negative_edge_{edge:.1f}pct"
+            #   • ESPN LEADERBOARD-sourced CSL picks: SKIP this rule
+            #     entirely. These picks come from live ESPN top-
+            #     scorer data (goals/matches) and are our own source
+            #     of truth — the downstream `model_win_prob`
+            #     enrichment sometimes clobbers our synth model,
+            #     manufacturing false "-40% edge" readings for a
+            #     player like Guy Mbenza who's actually 9g/18m at
+            #     50% rate. Trust our source over the enrichment.
+            source_field = (pick.get("source") or "").lower()
+            if source_field != "csl_espn_leaderboard":
+                edge = pick.get("edge_percent")
+                if isinstance(edge, (int, float)):
+                    floor = -8.0 if trust_scorer else -3.0
+                    if edge < floor:
+                        return f"anytime_scorer_negative_edge_{edge:.1f}pct"
             # Rule 4: for non-trusted-source picks, require real
             # evidence in the rationale. Elite anchor players AND
             # form-covered leagues (CSL, Top-5 EU, etc.) skip this
