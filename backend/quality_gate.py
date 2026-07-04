@@ -406,11 +406,40 @@ def _block_reason(pick: dict) -> str | None:
             ls = _displayed_lock_score(pick)
             player_name = _extract_player_from_pick(pick)
             is_elite = _elite_anchor_rate(player_name, market) is not None
+            # ── "Has-form-source" check — the pick's league is one
+            # where we ingest live scorer data (goals/starts) via a
+            # dedicated pipeline. These leagues get the same
+            # exemptions as elite anchor list players because the
+            # V1 engine's low reading is expected — V1 doesn't
+            # consume league-specific form sources, V2 does.
+            # (2026-07-03 user report: "why am I no longer seeing
+            # CSL goalscorer" — CSL scorer intel is fresh via
+            # csl_espn_live, but V1 didn't know about it so Rule 2
+            # was killing every CSL AGS pick.)
+            has_form_source_leagues = {
+                # Chinese Super League — ESPN scrape (csl_espn_live).
+                "china super league", "chinese super league",
+                # Top-5 EU + Understat coverage.
+                "premier league", "la liga", "serie a", "bundesliga",
+                "ligue 1",
+                # Continental competitions with EU-team overlap.
+                "uefa champions league", "uefa europa league",
+                "uefa conference league",
+                # Additional Understat + ESPN-covered leagues.
+                "mls", "j1 league", "eredivisie", "primeira liga",
+                "championship", "efl championship",
+            }
+            pick_league_lc = (pick.get("league") or "").lower()
+            has_form_source = any(
+                cl in pick_league_lc for cl in has_form_source_leagues
+            )
+            trust_scorer = is_elite or has_form_source
+
             # Rule 1: displayed lock must clear floor.
             if ls < ANYTIME_SCORER_MIN_LOCK:
                 return f"anytime_scorer_below_lock_floor_{int(ANYTIME_SCORER_MIN_LOCK)}"
-            # Rule 2: engine disagreement — non-elites only.
-            if (not is_elite
+            # Rule 2: engine disagreement — skip for trusted sources.
+            if (not trust_scorer
                     and v1_ls > 0
                     and abs(v2_ls - v1_ls) > 12.0):
                 return (
@@ -435,10 +464,11 @@ def _block_reason(pick: dict) -> str | None:
                 floor = -7.0 if is_elite else -3.0
                 if edge < floor:
                     return f"anytime_scorer_negative_edge_{edge:.1f}pct"
-            # Rule 4: for NON-elites, require real evidence in the
-            # rationale. Elite anchor list players skip this because
-            # their high-confidence anchor IS the evidence.
-            if not is_elite:
+            # Rule 4: for non-trusted-source picks, require real
+            # evidence in the rationale. Elite anchor players AND
+            # form-covered leagues (CSL, Top-5 EU, etc.) skip this
+            # because their league-specific ingestion IS the evidence.
+            if not trust_scorer:
                 pr = pick.get("pick_rationale") or {}
                 evidence = pr.get("evidence") or []
                 has_scorer_evidence = any(
