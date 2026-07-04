@@ -81,3 +81,24 @@ async def parlay_remove(
     from parlay_history import delete_parlay
     ok = await delete_parlay(db, user_id=user.id, parlay_id=parlay_id)
     return {"deleted": ok}
+
+
+@router.post("/parlay/{parlay_id}/resettle")
+async def parlay_resettle(
+    parlay_id: str,
+    user: Annotated[UserPublic, Depends(current_user)],
+):
+    """Force-run the leg-resolution chain (pick lookup → snapshot match
+    → external adapter) for a single parlay. Returns the updated doc.
+
+    Useful when the user sees a stuck 'pending' leg and doesn't want to
+    wait for the periodic settler."""
+    try:
+        from parlay_history import resettle_parlay
+        doc = await resettle_parlay(db, user_id=user.id, parlay_id=parlay_id)
+        return strip_mongo(doc)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        logger.exception("resettle_parlay failed")
+        raise HTTPException(500, f"resettle failed: {e}")

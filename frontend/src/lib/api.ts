@@ -673,6 +673,8 @@ export const api = {
         stake: number; status: "live" | "won" | "lost";
         legs_won: number; legs_lost: number; legs_pending: number;
         settled_at: string | null; payout: number | null;
+        cashout_estimate?: number | null;
+        last_resettled_at?: string | null;
         legs: Array<{
           pick_id: string; sport: string; league: string; event: string;
           market: string; selection: string; book_odds: number;
@@ -684,6 +686,11 @@ export const api = {
     }>(`/parlay/history${qs}`);
   },
   deleteParlay: (id: string) => request<{ deleted: boolean }>(`/parlay/${id}`, { method: "DELETE" }),
+  resettleParlay: (id: string) => request<{
+    id: string; status: string; legs_won: number; legs_lost: number;
+    legs_pending: number; settled_at: string | null; payout: number | null;
+    last_resettled_at?: string | null;
+  }>(`/parlay/${id}/resettle`, { method: "POST" }),
   pickAiExplain: (id: string) => request<{ explanation: string; source: string }>(`/picks/${id}/ai-explain`, { method: "POST" }),
   pickSimulation: (id: string) =>
     request<{

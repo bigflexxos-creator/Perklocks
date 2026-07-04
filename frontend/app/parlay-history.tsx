@@ -66,6 +66,17 @@ export default function ParlayHistoryScreen() {
 
   const onRefresh = useCallback(() => { setRefreshing(true); load(filter); }, [filter, load]);
 
+  // ── Auto-refresh while any live parlays are on-screen ────────────────
+  // 30-second cadence so users see leg statuses tick over without pulling
+  // to refresh. Only runs when at least one live parlay exists (there's
+  // nothing to update on all-settled screens).
+  const hasLive = parlays.some(p => p.status === "live");
+  useEffect(() => {
+    if (!hasLive) return;
+    const iv = setInterval(() => { load(filter); }, 30000);
+    return () => clearInterval(iv);
+  }, [hasLive, filter, load]);
+
   const onDelete = useCallback(async (id: string) => {
     Alert.alert("Remove parlay?", "This removes it from your history.", [
       { text: "Cancel", style: "cancel" },
@@ -74,6 +85,17 @@ export default function ParlayHistoryScreen() {
         catch (e: any) { Alert.alert("Failed", String(e?.message || e)); }
       }},
     ]);
+  }, []);
+
+  const onResettle = useCallback(async (id: string) => {
+    try {
+      const doc = await api.resettleParlay(id);
+      // Replace the row in place with the updated payload.
+      setParlays(prev => prev.map(x => x.id === id ? { ...x, ...doc } : x));
+      Alert.alert("Re-settled", "Latest results checked. Any stuck legs have been re-graded.");
+    } catch (e: any) {
+      Alert.alert("Failed", String(e?.message || e));
+    }
   }, []);
 
   return (
@@ -118,7 +140,7 @@ export default function ParlayHistoryScreen() {
               </Text>
             </View>
           ) : (
-            parlays.map(p => <ParlayCard key={p.id} parlay={p} onDelete={() => onDelete(p.id)} />)
+            parlays.map(p => <ParlayCard key={p.id} parlay={p} onDelete={() => onDelete(p.id)} onResettle={() => onResettle(p.id)} />)
           )}
         </ScrollView>
       )}
@@ -126,11 +148,12 @@ export default function ParlayHistoryScreen() {
   );
 }
 
-function ParlayCard({ parlay, onDelete }: { parlay: any; onDelete: () => void }) {
+function ParlayCard({ parlay, onDelete, onResettle }: { parlay: any; onDelete: () => void; onResettle: () => void }) {
   const accent = STATUS_COLOR[parlay.status] || COLORS.textPrimary;
   const oddsLabel = parlay.combined_odds > 0 ? `+${parlay.combined_odds}` : `${parlay.combined_odds}`;
   const cardRef = useRef<View>(null);
   const [busy, setBusy] = useState(false);
+  const [resettling, setResettling] = useState(false);
 
   const slipPayload = useCallback(() => ({
     legs: (parlay.legs || []).map((l: any) => ({
@@ -180,8 +203,22 @@ function ParlayCard({ parlay, onDelete }: { parlay: any; onDelete: () => void })
 
       <View style={styles.progress}>
         <Text style={styles.progressTxt}>
-          {parlay.legs_won}/{parlay.legs.length} legs hit · {parlay.legs_pending} pending · {parlay.legs_lost} lost
+          <Text style={{ color: COLORS.neonGreen, fontWeight: "800" }}>
+            {parlay.legs_won}/{parlay.legs.length} legs hit
+          </Text>
+          {`  ·  ${parlay.legs_pending} pending  ·  ${parlay.legs_lost} lost`}
         </Text>
+        {parlay.status === "live" && parlay.cashout_estimate != null && (
+          <View style={styles.cashoutRow}>
+            <Ionicons name="cash-outline" size={12} color={COLORS.voltBlue} />
+            <Text style={styles.cashoutTxt}>
+              CASH-OUT EST: <Text style={{ color: COLORS.voltBlue, fontWeight: "900" }}>
+                ${parlay.cashout_estimate.toFixed(2)}
+              </Text>
+              <Text style={styles.cashoutSub}> · ${(parlay.stake || 1).toFixed(2)} stake</Text>
+            </Text>
+          </View>
+        )}
       </View>
 
       {parlay.legs.map((leg: any, i: number) => {
@@ -203,7 +240,7 @@ function ParlayCard({ parlay, onDelete }: { parlay: any; onDelete: () => void })
         );
       })}
 
-      {/* Share action row */}
+      {/* Share + resettle action row */}
       <View style={styles.shareRow}>
         <Pressable
           onPress={onCopy}
@@ -224,6 +261,29 @@ function ParlayCard({ parlay, onDelete }: { parlay: any; onDelete: () => void })
           <Ionicons name="download-outline" size={13} color={COLORS.voltBlue} />
           <Text style={[styles.shareTxt, { color: COLORS.voltBlue }]}>IMG</Text>
         </Pressable>
+        {/* Force re-settle — visible whenever there's at least 1 pending leg */}
+        {(parlay.legs_pending > 0) && (
+          <Pressable
+            onPress={async () => {
+              if (resettling) return;
+              setResettling(true);
+              try { await onResettle(); } finally { setResettling(false); }
+            }}
+            disabled={resettling}
+            testID={`history-resettle-${parlay.id}`}
+            hitSlop={6}
+            style={({ pressed }) => [styles.shareBtn, { borderColor: COLORS.electricBlaze }, (pressed || resettling) && { opacity: 0.6 }]}
+          >
+            <Ionicons
+              name={resettling ? "sync" : "refresh-outline"}
+              size={13}
+              color={COLORS.electricBlaze}
+            />
+            <Text style={[styles.shareTxt, { color: COLORS.electricBlaze }]}>
+              {resettling ? "SETTLING…" : "RESETTLE"}
+            </Text>
+          </Pressable>
+        )}
         <Pressable
           onPress={onShare}
           disabled={busy}
@@ -276,6 +336,16 @@ const styles = StyleSheet.create({
   payout: { color: COLORS.neonGreen, fontSize: 14, fontWeight: "800" },
   progress: { marginBottom: 8 },
   progressTxt: { color: COLORS.textMuted, fontSize: 11.5, fontWeight: "600" },
+  cashoutRow: {
+    flexDirection: "row", alignItems: "center", gap: 5,
+    marginTop: 6, paddingHorizontal: 8, paddingVertical: 5,
+    backgroundColor: COLORS.voltBlue + "10",
+    borderRadius: 6,
+    borderWidth: 1, borderColor: COLORS.voltBlue + "44",
+    alignSelf: "flex-start",
+  },
+  cashoutTxt: { color: COLORS.textPrimary, fontSize: 10.5, fontWeight: "700", letterSpacing: 0.4 },
+  cashoutSub: { color: COLORS.textMuted, fontSize: 10, fontWeight: "500" },
   leg: {
     flexDirection: "row", alignItems: "center",
     paddingVertical: 6, borderTopWidth: 1, borderTopColor: COLORS.borderDefault,
