@@ -447,21 +447,22 @@ def _block_reason(pick: dict) -> str | None:
                     f"_v2_{int(v2_ls)}"
                 )
             # Rule 3: Edge check.
-            #   • NON-elites: block below -3% edge. Small tolerance
-            #     covers players not on the anchor list who our engine
-            #     may under-estimate (Toney, David, Doku, Lukaku, etc.).
-            #     Below -3% is a real negative-EV signal → block.
-            #   • ELITES: allow edge as low as -7% because AGS is a
-            #     lottery-priced +200-ish market where our model can
-            #     under-estimate proven finishers vs the book, and
-            #     the ceiling upside justifies a small edge dip.
-            # (2026-07-03 user report: "why did anytime goalscorer
-            # disappear smh" — floors initially at 0/-6 wiped too much.
-            # Relaxed to -3/-7 to keep Persson-style noise blocked but
-            # let elite + emerging stars surface.)
+            #   • TRUSTED (elite anchor list OR form-source league like
+            #     CSL/Top-5 EU): allow edge as low as -8%. AGS is a
+            #     +200-ish lottery market where books tighten summer
+            #     lines and our model can under-estimate proven
+            #     scorers vs the book. -8% is the practical floor for
+            #     "still worth showing the elite/form-verified pick".
+            #   • Non-trusted: block below -3%. Small tolerance
+            #     covers emerging stars our model may under-value,
+            #     while still blocking clearly negative-EV noise.
+            # (2026-07-04 user report: "still not seeing CSL scorer"
+            # — CSL book pricing on 2026-07-04 slate ran edge=-7.9%
+            # for every player, wiping the surface. Raised trusted
+            # floor to -8% so genuine form-covered picks surface.)
             edge = pick.get("edge_percent")
             if isinstance(edge, (int, float)):
-                floor = -7.0 if is_elite else -3.0
+                floor = -8.0 if trust_scorer else -3.0
                 if edge < floor:
                     return f"anytime_scorer_negative_edge_{edge:.1f}pct"
             # Rule 4: for non-trusted-source picks, require real
