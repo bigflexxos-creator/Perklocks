@@ -295,6 +295,14 @@ def score_leg(pick: dict, bucket_map: dict, current_legs: list[dict],
         stability_component -= 10
     if pick.get("synthetic_soa"):
         stability_component -= 8
+    # First Goal Scorer is inherently higher variance than Anytime Goal
+    # Scorer (only ONE player scores first vs anyone scoring anytime).
+    # AGS win rate is ~3x FGS. User complaint 2026-07-04 "shouldn't it
+    # be anytime goalscorer" — heavily deprioritise FGS so the optimizer
+    # gravitates to AGS whenever a player has both markets available.
+    if "first goal scorer" in (pick.get("market") or "").lower() \
+       or "first scorer" in (pick.get("market") or "").lower():
+        stability_component -= 45
     stability_component = max(0.0, stability_component)
 
     composite = (
@@ -490,6 +498,41 @@ def diversification_ok(current_legs: list[dict], candidate: dict,
         )
         if same_family >= MAX_SAME_MARKET_FAMILY:
             return False, f"Max {MAX_SAME_MARKET_FAMILY} {cand_family.replace('_',' ')} legs"
+    # ─── HARD BLOCK: same player twice in same parlay ────────────────
+    # User complaint 2026-07-04 "app keep putting mbappe in there twice".
+    # Extract player name from the market (works for both AGS and FGS
+    # variants: "Kylian Mbappe - Anytime Goal Scorer", "Mbappe First
+    # Goal Scorer", "Mbappe To Score or Assist", etc.). If ANY existing
+    # leg has the same player name (case-insensitive, accent-stripped),
+    # hard-block the candidate — regardless of market type. Two picks
+    # on the same player are ~100 % correlated and shouldn't parlay.
+    try:
+        from quality_gate import _extract_player_from_pick
+        import unicodedata as _ud
+        def _norm(n: str) -> str:
+            if not n:
+                return ""
+            return "".join(
+                c for c in _ud.normalize("NFD", n)
+                if _ud.category(c) != "Mn"
+            ).lower().strip()
+        cand_player = _norm(_extract_player_from_pick(candidate))
+        # Only enforce when the candidate is actually a player market
+        # (else Mets ML would collide with e.g. "Mets" AGS names).
+        cand_is_player_market = _market_family(candidate.get("market") or "") in (
+            "goal_scorer", "first_goal", "score_or_assist", "batter_over",
+        ) or "goal scorer" in (candidate.get("market") or "").lower() \
+             or "to score" in (candidate.get("market") or "").lower()
+        if cand_player and cand_is_player_market:
+            for L in current_legs:
+                lp = _norm(_extract_player_from_pick(L))
+                if lp and lp == cand_player:
+                    return False, f"Same player already in parlay ({cand_player.title()})"
+    except Exception:
+        # Non-fatal — if extraction fails we fall through and rely on the
+        # soft correlation penalty in score_leg().
+        pass
+
     # No duplicate picks
     if any(L.get("id") == candidate.get("id") for L in current_legs):
         return False, "Duplicate pick"
