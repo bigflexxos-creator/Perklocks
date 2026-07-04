@@ -64,18 +64,57 @@ def _score_for(scores: list[dict], team: str) -> Optional[float]:
 
 
 def _parse_spread(market: str) -> tuple[Optional[str], Optional[float]]:
-    """Extract the team and line from a market string like 'Team +1.5 Spread' or 'Team -1.5 Spread'."""
-    m = re.match(r"^(.+?)\s+([+-]?\d+(?:\.\d+)?)\s+Spread\s*$", market, re.IGNORECASE)
+    """Extract the team and line from a market string like 'Team +1.5 Spread',
+    'Team -1.5 Spread (Alt)', 'Team +1.5 Run Line', 'Team -1.5 Puck Line' etc.
+    Handles the ' (Alt)' suffix and Run Line / Puck Line / Handicap variants
+    that some sports (MLB / NHL) emit instead of the literal 'Spread'."""
+    # Strip trailing " (Alt)" first — settles identically to the main line.
+    m_str = re.sub(r"\s*\(Alt\)\s*$", "", market, flags=re.IGNORECASE)
+    m = re.match(
+        r"^(.+?)\s+([+-]?\d+(?:\.\d+)?)\s+"
+        r"(?:Spread|Run\s+Line|Puck\s+Line|Handicap)\s*$",
+        m_str, re.IGNORECASE,
+    )
     if not m:
         return (None, None)
     return (m.group(1).strip(), float(m.group(2)))
 
 
 def _parse_total_line(market: str) -> Optional[float]:
-    m = re.search(r"Over\s+(\d+(?:\.\d+)?)", market, re.IGNORECASE)
+    """Extract the numeric line from a total market string. Supports both
+    'Over 8.5' and 'Under 8.5' variants (also 'Over 8.5 Runs (Alt)' etc.)."""
+    m = re.search(r"(?:Over|Under)\s+(\d+(?:\.\d+)?)", market, re.IGNORECASE)
     if m:
         return float(m.group(1))
     return None
+
+
+def _parse_total_side(market: str) -> Optional[str]:
+    """Return 'over' or 'under' based on market wording, else None."""
+    if re.search(r"\bunder\b", market, re.IGNORECASE):
+        return "under"
+    if re.search(r"\bover\b", market, re.IGNORECASE):
+        return "over"
+    return None
+
+
+def _parse_team_total(market: str) -> tuple[Optional[str], Optional[str], Optional[float]]:
+    """Extract (team, side, line) from strings like:
+      • 'St. Louis Cardinals Team Total Over 3.5'
+      • 'New York Yankees Team Total Under 4.5 (Alt)'
+
+    Returns (None, None, None) when the market doesn't look like a Team Total.
+    """
+    # Drop trailing " (Alt)" — same settlement rule as main.
+    m_str = re.sub(r"\s*\(Alt\)\s*$", "", market, flags=re.IGNORECASE)
+    m = re.match(
+        r"^(?P<team>.+?)\s+Team\s+Total\s+(?P<side>Over|Under)\s+"
+        r"(?P<line>\d+(?:\.\d+)?)\s*$",
+        m_str, re.IGNORECASE,
+    )
+    if not m:
+        return (None, None, None)
+    return (m.group("team").strip(), m.group("side").lower(), float(m.group("line")))
 
 
 def settle_pick(pick: dict, score_payload: dict) -> Optional[str]:
@@ -120,8 +159,13 @@ def settle_pick(pick: dict, score_payload: dict) -> Optional[str]:
             return "won" if home_score >= away_score else "lost"
         return None
 
-    # Spread
-    if "spread" in market:
+    # Spread (main + Alt run-line / puck-line)
+    if (
+        "spread" in market
+        or "run line" in market
+        or "puck line" in market
+        or "handicap" in market
+    ):
         team, line = _parse_spread(pick.get("market") or "")
         if not team or line is None:
             return None
@@ -134,14 +178,40 @@ def settle_pick(pick: dict, score_payload: dict) -> Optional[str]:
             return "push"
         return "won" if margin > 0 else "lost"
 
-    # Totals
-    if "over" in market and ("total" in market or " runs" in market or " goals" in market or " points" in market or " games" in market):
+    # ── Team Totals (MUST come before generic Totals) ─────────────────
+    # e.g. "St. Louis Cardinals Team Total Over 3.5",
+    #      "Yankees Team Total Under 4.5 (Alt)"
+    # The prior settler treated these as game totals and always compared
+    # the ~7-run game aggregate to a ~3-run team line — inflating win
+    # rates on Team Total Over picks to ~95%+ (a statistical impossibility).
+    # Fix: extract the team, use ONLY that team's score.
+    if "team total" in market:
+        team, side, line = _parse_team_total(pick.get("market") or "")
+        if not team or side is None or line is None:
+            return None
+        team_score = _score_for(scores, team)
+        if team_score is None:
+            return None
+        if abs(team_score - line) < 0.01:
+            return "push"
+        if side == "over":
+            return "won" if team_score > line else "lost"
+        # under
+        return "won" if team_score < line else "lost"
+
+    # Game Totals (Over / Under, incl. Alt)
+    if ("total" in market or " runs" in market or " goals" in market
+            or " points" in market or " games" in market) and (
+                "over" in market or "under" in market):
         line = _parse_total_line(pick.get("market") or "")
-        if line is None:
+        side = _parse_total_side(pick.get("market") or "")
+        if line is None or side is None:
             return None
         if abs(total - line) < 0.01:
             return "push"
-        return "won" if total > line else "lost"
+        if side == "over":
+            return "won" if total > line else "lost"
+        return "won" if total < line else "lost"
 
     return None  # unrecognized market — leave pending
 
