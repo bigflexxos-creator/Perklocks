@@ -575,7 +575,7 @@ async def picks_history(
                 r"First Goal Scorer|Last Goal Scorer", "$options": "i"}}},
             {"league": {"$not": {"$regex": r"KBO|Korean", "$options": "i"}}},
             {"$or": [
-                {"market": {"$not": {"$regex": r"Anytime Goal Scorer",
+                {"market": {"$not": {"$regex": r"Anytime Goal Scorer|To Score or Assist",
                                       "$options": "i"}}},
                 {"lock_score": {"$gte": 85}},
             ]},
@@ -586,6 +586,14 @@ async def picks_history(
                 # surfaced even at lower lock with strong edge — preserve them.
                 {"elite_pitcher_override": True},
                 {"is_alt": True, "lock_score": {"$gte": 85}},
+                # 2026-07-04 user: goalscorer analytics/history never populated
+                # after top-3 rule shipped. Soccer AGS + SoA surface at the
+                # 85 floor (see quality_gate.top_3_scorers branch), so allow
+                # them in History at that same floor.
+                {"sport": "Soccer",
+                 "market": {"$regex": r"Anytime Goal Scorer|To Score or Assist",
+                             "$options": "i"},
+                 "lock_score": {"$gte": 85}},
             ]},
         ],
     }

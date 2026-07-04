@@ -503,24 +503,31 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
     except Exception as e:
         logger.warning("prop settlement failed: %s", e)
 
-    # ── KBO settlement via Naver Sports — The Odds API doesn't return
-    # completed KBO scores so we settle KBO picks against the free public
-    # Naver KBO scoreboard. Pure HTTP, no auth required.
+    # ── KBO settlement REMOVED (2026-07-04, per user request):
+    # KBO market removed from product scope. Historical KBO settler code
+    # kept in kbo_settlement.py for reference but no longer invoked. All
+    # KBO picks were already blocked at generation (sports_engine.py L54)
+    # and the analytics dashboard already excludes them by league regex.
+
+    # ── Soccer picks-table settler (2026-07-04, per user: goalscorer in
+    # analytics "never updated after we did the 3 top goalscorer").
+    # The previous flow only settled soccer via parlay legs, so soccer
+    # AGS / SoA picks in the main picks table stayed pending forever
+    # and their outcomes never entered the Analytics dashboard.
     try:
-        from kbo_settlement import settle_kbo_picks
-        kbo_counts = await settle_kbo_picks(db)
-        counts["kbo_settled"] = kbo_counts.get("settled", 0)
-        counts["kbo_won"] = kbo_counts.get("won", 0)
-        counts["kbo_lost"] = kbo_counts.get("lost", 0)
-        counts["kbo_push"] = kbo_counts.get("push", 0)
-        counts["won"] += kbo_counts.get("won", 0)
-        counts["lost"] += kbo_counts.get("lost", 0)
-        counts["push"] += kbo_counts.get("push", 0)
-        counts["settled"] += kbo_counts.get("settled", 0)
-        if kbo_counts.get("settled"):
-            logger.info("KBO Naver settlement: %s", kbo_counts)
+        from soccer_espn_settle import settle_soccer_picks_via_espn
+        soccer_counts = await settle_soccer_picks_via_espn(db)
+        counts["soccer_settled"] = soccer_counts.get("settled", 0)
+        counts["soccer_won"] = soccer_counts.get("won", 0)
+        counts["soccer_lost"] = soccer_counts.get("lost", 0)
+        counts["won"] += soccer_counts.get("won", 0)
+        counts["lost"] += soccer_counts.get("lost", 0)
+        counts["push"] += soccer_counts.get("push", 0)
+        counts["settled"] += soccer_counts.get("settled", 0)
+        if soccer_counts.get("settled"):
+            logger.info("Soccer ESPN settler: %s", soccer_counts)
     except Exception as e:
-        logger.warning("KBO settlement failed: %s", e)
+        logger.warning("Soccer picks settle failed: %s", e)
 
     # ── ESPN fallback settler for Tennis / UFC / WNBA-NBA player props.
     # The Odds API is slow/lacking coverage for these — ESPN has free public

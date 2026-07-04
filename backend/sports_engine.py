@@ -3183,7 +3183,8 @@ async def generate_all_picks(
     if _want("Soccer"): fetch_jobs.append(fetch_soccer_picks(date_str))
     if _want("Tennis"): fetch_jobs.append(fetch_tennis_picks(date_str))
     if _want("UFC"): fetch_jobs.append(fetch_ufc_picks(date_str))
-    if _want("KBO"): fetch_jobs.append(fetch_kbo_picks(date_str))
+    # KBO removed 2026-07-04 per user request. Function `fetch_kbo_picks`
+    # kept in module for historical reference but never invoked.
     game_results = await asyncio.gather(*fetch_jobs, return_exceptions=True) if fetch_jobs else []
     all_picks: list[dict] = []
     for r in game_results:

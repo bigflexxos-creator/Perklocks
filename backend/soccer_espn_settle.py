@@ -399,3 +399,277 @@ def _scorer_match(selection: str, scorers: list[str]) -> bool:
         if ns.split()[-1] == sel_last and len(sel_last) >= 4:
             return True
     return False
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Batch DB settler — wires soccer legs from the main `picks` collection
+# to ESPN scores. Previously we only settled soccer via parlay legs
+# (see parlay_leg_settle.settle_soccer_leg import). That meant soccer
+# picks in the main picks table stayed `pending` FOREVER, and the
+# Analytics dashboard's soccer AGS / SoA rows never populated.
+# ──────────────────────────────────────────────────────────────────────
+
+# Map user-facing league names to ESPN league slugs. Keeps the batch
+# settler O(picks) instead of O(picks × leagues) by hinting exactly
+# which ESPN endpoint to hit for each pick.
+_LEAGUE_NAME_TO_SLUG: dict[str, str] = {
+    "china super league": "chn.1",
+    "csl": "chn.1",
+    "premier league": "eng.1",
+    "epl": "eng.1",
+    "english premier league": "eng.1",
+    "la liga": "esp.1",
+    "spanish la liga": "esp.1",
+    "primera division": "esp.1",
+    "serie a": "ita.1",
+    "italian serie a": "ita.1",
+    "bundesliga": "ger.1",
+    "german bundesliga": "ger.1",
+    "ligue 1": "fra.1",
+    "french ligue 1": "fra.1",
+    "eredivisie": "ned.1",
+    "primeira liga": "por.1",
+    "liga portugal": "por.1",
+    "russian premier league": "rus.1",
+    "mls": "usa.1",
+    "major league soccer": "usa.1",
+    "liga mx": "mex.1",
+    "expansion mx": "mex.2",
+    "brasileirão": "bra.1",
+    "brasileirao": "bra.1",
+    "brazilian serie a": "bra.1",
+    "brazilian serie b": "bra.2",
+    "brasileirão série b": "bra.2",
+    "argentine primera division": "arg.1",
+    "argentine liga profesional": "arg.1",
+    "colombian primera a": "col.1",
+    "chilean primera division": "chi.1",
+    "peruvian primera division": "per.1",
+    "concacaf champions cup": "concacaf.champions",
+    "conmebol libertadores": "conmebol.libertadores",
+    "copa libertadores": "conmebol.libertadores",
+    "copa sudamericana": "conmebol.sudamericana",
+    "champions league": "uefa.champions",
+    "uefa champions league": "uefa.champions",
+    "europa league": "uefa.europa",
+    "uefa europa league": "uefa.europa",
+    "uefa conference league": "uefa.europa.conf",
+    "afc champions league": "afc.champions",
+    "efl championship": "eng.2",
+    "english championship": "eng.2",
+    "efl league one": "eng.3",
+    "efl league two": "eng.4",
+    "fa cup": "eng.fa",
+    "carabao cup": "eng.league_cup",
+    "copa del rey": "esp.copa_del_rey",
+    "coppa italia": "ita.coppa_italia",
+    "dfb pokal": "ger.dfb_pokal",
+    "coupe de france": "fra.coupe_de_france",
+    "allsvenskan": "swe.1",
+    "veikkausliiga": "fin.1",
+    "eliteserien": "nor.1",
+    "1. hnl": "cro.1",
+    "croatian hnl": "cro.1",
+    "j1 league": "jpn.1",
+    "j league": "jpn.1",
+    "k league 1": "kor.1",
+    "k1 league": "kor.1",
+    "australian a-league": "aus.1",
+    "a-league men": "aus.1",
+}
+
+
+def _league_slug_for(pick_league: Optional[str]) -> Optional[str]:
+    if not pick_league:
+        return None
+    key = pick_league.strip().lower()
+    if key in _LEAGUE_NAME_TO_SLUG:
+        return _LEAGUE_NAME_TO_SLUG[key]
+    # Substring probe for looser matches (e.g. "China Super League (Regular Season)")
+    for name, slug in _LEAGUE_NAME_TO_SLUG.items():
+        if len(name) >= 6 and name in key:
+            return slug
+    return None
+
+
+async def settle_soccer_picks_via_espn(db, *, days_back: int = 14,
+                                          max_picks: int = 400) -> dict:
+    """Iterate pending soccer picks whose event_time is in the past and
+    apply the ESPN soccer settler. Updates status/result/units_profit.
+
+    Optimisation: picks are grouped by (league_slug, YYYYMMDD) so we
+    only fetch each ESPN scoreboard ONCE per run, then match all picks
+    for that day/league. Cuts run time from O(picks × leagues) to
+    O(unique scoreboards).
+
+    Returns a summary dict. Safe to call repeatedly.
+    """
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    lo = (now - timedelta(days=days_back)).isoformat()
+    hi = now.isoformat()
+
+    summary = {"scanned": 0, "settled": 0, "won": 0, "lost": 0,
+               "push": 0, "skipped": 0, "no_match": 0, "no_league": 0}
+    cursor = db.picks.find({
+        "sport": "Soccer",
+        "status": {"$in": [None, "pending"]},
+        "event_time": {"$gte": lo, "$lte": hi},
+        "$or": [
+            {"market": {"$regex": "Anytime Goal Scorer", "$options": "i"}},
+            {"market": {"$regex": "To Score or Assist", "$options": "i"}},
+            {"market": {"$regex": "Moneyline", "$options": "i"}},
+            {"market": {"$regex": "Total Goals", "$options": "i"}},
+            {"market": {"$regex": "Both Teams To Score", "$options": "i"}},
+            {"market": {"$regex": "Win or Draw", "$options": "i"}},
+            {"market": {"$regex": "Draw No Bet", "$options": "i"}},
+            {"market": {"$regex": "Double Chance", "$options": "i"}},
+        ],
+    }).limit(max_picks)
+
+    try:
+        from quality_gate import _extract_player_from_pick
+    except Exception:
+        def _extract_player_from_pick(p):  # type: ignore
+            return (p.get("selection") or "").strip()
+
+    def _american_to_profit(units_risked: float, odds: int) -> float:
+        if not odds:
+            return 0.0
+        if odds > 0:
+            return units_risked * odds / 100.0
+        return units_risked * 100.0 / abs(odds)
+
+    # Scoreboard cache: (league_slug, YYYYMMDD) → list of events
+    scoreboard_cache: dict[tuple[str, str], list[dict]] = {}
+    # Summary cache: (league_slug, event_id) → summary json
+    summary_cache: dict[tuple[str, str], Optional[dict]] = {}
+
+    async def _get_scoreboard(slug: str, date_str: str) -> list[dict]:
+        key = (slug, date_str)
+        if key in scoreboard_cache:
+            return scoreboard_cache[key]
+        url = f"{_ESPN_BASE}/{slug}/scoreboard"
+        data = await _http_get(url, {"dates": date_str})
+        events = (data or {}).get("events") or []
+        scoreboard_cache[key] = events
+        return events
+
+    picks_to_process = await cursor.to_list(length=max_picks)
+    for p in picks_to_process:
+        summary["scanned"] += 1
+        market = p.get("market") or ""
+        market_l = market.lower()
+        sel = (p.get("selection") or "").strip()
+        if ("goal scorer" in market_l or "to score or assist" in market_l
+                or "score & assist" in market_l):
+            if not sel or sel.lower() in ("yes", "no"):
+                sel = _extract_player_from_pick(p) or sel
+
+        # Resolve ESPN league slug from the pick's league name.
+        slug = _league_slug_for(p.get("league"))
+        if not slug:
+            summary["no_league"] += 1
+            continue
+
+        # Parse teams from event string.
+        event = (p.get("event") or "").strip()
+        parts = re.split(r"\s+@\s+", event)
+        if len(parts) != 2:
+            summary["skipped"] += 1
+            continue
+        away_team, home_team = parts[0].strip(), parts[1].strip()
+
+        # Probe up to 3 candidate dates (event day ±1)
+        dates_to_try = _candidate_dates(p.get("event_time"))
+        matched_ev = None
+        for ds in dates_to_try:
+            events = await _get_scoreboard(slug, ds)
+            for ev in events:
+                comp = (ev.get("competitions") or [{}])[0]
+                competitors = comp.get("competitors") or []
+                if len(competitors) < 2:
+                    continue
+                home_c = next((c for c in competitors if c.get("homeAway") == "home"), competitors[0])
+                away_c = next((c for c in competitors if c.get("homeAway") == "away"), competitors[-1])
+                hname = ((home_c.get("team") or {}).get("displayName") or "")
+                aname = ((away_c.get("team") or {}).get("displayName") or "")
+                if _names_match(hname, home_team) and _names_match(aname, away_team):
+                    matched_ev = (slug, ev)
+                    break
+            if matched_ev:
+                break
+        if not matched_ev:
+            summary["no_match"] += 1
+            continue
+        slug_matched, ev = matched_ev
+        comp = (ev.get("competitions") or [{}])[0]
+        status_name = ((comp.get("status") or {}).get("type") or {}).get("name") or ""
+        if status_name not in ("STATUS_FULL_TIME", "STATUS_FINAL", "STATUS_FINAL_AET",
+                               "STATUS_FINAL_PEN", "STATUS_FORFEIT"):
+            summary["skipped"] += 1
+            continue
+
+        competitors = comp.get("competitors") or []
+        home_c = next((c for c in competitors if c.get("homeAway") == "home"), competitors[0])
+        away_c = next((c for c in competitors if c.get("homeAway") == "away"), competitors[-1])
+        try:
+            home_goals = int(home_c.get("score"))
+            away_goals = int(away_c.get("score"))
+        except (TypeError, ValueError):
+            summary["skipped"] += 1
+            continue
+
+        outcome: Optional[str] = None
+        if ("goal scorer" in market_l or "to score or assist" in market_l
+                or "score & assist" in market_l):
+            skey = (slug_matched, str(ev.get("id")))
+            if skey not in summary_cache:
+                summary_cache[skey] = await _fetch_summary(slug_matched, ev.get("id"))
+            summ = summary_cache[skey]
+            if summ is not None:
+                outcome = _settle_scorer_market(summ, sel, market_l)
+        elif "moneyline" in market_l:
+            if sel:
+                nsel = _norm(sel)
+                if _names_match(sel, home_team):
+                    outcome = "won" if home_goals > away_goals else "lost"
+                elif _names_match(sel, away_team):
+                    outcome = "won" if away_goals > home_goals else "lost"
+                elif "draw" in nsel:
+                    outcome = "won" if home_goals == away_goals else "lost"
+        elif "total goals" in market_l:
+            m = re.search(r"(\d+(?:\.\d+)?)", market)
+            if m:
+                line = float(m.group(1))
+                total = home_goals + away_goals
+                if "under" in market_l:
+                    outcome = "push" if abs(total - line) < 0.01 else ("won" if total < line else "lost")
+                else:
+                    outcome = "push" if abs(total - line) < 0.01 else ("won" if total > line else "lost")
+
+        if outcome not in ("won", "lost", "push"):
+            summary["no_match" if outcome is None else "skipped"] += 1
+            continue
+
+        units_risked = float(p.get("units_risked") or 1.0)
+        odds = int(p.get("odds_at_pick") or p.get("book_odds") or -110)
+        if outcome == "won":
+            profit = round(_american_to_profit(units_risked, odds), 4)
+        elif outcome == "lost":
+            profit = -units_risked
+        else:
+            profit = 0.0
+        await db.picks.update_one(
+            {"_id": p["_id"]},
+            {"$set": {
+                "status": outcome,
+                "result": outcome,
+                "units_profit": profit,
+                "settled_at": now.isoformat(),
+                "settled_by": "soccer_espn_batch_v1",
+            }},
+        )
+        summary["settled"] += 1
+        summary[outcome] = summary.get(outcome, 0) + 1
+    return summary

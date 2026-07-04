@@ -164,11 +164,15 @@ async def compute_model_performance(db, days: int = 30) -> dict[str, Any]:
         # First / Last Goal Scorer — market retired from analytics.
         {"market": {"$not": {"$regex": r"First Goal Scorer|Last Goal Scorer",
                               "$options": "i"}}},
-        # KBO / Korean baseball — out of product scope.
+        # KBO / Korean baseball — market removed from product entirely.
         {"league": {"$not": {"$regex": r"KBO|Korean", "$options": "i"}}},
-        # Anytime Goal Scorer at lock<85 = never on top-3 board.
+        # Anytime Goal Scorer + To Score or Assist at lock<85 = never on top-3
+        # board (2026-07-04 patch: previously this only carved AGS; SoA rows
+        # were missing from analytics for the same reason. Also lowered the
+        # outer lock gate from 89→85 for AGS/SoA below since we surface
+        # scorer/assist markets at the 85 floor).
         {"$or": [
-            {"market": {"$not": {"$regex": r"Anytime Goal Scorer",
+            {"market": {"$not": {"$regex": r"Anytime Goal Scorer|To Score or Assist",
                                   "$options": "i"}}},
             {"lock_score": {"$gte": 85}},
         ]},
@@ -183,6 +187,14 @@ async def compute_model_performance(db, days: int = 30) -> dict[str, Any]:
                  {"raw_lock_score": {"$gte": 89}},
                  {"elite_pitcher_override": True},
                  {"is_alt": True, "lock_score": {"$gte": 85}},
+                 # 2026-07-04 user: goalscorer analytics never populated
+                 # after the top-3-only rule shipped. Soccer AGS + SoA
+                 # surface at the 85 floor (see quality_gate top-3-scorers
+                 # branch), so grade them at that same floor here.
+                 {"sport": "Soccer",
+                  "market": {"$regex": r"Anytime Goal Scorer|To Score or Assist",
+                              "$options": "i"},
+                  "lock_score": {"$gte": 85}},
              ]},
          ]},
         {"_id": 0, "sport": 1, "market": 1, "status": 1, "lock_score": 1,
