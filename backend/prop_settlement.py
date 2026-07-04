@@ -207,17 +207,45 @@ async def _mlb_boxscore(cx: httpx.AsyncClient, game_pk: int) -> Optional[dict]:
 
 
 def _mlb_find_game(games: list[dict], away: str, home: str) -> Optional[dict]:
+    """Match (away, home) to an MLB Stats API game object.
+
+    Ordering matters when two candidates share the same teams — e.g. the
+    Giants @ Rockies play the same matchup on 07-03 AND 07-04 (a series).
+    When the caller merged today + yesterday's schedules (see the
+    `_settle_group` MLB branch), both games are in the list, and the
+    naïve "return first match" logic ended up returning tomorrow's
+    Preview game and skipping settlement forever.
+
+    Fix (2026-07-04): collect ALL identity matches and prefer:
+        1. abstractGameState == "Final"
+        2. abstractGameState == "Live"
+        3. anything else (Preview, Scheduled, Postponed, …)
+    Within the same priority tier we take the earliest by gameDate.
+    """
     an, hn = _norm(away), _norm(home)
+    matches: list[dict] = []
     for g in games:
         teams = g.get("teams") or {}
         away_team = (teams.get("away") or {}).get("team", {}).get("name") or ""
         home_team = (teams.get("home") or {}).get("team", {}).get("name") or ""
         if _norm(away_team) == an and _norm(home_team) == hn:
-            return g
-        # Loose match (e.g. "St. Louis Cardinals" vs "St Louis Cardinals")
-        if hn in _norm(home_team) and an in _norm(away_team):
-            return g
-    return None
+            matches.append(g)
+            continue
+        # Loose substring match ("St. Louis" vs "St Louis")
+        if hn and an and hn in _norm(home_team) and an in _norm(away_team):
+            matches.append(g)
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+
+    def _prio(g: dict) -> tuple:
+        state = ((g.get("status") or {}).get("abstractGameState") or "").lower()
+        tier = 0 if state == "final" else (1 if state == "live" else 2)
+        return (tier, g.get("gameDate") or "")
+
+    matches.sort(key=_prio)
+    return matches[0]
 
 
 def _mlb_stat_for_player(box: dict, player_name: str, stat_key: str) -> Optional[float]:
