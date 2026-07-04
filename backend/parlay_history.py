@@ -192,11 +192,40 @@ async def resolve_saved_parlays(db) -> dict:
             if s is None or s == "pending":
                 # Pick missing or still pending — try the snapshot fallback.
                 snap = legs_view[i] if i < len(legs_view) else {}
+                # ── EVENT-TIME PROXIMITY GUARD (2026-07-04 fix) ──
+                # Same-teams matchups recur across dates (e.g. Yankees @
+                # Red Sox play a 3-game series; Humbert vs Bergs plays on
+                # 06-27 AND 06-28). Without a date filter the snapshot
+                # match happily grabs the older completed game and
+                # inflates a future leg to WON. Require the candidate
+                # pick to fall within ±36h of the leg's stored event
+                # time. If the leg has no event_time we can't safely
+                # snapshot-match — leave pending.
+                snap_time = snap.get("event_time")
+                if not snap_time:
+                    leg_status.append(s or "pending")
+                    continue
+                # Bail out if the event is still in the future — a
+                # future game CANNOT already be won/lost regardless of
+                # what any other pick says.
+                if snap_time > now:
+                    leg_status.append(s or "pending")
+                    continue
+                # ±36 h window around the stored event_time.
+                from datetime import timedelta as _td
+                try:
+                    snap_dt = datetime.fromisoformat(snap_time.replace("Z", "+00:00"))
+                except Exception:
+                    leg_status.append(s or "pending")
+                    continue
+                lo = (snap_dt - _td(hours=36)).isoformat()
+                hi = (snap_dt + _td(hours=36)).isoformat()
                 match_q = {
                     "sport": snap.get("sport"),
                     "event": snap.get("event"),
                     "market": snap.get("market"),
                     "status": {"$in": ["won", "lost", "void", "push"]},
+                    "event_time": {"$gte": lo, "$lte": hi},
                 }
                 # Selection narrows when present (helps with multi-pick events)
                 if snap.get("selection"):
@@ -413,24 +442,34 @@ async def resettle_parlay(db, *, user_id: str, parlay_id: str) -> dict:
     ).to_list(length=len(leg_ids))
     status_by_id = {p["id"]: p.get("status") for p in picks}
     leg_status: list[str] = []
+    from datetime import timedelta as _td
     for i, lid in enumerate(leg_ids):
         s = status_by_id.get(lid)
         if s in ("won", "lost", "void", "push"):
             leg_status.append(s)
             continue
         snap = legs_view[i] if i < len(legs_view) else {}
-        # Snapshot identity match
-        match_q = {
-            "sport": snap.get("sport"),
-            "event": snap.get("event"),
-            "market": snap.get("market"),
-            "status": {"$in": ["won", "lost", "void", "push"]},
-        }
-        if snap.get("selection"):
-            match_q["selection"] = snap.get("selection")
+        # Event-time proximity guard (see resolve_saved_parlays comment).
+        snap_time = snap.get("event_time")
         match = None
-        if all(match_q.get(k) for k in ("sport", "event", "market")):
-            match = await db.picks.find_one(match_q, {"status": 1})
+        if snap_time and snap_time <= now:
+            try:
+                snap_dt = datetime.fromisoformat(snap_time.replace("Z", "+00:00"))
+                lo = (snap_dt - _td(hours=36)).isoformat()
+                hi = (snap_dt + _td(hours=36)).isoformat()
+                match_q = {
+                    "sport": snap.get("sport"),
+                    "event": snap.get("event"),
+                    "market": snap.get("market"),
+                    "status": {"$in": ["won", "lost", "void", "push"]},
+                    "event_time": {"$gte": lo, "$lte": hi},
+                }
+                if snap.get("selection"):
+                    match_q["selection"] = snap.get("selection")
+                if all(match_q.get(k) for k in ("sport", "event", "market")):
+                    match = await db.picks.find_one(match_q, {"status": 1})
+            except Exception:
+                match = None
         if match:
             leg_status.append(match["status"])
             continue
