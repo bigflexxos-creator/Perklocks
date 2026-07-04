@@ -90,7 +90,7 @@ except Exception as _picks_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.07.04-csl-edge-relax-v30"
+DATA_VERSION = "2026.07.04-csl-leaderboard-verify-v31"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
