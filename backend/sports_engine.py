@@ -253,13 +253,44 @@ async def _load_active_sports() -> None:
 
 
 async def _fetch_odds_for(sport_key: str, regions: str = "us", sport: str | None = None) -> list:
-    # `sport` is accepted for future sport-specific market tuning; currently
-    # we use the same core markets for everything. Alternate markets must be
-    # fetched via the per-event endpoint, not /odds.
+    """Bulk /odds fetch for a given sport key.
+
+    Per-sport market tuning (2026-07-07)
+    ------------------------------------
+    Tennis + UFC are 1v1 sports with **no native spreads/totals** on
+    The Odds API bulk endpoint. Historically we asked for
+    `markets=h2h,spreads,totals` universally; for these sports the API
+    would either 422 outright or (worse) return games with empty
+    `bookmakers[]`, silently dropping the h2h moneyline picks we
+    actually wanted. That was the "ATP moneylines disappear" bug and
+    the sole reason we needed `_backfill_tennis_moneylines` as a
+    downstream rescue.
+
+    Fix: request only the markets each sport actually supports in
+    bulk, and 422-retry with just `h2h` for anything else. Alt lines
+    (spreads/totals variants) still flow through the per-event
+    endpoint via `_fetch_tennis_event_alts` / `_fetch_mlb_event_alts`
+    exactly as before — no credit cost change.
+    """
+    # 1v1 sports: h2h is the only bulk market. Requesting more just
+    # confuses the API into returning empty bookmakers.
+    if sport in ("Tennis", "UFC"):
+        markets_param = "h2h"
+    else:
+        markets_param = "h2h,spreads,totals"
+
     data = await _get(
         f"{BASE}/sports/{sport_key}/odds",
-        {"regions": regions, "markets": "h2h,spreads,totals", "oddsFormat": "american"},
+        {"regions": regions, "markets": markets_param, "oddsFormat": "american"},
     )
+    # Defensive 422-retry: if the multi-market request came back empty
+    # for a team sport (rare, but happens on obscure minor leagues),
+    # fall back to h2h-only so we at least surface the moneyline picks.
+    if not data and markets_param != "h2h":
+        data = await _get(
+            f"{BASE}/sports/{sport_key}/odds",
+            {"regions": regions, "markets": "h2h", "oddsFormat": "american"},
+        )
     return data if isinstance(data, list) else []
 
 
@@ -1431,7 +1462,11 @@ async def _backfill_tennis_moneylines(picks: list[dict], date_str: str) -> list[
         picks.append(pick)
         added += 1
     if added:
-        logger.info("tennis ML backfill: added %d moneyline picks from live_alt_lines", added)
+        # Downgraded to debug (2026-07-07): the bulk /odds fetch now
+        # requests h2h-only for Tennis so the primary path succeeds
+        # natively — the backfill should be a rare last-resort. If it
+        # keeps firing, that's a signal something upstream regressed.
+        logger.debug("tennis ML backfill: added %d moneyline picks from live_alt_lines", added)
     return picks
 
 
