@@ -81,6 +81,14 @@ except Exception as _picks_mount_err:
         "Picks routes failed to mount: %s", _picks_mount_err,
     )
 
+# Lab research/analytics endpoints (Session 2+3 build 2026-07-07).
+try:
+    from lab_routes import router as _lab_router
+    api.include_router(_lab_router)
+    logger.info("Lab research routes mounted at /api/lab/*")
+except Exception as _lab_mount_err:
+    logger.warning("Lab routes failed to mount: %s", _lab_mount_err)
+
 
 # ────────────────────── Data version (cache-bust signal) ──────────────────────
 # Bump `DATA_VERSION` whenever a backend change requires phones to wipe their
@@ -90,7 +98,7 @@ except Exception as _picks_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.07.07-lab-tab-v35"
+DATA_VERSION = "2026.07.07-lab-session2-v36"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
