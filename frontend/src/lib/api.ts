@@ -552,21 +552,33 @@ export const api = {
       generated_at: string;
       sport_filter: string | null;
       count: number;
-      cards: {
-        pick_id: string;
-        player_name: string;
-        player_display: string;
-        opponent: string | null;
-        sport: string;
-        market: string;
-        market_clean: string;
-        family: string;
-        book_odds: number | null;
-        lock_score: number | null;
-        facts: { icon: string; text: string; pct: number; hits: number; n: number }[];
+      cards: any[];
+      groups: {
+        title: string;
+        icon: string;
+        entries: {
+          pick_id: string;
+          player_display: string;
+          market_clean: string;
+          sport: string;
+          opponent: string | null;
+          hits: number; n: number; pct: number;
+          fact_text: string;
+        }[];
       }[];
     }>(`/lab/cheatsheets${qs ? "?" + qs : ""}`);
   },
+  labCheatsheetDetail: (pick_id: string) =>
+    request<{
+      pick_id: string;
+      player: string; player_display: string;
+      sport: string; market: string;
+      opponent: string | null; book_odds: number | null;
+      recent_form: { hits: number; n: number; pct: number };
+      head_to_head: { hits: number; n: number; pct: number; opponent: string | null };
+      venue_split: { hits: number; n: number; pct: number; venue: string } | null;
+      games: { date: string; opponent: string; hit: boolean; status: string }[];
+    }>(`/lab/cheatsheet-detail/${encodeURIComponent(pick_id)}`),
 
   // Correlation Lab — historical parlay leg co-occurrence hit rates.
   labCorrelations: (opts?: { sport?: string; min_pairs?: number; limit?: number }) => {

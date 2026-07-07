@@ -575,6 +575,9 @@ async def cheatsheets(
         # Legacy DB rows store the literal string "None" — treat as empty.
         if player.lower() == "none":
             player = ""
+        # Strip parenthetical team codes from stored player_name so
+        # `_shorten_name` produces "M. Vargas" not "M. Vargas (CWS)".
+        player = re.sub(r"\s*\([A-Z]{2,4}\)\s*", "", player).strip()
         team = (lp.get("team") or "").strip()
         if team.lower() == "none":
             team = ""
@@ -628,7 +631,7 @@ async def cheatsheets(
             "opponent": opp_display,
             "sport": lp.get("sport"),
             "market": market_str,
-            "market_clean": _clean_market_label(market_str or lp.get("selection") or ""),
+            "market_clean": _clean_market_label(market_str or lp.get("selection") or "", subject=subject),
             "family": family,
             "book_odds": lp.get("book_odds"),
             "lock_score": lp.get("lock_score"),
@@ -640,6 +643,153 @@ async def cheatsheets(
         "sport_filter": sport,
         "count": len(cards),
         "cards": cards,
+        "groups": _group_cards_by_theme(cards),
+    }
+
+
+def _group_cards_by_theme(cards: list[dict]) -> list[dict]:
+    """Reorganise cards into themed rails matching the competitor
+    "Cheatsheets" home UX: `100% Recent Form`, `100% Home/Away Games`,
+    `Head-to-Head Streaks`, etc. Each rail has ordered entries so the
+    strongest hit-rates float to the top.
+    """
+    rails: dict[str, list[dict]] = {
+        "recent_form_100": [],
+        "recent_form": [],
+        "home_away_100": [],
+        "vs_opponent_100": [],
+    }
+    for c in cards:
+        # Highest-pct fact drives which rail it belongs to.
+        for f in c.get("facts", []):
+            txt = (f.get("text") or "").lower()
+            pct = f.get("pct") or 0
+            entry = {
+                "pick_id": c.get("pick_id"),
+                "player_display": c.get("player_display"),
+                "market_clean": c.get("market_clean"),
+                "sport": c.get("sport"),
+                "opponent": c.get("opponent"),
+                "hits": f.get("hits"),
+                "n": f.get("n"),
+                "pct": pct,
+                "fact_text": f.get("text"),
+            }
+            if "vs " in txt and pct == 100:
+                rails["vs_opponent_100"].append(entry)
+            elif ("home games" in txt or "away games" in txt) and pct == 100:
+                rails["home_away_100"].append(entry)
+            elif "last" in txt and "games" in txt and pct == 100 and "home" not in txt and "away" not in txt:
+                rails["recent_form_100"].append(entry)
+            elif "last" in txt and "games" in txt and pct >= 75 and "home" not in txt and "away" not in txt:
+                rails["recent_form"].append(entry)
+
+    # Sort each rail by hit count desc so 9/9 beats 5/5 at same pct.
+    for k in rails:
+        rails[k].sort(key=lambda e: -(e.get("hits") or 0))
+
+    groups = []
+    if rails["recent_form_100"]:
+        groups.append({"title": "100% Recent Form", "icon": "flash",
+                       "entries": rails["recent_form_100"][:8]})
+    if rails["home_away_100"]:
+        groups.append({"title": "100% Home/Away Games", "icon": "location",
+                       "entries": rails["home_away_100"][:8]})
+    if rails["vs_opponent_100"]:
+        groups.append({"title": "100% Head-to-Head", "icon": "chatbubbles",
+                       "entries": rails["vs_opponent_100"][:8]})
+    if rails["recent_form"] and len(rails["recent_form_100"]) < 4:
+        groups.append({"title": "Strong Recent Form (75%+)", "icon": "trending-up",
+                       "entries": rails["recent_form"][:8]})
+    return groups
+
+
+# Detail endpoint: full game log for a subject in the Cheatsheets tab
+# (tap-through from a rail entry).
+@router.get("/cheatsheet-detail/{pick_id}")
+async def cheatsheet_detail(pick_id: str):
+    """Return the full game log for the subject of a Cheatsheet card
+    so the frontend can render the "Trend analysis" screen (Recent
+    Form / Head to Head / Away Split + Games Played table).
+    """
+    lp = await db.picks.find_one(
+        {"id": pick_id},
+        {"_id": 0, "sport": 1, "market": 1, "player_name": 1,
+         "team": 1, "event": 1, "book_odds": 1, "lock_score": 1},
+    )
+    if not lp:
+        raise HTTPException(404, "pick not found")
+    player = (lp.get("player_name") or "").strip()
+    if player.lower() == "none":
+        player = ""
+    if not player:
+        player = _parse_player_from_market(lp.get("market") or "")
+    if not player:
+        raise HTTPException(400, "no player subject on pick")
+
+    family = _classify_market_family(lp.get("sport"), lp.get("market") or "")
+    settled = await _fetch_subject_history(player, lp.get("sport"), family, True)
+    inferred_own_team = _infer_own_team(settled) if not lp.get("team") else None
+    raw_opp = _extract_opponent_full_name(lp, own_team_override=inferred_own_team)
+
+    # Split stats
+    def _sum(picks):
+        w = sum(1 for p in picks if (p.get("status") or "").lower() == "won")
+        return w, len(picks)
+
+    all_hits, all_n = _sum(settled[:20])
+    opp_picks = ([p for p in settled if raw_opp and re.search(re.escape(raw_opp), p.get("event") or "", re.I)]
+                 if raw_opp else [])
+    opp_hits, opp_n = _sum(opp_picks)
+    live_venue = _venue_of_pick(lp, own_team_override=inferred_own_team)
+    venue_picks = [p for p in settled if _venue_of_pick(p, own_team_override=inferred_own_team) == live_venue] if live_venue else []
+    venue_hits, venue_n = _sum(venue_picks[:10])
+
+    # Row-by-row game log (last 20)
+    rows = []
+    for p in settled[:20]:
+        st = (p.get("status") or "").lower()
+        ev = p.get("event") or ""
+        opp = ""
+        if "@" in ev:
+            away, home = [s.strip() for s in ev.split("@", 1)]
+            own_lc = (inferred_own_team or lp.get("team") or "").lower()
+            if own_lc and own_lc in home.lower():
+                opp = _team_abbr(away)
+            elif own_lc and own_lc in away.lower():
+                opp = _team_abbr(home)
+            else:
+                opp = _team_abbr(away)
+        rows.append({
+            "date": p.get("pick_date"),
+            "opponent": opp,
+            "hit": st == "won",
+            "status": st,
+        })
+
+    return {
+        "pick_id": pick_id,
+        "player": player,
+        "player_display": _shorten_name(player),
+        "sport": lp.get("sport"),
+        "market": lp.get("market"),
+        "opponent": _team_abbr(raw_opp) if raw_opp else None,
+        "book_odds": lp.get("book_odds"),
+        "recent_form": {
+            "hits": all_hits, "n": all_n,
+            "pct": round(all_hits / all_n * 100) if all_n else 0,
+        },
+        "head_to_head": {
+            "hits": opp_hits, "n": opp_n,
+            "pct": round(opp_hits / opp_n * 100) if opp_n else 0,
+            "opponent": _team_abbr(raw_opp) if raw_opp else None,
+        },
+        "venue_split": {
+            "hits": venue_hits, "n": venue_n,
+            "pct": round(venue_hits / venue_n * 100) if venue_n else 0,
+            "venue": live_venue,
+        } if live_venue else None,
+        "games": rows,
     }
 
 
@@ -922,8 +1072,26 @@ def _shorten_name(name: str) -> str:
     return name
 
 
-def _clean_market_label(m: str) -> str:
-    return re.sub(r"^.*?-\s*", "", m).strip() or m
+def _clean_market_label(m: str, subject: str | None = None) -> str:
+    """Strip subject/team prefix from a market string.
+
+    Examples:
+      "Miguel Vargas (CWS) Over 0.5 Hits"           → "Over 0.5 Hits"
+      "Mohamed Salah - Anytime Goal Scorer"         → "Anytime Goal Scorer"
+      "Lionel Messi Anytime Goal Scorer"            → "Anytime Goal Scorer"
+      "Elly De La Cruz (CIN) Over 0.5 Total Bases"  → "Over 0.5 Total Bases"
+    """
+    if not m:
+        return m
+    out = m
+    # 1) Strip "Player Name (TEAM) " prefix
+    out = re.sub(r"^[A-Z][a-zA-Z'.\- ]+?\s*\([A-Z]{2,4}\)\s*", "", out)
+    # 2) If we know the subject explicitly, strip that too.
+    if subject:
+        out = re.sub(r"^\s*" + re.escape(subject) + r"\s*[-:]*\s*", "", out, flags=re.IGNORECASE)
+    # 3) Strip leftover "Player Name - " prefix (no team in parens)
+    out = re.sub(r"^[A-Z][a-zA-Z'.\- ]{2,}?\s*-\s*", "", out)
+    return out.strip() or m
 
 
 # Player-prop keyword tail that we strip when parsing player from
@@ -967,24 +1135,32 @@ _PLAYER_MARKET_TAILS = (
 
 def _parse_player_from_market(market: str) -> str:
     """Extract player name from a market string when the pick doc's
-    `player_name` field is missing. Handles both `"Mohamed Salah First
-    Goal Scorer"` and `"Player Name - Anytime Goal Scorer"` formats.
+    `player_name` field is missing. Handles multiple formats:
+      "Mohamed Salah First Goal Scorer"
+      "Player Name - Anytime Goal Scorer"
+      "Miguel Vargas (CWS) Over 0.5 Hits"
     """
     if not market:
         return ""
     m = market.strip()
+    # Strip "(TEAM)" team-code suffixes anywhere in the string.
+    m = re.sub(r"\s*\([A-Z]{2,4}\)\s*", " ", m).strip()
+    # Strip Over/Under N.N prefix before the market keyword.
+    m = re.sub(r"\s+(Over|Under)\s+[\d.]+\s+", " ", m).strip()
     # "Player - Market" split first
     if " - " in m:
         left = m.split(" - ", 1)[0].strip()
-        # Ensure it looks like a name (has a space, no obvious market keywords)
         if " " in left and not any(t.lower() in left.lower() for t in _PLAYER_MARKET_TAILS):
             return left
-    # Otherwise trim market tail off the right side
+    # Trim any market tail off the right side
     for tail in _PLAYER_MARKET_TAILS:
         if m.lower().endswith(tail.lower()):
             candidate = m[: -len(tail)].strip(" -–—")
             if candidate and " " in candidate:
-                return candidate
+                # Also strip leftover "Over 0.5" fragments.
+                candidate = re.sub(r"\s+(Over|Under)\s+[\d.]+\s*$", "", candidate).strip()
+                if candidate:
+                    return candidate
     return ""
 
 
