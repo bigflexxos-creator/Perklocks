@@ -745,41 +745,38 @@ function PropExplorerModule({ picks }: { picks: any[] }) {
 // ═══════════════════════════════════════════════════════════════════
 // MODULE 5: CHEATSHEETS
 // ═══════════════════════════════════════════════════════════════════
-// Data source: /api/lab/cheatsheets — REAL "Hit in X of last Y games"
-// facts computed server-side from the settled-pick history for each
-// player+market. NO model-rubric scores, NO fabricated bullets.
+// Themed rails (100% Recent Form, 100% Home/Away, 100% Head-to-Head)
+// with tap-to-detail Trend Analysis modal. All data from
+// /api/lab/cheatsheets + /api/lab/cheatsheet-detail.
 function CheatsheetsModule({ picks: _picks }: { picks: any[] }) {
   const [sport, setSport] = useState<string>("All");
   const [data, setData] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
+  const [detailPickId, setDetailPickId] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
-    api.labCheatsheets({ sport: sport === "All" ? undefined : sport, limit: 40 })
-      .then(setData)
-      .catch(() => setData({ cards: [], count: 0 }))
+    api.labCheatsheets({ sport: sport === "All" ? undefined : sport, limit: 60 })
+      .then(setData).catch(() => setData({ cards: [], groups: [] }))
       .finally(() => setLoading(false));
   }, [sport]);
   useEffect(() => { load(); }, [load]);
 
   const sportsAvail = ["All", "MLB", "NBA", "NFL", "Soccer", "Tennis"];
-  const cards = data?.cards || [];
+  const groups = data?.groups || [];
 
   return (
     <View>
       <SectionHeader
         icon="flash"
         title="Cheatsheets"
-        blurb="Real hit-streak proof cards. Every fact is computed from the player's settled-pick history — no model scores, no fabrication."
+        blurb="Real hit-streak proof cards grouped by theme. Tap any row for the full trend analysis + game log."
       />
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
         {sportsAvail.map((s) => (
-          <TouchableOpacity
-            key={s}
-            onPress={() => setSport(s)}
+          <TouchableOpacity key={s} onPress={() => setSport(s)}
             testID={`lab-cheats-sport-${s}`}
-            style={[styles.filterChip, sport === s && styles.filterChipActive]}
-          >
+            style={[styles.filterChip, sport === s && styles.filterChipActive]}>
             <Text style={[styles.filterChipTxt, sport === s && styles.filterChipTxtActive]}>
               {s.toUpperCase()}
             </Text>
@@ -789,51 +786,169 @@ function CheatsheetsModule({ picks: _picks }: { picks: any[] }) {
 
       {loading ? (
         <ActivityIndicator color={COLORS.textPrimary} style={{ marginTop: 20 }} />
-      ) : cards.length === 0 ? (
+      ) : groups.length === 0 ? (
         <Text style={styles.disclaimer}>
-          No cheatsheet-ready picks yet in {sport}. Cards populate once players in
-          today&apos;s slate have ≥3 hits in their last 5-10 same-market settled picks.
-          As the settled-pick history grows, more cards appear automatically.
+          No cheatsheet-ready picks yet in {sport}. Cards populate as settled-pick
+          history accumulates for players in today&apos;s slate.
         </Text>
       ) : (
-        cards.map((c: any) => <CheatsheetServerCard key={c.pick_id} card={c} />)
+        groups.map((g: any) => (
+          <CheatsheetGroup key={g.title} group={g} onTap={setDetailPickId} />
+        ))
       )}
+
+      {detailPickId ? (
+        <CheatsheetDetailModal pickId={detailPickId} onClose={() => setDetailPickId(null)} />
+      ) : null}
     </View>
   );
 }
 
-function CheatsheetServerCard({ card }: { card: any }) {
-  const oddsColor = String(card.book_odds ?? "").startsWith("-") ? "#e46d6d" : "#40d18a";
-  const headerLabel = card.opponent
-    ? `${card.player_display} ${card.opponent}`
-    : card.player_display;
+function CheatsheetGroup({ group, onTap }:
+  { group: any; onTap: (pickId: string) => void }) {
+  const icon: keyof typeof Ionicons.glyphMap =
+    group.icon === "location" ? "location" :
+    group.icon === "chatbubbles" ? "chatbubbles" :
+    group.icon === "trending-up" ? "trending-up" : "flash";
   return (
-    <View style={cheatStyles.card} testID={`cheatsheet-card-${card.pick_id}`}>
-      <View style={cheatStyles.headerRow}>
-        <View style={{ flex: 1 }}>
-          <Text style={cheatStyles.player} numberOfLines={1}>{headerLabel}</Text>
-          <Text style={cheatStyles.market} numberOfLines={1}>{card.market_clean}</Text>
-        </View>
-        {card.book_odds != null ? (
-          <View style={[cheatStyles.oddsBadge, { borderColor: oddsColor }]}>
-            <Text style={[cheatStyles.oddsTxt, { color: oddsColor }]}>{formatOdds(card.book_odds)}</Text>
-          </View>
-        ) : null}
+    <View style={cheatStyles.card}>
+      <View style={cheatStyles.groupHeader}>
+        <Ionicons name={icon} size={14} color={COLORS.textPrimary} />
+        <Text style={cheatStyles.groupTitle}>{group.title}</Text>
       </View>
-      <View style={cheatStyles.factsBlock}>
-        {card.facts.map((f: any, i: number) => {
-          const tint = pctTint(f.pct);
-          const icon: keyof typeof Ionicons.glyphMap =
-            f.icon === "chatbubbles" ? "chatbubbles" :
-            f.icon === "location"    ? "location"    : "flash";
-          return (
-            <View key={i} style={cheatStyles.factRow}>
-              <Ionicons name={icon} size={13} color={tint} />
-              <Text style={cheatStyles.factTxt} numberOfLines={2}>{f.text}</Text>
-              <Text style={[cheatStyles.factPct, { color: tint }]}>{f.pct}%</Text>
+      {group.entries.map((e: any) => (
+        <TouchableOpacity
+          key={e.pick_id}
+          onPress={() => onTap(e.pick_id)}
+          style={cheatStyles.groupRow}
+          testID={`cheatsheet-row-${e.pick_id}`}
+        >
+          <View style={{ flex: 1 }}>
+            <Text style={cheatStyles.groupRowPlayer} numberOfLines={1}>
+              <Text style={{ fontWeight: "900" }}>{e.player_display}</Text>
+              <Text style={cheatStyles.groupRowMarket}>{"  :  "}{e.market_clean}</Text>
+            </Text>
+          </View>
+          <View style={cheatStyles.groupRowRight}>
+            <Text style={[cheatStyles.groupRowRatio, { color: pctTint(e.pct) }]}>
+              {e.hits}/{e.n}
+            </Text>
+          </View>
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
+}
+
+function CheatsheetDetailModal({ pickId, onClose }:
+  { pickId: string; onClose: () => void }) {
+  const [detail, setDetail] = useState<any | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    api.labCheatsheetDetail(pickId)
+      .then(setDetail).catch(() => setDetail(null))
+      .finally(() => setLoading(false));
+  }, [pickId]);
+
+  return (
+    <View style={cheatStyles.modalOverlay}>
+      <View style={cheatStyles.modalCard}>
+        <View style={cheatStyles.modalHeader}>
+          <Text style={cheatStyles.modalTitle}>Trend Analysis</Text>
+          <TouchableOpacity onPress={onClose} testID="cheatsheet-modal-close">
+            <Ionicons name="close" size={22} color={COLORS.textPrimary} />
+          </TouchableOpacity>
+        </View>
+        {loading ? (
+          <ActivityIndicator color={COLORS.textPrimary} style={{ padding: 24 }} />
+        ) : !detail ? (
+          <Text style={styles.errTxt}>Detail load failed.</Text>
+        ) : (
+          <ScrollView style={{ maxHeight: 600 }}>
+            <View style={{ padding: 4 }}>
+              <Text style={cheatStyles.modalPlayer}>
+                {detail.player_display}
+                {detail.opponent ? <Text style={cheatStyles.modalOpp}>{"  vs "}{detail.opponent}</Text> : null}
+              </Text>
+              <Text style={cheatStyles.modalMarket}>{detail.market}</Text>
             </View>
-          );
-        })}
+            <View style={cheatStyles.modalStatsGrid}>
+              <View style={cheatStyles.modalStatCell}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                  <Ionicons name="flash" size={11} color={COLORS.textMuted} />
+                  <Text style={cheatStyles.modalStatLabel}>Recent Form</Text>
+                </View>
+                <Text style={[cheatStyles.modalStatValue, { color: pctTint(detail.recent_form.pct) }]}>
+                  {detail.recent_form.pct}%
+                </Text>
+                <Text style={cheatStyles.modalStatSub}>
+                  {detail.recent_form.hits}/L{detail.recent_form.n} Games
+                </Text>
+              </View>
+              <View style={cheatStyles.modalStatCell}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                  <Ionicons name="chatbubbles" size={11} color={COLORS.textMuted} />
+                  <Text style={cheatStyles.modalStatLabel}>Head to Head</Text>
+                </View>
+                <Text style={[cheatStyles.modalStatValue, { color: pctTint(detail.head_to_head.pct) }]}>
+                  {detail.head_to_head.n > 0 ? `${detail.head_to_head.pct}%` : "—"}
+                </Text>
+                <Text style={cheatStyles.modalStatSub}>
+                  {detail.head_to_head.n > 0
+                    ? `${detail.head_to_head.hits}/L${detail.head_to_head.n} vs ${detail.head_to_head.opponent}`
+                    : "no history"}
+                </Text>
+              </View>
+              {detail.venue_split ? (
+                <View style={cheatStyles.modalStatCell}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                    <Ionicons name="location" size={11} color={COLORS.textMuted} />
+                    <Text style={cheatStyles.modalStatLabel}>{detail.venue_split.venue === "home" ? "Home Split" : "Away Split"}</Text>
+                  </View>
+                  <Text style={[cheatStyles.modalStatValue, { color: pctTint(detail.venue_split.pct) }]}>
+                    {detail.venue_split.pct}%
+                  </Text>
+                  <Text style={cheatStyles.modalStatSub}>
+                    {detail.venue_split.hits}/L{detail.venue_split.n} {detail.venue_split.venue}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+
+            <View style={cheatStyles.gamesHeader}>
+              <Ionicons name="calendar" size={13} color={COLORS.textPrimary} />
+              <Text style={cheatStyles.gamesTitle}>Games Played</Text>
+            </View>
+            <View style={cheatStyles.gamesTableHeader}>
+              <Text style={[cheatStyles.gamesCol, { flex: 0.6 }]}>Hit</Text>
+              <Text style={[cheatStyles.gamesCol, { flex: 1.4 }]}>Date</Text>
+              <Text style={[cheatStyles.gamesCol, { flex: 1.4 }]}>Versus</Text>
+            </View>
+            {detail.games.length === 0 ? (
+              <Text style={styles.disclaimer}>No prior game log data.</Text>
+            ) : (
+              detail.games.map((g: any, i: number) => (
+                <View key={i} style={cheatStyles.gamesRow}>
+                  <View style={[cheatStyles.gamesCol, { flex: 0.6, flexDirection: "row" }]}>
+                    <View style={[cheatStyles.hitDot, {
+                      backgroundColor: g.hit ? "#40d18a" : "#e46d6d",
+                    }]}>
+                      <Ionicons name={g.hit ? "checkmark" : "close"} size={11} color="#0a0a0a" />
+                    </View>
+                  </View>
+                  <Text style={[cheatStyles.gamesCol, cheatStyles.gamesCell, { flex: 1.4 }]}>
+                    {g.date}
+                  </Text>
+                  <Text style={[cheatStyles.gamesCol, cheatStyles.gamesCell, { flex: 1.4, fontWeight: "700" }]}>
+                    {g.opponent || "—"}
+                  </Text>
+                </View>
+              ))
+            )}
+          </ScrollView>
+        )}
       </View>
     </View>
   );
@@ -856,6 +971,50 @@ function pctTint(pct: number): string {
 // server endpoint now handles all these formatting concerns.)
 
 const cheatStyles = StyleSheet.create({
+  // Group rail card (competitor "Cheatsheets" list style)
+  groupHeader: { flexDirection: "row", alignItems: "center", gap: 6,
+    paddingBottom: 8, marginBottom: 4,
+    borderBottomWidth: 1, borderBottomColor: COLORS.borderDefault },
+  groupTitle: { color: COLORS.textPrimary, fontSize: 13, fontWeight: "900", letterSpacing: 0.4 },
+  groupRow: { flexDirection: "row", alignItems: "center",
+    paddingVertical: 10, gap: 10 },
+  groupRowPlayer: { color: COLORS.textPrimary, fontSize: 13 },
+  groupRowMarket: { color: COLORS.textMuted, fontWeight: "500" },
+  groupRowRight: { paddingLeft: 8 },
+  groupRowRatio: { fontSize: 14, fontWeight: "900", letterSpacing: 0.3 },
+
+  // Detail modal (Trend Analysis screen)
+  modalOverlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: "rgba(0,0,0,0.85)",
+    justifyContent: "center", alignItems: "stretch", padding: 12, zIndex: 999 },
+  modalCard: { backgroundColor: "#141414", borderRadius: 14,
+    borderWidth: 1, borderColor: COLORS.borderDefault, padding: 14, maxHeight: "90%" },
+  modalHeader: { flexDirection: "row", alignItems: "center",
+    justifyContent: "space-between", marginBottom: 10 },
+  modalTitle: { color: COLORS.textPrimary, fontSize: 17, fontWeight: "900", letterSpacing: 0.3 },
+  modalPlayer: { color: COLORS.textPrimary, fontSize: 18, fontWeight: "900", marginBottom: 2 },
+  modalOpp: { color: COLORS.textMuted, fontSize: 15, fontWeight: "600" },
+  modalMarket: { color: COLORS.textMuted, fontSize: 13, marginBottom: 12 },
+  modalStatsGrid: { flexDirection: "row", gap: 8, marginBottom: 16 },
+  modalStatCell: { flex: 1, padding: 10, borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: 1, borderColor: COLORS.borderDefault },
+  modalStatLabel: { color: COLORS.textMuted, fontSize: 10, fontWeight: "700", letterSpacing: 0.5 },
+  modalStatValue: { color: COLORS.textPrimary, fontSize: 20, fontWeight: "900", marginTop: 4 },
+  modalStatSub: { color: COLORS.textMuted, fontSize: 11, marginTop: 2 },
+  gamesHeader: { flexDirection: "row", alignItems: "center", gap: 6,
+    paddingBottom: 8, borderBottomWidth: 1, borderBottomColor: COLORS.borderDefault, marginBottom: 6 },
+  gamesTitle: { color: COLORS.textPrimary, fontSize: 14, fontWeight: "900", letterSpacing: 0.3 },
+  gamesTableHeader: { flexDirection: "row", paddingVertical: 6,
+    borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.04)" },
+  gamesCol: { color: COLORS.textMuted, fontSize: 11, letterSpacing: 0.5, fontWeight: "800" },
+  gamesRow: { flexDirection: "row", alignItems: "center",
+    paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.04)" },
+  gamesCell: { color: COLORS.textPrimary, fontSize: 12, fontWeight: "600" },
+  hitDot: { width: 22, height: 22, borderRadius: 12,
+    alignItems: "center", justifyContent: "center" },
+
+  // Legacy card styles (kept for backward compat)
   card: {
     backgroundColor: "#1a1a1a",
     borderRadius: 14,
