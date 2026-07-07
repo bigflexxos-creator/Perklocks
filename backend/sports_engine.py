@@ -392,21 +392,21 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     score = (0.35 * edge_comp + 0.20 * market_align + 0.15 * roi_comp
              + 0.10 * data_quality + 0.10 * vol_comp + 0.10 * cls_comp)
 
-    # ── Bet-Quality Floor (TIER STEP FUNCTION — USER SPEC) ───────────────
-    # Spec is a STEP function, not continuous. Each tier requires BOTH a
-    # win-prob bar AND an edge bar:
+    # ── Bet-Quality Floor (EVIDENCE-BASED, 2026-07-04 chalk-bias fix) ────
+    # OLD: floor required BOTH win_prob AND edge (e.g. Elite needs wp≥80
+    # AND edge≥15). This hard-coded chalk bias into the model — a +150
+    # underdog with 45% wp could NEVER reach Elite even with elite EV,
+    # bucket-hit rate, and factor agreement.
     #
-    #   Win ≥80 AND Edge ≥15 → 98  (Elite Lock)
-    #   Win ≥75 AND Edge ≥10 → 95  (Strong Lock)
-    #   Win ≥70 AND Edge ≥5  → 90  (Lock)
-    #   Win ≥65 AND Edge ≥3  → 85  (Playable)
-    #   else                  → no floor; 6-component score governs.
+    # NEW: floor is triggered by EVIDENCE, not implied probability:
+    #   • EV per unit (chalk-neutral expected value from decimal odds × wp)
+    #   • Historical bucket hit rate (learning engine's actual outcomes)
+    #   • Factor agreement (variance across signals; 1 - stdev)
+    #   • Absolute model edge (still counts, but not gated by wp)
     #
-    # Why step (not continuous):  the old continuous formula
-    # (85 + (wp-65)*1.5 + edge*0.5) overshot the spec — a soccer pick at
-    # 72 % win / 4 % edge got pushed to ~95 (Strong Lock) when the spec
-    # places it in the Playable band. Step function honors the user's
-    # exact tier table.
+    # A +150 (wp 45%, edge 12%, EV +0.20u, bucket_hit 62%) now CAN reach
+    # Elite Lock. A -300 (wp 78%, edge 3%, EV -0.05u, bucket_hit 55%) will
+    # NOT — chalk with no evidence is downgraded.
     #
     # Read win-prob + edge from BOTH the explicit args (preferred — passed
     # by callers at pick generation time) AND the pick dict (used by the
@@ -419,14 +419,52 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
         edge_percent if edge_percent is not None
         else (pick.get("edge_percent") if pick else 0) or 0
     )
+
+    # Expected value per 1u risked — chalk-neutral. Positive EV = model
+    # expects a profit; negative = model expects a loss regardless of
+    # whether the pick is favourite or dog.
+    wp_frac = wp_val / 100.0 if wp_val > 1.0 else wp_val
+    book = pick.get("book_odds") or 0
+    ev_units = 0.0
+    if book and 0.0 <= wp_frac <= 1.0:
+        if book >= 100:
+            dec = 1.0 + book / 100.0
+        elif book <= -100:
+            dec = 1.0 + 100.0 / abs(book)
+        else:
+            dec = 1.0
+        ev_units = wp_frac * (dec - 1.0) - (1.0 - wp_frac)
+
+    # Historical bucket hit rate — real outcomes on this pick's bucket.
+    bucket_hit = 0.0
+    bucket_n = 0
+    if bucket_row and bucket_row.get("n", 0) >= 20:
+        bucket_n = bucket_row.get("n", 0)
+        wins = bucket_row.get("wins", 0)
+        losses = bucket_row.get("losses", 0)
+        decided = wins + losses
+        if decided > 0:
+            bucket_hit = wins / decided
+
+    # Factor agreement — inverse of standard deviation across model
+    # signals. Already computed above for `market_align`.
+    factor_agreement = market_align / 100.0  # 0..1
+
     floor = 0.0
-    if wp_val >= 80.0 and ed_val >= 15.0:
+    # Elite Lock (98): edge ≥ 12, EV ≥ +0.15u, bucket ≥ 60%, agreement ≥ 0.75
+    if ed_val >= 12.0 and ev_units >= 0.15 and (
+            bucket_n == 0 or bucket_hit >= 0.60) and factor_agreement >= 0.75:
         floor = 98.0
-    elif wp_val >= 75.0 and ed_val >= 10.0:
+    # Strong Lock (95): edge ≥ 8, EV ≥ +0.10u, bucket ≥ 55%, agreement ≥ 0.65
+    elif ed_val >= 8.0 and ev_units >= 0.10 and (
+            bucket_n == 0 or bucket_hit >= 0.55) and factor_agreement >= 0.65:
         floor = 95.0
-    elif wp_val >= 70.0 and ed_val >= 5.0:
+    # Lock (90): edge ≥ 5, EV ≥ +0.05u, bucket ≥ 50%, agreement ≥ 0.55
+    elif ed_val >= 5.0 and ev_units >= 0.05 and (
+            bucket_n == 0 or bucket_hit >= 0.50) and factor_agreement >= 0.55:
         floor = 90.0
-    elif wp_val >= 65.0 and ed_val >= 3.0:
+    # Playable (85): edge ≥ 3 AND non-negative EV
+    elif ed_val >= 3.0 and ev_units >= 0.0:
         floor = 85.0
     if floor and score < floor:
         score = floor
@@ -435,15 +473,22 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     # badges / progress bars.
     score = min(99.0, score)
 
-    # Store the 6 components so the UI / analytics can inspect them later.
+    # Store the 6 components + evidence signals so the UI / analytics can
+    # inspect them later. Evidence fields (ev_units, bucket_hit, agreement)
+    # are the new chalk-neutral tier gates added 2026-07-04.
     pick["lock_components"] = {
-        "edge":        round(edge_comp, 1),
-        "alignment":   round(market_align, 1),
-        "roi":         round(roi_comp, 1),
+        "edge":         round(edge_comp, 1),
+        "alignment":    round(market_align, 1),
+        "roi":          round(roi_comp, 1),
         "data_quality": round(data_quality, 1),
-        "volatility":  round(vol_comp, 1),
-        "clv":         round(cls_comp, 1),
+        "volatility":   round(vol_comp, 1),
+        "clv":          round(cls_comp, 1),
         "quality_floor": round(floor, 1) if floor else 0,
+        # Evidence — chalk-neutral inputs to the tier floor
+        "ev_units":     round(ev_units, 4),
+        "bucket_hit":   round(bucket_hit, 4) if bucket_n else None,
+        "bucket_n":     bucket_n,
+        "agreement":    round(factor_agreement, 3),
     }
     return max(55.0, min(99.0, round(score, 1))), weighted
 
