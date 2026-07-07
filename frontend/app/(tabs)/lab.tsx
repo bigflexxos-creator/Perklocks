@@ -748,8 +748,28 @@ function PropExplorerModule({ picks }: { picks: any[] }) {
 // Themed rails (100% Recent Form, 100% Home/Away, 100% Head-to-Head)
 // with tap-to-detail Trend Analysis modal. All data from
 // /api/lab/cheatsheets + /api/lab/cheatsheet-detail.
+// ═══════════════════════════════════════════════════════════════════
+// MODULE 5: CHEATSHEETS  (Linemate-style tile deck — 2026-07-07 redesign)
+// -------------------------------------------------------------------
+// Each card is a self-contained tile with:
+//   • Team-abbreviation logo chip (left)
+//   • Player name + opponent (top-left, bold)
+//   • Cleaned market line (below name)
+//   • Book odds (top-right, badge)
+//   • 3-5 stat facts, each with icon + text + right-aligned percentage
+//
+// Three tabs at the top switch how cards are ordered:
+//   • "Most Locked"  — sorted by lock_score desc (default; catches the
+//                       book's highest-confidence bets)
+//   • "By Game"      — grouped by event so the user can build SGPs
+//   • "Deepest Trend" — sorted by the strongest single fact percentage
+//                       so users spot outliers like "8/8 last 8".
+// ═══════════════════════════════════════════════════════════════════
+type CheatTab = "locked" | "by_game" | "deepest";
+
 function CheatsheetsModule({ picks: _picks }: { picks: any[] }) {
   const [sport, setSport] = useState<string>("All");
+  const [tab, setTab] = useState<CheatTab>("locked");
   const [data, setData] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailPickId, setDetailPickId] = useState<string | null>(null);
@@ -763,15 +783,46 @@ function CheatsheetsModule({ picks: _picks }: { picks: any[] }) {
   useEffect(() => { load(); }, [load]);
 
   const sportsAvail = ["All", "MLB", "NBA", "NFL", "Soccer", "Tennis"];
-  const groups = data?.groups || [];
+  const cards: any[] = useMemo(() => data?.cards || [], [data]);
+
+  // Sort / group cards based on the active tab.
+  const view = useMemo(() => {
+    if (tab === "locked") {
+      return [...cards].sort((a, b) => (b.lock_score || 0) - (a.lock_score || 0));
+    }
+    if (tab === "deepest") {
+      // Score cards by best single fact percentage so 8/8 (100%) rises
+      // above 5/8 (62%).
+      const bestPct = (c: any) => Math.max(0,
+        ...(c.facts || []).map((f: any) => (typeof f.pct === "number" ? f.pct : 0)));
+      return [...cards].sort((a, b) => bestPct(b) - bestPct(a));
+    }
+    // by_game — return cards untouched; grouped downstream
+    return cards;
+  }, [cards, tab]);
+
+  // Group cards by event for the "By Game" tab.
+  const gameGroups = useMemo(() => {
+    const map: Record<string, any[]> = {};
+    for (const c of view) {
+      const ev = c.event || c.opponent || "Other";
+      if (!map[ev]) map[ev] = [];
+      map[ev].push(c);
+    }
+    // Keep games with 2+ cards on top — more actionable for SGP building.
+    return Object.entries(map)
+      .sort(([, a], [, b]) => b.length - a.length);
+  }, [view]);
 
   return (
     <View>
       <SectionHeader
         icon="flash"
         title="Cheatsheets"
-        blurb="Real hit-streak proof cards grouped by theme. Tap any row for the full trend analysis + game log."
+        blurb="Real hit-streak proof cards. Tap any card for the full trend analysis + game log."
       />
+
+      {/* Sport filter row */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
         {sportsAvail.map((s) => (
           <TouchableOpacity key={s} onPress={() => setSport(s)}
@@ -784,16 +835,46 @@ function CheatsheetsModule({ picks: _picks }: { picks: any[] }) {
         ))}
       </ScrollView>
 
+      {/* Cheat-mode tab switch */}
+      <View style={cheatStyles.tabBar}>
+        {([
+          { id: "locked",   label: "Most Locked"   },
+          { id: "by_game",  label: "By Game"       },
+          { id: "deepest",  label: "Deepest Trend" },
+        ] as { id: CheatTab; label: string }[]).map((t) => (
+          <TouchableOpacity
+            key={t.id}
+            onPress={() => setTab(t.id)}
+            style={[cheatStyles.tabBtn, tab === t.id && cheatStyles.tabBtnActive]}
+            testID={`cheatsheet-tab-${t.id}`}
+          >
+            <Text style={[cheatStyles.tabTxt, tab === t.id && cheatStyles.tabTxtActive]}>
+              {t.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
       {loading ? (
         <ActivityIndicator color={COLORS.textPrimary} style={{ marginTop: 20 }} />
-      ) : groups.length === 0 ? (
+      ) : cards.length === 0 ? (
         <Text style={styles.disclaimer}>
           No cheatsheet-ready picks yet in {sport}. Cards populate as settled-pick
           history accumulates for players in today&apos;s slate.
         </Text>
+      ) : tab === "by_game" ? (
+        // "By Game" mode — group cards under an event header
+        gameGroups.map(([ev, evCards]) => (
+          <View key={ev} style={{ marginTop: 14 }}>
+            <Text style={cheatStyles.gameHeader}>{ev}</Text>
+            {evCards.map((c: any) => (
+              <CheatsheetCard key={c.pick_id} card={c} onTap={setDetailPickId} />
+            ))}
+          </View>
+        ))
       ) : (
-        groups.map((g: any) => (
-          <CheatsheetGroup key={g.title} group={g} onTap={setDetailPickId} />
+        view.map((c: any) => (
+          <CheatsheetCard key={c.pick_id} card={c} onTap={setDetailPickId} />
         ))
       )}
 
@@ -804,45 +885,82 @@ function CheatsheetsModule({ picks: _picks }: { picks: any[] }) {
   );
 }
 
-function CheatsheetGroup({ group, onTap }:
-  { group: any; onTap: (pickId: string) => void }) {
-  const icon: keyof typeof Ionicons.glyphMap =
-    group.icon === "location" ? "location" :
-    group.icon === "chatbubbles" ? "chatbubbles" :
-    group.icon === "trending-up" ? "trending-up" : "flash";
+
+// Linemate-style card tile — team chip, player @ opp, market, odds,
+// then N fact rows with icon + right-aligned percentage/value.
+function CheatsheetCard({ card, onTap }:
+  { card: any; onTap: (pickId: string) => void }) {
+  const facts = card.facts || [];
+  const oddsColor = (typeof card.book_odds === "number" && card.book_odds > 0)
+    ? "#40d18a"                        // plus-money = green
+    : COLORS.textPrimary;              // chalk = neutral
+  const fmtOdds = (o: any) => {
+    if (typeof o !== "number") return "";
+    return o > 0 ? `+${o}` : String(o);
+  };
+  const teamAbbr = (card.team_abbr || card.opponent?.replace(/^(vs|@)\s+/, "") || "").slice(0, 3);
   return (
-    <View style={cheatStyles.card}>
-      <View style={cheatStyles.groupHeader}>
-        <Ionicons name={icon} size={14} color={COLORS.textPrimary} />
-        <Text style={cheatStyles.groupTitle}>{group.title}</Text>
+    <TouchableOpacity
+      onPress={() => onTap(card.pick_id)}
+      testID={`cheatsheet-card-${card.pick_id}`}
+      style={cheatStyles.card}
+      activeOpacity={0.85}
+    >
+      <View style={cheatStyles.headerRow}>
+        {/* Team-abbr logo chip */}
+        <View style={cheatStyles.teamChip}>
+          <Text style={cheatStyles.teamChipTxt}>{teamAbbr}</Text>
+        </View>
+        {/* Player name + market */}
+        <View style={{ flex: 1 }}>
+          <View style={{ flexDirection: "row", alignItems: "baseline", gap: 6 }}>
+            <Text style={cheatStyles.player} numberOfLines={1}>
+              {card.player_display}
+            </Text>
+            {card.opponent ? (
+              <Text style={cheatStyles.playerOpp} numberOfLines={1}>
+                {card.opponent}
+              </Text>
+            ) : null}
+          </View>
+          <Text style={cheatStyles.market} numberOfLines={1}>
+            {card.market_clean}
+          </Text>
+        </View>
+        {/* Odds badge */}
+        {card.book_odds != null ? (
+          <View style={cheatStyles.oddsBadge}>
+            <Text style={[cheatStyles.oddsTxt, { color: oddsColor }]}>
+              {fmtOdds(card.book_odds)}
+            </Text>
+          </View>
+        ) : null}
       </View>
-      {group.entries.map((e: any) => (
-        <TouchableOpacity
-          key={`${e.pick_id}_${e.fact_text || ""}`}
-          onPress={() => onTap(e.pick_id)}
-          style={cheatStyles.groupRow}
-          testID={`cheatsheet-row-${e.pick_id}`}
-        >
-          <View style={{ flex: 1 }}>
-            <Text style={cheatStyles.groupRowPlayer} numberOfLines={1}>
-              <Text style={{ fontWeight: "900" }}>{e.player_display}</Text>
+      <View style={cheatStyles.factsBlock}>
+        {facts.map((f: any, i: number) => (
+          <View key={i} style={cheatStyles.factRow}>
+            <Ionicons
+              name={((f.icon || "flash") as any)}
+              size={13}
+              color={COLORS.textMuted}
+              style={{ width: 16 }}
+            />
+            <Text style={cheatStyles.factTxt} numberOfLines={2}>
+              {f.text}
             </Text>
-            <Text style={cheatStyles.groupRowMarket} numberOfLines={1}>
-              {e.market_line ? `${e.market_line} ${e.market_clean.replace(/^(Over|Under)\s+[\d.]+\s*/i, "")}` : e.market_clean}
-              {e.book_odds != null ? `  ${e.book_odds > 0 ? "+" : ""}${e.book_odds}` : ""}
-            </Text>
+            {typeof f.pct === "number" ? (
+              <Text style={[cheatStyles.factPct, { color: pctTint(f.pct) }]}>
+                {f.pct}%
+              </Text>
+            ) : (
+              <Text style={[cheatStyles.factPct, { color: COLORS.textMuted, fontSize: 11 }]}>
+                {f.hits}/{f.n}
+              </Text>
+            )}
           </View>
-          <View style={cheatStyles.groupRowRight}>
-            <Text style={[cheatStyles.groupRowRatio, { color: pctTint(e.pct) }]}>
-              {e.pct}%
-            </Text>
-            <Text style={{ color: COLORS.textMuted, fontSize: 11, fontWeight: "700" }}>
-              {e.hits}/{e.n}
-            </Text>
-          </View>
-        </TouchableOpacity>
-      ))}
-    </View>
+        ))}
+      </View>
+    </TouchableOpacity>
   );
 }
 
@@ -977,7 +1095,64 @@ function pctTint(pct: number): string {
 // server endpoint now handles all these formatting concerns.)
 
 const cheatStyles = StyleSheet.create({
-  // Group rail card (competitor "Cheatsheets" list style)
+  // ── Tab bar (Most Locked / By Game / Deepest Trend) ────────────
+  tabBar: { flexDirection: "row", gap: 8, marginTop: 12, marginBottom: 12 },
+  tabBtn: {
+    flex: 1, paddingVertical: 10, paddingHorizontal: 12,
+    borderRadius: 10, alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: 1, borderColor: COLORS.borderDefault,
+  },
+  tabBtnActive: {
+    backgroundColor: COLORS.textPrimary,
+    borderColor: COLORS.textPrimary,
+  },
+  tabTxt: {
+    color: COLORS.textMuted, fontSize: 12, fontWeight: "800", letterSpacing: 0.3,
+  },
+  tabTxtActive: { color: "#0a0a0a" },
+  gameHeader: {
+    color: COLORS.textPrimary, fontSize: 12, fontWeight: "900", letterSpacing: 0.4,
+    textTransform: "uppercase", paddingBottom: 6, marginBottom: 6,
+    borderBottomWidth: 1, borderBottomColor: COLORS.borderDefault,
+  },
+
+  // ── Linemate-style card tile ───────────────────────────────────
+  card: {
+    backgroundColor: "#141414",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.borderDefault,
+    padding: 14,
+    marginBottom: 10,
+  },
+  headerRow: { flexDirection: "row", alignItems: "center", marginBottom: 12, gap: 10 },
+  teamChip: {
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1, borderColor: COLORS.borderDefault,
+    alignItems: "center", justifyContent: "center",
+  },
+  teamChipTxt: {
+    color: COLORS.textPrimary, fontSize: 11, fontWeight: "900", letterSpacing: 0.3,
+  },
+  player: { color: COLORS.textPrimary, fontSize: 15, fontWeight: "900", letterSpacing: 0.2 },
+  playerOpp: { color: COLORS.textMuted, fontSize: 13, fontWeight: "600" },
+  market: { color: COLORS.textMuted, fontSize: 12.5, fontWeight: "600", marginTop: 2 },
+  oddsBadge: {
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderWidth: 1, borderColor: COLORS.borderDefault,
+  },
+  oddsTxt: { fontSize: 13, fontWeight: "900", letterSpacing: 0.4 },
+
+  factsBlock: { gap: 10 },
+  factRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  factTxt: { flex: 1, color: COLORS.textPrimary, fontSize: 13, fontWeight: "500" },
+  factPct: { fontSize: 14, fontWeight: "900", minWidth: 44, textAlign: "right" },
+
+  // ── Legacy group-rail styles (kept in case other modules use them) ──
   groupHeader: { flexDirection: "row", alignItems: "center", gap: 6,
     paddingBottom: 8, marginBottom: 4,
     borderBottomWidth: 1, borderBottomColor: COLORS.borderDefault },
@@ -989,7 +1164,7 @@ const cheatStyles = StyleSheet.create({
   groupRowRight: { paddingLeft: 8 },
   groupRowRatio: { fontSize: 14, fontWeight: "900", letterSpacing: 0.3 },
 
-  // Detail modal (Trend Analysis screen)
+  // ── Detail modal (Trend Analysis screen) ───────────────────────
   modalOverlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
     backgroundColor: "rgba(0,0,0,0.85)",
     justifyContent: "center", alignItems: "stretch", padding: 12, zIndex: 999 },
@@ -1019,29 +1194,6 @@ const cheatStyles = StyleSheet.create({
   gamesCell: { color: COLORS.textPrimary, fontSize: 12, fontWeight: "600" },
   hitDot: { width: 22, height: 22, borderRadius: 12,
     alignItems: "center", justifyContent: "center" },
-
-  // Legacy card styles (kept for backward compat)
-  card: {
-    backgroundColor: "#1a1a1a",
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: COLORS.borderDefault,
-    padding: 14,
-    marginBottom: 10,
-  },
-  headerRow: { flexDirection: "row", alignItems: "center", marginBottom: 10, gap: 10 },
-  player: { color: COLORS.textPrimary, fontSize: 15, fontWeight: "900", marginBottom: 2, letterSpacing: 0.2 },
-  market: { color: COLORS.textMuted, fontSize: 12, fontWeight: "700" },
-  oddsBadge: {
-    paddingHorizontal: 10, paddingVertical: 6,
-    borderRadius: 20, borderWidth: 1,
-    backgroundColor: "rgba(255,255,255,0.03)",
-  },
-  oddsTxt: { fontSize: 13, fontWeight: "900", letterSpacing: 0.4 },
-  factsBlock: { gap: 8 },
-  factRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  factTxt: { flex: 1, color: COLORS.textPrimary, fontSize: 12.5, fontWeight: "600" },
-  factPct: { fontSize: 13, fontWeight: "900" },
 });
 
 

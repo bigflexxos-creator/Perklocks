@@ -234,6 +234,12 @@ async def correlations_v2(
                 (sb, fb, hb, ob) = reduced[j]
                 if (sa, fa) == (sb, fb):
                     continue
+                # Skip same-player derived-market pairs (see
+                # `_DERIVED_FAMILIES`) — those are the same event
+                # rendered twice and would poison the historical
+                # co-hit distribution with tautological correlations.
+                if _is_derived_same_player(sa, fa, sb, fb):
+                    continue
                 key = tuple(sorted([(sa, fa), (sb, fb)]))
                 slot = pair_counts.setdefault(key, {
                     "n": 0, "both_hit": 0, "a_hit": 0, "b_hit": 0,
@@ -336,8 +342,24 @@ async def correlations_v2(
     }
 
 
-def _prettify_leg(subject: str, family: str) -> str:
-    """Turn ('Aaron Judge', 'MLB_HR') → 'Aaron Judge Home Run'."""
+def _prettify_leg(subject: str, family: str, market: str | None = None,
+                  line: float | None = None, direction: str | None = None) -> str:
+    """Turn ('Aaron Judge', 'MLB_HR', 'Aaron Judge Over 0.5 Home Runs', 0.5, 'Over')
+    → 'Aaron Judge Over 0.5 Home Runs'.
+
+    If a raw `market` string is supplied and already contains "Over" or
+    "Under", we return it verbatim (with the player-code suffix like
+    " (NYY)" trimmed) — that's the most faithful representation of
+    what the user is actually betting.  Otherwise we fall back to the
+    family label so team-level moneyline/spread markets still render
+    something readable.
+    """
+    if market:
+        clean = re.sub(r"\s*\([A-Z]{2,4}\)\s*", " ", market).strip()
+        clean = re.sub(r"\s{2,}", " ", clean)
+        if re.search(r"\b(Over|Under|Yes|No)\b", clean, re.I):
+            return clean
+
     market_map = {
         "MLB_HR": "Home Run", "MLB_HITS": "1+ Hits", "MLB_RBI": "1+ RBI",
         "MLB_TB": "Total Bases", "MLB_KS": "Strikeouts", "MLB_OUTS": "Outs Recorded",
@@ -352,10 +374,50 @@ def _prettify_leg(subject: str, family: str) -> str:
         "TEN_MATCH": "Match Winner", "TEN_GAMES": "Total Games",
         "UFC_ML": "Moneyline",
     }
-    market = market_map.get(family, family.replace("_", " ").title())
+    label = market_map.get(family, family.replace("_", " ").title())
     if not subject or subject == "TEAM":
-        return market
-    return f"{subject} {market}"
+        return label
+    if direction and line is not None:
+        return f"{subject} {direction} {line:g} {label}"
+    return f"{subject} {label}"
+
+
+# Same-player derived-market groups.  Two picks from ANY set below,
+# on the same player, are effectively wagers on the same stat line
+# and MUST NOT be paired inside a parlay — the combined book price
+# would be nonsense (a K and an Out are the same 1/3-of-inning event
+# on the pitcher's ledger; a Home Run counts toward the hitter's TB
+# and Hit totals too).  These live at leg-level so the Correlation
+# Lab can transparently show "why we filtered you out" if needed.
+_DERIVED_FAMILIES: tuple[frozenset[str], ...] = (
+    # Pitcher stat line — outs recorded, walks, earned runs, hits allowed
+    # and strikeouts all resolve off the same start.
+    frozenset({"MLB_KS", "MLB_OUTS", "MLB_ER", "MLB_HA", "MLB_BB"}),
+    # Batter stat line — HRs count as hits and total bases; RBI is
+    # tied to the swing outcome.  Note different players in same
+    # game are NOT derived — the filter is same-player only.
+    frozenset({"MLB_HR", "MLB_HITS", "MLB_TB", "MLB_RBI"}),
+    # NBA volume stats for the same player.
+    frozenset({"NBA_POINTS", "NBA_REB", "NBA_AST", "NBA_THREES"}),
+    # NFL yardage / receiving for the same player.
+    frozenset({"NFL_PASS_YDS", "NFL_RUSH_YDS", "NFL_REC"}),
+    # Soccer attacking output.
+    frozenset({"SOC_SCORER", "SOC_ASSIST"}),
+)
+
+
+def _is_derived_same_player(sa: str, fa: str, sb: str, fb: str) -> bool:
+    """Return True iff the two legs represent the same person betting
+    on two stats that share the same underlying event/box-score row.
+    """
+    if not sa or not sb:
+        return False
+    if sa.strip().lower() != sb.strip().lower():
+        return False
+    for group in _DERIVED_FAMILIES:
+        if fa in group and fb in group:
+            return True
+    return False
 
 
 def _plain_verdict(lift: float | None, wlb: float, n: int) -> str:
@@ -433,6 +495,15 @@ async def _today_recommended_pairs(sport: str | None):
                 fb = _classify_market_family(b.get("sport"), b.get("market") or "")
                 if fa == fb:
                     continue
+                # subjects
+                sa = (a.get("player_name") or "").strip() or _parse_player_from_market(a.get("market") or "") or a.get("team") or ""
+                sb = (b.get("player_name") or "").strip() or _parse_player_from_market(b.get("market") or "") or b.get("team") or ""
+                sa = re.sub(r"\s*\([A-Z]{2,4}\)\s*", "", sa).strip()
+                sb = re.sub(r"\s*\([A-Z]{2,4}\)\s*", "", sb).strip()
+                # Reject same-player derived markets (can't parlay a
+                # pitcher's K prop with his Outs prop — same event).
+                if _is_derived_same_player(sa, fa, sb, fb):
+                    continue
                 # Combined odds
                 oa = a.get("book_odds") or -110
                 ob = b.get("book_odds") or -110
@@ -440,14 +511,9 @@ async def _today_recommended_pairs(sport: str | None):
                 dbb = (ob / 100 + 1) if ob > 0 else (100 / -ob + 1)
                 combo_dec = da * dbb
                 combo_american = round((combo_dec - 1) * 100) if combo_dec >= 2 else round(-100 / (combo_dec - 1))
-                # subjects
-                sa = (a.get("player_name") or "").strip() or _parse_player_from_market(a.get("market") or "") or a.get("team") or ""
-                sb = (b.get("player_name") or "").strip() or _parse_player_from_market(b.get("market") or "") or b.get("team") or ""
-                sa = re.sub(r"\s*\([A-Z]{2,4}\)\s*", "", sa).strip()
-                sb = re.sub(r"\s*\([A-Z]{2,4}\)\s*", "", sb).strip()
                 suggestions.append({
-                    "leg_a_display": _prettify_leg(sa, fa),
-                    "leg_b_display": _prettify_leg(sb, fb),
+                    "leg_a_display": _prettify_leg(sa, fa, market=a.get("market")),
+                    "leg_b_display": _prettify_leg(sb, fb, market=b.get("market")),
                     "leg_a_family": fa, "leg_b_family": fb,
                     "event": ev,
                     "combo_odds": combo_american,
@@ -916,6 +982,12 @@ async def cheatsheets(
             "player_name": subject,
             "player_display": _shorten_name(subject) if is_player_prop else subject,
             "opponent": opp_display,
+            # Own-team abbreviation used for the Linemate-style logo
+            # chip in the Cheatsheet card header.  Falls back to the
+            # inferred own team if the pick doesn't carry `team`.
+            "team_abbr": _team_abbr((inferred_own_team or team) or "") or None,
+            "team_full": (inferred_own_team or team) or None,
+            "event": lp.get("event"),
             "sport": lp.get("sport"),
             "market": market_str,
             "market_clean": _clean_market_label(market_str or lp.get("selection") or "", subject=subject),
