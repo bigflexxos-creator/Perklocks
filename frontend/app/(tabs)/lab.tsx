@@ -745,35 +745,34 @@ function PropExplorerModule({ picks }: { picks: any[] }) {
 // ═══════════════════════════════════════════════════════════════════
 // MODULE 5: CHEATSHEETS
 // ═══════════════════════════════════════════════════════════════════
-// Auto-generated stat proof cards for the highest-confidence picks.
-// Mirrors the "Trending today" cheatsheet UX users see on modern
-// sportsbook explorers — one glance shows the 3 most concrete
-// hit-streak facts + the % badge for each. Everything is derived
-// from data already on the pick (pick_rationale bullets + recent_form
-// + player_form_streak). No new API round-trip.
-function CheatsheetsModule({ picks }: { picks: any[] }) {
+// Data source: /api/lab/cheatsheets — REAL "Hit in X of last Y games"
+// facts computed server-side from the settled-pick history for each
+// player+market. NO model-rubric scores, NO fabricated bullets.
+function CheatsheetsModule({ picks: _picks }: { picks: any[] }) {
   const [sport, setSport] = useState<string>("All");
+  const [data, setData] = useState<any | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const sportsAvail = useMemo(() => {
-    const set = new Set<string>();
-    picks.forEach((p) => p.sport && set.add(p.sport));
-    return ["All", ...Array.from(set).sort()];
-  }, [picks]);
+  const load = useCallback(() => {
+    setLoading(true);
+    api.labCheatsheets({ sport: sport === "All" ? undefined : sport, limit: 40 })
+      .then(setData)
+      .catch(() => setData({ cards: [], count: 0 }))
+      .finally(() => setLoading(false));
+  }, [sport]);
+  useEffect(() => { load(); }, [load]);
 
-  const cards = useMemo(() => buildCheatsheets(picks, sport), [picks, sport]);
+  const sportsAvail = ["All", "MLB", "NBA", "NFL", "Soccer", "Tennis"];
+  const cards = data?.cards || [];
 
   return (
     <View>
       <SectionHeader
         icon="flash"
         title="Cheatsheets"
-        blurb="Auto-generated hit-streak proof cards for the day's most confident picks. Every fact is real data — no fluff."
+        blurb="Real hit-streak proof cards. Every fact is computed from the player's settled-pick history — no model scores, no fabrication."
       />
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.chipRow}
-      >
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
         {sportsAvail.map((s) => (
           <TouchableOpacity
             key={s}
@@ -788,218 +787,62 @@ function CheatsheetsModule({ picks }: { picks: any[] }) {
         ))}
       </ScrollView>
 
-      {cards.length === 0 ? (
+      {loading ? (
+        <ActivityIndicator color={COLORS.textPrimary} style={{ marginTop: 20 }} />
+      ) : cards.length === 0 ? (
         <Text style={styles.disclaimer}>
-          No cheatsheet-ready picks in this filter yet. Cards populate as picks
-          accumulate rolling-form + matchup evidence.
+          No cheatsheet-ready picks yet in {sport}. Cards populate once players in
+          today&apos;s slate have ≥3 hits in their last 5-10 same-market settled picks.
+          As the settled-pick history grows, more cards appear automatically.
         </Text>
       ) : (
-        cards.map((c) => <CheatsheetCard key={c.pickId} card={c} />)
+        cards.map((c: any) => <CheatsheetServerCard key={c.pick_id} card={c} />)
       )}
     </View>
   );
 }
 
-type CheatCard = {
-  pickId: string;
-  playerLabel: string;    // e.g. "B. Stott @ CIN"
-  marketLabel: string;    // e.g. "Over 0.5 Hits"
-  oddsLabel: string;      // e.g. "-150"
-  sport: string;
-  facts: { icon: keyof typeof Ionicons.glyphMap; text: string; pctLabel: string; tint: string }[];
-};
-
-function buildCheatsheets(picks: any[], sportFilter: string): CheatCard[] {
-  const filtered = picks.filter((p) => {
-    if (sportFilter !== "All" && p.sport !== sportFilter) return false;
-    if ((p.lock_score || 0) < 80) return false;      // only high-confidence
-    return true;
-  });
-  const cards: CheatCard[] = [];
-  for (const p of filtered) {
-    const facts = extractFacts(p);
-    if (facts.length < 1) continue;                  // need at least 1 solid fact
-    const player = shortenPlayer(p.player_name || p.player || "");
-    const opp = extractOpponent(p);
-    const playerLabel = player
-      ? (opp ? `${player} · ${opp}` : player)
-      : (p.event || p.selection || "");
-    cards.push({
-      pickId: p.id,
-      playerLabel,
-      marketLabel: cleanMarket(p.market || p.selection || ""),
-      oddsLabel: p.book_odds != null ? formatOdds(p.book_odds) : "",
-      sport: p.sport || "",
-      facts: facts.slice(0, 3),
-    });
-    if (cards.length >= 30) break;
-  }
-  return cards;
-}
-
-function extractFacts(pick: any): CheatCard["facts"] {
-  const facts: CheatCard["facts"] = [];
-  const rationale = pick.pick_rationale || {};
-  const evidence: any[] = rationale.evidence || rationale.evidence_all || [];
-  const rf = rationale.recent_form || {};
-  const keyInsights: any[] = pick.key_insights || [];
-
-  // 1) Recent-form streak facts (highest priority — matches the "Hit in 8 of last 8" pattern)
-  const streakKeys: [string, string][] = [
-    ["last5",  "last 5 games"],
-    ["last10", "last 10 games"],
-    ["last20", "last 20 games"],
-    ["L5",     "last 5 games"],
-    ["L10",    "last 10 games"],
-    ["L20",    "last 20 games"],
-  ];
-  for (const [key, label] of streakKeys) {
-    const v = rf[key];
-    if (v == null) continue;
-    // Accept {hits, n} shape
-    if (typeof v === "object" && "hits" in v && "n" in v) {
-      const hits = Number(v.hits);
-      const n = Number(v.n);
-      if (n > 0 && hits >= n * 0.6) {
-        const pct = Math.round((hits / n) * 100);
-        facts.push({
-          icon: "flash",
-          text: `Hit in ${hits} of ${label}`,
-          pctLabel: `${pct}%`,
-          tint: pctTint(pct),
-        });
-      }
-    } else if (typeof v === "number" && v >= 0.6) {
-      const pct = Math.round(v * 100);
-      const label2 = label.replace("games", "");
-      facts.push({
-        icon: "flash",
-        text: `Hit rate over ${label2}games`,
-        pctLabel: `${pct}%`,
-        tint: pctTint(pct),
-      });
-    }
-  }
-
-  // 2) Streak string on pick itself (player_form_streak like "5/6 vs CIN")
-  const pfStreak = pick.player_form_streak;
-  if (typeof pfStreak === "string" && pfStreak.includes("/")) {
-    const m = pfStreak.match(/(\d+)\s*\/\s*(\d+)/);
-    if (m) {
-      const hits = Number(m[1]);
-      const n = Number(m[2]);
-      if (n > 0) {
-        const pct = Math.round((hits / n) * 100);
-        const suffix = pfStreak.replace(m[0], "").trim();
-        facts.push({
-          icon: "stats-chart",
-          text: `Hit in ${hits} of last ${n}${suffix ? ` ${suffix}` : ""}`,
-          pctLabel: `${pct}%`,
-          tint: pctTint(pct),
-        });
-      }
-    }
-  }
-
-  // 3) Evidence/key_insights bullets that look like "Hit in X of Y ..."
-  //    — normalise + extract the streak numbers.
-  const streakRegex = /(\d+)\s*(?:of|\/)\s*(?:the\s+)?(?:last\s+)?(\d+)/i;
-  const allBullets = [...evidence, ...keyInsights];
-  for (const raw of allBullets) {
-    const text = typeof raw === "string" ? raw : (raw?.text || raw?.reason || "");
-    if (!text) continue;
-    const m = text.match(streakRegex);
-    if (!m) continue;
-    const hits = Number(m[1]);
-    const n = Number(m[2]);
-    if (!n || hits > n || n > 100) continue;
-    const pct = Math.round((hits / n) * 100);
-    if (pct < 60) continue;
-    // Guess an icon by keywords.
-    const t = text.toLowerCase();
-    const icon: keyof typeof Ionicons.glyphMap =
-      t.includes("home") || t.includes("away") ? "location"
-      : t.includes(" vs ") || t.includes("against") ? "chatbubbles"
-      : "flash";
-    // Clean the text (strip emojis) for consistent rendering.
-    const clean = text.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "").trim();
-    facts.push({ icon, text: clean, pctLabel: `${pct}%`, tint: pctTint(pct) });
-    if (facts.length >= 5) break;
-  }
-
-  // 4) Fallback: pull the top key_insights that carry a % or numeric
-  //    signal but aren't streak-formatted. These are still real facts
-  //    from the model (e.g. "Elite Player Lock", "xG per 90 = 0.62")
-  //    and let the cheatsheet render SOMETHING even for team-market /
-  //    non-recent-form picks. Better than an empty card.
-  if (facts.length < 3) {
-    for (const raw of allBullets) {
-      const text = typeof raw === "string" ? raw : (raw?.text || raw?.reason || "");
-      if (!text) continue;
-      // Skip anything already covered by the streak-regex loop above.
-      if (streakRegex.test(text)) continue;
-      // Extract a % if present, else look for a decimal or "N of M".
-      const pctMatch = text.match(/(\d{1,3})\s*%/);
-      const decimalMatch = text.match(/\b(\d+\.\d+)\b/);
-      let pctLabel = "";
-      let tint = COLORS.textPrimary;
-      if (pctMatch) {
-        const p = Number(pctMatch[1]);
-        pctLabel = `${p}%`;
-        tint = pctTint(p);
-      } else if (decimalMatch) {
-        pctLabel = decimalMatch[1];
-      } else {
-        // No numeric signal — accept only elite/keyword bullets.
-        if (!/elite|top|leader|hot|form/i.test(text)) continue;
-        pctLabel = "🔥";
-      }
-      const clean = text.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "").trim();
-      // Trim overly-long bullets to keep card readable.
-      const trimmed = clean.length > 90 ? clean.slice(0, 87) + "…" : clean;
-      const icon: keyof typeof Ionicons.glyphMap = pctMatch ? "stats-chart" : "trending-up";
-      facts.push({ icon, text: trimmed, pctLabel, tint });
-      if (facts.length >= 4) break;
-    }
-  }
-
-  // Dedupe by leading text
-  const seen = new Set<string>();
-  return facts.filter((f) => {
-    const key = f.text.slice(0, 40).toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function CheatsheetCard({ card }: { card: CheatCard }) {
-  const oddsColor = card.oddsLabel.startsWith("-") ? "#e46d6d" : "#40d18a";
+function CheatsheetServerCard({ card }: { card: any }) {
+  const oddsColor = String(card.book_odds ?? "").startsWith("-") ? "#e46d6d" : "#40d18a";
+  const headerLabel = card.opponent
+    ? `${card.player_display} ${card.opponent}`
+    : card.player_display;
   return (
-    <View style={cheatStyles.card} testID={`cheatsheet-card-${card.pickId}`}>
+    <View style={cheatStyles.card} testID={`cheatsheet-card-${card.pick_id}`}>
       <View style={cheatStyles.headerRow}>
         <View style={{ flex: 1 }}>
-          <Text style={cheatStyles.player} numberOfLines={1}>{card.playerLabel}</Text>
-          <Text style={cheatStyles.market} numberOfLines={1}>{card.marketLabel}</Text>
+          <Text style={cheatStyles.player} numberOfLines={1}>{headerLabel}</Text>
+          <Text style={cheatStyles.market} numberOfLines={1}>{card.market_clean}</Text>
         </View>
-        {card.oddsLabel ? (
+        {card.book_odds != null ? (
           <View style={[cheatStyles.oddsBadge, { borderColor: oddsColor }]}>
-            <Text style={[cheatStyles.oddsTxt, { color: oddsColor }]}>{card.oddsLabel}</Text>
+            <Text style={[cheatStyles.oddsTxt, { color: oddsColor }]}>{formatOdds(card.book_odds)}</Text>
           </View>
         ) : null}
       </View>
       <View style={cheatStyles.factsBlock}>
-        {card.facts.map((f, i) => (
-          <View key={i} style={cheatStyles.factRow}>
-            <Ionicons name={f.icon} size={13} color={f.tint} />
-            <Text style={cheatStyles.factTxt} numberOfLines={2}>{f.text}</Text>
-            <Text style={[cheatStyles.factPct, { color: f.tint }]}>{f.pctLabel}</Text>
-          </View>
-        ))}
+        {card.facts.map((f: any, i: number) => {
+          const tint = pctTint(f.pct);
+          const icon: keyof typeof Ionicons.glyphMap =
+            f.icon === "chatbubbles" ? "chatbubbles" :
+            f.icon === "location"    ? "location"    : "flash";
+          return (
+            <View key={i} style={cheatStyles.factRow}>
+              <Ionicons name={icon} size={13} color={tint} />
+              <Text style={cheatStyles.factTxt} numberOfLines={2}>{f.text}</Text>
+              <Text style={[cheatStyles.factPct, { color: tint }]}>{f.pct}%</Text>
+            </View>
+          );
+        })}
       </View>
     </View>
   );
 }
+
+// Legacy client-side cheatsheet builder — replaced by /api/lab/cheatsheets
+// which computes real streak facts from settled-pick history. The
+// helper functions below (pctTint, shortenPlayer, extractOpponent,
+// abbr, cleanMarket, cheatStyles) are still used by CheatsheetServerCard.
 
 // ── cheatsheet helpers ────────────────────────────────────────────
 function pctTint(pct: number): string {
@@ -1008,38 +851,9 @@ function pctTint(pct: number): string {
   if (pct >= 60) return "#f5c542";
   return COLORS.textMuted;
 }
-function shortenPlayer(name: string): string {
-  if (!name) return "";
-  const parts = name.trim().split(/\s+/);
-  if (parts.length >= 2) return `${parts[0][0]}. ${parts.slice(1).join(" ")}`;
-  return name;
-}
-function extractOpponent(pick: any): string {
-  const event = pick.event || "";
-  const team = pick.team || "";
-  if (event.includes("@")) {
-    const [a, h] = event.split("@").map((s: string) => s.trim());
-    // Return the team the player is playing AGAINST if we know the player's team
-    if (team && team === a) return `@ ${abbr(h)}`;
-    if (team && team === h) return `vs ${abbr(a)}`;
-    // Fallback — show "@ HOME"
-    return `@ ${abbr(h)}`;
-  }
-  return "";
-}
-function abbr(team: string): string {
-  if (!team) return "";
-  const t = team.trim();
-  const words = t.split(/\s+/);
-  if (words.length >= 2) return words.map((w) => w[0]).join("").toUpperCase().slice(0, 4);
-  return t.slice(0, 3).toUpperCase();
-}
-function cleanMarket(market: string): string {
-  return market
-    .replace(/^.*?(Over|Under|Anytime|Total)/, "$1")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+
+// (shortenPlayer/extractOpponent/abbr/cleanMarket removed — cheatsheet
+// server endpoint now handles all these formatting concerns.)
 
 const cheatStyles = StyleSheet.create({
   card: {

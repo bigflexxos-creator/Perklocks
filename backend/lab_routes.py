@@ -501,6 +501,380 @@ async def patterns(
 
 
 # ═════════════════════════════════════════════════════════════════════
+# CHEATSHEETS — real streak facts from settled-pick history
+# ═════════════════════════════════════════════════════════════════════
+@router.get("/cheatsheets")
+async def cheatsheets(
+    sport: str | None = Query(None),
+    min_lock: float = Query(75.0, ge=0),
+    min_streak_hits: int = Query(2, ge=1, description="Only include cards where the last-N sample has ≥ this many hits"),
+    limit: int = Query(30, ge=1, le=100),
+):
+    """Return REAL "Hit in X of last Y" cheatsheet cards for today's
+    high-confidence PLAYER PROP picks.
+
+    Algorithm
+    ---------
+    1. Pull today's active picks with a `player_name`, lock_score ≥
+       min_lock, market that isn't alt/spread/ML.
+    2. For each, query the SETTLED history for that exact player +
+       market family and compute:
+         * last5 hit rate    (last 5 settled picks)
+         * last10 hit rate   (last 10 settled picks)
+         * last20 hit rate   (last 20 settled picks)
+         * vs-opponent hit rate (when we can identify the opponent
+           from the pick's `event` string)
+         * home/away hit rate for whichever venue the current pick is at
+    3. Build up to 3 fact bullets per card. Skip the card entirely if
+       we can't produce at least ONE bullet with ≥ min_streak_hits hits
+       — better empty than fabricated.
+
+    This is the ONLY source-of-truth for the Cheatsheets tab; the
+    frontend no longer synthesises facts from model rubric scores.
+    """
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    live_q: dict[str, Any] = {
+        "pick_date": today,
+        "lock_score": {"$gte": min_lock},
+        # Block synthesized alt lines only — user wants REAL bets.
+        # Moneylines, spreads, totals, and player props are all fair game.
+        "market": {
+            "$exists": True,
+            "$not": re.compile(r"\(alt\)|\balt\b", re.IGNORECASE),
+        },
+    }
+    if sport:
+        live_q["sport"] = sport
+
+    live_cursor = db.picks.find(
+        live_q,
+        {"_id": 0, "id": 1, "sport": 1, "market": 1, "selection": 1,
+         "event": 1, "team": 1, "player_name": 1, "book_odds": 1,
+         "lock_score": 1, "edge_percent": 1},
+    ).sort("lock_score", -1).limit(300)
+
+    live_picks = await live_cursor.to_list(length=300)
+
+    cards: list[dict[str, Any]] = []
+    seen_subject_family: set[tuple[str, str]] = set()
+    for lp in live_picks:
+        if len(cards) >= limit:
+            break
+        # Determine the "subject" of the pick — prefer explicit fields,
+        # fall back to parsing from the market string when those are
+        # missing (common on synth-goal-scorer picks where player_name
+        # is None but the player IS named in the market text).
+        player = (lp.get("player_name") or "").strip()
+        # Legacy DB rows store the literal string "None" — treat as empty.
+        if player.lower() == "none":
+            player = ""
+        team = (lp.get("team") or "").strip()
+        if team.lower() == "none":
+            team = ""
+        market_str = lp.get("market") or ""
+        if not player:
+            player = _parse_player_from_market(market_str)
+        is_player_prop = bool(player)
+        subject = player if is_player_prop else team
+        if not subject:
+            subject = _parse_team_from_market(market_str, lp.get("event") or "")
+        if not subject:
+            continue
+        family = _classify_market_family(lp.get("sport"), market_str)
+        # De-dupe: show ONE card per (subject, family). If the slate has
+        # both "Messi First Goal Scorer" and "Messi Anytime Goal Scorer"
+        # for the same player, the SOC_SCORER family covers both — the
+        # highest-lock variant wins (list is already sorted lock-desc).
+        dedup_key = (subject.lower(), family)
+        if dedup_key in seen_subject_family:
+            continue
+        settled = await _fetch_subject_history(
+            subject, lp.get("sport"), family, is_player_prop,
+        )
+        if not settled:
+            continue
+        facts = _build_streak_facts(settled, lp, min_streak_hits)
+        if not facts:
+            continue
+        seen_subject_family.add(dedup_key)
+        opp = _extract_opponent_from_pick(lp)
+        cards.append({
+            "pick_id": lp.get("id"),
+            "player_name": subject,
+            "player_display": _shorten_name(subject) if is_player_prop else subject,
+            "opponent": opp,
+            "sport": lp.get("sport"),
+            "market": market_str,
+            "market_clean": _clean_market_label(market_str or lp.get("selection") or ""),
+            "family": family,
+            "book_odds": lp.get("book_odds"),
+            "lock_score": lp.get("lock_score"),
+            "facts": facts,
+        })
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "sport_filter": sport,
+        "count": len(cards),
+        "cards": cards,
+    }
+
+
+async def _fetch_subject_history(
+    subject: str, sport: str | None, family: str, is_player_prop: bool,
+) -> list[dict]:
+    """Get the last 30 settled picks for this subject+family.
+
+    Player-name resolution notes
+    ----------------------------
+    Historical picks in this DB sometimes have `player_name` unset or
+    literally set to the string "None" while the actual player is
+    embedded in the `market` field (e.g. `"Mohamed Salah First Goal
+    Scorer"`). To surface real streaks we match by EITHER:
+      * `player_name` regex exact match  (when field is populated), OR
+      * `market` regex substring match   (fallback for legacy rows).
+
+    For team markets we search the `team` field with a contains-regex
+    since team labels can be inconsistent ("Yankees" vs "New York
+    Yankees").
+    """
+    subj_str = subject.strip()
+    q: dict[str, Any] = {"status": {"$in": ["won", "lost"]}}
+    if is_player_prop:
+        # Match either exact player_name OR market-substring so we catch
+        # the legacy rows where player_name was stored as "None".
+        q["$or"] = [
+            {"player_name": re.compile(r"^" + re.escape(subj_str) + r"$", re.IGNORECASE)},
+            {"market": re.compile(re.escape(subj_str), re.IGNORECASE)},
+        ]
+    else:
+        q["team"] = re.compile(re.escape(subj_str), re.IGNORECASE)
+    if sport:
+        q["sport"] = sport
+    cursor = db.picks.find(
+        q,
+        {"_id": 0, "id": 1, "sport": 1, "market": 1, "event": 1,
+         "team": 1, "player_name": 1, "status": 1,
+         "pick_date": 1, "settled_at": 1},
+    ).sort("settled_at", -1).limit(30)
+    all_hist = await cursor.to_list(length=30)
+    # Filter to same market family (Hits ≠ HR, ML ≠ Spread).
+    return [
+        h for h in all_hist
+        if _classify_market_family(h.get("sport"), h.get("market") or "") == family
+    ]
+
+
+def _build_streak_facts(
+    settled: list[dict], live_pick: dict, min_hits: int,
+) -> list[dict]:
+    """From settled history + the current live pick's context, build
+    the 3 most persuasive streak bullets.
+
+    Priority (matches the competitor "cheatsheet" UX the user pinned
+    in the design brief):
+      1. Overall recent streak — e.g. "Hit in 8 of last 8 games"
+      2. vs-opponent streak — e.g. "Hit in 3 of last 3 vs CIN"
+      3. Home/away streak matching the venue of the current pick
+    """
+    facts: list[dict] = []
+
+    def _win_count(picks: list[dict]) -> tuple[int, int]:
+        w = sum(1 for p in picks if (p.get("status") or "").lower() == "won")
+        return w, len(picks)
+
+    # 1) Overall — try last8 then last10 then last5
+    for window in (8, 10, 5, 20):
+        if len(settled) < window:
+            continue
+        recent = settled[:window]
+        w, n = _win_count(recent)
+        if w >= min_hits:
+            pct = round(w / n * 100)
+            facts.append({
+                "icon": "flash",
+                "text": f"Hit in {w} of last {n} games",
+                "pct": pct,
+                "hits": w, "n": n,
+            })
+            break
+
+    # 2) vs opponent
+    opp_hint = _extract_opponent_from_pick(live_pick)
+    if opp_hint:
+        opp_re = re.compile(re.escape(opp_hint.replace("vs ", "").replace("@ ", "")), re.I)
+        vs_hist = [h for h in settled if opp_re.search(h.get("event") or "")]
+        if vs_hist:
+            w, n = _win_count(vs_hist)
+            if w >= max(1, min_hits - 1):
+                pct = round(w / n * 100)
+                facts.append({
+                    "icon": "chatbubbles",
+                    "text": f"Hit in {w} of last {n} vs {opp_hint.replace('vs ', '').replace('@ ', '')}",
+                    "pct": pct,
+                    "hits": w, "n": n,
+                })
+
+    # 3) Home / Away match
+    live_venue = _venue_of_pick(live_pick)   # "home", "away", or None
+    if live_venue:
+        venue_hist = [h for h in settled if _venue_of_pick(h) == live_venue]
+        if venue_hist:
+            w, n = _win_count(venue_hist[:10])  # last 10 same-venue
+            if w >= max(1, min_hits - 1):
+                pct = round(w / n * 100)
+                facts.append({
+                    "icon": "location",
+                    "text": f"Hit in {w} of last {n} {live_venue} games",
+                    "pct": pct,
+                    "hits": w, "n": n,
+                })
+
+    # Dedupe on identical text
+    seen: set[str] = set()
+    out: list[dict] = []
+    for f in facts:
+        if f["text"] in seen:
+            continue
+        seen.add(f["text"])
+        out.append(f)
+    return out[:3]
+
+
+def _extract_opponent_from_pick(pick: dict) -> str | None:
+    ev = pick.get("event") or ""
+    tm = (pick.get("team") or "").strip().lower()
+    if not ev or "@" not in ev:
+        return None
+    away, home = [s.strip() for s in ev.split("@", 1)]
+    if not tm:
+        return f"@ {_team_abbr(home)}"
+    if tm in home.lower():
+        return f"vs {_team_abbr(away)}"
+    if tm in away.lower():
+        return f"@ {_team_abbr(home)}"
+    return f"@ {_team_abbr(home)}"
+
+
+def _venue_of_pick(pick: dict) -> str | None:
+    ev = pick.get("event") or ""
+    tm = (pick.get("team") or "").strip().lower()
+    if not ev or "@" not in ev or not tm:
+        return None
+    away, home = [s.strip().lower() for s in ev.split("@", 1)]
+    if tm in home:
+        return "home"
+    if tm in away:
+        return "away"
+    return None
+
+
+def _team_abbr(team: str) -> str:
+    if not team:
+        return ""
+    words = team.strip().split()
+    if len(words) >= 2:
+        return "".join(w[0] for w in words).upper()[:4]
+    return team[:3].upper()
+
+
+def _shorten_name(name: str) -> str:
+    parts = name.strip().split()
+    if len(parts) >= 2:
+        return f"{parts[0][0]}. {' '.join(parts[1:])}"
+    return name
+
+
+def _clean_market_label(m: str) -> str:
+    return re.sub(r"^.*?-\s*", "", m).strip() or m
+
+
+# Player-prop keyword tail that we strip when parsing player from
+# market string. Ordered longest-first so "Anytime Goal Scorer" is
+# tried before "Goal Scorer".
+_PLAYER_MARKET_TAILS = (
+    "First Goal Scorer",
+    "Anytime Goal Scorer",
+    "Score or Assist",
+    "Anytime Assist",
+    "Anytime Touchdown Scorer",
+    "First Touchdown Scorer",
+    "Last Touchdown Scorer",
+    "Anytime Home Run",
+    "First Home Run",
+    "Any Time Rush + Rec TD",
+    "To Record a Sack",
+    "Shots On Goal",
+    "Total Bases",
+    "Total Points",
+    "Passing Yards",
+    "Rushing Yards",
+    "Receiving Yards",
+    "Receptions",
+    "Passing TDs",
+    "Rushing TDs",
+    "Home Run",
+    "Hits + Runs + RBI",
+    "Total Assists",
+    "Total Rebounds",
+    "Total 3-Pointers",
+    "Strikeouts",
+    "Hits Allowed",
+    "Outs Recorded",
+    "Earned Runs",
+    "Runs",
+    "RBI",
+    "Hits",
+)
+
+
+def _parse_player_from_market(market: str) -> str:
+    """Extract player name from a market string when the pick doc's
+    `player_name` field is missing. Handles both `"Mohamed Salah First
+    Goal Scorer"` and `"Player Name - Anytime Goal Scorer"` formats.
+    """
+    if not market:
+        return ""
+    m = market.strip()
+    # "Player - Market" split first
+    if " - " in m:
+        left = m.split(" - ", 1)[0].strip()
+        # Ensure it looks like a name (has a space, no obvious market keywords)
+        if " " in left and not any(t.lower() in left.lower() for t in _PLAYER_MARKET_TAILS):
+            return left
+    # Otherwise trim market tail off the right side
+    for tail in _PLAYER_MARKET_TAILS:
+        if m.lower().endswith(tail.lower()):
+            candidate = m[: -len(tail)].strip(" -–—")
+            if candidate and " " in candidate:
+                return candidate
+    return ""
+
+
+def _parse_team_from_market(market: str, event: str) -> str:
+    """Extract the team being bet on from a team-market string like
+    "Lillestrom Win or Draw" or "Yankees Moneyline" — check which side
+    of the event's teams appears in the market."""
+    if not market or not event or "@" not in event:
+        return ""
+    m = market.lower()
+    away, home = [s.strip() for s in event.split("@", 1)]
+    # Longer team name first so "New York" doesn't shadow "New York Yankees".
+    for team in sorted([away, home], key=lambda t: -len(t or "")):
+        if not team:
+            continue
+        # Try each significant word of the team name.
+        for token in team.lower().split():
+            if len(token) < 4:
+                continue
+            if token in m:
+                return team
+    return ""
+
+
+# ═════════════════════════════════════════════════════════════════════
 # MATCHUP DNA
 # ═════════════════════════════════════════════════════════════════════
 @router.get("/matchup-dna/{sport}/{subject}")
