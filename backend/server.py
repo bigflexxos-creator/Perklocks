@@ -1992,6 +1992,34 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as _enr_err:
         logger.warning("Pick enrichment failed (continuing): %s", _enr_err)
 
+    # ── Validation-first architecture (2026-07-04, per user spec) ──
+    # Every pick must survive the board_validator gauntlet before it
+    # can be published. This is the last gate before insert_many:
+    #   §1 contradiction detection (both-sides-of-same-market)
+    #   §2 batter-vs-pitcher validation (same-team, non-probable)
+    #   §6 board-quality floors (never publish filler picks)
+    #   §3 immutable snapshot (locked payload for graders)
+    #   §4 rollover tag (permanent on_rollover_at stamp)
+    try:
+        from board_validator import validate_and_finalize
+        pre_count = len(safe_picks)
+        safe_picks, val_report = validate_and_finalize(safe_picks)
+        logger.info(
+            "Board validator: %d → %d picks (contra=%d, bp=%d, quality=%d, rollover=%d)",
+            pre_count, len(safe_picks),
+            val_report.get("contradictions", {}).get("dropped", 0),
+            val_report.get("batter_pitcher", {}).get("dropped", 0),
+            val_report.get("board_quality", {}).get("dropped", 0),
+            val_report.get("rollover", {}).get("tagged", 0),
+        )
+        # Log detailed reasons at INFO when anything was dropped so we
+        # can debug board-quality regressions from a single log line.
+        if any(val_report[k].get("dropped", 0) for k in
+               ("contradictions", "batter_pitcher", "board_quality")):
+            logger.info("Board validator reasons: %s", val_report)
+    except Exception as _bv_err:
+        logger.warning("Board validator failed (continuing): %s", _bv_err)
+
     if safe_picks:
         # ATOMIC-SWAP: do the wipe NOW, immediately before the insert.
         # The enrichment passes above ran on in-memory `safe_picks` —

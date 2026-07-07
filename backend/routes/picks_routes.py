@@ -672,12 +672,25 @@ async def picks_history(
         except Exception:
             return 0.0
         return f / 100.0 if f > 1.0 else f
-    rollover_picks = [
-        p for p in settled
-        if (p.get("lock_score") or 0) >= 95
-        and _wp_frac(p.get("win_probability")) >= 0.80
-        and float(p.get("edge_percent") or 0) >= 4.0
-    ]
+    # Rollover V4 (2026-07-04 IMMUTABLE): Rollover history now filters
+    # on the `on_rollover_at` publish-time tag stamped by the board
+    # validator, NOT live lock/win_prob/edge thresholds. Previously we
+    # re-evaluated thresholds against current DB state, so a pick that
+    # was downgraded after settlement would silently disappear from
+    # rollover history, and a newly-qualifying pick would retroactively
+    # appear (user complaint: "Rollover history is grading random bets
+    # instead of the actual rollover picks"). Fallback to legacy
+    # threshold-based logic ONLY when no picks have been tagged yet.
+    tagged_rollover = [p for p in settled if p.get("on_rollover_at")]
+    if tagged_rollover:
+        rollover_picks = tagged_rollover
+    else:
+        rollover_picks = [
+            p for p in settled
+            if (p.get("lock_score") or 0) >= 95
+            and _wp_frac(p.get("win_probability")) >= 0.80
+            and float(p.get("edge_percent") or 0) >= 4.0
+        ]
     ro_won = sum(1 for p in rollover_picks if p.get("status") == "won")
     ro_lost = sum(1 for p in rollover_picks if p.get("status") == "lost")
     ro_push = sum(1 for p in rollover_picks if p.get("status") == "push")
