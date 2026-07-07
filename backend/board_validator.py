@@ -1,0 +1,457 @@
+"""Validation-first architecture for PerksLocks board publishing.
+
+User spec 2026-07-04: "PerksLocks needs to move to a validation-first
+architecture instead of a generation-first architecture. Every published
+pick should be fully validated, explainable, traceable, and graded
+against the exact pick that was originally published."
+
+This module implements Session-1 scope:
+
+  §1 Contradiction detection — reject both-sides-of-same-market
+  §2 Batter vs pitcher validation — reject impossible matchups
+  §3 Immutable snapshot — every pick gets a locked `snapshot` payload
+  §6 Board quality gate — never publish "filler" picks below threshold
+  §4 Rollover tagging — pin picks to the rollover board at publish time
+
+Sessions 2-3 (chalk-bias fix, lock-score integrity, evidence threshold,
+automated integrity checks) build on this foundation.
+
+Note: the existing `pick_validator.py` handles math-drift healing on
+the DB side (edge/implied-prob/lock-score consistency). This module is
+distinct — it runs at PUBLISH time against the in-memory candidate
+list, BEFORE picks are written to the picks collection.
+
+USAGE
+    from board_validator import validate_and_finalize
+    safe_picks, report = validate_and_finalize(safe_picks)
+    logger.info("Board validator: %s", report)
+"""
+from __future__ import annotations
+
+import logging
+import re
+import unicodedata
+from datetime import datetime, timezone
+from typing import Optional
+
+logger = logging.getLogger("lockscore.board_validator")
+
+
+# ─────────────────────── shared helpers ───────────────────────────────
+
+def _norm(s: str) -> str:
+    if not s:
+        return ""
+    return "".join(
+        c for c in unicodedata.normalize("NFD", s)
+        if unicodedata.category(c) != "Mn"
+    ).strip().lower()
+
+
+def _line_from_market(market: str) -> Optional[str]:
+    if not market:
+        return None
+    m = re.search(r"(-?\d+(?:\.\d+)?)", market)
+    return m.group(1) if m else None
+
+
+def _side_from_market(market: str) -> Optional[str]:
+    ml = (market or "").lower()
+    if "team total" in ml:
+        if "over" in ml:
+            return "team_over"
+        if "under" in ml:
+            return "team_under"
+        return None
+    if "over" in ml:
+        return "over"
+    if "under" in ml:
+        return "under"
+    return None
+
+
+def _has_real_player(pick: dict) -> bool:
+    """True if the pick has an explicit player identity (not just an
+    Over/Under game total). Prefer explicit `selection`/`player_name`
+    fields; fall back to detecting the (TEAM) abbreviation pattern
+    that marks bookmaker-formatted player-prop markets."""
+    sel = (pick.get("selection") or "").strip().lower()
+    if sel and sel not in ("over", "under", "yes", "no"):
+        return True
+    if pick.get("player_name"):
+        return True
+    # Bookmaker player-prop markets have "Player Name (ABBR)" prefix.
+    m = re.search(r"\(([A-Z]{2,4})\)", pick.get("market") or "")
+    return bool(m)
+
+
+def _extract_player(pick: dict) -> str:
+    if not _has_real_player(pick):
+        return ""
+    try:
+        from quality_gate import _extract_player_from_pick
+        return _norm(_extract_player_from_pick(pick) or "")
+    except Exception:
+        return _norm(pick.get("selection") or "")
+
+
+def _score(pick: dict) -> float:
+    return (
+        float(pick.get("lock_score_v2") or pick.get("lock_score") or 0)
+        + max(0.0, float(pick.get("edge_percent") or 0)) * 0.05
+    )
+
+
+# ─────────────────────── §1 Contradiction detection ───────────────────
+
+def remove_contradictions(picks: list[dict]) -> tuple[list[dict], dict]:
+    """Remove picks contradicting each other on the same market/game.
+
+    Handled:
+      • Game Total Over vs Under (same line)
+      • Team Total Over vs Under (same team + line)
+      • Player prop Over vs Under (same player + stat + line)
+      • Both-team Moneyline on same game
+    """
+    stats = {"scanned": len(picks), "dropped": 0, "reasons": {}}
+    if not picks:
+        return picks, stats
+
+    groups: dict[tuple, list[dict]] = {}
+    for p in picks:
+        event = p.get("event") or ""
+        market = p.get("market") or ""
+        ml = market.lower()
+        line = _line_from_market(market)
+        side = _side_from_market(market)
+        if side is None:
+            continue
+        if side in ("team_over", "team_under"):
+            m = re.match(r"^(.+?)\s+Team\s+Total", market, re.IGNORECASE)
+            team = _norm(m.group(1)) if m else ""
+            key = (event, "team_total", team, line)
+        elif "goal scorer" in ml or "to score" in ml:
+            key = (event, "player_prop", _extract_player(p), line)
+        elif (
+            _extract_player(p)
+            and any(k in ml for k in (
+                "hits", "strikeouts", "outs recorded", "total bases",
+                " runs", "rbi", "points", "rebounds", "assists",
+                "games", "sets", "home run",
+            ))
+        ):
+            # Player prop: requires an actual player name AND a stat keyword.
+            family = re.sub(r"\s*(over|under)\s+[-\d.]+.*", "", ml).strip()
+            key = (event, "player_prop", _extract_player(p), family, line)
+        else:
+            # Bare game total (no player) — group by line only.
+            key = (event, "game_total", line)
+        groups.setdefault(key, []).append(p)
+
+    keep: set[int] = {id(p) for p in picks}
+    for key, bucket in groups.items():
+        if len(bucket) <= 1:
+            continue
+        sides_present = {
+            _side_from_market(b.get("market") or "") for b in bucket
+        }
+        if len(sides_present) <= 1:
+            continue
+        bucket.sort(key=_score, reverse=True)
+        winner = bucket[0]
+        for loser in bucket[1:]:
+            if id(loser) in keep:
+                keep.discard(id(loser))
+                stats["dropped"] += 1
+                r = f"contradict_{key[1]}"
+                stats["reasons"][r] = stats["reasons"].get(r, 0) + 1
+                logger.debug("Drop contradiction (%s): %s vs kept %s",
+                             r, loser.get("market"), winner.get("market"))
+
+    # Both-teams Moneyline on same event
+    ml_groups: dict[str, list[dict]] = {}
+    for p in picks:
+        market = (p.get("market") or "").lower()
+        if "moneyline" not in market and not market.endswith(" to win"):
+            continue
+        if id(p) not in keep:
+            continue
+        event = p.get("event") or ""
+        if not event:
+            continue
+        ml_groups.setdefault(event, []).append(p)
+    for event, bucket in ml_groups.items():
+        if len(bucket) <= 1:
+            continue
+        bucket.sort(key=_score, reverse=True)
+        for loser in bucket[1:]:
+            keep.discard(id(loser))
+            stats["dropped"] += 1
+            stats["reasons"]["contradict_moneyline"] = (
+                stats["reasons"].get("contradict_moneyline", 0) + 1
+            )
+
+    return [p for p in picks if id(p) in keep], stats
+
+
+# ─────────────────────── §2 Batter vs pitcher validation ──────────────
+
+_MLB_ABBR: dict[str, str] = {
+    "ATL": "Atlanta Braves", "AZ": "Arizona Diamondbacks",
+    "ARI": "Arizona Diamondbacks", "BAL": "Baltimore Orioles",
+    "BOS": "Boston Red Sox", "CHC": "Chicago Cubs",
+    "CHW": "Chicago White Sox", "CWS": "Chicago White Sox",
+    "CIN": "Cincinnati Reds", "CLE": "Cleveland Guardians",
+    "COL": "Colorado Rockies", "DET": "Detroit Tigers",
+    "HOU": "Houston Astros", "KC": "Kansas City Royals",
+    "LAA": "Los Angeles Angels", "LAD": "Los Angeles Dodgers",
+    "MIA": "Miami Marlins", "MIL": "Milwaukee Brewers",
+    "MIN": "Minnesota Twins", "NYM": "New York Mets",
+    "NYY": "New York Yankees", "OAK": "Athletics",
+    "ATH": "Athletics", "PHI": "Philadelphia Phillies",
+    "PIT": "Pittsburgh Pirates", "SD": "San Diego Padres",
+    "SEA": "Seattle Mariners", "SF": "San Francisco Giants",
+    "SFG": "San Francisco Giants", "STL": "St. Louis Cardinals",
+    "TB": "Tampa Bay Rays", "TBR": "Tampa Bay Rays",
+    "TEX": "Texas Rangers", "TOR": "Toronto Blue Jays",
+    "WSH": "Washington Nationals", "WAS": "Washington Nationals",
+}
+
+
+def _player_team_from_market(market: str) -> Optional[str]:
+    if not market:
+        return None
+    m = re.search(r"\(([A-Z]{2,4})\)", market)
+    if not m:
+        return None
+    return _MLB_ABBR.get(m.group(1).upper())
+
+
+def validate_batter_pitcher(picks: list[dict]) -> tuple[list[dict], dict]:
+    """Reject impossible MLB matchups."""
+    stats = {"scanned": 0, "dropped": 0, "reasons": {}}
+    survivors: list[dict] = []
+    for p in picks:
+        if (p.get("sport") or "").upper() != "MLB":
+            survivors.append(p)
+            continue
+        market = p.get("market") or ""
+        ml = market.lower()
+        is_player_market = any(k in ml for k in (
+            "hits", "home run", "strikeout", "outs recorded",
+            "total bases", " rbi", "hits + runs",
+        ))
+        if not is_player_market:
+            stats["scanned"] += 1
+            survivors.append(p)
+            continue
+
+        stats["scanned"] += 1
+        player_team = _player_team_from_market(market)
+        event = (p.get("event") or "").strip()
+        parts = re.split(r"\s+@\s+", event)
+        if len(parts) != 2 or not player_team:
+            survivors.append(p)
+            continue
+        away, home = parts[0].strip(), parts[1].strip()
+
+        # Rule 1: player must be on one of the two teams playing.
+        if _norm(player_team) not in (_norm(away), _norm(home)):
+            stats["dropped"] += 1
+            stats["reasons"]["player_team_not_in_event"] = (
+                stats["reasons"].get("player_team_not_in_event", 0) + 1
+            )
+            logger.warning(
+                "REJECT: player team %r not in event %r (%s)",
+                player_team, event, market,
+            )
+            continue
+
+        # Rule 2: opposing-pitcher must be from the OTHER team (never own).
+        opp = home if _norm(player_team) == _norm(away) else away
+        opp_pitcher_team = (
+            p.get("opposing_pitcher_team")
+            or (p.get("pick_rationale") or {}).get("opp_pitcher_team")
+        )
+        if opp_pitcher_team and _norm(opp_pitcher_team) != _norm(opp):
+            stats["dropped"] += 1
+            stats["reasons"]["batter_faces_own_team_pitcher"] = (
+                stats["reasons"].get("batter_faces_own_team_pitcher", 0) + 1
+            )
+            logger.warning(
+                "REJECT: batter %s (%s) vs pitcher from same team %s",
+                _extract_player(p), player_team, opp_pitcher_team,
+            )
+            continue
+
+        # Rule 3: pitcher props must be the probable starter when known.
+        is_pitcher_market = ("strikeout" in ml or "outs recorded" in ml)
+        if is_pitcher_market and p.get("is_probable_pitcher") is False:
+            stats["dropped"] += 1
+            stats["reasons"]["pitcher_not_probable"] = (
+                stats["reasons"].get("pitcher_not_probable", 0) + 1
+            )
+            logger.warning("REJECT: %s not probable starter — %s",
+                           _extract_player(p), market)
+            continue
+
+        survivors.append(p)
+
+    return survivors, stats
+
+
+# ─────────────────────── §6 Board quality gate ────────────────────────
+
+_BOARD_QUALITY_FLOORS: dict[str, dict[str, float]] = {
+    "default":                {"lock_min": 65, "edge_min": -3.0, "win_prob_min": 0.45},
+    "MLB_prop":               {"lock_min": 70, "edge_min":  0.0, "win_prob_min": 0.50},
+    "Soccer_ags":             {"lock_min": 75, "edge_min":  0.0, "win_prob_min": 0.30},
+    "Tennis":                 {"lock_min": 70, "edge_min": -2.0, "win_prob_min": 0.50},
+}
+
+
+def _quality_key(pick: dict) -> str:
+    sport = (pick.get("sport") or "").upper()
+    market = (pick.get("market") or "").lower()
+    if sport == "MLB" and any(k in market for k in (
+        "hits", "strikeouts", "outs recorded", "home run", "total bases", "rbi",
+    )):
+        return "MLB_prop"
+    if sport == "SOCCER" and (
+        "goal scorer" in market or "to score or assist" in market
+    ):
+        return "Soccer_ags"
+    if sport == "TENNIS":
+        return "Tennis"
+    return "default"
+
+
+def enforce_board_quality(picks: list[dict]) -> tuple[list[dict], dict]:
+    stats = {"scanned": len(picks), "dropped": 0, "reasons": {}}
+    survivors: list[dict] = []
+    for p in picks:
+        key = _quality_key(p)
+        floors = _BOARD_QUALITY_FLOORS.get(key, _BOARD_QUALITY_FLOORS["default"])
+        lock = float(p.get("lock_score_v2") or p.get("lock_score") or 0)
+        edge = float(p.get("edge_percent") or 0)
+        wp = float(p.get("win_probability") or 0)
+        if wp > 1.0:
+            wp = wp / 100.0
+        if lock < floors["lock_min"]:
+            stats["dropped"] += 1
+            r = f"lock_below_{int(floors['lock_min'])}"
+            stats["reasons"][r] = stats["reasons"].get(r, 0) + 1
+            continue
+        if edge < floors["edge_min"]:
+            stats["dropped"] += 1
+            stats["reasons"]["edge_negative"] = (
+                stats["reasons"].get("edge_negative", 0) + 1
+            )
+            continue
+        if wp < floors["win_prob_min"]:
+            stats["dropped"] += 1
+            stats["reasons"]["win_prob_low"] = (
+                stats["reasons"].get("win_prob_low", 0) + 1
+            )
+            continue
+        survivors.append(p)
+    return survivors, stats
+
+
+# ─────────────────────── §3 Immutable snapshot ────────────────────────
+
+def apply_immutable_snapshot(picks: list[dict]) -> tuple[list[dict], dict]:
+    """Attach a locked `snapshot` payload to every pick. Idempotent."""
+    stats = {"applied": 0, "already": 0}
+    now = datetime.now(timezone.utc).isoformat()
+    for p in picks:
+        if p.get("snapshot"):
+            stats["already"] += 1
+            continue
+        p["snapshot"] = {
+            "pick_id": p.get("id"),
+            "event_id": p.get("event_id") or p.get("game_id"),
+            "sport": p.get("sport"),
+            "league": p.get("league"),
+            "event": p.get("event"),
+            "market": p.get("market"),
+            "selection": p.get("selection"),
+            "line": _line_from_market(p.get("market") or ""),
+            "book_odds": p.get("book_odds"),
+            "bookmaker": p.get("bookmaker"),
+            "event_time": p.get("event_time"),
+            "player": _extract_player(p) or None,
+            "home_team": p.get("home_team"),
+            "away_team": p.get("away_team"),
+            "lock_score": p.get("lock_score"),
+            "lock_score_v2": p.get("lock_score_v2"),
+            "win_probability": p.get("win_probability"),
+            "edge_percent": p.get("edge_percent"),
+            "grade": p.get("grade"),
+            "confidence": p.get("confidence"),
+            "reasoning": p.get("pick_rationale") or {},
+            "published_at": now,
+        }
+        stats["applied"] += 1
+    return picks, stats
+
+
+# ─────────────────────── §4 Rollover tagging ──────────────────────────
+
+ROLLOVER_LOCK_MIN = 95
+ROLLOVER_WIN_PROB_MIN = 0.80
+ROLLOVER_EDGE_MIN = 4.0
+
+
+def _wp_frac(v) -> float:
+    try:
+        f = float(v or 0)
+    except Exception:
+        return 0.0
+    return f / 100.0 if f > 1.0 else f
+
+
+def tag_rollover_picks(picks: list[dict]) -> tuple[list[dict], dict]:
+    """Stamp `on_rollover_at` on qualifying picks. Idempotent."""
+    stats = {"tagged": 0}
+    now = datetime.now(timezone.utc).isoformat()
+    for p in picks:
+        if p.get("on_rollover_at"):
+            continue
+        lock = float(p.get("lock_score_v2") or p.get("lock_score") or 0)
+        edge = float(p.get("edge_percent") or 0)
+        wp = _wp_frac(p.get("win_probability"))
+        if (lock >= ROLLOVER_LOCK_MIN
+                and wp >= ROLLOVER_WIN_PROB_MIN
+                and edge >= ROLLOVER_EDGE_MIN):
+            p["on_rollover_at"] = now
+            stats["tagged"] += 1
+    return picks, stats
+
+
+# ─────────────────────── Top-level orchestrator ───────────────────────
+
+def validate_and_finalize(picks: list[dict]) -> tuple[list[dict], dict]:
+    """Run every validation pass in publish order.
+
+    Order rationale:
+      §1 contradictions FIRST — dropping bogus pairs before quality gate
+      ensures we don't keep the wrong side of a pair
+      §2 batter/pitcher — cheap and definitive rejections
+      §6 board quality — enforce floors; NEVER pad
+      §3 snapshot — lock immutable payload for graders
+      §4 rollover — tag the rollover board at publish time
+    """
+    report: dict = {"input_count": len(picks)}
+    picks, r1 = remove_contradictions(picks)
+    report["contradictions"] = r1
+    picks, r2 = validate_batter_pitcher(picks)
+    report["batter_pitcher"] = r2
+    picks, r3 = enforce_board_quality(picks)
+    report["board_quality"] = r3
+    picks, r4 = apply_immutable_snapshot(picks)
+    report["snapshot"] = r4
+    picks, r5 = tag_rollover_picks(picks)
+    report["rollover"] = r5
+    report["output_count"] = len(picks)
+    return picks, report
