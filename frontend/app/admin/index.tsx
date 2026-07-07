@@ -169,6 +169,54 @@ export default function AdminDashboardScreen() {
     }
   }, []);
 
+  // ── Re-Enrich Rationale: rewrite `pick_rationale` on today's picks
+  //    using freshly-deployed sport_rationale code.  Fixes stale K
+  //    stats on Pitcher-Outs cards and refreshes Cheatsheet facts.
+  const [reenriching, setReenriching] = useState(false);
+  const [reenrichMsg, setReenrichMsg] = useState<string | null>(null);
+  const onReenrich = useCallback(async () => {
+    setReenriching(true);
+    setReenrichMsg(null);
+    try {
+      const r = await api.request<{scanned:number; enriched:number; db_updated:number}>(
+        "/admin/picks/re-enrich-rationale?scope=today",
+        { method: "POST" },
+      );
+      setReenrichMsg(
+        `Re-enriched ${r.enriched}/${r.scanned} picks · ${r.db_updated} DB writes. `
+        + `Pitcher-Outs cards now show outs stats.`,
+      );
+    } catch (e: any) {
+      setReenrichMsg(e?.message || "Re-enrich failed");
+    } finally {
+      setReenriching(false);
+    }
+  }, []);
+
+  // ── Scorer Backfill: run the ESPN goal-scorer backfill so Cheatsheet
+  //    surfaces Kane / Haaland / Messi / Mbappé cards on the deployed
+  //    DB (roster-verified — no phantom losses).
+  const [backfilling, setBackfilling] = useState(false);
+  const [backfillMsg, setBackfillMsg] = useState<string | null>(null);
+  const onScorerBackfill = useCallback(async () => {
+    setBackfilling(true);
+    setBackfillMsg(null);
+    try {
+      await api.request(
+        "/admin/scorer-backfill?days=120&max_players=25&purge=true",
+        { method: "POST" },
+      );
+      setBackfillMsg(
+        "Backfill queued. ~3-5 minutes for 25 elite scorers. "
+        + "Refresh Cheatsheets after.",
+      );
+    } catch (e: any) {
+      setBackfillMsg(e?.message || "Backfill failed");
+    } finally {
+      setBackfilling(false);
+    }
+  }, []);
+
   if (loading) {
     return (
       <SafeAreaView style={styles.root} edges={["top"]}>
@@ -307,6 +355,54 @@ export default function AdminDashboardScreen() {
               <Text style={styles.healHint}>
                 Resets the Odds API circuit breaker and force-refreshes today&apos;s picks.
                 Use this after rotating THE_ODDS_API_KEY or if the board is unexpectedly empty.
+              </Text>
+
+              {/* ── Re-enrich rationale (v2 pitcher props) ── */}
+              <Pressable
+                onPress={onReenrich}
+                disabled={reenriching}
+                style={[styles.healBtn, reenriching && { opacity: 0.5 }, { marginTop: 16, backgroundColor: COLORS.voltBlue }]}
+              >
+                {reenriching ? (
+                  <ActivityIndicator color="#000" />
+                ) : (
+                  <>
+                    <Ionicons name="sparkles" size={16} color="#000" />
+                    <Text style={styles.healBtnText}>RE-ENRICH RATIONALE (TODAY)</Text>
+                  </>
+                )}
+              </Pressable>
+              {reenrichMsg && (
+                <Text style={styles.healMsg}>{reenrichMsg}</Text>
+              )}
+              <Text style={styles.healHint}>
+                Rewrites Why-This-Pick evidence + recent-form on today&apos;s picks
+                using the current code. Fixes Pitcher-Outs cards showing K
+                stats and enriches Cheatsheet facts with streaks / trends.
+              </Text>
+
+              {/* ── ESPN scorer backfill ── */}
+              <Pressable
+                onPress={onScorerBackfill}
+                disabled={backfilling}
+                style={[styles.healBtn, backfilling && { opacity: 0.5 }, { marginTop: 16, backgroundColor: COLORS.goldElite }]}
+              >
+                {backfilling ? (
+                  <ActivityIndicator color="#000" />
+                ) : (
+                  <>
+                    <Ionicons name="football" size={16} color="#000" />
+                    <Text style={styles.healBtnText}>RUN SCORER BACKFILL (ESPN)</Text>
+                  </>
+                )}
+              </Pressable>
+              {backfillMsg && (
+                <Text style={styles.healMsg}>{backfillMsg}</Text>
+              )}
+              <Text style={styles.healHint}>
+                Roster-verified ESPN backfill for elite goal scorers
+                (Kane, Haaland, Messi, Mbappé, etc.). Populates Cheatsheet
+                cards on production. Takes 3-5 min.
               </Text>
             </View>
           </>
