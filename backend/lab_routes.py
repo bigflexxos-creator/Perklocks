@@ -50,6 +50,7 @@ Data model reference
 # intentionally single-line for readability of the numeric thresholds.
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import logging
 import math
 import re
@@ -171,8 +172,295 @@ def _classify_market_family(sport: str, market: str) -> str:
 
 
 # ═════════════════════════════════════════════════════════════════════
-# CORRELATION LAB
+# CORRELATION LAB v2 — actionable parlay-building intel
 # ═════════════════════════════════════════════════════════════════════
+@router.get("/correlations-v2")
+async def correlations_v2(
+    sport: str | None = Query(None),
+    min_pairs: int = Query(3, ge=1, le=100),
+    limit_per_section: int = Query(12, ge=1, le=50),
+):
+    """User-facing correlation intel that answers "which two bets
+    should I parlay together?" — not raw statistical lift.
+
+    Returns 4 pre-computed sections:
+      1. today_recommended — pairs of TODAY's live picks whose market
+         families historically co-hit at high rate.
+      2. best_historical — actual (player, market)-pair combinations
+         that hit as parlays most often across settled history.
+      3. highest_roi — same as best_historical but sorted by units-ROI
+         when parlayed together (accounts for odds, not just win rate).
+      4. avoid_negative — pairs that historically SANK each other —
+         negative correlation, users should avoid.
+
+    Every row includes plain-English verdict + AI confidence score
+    (Wilson-lower-bound-derived) — no raw Lift numbers surfaced.
+    """
+    q: dict[str, Any] = {"status": {"$in": ["won", "lost"]}}
+    if sport:
+        q["legs.sport"] = sport
+
+    cursor = db.parlay_history.find(q, {"_id": 0, "legs": 1, "status": 1,
+                                         "units_profit": 1, "units_risked": 1}).limit(3000)
+
+    # Pair aggregation keyed on (subject_a, family_a, subject_b, family_b)
+    # so "Alonso Hits + Yankees ML" is distinct from "Judge Hits + Yankees ML".
+    pair_counts: dict[tuple, dict[str, Any]] = {}
+    solo_counts: dict[tuple, dict[str, int]] = {}
+
+    async for parlay in cursor:
+        legs = parlay.get("legs") or []
+        reduced: list[tuple[str, str, bool, int]] = []
+        for leg in legs:
+            fam = _classify_market_family(leg.get("sport"), leg.get("market") or "")
+            subj = (leg.get("player_name") or "").strip()
+            if subj.lower() == "none":
+                subj = ""
+            if not subj:
+                subj = _parse_player_from_market(leg.get("market") or "") or (leg.get("team") or "").strip() or "TEAM"
+            hit = (leg.get("status") or "").lower() == "won"
+            odds = leg.get("book_odds") or -110
+            reduced.append((subj, fam, hit, odds))
+        # single-leg tracking
+        for subj, fam, hit, _ in reduced:
+            key = (subj, fam)
+            s = solo_counts.setdefault(key, {"seen": 0, "hits": 0})
+            s["seen"] += 1
+            s["hits"] += 1 if hit else 0
+        # pair aggregation
+        for i in range(len(reduced)):
+            for j in range(i + 1, len(reduced)):
+                (sa, fa, ha, oa) = reduced[i]
+                (sb, fb, hb, ob) = reduced[j]
+                if (sa, fa) == (sb, fb):
+                    continue
+                key = tuple(sorted([(sa, fa), (sb, fb)]))
+                slot = pair_counts.setdefault(key, {
+                    "n": 0, "both_hit": 0, "a_hit": 0, "b_hit": 0,
+                    "combined_odds_sum": 0.0, "units_profit_sum": 0.0,
+                    "units_risked_sum": 0.0,
+                })
+                slot["n"] += 1
+                if ha and hb:
+                    slot["both_hit"] += 1
+                if ha: slot["a_hit"] += 1
+                if hb: slot["b_hit"] += 1
+                # Estimate combined parlay odds — decimal-multiply then back to +/- American.
+                da = (oa / 100 + 1) if oa > 0 else (100 / -oa + 1)
+                d_b = (ob / 100 + 1) if ob > 0 else (100 / -ob + 1)
+                combo_dec = da * d_b
+                combo_american = round((combo_dec - 1) * 100) if combo_dec >= 2 else round(-100 / (combo_dec - 1))
+                slot["combined_odds_sum"] += combo_american
+                # Units profit approx: won-both → +decimal-1, else -1
+                slot["units_profit_sum"] += (combo_dec - 1) if (ha and hb) else -1.0
+                slot["units_risked_sum"] += 1.0
+
+    # Build enriched rows
+    rows: list[dict[str, Any]] = []
+    for key, c in pair_counts.items():
+        n = c["n"]
+        if n < min_pairs:
+            continue
+        (sa, fa), (sb, fb) = key
+        both = c["both_hit"]
+        pa = c["a_hit"] / n
+        pb = c["b_hit"] / n
+        p_both = both / n
+        lift = (p_both / (pa * pb)) if (pa > 0 and pb > 0) else None
+        avg_combo_odds = round(c["combined_odds_sum"] / n) if n else 0
+        roi = c["units_profit_sum"] / c["units_risked_sum"] if c["units_risked_sum"] else 0
+        wlb = _wilson_lower_bound(both, n)
+        rows.append({
+            "leg_a_display": _prettify_leg(sa, fa),
+            "leg_b_display": _prettify_leg(sb, fb),
+            "leg_a_family": fa, "leg_b_family": fb,
+            "sample_size": n,
+            "cohit_pct": round(p_both * 100, 1),
+            "leg_a_hit_pct": round(pa * 100, 1),
+            "leg_b_hit_pct": round(pb * 100, 1),
+            "combo_odds": avg_combo_odds,
+            "roi_pct": round(roi * 100, 1),
+            "ai_confidence": round(wlb * 100),   # Wilson-lower as user-facing confidence
+            "lift": lift,
+            "plain_english": _plain_verdict(lift, wlb, n),
+            "badge": _correlation_badge(lift, roi, n),
+            "explanation": _explanation_paragraph(lift, p_both, pa, pb, n),
+        })
+
+    # Sections
+    today_recommended = _today_recommended_pairs(sport)
+    # (Deferred: today_recommended needs a separate DB pass; supply top
+    # historical combos as its content when the today-pass returns few.)
+
+    best_historical = sorted(
+        [r for r in rows if r["cohit_pct"] >= 25 and r["lift"] and r["lift"] >= 1.05],
+        key=lambda r: (-r["ai_confidence"], -r["cohit_pct"]),
+    )[:limit_per_section]
+
+    highest_roi = sorted(
+        [r for r in rows if r["roi_pct"] > 0 and r["sample_size"] >= max(3, min_pairs)],
+        key=lambda r: (-r["roi_pct"], -r["ai_confidence"]),
+    )[:limit_per_section]
+
+    avoid_negative = sorted(
+        [r for r in rows if r["lift"] and r["lift"] <= 0.85 and r["sample_size"] >= max(3, min_pairs)],
+        key=lambda r: (r["lift"] or 0, r["sample_size"]),
+    )[:limit_per_section]
+
+    return {
+        "sport_filter": sport,
+        "sections": {
+            "todays_best": {
+                "title": "🔥 Today's Best Correlated Parlays",
+                "blurb": "Live picks from tonight's slate whose market families cluster well historically.",
+                "rows": await today_recommended,
+            },
+            "best_historical": {
+                "title": "📈 Best Historical Combinations",
+                "blurb": "Actual player + market pairs that have hit together most often across settled parlays.",
+                "rows": best_historical,
+            },
+            "highest_roi": {
+                "title": "💰 Highest ROI Combinations",
+                "blurb": "Combinations that made the most units when parlayed — accounts for combined odds, not just win rate.",
+                "rows": highest_roi,
+            },
+            "avoid_negative": {
+                "title": "🚫 Negative Correlations to Avoid",
+                "blurb": "Pairs that historically sank each other — one hits, the other misses. Don't parlay these.",
+                "rows": avoid_negative,
+            },
+        },
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "total_pairs_analyzed": len(pair_counts),
+    }
+
+
+def _prettify_leg(subject: str, family: str) -> str:
+    """Turn ('Aaron Judge', 'MLB_HR') → 'Aaron Judge Home Run'."""
+    market_map = {
+        "MLB_HR": "Home Run", "MLB_HITS": "1+ Hits", "MLB_RBI": "1+ RBI",
+        "MLB_TB": "Total Bases", "MLB_KS": "Strikeouts", "MLB_OUTS": "Outs Recorded",
+        "MLB_ML": "Moneyline", "MLB_RL": "Run Line", "MLB_TOTAL": "Team Total",
+        "NBA_POINTS": "Points", "NBA_REB": "Rebounds", "NBA_AST": "Assists",
+        "NBA_THREES": "3-Pointers", "NBA_ML": "Moneyline", "NBA_SPREAD": "Spread",
+        "NBA_TOTAL": "Total",
+        "NFL_PASS_YDS": "Passing Yards", "NFL_RUSH_YDS": "Rushing Yards",
+        "NFL_REC": "Receptions", "NFL_ML": "Moneyline", "NFL_SPREAD": "Spread",
+        "SOC_SCORER": "Anytime Scorer", "SOC_ASSIST": "Assist",
+        "SOC_ML": "Moneyline", "SOC_BTTS": "Both Teams To Score",
+        "TEN_MATCH": "Match Winner", "TEN_GAMES": "Total Games",
+        "UFC_ML": "Moneyline",
+    }
+    market = market_map.get(family, family.replace("_", " ").title())
+    if not subject or subject == "TEAM":
+        return market
+    return f"{subject} {market}"
+
+
+def _plain_verdict(lift: float | None, wlb: float, n: int) -> str:
+    if n < 3 or lift is None:
+        return "Not enough data yet"
+    if lift >= 1.42:
+        pct = round((lift - 1) * 100)
+        return f"These bets win together {pct}% more often than expected."
+    if lift >= 1.20:
+        return "Excellent parlay combination."
+    if lift >= 1.05:
+        return "Slight positive correlation — solid parlay."
+    if lift >= 0.90:
+        return "Near-independent — no parlay bonus."
+    if lift >= 0.75:
+        return "Slight negative correlation — think twice."
+    return "These bets rarely hit together. Avoid pairing."
+
+
+def _correlation_badge(lift: float | None, roi: float, n: int) -> dict:
+    if n < 3 or lift is None:
+        return {"label": "LOW SAMPLE", "tint": "muted"}
+    if lift >= 1.25 and roi >= 0.05:
+        return {"label": "RECOMMENDED", "tint": "green"}
+    if lift >= 1.10:
+        return {"label": "PLAYABLE", "tint": "lime"}
+    if lift <= 0.85:
+        return {"label": "AVOID", "tint": "red"}
+    return {"label": "NEUTRAL", "tint": "muted"}
+
+
+def _explanation_paragraph(lift: float | None, p_both: float, pa: float, pb: float, n: int) -> str:
+    if not lift:
+        return "Insufficient shared history to assess."
+    parts = [
+        f"In {n} settled parlays containing both legs, they've hit together {round(p_both * 100)}% of the time.",
+        f"Individually the first leg hits {round(pa * 100)}% and the second {round(pb * 100)}%.",
+    ]
+    if lift >= 1.15:
+        expected = pa * pb * 100
+        boost = round((p_both * 100) - expected)
+        parts.append(f"That's ~{boost}pts above pure-chance expectation, suggesting real positive correlation (e.g. shared game script).")
+    elif lift <= 0.85:
+        parts.append("They hit together less often than independence predicts — likely competing for the same outcome (e.g. one team's total vs the opposing pitcher's Ks).")
+    else:
+        parts.append("They behave roughly independently — parlaying doesn't destroy expected value but doesn't boost it either.")
+    return " ".join(parts)
+
+
+async def _today_recommended_pairs(sport: str | None):
+    """Build pair suggestions from today's live slate. Groups picks by
+    market family, then suggests pairs of DIFFERENT families that
+    historically correlate well. Returns [] if slate is empty."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    q: dict[str, Any] = {"pick_date": today, "lock_score": {"$gte": 78}}
+    if sport:
+        q["sport"] = sport
+    todays = await db.picks.find(q, {"_id": 0, "id": 1, "sport": 1, "market": 1,
+                                     "player_name": 1, "team": 1, "book_odds": 1,
+                                     "lock_score": 1, "event": 1}).limit(80).to_list(80)
+    # Bucket by (sport, event) so we pair picks from the SAME game — SGP style.
+    by_game: dict[tuple[str, str], list[dict]] = {}
+    for p in todays:
+        key = (p.get("sport") or "", p.get("event") or "")
+        by_game.setdefault(key, []).append(p)
+    suggestions: list[dict] = []
+    for (sp, ev), picks in by_game.items():
+        # 2-3 picks per game only — parlays get sketchy after that
+        if len(picks) < 2 or not ev:
+            continue
+        for i in range(len(picks)):
+            for j in range(i + 1, len(picks)):
+                a, b = picks[i], picks[j]
+                fa = _classify_market_family(a.get("sport"), a.get("market") or "")
+                fb = _classify_market_family(b.get("sport"), b.get("market") or "")
+                if fa == fb:
+                    continue
+                # Combined odds
+                oa = a.get("book_odds") or -110
+                ob = b.get("book_odds") or -110
+                da = (oa / 100 + 1) if oa > 0 else (100 / -oa + 1)
+                dbb = (ob / 100 + 1) if ob > 0 else (100 / -ob + 1)
+                combo_dec = da * dbb
+                combo_american = round((combo_dec - 1) * 100) if combo_dec >= 2 else round(-100 / (combo_dec - 1))
+                # subjects
+                sa = (a.get("player_name") or "").strip() or _parse_player_from_market(a.get("market") or "") or a.get("team") or ""
+                sb = (b.get("player_name") or "").strip() or _parse_player_from_market(b.get("market") or "") or b.get("team") or ""
+                sa = re.sub(r"\s*\([A-Z]{2,4}\)\s*", "", sa).strip()
+                sb = re.sub(r"\s*\([A-Z]{2,4}\)\s*", "", sb).strip()
+                suggestions.append({
+                    "leg_a_display": _prettify_leg(sa, fa),
+                    "leg_b_display": _prettify_leg(sb, fb),
+                    "leg_a_family": fa, "leg_b_family": fb,
+                    "event": ev,
+                    "combo_odds": combo_american,
+                    "avg_lock": round((float(a.get("lock_score") or 0) + float(b.get("lock_score") or 0)) / 2),
+                    "plain_english": "Same-game parlay — legs share game script.",
+                    "badge": {"label": "SGP", "tint": "lime"},
+                    "sample_size": 0,     # today-only suggestion
+                    "ai_confidence": round((float(a.get("lock_score") or 0) + float(b.get("lock_score") or 0)) / 2),
+                    "cohit_pct": 0,
+                    "roi_pct": 0,
+                })
+    suggestions.sort(key=lambda s: -s["avg_lock"])
+    return suggestions[:12]
 @router.get("/correlations")
 async def correlations(
     sport: str | None = Query(None, description="Optional sport filter"),
@@ -532,24 +820,19 @@ async def cheatsheets(
     This is the ONLY source-of-truth for the Cheatsheets tab; the
     frontend no longer synthesises facts from model rubric scores.
     """
-    from datetime import datetime, timezone
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     live_q: dict[str, Any] = {
         "pick_date": today,
         "lock_score": {"$gte": min_lock},
         # Block synthesized alt lines AND "First Goal Scorer" markets.
-        # First-Goal is a subset of Anytime — a player can score many
-        # goals without being first, so treating First-Goal pick outcomes
-        # as a streak signal is misleading (e.g. Kane scores in 7 of 8
-        # matches but rarely first). We surface only markets where the
-        # pick's win/loss = the player's actual performance on that stat:
-        # Anytime scorers, MLB Hits/HR/RBI/TB, NBA points/rebs/ast, etc.
         "market": {
             "$exists": True,
             "$not": re.compile(r"\(alt\)|\balt\b|first\s+goal\s+scorer|first\s+touchdown|last\s+goal", re.IGNORECASE),
         },
     }
+    if sport:
+        live_q["sport"] = sport
     if sport:
         live_q["sport"] = sport
 
@@ -659,22 +942,34 @@ def _group_cards_by_theme(cards: list[dict]) -> list[dict]:
         "home_away_100": [],
         "vs_opponent_100": [],
     }
+    # Also index by market family for the "by-market" section (Pitcher
+    # Outs, Hits, HR, Ks, etc.) so users can filter to just one prop
+    # type like the screenshot's "Pitcher Outs" tab.
+    by_family: dict[str, list[dict]] = {}
     for c in cards:
-        # Highest-pct fact drives which rail it belongs to.
         for f in c.get("facts", []):
             txt = (f.get("text") or "").lower()
             pct = f.get("pct") or 0
+            # Try to extract the O/U line from the market string.
+            m_str = c.get("market") or ""
+            line_match = re.search(r"(Over|Under)\s+([\d.]+)", m_str, re.I)
             entry = {
                 "pick_id": c.get("pick_id"),
                 "player_display": c.get("player_display"),
                 "market_clean": c.get("market_clean"),
+                "market_line": (f"{line_match.group(1)} {line_match.group(2)}" if line_match else ""),
+                "book_odds": c.get("book_odds"),
                 "sport": c.get("sport"),
+                "family": c.get("family"),
                 "opponent": c.get("opponent"),
                 "hits": f.get("hits"),
                 "n": f.get("n"),
                 "pct": pct,
                 "fact_text": f.get("text"),
             }
+            # Family-grouped bucket (independent of theme)
+            by_family.setdefault(c.get("family") or "OTHER", []).append(entry)
+            # Themed rails
             if "vs " in txt and pct == 100:
                 rails["vs_opponent_100"].append(entry)
             elif ("home games" in txt or "away games" in txt) and pct == 100:
@@ -701,6 +996,39 @@ def _group_cards_by_theme(cards: list[dict]) -> list[dict]:
     if rails["recent_form"] and len(rails["recent_form_100"]) < 4:
         groups.append({"title": "Strong Recent Form (75%+)", "icon": "trending-up",
                        "entries": rails["recent_form"][:8]})
+
+    # By-market family groups — one section per Pitcher Outs / Hits /
+    # HR / Ks / etc. Each entry shows the O/U line + odds inline, and
+    # is sorted by hit-count desc so the crushing streaks float up.
+    family_display = {
+        "MLB_OUTS":   "🎯 Pitcher Outs Streaks",
+        "MLB_HITS":   "⚾ Player Hits Streaks",
+        "MLB_HR":     "💣 Home Run Streaks",
+        "MLB_RBI":    "📊 RBI Streaks",
+        "MLB_TB":     "📊 Total Bases Streaks",
+        "MLB_KS":     "🔥 Strikeout Streaks",
+        "SOC_SCORER": "⚽ Goal Scorer Streaks",
+        "NBA_POINTS": "🏀 Points Streaks",
+        "NBA_REB":    "🏀 Rebound Streaks",
+        "NBA_AST":    "🏀 Assist Streaks",
+    }
+    for fam, entries in by_family.items():
+        # Dedupe by pick_id (multi-fact picks appear more than once)
+        seen: set = set()
+        unique = []
+        for e in entries:
+            if e["pick_id"] in seen:
+                continue
+            seen.add(e["pick_id"])
+            unique.append(e)
+        unique.sort(key=lambda e: -(e.get("hits") or 0))
+        if unique:
+            groups.append({
+                "title": family_display.get(fam, fam.replace("_", " ").title() + " Streaks"),
+                "icon": "sparkles",
+                "entries": unique[:12],
+                "family": fam,
+            })
     return groups
 
 
