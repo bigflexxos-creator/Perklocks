@@ -255,8 +255,17 @@ def validate_batter_pitcher(picks: list[dict]) -> tuple[list[dict], dict]:
             continue
         away, home = parts[0].strip(), parts[1].strip()
 
+        # Expand event team abbreviations if present ("NYY @ BOS" → full names)
+        def _expand(t: str) -> str:
+            u = t.strip().upper()
+            return _MLB_ABBR.get(u, t)
+        away_full = _expand(away)
+        home_full = _expand(home)
+
         # Rule 1: player must be on one of the two teams playing.
-        if _norm(player_team) not in (_norm(away), _norm(home)):
+        pt_norm = _norm(player_team)
+        if pt_norm not in (_norm(away), _norm(home),
+                            _norm(away_full), _norm(home_full)):
             stats["dropped"] += 1
             stats["reasons"]["player_team_not_in_event"] = (
                 stats["reasons"].get("player_team_not_in_event", 0) + 1
@@ -268,7 +277,8 @@ def validate_batter_pitcher(picks: list[dict]) -> tuple[list[dict], dict]:
             continue
 
         # Rule 2: opposing-pitcher must be from the OTHER team (never own).
-        opp = home if _norm(player_team) == _norm(away) else away
+        opp = (home_full if pt_norm in (_norm(away), _norm(away_full))
+                else away_full)
         opp_pitcher_team = (
             p.get("opposing_pitcher_team")
             or (p.get("pick_rationale") or {}).get("opp_pitcher_team")
@@ -429,29 +439,162 @@ def tag_rollover_picks(picks: list[dict]) -> tuple[list[dict], dict]:
     return picks, stats
 
 
+# ─────────────────────── §10 Automated integrity checks ─────────────
+# Final pre-publish gate. Rejects picks with missing metadata, invalid
+# sportsbook lines, unplayable / ungraded state, or duplicate identity.
+
+_ODDS_MIN = -100000  # absurd chalk cap
+_ODDS_MAX = 100000   # lottery cap
+_REQUIRED_FIELDS = ("id", "sport", "event", "market", "event_time", "book_odds")
+
+
+def integrity_check(picks: list[dict]) -> tuple[list[dict], dict]:
+    """Reject picks that cannot be safely published:
+
+      • missing required fields (id / sport / event / market / event_time / book_odds)
+      • book_odds outside sane range (-100 < |odds| < 100000 excluded)
+      • event_time not parseable
+      • duplicate identity (event + market + selection) — keep highest lock
+    """
+    stats = {"scanned": len(picks), "dropped": 0, "reasons": {}}
+    if not picks:
+        return picks, stats
+    survivors: list[dict] = []
+    dedupe: dict[tuple, dict] = {}
+    for p in picks:
+        # Required fields
+        missing = [f for f in _REQUIRED_FIELDS if not p.get(f)]
+        if missing:
+            stats["dropped"] += 1
+            r = f"missing_{missing[0]}"
+            stats["reasons"][r] = stats["reasons"].get(r, 0) + 1
+            continue
+        # Odds sanity — American odds must be ≥ +100 or ≤ -100 (no 0/±99).
+        try:
+            odds = int(p.get("book_odds"))
+        except (TypeError, ValueError):
+            stats["dropped"] += 1
+            stats["reasons"]["invalid_odds"] = (
+                stats["reasons"].get("invalid_odds", 0) + 1
+            )
+            continue
+        if odds == 0 or (-100 < odds < 100) or abs(odds) > _ODDS_MAX:
+            stats["dropped"] += 1
+            stats["reasons"]["invalid_odds"] = (
+                stats["reasons"].get("invalid_odds", 0) + 1
+            )
+            continue
+        # Event-time parseable
+        try:
+            datetime.fromisoformat(
+                (p.get("event_time") or "").replace("Z", "+00:00")
+            )
+        except Exception:
+            stats["dropped"] += 1
+            stats["reasons"]["invalid_event_time"] = (
+                stats["reasons"].get("invalid_event_time", 0) + 1
+            )
+            continue
+        # Dedupe by identity — keep highest lock
+        key = (p.get("sport"), p.get("event"), p.get("market"),
+               (p.get("selection") or "").strip().lower())
+        existing = dedupe.get(key)
+        if existing and _score(existing) >= _score(p):
+            stats["dropped"] += 1
+            stats["reasons"]["duplicate_identity"] = (
+                stats["reasons"].get("duplicate_identity", 0) + 1
+            )
+            continue
+        if existing:
+            # Replace worse existing
+            survivors.remove(existing)
+            stats["dropped"] += 1
+            stats["reasons"]["duplicate_identity"] = (
+                stats["reasons"].get("duplicate_identity", 0) + 1
+            )
+        dedupe[key] = p
+        survivors.append(p)
+    return survivors, stats
+
+
+# ─────────────────────── §7 Evidence threshold ──────────────────────
+# Each pick must be supported by N independent evidence factors so we
+# don't publish "just-one-signal" picks. Counted signals:
+#   1. Non-empty pick_rationale (structured reasoning)
+#   2. Bucket data (learning engine sample ≥ 20)
+#   3. Model factors (≥ 3 factor axes)
+#   4. Positive edge (edge_percent ≥ 1.5)
+#   5. Positive EV (ev_units > 0)
+#   6. Sport-specific data (recent_form / xG / h2h / injury)
+# Threshold: at least 3 of 6 must be present.
+
+MIN_EVIDENCE_COUNT = 3
+
+
+def evidence_threshold(picks: list[dict]) -> tuple[list[dict], dict]:
+    stats = {"scanned": len(picks), "dropped": 0, "reasons": {}}
+    survivors: list[dict] = []
+    for p in picks:
+        evidence = 0
+        rationale = p.get("pick_rationale") or {}
+        if rationale and isinstance(rationale, dict) and len(rationale) > 0:
+            evidence += 1
+        components = p.get("lock_components") or {}
+        if components.get("bucket_n", 0) >= 20:
+            evidence += 1
+        factors = p.get("factors") or {}
+        if isinstance(factors, dict) and len(factors) >= 3:
+            evidence += 1
+        if float(p.get("edge_percent") or 0) >= 1.5:
+            evidence += 1
+        if float(components.get("ev_units") or 0) > 0:
+            evidence += 1
+        # Sport-specific evidence
+        if any(
+            (isinstance(rationale, dict) and rationale.get(k)) for k in (
+                "recent_form", "xg", "h2h", "vs_pitcher", "recent_l5",
+                "recent_l10", "espn_rank", "matchup",
+            )
+        ):
+            evidence += 1
+        p["evidence_count"] = evidence
+        if evidence < MIN_EVIDENCE_COUNT:
+            stats["dropped"] += 1
+            r = f"only_{evidence}_of_{MIN_EVIDENCE_COUNT}_signals"
+            stats["reasons"][r] = stats["reasons"].get(r, 0) + 1
+            continue
+        survivors.append(p)
+    return survivors, stats
+
+
 # ─────────────────────── Top-level orchestrator ───────────────────────
 
 def validate_and_finalize(picks: list[dict]) -> tuple[list[dict], dict]:
-    """Run every validation pass in publish order.
+    """Full 10-stage validation pipeline (§5 spec). Order matters —
+    cheap deterministic checks first, evidence + snapshot last.
 
-    Order rationale:
-      §1 contradictions FIRST — dropping bogus pairs before quality gate
-      ensures we don't keep the wrong side of a pair
-      §2 batter/pitcher — cheap and definitive rejections
-      §6 board quality — enforce floors; NEVER pad
-      §3 snapshot — lock immutable payload for graders
-      §4 rollover — tag the rollover board at publish time
+      1. contradictions       (§1)
+      2. batter_pitcher       (§2)
+      3. integrity_check      (§10 — required fields, odds sanity, dedupe)
+      4. board_quality        (§6)
+      5. evidence_threshold   (§7 — min 3-of-6 independent signals)
+      6. snapshot             (§3 — lock immutable payload)
+      7. rollover             (§4 — pin to rollover board when qualifying)
     """
     report: dict = {"input_count": len(picks)}
     picks, r1 = remove_contradictions(picks)
     report["contradictions"] = r1
     picks, r2 = validate_batter_pitcher(picks)
     report["batter_pitcher"] = r2
-    picks, r3 = enforce_board_quality(picks)
-    report["board_quality"] = r3
-    picks, r4 = apply_immutable_snapshot(picks)
-    report["snapshot"] = r4
-    picks, r5 = tag_rollover_picks(picks)
-    report["rollover"] = r5
+    picks, r3 = integrity_check(picks)
+    report["integrity"] = r3
+    picks, r4 = enforce_board_quality(picks)
+    report["board_quality"] = r4
+    picks, r5 = evidence_threshold(picks)
+    report["evidence"] = r5
+    picks, r6 = apply_immutable_snapshot(picks)
+    report["snapshot"] = r6
+    picks, r7 = tag_rollover_picks(picks)
+    report["rollover"] = r7
     report["output_count"] = len(picks)
     return picks, report
