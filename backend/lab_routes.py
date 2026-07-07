@@ -595,16 +595,28 @@ async def cheatsheets(
         )
         if not settled:
             continue
-        facts = _build_streak_facts(settled, lp, min_streak_hits)
+        # Infer the player's OWN team from their history so we can
+        # compute the true opponent. Messi's settled picks are always
+        # "X @ Argentina" → Argentina is Messi's team, so "vs Argentina"
+        # would be wrong (that's who he plays FOR). Team markets have
+        # `team` set, so this only applies to player-prop cases.
+        inferred_own_team = None
+        if is_player_prop and not team:
+            inferred_own_team = _infer_own_team(settled)
+        opp_display = _extract_opponent_from_pick(lp, own_team_override=inferred_own_team)
+        # Also compute the raw opponent NAME (not the abbreviation) for
+        # streak-fact matching against historical events.
+        raw_opp = _extract_opponent_full_name(lp, own_team_override=inferred_own_team)
+        facts = _build_streak_facts(settled, lp, min_streak_hits, raw_opponent=raw_opp,
+                                    own_team=inferred_own_team or team)
         if not facts:
             continue
         seen_subject_family.add(dedup_key)
-        opp = _extract_opponent_from_pick(lp)
         cards.append({
             "pick_id": lp.get("id"),
             "player_name": subject,
             "player_display": _shorten_name(subject) if is_player_prop else subject,
-            "opponent": opp,
+            "opponent": opp_display,
             "sport": lp.get("sport"),
             "market": market_str,
             "market_clean": _clean_market_label(market_str or lp.get("selection") or ""),
@@ -669,15 +681,22 @@ async def _fetch_subject_history(
 
 def _build_streak_facts(
     settled: list[dict], live_pick: dict, min_hits: int,
+    raw_opponent: str | None = None,
+    own_team: str | None = None,
 ) -> list[dict]:
     """From settled history + the current live pick's context, build
     the 3 most persuasive streak bullets.
 
-    Priority (matches the competitor "cheatsheet" UX the user pinned
-    in the design brief):
-      1. Overall recent streak — e.g. "Hit in 8 of last 8 games"
-      2. vs-opponent streak — e.g. "Hit in 3 of last 3 vs CIN"
-      3. Home/away streak matching the venue of the current pick
+    Priority (matches the competitor "cheatsheet" UX):
+      1. Overall recent streak — "Hit in 8 of last 8 games"
+      2. vs-opponent streak — "Hit in 3 of last 3 vs CIN"
+         Uses `raw_opponent` (full team name, not abbreviation) so
+         it matches historical `event` strings correctly. Falls back
+         to `team` on the pick if raw_opponent isn't provided.
+      3. Home/away streak matching the venue of the current pick.
+         For player-prop picks where `team` is missing on the pick,
+         `own_team` is inferred from history (e.g. "Argentina" for
+         Messi).
     """
     facts: list[dict] = []
 
@@ -685,7 +704,7 @@ def _build_streak_facts(
         w = sum(1 for p in picks if (p.get("status") or "").lower() == "won")
         return w, len(picks)
 
-    # 1) Overall — try last8 then last10 then last5
+    # 1) Overall — try last8 then last10 then last5 then last20
     for window in (8, 10, 5, 20):
         if len(settled) < window:
             continue
@@ -701,10 +720,10 @@ def _build_streak_facts(
             })
             break
 
-    # 2) vs opponent
-    opp_hint = _extract_opponent_from_pick(live_pick)
-    if opp_hint:
-        opp_re = re.compile(re.escape(opp_hint.replace("vs ", "").replace("@ ", "")), re.I)
+    # 2) vs opponent — use the *full* opponent name to match history.
+    opp_name = (raw_opponent or "").strip()
+    if opp_name:
+        opp_re = re.compile(re.escape(opp_name), re.I)
         vs_hist = [h for h in settled if opp_re.search(h.get("event") or "")]
         if vs_hist:
             w, n = _win_count(vs_hist)
@@ -712,17 +731,20 @@ def _build_streak_facts(
                 pct = round(w / n * 100)
                 facts.append({
                     "icon": "chatbubbles",
-                    "text": f"Hit in {w} of last {n} vs {opp_hint.replace('vs ', '').replace('@ ', '')}",
+                    "text": f"Hit in {w} of last {n} vs {_team_abbr(opp_name)}",
                     "pct": pct,
                     "hits": w, "n": n,
                 })
 
-    # 3) Home / Away match
-    live_venue = _venue_of_pick(live_pick)   # "home", "away", or None
+    # 3) Home / Away match — use inferred own_team for player props.
+    live_venue = _venue_of_pick(live_pick, own_team_override=own_team)
     if live_venue:
-        venue_hist = [h for h in settled if _venue_of_pick(h) == live_venue]
+        venue_hist = [
+            h for h in settled
+            if _venue_of_pick(h, own_team_override=own_team) == live_venue
+        ]
         if venue_hist:
-            w, n = _win_count(venue_hist[:10])  # last 10 same-venue
+            w, n = _win_count(venue_hist[:10])
             if w >= max(1, min_hits - 1):
                 pct = round(w / n * 100)
                 facts.append({
@@ -743,30 +765,87 @@ def _build_streak_facts(
     return out[:3]
 
 
-def _extract_opponent_from_pick(pick: dict) -> str | None:
+def _extract_opponent_full_name(pick: dict, own_team_override: str | None = None) -> str | None:
+    """Return the full opponent team name (not abbreviated) for
+    matching against historical event strings."""
     ev = pick.get("event") or ""
     tm = (pick.get("team") or "").strip().lower()
+    if own_team_override:
+        tm = own_team_override.strip().lower()
     if not ev or "@" not in ev:
         return None
     away, home = [s.strip() for s in ev.split("@", 1)]
     if not tm:
-        return f"@ {_team_abbr(home)}"
-    if tm in home.lower():
-        return f"vs {_team_abbr(away)}"
-    if tm in away.lower():
-        return f"@ {_team_abbr(home)}"
-    return f"@ {_team_abbr(home)}"
+        return away
+    if tm in home.lower() or home.lower() in tm:
+        return away
+    if tm in away.lower() or away.lower() in tm:
+        return home
+    return away
 
 
-def _venue_of_pick(pick: dict) -> str | None:
+def _extract_opponent_from_pick(pick: dict, own_team_override: str | None = None) -> str | None:
     ev = pick.get("event") or ""
     tm = (pick.get("team") or "").strip().lower()
+    if own_team_override:
+        tm = own_team_override.strip().lower()
+    if not ev or "@" not in ev:
+        return None
+    away, home = [s.strip() for s in ev.split("@", 1)]
+    if not tm:
+        return f"vs {_team_abbr(away)}"
+    # Compare team name against both sides via contains-match — team
+    # labels are inconsistent across leagues ("USA" vs "United States").
+    if tm in home.lower() or home.lower() in tm:
+        # Player plays for home team → opponent is away.
+        return f"vs {_team_abbr(away)}"
+    if tm in away.lower() or away.lower() in tm:
+        # Player plays for away team → opponent is home.
+        return f"@ {_team_abbr(home)}"
+    # No clear match — default to visitor phrasing.
+    return f"vs {_team_abbr(away)}"
+
+
+def _infer_own_team(settled: list[dict]) -> str | None:
+    """Given a subject's settled-pick history, infer which team they
+    play FOR by counting which team-side of every `event` string
+    recurs most often. Reliable for national-team / long-tenure players
+    since we've usually seen them 5+ times against varied opponents on
+    the SAME home team side.
+    """
+    counts: dict[str, int] = {}
+    for p in settled:
+        ev = p.get("event") or ""
+        if "@" not in ev:
+            continue
+        for side in ev.split("@", 1):
+            side = side.strip()
+            if not side:
+                continue
+            counts[side] = counts.get(side, 0) + 1
+    if not counts:
+        return None
+    # Pick the team that appears in >= 60% of history rows — that's
+    # the player's own team. Random rotational teammates won't hit
+    # that threshold.
+    total = len(settled)
+    best, best_count = max(counts.items(), key=lambda kv: kv[1])
+    if best_count / max(total, 1) >= 0.6:
+        return best
+    return None
+
+
+def _venue_of_pick(pick: dict, own_team_override: str | None = None) -> str | None:
+    ev = pick.get("event") or ""
+    tm = (pick.get("team") or "").strip().lower()
+    if own_team_override:
+        tm = own_team_override.strip().lower()
     if not ev or "@" not in ev or not tm:
         return None
     away, home = [s.strip().lower() for s in ev.split("@", 1)]
-    if tm in home:
+    if tm in home or home in tm:
         return "home"
-    if tm in away:
+    if tm in away or away in tm:
         return "away"
     return None
 
