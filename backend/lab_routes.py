@@ -670,13 +670,54 @@ async def _fetch_subject_history(
         {"_id": 0, "id": 1, "sport": 1, "market": 1, "event": 1,
          "team": 1, "player_name": 1, "status": 1,
          "pick_date": 1, "settled_at": 1},
-    ).sort("settled_at", -1).limit(30)
-    all_hist = await cursor.to_list(length=30)
+    ).sort("settled_at", -1).limit(200)
+    all_hist = await cursor.to_list(length=200)
     # Filter to same market family (Hits ≠ HR, ML ≠ Spread).
-    return [
+    same_family = [
         h for h in all_hist
         if _classify_market_family(h.get("sport"), h.get("market") or "") == family
     ]
+    # DEDUPE by unique game (pick_date + event). The picks collection
+    # can hold multiple rows for the same match — e.g. "First Goal
+    # Scorer" and "Anytime Goal Scorer" both trigger, plus rows can be
+    # duplicated by upstream ingestion runs. Without this dedupe,
+    # 15 duplicate Haaland rows for one game would report as
+    # "Hit in 15 of last 15 games" — a lie.
+    # Rule: for a given (date, event) tuple, keep the FIRST entry
+    # encountered (most-recent settled_at wins because we sorted desc).
+    # Prefer "won" over "lost" only if the game itself had multiple
+    # markets and the player DID score (any-time hitting → the game
+    # counts as a hit for streak purposes).
+    seen: dict[tuple[str, str], dict] = {}
+    for h in same_family:
+        key = (h.get("pick_date") or "", (h.get("event") or "").lower().strip())
+        if key not in seen:
+            seen[key] = h
+        else:
+            # Same game already recorded — upgrade to "won" only if the
+            # DEFINITIVE market for this family (First Goal / Anytime)
+            # hit. For MLB hits/HR/RBI etc. this is a no-op since a
+            # player has exactly one outcome per game per market. For
+            # Soccer scorers we prefer to keep the ANYTIME-goal outcome
+            # as the game-level truth — "First Goal" is a subset (you
+            # can score anytime without being first).
+            existing = seen[key]
+            existing_status = (existing.get("status") or "").lower()
+            new_status = (h.get("status") or "").lower()
+            # If existing is a "First Goal Scorer" and new is "Anytime"
+            # AND new won → replace, because anytime is the truer
+            # game-level "did they score?" signal.
+            existing_market = (existing.get("market") or "").lower()
+            new_market = (h.get("market") or "").lower()
+            if ("first goal" in existing_market and "anytime" in new_market
+                    and new_status in ("won", "lost")):
+                seen[key] = h
+            elif existing_status == "lost" and new_status == "won":
+                # If we've seen a loss but a later scan shows a win for
+                # the same game, prefer the win (indicates the player
+                # DID hit *something*).
+                seen[key] = h
+    return list(seen.values())
 
 
 def _build_streak_facts(
