@@ -22,14 +22,32 @@
 import React, { useEffect, useState } from "react";
 import { View, Text, Pressable, StyleSheet } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import Constants from "expo-constants";
 import { COLORS } from "@/src/theme";
 import { APP_DATA_VERSION } from "@/src/lib/cachebust";
 import { api } from "@/src/lib/api";
 
 const DISMISS_KEY_PREFIX = "perkslocks.stale_banner_dismissed.";
 
-function buildDateFromAppVersion(): Date | null {
-  // APP_DATA_VERSION format: "YYYYMMDD-NN-slug" e.g. "20260620-12-analytics-clean"
+/**
+ * Resolve the actual build/bundle date. Preferred source is the auto-injected
+ * `buildDate` value from app.config.js (regenerated every bundle → always
+ * accurate on Publish). Falls back to parsing the legacy hardcoded
+ * `APP_DATA_VERSION` prefix if the extra field is missing for any reason
+ * (e.g. very old cached bundle without the new config).
+ */
+function resolveBuildDate(): Date | null {
+  try {
+    const extra = (Constants?.expoConfig as any)?.extra || {};
+    const iso: string | undefined = extra.buildTime || extra.buildDate;
+    if (iso && typeof iso === "string") {
+      const d = new Date(iso);
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+  } catch {
+    /* fall through to legacy parse */
+  }
+  // Legacy fallback: APP_DATA_VERSION format "YYYYMMDD-NN-slug"
   const m = /^(\d{4})(\d{2})(\d{2})/.exec(APP_DATA_VERSION);
   if (!m) return null;
   const yyyy = Number(m[1]);
@@ -57,7 +75,7 @@ export function StaleBuildBanner() {
         if (cancelled) return;
         const serverIso = (ver as any)?.server_time;
         const serverDate = serverIso ? new Date(serverIso) : new Date();
-        const buildDate = buildDateFromAppVersion();
+        const buildDate = resolveBuildDate();
         if (!buildDate) return;
         const diff = daysBetween(buildDate, serverDate);
         if (diff <= 1) {
