@@ -592,6 +592,162 @@ async def admin_picks_heal(
     }
 
 
+# ────────────────────── Rationale re-enrichment (v2 pitcher props) ──────────────────────
+@router.post("/admin/picks/re-enrich-rationale")
+async def admin_reenrich_rationale(
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+    scope: str = "today",   # "today" | "week" | "all"
+    sport: Optional[str] = None,
+):
+    """Force re-enrich `pick_rationale` on existing picks so a newly-
+    deployed rationale layer (e.g. the 2026-07-07 stat-specific
+    pitcher-props builder) rewrites stale in-DB rationales without
+    waiting for the 06:00 UTC daily rebuild.
+
+    Use case: after a code fix that changes what evidence a market
+    surfaces (Pitcher-Outs no longer showing K's, Cheatsheet gaining
+    streak / trend facts, etc.) — the production DB still has picks
+    with pre-fix rationale blocks stuck to them.  This endpoint runs
+    the enricher over the picks matching `scope` / `sport` and
+    persists the refreshed `pick_rationale` + `recent_form`.
+
+    Scope:
+      • "today" (default) — only today's `pick_date` picks
+      • "week"            — last 7 days
+      • "all"             — every pick in the collection (SLOW, admin
+                             confirmation required)
+    """
+    import asyncio
+    from datetime import date as _date, timedelta as _td
+    from pick_enrichment import enrich_picks_with_active_registry
+    from motor.motor_asyncio import AsyncIOMotorClient  # noqa: F401
+    q: dict = {}
+    today = _date.today().isoformat()
+    if scope == "today":
+        q["pick_date"] = today
+    elif scope == "week":
+        cutoff = (_date.today() - _td(days=7)).isoformat()
+        q["pick_date"] = {"$gte": cutoff}
+    elif scope != "all":
+        raise HTTPException(400, f"unknown scope: {scope}")
+    if sport:
+        q["sport"] = sport
+    cursor = db.picks.find(q)
+    batch: list = []
+    BATCH = 200
+    seen = enriched_ct = updated = 0
+
+    async def _flush(batch: list) -> None:
+        nonlocal enriched_ct, updated
+        if not batch:
+            return
+        counts = enrich_picks_with_active_registry(batch)
+        enriched_ct += counts.get("enriched", 0) + counts.get("skipped_team_pick", 0)
+        for pick in batch:
+            if isinstance(pick.get("pick_rationale"), dict) and pick["pick_rationale"]:
+                await db.picks.update_one(
+                    {"id": pick["id"]},
+                    {"$set": {"pick_rationale": pick["pick_rationale"]}},
+                )
+                updated += 1
+
+    async for doc in cursor:
+        seen += 1
+        doc.pop("_id", None)
+        batch.append(doc)
+        if len(batch) >= BATCH:
+            await _flush(batch)
+            batch = []
+    await _flush(batch)
+    return {
+        "ok": True,
+        "scope": scope,
+        "sport": sport,
+        "scanned": seen,
+        "enriched": enriched_ct,
+        "db_updated": updated,
+        "message": (
+            f"Re-enriched {enriched_ct}/{seen} picks. Pitcher-Outs cards "
+            "now show outs stats; Cheatsheet L5/L10/L20 chip uses the "
+            "correct per-market stat."
+        ),
+    }
+
+
+@router.post("/admin/scorer-backfill")
+async def admin_scorer_backfill(
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+    days: int = 120,
+    max_players: int = 25,
+    purge: bool = True,
+):
+    """Fire the ESPN Anytime-Goal-Scorer backfill in a background task.
+
+    The Cheatsheets module requires ≥ 5 settled Anytime Goal Scorer
+    picks per elite player to surface a card.  Production picks come
+    in organically at 1-2 per week per player, so it can take months
+    before Kane / Haaland / Messi appear.  This endpoint mines ESPN's
+    public soccer summaries for the last `days` days and synthesises
+    settled "won"/"lost" picks in the `picks` collection with
+    `backfilled: true`.
+
+    v2 (2026-07-07) uses roster-verified inserts — matches where the
+    player wasn't actually on the ESPN team roster are SKIPPED, not
+    recorded as losses.  This eliminates the "Kane 25%" bug where
+    "New England Revolution" MLS matches were being credited as Kane
+    appearances.
+
+    Query params:
+      • days=120       days back to scan (default 120)
+      • max_players=25 cap on players (default 25)
+      • purge=true     wipe legacy `backfilled: true` rows first
+    """
+    import asyncio
+    import httpx
+    from scripts.backfill_scorer_picks import (
+        _get_elite_scorers, _backfill_player, _prefetch_scoreboards,
+        _purge_stale_backfill,
+    )
+
+    async def _runner():
+        if purge:
+            await _purge_stale_backfill()
+        players = await _get_elite_scorers(max_players)
+        totals = {"inserted": 0, "updated": 0, "skipped": 0, "players": 0}
+        async with httpx.AsyncClient() as client:
+            scoreboard_cache = await _prefetch_scoreboards(client, days)
+            summary_cache: dict = {}
+            for p in players:
+                name = p["player_name"]
+                nat = p.get("national_aliases") or []
+                club = p.get("club_aliases") or []
+                if not nat and not club:
+                    continue
+                try:
+                    r = await _backfill_player(
+                        client, name, nat, club, days,
+                        scoreboard_cache, summary_cache,
+                    )
+                    totals["inserted"] += r["inserted"]
+                    totals["updated"] += r["updated"]
+                    totals["skipped"] += r["skipped"]
+                    totals["players"] += 1
+                except Exception:
+                    pass
+
+    asyncio.create_task(_runner())
+    return {
+        "queued": True,
+        "days": days,
+        "max_players": max_players,
+        "purge": purge,
+        "message": (
+            "Backfill queued in background. Takes ~3-5 minutes for 25 "
+            "players over 120 days. Refresh Cheatsheets after."
+        ),
+    }
+
+
 # ────────────────────── CSL ESPN Live (retired-player filter) ──────────────────────
 @router.get("/admin/csl-espn-status")
 async def admin_csl_espn_status(
