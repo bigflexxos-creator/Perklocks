@@ -133,9 +133,49 @@ def compute_risk_score(pick: dict, bucket_n: int = 0) -> float:
 
 
 def top_three_reasons(pick: dict) -> list[str]:
-    """Pick the 3 most informative `key_insights` for the UI's reason list.
-    We rank by length (a proxy for detail) and prefer numeric-bearing lines.
+    """Pick the top market-relevant reasons for the UI's summary chip.
+
+    Preferred source (2026-07-07): `pick_rationale.evidence` — already
+    ranked + trimmed by `market_evidence_profiles` so a Home-Run pick
+    sees HR-relevant bullets, an Outs-Recorded pick sees IP/pitch-count
+    bullets, and so on. This replaces the previous keyword-heuristic
+    ranker that surfaced K/9 lines on batter picks.
+
+    Fallback: legacy `key_insights` list ranked by the old heuristics
+    (numbers/percent/keywords) — kept for picks that haven't been
+    enriched yet, so the deep_dive stays best-effort.
     """
+    # ── Preferred source: market-filtered evidence ─────────────────
+    rationale = pick.get("pick_rationale") or {}
+    ev = rationale.get("evidence") or []
+    # Coerce dict-shaped bullets (rare, from services/mlb_hitter_intel)
+    # to their `text`/`reason` field so the UI gets plain strings.
+    def _stringify(b):
+        if isinstance(b, str):
+            return b
+        if isinstance(b, dict):
+            for k in ("text", "reason", "explanation_text", "label"):
+                v = b.get(k)
+                if isinstance(v, str) and v:
+                    return v
+        return str(b)
+    ev_str = [_stringify(b) for b in ev if b]
+    # Dedupe by leading 40 chars, cap at 5 per user spec ("top 3-5").
+    if ev_str:
+        seen: set[str] = set()
+        out: list[str] = []
+        for ins in ev_str:
+            key = ins[:40].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(ins)
+            if len(out) == 5:
+                break
+        if out:
+            return out
+
+    # ── Fallback: legacy key_insights + generic heuristics ─────────
     insights = pick.get("key_insights") or []
     if not insights:
         return []
