@@ -818,7 +818,7 @@ function CheatsheetGroup({ group, onTap }:
       </View>
       {group.entries.map((e: any) => (
         <TouchableOpacity
-          key={e.pick_id}
+          key={`${e.pick_id}_${e.fact_text || ""}`}
           onPress={() => onTap(e.pick_id)}
           style={cheatStyles.groupRow}
           testID={`cheatsheet-row-${e.pick_id}`}
@@ -826,11 +826,17 @@ function CheatsheetGroup({ group, onTap }:
           <View style={{ flex: 1 }}>
             <Text style={cheatStyles.groupRowPlayer} numberOfLines={1}>
               <Text style={{ fontWeight: "900" }}>{e.player_display}</Text>
-              <Text style={cheatStyles.groupRowMarket}>{"  :  "}{e.market_clean}</Text>
+            </Text>
+            <Text style={cheatStyles.groupRowMarket} numberOfLines={1}>
+              {e.market_line ? `${e.market_line} ${e.market_clean.replace(/^(Over|Under)\s+[\d.]+\s*/i, "")}` : e.market_clean}
+              {e.book_odds != null ? `  ${e.book_odds > 0 ? "+" : ""}${e.book_odds}` : ""}
             </Text>
           </View>
           <View style={cheatStyles.groupRowRight}>
             <Text style={[cheatStyles.groupRowRatio, { color: pctTint(e.pct) }]}>
+              {e.pct}%
+            </Text>
+            <Text style={{ color: COLORS.textMuted, fontSize: 11, fontWeight: "700" }}>
               {e.hits}/{e.n}
             </Text>
           </View>
@@ -1040,39 +1046,38 @@ const cheatStyles = StyleSheet.create({
 
 
 // ═══════════════════════════════════════════════════════════════════
-// MODULE 6: CORRELATION LAB
+// MODULE 6: CORRELATION LAB (v2 — actionable parlay-building intel)
 // ═══════════════════════════════════════════════════════════════════
-// Data source: /api/lab/correlations (parlay_history aggregation).
 function CorrelationModule() {
   const [sport, setSport] = useState<string>("");
   const [data, setData] = useState<any | null>(null);
   const [loading, setLoading] = useState(false);
+  const [detailRow, setDetailRow] = useState<any | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
-    api.labCorrelations({ sport: sport || undefined, min_pairs: 5, limit: 30 })
+    fetch(`${(process.env.EXPO_PUBLIC_BACKEND_URL || "")}/api/lab/correlations-v2?limit_per_section=10${sport ? `&sport=${sport}` : ""}`)
+      .then((r) => r.json())
       .then(setData)
-      .catch(() => setData({ rows: [], total_pairs_seen: 0 }))
+      .catch(() => setData({ sections: {} }))
       .finally(() => setLoading(false));
   }, [sport]);
-
   useEffect(() => { load(); }, [load]);
 
-  const sports = ["", "MLB", "NBA", "NFL", "Soccer", "Tennis", "UFC"];
+  const sports = ["", "MLB", "NBA", "NFL", "Soccer", "Tennis"];
+  const sections = data?.sections || {};
+
   return (
     <View>
       <SectionHeader
         icon="git-network"
         title="Correlation Lab"
-        blurb="How often two market families co-hit in a parlay. Lift > 1.25 = legs cluster together (positive corr). Lift < 0.8 = anti-correlated."
+        blurb="Which two bets should you parlay? Sections below show combinations that historically win together, high-ROI pairs, and pairs to avoid."
       />
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
         {sports.map((s) => (
-          <TouchableOpacity
-            key={s || "all"}
-            onPress={() => setSport(s)}
-            style={[styles.filterChip, sport === s && styles.filterChipActive]}
-          >
+          <TouchableOpacity key={s || "all"} onPress={() => setSport(s)}
+            style={[styles.filterChip, sport === s && styles.filterChipActive]}>
             <Text style={[styles.filterChipTxt, sport === s && styles.filterChipTxtActive]}>
               {(s || "ALL").toUpperCase()}
             </Text>
@@ -1081,39 +1086,110 @@ function CorrelationModule() {
       </ScrollView>
       {loading ? (
         <ActivityIndicator color={COLORS.textPrimary} style={{ marginTop: 20 }} />
-      ) : !data?.rows?.length ? (
-        <Text style={styles.disclaimer}>
-          No correlation data yet. Cards appear once we have ≥5 co-occurrences of a
-          leg pair in settled parlays.
-        </Text>
       ) : (
-        data.rows.map((r: any, i: number) => (
-          <View key={`${r.family_a}_${r.family_b}_${i}`} style={styles.pickRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.pickSport}>{r.family_a} × {r.family_b}</Text>
-              <Text style={styles.pickMarket}>
-                Both hit {Math.round(r.both_hit_rate * 100)}% · Leg A {Math.round(r.leg_a_hit_rate * 100)}% · Leg B {Math.round(r.leg_b_hit_rate * 100)}%
-              </Text>
-              <Text style={styles.pickEvent}>n={r.sample_size} · {r.verdict}</Text>
+        ["todays_best", "best_historical", "highest_roi", "avoid_negative"].map((k) => {
+          const sec = sections[k];
+          if (!sec || !sec.rows?.length) return null;
+          return (
+            <View key={k} style={styles.subSection}>
+              <View style={styles.subSectionRow}>
+                <Text style={styles.subSectionTitle}>{sec.title}</Text>
+              </View>
+              <Text style={styles.disclaimer}>{sec.blurb}</Text>
+              {sec.rows.map((r: any, i: number) => (
+                <TouchableOpacity
+                  key={`${k}_${i}`}
+                  onPress={() => setDetailRow(r)}
+                  style={styles.pickRow}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.pickMarket} numberOfLines={2}>
+                      {r.leg_a_display} + {r.leg_b_display}
+                    </Text>
+                    <Text style={styles.pickEvent}>{r.plain_english}</Text>
+                    {r.sample_size > 0 ? (
+                      <Text style={styles.pickEvent}>
+                        n={r.sample_size} · cohit {r.cohit_pct}% · ROI {r.roi_pct >= 0 ? "+" : ""}{r.roi_pct}%
+                      </Text>
+                    ) : (
+                      <Text style={styles.pickEvent}>
+                        SGP · combo {r.combo_odds > 0 ? "+" : ""}{r.combo_odds} · avg lock {r.avg_lock}
+                      </Text>
+                    )}
+                  </View>
+                  <View style={styles.pickRight}>
+                    <View style={{
+                      paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6,
+                      backgroundColor: badgeBg(r.badge?.tint),
+                    }}>
+                      <Text style={{ color: badgeText(r.badge?.tint), fontSize: 10, fontWeight: "900", letterSpacing: 0.4 }}>
+                        {r.badge?.label || "—"}
+                      </Text>
+                    </View>
+                    <Text style={[styles.pickLockLabel, { marginTop: 4 }]}>{r.ai_confidence}% CONF</Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
             </View>
-            <View style={styles.pickRight}>
-              <Text style={[styles.pickLock, { color: liftColor(r.lift) }]}>
-                {r.lift != null ? r.lift.toFixed(2) : "—"}
-              </Text>
-              <Text style={styles.pickLockLabel}>LIFT</Text>
-            </View>
-          </View>
-        ))
+          );
+        })
       )}
+      {detailRow ? (
+        <View style={cheatStyles.modalOverlay}>
+          <View style={cheatStyles.modalCard}>
+            <View style={cheatStyles.modalHeader}>
+              <Text style={cheatStyles.modalTitle}>Why This Pairing?</Text>
+              <TouchableOpacity onPress={() => setDetailRow(null)}>
+                <Ionicons name="close" size={22} color={COLORS.textPrimary} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView>
+              <Text style={cheatStyles.modalPlayer}>
+                {detailRow.leg_a_display}
+              </Text>
+              <Text style={cheatStyles.modalOpp}>+ {detailRow.leg_b_display}</Text>
+              <View style={{ height: 12 }} />
+              <Text style={styles.pickMarket}>{detailRow.plain_english}</Text>
+              <View style={{ height: 12 }} />
+              <Text style={styles.disclaimer}>{detailRow.explanation}</Text>
+              {detailRow.sample_size > 0 ? (
+                <StatGrid
+                  cells={[
+                    { label: "SAMPLE", value: String(detailRow.sample_size) },
+                    { label: "CO-HIT", value: `${detailRow.cohit_pct}%` },
+                    { label: "ROI", value: `${detailRow.roi_pct >= 0 ? "+" : ""}${detailRow.roi_pct}%`,
+                      tint: detailRow.roi_pct >= 0 ? "#40d18a" : "#e46d6d" },
+                    { label: "AI CONF", value: `${detailRow.ai_confidence}%` },
+                  ]}
+                />
+              ) : (
+                <StatGrid
+                  cells={[
+                    { label: "COMBO ODDS", value: `${detailRow.combo_odds > 0 ? "+" : ""}${detailRow.combo_odds}` },
+                    { label: "AVG LOCK", value: `${detailRow.avg_lock}` },
+                    { label: "TYPE", value: "SGP" },
+                  ]}
+                />
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      ) : null}
     </View>
   );
 }
 
-function liftColor(lift: number | null): string {
-  if (lift == null) return COLORS.textMuted;
-  if (lift >= 1.25) return "#40d18a";
-  if (lift <= 0.8)  return "#e46d6d";
-  return COLORS.textPrimary;
+function badgeBg(tint?: string): string {
+  if (tint === "green") return "rgba(64,209,138,0.15)";
+  if (tint === "lime")  return "rgba(201,208,85,0.15)";
+  if (tint === "red")   return "rgba(228,109,109,0.15)";
+  return "rgba(255,255,255,0.06)";
+}
+function badgeText(tint?: string): string {
+  if (tint === "green") return "#40d18a";
+  if (tint === "lime")  return "#c9d055";
+  if (tint === "red")   return "#e46d6d";
+  return COLORS.textMuted;
 }
 
 
