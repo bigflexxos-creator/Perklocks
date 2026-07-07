@@ -898,6 +898,10 @@ async def cheatsheets(
         inferred_own_team = None
         if is_player_prop and not team:
             inferred_own_team = _infer_own_team(settled)
+        # For multi-team players (Kane plays for both England AND
+        # Bayern), pick the specific team relevant to THIS live pick's
+        # event so opponent/venue labels reflect the current match.
+        inferred_own_team = _pick_own_team_for_event(lp, settled, inferred_own_team)
         opp_display = _extract_opponent_from_pick(lp, own_team_override=inferred_own_team)
         # Also compute the raw opponent NAME (not the abbreviation) for
         # streak-fact matching against historical events.
@@ -1367,6 +1371,37 @@ def _infer_own_team(settled: list[dict]) -> str | None:
     if best_count / max(total, 1) >= 0.6:
         return best
     return None
+
+
+def _pick_own_team_for_event(pick: dict, settled: list[dict],
+                             fallback: str | None) -> str | None:
+    """Choose the correct own-team side for THIS live pick's event.
+
+    Multi-team players (national + club, e.g. Harry Kane plays for both
+    England and Bayern Munich) break the single-team inference.  We look
+    at the live pick's two event participants and pick whichever one
+    appears more frequently in this subject's settled history — that's
+    the team they're representing in this specific match.
+
+    Falls back to `fallback` (the aggregated own_team) if neither event
+    side has any historical footprint.
+    """
+    ev = pick.get("event") or ""
+    if "@" not in ev:
+        return fallback
+    away, home = [s.strip() for s in ev.split("@", 1)]
+    # Count historical occurrences of each side
+    counts_a = counts_h = 0
+    for p in settled:
+        pev = p.get("event") or ""
+        pev_l = pev.lower()
+        if away and away.lower() in pev_l:
+            counts_a += 1
+        if home and home.lower() in pev_l:
+            counts_h += 1
+    if counts_a == 0 and counts_h == 0:
+        return fallback
+    return away if counts_a >= counts_h else home
 
 
 def _venue_of_pick(pick: dict, own_team_override: str | None = None) -> str | None:
