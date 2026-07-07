@@ -62,7 +62,13 @@ export default function LabScreen() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const res = await api.picksToday(undefined, undefined, "lock", undefined, "desc");
+      // NOTE: use `picksAll` NOT `picksToday` — the latter hardcodes
+      // `lite=true` which strips `pick_rationale`, `recent_form`, and
+      // `player_form_streak`. Those are exactly the fields the
+      // Cheatsheet + Research modules use to generate "Hit in X of Y"
+      // proof bullets. `picksAll` returns the full document (~200 rows,
+      // no lite stripping) which is fine for Lab's use-cases.
+      const res = await api.picksAll();
       setPicks(res.picks || []);
     } catch (e: any) {
       setError(e?.message || "Failed to load picks");
@@ -812,7 +818,7 @@ function buildCheatsheets(picks: any[], sportFilter: string): CheatCard[] {
   const cards: CheatCard[] = [];
   for (const p of filtered) {
     const facts = extractFacts(p);
-    if (facts.length < 2) continue;                  // need at least 2 solid facts
+    if (facts.length < 1) continue;                  // need at least 1 solid fact
     const player = shortenPlayer(p.player_name || p.player || "");
     const opp = extractOpponent(p);
     const playerLabel = player
@@ -831,11 +837,12 @@ function buildCheatsheets(picks: any[], sportFilter: string): CheatCard[] {
   return cards;
 }
 
-function extractFacts(pick: any): CheatsheetCard["facts"] {
-  const facts: CheatsheetCard["facts"] = [];
+function extractFacts(pick: any): CheatCard["facts"] {
+  const facts: CheatCard["facts"] = [];
   const rationale = pick.pick_rationale || {};
   const evidence: any[] = rationale.evidence || rationale.evidence_all || [];
   const rf = rationale.recent_form || {};
+  const keyInsights: any[] = pick.key_insights || [];
 
   // 1) Recent-form streak facts (highest priority — matches the "Hit in 8 of last 8" pattern)
   const streakKeys: [string, string][] = [
@@ -894,9 +901,11 @@ function extractFacts(pick: any): CheatsheetCard["facts"] {
     }
   }
 
-  // 3) Evidence bullets that look like "Hit in X of Y ..." — normalise + score them.
+  // 3) Evidence/key_insights bullets that look like "Hit in X of Y ..."
+  //    — normalise + extract the streak numbers.
   const streakRegex = /(\d+)\s*(?:of|\/)\s*(?:the\s+)?(?:last\s+)?(\d+)/i;
-  for (const raw of evidence) {
+  const allBullets = [...evidence, ...keyInsights];
+  for (const raw of allBullets) {
     const text = typeof raw === "string" ? raw : (raw?.text || raw?.reason || "");
     if (!text) continue;
     const m = text.match(streakRegex);
@@ -916,6 +925,42 @@ function extractFacts(pick: any): CheatsheetCard["facts"] {
     const clean = text.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "").trim();
     facts.push({ icon, text: clean, pctLabel: `${pct}%`, tint: pctTint(pct) });
     if (facts.length >= 5) break;
+  }
+
+  // 4) Fallback: pull the top key_insights that carry a % or numeric
+  //    signal but aren't streak-formatted. These are still real facts
+  //    from the model (e.g. "Elite Player Lock", "xG per 90 = 0.62")
+  //    and let the cheatsheet render SOMETHING even for team-market /
+  //    non-recent-form picks. Better than an empty card.
+  if (facts.length < 3) {
+    for (const raw of allBullets) {
+      const text = typeof raw === "string" ? raw : (raw?.text || raw?.reason || "");
+      if (!text) continue;
+      // Skip anything already covered by the streak-regex loop above.
+      if (streakRegex.test(text)) continue;
+      // Extract a % if present, else look for a decimal or "N of M".
+      const pctMatch = text.match(/(\d{1,3})\s*%/);
+      const decimalMatch = text.match(/\b(\d+\.\d+)\b/);
+      let pctLabel = "";
+      let tint = COLORS.textPrimary;
+      if (pctMatch) {
+        const p = Number(pctMatch[1]);
+        pctLabel = `${p}%`;
+        tint = pctTint(p);
+      } else if (decimalMatch) {
+        pctLabel = decimalMatch[1];
+      } else {
+        // No numeric signal — accept only elite/keyword bullets.
+        if (!/elite|top|leader|hot|form/i.test(text)) continue;
+        pctLabel = "🔥";
+      }
+      const clean = text.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "").trim();
+      // Trim overly-long bullets to keep card readable.
+      const trimmed = clean.length > 90 ? clean.slice(0, 87) + "…" : clean;
+      const icon: keyof typeof Ionicons.glyphMap = pctMatch ? "stats-chart" : "trending-up";
+      facts.push({ icon, text: trimmed, pctLabel, tint });
+      if (facts.length >= 4) break;
+    }
   }
 
   // Dedupe by leading text
