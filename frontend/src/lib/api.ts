@@ -540,6 +540,34 @@ export const api = {
     ),
 
   // ── LAB endpoints (Session 2+3) ─────────────────────────────────
+  // Cheatsheets — real streak facts from settled-pick history.
+  labCheatsheets: (opts?: { sport?: string; min_lock?: number; min_streak_hits?: number; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.sport) params.set("sport", opts.sport);
+    if (opts?.min_lock != null) params.set("min_lock", String(opts.min_lock));
+    if (opts?.min_streak_hits != null) params.set("min_streak_hits", String(opts.min_streak_hits));
+    if (opts?.limit != null) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    return request<{
+      generated_at: string;
+      sport_filter: string | null;
+      count: number;
+      cards: {
+        pick_id: string;
+        player_name: string;
+        player_display: string;
+        opponent: string | null;
+        sport: string;
+        market: string;
+        market_clean: string;
+        family: string;
+        book_odds: number | null;
+        lock_score: number | null;
+        facts: { icon: string; text: string; pct: number; hits: number; n: number }[];
+      }[];
+    }>(`/lab/cheatsheets${qs ? "?" + qs : ""}`);
+  },
+
   // Correlation Lab — historical parlay leg co-occurrence hit rates.
   labCorrelations: (opts?: { sport?: string; min_pairs?: number; limit?: number }) => {
     const params = new URLSearchParams();
