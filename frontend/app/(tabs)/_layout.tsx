@@ -117,6 +117,14 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="lab"
+        options={{
+          title: "LAB",
+          tabBarIcon: ({ color, size }) => <Ionicons name="flask" color={color} size={size} />,
+          tabBarButtonTestID: "tab-lab",
+        }}
+      />
+      <Tabs.Screen
         name="under"
         options={{
           title: "UNDER",

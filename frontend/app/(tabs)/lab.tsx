@@ -36,9 +36,10 @@ import { COLORS } from "@/src/theme";
 import { api } from "@/src/lib/api";
 
 // ── Module type ──────────────────────────────────────────────────────
-type LabModule = "research" | "ev" | "sim" | "props";
+type LabModule = "cheats" | "research" | "ev" | "sim" | "props";
 
 const MODULES: { id: LabModule; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { id: "cheats",   label: "Cheatsheets", icon: "flash" },
   { id: "research", label: "Research", icon: "search" },
   { id: "ev",       label: "EV Calc",  icon: "calculator" },
   { id: "sim",      label: "Sim",      icon: "analytics" },
@@ -48,7 +49,7 @@ const MODULES: { id: LabModule; label: string; icon: keyof typeof Ionicons.glyph
 // ── Root screen ──────────────────────────────────────────────────────
 export default function LabScreen() {
   const insets = useSafeAreaInsets();
-  const [module, setModule] = useState<LabModule>("research");
+  const [module, setModule] = useState<LabModule>("cheats");
   const [picks, setPicks] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -136,6 +137,7 @@ export default function LabScreen() {
             />
           }
         >
+          {module === "cheats"   && <CheatsheetsModule picks={picks} />}
           {module === "research" && <ResearchModule picks={picks} />}
           {module === "ev"       && <EVCalcModule picks={picks} />}
           {module === "sim"      && <SimulationModule picks={picks} />}
@@ -727,8 +729,288 @@ function PropExplorerModule({ picks }: { picks: any[] }) {
 
 
 // ═══════════════════════════════════════════════════════════════════
-// Shared components
+// MODULE 5: CHEATSHEETS
 // ═══════════════════════════════════════════════════════════════════
+// Auto-generated stat proof cards for the highest-confidence picks.
+// Mirrors the "Trending today" cheatsheet UX users see on modern
+// sportsbook explorers — one glance shows the 3 most concrete
+// hit-streak facts + the % badge for each. Everything is derived
+// from data already on the pick (pick_rationale bullets + recent_form
+// + player_form_streak). No new API round-trip.
+function CheatsheetsModule({ picks }: { picks: any[] }) {
+  const [sport, setSport] = useState<string>("All");
+
+  const sportsAvail = useMemo(() => {
+    const set = new Set<string>();
+    picks.forEach((p) => p.sport && set.add(p.sport));
+    return ["All", ...Array.from(set).sort()];
+  }, [picks]);
+
+  const cards = useMemo(() => buildCheatsheets(picks, sport), [picks, sport]);
+
+  return (
+    <View>
+      <SectionHeader
+        icon="flash"
+        title="Cheatsheets"
+        blurb="Auto-generated hit-streak proof cards for the day's most confident picks. Every fact is real data — no fluff."
+      />
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.chipRow}
+      >
+        {sportsAvail.map((s) => (
+          <TouchableOpacity
+            key={s}
+            onPress={() => setSport(s)}
+            testID={`lab-cheats-sport-${s}`}
+            style={[styles.filterChip, sport === s && styles.filterChipActive]}
+          >
+            <Text style={[styles.filterChipTxt, sport === s && styles.filterChipTxtActive]}>
+              {s.toUpperCase()}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+
+      {cards.length === 0 ? (
+        <Text style={styles.disclaimer}>
+          No cheatsheet-ready picks in this filter yet. Cards populate as picks
+          accumulate rolling-form + matchup evidence.
+        </Text>
+      ) : (
+        cards.map((c) => <CheatsheetCard key={c.pickId} card={c} />)
+      )}
+    </View>
+  );
+}
+
+type CheatCard = {
+  pickId: string;
+  playerLabel: string;    // e.g. "B. Stott @ CIN"
+  marketLabel: string;    // e.g. "Over 0.5 Hits"
+  oddsLabel: string;      // e.g. "-150"
+  sport: string;
+  facts: { icon: keyof typeof Ionicons.glyphMap; text: string; pctLabel: string; tint: string }[];
+};
+
+function buildCheatsheets(picks: any[], sportFilter: string): CheatCard[] {
+  const filtered = picks.filter((p) => {
+    if (sportFilter !== "All" && p.sport !== sportFilter) return false;
+    if ((p.lock_score || 0) < 80) return false;      // only high-confidence
+    return true;
+  });
+  const cards: CheatCard[] = [];
+  for (const p of filtered) {
+    const facts = extractFacts(p);
+    if (facts.length < 2) continue;                  // need at least 2 solid facts
+    const player = shortenPlayer(p.player_name || p.player || "");
+    const opp = extractOpponent(p);
+    const playerLabel = player
+      ? (opp ? `${player} · ${opp}` : player)
+      : (p.event || p.selection || "");
+    cards.push({
+      pickId: p.id,
+      playerLabel,
+      marketLabel: cleanMarket(p.market || p.selection || ""),
+      oddsLabel: p.book_odds != null ? formatOdds(p.book_odds) : "",
+      sport: p.sport || "",
+      facts: facts.slice(0, 3),
+    });
+    if (cards.length >= 30) break;
+  }
+  return cards;
+}
+
+function extractFacts(pick: any): CheatsheetCard["facts"] {
+  const facts: CheatsheetCard["facts"] = [];
+  const rationale = pick.pick_rationale || {};
+  const evidence: any[] = rationale.evidence || rationale.evidence_all || [];
+  const rf = rationale.recent_form || {};
+
+  // 1) Recent-form streak facts (highest priority — matches the "Hit in 8 of last 8" pattern)
+  const streakKeys: [string, string][] = [
+    ["last5",  "last 5 games"],
+    ["last10", "last 10 games"],
+    ["last20", "last 20 games"],
+    ["L5",     "last 5 games"],
+    ["L10",    "last 10 games"],
+    ["L20",    "last 20 games"],
+  ];
+  for (const [key, label] of streakKeys) {
+    const v = rf[key];
+    if (v == null) continue;
+    // Accept {hits, n} shape
+    if (typeof v === "object" && "hits" in v && "n" in v) {
+      const hits = Number(v.hits);
+      const n = Number(v.n);
+      if (n > 0 && hits >= n * 0.6) {
+        const pct = Math.round((hits / n) * 100);
+        facts.push({
+          icon: "flash",
+          text: `Hit in ${hits} of ${label}`,
+          pctLabel: `${pct}%`,
+          tint: pctTint(pct),
+        });
+      }
+    } else if (typeof v === "number" && v >= 0.6) {
+      const pct = Math.round(v * 100);
+      const label2 = label.replace("games", "");
+      facts.push({
+        icon: "flash",
+        text: `Hit rate over ${label2}games`,
+        pctLabel: `${pct}%`,
+        tint: pctTint(pct),
+      });
+    }
+  }
+
+  // 2) Streak string on pick itself (player_form_streak like "5/6 vs CIN")
+  const pfStreak = pick.player_form_streak;
+  if (typeof pfStreak === "string" && pfStreak.includes("/")) {
+    const m = pfStreak.match(/(\d+)\s*\/\s*(\d+)/);
+    if (m) {
+      const hits = Number(m[1]);
+      const n = Number(m[2]);
+      if (n > 0) {
+        const pct = Math.round((hits / n) * 100);
+        const suffix = pfStreak.replace(m[0], "").trim();
+        facts.push({
+          icon: "stats-chart",
+          text: `Hit in ${hits} of last ${n}${suffix ? ` ${suffix}` : ""}`,
+          pctLabel: `${pct}%`,
+          tint: pctTint(pct),
+        });
+      }
+    }
+  }
+
+  // 3) Evidence bullets that look like "Hit in X of Y ..." — normalise + score them.
+  const streakRegex = /(\d+)\s*(?:of|\/)\s*(?:the\s+)?(?:last\s+)?(\d+)/i;
+  for (const raw of evidence) {
+    const text = typeof raw === "string" ? raw : (raw?.text || raw?.reason || "");
+    if (!text) continue;
+    const m = text.match(streakRegex);
+    if (!m) continue;
+    const hits = Number(m[1]);
+    const n = Number(m[2]);
+    if (!n || hits > n || n > 100) continue;
+    const pct = Math.round((hits / n) * 100);
+    if (pct < 60) continue;
+    // Guess an icon by keywords.
+    const t = text.toLowerCase();
+    const icon: keyof typeof Ionicons.glyphMap =
+      t.includes("home") || t.includes("away") ? "location"
+      : t.includes(" vs ") || t.includes("against") ? "chatbubbles"
+      : "flash";
+    // Clean the text (strip emojis) for consistent rendering.
+    const clean = text.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "").trim();
+    facts.push({ icon, text: clean, pctLabel: `${pct}%`, tint: pctTint(pct) });
+    if (facts.length >= 5) break;
+  }
+
+  // Dedupe by leading text
+  const seen = new Set<string>();
+  return facts.filter((f) => {
+    const key = f.text.slice(0, 40).toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function CheatsheetCard({ card }: { card: CheatCard }) {
+  const oddsColor = card.oddsLabel.startsWith("-") ? "#e46d6d" : "#40d18a";
+  return (
+    <View style={cheatStyles.card} testID={`cheatsheet-card-${card.pickId}`}>
+      <View style={cheatStyles.headerRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={cheatStyles.player} numberOfLines={1}>{card.playerLabel}</Text>
+          <Text style={cheatStyles.market} numberOfLines={1}>{card.marketLabel}</Text>
+        </View>
+        {card.oddsLabel ? (
+          <View style={[cheatStyles.oddsBadge, { borderColor: oddsColor }]}>
+            <Text style={[cheatStyles.oddsTxt, { color: oddsColor }]}>{card.oddsLabel}</Text>
+          </View>
+        ) : null}
+      </View>
+      <View style={cheatStyles.factsBlock}>
+        {card.facts.map((f, i) => (
+          <View key={i} style={cheatStyles.factRow}>
+            <Ionicons name={f.icon} size={13} color={f.tint} />
+            <Text style={cheatStyles.factTxt} numberOfLines={2}>{f.text}</Text>
+            <Text style={[cheatStyles.factPct, { color: f.tint }]}>{f.pctLabel}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+// ── cheatsheet helpers ────────────────────────────────────────────
+function pctTint(pct: number): string {
+  if (pct >= 90) return "#40d18a";
+  if (pct >= 75) return "#c9d055";
+  if (pct >= 60) return "#f5c542";
+  return COLORS.textMuted;
+}
+function shortenPlayer(name: string): string {
+  if (!name) return "";
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) return `${parts[0][0]}. ${parts.slice(1).join(" ")}`;
+  return name;
+}
+function extractOpponent(pick: any): string {
+  const event = pick.event || "";
+  const team = pick.team || "";
+  if (event.includes("@")) {
+    const [a, h] = event.split("@").map((s: string) => s.trim());
+    // Return the team the player is playing AGAINST if we know the player's team
+    if (team && team === a) return `@ ${abbr(h)}`;
+    if (team && team === h) return `vs ${abbr(a)}`;
+    // Fallback — show "@ HOME"
+    return `@ ${abbr(h)}`;
+  }
+  return "";
+}
+function abbr(team: string): string {
+  if (!team) return "";
+  const t = team.trim();
+  const words = t.split(/\s+/);
+  if (words.length >= 2) return words.map((w) => w[0]).join("").toUpperCase().slice(0, 4);
+  return t.slice(0, 3).toUpperCase();
+}
+function cleanMarket(market: string): string {
+  return market
+    .replace(/^.*?(Over|Under|Anytime|Total)/, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const cheatStyles = StyleSheet.create({
+  card: {
+    backgroundColor: "#1a1a1a",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.borderDefault,
+    padding: 14,
+    marginBottom: 10,
+  },
+  headerRow: { flexDirection: "row", alignItems: "center", marginBottom: 10, gap: 10 },
+  player: { color: COLORS.textPrimary, fontSize: 15, fontWeight: "900", marginBottom: 2, letterSpacing: 0.2 },
+  market: { color: COLORS.textMuted, fontSize: 12, fontWeight: "700" },
+  oddsBadge: {
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 20, borderWidth: 1,
+    backgroundColor: "rgba(255,255,255,0.03)",
+  },
+  oddsTxt: { fontSize: 13, fontWeight: "900", letterSpacing: 0.4 },
+  factsBlock: { gap: 8 },
+  factRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  factTxt: { flex: 1, color: COLORS.textPrimary, fontSize: 12.5, fontWeight: "600" },
+  factPct: { fontSize: 13, fontWeight: "900" },
+});
 function SectionHeader({ icon, title, blurb }:
   { icon: keyof typeof Ionicons.glyphMap; title: string; blurb?: string }) {
   return (
