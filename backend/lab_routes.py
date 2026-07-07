@@ -538,11 +538,16 @@ async def cheatsheets(
     live_q: dict[str, Any] = {
         "pick_date": today,
         "lock_score": {"$gte": min_lock},
-        # Block synthesized alt lines only — user wants REAL bets.
-        # Moneylines, spreads, totals, and player props are all fair game.
+        # Block synthesized alt lines AND "First Goal Scorer" markets.
+        # First-Goal is a subset of Anytime — a player can score many
+        # goals without being first, so treating First-Goal pick outcomes
+        # as a streak signal is misleading (e.g. Kane scores in 7 of 8
+        # matches but rarely first). We surface only markets where the
+        # pick's win/loss = the player's actual performance on that stat:
+        # Anytime scorers, MLB Hits/HR/RBI/TB, NBA points/rebs/ast, etc.
         "market": {
             "$exists": True,
-            "$not": re.compile(r"\(alt\)|\balt\b", re.IGNORECASE),
+            "$not": re.compile(r"\(alt\)|\balt\b|first\s+goal\s+scorer|first\s+touchdown|last\s+goal", re.IGNORECASE),
         },
     }
     if sport:
@@ -593,7 +598,11 @@ async def cheatsheets(
         settled = await _fetch_subject_history(
             subject, lp.get("sport"), family, is_player_prop,
         )
-        if not settled:
+        # Minimum-sample gate: don't fabricate confidence from tiny
+        # samples. "Hit in 1 of last 1" is technically true but
+        # meaningless. Require at least 5 real same-market settled
+        # games before rendering a card.
+        if len(settled) < 5:
             continue
         # Infer the player's OWN team from their history so we can
         # compute the true opponent. Messi's settled picks are always
@@ -672,10 +681,14 @@ async def _fetch_subject_history(
          "pick_date": 1, "settled_at": 1},
     ).sort("settled_at", -1).limit(200)
     all_hist = await cursor.to_list(length=200)
-    # Filter to same market family (Hits ≠ HR, ML ≠ Spread).
+    # Filter to same market family (Hits ≠ HR, ML ≠ Spread) AND drop
+    # subset-market history entries that don't reflect true player
+    # performance (First-Goal-Scorer is a subset of Anytime).
+    first_goal_re = re.compile(r"first\s+goal\s+scorer|first\s+touchdown|last\s+goal", re.I)
     same_family = [
         h for h in all_hist
         if _classify_market_family(h.get("sport"), h.get("market") or "") == family
+        and not first_goal_re.search(h.get("market") or "")
     ]
     # DEDUPE by unique game (pick_date + event). The picks collection
     # can hold multiple rows for the same match — e.g. "First Goal
@@ -762,13 +775,14 @@ def _build_streak_facts(
             break
 
     # 2) vs opponent — use the *full* opponent name to match history.
+    #    Require n ≥ 3 same-opponent games or the bullet is stat noise.
     opp_name = (raw_opponent or "").strip()
     if opp_name:
         opp_re = re.compile(re.escape(opp_name), re.I)
         vs_hist = [h for h in settled if opp_re.search(h.get("event") or "")]
-        if vs_hist:
+        if len(vs_hist) >= 3:
             w, n = _win_count(vs_hist)
-            if w >= max(1, min_hits - 1):
+            if w >= max(2, min_hits):
                 pct = round(w / n * 100)
                 facts.append({
                     "icon": "chatbubbles",
@@ -778,15 +792,16 @@ def _build_streak_facts(
                 })
 
     # 3) Home / Away match — use inferred own_team for player props.
+    #    Require n ≥ 3 same-venue games.
     live_venue = _venue_of_pick(live_pick, own_team_override=own_team)
     if live_venue:
         venue_hist = [
             h for h in settled
             if _venue_of_pick(h, own_team_override=own_team) == live_venue
         ]
-        if venue_hist:
+        if len(venue_hist) >= 3:
             w, n = _win_count(venue_hist[:10])
-            if w >= max(1, min_hits - 1):
+            if w >= max(2, min_hits):
                 pct = round(w / n * 100)
                 facts.append({
                     "icon": "location",
