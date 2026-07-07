@@ -364,6 +364,13 @@ def _build_rationale(pick: dict, sport: str, name: str) -> dict[str, Any]:
         # rationale block self-documents which layer produced it.
         if rationale.get("engine") and not existing.get("engine"):
             existing["engine"] = rationale["engine"]
+        # Overwrite the rolling-form block with the freshly-computed one
+        # so a re-enrichment can flip a Strikeout `recent_form` (avg_k
+        # values) into an Outs Recorded `recent_form` (avg_outs values).
+        # We don't want stale STAT-specific values leaking across market
+        # families — the newer block is always authoritative.
+        if rationale.get("recent_form"):
+            existing["recent_form"] = rationale["recent_form"]
         # Market-specific evidence ranking (2026-07-07): trim + reorder
         # the merged bullet list so ONLY market-relevant evidence stays,
         # top-5 only, ordered by predictive importance for THIS market.

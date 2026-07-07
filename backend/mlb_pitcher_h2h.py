@@ -194,21 +194,56 @@ async def fetch_pitcher_h2h(pitcher_name: str, opp_team_name: str) -> dict:
         gk = sum(s["k"] for s in w)
         gip = sum(s["ip"] for s in w)
         ger = sum(s["er"] for s in w)
+        gh = sum(s.get("h", 0) for s in w)
+        gbb = sum(s.get("bb", 0) for s in w)
         return {
             "starts": len(w),
+            # Strikeout metrics
             "avg_k": round(gk / len(w), 2),
             "total_k": gk,
+            # Innings & derived outs (1 IP = 3 outs; ip_float is decimal)
             "avg_ip": round(gip / len(w), 2),
+            "total_ip": round(gip, 2),
+            "avg_outs": round((gip / len(w)) * 3, 2),
+            "total_outs": round(gip * 3, 0),
+            # Earned runs
+            "avg_er": round(ger / len(w), 2),
+            "total_er": ger,
             "era": round(9.0 * ger / gip, 2) if gip > 0 else None,
+            # Hits allowed
+            "avg_h": round(gh / len(w), 2),
+            "total_h": gh,
+            # Walks allowed
+            "avg_bb": round(gbb / len(w), 2),
+            "total_bb": gbb,
         }
     l5, l10, l20 = _win(5), _win(10), _win(20)
 
     out["ok"] = True
     out["season_starts"] = total_starts
     out["season_avg_k"] = round(total_k / total_starts, 2) if total_starts else 0
+    # Season-wide non-K aggregates for outs/walks/earned-run/hits props
+    _tot_ip = sum(s["ip"] for s in all_starts)
+    _tot_er = sum(s["er"] for s in all_starts)
+    _tot_h = sum(s.get("h", 0) for s in all_starts)
+    _tot_bb = sum(s.get("bb", 0) for s in all_starts)
+    out["season_avg_ip"] = round(_tot_ip / total_starts, 2) if total_starts else 0
+    out["season_avg_outs"] = round((_tot_ip / total_starts) * 3, 2) if total_starts else 0
+    out["season_avg_er"] = round(_tot_er / total_starts, 2) if total_starts else 0
+    out["season_avg_h"] = round(_tot_h / total_starts, 2) if total_starts else 0
+    out["season_avg_bb"] = round(_tot_bb / total_starts, 2) if total_starts else 0
+    out["season_era"] = round(9.0 * _tot_er / _tot_ip, 2) if _tot_ip > 0 else None
     out["vs_team_starts"] = vs_team_starts
     out["vs_team_avg_k"] = round(vs_team_k / vs_team_starts, 2) if vs_team_starts else 0
     out["vs_team_recent"] = sorted(recent_vs_team, key=lambda x: x["date"], reverse=True)[:5]
+    # Per-start details for the vs-team log (needed for outs/walks context)
+    _vs_starts_full = [s for s in all_starts if s.get("opp") == opp_team_name] if opp_team_name else []
+    if _vs_starts_full:
+        out["vs_team_avg_ip"] = round(sum(s["ip"] for s in _vs_starts_full) / len(_vs_starts_full), 2)
+        out["vs_team_avg_outs"] = round(out["vs_team_avg_ip"] * 3, 2)
+        out["vs_team_avg_er"] = round(sum(s["er"] for s in _vs_starts_full) / len(_vs_starts_full), 2)
+        out["vs_team_avg_bb"] = round(sum(s.get("bb", 0) for s in _vs_starts_full) / len(_vs_starts_full), 2)
+        out["vs_team_avg_h"] = round(sum(s.get("h", 0) for s in _vs_starts_full) / len(_vs_starts_full), 2)
     out["last5"] = l5
     out["last10"] = l10
     out["last20"] = l20

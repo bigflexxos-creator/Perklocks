@@ -1256,6 +1256,39 @@ def _build_streak_facts(
             })
             break
 
+    # 1b) Current consecutive hit streak — the "🔥 3-game hit streak"
+    #     rail Linemate leans on hard. Counted from the newest settled
+    #     game backwards until the first non-won status.
+    streak = 0
+    for h in settled:
+        if (h.get("status") or "").lower() == "won":
+            streak += 1
+        else:
+            break
+    if streak >= 3:
+        facts.append({
+            "icon": "flame",
+            "text": f"On a {streak}-game hit streak",
+            "pct": 100,
+            "hits": streak, "n": streak,
+        })
+
+    # 1c) Larger-sample season-context bullet — L20 hit rate, only
+    #     surfaced if it's >= 60% because a 40% L20 is not persuasive.
+    if len(settled) >= 15:
+        w20, n20 = _win_count(settled[:20])
+        if n20 >= 15 and w20 / n20 >= 0.6:
+            # Only include if it adds NEW information (differs from the
+            # last-N bullet we already emitted).
+            already = {(f.get("hits"), f.get("n")) for f in facts}
+            if (w20, n20) not in already:
+                facts.append({
+                    "icon": "trending-up",
+                    "text": f"Hit in {w20} of last {n20} (season)",
+                    "pct": round(w20 / n20 * 100),
+                    "hits": w20, "n": n20,
+                })
+
     # 2) vs opponent — use the *full* opponent name to match history.
     #    Require n ≥ 3 same-opponent games or the bullet is stat noise.
     opp_name = (raw_opponent or "").strip()
@@ -1292,6 +1325,57 @@ def _build_streak_facts(
                     "hits": w, "n": n,
                 })
 
+    # 4) Line-cushion — the numeric edge the model has over the book
+    #    line, computed from the L10 recent-form average vs the pick's
+    #    line. Only surfaced for player props where both numbers exist.
+    #    Reads like Linemate's "avg 2.2 hits vs 1.5 line — +0.7".
+    line_val = _parse_prop_line(live_pick.get("market") or "")
+    rf = (live_pick.get("pick_rationale") or {}).get("recent_form") or {}
+    l10_avg = rf.get("last10_avg")
+    stat_label = rf.get("stat") or ""
+    if line_val is not None and isinstance(l10_avg, (int, float)) and l10_avg > 0:
+        delta = l10_avg - line_val
+        is_under = "under" in (live_pick.get("market") or "").lower()
+        # For under picks a NEGATIVE delta is bullish; for over picks
+        # a POSITIVE delta is bullish. Only emit if the delta actually
+        # supports the pick's direction, otherwise it's a concern the
+        # panel already surfaces via `concerns`.
+        supportive = (delta > 0 and not is_under) or (delta < 0 and is_under)
+        if supportive and abs(delta) >= 0.2:
+            unit = stat_label or "stat"
+            arrow = "+" if delta > 0 else ""
+            facts.append({
+                "icon": "analytics",
+                "text": f"L10 avg {l10_avg:g} {unit}, line {line_val:g} ({arrow}{delta:.1f})",
+                "pct": None,  # numeric fact, not a percentage
+                "hits": None, "n": rf.get("last10_games_played") or 10,
+            })
+
+    # 5) Trending up / down — compare last 5 avg vs prior 5 avg. Only
+    #    surface if it's a meaningfully positive trend (≥ 10% swing).
+    l5_avg = rf.get("last5_avg")
+    if isinstance(l10_avg, (int, float)) and isinstance(l5_avg, (int, float)) \
+            and l10_avg > 0 and l5_avg > 0:
+        # Prior-5 average = ((L10 * 10) - (L5 * 5)) / 5
+        prior5 = (l10_avg * 10 - l5_avg * 5) / 5
+        if prior5 > 0:
+            swing = (l5_avg - prior5) / prior5
+            is_under = "under" in (live_pick.get("market") or "").lower()
+            if not is_under and swing >= 0.10:
+                facts.append({
+                    "icon": "trending-up",
+                    "text": f"📈 Trending up: L5 avg {l5_avg:g} vs prior 5 at {prior5:.1f}",
+                    "pct": round(swing * 100),
+                    "hits": None, "n": 5,
+                })
+            elif is_under and swing <= -0.10:
+                facts.append({
+                    "icon": "trending-down",
+                    "text": f"📉 Trending down: L5 avg {l5_avg:g} vs prior 5 at {prior5:.1f}",
+                    "pct": round(-swing * 100),
+                    "hits": None, "n": 5,
+                })
+
     # Dedupe on identical text
     seen: set[str] = set()
     out: list[dict] = []
@@ -1300,7 +1384,24 @@ def _build_streak_facts(
             continue
         seen.add(f["text"])
         out.append(f)
-    return out[:3]
+    return out[:5]  # widened from 3 → 5 to match Linemate density
+
+
+_PROP_LINE_RE = re.compile(r"\b(?:Over|Under)\s+(\d+(?:\.\d+)?)", re.I)
+
+
+def _parse_prop_line(market: str) -> float | None:
+    """Extract the numeric line (e.g. "Over 14.5 Outs Recorded" → 14.5)
+    from a market string. Returns None if no line is present."""
+    if not market:
+        return None
+    m = _PROP_LINE_RE.search(market)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except (ValueError, TypeError):
+        return None
 
 
 def _extract_opponent_full_name(pick: dict, own_team_override: str | None = None) -> str | None:

@@ -127,6 +127,30 @@ class EvidenceKey:
     desc: str = ""
 
 
+# ── Cross-market blocklists ──────────────────────────────────────────
+# Bullets containing ANY of these substrings for a given market family
+# are dropped BEFORE ranking — they belong to a different stat.  This
+# is what prevents a Pitcher-Outs card from surfacing "avg 6.8 K"
+# leftovers when the same pitcher's card was previously enriched as a
+# Strikeouts pick.
+_CROSS_MARKET_BLOCK: dict[str, tuple[str, ...]] = {
+    "MLB_OUTS":    ("k's / start", "k's/start", "k avg", "k's cushion",
+                    "strikeout rate", "strikeout form", "k/9",
+                    "averaging 6.8 k", "averaging \\d+.\\d+ k"),
+    "MLB_KS":      ("outs / start", "ip / start", "walks / start",
+                    "er / start", "hits / start", "ha / start"),
+    "MLB_ER":      ("k's / start", "k avg", "outs / start", "walks / start"),
+    "MLB_HA":      ("k's / start", "k avg", "outs / start", "walks / start"),
+    # Batter markets — reject pitcher-stat leftovers if a batter card
+    # was ever enriched as a pitcher (rare but has happened via mis-map).
+    "MLB_HR":      ("k's / start", "outs / start", "ip / start"),
+    "MLB_HITS":    ("k's / start", "outs / start", "ip / start"),
+    "MLB_RBI":     ("k's / start", "outs / start", "ip / start"),
+    "MLB_TB":      ("k's / start", "outs / start", "ip / start"),
+    "MLB_HRR":     ("k's / start", "outs / start", "ip / start"),
+}
+
+
 # ── Sport / market classifier ─────────────────────────────────────────
 _MLB_PITCHER_MARKETS = (
     "strikeouts", "k's", " ks ", " k ", "pitcher_ks",
@@ -329,8 +353,13 @@ PROFILES: dict[MarketFamily, tuple[EvidenceKey, ...]] = {
     ),
     # ─────────── MLB pitcher props ───────────
     MarketFamily.MLB_OUTS: (
-        EvidenceKey("innings_per_start", 0.95, ("ip/gs", "innings per start", "avg ip")),
-        EvidenceKey("recent_workload", 0.90, ("last 5", "l5 starts", "last 10 starts", "last-5 workload")),
+        EvidenceKey("innings_per_start", 0.95,
+                    ("ip/gs", "innings per start", "avg ip",
+                     "outs / start", "outs/start", "outs recorded",
+                     "ip / start", " ip)", "avg outs")),
+        EvidenceKey("recent_workload", 0.90,
+                    ("last 5", "l5 starts", "last 10 starts", "last-5 workload",
+                     "recent form", "l10 form", "prior starts")),
         EvidenceKey("pitch_count", 0.85, ("pitch count", "pitches per")),
         EvidenceKey("quality_start_rate", 0.80, ("quality start", "qs rate", "qs%")),
         EvidenceKey("pull_tendency", 0.72, ("manager pull", "hook", "quick hook")),
@@ -686,6 +715,25 @@ def select_top_evidence(
         return []
     family = classify_market(pick)
     profile = PROFILES.get(family) or PROFILES[MarketFamily.UNKNOWN]
+
+    # ── Cross-market blocklist ────────────────────────────────────
+    # Drop bullets that reference stats belonging to a DIFFERENT market
+    # family (e.g. K-averages leaking into an Outs Recorded card). This
+    # is the last line of defence when a pick's rationale block was
+    # previously enriched under a different market subtype and stale
+    # bullets are still sitting there. See `_CROSS_MARKET_BLOCK` at the
+    # top of the file for the per-family blacklist.
+    block_terms = _CROSS_MARKET_BLOCK.get(family.value, ())
+    if block_terms:
+        filtered: list = []
+        for b in bullets:
+            txt = _to_text(b)
+            if any(term.lower() in txt for term in block_terms):
+                continue
+            filtered.append(b)
+        bullets = filtered
+    if not bullets:
+        return []
 
     matched: list[tuple[float, int, object]] = []
     unmatched: list[tuple[int, object]] = []

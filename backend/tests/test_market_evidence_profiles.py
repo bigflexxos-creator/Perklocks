@@ -143,6 +143,50 @@ def test_outs_pick_does_not_surface_strikeout_stats():
     )
 
 
+def test_outs_pick_blocks_stale_strikeout_bullets():
+    """Regression (2026-07-07): a Pitcher-Outs pick that was previously
+    enriched as a Strikeouts pick used to have "avg 6.8 K's / start"
+    stuck in its rationale. `_CROSS_MARKET_BLOCK["MLB_OUTS"]` must
+    strip those leftovers before ranking.
+    """
+    pick = _pick("MLB", "Outs Recorded Over 17.5")
+    stale_pool = [
+        "⚾ Season avg 6.8 K's / start — sitting right at the 5.5 line",
+        "📉 Only 4.1 K avg vs BOS in last 3 starts",
+        "⚾ Season avg 17.9 outs / start (6.0 IP) — right on the 17.5 line",
+        "🔥 pitch count avg 96 per outing",
+    ]
+    top = select_top_evidence(pick, stale_pool, max_n=5)
+    joined = " || ".join(top).lower()
+    # The stale K bullets MUST be gone
+    assert "k's / start" not in joined, \
+        f"MLB_OUTS blocklist should drop K's / start bullet: {joined}"
+    assert "k avg" not in joined, \
+        f"MLB_OUTS blocklist should drop K avg bullet: {joined}"
+    # The correct outs bullet MUST survive
+    assert "outs / start" in joined, \
+        f"Outs bullet must survive: {joined}"
+
+
+def test_hr_pick_blocks_stale_pitcher_outs_bullets():
+    """Symmetric regression: a batter HR pick must never surface leftover
+    pitcher-outs bullets from a prior mis-enrichment pass.
+    """
+    pick = _pick("MLB", "Home Run Over 0.5")
+    stale_pool = [
+        "⚾ Season avg 17.9 outs / start (6.0 IP)",
+        "🎯 pitcher HR/9: 1.42 (elite)",
+        "🔥 batter ISO .285",
+    ]
+    top = select_top_evidence(pick, stale_pool, max_n=5)
+    joined = " || ".join(top).lower()
+    assert "outs / start" not in joined, \
+        f"MLB_HR blocklist should drop outs bullet: {joined}"
+    assert "hr/9" in joined or "iso" in joined, \
+        f"Real HR bullets must survive: {joined}"
+
+
+
 def test_ks_pick_surfaces_k_specific_features():
     pick = _pick("MLB", "Strikeouts Over 6.5")
     top = select_top_evidence(pick, _MLB_POOL, max_n=5)
