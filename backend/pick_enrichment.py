@@ -29,6 +29,48 @@ from typing import Any, Optional
 logger = logging.getLogger("lockscore.pick_enrichment")
 
 
+# ─── Market-Specific Evidence Filter ─────────────────────────────────
+def _apply_market_evidence_filter(pick: dict, rationale: dict) -> dict:
+    """Rank + trim `rationale['evidence']` against the market-specific
+    profile in `market_evidence_profiles.PROFILES`.
+
+    This is what enforces the user's mandate (2026-07-07): a Home-Run
+    pick must show HR-relevant evidence (pitcher HR rate, ISO, barrel,
+    park), NOT the generic pitcher K/9 line that used to pollute every
+    batter pick. Similarly a Pitcher-Outs pick must show IP/pitch-count
+    stuff, NOT strikeout-only bullets.
+
+    Behaviour:
+      • Keeps the full unfiltered list at `rationale['evidence_all']`
+        for the admin inspector.
+      • Replaces `rationale['evidence']` with a top-5 ordered by the
+        market's per-key importance weights.
+      • Adds `rationale['evidence_family']` so the UI can badge the
+        market family (e.g. "MLB_OUTS") in the debug view.
+      • Silent-safe: any exception falls back to the untouched
+        rationale so a profile bug never breaks the card render.
+    """
+    try:
+        from market_evidence_profiles import (
+            classify_market, select_top_evidence, PROFILES, MarketFamily,
+        )
+        bullets = list(rationale.get("evidence") or [])
+        if not bullets:
+            return rationale
+        family = classify_market(pick)
+        top = select_top_evidence(pick, bullets, max_n=5)
+        rationale["evidence_all"] = bullets
+        rationale["evidence"] = top
+        rationale["evidence_family"] = family.value
+        # Ranked keys for the admin inspector — first-hit lookup so the
+        # inspector can show which profile weight drove the ordering.
+        profile = PROFILES.get(family) or PROFILES[MarketFamily.UNKNOWN]
+        rationale["evidence_profile_keys"] = [k.label for k in profile]
+    except Exception as e:
+        logger.debug("market evidence filter skipped: %s", e)
+    return rationale
+
+
 # ─── Sport detection ──────────────────────────────────────────────
 def _detect_sport(pick: dict) -> Optional[str]:
     """Maps the pick's sport_key / league / sport field to the
@@ -322,7 +364,10 @@ def _build_rationale(pick: dict, sport: str, name: str) -> dict[str, Any]:
         # rationale block self-documents which layer produced it.
         if rationale.get("engine") and not existing.get("engine"):
             existing["engine"] = rationale["engine"]
-        return existing
+        # Market-specific evidence ranking (2026-07-07): trim + reorder
+        # the merged bullet list so ONLY market-relevant evidence stays,
+        # top-5 only, ordered by predictive importance for THIS market.
+        return _apply_market_evidence_filter(pick, existing)
 
     # Compose a one-line summary fallback.
     rank_part = f"ESPN #{rationale['espn_rank']} " if rationale["espn_rank"] else ""
@@ -331,7 +376,7 @@ def _build_rationale(pick: dict, sport: str, name: str) -> dict[str, Any]:
         if isinstance(wp, (int, float))
         else f"{name}: pick rationale (auto)"
     )
-    return rationale
+    return _apply_market_evidence_filter(pick, rationale)
 
 
 # ─── Public entry point ──────────────────────────────────────────────
