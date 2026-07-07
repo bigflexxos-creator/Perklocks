@@ -538,6 +538,96 @@ export const api = {
       "/version",
       { auth: false },
     ),
+
+  // ── LAB endpoints (Session 2+3) ─────────────────────────────────
+  // Correlation Lab — historical parlay leg co-occurrence hit rates.
+  labCorrelations: (opts?: { sport?: string; min_pairs?: number; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.sport) params.set("sport", opts.sport);
+    if (opts?.min_pairs != null) params.set("min_pairs", String(opts.min_pairs));
+    if (opts?.limit != null) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    return request<{
+      rows: {
+        family_a: string; family_b: string;
+        sample_size: number;
+        both_hit_rate: number;
+        leg_a_hit_rate: number; leg_b_hit_rate: number;
+        lift: number | null;
+        verdict: string;
+      }[];
+      total_pairs_seen: number;
+    }>(`/lab/correlations${qs ? "?" + qs : ""}`);
+  },
+  // Bet Backtester — strategy filter → win rate, ROI, sample.
+  labBacktest: (opts?: {
+    sport?: string; market_family?: string;
+    odds_min?: number; odds_max?: number;
+    edge_min?: number; lock_min?: number; lock_max?: number;
+    limit_sample?: number;
+  }) => {
+    const params = new URLSearchParams();
+    Object.entries(opts || {}).forEach(([k, v]) => {
+      if (v != null && v !== "") params.set(k, String(v));
+    });
+    const qs = params.toString();
+    return request<{
+      filters: Record<string, unknown>;
+      sample_size: number;
+      won: number; lost: number; push: number;
+      hit_rate: number;
+      units_profit: number; units_risked: number;
+      roi: number;
+      best_day: { date: string; units: number } | null;
+      worst_day: { date: string; units: number } | null;
+      days_traded: number;
+      verdict: string;
+      family_breakdown: {
+        family: string; n: number; hit_rate: number;
+        units_profit: number; roi: number;
+      }[];
+    }>(`/lab/backtest${qs ? "?" + qs : ""}`);
+  },
+  // Pattern Finder — auto-mined profitable buckets, Wilson-ranked.
+  labPatterns: (opts?: { sport?: string; axis?: string; min_n?: number; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.sport) params.set("sport", opts.sport);
+    if (opts?.axis) params.set("axis", opts.axis);
+    if (opts?.min_n != null) params.set("min_n", String(opts.min_n));
+    if (opts?.limit != null) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    return request<{
+      axis: string; min_n: number; buckets_considered: number;
+      rows: {
+        bucket: string; n: number; hit_rate: number;
+        wilson_lower: number; roi: number; units_profit: number;
+      }[];
+    }>(`/lab/patterns${qs ? "?" + qs : ""}`);
+  },
+  // Matchup DNA — deep player profile with vs-opponent breakdown.
+  labMatchupDNA: (sport: string, subject: string, opponent?: string) => {
+    const params = new URLSearchParams();
+    if (opponent) params.set("opponent", opponent);
+    const qs = params.toString();
+    return request<{
+      subject: string; sport: string;
+      overall: {
+        n: number; won: number; lost: number; push: number;
+        hit_rate: number; units_profit: number; roi: number;
+      };
+      vs_opponent: (Record<string, unknown> & { opponent: string; n: number }) | null;
+      by_market: {
+        family: string; n: number; won: number; lost: number;
+        push: number; hit_rate: number; units_profit: number; roi: number;
+      }[];
+      home_away: Record<string, {
+        n: number; won: number; lost: number; push: number;
+        hit_rate: number; units_profit: number; roi: number;
+      }>;
+      recent_form: { date: string; market: string; status: string; units: number }[];
+      hot_cold: string;
+    }>(`/lab/matchup-dna/${encodeURIComponent(sport)}/${encodeURIComponent(subject)}${qs ? "?" + qs : ""}`);
+  },
   xgFormShadow: () =>
     request<{
       buckets: {

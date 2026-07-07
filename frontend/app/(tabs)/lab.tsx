@@ -36,14 +36,18 @@ import { COLORS } from "@/src/theme";
 import { api } from "@/src/lib/api";
 
 // ── Module type ──────────────────────────────────────────────────────
-type LabModule = "cheats" | "research" | "ev" | "sim" | "props";
+type LabModule = "cheats" | "research" | "ev" | "sim" | "props" | "corr" | "backtest" | "patterns" | "dna";
 
 const MODULES: { id: LabModule; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
   { id: "cheats",   label: "Cheatsheets", icon: "flash" },
-  { id: "research", label: "Research", icon: "search" },
-  { id: "ev",       label: "EV Calc",  icon: "calculator" },
-  { id: "sim",      label: "Sim",      icon: "analytics" },
-  { id: "props",    label: "Props",    icon: "list" },
+  { id: "research", label: "Research",    icon: "search" },
+  { id: "corr",     label: "Correlations", icon: "git-network" },
+  { id: "backtest", label: "Backtest",    icon: "trending-up" },
+  { id: "patterns", label: "Patterns",    icon: "sparkles" },
+  { id: "dna",      label: "Matchup DNA", icon: "body" },
+  { id: "ev",       label: "EV Calc",     icon: "calculator" },
+  { id: "sim",      label: "Sim",         icon: "analytics" },
+  { id: "props",    label: "Props",       icon: "list" },
 ];
 
 // ── Root screen ──────────────────────────────────────────────────────
@@ -139,6 +143,10 @@ export default function LabScreen() {
         >
           {module === "cheats"   && <CheatsheetsModule picks={picks} />}
           {module === "research" && <ResearchModule picks={picks} />}
+          {module === "corr"     && <CorrelationModule />}
+          {module === "backtest" && <BacktestModule />}
+          {module === "patterns" && <PatternsModule />}
+          {module === "dna"      && <MatchupDNAModule />}
           {module === "ev"       && <EVCalcModule picks={picks} />}
           {module === "sim"      && <SimulationModule picks={picks} />}
           {module === "props"    && <PropExplorerModule picks={picks} />}
@@ -1011,6 +1019,481 @@ const cheatStyles = StyleSheet.create({
   factTxt: { flex: 1, color: COLORS.textPrimary, fontSize: 12.5, fontWeight: "600" },
   factPct: { fontSize: 13, fontWeight: "900" },
 });
+
+
+// ═══════════════════════════════════════════════════════════════════
+// MODULE 6: CORRELATION LAB
+// ═══════════════════════════════════════════════════════════════════
+// Data source: /api/lab/correlations (parlay_history aggregation).
+function CorrelationModule() {
+  const [sport, setSport] = useState<string>("");
+  const [data, setData] = useState<any | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    api.labCorrelations({ sport: sport || undefined, min_pairs: 5, limit: 30 })
+      .then(setData)
+      .catch(() => setData({ rows: [], total_pairs_seen: 0 }))
+      .finally(() => setLoading(false));
+  }, [sport]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const sports = ["", "MLB", "NBA", "NFL", "Soccer", "Tennis", "UFC"];
+  return (
+    <View>
+      <SectionHeader
+        icon="git-network"
+        title="Correlation Lab"
+        blurb="How often two market families co-hit in a parlay. Lift > 1.25 = legs cluster together (positive corr). Lift < 0.8 = anti-correlated."
+      />
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+        {sports.map((s) => (
+          <TouchableOpacity
+            key={s || "all"}
+            onPress={() => setSport(s)}
+            style={[styles.filterChip, sport === s && styles.filterChipActive]}
+          >
+            <Text style={[styles.filterChipTxt, sport === s && styles.filterChipTxtActive]}>
+              {(s || "ALL").toUpperCase()}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+      {loading ? (
+        <ActivityIndicator color={COLORS.textPrimary} style={{ marginTop: 20 }} />
+      ) : !data?.rows?.length ? (
+        <Text style={styles.disclaimer}>
+          No correlation data yet. Cards appear once we have ≥5 co-occurrences of a
+          leg pair in settled parlays.
+        </Text>
+      ) : (
+        data.rows.map((r: any, i: number) => (
+          <View key={`${r.family_a}_${r.family_b}_${i}`} style={styles.pickRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.pickSport}>{r.family_a} × {r.family_b}</Text>
+              <Text style={styles.pickMarket}>
+                Both hit {Math.round(r.both_hit_rate * 100)}% · Leg A {Math.round(r.leg_a_hit_rate * 100)}% · Leg B {Math.round(r.leg_b_hit_rate * 100)}%
+              </Text>
+              <Text style={styles.pickEvent}>n={r.sample_size} · {r.verdict}</Text>
+            </View>
+            <View style={styles.pickRight}>
+              <Text style={[styles.pickLock, { color: liftColor(r.lift) }]}>
+                {r.lift != null ? r.lift.toFixed(2) : "—"}
+              </Text>
+              <Text style={styles.pickLockLabel}>LIFT</Text>
+            </View>
+          </View>
+        ))
+      )}
+    </View>
+  );
+}
+
+function liftColor(lift: number | null): string {
+  if (lift == null) return COLORS.textMuted;
+  if (lift >= 1.25) return "#40d18a";
+  if (lift <= 0.8)  return "#e46d6d";
+  return COLORS.textPrimary;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+// MODULE 7: BET BACKTESTER
+// ═══════════════════════════════════════════════════════════════════
+function BacktestModule() {
+  const [sport, setSport] = useState<string>("");
+  const [family, setFamily] = useState<string>("");
+  const [oddsMin, setOddsMin] = useState<string>("");
+  const [oddsMax, setOddsMax] = useState<string>("");
+  const [edgeMin, setEdgeMin] = useState<string>("");
+  const [lockMin, setLockMin] = useState<string>("");
+  const [data, setData] = useState<any | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const run = useCallback(() => {
+    setLoading(true);
+    api.labBacktest({
+      sport: sport || undefined,
+      market_family: family || undefined,
+      odds_min: oddsMin ? parseInt(oddsMin, 10) : undefined,
+      odds_max: oddsMax ? parseInt(oddsMax, 10) : undefined,
+      edge_min: edgeMin ? parseFloat(edgeMin) : undefined,
+      lock_min: lockMin ? parseFloat(lockMin) : undefined,
+    }).then(setData).catch(() => setData(null)).finally(() => setLoading(false));
+  }, [sport, family, oddsMin, oddsMax, edgeMin, lockMin]);
+
+  useEffect(() => { run(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const sports = ["", "MLB", "NBA", "NFL", "Soccer", "Tennis"];
+  return (
+    <View>
+      <SectionHeader
+        icon="trending-up"
+        title="Bet Backtester"
+        blurb="How would this filter set have performed historically? Runs against every settled pick and reports win rate, ROI, best/worst day."
+      />
+
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+        {sports.map((s) => (
+          <TouchableOpacity
+            key={s || "all"}
+            onPress={() => setSport(s)}
+            style={[styles.filterChip, sport === s && styles.filterChipActive]}
+          >
+            <Text style={[styles.filterChipTxt, sport === s && styles.filterChipTxtActive]}>
+              {(s || "ALL").toUpperCase()}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+
+      <View style={styles.evInputRow}>
+        <View style={styles.evField}>
+          <Text style={styles.evFieldLabel}>Odds Min</Text>
+          <TextInput value={oddsMin} onChangeText={setOddsMin} placeholder="-200" placeholderTextColor={COLORS.textMuted} keyboardType="numbers-and-punctuation" style={styles.evInput} />
+        </View>
+        <View style={styles.evField}>
+          <Text style={styles.evFieldLabel}>Odds Max</Text>
+          <TextInput value={oddsMax} onChangeText={setOddsMax} placeholder="+300" placeholderTextColor={COLORS.textMuted} keyboardType="numbers-and-punctuation" style={styles.evInput} />
+        </View>
+      </View>
+      <View style={styles.evInputRow}>
+        <View style={styles.evField}>
+          <Text style={styles.evFieldLabel}>Min Edge %</Text>
+          <TextInput value={edgeMin} onChangeText={setEdgeMin} placeholder="3" placeholderTextColor={COLORS.textMuted} keyboardType="decimal-pad" style={styles.evInput} />
+        </View>
+        <View style={styles.evField}>
+          <Text style={styles.evFieldLabel}>Min Lock</Text>
+          <TextInput value={lockMin} onChangeText={setLockMin} placeholder="80" placeholderTextColor={COLORS.textMuted} keyboardType="decimal-pad" style={styles.evInput} />
+        </View>
+        <View style={styles.evField}>
+          <Text style={styles.evFieldLabel}>Family (opt)</Text>
+          <TextInput value={family} onChangeText={setFamily} placeholder="MLB_HR" placeholderTextColor={COLORS.textMuted} autoCapitalize="characters" style={styles.evInput} />
+        </View>
+      </View>
+
+      <TouchableOpacity onPress={run} style={[styles.retryBtn, { alignSelf: "flex-start", marginBottom: 12 }]}>
+        <Text style={styles.retryTxt}>{loading ? "…" : "RUN BACKTEST"}</Text>
+      </TouchableOpacity>
+
+      {data ? (
+        <View>
+          <StatGrid
+            cells={[
+              { label: "N", value: String(data.sample_size) },
+              { label: "Hit%", value: `${(data.hit_rate * 100).toFixed(1)}%`,
+                tint: data.hit_rate >= 0.55 ? "#40d18a" : data.hit_rate >= 0.5 ? undefined : "#e46d6d" },
+              { label: "ROI", value: `${(data.roi * 100).toFixed(1)}%`,
+                tint: data.roi >= 0.03 ? "#40d18a" : data.roi >= -0.02 ? undefined : "#e46d6d" },
+              { label: "Units", value: `${data.units_profit >= 0 ? "+" : ""}${data.units_profit.toFixed(1)}u`,
+                tint: data.units_profit >= 0 ? "#40d18a" : "#e46d6d" },
+            ]}
+          />
+          <View style={styles.recRow}>
+            <Text style={styles.recLabel}>Verdict</Text>
+            <Text style={[styles.recValue, { color: verdictTint(data.roi, data.sample_size) }]}>
+              {data.verdict}
+            </Text>
+          </View>
+          {data.best_day && data.worst_day ? (
+            <View style={styles.rangeRow}>
+              <View style={[styles.rangeBox, { backgroundColor: "#1e2b1e" }]}>
+                <Text style={styles.rangeLabel}>Best Day</Text>
+                <Text style={styles.rangeValue}>+{data.best_day.units.toFixed(1)}u</Text>
+                <Text style={styles.rangeSub}>{data.best_day.date}</Text>
+              </View>
+              <View style={[styles.rangeBox, { backgroundColor: "#2b1e1e" }]}>
+                <Text style={styles.rangeLabel}>Worst Day</Text>
+                <Text style={styles.rangeValue}>{data.worst_day.units.toFixed(1)}u</Text>
+                <Text style={styles.rangeSub}>{data.worst_day.date}</Text>
+              </View>
+            </View>
+          ) : null}
+          {data.family_breakdown?.length ? (
+            <Section title="By Market Family">
+              {data.family_breakdown.map((f: any) => (
+                <View key={f.family} style={styles.pickRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.pickMarket}>{f.family}</Text>
+                    <Text style={styles.pickEvent}>n={f.n} · hit {(f.hit_rate * 100).toFixed(0)}% · ROI {(f.roi * 100).toFixed(1)}%</Text>
+                  </View>
+                  <View style={styles.pickRight}>
+                    <Text style={[styles.pickLock, { color: f.units_profit >= 0 ? "#40d18a" : "#e46d6d" }]}>
+                      {f.units_profit >= 0 ? "+" : ""}{f.units_profit.toFixed(1)}
+                    </Text>
+                    <Text style={styles.pickLockLabel}>UNITS</Text>
+                  </View>
+                </View>
+              ))}
+            </Section>
+          ) : null}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function verdictTint(roi: number, n: number): string {
+  if (n < 30) return COLORS.textMuted;
+  if (roi >= 0.1) return "#40d18a";
+  if (roi >= 0.03) return "#c9d055";
+  if (roi >= -0.02) return COLORS.textPrimary;
+  return "#e46d6d";
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+// MODULE 8: PATTERN FINDER
+// ═══════════════════════════════════════════════════════════════════
+function PatternsModule() {
+  const [axis, setAxis] = useState<string>("family_odds");
+  const [sport, setSport] = useState<string>("");
+  const [minN, setMinN] = useState<number>(20);
+  const [data, setData] = useState<any | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    api.labPatterns({ axis, sport: sport || undefined, min_n: minN, limit: 25 })
+      .then(setData).catch(() => setData(null)).finally(() => setLoading(false));
+  }, [axis, sport, minN]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const axes: [string, string][] = [
+    ["family_odds", "FAMILY × ODDS"],
+    ["family_edge", "FAMILY × EDGE"],
+    ["family_lock", "FAMILY × LOCK"],
+    ["sport_odds",  "SPORT × ODDS"],
+    ["dow",         "DAY OF WEEK"],
+  ];
+  const sports = ["", "MLB", "NBA", "NFL", "Soccer", "Tennis"];
+  return (
+    <View>
+      <SectionHeader
+        icon="sparkles"
+        title="Pattern Finder"
+        blurb="Auto-mined profitable buckets across settled picks. Ranked by Wilson lower bound so big-sample wins float to the top and small-sample flukes stay hidden."
+      />
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+        {axes.map(([a, label]) => (
+          <TouchableOpacity key={a} onPress={() => setAxis(a)}
+            style={[styles.filterChip, axis === a && styles.filterChipActive]}>
+            <Text style={[styles.filterChipTxt, axis === a && styles.filterChipTxtActive]}>{label}</Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+        {sports.map((s) => (
+          <TouchableOpacity key={s || "all"} onPress={() => setSport(s)}
+            style={[styles.filterChip, sport === s && styles.filterChipActive]}>
+            <Text style={[styles.filterChipTxt, sport === s && styles.filterChipTxtActive]}>{(s || "ALL").toUpperCase()}</Text>
+          </TouchableOpacity>
+        ))}
+        {[10, 20, 50, 100].map((n) => (
+          <TouchableOpacity key={`n${n}`} onPress={() => setMinN(n)}
+            style={[styles.filterChip, minN === n && styles.filterChipActive]}>
+            <Text style={[styles.filterChipTxt, minN === n && styles.filterChipTxtActive]}>MIN N={n}</Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+
+      {loading ? (
+        <ActivityIndicator color={COLORS.textPrimary} style={{ marginTop: 20 }} />
+      ) : !data?.rows?.length ? (
+        <Text style={styles.disclaimer}>No patterns pass the sample-size cutoff. Lower Min N or change axis.</Text>
+      ) : (
+        <View>
+          <Text style={styles.subhead}>
+            {data.rows.length} of {data.buckets_considered} buckets · sorted by Wilson lower bound
+          </Text>
+          {data.rows.map((r: any, i: number) => (
+            <View key={`${r.bucket}_${i}`} style={styles.pickRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.pickMarket} numberOfLines={2}>{r.bucket}</Text>
+                <Text style={styles.pickEvent}>
+                  n={r.n} · hit {(r.hit_rate * 100).toFixed(1)}% · Wilson {(r.wilson_lower * 100).toFixed(1)}% · ROI {(r.roi * 100).toFixed(1)}%
+                </Text>
+              </View>
+              <View style={styles.pickRight}>
+                <Text style={[styles.pickLock, { color: r.units_profit >= 0 ? "#40d18a" : "#e46d6d" }]}>
+                  {r.units_profit >= 0 ? "+" : ""}{r.units_profit.toFixed(1)}
+                </Text>
+                <Text style={styles.pickLockLabel}>UNITS</Text>
+              </View>
+            </View>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+// MODULE 9: MATCHUP DNA
+// ═══════════════════════════════════════════════════════════════════
+function MatchupDNAModule() {
+  const [sport, setSport] = useState<string>("MLB");
+  const [subject, setSubject] = useState<string>("");
+  const [opponent, setOpponent] = useState<string>("");
+  const [data, setData] = useState<any | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const run = useCallback(() => {
+    if (!subject.trim()) { setData(null); return; }
+    setLoading(true);
+    api.labMatchupDNA(sport, subject.trim(), opponent.trim() || undefined)
+      .then(setData).catch(() => setData(null)).finally(() => setLoading(false));
+  }, [sport, subject, opponent]);
+
+  const sports = ["MLB", "NBA", "NFL", "Soccer", "Tennis", "UFC"];
+  return (
+    <View>
+      <SectionHeader
+        icon="body"
+        title="Matchup DNA"
+        blurb="Deep profile for any player from settled-pick history. Overall record, by-market breakdown, home/away split, hot/cold streak, optional vs-opponent filter."
+      />
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+        {sports.map((s) => (
+          <TouchableOpacity key={s} onPress={() => setSport(s)}
+            style={[styles.filterChip, sport === s && styles.filterChipActive]}>
+            <Text style={[styles.filterChipTxt, sport === s && styles.filterChipTxtActive]}>{s.toUpperCase()}</Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+      <View style={styles.searchWrap}>
+        <Ionicons name="person" size={14} color={COLORS.textMuted} />
+        <TextInput
+          value={subject}
+          onChangeText={setSubject}
+          placeholder="Player name (e.g. Alonso)"
+          placeholderTextColor={COLORS.textMuted}
+          style={styles.searchInput}
+          autoCorrect={false}
+          onSubmitEditing={run}
+        />
+      </View>
+      <View style={styles.searchWrap}>
+        <Ionicons name="shield" size={14} color={COLORS.textMuted} />
+        <TextInput
+          value={opponent}
+          onChangeText={setOpponent}
+          placeholder="Opponent (optional — e.g. Reds, Nadal)"
+          placeholderTextColor={COLORS.textMuted}
+          style={styles.searchInput}
+          autoCorrect={false}
+          onSubmitEditing={run}
+        />
+      </View>
+      <TouchableOpacity onPress={run} style={[styles.retryBtn, { alignSelf: "flex-start", marginBottom: 12 }]}>
+        <Text style={styles.retryTxt}>{loading ? "…" : "LOOKUP"}</Text>
+      </TouchableOpacity>
+
+      {data ? (
+        <View>
+          <View style={styles.detailHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.detailSport}>{data.sport}</Text>
+              <Text style={styles.detailEvent}>{data.subject}</Text>
+              <Text style={styles.detailMarket}>{data.hot_cold}</Text>
+            </View>
+          </View>
+
+          <StatGrid
+            cells={[
+              { label: "N", value: String(data.overall.n) },
+              { label: "Won", value: String(data.overall.won), tint: "#40d18a" },
+              { label: "Lost", value: String(data.overall.lost), tint: "#e46d6d" },
+              { label: "Hit%", value: `${(data.overall.hit_rate * 100).toFixed(1)}%`,
+                tint: data.overall.hit_rate >= 0.55 ? "#40d18a" : undefined },
+            ]}
+          />
+          <StatGrid
+            cells={[
+              { label: "Units", value: `${data.overall.units_profit >= 0 ? "+" : ""}${data.overall.units_profit.toFixed(2)}u`,
+                tint: data.overall.units_profit >= 0 ? "#40d18a" : "#e46d6d" },
+              { label: "ROI", value: `${(data.overall.roi * 100).toFixed(1)}%`,
+                tint: data.overall.roi >= 0 ? "#40d18a" : "#e46d6d" },
+              { label: "Home n", value: String(data.home_away?.home?.n || 0) },
+              { label: "Away n", value: String(data.home_away?.away?.n || 0) },
+            ]}
+          />
+
+          {data.vs_opponent ? (
+            <Section title={`vs ${data.vs_opponent.opponent}`}>
+              {data.vs_opponent.n > 0 ? (
+                <StatGrid
+                  cells={[
+                    { label: "N", value: String(data.vs_opponent.n) },
+                    { label: "Hit%", value: `${((data.vs_opponent.hit_rate || 0) * 100).toFixed(1)}%` },
+                    { label: "Units", value: `${(data.vs_opponent.units_profit || 0) >= 0 ? "+" : ""}${(data.vs_opponent.units_profit || 0).toFixed(2)}u`,
+                      tint: (data.vs_opponent.units_profit || 0) >= 0 ? "#40d18a" : "#e46d6d" },
+                    { label: "ROI", value: `${((data.vs_opponent.roi || 0) * 100).toFixed(1)}%` },
+                  ]}
+                />
+              ) : (
+                <Text style={styles.disclaimer}>No prior picks vs this opponent.</Text>
+              )}
+            </Section>
+          ) : null}
+
+          {data.by_market?.length ? (
+            <Section title="By Market">
+              {data.by_market.map((f: any) => (
+                <View key={f.family} style={styles.pickRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.pickMarket}>{f.family}</Text>
+                    <Text style={styles.pickEvent}>
+                      n={f.n} · {f.won}-{f.lost} · hit {(f.hit_rate * 100).toFixed(0)}%
+                    </Text>
+                  </View>
+                  <View style={styles.pickRight}>
+                    <Text style={[styles.pickLock, { color: f.units_profit >= 0 ? "#40d18a" : "#e46d6d" }]}>
+                      {f.units_profit >= 0 ? "+" : ""}{f.units_profit.toFixed(1)}
+                    </Text>
+                    <Text style={styles.pickLockLabel}>UNITS</Text>
+                  </View>
+                </View>
+              ))}
+            </Section>
+          ) : null}
+
+          {data.recent_form?.length ? (
+            <Section title="Recent Form">
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
+                {data.recent_form.map((r: any, i: number) => (
+                  <View
+                    key={i}
+                    style={{
+                      width: 14, height: 14, borderRadius: 3,
+                      backgroundColor:
+                        r.status === "won" ? "#40d18a" :
+                        r.status === "lost" ? "#e46d6d" :
+                        "#666",
+                    }}
+                  />
+                ))}
+              </View>
+              <Text style={[styles.disclaimer, { marginTop: 6 }]}>
+                Latest {data.recent_form.length} settled picks (left = newest).
+              </Text>
+            </Section>
+          ) : null}
+        </View>
+      ) : subject.trim() ? (
+        !loading && <Text style={styles.disclaimer}>No settled picks found for &quot;{subject}&quot; in {sport}.</Text>
+      ) : (
+        <Text style={styles.disclaimer}>Enter a player name and tap LOOKUP.</Text>
+      )}
+    </View>
+  );
+}
+
+
 function SectionHeader({ icon, title, blurb }:
   { icon: keyof typeof Ionicons.glyphMap; title: string; blurb?: string }) {
   return (
