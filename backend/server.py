@@ -2020,6 +2020,20 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as _bv_err:
         logger.warning("Board validator failed (continuing): %s", _bv_err)
 
+    # ── Monte Carlo simulation engine (2026-07-04 spec, Session 1) ──
+    # For every survivor, run scenario-based + multi-model sims and
+    # attach `sim_result` (prob / edge / agreement / breakdown). Feeds
+    # into the ranker and gives the UI a transparent "why this pick"
+    # payload.
+    try:
+        from sim_engine import simulate_board
+        simulate_board(safe_picks, n_simulations=500)
+        # Track how many picks got sim results for observability
+        sim_ok = sum(1 for p in safe_picks if p.get("sim_result"))
+        logger.info("Sim engine: %d/%d picks simulated", sim_ok, len(safe_picks))
+    except Exception as _sim_err:
+        logger.warning("Sim engine failed (continuing): %s", _sim_err)
+
     if safe_picks:
         # ATOMIC-SWAP: do the wipe NOW, immediately before the insert.
         # The enrichment passes above ran on in-memory `safe_picks` —
