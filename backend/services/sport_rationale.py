@@ -59,12 +59,14 @@ def is_mlb_pitcher_prop(market: str) -> bool:
 async def build_mlb_pitcher_rationale(
     pick: dict, player_name: str,
 ) -> dict[str, list[str]]:
-    """Returns {evidence, concerns} bullets for an MLB pitcher prop
-    based on the pitcher's season form + recent-form vs opp team.
+    """Returns {evidence, concerns, recent_form} bullets for an MLB
+    pitcher prop.  The bullets are STAT-SPECIFIC to the exact market
+    (Ks vs Outs vs Walks vs Earned Runs vs Hits Allowed) so a
+    Pitcher Outs pick never shows strikeout stats and vice versa.
 
     Uses `mlb_pitcher_h2h.fetch_pitcher_h2h` which itself talks to MLB
     Stats API (free) — no Odds credits consumed."""
-    out = {"evidence": [], "concerns": []}
+    out: dict[str, Any] = {"evidence": [], "concerns": []}
     if not player_name:
         return out
     # Parse opponent from "Houston Astros @ Detroit Tigers" + pick.team
@@ -89,8 +91,10 @@ async def build_mlb_pitcher_rationale(
     if not data.get("ok"):
         return out
 
-    # Pull the prop line (e.g. "Over 6.5" → 6.5) from the market string
     market = pick.get("market") or ""
+    m_lower = market.lower()
+
+    # Parse the prop line from the market string (e.g. "Over 14.5" → 14.5)
     line: Optional[float] = None
     m_line = re.search(r"\b(?:Over|Under)\s+(\d+(?:\.\d+)?)", market, re.I)
     if m_line:
@@ -98,83 +102,243 @@ async def build_mlb_pitcher_rationale(
             line = float(m_line.group(1))
         except Exception:
             line = None
+    is_under = bool(re.search(r"\bunder\b", m_lower))
+    last_name = player_name.split()[-1] if player_name else "Pitcher"
+    starts = int(data.get("season_starts") or 0)
 
-    # Season form
-    season_avg_k = data.get("season_avg_k")
-    starts = data.get("season_starts") or 0
-    if isinstance(season_avg_k, (int, float)) and starts >= 3:
-        # "K's" market: compare avg to the line
-        is_k_market = any(s in market.lower() for s in ("strikeout", "k's", " ks", " k "))
-        if is_k_market and line is not None:
-            delta = season_avg_k - line
-            if delta >= 1.0:
+    # ── Dispatch by prop subtype ──────────────────────────────────
+    # Each branch emits stat-specific evidence + a recent_form block
+    # whose values reflect THIS stat (avg_outs for Outs Recorded,
+    # avg_bb for Walks, etc.) so the Universal-L5/L10/L20 chip renders
+    # meaningfully.
+    is_outs = ("outs recorded" in m_lower or "outs allowed" in m_lower
+               or "pitching outs" in m_lower)
+    is_walks = "walks allowed" in m_lower or " walks" in m_lower
+    is_er = "earned runs" in m_lower
+    is_ha = "hits allowed" in m_lower
+
+    l5 = data.get("last5") or {}
+    l10 = data.get("last10") or {}
+    l20 = data.get("last20") or {}
+
+    if is_outs:
+        # Outs Recorded — use avg_outs (IP*3) not K/9
+        season_avg = data.get("season_avg_outs") or 0
+        avg_ip = data.get("season_avg_ip") or 0
+        if starts >= 3 and line is not None and season_avg:
+            delta = season_avg - line
+            if delta >= 1.5:
                 out["evidence"].append(
-                    f"📈 {player_name.split()[-1]} averaging {season_avg_k:.1f} K's"
-                    f" across {starts} starts (line {line:g}, +{delta:.1f} cushion)"
+                    f"📈 {last_name} averaging {season_avg:.1f} outs "
+                    f"({avg_ip:.1f} IP) across {starts} starts — "
+                    f"line {line:g}, +{delta:.1f} cushion"
                 )
-            elif delta <= -1.0:
+            elif delta <= -1.5:
                 out["concerns"].append(
-                    f"📉 Season avg only {season_avg_k:.1f} K's / start —"
-                    f" line of {line:g} requires above-trend performance"
+                    f"📉 Season averages only {season_avg:.1f} outs / start "
+                    f"({avg_ip:.1f} IP) — line of {line:g} requires above-trend length"
                 )
             else:
                 out["evidence"].append(
-                    f"⚾ Season avg {season_avg_k:.1f} K's / start"
-                    f" — sitting right at the {line:g} line"
+                    f"⚾ Season avg {season_avg:.1f} outs / start "
+                    f"({avg_ip:.1f} IP) — right on the {line:g} line"
                 )
-        elif starts >= 3:
+        elif starts >= 3 and season_avg:
             out["evidence"].append(
-                f"⚾ {starts} starts this season, averaging {season_avg_k:.1f} K"
+                f"⚾ {starts} starts this season, averaging {season_avg:.1f} outs "
+                f"({avg_ip:.1f} IP)"
             )
+        # vs team
+        vs_outs = data.get("vs_team_avg_outs")
+        vs_starts_ct = int(data.get("vs_team_starts") or 0)
+        if vs_starts_ct >= 2 and vs_outs is not None and opp:
+            if line is not None and vs_outs >= line + 1:
+                out["evidence"].append(
+                    f"🎯 {vs_outs:.1f} outs avg vs {opp} across {vs_starts_ct} prior starts"
+                )
+            elif line is not None and vs_outs < line - 1:
+                out["concerns"].append(
+                    f"⚠️ Only {vs_outs:.1f} outs avg vs {opp} in last {vs_starts_ct} starts"
+                )
+        # Recent-form chip for OUTS
+        def _outs_form(w):
+            return {
+                "avg": w.get("avg_outs"),
+                "starts": w.get("starts") or 0,
+                "total": w.get("total_outs"),
+                "era": w.get("era"),
+                "ip": w.get("avg_ip"),
+            }
+        out["recent_form"] = _pitcher_form_block(l5, l10, l20, "outs", _outs_form)
 
-    # Recent vs opp team form
-    vs_starts = data.get("vs_team_starts") or 0
-    vs_avg_k = data.get("vs_team_avg_k")
-    if vs_starts >= 2 and isinstance(vs_avg_k, (int, float)):
-        if line is not None and vs_avg_k >= line:
-            out["evidence"].append(
-                f"🎯 {vs_avg_k:.1f} K avg vs {opp} in {vs_starts} prior starts"
-            )
-        elif line is not None and vs_avg_k < line - 1:
-            out["concerns"].append(
-                f"⚠️ Only {vs_avg_k:.1f} K avg vs {opp} in last {vs_starts} starts"
-            )
-        else:
-            out["evidence"].append(
-                f"📅 {vs_starts} prior starts vs {opp} — {vs_avg_k:.1f} K avg"
-            )
+    elif is_walks:
+        season_avg = data.get("season_avg_bb") or 0
+        if starts >= 3 and line is not None and season_avg is not None:
+            delta = season_avg - line
+            phrasing = "walking" if delta > 0 else "issuing"
+            if is_under:
+                # Under pick — LOWER avg is bullish
+                if delta <= -0.5:
+                    out["evidence"].append(
+                        f"📈 {last_name} averaging just {season_avg:.1f} BB / start — "
+                        f"comfortably under the {line:g} line"
+                    )
+                elif delta >= 0.5:
+                    out["concerns"].append(
+                        f"📉 Season avg {season_avg:.1f} BB / start — line of {line:g} "
+                        f"under is tight"
+                    )
+            else:
+                # Over pick — HIGHER avg is bullish
+                if delta >= 0.5:
+                    out["evidence"].append(
+                        f"📈 {last_name} {phrasing} {season_avg:.1f} BB / start — "
+                        f"comfortably over {line:g}"
+                    )
+                elif delta <= -0.5:
+                    out["concerns"].append(
+                        f"📉 Only {season_avg:.1f} BB / start — line of {line:g} "
+                        f"over requires above-trend wildness"
+                    )
+        def _bb_form(w):
+            return {"avg": w.get("avg_bb"), "starts": w.get("starts") or 0,
+                    "total": w.get("total_bb"), "era": w.get("era"), "ip": w.get("avg_ip")}
+        out["recent_form"] = _pitcher_form_block(l5, l10, l20, "walks", _bb_form)
 
-    # L5/L10/L20 rolling form windows (user spec 2026-07-03 —
-    # "L5 L10 L20 should be universal for all bets"). We pass these
-    # through as `recent_form` so the same LockPickCard chip renders
-    # the same way it does for hitters. Each window shows:
-    #   • starts  → games in the window
-    #   • avg_k   → strikeouts per start
-    #   • era     → earned run avg over the window
-    l5, l10, l20 = data.get("last5"), data.get("last10"), data.get("last20")
-    out["recent_form"] = {
-        "last5_avg": l5.get("avg_k") if l5 else None,
-        "last5_games_played": l5.get("starts") if l5 else 0,
-        "last5_games_with_hit": l5.get("total_k") if l5 else 0,   # total K's over L5 (used as "score" for chip)
-        "last5_hits": l5.get("total_k") if l5 else 0,
-        "last5_ab": l5.get("starts") if l5 else 0,
-        "last5_era": l5.get("era") if l5 else None,
-        "last10_avg": l10.get("avg_k") if l10 else None,
-        "last10_games_played": l10.get("starts") if l10 else 0,
-        "last10_games_with_hit": l10.get("total_k") if l10 else 0,
-        "last10_hits": l10.get("total_k") if l10 else 0,
-        "last10_ab": l10.get("starts") if l10 else 0,
-        "last10_era": l10.get("era") if l10 else None,
-        "last20_avg": l20.get("avg_k") if l20 else None,
-        "last20_games_played": l20.get("starts") if l20 else 0,
-        "last20_games_with_hit": l20.get("total_k") if l20 else 0,
-        "last20_hits": l20.get("total_k") if l20 else 0,
-        "last20_ab": l20.get("starts") if l20 else 0,
-        "last20_era": l20.get("era") if l20 else None,
-        "engine": "mlb_pitcher_intel",
-    }
+    elif is_er:
+        season_avg = data.get("season_avg_er") or 0
+        era = data.get("season_era")
+        if starts >= 3 and line is not None and season_avg is not None:
+            delta = season_avg - line
+            if is_under:
+                if delta <= -0.5:
+                    out["evidence"].append(
+                        f"📈 {last_name} allowing only {season_avg:.1f} ER / start "
+                        f"({era or '—'} ERA) — well under {line:g}"
+                    )
+                elif delta >= 0.5:
+                    out["concerns"].append(
+                        f"⚠️ Season avg {season_avg:.1f} ER / start ({era or '—'} ERA) — "
+                        f"under {line:g} is a stretch"
+                    )
+            else:
+                if delta >= 0.5:
+                    out["evidence"].append(
+                        f"📉 {last_name} coughing up {season_avg:.1f} ER / start — "
+                        f"over {line:g} live"
+                    )
+        def _er_form(w):
+            return {"avg": w.get("avg_er"), "starts": w.get("starts") or 0,
+                    "total": w.get("total_er"), "era": w.get("era"), "ip": w.get("avg_ip")}
+        out["recent_form"] = _pitcher_form_block(l5, l10, l20, "earned_runs", _er_form)
+
+    elif is_ha:
+        season_avg = data.get("season_avg_h") or 0
+        if starts >= 3 and line is not None and season_avg is not None:
+            delta = season_avg - line
+            if is_under:
+                if delta <= -1.0:
+                    out["evidence"].append(
+                        f"📈 {last_name} allowing only {season_avg:.1f} H / start — "
+                        f"well under {line:g}"
+                    )
+                elif delta >= 1.0:
+                    out["concerns"].append(
+                        f"⚠️ Season avg {season_avg:.1f} H / start — "
+                        f"under {line:g} tough"
+                    )
+            else:
+                if delta >= 1.0:
+                    out["evidence"].append(
+                        f"📉 {last_name} giving up {season_avg:.1f} H / start — "
+                        f"over {line:g} tracking"
+                    )
+        def _h_form(w):
+            return {"avg": w.get("avg_h"), "starts": w.get("starts") or 0,
+                    "total": w.get("total_h"), "era": w.get("era"), "ip": w.get("avg_ip")}
+        out["recent_form"] = _pitcher_form_block(l5, l10, l20, "hits_allowed", _h_form)
+
+    else:
+        # Default = Strikeouts (existing logic)
+        season_avg_k = data.get("season_avg_k")
+        if isinstance(season_avg_k, (int, float)) and starts >= 3:
+            if line is not None:
+                delta = season_avg_k - line
+                if delta >= 1.0:
+                    out["evidence"].append(
+                        f"📈 {last_name} averaging {season_avg_k:.1f} K's"
+                        f" across {starts} starts (line {line:g}, +{delta:.1f} cushion)"
+                    )
+                elif delta <= -1.0:
+                    out["concerns"].append(
+                        f"📉 Season avg only {season_avg_k:.1f} K's / start —"
+                        f" line of {line:g} requires above-trend performance"
+                    )
+                else:
+                    out["evidence"].append(
+                        f"⚾ Season avg {season_avg_k:.1f} K's / start"
+                        f" — sitting right at the {line:g} line"
+                    )
+            else:
+                out["evidence"].append(
+                    f"⚾ {starts} starts this season, averaging {season_avg_k:.1f} K"
+                )
+        # Recent vs opp team form (Ks)
+        vs_starts = data.get("vs_team_starts") or 0
+        vs_avg_k = data.get("vs_team_avg_k")
+        if vs_starts >= 2 and isinstance(vs_avg_k, (int, float)) and opp:
+            if line is not None and vs_avg_k >= line:
+                out["evidence"].append(
+                    f"🎯 {vs_avg_k:.1f} K avg vs {opp} in {vs_starts} prior starts"
+                )
+            elif line is not None and vs_avg_k < line - 1:
+                out["concerns"].append(
+                    f"⚠️ Only {vs_avg_k:.1f} K avg vs {opp} in last {vs_starts} starts"
+                )
+        def _k_form(w):
+            return {"avg": w.get("avg_k"), "starts": w.get("starts") or 0,
+                    "total": w.get("total_k"), "era": w.get("era"), "ip": w.get("avg_ip")}
+        out["recent_form"] = _pitcher_form_block(l5, l10, l20, "strikeouts", _k_form)
 
     return out
+
+
+def _pitcher_form_block(l5: dict, l10: dict, l20: dict,
+                        stat_name: str, extract) -> dict:
+    """Emit the universal L5/L10/L20 chip payload with stat-appropriate
+    values so the LockPickCard renders "outs" for Outs picks, "walks"
+    for BB picks, etc. — never K's for a non-K market.
+
+    `extract(window)` returns a dict of `{avg, starts, total, era, ip}`
+    for that window.  We flatten into the historical `recent_form`
+    field shape used by the frontend (last5_avg, last5_hits, etc.).
+    """
+    e5, e10, e20 = extract(l5), extract(l10), extract(l20)
+    return {
+        "stat": stat_name,           # NEW — tells the UI which stat this is
+        "last5_avg": e5.get("avg"),
+        "last5_games_played": e5.get("starts") or 0,
+        "last5_games_with_hit": e5.get("total") or 0,
+        "last5_hits": e5.get("total") or 0,
+        "last5_ab": e5.get("starts") or 0,
+        "last5_era": e5.get("era"),
+        "last5_ip": e5.get("ip"),
+        "last10_avg": e10.get("avg"),
+        "last10_games_played": e10.get("starts") or 0,
+        "last10_games_with_hit": e10.get("total") or 0,
+        "last10_hits": e10.get("total") or 0,
+        "last10_ab": e10.get("starts") or 0,
+        "last10_era": e10.get("era"),
+        "last10_ip": e10.get("ip"),
+        "last20_avg": e20.get("avg"),
+        "last20_games_played": e20.get("starts") or 0,
+        "last20_games_with_hit": e20.get("total") or 0,
+        "last20_hits": e20.get("total") or 0,
+        "last20_ab": e20.get("starts") or 0,
+        "last20_era": e20.get("era"),
+        "last20_ip": e20.get("ip"),
+        "engine": "mlb_pitcher_intel",
+    }
 
 
 # ────────────────────────────────────────────────────────────────────
