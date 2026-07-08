@@ -422,13 +422,24 @@ def _wp_frac(v) -> float:
 
 
 def tag_rollover_picks(picks: list[dict]) -> tuple[list[dict], dict]:
-    """Stamp `on_rollover_at` on qualifying picks. Idempotent."""
+    """Stamp `on_rollover_at` on qualifying picks. Idempotent.
+
+    Bug fix (2026-07-08): earlier revision preferred `lock_score_v2`
+    (shadow-mode conservative score, always 2-4 pts below V1) which
+    NEVER cleared the 95 gate — so `tag_rollover_picks` silently
+    tagged nothing and Rollover History fell back to the legacy
+    threshold path, which matched every pick because board_quality
+    had already filtered to lock_score ≥ 89.  Result: the Rollover tab
+    duplicated the "All" tab.  We now use the *user-facing*
+    `lock_score` (V1) as the source of truth — that's the score the
+    Rollover board itself uses at publish time.
+    """
     stats = {"tagged": 0}
     now = datetime.now(timezone.utc).isoformat()
     for p in picks:
         if p.get("on_rollover_at"):
             continue
-        lock = float(p.get("lock_score_v2") or p.get("lock_score") or 0)
+        lock = float(p.get("lock_score") or 0)
         edge = float(p.get("edge_percent") or 0)
         wp = _wp_frac(p.get("win_probability"))
         if (lock >= ROLLOVER_LOCK_MIN

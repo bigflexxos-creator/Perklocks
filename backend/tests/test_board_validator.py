@@ -212,6 +212,32 @@ def test_rollover_win_prob_100_scale_accepted():
     assert stats["tagged"] == 1
 
 
+
+def test_rollover_uses_lock_score_not_lock_score_v2():
+    """Regression (2026-07-08): earlier version preferred `lock_score_v2`
+    (shadow-mode conservative score, always 2-4 pts below V1) which
+    NEVER cleared the 95 gate — so tag_rollover_picks silently tagged
+    nothing and Rollover History fell back to the fallback threshold,
+    which matched every pick because board_quality had already
+    filtered to lock_score ≥ 89. Rollover tab duplicated All tab.
+
+    Ensure the tagger keys off `lock_score` (V1) — the user-facing
+    score that the Rollover board itself uses.
+    """
+    picks = [{
+        "id": "a", "sport": "MLB",
+        "lock_score": 96,      # V1: qualifies
+        "lock_score_v2": 92,   # V2 shadow: fails, must be ignored
+        "win_probability": 0.85,
+        "edge_percent": 5.0,
+    }]
+    picks, stats = tag_rollover_picks(picks)
+    assert stats["tagged"] == 1, \
+        "lock_score_v2 (92) must not gate the Rollover tag when V1 (96) qualifies"
+    assert picks[0]["on_rollover_at"]
+
+
+
 # ── End-to-end orchestrator ────────────────────────────────────────
 
 def test_orchestrator_full_flow():
