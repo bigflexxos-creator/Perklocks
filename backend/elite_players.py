@@ -23,17 +23,171 @@ Boost rules:
 
 Elite lists are curated and re-edited weekly. Players can be added or
 removed without touching code by editing the lists below.
+
+Starter gate (2026-07-08)
+-------------------------
+User feedback: Ollie Watkins / Ivan Toney kept surfacing as Elite Locks even
+though neither had started England's recent World Cup matches. To stop
+bench players from riding a reputation boost into a false Elite Lock we
+now consult `soccer_player_form` at boost time.  If an elite Soccer name
+has ≤ 1 appearance in the last 45 days (per the settled+backfilled
+`db.picks` cohort) OR has never been backfilled with `roster_verified`
+data → we skip the boost AND suppress the synthetic Anytime Goal Scorer
+row.  The reputation list itself stays intact so the player automatically
+comes back when they return to the XI.
 """
 from __future__ import annotations
 
 import logging
 import re
+import time
 import unicodedata as _ud
 
 logger = logging.getLogger("lockscore.elite")
 
 ELITE_BOOST_PCT = 15.0   # added to lock_score (clamped to 99 max)
 ELITE_LOCK_FLOOR = 95.0  # ensures elite picks land in Elite Lock tier (≥95)
+
+# ── Starter-gate cache (Soccer only) ─────────────────────────────
+# `_STARTER_CACHE` maps normalized-lowercase player name → 1 if the
+# player has been observed on a roster in the last 45 days, 0 otherwise.
+# Refreshed at most once per `_STARTER_TTL_SEC` to keep pick generation
+# snappy (this function is called on every daily refresh over ~200 picks).
+_STARTER_CACHE: dict[str, int] = {}
+_STARTER_LEAGUE_KIND: dict[str, dict[str, int]] = {}
+_STARTER_CACHE_TS: float = 0.0
+_STARTER_TTL_SEC: int = 60 * 30   # 30 minutes
+
+
+def _classify_event_league_kind(event: str | None,
+                                league: str | None) -> str:
+    """Return 'national' if the pick is on a national-team competition,
+    else 'club'.  Used by the starter gate so Aston Villa Premier
+    League starts don't rescue an England World Cup pick.
+    """
+    txt = f"{event or ''} {league or ''}".lower()
+    NATIONAL_TOKENS = (
+        "world cup", "world-cup", "fifa", "euro ", "euro20", "euro 20",
+        "uefa nations", "copa america", "asian cup", "gold cup",
+        "africa cup", "concacaf nations",
+    )
+    if any(t in txt for t in NATIONAL_TOKENS):
+        return "national"
+    return "club"
+
+
+def _slug_player(name: str) -> str:
+    n = _ud.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z]", "", n.lower())
+
+
+def _refresh_starter_cache() -> None:
+    """Rebuild `_STARTER_CACHE` from `db.picks` in a single sync query.
+
+    A player is "actively starting" iff they were flagged
+    `is_starter=True` (in the backfilled dataset ESPN's `starter: true`)
+    OR they logged a settled won/lost pick in the same window (organic
+    picks come with lineup verification upstream) — in ≥ 2 rows over
+    the last 45 days.
+
+    We ALSO track a per-league-kind index so we can gate a national-
+    team pick (e.g. World Cup) on national-team starts only.  Aston
+    Villa starts don't rescue Ollie Watkins for an England pick.
+
+    Cache shape:
+        _STARTER_CACHE[slug]                = 1 iff ≥ 2 starts anywhere
+        _STARTER_LEAGUE_KIND[slug]["national"] = int (start count)
+        _STARTER_LEAGUE_KIND[slug]["club"]     = int
+    """
+    global _STARTER_CACHE_TS
+    try:
+        from pymongo import MongoClient
+        from datetime import date, timedelta
+        import os
+        client = MongoClient(os.getenv("MONGO_URL"), serverSelectionTimeoutMS=2000)
+        db = client[os.environ.get("DB_NAME") or "perkslocks_production"]
+        cutoff = (date.today() - timedelta(days=45)).isoformat()
+        pipeline = [
+            {"$match": {
+                "sport": "Soccer",
+                "pick_date": {"$gte": cutoff},
+                "market": {"$regex": "goal scorer|to score|scorer|assist", "$options": "i"},
+                "$or": [
+                    # Backfilled: only count STARTS (ignore sub appearances)
+                    {"backfilled": True, "is_starter": True},
+                    # Organic settled picks — lineup was already resolved upstream
+                    {"status": {"$in": ["won", "lost"]}, "backfilled": {"$ne": True}},
+                ],
+            }},
+            {"$group": {
+                "_id": {"player": "$player_name",
+                        "kind": {"$ifNull": ["$league_kind", "unknown"]}},
+                "n": {"$sum": 1},
+            }},
+        ]
+        cache: dict[str, int] = {}
+        by_kind: dict[str, dict[str, int]] = {}
+        for row in db.picks.aggregate(pipeline):
+            _id = row.get("_id") or {}
+            nm = _id.get("player") or ""
+            kind = _id.get("kind") or "unknown"
+            n = row.get("n") or 0
+            if not nm:
+                continue
+            slug = _slug_player(nm)
+            by_kind.setdefault(slug, {})[kind] = n
+            total = sum(by_kind[slug].values())
+            cache[slug] = 1 if total >= 2 else 0
+        _STARTER_CACHE.clear()
+        _STARTER_CACHE.update(cache)
+        _STARTER_LEAGUE_KIND.clear()
+        _STARTER_LEAGUE_KIND.update(by_kind)
+        _STARTER_CACHE_TS = time.time()
+        logger.info("Starter cache refreshed: %d Soccer players "
+                    "(actively-starting=%d)", len(cache),
+                    sum(1 for v in cache.values() if v == 1))
+    except Exception as e:
+        logger.warning("starter cache refresh failed: %s", e)
+
+
+def _is_actively_starting_soccer(player_name: str,
+                                 league_kind: str | None = None) -> bool:
+    """Return True iff the elite striker has ≥ 2 STARTS in the last 45
+    days (ESPN `starter: true`).
+
+    If `league_kind` is provided ("national" or "club"), require ≥ 2
+    starts in that specific league kind — an England World Cup pick
+    isn't rescued by Aston Villa starts and vice versa.
+
+    Elite-list players whose name we recognise from the reputation
+    roster but who have **zero** recent starts fail the gate
+    (fail-CLOSED for names we know).  Truly unknown names (never seen
+    in DB, not in elite list) fail-open so a debut / new-transfer
+    player still gets a fair shake.
+    """
+    global _STARTER_CACHE_TS
+    if time.time() - _STARTER_CACHE_TS > _STARTER_TTL_SEC:
+        _refresh_starter_cache()
+    slug = _slug_player(player_name or "")
+
+    # Fail-CLOSED for known elite names with zero data.  This is how we
+    # catch Ivan Toney (loan to Al Ahli, no recent England call-ups) —
+    # he's on the elite list but has no `is_starter=True` rows.
+    known_elite = False
+    for name in ELITE_PLAYERS.get("Soccer", set()):
+        if _slug_player(name) == slug:
+            known_elite = True
+            break
+    if slug not in _STARTER_CACHE:
+        return not known_elite   # elite w/ no data → fail; otherwise fail-open
+
+    by_kind = _STARTER_LEAGUE_KIND.get(slug) or {}
+    if league_kind:
+        # Require ≥ 2 starts IN THE SPECIFIC LEAGUE KIND.  1 lone
+        # England appearance in 45 days is not enough to justify a
+        # World-Cup Elite Lock.
+        return by_kind.get(league_kind, 0) >= 2
+    return _STARTER_CACHE[slug] == 1
 # Elite players ANCHOR the slate. Even when the book prices them tight and
 # our edge is negative, they're the safest hit candidates by reputation and
 # get locked in at Elite tier so users always see Mbappé / Haaland / Messi /
@@ -234,6 +388,21 @@ def apply_elite_boost(picks: list[dict]) -> list[dict]:
         if not find_elite_player(sport, sel_text):
             p["elite_player"] = False
             continue
+        # ── Starter gate (Soccer only) ─────────────────────────────
+        # Suppress the reputation boost for rotational / benched
+        # strikers so Ollie Watkins / Ivan Toney (currently ~zero
+        # England starts in last 45 days) don't ride reputation into
+        # false Elite Locks.  A player automatically re-qualifies as
+        # soon as they log ≥ 2 backfilled or settled roster
+        # appearances in a 45-day window.  We also scope the gate to
+        # the league-kind of the pick — a World Cup pick requires
+        # national-team starts, not club starts.
+        if sport == "Soccer":
+            kind = _classify_event_league_kind(p.get("event"), p.get("league"))
+            if not _is_actively_starting_soccer(canonical, league_kind=kind):
+                p["elite_player"] = False
+                p["elite_player_gate"] = f"not_starting_{kind}"
+                continue
         # ANCHOR mode: elite players are always Lock tier regardless of edge.
         # Books price stars sharply (sometimes negative edge by our model),
         # but Mbappé / Haaland / Messi / Kane / Judge / Sinner etc. are still
@@ -311,6 +480,14 @@ def apply_elite_boost(picks: list[dict]) -> list[dict]:
     # For each elite SoA pick without a matching AGS / FGS, create synthetics.
     import uuid
     for (striker, event), soa_pick in soa_picks_by_player.items():
+        # Starter gate — don't synthesise AGS for a bench player.  Same
+        # data source as the main boost path: STARTS count in the last
+        # 45 days, scoped to the league kind of THIS event.
+        kind = _classify_event_league_kind(event, soa_pick.get("league"))
+        if not _is_actively_starting_soccer(striker, league_kind=kind):
+            logger.info("Skipping synth AGS for %s @ %s — no recent %s starts",
+                        striker, event, kind)
+            continue
         soa_win = float(soa_pick.get("win_probability") or 0)
         soa_odds = float(soa_pick.get("book_odds") or -150)
 
@@ -454,4 +631,40 @@ def apply_elite_boost(picks: list[dict]) -> list[dict]:
 
     if synth_added:
         logger.info("Synthetic AGS+FGS+SoA picks added: %d", synth_added)
-    return picks
+
+    # ── Final starter gate for Soccer scorer markets ──────────────
+    # Suppress ANY goalscorer / to-score pick where our roster-verified
+    # activity signal says the player hasn't started recently — even if
+    # they aren't in the ELITE_STRIKERS list.  This catches Odds-API
+    # feeds that publish scorer odds for every extended-squad player
+    # (bench forwards, backups) which used to leak into the board as
+    # nominally-priced picks.  Players with no historical data at all
+    # still pass through (fail-open), so newcomers aren't false-negated.
+    _SCORER_RE = re.compile(r"anytime\s+goal\s+scorer|to\s+score|first\s+goal\s+scorer", re.I)
+    filtered_out = 0
+    kept: list[dict] = []
+    for p in picks:
+        if (p.get("sport") or "") != "Soccer":
+            kept.append(p)
+            continue
+        market = p.get("market") or ""
+        if not _SCORER_RE.search(market):
+            kept.append(p)
+            continue
+        # Extract player from "<Player> Anytime Goal Scorer" market string.
+        m = re.match(r"^(.+?)\s+(?:Anytime\s+Goal\s+Scorer|To\s+Score(?:\s+or\s+Assist)?|First\s+Goal\s+Scorer)",
+                     market, re.I)
+        if not m:
+            kept.append(p)
+            continue
+        player = m.group(1).strip()
+        kind = _classify_event_league_kind(p.get("event"), p.get("league"))
+        if _is_actively_starting_soccer(player, league_kind=kind):
+            kept.append(p)
+        else:
+            filtered_out += 1
+            logger.info("Starter-gate drop: %s @ %s (no recent %s starts)",
+                        player, p.get("event", "?"), kind)
+    if filtered_out:
+        logger.info("Starter-gate suppressed %d Soccer scorer picks", filtered_out)
+    return kept

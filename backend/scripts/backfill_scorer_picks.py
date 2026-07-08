@@ -208,6 +208,26 @@ def _rosters_from_summary(summary: dict) -> list[str]:
     return names
 
 
+def _starters_from_summary(summary: dict) -> list[str]:
+    """Return only the athlete displayNames flagged `starter: true`.
+
+    Bench players and unused subs are excluded.  This is what backs the
+    starter-gate that keeps rotational forwards like Ollie Watkins /
+    Ivan Toney off the board when they haven't cracked the starting XI
+    for weeks.
+    """
+    names: list[str] = []
+    for team_block in (summary.get("rosters") or []):
+        for entry in team_block.get("roster") or []:
+            if not entry.get("starter"):
+                continue
+            athlete = entry.get("athlete") or {}
+            nm = athlete.get("displayName") or athlete.get("shortName")
+            if nm:
+                names.append(nm)
+    return names
+
+
 async def _get_elite_scorers(limit: int) -> list[dict]:
     """Return elite Soccer scorers from `auto_elite_scorers` collection
     plus a hardcoded head list so global superstars are always covered
@@ -386,6 +406,7 @@ async def _backfill_player(client: httpx.AsyncClient, player: str,
                     continue
 
                 roster_names = _rosters_from_summary(summary)
+                starter_names = _starters_from_summary(summary)
                 if roster_names:
                     if not _name_match(player, roster_names):
                         # Player was NOT in the match squad — skip.
@@ -402,6 +423,13 @@ async def _backfill_player(client: httpx.AsyncClient, player: str,
                     # size in favour of accuracy.
                     seen_events.add(event_id)
                     continue
+                # Was this a STARTING appearance or a bench role?
+                # Only starts count toward the "actively starting"
+                # gate in `elite_players.py`.  Subs still record a
+                # settled pick (they did play, they could have scored)
+                # but with `is_starter=False` so the reputation-boost
+                # code can filter them out.
+                is_starter = _name_match(player, starter_names) if starter_names else False
 
                 key_events = summary.get("keyEvents") or []
                 scorers = _extract_scorers(key_events)
@@ -417,11 +445,14 @@ async def _backfill_player(client: httpx.AsyncClient, player: str,
                     "market": f"{player} Anytime Goal Scorer",
                     "selection": "Yes",
                     "event": event_string,
+                    "league_slug": lg,
+                    "league_kind": "national" if is_national else "club",
                     "status": status_str,
                     "pick_date": pick_date,
                     "settled_at": datetime.now(timezone.utc).isoformat(),
                     "backfilled": True,
                     "backfill_source": f"espn:{lg}:{event_id}",
+                    "is_starter": is_starter,
                     "lock_score": 78.0,          # placeholder — not shown
                     "book_odds": -110,           # placeholder
                     "units_risked": 0.0,          # backfill rows shouldn't affect bankroll
