@@ -940,6 +940,27 @@ async def cheatsheets(
         if not subject:
             continue
         family = _classify_market_family(lp.get("sport"), market_str)
+        # ── Starter gate (Soccer scorer markets, 2026-07-08) ──────
+        # Suppress Cheatsheet cards for bench players — same rule the
+        # live board uses.  A card without a Live pick is useless, and
+        # a card for a benched player misleads users into betting on
+        # someone the model hasn't seen start.  Uses `elite_players`'s
+        # module-level cache so it's a hash lookup, not a DB round-trip.
+        if lp.get("sport") == "Soccer" and family == "SOC_SCORER" and is_player_prop:
+            try:
+                from elite_players import (
+                    _is_actively_starting_soccer,
+                    _classify_event_league_kind,
+                )
+                league_kind = _classify_event_league_kind(
+                    lp.get("event"), lp.get("league"),
+                )
+                if not _is_actively_starting_soccer(subject, league_kind=league_kind):
+                    logger.info("Cheatsheet gate: dropped %s (%s pick) — not actively starting",
+                                subject, league_kind)
+                    continue
+            except Exception as e:
+                logger.debug("Cheatsheet starter-gate check skipped: %s", e)
         # De-dupe: show ONE card per (subject, family). If the slate has
         # both "Messi First Goal Scorer" and "Messi Anytime Goal Scorer"
         # for the same player, the SOC_SCORER family covers both — the
