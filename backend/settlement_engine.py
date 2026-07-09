@@ -601,4 +601,18 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
     except Exception as e:
         logger.warning("validator failed: %s", e)
 
+    # ── Rollover History tag stamping (2026-07-08) ─────────────────
+    # Re-derives the V4 top-3 rollover slate for each date we JUST
+    # graded and stamps `on_rollover_at` onto exactly those 3 picks.
+    # This is why History → Rollover matches what was on the live
+    # Rollover tab, not a threshold approximation.
+    try:
+        from rollover_history_tagger import stamp_rollover_history_tags
+        tag_res = await stamp_rollover_history_tags(db)
+        counts["rollover_tags"] = tag_res
+        logger.info("Rollover history tags refreshed: %s", tag_res)
+    except Exception as e:
+        logger.warning("Rollover history tagger failed: %s", e)
+
     return counts
+
