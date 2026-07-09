@@ -51,7 +51,10 @@ _FD_TO_ODDS_KEY = {
     "WC":  "soccer_fifa_world_cup",
     "EC":  "soccer_uefa_european_championship",
     "CL":  "soccer_uefa_champs_league",
+    "CLQ": "soccer_uefa_champs_league_qualification",
     "EL":  "soccer_uefa_europa_league",
+    "ECL": "soccer_uefa_europa_conference_league",
+    "UNL": "soccer_uefa_nations_league",
     "CLI": "soccer_conmebol_copa_libertadores",
     "CA":  "soccer_conmebol_copa_america",
 }
