@@ -457,30 +457,34 @@ def _canonicalize_picks(picks: list[dict]) -> list[dict]:
 
 
 async def _decorate_with_espn_meta(picks: list[dict]) -> list[dict]:
-    """Attach ESPN team logos + colors + injury chip to every pick.
+    """Attach ESPN team logos + colors + injury chip to every pick AND
+    run the ESPN Signal Engine to fold the same context into the model.
 
-    Added 2026-07-09 as part of the generic ESPN-fallback layer. Runs
-    per-request but backed by an in-memory cache in `espn_team_meta`
-    (miss cost = a single mongo find) so the extra latency is <5ms
-    even on 200-pick pages.
+    Two-stage pipeline (per user directive 2026-07-09):
+      1. **Enrich** — logos, colors, injury_chip, form strings (display).
+      2. **Analyse** — feed the enrichment into `apply_signals_bulk`
+         which adjusts `win_probability` and `lock_score` inside a ±6pt
+         band. This means the same ESPN data both *shows up on the card*
+         and *actually moves the pick* rather than being cosmetic.
 
-    New fields injected on each pick when data is available:
-      home_meta:   {logo, color, alt_color, abbrev}
-      away_meta:   {logo, color, alt_color, abbrev}
-      injury_chip: {home:{out,doubtful,questionable}, away:{...},
-                     worst_side, home_key_injuries, away_key_injuries}
+    Idempotent — the signal engine bails when `espn_signals` is already
+    present on a pick.
     """
     if not picks:
         return picks
     try:
         from services.espn_team_meta import enrich_pick as _meta
         from services.espn_injury_notes import injury_chip_for_pick as _chip
+        from services.espn_form_cache import attach_form_to_pick as _form
+        from services.espn_signal_engine import apply_signals as _sig
     except Exception:
         return picks
     for p in picks:
         try:
             await _meta(db, p)
             await _chip(db, p)
+            await _form(db, p)        # form strings for the signal engine
+            await _sig(db, p)         # ← the analysis layer
         except Exception:
             pass  # non-critical enrichment
     return picks
@@ -3613,12 +3617,14 @@ async def on_startup():
             await asyncio.sleep(30)
             while True:
                 try:
+                    from services.espn_form_cache import refresh_all_forms
                     await refresh_all_teams(db)
                     await refresh_all_injuries(db)
+                    await refresh_all_forms(db)
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    logger.warning("ESPN meta/injury refresh error: %s", e)
+                    logger.warning("ESPN meta/injury/form refresh error: %s", e)
                 await asyncio.sleep(6 * 60 * 60)  # 6h cadence
 
         _deferred_task(_espn_meta_loop, DEFER_BASE * 3)

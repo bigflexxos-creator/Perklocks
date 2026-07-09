@@ -30,6 +30,9 @@ _INJURY_SLUGS: list[tuple[str, str]] = [
     ("football/nfl",                       "NFL"),
     ("football/college-football",          "CFB"),
     ("basketball/nba",                     "NBA"),
+    ("basketball/wnba",                    "WNBA"),
+    ("baseball/mlb",                       "MLB"),
+    ("hockey/nhl",                         "NHL"),
 ]
 
 _STATUS_SEVERITY = {
