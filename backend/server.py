@@ -3549,6 +3549,17 @@ async def on_startup():
         logger.info("Soccer pipeline scheduler armed (15-min pregame loop + 24h backfill loop)")
     except Exception as e:
         logger.warning("Soccer pipeline scheduler not armed: %s", e)
+    # ── UEFA ESPN fallback ingest (Champions/Europa/Conference) ─────
+    # Our primary sources (The Odds API + football-data.org) don't carry
+    # UEFA qualification rounds until close to kickoff. ESPN's public
+    # scoreboard has full DraftKings pricing days out — we pull from
+    # there so the app shows the same fixtures Linemate does.
+    try:
+        from uefa_espn_ingest import uefa_espn_loop
+        _deferred_task(lambda: uefa_espn_loop(db),           DEFER_BASE * 3)
+        logger.info("UEFA ESPN fallback ingest armed (30-min loop, 7-day window)")
+    except Exception as e:
+        logger.warning("UEFA ESPN ingest not armed: %s", e)
     # ── Soccer Player Form (Understat) ──────────────────────────────
     # Refreshes per-player season stats (xG, npxG, goals/xG ratio) for
     # the Top 5 European leagues every 12h. Powers the HOT FORM /
