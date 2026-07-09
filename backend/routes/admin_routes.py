@@ -873,6 +873,22 @@ async def admin_services_nfl_refresh(
     return await nfl_ingest.refresh(db)
 
 
+@router.post("/admin/uefa-espn-refresh")
+async def admin_uefa_espn_refresh(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    days: int = 7,
+):
+    """Force-refresh the UEFA ESPN fallback ingest (Champions League,
+    Europa League, Conference League + qualification rounds).
+
+    ESPN's public scoreboard carries these matches days before The Odds
+    API populates them, so we ingest from there and dedupe against
+    football-data-backed picks. Runs on a 30-min loop normally.
+    """
+    from uefa_espn_ingest import sync_uefa_espn_picks
+    return await sync_uefa_espn_picks(db, days_ahead=days)
+
+
 @router.get("/admin/services-active-check")
 async def admin_services_active_check(
     user: Annotated[UserPublic, Depends(current_admin)],
