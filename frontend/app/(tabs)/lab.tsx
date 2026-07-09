@@ -308,6 +308,27 @@ function ResearchDetail({ pick }: { pick: any }) {
         </Section>
       )}
 
+      {/* ESPN Signal Adjustment — how injuries + form nudged the pick */}
+      {pick.espn_signals && pick.espn_signals.applied && (
+        <Section title="🧠 ESPN Signal" chip={`${pick.espn_signals.delta > 0 ? "+" : ""}${pick.espn_signals.delta.toFixed(1)}pp`}>
+          <Bullet
+            text={`Base model: ${pick.espn_signals.base_prob.toFixed(1)}% → Adjusted: ${(pick.espn_signals.final_prob || pick.win_probability).toFixed(1)}% (${pick.espn_signals.delta > 0 ? "+" : ""}${pick.espn_signals.delta.toFixed(1)}pp)`}
+          />
+          {(pick.espn_signals.items || []).map((it: any, i: number) => (
+            <Bullet
+              key={`sig${i}`}
+              text={
+                it.kind === "injury"
+                  ? `${it.side === "pick" ? "Pick-side" : "Opponent"} ${it.tier}: ${it.count} player${it.count > 1 ? "s" : ""} (${it.delta > 0 ? "+" : ""}${it.delta}pp)`
+                  : it.kind === "form"
+                    ? `Recent form ${it.pick_form || "n/a"} vs ${it.opp_form || "n/a"} (${it.delta > 0 ? "+" : ""}${it.delta}pp)`
+                    : JSON.stringify(it)
+              }
+            />
+          ))}
+        </Section>
+      )}
+
       {/* Injury Report — from ESPN team injury feeds (NFL/NBA/CFB) */}
       {pick.injury_chip && (
         (pick.injury_chip.home_key_injuries?.length ||

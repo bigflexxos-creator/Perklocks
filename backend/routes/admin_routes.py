@@ -921,6 +921,17 @@ async def admin_espn_injury_refresh(
     return await refresh_all_injuries(db)
 
 
+@router.post("/admin/espn-form-refresh")
+async def admin_espn_form_refresh(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Refresh the `espn_form_cache` collection. Feeds recent-form
+    strings ('LLLWL') into the Signal Engine so form deltas actually
+    move the pick probability."""
+    from services.espn_form_cache import refresh_all_forms
+    return await refresh_all_forms(db)
+
+
 @router.get("/admin/services-active-check")
 async def admin_services_active_check(
     user: Annotated[UserPublic, Depends(current_admin)],

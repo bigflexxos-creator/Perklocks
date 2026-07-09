@@ -160,6 +160,24 @@ export type Pick = {
     away_key_injuries?: Array<{ athlete: string; position?: string; status: string; description?: string }>;
   };
 
+  // ─── ESPN Signal Engine (analysis layer, not display) ──────────────
+  // Applied server-side by `services/espn_signal_engine.apply_signals`.
+  // Adjusts `win_probability` and `lock_score` in a bounded ±6pt window
+  // based on injuries + recent team form. Stores auditable reasoning
+  // so the "Why This Pick" panel can show what moved the number.
+  espn_signals?: {
+    applied: boolean;
+    delta: number;              // +/- percentage points added to win_probability
+    base_prob: number;
+    final_prob?: number;
+    side?: "home" | "away";
+    items: Array<
+      | { kind: "injury"; side: "pick" | "opponent"; tier: "out" | "doubtful" | "questionable"; count: number; delta: number }
+      | { kind: "form"; pick_form: string; opp_form: string; diff: number; delta: number }
+    >;
+  };
+  pre_espn_win_probability?: number;
+
   // ─── Player Form (from live learning store) ─────────────────────────
   player_form?: {
     name: string;
