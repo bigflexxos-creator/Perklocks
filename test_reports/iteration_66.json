@@ -1,0 +1,45 @@
+{
+  "summary": "ESPN enrichment pipeline (Pass 1) — BACKEND 13/13 GREEN, FRONTEND HOME TAB CONFIRMED RENDERING ESPN LOGOS. Backend pytest (/app/backend/tests/test_espn_enrichment_iter66.py, JUnit /app/test_reports/pytest/iter66_espn_enrichment.xml): demo login works, /api/picks/today returns 170 picks with 65 carrying home_meta.logo hosted on https://a.espncdn.com/i/teamlogos/*, no Mongo _id leak. Admin refresh endpoints (uefa-espn-refresh, ufc-espn-refresh, espn-team-meta-refresh, espn-injury-refresh) all return 200 with real work done: injury refresh reports NFL total_injuries=800, CFB=27, NBA=127 across all 32/23/27 teams. Mongo state at end of run: espn_team_meta=626 docs (>500 target), espn_injury_notes=82 team-injury docs, picks(source=uefa_espn_v1)=88 (>80 target), picks(source=ufc_espn_v1)=1. Frontend: after logging in as demo@lockscore.ai / demo123 on mobile viewport (390x844), the home tab (/) rendered 128 <img> elements with src starting `https://a.espncdn.com/i/teamlogos/` (samples: countries/mar.png, countries/fra.png, mlb/chc.png, mlb/bal.png, mlb/bos.png). Sample rendered card visually shows Morocco @ France with country flag crests on both sides plus abbreviations. Rollover/Under/Lab tabs use the same PickEventRow component so identical enrichment applies — visual verification for those tabs was blocked by /api/auth/login rate limiting on repeated login attempts, but code-level flow is identical. Console emitted only two deprecation warnings (`shadow*` style props → boxShadow, `props.pointerEvents` → style.pointerEvents) — no red errors.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/picks/today", "issue": "0/170 picks carry a truthy injury_chip today. Expected — today's slate has only Soccer/MLB/Tennis picks, and injury_chip is only populated for NFL/NBA/CFB in the decorator. When those sports enter the slate the chip will populate (per iter's admin refresh, 954 total injuries are sitting in espn_injury_notes ready to use)."},
+      {"endpoint": "/api/auth/login", "issue": "Rate limiter still trips HTTP 429 on rapid re-login (carry-over from iter64/65). Regression tests handle with a 30s sleep + retry, but multiple concurrent browser/Playwright login attempts in the same window get denied."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "PickEventRow.tsx", "issue": "Uses deprecated Platform.select({ios:{shadowColor, shadowOffset, shadowOpacity, shadowRadius}}) — RN Web emits deprecation warning `\"shadow*\" style props are deprecated. Use \"boxShadow\"`. Non-blocking but should migrate to boxShadow for RN Web parity. Reference: /app/frontend/src/components/PickEventRow.tsx:225-229"},
+      {"component": "Global (unknown parent, not in this iter's diff)", "issue": "Console warning `props.pointerEvents is deprecated. Use style.pointerEvents`. Pre-existing framework-level warning, not introduced by this iter."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_espn_enrichment_iter66.py",
+    "/app/test_reports/pytest/iter66_espn_enrichment.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Migrate PickEventRow's Platform.select shadow props to boxShadow-style CSS for RN Web parity (deprecation warning). Non-blocking.",
+    "OPTIONAL: When today's slate next contains NFL/NBA/CFB picks (currently off-season / not on the board), re-verify that `injury_chip` populates on those picks and the 🚑 pill renders on the card — the decorator logic is code-verified but a live smoke test on non-off-season data would confirm end-to-end.",
+    "OPTIONAL: Consider bumping /api/auth/login rate limiter to allow test harnesses to do 3-4 logins/min instead of tripping 429 (impacts CI flakiness only)."
+  ],
+  "critical_code_review_comments": [
+    "services/espn_common.py — clean, dependency-injected HTTP client with 15-min per-slug cache. de-vig math (dedvig_1x2, dedvig_pair) and deterministic pick IDs are correct.",
+    "services/espn_team_meta.py + espn_injury_notes.py — verified via admin refresh: 626 team-meta docs (NFL+NBA+MLB+NHL+CFB+NCAAB+WNBA + soccer leagues), 82 injury notes (per-team roll-ups aggregating 800 NFL + 127 NBA + 27 CFB player injuries).",
+    "server.py::_decorate_with_espn_meta — populated home_meta/away_meta.logo on 65/170 picks today; logo URLs correctly point to a.espncdn.com/i/teamlogos/{sport}/500/{code}.png. injury_chip decoration is wired up but currently None on Soccer/MLB/Tennis picks (correct — only NFL/NBA/CFB triggered).",
+    "routes/admin_routes.py — all 4 new admin endpoints require admin role (`Depends(current_admin)`), return structured JSON responses with per-sport counts + timing. UEFA/UFC refresh trigger real ESPN fetches (verified upserts landed in Mongo).",
+    "PickEventRow.tsx — correctly falls back to legacy event text when no home_meta/away_meta.logo present (Tennis/Golf/obscure soccer). Team-color accent, injury dot badge, size prop for card/detail are all wired. Uses <Image> + <Text> — no HTML leakage.",
+    "Backend + frontend end-to-end verified: home tab rendered 128 ESPN team logo <img> tags after login, sample srcs cover MLB (chc/bal/bos) and Soccer countries (mar/fra) — exact match of enrichment payload from /api/picks/today."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_espn_enrichment_iter66.py (new — 13 pytest cases covering demo login, /api/picks/today enrichment, all 4 admin endpoints, Mongo collection counts)"
+  ],
+  "success_rate": {"backend": "100% (13/13 pytest)", "frontend": "Partial — home tab (Locks) visually confirmed rendering ESPN logos + no red errors; Rollover/Under/Lab tabs use the identical PickEventRow component (code-level guarantee) but visual retest was blocked by /api/auth/login rate-limiter on repeated logins."},
+  "seed_data_creation": "Created TEST_espn_admin@lockscore.ai user (promoted to role='admin' via direct DB write) to exercise the admin endpoints. Left in place — email prefix TEST_ makes cleanup trivial.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "The /api/auth/login rate limiter aggressively 429s on repeated logins from the same origin — when running Playwright + pytest in the same run, insert 30-60s sleeps between login attempts or reuse a JWT. Storage key used by the app for the JWT is `lockscore_token` (via storage.secureSet, not plain localStorage) — injecting a token via localStorage.setItem('access_token', …) will NOT work. To visually verify Rollover/Under/Lab tabs in a future run, wait 60s after any previous login, then log in fresh via the SIGN IN button (Enter-key submit works). Numbers today: 170 total picks (Soccer 132, MLB 36, Tennis 2), 65 with home_meta.logo, 0 with injury_chip (no NFL/NBA/CFB on today's slate; injury data itself is seeded — NFL 800, CFB 27, NBA 127 in espn_injury_notes).",
+  "rca_of_issue": "N/A — no functional issues found. All 4 new admin endpoints work, all 4 Mongo collections populated to spec, /api/picks/today decoration is producing valid ESPN logo URLs, and the frontend PickEventRow renders them correctly on the home tab (visually confirmed 128 <img> tags). The two frontend deprecation warnings (shadow* + pointerEvents) are RN-Web level warnings, not runtime errors."
+}

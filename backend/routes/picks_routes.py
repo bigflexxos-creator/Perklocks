@@ -818,6 +818,7 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         _canonicalize_picks, _market_regex,
         _dedupe_game_outcome_picks, _dedupe_goalscorer_per_event,
         _decorate_with_player_form, _decorate_with_understat_form,
+        _decorate_with_espn_meta,
         _strip_for_lite,
     )
     await _ensure_today_picks()
@@ -1508,6 +1509,7 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 picks.sort(key=lambda p: -p.get("lock_score", 0))
     picks = await _decorate_with_player_form(picks)
     picks = await _decorate_with_understat_form(picks)
+    picks = await _decorate_with_espn_meta(picks)
     # ── Real-streak override (2026-06-30) ───────────────────────────────
     # The legacy `_decorate_with_player_form` reads `current_streak` from
     # `player_profiles_v2`, which was calculated from PICK win/loss

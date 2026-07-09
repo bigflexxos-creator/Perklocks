@@ -12,6 +12,7 @@ import { LineTypeToggle } from "@/src/components/LineTypeToggle";
 import { SortSelector } from "@/src/components/SortSelector";
 import { ChipRow } from "@/src/components/ChipRow";
 import { SportFilterBar } from "@/src/components/SportFilterBar";
+import { PickEventRow } from "@/src/components/PickEventRow";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 import { getDisplayLockRounded } from "@/src/lib/lockScore";
@@ -118,7 +119,7 @@ export default function UnderOfTheDayScreen() {
                 <Text style={styles.poolNote}>1 / {pool}</Text>
               </View>
               <Text style={styles.sportLine}>{pick.sport} · {pick.league}</Text>
-              <Text style={styles.event}>{pick.event}</Text>
+              <PickEventRow pick={pick} size="card" />
               {pick.event_time && (
                 <Text style={styles.gameTime}>{formatGameTime(pick.event_time)}</Text>
               )}

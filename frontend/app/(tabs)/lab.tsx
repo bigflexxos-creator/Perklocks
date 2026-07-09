@@ -34,6 +34,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS } from "@/src/theme";
 import { api } from "@/src/lib/api";
+import { PickEventRow } from "@/src/components/PickEventRow";
 
 // ── Module type ──────────────────────────────────────────────────────
 type LabModule = "cheats" | "hot" | "research" | "ev" | "sim" | "props" | "corr" | "backtest" | "patterns" | "dna";
@@ -276,7 +277,7 @@ function ResearchDetail({ pick }: { pick: any }) {
           <Text style={styles.detailSport}>
             {pick.sport}{pick.league ? ` · ${pick.league}` : ""}
           </Text>
-          <Text style={styles.detailEvent} numberOfLines={2}>{pick.event || ""}</Text>
+          <PickEventRow pick={pick} size="detail" />
           <Text style={styles.detailMarket} numberOfLines={2}>
             {pick.market || pick.selection}
           </Text>
@@ -305,6 +306,34 @@ function ResearchDetail({ pick }: { pick: any }) {
             <Bullet key={i} text={stringifyBullet(line)} />
           ))}
         </Section>
+      )}
+
+      {/* Injury Report — from ESPN team injury feeds (NFL/NBA/CFB) */}
+      {pick.injury_chip && (
+        (pick.injury_chip.home_key_injuries?.length ||
+         pick.injury_chip.away_key_injuries?.length ||
+         (pick.injury_chip.home.out + pick.injury_chip.home.doubtful +
+          pick.injury_chip.home.questionable +
+          pick.injury_chip.away.out + pick.injury_chip.away.doubtful +
+          pick.injury_chip.away.questionable) > 0
+        ) ? (
+        <Section title="🚑 Injury Report" chip="ESPN">
+          {(pick.injury_chip.home.out + pick.injury_chip.home.doubtful +
+            pick.injury_chip.home.questionable) > 0 && (
+            <Bullet text={`Home — Out: ${pick.injury_chip.home.out} · Doubtful: ${pick.injury_chip.home.doubtful} · Questionable: ${pick.injury_chip.home.questionable}`} />
+          )}
+          {(pick.injury_chip.away.out + pick.injury_chip.away.doubtful +
+            pick.injury_chip.away.questionable) > 0 && (
+            <Bullet text={`Away — Out: ${pick.injury_chip.away.out} · Doubtful: ${pick.injury_chip.away.doubtful} · Questionable: ${pick.injury_chip.away.questionable}`} />
+          )}
+          {(pick.injury_chip.home_key_injuries || []).slice(0, 3).map((inj, i) => (
+            <Bullet key={`h${i}`} text={`Home: ${inj.athlete}${inj.position ? ` (${inj.position})` : ""} — ${inj.status}${inj.description ? `. ${inj.description.slice(0, 140)}` : ""}`} />
+          ))}
+          {(pick.injury_chip.away_key_injuries || []).slice(0, 3).map((inj, i) => (
+            <Bullet key={`a${i}`} text={`Away: ${inj.athlete}${inj.position ? ` (${inj.position})` : ""} — ${inj.status}${inj.description ? `. ${inj.description.slice(0, 140)}` : ""}`} />
+          ))}
+        </Section>
+        ) : null
       )}
 
       {/* Rolling form (L5/L10/L20 when present) */}
