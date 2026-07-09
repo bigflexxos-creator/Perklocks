@@ -129,14 +129,10 @@ async def get_team_injuries(db, sport: str, team_name: str) -> list[dict]:
 
 
 async def injury_chip_for_pick(db, pick: dict) -> dict:
-    """Attach a small `injury_chip` field summarizing severity totals
-    that the frontend can render as a red pill on the pick card.
-
-    Format: `{ home: {out: 1, doubtful: 0, questionable: 3},
-              away: {out: 0, doubtful: 1, questionable: 2},
-              worst_side: \"home\" | \"away\" | None }`
-
-    Only fires for sports in `_INJURY_SLUGS`.
+    """Attach a small `injury_chip` field ONLY when there are active
+    injuries relevant to today's game. Long-term IL entries and status
+    entries older than 30 days are filtered out so the frontend chip
+    doesn't flash on every card in the slate.
     """
     sport = pick.get("sport")
     if not sport or sport not in {s for _, s in _INJURY_SLUGS}:
@@ -150,11 +146,47 @@ async def injury_chip_for_pick(db, pick: dict) -> dict:
     if not (home or away):
         return pick
 
+    def _is_recent(iso_date: str, max_age_days: int = 30) -> bool:
+        if not iso_date:
+            return True
+        try:
+            s = iso_date.replace("Z", "+00:00")
+            d = datetime.fromisoformat(s)
+            return (datetime.now(timezone.utc) - d).days <= max_age_days
+        except Exception:
+            return True
+
+    def _active(injuries: list[dict]) -> list[dict]:
+        out: list[dict] = []
+        for inj in injuries or []:
+            status = (inj.get("status") or "").strip().lower()
+            # Long-term IL is not moving today's line.
+            if "60-day" in status or "60 day" in status:
+                continue
+            if not any(k in status for k in
+                       ("out", "doubt", "question", "day-to-day",
+                        "day to day", "-day-il", " day il", "10-day",
+                        "15-day", "7-day", "il")):
+                continue
+            desc = (inj.get("description") or "").lower()
+            if any(bad in desc for bad in
+                   ("season-ending", "season ending",
+                    "suspended", "suspension", "retirement", "retired")):
+                continue
+            if not _is_recent(inj.get("date") or "", 30):
+                continue
+            out.append(inj)
+        return out
+
     def _bucket(injuries: list[dict]) -> dict[str, int]:
+        """Same tier map as espn_signal_engine._injury_tier so the chip
+        counts and the analysis engine always agree."""
         out = {"out": 0, "doubtful": 0, "questionable": 0}
         for i in injuries:
             s = (i.get("status") or "").lower()
-            if "out" in s and "probab" not in s:
+            if not s or "probab" in s:
+                continue
+            if "il" in s or "injured list" in s or "out" in s:
                 out["out"] += 1
             elif "doubt" in s:
                 out["doubtful"] += 1
@@ -162,10 +194,20 @@ async def injury_chip_for_pick(db, pick: dict) -> dict:
                 out["questionable"] += 1
         return out
 
-    home_inj = await get_team_injuries(db, sport, home) if home else []
-    away_inj = await get_team_injuries(db, sport, away) if away else []
+    home_all = await get_team_injuries(db, sport, home) if home else []
+    away_all = await get_team_injuries(db, sport, away) if away else []
+    home_inj = _active(home_all)
+    away_inj = _active(away_all)
+
     h_bucket = _bucket(home_inj)
     a_bucket = _bucket(away_inj)
+    home_total = h_bucket["out"] + h_bucket["doubtful"] + h_bucket["questionable"]
+    away_total = a_bucket["out"] + a_bucket["doubtful"] + a_bucket["questionable"]
+
+    # If both sides have zero active injuries, don't attach a chip.
+    # Keeps the card clean and prevents the "chip on every game" UX.
+    if home_total == 0 and away_total == 0:
+        return pick
 
     def score(b: dict[str, int]) -> int:
         return b["out"] * 3 + b["doubtful"] * 2 + b["questionable"]
@@ -176,13 +218,17 @@ async def injury_chip_for_pick(db, pick: dict) -> dict:
     elif score(a_bucket) > score(h_bucket):
         worst = "away"
 
+    def _is_out_tier(inj: dict) -> bool:
+        s = (inj.get("status") or "").lower()
+        if not s or "probab" in s:
+            return False
+        return "il" in s or "injured list" in s or "out" in s
+
     pick["injury_chip"] = {
         "home": h_bucket,
         "away": a_bucket,
         "worst_side": worst,
-        "home_key_injuries": [i for i in home_inj
-                              if (i.get("status") or "").lower() == "out"][:3],
-        "away_key_injuries": [i for i in away_inj
-                              if (i.get("status") or "").lower() == "out"][:3],
+        "home_key_injuries": [i for i in home_inj if _is_out_tier(i)][:3],
+        "away_key_injuries": [i for i in away_inj if _is_out_tier(i)][:3],
     }
     return pick

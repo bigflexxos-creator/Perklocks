@@ -101,16 +101,92 @@ def _pick_side(pick: dict) -> Optional[str]:
     return None
 
 
+def _is_recent(iso_date: str, max_age_days: int = 30) -> bool:
+    """Only count injuries with a note updated within the last N days.
+    ESPN often carries season-ending IL entries from months ago that
+    shouldn't move today's line."""
+    if not iso_date:
+        return True   # unknown → keep (better to include than drop signal)
+    try:
+        from datetime import datetime, timezone
+        # Support both '2026-06-12T21:21Z' and full ISO strings.
+        s = iso_date.replace("Z", "+00:00")
+        d = datetime.fromisoformat(s)
+        age = (datetime.now(timezone.utc) - d).days
+        return age <= max_age_days
+    except Exception:
+        return True
+
+
+def _filter_active(injuries: list[dict]) -> list[dict]:
+    """Drop stale or long-term IL entries so we only count injuries
+    actually affecting *today's* lineup.
+
+    Rules:
+      • Recent (within 30 days) OR unknown date.
+      • Status is one of: Out, Doubtful, Questionable, Day-to-Day,
+        or a short-term IL stint (7/10/15-Day-IL).
+      • Excluded: 60-Day-IL, season-ending, suspensions, retired.
+    """
+    active: list[dict] = []
+    for inj in injuries or []:
+        status = (inj.get("status") or "").strip().lower()
+        # Long-term IL entries — the player was already presumed out; the
+        # book already priced this in and it shouldn't move the line.
+        if "60-day" in status or "60 day" in status:
+            continue
+        if not any(k in status for k in
+                   ("out", "doubt", "question", "day-to-day", "day to day",
+                    "-day-il", " day il", "10-day", "15-day", "7-day", "il")):
+            continue
+        desc = (inj.get("description") or "").lower()
+        if any(bad in desc for bad in
+               ("season-ending", "season ending",
+                "suspended", "suspension", "retirement", "retired")):
+            continue
+        if not _is_recent(inj.get("date") or "", max_age_days=30):
+            continue
+        active.append(inj)
+    return active
+
+
+def _short_injury_line(inj: dict) -> str:
+    """Single-line label for an evidence bullet."""
+    name = inj.get("athlete") or "Player"
+    pos = inj.get("position")
+    status = (inj.get("status") or "").strip()
+    pos_str = f" ({pos})" if pos else ""
+    return f"{name}{pos_str} — {status}"
+
+
+def _injury_tier(status: str) -> str | None:
+    """Map an ESPN status string to one of our three tiers.
+    Returns None when the entry shouldn't count."""
+    s = (status or "").lower()
+    if not s or "probab" in s:
+        return None
+    # Any IL stint = the player isn't in the lineup today. Treat as OUT.
+    if "il" in s or "injured list" in s:
+        return "out"
+    if "out" in s:
+        return "out"
+    if "doubt" in s:
+        return "doubtful"
+    if "question" in s:
+        return "questionable"
+    if "day" in s:   # "day-to-day"
+        return "questionable"
+    return None
+
+
 def _injury_bucket(injuries: list[dict]) -> dict[str, int]:
+    """Bucket ACTIVE injuries by tier. Excludes long-term IL entries."""
+    active = _filter_active(injuries)
     out = {"out": 0, "doubtful": 0, "questionable": 0}
-    for i in injuries:
-        s = (i.get("status") or "").lower()
-        if "out" in s and "probab" not in s:
-            out["out"] += 1
-        elif "doubt" in s:
-            out["doubtful"] += 1
-        elif "question" in s or "day" in s:
-            out["questionable"] += 1
+    for i in active:
+        tier = _injury_tier(i.get("status") or "")
+        if tier and tier in out:
+            out[tier] += 1
     return out
 
 
@@ -210,15 +286,18 @@ async def _fetch_team_injuries(db, sport: str, event: str) -> tuple[list[dict], 
 
 async def apply_signals(db, pick: dict) -> dict:
     """Mutate `pick` in-place, applying ESPN-derived probability
-    adjustments and recording the reasoning under `espn_signals`.
+    adjustments AND injecting bullets into `pick_rationale.evidence`
+    so \"Why This Pick?\" renders the reasoning natively.
 
     - No-op when the pick lacks a clear home/away side, when the sport
       isn't ESPN-covered, or when the pick already has an
       `espn_signals` block written by a previous run.
-
     - Adjusts `win_probability` and `lock_score` bounded to ±6 pts.
-
-    - Adds new bullets to `factors` so \"Why This Pick?\" shows them.
+    - Filters ESPN injury data to *active* injuries only (recent date +
+      Out/Doubtful/Questionable). Long-term IL entries are ignored so
+      we don't over-adjust for players who weren't going to play anyway.
+    - When zero meaningful signals fire, `injury_chip` is stripped from
+      the pick so the frontend doesn't render a hollow chip.
     """
     if not pick or pick.get("espn_signals"):
         return pick   # idempotent
@@ -229,17 +308,12 @@ async def apply_signals(db, pick: dict) -> dict:
 
     side = _pick_side(pick)
     if not side:
-        # Markets without a clear team side (spread totals, draw ML,
-        # goalscorers) still benefit from *displaying* injury info via
-        # the enrichment path, but we don't adjust win_probability
-        # here to avoid mis-attribution.
         return pick
 
     base = float(pick.get("win_probability") or 0.0)
     if base <= 0:
         return pick
 
-    # Fetch context in parallel where possible
     home_inj, away_inj = await _fetch_team_injuries(db, sport, pick.get("event") or "")
 
     signals: list[dict] = []
@@ -253,12 +327,21 @@ async def apply_signals(db, pick: dict) -> dict:
     delta += form_d
     signals.extend(form_items)
 
-    # Clamp total swing
     delta = _clamp(delta, -_MAX_TOTAL_SWING, _MAX_TOTAL_SWING)
 
+    # When no meaningful signal fired, strip hollow chip data and bail.
     if abs(delta) < 0.25:
-        # Not enough signal to disturb the pick — still record the
-        # empty analysis so the read-side knows we tried.
+        if isinstance(pick.get("injury_chip"), dict):
+            c = pick["injury_chip"]
+            total = (c.get("home", {}).get("out", 0)
+                     + c.get("home", {}).get("doubtful", 0)
+                     + c.get("home", {}).get("questionable", 0)
+                     + c.get("away", {}).get("out", 0)
+                     + c.get("away", {}).get("doubtful", 0)
+                     + c.get("away", {}).get("questionable", 0))
+            if total == 0:
+                # Nothing to show — remove entirely.
+                pick.pop("injury_chip", None)
         pick["espn_signals"] = {
             "applied":   False,
             "delta":     0.0,
@@ -270,7 +353,6 @@ async def apply_signals(db, pick: dict) -> dict:
     new_prob = _clamp(base + delta, 1.0, 99.5)
     new_lock = _prob_to_lock(new_prob)
 
-    # Preserve base for auditability / idempotency
     pick["pre_espn_win_probability"] = base
     pick["win_probability"]          = round(new_prob, 2)
     pick["lock_score"]                = new_lock
@@ -285,27 +367,69 @@ async def apply_signals(db, pick: dict) -> dict:
         "side":      side,
     }
 
-    # Human-readable bullets for the rationale panel
+    # ── Inject bullets into pick_rationale.evidence ────────────────
+    # This is what makes ESPN data actually "flow through" the "Why This
+    # Pick?" panel instead of hiding in a side section. Each signal
+    # becomes one evidence bullet, styled with an emoji tag so the
+    # rationale renderer can group them visually.
+    rationale = pick.setdefault("pick_rationale", {})
+    if not isinstance(rationale, dict):
+        rationale = pick["pick_rationale"] = {}
+    evidence = rationale.setdefault("evidence", [])
+    if not isinstance(evidence, list):
+        evidence = rationale["evidence"] = []
+
+    # Headline bullet — always emitted when we adjust.
+    evidence.append(
+        f"🧠 ESPN Signal moved the model {'+' if delta > 0 else ''}{round(delta, 1)}pp "
+        f"({round(base, 1)}% → {pick['win_probability']}%)."
+    )
+
+    # Injury bullets — one per side with counts + key names.
+    own_inj = home_inj if side == "home" else away_inj
+    opp_inj = away_inj if side == "home" else home_inj
+    own_active = _filter_active(own_inj)
+    opp_active = _filter_active(opp_inj)
+    if own_active:
+        top = ", ".join(_short_injury_line(i) for i in own_active[:3])
+        more = "" if len(own_active) <= 3 else f" (+{len(own_active) - 3} more)"
+        evidence.append(
+            f"🚑 Pick side has {len(own_active)} active injur"
+            f"{'y' if len(own_active) == 1 else 'ies'}: {top}{more}."
+        )
+    if opp_active:
+        top = ", ".join(_short_injury_line(i) for i in opp_active[:3])
+        more = "" if len(opp_active) <= 3 else f" (+{len(opp_active) - 3} more)"
+        evidence.append(
+            f"💪 Opponent depleted — {len(opp_active)} active injur"
+            f"{'y' if len(opp_active) == 1 else 'ies'}: {top}{more}."
+        )
+
+    # Form bullets
+    for f in form_items:
+        pick_form = f.get("pick_form") or "n/a"
+        opp_form = f.get("opp_form") or "n/a"
+        arrow = "📈" if f.get("delta", 0) > 0 else "📉"
+        evidence.append(
+            f"{arrow} Recent form — pick side {pick_form} vs opponent {opp_form} "
+            f"({'+' if f['delta'] > 0 else ''}{f['delta']}pp)."
+        )
+
+    # Prune any duplicate evidence lines that already existed
+    seen = set()
+    deduped = []
+    for line in evidence:
+        key = str(line).lower()
+        if key not in seen:
+            seen.add(key)
+            deduped.append(line)
+    rationale["evidence"] = deduped
+    # Keep the summary factor bullet too (used by legacy consumers).
     factors = pick.setdefault("factors", {})
     if isinstance(factors, dict):
-        summary = []
-        if inj_items:
-            own_hits = sum(i["count"] for i in inj_items if i["side"] == "pick")
-            opp_hits = sum(i["count"] for i in inj_items if i["side"] == "opponent")
-            if own_hits or opp_hits:
-                summary.append(
-                    f"Injuries — pick side: {own_hits} issue{'s' if own_hits != 1 else ''}, "
-                    f"opponent: {opp_hits}"
-                )
-        if form_items:
-            f = form_items[0]
-            summary.append(
-                f"Form — pick side {f['pick_form'] or 'n/a'} vs opponent {f['opp_form'] or 'n/a'}"
-            )
         factors["ESPN Signal Adjustment"] = (
             f"{'+' if delta > 0 else ''}{round(delta, 2)}pp on win probability "
-            f"({base}% → {pick['win_probability']}%). "
-            + " · ".join(summary)
+            f"({base}% → {pick['win_probability']}%)."
         )
 
     return pick

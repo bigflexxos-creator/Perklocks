@@ -299,62 +299,20 @@ function ResearchDetail({ pick }: { pick: any }) {
         ]}
       />
 
-      {/* Why this pick — market-filtered evidence */}
+      {/* Why this pick — market-filtered evidence.
+          Note: ESPN Signal Engine bullets (injuries, form, probability
+          delta) are injected server-side into `pick_rationale.evidence`
+          via `services/espn_signal_engine.apply_signals`. That is why
+          the redundant "🧠 ESPN Signal" and "🚑 Injury Report" side-
+          sections that used to live below this block were removed —
+          the analysis flows through the same evidence list every other
+          rationale bullet does. */}
       {evidence.length > 0 && (
         <Section title="Why This Pick" chip={evFamily}>
           {evidence.map((line: any, i: number) => (
             <Bullet key={i} text={stringifyBullet(line)} />
           ))}
         </Section>
-      )}
-
-      {/* ESPN Signal Adjustment — how injuries + form nudged the pick */}
-      {pick.espn_signals && pick.espn_signals.applied && (
-        <Section title="🧠 ESPN Signal" chip={`${pick.espn_signals.delta > 0 ? "+" : ""}${pick.espn_signals.delta.toFixed(1)}pp`}>
-          <Bullet
-            text={`Base model: ${pick.espn_signals.base_prob.toFixed(1)}% → Adjusted: ${(pick.espn_signals.final_prob || pick.win_probability).toFixed(1)}% (${pick.espn_signals.delta > 0 ? "+" : ""}${pick.espn_signals.delta.toFixed(1)}pp)`}
-          />
-          {(pick.espn_signals.items || []).map((it: any, i: number) => (
-            <Bullet
-              key={`sig${i}`}
-              text={
-                it.kind === "injury"
-                  ? `${it.side === "pick" ? "Pick-side" : "Opponent"} ${it.tier}: ${it.count} player${it.count > 1 ? "s" : ""} (${it.delta > 0 ? "+" : ""}${it.delta}pp)`
-                  : it.kind === "form"
-                    ? `Recent form ${it.pick_form || "n/a"} vs ${it.opp_form || "n/a"} (${it.delta > 0 ? "+" : ""}${it.delta}pp)`
-                    : JSON.stringify(it)
-              }
-            />
-          ))}
-        </Section>
-      )}
-
-      {/* Injury Report — from ESPN team injury feeds (NFL/NBA/CFB) */}
-      {pick.injury_chip && (
-        (pick.injury_chip.home_key_injuries?.length ||
-         pick.injury_chip.away_key_injuries?.length ||
-         (pick.injury_chip.home.out + pick.injury_chip.home.doubtful +
-          pick.injury_chip.home.questionable +
-          pick.injury_chip.away.out + pick.injury_chip.away.doubtful +
-          pick.injury_chip.away.questionable) > 0
-        ) ? (
-        <Section title="🚑 Injury Report" chip="ESPN">
-          {(pick.injury_chip.home.out + pick.injury_chip.home.doubtful +
-            pick.injury_chip.home.questionable) > 0 && (
-            <Bullet text={`Home — Out: ${pick.injury_chip.home.out} · Doubtful: ${pick.injury_chip.home.doubtful} · Questionable: ${pick.injury_chip.home.questionable}`} />
-          )}
-          {(pick.injury_chip.away.out + pick.injury_chip.away.doubtful +
-            pick.injury_chip.away.questionable) > 0 && (
-            <Bullet text={`Away — Out: ${pick.injury_chip.away.out} · Doubtful: ${pick.injury_chip.away.doubtful} · Questionable: ${pick.injury_chip.away.questionable}`} />
-          )}
-          {(pick.injury_chip.home_key_injuries || []).slice(0, 3).map((inj, i) => (
-            <Bullet key={`h${i}`} text={`Home: ${inj.athlete}${inj.position ? ` (${inj.position})` : ""} — ${inj.status}${inj.description ? `. ${inj.description.slice(0, 140)}` : ""}`} />
-          ))}
-          {(pick.injury_chip.away_key_injuries || []).slice(0, 3).map((inj, i) => (
-            <Bullet key={`a${i}`} text={`Away: ${inj.athlete}${inj.position ? ` (${inj.position})` : ""} — ${inj.status}${inj.description ? `. ${inj.description.slice(0, 140)}` : ""}`} />
-          ))}
-        </Section>
-        ) : null
       )}
 
       {/* Rolling form (L5/L10/L20 when present) */}
