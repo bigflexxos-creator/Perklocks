@@ -36,18 +36,19 @@ import { COLORS } from "@/src/theme";
 import { api } from "@/src/lib/api";
 
 // ── Module type ──────────────────────────────────────────────────────
-type LabModule = "cheats" | "research" | "ev" | "sim" | "props" | "corr" | "backtest" | "patterns" | "dna";
+type LabModule = "cheats" | "hot" | "research" | "ev" | "sim" | "props" | "corr" | "backtest" | "patterns" | "dna";
 
 const MODULES: { id: LabModule; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
-  { id: "cheats",   label: "Cheatsheets", icon: "flash" },
-  { id: "research", label: "Research",    icon: "search" },
+  { id: "cheats",   label: "Cheatsheets",  icon: "flash" },
+  { id: "hot",      label: "Hot Hitters",  icon: "flame" },
+  { id: "research", label: "Research",     icon: "search" },
   { id: "corr",     label: "Correlations", icon: "git-network" },
-  { id: "backtest", label: "Backtest",    icon: "trending-up" },
-  { id: "patterns", label: "Patterns",    icon: "sparkles" },
-  { id: "dna",      label: "Matchup DNA", icon: "body" },
-  { id: "ev",       label: "EV Calc",     icon: "calculator" },
-  { id: "sim",      label: "Sim",         icon: "analytics" },
-  { id: "props",    label: "Props",       icon: "list" },
+  { id: "backtest", label: "Backtest",     icon: "trending-up" },
+  { id: "patterns", label: "Patterns",     icon: "sparkles" },
+  { id: "dna",      label: "Matchup DNA",  icon: "body" },
+  { id: "ev",       label: "EV Calc",      icon: "calculator" },
+  { id: "sim",      label: "Sim",          icon: "analytics" },
+  { id: "props",    label: "Props",        icon: "list" },
 ];
 
 // ── Root screen ──────────────────────────────────────────────────────
@@ -148,6 +149,7 @@ export default function LabScreen() {
           }
         >
           {module === "cheats"   && <CheatsheetsModule picks={picks} />}
+          {module === "hot"      && <HotHittersModule />}
           {module === "research" && <ResearchModule picks={picks} />}
           {module === "corr"     && <CorrelationModule />}
           {module === "backtest" && <BacktestModule />}
@@ -766,6 +768,105 @@ function PropExplorerModule({ picks }: { picks: any[] }) {
 //                       so users spot outliers like "8/8 last 8".
 // ═══════════════════════════════════════════════════════════════════
 type CheatTab = "locked" | "by_game" | "deepest";
+
+// ═══════════════════════════════════════════════════════════════════
+// MODULE: HOT HITTERS  (Stats-driven best-bets, book-agnostic)
+// -------------------------------------------------------------------
+// Ranks every active MLB hitter by a composite heat score built from
+// L15 avg + OBP + OPS + current hit streak — INDEPENDENT of book
+// odds coverage.  Surfaces niche batters (Otto Lopez, Gabriel
+// Rincones etc.) that sportsbooks systematically skip even when
+// they're on legitimate streaks.  Backed by `backend/hot_hitters.py`.
+// ═══════════════════════════════════════════════════════════════════
+function HotHittersModule() {
+  const [data, setData] = useState<any | null>(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    setLoading(true);
+    api.labHotHitters({ limit: 30 })
+      .then(setData)
+      .catch(() => setData({ hitters: [], total_ranked: 0 }))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const hitters: any[] = data?.hitters || [];
+  return (
+    <View>
+      <SectionHeader
+        icon="flame"
+        title="Hot Hitters"
+        blurb="Stats-driven leaderboard — L15 avg + OBP + OPS + hit streak. Book-agnostic so niche batters (Otto Lopez, Rincones, etc.) surface when they're hot."
+      />
+      {loading ? (
+        <ActivityIndicator color={COLORS.textPrimary} style={{ marginTop: 20 }} />
+      ) : hitters.length === 0 ? (
+        <Text style={styles.disclaimer}>
+          No hot-hitter data yet — MLB Stats API is silent or the L15
+          window has no qualifying batters. Try again later.
+        </Text>
+      ) : (
+        hitters.map((h) => <HotHitterCard key={h.player_id} hitter={h} />)
+      )}
+    </View>
+  );
+}
+
+
+function HotHitterCard({ hitter }: { hitter: any }) {
+  const playing = !!hitter.playing_today;
+  const heatColor = hitter.heat_score >= 65
+    ? "#40d18a"
+    : hitter.heat_score >= 50
+    ? COLORS.goldElite
+    : COLORS.textMuted;
+  const oppLine = hitter.next_opponent_abbr
+    ? `vs ${hitter.next_opponent_abbr}${hitter.next_pitcher ? ` · ${hitter.next_pitcher}` : ""}`
+    : "off tonight";
+  return (
+    <View style={cheatStyles.card}>
+      <View style={cheatStyles.headerRow}>
+        <View style={cheatStyles.teamChip}>
+          <Text style={cheatStyles.teamChipTxt}>{hitter.team_abbr || "?"}</Text>
+        </View>
+        <View style={{ flex: 1 }}>
+          <View style={{ flexDirection: "row", alignItems: "baseline", gap: 6 }}>
+            <Text style={cheatStyles.player} numberOfLines={1}>
+              {hitter.player_name}
+            </Text>
+            <Text style={cheatStyles.playerOpp} numberOfLines={1}>
+              {playing ? oppLine : "— off day"}
+            </Text>
+          </View>
+          <Text style={cheatStyles.market} numberOfLines={1}>
+            L15 .{String(Math.round((hitter.l15_avg || 0) * 1000)).padStart(3, "0")}
+            {" · OPS "}
+            {(hitter.l15_ops || 0).toFixed(3).replace(/^0/, "")}
+            {" · "}
+            {hitter.l15_games}G
+          </Text>
+        </View>
+        <View style={[cheatStyles.oddsBadge, { backgroundColor: "rgba(64,209,138,0.08)" }]}>
+          <Text style={[cheatStyles.oddsTxt, { color: heatColor }]}>
+            🔥 {hitter.heat_score}
+          </Text>
+        </View>
+      </View>
+      <View style={cheatStyles.factsBlock}>
+        {(hitter.reasons || []).slice(0, 4).map((r: string, i: number) => (
+          <View key={i} style={cheatStyles.factRow}>
+            <Text style={cheatStyles.factTxt}>{r}</Text>
+          </View>
+        ))}
+        {!playing && (
+          <Text style={{ color: COLORS.textMuted, fontSize: 11, marginTop: 4 }}>
+            Not on today&apos;s slate — bookmark for their next start.
+          </Text>
+        )}
+      </View>
+    </View>
+  );
+}
+
 
 function CheatsheetsModule({ picks: _picks }: { picks: any[] }) {
   const [sport, setSport] = useState<string>("All");

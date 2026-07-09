@@ -25,7 +25,7 @@ def _pick(**over):
         "sport": "MLB",
         "event": "A @ B",
         "market": "Team Total Over 4.5",
-        "book_odds": -120,
+        "book_odds": -105,      # outside -140/-110 dead zone
         "win_probability": 0.72,
         "edge_percent": 3.5,
         "lock_score": 92,
