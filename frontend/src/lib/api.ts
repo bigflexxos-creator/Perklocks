@@ -580,6 +580,39 @@ export const api = {
       games: { date: string; opponent: string; hit: boolean; status: string }[];
     }>(`/lab/cheatsheet-detail/${encodeURIComponent(pick_id)}`),
 
+  // Hot Hitters — stats-driven best-bets discovery, independent of book odds.
+  // Ranks every active MLB hitter by composite heat score (L15 avg + OBP +
+  // OPS + current hit streak).  Surfaces niche players (Otto Lopez et al.)
+  // that sportsbooks skip.
+  labHotHitters: (opts?: { limit?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.limit != null) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    return request<{
+      generated_at: string;
+      window_days: number;
+      total_ranked: number;
+      hitters: {
+        player_id: number;
+        player_name: string;
+        team: string;
+        team_abbr: string;
+        position: string | null;
+        heat_score: number;
+        l15_avg: number;
+        l15_ops: number;
+        l15_obp: number;
+        l15_games: number;
+        hit_streak: number;
+        playing_today: boolean;
+        next_opponent: string | null;
+        next_opponent_abbr: string | null;
+        next_pitcher: string | null;
+        reasons: string[];
+      }[];
+    }>(`/lab/hot-hitters${qs ? "?" + qs : ""}`);
+  },
+
   // Correlation Lab — historical parlay leg co-occurrence hit rates.
   labCorrelations: (opts?: { sport?: string; min_pairs?: number; limit?: number }) => {
     const params = new URLSearchParams();

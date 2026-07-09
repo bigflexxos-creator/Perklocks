@@ -857,6 +857,28 @@ async def patterns(
 # ═════════════════════════════════════════════════════════════════════
 # CHEATSHEETS — real streak facts from settled-pick history
 # ═════════════════════════════════════════════════════════════════════
+@router.get("/hot-hitters")
+async def hot_hitters(limit: int = Query(20, ge=5, le=50)):
+    """Stats-driven best-bets discovery — INDEPENDENT of book odds.
+
+    Returns a leaderboard of MLB hitters ranked by a composite heat
+    score (L15 avg + OBP + OPS + current hit streak). Books
+    systematically under-cover niche batters (see 2026-07-08 user
+    complaint about Otto Lopez / Gabriel Rincones) so this endpoint
+    exists to surface stats-legitimate best-bet candidates regardless
+    of book listing. Full details in `backend/hot_hitters.py`.
+
+    Query params:
+      • `limit` (int 5-50, default 20) — cap on returned hitters
+    """
+    try:
+        from hot_hitters import build_hot_hitters
+        return await build_hot_hitters(limit=limit)
+    except Exception as e:
+        logger.exception("hot-hitters failed: %s", e)
+        raise HTTPException(500, "hot-hitters failed")
+
+
 @router.get("/cheatsheets")
 async def cheatsheets(
     sport: str | None = Query(None),
