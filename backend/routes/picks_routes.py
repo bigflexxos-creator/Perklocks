@@ -660,37 +660,21 @@ async def picks_history(
     push = sum(1 for p in settled if p.get("status") == "push")
     decided = won + lost
     hit_rate = round(won / decided * 100, 1) if decided else 0.0
-    # Rollover V3 (2026-07-01): analytics must mirror the endpoint's
-    # HIGH-CONVICTION floors — lock_score ≥ 95 AND win_prob ≥ 0.80 AND
-    # edge_percent ≥ 4.0. Anything looser inflates rollover_hit_rate
-    # with picks that never actually surfaced on the rollover tab.
-    # `win_probability` is stored as 0-100 in some pipelines and 0-1 in
-    # others — normalise before comparing.
-    def _wp_frac(v) -> float:
-        try:
-            f = float(v or 0)
-        except Exception:
-            return 0.0
-        return f / 100.0 if f > 1.0 else f
-    # Rollover V4 (2026-07-04 IMMUTABLE): Rollover history now filters
-    # on the `on_rollover_at` publish-time tag stamped by the board
-    # validator, NOT live lock/win_prob/edge thresholds. Previously we
-    # re-evaluated thresholds against current DB state, so a pick that
-    # was downgraded after settlement would silently disappear from
-    # rollover history, and a newly-qualifying pick would retroactively
-    # appear (user complaint: "Rollover history is grading random bets
-    # instead of the actual rollover picks"). Fallback to legacy
-    # threshold-based logic ONLY when no picks have been tagged yet.
-    tagged_rollover = [p for p in settled if p.get("on_rollover_at")]
-    if tagged_rollover:
-        rollover_picks = tagged_rollover
-    else:
-        rollover_picks = [
-            p for p in settled
-            if (p.get("lock_score") or 0) >= 95
-            and _wp_frac(p.get("win_probability")) >= 0.80
-            and float(p.get("edge_percent") or 0) >= 4.0
-        ]
+    # Rollover V4 (2026-07-08): Rollover history filters STRICTLY on
+    # the `on_rollover_at` publish-time tag now stamped by
+    # `rollover_history_tagger` at settlement time.  The tag is
+    # re-derived deterministically from the V4 top-3 slate per date,
+    # so History → Rollover matches the exact picks the user saw on
+    # the live Rollover tab (see rollover_history_tagger.py).
+    #
+    # The previous "fallback threshold" path (lock ≥ 95 AND wp ≥ 0.80
+    # AND edge ≥ 4.0) inflated the tab with alt-line MLB totals that
+    # were never on the live Rollover board — user complaint 2026-07-08:
+    # "picks in rollover sections are regular picks…showing MLB alt
+    # totals when they wasn't on rollover in general".  We drop that
+    # fallback entirely; if no picks are tagged we return an empty set
+    # rather than fabricate a superset.
+    rollover_picks = [p for p in settled if p.get("on_rollover_at")]
     ro_won = sum(1 for p in rollover_picks if p.get("status") == "won")
     ro_lost = sum(1 for p in rollover_picks if p.get("status") == "lost")
     ro_push = sum(1 for p in rollover_picks if p.get("status") == "push")

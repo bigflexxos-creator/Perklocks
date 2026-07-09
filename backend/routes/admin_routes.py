@@ -592,6 +592,36 @@ async def admin_picks_heal(
     }
 
 
+@router.post("/admin/rollover/backfill-tags")
+async def admin_backfill_rollover_tags(
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+    days: int = 60,
+):
+    """One-shot backfill: re-derives the V4 top-3 rollover slate for
+    each of the last `days` graded dates and stamps `on_rollover_at`
+    onto EXACTLY those 3 picks.  Any picks that had the tag but no
+    longer belong in the top-3 (because a settlement re-fired and
+    outcomes shifted) get UNTAGGED.  Fully reconstructive so safe to
+    re-run.
+
+    This is the fix for the History → Rollover mismatch reported
+    2026-07-08 where MLB alt totals were showing as "rollover picks"
+    even though they were never on the live Rollover tab.
+    """
+    from rollover_history_tagger import stamp_rollover_history_tags
+    from datetime import date as _date, timedelta as _td
+    cutoff = (_date.today() - _td(days=days)).isoformat()
+    pipeline = [
+        {"$match": {"status": {"$in": ["won", "lost", "push"]},
+                    "pick_date": {"$gte": cutoff}}},
+        {"$group": {"_id": "$pick_date"}},
+    ]
+    dates_docs = await db.picks.aggregate(pipeline).to_list(days * 2)
+    dates = [r["_id"] for r in dates_docs]
+    res = await stamp_rollover_history_tags(db, dates=dates)
+    return {"ok": True, "days_range": days, "result": res}
+
+
 # ────────────────────── Rationale re-enrichment (v2 pitcher props) ──────────────────────
 @router.post("/admin/picks/re-enrich-rationale")
 async def admin_reenrich_rationale(
