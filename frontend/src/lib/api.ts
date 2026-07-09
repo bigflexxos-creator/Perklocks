@@ -136,6 +136,30 @@ export type Pick = {
   sim_recent_goal_rate?: number;       // Recent 'scored in N of last M' rate (%)
   sim_opp_concedes?: number;           // Opponent goals conceded / match
   sim_player_xg_per_game?: number;     // Player career xG/match (parsed)
+  // ─── ESPN-backed team meta (logos + colors, injuries) ──────────────
+  // Injected by backend `_decorate_with_espn_meta` on `/api/picks/today`
+  // and detail endpoints. Available for MLB, NFL, NBA, CFB, NHL, WNBA,
+  // NCAAB, and every ESPN-covered soccer league.
+  home_meta?: {
+    logo?: string;
+    color?: string;
+    alt_color?: string;
+    abbrev?: string;
+  };
+  away_meta?: {
+    logo?: string;
+    color?: string;
+    alt_color?: string;
+    abbrev?: string;
+  };
+  injury_chip?: {
+    home: { out: number; doubtful: number; questionable: number };
+    away: { out: number; doubtful: number; questionable: number };
+    worst_side: "home" | "away" | null;
+    home_key_injuries?: Array<{ athlete: string; position?: string; status: string; description?: string }>;
+    away_key_injuries?: Array<{ athlete: string; position?: string; status: string; description?: string }>;
+  };
+
   // ─── Player Form (from live learning store) ─────────────────────────
   player_form?: {
     name: string;

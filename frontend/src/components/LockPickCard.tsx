@@ -6,6 +6,7 @@ import { Pick, PickRationale, api } from "@/src/lib/api";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { useMLBLive } from "@/src/contexts/MLBLiveContext";
 import { getDisplayLock } from "@/src/lib/lockScore";
+import { PickEventRow } from "@/src/components/PickEventRow";
 
 function LockPickCardImpl({ pick }: { pick: Pick }) {
   const router = useRouter();
@@ -168,7 +169,7 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
               </View>
             )}
           </View>
-          <Text style={styles.event} numberOfLines={1}>{pick.event}</Text>
+          <PickEventRow pick={pick} size="card" showInjuryChip={true} />
           {pick.event_time && (
             <Text style={styles.gameTime}>{formatGameTime(pick.event_time)}</Text>
           )}

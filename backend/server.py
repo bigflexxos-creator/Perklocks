@@ -456,6 +456,36 @@ def _canonicalize_picks(picks: list[dict]) -> list[dict]:
     return [_canonicalize_lock_score(p) for p in picks]
 
 
+async def _decorate_with_espn_meta(picks: list[dict]) -> list[dict]:
+    """Attach ESPN team logos + colors + injury chip to every pick.
+
+    Added 2026-07-09 as part of the generic ESPN-fallback layer. Runs
+    per-request but backed by an in-memory cache in `espn_team_meta`
+    (miss cost = a single mongo find) so the extra latency is <5ms
+    even on 200-pick pages.
+
+    New fields injected on each pick when data is available:
+      home_meta:   {logo, color, alt_color, abbrev}
+      away_meta:   {logo, color, alt_color, abbrev}
+      injury_chip: {home:{out,doubtful,questionable}, away:{...},
+                     worst_side, home_key_injuries, away_key_injuries}
+    """
+    if not picks:
+        return picks
+    try:
+        from services.espn_team_meta import enrich_pick as _meta
+        from services.espn_injury_notes import injury_chip_for_pick as _chip
+    except Exception:
+        return picks
+    for p in picks:
+        try:
+            await _meta(db, p)
+            await _chip(db, p)
+        except Exception:
+            pass  # non-critical enrichment
+    return picks
+
+
 async def _decorate_with_player_form(picks: list[dict]) -> list[dict]:
     """Attach `player_form` data to each pick that references a player.
 
@@ -3560,6 +3590,41 @@ async def on_startup():
         logger.info("UEFA ESPN fallback ingest armed (30-min loop, 7-day window)")
     except Exception as e:
         logger.warning("UEFA ESPN ingest not armed: %s", e)
+    # ── UFC ESPN fallback ingest ────────────────────────────────────
+    # ESPN carries UFC/PFL/Bellator cards 3+ weeks out with fighter
+    # records; picks emit as fair-odds until DK posts markets.
+    try:
+        from ufc_espn_ingest import ufc_espn_loop
+        _deferred_task(lambda: ufc_espn_loop(db),            DEFER_BASE * 3)
+        logger.info("UFC ESPN fallback ingest armed (60-min loop, 21-day window)")
+    except Exception as e:
+        logger.warning("UFC ESPN ingest not armed: %s", e)
+    # ── ESPN team meta + injury notes (all sports) ──────────────────
+    # Powers logo/color rendering on pick cards and the injury chip.
+    # Runs once at boot then every 6 hours.
+    try:
+        from services.espn_team_meta import refresh_all_teams
+        from services.espn_injury_notes import refresh_all_injuries
+        await db.espn_team_meta.create_index([("norm_name", 1), ("sport", 1)], unique=True)
+        await db.espn_team_meta.create_index("aliases")
+        await db.espn_injury_notes.create_index([("sport", 1), ("team_norm", 1)])
+
+        async def _espn_meta_loop():
+            await asyncio.sleep(30)
+            while True:
+                try:
+                    await refresh_all_teams(db)
+                    await refresh_all_injuries(db)
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.warning("ESPN meta/injury refresh error: %s", e)
+                await asyncio.sleep(6 * 60 * 60)  # 6h cadence
+
+        _deferred_task(_espn_meta_loop, DEFER_BASE * 3)
+        logger.info("ESPN team-meta + injury-notes refresh armed (6h loop)")
+    except Exception as e:
+        logger.warning("ESPN meta refresh not armed: %s", e)
     # ── Soccer Player Form (Understat) ──────────────────────────────
     # Refreshes per-player season stats (xG, npxG, goals/xG ratio) for
     # the Top 5 European leagues every 12h. Powers the HOT FORM /

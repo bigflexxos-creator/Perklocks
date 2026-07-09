@@ -889,6 +889,38 @@ async def admin_uefa_espn_refresh(
     return await sync_uefa_espn_picks(db, days_ahead=days)
 
 
+@router.post("/admin/ufc-espn-refresh")
+async def admin_ufc_espn_refresh(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    days: int = 21,
+):
+    """Force-refresh the UFC / PFL / Bellator ESPN ingest."""
+    from ufc_espn_ingest import sync_ufc_espn_picks
+    return await sync_ufc_espn_picks(db, days_ahead=days)
+
+
+@router.post("/admin/espn-team-meta-refresh")
+async def admin_espn_team_meta_refresh(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Rehydrate the `espn_team_meta` collection (logos + colors) for
+    every sport. Runs on a 6h background loop; hit this after a team
+    rebrand to see the new crest immediately."""
+    from services.espn_team_meta import refresh_all_teams
+    return await refresh_all_teams(db)
+
+
+@router.post("/admin/espn-injury-refresh")
+async def admin_espn_injury_refresh(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Rehydrate `espn_injury_notes` collection for NFL / CFB / NBA.
+    Powers the small red 🚑 chip on pick cards + the injuries panel
+    inside `Why This Pick?`."""
+    from services.espn_injury_notes import refresh_all_injuries
+    return await refresh_all_injuries(db)
+
+
 @router.get("/admin/services-active-check")
 async def admin_services_active_check(
     user: Annotated[UserPublic, Depends(current_admin)],
