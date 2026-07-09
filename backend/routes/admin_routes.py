@@ -932,6 +932,19 @@ async def admin_espn_form_refresh(
     return await refresh_all_forms(db)
 
 
+@router.post("/admin/wiki-record-refresh")
+async def admin_wiki_record_refresh(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    limit_teams: int = 200,
+):
+    """Refresh Wikipedia season-record cache for soccer teams in
+    recent picks. Deep W/D/L history feeds the Season-Record Signal
+    (up to ±4pp) so niche-league teams like Mornar (20W-9D-7L) actually
+    get recognized instead of getting judged on ESPN's 5-game window."""
+    from services.wikipedia_team_record import bulk_refresh_soccer
+    return await bulk_refresh_soccer(db, limit_teams=limit_teams)
+
+
 @router.get("/admin/services-active-check")
 async def admin_services_active_check(
     user: Annotated[UserPublic, Depends(current_admin)],

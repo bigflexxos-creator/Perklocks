@@ -3618,13 +3618,16 @@ async def on_startup():
             while True:
                 try:
                     from services.espn_form_cache import refresh_all_forms
+                    from services.wikipedia_team_record import bulk_refresh_soccer
                     await refresh_all_teams(db)
                     await refresh_all_injuries(db)
                     await refresh_all_forms(db)
+                    # Wikipedia deep-history — throttled to daily
+                    await bulk_refresh_soccer(db, limit_teams=250)
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    logger.warning("ESPN meta/injury/form refresh error: %s", e)
+                    logger.warning("ESPN meta/injury/form/wiki refresh error: %s", e)
                 await asyncio.sleep(6 * 60 * 60)  # 6h cadence
 
         _deferred_task(_espn_meta_loop, DEFER_BASE * 3)
