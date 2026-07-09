@@ -60,7 +60,10 @@ SPORT_KEYS: dict[str, list[str]] = {
         "soccer_conmebol_copa_libertadores",
         "soccer_conmebol_copa_sudamericana",
         "soccer_uefa_champs_league", "soccer_uefa_europa_league",
+        "soccer_uefa_europa_conference_league",
+        "soccer_uefa_champs_league_qualification",
         "soccer_uefa_european_championship",
+        "soccer_uefa_nations_league",
         # Top European leagues
         "soccer_epl", "soccer_spain_la_liga", "soccer_germany_bundesliga",
         "soccer_italy_serie_a", "soccer_france_ligue_one",
@@ -1197,7 +1200,10 @@ LEAGUE_LABELS: dict[str, str] = {
     "soccer_fifa_club_world_cup": "FIFA Club World Cup",
     # UEFA + major European leagues
     "soccer_uefa_champs_league": "UEFA Champions League",
+    "soccer_uefa_champs_league_qualification": "UEFA Champions League Qualifying",
     "soccer_uefa_europa_league": "UEFA Europa League",
+    "soccer_uefa_europa_conference_league": "UEFA Conference League",
+    "soccer_uefa_nations_league": "UEFA Nations League",
     "soccer_uefa_european_championship": "UEFA Euro",
     "soccer_uefa_euro": "UEFA Euro",
     "soccer_epl": "Premier League",
@@ -2830,7 +2836,9 @@ _PROPS_PER_KEY_CAP = {
     "soccer_fifa_world_cup": 14,
     "soccer_fifa_club_world_cup": 10,
     "soccer_uefa_champs_league": 10,
+    "soccer_uefa_champs_league_qualification": 6,
     "soccer_uefa_europa_league": 6,
+    "soccer_uefa_europa_conference_league": 6,
     # MLB has ~15 games/day. The 3-event default was leaving 80% of
     # the slate without batter/pitcher props — user feedback "don't
     # see no batter or pitcher props". Bumping to 10 covers most days'
@@ -2853,7 +2861,9 @@ _PROPS_LOOKAHEAD_HOURS = {
     "soccer_fifa_world_cup": 168,         # 7 days
     "soccer_fifa_club_world_cup": 168,    # 7 days
     "soccer_uefa_champs_league": 168,
+    "soccer_uefa_champs_league_qualification": 168,
     "soccer_uefa_europa_league": 168,
+    "soccer_uefa_europa_conference_league": 168,
 }
 _DEFAULT_LOOKAHEAD_HOURS = 72
 

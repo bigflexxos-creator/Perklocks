@@ -119,7 +119,9 @@ LEAGUE_MAP: dict[str, tuple[str, str, str]] = {
     "soccer_saudi_prof":             ("saudi-arabia:172", "saudi-pro-league:p7CtIfx0", "2025-2026"),
     "soccer_argentina_primera_division": ("argentina:22", "liga-profesional:vTYz5w5l", "2026"),
     "soccer_uefa_champs_league":     ("europe:6",        "champions-league:xGrwqq16",  "2025-2026"),
+    "soccer_uefa_champs_league_qualification": ("europe:6", "champions-league:xGrwqq16", "2025-2026"),
     "soccer_uefa_europa_league":     ("europe:6",        "europa-league:ClDjv3V5",     "2025-2026"),
+    "soccer_uefa_europa_conference_league": ("europe:6", "conference-league:s2xzUyrL", "2025-2026"),
     "soccer_fifa_world_cup":         ("world:7",         "world-cup:eBHRoOnX",         "2026"),
     "soccer_fifa_club_world_cup":    ("world:7",         "club-world-cup:CGwEMb1u",    "2025"),
 }

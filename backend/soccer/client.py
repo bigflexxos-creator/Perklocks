@@ -155,7 +155,7 @@ class FootballDataClient:
         hit = await cache.get(cache_key)
         if hit is not None:
             return hit
-        active_codes = ["WC", "CL", "EC", "PL", "BL1", "PD", "SA", "FL1",
+        active_codes = ["WC", "CL", "EL", "ECL", "EC", "PL", "BL1", "PD", "SA", "FL1",
                         "BSA", "ELC", "DED", "PPL", "CLI"]
         combined: list[dict] = []
         errors: list[str] = []
@@ -195,7 +195,7 @@ class FootballDataClient:
         hit = await cache.get(cache_key)
         if hit is not None:
             return hit
-        active_codes = ["WC", "CL", "EC", "PL", "BL1", "PD", "SA", "FL1",
+        active_codes = ["WC", "CL", "EL", "ECL", "EC", "PL", "BL1", "PD", "SA", "FL1",
                         "BSA", "ELC", "DED", "PPL", "CLI"]
         combined: list[dict] = []
         for code in active_codes:
