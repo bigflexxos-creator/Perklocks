@@ -44,8 +44,8 @@ logger = logging.getLogger("lockscore.services.espn_signal_engine")
 
 # ── tunable weights ─────────────────────────────────────────────────
 # Kept conservative on purpose — ESPN is one of many signals. Total
-# possible swing capped at ±6.0 pts, chosen so a single injury can't
-# flip a 60% pick to a 66% pick on its own.
+# possible swing capped at ±8.0 pts (up from ±6 to accommodate the new
+# season-record signal). No single signal can exceed its own sub-cap.
 
 _INJURY_WEIGHTS = {
     "out":          3.0,   # each side's OUT starter
@@ -56,9 +56,10 @@ _OPPONENT_MULT = 0.7   # opponent injuries help our pick a bit less than
                        # our own injuries hurt us (books already price
                        # the pick-side more efficiently)
 
-_FORM_MAX_SWING = 3.0  # ±3 pts from form delta
+_FORM_MAX_SWING = 3.0    # ±3 pts from ESPN last-5 form delta
+_RECORD_MAX_SWING = 4.0  # ±4 pts from Wikipedia season-record delta
 
-_MAX_TOTAL_SWING = 6.0
+_MAX_TOTAL_SWING = 8.0
 
 # Sports that carry the ESPN injury feed (from espn_injury_notes)
 _INJURY_SPORTS = {"NFL", "NBA", "CFB", "MLB", "NHL", "WNBA"}
@@ -257,6 +258,72 @@ def _form_signal(pick: dict, side: str) -> tuple[float, list[dict]]:
     return delta, items
 
 
+async def _season_record_signal(db, pick: dict, side: str) -> tuple[float, list[dict]]:
+    """Season-long W/D/L record delta pulled from Wikipedia.
+
+    This is the deeper-history signal that ESPN's 5-game form can't
+    provide for niche leagues. A 55% win rate over 36 games is a *much*
+    stronger indicator than the last 5 which might have been a rough
+    stretch.
+
+    We compute the pick-side vs opponent-side win-rate delta, scale it
+    by sample size, and cap at ±_RECORD_MAX_SWING (±4pp).
+    """
+    sport = pick.get("sport")
+    if sport != "Soccer":
+        return (0.0, [])   # Wikipedia scraper only runs on soccer today
+
+    event = pick.get("event") or ""
+    home = away = ""
+    if " @ " in event:
+        away, home = event.split(" @ ", 1)
+    elif " vs " in event:
+        home, away = event.split(" vs ", 1)
+    if not (home and away):
+        return (0.0, [])
+
+    try:
+        from services.wikipedia_team_record import get_team_record
+    except Exception:
+        return (0.0, [])
+
+    home_rec = await get_team_record(db, sport, home.strip())
+    away_rec = await get_team_record(db, sport, away.strip())
+    if not home_rec or not away_rec:
+        return (0.0, [])
+
+    home_wr = home_rec["wins"] / max(1, home_rec["played"])
+    away_wr = away_rec["wins"] / max(1, away_rec["played"])
+
+    # Sample-size confidence — a 5-game season is worth less than a
+    # full 36. Scale linearly up to 30 games each, saturating there.
+    n_conf = min(1.0, min(home_rec["played"], away_rec["played"]) / 30.0)
+
+    pick_wr = home_wr if side == "home" else away_wr
+    opp_wr  = away_wr if side == "home" else home_wr
+    diff = pick_wr - opp_wr   # positive = pick side has better record
+    delta = _clamp(diff * (2 * _RECORD_MAX_SWING) * n_conf,
+                   -_RECORD_MAX_SWING, _RECORD_MAX_SWING)
+
+    items = [{
+        "kind":     "season_record",
+        "pick_wdl": f"{home_rec['wins']}-{home_rec['draws']}-{home_rec['losses']}"
+                    if side == "home" else
+                    f"{away_rec['wins']}-{away_rec['draws']}-{away_rec['losses']}",
+        "opp_wdl":  f"{away_rec['wins']}-{away_rec['draws']}-{away_rec['losses']}"
+                    if side == "home" else
+                    f"{home_rec['wins']}-{home_rec['draws']}-{home_rec['losses']}",
+        "pick_wr":  round(pick_wr * 100, 1),
+        "opp_wr":   round(opp_wr * 100, 1),
+        "pick_source": (home_rec.get("source_page") if side == "home"
+                        else away_rec.get("source_page")),
+        "opp_source":  (away_rec.get("source_page") if side == "home"
+                        else home_rec.get("source_page")),
+        "delta":    round(delta, 2),
+    }]
+    return delta, items
+
+
 def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
@@ -326,6 +393,10 @@ async def apply_signals(db, pick: dict) -> dict:
     form_d, form_items = _form_signal(pick, side)
     delta += form_d
     signals.extend(form_items)
+
+    rec_d, rec_items = await _season_record_signal(db, pick, side)
+    delta += rec_d
+    signals.extend(rec_items)
 
     delta = _clamp(delta, -_MAX_TOTAL_SWING, _MAX_TOTAL_SWING)
 
@@ -413,6 +484,16 @@ async def apply_signals(db, pick: dict) -> dict:
         evidence.append(
             f"{arrow} Recent form — pick side {pick_form} vs opponent {opp_form} "
             f"({'+' if f['delta'] > 0 else ''}{f['delta']}pp)."
+        )
+
+    # Season-record bullets (Wikipedia-sourced deep history)
+    for r in rec_items:
+        arrow = "🏆" if r.get("delta", 0) > 0 else "🧊"
+        evidence.append(
+            f"{arrow} Full-season record — pick side {r['pick_wdl']} "
+            f"({r['pick_wr']}%) vs opponent {r['opp_wdl']} ({r['opp_wr']}%) "
+            f"({'+' if r['delta'] > 0 else ''}{r['delta']}pp, "
+            f"via {r.get('pick_source', 'Wikipedia')[:40]})."
         )
 
     # Prune any duplicate evidence lines that already existed

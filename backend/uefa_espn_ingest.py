@@ -424,11 +424,15 @@ def _build_total_pick(fx: dict) -> Optional[dict]:
 
 
 def _build_double_chance_pick(fx: dict) -> Optional[dict]:
-    """Emit a Win-or-Draw pick (double chance / 1X or X2) — the market
-    the Rollover tab treats as canonical soccer-lock territory.
-
-    Only surface when the combined side exceeds a strict floor (75%)
-    so the Rollover pipeline doesn't get flooded with coin-flips.
+    """Emit a Win-or-Draw pick (double chance / 1X or X2). Threshold
+    is intentionally loose (60%) because the ESPN Signal Engine
+    (services.espn_signal_engine.apply_signals) runs *after* picks are
+    built and adjusts probability up/down by up to ±8pp based on:
+      • Wikipedia season W/D/L record delta
+      • ESPN recent-form strings
+      • Active injuries
+    So a modest 60% base can climb into legit Rollover territory when
+    the pick side has a strong season record vs opponent.
     """
     ml = (fx.get("odds") or {}).get("moneyline")
     if not ml:
@@ -442,7 +446,7 @@ def _build_double_chance_pick(fx: dict) -> Optional[dict]:
     else:
         side_team = fx["away"]["name"]
         conf = away_or_draw
-    if conf < 75.0:  # rollover tier only
+    if conf < 60.0:  # loosened from 75 — Signal Engine can rescue borderline picks
         return None
 
     # Derive a fair American price for the double-chance combo since
@@ -635,6 +639,30 @@ async def sync_uefa_espn_picks(db, days_ahead: int = 7) -> dict:
             dc_picks.append(d)
 
     all_new = ml_picks + total_picks + dc_picks + synth_picks
+
+    # Fold ESPN Signal Engine adjustments into the freshly-built picks
+    # BEFORE upsert. This is what promotes borderline picks (e.g.
+    # Mornar-or-Draw at 60% base) into the visible slate when the
+    # Wikipedia season-record signal boosts them past the no_bet /
+    # lock thresholds.
+    try:
+        from services.espn_team_meta import enrich_pick as _meta
+        from services.espn_form_cache import attach_form_to_pick as _form
+        from services.espn_signal_engine import apply_signals as _sig
+        for doc in all_new:
+            try:
+                await _meta(db, doc)
+                await _form(db, doc)
+                await _sig(db, doc)
+                # Signal Engine may have raised the win_probability high
+                # enough to clear the 60% no_bet floor — refresh the
+                # gate now that the analysis has run.
+                doc["no_bet"] = doc.get("win_probability", 0) < 60.0
+            except Exception as e:
+                logger.warning("signal enrichment failed for %s: %s",
+                               doc.get("selection"), e)
+    except Exception as e:
+        logger.warning("signal enrichment stack unavailable: %s", e)
 
     # Dedup: skip if a football-data-backed pick already exists for the
     # same event_time + selection (avoid duplicating group-stage CL games
