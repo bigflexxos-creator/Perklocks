@@ -487,7 +487,15 @@ async def pick_rollover(
             hist_mult = 0.95
         else:
             hist_mult = 1.0
-        return base * mkt_mult * (1.0 - chalk_pen) * hist_mult
+        # Signal Engine multiplier (Phase A, 2026-07-12) — persisted
+        # 0-100 Signal Score from services/signal_engine. Bounded to
+        # ±8% so signals nudge the ranking rather than dominate it.
+        ss = p.get("signal_score")
+        try:
+            sig_mult = (1.0 + ((float(ss) - 50.0) / 50.0) * 0.08) if ss is not None else 1.0
+        except (TypeError, ValueError):
+            sig_mult = 1.0
+        return base * mkt_mult * (1.0 - chalk_pen) * hist_mult * sig_mult
 
     ranked = sorted(pool, key=_ev_score, reverse=True)
 
@@ -1510,6 +1518,16 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     picks = await _decorate_with_player_form(picks)
     picks = await _decorate_with_understat_form(picks)
     picks = await _decorate_with_espn_meta(picks)
+    # ── Signal Engine (Phase A, 2026-07-12) ─────────────────────────
+    # Six universal signals (form/matchup/volume/injury/market/value)
+    # combined into a 0-100 Signal Score + signal-driven why bullets.
+    # Runs AFTER espn meta so injury/form/record items are available.
+    # Persists to db.picks so the Rollover ranker reads signal_score.
+    try:
+        from services.signal_engine import decorate_signals_bulk
+        picks = await decorate_signals_bulk(db, picks, persist=True)
+    except Exception as _sig_err:
+        logger.warning("Signal Engine decoration skipped: %s", _sig_err)
     # ── Real-streak override (2026-06-30) ───────────────────────────────
     # The legacy `_decorate_with_player_form` reads `current_streak` from
     # `player_profiles_v2`, which was calculated from PICK win/loss
@@ -1694,6 +1712,19 @@ async def pick_detail(
         await enrich_picks_with_real_streaks([pick], db)
     except Exception as _se:
         logger.debug("Real-streak enrichment failed on /picks/{id}: %s", _se)
+    # ── Signal Engine (Phase A, 2026-07-12) ─────────────────────────
+    # ESPN meta decoration first (injury/form/record items feed the
+    # calculators AND makes the detail win_probability match the home
+    # card, which also runs the espn signal layer), then compute the
+    # 0-100 Signal Score + signal-driven why bullets.
+    try:
+        from server import _decorate_with_espn_meta  # lazy
+        from services.signal_engine import decorate_signals_bulk
+        await _decorate_with_espn_meta([pick])
+        pick = _canonicalize_lock_score(pick)  # espn layer may move lock
+        await decorate_signals_bulk(db, [pick], persist=True)
+    except Exception as _sig_err:
+        logger.debug("Signal Engine failed on /picks/{id}: %s", _sig_err)
     return pick
 
 

@@ -20,6 +20,7 @@ import { PitcherH2HPanel } from "@/src/components/PitcherH2HPanel";
 import { XGFormPanel } from "@/src/components/XGFormPanel";
 import { ProbabilityBreakdownPanel } from "@/src/components/ProbabilityBreakdownPanel";
 import { MarkdownText } from "@/src/components/MarkdownText";
+import { SignalEnginePanel } from "@/src/components/SignalEnginePanel";
 import { getDisplayLockRounded } from "@/src/lib/lockScore";
 import { buildSlipText, shareSlip, saveSlipImage, copySlipText } from "@/src/lib/shareBetSlip";
 
@@ -275,6 +276,11 @@ export default function PickDetail() {
               )}
             </View>
 
+            {/* Signal Engine — six universal signals (Form/Matchup/Volume/
+                Injury/Market/Value) scored 0-100 with signed component
+                bars + the real-number evidence behind each. */}
+            <SignalEnginePanel pick={pick} />
+
             <Text style={styles.sectionLabel}>FACTOR BREAKDOWN</Text>
             <View style={styles.factorsCard}>
               {/* Defensive: alt-line picks (e.g. tennis Tommy Paul +0.5 Games)
@@ -411,7 +417,12 @@ export default function PickDetail() {
 
             <Text style={styles.sectionLabel}>WHY THIS PICK</Text>
             <View style={styles.insightsCard}>
-              {(pick.top_reasons && pick.top_reasons.length > 0
+              {/* Signal Engine "why" bullets take priority — they cite the
+                  actual strongest signals with real numbers. Falls back to
+                  legacy top_reasons / key_insights for pre-engine picks. */}
+              {(pick.signal_engine?.why && pick.signal_engine.why.length > 0
+                ? pick.signal_engine.why
+                : pick.top_reasons && pick.top_reasons.length > 0
                 ? pick.top_reasons
                 : (pick.key_insights || []).slice(0, 3)
               ).map((reason, idx) => (

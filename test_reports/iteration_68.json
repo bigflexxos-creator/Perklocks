@@ -1,0 +1,55 @@
+{
+  "summary": "Signal Engine Phase A verified end-to-end. Backend: 14/14 pytest cases pass — /auth/login OK, /picks/today?lite=true returns 227 picks all carrying numeric signal_score (min 43, max 64, avg 52.0) with signal_engine block stripped as expected; /picks/{id} returns full block with version=1, valid grade in {Elite,Strong,Moderate,Weak,Fade}, 6 components (form/matchup/volume/injury/market/value each with points/max/details/found), non-empty why[] whose first bullet cites model win probability + 'Signal Score N/100', persistence stable (computed_at unchanged on second GET); /picks/rollover 200 with signal_score on legs and composite_rank preserved; no 500s on /picks/all, /picks/under-of-the-day, /stats/summary. Edge-scan across all 227 picks (Soccer 119, MLB 108 — no Tennis in today's slate) found zero anomalies (no empty why[], no bad component counts, no points>max). Frontend (mobile 390x844): login works, feed shows 15 '📡 SIGNAL N/100' chips on visible cards, Juan Soto detail renders signal-engine-panel with score 54/100 + MODERATE pill + signed component bars (+4/+0.1/+0), tapping signal-comp-form correctly expands from 1 detail line to 3, numbered WHY THIS PICK section shows signal_engine.why[0] verbatim ('Juan Soto (NYM) Over 0.5 Hits carries a 65.4% model win probability — Signal Score 54/100.'), Rollover and Under tabs render without crash. Deprecated React Native style warnings detected: 'shadow*' and 'props.pointerEvents' — Expo deprecation, main agent should migrate.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "pick/[id].tsx",
+        "issue": "Two 'WHY THIS PICK' section labels render on the same detail screen — the top one (line 262) hosts Claude's markdown explanation, the bottom one (line 418) hosts the signal_engine.why[] numbered bullets. Users see the same header twice. Consider renaming the numbered section to e.g. 'SIGNAL-DRIVEN INSIGHTS' or 'WHY THIS PICK — SIGNALS'.",
+        "testID": "n/a",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Pick Detail",
+        "issues": [
+          "Signal Engine panel intentionally hides components where found=false — for Juan Soto only Form/Value/Market show (3 of 6). This matches the code (SignalEnginePanel.tsx line 32) but the panel footnote reads 'Six independent signals scored against a neutral 50', which is slightly misleading when only 3 rows appear."
+        ]
+      }
+    ],
+    "react_native_issues": [
+      {"component": "Global styles", "issue": "React Native deprecation warning: 'shadow*' style props are deprecated — use 'boxShadow'. Multiple occurrences at app load. Reference: frontend components using shadowColor/shadowOffset/shadowOpacity/shadowRadius."},
+      {"component": "Global styles / touchable", "issue": "React Native deprecation warning: 'props.pointerEvents is deprecated. Use style.pointerEvents' — surfaced at app load."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_signal_engine_phase_a.py",
+    "/app/test_reports/pytest/iter68_signal_engine_phase_a.xml"
+  ],
+  "action_items": [
+    "Rename or restyle one of the two 'WHY THIS PICK' section labels on pick/[id].tsx (line 262 vs 418) so users don't see duplicate headers on the same screen.",
+    "Update footnote in SignalEnginePanel.tsx (line 92-94) to reflect that only components with data are shown, e.g. 'Signals with available data are shown; scored against a neutral 50.'",
+    "Migrate deprecated 'shadow*' style props to 'boxShadow' and 'props.pointerEvents' to 'style.pointerEvents' across the codebase (React Native Expo deprecations)."
+  ],
+  "critical_code_review_comments": [
+    "engine.py freshness window (30 min) works — verified computed_at stable across two back-to-back detail GETs.",
+    "decorate_signals_bulk best-effort persist via UpdateOne + bulk_write is sound; confirmed by rollover legs carrying signal_score without an explicit re-decorate call.",
+    "rationale.build_why guarantees first bullet always cites 'Signal Score N/100' + win probability — verified live for Juan Soto pick.",
+    "Frontend SignalEnginePanel filters to components with found=true then hides the panel entirely when zero remain — reasonable, but see footnote fix above."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_signal_engine_phase_a.py (new)",
+    "/app/test_reports/pytest/iter68_signal_engine_phase_a.xml (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None — used existing seeded demo user and live picks/today output.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Signal Engine Phase A is stable. Backend regression suite is /app/backend/tests/test_signal_engine_phase_a.py — reuse it. Tennis picks were absent from the slate at test time (only Soccer + MLB were in /picks/today) so the Tennis edge-case remains unverified against a live pick; consider re-running when Tennis picks are present. /picks/today was cache-warm during this run (~2s response); on a cold cache expect 60–180s.",
+  "rca_of_issue": "No unresolved issue — all Phase A acceptance criteria met."
+}
