@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -129,106 +130,83 @@ async def get_team_injuries(db, sport: str, team_name: str) -> list[dict]:
 
 
 async def injury_chip_for_pick(db, pick: dict) -> dict:
-    """Attach a small `injury_chip` field ONLY when there are active
-    injuries relevant to today's game. Long-term IL entries and status
-    entries older than 30 days are filtered out so the frontend chip
-    doesn't flash on every card in the slate.
+    """Player-specific injury chip (2026-07-12 rewrite).
+
+    Old behaviour attached a team-level chip that lit up on every pick
+    when 3rd-string players were on the IR — noisy UX. Now the chip
+    fires ONLY when the *subject player* of a player-prop bet is on
+    the injury report. Team-level chips are gone; the Signal Engine
+    still adjusts probability based on team injuries so nothing is
+    lost from the *analysis* layer.
+
+    Detection: extract the player name from the pick's `market` or
+    `selection` field (which for props looks like
+    'Aaron Judge - Anytime Home Run' or 'Aaron Judge to Score').
+    Match against injuries on both teams.
     """
     sport = pick.get("sport")
     if not sport or sport not in {s for _, s in _INJURY_SLUGS}:
         return pick
     event = pick.get("event") or ""
+    if not event:
+        return pick
+
+    # Extract candidate player name from the pick
+    candidates: list[str] = []
+    for field_val in (pick.get("market"), pick.get("selection")):
+        if not field_val:
+            continue
+        raw = str(field_val)
+        # "Aaron Judge - Anytime Home Run" → "Aaron Judge"
+        m = re.match(r"^([A-Za-zÀ-ÿ.'\- ]{4,60}?)\s*[-–—]", raw)
+        if m:
+            candidates.append(m.group(1).strip())
+        # "Aaron Judge to Score" → "Aaron Judge"
+        m = re.match(r"^([A-Za-zÀ-ÿ.'\- ]{4,60}?)\s+to\s+", raw)
+        if m:
+            candidates.append(m.group(1).strip())
+    if not candidates:
+        return pick
+
+    # Walk both teams' injury lists
     home = away = None
     if " @ " in event:
         away, home = event.split(" @ ", 1)
     elif " vs " in event:
         home, away = event.split(" vs ", 1)
-    if not (home or away):
+
+    all_injuries: list[dict] = []
+    if home:
+        all_injuries.extend(await get_team_injuries(db, sport, home.strip()))
+    if away:
+        all_injuries.extend(await get_team_injuries(db, sport, away.strip()))
+    if not all_injuries:
         return pick
 
-    def _is_recent(iso_date: str, max_age_days: int = 30) -> bool:
-        if not iso_date:
-            return True
-        try:
-            s = iso_date.replace("Z", "+00:00")
-            d = datetime.fromisoformat(s)
-            return (datetime.now(timezone.utc) - d).days <= max_age_days
-        except Exception:
-            return True
-
-    def _active(injuries: list[dict]) -> list[dict]:
-        out: list[dict] = []
-        for inj in injuries or []:
-            status = (inj.get("status") or "").strip().lower()
-            # Long-term IL is not moving today's line.
-            if "60-day" in status or "60 day" in status:
-                continue
-            if not any(k in status for k in
-                       ("out", "doubt", "question", "day-to-day",
-                        "day to day", "-day-il", " day il", "10-day",
-                        "15-day", "7-day", "il")):
-                continue
-            desc = (inj.get("description") or "").lower()
-            if any(bad in desc for bad in
-                   ("season-ending", "season ending",
-                    "suspended", "suspension", "retirement", "retired")):
-                continue
-            if not _is_recent(inj.get("date") or "", 30):
-                continue
-            out.append(inj)
-        return out
-
-    def _bucket(injuries: list[dict]) -> dict[str, int]:
-        """Same tier map as espn_signal_engine._injury_tier so the chip
-        counts and the analysis engine always agree."""
-        out = {"out": 0, "doubtful": 0, "questionable": 0}
-        for i in injuries:
-            s = (i.get("status") or "").lower()
-            if not s or "probab" in s:
-                continue
-            if "il" in s or "injured list" in s or "out" in s:
-                out["out"] += 1
-            elif "doubt" in s:
-                out["doubtful"] += 1
-            elif "question" in s or "day" in s:
-                out["questionable"] += 1
-        return out
-
-    home_all = await get_team_injuries(db, sport, home) if home else []
-    away_all = await get_team_injuries(db, sport, away) if away else []
-    home_inj = _active(home_all)
-    away_inj = _active(away_all)
-
-    h_bucket = _bucket(home_inj)
-    a_bucket = _bucket(away_inj)
-    home_total = h_bucket["out"] + h_bucket["doubtful"] + h_bucket["questionable"]
-    away_total = a_bucket["out"] + a_bucket["doubtful"] + a_bucket["questionable"]
-
-    # If both sides have zero active injuries, don't attach a chip.
-    # Keeps the card clean and prevents the "chip on every game" UX.
-    if home_total == 0 and away_total == 0:
-        return pick
-
-    def score(b: dict[str, int]) -> int:
-        return b["out"] * 3 + b["doubtful"] * 2 + b["questionable"]
-
-    worst = None
-    if score(h_bucket) > score(a_bucket):
-        worst = "home"
-    elif score(a_bucket) > score(h_bucket):
-        worst = "away"
-
-    def _is_out_tier(inj: dict) -> bool:
-        s = (inj.get("status") or "").lower()
-        if not s or "probab" in s:
+    def _cand_matches(inj_athlete: str, cand: str) -> bool:
+        a = normalize_name(inj_athlete)
+        c = normalize_name(cand)
+        if not a or not c:
             return False
-        return "il" in s or "injured list" in s or "out" in s
+        return a == c or (len(c) >= 6 and c in a) or (len(a) >= 6 and a in c)
 
-    pick["injury_chip"] = {
-        "home": h_bucket,
-        "away": a_bucket,
-        "worst_side": worst,
-        "home_key_injuries": [i for i in home_inj if _is_out_tier(i)][:3],
-        "away_key_injuries": [i for i in away_inj if _is_out_tier(i)][:3],
-    }
+    for inj in all_injuries:
+        athlete = inj.get("athlete") or ""
+        status = (inj.get("status") or "").strip()
+        low = status.lower()
+        # Only fire when the injury is still active (not probable/60-day)
+        if not any(k in low for k in ("out", "doubt", "question", "day",
+                                       "il", "injured list")):
+            continue
+        if "probab" in low or "60-day" in low or "60 day" in low:
+            continue
+        for cand in candidates:
+            if _cand_matches(athlete, cand):
+                pick["subject_player_hurt"] = {
+                    "athlete":     athlete,
+                    "status":      status,
+                    "description": (inj.get("description") or "")[:180],
+                }
+                return pick
     return pick
+

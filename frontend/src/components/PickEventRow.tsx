@@ -22,7 +22,7 @@ type Props = {
   showInjuryChip?: boolean;
 };
 
-export function PickEventRow({ pick, size = "card", showInjuryChip = true }: Props) {
+export function PickEventRow({ pick, size = "card", showInjuryChip = false }: Props) {
   const logoSize = size === "detail" ? 44 : 26;
   const away = pick.away_meta;
   const home = pick.home_meta;
@@ -43,15 +43,12 @@ export function PickEventRow({ pick, size = "card", showInjuryChip = true }: Pro
     homeName = h.trim();
   }
 
-  const injury = pick.injury_chip;
-  const chipCount = (side: "home" | "away") => {
-    if (!injury) return 0;
-    const b = injury[side];
-    return (b?.out || 0) + (b?.doubtful || 0) + (b?.questionable || 0);
-  };
-  const homeInjuryCount = chipCount("home");
-  const awayInjuryCount = chipCount("away");
-  const anyInjury = showInjuryChip && (homeInjuryCount + awayInjuryCount) > 0;
+  // 2026-07-12 — team-level injury chip removed from the card per user
+  // feedback. Chips are noisy when 3rd-string players are on the IR
+  // but the starters are healthy. Only the *player-specific* chip
+  // (i.e. subject player of a prop bet is on the injury report)
+  // renders below via `pick.subject_player_hurt`.
+  const subjectHurt = (pick as any).subject_player_hurt;
 
   // Fallback path — no logos at all → render legacy single-line event
   if (!hasLogos) {
@@ -60,12 +57,12 @@ export function PickEventRow({ pick, size = "card", showInjuryChip = true }: Pro
         <Text style={styles.eventFallback} numberOfLines={1}>
           {pick.event}
         </Text>
-        {anyInjury && (
-          <InjuryPill
-            homeCount={homeInjuryCount}
-            awayCount={awayInjuryCount}
-            worstSide={injury?.worst_side || null}
-          />
+        {subjectHurt && (
+          <View style={styles.injuryPill}>
+            <Text style={styles.injuryPillText}>
+              🚑 {subjectHurt.athlete} {subjectHurt.status}
+            </Text>
+          </View>
         )}
       </View>
     );
@@ -81,7 +78,7 @@ export function PickEventRow({ pick, size = "card", showInjuryChip = true }: Pro
           fullName={awayName}
           size={logoSize}
           side="away"
-          injuryBadge={awayInjuryCount > 0 && showInjuryChip ? awayInjuryCount : 0}
+          injuryBadge={0}
         />
         <Text style={[styles.atSign, size === "detail" && { fontSize: 16 }]}>@</Text>
         <TeamCell
@@ -91,15 +88,15 @@ export function PickEventRow({ pick, size = "card", showInjuryChip = true }: Pro
           fullName={homeName}
           size={logoSize}
           side="home"
-          injuryBadge={homeInjuryCount > 0 && showInjuryChip ? homeInjuryCount : 0}
+          injuryBadge={0}
         />
       </View>
-      {anyInjury && (
-        <InjuryPill
-          homeCount={homeInjuryCount}
-          awayCount={awayInjuryCount}
-          worstSide={injury?.worst_side || null}
-        />
+      {subjectHurt && (
+        <View style={styles.injuryPill}>
+          <Text style={styles.injuryPillText}>
+            🚑 {subjectHurt.athlete} {subjectHurt.status}
+          </Text>
+        </View>
       )}
     </View>
   );
@@ -176,28 +173,8 @@ function TeamCell({
   );
 }
 
-function InjuryPill({
-  homeCount,
-  awayCount,
-  worstSide,
-}: {
-  homeCount: number;
-  awayCount: number;
-  worstSide: "home" | "away" | null;
-}) {
-  const total = homeCount + awayCount;
-  const label =
-    worstSide === "home"
-      ? `🚑 Home ${homeCount}`
-      : worstSide === "away"
-        ? `🚑 Away ${awayCount}`
-        : `🚑 ${total}`;
-  return (
-    <View style={styles.injuryPill}>
-      <Text style={styles.injuryPillText}>{label} inj</Text>
-    </View>
-  );
-}
+// InjuryPill removed 2026-07-12 — team-level chips are noisy; only
+// subject-player-hurt chip renders now (inline above).
 
 const styles = StyleSheet.create({
   wrap: {
