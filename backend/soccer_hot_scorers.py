@@ -213,6 +213,11 @@ async def sync_hot_scorers(db, days_ahead: int = 4) -> dict:
                 "edge_percent":    0.0,
                 "lock_score":      lock,
                 "lock_score_v2":   lock,
+                # Set peak equal to lock so the 95+ sticky-pin filter in
+                # the main refresh recognises high-lock hot-scorer picks
+                # (safety net — the primary protection is the source-based
+                # exclusion in server.py `_OUT_OF_BAND_SOURCES`).
+                "lock_score_peak": lock,
                 "grade":           grade_from_conf(lock),
                 "pick_date":       now.strftime("%Y-%m-%d"),
                 "is_under_lock":   False,
@@ -285,7 +290,13 @@ async def sync_hot_scorers(db, days_ahead: int = 4) -> dict:
 
 
 async def hot_scorers_loop(db) -> None:
-    """4h refresh cadence — top-scorer tables update slowly."""
+    """1h refresh cadence — top-scorer tables update slowly but we run
+    every hour so the picks are re-seeded quickly after any external
+    delete / DB restart / etc. (2026-07-12 user report: "Sweden and
+    Norway goalscorers appeared then they disappeared, please
+    permanently fix"). Combined with the source-based exclusion in
+    server.py `_OUT_OF_BAND_SOURCES`, this guarantees the picks stay
+    on the board."""
     await asyncio.sleep(75)
     while True:
         try:
@@ -294,4 +305,4 @@ async def hot_scorers_loop(db) -> None:
             break
         except Exception as e:
             logger.warning("hot_scorers_loop error: %s", e)
-        await asyncio.sleep(4 * 60 * 60)
+        await asyncio.sleep(60 * 60)
