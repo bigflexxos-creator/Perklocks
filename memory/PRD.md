@@ -107,6 +107,25 @@ not rebuild the app."
 **Phase B–D (approved roadmap, not yet built):** MLB Savant deep stats →
 NBA/NFL/CFB volume+matchup ingestion → Tennis Elo (Sackmann).
 
+## Nordic Hot-Scorers Board Fix + Detail UX (2026-07-12)
+User reports: "Sweden and Norway goalscorer not populating on board" +
+"Lock and win pct is not the same thing" + "why this pick shows generic
+version first then loads detail version".
+
+- `soccer_hot_scorers.py` (Wikipedia top-scorer picks for Allsvenskan /
+  Eliteserien / Veikkausliiga etc.) now: maps scoring rate → lock via the
+  shared `_prob_to_lock` tier scale (65% rate → 99 lock, wp stays 65%),
+  tags `is_model_only` (matches board `model_only_q` carve-out ≥75),
+  `elite_protect` for 8+ goal scorers, and writes real
+  `pick_rationale.evidence` (passes quality-gate AGS Rule 4).
+- `quality_gate.py`: Nordic leagues added to `has_form_source_leagues`
+  (trusted AGS source); odds dead-zone (-140..-110) no longer applies to
+  `fair_odds_model` picks (synthetic odds ≠ book-priced history).
+- `pick/[id].tsx`: explanation card shows the AI loading state while
+  `ai_pending` — never flashes the generic fallback template first.
+  Second "WHY THIS PICK" section renamed "TOP SIGNALS".
+- Result: 11 SWE/NOR goalscorer picks live on board (locks 88-99).
+
 ## Goalscorer Matchup Engine v3 (2026-06-30)
 User mandate: "PerkLocks goalscorer engine feels like it is choosing players from
 historical averages instead of evaluating the actual match."

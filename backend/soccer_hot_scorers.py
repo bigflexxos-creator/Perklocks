@@ -180,6 +180,24 @@ async def sync_hot_scorers(db, days_ahead: int = 4) -> dict:
             fair_odds = american_from_prob(conf)
             event_id = fx.get("external") or hashlib.md5(event.encode()).hexdigest()[:12]
 
+            # ── Lock score ≠ win probability (user mandate 2026-07-12) ──
+            # A 65% per-game scoring rate is ELITE for an Anytime market —
+            # it should read as a 95+ lock, not "lock 65". Reuse the same
+            # tier-relative mapping the SportDB synth scorer engine uses
+            # (career goals + weighted rate + probability-driven floors)
+            # so Nordic-league hot scorers grade consistently with
+            # CSL/MLS model-only picks.
+            try:
+                from sportdb_player_scorer import _prob_to_lock
+                lock = _prob_to_lock(base_p, {
+                    "goals":          goals,
+                    "rate_per_match": base_p,
+                    "matches":        games_est,
+                })
+            except Exception:
+                lock = conf  # legacy fallback
+            is_elite = goals >= 8
+
             doc = {
                 "id":              _pick_id(fx["sport_key"], event_id, player),
                 "external_id":     f"{fx['sport_key']}-{event_id}-hotscorer-{_norm(player)}",
@@ -193,13 +211,21 @@ async def sync_hot_scorers(db, days_ahead: int = 4) -> dict:
                 "implied_probability": conf,
                 "book_odds":       fair_odds,
                 "edge_percent":    0.0,
-                "lock_score":      conf,
-                "lock_score_v2":   conf,
-                "grade":           grade_from_conf(conf),
+                "lock_score":      lock,
+                "lock_score_v2":   lock,
+                "grade":           grade_from_conf(lock),
                 "pick_date":       now.strftime("%Y-%m-%d"),
                 "is_under_lock":   False,
                 "no_bet":          conf < 40.0,
-                "elite_player":    goals >= 8,
+                "elite_player":    is_elite,
+                # League-leading scorers bypass the goalscorer-matchup
+                # drop guard (same pattern as curated CSL seeds) — the
+                # Wikipedia top-scorer table IS the form evidence.
+                "elite_protect":   is_elite,
+                # Model-only: no real bookmaker line exists for these
+                # players. Matches the board's `model_only_q` carve-out
+                # (lock ≥ 75) and the evidence-governor skip list.
+                "is_model_only":   True,
                 "deep_dive":       False,
                 "source":          _SOURCE_TAG,
                 "model_version":   "soccer.hot_scorers.v1",
@@ -208,6 +234,23 @@ async def sync_hot_scorers(db, days_ahead: int = 4) -> dict:
                 "is_extra":        True,
                 "fair_odds_model": True,
                 "sport_key":       fx["sport_key"],
+                # Real scorer-form evidence — consumed by the quality
+                # gate's AGS Rule 4 ("no form evidence" block) and the
+                # card's "Why This Pick?" panel.
+                "pick_rationale": {
+                    "summary": (
+                        f"{player} is a top scorer in the {lg} — "
+                        f"{goals} goals in ~{games_est} league games "
+                        f"({goals / games_est:.0%} per match)."
+                    ),
+                    "evidence": [
+                        f"📈 {player} has scored {goals} goals in ~{games_est} "
+                        f"{lg} games this season ({goals / games_est:.0%} per game).",
+                        f"📊 Wikipedia league top-scorer table ranks {player} "
+                        f"among the {lg}'s leading scorers.",
+                    ] + ([f"🏠 Home fixture — home scorers get a +3pp scoring bump."]
+                         if side == "home" else []),
+                },
                 "factors": {
                     "Coverage Source": (
                         f"Wikipedia top-scorer table for {lg}. Book lines "

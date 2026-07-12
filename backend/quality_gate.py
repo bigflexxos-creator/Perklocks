@@ -438,6 +438,12 @@ def _block_reason(pick: dict) -> str | None:
                 # Additional Understat + ESPN-covered leagues.
                 "mls", "j1 league", "eredivisie", "primeira liga",
                 "championship", "efl championship",
+                # Wikipedia top-scorer pipeline (services/wiki_top_scorers
+                # + soccer_hot_scorers) — league-official scorer tables
+                # are our form source for the Nordic leagues.
+                # (2026-07-12 user report: "Sweden and Norway goalscorer
+                # not populating on board".)
+                "allsvenskan", "eliteserien", "veikkausliiga",
             }
             pick_league_lc = (pick.get("league") or "").lower()
             has_form_source = any(
@@ -574,8 +580,13 @@ def _block_reason(pick: dict) -> str | None:
     #     over 139 picks — "barely favourite" trap. Same MLB/Soccer
     #     scope caveat as 2b; Tennis moneylines at these odds actually
     #     hit 62.5% historically, so we exempt Tennis + NBA + NFL.
+    #     Fair-odds MODEL picks are exempt too (2026-07-12): their
+    #     "odds" are synthesized from our own probability, not book-
+    #     priced — the historical dead-zone stat doesn't apply and it
+    #     was silently killing Nordic hot-scorer picks (Kasper Høgh).
     odds = pick.get("book_odds")
-    if isinstance(odds, (int, float)) and sport in ("mlb", "soccer"):
+    if (isinstance(odds, (int, float)) and sport in ("mlb", "soccer")
+            and not pick.get("fair_odds_model")):
         if _ODDS_DEAD_ZONE_LO <= float(odds) < _ODDS_DEAD_ZONE_HI:
             return f"odds_dead_zone_{_ODDS_DEAD_ZONE_LO}_{_ODDS_DEAD_ZONE_HI}_48pct"
 
