@@ -263,7 +263,12 @@ export default function PickDetail() {
               WHY THIS PICK
             </Text>
             <View style={styles.explainCard}>
-              {pick.explanation ? (
+              {/* User mandate 2026-07-12: never flash the generic template
+                  first — while the Claude upgrade is in flight, show the
+                  loading state only. The template still renders if the AI
+                  call ultimately fails (aiLoading goes false, explanation
+                  keeps the fallback). */}
+              {pick.explanation && !aiLoading ? (
                 <MarkdownText style={styles.explainText}>{pick.explanation}</MarkdownText>
               ) : (
                 <View style={styles.aiLoading}>
@@ -415,7 +420,7 @@ export default function PickDetail() {
               </View>
             )}
 
-            <Text style={styles.sectionLabel}>WHY THIS PICK</Text>
+            <Text style={styles.sectionLabel}>TOP SIGNALS</Text>
             <View style={styles.insightsCard}>
               {/* Signal Engine "why" bullets take priority — they cite the
                   actual strongest signals with real numbers. Falls back to
