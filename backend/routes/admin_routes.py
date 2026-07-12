@@ -945,6 +945,29 @@ async def admin_wiki_record_refresh(
     return await bulk_refresh_soccer(db, limit_teams=limit_teams)
 
 
+@router.post("/admin/wiki-top-scorers-refresh")
+async def admin_wiki_top_scorers_refresh(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Refresh Wikipedia top-scorer cache for every covered league.
+    Feeds the Soccer Hot Scorers module, which emits stats-driven
+    Anytime-Goal-Scorer picks for niche leagues (Allsvenskan,
+    Eliteserien) where sportsbook coverage is patchy."""
+    from services.wiki_top_scorers import refresh_top_scorers
+    return await refresh_top_scorers(db)
+
+
+@router.post("/admin/soccer-hot-scorers-refresh")
+async def admin_soccer_hot_scorers_refresh(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    days: int = 4,
+):
+    """Force a Hot Scorers emission for all upcoming soccer fixtures
+    in covered leagues."""
+    from soccer_hot_scorers import sync_hot_scorers
+    return await sync_hot_scorers(db, days_ahead=days)
+
+
 @router.get("/admin/services-active-check")
 async def admin_services_active_check(
     user: Annotated[UserPublic, Depends(current_admin)],
