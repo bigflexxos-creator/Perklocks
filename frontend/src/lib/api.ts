@@ -25,10 +25,13 @@ function resolveBaseUrl(): string {
   if (envUrl && envUrl.trim().length > 0) {
     // Avoid pinning the bundle to the dev preview URL in production builds.
     if (typeof window !== "undefined" && window.location && window.location.origin) {
+      const origin = window.location.origin;
+      const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
       const previewMismatch =
         envUrl.includes(".preview.emergentagent.com") &&
-        !window.location.origin.includes(".preview.emergentagent.com");
-      if (previewMismatch) return window.location.origin;
+        !origin.includes(".preview.emergentagent.com") &&
+        !isLocalhost; // localhost dev preview intentionally hits the remote preview backend
+      if (previewMismatch) return origin;
     }
     return envUrl;
   }

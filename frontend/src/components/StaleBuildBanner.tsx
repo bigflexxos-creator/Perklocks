@@ -20,7 +20,7 @@
  * This banner is the visible tripwire.
  */
 import React, { useEffect, useState } from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { View, Text, Pressable, StyleSheet, Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 import { COLORS } from "@/src/theme";
@@ -68,6 +68,22 @@ export function StaleBuildBanner() {
 
   useEffect(() => {
     let cancelled = false;
+
+    // Only surface the "stale deploy" banner in the developer's own
+    // workspaces (localhost dev preview + *.preview.emergentagent.com).
+    // On the production deployed host (bet-edge-ai-1.emergent.host and
+    // any *.emergent.host / *.emergent.sh / native builds) end users
+    // have no way to "Update Deployment", so the banner is pure noise
+    // for them. 2026-07-12 user report: "why do it do that if it's deployed".
+    if (Platform.OS !== "web") return; // native builds → hide
+    if (typeof window !== "undefined" && window.location?.hostname) {
+      const host = window.location.hostname;
+      const isDevHost =
+        host === "localhost" ||
+        host === "127.0.0.1" ||
+        host.endsWith(".preview.emergentagent.com");
+      if (!isDevHost) return; // production web → banner never shows
+    }
 
     (async () => {
       try {

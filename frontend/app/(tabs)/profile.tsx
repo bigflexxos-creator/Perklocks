@@ -205,7 +205,7 @@ function BigStat({ label, value, color = COLORS.textPrimary }: { label: string; 
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "rgba(10,10,10,0.92)" },
+  safe: { flex: 1, backgroundColor: "transparent" },
   // CRITICAL (2026-06-29 v21): the Profile screen's content (~700px tall)
   // is much shorter than the viewport (~900px). Without an opaque
   // backgroundColor on the ScrollView itself, the empty area below the
@@ -215,7 +215,7 @@ const styles = StyleSheet.create({
   //   • Give the ScrollView its OWN opaque background
   //   • Give content `flexGrow: 1` so its area extends to fill the
   //     viewport even when there isn't enough content to overflow
-  scrollView: { flex: 1, backgroundColor: "rgba(10,10,10,0.92)" },
+  scrollView: { flex: 1, backgroundColor: "transparent" },
   content: {
     paddingHorizontal: 20, paddingTop: 8, paddingBottom: 30,
     flexGrow: 1,

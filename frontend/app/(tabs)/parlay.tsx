@@ -792,7 +792,7 @@ function MiniStat({ label, value, accent }: { label: string; value: string; acce
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "rgba(10,10,10,0.92)" },
+  safe: { flex: 1, backgroundColor: "transparent" },
   header: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 14, flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end" },
   brand: { fontSize: 22, fontWeight: "900", color: COLORS.textPrimary, letterSpacing: 3 },
   tag: { fontSize: 10, color: COLORS.goldElite, fontWeight: "800", letterSpacing: 1.4, marginTop: 4 },

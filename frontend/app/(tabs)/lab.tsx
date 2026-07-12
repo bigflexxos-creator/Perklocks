@@ -2007,7 +2007,7 @@ function formatFormValue(v: any): string {
 
 // ── styles ─────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#0a0a0a" },
+  root: { flex: 1, backgroundColor: "transparent" },
   header: {
     paddingHorizontal: 14,
     paddingBottom: 8,
