@@ -32,6 +32,11 @@ VOLUME_MAX = 7.0
 INJURY_MAX = 8.0
 MARKET_MAX = 7.0
 VALUE_MAX = 8.0
+# Phase B.1 — MLB deep signal (park factors + market-family fit).
+# Neutral 0-point return for non-MLB picks, so score remains centered
+# at 50 across sports. Small budget (±5) keeps existing calibration
+# intact while adding a real evidence layer for MLB hitters/pitchers.
+MLB_DEEP_MAX = 5.0
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -494,4 +499,121 @@ def value_signal(pick: dict) -> dict:
         "key": "value", "label": "Value",
         "points": round(_clamp(pts, -VALUE_MAX, VALUE_MAX), 1),
         "max": VALUE_MAX, "details": details, "found": found,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 7. MLB DEEP — park factor + market-family fit (Phase B.1)
+# ─────────────────────────────────────────────────────────────────────
+def mlb_deep_signal(pick: dict) -> dict:
+    """MLB-only enrichment layer. Reads `pick['mlb_deep']` (populated by
+    `services.signal_engine.mlb_deep.enrich_mlb_pick`) and awards
+    directional points based on:
+      • Park factor vs the pick's market family (HR park + Over HR pick
+        → +points, pitcher-friendly park + Over K pick → +points).
+      • Whether the park lean AGREES with the pick's Over/Under side.
+
+    Returns a neutral 0-point block for non-MLB picks or when
+    `mlb_deep` isn't attached — identical to the Phase A calculators'
+    fallback behaviour so scoring stays stable when the data isn't
+    available.
+    """
+    pts = 0.0
+    details: list[str] = []
+    found = False
+
+    if (pick.get("sport") or "").upper() != "MLB":
+        return {
+            "key": "mlb_deep", "label": "MLB Context",
+            "points": 0.0, "max": MLB_DEEP_MAX,
+            "details": [], "found": False,
+        }
+    deep = pick.get("mlb_deep") or {}
+    if not deep:
+        return {
+            "key": "mlb_deep", "label": "MLB Context",
+            "points": 0.0, "max": MLB_DEEP_MAX,
+            "details": [], "found": False,
+        }
+
+    hr_pf   = int(deep.get("park_hr_factor") or 100)
+    hits_pf = int(deep.get("park_hits_factor") or 100)
+    run_pf  = int(deep.get("park_run_factor") or 100)
+    park    = deep.get("park_name") or "the park"
+    family  = deep.get("market_family") or ""
+
+    # Direction alignment — over-side benefits from hitter-friendly
+    # parks; under-side benefits from pitcher-friendly parks.
+    _, direction = _extract_line(pick.get("market") or "")
+    is_over = direction == "over"
+    is_under = direction == "under"
+
+    # HR-family: park HR factor
+    if family in ("hr", "total_bases"):
+        dev = hr_pf - 100
+        found = True
+        if is_over:
+            pts += _clamp(dev * 0.10, -3.5, 3.5)
+        elif is_under:
+            pts += _clamp(-dev * 0.10, -3.5, 3.5)
+        else:
+            pts += _clamp(dev * 0.06, -2.0, 2.0)
+        details.append(
+            f"{park} park HR factor {hr_pf} "
+            f"({'boost' if dev > 3 else 'suppress' if dev < -3 else 'neutral'} "
+            f"vs league avg)")
+
+    # Hits / RBI / HRR — hits factor is the primary driver
+    elif family in ("hits", "rbi", "hrr"):
+        dev = hits_pf - 100
+        found = True
+        if is_over:
+            pts += _clamp(dev * 0.10, -3.0, 3.0)
+        elif is_under:
+            pts += _clamp(-dev * 0.10, -3.0, 3.0)
+        details.append(
+            f"{park} park hits factor {hits_pf}")
+
+    # Pitcher K / IP / ER — pitcher-friendly park HELPS Over K, HURTS Over ER
+    elif family in ("pitcher_k", "pitcher_ip"):
+        # Pitcher-friendly park (low run_pf) → more Ks, longer outings
+        dev = 100 - run_pf   # inverted: lower run env is better for pitchers
+        found = True
+        if is_over:
+            pts += _clamp(dev * 0.10, -3.0, 3.0)
+        elif is_under:
+            pts += _clamp(-dev * 0.10, -3.0, 3.0)
+        details.append(
+            f"{park} run environment {run_pf} — "
+            f"{'pitcher-friendly' if run_pf < 97 else 'hitter-friendly' if run_pf > 103 else 'neutral'}")
+    elif family == "pitcher_er":
+        # Higher run environment → more earned runs
+        dev = run_pf - 100
+        found = True
+        if is_over:
+            pts += _clamp(dev * 0.08, -2.5, 2.5)
+        elif is_under:
+            pts += _clamp(-dev * 0.08, -2.5, 2.5)
+        details.append(
+            f"{park} run environment {run_pf} (earned-run context)")
+
+    # Game total / NRFI — pure run environment
+    elif family in ("game_total", "nrfi"):
+        dev = run_pf - 100
+        found = True
+        # NRFI = "no run first inning" = Under-style bet
+        if family == "nrfi":
+            pts += _clamp(-dev * 0.08, -2.0, 2.0)
+        elif is_over:
+            pts += _clamp(dev * 0.08, -2.5, 2.5)
+        elif is_under:
+            pts += _clamp(-dev * 0.08, -2.5, 2.5)
+        details.append(
+            f"{park} run factor {run_pf} — "
+            f"{'high-scoring' if run_pf > 103 else 'low-scoring' if run_pf < 97 else 'neutral'} venue")
+
+    return {
+        "key": "mlb_deep", "label": "MLB Context",
+        "points": round(_clamp(pts, -MLB_DEEP_MAX, MLB_DEEP_MAX), 1),
+        "max": MLB_DEEP_MAX, "details": details, "found": found,
     }

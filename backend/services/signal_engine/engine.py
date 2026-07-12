@@ -24,13 +24,14 @@ from pymongo import UpdateOne
 
 from .calculators import (
     form_signal, injury_signal, market_signal, matchup_signal,
-    value_signal, volume_signal,
+    mlb_deep_signal, value_signal, volume_signal,
 )
+from .mlb_deep import enrich_mlb_pick
 from .rationale import build_why, signal_breakdown_line
 
 logger = logging.getLogger("lockscore.services.signal_engine")
 
-SIGNAL_VERSION = 1
+SIGNAL_VERSION = 2  # bumped for Phase B.1 (adds mlb_deep component)
 _REFRESH_SECS = 1800  # 30 min — market signal tracks live line movement
 
 
@@ -70,6 +71,13 @@ async def compute_signals(db, pick: dict) -> dict:
         pick.setdefault("signal_score", existing.get("score"))
         return pick
 
+    # Phase B.1 enrichment (idempotent, no external calls).
+    # Only mutates MLB picks; every other sport is a fast no-op.
+    try:
+        enrich_mlb_pick(pick)
+    except Exception as e:
+        logger.debug("mlb_deep enrich failed for pick %s: %s", pick.get("id"), e)
+
     components = [
         await form_signal(db, pick),
         await matchup_signal(db, pick),
@@ -77,6 +85,7 @@ async def compute_signals(db, pick: dict) -> dict:
         injury_signal(pick),
         market_signal(pick),
         value_signal(pick),
+        mlb_deep_signal(pick),
     ]
 
     total = sum(c["points"] for c in components)
