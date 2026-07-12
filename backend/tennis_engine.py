@@ -67,7 +67,12 @@ WEIGHTS = {
 
 NO_BET_MIN_EDGE = 5.0       # %
 NO_BET_MIN_CONF = 72.0      # composite confidence 0-100
-MAX_TENNIS_PICKS_PER_DAY = 50
+# 2026-07-12: raised 50 → 150 because the permissive TennisExplorer
+# scraper now surfaces every rotating ATP/WTA 250 + Challenger the
+# tour is playing that week (Umag+Bastad+Gstaad+Iasi WTA+Athens WTA+
+# Kitzbühel WTA+Rome 2 WTA+Newport Beach WTA+etc = 100+ matches). A
+# 50-cap silently trimmed 56 picks (all Challengers) off the slate.
+MAX_TENNIS_PICKS_PER_DAY = 150
 
 # 99-LOCK gating thresholds
 LOCK99 = {
