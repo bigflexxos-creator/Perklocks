@@ -223,6 +223,31 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
               <Text style={styles.simEdgeText}>SIM EDGE · {pick.sim_win_probability.toFixed(0)}%</Text>
             </View>
           )}
+          {/* SIGNAL chip — PerksLocks Signal Engine 0-100 score. Only
+              renders when the score meaningfully deviates from the
+              neutral 50 (±8) so average picks don't get badge noise.
+              Full component breakdown lives in the detail screen. */}
+          {typeof pick.signal_score === "number" &&
+           Math.abs(pick.signal_score - 50) >= 8 && (
+            <View
+              style={[
+                styles.signalBadge,
+                pick.signal_score >= 50 ? styles.signalBadgePos : styles.signalBadgeNeg,
+              ]}
+              testID="signal-score-chip"
+            >
+              <Text style={styles.signalIcon}>📡</Text>
+              <Text
+                style={[
+                  styles.signalText,
+                  { color: pick.signal_score >= 65 ? "#86EFAC"
+                         : pick.signal_score >= 50 ? "#93C5FD" : "#FCA5A5" },
+                ]}
+              >
+                SIGNAL {Math.round(pick.signal_score)}/100
+              </Text>
+            </View>
+          )}
           {/* xG FORM chip — Understat-derived season form for soccer
               goalscorer markets. Renders only HOT or COLD (we hide
               NEUTRAL because every average player would otherwise
@@ -877,6 +902,7 @@ function arePropsEqual(prev: { pick: Pick }, next: { pick: Pick }): boolean {
   if (a.american_odds !== b.american_odds) return false;
   if (a.lock_score_v2 !== b.lock_score_v2) return false;
   if (a.lock_score_peak !== b.lock_score_peak) return false;
+  if (a.signal_score !== b.signal_score) return false;
   // String / enum fields
   if (a.grade !== b.grade) return false;
   if (a.market !== b.market) return false;
@@ -1047,6 +1073,21 @@ const styles = StyleSheet.create({
   },
   simEdgeIcon: { fontSize: 10 },
   simEdgeText: { color: "#C4B5FD", fontSize: 9, fontWeight: "900", letterSpacing: 0.9 },
+  signalBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    alignSelf: "flex-start",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+    borderWidth: 1,
+    marginTop: 6,
+  },
+  signalBadgePos: { backgroundColor: "#052E1622", borderColor: "#22C55E55" },
+  signalBadgeNeg: { backgroundColor: "#450A0A22", borderColor: "#EF444455" },
+  signalIcon: { fontSize: 10 },
+  signalText: { fontSize: 9, fontWeight: "900", letterSpacing: 0.9 },
   // ── Player streak (hot/cold) badge ──
   streakBadge: {
     alignSelf: "flex-start",

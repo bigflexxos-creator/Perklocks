@@ -181,6 +181,29 @@ export type Pick = {
   };
   pre_espn_win_probability?: number;
 
+  // ─── PerksLocks Signal Engine (Phase A, universal signals) ──────────
+  // Computed server-side by `services/signal_engine`. Six independent
+  // signals (Form/Matchup/Volume/Injury/Market/Value) combined into a
+  // 0-100 Signal Score. `signal_score` survives the lite payload for
+  // the card chip; the full block is detail-endpoint only.
+  signal_score?: number;
+  signal_engine?: {
+    version: number;
+    score: number;
+    grade: "Elite" | "Strong" | "Moderate" | "Weak" | "Fade";
+    breakdown: string;          // "Value +6 · Form +4.5 · Market -2"
+    components: Array<{
+      key: "form" | "matchup" | "volume" | "injury" | "market" | "value";
+      label: string;
+      points: number;           // signed contribution
+      max: number;              // absolute cap for this component
+      details: string[];        // real-number evidence lines
+      found: boolean;           // whether any underlying data existed
+    }>;
+    why: string[];              // signal-driven "Why This Pick" bullets
+    computed_at?: string;
+  };
+
   // ─── Player Form (from live learning store) ─────────────────────────
   player_form?: {
     name: string;

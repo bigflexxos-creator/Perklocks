@@ -2538,6 +2538,10 @@ _LITE_STRIPPED_FIELDS = frozenset({
     "calibration_band_warning", # 7 KB  — admin-only narrative
     "marquee_reason",           # 3 KB  — verbose AI string, summary already shown
     "deep_dive_warning",        # detail screen only
+    # ── Signal Engine (2026-07-12) — full component breakdown is
+    # detail-only; the card chip renders from the plain `signal_score`
+    # number which is intentionally NOT stripped.
+    "signal_engine",
     "historical_signal",        # detail screen only
     "bandit_arms_matched",      # bandit debug
 })

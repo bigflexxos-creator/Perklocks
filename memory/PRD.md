@@ -69,6 +69,44 @@ Runs ALONGSIDE `elite_players.py` / `auto_elite.py` (per user spec — never rep
 Each player-prop pick is enriched with `player_form` data and a soft ±1.5 nudge
 based on hot/cold trend + consistency (min 3 logged games to react).
 
+## PerksLocks Signal Engine — Phase A (2026-07-12)
+User mandate: dedicated Signal Engine layer computing independent betting
+signals feeding probability/ranking/Why-This-Pick. "Add signals only, do
+not rebuild the app."
+
+**New package:** `/app/backend/services/signal_engine/`
+- `calculators.py` — 6 universal signals with budgets summing to ±50:
+  Form ±12 (game-log L5/L10 vs line, trend, consistency, ESPN team form,
+  Understat xG, pick hit-rate) · Matchup ±8 (season record delta,
+  goalscorer matchup engine, BvP history) · Volume ±7 (starter prob,
+  minutes, penalty taker, role, sim xG) · Injury ±8 (ESPN report both
+  sides, subject-player status) · Market ±7 (open→current line movement
+  steam, implied-prob zone, CLV component) · Value ±8 (edge vs book,
+  EV per $1, sim agreement).
+- `engine.py` — `score = clamp(50 + Σpoints, 0, 100)`, grades
+  Elite/Strong/Moderate/Weak/Fade, 30-min freshness (market moves),
+  best-effort persist to `db.picks` (`signal_engine` + `signal_score`).
+- `rationale.py` — signal-driven "Why This Pick" bullets (real numbers,
+  never generic); top-2 signals also injected into
+  `pick_rationale.evidence` with 📡 prefix.
+
+**Wired into:**
+- `/api/picks/today` — decorator after `_decorate_with_espn_meta`.
+- `/api/picks/{id}` — espn meta + signal engine on detail (also fixes
+  card/detail win-prob drift).
+- Rollover V4 `_ev_score` — `sig_mult = 1 ± 8%` from signal_score.
+- Lite payload strips `signal_engine` (detail-only), keeps `signal_score`.
+
+**Frontend:**
+- `SignalEnginePanel.tsx` — 0-100 score + signed component bars +
+  tap-to-expand evidence, on pick detail.
+- `LockPickCard` — `📡 SIGNAL N/100` chip when |score−50| ≥ 8.
+- Detail "WHY THIS PICK" prefers `signal_engine.why` over legacy
+  top_reasons/key_insights.
+
+**Phase B–D (approved roadmap, not yet built):** MLB Savant deep stats →
+NBA/NFL/CFB volume+matchup ingestion → Tennis Elo (Sackmann).
+
 ## Goalscorer Matchup Engine v3 (2026-06-30)
 User mandate: "PerkLocks goalscorer engine feels like it is choosing players from
 historical averages instead of evaluating the actual match."
