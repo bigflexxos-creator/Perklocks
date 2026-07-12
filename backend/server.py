@@ -1518,7 +1518,13 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     # Free fallback uses TennisExplorer.com — scrape is cached 30 min.
     try:
         from tennis_extra import fetch_extra_tennis_picks
-        extra = await fetch_extra_tennis_picks(date_str=date_str)
+        # days_ahead=3 gives today + 3 days of visibility so tournaments
+        # starting Monday–Wednesday appear in the feed on Sunday night
+        # (user report 2026-07-12: Umag/Bastad/Gstaad/Athens/Iasi ATP
+        # matches on TU 14.07 weren't being picked up). TennisExplorer
+        # supports future-date URLs natively so this is 3 extra HTTP
+        # calls per refresh (still under the 30-min in-process cache).
+        extra = await fetch_extra_tennis_picks(date_str=date_str, days_ahead=3)
         if extra:
             existing_ids = {p.get("id") for p in picks}
             for ep in extra:

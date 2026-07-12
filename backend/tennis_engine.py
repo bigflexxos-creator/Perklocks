@@ -474,7 +474,23 @@ def compute_components(pick: dict) -> TennisComponents:
     is_chalk_ml = is_ml and (is_heavy_chalk_ml or comp.market_edge >= 2.0)
     is_alt = ("alt" in market_l) or ("alt" in (pick.get("line_type") or "").lower())
 
-    if not (is_chalk_ml or is_alt):
+    # ── Tennis-Extra scrape anchor path (2026-07-12 permanent fix) ──
+    # `tennis_extra` and `tennis_extra_model` picks are TennisExplorer
+    # scrapes for tournaments The Odds API doesn't carry (Umag, Bastad,
+    # Gstaad, Kitzbuhel, Athens, Iasi, Newport, Los Cabos, etc.). They're
+    # book-anchored: the model uses the scrape's implied probability as
+    # the anchor, so there IS no independent model → edge_percent is
+    # definitionally 0.0 and can't clear the 5% NO_BET floor. Without
+    # this carve-out, EVERY Umag/Bastad/Gstaad/etc. pick gets dropped
+    # (user report 2026-07-12: "Why are these tennis games not being
+    # picked up?"). Route them through the anchor path — same treatment
+    # heavy-chalk MLs and alt-lines already get.
+    source_lc = (pick.get("source") or "").lower()
+    is_scrape_anchored = source_lc in {
+        "tennis_extra", "tennis_extra_model",
+    }
+
+    if not (is_chalk_ml or is_alt or is_scrape_anchored):
         # Standard path: full edge + confidence gates.
         if comp.market_edge < NO_BET_MIN_EDGE:
             comp.reason_no_bet = f"edge {comp.market_edge}% < {NO_BET_MIN_EDGE}% min"
@@ -482,8 +498,9 @@ def compute_components(pick: dict) -> TennisComponents:
             comp.reason_no_bet = f"confidence {comp.confidence} < {NO_BET_MIN_CONF} min"
     else:
         # Anchor path: skip the edge gate, allow lower confidence floor
-        # (60 vs 72) — heavy chalk + alts get into the slate as long as
-        # the player profile isn't obviously broken.
+        # (60 vs 72) — heavy chalk, alts, and scrape-anchored picks get
+        # into the slate as long as the player profile isn't obviously
+        # broken.
         anchor_min_conf = 60.0
         if comp.confidence < anchor_min_conf:
             comp.reason_no_bet = (

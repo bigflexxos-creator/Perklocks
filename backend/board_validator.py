@@ -317,7 +317,19 @@ _BOARD_QUALITY_FLOORS: dict[str, dict[str, float]] = {
     "MLB_prop":               {"lock_min": 70, "edge_min":  0.0, "win_prob_min": 0.50},
     "Soccer_ags":             {"lock_min": 75, "edge_min":  0.0, "win_prob_min": 0.30},
     "Tennis":                 {"lock_min": 70, "edge_min": -2.0, "win_prob_min": 0.50},
+    # Tennis Extra (TennisExplorer scrape for Umag/Bastad/Gstaad/Athens/
+    # Iasi/Kitzbuhel/etc.) is book-anchored — edge_percent is definitionally
+    # 0.0 or slightly negative due to vig math between no-vig `win_probability`
+    # and vig-included `book_odds`. Chalk favorites (-300 → -500) come out
+    # at edge = -3% to -5% purely from the vig gap. Use a wide edge floor
+    # (-10%) and lower lock_min so the ATP/WTA 250 slate isn't nuked.
+    # User report 2026-07-12: "Why are these tennis games not being picked
+    # up?" (Umag/Bastad/Gstaad on TU 14.07 all missing).
+    "Tennis_scrape":          {"lock_min": 65, "edge_min": -10.0, "win_prob_min": 0.45},
 }
+
+
+_TENNIS_SCRAPE_SOURCES = {"tennis_extra", "tennis_extra_model"}
 
 
 def _quality_key(pick: dict) -> str:
@@ -332,6 +344,10 @@ def _quality_key(pick: dict) -> str:
     ):
         return "Soccer_ags"
     if sport == "TENNIS":
+        # Book-anchored scrape picks get their own key (see explanation on
+        # `Tennis_scrape` floor definition above).
+        if (pick.get("source") or "").lower() in _TENNIS_SCRAPE_SOURCES:
+            return "Tennis_scrape"
         return "Tennis"
     return "default"
 
@@ -540,6 +556,12 @@ def integrity_check(picks: list[dict]) -> tuple[list[dict], dict]:
 # Threshold: at least 3 of 6 must be present.
 
 MIN_EVIDENCE_COUNT = 3
+# Book-anchored scrape picks (TennisExplorer for Umag/Bastad/Gstaad/
+# Athens/Iasi/Kitzbuhel etc.) don't have bucket_n / recent_form / EV
+# columns — the scrape itself IS the evidence. Use a lower threshold
+# for them so the ATP/WTA 250 slate surfaces (2026-07-12 user report).
+_LOW_EVIDENCE_SOURCES = {"tennis_extra", "tennis_extra_model"}
+MIN_EVIDENCE_COUNT_SCRAPE = 1
 
 
 def evidence_threshold(picks: list[dict]) -> tuple[list[dict], dict]:
@@ -569,9 +591,15 @@ def evidence_threshold(picks: list[dict]) -> tuple[list[dict], dict]:
         ):
             evidence += 1
         p["evidence_count"] = evidence
-        if evidence < MIN_EVIDENCE_COUNT:
+        # Determine per-pick threshold (scrape sources get a lower bar).
+        src_lc = (p.get("source") or "").lower()
+        threshold = (
+            MIN_EVIDENCE_COUNT_SCRAPE if src_lc in _LOW_EVIDENCE_SOURCES
+            else MIN_EVIDENCE_COUNT
+        )
+        if evidence < threshold:
             stats["dropped"] += 1
-            r = f"only_{evidence}_of_{MIN_EVIDENCE_COUNT}_signals"
+            r = f"only_{evidence}_of_{threshold}_signals"
             stats["reasons"][r] = stats["reasons"].get(r, 0) + 1
             continue
         survivors.append(p)
