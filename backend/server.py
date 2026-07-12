@@ -3603,6 +3603,15 @@ async def on_startup():
         logger.info("UFC ESPN fallback ingest armed (60-min loop, 21-day window)")
     except Exception as e:
         logger.warning("UFC ESPN ingest not armed: %s", e)
+    # ── Soccer Hot Scorers (Wikipedia-driven, bypasses book gaps) ───
+    # Emits Anytime-Goal-Scorer picks for niche-league top scorers
+    # (Allsvenskan, Eliteserien, etc.) that sportsbooks don't cover.
+    try:
+        from soccer_hot_scorers import hot_scorers_loop
+        _deferred_task(lambda: hot_scorers_loop(db),         DEFER_BASE * 3)
+        logger.info("Soccer Hot Scorers armed (4h loop, Wikipedia-driven)")
+    except Exception as e:
+        logger.warning("Soccer Hot Scorers not armed: %s", e)
     # ── ESPN team meta + injury notes (all sports) ──────────────────
     # Powers logo/color rendering on pick cards and the injury chip.
     # Runs once at boot then every 6 hours.
