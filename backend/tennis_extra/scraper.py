@@ -25,21 +25,26 @@ _TIMEOUT = 20.0
 _CACHE_TTL = 1800  # 30 min
 _cache: dict[str, tuple[float, list[dict]]] = {}
 
-# Tournaments we DO want to surface (ATP/WTA main tour + Challengers).
-# Filtered against the tournament header name. Anything containing these
-# tokens is considered "tour-grade".
-_TOUR_KEYWORDS = (
-    "atp", "wta", "challenger", "masters", "grand slam",
-    # Main-tour 250/500 tournament cities that don't include ATP/WTA in name:
-    "halle", "queen", "berlin", "mallorca", "homburg", "eastbourne",
-    "nottingham", "hertogenbosch", "rosmalen", "stuttgart", "birmingham",
-    "newport", "atlanta", "los cabos", "washington", "winston-salem",
-    "kitzbuhel", "umag", "gstaad", "bastad",
+# Tournaments we EXPLICITLY SKIP. Anything else that TennisExplorer's
+# `?type=all` endpoint surfaces is considered fair game (see filter
+# below). This is a BLOCKLIST-only design so tournaments rotating in
+# and out of the tour calendar week-to-week (Umag → Hamburg → Kitzbühel
+# WTA → Prague, etc.) are picked up AUTOMATICALLY without code changes.
+# User mandate 2026-07-12: "Right tennis tournaments always change I
+# want app to be able to pick them up".
+_SKIP_KEYWORDS = (
+    # Non-tour categories — settlement is unreliable and lines are weak.
+    "utr", "exhibition", "futures", " itf",
+    # Section headers TennisExplorer emits as fake tournament rows.
+    "main tournaments", "lower level tournaments",
+    # ITF variants (with/without space).
+    "itf w",     # ITF W15/W25/W35/W60/W75/W100 women
+    "itf m",     # ITF M15/M25 men
 )
 
-# Tournaments we EXPLICITLY SKIP (too low-level / exhibition / settlement risk).
-_SKIP_KEYWORDS = (
-    "utr", "exhibition", "futures", "itf", "lower level", "main tournaments",
+# (Legacy list — retained but no longer consulted. See _is_tour_grade.)
+_TOUR_KEYWORDS = (
+    "atp", "wta", "challenger", "masters", "grand slam",
 )
 
 
@@ -85,13 +90,28 @@ def _normalize_player_name(raw: str) -> str:
 
 
 def _is_tour_grade(tournament: str) -> bool:
-    """True if this tournament should produce picks."""
+    """Permissive tour-grade filter (2026-07-12 rewrite).
+
+    Design: accept ANY tournament that TennisExplorer's ?type=all endpoint
+    surfaces UNLESS it matches a known-bad category (UTR / ITF /
+    exhibition / futures / section header). This is a BLOCKLIST-only
+    design — the rationale is that ATP/WTA rotate tournaments weekly
+    (Umag → Hamburg → Kitzbühel WTA → Athens WTA → Iasi WTA → …) and
+    hardcoding city names means we miss the new week's slate until
+    someone updates the list. User mandate: "Right tennis tournaments
+    always change I want app to be able to pick them up".
+
+    We still require a non-empty tournament header. Sanity limit: 100
+    chars so we don't accidentally pick up a stray HTML block.
+    """
     if not tournament:
         return False
-    t = tournament.lower()
+    t = tournament.lower().strip()
+    if len(t) == 0 or len(t) > 100:
+        return False
     if any(skip in t for skip in _SKIP_KEYWORDS):
         return False
-    return any(kw in t for kw in _TOUR_KEYWORDS)
+    return True
 
 
 def _qualification_mark(tournament: str) -> str:
@@ -133,11 +153,17 @@ async def fetch_today_matches(now: Optional[datetime] = None, target_date: Optio
     if cached and (time.time() - cached[0]) < _CACHE_TTL:
         return cached[1]
 
-    # NOTE: Do NOT pass `type=all` — TennisExplorer's default endpoint
-    # returns the MAIN tour tournaments (Mallorca, Bad Homburg, Halle,
-    # Queen's etc.). `type=all` perversely filters those out and only
-    # returns UTR exhibitions + ITFs.
-    url = f"{_BASE}?year={target.year}&month={target.month:02d}&day={target.day:02d}"
+    # 2026-07-12: switch to `?type=all` — TennisExplorer's default
+    # endpoint used to return the main tour (Bastad/Gstaad/Umag) and
+    # `type=all` used to add ITFs. But their frontend now emits WTA
+    # 250s (Iasi WTA, Athens WTA, Kitzbühel WTA, Rome 2 WTA) ONLY on
+    # `?type=all`. Since our `_is_tour_grade()` filter is now
+    # blocklist-only (skips UTR/ITF/exhibition), we can safely use
+    # `type=all` and the SKIP_KEYWORDS list keeps the noise out.
+    # User mandate: "Right tennis tournaments always change I want app
+    # to be able to pick them up" — this + the blocklist filter means
+    # newly-scheduled tournaments auto-appear without code changes.
+    url = f"{_BASE}?type=all&year={target.year}&month={target.month:02d}&day={target.day:02d}"
     headers = {
         "User-Agent": "Mozilla/5.0 PerksLocks/1.0 (https://perkslocks.com)",
         "Accept-Language": "en-US,en;q=0.9",
@@ -296,17 +322,17 @@ def _infer_tier(tournament: str) -> str:
         return "Qualifier"
     if "challenger" in t:
         return "Challenger"
+    # Explicit WTA / ATP tags anywhere in the name (Athens WTA, Iasi WTA,
+    # Kitzbühel WTA, Bastad ATP, Rome 2 WTA, Halle ATP, etc.).
     if "wta" in t:
         return "WTA 250"
     if "atp" in t:
         return "ATP 250"
-    # Bare city names — typically 250-level grass tune-ups.
-    if any(city in t for city in ("halle", "queen", "mallorca", "homburg",
-                                   "eastbourne", "nottingham", "berlin")):
-        if "wta" in t or "homburg" in t or "nottingham" in t:
-            return "WTA 250"
-        return "ATP 250"
-    return "Unknown"
+    # Bare city names (default TennisExplorer schema for the main tour) —
+    # treat as ATP 250 unless the city is a known WTA-only tune-up.
+    if any(city in t for city in ("homburg", "nottingham")):
+        return "WTA 250"
+    return "ATP 250"
 
 
 async def _selftest() -> None:
