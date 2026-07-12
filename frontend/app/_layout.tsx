@@ -26,6 +26,7 @@ import { BetSlipProvider } from "@/src/contexts/BetSlipContext";
 import { MLBLiveProvider } from "@/src/contexts/MLBLiveContext";
 import { FiltersProvider } from "@/src/stores/useFilters";
 import { ErrorBoundary } from "@/src/components/ErrorBoundary";
+import { reportError } from "@/src/lib/telemetry";
 import {
   runCacheBustIfNeeded,
   runBackendCacheBustIfNeeded,
@@ -146,13 +147,48 @@ export default function RootLayout() {
     }
   }, [loaded, error, cacheBustDone]);
 
+  // Global unhandled-error trap — captures errors that escape React's
+  // render tree (async setTimeout callbacks, unhandled promise rejects).
+  // Milestone 1.1 stability layer.
+  useEffect(() => {
+    if (typeof globalThis === "undefined") return;
+    const g = globalThis as any;
+    const orig = g.ErrorUtils?.getGlobalHandler?.();
+    g.ErrorUtils?.setGlobalHandler?.((err: Error, isFatal?: boolean) => {
+      try {
+        void reportError(err, {
+          component: "GlobalHandler",
+          extra: { isFatal: !!isFatal, kind: "js-error" },
+        });
+      } catch { /* never rethrow */ }
+      if (orig) orig(err, isFatal);
+    });
+    const onUnhandled = (ev: any) => {
+      try {
+        const reason = ev?.reason || ev;
+        void reportError(reason instanceof Error ? reason : new Error(String(reason)), {
+          component: "unhandledrejection",
+          extra: { kind: "promise-rejection" },
+        });
+      } catch { /* never rethrow */ }
+    };
+    if (typeof (globalThis as any).addEventListener === "function") {
+      (globalThis as any).addEventListener("unhandledrejection", onUnhandled);
+    }
+    return () => {
+      if (typeof (globalThis as any).removeEventListener === "function") {
+        (globalThis as any).removeEventListener("unhandledrejection", onUnhandled);
+      }
+    };
+  }, []);
+
   // If the CDN is unreachable we fall through on error rather than wedging
   // the app — icons will tofu, but the app still boots.
   if ((!loaded && !error) || !cacheBustDone) return null;
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <ErrorBoundary>
+      <ErrorBoundary boundary="RootLayout">
         <SafeAreaProvider style={{ backgroundColor: "transparent" }}>
           {/* ── Global branded backdrop ──
               On web the bg is painted on <body> via useEffect (see above)

@@ -1,0 +1,38 @@
+{
+  "summary": "Verified the tab-background fix + Milestone 1.1 telemetry endpoint. Backend: 7/7 pytest cases pass (telemetry POST 200 with & without auth, doc persistence in `client_errors` with correct fields incl. ISO received_at, admin/recent listing with limit, and regressions on /api/auth/login, /api/picks/today, /api/version). Frontend: after login as demo@lockscore.ai/demo123, the branded `brand-bg-v7.jpg` is applied to `<html>` (`htmlBg='url(...brand-bg-v7.jpg)'`) on every tab (Locks, Rollover, Under, Lab, Parlay, Profile). The `#perklocks-tabs-root` wrapper computed backgroundColor is `rgba(0,0,0,0)` (transparent) — the fix is in place. Inactive-tab bleed regression check passed: aria-hidden count grows correctly on tab visits (lazy) and all hidden scenes compute `display: none` via the injected CSS rule, so no content bleed. Tab bar remains solid `rgb(10, 10, 10)` = `#0a0a0a`. No console errors, no pageerror, no red-screen. No mocked APIs.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "console-deprecation", "issue": "'shadow*' style props deprecated warning fires at boot (RN Web). Not user-visible but should be migrated to boxShadow when convenient."},
+      {"component": "console-deprecation", "issue": "'props.pointerEvents is deprecated. Use style.pointerEvents' warning fires (likely from the `brandScrim` View in app/_layout.tsx line 205). Non-blocking."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_telemetry_and_regression.py",
+    "/app/test_reports/pytest/iter67_telemetry.xml"
+  ],
+  "action_items": [
+    "Optional cleanup: replace `pointerEvents=\"none\"` prop on brandScrim <View> in /app/frontend/app/_layout.tsx:205 with `style={{ pointerEvents: 'none', ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.30)' }}` to silence the RN 0.79 deprecation warning.",
+    "Optional cleanup: migrate remaining `shadow*` styles to `boxShadow` for RN 0.79 compliance (existing warning, pre-existed this iteration)."
+  ],
+  "critical_code_review_comments": [
+    "server.py is >2900 lines — should be modularized into feature routers (already in progress with routes/telemetry_routes.py pattern).",
+    "telemetry_routes.py opens its own AsyncIOMotorClient rather than importing the shared handle from server.py. Comment acknowledges circular-import avoidance — acceptable, but longer-term the Mongo handle should live in a dedicated `db.py` module both server.py and routers import from.",
+    "/api/admin/client-errors/recent is 'wide open at API level for now' per code comment — fine while admin-gated in UI but flagging for future auth enforcement before production."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_telemetry_and_regression.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Inserted 3 TEST_-prefixed docs in `client_errors` (TEST_telemetry_*, TEST_persist_*, TEST_authed_*) via the live API during pytest run. Safe to leave; will not affect prod flows.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend URL is EXPO_PUBLIC_BACKEND_URL (not EXPO_BACKEND_URL) in frontend/.env. Demo creds `demo@lockscore.ai`/`demo123` work. `/api/picks/today` requires Bearer auth. `/api/telemetry/error` is auth-optional but authed calls populate user_email_hash (sha256 first 8 chars). `#perklocks-tabs-root` is the wrapper that must stay transparent for brand background to bleed through. Web tab-bleed prevention relies on the CSS rule injected in /app/frontend/app/_layout.tsx (`#perklocks-tabs-root [aria-hidden=\"true\"] { display: none !important; }`) — verified working; all inactive scenes compute display:none.",
+  "rca_of_issue": "Root cause was correctly identified by main agent: the `<View>` at /app/frontend/app/(tabs)/_layout.tsx:35 had `backgroundColor: '#0a0a0a'` which is fully opaque and sat between the parent _layout.tsx's html-level `background-image: url(brand-bg-v7.jpg)` (applied via useEffect on web) and the tab scenes. Changing to `backgroundColor: 'transparent'` restores brand-bg visibility while inactive-tab bleed is still prevented by the DOM-level `aria-hidden` CSS rule. Verified on all 6 visible tabs post-login with automated screenshots + computed-style probes."
+}

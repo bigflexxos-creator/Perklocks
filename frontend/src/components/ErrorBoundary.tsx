@@ -14,8 +14,17 @@
  */
 import React from "react";
 import { View, Text, Pressable, StyleSheet, ScrollView } from "react-native";
+import { reportError } from "@/src/lib/telemetry";
 
-type Props = { children: React.ReactNode };
+type Props = {
+  children: React.ReactNode;
+  /** Human-readable name used in telemetry (e.g. "HomeTab", "LabTab"). */
+  boundary?: string;
+  /** Path snapshot at render time (routes register this). */
+  urlPath?: string;
+  /** Optional custom fallback UI instead of the default retry card. */
+  fallback?: (err: Error, retry: () => void) => React.ReactNode;
+};
 type State = { hasError: boolean; error: Error | null; errorInfo: string };
 
 export class ErrorBoundary extends React.Component<Props, State> {
@@ -26,12 +35,16 @@ export class ErrorBoundary extends React.Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
-    // Internal logging — visible in Metro / dev tools. In production this
-    // also surfaces in `__DEV__` consoles. Component stack helps trace
-    // which screen blew up.
     console.error("[ErrorBoundary] caught:", error);
     console.error("[ErrorBoundary] componentStack:", info.componentStack);
     this.setState({ errorInfo: info.componentStack ?? "" });
+    // Fire-and-forget telemetry so we can see what's crashing in the wild
+    // without waiting for user reports. Never let telemetry itself throw.
+    void reportError(error, {
+      component: this.props.boundary || "ErrorBoundary",
+      urlPath:   this.props.urlPath,
+      extra:     { componentStack: (info.componentStack || "").slice(0, 3000) },
+    });
   }
 
   handleRetry = () => {
@@ -40,6 +53,9 @@ export class ErrorBoundary extends React.Component<Props, State> {
 
   render() {
     if (this.state.hasError) {
+      if (this.props.fallback && this.state.error) {
+        return this.props.fallback(this.state.error, this.handleRetry);
+      }
       return (
         <View style={styles.root}>
           <View style={styles.card}>

@@ -2912,6 +2912,15 @@ try:
 except Exception as _slab_mount_err:
     logger.warning("Soccer Lab failed to mount, continuing without it: %s", _slab_mount_err)
 
+# Mount client telemetry — Milestone 1.1 stability layer. Captures
+# uncaught frontend errors into `client_errors` collection for debug.
+try:
+    from routes.telemetry_routes import router as telemetry_router
+    app.include_router(telemetry_router)   # note: app, not api — has /api prefix baked in
+    logger.info("Client telemetry mounted at /api/telemetry/error")
+except Exception as _tel_err:
+    logger.warning("Client telemetry failed to mount: %s", _tel_err)
+
 # Mount Auto-Elite Discovery — exposes data-driven scorer profiles + trends.
 # Endpoints: /api/auto-elite, /api/player-profiles, /api/auto-elite/recompute.
 try:
