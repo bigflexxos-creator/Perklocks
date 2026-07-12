@@ -32,7 +32,7 @@ export default function TabsLayout() {
   //   freeze on native too.
 
   return (
-    <View testID="perklocks-tabs-root" nativeID="perklocks-tabs-root" style={{ flex: 1, backgroundColor: "#0a0a0a", overflow: "hidden" }}>
+    <View testID="perklocks-tabs-root" nativeID="perklocks-tabs-root" style={{ flex: 1, backgroundColor: "transparent", overflow: "hidden" }}>
     <Tabs
       screenOptions={{
         headerShown: false,
