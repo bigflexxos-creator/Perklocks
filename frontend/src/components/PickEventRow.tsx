@@ -215,7 +215,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   teamName: {
-    color: COLORS.text,
+    color: COLORS.textPrimary,
     fontSize: 13,
     fontWeight: "600",
     flexShrink: 1,
@@ -227,7 +227,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
   },
   eventFallback: {
-    color: COLORS.text,
+    color: COLORS.textPrimary,
     fontSize: 14,
     fontWeight: "600",
     flex: 1,
