@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
-  View, Text, StyleSheet, ScrollView, ActivityIndicator,
+  View, Text, StyleSheet, ScrollView,
   RefreshControl, Pressable,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -13,6 +13,8 @@ import { SortSelector } from "@/src/components/SortSelector";
 import { ChipRow } from "@/src/components/ChipRow";
 import { SportFilterBar } from "@/src/components/SportFilterBar";
 import { PickEventRow } from "@/src/components/PickEventRow";
+import { SkeletonList } from "@/src/components/Skeleton";
+import { EmptyState } from "@/src/components/EmptyState";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 import { getDisplayLockRounded } from "@/src/lib/lockScore";
@@ -28,9 +30,11 @@ export default function UnderOfTheDayScreen() {
   const [filters, setFilters] = useState<PickFilters>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async (lt: LineType, sk: SortKey, sp: string, f: PickFilters) => {
     try {
+      setError(null);
       const res = await api.underOfTheDay(lt, sk, f, sp);
       // Defensive: hide KBO at the client even if production backend
       // hasn't deployed the sport removal yet.
@@ -38,8 +42,9 @@ export default function UnderOfTheDayScreen() {
       setPick(isKbo(res.pick) ? null : res.pick);
       setAlternates((res.alternates ?? []).filter((p: any) => !isKbo(p)));
       setPool(res.total_evaluated ?? 0);
-    } catch (e) {
+    } catch (e: any) {
       console.warn("under load", e);
+      setError(String(e?.message || "Couldn't load the Under of the Day."));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -87,21 +92,31 @@ export default function UnderOfTheDayScreen() {
         showsVerticalScrollIndicator={false}
       >
         {loading ? (
-          <View style={styles.center}><ActivityIndicator color={COLORS.voltBlue} /></View>
+          <SkeletonList count={2} testID="under-skeleton" />
+        ) : error ? (
+          <EmptyState
+            variant="error"
+            title="Couldn't load Under of the Day"
+            message={error}
+            onRetry={() => { setLoading(true); load(lineType, sortKey, sport, filters); }}
+            testID="under-error"
+          />
         ) : !pick ? (
-          <View style={styles.center}>
-            <Ionicons name="search-outline" size={48} color={COLORS.textMuted} />
-            <Text style={styles.emptyTitle}>
-              {lineType === "main" ? "No main-line Unders" :
-               lineType === "alt" ? "No alt-Under locks" :
-               "No Under locks today"}
-            </Text>
-            <Text style={styles.emptyMsg}>
-              {lineType === "main"
-                ? "Try ALT or BOTH for chalky alt-line Unders. Pull to refresh."
-                : "Books don't always offer alt lines on every event. Pull to refresh."}
-            </Text>
-          </View>
+          <EmptyState
+            icon="search-outline"
+            title={
+              lineType === "main" ? "No main-line Unders" :
+              lineType === "alt" ? "No alt-Under locks" :
+              "No Under locks today"
+            }
+            message={
+              lineType === "main"
+                ? "Try ALT or BOTH for chalky alt-line Unders."
+                : "Books don't always offer alt lines on every event."
+            }
+            secondaryHint="Pull down to refresh, or try a different sport tab."
+            testID="under-empty"
+          />
         ) : (
           <>
             <Text style={styles.intro}>

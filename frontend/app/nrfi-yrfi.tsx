@@ -13,7 +13,7 @@
  */
 import React, { useCallback, useEffect, useState } from "react";
 import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity,
   RefreshControl,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -22,6 +22,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { COLORS } from "@/src/theme";
 import { api } from "@/src/lib/api";
 import { formatGameTime } from "@/src/lib/formatGameTime";
+import { SkeletonList } from "@/src/components/Skeleton";
+import { EmptyState } from "@/src/components/EmptyState";
 
 type Feed = Awaited<ReturnType<typeof api.nrfiYrfi>>;
 type Pick = Feed["picks"][number];
@@ -104,22 +106,23 @@ export default function NrfiYrfiScreen() {
         }
       >
         {loading ? (
-          <View style={styles.center}>
-            <ActivityIndicator color={COLORS.voltBlue} />
-          </View>
+          <SkeletonList count={3} testID="nrfi-skeleton" />
         ) : error ? (
-          <View style={styles.emptyCard}>
-            <Text style={styles.emptyTitle}>Couldn&apos;t load NRFI/YRFI</Text>
-            <Text style={styles.emptySub}>{error}</Text>
-          </View>
+          <EmptyState
+            variant="error"
+            title="Couldn't load NRFI/YRFI"
+            message={error}
+            onRetry={() => { setRefreshing(true); load(); }}
+            testID="nrfi-error"
+          />
         ) : visible.length === 0 ? (
-          <View style={styles.emptyCard}>
-            <Ionicons name="baseball-outline" size={42} color={COLORS.textMuted} />
-            <Text style={styles.emptyTitle}>No first-inning picks right now</Text>
-            <Text style={styles.emptySub}>
-              The model needs probable starters + lineup OPS to fire. Check back closer to first pitch.
-            </Text>
-          </View>
+          <EmptyState
+            icon="baseball-outline"
+            title="No first-inning picks right now"
+            message="The model needs probable starters + lineup OPS to fire."
+            secondaryHint="Check back closer to first pitch."
+            testID="nrfi-empty"
+          />
         ) : (
           visible.map((p) => <NrfiCard key={p.id} pick={p} />)
         )}

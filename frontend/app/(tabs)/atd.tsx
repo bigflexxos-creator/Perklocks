@@ -14,7 +14,7 @@
  */
 import React, { useCallback, useEffect, useState } from "react";
 import {
-  ActivityIndicator, RefreshControl, ScrollView, StyleSheet,
+  RefreshControl, ScrollView, StyleSheet,
   Text, View, Pressable,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -22,6 +22,8 @@ import { Stack, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api, type NFLAtdLeaderboardResponse, type NFLAtdPick } from "@/src/lib/api";
 import { COLORS } from "@/src/theme";
+import { SkeletonList } from "@/src/components/Skeleton";
+import { EmptyState } from "@/src/components/EmptyState";
 
 type ViewMode = "top5" | "full";
 
@@ -179,24 +181,35 @@ export default function NFLAtdScreen() {
       </View>
 
       {loading ? (
-        <ActivityIndicator color={COLORS.voltBlue} style={{ marginTop: 60 }} />
+        <View style={styles.scroll} testID="atd-skeleton">
+          <SkeletonList count={4} />
+        </View>
       ) : error ? (
         <ScrollView
-          contentContainerStyle={styles.center}
+          contentContainerStyle={styles.scroll}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.voltBlue} />}
         >
-          <Text style={styles.errorText}>{error}</Text>
-          <Text style={styles.hintText}>Pull down to retry.</Text>
+          <EmptyState
+            variant="error"
+            title="Couldn't load ATD board"
+            message={error}
+            onRetry={onRefresh}
+            secondaryHint="Pull down to retry manually."
+            testID="atd-error"
+          />
         </ScrollView>
       ) : displayed.length === 0 ? (
         <ScrollView
-          contentContainerStyle={styles.center}
+          contentContainerStyle={styles.scroll}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.voltBlue} />}
         >
-          <Text style={styles.emptyTitle}>No NFL ATD picks yet.</Text>
-          <Text style={styles.hintText}>
-            Slate is built once probable usage data lands — check back closer to gameday.
-          </Text>
+          <EmptyState
+            icon="american-football-outline"
+            title="No NFL ATD picks yet"
+            message="Slate is built once probable usage data lands."
+            secondaryHint="Check back closer to gameday."
+            testID="atd-empty"
+          />
         </ScrollView>
       ) : (
         <ScrollView

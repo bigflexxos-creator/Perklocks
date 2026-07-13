@@ -16,6 +16,7 @@ import { SportFilterBar } from "@/src/components/SportFilterBar";
 import { NFLIntelligenceSection } from "@/src/components/NFLIntelligenceSection";
 import { StaleVersionBanner } from "@/src/components/StaleVersionBanner";
 import { StaleBuildBanner } from "@/src/components/StaleBuildBanner";
+import { EventGroupSkeleton } from "@/src/components/Skeleton";
 import { storage } from "@/src/utils/storage";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 import { useFilters } from "@/src/stores/useFilters";
@@ -754,8 +755,17 @@ export default function LocksScreen() {
           </TouchableOpacity>
         )}
         {loading ? (
-          <View style={styles.center}>
-            <ActivityIndicator color={COLORS.voltBlue} />
+          <View testID="board-skeleton">
+            {/* Milestone 1.2 — Skeleton loader replaces the plain spinner
+                so the user sees the SHAPE of what's about to appear
+                (event groups + pick cards) instead of a blank frame.
+                Matches the real event-grouped list layout exactly. */}
+            <EventGroupSkeleton picks={2} />
+            <EventGroupSkeleton picks={3} />
+            <EventGroupSkeleton picks={2} />
+            <View style={styles.center}>
+              <ActivityIndicator color={COLORS.voltBlue} />
+            </View>
           </View>
         ) : visiblePicks.length === 0 ? (
           <View style={styles.emptyCard} testID="empty-board">
