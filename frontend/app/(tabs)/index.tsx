@@ -94,6 +94,13 @@ export default function LocksScreen() {
   const [stats, setStats] = useState<{ total_picks: number; elite_count: number; avg_edge_percent: number } | null>(null);
   const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  // Alt-line availability diagnostic (2026-07-13). Populated by the
+  // backend when the ALT tab is empty for a sport that the book doesn't
+  // cover (currently: tennis 250s). Renders as a friendly explanation
+  // in the empty state instead of the generic "no locks" message.
+  const [altUnavailable, setAltUnavailable] = useState<
+    { message: string; suggestion?: string } | null
+  >(null);
   // Refresh-cooldown countdown driven by /picks/refresh-status. `nextRefreshAt`
   // is an absolute timestamp (ms since epoch); `remaining` is derived from it
   // by a 1-second ticker so the badge animates smoothly.
@@ -334,6 +341,18 @@ export default function LocksScreen() {
       }
       setPicks(fresh);
       lastLoadedForSportRef.current = requestedSport;
+      // Alt-line availability diagnostic (2026-07-13): backend tells us
+      // when this ALT query hit a book-coverage gap so we can render
+      // the reason in the empty state instead of a generic "no locks".
+      const altDiag: any = (picksRes as any).alt_availability;
+      if (lt === "alt" && fresh.length === 0 && altDiag && altDiag.supported === false) {
+        setAltUnavailable({
+          message: String(altDiag.message || ""),
+          suggestion: altDiag.suggestion ? String(altDiag.suggestion) : undefined,
+        });
+      } else {
+        setAltUnavailable(null);
+      }
       // Stats: if backend hasn't deployed KBO removal yet, recompute the
       // top-row totals locally so the hero card matches the visible list.
       if (statsRes) {
@@ -769,10 +788,41 @@ export default function LocksScreen() {
           </View>
         ) : visiblePicks.length === 0 ? (
           <View style={styles.emptyCard} testID="empty-board">
-            <Ionicons name="lock-open-outline" size={42} color={COLORS.textMuted} />
-            <Text style={styles.emptyTitle}>No locks on the board</Text>
+            <Ionicons
+              name={altUnavailable ? "information-circle-outline" : "lock-open-outline"}
+              size={42}
+              color={COLORS.textMuted}
+            />
+            <Text style={styles.emptyTitle}>
+              {altUnavailable ? "Alt lines unavailable" : "No locks on the board"}
+            </Text>
 
-            {/* ── Self-diagnostic empty state ──
+            {/* Alt-line book-coverage-gap diagnostic (2026-07-13).
+                When the ALT tab is empty because the current sport's
+                tournaments are outside The Odds API's alt-market
+                coverage (currently: every tennis tournament we
+                surface — Umag, Bastad, Gstaad, Iasi WTA, Athens WTA,
+                Kitzbühel WTA — is 250-tier and not covered), show
+                the backend-provided explanation + suggestion instead
+                of the generic "no locks" empty state. */}
+            {altUnavailable ? (
+              <>
+                <Text style={styles.emptyMsg} testID="empty-msg-alt-unavailable">
+                  {altUnavailable.message}
+                </Text>
+                {!!altUnavailable.suggestion && (
+                  <TouchableOpacity
+                    onPress={() => setLineType("main")}
+                    style={styles.emptyCta}
+                    activeOpacity={0.8}
+                    testID="empty-switch-main"
+                  >
+                    <Text style={styles.emptyCtaTxt}>{altUnavailable.suggestion}</Text>
+                  </TouchableOpacity>
+                )}
+              </>
+            ) :
+            /* ── Self-diagnostic empty state ──
                 Recurring P0 ("App still not showing picks") usually has
                 one of three root causes: (1) user has a narrowing
                 filter on (SIM EDGE / market / lock floor) and forgot,
@@ -780,8 +830,8 @@ export default function LocksScreen() {
                 has 0 picks today while Soccer/Tennis still do, or (3)
                 the slate genuinely has nothing live. We surface the
                 most likely cause + a 1-tap fix instead of a dead-end
-                "pull to refresh" message. */}
-            {filtersAreNarrowing ? (
+                "pull to refresh" message. */
+            filtersAreNarrowing ? (
               <>
                 <Text style={styles.emptyMsg} testID="empty-msg-filters">
                   Filters are hiding picks from the board. Clear them to see

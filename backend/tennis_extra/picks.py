@@ -274,6 +274,22 @@ async def fetch_extra_tennis_picks(
             "status": "pending",
             "no_edge_model": no_edge_model_flag,
             "bookmaker": bookmaker_final,
+            # ── Alt-line availability metadata (2026-07-13) ──
+            # The Odds API catalog only covers Grand Slams, Masters
+            # 1000s, WTA 1000s, and select 500s. Every match generated
+            # by the TennisExplorer scraper (ATP/WTA 250 tour + Challenger
+            # circuit + qualifying) is OUTSIDE the book's coverage, so
+            # alt-line rows will NEVER populate for these events.
+            # Surface this cleanly to the UI so the ALT tab can show
+            # "book coverage gap" instead of a blank empty state.
+            "alt_lines_supported": False,
+            "alt_lines_unavailable_reason": "book_coverage_gap",
+            "alt_lines_note": (
+                "Alt-line pricing is only published by sportsbooks for "
+                "Grand Slams and Masters 1000 events. ATP/WTA 250 "
+                "tournaments (Umag, Bastad, Gstaad, Iasi WTA, Athens "
+                "WTA, Kitzbühel WTA, etc.) don't have alt-line coverage."
+            ),
         }
         if using_real and all_books:
             pick_doc["all_book_odds"] = all_books
