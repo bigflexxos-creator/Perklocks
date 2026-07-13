@@ -41,6 +41,10 @@ MLB_DEEP_MAX = 5.0
 # home advantage + league tier). Same ±5 budget so per-sport signals
 # scale evenly across the score.
 SOCCER_DEEP_MAX = 5.0
+# Phase B.5 — Tennis deep signal (surface fit + serve/return dominance +
+# motivation + variance risk + surface-Elo delta + recent match load).
+# Same ±5 budget for cross-sport consistency.
+TENNIS_DEEP_MAX = 5.0
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -745,3 +749,119 @@ def soccer_deep_signal(pick: dict) -> dict:
         "points": round(_clamp(pts, -SOCCER_DEEP_MAX, SOCCER_DEEP_MAX), 1),
         "max": SOCCER_DEEP_MAX, "details": details, "found": found,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 9. TENNIS DEEP — surface fit, serve/return, motivation, variance,
+#                  surface-Elo delta, match load (Phase B.5)
+# ─────────────────────────────────────────────────────────────────────
+def tennis_deep_signal(pick: dict) -> dict:
+    """Tennis-only evidence layer. Reads `pick['tennis_deep']` populated
+    by `services.signal_engine.tennis_deep.enrich_tennis_pick`.
+
+    Aggregates six sub-signals into a single ±5 component. Returns
+    neutral 0-point block for non-tennis picks or missing data — same
+    fallback pattern as every Phase A calculator.
+    """
+    pts = 0.0
+    details: list[str] = []
+    found = False
+
+    if (pick.get("sport") or "").lower() != "tennis":
+        return {
+            "key": "tennis_deep", "label": "Tennis Context",
+            "points": 0.0, "max": TENNIS_DEEP_MAX,
+            "details": [], "found": False,
+        }
+    deep = pick.get("tennis_deep") or {}
+    if not deep:
+        return {
+            "key": "tennis_deep", "label": "Tennis Context",
+            "points": 0.0, "max": TENNIS_DEEP_MAX,
+            "details": [], "found": False,
+        }
+
+    surface = str(deep.get("surface") or "Hard").title()
+
+    # 1. Surface fit (from tennis_components)
+    sf = deep.get("surface_fit")
+    if isinstance(sf, (int, float)):
+        found = True
+        v = float(sf)
+        if v >= 80:
+            pts += 1.5
+            details.append(f"Surface specialist ({round(v)}/100 on {surface})")
+        elif v >= 65:
+            pts += 0.6
+        elif v <= 35:
+            pts -= 1.2
+            details.append(f"Poor surface fit ({round(v)}/100 on {surface})")
+
+    # 2. Serve/return dominance
+    sr = deep.get("serve_return")
+    if isinstance(sr, (int, float)):
+        found = True
+        v = float(sr)
+        if v >= 80:
+            pts += 1.5
+            details.append(f"Elite hold/break profile ({round(v)}/100)")
+        elif v <= 40:
+            pts -= 1.0
+            details.append(f"Weak serve+return ({round(v)}/100)")
+
+    # 3. Motivation
+    mo = deep.get("motivation")
+    if isinstance(mo, (int, float)):
+        v = float(mo)
+        if v <= 50:
+            found = True
+            pts -= 1.0
+            details.append(f"Low motivation flag ({round(v)}/100)")
+        elif v >= 85:
+            found = True
+            pts += 0.5
+
+    # 4. Variance risk
+    var = deep.get("variance")
+    if isinstance(var, (int, float)):
+        v = float(var)
+        if v >= 60:
+            found = True
+            pts -= 1.0
+            details.append(f"High variance profile ({round(v)}/100) — upset risk")
+
+    # 5. Surface-Elo delta (from tennis_players DB)
+    edge = deep.get("elo_edge")
+    if isinstance(edge, (int, float)):
+        found = True
+        e = float(edge)
+        # +100 Elo ≈ +64% win prob head-to-head. Scale to ±2 points at ±150.
+        pts += _clamp(e / 150.0 * 2.0, -2.0, 2.0)
+        if e >= 100:
+            details.append(f"Surface Elo edge +{round(e)} on {surface}")
+        elif e <= -100:
+            details.append(f"Surface Elo deficit {round(e)} on {surface}")
+
+    # 6. Recent match load (fatigue)
+    p_load = deep.get("pick_matches_7d")
+    o_load = deep.get("opp_matches_7d")
+    if isinstance(p_load, int) and p_load >= 5:
+        found = True
+        pts -= 0.8
+        details.append(f"Heavy match load ({p_load} matches in 7 days) — fatigue risk")
+    elif isinstance(p_load, int) and isinstance(o_load, int) and (o_load - p_load) >= 3:
+        found = True
+        pts += 0.6
+        details.append(f"Rest edge — opponent has {o_load} recent matches vs pick's {p_load}")
+
+    # 7. 99-lock eligibility from tennis_engine (bonus signal)
+    if deep.get("is_99_lock_elig"):
+        found = True
+        pts += 0.4
+
+    return {
+        "key": "tennis_deep", "label": "Tennis Context",
+        "points": round(_clamp(pts, -TENNIS_DEEP_MAX, TENNIS_DEEP_MAX), 1),
+        "max": TENNIS_DEEP_MAX, "details": details, "found": found,
+    }
+
