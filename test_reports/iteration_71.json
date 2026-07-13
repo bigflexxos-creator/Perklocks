@@ -1,0 +1,39 @@
+{
+  "summary": "MLB player-prop grading fix verified GREEN end-to-end (70/70 tests pass, backend-only per E1). Iter71 fixes to prop_settlement._mlb_find_game (event_time distance selection), prop_settlement._mlb_stat_for_player (position-aware batting/pitching routing), _MARKET_STATS (Total Bases / Runs Scored / Home Run singular added), Hits+Runs+RBIs combo summing, grading_validator._mlb_verify_prop (D+D-1 merge + event_time-distance + AND-team match + position-aware + combo sum), stuck_pick_reaper (grade_disagreement guard), and validator agreement-branch $unset — all confirmed via targeted unit tests + DB spot-checks. TestReopenedPickRegrade (Wheeler 07-12 5.5 K, Wheeler 17.5 Outs, no stale disagreement flag) — the 3 CRITICAL failing tests from iter70 — now GO GREEN. Post-fix DB state confirmed: Wheeler 07-12 both picks status=won; Altuve 07-04 0.5 Hits status=lost; Machado 07-09 0.5 Hits status=lost; Turner 07-02 H+R+RBI status=won; 0 remaining grade_disagreement flags across all MLB picks (was 82 before the fix). /api/picks/history?days=30 sort-order intact (0 out-of-order pairs).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_mlb_grading_fix_iter71.py",
+    "/app/backend/tests/test_mlb_grading_validator_iter70.py",
+    "/app/test_reports/pytest/iter71_mlb_grading_fix.xml",
+    "/app/test_reports/pytest/iter71_combined.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "prop_settlement._mlb_find_game — Selection priority (Final > Live > other, then event_time-distance, then earliest gameDate) is well-documented and correctly implemented. Verified with fabricated Phillies@Tigers 07-11/07-12 series fixture: chooses 07-12 for event_time 07-12 and 07-11 for event_time 07-11.",
+    "prop_settlement._mlb_stat_for_player — Position-aware routing: pitchers get pitching block for strikeOuts/baseOnBalls/runs; hitters get batting block for the same fields. Batting-only stats (hits, HR, RBI, TB) and pitching-only stats (outs, IP, ER) route unambiguously. Docstring at :293-317 clearly explains the Wheeler bug. Well-implemented.",
+    "prop_settlement._MARKET_STATS — Order matters: 'outs recorded' before 'runs scored' before 'runs', 'total bases' before 'home runs' before 'home run' (singular). Ordering is preserved.",
+    "prop_settlement combo-market branch (line 947) — 'hits + runs + rbi' inline sum path is correct: reads all three stats via _mlb_stat_for_player, sums (None → 0), skips only if all three are None. Matches the Turner 07-02 case (1+0+0=1>0.5=won).",
+    "grading_validator._mlb_verify_prop — Full parity with settler: same D+D-1 merge, AND-team match (was OR before), event_time-distance selection, position-aware routing, combo-market sum. Validator can now truly cross-check the settler.",
+    "stuck_pick_reaper.py:72 — Query correctly excludes {\"grade_disagreement\": {\"$exists\": False}} so the reaper never voids picks the validator has reopened for re-settlement.",
+    "grading_validator._run_cross_check agreement branch (line 315-318) — Correctly $unsets grade_disagreement on agreement; the stale-flag issue reported in iter70 is fixed."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_mlb_grading_fix_iter71.py (new — 32 tests covering all 7 fix categories)",
+    "/app/backend/tests/test_mlb_grading_validator_iter70.py (1-test update: test_grade_disagreement_count_bulk assertion inverted from ≥10 to ==0 to reflect post-fix expected state — the ≥10 assertion measured the bug's presence, which no longer applies)"
+  ],
+  "success_rate": {"backend": "100% (70/70 tests pass across iter70 + iter71 combined suite)", "frontend": "skipped-per-request"},
+  "seed_data_creation": "None — reused demo@lockscore.ai / demo123, live DB, and fabricated MLB Stats API-shaped dict fixtures for pure unit tests (no HTTP calls beyond one live-schedule sanity check).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Regression suite for MLB grading: run `pytest /app/backend/tests/test_mlb_grading_fix_iter71.py /app/backend/tests/test_mlb_grading_validator_iter70.py -v` — expect 70 passed. Unit-style tests in iter71 use fabricated MLB Stats API dict fixtures (no live HTTP), so they are stable and fast. DB spot-checks depend on live picks in the demo user's history — if the 2026-07-04 Altuve / 2026-07-09 Machado / 2026-07-02 Turner / 2026-07-12 Wheeler picks eventually roll off the 30-day history window they will pytest.skip cleanly. TestReopenedPickRegrade from iter70 is the acceptance gate for any future settler regression — it queries the DB for the exact Wheeler 07-12 K + Outs picks and asserts status=won. The iter70 test_grade_disagreement_count_bulk was inverted (was ≥10, now ==0) to reflect the post-fix baseline; any future MLB grading regression will re-trigger the validator and this test will fail loudly.",
+  "rca_of_issue": "N/A — this iteration verifies a fix. Root cause of the iter70 bug (documented in iteration_70.json) was: (1) _mlb_find_game selected the wrong game in a series when two games shared teams (07-11 vs 07-12 Wheeler), (2) _mlb_stat_for_player read pitcher K/BB/runs from the batting block (which is populated with 0 for the plate appearances) instead of the pitching block, (3) the combo market 'Hits + Runs + RBIs' only read hits, (4) the cross-source validator had OR team match + no event_time distance, so it agreed with the settler's wrong answer for a subset and disagreed but the settler kept re-writing the wrong answer for the 82 flagged. Iter71 fix addresses all four with position-aware routing + event_time-distance + AND-team + combo sum in BOTH the settler and validator. Post-fix DB is clean: 0 remaining grade_disagreement flags; Wheeler/Altuve/Machado/Turner all now match MLB Stats API."
+}

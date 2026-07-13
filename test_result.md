@@ -512,3 +512,52 @@ agent_communication:
       regression, already-existing behavior in api.ts.
 
       No backend changes. No retest needed for backend.
+
+
+  - agent: "main"
+    message: |
+      iteration_71 setup — MLB grading regression FIXED (2026-07-13).
+
+      Root cause: `_mlb_stat_for_player` in prop_settlement.py returned 0.0 for pitchers
+      when their game was NOT the one selected by `_mlb_find_game`. On series/doubleheaders
+      (Phillies @ Tigers 07-11 & 07-12), the settler merged D and D-1 schedules to catch
+      late ET games but picked the earliest Final match, which was the wrong game where
+      the pitcher didn't appear (empty stats → returned 0.0 → graded Over 5.5 K as LOST).
+
+      Fixes applied:
+        1) `_mlb_find_game` now accepts `event_time` and prefers the game whose gameDate
+           is closest to the pick's event_time (fixes series game selection).
+        2) `_mlb_stat_for_player` now routes to the correct batting/pitching block based
+           on player position (was returning batting.strikeOuts=0 for pitchers who
+           actually threw 10 K in pitching.strikeOuts).
+        3) Added `Total Bases`, `Runs Scored`, and `Home Run` (singular) to `_MARKET_STATS`.
+        4) `Hits + Runs + RBIs` combo markets now sum all three stats before grading
+           (was only reading `hits`).
+        5) grading_validator._mlb_verify_prop got the same D+D-1 merge, event_time
+           distance selection, AND-team matching, position-aware block routing, and
+           combo-market sum logic — otherwise the settler's authoritative-override
+           inside `_record()` would use a broken validator and re-introduce wrong grades.
+        6) stuck_pick_reaper.py excludes picks with `grade_disagreement` set so the
+           validator's reopened picks don't get prematurely voided.
+        7) grading_validator now `$unset`s stale `grade_disagreement` on agreement.
+        8) Regex query in validator extended to cover Runs Scored / Walks.
+
+      Verification (backend-only, no test agent yet):
+        - Wheeler 2026-07-12: Over 5.5 K and Over 17.5 Outs Recorded → both WON (were LOST).
+        - Trea Turner H+R+RBIs 07-02 → WON (was LOST — 1 hit + 0 R + 0 RBI = 1 > 0.5).
+        - Willson Contreras Over 0.5 Hits 07-08 → LOST (0 hits, correct).
+        - Juan Soto H+R+RBIs 07-08 → LOST (0 H+R+RBI, correct).
+        - Jose Altuve Over 0.5 Hits 07-04 → LOST (0 hits, was incorrectly WON).
+        - Manny Machado Over 0.5 Hits 07-09 → LOST (0 hits, was incorrectly WON, wrong series game).
+        - After full sweep: 82 originally mis-graded picks now correct;
+          0 grade_disagreement flags remaining.
+
+  test_plan:
+    current_focus:
+      - "MLB pitcher-prop settlement (K, Outs, Walks) grades correctly against Stats API"
+      - "MLB batter Hits + Runs + RBIs combo markets grade against sum of all three stats"
+      - "Series/doubleheader game selection picks the game closest to event_time"
+      - "grading_validator agrees with settler on freshly settled MLB picks"
+      - "stuck_pick_reaper does NOT void picks with grade_disagreement flag"
+    test_all: false
+    test_priority: "high_first"

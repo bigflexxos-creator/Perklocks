@@ -247,14 +247,18 @@ class TestReopenedMlbPicks:
         print(f"  → {n} picks currently carry grade_disagreement")
 
     def test_grade_disagreement_count_bulk(self):
+        """Iter71 update: post-fix expected state is 0 remaining
+        grade_disagreement flags (settler now regrades correctly and
+        validator clears stale flags on agreement). During the iter70 bug
+        window this was ≥10; after the iter71 fix it must be 0."""
         async def _q(db):
             return await db.picks.count_documents({
                 "sport": "MLB",
                 "grade_disagreement": {"$exists": True},
             })
         n = _run_with_db(_q)
-        print(f"  → {n} MLB picks with grade_disagreement")
-        assert n >= 10, f"expected many MLB reopened picks, found only {n}"
+        print(f"  → {n} MLB picks with grade_disagreement (post-fix expect 0)")
+        assert n == 0, f"expected 0 MLB grade_disagreement post-fix, found {n}"
 
     @pytest.mark.parametrize("player", REOPENED_PLAYERS)
     def test_named_reopened_pick_exists(self, player):
