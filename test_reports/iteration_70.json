@@ -1,0 +1,52 @@
+{
+  "summary": "MLB cross-source grading validator extension verified end-to-end via pytest (35/38 passed, backend-only per request). All 9 review items ran. GREEN: (1) grading_validator module imports & exposes verify_recent_goalscorer_grades, verify_recent_mlb_grades, grading_validator_loop, _mlb_verify_prop; (2) _MLB_STAT_MAP contains all 7 required market families (hits, home run, total bases, rbi, runs scored, strikeouts, outs recorded) with correct MLB Stats API camelCase keys; (3) _mlb_verify_prop parses each required market family without raising, and correctly early-returns None on missing selection/event_time/unknown family; (4) grading_validator_loop source calls BOTH verify_recent_goalscorer_grades AND verify_recent_mlb_grades per cycle; (5) DB spot-check: 84 picks currently carry grade_disagreement — 82 of them MLB (matches the claim of 82 mismatches on iter 70 startup); (6) all 4 named MLB players (Zack Wheeler, Trea Turner, Francisco Lindor, Noah Schultz) on 2026-07-12 slate have rows with grade_disagreement/grade_verified_at populated; (7) /api/picks/history?days=30 returned 200 with 1221 dated picks, 0 out-of-order pairs (sort regression intact); (8) all 6 FanDuel-verified WON soccer picks show won (Robbie Ure, Isak Bjerkebo, Paulos Abraham, Erik Botheim, Mikkel Ladefoged, Kristian Lien) and both LOST picks show lost (Kasper Høgh, Peter Christiansen); (9) MLB Stats API upstream reachable. RED (3 failed, CRITICAL): the 82 reopened MLB picks were re-settled by the settler back to the SAME wrong grade — Zack Wheeler 2026-07-12 has 10 strikeouts + 18 outs per MLB Stats API (both Over 5.5 K and Over 17.5 Outs must be WON), but the DB shows status='lost' with grade_disagreement=True. All 82 MLB picks with grade_disagreement have status won/lost (0 pending) — the validator caught the mismatch and reopened, but the settler regraded to the same wrong answer, so the user-facing history is still incorrect. The validator's self-healing loop is a no-op until the underlying MLB grading logic is fixed.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "prop_settlement / settlement_engine (MLB pitcher props)",
+        "issue": "82 MLB picks reopened by grading_validator got re-settled to the SAME wrong grade. Concrete case: Zack Wheeler 2026-07-12 pitched 10 K / 18 outs (MLB Stats API confirmed). Picks 'Over 5.5 Strikeouts' and 'Over 17.5 Outs Recorded' show status='lost' with grade_disagreement={our_grade_was: lost, mlb_statsapi_said: won}. Distribution: 57 lost + 25 won of the 82 flagged. All 82 have populated settled_at (re-settle happened) but grade_disagreement is stale. Validator will re-open them again on next cycle — infinite oscillation.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "grading_validator._run_cross_check (agreement branch)",
+        "issue": "When post-reopen re-settle produces a grade that AGREES with MLB Stats API, the code sets grade_verified_at + grade_verify_result='agreed' but does NOT $unset the (now-stale) grade_disagreement field. Downstream monitors that key off grade_disagreement will see false positives."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_mlb_grading_validator_iter70.py",
+    "/app/test_reports/pytest/iter70_mlb_grading.xml"
+  ],
+  "action_items": [
+    "Fix the MLB pitcher-prop settler (prop_settlement.py / settlement_engine.py) so it produces the correct grade for Wheeler-style pitcher props. The validator has been telling us for a full cycle that 82 picks are wrong; the settler keeps re-writing the wrong answer. Look at how strikeOuts / outs are pulled from MLB Stats API boxscore vs the current source (ESPN?) — the discrepancy suggests either wrong player match, wrong game match, or a stat field mismatch.",
+    "Investigate why 25 of 82 disagreements went the other way (our_grade=won, MLB=lost) — those bets need to flip lost.",
+    "In grading_validator._run_cross_check, when result==current (agreement) after a prior disagreement, `$unset` the grade_disagreement field so downstream doesn't see stale flags.",
+    "Optional: run settle_due_picks after the fix and re-run this test file — expect TestReopenedPickRegrade to go GREEN (all 3 tests) and 82 → 0 stale flags."
+  ],
+  "critical_code_review_comments": [
+    "grading_validator.py:212-223 reopen path — correctly $sets status=pending, adds grade_disagreement, $unsets settled_at/settle_source/settle_reason. Contract is sound.",
+    "grading_validator.py:196-201 agreement path — sets grade_verified_at/source/result but does NOT clear grade_disagreement. If a pick was reopened, then correctly regraded, then re-checked, the stale grade_disagreement stays forever. Minor but cosmetic-in-DB.",
+    "grading_validator.py:105 `_MLB_STATS_BASE.replace('/v1','/v1')` is a no-op — vestigial code, safe to remove for clarity.",
+    "grading_validator.py:83-101 game match uses substring-in-both-directions team-name compare. For teams like 'Athletics' this could match multiple teams; consider using team ID from the fixture where possible.",
+    "grading_validator.py:157-170 verify_recent_mlb_grades regex covers Strikeouts/Hits/Home Run/Total Bases/RBI/Outs Recorded but NOT 'Runs Scored' — the _MLB_STAT_MAP has runs_scored but the DB query pattern doesn't include it, so 'Runs Scored' props will never be cross-checked. Add `|Runs Scored` to the regex.",
+    "picks_routes.py history endpoint sort intact (0 out-of-order pairs across 1221 rows)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_mlb_grading_validator_iter70.py (new)",
+    "/app/test_reports/pytest/iter70_mlb_grading.xml (new)"
+  ],
+  "success_rate": {"backend": "92% (35/38, 3 CRITICAL failures expose user-facing grading bug)", "frontend": "skipped-per-request"},
+  "seed_data_creation": "None — used demo@lockscore.ai / demo123 credentials and live DB + live MLB Stats API.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Regression suite: /app/backend/tests/test_mlb_grading_validator_iter70.py — reuse. TestReopenedPickRegrade is the acceptance gate for the settler fix. It uses _run_with_db() which creates a fresh Motor client per call so it survives pytest's per-test event loop. Fanduel soccer regression tests use Nordic-character folding + last-name substring — resilient to selection-string variations. The Wheeler-specific tests query BOTH selection AND market fields because the DB stores the human-readable string in `market` (e.g. 'Zack Wheeler (PHI) Over 5.5 Strikeouts  · ALT LOCK').",
+  "rca_of_issue": "ROOT CAUSE (grading regression on MLB pitcher props): The grading_validator built in iter 70 is working correctly — it queries MLB Stats API and correctly flags the 82 grading mismatches. However, the reopening it does is a NO-OP end-to-end because the underlying MLB settler (prop_settlement.py / settlement_engine.py) uses the same buggy grade path when it re-processes the reopened pick, so status flips pending → lost → grade_disagreement=True (stale). Concrete evidence: MLB Stats API returns Zack Wheeler 2026-07-12 strikeOuts=10, outs=18. System shows Over 5.5 K = lost, Over 17.5 Outs = lost. The user's original complaint ('I want all picks on board to grade correctly') is still visible in production data for at least 82 recent picks. REPRODUCTION: `python3 -c \"import httpx; r=httpx.get('https://statsapi.mlb.com/api/v1/schedule',params={'sportId':1,'date':'2026-07-12'}); print(r.json()['dates'][0]['games'][0]['gamePk'])\"` → boxscore → confirm Wheeler stats vs DB. MITIGATION: E1 needs to (a) audit the MLB pitcher-prop stat extraction in the settler and align it to statsapi.mlb.com boxscore (canonical first-party source), (b) after the fix, force-resettle the 82 flagged picks — the validator will confirm the fix on the next cycle by clearing grade_disagreement."
+}
