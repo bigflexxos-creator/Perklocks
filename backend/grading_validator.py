@@ -102,7 +102,7 @@ async def _mlb_verify_prop(pick: dict) -> Optional[str]:
         if not game_pk:
             return None
         async with httpx.AsyncClient(timeout=15) as cx:
-            r2 = await cx.get(f"{_MLB_STATS_BASE.replace('/v1','/v1')}/game/{game_pk}/boxscore")
+            r2 = await cx.get(f"{_MLB_STATS_BASE}/game/{game_pk}/boxscore")
         boxscore = r2.json() or {}
     except Exception as e:
         logger.debug("MLB boxscore fetch failed: %s", e)
@@ -110,6 +110,13 @@ async def _mlb_verify_prop(pick: dict) -> Optional[str]:
 
     # Search both team rosters for the player
     pname_norm = player_name.lower().strip()
+    # Position-aware block routing — see prop_settlement._mlb_stat_for_player
+    # for the full rationale. Wrong-block routing was the original grading
+    # regression that made 82 Wheeler-style picks grade lost when they won.
+    _BATTING_ONLY = {"hits", "homeRuns", "rbi", "totalBases", "doubles", "triples"}
+    _PITCHING_ONLY = {"outs", "inningsPitched", "earnedRuns", "wins",
+                       "losses", "saves", "holds", "battersFaced"}
+    _AMBIGUOUS = {"strikeOuts", "baseOnBalls", "runs", "hitByPitch"}
     for side in ("home", "away"):
         players = ((boxscore.get("teams") or {}).get(side) or {}).get("players") or {}
         for pdoc in players.values():
@@ -117,8 +124,17 @@ async def _mlb_verify_prop(pick: dict) -> Optional[str]:
             full = (person.get("fullName") or "").lower()
             if pname_norm and (pname_norm in full or full in pname_norm):
                 stats = pdoc.get("stats") or {}
-                # Try both batting and pitching stat blocks.
-                for block in ("batting", "pitching"):
+                position = ((pdoc.get("position") or {}).get("abbreviation") or "").upper()
+                is_pitcher = position in ("P", "SP", "RP", "TWP")
+                if stat_key in _BATTING_ONLY:
+                    blocks = ("batting",)
+                elif stat_key in _PITCHING_ONLY:
+                    blocks = ("pitching",)
+                elif stat_key in _AMBIGUOUS:
+                    blocks = ("pitching", "batting") if is_pitcher else ("batting", "pitching")
+                else:
+                    blocks = ("batting", "pitching")
+                for block in blocks:
                     block_stats = stats.get(block) or {}
                     if stat_key in block_stats:
                         actual = float(block_stats[stat_key] or 0)
@@ -161,7 +177,7 @@ async def verify_recent_mlb_grades(db, *, window_min: int = VERIFY_WINDOW_MIN) -
     q = {
         "sport": "MLB",
         "market": {"$regex":
-            r"Strikeouts?|Hits|Home Run|Total Bases|RBI|Outs Recorded",
+            r"Strikeouts?|Hits|Home Run|Total Bases|RBI|Outs Recorded|Runs Scored|Walks",
             "$options": "i"},
         "status": {"$in": ["won", "lost", "push"]},
         "settled_at": {"$gte": cutoff_iso},
@@ -193,12 +209,20 @@ async def _run_cross_check(db, query: dict, verifier, source_label: str) -> dict
         current = p.get("status")
         if result == current:
             summary["agreed"] += 1
-            await db.picks.update_one(
-                {"id": p.get("id")},
-                {"$set": {"grade_verified_at": datetime.now(timezone.utc).isoformat(),
-                          "grade_verify_source": source_label,
-                          "grade_verify_result": "agreed"}},
-            )
+            update: dict = {
+                "$set": {
+                    "grade_verified_at": datetime.now(timezone.utc).isoformat(),
+                    "grade_verify_source": source_label,
+                    "grade_verify_result": "agreed",
+                },
+            }
+            # If this pick had a prior disagreement flag, clear it now that
+            # the settler produced the correct grade on the retry — otherwise
+            # downstream monitors keyed on `grade_disagreement` see stale
+            # positives forever (iter 70 cosmetic-bug finding).
+            if p.get("grade_disagreement"):
+                update["$unset"] = {"grade_disagreement": ""}
+            await db.picks.update_one({"id": p.get("id")}, update)
             continue
         summary["mismatched"] += 1
         summary["mismatches"].append({

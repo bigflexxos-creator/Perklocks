@@ -136,13 +136,18 @@ def _extract_line(market: str) -> Optional[tuple[float, str]]:
 # Map the human market text we render in picks to a (stat-key, source) pair.
 # Keys are matched in priority order against the LOWERCASED market text.
 _MARKET_STATS: list[tuple[str, str]] = [
-    # MLB
+    # MLB — order matters, "total bases" must come before "hits" wouldn't
+    # collide but "runs scored" must come before "runs" alone won't match
+    # "home runs" first (since that's listed above).
     ("outs recorded", "mlb.outs"),
     ("pitcher outs",  "mlb.outs"),
+    ("total bases", "mlb.totalBases"),
     ("home runs",   "mlb.homeRuns"),
+    ("home run",    "mlb.homeRuns"),   # singular alt-line form
     ("strikeouts",  "mlb.strikeOuts"),
     ("walks",       "mlb.baseOnBalls"),
     ("rbi",         "mlb.rbi"),
+    ("runs scored", "mlb.runs"),
     ("runs",        "mlb.runs"),
     ("hits",        "mlb.hits"),
     # Basketball / hockey shared
@@ -206,21 +211,29 @@ async def _mlb_boxscore(cx: httpx.AsyncClient, game_pk: int) -> Optional[dict]:
     return r.json()
 
 
-def _mlb_find_game(games: list[dict], away: str, home: str) -> Optional[dict]:
+def _mlb_find_game(
+    games: list[dict],
+    away: str,
+    home: str,
+    *,
+    event_time: Optional[str] = None,
+) -> Optional[dict]:
     """Match (away, home) to an MLB Stats API game object.
 
     Ordering matters when two candidates share the same teams — e.g. the
-    Giants @ Rockies play the same matchup on 07-03 AND 07-04 (a series).
+    Phillies @ Tigers play the same matchup on 07-11 AND 07-12 (a series).
     When the caller merged today + yesterday's schedules (see the
-    `_settle_group` MLB branch), both games are in the list, and the
-    naïve "return first match" logic ended up returning tomorrow's
-    Preview game and skipping settlement forever.
+    `_settle_group` MLB branch), both games are in the list.
 
-    Fix (2026-07-04): collect ALL identity matches and prefer:
-        1. abstractGameState == "Final"
-        2. abstractGameState == "Live"
-        3. anything else (Preview, Scheduled, Postponed, …)
-    Within the same priority tier we take the earliest by gameDate.
+    Selection priority (updated 2026-07-13 after the Wheeler
+    "wrong-game-in-series" grading regression):
+        1. abstractGameState == "Final" > "Live" > everything else
+        2. Within the same tier, if `event_time` is provided, prefer the
+           game whose gameDate is closest to it (this fixes the 07-11 vs
+           07-12 series-selection bug where the earliest-Final game was
+           being picked even when the pick clearly targeted the 07-12 game
+           and Wheeler wasn't even on the roster for 07-11).
+        3. Otherwise fall back to earliest gameDate.
     """
     an, hn = _norm(away), _norm(home)
     matches: list[dict] = []
@@ -239,10 +252,39 @@ def _mlb_find_game(games: list[dict], away: str, home: str) -> Optional[dict]:
     if len(matches) == 1:
         return matches[0]
 
+    # Parse event_time to a datetime for distance-based ranking.
+    et_dt: Optional[datetime] = None
+    if event_time:
+        try:
+            et_dt = datetime.fromisoformat(event_time.replace("Z", "+00:00"))
+            if et_dt.tzinfo is None:
+                et_dt = et_dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            et_dt = None
+
+    def _game_dt(g: dict) -> Optional[datetime]:
+        gd = g.get("gameDate") or ""
+        if not gd:
+            return None
+        try:
+            d = datetime.fromisoformat(gd.replace("Z", "+00:00"))
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=timezone.utc)
+            return d
+        except Exception:
+            return None
+
     def _prio(g: dict) -> tuple:
         state = ((g.get("status") or {}).get("abstractGameState") or "").lower()
         tier = 0 if state == "final" else (1 if state == "live" else 2)
-        return (tier, g.get("gameDate") or "")
+        gd = _game_dt(g)
+        # Distance to event_time (secs) as the secondary key when available.
+        if et_dt and gd:
+            dist = abs((gd - et_dt).total_seconds())
+        else:
+            dist = 0.0
+        # Tertiary: earliest gameDate (ISO string sorts chronologically).
+        return (tier, dist, g.get("gameDate") or "")
 
     matches.sort(key=_prio)
     return matches[0]
@@ -251,24 +293,39 @@ def _mlb_find_game(games: list[dict], away: str, home: str) -> Optional[dict]:
 def _mlb_stat_for_player(box: dict, player_name: str, stat_key: str) -> Optional[float]:
     """stat_key is like 'mlb.hits'.
 
-    Returns the player's stat value. Critical edge case fixed here:
-    when the player IS on the roster but did NOT play (empty batting/pitching
-    block — happens with bench scratches, late-arrival rosters, and games
-    where a bullpen pitcher prop never came in), the upstream MLB Stats API
-    response still includes the player under teams.{side}.players but the
-    `batting` and `pitching` blocks are empty dicts.
+    Returns the player's stat value. Two critical edge cases handled:
 
-    Previously we returned None in that case, which made the settlement engine
-    SKIP the pick (status stayed pending forever — the Friday→Saturday "still
-    on Friday" bug the user reported). Sportsbooks resolve a DNP / no-at-bat
-    Over prop as a LOSS under standard "Action" rules (you bet on a stat that
-    didn't materialise → you lose). We now return 0.0 in that case so the
-    grader can settle it. If we ever want PUSH-on-DNP semantics, change the
-    sentinel here and teach `_grade` to honour it.
+    1) Batting vs pitching disambiguation (2026-07-13 fix).
+       The MLB Stats API stores the SAME key (`strikeOuts`, `baseOnBalls`,
+       `runs`) in BOTH the batting and pitching blocks with completely
+       different meanings — for a pitcher, pitching.strikeOuts = Ks thrown,
+       batting.strikeOuts = times he struck out at the plate. Previously we
+       iterated ("batting", "pitching") and returned the first match, which
+       silently graded pitcher Strikeouts / Walks props off the wrong block
+       whenever both were populated. We now route by position:
+         • Pitchers  → check pitching block first for K / BB / runs
+         • Hitters   → check batting  block first for those same keys
+         • Pitching-only stats (outs recorded) → pitching only
+         • Batting-only stats (hits, HR, RBI, totalBases) → batting only
+
+    2) When the player IS on the roster but did NOT play (empty batting/
+       pitching block — bench scratches, bullpen pitchers who didn't come
+       in), the boxscore still includes them under teams.{side}.players but
+       every stat block is `{}`. We return 0.0 in that case so the grader
+       can settle the pick as a loss under standard "Action" rules instead
+       of leaving it pending forever.
     """
     field = stat_key.split(".", 1)[1]
     if not box:
         return None
+    # Which stat block(s) should we consult for this field?
+    _BATTING_ONLY = {"hits", "homeRuns", "rbi", "totalBases", "doubles", "triples"}
+    _PITCHING_ONLY = {"outs", "inningsPitched", "earnedRuns", "wins", "losses",
+                       "saves", "holds", "battersFaced"}
+    # Fields that live in BOTH blocks with different semantics — routed by
+    # player position at settlement time.
+    _AMBIGUOUS = {"strikeOuts", "baseOnBalls", "runs", "hitByPitch"}
+
     found_player = False
     for side in ("away", "home"):
         players = ((box.get("teams") or {}).get(side, {}).get("players") or {})
@@ -279,15 +336,27 @@ def _mlb_stat_for_player(box: dict, player_name: str, stat_key: str) -> Optional
                 continue
             found_player = True
             stats = pdata.get("stats") or {}
-            # Try canonical blocks first (batting, pitching). The MLB API uses
-            # identical keys ('strikeOuts', 'hits', etc.) in both.
-            for block in ("batting", "pitching"):
+            position = ((pdata.get("position") or {}).get("abbreviation") or "").upper()
+            is_pitcher = position in ("P", "SP", "RP", "TWP")
+
+            # Choose block priority
+            if field in _BATTING_ONLY:
+                blocks = ("batting",)
+            elif field in _PITCHING_ONLY:
+                blocks = ("pitching",)
+            elif field in _AMBIGUOUS:
+                blocks = ("pitching", "batting") if is_pitcher else ("batting", "pitching")
+            else:
+                blocks = ("batting", "pitching")
+
+            for block in blocks:
                 section = stats.get(block) or {}
                 if field in section:
                     try:
                         return float(section[field])
                     except (TypeError, ValueError):
                         return None
+
             # Field-level fallback (some stats live under non-canonical keys).
             for _block_name, block in stats.items():
                 if isinstance(block, dict) and field in block:
@@ -853,7 +922,7 @@ async def _settle_group(cx, db, sport: str, date_str: str, batch: list[dict], co
             if not away or not home:
                 counts["skipped"] += 1
                 continue
-            game = _mlb_find_game(games, away, home)
+            game = _mlb_find_game(games, away, home, event_time=p.get("event_time"))
             if not game:
                 counts["skipped"] += 1
                 continue
@@ -1157,6 +1226,32 @@ def _player_from_market(market: str) -> str:
 
 
 async def _record(db, pick: dict, outcome: str, detail: dict, counts: dict):
+    # ── Authoritative MLB cross-check (2026-07-13 user mandate: "I want
+    # all picks on board to grade correctly across all sports"). Some
+    # code paths in `settle_player_props` silently return stat_value=0.0
+    # for pitcher-K / outs-recorded / hits props even when MLB Stats API
+    # shows the real value (Zack Wheeler 10 Ks graded as 0). Rather than
+    # chase every settle-loop edge case, ALWAYS verify MLB player-prop
+    # grades against MLB Stats API right before we persist them. If the
+    # authoritative source disagrees, override.
+    if (pick.get("sport") == "MLB"
+            and outcome in ("won", "lost", "push")):
+        try:
+            from grading_validator import _mlb_verify_prop
+            authoritative = await _mlb_verify_prop(pick)
+            if authoritative in ("won", "lost", "push") and authoritative != outcome:
+                logger = __import__("logging").getLogger("lockscore.prop_settlement")
+                logger.warning(
+                    "MLB grade OVERRIDE via Stats API: %s → %s for %s",
+                    outcome, authoritative, pick.get("market"),
+                )
+                outcome = authoritative
+                detail = {**(detail or {}),
+                          "override_from": outcome,
+                          "override_reason": "mlb_statsapi_disagreement"}
+        except Exception:
+            pass    # cross-check is best-effort; don't block settlement
+
     # Compute analytics-side fields the same way settlement_engine does so
     # the model-performance dashboard treats every settled pick uniformly.
     try:
