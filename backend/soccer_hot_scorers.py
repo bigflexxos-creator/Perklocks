@@ -238,6 +238,16 @@ async def sync_hot_scorers(db, days_ahead: int = 4) -> dict:
                 "created_at":      now.isoformat(),
                 "is_extra":        True,
                 "fair_odds_model": True,
+                # ── Settlement lifecycle fields (2026-07-13 permanent fix) ──
+                # Without these, hot-scorer picks landed in the DB with
+                # NO `status` field at all — invisible to every settler
+                # (they all filter by `status ∈ [None, "pending"]`, which
+                # matches None too, BUT the picks also lacked `event`
+                # normalisation for Nordic names so they silently piled
+                # up. Explicit "pending" + auto_settle=True makes them
+                # first-class settlement citizens same as any other pick.
+                "status":          "pending",
+                "auto_settle":     True,
                 "sport_key":       fx["sport_key"],
                 # Real scorer-form evidence — consumed by the quality
                 # gate's AGS Rule 4 ("no form evidence" block) and the
