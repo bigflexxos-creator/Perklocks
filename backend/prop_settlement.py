@@ -594,6 +594,11 @@ def _espn_did_score_goal(summary: dict, player_name: str) -> Optional[bool]:
     "Goal! Team 1, Team 0. Player Name (Team) ..."). Older endpoints used
     `scoringPlays`/`plays`. We check all three so we work against whichever
     shape the API returns for a given match.
+
+    Returns:
+      True  — player was found in a Goal play → confirmed scored
+      False — plays were present and player wasn't in them → confirmed NOT scored
+      None  — no play detail available at all (unknown, DON'T grade)
     """
     if not summary:
         return None
@@ -608,6 +613,26 @@ def _espn_did_score_goal(summary: dict, player_name: str) -> Optional[bool]:
     for ev in summary.get("keyEvents") or []:
         if (ev.get("type") or {}).get("text", "").strip().lower().startswith("goal"):
             plays.append(ev)
+    # ── Data-coverage guard (2026-07-13 user report: "Kristian Lien
+    # scored but graded as lost"). ESPN doesn't publish goal-scorer
+    # detail for every league. Allsvenskan / Eliteserien / lower-tier
+    # comps often return an empty play feed even for 3-0 games. If we
+    # have NO plays at all AND the final score shows the pick's team
+    # actually scored, we can't verify → return None so the caller
+    # voids instead of grading LOST. Confirmed-zero-goal games (0-0
+    # matches with an empty feed) still grade False.
+    if not plays:
+        try:
+            hdr = summary.get("header") or {}
+            comps = ((hdr.get("competitions") or [{}])[0]
+                     .get("competitors") or [])
+            total_goals = 0
+            for c in comps:
+                total_goals += int(c.get("score") or 0)
+            if total_goals > 0:
+                return None    # game had goals but ESPN doesn't tell us who
+        except Exception:
+            return None        # data broken → don't grade
     found_any = False
     found_first: Optional[str] = None
     for p in plays:

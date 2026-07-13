@@ -351,7 +351,35 @@ async def settle_soccer_leg(leg: dict) -> Optional[str]:
         summary = await _fetch_summary(league, ev.get("id"))
         if not summary:
             return None
-        return _settle_scorer_market(summary, selection, market_lower)
+        result = _settle_scorer_market(
+            summary, selection, market_lower,
+            total_goals=total_goals,
+        )
+        # ── FotMob fallback (2026-07-13 user report: "Kristian Lien
+        # scored but graded lost"). ESPN doesn't publish goal-scorer
+        # detail for Allsvenskan / Eliteserien / most non-top-5 leagues.
+        # When ESPN can't verify (result is None), fall through to
+        # FotMob which has universal Nordic coverage.
+        if result is None:
+            try:
+                from soccer_fotmob_settle import settle_soccer_leg as _fotmob
+                leg = {
+                    "sport":      "Soccer",
+                    "event":      f"{away_team} @ {home_team}",
+                    "market":     market,
+                    "selection":  selection,
+                    "event_time": event_time,
+                }
+                fot_result = await _fotmob(leg)
+                if fot_result in ("won", "lost", "push"):
+                    logger.info(
+                        "Soccer goalscorer settled via FotMob fallback: %s (%s) → %s",
+                        selection, market, fot_result,
+                    )
+                    return fot_result
+            except Exception as e:
+                logger.debug("FotMob fallback failed for %s: %s", selection, e)
+        return result
 
     # ─── Moneyline ───────────────────────────────────────────────────
     if "moneyline" in market_lower:
@@ -423,21 +451,39 @@ async def settle_soccer_leg(leg: dict) -> Optional[str]:
 # ──────────────────────────────────────────────────────────────────────
 # Goal-scorer settlement helpers
 # ──────────────────────────────────────────────────────────────────────
-def _settle_scorer_market(summary: dict, selection: str, market_lower: str) -> Optional[str]:
+def _settle_scorer_market(
+    summary: dict, selection: str, market_lower: str,
+    *, total_goals: int = -1,
+) -> Optional[str]:
     """Resolve goal-scorer style markets from an ESPN /summary payload.
 
     The `keyEvents` array contains every meaningful event; goals are
     flagged with `scoringPlay: true` and we can read the scorer name
     out of `participants[].athlete.displayName` or fall back to the
     natural-language `text` field.
+
+    Returns:
+      "won" / "lost" — confidently graded
+      None           — cannot verify (caller should try FotMob fallback)
+
+    Ambiguity guard (2026-07-13): ESPN doesn't publish goal-scorer
+    detail for Allsvenskan / Eliteserien / lower-tier competitions.
+    When the scoreboard shows the match had goals but keyEvents has
+    NO scorer entries at all, we return None instead of grading LOST
+    — so the caller can fall through to FotMob (which has universal
+    coverage). Genuine 0-0 draws still grade LOST correctly because
+    total_goals == 0.
     """
     if not selection:
         return None
     key_events = summary.get("keyEvents") or []
     scorers = _extract_scorers(key_events)
     if not scorers:
-        # No goals at all — every "Anytime Goal Scorer" pick loses.
         if "anytime" in market_lower or "goal scorer" in market_lower:
+            if total_goals > 0:
+                # Match had goals but ESPN doesn't know who scored — abstain.
+                return None
+            # 0-0 draw (or unknown score) — every "Anytime" pick loses.
             return "lost"
         return None
     if _scorer_match(selection, scorers):
@@ -487,19 +533,57 @@ def _extract_scorers(key_events: list[dict]) -> list[str]:
 
 def _scorer_match(selection: str, scorers: list[str]) -> bool:
     """True if `selection` matches any scorer name (accent + case insensitive,
-    last-name fallback)."""
+    handles middle names, initials, and pick-suffix noise).
+
+    Fixes covered (2026-07-13 root-cause "Kristian Lien graded lost"):
+      • Strip trailing pick-market noise ("to score", "to score or assist",
+        "anytime goal scorer", etc.) so `sel_last` is the actual player
+        surname, not the word "score".
+      • Match on FIRST + LAST name both appearing in ESPN's scorer string,
+        even when a middle name splits them ("Kristian Lien" ⊂
+        "Kristian Stromland Lien"). This is the #1 grading regression
+        source — Nordic and Latin American players routinely use middle
+        names in official broadcast feeds.
+    """
     sel = _norm(selection)
     if not sel:
         return False
-    sel_last = sel.split()[-1]
+    # Trim market-suffix noise so we compare "kristian lien" not
+    # "kristian lien to score" (which turned sel_last into "score").
+    for suffix in (
+        " to score or assist", " to score", " anytime goal scorer",
+        " goal scorer", " score or assist", " to score & assist",
+    ):
+        if sel.endswith(suffix):
+            sel = sel[: -len(suffix)].strip()
+            break
+    if not sel:
+        return False
+    sel_parts = sel.split()
+    sel_first = sel_parts[0] if sel_parts else ""
+    sel_last  = sel_parts[-1] if sel_parts else ""
     for s in scorers:
         ns = _norm(s)
+        if not ns:
+            continue
+        # Exact match
         if ns == sel:
             return True
         # Bidirectional substring (handles "C. Ronaldo" vs "Cristiano Ronaldo")
         if (sel in ns) or (ns in sel):
             return True
-        if ns.split()[-1] == sel_last and len(sel_last) >= 4:
+        ns_parts = ns.split()
+        # Last-name only match (min 4 chars so we don't match "Silva" everywhere)
+        if len(sel_last) >= 4 and ns_parts and ns_parts[-1] == sel_last:
+            return True
+        # First + last both present anywhere in the scorer's name string.
+        # Critical for middle-name cases: "Kristian Lien" ⊂ "Kristian
+        # Stromland Lien" (first token match + last token match, middle
+        # name in between). Requires both tokens ≥ 3 chars so the
+        # short-form pattern doesn't false-match ("A. Silva" vs
+        # "Andre Silva" already handled by substring above).
+        if (len(sel_first) >= 3 and len(sel_last) >= 4
+                and sel_first in ns_parts and sel_last in ns_parts):
             return True
     return False
 

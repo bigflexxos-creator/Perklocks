@@ -3858,6 +3858,19 @@ async def on_startup():
     except Exception as e:
         logger.warning("Tennis Extra settler failed to start: %s", e)
 
+    # ── Grading Validator (permanent history-accuracy guardrail 2026-07-13) ──
+    # Cross-checks recently-graded soccer goalscorer picks against
+    # FotMob (independent source). On disagreement, reopens the pick
+    # for re-settlement with the fixed logic. This is the self-healing
+    # loop that catches grading regressions the moment they happen
+    # instead of days later when a user notices.
+    try:
+        from grading_validator import grading_validator_loop
+        _deferred_task(lambda: grading_validator_loop(db), DEFER_BASE * 7)
+        logger.info("Grading Validator armed (1-hour loop, FotMob cross-check)")
+    except Exception as e:
+        logger.warning("Grading Validator failed to start: %s", e)
+
     # ── Stuck-Pick Reaper (permanent history guardrail 2026-07-13) ──
     # Voids any pick left as `pending` (or with a missing status field)
     # >48h after its event_time. Prevents any settler bug / name-match
