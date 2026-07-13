@@ -349,18 +349,26 @@ async def settle_soccer_leg(leg: dict) -> Optional[str]:
     # ─── Anytime Goal Scorer ─────────────────────────────────────────
     if "goal scorer" in market_lower or "to score or assist" in market_lower or "score & assist" in market_lower:
         summary = await _fetch_summary(league, ev.get("id"))
-        if not summary:
-            return None
-        result = _settle_scorer_market(
-            summary, selection, market_lower,
-            total_goals=total_goals,
-        )
-        # ── FotMob fallback (2026-07-13 user report: "Kristian Lien
-        # scored but graded lost"). ESPN doesn't publish goal-scorer
-        # detail for Allsvenskan / Eliteserien / most non-top-5 leagues.
-        # When ESPN can't verify (result is None), fall through to
-        # FotMob which has universal Nordic coverage.
-        if result is None:
+        result: Optional[str] = None
+        if summary:
+            result = _settle_scorer_market(
+                summary, selection, market_lower,
+                total_goals=total_goals,
+            )
+        # ── FotMob PRIMARY for Nordic + fallback everywhere else ──
+        # ESPN's goal-scorer detail is unreliable for Allsvenskan /
+        # Eliteserien / Superliga / Veikkausliiga — they routinely
+        # publish "Kristian Stromland Lien" one match and just the
+        # score another. FotMob has universal Nordic coverage from
+        # first-party feeds. So for Nordic leagues we ALWAYS consult
+        # FotMob (and prefer its answer when it differs from ESPN).
+        # For other leagues, FotMob is only consulted when ESPN can't
+        # verify (result is None).
+        is_nordic = any(k in (league or "").lower() for k in (
+            "nor.1", "swe.1", "den.1", "fin.1",
+            "allsvenskan", "eliteserien", "superligaen", "veikkausliiga",
+        ))
+        if is_nordic or result is None:
             try:
                 from soccer_fotmob_settle import settle_soccer_leg as _fotmob
                 leg = {
@@ -372,13 +380,14 @@ async def settle_soccer_leg(leg: dict) -> Optional[str]:
                 }
                 fot_result = await _fotmob(leg)
                 if fot_result in ("won", "lost", "push"):
-                    logger.info(
-                        "Soccer goalscorer settled via FotMob fallback: %s (%s) → %s",
-                        selection, market, fot_result,
-                    )
+                    if result and result != fot_result:
+                        logger.warning(
+                            "Nordic grade override — ESPN=%s → FotMob=%s for %s (%s)",
+                            result, fot_result, selection, market,
+                        )
                     return fot_result
             except Exception as e:
-                logger.debug("FotMob fallback failed for %s: %s", selection, e)
+                logger.debug("FotMob primary/fallback failed for %s: %s", selection, e)
         return result
 
     # ─── Moneyline ───────────────────────────────────────────────────

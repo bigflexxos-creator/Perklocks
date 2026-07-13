@@ -35,13 +35,13 @@ from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("lockscore.stuck_pick_reaper")
 
-# Void picks whose event_time is >= 48h in the past. Chosen so:
-#   • Normal settlement cycles (15 min soccer, 5 min MLB, 30 min tennis
-#     extra) have plenty of time to converge for any pick that lands
-#     from a match played "yesterday" or "the day before".
+# Void picks whose event_time is >= 72h in the past. Chosen so:
+#   • Normal settlement cycles have plenty of time to converge,
+#   • FotMob primary + ESPN fallback grading has time to complete,
 #   • Overnight backlog after a service outage doesn't get nuked
-#     prematurely (we typically catch back up within a few hours).
-_STUCK_HOURS = 48
+#     prematurely (we typically catch back up within a few hours),
+#   • 3-day window still keeps the History tab clean.
+_STUCK_HOURS = 72
 
 _REAP_INTERVAL_SECS = 30 * 60      # 30 min cadence
 

@@ -1,0 +1,35 @@
+{
+  "summary": "Nordic goalscorer grading + history sort fixes verified end-to-end via 15/15 pytest cases (backend only, per request). /api/picks/history?days=30 returns 200 with picks correctly sorted by event_time desc (zero out-of-order pairs across all rows), and correctly excludes hide_from_main_board, no_bet, excluded_from_history, and status=void. All 6 WON picks from the 2026-07-12/13 FanDuel screenshot (Kristian Lien 07-13, Robbie Ure, Isak Bjerkebo, Paulos Abraham, Erik Botheim, Mikkel Ladefoged 07-12) now show status=won in history. Both LOST picks (Kasper Høgh, Peter Christiansen 07-12) show status=lost with no won duplicates. grading_validator.py imports cleanly (exposes verify_recent_goalscorer_grades + grading_validator_loop). stuck_pick_reaper.py imports cleanly with _STUCK_HOURS=72. soccer_espn_settle._grade_pick contains the Nordic-primary branch: `is_nordic` matches nor.1/swe.1/den.1/fin.1 + allsvenskan/eliteserien/superligaen/veikkausliiga and dispatches to soccer_fotmob_settle.settle_soccer_leg with 'if is_nordic or result is None' guarding the call. /api/picks/today?lite=true returned 200 with a populated picks list and IDs present — on_main_board_at bulk update_many stamp path (picks_routes.py:1662) is reachable (fire-and-forget so response body doesn't echo the stamp).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_nordic_grading_iter69.py",
+    "/app/test_reports/pytest/iter69_nordic.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "picks_routes.py:672 correctly sorts by event_time desc — verified against live payload (0 out-of-order pairs).",
+    "picks_routes.py:613-614 excludes hide_from_main_board / no_bet — verified against every returned pick.",
+    "picks_routes.py:1662-1666 uses update_many with {on_main_board_at: {$exists: False}} guard so first-surface timestamp is preserved across refreshes. Sound.",
+    "soccer_espn_settle.py:367-390 correctly makes FotMob PRIMARY for Nordic (not just fallback) — logs a warning on ESPN↔FotMob disagreement and returns FotMob's answer.",
+    "grading_validator.py cross-checks recent grades against FotMob independently; verified module contract."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_nordic_grading_iter69.py (new)",
+    "/app/test_reports/pytest/iter69_nordic.xml (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "skipped-per-request"},
+  "seed_data_creation": "None — used demo@lockscore.ai / demo123 and live history payload.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "The regression suite for this fix is /app/backend/tests/test_nordic_grading_iter69.py — reuse it. It matches picks by last-name substring with Nordic-character folding (Høgh↔Hogh) so it survives selection-string variations. TestFanDuelScreenshotGrading uses pytest.skip if a named pick is no longer in the 30-day window, so re-running weeks later will degrade gracefully instead of false-failing. history_picks fixture caches the payload across tests. /picks/today was warm (~1s); expect 60–180s cold.",
+  "rca_of_issue": "Not applicable — verification pass on shipped fixes. All acceptance criteria met."
+}
