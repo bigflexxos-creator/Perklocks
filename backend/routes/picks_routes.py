@@ -587,6 +587,15 @@ async def picks_history(
     one logical bet.
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    # Board-visibility deployment fence (2026-07-13). Picks whose
+    # pick_date is ON OR AFTER this date MUST have proof they were
+    # actually surfaced to the user — either main-board visibility
+    # (`on_main_board_at`), rollover slate (`on_rollover_at`), or
+    # one of the other feature-specific surface timestamps. This is
+    # the permanent fix for "history showing picks that were never
+    # on the board" (user report 2026-07-13). Older picks fall
+    # through the pre-stamper lock-score gates.
+    _BOARD_STAMP_FENCE = "2026-07-13"
     q: dict = {
         "settled_at": {"$gte": cutoff},
         # Hide voided picks (legacy soccer goalscorer payloads etc.)
@@ -595,6 +604,14 @@ async def picks_history(
         # W/L stats.
         "status": {"$nin": ["void"]},
         "excluded_from_history": {"$ne": True},
+        # Two board-invisibility flags — set by the generation pipeline
+        # to mark picks that were suppressed BEFORE they reached the
+        # user's screen (2026-07-13 sharpening: user report "history
+        # showing picks that were never on the board"). Excluding both
+        # cleans up the legacy long-tail without touching pre-fence
+        # picks that DID surface.
+        "hide_from_main_board": {"$ne": True},
+        "no_bet": {"$ne": True},
         # ── Board-floor gate (2026-07-01 update). Picks for many markets
         # that the LIVE feed filters out for low lock scores settle and
         # then leak into PICK HISTORY even though the user never saw them.
@@ -631,6 +648,24 @@ async def picks_history(
                  "market": {"$regex": r"Anytime Goal Scorer|To Score or Assist",
                              "$options": "i"},
                  "lock_score": {"$gte": 85}},
+            ]},
+            # ── Board-visibility gate (2026-07-13 permanent fix) ─────
+            # Picks generated on or after the stamper deployment date
+            # MUST have proof of surfacing to the user. Legacy picks
+            # (pick_date < fence) fall through unchanged so we don't
+            # nuke 30 days of existing history retroactively.
+            {"$or": [
+                {"pick_date": {"$lt": _BOARD_STAMP_FENCE}},
+                {"on_main_board_at": {"$exists": True}},
+                {"on_rollover_at":   {"$exists": True}},
+                {"on_under_at":      {"$exists": True}},
+                {"on_hr_board_at":   {"$exists": True}},
+                {"on_atd_board_at":  {"$exists": True}},
+                {"on_parlay_at":     {"$exists": True}},
+                # Feature-specific carve-out: elite-pitcher override
+                # picks are intentionally surfaced by name at generation
+                # time so they don't need main-board provenance.
+                {"elite_pitcher_override": True},
             ]},
         ],
     }
@@ -1601,6 +1636,30 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 ),
                 "suggestion":   "Switch to MAIN for moneyline picks.",
             }
+    # ── Board-visibility stamping (2026-07-13 permanent history fix) ──
+    # Every pick actually returned to the user gets `on_main_board_at`
+    # stamped fire-and-forget. The `/history` endpoint requires this
+    # stamp (or a similar surface-timestamp like `on_rollover_at`) for
+    # any pick whose `pick_date >= 2026-07-13`. This guarantees the
+    # History tab shows ONLY picks the user actually saw on their
+    # board — no more "60 Nordic picks I never had on my slate"
+    # leaks from below-floor Total Goals / Win-or-Draw / etc.
+    if canonical:
+        pick_ids = [p.get("id") for p in canonical if p.get("id")]
+        if pick_ids:
+            try:
+                stamp_iso = datetime.now(timezone.utc).isoformat()
+                # setOnInsert-style: only set if not already set, so the
+                # FIRST time a pick surfaces is preserved (not overwritten
+                # by every subsequent refresh).
+                await db.picks.update_many(
+                    {"id": {"$in": pick_ids},
+                     "on_main_board_at": {"$exists": False}},
+                    {"$set": {"on_main_board_at": stamp_iso}},
+                )
+            except Exception as e:
+                logger.debug("board-visibility stamping skipped: %s", e)
+
     return {"picks": canonical, "alt_availability": alt_availability}
 
 

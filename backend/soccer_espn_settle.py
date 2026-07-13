@@ -76,27 +76,130 @@ _DEAD_LEAGUES: set[str] = set()
 # ──────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────
+# Explicit transliteration for characters that NFD normalization DOESN'T
+# decompose. These are fully-composed glyphs (Unicode category "Ll"/"Lu"
+# rather than "Mn"), so the standard `unicodedata.normalize("NFD", s)`
+# followed by combining-mark strip leaves them untouched. Without this
+# table "Bodø/Glimt" (in-pipe) never equals "Bodo/Glimt" (ESPN feed),
+# and every Norwegian/Icelandic team stayed pending forever.
+_TRANSLIT = str.maketrans({
+    "ø": "o", "Ø": "O",   # Norwegian / Danish
+    "æ": "ae", "Æ": "AE",  # Norwegian / Danish / Icelandic / Old English
+    "å": "a", "Å": "A",   # Swedish / Norwegian / Danish / Finnish
+    "ð": "d", "Ð": "D",   # Icelandic / Faroese
+    "þ": "th", "Þ": "TH",  # Icelandic
+    "ß": "ss",             # German (safety)
+    "ł": "l", "Ł": "L",   # Polish (safety)
+})
+
+# Nordic team-name aliases. Norwegian / Swedish clubs use unofficial
+# abbreviations in some feeds ("HamKam" for Hamarkameratene, "MFF" for
+# Malmö FF, "AIK" for AIK Solna) that no amount of accent stripping /
+# substring matching can resolve. Populated from Eliteserien + Allsvenskan
+# official rosters. Key = alias (lowercase, accent-stripped); Value =
+# canonical ESPN displayName (lowercase, accent-stripped).
+_TEAM_ALIASES: dict[str, str] = {
+    # Norway (Eliteserien)
+    "hamkam":      "hamarkameratene",
+    "kfum":        "kfum oslo",
+    "brann":       "sk brann",
+    "start":       "ik start",
+    "viking":      "viking fk",
+    "sarpsborg":   "sarpsborg fk",
+    "sarpsborg 08": "sarpsborg fk",
+    "kbk":         "kristiansund bk",
+    "kristiansund": "kristiansund bk",
+    "molde":       "molde fk",
+    "rbk":         "rosenborg",
+    "rosenborg bk": "rosenborg",
+    "godset":      "strømsgodset",
+    "stromsgodset": "strømsgodset",
+    "haugesund":   "fk haugesund",
+    "tromso":      "tromsø",
+    "bodo glimt":  "bodo/glimt",
+    "bodo/glimt":  "bodo/glimt",
+    "fredrikstad": "fredrikstad fk",
+    # Sweden (Allsvenskan)
+    "aik":         "aik solna",
+    "djurgardens if": "djurgarden",
+    "djurgarden if": "djurgarden",
+    "hammarby if": "hammarby",
+    "hammarby": "hammarby",
+    "malmo ff":    "malmo ff",
+    "mff":         "malmo ff",
+    "goteborg":    "ifk goteborg",
+    "ifk gbg":     "ifk goteborg",
+    "elfsborg":    "if elfsborg",
+    "hacken":      "bk hacken",
+    "brommapojkarna": "if brommapojkarna",
+    "sirius":      "ik sirius",
+    "halmstad":    "halmstads bk",
+    "halmstads":   "halmstads bk",
+    "mjallby":     "mjallby aif",
+    "orebro":      "orebro sk",
+    "norrkoping":  "ifk norrkoping",
+    "varnamo":     "ifk varnamo",
+    "vasteras":    "vasteras sk",
+    "gais":        "gais goteborg",
+    # Denmark (Superliga) — same alias-heavy style
+    "fck":         "fc copenhagen",
+    "brondby":     "brondby if",
+    "midtjylland": "fc midtjylland",
+    "nordsjaelland": "fc nordsjaelland",
+    "silkeborg":   "silkeborg if",
+    "aalborg":     "aab aalborg",
+    "aab":         "aab aalborg",
+    "randers":     "randers fc",
+    "viborg":      "viborg ff",
+    # Finland (Veikkausliiga) — light coverage
+    "hjk":         "hjk helsinki",
+    "kupsu":       "kups kuopio",
+    "kups":        "kups kuopio",
+    "haka":        "fc haka",
+    "inter turku": "fc inter turku",
+}
+
+
 def _norm(s: str) -> str:
-    """Lower + accent-strip + alnum-only-space-pre­served."""
+    """Lower + Nordic transliterate + NFD accent-strip + alnum-only-with-space.
+
+    Two-stage normalization (2026-07-13 fix — user report "history not
+    grading Norway/Sweden goalscorers"):
+      1. Explicit transliteration for precomposed glyphs that don't
+         decompose under NFD (ø → o, æ → ae, å → a, ð → d, þ → th, ß → ss).
+      2. NFD-strip for the traditional Latin diacritics
+         (é → e, ü → u, ñ → n, ó → o, etc.).
+    """
     if not s:
         return ""
+    s = s.translate(_TRANSLIT)
     s = "".join(c for c in _ud.normalize("NFD", s) if _ud.category(c) != "Mn")
     return s.strip().lower()
+
+
+def _resolve_alias(name: str) -> str:
+    """Return the canonical name if `name` is a known Nordic alias,
+    else the input unchanged. Both keys and values are already
+    accent-stripped and lowercased by _norm.
+    """
+    return _TEAM_ALIASES.get(name, name)
 
 
 def _names_match(a: str, b: str) -> bool:
     """Tolerant name match.
 
     Treats "Operário PR" == "Operario PR", "Manchester United" == "Man United",
-    "Goiás" == "Goias", "São Bernardo" == "Sao Bernardo".
+    "Goiás" == "Goias", "São Bernardo" == "Sao Bernardo",
+    "Bodø/Glimt" == "Bodo/Glimt", "HamKam" == "Hamarkameratene".
 
-    Strategy: accent-strip both, then accept exact match, OR substring
-    match in either direction once we trim common suffixes (FC, CF, EC,
-    AC, SC, AFC, CFC, etc.) and any leading article ("Os ", "El ", "AL-").
+    Strategy: transliterate + accent-strip both, resolve Nordic
+    aliases, then accept exact match, OR substring match in either
+    direction once we trim common suffixes (FC, CF, EC, AC, SC, AFC,
+    CFC, etc.) and any leading article ("Os ", "El ", "AL-").
     """
     if not a or not b:
         return False
-    na, nb = _norm(a), _norm(b)
+    na, nb = _resolve_alias(_norm(a)), _resolve_alias(_norm(b))
     if not na or not nb:
         return False
     if na == nb:

@@ -3857,6 +3857,19 @@ async def on_startup():
         logger.info("Tennis Extra settler armed (30-min loop)")
     except Exception as e:
         logger.warning("Tennis Extra settler failed to start: %s", e)
+
+    # ── Stuck-Pick Reaper (permanent history guardrail 2026-07-13) ──
+    # Voids any pick left as `pending` (or with a missing status field)
+    # >48h after its event_time. Prevents any settler bug / name-match
+    # gap / silent failure from ever leaving picks stuck in limbo where
+    # they neither appear on the board (event has passed) nor in
+    # History (settlement never completed). Runs every 30 min.
+    try:
+        from stuck_pick_reaper import stuck_pick_reaper_loop
+        _deferred_task(lambda: stuck_pick_reaper_loop(db), DEFER_BASE * 6)
+        logger.info("Stuck-Pick Reaper armed (30-min loop, 48h stale threshold)")
+    except Exception as e:
+        logger.warning("Stuck-Pick Reaper failed to start: %s", e)
     # ── Tennis Fair-Odds Engine ─────────────────────────────────────
     # Elo + surface + form + fatigue for matches without book odds.
     try:
