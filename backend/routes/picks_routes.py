@@ -669,7 +669,7 @@ async def picks_history(
             ]},
         ],
     }
-    cursor = db.picks.find(q, {"_id": 0}).sort("settled_at", -1).limit(2000)
+    cursor = db.picks.find(q, {"_id": 0}).sort("event_time", -1).limit(2000)
     picks = await cursor.to_list(length=2000)
 
     # ─── Dedupe correlated historical picks ───
@@ -724,7 +724,14 @@ async def picks_history(
         elif (p.get("lock_score") or 0) == (ex.get("lock_score") or 0):
             if (p.get("book_odds") or -9999) > (ex.get("book_odds") or -9999):
                 best[k] = p
-    picks = sorted(best.values(), key=lambda p: p.get("settled_at") or "", reverse=True)
+    # 2026-07-13: sort by event_time (when game was played) not
+    # settled_at (when we graded it). Mass re-grades push old games
+    # to the top of the settled_at sort — but the user thinks of
+    # history in game-date order. Chronological event_time desc =
+    # what they see on FanDuel/DraftKings too.
+    picks = sorted(best.values(),
+                   key=lambda p: p.get("event_time") or "",
+                   reverse=True)
 
     settled = [p for p in picks if p.get("status") in ("won", "lost", "push")]
     won = sum(1 for p in settled if p.get("status") == "won")
