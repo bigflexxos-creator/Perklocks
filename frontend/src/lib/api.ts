@@ -811,7 +811,19 @@ export const api = {
     // document, so no UX regression. (Perf, 2026-06-25.)
     qs.set("lite", "true");
     const q = qs.toString();
-    return request<{ picks: Pick[] }>(`/picks/today${q ? `?${q}` : ""}`);
+    // 2026-07-13: Response now includes `alt_availability` diagnostic
+    // when the ALT tab is empty for a sport whose tournaments aren't
+    // covered by the book (e.g. tennis 250s). Frontend renders a
+    // friendly explanation instead of a bare "no picks" empty state.
+    return request<{
+      picks: Pick[];
+      alt_availability?: {
+        supported:  boolean;
+        reason:     string;
+        message:    string;
+        suggestion?: string;
+      } | null;
+    }>(`/picks/today${q ? `?${q}` : ""}`);
   },
   sportMarkets: (sport: string) =>
     request<{ sport: string; markets: SportMarket[]; leagues: SportLeague[] }>(

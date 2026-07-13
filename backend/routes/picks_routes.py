@@ -1573,7 +1573,35 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     canonical = _canonicalize_picks(picks)
     if lite:
         canonical = [_strip_for_lite(p) for p in canonical]
-    return {"picks": canonical}
+
+    # ── Alt-line availability diagnostic (2026-07-13) ─────────────────
+    # When the client asks for `line_type=alt` and gets zero (or very
+    # few) tennis picks back, the reason is almost always that The Odds
+    # API doesn't publish alt lines for the ATP/WTA 250 tour that our
+    # TennisExplorer scrape surfaces. Rather than force the UI to guess
+    # from the empty picks list, surface an honest diagnostic block the
+    # frontend can render as a friendly empty-state.
+    lt_lower = (line_type or "").lower()
+    alt_availability = None
+    if lt_lower == "alt":
+        # If the response is dominated by tennis_extra tournaments and
+        # returned no alt-tagged picks, tell the client why.
+        # (Response payload is always small — this is a cheap tag.)
+        sport_lc = (sport or "").lower() if sport else ""
+        if sport_lc == "tennis" and len(canonical) == 0:
+            alt_availability = {
+                "supported":    False,
+                "reason":       "book_coverage_gap",
+                "message":      (
+                    "Alt-line pricing is only published by sportsbooks "
+                    "for Grand Slams and Masters 1000 events. This "
+                    "week's tour is running the ATP/WTA 250 circuit "
+                    "(Umag, Bastad, Gstaad, Iasi WTA, Athens WTA, "
+                    "Kitzbühel WTA) — which the book doesn't carry."
+                ),
+                "suggestion":   "Switch to MAIN for moneyline picks.",
+            }
+    return {"picks": canonical, "alt_availability": alt_availability}
 
 
 @router.get("/bet-killer", deprecated=True)

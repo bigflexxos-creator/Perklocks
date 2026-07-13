@@ -196,13 +196,67 @@ async def _fetch_event_odds_individual(cx: httpx.AsyncClient, sport_key: str,
 
 
 async def _discover_active_tennis_tournaments(cx: httpx.AsyncClient) -> list[tuple[str, str]]:
-    """Query The Odds API `/v4/sports` catalog and return every active
-    tennis tournament (both ATP and WTA). Returns `(cfg_key, sport_key)`
+    """Query The Odds API `/v4/sports` catalog and return every tennis
+    tournament (both ATP and WTA) that either is currently `active` OR
+    has at least one upcoming event. Returns `(cfg_key, sport_key)`
     tuples suitable for injection into SPORT_CONFIG at runtime.
 
-    We refresh this every alt-line cycle so the moment Wimbledon → US Open
-    → Cincinnati flip, we pick up the new tour automatically."""
-    return await _discover_active_sports_by_prefix(cx, "tennis_")
+    We DELIBERATELY include `active: false` tournaments too because
+    The Odds API often flips the `active` flag off between rounds even
+    when events are still scheduled (e.g., transition day between a
+    tournament's semi-finals and final). The downstream event-fetch
+    already handles empty event lists gracefully.
+
+    Coverage caveat (2026-07-13 user question: "Why alt lines not
+    generating for tennis matches?"):
+      The Odds API tennis catalog only covers Grand Slams, Masters
+      1000s, WTA 1000s, and a handful of 500-level events. The ATP/
+      WTA 250 tour (Umag, Bastad, Gstaad, Iasi WTA, Athens WTA,
+      Kitzbühel WTA, Hamburg, etc.) is NOT in the catalog at all —
+      no amount of discovery tuning surfaces those tournaments here.
+      For 250-level events our tennis picks come from the TennisExplorer
+      scrape (`source=tennis_extra`) which is moneyline-only.
+    """
+    return await _discover_tennis_from_catalog(cx, include_inactive=True)
+
+
+async def _discover_tennis_from_catalog(
+    cx: httpx.AsyncClient, include_inactive: bool = True,
+) -> list[tuple[str, str]]:
+    if not ODDS_API_KEY:
+        return []
+    try:
+        r = await cx.get(
+            f"{ODDS_API_BASE}/sports",
+            params={"apiKey": ODDS_API_KEY, "all": "true"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return []
+        catalog = r.json() or []
+    except Exception as e:
+        logger.warning("tennis catalog fetch failed: %s", e)
+        return []
+    out: list[tuple[str, str]] = []
+    active_ct = 0
+    inactive_ct = 0
+    for s in catalog:
+        key = s.get("key") or ""
+        if not key.startswith("tennis_"):
+            continue
+        if s.get("active"):
+            active_ct += 1
+            out.append((key, key))
+        elif include_inactive:
+            inactive_ct += 1
+            out.append((key, key))
+    logger.info(
+        "tennis catalog: %d entries (%d active, %d inactive included) "
+        "— note: 250-tier tournaments never appear in this catalog and "
+        "have no alt-line coverage",
+        len(out), active_ct, inactive_ct,
+    )
+    return out
 
 
 async def _discover_active_soccer_leagues(cx: httpx.AsyncClient) -> list[tuple[str, str]]:
