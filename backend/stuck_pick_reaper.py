@@ -65,6 +65,11 @@ async def reap_stuck_picks(db, *, hours: int = _STUCK_HOURS) -> dict:
         # `+00:00` suffixes across sources. Lexicographic comparison
         # works for both because they share the same date/time prefix.
         "event_time": {"$lt": cutoff_iso},
+        # DO NOT reap picks that the grading validator recently reopened
+        # for cross-source re-settlement. They're pending on purpose and
+        # will be regraded by the next settler cycle — voiding them here
+        # loses the correct grade and silently drops user history.
+        "grade_disagreement": {"$exists": False},
     }
     # Sample a handful for the diagnostic log so we can see WHAT is
     # getting reaped without dumping the full working set.
