@@ -24,15 +24,17 @@ from pymongo import UpdateOne
 
 from .calculators import (
     form_signal, injury_signal, market_signal, matchup_signal,
-    mlb_deep_signal, soccer_deep_signal, value_signal, volume_signal,
+    mlb_deep_signal, soccer_deep_signal, tennis_deep_signal,
+    value_signal, volume_signal,
 )
 from .mlb_deep import enrich_mlb_pick
 from .soccer_deep import enrich_soccer_pick
+from .tennis_deep import enrich_tennis_pick
 from .rationale import build_why, signal_breakdown_line
 
 logger = logging.getLogger("lockscore.services.signal_engine")
 
-SIGNAL_VERSION = 3  # bumped for Phase B.4 (adds soccer_deep component)
+SIGNAL_VERSION = 4  # bumped for Phase B.5 (adds tennis_deep component)
 _REFRESH_SECS = 1800  # 30 min — market signal tracks live line movement
 
 
@@ -72,9 +74,8 @@ async def compute_signals(db, pick: dict) -> dict:
         pick.setdefault("signal_score", existing.get("score"))
         return pick
 
-    # Phase B.1/B.4 enrichment (idempotent, no external calls).
-    # Only mutates picks whose sport matches; every other sport is a
-    # fast no-op.
+    # Phase B.1/B.4/B.5 enrichment (idempotent). Only mutates picks
+    # whose sport matches; every other sport is a fast no-op.
     try:
         enrich_mlb_pick(pick)
     except Exception as e:
@@ -83,6 +84,10 @@ async def compute_signals(db, pick: dict) -> dict:
         enrich_soccer_pick(pick)
     except Exception as e:
         logger.debug("soccer_deep enrich failed for pick %s: %s", pick.get("id"), e)
+    try:
+        await enrich_tennis_pick(db, pick)
+    except Exception as e:
+        logger.debug("tennis_deep enrich failed for pick %s: %s", pick.get("id"), e)
 
     components = [
         await form_signal(db, pick),
@@ -93,6 +98,7 @@ async def compute_signals(db, pick: dict) -> dict:
         value_signal(pick),
         mlb_deep_signal(pick),
         soccer_deep_signal(pick),
+        tennis_deep_signal(pick),
     ]
 
     total = sum(c["points"] for c in components)
