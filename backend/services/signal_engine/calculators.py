@@ -37,6 +37,10 @@ VALUE_MAX = 8.0
 # at 50 across sports. Small budget (±5) keeps existing calibration
 # intact while adding a real evidence layer for MLB hitters/pitchers.
 MLB_DEEP_MAX = 5.0
+# Phase B.4 — Soccer deep signal (xG regression + xG differential +
+# home advantage + league tier). Same ±5 budget so per-sport signals
+# scale evenly across the score.
+SOCCER_DEEP_MAX = 5.0
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -616,4 +620,128 @@ def mlb_deep_signal(pick: dict) -> dict:
         "key": "mlb_deep", "label": "MLB Context",
         "points": round(_clamp(pts, -MLB_DEEP_MAX, MLB_DEEP_MAX), 1),
         "max": MLB_DEEP_MAX, "details": details, "found": found,
+    }
+
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 8. SOCCER DEEP — xG regression, xG differential, home advantage,
+#                  league tier (Phase B.4)
+# ─────────────────────────────────────────────────────────────────────
+def soccer_deep_signal(pick: dict) -> dict:
+    """Soccer-only evidence layer. Reads `pick['soccer_deep']` populated
+    by `services.signal_engine.soccer_deep.enrich_soccer_pick`.
+
+    Awards points from FOUR independent sub-signals:
+      • xG regression      (goalscorer picks) — G/xG outliers due to revert
+      • xG differential    (team picks) — durable underlying quality edge
+      • Home advantage     (team picks in high-home-adv leagues)
+      • League tier        (data quality confidence bump / penalty)
+
+    Returns a neutral 0-point block for non-soccer picks or when the
+    soccer_deep block hasn't been attached — identical fallback to
+    every Phase A calculator so scoring stays stable.
+    """
+    pts = 0.0
+    details: list[str] = []
+    found = False
+
+    if (pick.get("sport") or "").lower() != "soccer":
+        return {
+            "key": "soccer_deep", "label": "Soccer Context",
+            "points": 0.0, "max": SOCCER_DEEP_MAX,
+            "details": [], "found": False,
+        }
+    deep = pick.get("soccer_deep") or {}
+    if not deep:
+        return {
+            "key": "soccer_deep", "label": "Soccer Context",
+            "points": 0.0, "max": SOCCER_DEEP_MAX,
+            "details": [], "found": False,
+        }
+
+    market_l = (pick.get("market") or "").lower()
+    is_scorer = ("goal scorer" in market_l
+                 or "score or assist" in market_l
+                 or "to score" in market_l)
+    is_team_market = any(t in market_l for t in (
+        "moneyline", "win or draw", "double chance", "1x2",
+        "total goals", "btts", "both teams", "asian handicap",
+    ))
+
+    # 1. xG regression (goalscorer markets only)
+    xgr = deep.get("xg_regression")
+    gox = deep.get("goals_over_xg")
+    if is_scorer and xgr is not None and gox is not None:
+        found = True
+        if xgr == "due_hot":
+            pts += 2.5
+            details.append(
+                f"xG regression buy — scoring only {gox:g}× xG (underperforming, "
+                f"positive regression due)")
+        elif xgr == "due_cold":
+            pts -= 2.0
+            details.append(
+                f"xG regression risk — scoring {gox:g}× xG (unsustainable pace, "
+                f"negative regression risk)")
+
+    # 2. xG differential (team markets only). Factor score is 0-100 where
+    #    50 = neutral. Anything ≥ 70 is a strong pro signal for the pick,
+    #    ≤ 30 is a strong against signal.
+    xg_diff = deep.get("xg_diff")
+    xga_diff = deep.get("xga_diff")
+    if is_team_market and (xg_diff is not None or xga_diff is not None):
+        found = True
+        # Combine offensive (xG) and defensive (xGA) differentials.
+        combined = 0.0
+        n = 0
+        if xg_diff is not None:
+            combined += xg_diff; n += 1
+        if xga_diff is not None:
+            combined += xga_diff; n += 1
+        avg = combined / n if n else 50.0
+        # Scale (avg-50) from ±50 → ±3 points, then clamp to protect budget.
+        pts += _clamp((avg - 50.0) / 50.0 * 3.0, -3.0, 3.0)
+        if xg_diff is not None and xg_diff >= 70:
+            details.append(
+                f"xG creation edge {round(xg_diff)}/100 — durable underlying-quality advantage")
+        elif xg_diff is not None and xg_diff <= 30:
+            details.append(
+                f"xG creation deficit {round(xg_diff)}/100 — book chalk on weaker underlying")
+        if xga_diff is not None and xga_diff >= 70:
+            details.append(
+                f"xGA defensive edge {round(xga_diff)}/100 — pick side concedes less")
+        elif xga_diff is not None and xga_diff <= 30:
+            details.append(
+                f"xGA defensive gap {round(xga_diff)}/100 — pick side leaks chances")
+
+    # 3. Home advantage (only when the league is one where home cooking
+    #    materially affects outcomes — Turkish Super Lig, Liga MX, MLS,
+    #    Brasileirão, etc.)
+    home_adv = deep.get("home_adv")
+    if (is_team_market and home_adv is not None
+            and deep.get("high_home_adv") and home_adv >= 70):
+        found = True
+        pts += _clamp((home_adv - 60.0) / 40.0 * 1.5, 0.0, 1.5)
+        details.append(
+            f"Strong home-side profile ({round(home_adv)}/100) in a "
+            f"high-home-advantage league")
+
+    # 4. League tier — small confidence bump for well-covered leagues.
+    tier = deep.get("league_tier")
+    if tier == 1:
+        # Only bump if we already have SOMETHING going on — don't stack
+        # a free +1 onto every Top-5 pick.
+        if found:
+            pts += 0.5
+            details.append("Top-tier league — Understat/Opta calibration is strong")
+    elif tier == 3 and found:
+        # Long-tail leagues get a tiny confidence penalty because model
+        # variance is higher there.
+        pts -= 0.5
+
+    return {
+        "key": "soccer_deep", "label": "Soccer Context",
+        "points": round(_clamp(pts, -SOCCER_DEEP_MAX, SOCCER_DEEP_MAX), 1),
+        "max": SOCCER_DEEP_MAX, "details": details, "found": found,
     }
