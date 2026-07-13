@@ -16,7 +16,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ActivityIndicator, RefreshControl, ScrollView, StyleSheet,
+  RefreshControl, ScrollView, StyleSheet,
   Text, View, Pressable,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -26,6 +26,8 @@ import {
   api, type HRSlateResponse, type GameHRSlate, type HRHitter,
 } from "@/src/lib/api";
 import { COLORS } from "@/src/theme";
+import { SkeletonList } from "@/src/components/Skeleton";
+import { EmptyState } from "@/src/components/EmptyState";
 
 type ViewMode = "topDay" | "byGame";
 
@@ -386,22 +388,35 @@ export default function HRTab() {
       </View>
 
       {loading ? (
-        <ActivityIndicator color={COLORS.voltBlue} style={{ marginTop: 60 }} />
+        <View style={styles.scroll} testID="hr-skeleton">
+          <SkeletonList count={4} />
+        </View>
       ) : error ? (
         <ScrollView
-          contentContainerStyle={styles.center}
+          contentContainerStyle={styles.scroll}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.voltBlue} />}
         >
-          <Text style={styles.errorText}>{error}</Text>
-          <Text style={styles.hintText}>Pull down to retry.</Text>
+          <EmptyState
+            variant="error"
+            title="Couldn't load HR slate"
+            message={error}
+            onRetry={onRefresh}
+            secondaryHint="Pull down to retry manually — slate refreshes every 25 min."
+            testID="hr-error"
+          />
         </ScrollView>
       ) : !data || data.games.length === 0 ? (
         <ScrollView
-          contentContainerStyle={styles.center}
+          contentContainerStyle={styles.scroll}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.voltBlue} />}
         >
-          <Text style={styles.emptyTitle}>No MLB games today.</Text>
-          <Text style={styles.hintText}>Check back later — slate refreshes every 25 min.</Text>
+          <EmptyState
+            icon="baseball-outline"
+            title="No MLB games today"
+            message="The slate is quiet — no games to analyze right now."
+            secondaryHint="Check back later — slate refreshes every 25 min."
+            testID="hr-empty"
+          />
         </ScrollView>
       ) : (
         <ScrollView

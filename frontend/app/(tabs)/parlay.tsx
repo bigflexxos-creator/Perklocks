@@ -19,6 +19,8 @@ import { formatGameTime } from "@/src/lib/formatGameTime";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 import { getDisplayLockRounded } from "@/src/lib/lockScore";
 import { buildSlipText as buildGamblySlipText, shareSlip, saveSlipImage } from "@/src/lib/shareBetSlip";
+import { SkeletonList } from "@/src/components/Skeleton";
+import { EmptyState } from "@/src/components/EmptyState";
 
 // ─── Card label → accent colour mapping ───────────────────────────────
 const CARD_ACCENTS: Record<ParlayCard["label"], string> = {
@@ -58,6 +60,7 @@ export default function ParlayScreen() {
   const [reason, setReason] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   // Per-card refresh cursor: ephemeral — NOT persisted (resets every launch)
   const [rank, setRank] = useState(1);
   // Refresh nonce — bumped on every user-triggered REGENERATE so the
@@ -80,13 +83,15 @@ export default function ParlayScreen() {
            sMode: "auto"|"custom"|"single", wHours: number, nonce: number,
            advSub?: "safer" | "ev") => {
       try {
+        setError(null);
         const res = await api.parlay(
           n, m, s, lt, incl, f, r, locked, sMode, wHours, excl, nonce, advSub,
         );
         setParlays(res.parlays || []);
         setReason(res.reason || "");
-      } catch (e) {
+      } catch (e: any) {
         console.warn("parlay load", e);
+        setError(String(e?.message || "Couldn't build parlays."));
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -468,15 +473,26 @@ export default function ParlayScreen() {
         showsVerticalScrollIndicator={false}
       >
         {loading ? (
-          <View style={styles.center}><ActivityIndicator color={COLORS.voltBlue} /></View>
+          <SkeletonList count={3} testID="parlay-skeleton" />
+        ) : error ? (
+          <EmptyState
+            variant="error"
+            title="Couldn't build parlays"
+            message={error}
+            onRetry={() => {
+              setLoading(true);
+              setRefreshNonce((n) => n + 1);
+            }}
+            testID="parlay-error"
+          />
         ) : parlays.length === 0 ? (
-          <View style={styles.center}>
-            <Ionicons name="layers-outline" size={48} color={COLORS.textMuted} />
-            <Text style={styles.emptyTitle}>No parlay available</Text>
-            <Text style={styles.emptyMsg}>
-              {reason || "Not enough qualifying picks today (need Lock≥88, Edge≥+3%, positive ROI)."}
-            </Text>
-          </View>
+          <EmptyState
+            icon="layers-outline"
+            title="No parlay available"
+            message={reason || "Not enough qualifying picks today (need Lock ≥ 88, Edge ≥ +3%, positive ROI)."}
+            secondaryHint="Try relaxing filters, switching sport, or coming back later as the slate develops."
+            testID="parlay-empty"
+          />
         ) : (
           <>
             <Text style={styles.intro}>

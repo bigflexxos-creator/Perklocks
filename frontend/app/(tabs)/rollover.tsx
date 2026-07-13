@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
-  View, Text, StyleSheet, ScrollView, ActivityIndicator,
+  View, Text, StyleSheet, ScrollView,
   RefreshControl, Pressable,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -12,6 +12,8 @@ import { LineTypeToggle } from "@/src/components/LineTypeToggle";
 import { ChipRow } from "@/src/components/ChipRow";
 import { SportFilterBar } from "@/src/components/SportFilterBar";
 import { PickEventRow } from "@/src/components/PickEventRow";
+import { SkeletonList } from "@/src/components/Skeleton";
+import { EmptyState } from "@/src/components/EmptyState";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 import { getDisplayLockRounded } from "@/src/lib/lockScore";
@@ -29,9 +31,11 @@ export default function RolloverScreen() {
   const [filters, setFilters] = useState<PickFilters>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async (lt: LineType, sp: string, f: PickFilters) => {
     try {
+      setError(null);
       const res = await api.rollover(lt, f, sp);
       // Backend now returns an array of up to 3 picks.
       const arr = (res.picks && res.picks.length > 0)
@@ -40,8 +44,9 @@ export default function RolloverScreen() {
       setPicks(arr.filter((p: Pick) => p.sport !== "KBO"));
       setPool(res.total_evaluated ?? 0);
       setSurvivability((res as any).survivability ?? null);
-    } catch (e) {
+    } catch (e: any) {
       console.warn("rollover load", e);
+      setError(String(e?.message || "Couldn't load rollover picks."));
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -89,17 +94,23 @@ export default function RolloverScreen() {
         testID="rollover-scroll"
       >
         {loading ? (
-          <View style={styles.center}>
-            <ActivityIndicator color={COLORS.voltBlue} />
-          </View>
+          <SkeletonList count={3} testID="rollover-skeleton" />
+        ) : error ? (
+          <EmptyState
+            variant="error"
+            title="Couldn't load rollover picks"
+            message={error}
+            onRetry={() => { setLoading(true); load(lineType, sport, filters); }}
+            testID="rollover-error"
+          />
         ) : picks.length === 0 ? (
-          <View style={styles.center}>
-            <Ionicons name="hourglass-outline" size={48} color={COLORS.textMuted} />
-            <Text style={styles.emptyTitle}>No qualifying picks</Text>
-            <Text style={styles.emptyMsg}>
-              No Lock 90+ non-soccer picks for today&apos;s slate yet. Pull to refresh.
-            </Text>
-          </View>
+          <EmptyState
+            icon="hourglass-outline"
+            title="No qualifying picks"
+            message="No Lock 90+ non-soccer picks for today's slate yet."
+            secondaryHint="Pull down to refresh, or try again in a few minutes as the slate develops."
+            testID="rollover-empty"
+          />
         ) : (
           <>
             <Text style={styles.intro}>
