@@ -56,6 +56,39 @@ from rate_limit import rate_limit
 
 router = APIRouter(prefix="/picks", tags=["picks"])
 
+
+def _parse_event_dt(et: str) -> Optional[datetime]:
+    """Robust ISO-8601 parser for `pick.event_time`.
+
+    Handles ALL formats we've seen in the wild:
+      • `2026-07-12T00:41:00Z`             (Odds API, MLB, Soccer)
+      • `2026-07-14T08:00:00+00:00`        (tennis_extra, tennis_real_odds)
+      • `2026-07-13T14:00:00.000Z`         (SportDB, occasional)
+      • `2026-07-13T14:00:00+02:00`        (leagues in local time)
+
+    Returns a timezone-aware UTC datetime or None on failure.
+
+    Before this helper existed (2026-07-13 bug report: "Sort feature not
+    working when you put time soon to late it's show early games but
+    not the earliest") the codebase used a strict `strptime` with format
+    `%Y-%m-%dT%H:%M:%SZ` in FOUR places. All non-`Z`-suffixed picks
+    (every tennis pick — 80/307 of the daily slate) failed to parse and
+    got bucketed at `datetime.max`, so they piled at the sort's bottom
+    instead of being interleaved chronologically with soccer/MLB picks.
+    """
+    if not et or not isinstance(et, str):
+        return None
+    try:
+        # Normalise 'Z' → '+00:00' so fromisoformat handles it uniformly.
+        s = et.strip().replace("Z", "+00:00") if et.endswith("Z") else et
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
 # Per-user 30/min throttle for the AI-explain endpoint (SEC-002,
 # 2026-06-26). Mirrors the `_compute_throttle` instance in server.py —
 # building our own here avoids importing server.py at module-load and
@@ -218,12 +251,10 @@ async def under_of_the_day(
     picks = _filter_in_play_window(picks)
 
     def starts_today(p: dict) -> bool:
-        et = p.get("event_time") or ""
-        try:
-            dt = datetime.strptime(et, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-            return now <= dt <= cutoff
-        except Exception:
+        dt = _parse_event_dt(p.get("event_time") or "")
+        if dt is None:
             return False
+        return now <= dt <= cutoff
 
     today_picks = [p for p in picks if starts_today(p)]
     pool = today_picks if today_picks else picks
@@ -434,12 +465,10 @@ async def pick_rollover(
     cutoff = now + timedelta(hours=24)
 
     def starts_today(p: dict) -> bool:
-        et = p.get("event_time") or ""
-        try:
-            dt = datetime.strptime(et, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-            return now <= dt <= cutoff
-        except Exception:
+        dt = _parse_event_dt(p.get("event_time") or "")
+        if dt is None:
             return False
+        return now <= dt <= cutoff
 
     today_picks = [p for p in picks if starts_today(p)]
     pool = today_picks if today_picks else picks
@@ -1451,12 +1480,10 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         cutoff = now + timedelta(hours=24)
 
         def _bucket(p: dict) -> int:
-            et = p.get("event_time") or ""
-            try:
-                dt = datetime.strptime(et, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                return 0 if now <= dt <= cutoff else 1
-            except Exception:
+            dt = _parse_event_dt(p.get("event_time") or "")
+            if dt is None:
                 return 1
+            return 0 if now <= dt <= cutoff else 1
 
         # Apply the user's sort preference. Default "lock": highest lock_score
         # first. "time": soonest kickoff first. "edge": biggest model edge
@@ -1468,12 +1495,10 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         # +1 = asc (lowest first). Time sort uses its own direction logic.
         m = 1 if asc else -1
         def _event_dt(p: dict) -> datetime:
-            try:
-                return datetime.strptime(
-                    p.get("event_time") or "", "%Y-%m-%dT%H:%M:%SZ",
-                ).replace(tzinfo=timezone.utc)
-            except Exception:
+            dt = _parse_event_dt(p.get("event_time") or "")
+            if dt is None:
                 return datetime.max.replace(tzinfo=timezone.utc)
+            return dt
         # Elite-player anchor: float elite picks to the top within their
         # bucket — but ONLY for the default lock-desc view. When the user
         # has explicitly asked for asc / win / edge / time, respect their
