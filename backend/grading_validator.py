@@ -62,13 +62,19 @@ async def _mlb_verify_prop(pick: dict) -> Optional[str]:
     if not selection or not event_time:
         return None
 
-    # Determine market family + line
-    stat_key = None
-    for phrase, key in _MLB_STAT_MAP.items():
-        if phrase in market:
-            stat_key = key
-            break
-    if not stat_key:
+    # Determine market family + line. Combo markets like "Hits + Runs + RBIs"
+    # must sum all three stats — matching a single key would only look at
+    # hits and mis-grade edge cases where the batter's H+R+RBI is ≥ line
+    # but hits alone is 0.
+    stat_keys: list[str] = []
+    if "hits + runs + rbi" in market or "hits+runs+rbi" in market:
+        stat_keys = ["hits", "runs", "rbi"]
+    else:
+        for phrase, key in _MLB_STAT_MAP.items():
+            if phrase in market:
+                stat_keys = [key]
+                break
+    if not stat_keys:
         return None
     m = re.search(r"(over|under)\s*(\d+(?:\.\d+)?)", market)
     if not m:
@@ -80,25 +86,96 @@ async def _mlb_verify_prop(pick: dict) -> Optional[str]:
     if not player_name:
         player_name = selection.split()[0] if selection else ""
 
-    # Find the MLB game via schedule endpoint for event_date
+    # Find the MLB game via schedule endpoint for event_date. Merge D and
+    # D-1 to handle late ET games that MLB files under the previous US
+    # calendar date, then pick the game whose gameDate is closest to the
+    # pick's event_time (handles series/doubleheader ambiguity — the same
+    # bug that made the settler mis-grade Wheeler-style picks).
     try:
+        from datetime import datetime as _dt, timedelta as _td
         date_str = event_time[:10]  # YYYY-MM-DD
+        try:
+            prev_str = (_dt.fromisoformat(date_str) - _td(days=1)).strftime("%Y-%m-%d")
+        except Exception:
+            prev_str = None
+        games: list[dict] = []
         async with httpx.AsyncClient(timeout=15) as cx:
-            r = await cx.get(f"{_MLB_STATS_BASE}/schedule",
-                             params={"sportId": 1, "date": date_str, "hydrate": "team"})
-        games = []
-        for d in (r.json() or {}).get("dates", []):
-            games.extend(d.get("games", []))
+            for ds in ([date_str] + ([prev_str] if prev_str else [])):
+                rr = await cx.get(f"{_MLB_STATS_BASE}/schedule",
+                                  params={"sportId": 1, "date": ds, "hydrate": "team"})
+                for d in (rr.json() or {}).get("dates", []):
+                    games.extend(d.get("games", []))
+        # Dedupe by gamePk
+        seen: set = set()
+        deduped: list[dict] = []
+        for g in games:
+            pk = g.get("gamePk")
+            if pk in seen:
+                continue
+            seen.add(pk)
+            deduped.append(g)
+        games = deduped
+
         home_team = pick.get("home_team") or ""
         away_team = pick.get("away_team") or ""
-        game_pk = None
+        # Fallback: parse teams from event string when the pick doc doesn't
+        # carry them (older picks in the DB).
+        if (not home_team or not away_team) and pick.get("event"):
+            evt = pick.get("event") or ""
+            if "@" in evt:
+                a, h = evt.split("@", 1)
+                away_team = away_team or a.strip()
+                home_team = home_team or h.strip()
+
+        # AND team match (both teams must line up) — the previous OR match
+        # returned any game where either team appeared, which is dangerous
+        # for teams that play back-to-back different opponents.
+        def _tm(a: str, b: str) -> bool:
+            a, b = a.lower(), b.lower()
+            return bool(a) and bool(b) and (a in b or b in a)
+
+        matches: list[dict] = []
         for g in games:
             hn = ((g.get("teams") or {}).get("home") or {}).get("team", {}).get("name", "")
             an = ((g.get("teams") or {}).get("away") or {}).get("team", {}).get("name", "")
-            if (home_team.lower() in hn.lower() or hn.lower() in home_team.lower()) or \
-               (away_team.lower() in an.lower() or an.lower() in away_team.lower()):
-                game_pk = g.get("gamePk")
-                break
+            if _tm(home_team, hn) and _tm(away_team, an):
+                matches.append(g)
+        if not matches:
+            return None
+
+        # Parse event_time for distance ranking
+        et_dt = None
+        try:
+            et_dt = _dt.fromisoformat(event_time.replace("Z", "+00:00"))
+            if et_dt.tzinfo is None:
+                from datetime import timezone as _tz
+                et_dt = et_dt.replace(tzinfo=_tz.utc)
+        except Exception:
+            pass
+
+        def _prio(g: dict) -> tuple:
+            state = ((g.get("status") or {}).get("abstractGameState") or "").lower()
+            tier = 0 if state == "final" else (1 if state == "live" else 2)
+            gd = g.get("gameDate") or ""
+            dist = 0.0
+            if et_dt and gd:
+                try:
+                    d = _dt.fromisoformat(gd.replace("Z", "+00:00"))
+                    if d.tzinfo is None:
+                        from datetime import timezone as _tz
+                        d = d.replace(tzinfo=_tz.utc)
+                    dist = abs((d - et_dt).total_seconds())
+                except Exception:
+                    pass
+            return (tier, dist, gd)
+
+        matches.sort(key=_prio)
+        best = matches[0]
+        # Only verify against Final games — Live/Preview would give wrong grades.
+        state = ((best.get("status") or {}).get("abstractGameState") or "").lower()
+        if state != "final":
+            return None
+        game_pk = best.get("gamePk")
         if not game_pk:
             return None
         async with httpx.AsyncClient(timeout=15) as cx:
@@ -108,7 +185,9 @@ async def _mlb_verify_prop(pick: dict) -> Optional[str]:
         logger.debug("MLB boxscore fetch failed: %s", e)
         return None
 
-    # Search both team rosters for the player
+    # Search both team rosters for the player. For combo markets we sum the
+    # relevant stats — all keys pulled from the same batting/pitching block
+    # slice consistently for the same player.
     pname_norm = player_name.lower().strip()
     # Position-aware block routing — see prop_settlement._mlb_stat_for_player
     # for the full rationale. Wrong-block routing was the original grading
@@ -126,30 +205,45 @@ async def _mlb_verify_prop(pick: dict) -> Optional[str]:
                 stats = pdoc.get("stats") or {}
                 position = ((pdoc.get("position") or {}).get("abbreviation") or "").upper()
                 is_pitcher = position in ("P", "SP", "RP", "TWP")
-                if stat_key in _BATTING_ONLY:
-                    blocks = ("batting",)
-                elif stat_key in _PITCHING_ONLY:
-                    blocks = ("pitching",)
-                elif stat_key in _AMBIGUOUS:
-                    blocks = ("pitching", "batting") if is_pitcher else ("batting", "pitching")
+                # For each requested stat key, look it up in the correct block
+                # and accumulate. If the player is on the roster but has no
+                # stats blocks (DNP), treat every key as 0 so the market
+                # still grades cleanly.
+                total = 0.0
+                found_any = False
+                for sk in stat_keys:
+                    if sk in _BATTING_ONLY:
+                        blocks = ("batting",)
+                    elif sk in _PITCHING_ONLY:
+                        blocks = ("pitching",)
+                    elif sk in _AMBIGUOUS:
+                        blocks = ("pitching", "batting") if is_pitcher else ("batting", "pitching")
+                    else:
+                        blocks = ("batting", "pitching")
+                    for block in blocks:
+                        block_stats = stats.get(block) or {}
+                        if sk in block_stats:
+                            try:
+                                total += float(block_stats[sk] or 0)
+                                found_any = True
+                                break
+                            except (TypeError, ValueError):
+                                pass
+                # Player is on roster but every block was empty → DNP, grade
+                # against total=0 (standard "Action" resolution).
+                actual = total if found_any or stats else 0.0
+                if direction == "over":
+                    if actual > line:
+                        return "won"
+                    if actual < line:
+                        return "lost"
+                    return "push"
                 else:
-                    blocks = ("batting", "pitching")
-                for block in blocks:
-                    block_stats = stats.get(block) or {}
-                    if stat_key in block_stats:
-                        actual = float(block_stats[stat_key] or 0)
-                        if direction == "over":
-                            if actual > line:
-                                return "won"
-                            if actual < line:
-                                return "lost"
-                            return "push"
-                        else:
-                            if actual < line:
-                                return "won"
-                            if actual > line:
-                                return "lost"
-                            return "push"
+                    if actual < line:
+                        return "won"
+                    if actual > line:
+                        return "lost"
+                    return "push"
     return None
 
 

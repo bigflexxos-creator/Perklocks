@@ -940,12 +940,27 @@ async def _settle_group(cx, db, sport: str, date_str: str, batch: list[dict], co
                 boxscores[game_pk] = box
                 await asyncio.sleep(0.25)
             player = (p.get("selection") or "").strip() or _player_from_market(p["market"])
-            value = _mlb_stat_for_player(box, player, stat_key)
+            # Combo market: "Hits + Runs + RBIs" — sum all three stats before
+            # grading. The default single-key path would only read `hits` and
+            # mis-grade players who scored 0 hits but ≥1 run or ≥1 RBI.
+            market_low = (p.get("market") or "").lower()
+            if "hits + runs + rbi" in market_low or "hits+runs+rbi" in market_low:
+                h = _mlb_stat_for_player(box, player, "mlb.hits")
+                r_ = _mlb_stat_for_player(box, player, "mlb.runs")
+                b = _mlb_stat_for_player(box, player, "mlb.rbi")
+                if h is None and r_ is None and b is None:
+                    counts["skipped"] += 1
+                    continue
+                value = (h or 0) + (r_ or 0) + (b or 0)
+                stat_label = "hits+runs+rbi"
+            else:
+                value = _mlb_stat_for_player(box, player, stat_key)
+                stat_label = stat_key.split(".")[-1]
             if value is None:
                 counts["skipped"] += 1
                 continue
             outcome = _grade(value, line[0], line[1])
-            await _record(db, p, outcome, {"player": player, "stat": stat_key.split(".")[-1], "value": value, "line": line[0]}, counts)
+            await _record(db, p, outcome, {"player": player, "stat": stat_label, "value": value, "line": line[0]}, counts)
         return
 
     # ESPN sports (NBA, WNBA, NHL, NFL, Soccer)
