@@ -296,6 +296,15 @@ your 71.6% chalk band from −4.7u/100 to positive-EV.
    • `tests/test_devig.py` — 24 unit tests, all passing.
 
 **Week 2 (Phase 1 top 3):** Statcast xwOBA/barrel%, Fangraphs Stuff+, bullpen fatigue. Baseball is still in-season and highest pick volume.
+   • Phase 1.3 + 1.5 (bullpen fatigue + batting order) ✅ **COMPLETE 2026-07-14**
+     - `services/mlb_usage.py` — MLB Stats API-backed batching for lineup + probable pitcher + gameLog fatigue calculation. Dedupes per-game fetches so a full Yankees slate hits MLB once.
+     - Attaches `batting_order`, `expected_pa`, `lineup_posted`, `pitcher_days_rest`, `pitcher_pitches_3d`, `pitcher_fatigue_flag` (fresh|normal|tired|gassed).
+     - Wired into `pick_enrichment` (creation-time bulk enrichment) AND `/api/picks/today` (on-read enrichment).
+     - `volume_signal` rewrites: top-3 hitters get +1.8, bottom-third −1.5, bench-role −4.0. Fresh pitchers get +1.2 on Over K props, gassed −2.5.
+     - Team-market gating (`_is_hitter_market`) so team totals / spreads / moneylines are correctly skipped.
+     - Tests: `tests/test_mlb_usage.py` — 23 unit tests, all passing.
+   • Phase 1.1 (Statcast xwOBA / barrel%) — pending next.
+   • Phase 1.2 (Fangraphs Stuff+) — pending.
 
 **Week 3 (Phase 3 + Phase 2 top 3):** Sackmann tennis CSVs, ClubElo, FBref xG/PPDA. Tennis is high-volume on your board (132 picks today), soccer is highest overall (334).
 

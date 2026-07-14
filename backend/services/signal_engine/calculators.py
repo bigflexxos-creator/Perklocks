@@ -307,6 +307,68 @@ def volume_signal(pick: dict) -> dict:
     details: list[str] = []
     found = False
 
+    # Phase 1.5 — MLB batting-order expected plate appearances. Leadoff
+    # hitters see ~4.6 PA/game vs #9 hitters at ~3.6 PA. That full-PA
+    # gap is the difference between an Over 1.5 hits at 55% and 65%.
+    # Populated by services.mlb_usage.enrich_picks_with_usage_bulk.
+    order = pick.get("batting_order")
+    epa = pick.get("expected_pa")
+    if isinstance(order, int) and 1 <= order <= 9 and isinstance(epa, (int, float)):
+        found = True
+        # Reward top-3 hitters (+PA vs bottom-third), penalise 7-9.
+        if order <= 3:
+            pts += 1.8
+            details.append(
+                f"Batting {order}{'st' if order==1 else 'nd' if order==2 else 'rd'} — "
+                f"~{epa:.1f} PA expected (top of the order)")
+        elif order >= 7:
+            pts -= 1.5
+            details.append(
+                f"Batting {order}th — only ~{epa:.1f} PA expected (bottom-third slot)")
+        else:
+            details.append(f"Batting {order}th — ~{epa:.1f} PA expected")
+    elif pick.get("lineup_note") == "not_in_starting_lineup":
+        # Lineup was posted but hitter isn't in it — big volume hit.
+        found = True
+        pts -= 4.0
+        details.append("Not in the starting lineup — pinch/bench role only")
+
+    # Phase 1.3 — MLB pitcher fatigue (from mlb_usage). Days rest and
+    # pitches thrown in the last 3 days both meaningfully change K rate
+    # and run environment. Applied ONLY to pitcher-family markets.
+    fatigue = pick.get("pitcher_fatigue_flag")
+    if fatigue:
+        market_l = (pick.get("market") or "").lower()
+        is_pitcher_prop = any(m in market_l for m in (
+            "strikeouts", "outs recorded", "earned runs", "pitcher walks",
+        ))
+        if is_pitcher_prop:
+            found = True
+            direction = pick.get("selection", "")
+            over_side = "over" in market_l
+            # Fresh pitchers → more Ks / better performance → boost Overs, fade Unders.
+            if fatigue == "fresh":
+                pts += 1.2 if over_side else -1.2
+                details.append(
+                    f"Pitcher fresh ({pick.get('pitcher_days_rest')}d rest, "
+                    f"{pick.get('pitcher_pitches_3d') or 0} pitches last 3d)")
+            elif fatigue == "gassed":
+                pts += -2.5 if over_side else 2.5
+                details.append(
+                    f"Pitcher gassed — {pick.get('pitcher_pitches_3d')} pitches "
+                    f"in the last 3 days")
+            elif fatigue == "tired":
+                pts += -1.2 if over_side else 1.2
+                dr = pick.get("pitcher_days_rest")
+                p3d = pick.get("pitcher_pitches_3d")
+                bits = []
+                if dr is not None and dr <= 4:
+                    bits.append(f"{dr}d rest")
+                if p3d and p3d >= 40:
+                    bits.append(f"{p3d} pitches last 3d")
+                details.append(
+                    "Pitcher tired" + (f" — {', '.join(bits)}" if bits else ""))
+
     sp = pick.get("starter_probability")
     if isinstance(sp, (int, float)):
         found = True
