@@ -416,3 +416,167 @@ async def learn_now(user: Annotated[UserPublic, Depends(current_user)]):
         "picks_adjusted": adjusted,
         "sample_size": weights.get("sample_size", 0),
     }
+
+
+
+# ── Phase 0.3 — CLV dashboard ────────────────────────────────────────
+@router.get("/analytics/clv")
+async def clv_report(
+    user: Annotated[UserPublic, Depends(current_user)],
+    days: int = 30,
+):
+    """CLV (Closing Line Value) breakdown for the user's picks over the
+    last `days`. Buckets picks by odds band and returns per-band win %,
+    flat-stake ROI, average CLV (in implied-probability points), and
+    what % of picks BEAT the closing line.
+
+    Positive CLV = you got a price better than the market closed at →
+    sharp behaviour. The gold standard is Beat-Close %: sharp bettors
+    consistently sit above 55%, retail sits at ~50%, losing bettors
+    sit at ~45%.
+
+    Response shape:
+        {
+          "since": "2026-06-14T00:00:00+00:00",
+          "days": 30,
+          "overall": {
+            "n": 1234, "won": 780, "win_pct": 63.2,
+            "roi_per_100u": -3.1, "avg_clv_pp": -0.8, "beat_close_pct": 47.4
+          },
+          "bands": [
+            {"label": "Heavy fav (<-200)", "n": ..., "win_pct": ...,
+             "roi_per_100u": ..., "avg_clv_pp": ..., "beat_close_pct": ...},
+            ...
+          ]
+        }
+    """
+    from datetime import timedelta
+    from analytics import (
+        american_profit_per_unit,
+        american_to_implied_pct,
+        clv_units,
+    )
+    since = datetime.now(timezone.utc) - timedelta(days=max(days, 1))
+    since_iso = since.isoformat()
+
+    q = {
+        "status": {"$in": ["won", "lost", "push"]},
+        "event_time": {"$gte": since_iso},
+        "book_odds": {"$exists": True, "$ne": None},
+    }
+
+    bands: list[tuple[str, dict]] = [
+        ("Heavy fav (<-200)",        {"book_odds": {"$lt": -200}}),
+        ("Fav (-200 to -110)",       {"book_odds": {"$gte": -200, "$lte": -110}}),
+        ("Coin flip (-110 to +110)", {"book_odds": {"$gt": -110, "$lt": 110}}),
+        ("Plus (+110 to +200)",      {"book_odds": {"$gte": 110, "$lte": 200}}),
+        ("Big dog (+200 to +500)",   {"book_odds": {"$gt": 200, "$lte": 500}}),
+        ("Long shot (+500+)",        {"book_odds": {"$gt": 500}}),
+    ]
+
+    def _bucket() -> dict:
+        return {"n": 0, "won": 0, "profit_units": 0.0,
+                "clv_sum": 0.0, "clv_count": 0, "beat_close": 0}
+
+    def _finalize(b: dict, label: str | None = None) -> dict:
+        n = b["n"]
+        won = b["won"]
+        clv_n = b["clv_count"]
+        return {
+            "label": label,
+            "n": n,
+            "won": won,
+            "win_pct": round(won * 100 / n, 2) if n else 0.0,
+            "roi_per_100u": round(b["profit_units"] * 100 / n, 2) if n else 0.0,
+            "avg_clv_pp": round(b["clv_sum"] / clv_n, 3) if clv_n else None,
+            "beat_close_pct": round(b["beat_close"] * 100 / clv_n, 2) if clv_n else None,
+        }
+
+    overall = _bucket()
+    band_buckets: list[tuple[str, dict, dict]] = [(lbl, cond, _bucket())
+                                                    for lbl, cond in bands]
+
+    cursor = db.picks.find(q, {
+        "book_odds": 1, "closing_odds": 1, "odds_at_pick": 1, "status": 1,
+        "closing_odds_source": 1, "sharp_closing_odds": 1,
+    })
+    real_snap_n = 0
+    sharp_snap_n = 0
+    async for p in cursor:
+        odds = p.get("book_odds")
+        if not odds:
+            continue
+        status = p.get("status") or ""
+        profit = american_profit_per_unit(odds, status)
+        # Only count Beat-Close % against REAL closing snapshots. Fallback
+        # snapshots (source=fallback_book_odds) have closing_odds ==
+        # book_odds by construction → clv == 0 → they'd dilute the
+        # Beat-Close % toward zero and hide the real signal.
+        close_source = p.get("closing_odds_source") or ""
+        real_snap = close_source == "odds_api_live"
+        if real_snap:
+            real_snap_n += 1
+        if p.get("sharp_closing_odds"):
+            sharp_snap_n += 1
+        clv = None
+        odds_at_pick = p.get("odds_at_pick") or odds
+        closing = p.get("closing_odds")
+        if real_snap and closing and odds_at_pick:
+            clv = clv_units(odds_at_pick, closing)
+        # Overall
+        overall["n"] += 1
+        overall["won"] += 1 if status == "won" else 0
+        overall["profit_units"] += profit
+        if clv is not None:
+            overall["clv_sum"] += clv
+            overall["clv_count"] += 1
+            overall["beat_close"] += 1 if clv > 0 else 0
+        # Bands
+        o = float(odds)
+        for lbl, cond, bucket in band_buckets:
+            match = True
+            for _, op_dict in cond.items():
+                for op, val in op_dict.items():
+                    if op == "$lt" and not (o < val):
+                        match = False; break
+                    if op == "$lte" and not (o <= val):
+                        match = False; break
+                    if op == "$gt" and not (o > val):
+                        match = False; break
+                    if op == "$gte" and not (o >= val):
+                        match = False; break
+                if not match:
+                    break
+            if match:
+                bucket["n"] += 1
+                bucket["won"] += 1 if status == "won" else 0
+                bucket["profit_units"] += profit
+                if clv is not None:
+                    bucket["clv_sum"] += clv
+                    bucket["clv_count"] += 1
+                    bucket["beat_close"] += 1 if clv > 0 else 0
+                break
+
+    return {
+        "since": since_iso,
+        "days": days,
+        "overall": _finalize(overall, "Overall"),
+        "bands": [_finalize(b, lbl) for lbl, _, b in band_buckets],
+        "snapshot_coverage": {
+            "real_close_snapshots": real_snap_n,
+            "sharp_book_snapshots": sharp_snap_n,
+            "note": (
+                "Only picks with a REAL closing snapshot "
+                "(closing_odds_source='odds_api_live') are used for CLV "
+                "and Beat-Close %. Player-prop markets aren't currently "
+                "snapshotted via the Odds API events endpoint — that's "
+                "why coverage is low. See closing_line_snapshotter."
+            ),
+        },
+        "notes": (
+            "Beat-Close % = the share of picks graded against a real "
+            "closing snapshot where the closing line moved AWAY from "
+            "your pick (i.e. you got a better price than the market "
+            "closed at). Sharp bettors consistently sit >55%."
+        ),
+    }

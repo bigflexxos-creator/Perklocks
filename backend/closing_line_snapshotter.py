@@ -144,24 +144,32 @@ async def _fetch_event_odds(sport_key: str, event_id: str) -> Optional[list]:
     return data.get("bookmakers") or []
 
 
-def _match_pick_to_odds(pick: dict, bookmakers: list) -> Optional[float]:
-    """Find the current American odds for this pick's market/selection."""
+def _match_pick_to_odds(pick: dict, bookmakers: list) -> Optional[tuple[float, Optional[float]]]:
+    """Find the current American odds for this pick's market/selection.
+
+    Returns (median_price, pinnacle_price) — pinnacle is None if the sharp
+    book didn't quote this market/side in the response.
+
+    Phase 0.2: capturing Pinnacle separately lets downstream analytics and
+    the market_signal calculator do steam / sharp-side detection without
+    an extra HTTP call. Pinnacle is the industry sharp anchor because they
+    take limit action from professionals and their line reflects true
+    consensus much better than a US retail book quoting +EV pockets.
+    """
     if not bookmakers:
         return None
     market = (pick.get("market") or "").lower()
     selection = (pick.get("selection") or "").lower()
-    # Heuristic match:
-    #   "Yankees Moneyline"  → market_key h2h, outcome name "New York Yankees"
-    #   "Total Runs Over 8.5" → market_key totals, outcome name "Over", point 8.5
     target_market_key = None
     if "moneyline" in market: target_market_key = "h2h"
     elif "spread"  in market: target_market_key = "spreads"
     elif "total"   in market: target_market_key = "totals"
     if not target_market_key:
         return None  # prop markets not snapshotted via h2h endpoint
-    # Pick the median price across bookmakers for robustness.
-    prices = []
+    prices: list[float] = []
+    pinnacle: Optional[float] = None
     for bk in bookmakers:
+        bk_key = (bk.get("key") or "").lower()
         for mk in (bk.get("markets") or []):
             if (mk.get("key") or "").lower() != target_market_key:
                 continue
@@ -171,10 +179,12 @@ def _match_pick_to_odds(pick: dict, bookmakers: list) -> Optional[float]:
                     price = out.get("price")
                     if isinstance(price, (int, float)):
                         prices.append(float(price))
+                        if bk_key == "pinnacle":
+                            pinnacle = float(price)
     if not prices:
         return None
     prices.sort()
-    return prices[len(prices) // 2]   # median
+    return prices[len(prices) // 2], pinnacle  # median + optional pinnacle
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -302,24 +312,44 @@ async def _snapshot_closes_once(db) -> dict:
             continue
         bookmakers = await _fetch_event_odds(sport_key, eid)
         for pick in picks_for_event:
-            price = _match_pick_to_odds(pick, bookmakers or [])
-            if price is None:
+            result = _match_pick_to_odds(pick, bookmakers or [])
+            pinnacle: Optional[float] = None
+            if result is None:
                 # If we can't read the close, fall back to book_odds.
                 price = pick.get("book_odds")
                 source = "fallback_book_odds"
             else:
+                price, pinnacle = result
                 source = "odds_api_live"
             from analytics import clv_units as _clv
             clv = _clv(pick.get("odds_at_pick"), price)
+            update_set: dict = {
+                "closing_odds":              price,
+                "closing_odds_snapshotted":  True,
+                "closing_odds_source":       source,
+                "closing_odds_at":           _now_utc(),
+                "clv_value":                 clv,
+            }
+            # Phase 0.2 — persist Pinnacle price alongside median for
+            # steam / sharp-side computations downstream. If Pinnacle
+            # priced our side, compute the no-vig implied % vs the
+            # median so the market_signal calculator can flag steam.
+            if pinnacle is not None:
+                update_set["sharp_closing_odds"] = pinnacle
+                update_set["sharp_closing_book"] = "pinnacle"
+                try:
+                    from services.devig import american_to_prob
+                    p_med  = american_to_prob(price)
+                    p_pinn = american_to_prob(pinnacle)
+                    if p_med is not None and p_pinn is not None:
+                        update_set["sharp_vs_median_pp"] = round(
+                            (p_pinn - p_med) * 100.0, 3
+                        )
+                except Exception:
+                    pass
             await db.picks.update_one(
                 {"id": pick["id"]},
-                {"$set": {
-                    "closing_odds":              price,
-                    "closing_odds_snapshotted":  True,
-                    "closing_odds_source":       source,
-                    "closing_odds_at":           _now_utc(),
-                    "clv_value":                 clv,
-                }},
+                {"$set": update_set},
             )
             snapped += 1
     if snapped:

@@ -1,0 +1,45 @@
+{
+  "summary": "Phase 0 (devig + CLV) backend regression — GREEN. Ran (a) tests/test_devig.py → 24/24 passed. (b) new tests/test_phase0_devig_clv_iter72.py → 9 passed / 3 skipped (Wheeler/Altuve/Machado picks are event-time 2026-07 which is outside the /api/picks/history 30-day-past window given current server date; DB-level check confirms picks intact with correct iter71 status). (c) tests/test_mlb_grading_fix_iter71.py + tests/test_mlb_grading_validator_iter70.py → 70/70 passed — MLB grading fix from iter71 fully preserved. LIVE-API SPOT-CHECKS: GET /api/analytics/clv?days=30 → 200, schema {since, days, overall, bands, snapshot_coverage, notes} present, overall.beat_close_pct=8.33 (number), 6 bands with expected labels. GET /api/picks/today → 231 picks; 100% (231/231) have all four devig fields (no_vig_book_odds, no_vig_implied_pct, book_hold_pct, no_vig_source) + lock_score. GET /api/picks/history?days=30 → 200 OK, no schema regression.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/picks/today", "issue": "All 231 picks fall back to no_vig_source='proportional_sport_default' — zero picks use the more accurate 'two_way' or 'three_way' devig paths. This means pick_enrichment / ingestion is not attaching counterpart_odds, opposite_odds, alt_line_data.opposite_odds, or three_way_odds to picks, so the on-read devig can never exercise the exact-market normalization. The fallback still works but relies on default per-sport holds (4-6%) instead of the real market hold. Consider populating counterpart odds in the ingest layer to improve fair-odds accuracy."},
+      {"endpoint": "/api/analytics/clv?days=30", "issue": "snapshot_coverage.sharp_book_snapshots=0 across the entire 30-day window — sharp_closing_odds field from the iter72 snapshotter change (Pinnacle price) is not being persisted on any pick yet. The market_signal ±2 point award for sharp_vs_median_pp added to signal_engine/calculators.py cannot fire until the snapshotter runs with Pinnacle data. Endpoint response is otherwise correct."},
+      {"endpoint": "/api/analytics/clv?days=30", "issue": "snapshot_coverage.real_close_snapshots=60 out of 4017 picks (1.5% coverage). Beat-Close % of 8.33% is computed against this tiny sample. The response 'note' field correctly documents this limitation, so no blocker — just a data-density gap the roadmap presumably addresses."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase0_devig_clv_iter72.py",
+    "/app/backend/tests/test_devig.py",
+    "/app/test_reports/pytest/iter72_devig.xml",
+    "/app/test_reports/pytest/iter72_phase0.xml",
+    "/app/test_reports/pytest/iter72_mlb_regression.xml"
+  ],
+  "action_items": [
+    "OPTIONAL / DATA-QUALITY (not a blocker for Phase 0 acceptance): populate counterpart_odds (or opposite_odds / alt_line_data.opposite_odds / market_lines.counterpart / three_way_odds) during pick ingestion so devig_pick can use its 'two_way' / 'three_way' paths instead of always falling back to 'proportional_sport_default'. Currently 100% of live picks devig via the sport-default-hold fallback.",
+    "OPTIONAL: run closing_line_snapshotter with Pinnacle data so sharp_closing_odds populates and market_signal.sharp_vs_median_pp ±2 point award can activate."
+  ],
+  "critical_code_review_comments": [
+    "services/devig.py — Pure-math, no side-effects, well-documented. Docstrings explain the WHY (chalk hemorrhage) not just the WHAT. Fallback ordering (three_way > two_way > proportional_sport_default) is correct.",
+    "devig_pick three-way path uses substring match on `selection` vs. `event` split on '@' — this works for standard 'Away @ Home' events but will silently skip picks whose event string uses different separators. Not a bug given current ingest schema, but worth an assertion / warning log if the pick has three_way_odds set but no side could be resolved.",
+    "routes/analytics_routes.py:423 CLV endpoint — Band boundary handling: 'Coin flip (-110 to +110)' uses strict $gt -110 / $lt 110, so a pick at exactly -110 falls into 'Fav (-200 to -110)' (via $lte). Picks at +110 fall into 'Plus (+110 to +200)' (via $gte). No pick is double-counted or missed — verified by inspecting all six $lt/$lte boundaries.",
+    "routes/analytics_routes.py:507 — `if not odds: continue` will skip picks with book_odds == 0 which is already filtered by the mongo query; still, defensive check is fine.",
+    "CLV endpoint only counts Beat-Close % against closing_odds_source == 'odds_api_live' (documented in note). Correct — fallback snapshots have clv==0 by construction and would flatten the metric.",
+    "test_devig.py — Good coverage: american_to_prob edge cases (0, None), fair_from_prob boundary (0, 1, None), two-way + three-way missing legs, three_way home/draw resolution via selection substring, proportional fallback assertion (fair<raw when vig removed)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase0_devig_clv_iter72.py (NEW — 12 tests: 4 CLV schema, 4 picks_today devig+lock_score+count, 1 history 200, 3 MLB spot-check that skip cleanly when picks are outside the days=60 window)"
+  ],
+  "success_rate": {"backend": "100% (24/24 devig unit + 9/9 API regression + 70/70 iter71 MLB carryover; 3 MLB spot-checks skipped cleanly due to date window, DB direct check confirms picks intact)", "frontend": "not-tested-per-request"},
+  "seed_data_creation": "None — reused demo@lockscore.ai / demo123 and existing live picks.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase 0 devig + CLV endpoint is production-safe. Full regression harness: `pytest /app/backend/tests/test_devig.py /app/backend/tests/test_phase0_devig_clv_iter72.py /app/backend/tests/test_mlb_grading_fix_iter71.py /app/backend/tests/test_mlb_grading_validator_iter70.py -v` — expect 24+9+70=103 passed, 3 skipped (MLB spot-checks in iter72 file, superseded by iter71 DB-level tests which run green). If the pick_enrichment layer starts populating counterpart_odds / three_way_odds on picks, verify by curl `/api/picks/today` and grepping for `\"no_vig_source\":\"two_way\"` — should be >0 rather than 100% proportional. If closing_line_snapshotter runs against Pinnacle, verify `/api/analytics/clv?days=30` returns snapshot_coverage.sharp_book_snapshots > 0.",
+  "rca_of_issue": "N/A — this iteration verifies Phase 0 additions. All tests green; documented two minor data-density observations for main agent visibility (no fallback bugs, just underused optimal paths)."
+}

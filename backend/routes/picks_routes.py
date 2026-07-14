@@ -1667,6 +1667,18 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             except Exception as e:
                 logger.debug("board-visibility stamping skipped: %s", e)
 
+    # Phase 0.1 — Attach no-vig fair implied % on-read for any pick that
+    # doesn't already carry it. Cheap (pure math, no IO) and idempotent,
+    # so it's safe to run on every request. Ensures the value_signal
+    # calculator can grade against fair-market implied %, not book %.
+    try:
+        from services.devig import devig_pick
+        for _p in canonical:
+            if _p.get("no_vig_implied_pct") is None:
+                devig_pick(_p)
+    except Exception as e:
+        logger.debug("on-read devig pass failed: %s", e)
+
     return {"picks": canonical, "alt_availability": alt_availability}
 
 

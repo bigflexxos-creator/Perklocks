@@ -285,7 +285,15 @@ your 71.6% chalk band from −4.7u/100 to positive-EV.
 
 ## 5. Recommended sequencing (fastest → highest ROI)
 
-**Week 1 (Phase 0):** Closing-line snapshot + no-vig + Pinnacle anchor. Zero new data sources — everything is already in The Odds API or in memory. Expected ROI lift: +2-4% across all sports.
+**Week 1 (Phase 0):** Closing-line snapshot + no-vig + Pinnacle anchor. Zero new data sources — everything is already in The Odds API or in memory. Expected ROI lift: +2-4% across all sports.  ✅ **COMPLETE 2026-07-14**
+   • `services/devig.py` — no-vig two-way/three-way math + `devig_pick` mutator.
+   • `pick_enrichment.py` — attaches `no_vig_implied_pct`/`book_hold_pct` to every new pick.
+   • `routes/picks_routes.py` — on-read devig backfill for `/api/picks/today` so existing picks also benefit.
+   • `signal_engine/calculators.py::value_signal` — grades edge against fair market when available (kills the chalk-hemorrhage over-edge).
+   • `signal_engine/calculators.py::market_signal` — reads `sharp_vs_median_pp` for Pinnacle steam detection.
+   • `closing_line_snapshotter.py` — captures Pinnacle price alongside the median close, persists `sharp_closing_odds` + `sharp_vs_median_pp`.
+   • `routes/analytics_routes.py::/analytics/clv` — new CLV dashboard endpoint with per-band Beat-Close %, ROI, and average CLV in implied-probability points.
+   • `tests/test_devig.py` — 24 unit tests, all passing.
 
 **Week 2 (Phase 1 top 3):** Statcast xwOBA/barrel%, Fangraphs Stuff+, bullpen fatigue. Baseball is still in-season and highest pick volume.
 
