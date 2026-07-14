@@ -354,12 +354,18 @@ export async function setToken(t: string | null): Promise<void> {
 
 // ── Reliability layer: retries + timeout + in-flight dedupe ─────────────
 // Surgical hardening that doesn't change response shapes. Adds:
-//   1. 10-second per-request timeout via AbortController
+//   1. 20-second per-request timeout via AbortController (bumped from 10s
+//      2026-07-13 after user reported "Connection hiccup" on Expo Go cold
+//      boots — the backend can take 6-8s to warm up after a supervisor
+//      restart, and 10s wasn't enough headroom when mobile network adds
+//      2-3s of TLS handshake overhead. Retry works after that because the
+//      backend is warm; giving the first attempt more time avoids the
+//      failed-banner-then-retry UX entirely).
 //   2. Up to 2 retries on network errors / 5xx (exponential 300ms → 900ms)
 //   3. In-flight GET deduplication — identical concurrent GETs share one
 //      network call. Prevents accidental thundering-herd from React
 //      double-renders. Mutations (POST/PUT/DELETE) NEVER dedupe.
-const REQUEST_TIMEOUT_MS = 10_000;
+const REQUEST_TIMEOUT_MS = 20_000;
 const MAX_RETRIES = 2;
 const _inflight = new Map<string, Promise<any>>();
 
