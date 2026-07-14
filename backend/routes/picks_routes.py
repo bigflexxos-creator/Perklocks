@@ -1679,6 +1679,23 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     except Exception as e:
         logger.debug("on-read devig pass failed: %s", e)
 
+    # Phase 1.3 + 1.5 — MLB batting-order + pitcher fatigue enrichment.
+    # Only runs if at least one MLB pick is present AND the pick doesn't
+    # already carry lineup/fatigue markers. Uses a batched fetch so a
+    # full slate of Yankees hitter Overs only pulls the lineup once.
+    try:
+        mlb_picks_missing_usage = [
+            _p for _p in canonical
+            if (_p.get("sport") or "").upper() == "MLB"
+            and _p.get("lineup_posted") is None
+            and _p.get("pitcher_fatigue_flag") is None
+        ]
+        if mlb_picks_missing_usage:
+            from services.mlb_usage import enrich_picks_with_usage_bulk
+            await enrich_picks_with_usage_bulk(mlb_picks_missing_usage)
+    except Exception as e:
+        logger.debug("on-read MLB usage enrichment failed: %s", e)
+
     return {"picks": canonical, "alt_availability": alt_availability}
 
 

@@ -452,6 +452,32 @@ def enrich_picks_with_active_registry(picks: list[dict]) -> dict[str, int]:
 
     if mlb_hit_picks:
         counts["mlb_intel"] = _run_mlb_intel(mlb_hit_picks)
+
+    # Phase 1.3 + 1.5 — Bulk MLB usage enrichment (batting order + PA +
+    # pitcher fatigue). Uses async batched fetches so a full slate of
+    # Yankees hitter Overs only pulls the lineup once. Non-fatal — any
+    # failure just leaves the usage fields blank and volume_signal
+    # falls back to its pre-Phase 1 heuristics.
+    mlb_picks_all = [p for p in picks if (p.get("sport") or "").upper() == "MLB"]
+    if mlb_picks_all:
+        try:
+            import asyncio
+            from services.mlb_usage import enrich_picks_with_usage_bulk
+            counts["mlb_usage"] = asyncio.run(
+                enrich_picks_with_usage_bulk(mlb_picks_all)
+            )
+        except RuntimeError:
+            # asyncio.run inside a running loop — get the loop and schedule.
+            try:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                counts["mlb_usage"] = loop.run_until_complete(
+                    enrich_picks_with_usage_bulk(mlb_picks_all)
+                )
+            except Exception as e:
+                logger.debug("mlb_usage bulk enrichment failed: %s", e)
+        except Exception as e:
+            logger.debug("mlb_usage bulk enrichment failed: %s", e)
     return counts
 
 
