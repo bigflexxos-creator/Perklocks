@@ -34,9 +34,10 @@ MARKET_MAX = 7.0
 VALUE_MAX = 8.0
 # Phase B.1 — MLB deep signal (park factors + market-family fit).
 # Neutral 0-point return for non-MLB picks, so score remains centered
-# at 50 across sports. Small budget (±5) keeps existing calibration
-# intact while adding a real evidence layer for MLB hitters/pitchers.
-MLB_DEEP_MAX = 5.0
+# at 50 across sports. Budget bumped to ±7 in Phase 1.1 to accommodate
+# Statcast signals (xwOBA/xBA/barrel% batter + xwOBA-against pitcher)
+# stacked on top of the original park-factor signal.
+MLB_DEEP_MAX = 7.0
 # Phase B.4 — Soccer deep signal (xG regression + xG differential +
 # home advantage + league tier). Same ±5 budget so per-sport signals
 # scale evenly across the score.
@@ -369,6 +370,24 @@ def volume_signal(pick: dict) -> dict:
                 details.append(
                     "Pitcher tired" + (f" — {', '.join(bits)}" if bits else ""))
 
+    # Phase 1.4 — MLB umpire K-zone bias (pitcher K props only). Wide-zone
+    # umpires generate ~+2-3pp more Ks than league avg; tight-zone umps
+    # ~-2-3pp fewer. Populated by services.mlb_umpire.enrich_picks_with_umpire_bulk.
+    ump_zone = pick.get("ump_zone")
+    ump_delta = pick.get("ump_delta_pct")
+    if ump_zone in ("hitter", "pitcher") and isinstance(ump_delta, (int, float)):
+        market_l = (pick.get("market") or "").lower()
+        if "strikeouts" in market_l:
+            found = True
+            over_side = "over" in market_l
+            # +1pp K → +0.5 pts on Over, -0.5 on Under. Clamp at ±1.8.
+            magnitude = _clamp(float(ump_delta) * 0.5, -1.8, 1.8)
+            pts += magnitude if over_side else -magnitude
+            zone_label = "pitcher-friendly" if ump_zone == "pitcher" else "hitter-friendly"
+            details.append(
+                f"Plate ump {pick.get('ump_name', '')} — {zone_label} zone "
+                f"({ump_delta:+.1f}pp K rate vs league)")
+
     sp = pick.get("starter_probability")
     if isinstance(sp, (int, float)):
         found = True
@@ -634,18 +653,23 @@ def mlb_deep_signal(pick: dict) -> dict:
             "details": [], "found": False,
         }
     deep = pick.get("mlb_deep") or {}
-    if not deep:
+    sb_present = bool(pick.get("statcast_batter"))
+    sp_present = bool(pick.get("statcast_pitcher"))
+    # If neither park factors NOR statcast data are attached, we have
+    # nothing to say — return neutral. But if Statcast is present even
+    # without park data, we can still fire the xwOBA / barrel signals.
+    if not deep and not sb_present and not sp_present:
         return {
             "key": "mlb_deep", "label": "MLB Context",
             "points": 0.0, "max": MLB_DEEP_MAX,
             "details": [], "found": False,
         }
 
-    hr_pf   = int(deep.get("park_hr_factor") or 100)
-    hits_pf = int(deep.get("park_hits_factor") or 100)
-    run_pf  = int(deep.get("park_run_factor") or 100)
-    park    = deep.get("park_name") or "the park"
-    family  = deep.get("market_family") or ""
+    hr_pf   = int(deep.get("park_hr_factor") or 100) if deep else 100
+    hits_pf = int(deep.get("park_hits_factor") or 100) if deep else 100
+    run_pf  = int(deep.get("park_run_factor") or 100) if deep else 100
+    park    = (deep or {}).get("park_name") or "the park"
+    family  = (deep or {}).get("market_family") or ""
 
     # Direction alignment — over-side benefits from hitter-friendly
     # parks; under-side benefits from pitcher-friendly parks.
@@ -716,6 +740,74 @@ def mlb_deep_signal(pick: dict) -> dict:
         details.append(
             f"{park} run factor {run_pf} — "
             f"{'high-scoring' if run_pf > 103 else 'low-scoring' if run_pf < 97 else 'neutral'} venue")
+
+    # Phase 1.1 — Statcast quality signals (batter xwOBA/xBA/barrel% +
+    # pitcher xwOBA-against). Empirically the highest-lift single MLB
+    # feature (+3-5% AUC on hitter Overs). Two independent nudges:
+    #   1) BATTER: compare actual (BA/wOBA) vs expected (xBA/xwOBA).
+    #      A hitter batting .180 with a .310 xBA has been UNLUCKY —
+    #      regression buy on Overs. A .310/.240 hitter is luck-inflated,
+    #      fade Overs. Barrel% also boosts HR/TotalBases Overs.
+    #   2) PITCHER: xwOBA-against < .270 is elite; > .340 is bad.
+    #      Elite pitchers boost pitcher Overs (K/Outs) and fade hitter Overs.
+    sb = pick.get("statcast_batter") or {}
+    sp = pick.get("statcast_pitcher") or {}
+
+    if sb:
+        # xBA-diff = actual − expected. Negative means unlucky (regression buy).
+        xba_diff = sb.get("xba_diff")
+        xwoba_diff = sb.get("xwoba_diff")
+        barrel = sb.get("barrel_pct")
+        if isinstance(xba_diff, (int, float)) and abs(xba_diff) >= 0.020:
+            found = True
+            # Unlucky (xba_diff < 0) helps OVERS. Lucky (xba_diff > 0) fades Overs.
+            direction_mult = -1.0 if is_over else 1.0
+            pts += _clamp(xba_diff * direction_mult * 60.0, -2.0, 2.0)
+            details.append(
+                f"Statcast xBA {sb.get('xba', 0):.3f} vs actual {sb.get('ba', 0):.3f} "
+                f"({'unlucky' if xba_diff < 0 else 'lucky'} — {abs(xba_diff)*1000:.0f}pt gap)")
+        if family in ("hr", "total_bases") and isinstance(barrel, (int, float)) and barrel >= 12:
+            found = True
+            if is_over:
+                pts += _clamp((barrel - 10) * 0.15, 0.0, 2.5)
+                details.append(
+                    f"Elite barrel rate ({barrel:.1f}%) — power upside above the line")
+        if isinstance(xwoba_diff, (int, float)) and abs(xwoba_diff) >= 0.030:
+            found = True
+            # Additional xwOBA nudge (independent from xBA diff — captures
+            # quality of contact beyond just hits).
+            direction_mult = -1.0 if is_over else 1.0
+            pts += _clamp(xwoba_diff * direction_mult * 30.0, -1.5, 1.5)
+
+    if sp and family in ("pitcher_k", "pitcher_ip", "pitcher_er"):
+        xwoba_against = sp.get("xwoba_against")
+        xera = sp.get("xera")
+        if isinstance(xwoba_against, (int, float)):
+            found = True
+            # League avg xwOBA-against ~.310. Below .270 elite, above .340 bad.
+            if family in ("pitcher_k", "pitcher_ip"):
+                # Elite pitcher = more Ks / more Outs → boost Overs.
+                lift = (0.310 - xwoba_against) * 20.0
+                pts += _clamp(lift if is_over else -lift, -2.0, 2.0)
+                if xwoba_against <= 0.270:
+                    details.append(
+                        f"Elite pitcher quality — xwOBA-against {xwoba_against:.3f} "
+                        f"(league avg ~.310)")
+                elif xwoba_against >= 0.340:
+                    details.append(
+                        f"Weak pitcher quality — xwOBA-against {xwoba_against:.3f}")
+            elif family == "pitcher_er":
+                # Bad pitcher → more earned runs → boost Over ER.
+                lift = (xwoba_against - 0.310) * 20.0
+                pts += _clamp(lift if is_over else -lift, -2.0, 2.0)
+        if isinstance(xera, (int, float)) and family == "pitcher_er":
+            # Direct signal for ER props: xERA is Baseball Savant's own
+            # deserved-ERA metric. Prefer over ERA when they disagree.
+            found = True
+            if xera <= 3.20 and is_under:
+                pts += 1.0
+            elif xera >= 4.60 and is_over:
+                pts += 1.0
 
     return {
         "key": "mlb_deep", "label": "MLB Context",

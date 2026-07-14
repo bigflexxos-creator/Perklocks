@@ -1696,6 +1696,37 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     except Exception as e:
         logger.debug("on-read MLB usage enrichment failed: %s", e)
 
+    # Phase 1.1 — On-read Statcast attach. Very cheap (single Mongo
+    # find_one per distinct player) so we run unconditionally on MLB
+    # picks. Falls through as no-op if the daily refresh hasn't
+    # populated the cache yet.
+    try:
+        mlb_picks_missing_statcast = [
+            _p for _p in canonical
+            if (_p.get("sport") or "").upper() == "MLB"
+            and _p.get("statcast_batter") is None
+            and _p.get("statcast_pitcher") is None
+        ]
+        if mlb_picks_missing_statcast:
+            from services.mlb_statcast import enrich_picks_with_statcast_bulk
+            await enrich_picks_with_statcast_bulk(db, mlb_picks_missing_statcast)
+    except Exception as e:
+        logger.debug("on-read Statcast enrichment failed: %s", e)
+
+    # Phase 1.4 — On-read umpire K-zone attach for pitcher K props.
+    try:
+        mlb_k_picks_missing_ump = [
+            _p for _p in canonical
+            if (_p.get("sport") or "").upper() == "MLB"
+            and "strikeouts" in (_p.get("market") or "").lower()
+            and _p.get("ump_zone") is None
+        ]
+        if mlb_k_picks_missing_ump:
+            from services.mlb_umpire import enrich_picks_with_umpire_bulk
+            await enrich_picks_with_umpire_bulk(db, mlb_k_picks_missing_ump)
+    except Exception as e:
+        logger.debug("on-read umpire enrichment failed: %s", e)
+
     return {"picks": canonical, "alt_availability": alt_availability}
 
 

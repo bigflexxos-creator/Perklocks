@@ -3991,6 +3991,34 @@ async def on_startup():
     except Exception as e:
         logger.warning("CLV snapshotter failed to start: %s", e)
 
+    # Phase 1.1 — Baseball Savant Statcast daily refresh loop. Cheap
+    # (~50KB × 3 endpoints = 150KB per refresh) and infrequent (1×/24h
+    # is enough — Baseball Savant updates the leaderboard once daily
+    # after all box scores are finalised). Populates `mlb_statcast_players`
+    # with per-player xwOBA / xBA / barrel% / EV; consumed by
+    # signal_engine.mlb_deep_signal at scoring time.
+    try:
+        from services.mlb_statcast import refresh_all as _statcast_refresh_all
+
+        async def _mlb_statcast_loop():
+            while True:
+                try:
+                    r = await _statcast_refresh_all(db)
+                    logger.info(
+                        "Statcast refresh: %d batters, %d pitchers",
+                        (r or {}).get("batters", {}).get("upserted", 0),
+                        (r or {}).get("pitchers", {}).get("upserted", 0),
+                    )
+                except Exception as e:
+                    logger.warning("Statcast refresh cycle failed: %s", e)
+                # 24h refresh interval (Baseball Savant updates once/day).
+                await asyncio.sleep(24 * 60 * 60)
+
+        _deferred_task(_mlb_statcast_loop, DEFER_BASE * 8)
+        logger.info("Statcast daily refresh loop scheduled")
+    except Exception as e:
+        logger.warning("Statcast refresh loop failed to start: %s", e)
+
     # Live alt-line feed (2026-06-30 user mandate — no synthetic lines).
     # Pulls real DK + FanDuel alt-line markets from The Odds API every
     # 10 min and stores them in `live_alt_lines` with TTL. The quality
