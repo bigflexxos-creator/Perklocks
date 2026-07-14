@@ -1,0 +1,48 @@
+{
+  "summary": "Phase 1.1 (Statcast) + Phase 1.4 (Umpire K-zone) backend regression — GREEN. (1) Requested harness `pytest tests/test_devig.py tests/test_mlb_usage.py -v` → 47/47 passed. (2) New harness tests/test_statcast_umpire_iter73.py → 13/14 passed, 1 skipped (skip is expected: today's MLB slate has 0 hitter/pitcher props, only 3 team-level markets). (3) Combined iter73 harness (test_statcast_umpire_iter73 + test_devig + test_mlb_usage) → 60 passed / 1 skipped. (4) iter71 MLB grading regression preserved → 70/70 passed. (5) End-to-end DB verification: 422 batters + 486 pitchers seeded for year=2026, `enrich_picks_with_statcast_bulk` correctly attaches statcast_batter to Aaron Judge (xba=0.270, xwoba=0.415, barrel_pct=21.7), statcast_pitcher to Zack Wheeler (xwoba_against=0.254, xera=2.63), and correctly SKIPS 'American League Team Total Under 5.5'. (6) LIVE `/api/picks/today` → 200, 235 picks, 3 MLB (all team totals, 0 with statcast — correct), 0 pitcher K props (so ump enrichment not exercised on live data today). (7) LIVE `/api/analytics/clv?days=30` → 200 with expected shape (since, days, overall, bands=6, snapshot_coverage). (8) signal_engine.mlb_deep_signal is tolerant of picks with statcast_batter present but mlb_deep=None (verified with synthetic Judge Over Hits pick — points > 0, found=True, no crash). (9) mlb_deep_signal fires with found=True and positive points on synthetic Judge Over 0.5 Hits pick carrying only statcast_batter. (10) volume_signal correctly reads ump_zone/ump_delta_pct for pitcher K props (both Over-with-pitcher-friendly-ump and Under-with-hitter-friendly-ump produce positive points; details string mentions the ump name/zone).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/picks/today", "issue": "Today's MLB slate carries only 3 team-total picks (no hitter or pitcher props), so the Statcast enrichment code path could not be exercised end-to-end on live data. Confirmed via DB-level test that `enrich_picks_with_statcast_bulk` correctly attaches statcast_batter/statcast_pitcher to synthetic Judge/Wheeler picks and correctly skips team-market picks. This is a data-density (offseason/small slate) observation, not a bug."},
+      {"endpoint": "/api/picks/today", "issue": "No pitcher-K props in today's slate → umpire enrichment (`enrich_picks_with_umpire_bulk`) had no picks to touch. Umpire seed table (40 umps) verified via unit tests: get_umpire_zone('Angel Hernandez') → pitcher/+2.8pp; get_umpire_zone('Pat Hoberg') → hitter/-2.9pp; unknown names → None."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_statcast_umpire_iter73.py",
+    "/app/backend/tests/test_devig.py",
+    "/app/backend/tests/test_mlb_usage.py",
+    "/app/test_reports/pytest/iter73_phase1_regression.xml",
+    "/app/test_reports/pytest/iter73_statcast_umpire.xml",
+    "/app/test_reports/pytest/iter73_mlb_grading_regression.xml",
+    "/app/test_reports/pytest/iter73_full.xml"
+  ],
+  "action_items": [
+    "None blocking. Phase 1.1 (Statcast) + Phase 1.4 (Umpire K-zone) are production-safe.",
+    "OPTIONAL / DATA-DENSITY: today's slate has no MLB hitter/pitcher props, so live end-to-end enrichment cannot be observed until real MLB props appear. DB-level integration test in test_statcast_umpire_iter73.py::TestStatcastEnricherAgainstRealDB proves the path fires correctly on synthetic Judge/Wheeler picks against the 422/486 seeded 2026 Statcast rows.",
+    "OPTIONAL: 2 umpire names in the seed table have inconsistent whitespace ('will little' has extra spaces in the value literal, 'edwin moscoso' key spelling is unusual). Not a functional bug — get_umpire_zone normalizes via `.strip().lower()` — but worth a lint pass at some point.",
+    "OPTIONAL: consider moving the enrich_picks_with_umpire_bulk gamePk-resolution import (`from services.mlb_usage import _find_gamepk_for_event`) to module level so the import cost isn't paid per /api/picks/today request (current import is inside the function)."
+  ],
+  "critical_code_review_comments": [
+    "services/mlb_statcast.py — Clean, documented, thresholds (min 80 PA / 60 BF) prevent small-sample noise. `_is_hitter_market` / `_is_pitcher_market` correctly exclude team-level markets, spreads, moneylines, NRFI/YRFI, and pure Over/Under/Yes/No selections. Enrichment uses a per-slate cache to avoid duplicate DB reads. `find_one` projections correctly exclude `_id` — MongoDB ObjectId safety respected.",
+    "services/mlb_umpire.py — Pragmatic hardcoded seed table (documented rationale: no free JSON API for umpire K% deltas; ~0.60 season-over-season correlation makes this durable). Correctly classifies at ±1.3pp threshold. Handles 'D.J.' vs 'DJ' via period-stripped fallback lookup. HTTP call to MLB Stats API boxscore for plate umpire is defensive (try/except → None). Deduped game_pk cache is O(distinct_games) not O(picks). One nit: `if not mlb_k_picks: return 0` is checked before allocating the httpx client — good.",
+    "signal_engine/calculators.py — mlb_deep_signal now correctly returns neutral when `mlb_deep` AND both statcast dicts are absent. When mlb_deep is None but statcast_batter is present, it still fires the xBA/xwOBA/barrel% signals without touching park factors — no KeyError on missing `park_hr_factor`. Budget MLB_DEEP_MAX correctly bumped from ±5 to ±7 to accommodate stacked signals. `_clamp` on the final points keeps output within budget.",
+    "volume_signal correctly gates the umpire signal on `market_l contains 'strikeouts'` and `ump_zone in ('hitter','pitcher')`, so unknown/neutral zones don't fire. Magnitude clamped at ±1.8 within the ±7 volume budget.",
+    "pick_enrichment.py + picks_routes.py wiring — both creation-time (pick_enrichment) and read-time (/api/picks/today) enrichment paths call enrich_picks_with_statcast_bulk + enrich_picks_with_umpire_bulk. Belt-and-braces design covers picks created before the ingester was deployed.",
+    "server.py — 24h refresh loop scheduled from startup. Confirmed via DB check (422 batters + 486 pitchers for year=2026)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_statcast_umpire_iter73.py (NEW — 14 tests / 1 skip: /api/picks/today shape + team-market negative + prop counts; /api/analytics/clv 30d; mlb_deep_signal tolerance & firing with synthetic Judge/Wheeler; umpire seed lookups + volume_signal wiring for Over/Under K props; hitter/pitcher market classifier; end-to-end DB integration proving enrich_picks_with_statcast_bulk attaches statcast to real Judge/Wheeler and skips team markets against 422/486 seeded rows)"
+  ],
+  "success_rate": {"backend": "100% — 47/47 requested harness + 13/14 new iter73 harness (1 skip is expected due to empty MLB prop slate today) + 70/70 iter71 grading carryover = 130 passed / 1 skipped / 0 failed", "frontend": "not-tested-per-request"},
+  "seed_data_creation": "None — reused demo@lockscore.ai / demo123 and existing mlb_statcast_players collection (422 batters + 486 pitchers, year=2026, seeded by the refresh loop).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase 1.1 (Statcast batter/pitcher xwOBA/xBA/barrel%) + Phase 1.4 (Umpire K-zone) are production-safe. Regression harness: `pytest /app/backend/tests/test_statcast_umpire_iter73.py /app/backend/tests/test_devig.py /app/backend/tests/test_mlb_usage.py /app/backend/tests/test_mlb_grading_fix_iter71.py /app/backend/tests/test_mlb_grading_validator_iter70.py -v` → expect 130 passed / 1 skipped (the skip is TestPicksTodayStatcast::test_hitter_or_pitcher_props_may_have_statcast which only exercises when the live slate carries MLB hitter/pitcher props; today's slate had 0 props, 3 team totals). When a real MLB slate with hitter/pitcher props appears, the skip will convert to a real assertion that prints statcast-attached count (already logs via print — check pytest -s). git diff --stat summary: 2 new service files (services/mlb_statcast.py 364 loc + services/mlb_umpire.py 215 loc), 4 modified files (pick_enrichment.py +39, routes/picks_routes.py +31, server.py +28, services/signal_engine/calculators.py +110).",
+  "rca_of_issue": "N/A — this iteration verifies Phase 1.1 + 1.4 additions. All green. Single skipped test documented above is data-availability driven, not a code defect."
+}

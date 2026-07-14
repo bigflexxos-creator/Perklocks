@@ -467,7 +467,6 @@ def enrich_picks_with_active_registry(picks: list[dict]) -> dict[str, int]:
                 enrich_picks_with_usage_bulk(mlb_picks_all)
             )
         except RuntimeError:
-            # asyncio.run inside a running loop — get the loop and schedule.
             try:
                 import asyncio
                 loop = asyncio.get_event_loop()
@@ -478,6 +477,44 @@ def enrich_picks_with_active_registry(picks: list[dict]) -> dict[str, int]:
                 logger.debug("mlb_usage bulk enrichment failed: %s", e)
         except Exception as e:
             logger.debug("mlb_usage bulk enrichment failed: %s", e)
+
+        # Phase 1.1 — Statcast attach (xwOBA / barrel% / EV for batters,
+        # xwOBA-against / xERA for pitchers). Reads the cache populated
+        # by services.mlb_statcast.refresh_all (daily refresh loop).
+        try:
+            import asyncio
+            from services.mlb_statcast import enrich_picks_with_statcast_bulk
+            from server import db  # noqa: WPS433
+            try:
+                counts["mlb_statcast"] = asyncio.run(
+                    enrich_picks_with_statcast_bulk(db, mlb_picks_all)
+                )
+            except RuntimeError:
+                loop = asyncio.get_event_loop()
+                counts["mlb_statcast"] = loop.run_until_complete(
+                    enrich_picks_with_statcast_bulk(db, mlb_picks_all)
+                )
+        except Exception as e:
+            logger.debug("mlb_statcast bulk enrichment failed: %s", e)
+
+        # Phase 1.4 — Umpire K-zone attach (pitcher K props only).
+        # Fetches plate umpire from MLB Stats API boxscore and looks up
+        # in a seeded 2024-2025 K-delta table.
+        try:
+            import asyncio
+            from services.mlb_umpire import enrich_picks_with_umpire_bulk
+            from server import db as _db  # noqa: WPS433
+            try:
+                counts["mlb_umpire"] = asyncio.run(
+                    enrich_picks_with_umpire_bulk(_db, mlb_picks_all)
+                )
+            except RuntimeError:
+                loop = asyncio.get_event_loop()
+                counts["mlb_umpire"] = loop.run_until_complete(
+                    enrich_picks_with_umpire_bulk(_db, mlb_picks_all)
+                )
+        except Exception as e:
+            logger.debug("mlb_umpire bulk enrichment failed: %s", e)
     return counts
 
 
