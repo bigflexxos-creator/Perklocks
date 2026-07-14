@@ -297,14 +297,36 @@ your 71.6% chalk band from −4.7u/100 to positive-EV.
 
 **Week 2 (Phase 1 top 3):** Statcast xwOBA/barrel%, Fangraphs Stuff+, bullpen fatigue. Baseball is still in-season and highest pick volume.
    • Phase 1.3 + 1.5 (bullpen fatigue + batting order) ✅ **COMPLETE 2026-07-14**
-     - `services/mlb_usage.py` — MLB Stats API-backed batching for lineup + probable pitcher + gameLog fatigue calculation. Dedupes per-game fetches so a full Yankees slate hits MLB once.
-     - Attaches `batting_order`, `expected_pa`, `lineup_posted`, `pitcher_days_rest`, `pitcher_pitches_3d`, `pitcher_fatigue_flag` (fresh|normal|tired|gassed).
-     - Wired into `pick_enrichment` (creation-time bulk enrichment) AND `/api/picks/today` (on-read enrichment).
-     - `volume_signal` rewrites: top-3 hitters get +1.8, bottom-third −1.5, bench-role −4.0. Fresh pitchers get +1.2 on Over K props, gassed −2.5.
-     - Team-market gating (`_is_hitter_market`) so team totals / spreads / moneylines are correctly skipped.
-     - Tests: `tests/test_mlb_usage.py` — 23 unit tests, all passing.
-   • Phase 1.1 (Statcast xwOBA / barrel%) — pending next.
-   • Phase 1.2 (Fangraphs Stuff+) — pending.
+     - `services/mlb_usage.py` — MLB Stats API-backed batching for lineup + probable pitcher + gameLog fatigue calculation.
+     - Attaches `batting_order`, `expected_pa`, `pitcher_days_rest`, `pitcher_pitches_3d`, `pitcher_fatigue_flag`.
+     - `volume_signal` rewrites: top-3 hitters +1.8, bottom-third −1.5, bench −4.0. Fresh pitcher +1.2 / gassed −2.5 on Over K props.
+     - 23 unit tests passing.
+   • Phase 1.1 (Statcast xwOBA / barrel% / EV) ✅ **COMPLETE 2026-07-14**
+     - `services/mlb_statcast.py` — Baseball Savant CSV ingester (expected-statistics + statcast batted-ball). 422 batters + 486 pitchers cached for 2026 season.
+     - Daily 24h refresh loop scheduled from server startup.
+     - Attaches `statcast_batter` (xBA/xwOBA/barrel%/EV) and `statcast_pitcher` (xwOBA-against/xERA).
+     - `mlb_deep_signal` budget bumped to ±7. Reads Statcast for xBA regression signal (unlucky = Over buy), barrel% for HR/TotalBases boost, pitcher xwOBA-against for K/IP/ER modulation.
+   • Phase 1.4 (Umpire K% zone) ✅ **COMPLETE 2026-07-14**
+     - `services/mlb_umpire.py` — 40 active MLB umpires seeded with 2024-2025 K% deltas vs league avg.
+     - Fetches plate umpire from MLB Stats API boxscore.
+     - `volume_signal` awards ±1.8 pts on pitcher K props based on ump zone.
+   • Phase 1.2 (Fangraphs Stuff+) — user held off, may pick up later.
+
+**Testing status:** 130/131 tests passing (iteration 73 GREEN). Iter71 MLB grading fix intact.
+
+**Week 3 (Phase 2 — Soccer):** Scope needs recalibration — external soccer providers found blocked or discontinued:
+   - ❌ **ClubElo** — api.clubelo.com hangs from container (no response after 15s).
+   - ❌ **FBref** — Cloudflare 403 to non-browser user-agents (bot detection).
+   - ❌ **FiveThirtyEight SPI** — endpoint returns 302 redirect to ABC News (feed was discontinued in 2023).
+   - ⚠️ **Understat** — HTML no longer contains inline `playersData` JSON.parse blob during off-season; existing seeded data (2,774 player docs across top-5 leagues) is stale.
+
+   Options for Phase 2 given the constraints:
+   A. Register for free API key at Football-Data.org and use their team-standings + form endpoints.
+   B. Use TheSportsDB (already in the stack) — has some team-level records, no xG.
+   C. Build a "poor man's Elo" from our existing `soccer_player_form` collection by aggregating player xG to team level.
+   D. Skip Phase 2, jump to Phase 3 (Tennis) or Phase 4 (NFL pre-season prep).
+
+
 
 **Week 3 (Phase 3 + Phase 2 top 3):** Sackmann tennis CSVs, ClubElo, FBref xG/PPDA. Tennis is high-volume on your board (132 picks today), soccer is highest overall (334).
 
