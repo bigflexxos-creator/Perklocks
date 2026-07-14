@@ -4019,6 +4019,29 @@ async def on_startup():
     except Exception as e:
         logger.warning("Statcast refresh loop failed to start: %s", e)
 
+    # Phase 2 — Soccer multi-source fallback ingest (football-data.co.uk
+    # + Football-Data.org + TheSportsDB + OpenLigaDB). Runs once daily.
+    # See services/soccer/README (also docstring in services/soccer/__init__.py)
+    # for the architecture. Every ingested doc carries a `source` field so
+    # we can audit which provider gave us which data point.
+    try:
+        from services.soccer import refresh_all_leagues as _soccer_refresh
+
+        async def _soccer_refresh_loop():
+            while True:
+                try:
+                    r = await _soccer_refresh(db, seasons=("2024-25", "2023-24"))
+                    logger.info("Soccer multi-source refresh: %s", r)
+                except Exception as e:
+                    logger.warning("Soccer refresh cycle failed: %s", e)
+                # 24h refresh; historical data doesn't change frequently.
+                await asyncio.sleep(24 * 60 * 60)
+
+        _deferred_task(_soccer_refresh_loop, DEFER_BASE * 9)
+        logger.info("Soccer multi-source refresh loop scheduled")
+    except Exception as e:
+        logger.warning("Soccer refresh loop failed to start: %s", e)
+
     # Live alt-line feed (2026-06-30 user mandate — no synthetic lines).
     # Pulls real DK + FanDuel alt-line markets from The Odds API every
     # 10 min and stores them in `live_alt_lines` with TTL. The quality

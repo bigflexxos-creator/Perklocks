@@ -1103,3 +1103,171 @@ async def admin_services_cfb_rationale(
     return await cfb_rationale.build_cfb_rationale(
         db, team, opponent=opponent, player_name=player, year=year,
     )
+
+
+# ── Phase 2 — Soccer multi-source ingest diagnostics ─────────────────
+@router.get("/admin/soccer/status")
+async def soccer_ingest_status(user: Annotated[UserPublic, Depends(current_admin)]):
+    """Diagnostic snapshot of the soccer multi-source cache.
+
+    Returns per-source counts, per-league counts, coverage of closing
+    odds, and the last ingest run for each provider. Use this to verify
+    every provider is contributing and none has silently gone stale.
+    """
+    result: dict = {"providers": {}, "totals": {}, "coverage": {}, "top_leagues": []}
+
+    # Aggregate matches by source
+    async for d in db.soccer_matches.aggregate([
+        {"$group": {"_id": "$source", "n": {"$sum": 1}}},
+        {"$sort": {"n": -1}},
+    ]):
+        result["providers"].setdefault(d["_id"] or "unknown", {})["matches"] = d["n"]
+
+    # Aggregate teams by source
+    async for d in db.soccer_teams.aggregate([
+        {"$group": {"_id": "$source", "n": {"$sum": 1}}},
+    ]):
+        result["providers"].setdefault(d["_id"] or "unknown", {})["teams"] = d["n"]
+
+    # Standings + fixtures by source
+    async for d in db.soccer_standings.aggregate([
+        {"$group": {"_id": "$source", "n": {"$sum": 1}}},
+    ]):
+        result["providers"].setdefault(d["_id"] or "unknown", {})["standings"] = d["n"]
+
+    async for d in db.soccer_fixtures.aggregate([
+        {"$group": {"_id": "$source", "n": {"$sum": 1}}},
+    ]):
+        result["providers"].setdefault(d["_id"] or "unknown", {})["fixtures"] = d["n"]
+
+    result["totals"] = {
+        "matches":   await db.soccer_matches.count_documents({}),
+        "teams":     await db.soccer_teams.count_documents({}),
+        "standings": await db.soccer_standings.count_documents({}),
+        "fixtures":  await db.soccer_fixtures.count_documents({}),
+    }
+
+    # Coverage: how many matches have closing odds
+    total = result["totals"]["matches"]
+    with_close = await db.soccer_matches.count_documents(
+        {"home_odds_close": {"$ne": None}})
+    result["coverage"]["matches_with_closing_odds"] = with_close
+    result["coverage"]["closing_odds_pct"] = (
+        round(with_close * 100 / total, 2) if total else 0.0
+    )
+
+    # Top leagues by match count
+    async for d in db.soccer_matches.aggregate([
+        {"$group": {"_id": "$league", "n": {"$sum": 1}}},
+        {"$sort": {"n": -1}},
+        {"$limit": 15},
+    ]):
+        result["top_leagues"].append({"league": d["_id"], "matches": d["n"]})
+
+    # Last run per source
+    result["last_runs"] = {}
+    async for d in db.soccer_ingest_log.aggregate([
+        {"$sort": {"at": -1}},
+        {"$group": {"_id": "$source", "last": {"$first": "$$ROOT"}}},
+    ]):
+        result["last_runs"][d["_id"]] = {
+            "at":     d["last"].get("at"),
+            "kind":   d["last"].get("kind"),
+            "result": d["last"].get("result"),
+        }
+
+    return result
+
+
+@router.post("/admin/soccer/refresh")
+async def soccer_refresh_now(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    seasons: str = "2024-25,2023-24",
+):
+    """Manual trigger for a full soccer multi-source refresh. Non-blocking
+    (returns immediately with the run started in background)."""
+    import asyncio
+    from services.soccer import refresh_all_leagues
+
+    seasons_list = [s.strip() for s in seasons.split(",") if s.strip()]
+
+    async def _run():
+        try:
+            r = await refresh_all_leagues(db, seasons=tuple(seasons_list))
+            return r
+        except Exception as e:
+            return {"error": str(e)}
+
+    asyncio.create_task(_run())
+    return {"status": "started", "seasons": seasons_list,
+            "hint": "Poll GET /api/admin/soccer/status for progress"}
+
+
+@router.get("/admin/soccer/team/{team_name}")
+async def soccer_team_lookup(
+    team_name: str,
+    user: Annotated[UserPublic, Depends(current_admin)],
+    days: int = 90,
+):
+    """Recent-form snapshot for a team from the multi-source cache.
+
+    Returns the last N days of finished matches involving `team_name`,
+    including closing odds when available. Powers the recent-form
+    signal in signal_engine.soccer_deep_signal at scoring time.
+    """
+    from datetime import datetime, timezone, timedelta
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    q = {
+        "$or": [
+            {"home_team": {"$regex": team_name, "$options": "i"}},
+            {"away_team": {"$regex": team_name, "$options": "i"}},
+        ],
+        "status": "finished",
+        "date":   {"$gte": since},
+    }
+    matches: list[dict] = []
+    async for m in db.soccer_matches.find(q, {"_id": 0}).sort("date", -1).limit(20):
+        # Which side is our team on?
+        home = (m.get("home_team") or "").lower()
+        away = (m.get("away_team") or "").lower()
+        needle = team_name.lower()
+        is_home = needle in home
+        for_score = m.get("home_score") if is_home else m.get("away_score")
+        against_score = m.get("away_score") if is_home else m.get("home_score")
+        if for_score is None or against_score is None:
+            outcome = "?"
+        elif for_score > against_score:
+            outcome = "W"
+        elif for_score < against_score:
+            outcome = "L"
+        else:
+            outcome = "D"
+        matches.append({
+            "date":        m.get("date"),
+            "league":      m.get("league"),
+            "opponent":    m.get("away_team") if is_home else m.get("home_team"),
+            "venue":       "H" if is_home else "A",
+            "score":       f"{for_score}-{against_score}" if for_score is not None else None,
+            "outcome":     outcome,
+            "closing_odds": {
+                "for":   m.get("home_odds_close") if is_home else m.get("away_odds_close"),
+                "draw":  m.get("draw_odds_close"),
+                "against": m.get("away_odds_close") if is_home else m.get("home_odds_close"),
+            },
+            "source":      m.get("source"),
+        })
+    if not matches:
+        return {"team": team_name, "matches": [], "form": None, "note": "No cached matches"}
+    form = "".join(m["outcome"] for m in matches[:5])
+    wins = sum(1 for m in matches if m["outcome"] == "W")
+    draws = sum(1 for m in matches if m["outcome"] == "D")
+    losses = sum(1 for m in matches if m["outcome"] == "L")
+    return {
+        "team": team_name,
+        "days": days,
+        "matches": matches,
+        "form_last_5": form,
+        "record": {"W": wins, "D": draws, "L": losses,
+                    "n": wins + draws + losses},
+    }
+

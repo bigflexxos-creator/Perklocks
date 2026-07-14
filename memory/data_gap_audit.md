@@ -314,19 +314,25 @@ your 71.6% chalk band from −4.7u/100 to positive-EV.
 
 **Testing status:** 130/131 tests passing (iteration 73 GREEN). Iter71 MLB grading fix intact.
 
-**Week 3 (Phase 2 — Soccer):** Scope needs recalibration — external soccer providers found blocked or discontinued:
-   - ❌ **ClubElo** — api.clubelo.com hangs from container (no response after 15s).
-   - ❌ **FBref** — Cloudflare 403 to non-browser user-agents (bot detection).
-   - ❌ **FiveThirtyEight SPI** — endpoint returns 302 redirect to ABC News (feed was discontinued in 2023).
-   - ⚠️ **Understat** — HTML no longer contains inline `playersData` JSON.parse blob during off-season; existing seeded data (2,774 player docs across top-5 leagues) is stale.
+**Week 3 (Phase 2 — Soccer):** ✅ **COMPLETE 2026-07-14** — Multi-source fallback ingest replacing the previously-blocked ClubElo/FBref/538 chain.
 
-   Options for Phase 2 given the constraints:
-   A. Register for free API key at Football-Data.org and use their team-standings + form endpoints.
-   B. Use TheSportsDB (already in the stack) — has some team-level records, no xG.
-   C. Build a "poor man's Elo" from our existing `soccer_player_form` collection by aggregating player xG to team level.
-   D. Skip Phase 2, jump to Phase 3 (Tennis) or Phase 4 (NFL pre-season prep).
+   • `services/soccer/` package — modular multi-provider architecture with per-document source tracking.
+   • Sources implemented:
+     - **football-data.co.uk** (CSV, no key) — 22,230 matches with 99.87% closing-odds coverage across 20 main leagues (EPL, La Liga, Bundesliga, Serie A, Ligue 1, Championship, Segunda, Serie B, Ligue 2, Eredivisie, Primeira, SPL, SD1, Belgian, Turkish, Greek, Conference, English L1/L2, La Liga 2) + 17 extra leagues via BRA/ARG/SWE/NOR/USA/MEX/CHN/DEN/SUI/AUT/POL/IRL/FIN/ROU/JPN/RUS CSVs.
+     - **Football-Data.org** (free tier, API key `FOOTBALL_DATA_ORG_KEY` in env) — 212 standings + 60 fixtures + 212 teams across 12 competitions. Rate-limit-safe (6.5s inter-request delay + 429 retry).
+     - **TheSportsDB** (free, no key) — 456 team metadata records (name, stadium, founded, badge, website).
+     - **OpenLigaDB** (free, no key) — Bundesliga 1/2/3 authoritative data (306 matches per season).
+     - **ESPN** — already wired via existing `services/espn_signal_engine.py`.
+   • **Fallback orchestrator** (`services/soccer/fallback.py`) — provider priority per capability with cache-first reads; if all providers fail, returns cached data even if stale (never leaves callers empty).
+   • **Provider trust ranking** — merge logic prefers higher-trust source on conflict (football-data.co.uk > football-data.org > openligadb > thesportsdb) but never overwrites a non-None field with None.
+   • **Daily background refresh** scheduled from server startup.
+   • **Diagnostic endpoints** (admin-only):
+     - `GET /api/admin/soccer/status` — per-source counts, coverage %, per-league breakdown, last-run timestamps.
+     - `POST /api/admin/soccer/refresh?seasons=...` — manual refresh trigger.
+     - `GET /api/admin/soccer/team/{name}?days=N` — recent-form snapshot with closing odds per match.
+   • **Testing:** 24 unit tests (`test_soccer_sources.py`), 62 tests total across Phase 0/1/2 all passing.
 
-
+**Week 4:** Phase 3 (Tennis) — Jeff Sackmann github CSVs → per-match serve/return, career H2H, retirement rate, indoor/altitude flags.
 
 **Week 3 (Phase 3 + Phase 2 top 3):** Sackmann tennis CSVs, ClubElo, FBref xG/PPDA. Tennis is high-volume on your board (132 picks today), soccer is highest overall (334).
 
