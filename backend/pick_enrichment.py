@@ -408,6 +408,17 @@ def enrich_picks_with_active_registry(picks: list[dict]) -> dict[str, int]:
     # collected batch so we don't fire one task per pick.
     mlb_hit_picks: list[dict] = []
     for pick in picks:
+        # Phase 0.1 — Attach no-vig fair implied % to every pick BEFORE
+        # any downstream signal touches book_odds. This is what real
+        # bettors compare model probability against; comparing model vs
+        # raw book_odds overstates edge on chalk by ~2-3pp (the vig).
+        # No IO, pure math — safe to call unconditionally.
+        try:
+            from services.devig import devig_pick  # noqa: WPS433
+            devig_pick(pick)
+        except Exception as e:
+            logger.debug("devig failed for pick %s: %s", pick.get("id"), e)
+
         sport = _detect_sport(pick)
         name = _extract_player_name(pick)
         if not name or not sport:

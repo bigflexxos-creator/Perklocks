@@ -451,6 +451,21 @@ def market_signal(pick: dict) -> dict:
             pts += _clamp((clv - 50.0) / 50.0 * 1.5, -1.5, 1.5)
             details.append(f"Closing-line value component {round(clv)}/100")
 
+    # Phase 0.2 — Sharp-book steam detection. `sharp_vs_median_pp` is
+    # persisted at close time by closing_line_snapshotter when Pinnacle
+    # priced our side. Positive value = Pinnacle's implied % is HIGHER
+    # than the median (our side is a sharper price than retail is
+    # offering) → steam toward our pick. Threshold 2.5pp filters normal
+    # noise and only awards points on genuine sharp moves.
+    sharp_delta = _f(pick.get("sharp_vs_median_pp"))
+    if abs(sharp_delta) >= 2.5:
+        found = True
+        pts += _clamp(sharp_delta * 0.4, -2.0, 2.0)
+        direction = "toward" if sharp_delta > 0 else "away from"
+        details.append(
+            f"Sharp book (Pinnacle) prices {sharp_delta:+.1f}pp {direction} this pick "
+            f"vs market median")
+
     return {
         "key": "market", "label": "Market",
         "points": round(_clamp(pts, -MARKET_MAX, MARKET_MAX), 1),
@@ -468,19 +483,32 @@ def value_signal(pick: dict) -> dict:
 
     wp = _f(pick.get("win_probability"))
     imp = _f(pick.get("implied_probability"))
-    edge = _f(pick.get("edge_percent"))
+    # Phase 0.1 — Prefer NO-VIG implied % when the enrichment layer
+    # computed it (services.devig.devig_pick). Books charge 4-6% vig on
+    # both sides of a market; comparing our model to raw book_odds
+    # treats that vig as real edge against us and pushes the algorithm
+    # toward chalk. De-vigging normalises implied % to the fair-market
+    # equivalent, which is what pros use.
+    no_vig_imp = _f(pick.get("no_vig_implied_pct"))
+    edge_raw = _f(pick.get("edge_percent"))
+    if no_vig_imp > 0 and wp > 0:
+        # Recompute edge against the fair market.
+        edge = wp - no_vig_imp
+    else:
+        edge = edge_raw
     if wp > 0 and imp > 0:
         found = True
         if edge > 12.0:
             # >12% edge is historically an inverted signal (V4 calibration)
             pts += 3.0
             details.append(
-                f"Model {wp:.1f}% vs book {imp:.1f}% — edge +{edge:.1f}% "
+                f"Model {wp:.1f}% vs fair {no_vig_imp or imp:.1f}% — edge +{edge:.1f}% "
                 f"exceeds the calibration band, treated cautiously")
         else:
             pts += _clamp(edge / 12.0 * 6.0, -6.0, 6.0)
             details.append(
-                f"Model {wp:.1f}% vs book implied {imp:.1f}% → "
+                f"Model {wp:.1f}% vs {'fair' if no_vig_imp > 0 else 'book'} "
+                f"{no_vig_imp or imp:.1f}% → "
                 f"{'+' if edge >= 0 else ''}{edge:.1f}% edge")
 
     odds = _f(pick.get("book_odds"))
@@ -488,6 +516,13 @@ def value_signal(pick: dict) -> dict:
     if payout is not None and wp > 0:
         ev = (wp / 100.0) * payout - (1.0 - wp / 100.0)
         details.append(f"Expected value {'+' if ev >= 0 else ''}${ev:.2f} per $1 staked")
+
+    # Book hold (vig) surfaced as a details line for transparency. Users
+    # can see when a 3% edge is actually meaningful (small hold) vs
+    # illusory (large hold that ate into their true edge).
+    hold = _f(pick.get("book_hold_pct"))
+    if hold >= 5.5:
+        details.append(f"Heavy vig ({hold:.1f}%) — reduces true edge")
 
     sim = _f(pick.get("sim_win_probability"))
     if sim > 0 and wp > 0:
