@@ -4042,6 +4042,26 @@ async def on_startup():
     except Exception as e:
         logger.warning("Soccer refresh loop failed to start: %s", e)
 
+    # Phase 3 — Tennis Sackmann/TML historical ingest (weekly refresh;
+    # match histories are appended weekly by TML-Database). Populates
+    # tennis_matches_history + tennis_player_stats.
+    try:
+        from services.tennis import refresh_tennis_history as _tennis_refresh
+
+        async def _tennis_refresh_loop():
+            while True:
+                try:
+                    r = await _tennis_refresh(db)
+                    logger.info("Tennis Sackmann refresh: %s", r)
+                except Exception as e:
+                    logger.warning("Tennis refresh cycle failed: %s", e)
+                await asyncio.sleep(7 * 24 * 60 * 60)   # weekly
+
+        _deferred_task(_tennis_refresh_loop, DEFER_BASE * 10)
+        logger.info("Tennis Sackmann weekly refresh loop scheduled")
+    except Exception as e:
+        logger.warning("Tennis refresh loop failed to start: %s", e)
+
     # Live alt-line feed (2026-06-30 user mandate — no synthetic lines).
     # Pulls real DK + FanDuel alt-line markets from The Odds API every
     # 10 min and stores them in `live_alt_lines` with TTL. The quality
