@@ -332,7 +332,32 @@ your 71.6% chalk band from −4.7u/100 to positive-EV.
      - `GET /api/admin/soccer/team/{name}?days=N` — recent-form snapshot with closing odds per match.
    • **Testing:** 24 unit tests (`test_soccer_sources.py`), 62 tests total across Phase 0/1/2 all passing.
 
-**Week 4:** Phase 3 (Tennis) — Jeff Sackmann github CSVs → per-match serve/return, career H2H, retirement rate, indoor/altitude flags.
+**Week 4:** ✅ **COMPLETE 2026-07-14** — Phase 3 (Tennis) + Soccer signal wiring.
+
+   • **Phase 3 — Tennis Sackmann-format ingest** (`services/tennis/`):
+     - Source: Tennismylife/TML-Database GitHub CSVs (Sackmann's original repos removed 2025).
+     - 6,071 ATP/WTA matches ingested from 2023-2024 with full serve/return stats.
+     - 699 players aggregated into `tennis_player_stats` with 52-week rolling: `first_serve_pct`, `first_serve_won_pct`, `second_serve_won_pct`, `hold_pct`, `break_saved_pct`, `ace_pct`, `df_pct`, `retirement_rate_pct` — per-player AND per-surface (Hard/Clay/Grass/Carpet).
+     - **Name normalizer** — handles both "Firstname Lastname" (Sackmann format) and "Lastname F." (Tennis Explorer scraper format).
+     - `services/tennis/fallback.py::get_player_stats/get_h2h/get_recent_matches` — public lookups.
+     - Weekly refresh loop scheduled from server startup.
+     - **Wired into `tennis_deep_signal`** (budget bumped to ±7):
+       * ±2 pts on first-serve-won differential (≥3pp gap)
+       * ±1.5 pts on break-saved differential (≥5pp gap)
+       * −1.2 pts penalty on retirement rate ≥8%
+       * ±1.5 pts on career H2H edge (≥3 matches)
+
+   • **Phase 2b — Soccer recent-form signal wiring:**
+     - On-read enricher in `/api/picks/today` populates `pick["soccer_form"]` from cached `soccer_matches` (last-10 W/D/L per team, GF/GA averages, form string).
+     - **Wired into `soccer_deep_signal`**:
+       * ±2 pts on point-differential from last 10 (home vs away form gap ≥5 pts)
+       * +1.5 pts on Over Goals when combined recent averages ≥3.2 gpm
+       * +1.5 pts on Under Goals when combined recent averages ≤2.0 gpm
+     - Signal now fires even for picks WITHOUT Understat coverage (previously dark for lower-tier leagues).
+
+**Coverage status verified live:**
+   - Tennis: 15/63 picks today show real ATP-tour Sackmann stats (rest are lower-tier ITF/challenger not in Sackmann's dataset).
+   - Soccer: real form data for teams in cached leagues (EPL, Bundesliga, La Liga, Sweden, etc.); minor gap on Mexican Liga MX (not in our extra-leagues map — easy add if you want it).
 
 **Week 3 (Phase 3 + Phase 2 top 3):** Sackmann tennis CSVs, ClubElo, FBref xG/PPDA. Tennis is high-volume on your board (132 picks today), soccer is highest overall (334).
 

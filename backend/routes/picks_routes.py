@@ -1727,6 +1727,115 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     except Exception as e:
         logger.debug("on-read umpire enrichment failed: %s", e)
 
+    # Phase 3 — Tennis Sackmann/TML on-read attach. Adds surface-specific
+    # rolling serve/return stats + career H2H for tennis moneyline / totals /
+    # spread picks. Dedupes per-player lookup so a full slate of
+    # `Alcaraz Moneyline` alt-lines only hits Mongo once.
+    try:
+        tennis_picks = [p for p in canonical if (p.get("sport") or "").upper() == "TENNIS"
+                        and p.get("tennis_sackmann_stats") is None]
+        if tennis_picks:
+            from services.tennis import get_player_stats, get_h2h
+            player_cache: dict[tuple[str, str], dict | None] = {}
+            for p in tennis_picks:
+                sel = (p.get("selection") or "").strip()
+                if not sel:
+                    continue
+                # Extract opponent from event field: "Player A vs Player B"
+                event = (p.get("event") or "")
+                opp = None
+                for sep in (" vs ", " v. ", " v ", " - "):
+                    if sep in event:
+                        parts = [x.strip() for x in event.split(sep, 1)]
+                        if len(parts) == 2:
+                            opp = parts[0] if parts[1].lower().startswith(sel.lower()) else parts[1]
+                        break
+                # Surface — read from pick or tennis_deep hints
+                surface = (p.get("surface") or (p.get("tennis_deep") or {}).get("surface") or "All").capitalize()
+                # Look up both players
+                for key, name in (("pick", sel), ("opp", opp)):
+                    if not name:
+                        continue
+                    ckey = (name.lower(), surface)
+                    if ckey not in player_cache:
+                        s = await get_player_stats(db, name, surface)
+                        player_cache[ckey] = s
+                if opp:
+                    p["tennis_sackmann_stats"] = {
+                        "pick": player_cache.get((sel.lower(), surface)),
+                        "opponent": player_cache.get((opp.lower(), surface)),
+                    }
+                    p["tennis_h2h"] = await get_h2h(
+                        db, sel, opp,
+                        surface if surface != "All" else None,
+                    )
+    except Exception as e:
+        logger.debug("on-read Tennis Sackmann enrichment failed: %s", e)
+
+    # Phase 2b — Soccer recent-form attach (using multi-source cache
+    # populated by services.soccer). Adds `soccer_form` dict with home/
+    # away last-5 W/D/L, GF, GA, and position from cached standings.
+    try:
+        soccer_picks = [p for p in canonical if (p.get("sport") or "").upper() == "SOCCER"
+                        and p.get("soccer_form") is None]
+        if soccer_picks:
+            from datetime import timedelta as _td
+            recent_cache: dict[str, dict] = {}
+            for p in soccer_picks:
+                event = p.get("event") or ""
+                if "@" not in event:
+                    continue
+                away, home = [x.strip() for x in event.split("@", 1)]
+                form_data = {}
+                for role, name in (("home", home), ("away", away)):
+                    if not name:
+                        continue
+                    if name not in recent_cache:
+                        # Last-10 finished matches involving this team
+                        q = {
+                            "$or": [
+                                {"home_team": {"$regex": name, "$options": "i"}},
+                                {"away_team": {"$regex": name, "$options": "i"}},
+                            ],
+                            "status": "finished",
+                        }
+                        matches = await db.soccer_matches.find(
+                            q, {"_id": 0, "home_team": 1, "away_team": 1,
+                                "home_score": 1, "away_score": 1, "date": 1},
+                        ).sort("date", -1).limit(10).to_list(10)
+                        # Compute rolling GF/GA/form
+                        wins = draws = losses = 0
+                        gf = ga = 0
+                        form_str = ""
+                        for m in matches:
+                            hn = (m.get("home_team") or "").lower()
+                            is_home = name.lower() in hn
+                            fs = m.get("home_score") if is_home else m.get("away_score")
+                            as_ = m.get("away_score") if is_home else m.get("home_score")
+                            if fs is None or as_ is None:
+                                continue
+                            gf += fs
+                            ga += as_
+                            if fs > as_:
+                                wins += 1; form_str += "W"
+                            elif fs < as_:
+                                losses += 1; form_str += "L"
+                            else:
+                                draws += 1; form_str += "D"
+                        n = wins + draws + losses
+                        recent_cache[name] = {
+                            "n_matches": n,
+                            "wins": wins, "draws": draws, "losses": losses,
+                            "gf_avg": round(gf / n, 2) if n else None,
+                            "ga_avg": round(ga / n, 2) if n else None,
+                            "form": form_str[:5],
+                        }
+                    form_data[role] = recent_cache[name]
+                if form_data:
+                    p["soccer_form"] = form_data
+    except Exception as e:
+        logger.debug("on-read Soccer form enrichment failed: %s", e)
+
     return {"picks": canonical, "alt_availability": alt_availability}
 
 

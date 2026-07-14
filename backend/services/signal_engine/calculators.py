@@ -45,7 +45,7 @@ SOCCER_DEEP_MAX = 5.0
 # Phase B.5 — Tennis deep signal (surface fit + serve/return dominance +
 # motivation + variance risk + surface-Elo delta + recent match load).
 # Same ±5 budget for cross-sport consistency.
-TENNIS_DEEP_MAX = 5.0
+TENNIS_DEEP_MAX = 7.0  # bumped in Phase 3 for Sackmann serve/return + H2H signals
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -846,7 +846,11 @@ def soccer_deep_signal(pick: dict) -> dict:
             "details": [], "found": False,
         }
     deep = pick.get("soccer_deep") or {}
-    if not deep:
+    form_present = bool(pick.get("soccer_form"))
+    if not deep and not form_present:
+        # No data at all — return neutral. But if soccer_form is present
+        # (Phase 2b enricher populated it), keep going so recent-form
+        # signals can still fire on picks without Understat coverage.
         return {
             "key": "soccer_deep", "label": "Soccer Context",
             "points": 0.0, "max": SOCCER_DEEP_MAX,
@@ -932,6 +936,57 @@ def soccer_deep_signal(pick: dict) -> dict:
         # Long-tail leagues get a tiny confidence penalty because model
         # variance is higher there.
         pts -= 0.5
+
+    # Phase 2b — Recent-form signal from the multi-source cache
+    # (services.soccer). Populated by on-read enricher in picks_routes.
+    # `soccer_form` is {home: {form, wins, draws, losses, gf_avg, ga_avg},
+    #                   away: same}. We compute the home minus away point
+    # differential and use it to modulate team-side picks.
+    form = pick.get("soccer_form") or {}
+    home_f = form.get("home") or {}
+    away_f = form.get("away") or {}
+    if (home_f.get("n_matches", 0) >= 5 and away_f.get("n_matches", 0) >= 5):
+        # Points from last-N: 3 * wins + 1 * draw
+        home_pts_10 = home_f.get("wins", 0) * 3 + home_f.get("draws", 0)
+        away_pts_10 = away_f.get("wins", 0) * 3 + away_f.get("draws", 0)
+        diff = home_pts_10 - away_pts_10  # positive = home in better form
+        # Detect which side our pick is on
+        sel = (pick.get("selection") or "").lower()
+        event_l = (pick.get("event") or "").lower()
+        pick_side = None
+        if "@" in event_l:
+            away_name, home_name = [x.strip() for x in event_l.split("@", 1)]
+            if home_name and home_name in sel:
+                pick_side = "home"
+            elif away_name and away_name in sel:
+                pick_side = "away"
+        # Award pts when the form differential favours our side.
+        if pick_side and abs(diff) >= 5:
+            signed = diff if pick_side == "home" else -diff
+            found = True
+            pts += _clamp(signed * 0.15, -2.0, 2.0)
+            details.append(
+                f"Recent form: {home_f.get('form','?')} vs {away_f.get('form','?')} "
+                f"({diff:+d}pt gap in favour of "
+                f"{'home' if diff > 0 else 'away'})")
+        # xG/goal-average edge for Over/Under Goals markets
+        market_l = (pick.get("market") or "").lower()
+        if any(t in market_l for t in ("over", "under")) and "goals" in market_l:
+            total_gf = (home_f.get("gf_avg") or 0) + (home_f.get("ga_avg") or 0) \
+                        + (away_f.get("gf_avg") or 0) + (away_f.get("ga_avg") or 0)
+            avg_goals_per_match = total_gf / 2 if total_gf else 0
+            if avg_goals_per_match >= 3.2 and "over" in market_l:
+                found = True
+                pts += 1.5
+                details.append(
+                    f"Both teams' recent averages sum to {avg_goals_per_match:.1f} "
+                    f"goals per match — supports Over")
+            elif avg_goals_per_match <= 2.0 and "under" in market_l:
+                found = True
+                pts += 1.5
+                details.append(
+                    f"Both teams average only {avg_goals_per_match:.1f} goals "
+                    f"per match recently — supports Under")
 
     return {
         "key": "soccer_deep", "label": "Soccer Context",
@@ -1047,6 +1102,62 @@ def tennis_deep_signal(pick: dict) -> dict:
     if deep.get("is_99_lock_elig"):
         found = True
         pts += 0.4
+
+    # Phase 3 — Sackmann/TML-Database real serve/return signals.
+    # `tennis_sackmann_stats` is populated by services.tennis at read-time.
+    # We compare our pick's player vs opponent on the surface-specific
+    # 52-week aggregates.
+    sack = pick.get("tennis_sackmann_stats") or {}
+    pick_stats = sack.get("pick") or {}
+    opp_stats  = sack.get("opponent") or {}
+    if pick_stats and opp_stats:
+        # First-serve dominance: pick's 1st-serve-won% minus opp's 1st-serve-won%.
+        # +5pp on this metric is a MASSIVE edge (top-10 vs mid-tier).
+        p_fsw = pick_stats.get("first_serve_won_pct")
+        o_fsw = opp_stats.get("first_serve_won_pct")
+        if isinstance(p_fsw, (int, float)) and isinstance(o_fsw, (int, float)):
+            diff = p_fsw - o_fsw
+            if abs(diff) >= 3.0:
+                found = True
+                pts += _clamp(diff * 0.15, -2.0, 2.0)
+                details.append(
+                    f"1st-serve-won edge {diff:+.1f}pp "
+                    f"({p_fsw:.0f}% vs {o_fsw:.0f}%)")
+        # Break-point saved dominance (defensive serve strength)
+        p_bps = pick_stats.get("break_saved_pct")
+        o_bps = opp_stats.get("break_saved_pct")
+        if isinstance(p_bps, (int, float)) and isinstance(o_bps, (int, float)):
+            diff = p_bps - o_bps
+            if abs(diff) >= 5.0:
+                found = True
+                pts += _clamp(diff * 0.08, -1.5, 1.5)
+                details.append(
+                    f"Break-saved edge {diff:+.1f}pp "
+                    f"({p_bps:.0f}% vs {o_bps:.0f}%)")
+    # Retirement risk warning — retirement_rate > 8% on 20+ matches
+    # (roughly 2× league average) is a fade for both moneyline overs
+    # and Under Games/Sets markets.
+    p_ret = pick_stats.get("retirement_rate_pct")
+    p_n   = pick_stats.get("n_matches")
+    if isinstance(p_ret, (int, float)) and isinstance(p_n, int) and p_n >= 20 and p_ret >= 8.0:
+        found = True
+        pts -= 1.2
+        details.append(
+            f"Elevated retirement rate ({p_ret:.1f}% in last 52w) — fade risk")
+
+    # Career + surface-specific H2H — populated by tennis on-read enricher.
+    h2h = pick.get("tennis_h2h") or {}
+    n_h2h = h2h.get("matches", 0)
+    if isinstance(n_h2h, int) and n_h2h >= 3:
+        # a = our pick's player. a_wins vs b_wins is the historical edge.
+        aw = h2h.get("a_wins", 0)
+        bw = h2h.get("b_wins", 0)
+        if aw + bw > 0:
+            pick_share = aw / (aw + bw)
+            found = True
+            # +/- 1.5 pts at 100% dominance either way
+            pts += _clamp((pick_share - 0.5) * 3.0, -1.5, 1.5)
+            details.append(f"Career H2H: {aw}-{bw} ({h2h.get('surface') or 'all surfaces'})")
 
     return {
         "key": "tennis_deep", "label": "Tennis Context",
