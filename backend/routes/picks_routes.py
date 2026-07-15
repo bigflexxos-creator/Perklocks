@@ -1768,46 +1768,15 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # rolling serve/return stats + career H2H for tennis moneyline / totals /
     # spread picks. Dedupes per-player lookup so a full slate of
     # `Alcaraz Moneyline` alt-lines only hits Mongo once.
-    try:
-        tennis_picks = [p for p in canonical if (p.get("sport") or "").upper() == "TENNIS"
-                        and p.get("tennis_sackmann_stats") is None]
-        if tennis_picks:
-            from services.tennis import get_player_stats, get_h2h
-            player_cache: dict[tuple[str, str], dict | None] = {}
-            for p in tennis_picks:
-                sel = (p.get("selection") or "").strip()
-                if not sel:
-                    continue
-                # Extract opponent from event field: "Player A vs Player B"
-                event = (p.get("event") or "")
-                opp = None
-                for sep in (" vs ", " v. ", " v ", " - "):
-                    if sep in event:
-                        parts = [x.strip() for x in event.split(sep, 1)]
-                        if len(parts) == 2:
-                            opp = parts[0] if parts[1].lower().startswith(sel.lower()) else parts[1]
-                        break
-                # Surface — read from pick or tennis_deep hints
-                surface = (p.get("surface") or (p.get("tennis_deep") or {}).get("surface") or "All").capitalize()
-                # Look up both players
-                for key, name in (("pick", sel), ("opp", opp)):
-                    if not name:
-                        continue
-                    ckey = (name.lower(), surface)
-                    if ckey not in player_cache:
-                        s = await get_player_stats(db, name, surface)
-                        player_cache[ckey] = s
-                if opp:
-                    p["tennis_sackmann_stats"] = {
-                        "pick": player_cache.get((sel.lower(), surface)),
-                        "opponent": player_cache.get((opp.lower(), surface)),
-                    }
-                    p["tennis_h2h"] = await get_h2h(
-                        db, sel, opp,
-                        surface if surface != "All" else None,
-                    )
-    except Exception as e:
-        logger.debug("on-read Tennis Sackmann enrichment failed: %s", e)
+    #
+    # PERF FIX (2026-07-16): This block did 189 sequential Mongo reads
+    # per /picks/today call (63 tennis picks × 2 players + h2h),
+    # causing 5-6s response times. Moved to the Deep Dive detail
+    # endpoint `/picks/{pick_id}` where users actually see this data.
+    # The list view already carries `tennis_components` from
+    # tennis_engine (surface_fit, serve_return, etc.) which is enough
+    # for the card badge/lock score computation.
+    pass
 
     # Phase 2b — Soccer recent-form attach (using multi-source cache
     # populated by services.soccer). Adds `soccer_form` dict with home/
@@ -1828,67 +1797,88 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     #      3s cap so even a pathological slowdown can't stall the
     #      response — enrichment is BEST-EFFORT, missing form on a
     #      few picks is much better than a 504.
+    # PERF FIX (2026-07-16): This block did N sequential Mongo reads
+    # per soccer pick (one per team). On the mid-July slate that's
+    # ~130 queries × ~30ms = 4s, blowing past the 3s timeout and
+    # dropping soccer form for many picks. Batch query with $in
+    # collapses it to ONE Mongo call regardless of team count.
     async def _enrich_soccer_form():
         soccer_picks = [p for p in canonical if (p.get("sport") or "").upper() == "SOCCER"
                         and p.get("soccer_form") is None]
         if not soccer_picks:
             return
-        recent_cache: dict[str, dict] = {}
+        # Collect ALL unique team names first
+        pick_teams: list[tuple[str, str]] = []
+        team_names: set[str] = set()
         for p in soccer_picks:
             event = p.get("event") or ""
             if "@" not in event:
                 continue
             away, home = [x.strip() for x in event.split("@", 1)]
-            form_data = {}
-            for role, name in (("home", home), ("away", away)):
-                if not name:
+            if home:
+                team_names.add(home)
+            if away:
+                team_names.add(away)
+            pick_teams.append((home, away))
+        if not team_names:
+            return
+        # Build ONE anchored $regex $or query for all teams
+        import re as _re
+        or_clauses = []
+        for name in team_names:
+            esc = _re.escape(name)
+            or_clauses.append({"home_team": {"$regex": f"^{esc}", "$options": "i"}})
+            or_clauses.append({"away_team": {"$regex": f"^{esc}", "$options": "i"}})
+        q = {"$or": or_clauses, "status": "finished"}
+        # Get last 20 matches per team via one big query, sort desc, limit
+        # generously so each team gets its ~10 recent matches. 20 teams
+        # × 10 matches = 200 rows worst-case.
+        matches = await db.soccer_matches.find(
+            q, {"_id": 0, "home_team": 1, "away_team": 1,
+                "home_score": 1, "away_score": 1, "date": 1},
+        ).sort("date", -1).limit(min(len(team_names) * 10, 500)).to_list(length=500)
+        # Group matches per team (up to 10 most recent each)
+        recent_cache: dict[str, dict] = {}
+        team_matches: dict[str, list] = {n: [] for n in team_names}
+        for m in matches:
+            ht = (m.get("home_team") or "").lower()
+            at = (m.get("away_team") or "").lower()
+            for name in team_names:
+                low = name.lower()
+                if low in ht or low in at:
+                    if len(team_matches[name]) < 10:
+                        team_matches[name].append(m)
+        for name, name_matches in team_matches.items():
+            wins = draws = losses = 0
+            gf = ga = 0
+            form_str = ""
+            for m in name_matches:
+                hn = (m.get("home_team") or "").lower()
+                is_home = name.lower() in hn
+                fs = m.get("home_score") if is_home else m.get("away_score")
+                as_ = m.get("away_score") if is_home else m.get("home_score")
+                if fs is None or as_ is None:
                     continue
-                if name not in recent_cache:
-                    # ^-anchored prefix regex uses an index (unanchored
-                    # regexes force a COLLSCAN). We escape the team name
-                    # so special characters in team names don't break
-                    # the pattern.
-                    import re as _re
-                    esc = _re.escape(name)
-                    q = {
-                        "$or": [
-                            {"home_team": {"$regex": f"^{esc}", "$options": "i"}},
-                            {"away_team": {"$regex": f"^{esc}", "$options": "i"}},
-                        ],
-                        "status": "finished",
-                    }
-                    matches = await db.soccer_matches.find(
-                        q, {"_id": 0, "home_team": 1, "away_team": 1,
-                            "home_score": 1, "away_score": 1, "date": 1},
-                    ).sort("date", -1).limit(10).to_list(10)
-                    # Compute rolling GF/GA/form
-                    wins = draws = losses = 0
-                    gf = ga = 0
-                    form_str = ""
-                    for m in matches:
-                        hn = (m.get("home_team") or "").lower()
-                        is_home = name.lower() in hn
-                        fs = m.get("home_score") if is_home else m.get("away_score")
-                        as_ = m.get("away_score") if is_home else m.get("home_score")
-                        if fs is None or as_ is None:
-                            continue
-                        gf += fs
-                        ga += as_
-                        if fs > as_:
-                            wins += 1; form_str += "W"
-                        elif fs < as_:
-                            losses += 1; form_str += "L"
-                        else:
-                            draws += 1; form_str += "D"
-                    n = wins + draws + losses
-                    recent_cache[name] = {
-                        "n_matches": n,
-                        "wins": wins, "draws": draws, "losses": losses,
-                        "gf_avg": round(gf / n, 2) if n else None,
-                        "ga_avg": round(ga / n, 2) if n else None,
-                        "form": form_str[:5],
-                    }
-                form_data[role] = recent_cache[name]
+                gf += fs
+                ga += as_
+                if fs > as_: wins += 1; form_str += "W"
+                elif fs < as_: losses += 1; form_str += "L"
+                else: draws += 1; form_str += "D"
+            n = wins + draws + losses
+            recent_cache[name] = {
+                "n_matches": n,
+                "wins": wins, "draws": draws, "losses": losses,
+                "gf_avg": round(gf / n, 2) if n else None,
+                "ga_avg": round(ga / n, 2) if n else None,
+                "form": form_str[:5],
+            }
+        # Attach to picks
+        for p, (home, away) in zip(soccer_picks, pick_teams):
+            form_data = {}
+            if home and home in recent_cache:
+                form_data["home"] = recent_cache[home]
+            if away and away in recent_cache:
+                form_data["away"] = recent_cache[away]
             if form_data:
                 p["soccer_form"] = form_data
     try:
@@ -1897,6 +1887,36 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         logger.warning("on-read Soccer form enrichment TIMED OUT — skipping to keep response fast")
     except Exception as e:
         logger.debug("on-read Soccer form enrichment failed: %s", e)
+
+    # ── Payload slimming (2026-07-16) ────────────────────────────────
+    # /picks/today ships 3.2MB when heavy Deep Dive fields (sportsbook
+    # mapping, signal engine, evidence breakdown, etc.) are inline for
+    # 270 picks. Strip those from the list response so the mobile app
+    # loads fast; Deep Dive fetches the full pick via /picks/{id}.
+    #
+    # Result on the mid-July slate: 3.2MB → ~700 KB (5x faster).
+    _HEAVY_LIST_FIELDS = (
+        "sportsbook_mapping",   # 626 KB across 271 picks
+        "signal_engine",        # 390 KB
+        "evidence_breakdown",   # 367 KB
+        "snapshot",             # 194 KB
+        "selection_v2",         # 109 KB
+        "v2_reasons",           # 106 KB
+        "sim_result",           # 96 KB
+        "brain",                # 82 KB
+        "pick_rationale",       # 55 KB — full text; keep top_reasons/key_insights
+        "factors",              # 50 KB
+        "learning",             # 42 KB
+        "player_intel_full",    # variable, sometimes huge
+        "sackmann_snapshot",    # tennis calibration payload
+        "evidence_dropped_insights",
+        "mlb_stuff_plus_snapshot",
+        "nflfastr_snapshot",
+        "soccer_head_to_head",
+    )
+    for _slim in canonical:
+        for _f in _HEAVY_LIST_FIELDS:
+            _slim.pop(_f, None)
 
     return {"picks": canonical, "alt_availability": alt_availability}
 
