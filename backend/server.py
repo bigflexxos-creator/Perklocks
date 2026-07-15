@@ -250,6 +250,32 @@ def _canonicalize_lock_score(pick: dict) -> dict:
       • grade + confidence re-derived when we promote, so the badge,
         progress bar, and label always agree with the headline number.
     """
+    # ── Tennis-calibrated fast-path (2026-07-16) ────────────────────
+    # Tennis picks that have gone through the Sackmann-calibrated
+    # tennis engine carry `tennis_calibrated=True`. Their lock_score
+    # is the AUTHORITATIVE value — do not promote to max() of stale
+    # shadow fields. This is the fix for "everyone shows 92 on tennis"
+    # (user report 2026-07-15): peak=99 residue from pre-calibration
+    # refresh cycles was over-promoting every tennis pick to 99, and
+    # the mid-90 v2/raw shadows were dragging every other pick up to
+    # 91-92 regardless of the calibrated evidence.
+    if pick.get("tennis_calibrated"):
+        try:
+            from sports_engine import _grade as _tc_grade, _confidence as _tc_conf
+            final_lock = float(pick.get("lock_score") or 0)
+            if final_lock > 0:
+                pick["grade"]      = _tc_grade(final_lock)
+                pick["confidence"] = _tc_conf(final_lock)
+        except Exception:
+            pass
+        # Attach probability engine breakdown (same as standard path).
+        try:
+            from probability_engine import unified_probability_report
+            pick["probability"] = unified_probability_report(pick)
+        except Exception as e:
+            logger.debug("probability_engine attach skipped (tennis): %s", e)
+        return pick
+
     try:
         v1 = float(pick.get("lock_score") or 0)
     except Exception:

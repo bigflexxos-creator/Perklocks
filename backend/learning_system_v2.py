@@ -594,23 +594,34 @@ async def apply_v2_to_picks(picks: list[dict], db) -> list[dict]:
         # Tier step function (matches sports_engine.compute_lock_score):
         #   Win≥80 & Edge≥15 → 98, Win≥75 & Edge≥10 → 95,
         #   Win≥70 & Edge≥5  → 90, Win≥65 & Edge≥3  → 85, else none.
+        #
+        # ── Tennis carve-out (2026-07-16) ──────────────────────────────
+        # Tennis picks marked `tennis_calibrated=True` have already
+        # been through the Sackmann-calibrated tennis engine — its
+        # lock_score IS the authoritative value based on real player
+        # stats. The generic win/edge floor blows away that calibration
+        # (a Sinner pick at Sackmann-calibrated 87 gets bumped to 90
+        # by the floor, and an ITF Futures at 72 gets bumped to 85 too,
+        # so everything clusters at 85-90 again). Skip the floor for
+        # tennis-calibrated picks entirely.
         try:
-            wp_v = float(p.get("win_probability") or 0)
-            ed_v = float(p.get("edge_percent") or 0)
-            cur_lock = float(p.get("lock_score") or 0)
-            floor = 0.0
-            if wp_v >= 80.0 and ed_v >= 15.0:
-                floor = 98.0
-            elif wp_v >= 75.0 and ed_v >= 10.0:
-                floor = 95.0
-            elif wp_v >= 70.0 and ed_v >= 5.0:
-                floor = 90.0
-            elif wp_v >= 65.0 and ed_v >= 3.0:
-                floor = 85.0
-            if floor and cur_lock < floor:
-                # Clamp to 99 — Lock Score band is 0-99 by spec.
-                p["lock_score"] = round(min(99.0, floor), 1)
-                p["bet_quality_floor_applied"] = True
+            if not p.get("tennis_calibrated"):
+                wp_v = float(p.get("win_probability") or 0)
+                ed_v = float(p.get("edge_percent") or 0)
+                cur_lock = float(p.get("lock_score") or 0)
+                floor = 0.0
+                if wp_v >= 80.0 and ed_v >= 15.0:
+                    floor = 98.0
+                elif wp_v >= 75.0 and ed_v >= 10.0:
+                    floor = 95.0
+                elif wp_v >= 70.0 and ed_v >= 5.0:
+                    floor = 90.0
+                elif wp_v >= 65.0 and ed_v >= 3.0:
+                    floor = 85.0
+                if floor and cur_lock < floor:
+                    # Clamp to 99 — Lock Score band is 0-99 by spec.
+                    p["lock_score"] = round(min(99.0, floor), 1)
+                    p["bet_quality_floor_applied"] = True
         except Exception:
             pass
 
@@ -629,23 +640,29 @@ async def apply_v2_to_picks(picks: list[dict], db) -> list[dict]:
         # use V2 as the canonical lock. This stops the UI from showing
         # the stale "Old lock 85 → v2 94" framing — V2 IS the lock now.
         # We never PROMOTE below the bet-quality floor or above 99.
+        #
+        # Skip for tennis-calibrated picks — tennis_engine has already
+        # aligned all four lock fields (v1, v2, raw, peak) to the
+        # calibrated value; any V2 shadow score older than the tennis
+        # calibration would silently re-promote a stale 92.
         try:
-            v2 = p.get("lock_score_v2")
-            if v2 is not None:
-                v2_f = float(v2)
-                cur = float(p.get("lock_score") or 0)
-                if v2_f > cur:
-                    p["lock_score"] = round(min(99.0, v2_f), 1)
-                    p["grade"] = _grade(p["lock_score"])
-                    p["confidence"] = _confidence(p["lock_score"])
-                    p["v2_promoted_to_primary"] = True
-                # Sync v2 tier into grade when v2 says Apex/Elite Lock
-                # so the badge matches the headline score.
-                tier_v2 = p.get("tier_v2")
-                if tier_v2 in ("Apex Lock", "Elite Lock", "Strong Lock", "Lock", "Playable"):
-                    # Only upgrade — never downgrade an already-higher v1 grade.
-                    spec_grade = _grade(p["lock_score"])
-                    p["grade"] = spec_grade
+            if not p.get("tennis_calibrated"):
+                v2 = p.get("lock_score_v2")
+                if v2 is not None:
+                    v2_f = float(v2)
+                    cur = float(p.get("lock_score") or 0)
+                    if v2_f > cur:
+                        p["lock_score"] = round(min(99.0, v2_f), 1)
+                        p["grade"] = _grade(p["lock_score"])
+                        p["confidence"] = _confidence(p["lock_score"])
+                        p["v2_promoted_to_primary"] = True
+                    # Sync v2 tier into grade when v2 says Apex/Elite Lock
+                    # so the badge matches the headline score.
+                    tier_v2 = p.get("tier_v2")
+                    if tier_v2 in ("Apex Lock", "Elite Lock", "Strong Lock", "Lock", "Playable"):
+                        # Only upgrade — never downgrade an already-higher v1 grade.
+                        spec_grade = _grade(p["lock_score"])
+                        p["grade"] = spec_grade
         except Exception:
             pass
     return picks
