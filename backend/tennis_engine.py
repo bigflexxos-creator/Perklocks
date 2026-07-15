@@ -391,7 +391,12 @@ def _composite_confidence(c: TennisComponents) -> float:
     return round(max(0.0, min(100.0, score)), 1)
 
 
-def compute_components(pick: dict) -> TennisComponents:
+def compute_components(
+    pick: dict,
+    *,
+    calibrated_surface_fit: Optional[float] = None,
+    calibrated_serve_return: Optional[float] = None,
+) -> TennisComponents:
     """Calculate all 7 components + composite for a tennis pick.
 
     Pure function — no DB or HTTP calls. Heuristics only; swap helpers when
@@ -425,6 +430,30 @@ def compute_components(pick: dict) -> TennisComponents:
     matchup_s      = _matchup_score(player, opponent, implied_pct)
     edge_pct       = _market_edge(pick)
     variance_s     = _variance_penalty(player, tier, implied_pct, edge_pct)
+
+    # Phase 3c — Sackmann calibrated overrides. If the caller has
+    # pre-computed real z-score-normalized values from
+    # `services.tennis_calibration`, use them instead of the market-anchored
+    # heuristics. Blends 70% real / 30% heuristic to keep some market
+    # anchor when a player has borderline sample size.
+    #
+    # UNKNOWN-PLAYER FALLBACK: when calibrated data is None (player is
+    # NOT in Sackmann's ~2250-player DB — likely ITF Futures or low-tier
+    # regional player), we PENALIZE the heuristic score toward 40 instead
+    # of letting it stay at 90+. Rationale: absence from Sackmann is
+    # itself a signal that this is a lower-tier match, and the pick
+    # should NOT display as an "Elite Lock" 99.
+    if isinstance(calibrated_surface_fit, (int, float)):
+        surface_s = round(calibrated_surface_fit * 0.7 + surface_s * 0.3, 1)
+    else:
+        # Regress toward 40 (below league avg) for unknown players.
+        # Heuristic still contributes — an unknown player with strong
+        # market/implied signal can still reach ~55 (borderline).
+        surface_s = round(surface_s * 0.4 + 40.0 * 0.6, 1)
+    if isinstance(calibrated_serve_return, (int, float)):
+        serve_return_s = round(calibrated_serve_return * 0.7 + serve_return_s * 0.3, 1)
+    else:
+        serve_return_s = round(serve_return_s * 0.4 + 40.0 * 0.6, 1)
 
     comp = TennisComponents(
         surface=surface_s,
@@ -518,8 +547,12 @@ def compute_components(pick: dict) -> TennisComponents:
 # ───────────────────────── Public pipeline ─────────────────────────
 
 
-def apply_tennis_engine(picks: list[dict]) -> list[dict]:
+async def apply_tennis_engine(db, picks: list[dict]) -> list[dict]:
     """Apply the full v2 pipeline to a list of picks.
+
+    Async since 2026-07-15 to allow Sackmann-calibrated player-score
+    lookups per pick (see services.tennis_calibration). Caller needs
+    to pass the Motor db handle.
 
     Side-effects on each tennis pick:
         • Adds `tennis_components` dict (all 7 + composite + flags).
@@ -545,7 +578,34 @@ def apply_tennis_engine(picks: list[dict]) -> list[dict]:
     no_bet_log: dict[str, int] = {"edge": 0, "confidence": 0}
 
     for p in tennis_picks:
-        comp = compute_components(p)
+        # Phase 3c — Fetch Sackmann-calibrated z-scores if available. These
+        # replace the heuristic market-anchored scores so an ATP top-10
+        # scores higher than an ITF Futures player at the same odds.
+        cal_sf = None
+        cal_sr = None
+        try:
+            from services.tennis_calibration import (
+                get_calibrated_surface_fit, get_calibrated_serve_return,
+            )
+            _league = (p.get("league") or "").strip()
+            _surface = SURFACE_BY_LEAGUE.get(_league, "Hard")
+            _players = _parse_players(p.get("event") or "")
+            _market_l = (p.get("market") or "").lower()
+            _sel = (p.get("selection") or "").strip()
+            _player = _selection_player(_market_l, _sel, _players)
+            if not _player and _players:
+                _player = _players[0]
+            if _player:
+                cal_sf = await get_calibrated_surface_fit(db, _player, _surface)
+                cal_sr = await get_calibrated_serve_return(db, _player, _surface)
+        except Exception as _cal_err:
+            logger.debug("tennis calibrated lookup failed: %s", _cal_err)
+
+        comp = compute_components(
+            p,
+            calibrated_surface_fit=cal_sf,
+            calibrated_serve_return=cal_sr,
+        )
         p["tennis_components"] = comp.to_dict()
 
         if comp.reason_no_bet:
@@ -569,14 +629,20 @@ def apply_tennis_engine(picks: list[dict]) -> list[dict]:
         if not comp.is_99_lock_eligible:
             if p.get("grade") == "Elite Lock":
                 p["grade"] = "Strong Lock"
-            # Map confidence (0-100) → lock-score (85-95) so the v2-engine
-            # quality is reflected in the displayed lock_score. Never exceed
-            # 98 if 99-LOCK gates failed.
-            v2_lock = 85.0 + (comp.confidence - NO_BET_MIN_CONF) * (10.0 / (100.0 - NO_BET_MIN_CONF))
-            v2_lock = max(85.0, min(98.0, v2_lock))
-            # Take the BETTER of (original lock_score capped at 98) or v2-mapped
-            # so we don't suddenly downgrade a pick that already scored higher.
-            p["lock_score"] = round(max(min(original_lock, 98.0), v2_lock), 1)
+            # Phase 3c update — map confidence to a WIDER lock range so
+            # calibrated player quality actually differentiates picks
+            # on the board. Previously 60→85 / 100→95 = 10pt span.
+            # Now 60→75 / 100→96 = 21pt span. This makes an ITF Futures
+            # doubles pick (confidence 60) score meaningfully lower
+            # than a Sinner ATP main-tour pick (confidence 90).
+            v2_lock = 75.0 + (comp.confidence - NO_BET_MIN_CONF) * (21.0 / (100.0 - NO_BET_MIN_CONF))
+            v2_lock = max(70.0, min(96.0, v2_lock))
+            # WEIGHTED blend of v2_lock (calibrated evidence) and
+            # original_lock (market-based). 65% weight to v2 so the
+            # calibration actually differentiates, 35% to original so
+            # a genuinely strong market signal isn't fully overridden.
+            blended = v2_lock * 0.65 + min(original_lock, 98.0) * 0.35
+            p["lock_score"] = round(max(70.0, min(97.0, blended)), 1)
             p["lock_score_99_eligible"] = False
         else:
             # 99-LOCK eligible — keep the raw bet-quality composite, but bump

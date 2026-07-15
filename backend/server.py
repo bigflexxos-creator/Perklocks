@@ -1743,7 +1743,7 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     try:
         from tennis_engine import apply_tennis_engine, build_tennis_insights
         before_tennis = sum(1 for p in picks if (p.get("sport") or "").lower() == "tennis")
-        picks = apply_tennis_engine(picks)
+        picks = await apply_tennis_engine(db, picks)
         after_tennis = sum(1 for p in picks if (p.get("sport") or "").lower() == "tennis")
         # Attach tennis-specific insights to surviving tennis picks so the
         # Deep Dive UI gets the surface/serve/matchup bullets.
@@ -4161,6 +4161,32 @@ async def on_startup():
         logger.info("Tennis Sackmann weekly refresh loop scheduled")
     except Exception as e:
         logger.warning("Tennis refresh loop failed to start: %s", e)
+
+    # Phase 3c — Tennis league-average calibration. Recomputes surface-
+    # specific league means / stddevs for hold%, 1st-serve-won%, break-
+    # saved%, and win% from `tennis_player_stats`. These normalize the
+    # per-player z-scores so a top-10 pro scores 85+ and an ITF Futures
+    # player scores 20-35 (was: everyone scored 99).
+    try:
+        from services.tennis_calibration import refresh_league_averages as _cal_refresh
+
+        async def _tennis_cal_loop():
+            # Wait 60s for the Sackmann refresh to populate tennis_player_stats
+            # on cold start, then refresh averages daily.
+            await asyncio.sleep(60)
+            while True:
+                try:
+                    r = await _cal_refresh(db)
+                    logger.info("Tennis calibration averages refreshed for %d surfaces",
+                                len(r or {}))
+                except Exception as e:
+                    logger.warning("Tennis calibration refresh failed: %s", e)
+                await asyncio.sleep(24 * 60 * 60)
+
+        _deferred_task(_tennis_cal_loop, DEFER_BASE * 10)
+        logger.info("Tennis calibration daily refresh loop scheduled")
+    except Exception as e:
+        logger.warning("Tennis calibration loop failed to start: %s", e)
 
     # Phase 4 — NFL nflverse (snap counts + player_stats_season)
     # preseason prep. Season-agg parquets are ~2 MB each and rarely
