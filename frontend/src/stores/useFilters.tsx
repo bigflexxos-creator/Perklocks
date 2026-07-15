@@ -155,7 +155,7 @@ function reducer(state: FilterState, action: Action): FilterState {
 // obvious active filter — symptom was stale persisted arrays from
 // earlier sessions silently restricting the slate. Bumping the key
 // drops the old snapshot on every device.
-const STORAGE_KEY = "perkslocks_filters_v5";
+const STORAGE_KEY = "perkslocks_filters_v6";
 
 async function loadPersisted(): Promise<Partial<FilterState> | null> {
   try {

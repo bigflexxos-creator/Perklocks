@@ -21,7 +21,7 @@ import { storage } from "@/src/utils/storage";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 import { useFilters } from "@/src/stores/useFilters";
 
-const PREFS_KEY = "locks_feed_prefs_v1";
+const PREFS_KEY = "locks_feed_prefs_v2";
 type FeedPrefs = { sport?: string; sortKey?: SortKey; lineType?: LineType };
 
 function timeAgo(d: Date | null): string {
