@@ -98,7 +98,7 @@ except Exception as _lab_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.07.07-cheats-by-market-v43"
+DATA_VERSION = "2026.07.15-tennis-99lock-cleanup-v44"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
