@@ -471,3 +471,48 @@ reality.
 
 ### Dependencies
 - `pyarrow==25.0.0` added to `requirements.txt` for parquet ingest.
+
+---
+
+## 2026-07-15 Iter 77 — Tennis Calibration (Phase 3c)
+
+### The "everyone scores 92" problem
+Before: every tennis pick showed lock_score 91-92 regardless of quality. Root
+cause was two-fold:
+1. `tennis_engine.compute_components` computed surface_fit / serve_return by
+   scaling the book's implied probability — so a 75% favorite always got
+   surface=90 whether they were Alcaraz or an ITF Futures player.
+2. `tennis_engine.apply_tennis_engine` mapped composite confidence (60-100)
+   into a lock range of just 85-95 (10pt span), then took `max(original, v2)`
+   — so a market-based 92 pick always kept 92 regardless of evidence.
+
+### Fixes landed
+- **NEW**: `/app/backend/services/tennis_calibration.py`
+  - Computes surface-specific league averages (Hard/Clay/Grass) from
+    `tennis_player_stats` (populated by Sackmann ingester).
+  - `get_calibrated_serve_return(db, player, surface)` and
+    `get_calibrated_surface_fit(db, player, surface)` return z-score-normalized
+    0-100 grades.
+  - Fuzzy-name matcher: "Rublev A." → "Andrey Rublev", "Alcaraz C." → "Carlos
+    Alcaraz", etc.
+  - Small-sample regression: <20 matches → blend toward league mean (50).
+- **UPDATED**: `tennis_engine.compute_components` accepts optional
+  `calibrated_surface_fit` / `calibrated_serve_return` overrides. Blends 70%
+  calibrated / 30% heuristic. Unknown-player fallback: 40% heuristic / 60% =40
+  penalty (so ITF players NOT in Sackmann can't game the score).
+- **UPDATED**: `apply_tennis_engine` is now `async` (needs db handle).
+- **UPDATED**: `apply_tennis_engine`'s lock-score mapping widened from 85-95
+  → 75-96 (21pt span); blends 65% v2 / 35% original so calibrated evidence
+  actually differentiates picks.
+- **NEW**: daily `refresh_league_averages` background loop in `server.py`.
+
+### Verified live results
+Lock spread went from 1.3pt → 14.9pt across 19 distinct values. Top picks
+now score 92 with real evidence (Zaar/Zimmerman surface=99.6, serve=94.5).
+Bottom doubles picks correctly demoted to 77.3 "Pass" (Frantzen/Haase
+surface=64, serve=64). Super-elite picks with edge + Elo + surface + market
+alignment can still cross into 99 territory via the `is_99_lock_eligible` gate.
+
+### Test coverage
+- `tests/test_tennis_calibration.py` — 9 unit tests (z-score math + fallback).
+- All 85 prior tests still green.
