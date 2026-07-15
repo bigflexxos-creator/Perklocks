@@ -65,8 +65,8 @@ WEIGHTS = {
     "variance":     0.05,   # subtracted, not added
 }
 
-NO_BET_MIN_EDGE = 5.0       # %
-NO_BET_MIN_CONF = 72.0      # composite confidence 0-100
+NO_BET_MIN_EDGE = 3.0       # % (was 5.0 — too aggressive dropped 800+ picks)
+NO_BET_MIN_CONF = 60.0      # composite confidence 0-100 (was 72 — WTA/doubles slate cut)
 # 2026-07-12: raised 50 → 150 because the permissive TennisExplorer
 # scraper now surfaces every rotating ATP/WTA 250 + Challenger the
 # tour is playing that week (Umag+Bastad+Gstaad+Iasi WTA+Athens WTA+
@@ -437,23 +437,22 @@ def compute_components(
     # heuristics. Blends 70% real / 30% heuristic to keep some market
     # anchor when a player has borderline sample size.
     #
-    # UNKNOWN-PLAYER FALLBACK: when calibrated data is None (player is
-    # NOT in Sackmann's ~2250-player DB — likely ITF Futures or low-tier
-    # regional player), we PENALIZE the heuristic score toward 40 instead
-    # of letting it stay at 90+. Rationale: absence from Sackmann is
-    # itself a signal that this is a lower-tier match, and the pick
-    # should NOT display as an "Elite Lock" 99.
+    # UNKNOWN-PLAYER HANDLING (2026-07-16 v4): when Sackmann data is
+    # missing (WTA, doubles, ITF Futures — ~2/3 of the slate), we keep
+    # the market-anchored heuristic but CAP at 78 so unknown players
+    # can't accidentally reach the 92/88 elite-calibrated gate. This
+    # is the balance between "penalize to 40" (killed the slate) and
+    # "no cap" (everyone becomes 99).
     if isinstance(calibrated_surface_fit, (int, float)):
         surface_s = round(calibrated_surface_fit * 0.7 + surface_s * 0.3, 1)
     else:
-        # Regress toward 40 (below league avg) for unknown players.
-        # Heuristic still contributes — an unknown player with strong
-        # market/implied signal can still reach ~55 (borderline).
-        surface_s = round(surface_s * 0.4 + 40.0 * 0.6, 1)
+        # Cap unknown players below elite threshold. They can still
+        # reach the Lock band (90-97) via the standard formula.
+        surface_s = round(min(surface_s, 78.0), 1)
     if isinstance(calibrated_serve_return, (int, float)):
         serve_return_s = round(calibrated_serve_return * 0.7 + serve_return_s * 0.3, 1)
     else:
-        serve_return_s = round(serve_return_s * 0.4 + 40.0 * 0.6, 1)
+        serve_return_s = round(min(serve_return_s, 78.0), 1)
 
     comp = TennisComponents(
         surface=surface_s,
@@ -532,10 +531,9 @@ def compute_components(
             comp.reason_no_bet = f"confidence {comp.confidence} < {NO_BET_MIN_CONF} min"
     else:
         # Anchor path: skip the edge gate, allow lower confidence floor
-        # (60 vs 72) — heavy chalk, alts, and scrape-anchored picks get
-        # into the slate as long as the player profile isn't obviously
-        # broken.
-        anchor_min_conf = 60.0
+        # — heavy chalk, alts, and scrape-anchored picks get into the
+        # slate as long as the player profile isn't obviously broken.
+        anchor_min_conf = 50.0
         if comp.confidence < anchor_min_conf:
             comp.reason_no_bet = (
                 f"confidence {comp.confidence} < {anchor_min_conf} (anchor floor)"
