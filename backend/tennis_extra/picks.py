@@ -60,21 +60,89 @@ def _strip_seed(name: str) -> str:
     return re.sub(r"\s*\(\d+\)\s*$", "", name).strip()
 
 
-def _lock_score_from_implied(implied: float, *, tier: str) -> float:
-    """Translate book implied probability → SEED lock score in [70..90].
+def _lock_score_from_implied(
+    implied: float,
+    *,
+    tier: str,
+    tournament: str = "",
+    event_label: str = "",
+    edge_percent: float = 0.0,
+    using_real_odds: bool = False,
+) -> float:
+    """Translate book implied probability + evidence → SEED lock score.
 
-    This is only the initial seed value. Downstream (Lock Engine V2 +
-    learning_system_v2) can lift the score above 90 — that's intentional
-    when the pick actually passes the calibration / bandit / ROI checks.
+    Redesigned 2026-07-15 (user complaint "why are all tennis picks 92?").
+    Previous formula used implied% alone → 55% fav = 75, 90% fav = 90, and
+    then Lock V2 pushed every pick to 91-92. Result: no differentiation
+    between an ATP main-tour +EV pick and an ITF doubles chalk trap.
 
-    Approach: a 55% favorite ≈ 75; a 75% favorite ≈ 85; a 90% favorite ≈ 90.
-    Then deduct a small penalty for non-ATP/WTA 250 tiers.
+    New formula spreads legitimate picks from ~65 to ~95 by layering:
+
+      base       — implied% mapped to [65, 92]
+      tier_pen   — ITF Futures / Doubles / Qualifier / Challenger penalties
+      edge_bonus — real-book +EV bonus / negative-edge fade
+      chalk_pen  — implied ≥85% trap-zone penalty
+      value_bon  — 58-72% "sweet spot" bonus (best historical ROI zone)
     """
-    base = 70.0 + (implied - 0.55) / (0.90 - 0.55) * 20.0
-    base = max(70.0, min(_MAX_LOCK, base))
-    if "Challenger" in tier or "Qualifier" in tier:
-        base -= 4.0
-    return round(base, 1)
+    # Base — same slope as before but WIDER band
+    base = 65.0 + (implied - 0.55) / (0.90 - 0.55) * 27.0    # 65 → 92
+    base = max(60.0, min(92.0, base))
+
+    # ── Tier / tournament penalty ────────────────────────────────────
+    tier_pen = 0.0
+    tier_l = (tier or "").lower()
+    tournament_l = (tournament or "").lower()
+    event_l = (event_label or "").lower()
+    is_doubles = ("/" in event_l)  # doubles matches show "A / B vs C / D"
+    if is_doubles:
+        tier_pen -= 5.0
+    if any(kw in tier_l for kw in ("itf", "futures", "m15", "m25", "w15", "w25")):
+        tier_pen -= 5.0
+    elif "challenger" in tier_l:
+        tier_pen -= 3.0
+    elif "qualifier" in tier_l or "qualify" in tier_l:
+        tier_pen -= 4.0
+    elif any(kw in tier_l for kw in ("m50", "m80", "m100", "w60", "w80", "w100")):
+        # Higher-tier ITF Circuit / low-end Challenger → mid penalty
+        tier_pen -= 3.0
+    elif tier_l in ("unknown", ""):
+        tier_pen -= 2.0
+    # ATP 250 / 500 / 1000 / Grand Slam / WTA equivalents → no penalty
+
+    # ── Edge bonus / fade ────────────────────────────────────────────
+    edge_bonus = 0.0
+    if using_real_odds and isinstance(edge_percent, (int, float)):
+        # Positive edge = our fair prob beats book's price
+        if edge_percent >= 5:
+            edge_bonus += 3.5
+        elif edge_percent >= 2:
+            edge_bonus += 2.0
+        elif edge_percent >= 0.5:
+            edge_bonus += 0.8
+        elif edge_percent <= -8:
+            edge_bonus -= 5.0
+        elif edge_percent <= -5:
+            edge_bonus -= 3.0
+        elif edge_percent <= -2:
+            edge_bonus -= 1.5
+
+    # ── Chalk trap penalty ───────────────────────────────────────────
+    chalk_pen = 0.0
+    if implied >= 0.87:      # ~-670+ favorite
+        chalk_pen -= 3.0
+    elif implied >= 0.82:    # ~-455 to -670
+        chalk_pen -= 1.5
+
+    # ── "Sweet spot" bonus ───────────────────────────────────────────
+    value_bon = 0.0
+    if 0.58 <= implied <= 0.72:   # ~-140 to -260 fav — historical +EV zone
+        value_bon += 1.5
+
+    lock = base + tier_pen + edge_bonus + chalk_pen + value_bon
+    # Clamp to a wider legal range so the differentiation actually
+    # survives Lock V2's downstream bounded adjustments.
+    lock = max(55.0, min(_MAX_LOCK, lock))
+    return round(lock, 1)
 
 
 def _grade(lock: float) -> str:
@@ -195,7 +263,6 @@ async def fetch_extra_tennis_picks(
         if fav_odds is None or fav_odds <= -700:
             continue  # chalk trap
 
-        lock = _lock_score_from_implied(fav_implied, tier=tier)
         fav_clean = _strip_seed(fav_name)
         dog_clean = _strip_seed(dog_name)
         event_label = f"{fav_clean} vs {dog_clean}"
@@ -240,6 +307,20 @@ async def fetch_extra_tennis_picks(
             no_edge_model_flag  = not is_model_pick
             coverage_note       = "TennisExplorer scrape (Odds API doesn't carry this tournament)."
             all_books           = {}
+
+        # ── Lock score (multi-factor, spreads picks 55-90) ──────────
+        # Now computed AFTER real-odds promotion so real edge_pct feeds
+        # into the seed. See _lock_score_from_implied docstring for the
+        # tier / edge / chalk / value-zone weighting.
+        _tour_ctx = (m.get("tournament") or "") + " " + tier
+        lock = _lock_score_from_implied(
+            fav_implied,
+            tier=tier,
+            tournament=_tour_ctx,
+            event_label=event_label,
+            edge_percent=edge_pct,
+            using_real_odds=using_real,
+        )
 
         pick_doc = {
             "id": pid,

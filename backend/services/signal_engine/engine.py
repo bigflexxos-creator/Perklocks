@@ -148,7 +148,23 @@ def _inject_rationale(pick: dict, score: int, components: list[dict]) -> None:
 async def decorate_signals_bulk(db, picks: list[dict], persist: bool = True) -> list[dict]:
     """Bulk entry-point used by /picks/today and detail endpoints.
     Persists changed blocks best-effort so the Rollover ranker (which
-    queries raw docs) can read `signal_score` without re-decoration."""
+    queries raw docs) can read `signal_score` without re-decoration.
+
+    2026-07-15 fix — user complaint "why are all tennis picks 92?":
+    the persist step was only writing `signal_engine` + `signal_score`,
+    which meant the `tennis_deep` / `soccer_deep` / `mlb_deep` enrichment
+    blocks (populated in `compute_signals`) were being recomputed on
+    every request AND weren't being fed into the visible lock_score,
+    so users couldn't tell a Sackmann-rich pick apart from a chalk trap.
+
+    Fix (two parts):
+      1) Persist the deep-signal blocks too (`tennis_deep`, `mlb_deep`,
+         `soccer_deep`) so subsequent DB reads have the data.
+      2) Feed `signal_score` back into a `lock_score_signal_adjusted`
+         field: signal >= 70 → +3 to base lock, 60-70 → +1, <40 → -3,
+         <30 → -5. This actually spreads the on-card score from
+         a single-signal 85-95 into a multi-signal 75-98 band.
+    """
     if not picks:
         return picks
     ops: list[UpdateOne] = []
@@ -157,13 +173,41 @@ async def decorate_signals_bulk(db, picks: list[dict], persist: bool = True) -> 
             before = (p.get("signal_engine") or {}).get("computed_at")
             await compute_signals(db, p)
             after = (p.get("signal_engine") or {}).get("computed_at")
+
+            # ── Feed signal_score into lock_score adjustment ─────────
+            score = p.get("signal_score")
+            base_lock = p.get("lock_score")
+            if isinstance(score, (int, float)) and isinstance(base_lock, (int, float)):
+                if score >= 70:
+                    adj = 3.0
+                elif score >= 60:
+                    adj = 1.0
+                elif score < 30:
+                    adj = -5.0
+                elif score < 40:
+                    adj = -3.0
+                else:
+                    adj = 0.0
+                new_lock = max(50.0, min(99.0, base_lock + adj))
+                p["lock_score_signal_adjusted"] = round(new_lock, 1)
+                p["lock_score_signal_adj_delta"] = round(adj, 1)
+
             if persist and p.get("id") and after and after != before:
+                set_doc = {
+                    "signal_engine": p["signal_engine"],
+                    "signal_score": p["signal_score"],
+                }
+                # Persist deep-signal blocks so subsequent queries have
+                # them without re-enrichment (Rollover ranker, admin
+                # dashboards, mobile detail modal all read raw docs).
+                for k in ("tennis_deep", "mlb_deep", "soccer_deep",
+                          "lock_score_signal_adjusted",
+                          "lock_score_signal_adj_delta"):
+                    if k in p and p[k] is not None:
+                        set_doc[k] = p[k]
                 ops.append(UpdateOne(
                     {"id": p["id"]},
-                    {"$set": {
-                        "signal_engine": p["signal_engine"],
-                        "signal_score": p["signal_score"],
-                    }},
+                    {"$set": set_doc},
                 ))
         except Exception as e:
             logger.warning("signal engine failed for pick %s: %s", p.get("id"), e)
