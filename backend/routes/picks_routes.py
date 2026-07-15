@@ -1042,6 +1042,21 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         # bets (book is sharper than us). The Locks tab is for
         # actionable +EV picks only.
         "edge_percent": {"$gte": 0},
+        # ── ITF Tennis carve-out (2026-07-16) ────────────────────────
+        # ITF Futures picks (source=tennis_extra, league contains
+        # itf/futures/m15/m25/w15/w25/w35) must NOT enter through
+        # standard_q. They're routed exclusively through tennis_extra_q
+        # which enforces a strict 95+ lock floor per user mandate:
+        # "It's always a lot of ITF I want the locks 95-99 lock scores
+        # only so we don't get a lot of noise". Without this NOR,
+        # ITF picks landing at 84-86 lock via the tennis calibration
+        # slip through standard_q's 80/85 floor and pollute the board.
+        "$nor": [
+            {
+                "sport": "Tennis",
+                "league": {"$regex": r"itf|futures|m15|m25|w15|w25|w35", "$options": "i"},
+            },
+        ],
     }
     # Elite-player anchor query — marquee names (Mbappé, Haaland, Messi,
     # Kane, Ronaldo etc.) skip the strict edge ≥ 0 filter so a
@@ -1105,56 +1120,73 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # so the validator's negative-edge number is meaningless. Surface
     # tennis_extra ML picks based purely on lock_score (≥ 80) so the
     # 48-hour scraped slate shows up in the feed.
+    # 2026-07-16 user mandate: "It's always a lot of ITF I want the
+    # locks 95-99 lock scores only so we don't get a lot of noise" — but
+    # ONLY for ITF Futures. Main tour ATP/WTA/Challenger keep their
+    # standard 80-lock floor. ITF gets a strict 95+ floor so only the
+    # sharpest low-tier edges surface.
     tennis_ml_q = {
         "sport": "Tennis",
         "market": {"$regex": "moneyline", "$options": "i"},
         "no_bet": {"$ne": True},
         "$or": [
-            # Path 1: standard Odds-API tennis ML — must clear -3 edge floor + strong lock
+            # Path 1: standard Odds-API tennis ML (main tour only)
             {
                 "edge_percent": {"$gte": -3.0},
+                # Exclude ITF from Path 1 — routed through Path 2 with strict 95 floor.
+                "league": {"$not": {"$regex": r"itf|futures|m15|m25|w15|w25|w35", "$options": "i"}},
                 "$or": [
                     {"lock_score": {"$gte": 80.0}},
                     {"lock_score_v2": {"$gte": 80.0}},
                     {"bandit_lift": {"$gt": 0}},
                 ],
             },
-            # Path 2: tennis_extra scraped picks — book-anchored, edge is meaningless
+            # Path 2: tennis_extra scraped picks — book-anchored
             {
                 "source": {"$in": ["tennis_extra", "tennis_extra_model", "tennis_real_odds"]},
+                # ITF: require 95+, main tour: 80+
                 "$or": [
-                    {"lock_score": {"$gte": 80.0}},
-                    {"lock_score_v2": {"$gte": 80.0}},
+                    {
+                        "league": {"$regex": r"itf|futures|m15|m25|w15|w25|w35", "$options": "i"},
+                        "$or": [
+                            {"lock_score": {"$gte": 95.0}},
+                            {"lock_score_v2": {"$gte": 95.0}},
+                        ],
+                    },
+                    {
+                        "league": {"$not": {"$regex": r"itf|futures|m15|m25|w15|w25|w35", "$options": "i"}},
+                        "$or": [
+                            {"lock_score": {"$gte": 80.0}},
+                            {"lock_score_v2": {"$gte": 80.0}},
+                        ],
+                    },
                 ],
             },
         ],
     }
-    # ── Tennis Extended Coverage carve-out (user request 2026-06-25) ─
-    # Surface ALL tennis_extra picks on the main board (not just
-    # Moneyline) so users see the full slate at a glance. The frontend
-    # renders an "EXT" badge on these so it's obvious the line came
-    # from a TennisExplorer scrape rather than a US sportsbook.
     tennis_extra_q = {
         "sport": "Tennis",
         "source": {"$in": ["tennis_extra", "tennis_extra_model"]},
         "no_bet": {"$ne": True},
         "$or": [
-            {"lock_score": {"$gte": 75.0}},
-            {"lock_score_v2": {"$gte": 75.0}},
+            # ITF/Futures — strict 95+ floor
+            {
+                "league": {"$regex": r"itf|futures|m15|m25|w15|w25|w35", "$options": "i"},
+                "$or": [
+                    {"lock_score": {"$gte": 95.0}},
+                    {"lock_score_v2": {"$gte": 95.0}},
+                ],
+            },
+            # Main tour (ATP/WTA/Challenger) — 75 floor
+            {
+                "league": {"$not": {"$regex": r"itf|futures|m15|m25|w15|w25|w35", "$options": "i"}},
+                "$or": [
+                    {"lock_score": {"$gte": 75.0}},
+                    {"lock_score_v2": {"$gte": 75.0}},
+                ],
+            },
         ],
     }
-    # ── Tennis Alt-Line carve-out (chalk-ladder exception) ────────────
-    # User report 2026-06-23: "you deleted all the alt spread tennis
-    # after I told you to fix simulator add a tab under tennis (alt)
-    # that all alt spread tennis picks". Alt-spread + alt-total tennis
-    # picks (e.g. "Fritz -3.0 Spread", "Svitolina -3.5 Spread", "Under
-    # 21.0 Games (Alt)") are chalk-ladder bets where the FAVORED side
-    # is priced at -300 to -800. By construction these will register
-    # tiny / slightly-negative edge against the sharp market, so the
-    # default `edge_percent >= 0` gate erases them entirely. Surface
-    # them under a relaxed gate (edge >= -8 + lock >= 70) so the user's
-    # new "Alt" tab shows the chalkiest acceptable lines and the
-    # synthesized chalk-totals the sports engine builds for them.
     tennis_alt_q = {
         "sport": "Tennis",
         "no_bet": {"$ne": True},

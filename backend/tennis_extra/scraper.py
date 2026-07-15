@@ -33,13 +33,15 @@ _cache: dict[str, tuple[float, list[dict]]] = {}
 # User mandate 2026-07-12: "Right tennis tournaments always change I
 # want app to be able to pick them up".
 _SKIP_KEYWORDS = (
-    # Non-tour categories — settlement is unreliable and lines are weak.
-    "utr", "exhibition", "futures", " itf",
+    # Non-tour categories — kept minimal per user 2026-07-16: "Why aren't
+    # Montsi and Vanshelboim popping up?" Users want ITF Futures / M25 /
+    # W25 events on the board so sharp low-tier edges surface. The
+    # tennis_extra tier penalty in picks.py already downweights ITF
+    # picks appropriately, so they only survive when the calibrated
+    # evidence + market edge is genuinely strong.
+    "utr", "exhibition",
     # Section headers TennisExplorer emits as fake tournament rows.
     "main tournaments", "lower level tournaments",
-    # ITF variants (with/without space).
-    "itf w",     # ITF W15/W25/W35/W60/W75/W100 women
-    "itf m",     # ITF M15/M25 men
 )
 
 # (Legacy list — retained but no longer consulted. See _is_tour_grade.)
@@ -322,14 +324,16 @@ def _infer_tier(tournament: str) -> str:
         return "Qualifier"
     if "challenger" in t:
         return "Challenger"
-    # Explicit WTA / ATP tags anywhere in the name (Athens WTA, Iasi WTA,
-    # Kitzbühel WTA, Bastad ATP, Rome 2 WTA, Halle ATP, etc.).
+    # ITF Futures — men M15/M25 and women W15/W25/W35 — enabled
+    # 2026-07-16 per user request for Montsi/Vanshelboim visibility.
+    if ("itf" in t) or ("futures" in t) or ("m15" in t) or ("m25" in t) \
+       or ("w15" in t) or ("w25" in t) or ("w35" in t):
+        return "ITF"
+    # Explicit WTA / ATP tags anywhere in the name.
     if "wta" in t:
         return "WTA 250"
     if "atp" in t:
         return "ATP 250"
-    # Bare city names (default TennisExplorer schema for the main tour) —
-    # treat as ATP 250 unless the city is a known WTA-only tune-up.
     if any(city in t for city in ("homburg", "nottingham")):
         return "WTA 250"
     return "ATP 250"
