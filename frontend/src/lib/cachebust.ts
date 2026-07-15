@@ -39,7 +39,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 // ─── Client-baked cache version (Layer 3) ───────────────────────────────────
 // Bump on every CLIENT-side data shape / content change.
 // Format: YYYYMMDD-N  so collisions are obvious in git history.
-export const APP_DATA_VERSION = "20260715-tennis-99lock-cleanup-v66";
+export const APP_DATA_VERSION = "20260715-force-reset-tennis-99-v67";
 
 // ─── Backend-version snapshot (Layer 2 - stored after each /api/version call)
 const CLIENT_VERSION_KEY = "perkslocks.client_data_version";
@@ -49,7 +49,8 @@ const BACKEND_VERSION_KEY = "perkslocks.backend_data_version";
 const KNOWN_CACHE_KEYS = [
   "perkslocks.betslip.v1",          // BetSlipContext
   "perkslocks.parlay_prefs.v1",     // useParlayPreferences
-  "locks_feed_prefs_v1",            // Home tab persisted sport / sortKey / lineType
+  "locks_feed_prefs_v1",            // Home tab persisted sport / sortKey / lineType (legacy)
+  "locks_feed_prefs_v2",            // Home tab persisted sport / sortKey / lineType (current)
   // ── Persisted filter store ──
   // useFilters.tsx schema-versioned key. Listing ALL historical versions
   // here so a cache bust wipes orphaned restrictive filter state from
@@ -59,6 +60,7 @@ const KNOWN_CACHE_KEYS = [
   "perkslocks_filters_v3",
   "perkslocks_filters_v4",
   "perkslocks_filters_v5",
+  "perkslocks_filters_v6",
   // Add any new AsyncStorage keys here so a cache bust actually wipes them.
 ];
 
