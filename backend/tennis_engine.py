@@ -625,30 +625,174 @@ async def apply_tennis_engine(db, picks: list[dict]) -> list[dict]:
         # passed strict edge/confidence gates and deserves to appear on the
         # /picks/today feed (which hides picks with lock_score < 85). So we
         # bump the lock_score to at least 85 for survivors.
-        original_lock = float(p.get("lock_score", 0) or 0)
-        if not comp.is_99_lock_eligible:
+        # Preserve the ORIGINAL market-based lock score across
+        # re-calibrations so we don't feed our own calibrated output
+        # back in as the "market anchor" on subsequent refreshes
+        # (feedback loop that drove every pick down to 72). Only
+        # captured on the FIRST tennis-engine pass.
+        if "tennis_original_market_lock" not in p:
+            p["tennis_original_market_lock"] = float(p.get("lock_score", 0) or 0)
+        original_lock = float(p.get("tennis_original_market_lock", 0) or 0)
+        if original_lock <= 0:
+            original_lock = 85.0  # Sports engine default floor
+
+        # ── ELITE CALIBRATED 99-LOCK path (2026-07-16 v3) ──────────────
+        # Sackmann-verified top-of-tour players (surface_fit ≥ 92 AND
+        # serve_return ≥ 88) get an alternate 99-lock path that doesn't
+        # require the 7% edge floor. Rationale: books don't leave 7%
+        # edge on Sinner/Alcaraz MLs, but the CALIBRATED evidence is
+        # rock-solid — surface_fit=100 and serve_return=95 means we
+        # have hard data proving the pick.
+        #
+        # Also require the book to agree we're at least a modest
+        # favorite (implied ≥ 65%). This filters out reverse-line-move
+        # cases where a top player is a slight dog for a reason
+        # (injury, off-form) that the data doesn't yet reflect.
+        try:
+            _elite_implied = float(p.get("implied_probability") or 0)
+        except (TypeError, ValueError):
+            _elite_implied = 0.0
+        elite_calibrated = (
+            comp.surface >= 92.0 and comp.serve_return >= 88.0 and
+            _elite_implied >= 65.0
+        )
+        is_99_eligible = comp.is_99_lock_eligible or elite_calibrated
+
+        if not is_99_eligible:
             if p.get("grade") == "Elite Lock":
                 p["grade"] = "Strong Lock"
-            # Phase 3c update — map confidence to a WIDER lock range so
-            # calibrated player quality actually differentiates picks
-            # on the board. Previously 60→85 / 100→95 = 10pt span.
-            # Now 60→75 / 100→96 = 21pt span. This makes an ITF Futures
-            # doubles pick (confidence 60) score meaningfully lower
-            # than a Sinner ATP main-tour pick (confidence 90).
-            v2_lock = 75.0 + (comp.confidence - NO_BET_MIN_CONF) * (21.0 / (100.0 - NO_BET_MIN_CONF))
-            v2_lock = max(70.0, min(96.0, v2_lock))
-            # WEIGHTED blend of v2_lock (calibrated evidence) and
-            # original_lock (market-based). 65% weight to v2 so the
-            # calibration actually differentiates, 35% to original so
-            # a genuinely strong market signal isn't fully overridden.
-            blended = v2_lock * 0.65 + min(original_lock, 98.0) * 0.35
-            p["lock_score"] = round(max(70.0, min(97.0, blended)), 1)
+            # 2026-07-16 v3 — direct-evidence lock formula so calibrated
+            # top-of-tour players actually land in the 88-95 band,
+            # ITF Futures land in 70-80, and the composite CONFIDENCE
+            # (which under-weights heavy-chalk picks with motivation/
+            # matchup penalties) doesn't compress everyone to 70.
+            #
+            # Anchor on the two calibrated Sackmann signals + book
+            # market implied probability:
+            #   lock = calibrated_strength * 0.55  (surface + S/R avg, 0-100)
+            #        + implied_probability * 0.30  (market view, 0-100)
+            #        + form                * 0.10  (opponent-adj recency)
+            #        + edge_bump                   (up to +4)
+            #        - variance_penalty            (up to -3)
+            #
+            # Sinner @ Wimbledon: surface=99, S/R=97, impl=83, form=97 →
+            #     98*0.55 + 83*0.30 + 97*0.10 + 0 - 2 = 53.9 + 24.9 + 9.7 = 88.5 → lock 88
+            # Elite Sackmann on grass with high edge (surface=100, S/R=95,
+            # impl=68, form=95, edge=6) → 97.5*0.55 + 20.4 + 9.5 + 3 - 1 = 85.5 → 90
+            # ITF Futures (surface=40, S/R=40, impl=55, form=45, edge=0) →
+            #     40*0.55 + 16.5 + 4.5 - 1.5 = 41.5 → clamped to 70 floor
+            # Anchor on MAX of the two calibrated Sackmann signals
+            # (dominant metric drives) + book market implied
+            # probability. Using max/min combo instead of average so a
+            # player with elite S/R (93.6) but middling surface (84)
+            # doesn't get compressed by the average — the stronger
+            # signal dominates.
+            #
+            # Sinner @ Wimbledon: max(99, 97)=99, min=97 → 98.2 blend
+            #     98.2*0.55 + 83*0.30 + 97*0.10 + 0 - 2 = 88.6 → lock 89
+            # Bublik (surface=84, S/R=94, impl=74, form=98) →
+            #     93.6*0.55 + 74*0.30 + 98*0.10 + 0 - 1 = 82.4 → 82
+            # ITF (surface=40, S/R=40, impl=55, form=60) →
+            #     40*0.55 + 16.5 + 6 - 1 = 43.5 → clamp 70
+            hi = max(comp.surface, comp.serve_return)
+            lo = min(comp.surface, comp.serve_return)
+            calibrated_strength = hi * 0.6 + lo * 0.4
+            try:
+                implied_pct = float(p.get("implied_probability") or 50.0)
+            except (TypeError, ValueError):
+                implied_pct = 50.0
+            edge_bump = max(-2.0, min(4.0, comp.market_edge * 0.4))
+            variance_pen = max(0.0, (comp.variance - 20.0) * 0.10)
+            raw = (
+                calibrated_strength * 0.55
+                + implied_pct * 0.30
+                + comp.form * 0.10
+                + edge_bump
+                - variance_pen
+            )
+            # Motivation bonus at Grand Slam / Masters tier (tier 4+)
+            if comp.tier >= 4:
+                raw += 2.0
+            elif comp.tier == 3:
+                raw += 1.0
+            new_lock = round(max(70.0, min(97.0, raw)), 1)
+
+            # ── Near-elite Sackmann tier boost (2026-07-16 v3) ─────────
+            # Players who calibrate strong but miss the elite 92/88
+            # threshold still deserve a clear "Strong Lock" band
+            # placement (88-95). Two tiers:
+            #   Tier A (surface ≥ 85 OR S/R ≥ 88, AND the other ≥ 78):
+            #      floor 88, blend toward 94
+            #   Tier B (surface ≥ 78 AND S/R ≥ 78, decent player):
+            #      floor 82, blend toward 88
+            # Without this bump strong ATP top-50 pros cluster at 70-80
+            # alongside Futures players — the exact "no differentiation"
+            # bug the user reported.
+            tier_a = (
+                (comp.surface >= 85.0 or comp.serve_return >= 88.0)
+                and comp.surface >= 78.0 and comp.serve_return >= 78.0
+                and _elite_implied >= 60.0
+            )
+            tier_b = (
+                comp.surface >= 78.0 and comp.serve_return >= 78.0
+                and _elite_implied >= 55.0
+            )
+            if tier_a:
+                # Blend: 55% our calc + 45% tier-A floor of 94
+                bumped = new_lock * 0.55 + 94.0 * 0.45
+                new_lock = round(max(new_lock, min(96.0, bumped)), 1)
+            elif tier_b:
+                # Blend: 60% our calc + 40% tier-B floor of 88
+                bumped = new_lock * 0.60 + 88.0 * 0.40
+                new_lock = round(max(new_lock, min(93.0, bumped)), 1)
+
             p["lock_score_99_eligible"] = False
         else:
-            # 99-LOCK eligible — keep the raw bet-quality composite, but bump
-            # to at least 99 so the badge actually shows.
-            p["lock_score"] = round(max(original_lock, 99.0), 1)
+            # 99-LOCK eligible — either passed all 5 gates OR is an
+            # elite calibrated player with rock-solid Sackmann data.
+            new_lock = round(max(original_lock, 99.0), 1)
             p["lock_score_99_eligible"] = True
+
+        # ── CRITICAL FIX (2026-07-16): overwrite ALL lock shadow fields ─
+        # `_canonicalize_lock_score` at read time computes:
+        #     lock_score = max(v1, v2, raw, peak)
+        # so if we only set lock_score here, stale higher values in
+        # lock_score_v2 / lock_score_raw / lock_score_peak (written by
+        # prior refresh cycles or evidence_engine.govern_pick) will
+        # override the tennis calibration at API serialization time —
+        # this is why the user still saw "92 for everyone" on preview
+        # even after tennis engine calibration was correct in isolation.
+        #
+        # We now write the calibrated value to EVERY lock field so
+        # canonicalize returns the calibrated number and NOT stale
+        # 91-92 residue from evidence_engine. Elite 99-lock picks get
+        # all four fields set to 99 so canonicalize preserves them.
+        p["lock_score"]      = new_lock
+        p["lock_score_v2"]   = new_lock
+        p["lock_score_raw"]  = new_lock
+        # Peak is monotonic (never lowers), so only bump upward for
+        # elite locks, but for non-elite picks LOWER the peak too so
+        # canonicalize doesn't promote it back up from a prior refresh.
+        if is_99_eligible:
+            prev_peak = float(p.get("lock_score_peak") or 0)
+            p["lock_score_peak"] = round(max(prev_peak, new_lock), 1)
+        else:
+            # Explicitly lower peak to prevent stale 99-peak from
+            # over-promoting a picked that WAS elite-eligible on a
+            # prior refresh cycle but no longer is.
+            p["lock_score_peak"] = new_lock
+        # Clear any stale coherence cap ceiling so it doesn't clamp us
+        # (tennis is now its own calibrated authority).
+        if "coherence_cap_ceiling" in p:
+            p.pop("coherence_cap_ceiling", None)
+        # ── Tennis calibration marker (2026-07-16) ──
+        # Downstream pipelines (learning_system_v2 bet-quality floor,
+        # evidence_engine re-govern, quality_gate coherence) MUST NOT
+        # push this lock_score back up to 90+ or the calibration is
+        # invisible again. This flag tells them "tennis has already
+        # made its authoritative call — respect it".
+        p["tennis_calibrated"] = True
+        p["tennis_calibrated_version"] = "v3-sackmann"
 
         # Refresh grade after lock_score change.
         try:

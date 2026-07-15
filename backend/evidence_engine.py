@@ -428,6 +428,34 @@ def govern_pick(
     if pick is None:
         return pick
 
+    # ── Tennis-calibrated fast-path (2026-07-16) ────────────────────
+    # Tennis picks that have already been through tennis_engine's
+    # Sackmann-calibrated pipeline carry `tennis_calibrated=True`.
+    # Their `lock_score`, `lock_score_v2`, `lock_score_raw`, and
+    # `lock_score_peak` are all set to the authoritative calibrated
+    # value. If govern_pick runs afterwards and re-applies its own
+    # evidence multiplier, it re-writes lock_score_peak = max(new,
+    # prev) — which locks in a stale 99 from an earlier refresh
+    # (before calibration existed) and canonicalize then reads 99
+    # back to the user, defeating the whole calibration.
+    #
+    # Skip the multiplier + peak-tracking for tennis-calibrated
+    # picks. We still compute evidence_score/insights for the audit
+    # trail so the Deep Dive UI has the reasoning bullets.
+    if pick.get("tennis_calibrated"):
+        classify(features)
+        pick["evidence_score"] = evidence_score(features)
+        sorted_feats = sorted(
+            features, key=lambda f: (f.importance * f.reliability), reverse=True,
+        )
+        insights_in = pick.get("key_insights") or []
+        insights_out, dropped = apply_explanation_governor(
+            insights_in, sorted_feats, pick["evidence_score"],
+        )
+        pick["key_insights"] = insights_out
+        pick["evidence_dropped_insights"] = dropped
+        return pick
+
     classify(features)
     score = evidence_score(features)
 
