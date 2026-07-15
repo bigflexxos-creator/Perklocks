@@ -2386,15 +2386,57 @@ async def _ensure_today_picks() -> None:
     next hourly tick. Threshold of 20 picks is well below any healthy
     day (typically 100-500 picks across sports) so it acts as a
     fast "empty enough → refresh" trigger without false positives.
+
+    CRITICAL FIX 2026-07-15 — non-blocking refresh (deployment):
+    Previously this awaited `_refresh_picks(today)` inline, which
+    triggers a full sports scan (Odds API + pipeline + validator +
+    sim engine) that takes 60-120s on production. Since it runs on
+    every `/api/picks/today` request, an empty slate produced a
+    thundering-herd stampede of refreshes, each one hitting the
+    Cloudflare 100s gateway timeout and returning 504 to the client.
+    User report 2026-07-15: production /picks/today returns 504 after
+    every deploy while preview works fine (preview DB was already
+    seeded).
+
+    Fix: fire the refresh as a background task and RETURN IMMEDIATELY.
+    The request will serve whatever picks exist (possibly empty this
+    first tick), but the background refresh populates the DB within
+    ~60s and the next request lands a full slate. A module-level
+    guard `_refresh_in_flight` prevents overlapping refreshes when
+    multiple clients hit an empty slate at the same time.
     """
     today = _today_str()
     count = await db.picks.count_documents({"pick_date": today})
-    if count < 20:
-        logger.info(
-            "ensure_today_picks: only %d picks for %s — triggering refresh",
-            count, today,
-        )
-        await _refresh_picks(today)
+    if count >= 20:
+        return
+    logger.info(
+        "ensure_today_picks: only %d picks for %s — scheduling background refresh",
+        count, today,
+    )
+    global _refresh_in_flight
+    if _refresh_in_flight:
+        return  # a refresh is already running for the current day
+    _refresh_in_flight = True
+
+    async def _background_refresh():
+        global _refresh_in_flight
+        try:
+            await _refresh_picks(today)
+        except Exception as e:
+            logger.warning("Background refresh failed: %s", e)
+        finally:
+            _refresh_in_flight = False
+
+    # Fire-and-forget — don't await, don't block the response. The
+    # picks_today handler will return whatever's in the DB right now
+    # (possibly empty this first cold-start tick) and the next call
+    # will land a full slate ~60s later.
+    asyncio.create_task(_background_refresh())
+
+
+# Module-level guard: prevents overlapping refresh stampedes when
+# multiple clients hit an empty /picks/today at the same time.
+_refresh_in_flight: bool = False
 
 
 # ── Market filter taxonomy ────────────────────────────────────────────────
