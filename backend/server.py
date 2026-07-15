@@ -3279,7 +3279,14 @@ _MLB_WINDOW_END_UTC_HOUR = 23          # 7 PM ET (catches late west-coast first 
 
 async def _mlb_pregame_loop():
     """Refresh MLB picks every 5 min during US daytime so player props
-    surface 60–90 min pre-game instead of 5–10 min pre-game."""
+    surface 60–90 min pre-game instead of 5–10 min pre-game.
+
+    Look-ahead behaviour (2026-07-15 fix): the loop was only fetching
+    `today` which meant during MLB All-Star break (~July 14–16) or any
+    other empty day the slate went bone-dry until the following day
+    rolled over. We now ALSO fetch tomorrow's slate on every cycle so
+    Friday's post-All-Star games are on the board Thursday afternoon.
+    """
     # Let startup settle so the initial seed completes first.
     await asyncio.sleep(120)
     while True:
@@ -3287,7 +3294,17 @@ async def _mlb_pregame_loop():
             now = datetime.now(timezone.utc)
             hour = now.hour
             if _MLB_WINDOW_START_UTC_HOUR <= hour < _MLB_WINDOW_END_UTC_HOUR:
+                # Today's slate (real-time refresh — pregame line moves,
+                # scratch news, weather, etc.)
                 await _refresh_picks(_today_str(), sport_filter="MLB")
+                # Tomorrow's slate — surfaces post-break / next-day games
+                # 24h in advance. Same idempotent upsert path, cost is
+                # a single extra Odds API call per cycle.
+                try:
+                    tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+                    await _refresh_picks(tomorrow_str, sport_filter="MLB")
+                except Exception as e:
+                    logger.debug("MLB tomorrow lookahead failed: %s", e)
                 await asyncio.sleep(_MLB_QUICK_REFRESH_INTERVAL)
             else:
                 # Outside MLB hours — sleep until the window reopens.
