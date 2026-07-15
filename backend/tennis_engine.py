@@ -661,96 +661,52 @@ async def apply_tennis_engine(db, picks: list[dict]) -> list[dict]:
         if not is_99_eligible:
             if p.get("grade") == "Elite Lock":
                 p["grade"] = "Strong Lock"
-            # 2026-07-16 v3 — direct-evidence lock formula so calibrated
-            # top-of-tour players actually land in the 88-95 band,
-            # ITF Futures land in 70-80, and the composite CONFIDENCE
-            # (which under-weights heavy-chalk picks with motivation/
-            # matchup penalties) doesn't compress everyone to 70.
+            # 2026-07-16 v4 — LOCK-BAND ONLY formula. Picks that survive
+            # the NO_BET filters (edge/confidence gates) are ALL Lock-tier
+            # by definition, so the floor is 90, not 70. Differentiation
+            # happens WITHIN the 90-99 Lock band based on the calibrated
+            # Sackmann evidence.
             #
-            # Anchor on the two calibrated Sackmann signals + book
-            # market implied probability:
-            #   lock = calibrated_strength * 0.55  (surface + S/R avg, 0-100)
-            #        + implied_probability * 0.30  (market view, 0-100)
-            #        + form                * 0.10  (opponent-adj recency)
-            #        + edge_bump                   (up to +4)
-            #        - variance_penalty            (up to -3)
+            # User principle (2026-07-15): "75 lock score shouldn't be
+            # on the board — I want 90-99 with all the data we added."
             #
-            # Sinner @ Wimbledon: surface=99, S/R=97, impl=83, form=97 →
-            #     98*0.55 + 83*0.30 + 97*0.10 + 0 - 2 = 53.9 + 24.9 + 9.7 = 88.5 → lock 88
-            # Elite Sackmann on grass with high edge (surface=100, S/R=95,
-            # impl=68, form=95, edge=6) → 97.5*0.55 + 20.4 + 9.5 + 3 - 1 = 85.5 → 90
-            # ITF Futures (surface=40, S/R=40, impl=55, form=45, edge=0) →
-            #     40*0.55 + 16.5 + 4.5 - 1.5 = 41.5 → clamped to 70 floor
-            # Anchor on MAX of the two calibrated Sackmann signals
-            # (dominant metric drives) + book market implied
-            # probability. Using max/min combo instead of average so a
-            # player with elite S/R (93.6) but middling surface (84)
-            # doesn't get compressed by the average — the stronger
-            # signal dominates.
-            #
-            # Sinner @ Wimbledon: max(99, 97)=99, min=97 → 98.2 blend
-            #     98.2*0.55 + 83*0.30 + 97*0.10 + 0 - 2 = 88.6 → lock 89
-            # Bublik (surface=84, S/R=94, impl=74, form=98) →
-            #     93.6*0.55 + 74*0.30 + 98*0.10 + 0 - 1 = 82.4 → 82
-            # ITF (surface=40, S/R=40, impl=55, form=60) →
-            #     40*0.55 + 16.5 + 6 - 1 = 43.5 → clamp 70
-            hi = max(comp.surface, comp.serve_return)
-            lo = min(comp.surface, comp.serve_return)
-            calibrated_strength = hi * 0.6 + lo * 0.4
+            # Anchor at 88 (below floor) and layer in signal-driven
+            # bumps so weak calibrations sit at 90 (clamped floor) and
+            # strong calibrations push toward 97 (near-elite ceiling).
+            # Elite-calibrated players get 99 via the gate above.
             try:
-                implied_pct = float(p.get("implied_probability") or 50.0)
+                _implied = float(p.get("implied_probability") or 50.0)
             except (TypeError, ValueError):
-                implied_pct = 50.0
-            edge_bump = max(-2.0, min(4.0, comp.market_edge * 0.4))
-            variance_pen = max(0.0, (comp.variance - 20.0) * 0.10)
-            raw = (
-                calibrated_strength * 0.55
-                + implied_pct * 0.30
-                + comp.form * 0.10
-                + edge_bump
-                - variance_pen
-            )
-            # Motivation bonus at Grand Slam / Masters tier (tier 4+)
-            if comp.tier >= 4:
-                raw += 2.0
-            elif comp.tier == 3:
-                raw += 1.0
-            new_lock = round(max(70.0, min(97.0, raw)), 1)
+                _implied = 50.0
+            # Bumps calibrated to Sackmann z-score distribution
+            # (component floor ~40, average ~65, elite ~90+).
+            surface_bump = (comp.surface      - 70.0) * 0.12   # up to +3.6 at 100
+            sr_bump      = (comp.serve_return - 70.0) * 0.10   # up to +3.0 at 100
+            edge_bump    = max(-0.5, min(2.0, comp.market_edge * 0.4))
+            form_bump    = (comp.form         - 80.0) * 0.05   # up to +1.0 at 100
+            var_pen      = max(0.0, (comp.variance - 22.0) * 0.06)  # up to -4.7 at 100
+            tier_bonus   = {5: 2.0, 4: 1.5, 3: 1.0, 2: 0.5}.get(comp.tier, 0.3)
+            # Market agreement bump: books know something. When market
+            # and data agree the pick is safer.
+            if _implied >= 80.0:
+                market_bump = 1.5
+            elif _implied >= 70.0:
+                market_bump = 1.0
+            elif _implied >= 60.0:
+                market_bump = 0.5
+            else:
+                market_bump = 0.0
 
-            # ── Near-elite Sackmann tier boost (2026-07-16 v3) ─────────
-            # Players who calibrate strong but miss the elite 92/88
-            # threshold still deserve a clear "Strong Lock" band
-            # placement (88-95). Two tiers:
-            #   Tier A (surface ≥ 85 OR S/R ≥ 88, AND the other ≥ 78):
-            #      floor 88, blend toward 94
-            #   Tier B (surface ≥ 78 AND S/R ≥ 78, decent player):
-            #      floor 82, blend toward 88
-            # Without this bump strong ATP top-50 pros cluster at 70-80
-            # alongside Futures players — the exact "no differentiation"
-            # bug the user reported.
-            tier_a = (
-                (comp.surface >= 85.0 or comp.serve_return >= 88.0)
-                and comp.surface >= 78.0 and comp.serve_return >= 78.0
-                and _elite_implied >= 60.0
-            )
-            tier_b = (
-                comp.surface >= 78.0 and comp.serve_return >= 78.0
-                and _elite_implied >= 55.0
-            )
-            if tier_a:
-                # Blend: 55% our calc + 45% tier-A floor of 94
-                bumped = new_lock * 0.55 + 94.0 * 0.45
-                new_lock = round(max(new_lock, min(96.0, bumped)), 1)
-            elif tier_b:
-                # Blend: 60% our calc + 40% tier-B floor of 88
-                bumped = new_lock * 0.60 + 88.0 * 0.40
-                new_lock = round(max(new_lock, min(93.0, bumped)), 1)
-
+            raw = 88.0 + surface_bump + sr_bump + edge_bump + form_bump \
+                - var_pen + tier_bonus + market_bump
+            # Clamp within the Lock band [90, 97] so 99 remains reserved
+            # for the elite-calibrated gate above.
+            new_lock = round(max(90.0, min(97.0, raw)), 1)
             p["lock_score_99_eligible"] = False
         else:
-            # 99-LOCK eligible — either passed all 5 gates OR is an
-            # elite calibrated player with rock-solid Sackmann data.
-            new_lock = round(max(original_lock, 99.0), 1)
+            # 99-LOCK eligible — Sackmann-verified elite player with
+            # strong market agreement. Full lock 99.
+            new_lock = 99.0
             p["lock_score_99_eligible"] = True
 
         # ── CRITICAL FIX (2026-07-16): overwrite ALL lock shadow fields ─
