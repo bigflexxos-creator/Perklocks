@@ -634,26 +634,38 @@ async def apply_tennis_engine(db, picks: list[dict]) -> list[dict]:
         if original_lock <= 0:
             original_lock = 85.0  # Sports engine default floor
 
-        # ── ELITE CALIBRATED 99-LOCK path (2026-07-16 v3) ──────────────
-        # Sackmann-verified top-of-tour players (surface_fit ≥ 92 AND
-        # serve_return ≥ 88) get an alternate 99-lock path that doesn't
-        # require the 7% edge floor. Rationale: books don't leave 7%
-        # edge on Sinner/Alcaraz MLs, but the CALIBRATED evidence is
-        # rock-solid — surface_fit=100 and serve_return=95 means we
-        # have hard data proving the pick.
+        # ── ELITE CALIBRATED 99-LOCK path (2026-07-16 v4) ──────────────
+        # Three ways to hit 99:
+        # 1. Sackmann-verified elite (surface≥92 AND S/R≥88 AND implied≥65)
+        # 2. Very strong market (win_prob ≥ 78 AND implied ≥ 72)
+        # 3. All-signals aligned (win_prob ≥ 72 AND implied ≥ 70 AND
+        #    edge ≥ 2 AND (surface ≥ 78 OR S/R ≥ 78))
         #
-        # Also require the book to agree we're at least a modest
-        # favorite (implied ≥ 65%). This filters out reverse-line-move
-        # cases where a top player is a slight dog for a reason
-        # (injury, off-form) that the data doesn't yet reflect.
+        # User principle (2026-07-16): "80% win pct should be a 99 lock"
+        # — the market's win_probability is the definitive signal even
+        # when Sackmann has no data for the player (WTA / doubles / ITF).
         try:
             _elite_implied = float(p.get("implied_probability") or 0)
         except (TypeError, ValueError):
             _elite_implied = 0.0
-        elite_calibrated = (
+        try:
+            _elite_wp = float(p.get("win_probability") or 0)
+        except (TypeError, ValueError):
+            _elite_wp = 0.0
+
+        sackmann_elite = (
             comp.surface >= 92.0 and comp.serve_return >= 88.0 and
             _elite_implied >= 65.0
         )
+        market_elite = (
+            _elite_wp >= 78.0 and _elite_implied >= 72.0
+        )
+        aligned_elite = (
+            _elite_wp >= 72.0 and _elite_implied >= 70.0
+            and comp.market_edge >= 2.0
+            and (comp.surface >= 78.0 or comp.serve_return >= 78.0)
+        )
+        elite_calibrated = sackmann_elite or market_elite or aligned_elite
         is_99_eligible = comp.is_99_lock_eligible or elite_calibrated
 
         if not is_99_eligible:
