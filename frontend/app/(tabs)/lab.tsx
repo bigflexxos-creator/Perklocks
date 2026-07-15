@@ -37,19 +37,20 @@ import { api } from "@/src/lib/api";
 import { PickEventRow } from "@/src/components/PickEventRow";
 
 // ── Module type ──────────────────────────────────────────────────────
-type LabModule = "cheats" | "hot" | "research" | "ev" | "sim" | "props" | "corr" | "backtest" | "patterns" | "dna";
+type LabModule = "cheats" | "hot" | "research" | "ev" | "sim" | "props" | "corr" | "backtest" | "patterns" | "dna" | "analytics";
 
 const MODULES: { id: LabModule; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
-  { id: "cheats",   label: "Cheatsheets",  icon: "flash" },
-  { id: "hot",      label: "Hot Hitters",  icon: "flame" },
-  { id: "research", label: "Research",     icon: "search" },
-  { id: "corr",     label: "Correlations", icon: "git-network" },
-  { id: "backtest", label: "Backtest",     icon: "trending-up" },
-  { id: "patterns", label: "Patterns",     icon: "sparkles" },
-  { id: "dna",      label: "Matchup DNA",  icon: "body" },
-  { id: "ev",       label: "EV Calc",      icon: "calculator" },
-  { id: "sim",      label: "Sim",          icon: "analytics" },
-  { id: "props",    label: "Props",        icon: "list" },
+  { id: "cheats",    label: "Cheatsheets",  icon: "flash" },
+  { id: "hot",       label: "Hot Hitters",  icon: "flame" },
+  { id: "analytics", label: "Analytics",    icon: "stats-chart" },
+  { id: "research",  label: "Research",     icon: "search" },
+  { id: "corr",      label: "Correlations", icon: "git-network" },
+  { id: "backtest",  label: "Backtest",     icon: "trending-up" },
+  { id: "patterns",  label: "Patterns",     icon: "sparkles" },
+  { id: "dna",       label: "Matchup DNA",  icon: "body" },
+  { id: "ev",        label: "EV Calc",      icon: "calculator" },
+  { id: "sim",       label: "Sim",          icon: "analytics" },
+  { id: "props",     label: "Props",        icon: "list" },
 ];
 
 // ── Root screen ──────────────────────────────────────────────────────
@@ -149,16 +150,17 @@ export default function LabScreen() {
             />
           }
         >
-          {module === "cheats"   && <CheatsheetsModule picks={picks} />}
-          {module === "hot"      && <HotHittersModule />}
-          {module === "research" && <ResearchModule picks={picks} />}
-          {module === "corr"     && <CorrelationModule />}
-          {module === "backtest" && <BacktestModule />}
-          {module === "patterns" && <PatternsModule />}
-          {module === "dna"      && <MatchupDNAModule />}
-          {module === "ev"       && <EVCalcModule picks={picks} />}
-          {module === "sim"      && <SimulationModule picks={picks} />}
-          {module === "props"    && <PropExplorerModule picks={picks} />}
+          {module === "cheats"    && <CheatsheetsModule picks={picks} />}
+          {module === "hot"       && <HotHittersModule />}
+          {module === "analytics" && <AnalyticsModule />}
+          {module === "research"  && <ResearchModule picks={picks} />}
+          {module === "corr"      && <CorrelationModule />}
+          {module === "backtest"  && <BacktestModule />}
+          {module === "patterns"  && <PatternsModule />}
+          {module === "dna"       && <MatchupDNAModule />}
+          {module === "ev"        && <EVCalcModule picks={picks} />}
+          {module === "sim"       && <SimulationModule picks={picks} />}
+          {module === "props"     && <PropExplorerModule picks={picks} />}
         </ScrollView>
       )}
     </SafeAreaView>
@@ -1862,6 +1864,295 @@ function SectionHeader({ icon, title, blurb }:
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────
+//  ANALYTICS MODULE (Phase 5) — CLV Tracker + Kelly Calc + Steam Alerts
+// ─────────────────────────────────────────────────────────────────────
+type AnalyticsTab = "clv" | "kelly" | "steam";
+
+function AnalyticsModule() {
+  const [tab, setTab] = useState<AnalyticsTab>("clv");
+  return (
+    <View>
+      <SectionHeader
+        icon="stats-chart"
+        title="Advanced Analytics"
+        blurb="Sharp-bettor tools — Closing Line Value tracker, ¼-Kelly staking calc, and live steam-move detection."
+      />
+      <View style={[styles.chipRow, { flexDirection: "row", flexWrap: "wrap" }]}>
+        {[
+          { id: "clv" as const, label: "CLV" },
+          { id: "kelly" as const, label: "Kelly Calc" },
+          { id: "steam" as const, label: "Steam" },
+        ].map((t) => (
+          <TouchableOpacity
+            key={t.id}
+            onPress={() => setTab(t.id)}
+            style={[styles.filterChip, tab === t.id && styles.filterChipActive]}
+          >
+            <Text style={[styles.filterChipTxt, tab === t.id && styles.filterChipTxtActive]}>
+              {t.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      {tab === "clv" && <CLVSection />}
+      {tab === "kelly" && <KellySection />}
+      {tab === "steam" && <SteamSection />}
+    </View>
+  );
+}
+
+function CLVSection() {
+  const [days, setDays] = useState<30 | 7 | 90>(30);
+  const [data, setData] = useState<any | null>(null);
+  const [loading, setLoading] = useState(false);
+  const load = useCallback(() => {
+    setLoading(true);
+    api.clvReport(days).then(setData).catch(() => setData(null)).finally(() => setLoading(false));
+  }, [days]);
+  useEffect(() => { load(); }, [load]);
+  if (loading && !data) return <ActivityIndicator color={COLORS.textPrimary} style={{ marginTop: 24 }} />;
+  if (!data) return <Text style={styles.emptyTxt}>Failed to load CLV report.</Text>;
+  const o = data.overall || {};
+  const beatClose = o.beat_close_pct;
+  return (
+    <View>
+      <View style={[styles.chipRow, { flexDirection: "row", flexWrap: "wrap" }]}>
+        {[7, 30, 90].map((d) => (
+          <TouchableOpacity
+            key={d}
+            onPress={() => setDays(d as any)}
+            style={[styles.filterChip, days === d && styles.filterChipActive]}
+          >
+            <Text style={[styles.filterChipTxt, days === d && styles.filterChipTxtActive]}>
+              {d}d
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      <StatGrid
+        cells={[
+          { label: "N", value: String(o.n || 0) },
+          { label: "Win%", value: `${(o.win_pct || 0).toFixed(1)}%`,
+            tint: o.win_pct >= 55 ? "#40d18a" : o.win_pct >= 50 ? undefined : "#e46d6d" },
+          { label: "ROI/100u", value: `${(o.roi_per_100u >= 0 ? "+" : "")}${(o.roi_per_100u || 0).toFixed(1)}`,
+            tint: o.roi_per_100u >= 0 ? "#40d18a" : "#e46d6d" },
+          { label: "Beat Close", value: beatClose != null ? `${beatClose.toFixed(1)}%` : "—",
+            tint: beatClose == null ? undefined : beatClose >= 55 ? "#40d18a" : beatClose >= 50 ? undefined : "#e46d6d" },
+        ]}
+      />
+      <Section title="By Odds Band">
+        {(data.bands || []).map((b: any) => (
+          <View key={b.label} style={styles.pickRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.pickMarket}>{b.label}</Text>
+              <Text style={styles.pickEvent}>
+                n={b.n} · hit {(b.win_pct || 0).toFixed(0)}% · CLV {b.avg_clv_pp != null ? `${b.avg_clv_pp >= 0 ? "+" : ""}${b.avg_clv_pp.toFixed(2)}pp` : "—"}
+              </Text>
+            </View>
+            <View style={styles.pickRight}>
+              <Text style={[styles.pickLock, {
+                color: b.roi_per_100u >= 0 ? "#40d18a" : "#e46d6d",
+              }]}>
+                {b.roi_per_100u >= 0 ? "+" : ""}{(b.roi_per_100u || 0).toFixed(1)}
+              </Text>
+              <Text style={styles.pickLockLabel}>ROI</Text>
+            </View>
+          </View>
+        ))}
+      </Section>
+      {data.snapshot_coverage && (
+        <View style={styles.blurbBox}>
+          <Text style={styles.blurbTxt}>
+            {data.snapshot_coverage.note}
+          </Text>
+        </View>
+      )}
+      {data.notes && (
+        <View style={styles.blurbBox}>
+          <Text style={styles.blurbTxt}>{data.notes}</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+function KellySection() {
+  const [probStr, setProbStr] = useState("58");
+  const [oddsStr, setOddsStr] = useState("-110");
+  const [bankStr, setBankStr] = useState("1000");
+  const [fractionStr, setFractionStr] = useState("0.25");
+  const [data, setData] = useState<any | null>(null);
+  const [loading, setLoading] = useState(false);
+  const run = useCallback(() => {
+    const p = parseFloat(probStr);
+    const o = parseFloat(oddsStr);
+    const b = parseFloat(bankStr) || 100;
+    const f = parseFloat(fractionStr) || 0.25;
+    if (!isFinite(p) || !isFinite(o)) { setData(null); return; }
+    setLoading(true);
+    api.kelly({ win_probability: p, american_odds: o, bankroll: b, fraction: f })
+      .then(setData).catch(() => setData(null)).finally(() => setLoading(false));
+  }, [probStr, oddsStr, bankStr, fractionStr]);
+  useEffect(() => { run(); }, [run]);
+  return (
+    <View>
+      <View style={styles.evInputRow}>
+        <View style={styles.evField}>
+          <Text style={styles.evFieldLabel}>Win Prob %</Text>
+          <TextInput value={probStr} onChangeText={setProbStr} placeholder="58"
+            placeholderTextColor={COLORS.textMuted} keyboardType="decimal-pad" style={styles.evInput} />
+        </View>
+        <View style={styles.evField}>
+          <Text style={styles.evFieldLabel}>Odds</Text>
+          <TextInput value={oddsStr} onChangeText={setOddsStr} placeholder="-110"
+            placeholderTextColor={COLORS.textMuted} keyboardType="numbers-and-punctuation" style={styles.evInput} />
+        </View>
+      </View>
+      <View style={styles.evInputRow}>
+        <View style={styles.evField}>
+          <Text style={styles.evFieldLabel}>Bankroll</Text>
+          <TextInput value={bankStr} onChangeText={setBankStr} placeholder="1000"
+            placeholderTextColor={COLORS.textMuted} keyboardType="decimal-pad" style={styles.evInput} />
+        </View>
+        <View style={styles.evField}>
+          <Text style={styles.evFieldLabel}>Kelly Fraction</Text>
+          <TextInput value={fractionStr} onChangeText={setFractionStr} placeholder="0.25"
+            placeholderTextColor={COLORS.textMuted} keyboardType="decimal-pad" style={styles.evInput} />
+        </View>
+      </View>
+      <View style={[styles.chipRow, { flexDirection: "row", flexWrap: "wrap" }]}>
+        {[
+          { label: "⅛-Kelly", v: "0.125" },
+          { label: "¼-Kelly", v: "0.25" },
+          { label: "½-Kelly", v: "0.5" },
+          { label: "Full", v: "1.0" },
+        ].map((k) => (
+          <TouchableOpacity
+            key={k.v}
+            onPress={() => setFractionStr(k.v)}
+            style={[styles.filterChip, fractionStr === k.v && styles.filterChipActive]}
+          >
+            <Text style={[styles.filterChipTxt, fractionStr === k.v && styles.filterChipTxtActive]}>
+              {k.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      {loading && !data ? (
+        <ActivityIndicator color={COLORS.textPrimary} style={{ marginTop: 16 }} />
+      ) : data ? (
+        <View>
+          <StatGrid
+            cells={[
+              { label: "Stake", value: `$${data.stake.toFixed(2)}`,
+                tint: data.stake > 0 ? "#40d18a" : COLORS.textMuted },
+              { label: "% Bank", value: `${data.stake_pct.toFixed(2)}%`,
+                tint: data.stake_pct > 0 ? "#40d18a" : COLORS.textMuted },
+              { label: "Edge", value: `${data.edge_pp >= 0 ? "+" : ""}${data.edge_pp.toFixed(2)}pp`,
+                tint: data.edge_pp > 0 ? "#40d18a" : "#e46d6d" },
+              { label: "EV/unit", value: `${data.expected_value >= 0 ? "+" : ""}${data.expected_value.toFixed(3)}`,
+                tint: data.expected_value > 0 ? "#40d18a" : "#e46d6d" },
+            ]}
+          />
+          <View style={styles.blurbBox}>
+            <Text style={styles.blurbTxt}>{data.note}</Text>
+          </View>
+          <View style={styles.blurbBox}>
+            <Text style={styles.blurbTxt}>
+              Full-Kelly = {(data.kelly_f * 100).toFixed(2)}% · Fractional = {(data.fractional_kelly * 100).toFixed(2)}%
+            </Text>
+          </View>
+        </View>
+      ) : (
+        <Text style={styles.emptyTxt}>Enter values above.</Text>
+      )}
+    </View>
+  );
+}
+
+function SteamSection() {
+  const [dir, setDir] = useState<"" | "toward" | "away">("");
+  const [hours, setHours] = useState<6 | 12 | 24>(6);
+  const [data, setData] = useState<any | null>(null);
+  const [loading, setLoading] = useState(false);
+  const load = useCallback(() => {
+    setLoading(true);
+    api.steamPicks(hours, dir || undefined, 50)
+      .then(setData).catch(() => setData(null)).finally(() => setLoading(false));
+  }, [dir, hours]);
+  useEffect(() => { load(); }, [load]);
+  return (
+    <View>
+      <View style={[styles.chipRow, { flexDirection: "row", flexWrap: "wrap" }]}>
+        {[6, 12, 24].map((h) => (
+          <TouchableOpacity
+            key={h}
+            onPress={() => setHours(h as any)}
+            style={[styles.filterChip, hours === h && styles.filterChipActive]}
+          >
+            <Text style={[styles.filterChipTxt, hours === h && styles.filterChipTxtActive]}>
+              {h}h
+            </Text>
+          </TouchableOpacity>
+        ))}
+        {[
+          { label: "ALL", v: "" as const },
+          { label: "→ Toward", v: "toward" as const },
+          { label: "← Away", v: "away" as const },
+        ].map((f) => (
+          <TouchableOpacity
+            key={f.v || "all"}
+            onPress={() => setDir(f.v)}
+            style={[styles.filterChip, dir === f.v && styles.filterChipActive]}
+          >
+            <Text style={[styles.filterChipTxt, dir === f.v && styles.filterChipTxtActive]}>
+              {f.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      {loading && !data ? (
+        <ActivityIndicator color={COLORS.textPrimary} style={{ marginTop: 24 }} />
+      ) : !data || data.count === 0 ? (
+        <View style={styles.blurbBox}>
+          <Text style={styles.blurbTxt}>
+            {`No steam detected in the last ${hours}h. Steam alerts fire when a pick's implied probability moves ≥3pp (≈5¢) inside a 5-minute window.`}
+          </Text>
+        </View>
+      ) : (
+        <Section title={`${data.count} Steam Alert${data.count === 1 ? "" : "s"}`}>
+          {(data.picks || []).map((p: any) => {
+            const s = p.steam || {};
+            const toward = s.direction === "toward";
+            return (
+              <View key={p.id} style={styles.pickRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.pickMarket}>{p.selection}</Text>
+                  <Text style={styles.pickEvent}>
+                    {p.sport} · {p.market} · {p.event}
+                  </Text>
+                  <Text style={[styles.pickEvent, { color: toward ? "#40d18a" : "#e46d6d" }]}>
+                    {toward ? "→ TOWARD" : "← AWAY"} · {s.magnitude_pp?.toFixed(1)}pp move ·
+                    {" "}{s.american_start > 0 ? "+" : ""}{s.american_start} → {s.american_end > 0 ? "+" : ""}{s.american_end}
+                  </Text>
+                </View>
+                <View style={styles.pickRight}>
+                  <Text style={[styles.pickLock, { color: toward ? "#40d18a" : "#e46d6d" }]}>
+                    {toward ? "+" : ""}{s.magnitude_pp?.toFixed(1)}
+                  </Text>
+                  <Text style={styles.pickLockLabel}>pp</Text>
+                </View>
+              </View>
+            );
+          })}
+        </Section>
+      )}
+    </View>
+  );
+}
+
+
 function Section({ title, chip, children }: { title: string; chip?: string; children: React.ReactNode }) {
   return (
     <View style={styles.subSection}>
@@ -2063,6 +2354,16 @@ const styles = StyleSheet.create({
   filterChipActive: { backgroundColor: COLORS.textPrimary, borderColor: COLORS.textPrimary },
   filterChipTxt: { color: COLORS.textMuted, fontSize: 10, fontWeight: "800", letterSpacing: 0.8 },
   filterChipTxtActive: { color: "#000" },
+
+  // Analytics module — CLV / Kelly / Steam
+  blurbBox: {
+    padding: 10, borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.03)",
+    borderWidth: 1, borderColor: COLORS.borderDefault,
+    marginTop: 10,
+  },
+  blurbTxt: { color: COLORS.textMuted, fontSize: 11, lineHeight: 16 },
+  emptyTxt: { color: COLORS.textMuted, fontSize: 12, textAlign: "center", marginTop: 24 },
 
   pickRow: {
     flexDirection: "row", alignItems: "center",

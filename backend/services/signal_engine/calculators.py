@@ -428,6 +428,69 @@ def volume_signal(pick: dict) -> dict:
             pts += 1.0
         details.append(f"Simulated expected goals {_f(xg):.2f} per 90")
 
+    # Phase 4 — NFL nflverse usage (target share, snap %, WOPR, aDOT).
+    # Volume-heavy signal for NFL skill-position props. Applies only to
+    # NFL receiver/rusher/QB markets; other sports fall through.
+    nfl_use = pick.get("nfl_usage") or {}
+    if nfl_use and (pick.get("sport") or "").upper() == "NFL":
+        market_l = (pick.get("market") or "").lower()
+        _, direction = _extract_line(market_l)
+        is_over = direction == "over"
+        is_under = direction == "under"
+
+        snap_pct = nfl_use.get("snap_pct")
+        target_share = nfl_use.get("target_share")
+        wopr = nfl_use.get("wopr")
+        adot = nfl_use.get("adot")
+
+        # Receiving markets — target share + WOPR + snap % all lift Overs
+        if any(k in market_l for k in
+               ("receiving yards", "receptions", "longest reception")):
+            if isinstance(target_share, (int, float)) and target_share > 0:
+                found = True
+                # 25%+ target share is bell-cow; <15% is rotational.
+                if target_share >= 0.25 and is_over:
+                    pts += 1.8
+                    details.append(
+                        f"Elite target share ({target_share * 100:.0f}%) "
+                        f"— WR1 volume floor")
+                elif target_share <= 0.13 and is_over:
+                    pts -= 1.5
+                    details.append(
+                        f"Low target share ({target_share * 100:.0f}%) "
+                        f"— rotational usage caps upside")
+            if isinstance(wopr, (int, float)) and wopr >= 0.7 and is_over:
+                found = True
+                pts += 1.2
+                details.append(f"High WOPR ({wopr:.2f}) — combined "
+                               f"opportunity + air-yards role")
+            if (isinstance(adot, (int, float)) and adot >= 13
+                and "receiving yards" in market_l and is_over):
+                # Deep-target profile → higher variance but bigger Overs upside.
+                found = True
+                pts += 0.8
+                details.append(f"Downfield role (aDOT {adot:.1f}) — "
+                               f"outsized yardage per catch")
+        # Rushing markets — carries, snap % drive volume
+        if any(k in market_l for k in ("rushing yards", "rush attempts",
+                                        "carries", "longest rush")):
+            if isinstance(snap_pct, (int, float)) and snap_pct > 0:
+                found = True
+                if snap_pct >= 0.65 and is_over:
+                    pts += 1.5
+                    details.append(f"Bell-cow snap % ({snap_pct * 100:.0f}%)")
+                elif snap_pct <= 0.35 and is_over:
+                    pts -= 1.5
+                    details.append(f"Committee back only "
+                                   f"({snap_pct * 100:.0f}% snap share)")
+        # QB markets — attempts, passing yards
+        if any(k in market_l for k in ("passing yards", "passing attempts",
+                                        "passing completions")):
+            if isinstance(snap_pct, (int, float)) and snap_pct >= 0.9 and is_over:
+                found = True
+                pts += 0.8
+                details.append(f"Full-game QB usage ({snap_pct * 100:.0f}%)")
+
     return {
         "key": "volume", "label": "Volume",
         "points": round(_clamp(pts, -VOLUME_MAX, VOLUME_MAX), 1),

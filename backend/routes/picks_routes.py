@@ -1743,6 +1743,22 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     except Exception as e:
         logger.debug("on-read Stuff+ enrichment failed: %s", e)
 
+    # Phase 4 — NFL nflverse usage attach for skill-position props
+    # (WR / RB / TE / QB). Adds target share, snap %, WOPR, aDOT, YPRR.
+    # Cheap (dedupe cache per unique player). No-op during pre-season
+    # if no NFL picks are on the slate.
+    try:
+        nfl_picks_missing_usage = [
+            _p for _p in canonical
+            if (_p.get("sport") or "").upper() == "NFL"
+            and _p.get("nfl_usage") is None
+        ]
+        if nfl_picks_missing_usage:
+            from services.nfl_nflfastr import enrich_picks_with_nfl_usage_bulk
+            await enrich_picks_with_nfl_usage_bulk(db, nfl_picks_missing_usage)
+    except Exception as e:
+        logger.debug("on-read NFL usage enrichment failed: %s", e)
+
     # Phase 3 — Tennis Sackmann/TML on-read attach. Adds surface-specific
     # rolling serve/return stats + career H2H for tennis moneyline / totals /
     # spread picks. Dedupes per-player lookup so a full slate of

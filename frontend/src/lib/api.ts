@@ -1317,6 +1317,74 @@ export const api = {
     }>;
   }>(`/analytics/backtest?days=${days}`),
 
+  // ── Phase 0 — CLV report ──────────────────────────────────────────
+  clvReport: (days: number = 30) => request<{
+    since: string;
+    days: number;
+    overall: { label: string; n: number; won: number; win_pct: number;
+      roi_per_100u: number; avg_clv_pp: number | null;
+      beat_close_pct: number | null };
+    bands: Array<{ label: string; n: number; won: number; win_pct: number;
+      roi_per_100u: number; avg_clv_pp: number | null;
+      beat_close_pct: number | null }>;
+    snapshot_coverage: { real_close_snapshots: number;
+      sharp_book_snapshots: number; note: string };
+    notes: string;
+  }>(`/analytics/clv?days=${days}`),
+
+  // ── Phase 5a — Kelly staking calculator ───────────────────────────
+  kelly: (params: {
+    win_probability: number; american_odds: number;
+    bankroll?: number; fraction?: number; max_stake_pct?: number;
+  }) => {
+    const q = new URLSearchParams({
+      win_probability: String(params.win_probability),
+      american_odds:   String(params.american_odds),
+      bankroll:        String(params.bankroll ?? 100),
+      fraction:        String(params.fraction ?? 0.25),
+      max_stake_pct:   String(params.max_stake_pct ?? 0.05),
+    }).toString();
+    return request<{
+      stake: number; stake_pct: number;
+      kelly_f: number; fractional_kelly: number;
+      expected_value: number; edge_pp: number; note: string;
+    }>(`/analytics/kelly?${q}`);
+  },
+
+  kellyForPick: (pickId: string, bankroll: number = 100, fraction: number = 0.25) =>
+    request<{
+      pick_id: string; market: string; selection: string; sport: string;
+      book_odds: number; prob_source: string; prob_used: number;
+      stake: number; stake_pct: number; kelly_f: number;
+      fractional_kelly: number; expected_value: number;
+      edge_pp: number; note: string;
+    }>(
+      `/analytics/kelly/for-pick?pick_id=${encodeURIComponent(pickId)}` +
+      `&bankroll=${bankroll}&fraction=${fraction}`,
+    ),
+
+  // ── Phase 5c — Steam detection ────────────────────────────────────
+  steamPicks: (hours: number = 6, direction?: "toward" | "away", limit: number = 50) => {
+    const q = new URLSearchParams({
+      hours: String(hours), limit: String(limit),
+    });
+    if (direction) q.append("direction", direction);
+    return request<{
+      count: number; hours: number; direction_filter: string;
+      picks: Array<{
+        id: string; sport: string; market: string; selection: string;
+        event: string; event_time: string; book_odds: number;
+        lock_score: number;
+        steam: {
+          direction: "toward" | "away"; magnitude_pp: number;
+          american_delta: number; american_start: number;
+          american_end: number; observed_at: string;
+          window_minutes: number; observations: number;
+        };
+      }>;
+    }>(`/analytics/steam?${q.toString()}`);
+  },
+
   // ─────────────────────────── NFL Intelligence ───────────────────────────
   // Three engines, all read-only, all return TRUE probability (no edge).
   //   • nflSafeBets         — top-N player-prop locks ranked by hit rate

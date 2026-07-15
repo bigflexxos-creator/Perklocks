@@ -4089,6 +4089,42 @@ async def on_startup():
     except Exception as e:
         logger.warning("Tennis refresh loop failed to start: %s", e)
 
+    # Phase 4 — NFL nflverse (snap counts + player_stats_season)
+    # preseason prep. Season-agg parquets are ~2 MB each and rarely
+    # change once a game is final, so weekly refresh is plenty. Seeded
+    # with 2024 + 2025 so the signal is populated at kickoff.
+    try:
+        from services.nfl_nflfastr import refresh_nfl_seasons as _nfl_refresh
+
+        async def _nfl_nflverse_loop():
+            while True:
+                try:
+                    # Include current year — becomes non-empty as soon
+                    # as Week 1 games settle.
+                    yrs = (datetime.now(timezone.utc).year, 2025, 2024)
+                    r = await _nfl_refresh(db, seasons=yrs)
+                    logger.info("NFL nflverse refresh: %s", r)
+                except Exception as e:
+                    logger.warning("NFL nflverse cycle failed: %s", e)
+                await asyncio.sleep(7 * 24 * 60 * 60)   # weekly
+
+        _deferred_task(_nfl_nflverse_loop, DEFER_BASE * 11)
+        logger.info("NFL nflverse weekly refresh loop scheduled (pre-season prep)")
+    except Exception as e:
+        logger.warning("NFL nflverse loop failed to start: %s", e)
+
+    # Phase 5c — Steam detector. Watches pick_line_history for rapid
+    # implied-probability moves and tags picks with a `steam` block.
+    # Runs every 60s (loop-internal), independent of line-observer
+    # cadence — so it's timely as soon as the observer writes a new
+    # observation.
+    try:
+        from steam_detector import steam_detector_loop
+        _deferred_task(lambda: steam_detector_loop(db), DEFER_BASE * 11)
+        logger.info("Steam detector loop scheduled")
+    except Exception as e:
+        logger.warning("Steam detector loop failed to start: %s", e)
+
     # Live alt-line feed (2026-06-30 user mandate — no synthetic lines).
     # Pulls real DK + FanDuel alt-line markets from The Odds API every
     # 10 min and stores them in `live_alt_lines` with TTL. The quality

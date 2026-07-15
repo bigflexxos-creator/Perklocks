@@ -580,3 +580,105 @@ async def clv_report(
             "closed at). Sharp bettors consistently sit >55%."
         ),
     }
+
+
+# ── Phase 5a — Kelly staking ────────────────────────────────────────
+@router.get("/analytics/kelly")
+async def kelly_endpoint(
+    user: Annotated[UserPublic, Depends(current_user)],
+    win_probability: float,
+    american_odds: float,
+    bankroll: float = 100.0,
+    fraction: float = 0.25,
+    max_stake_pct: float = 0.05,
+):
+    """Kelly stake calculator.
+
+    Query params:
+        win_probability : your model's estimated win prob (0..1 or 0..100)
+        american_odds   : book's American price (e.g. -110, +250)
+        bankroll        : total bankroll (default 100 units)
+        fraction        : Kelly fraction (default 0.25 = ¼-Kelly)
+        max_stake_pct   : hard safety cap on stake as % of bankroll (5%)
+
+    Returns full staking payload — see `analytics.kelly_stake` docstring.
+    """
+    from analytics import kelly_stake
+    return kelly_stake(
+        win_probability=win_probability,
+        american_odds=american_odds,
+        bankroll=bankroll,
+        fraction=max(0.05, min(1.0, fraction)),
+        max_stake_pct=max(0.005, min(0.25, max_stake_pct)),
+    )
+
+
+@router.get("/analytics/kelly/for-pick")
+async def kelly_for_pick_endpoint(
+    user: Annotated[UserPublic, Depends(current_user)],
+    pick_id: str,
+    bankroll: float = 100.0,
+    fraction: float = 0.25,
+    max_stake_pct: float = 0.05,
+):
+    """Kelly stake for a specific pick — uses `no_vig_pct` when
+    available (sharpest edge estimate) and falls back to
+    `win_probability` otherwise."""
+    from analytics import kelly_stake
+    pick = await db.picks.find_one({"id": pick_id}, {
+        "_id": 0, "id": 1, "book_odds": 1, "no_vig_pct": 1,
+        "win_probability": 1, "market": 1, "selection": 1, "sport": 1,
+    })
+    if not pick:
+        return {"error": "pick_not_found", "pick_id": pick_id}
+    prob = pick.get("no_vig_pct") or pick.get("win_probability") or 0
+    odds = pick.get("book_odds") or 0
+    kelly = kelly_stake(
+        win_probability=prob, american_odds=odds,
+        bankroll=bankroll,
+        fraction=max(0.05, min(1.0, fraction)),
+        max_stake_pct=max(0.005, min(0.25, max_stake_pct)),
+    )
+    return {
+        "pick_id":         pick.get("id"),
+        "market":          pick.get("market"),
+        "selection":       pick.get("selection"),
+        "sport":           pick.get("sport"),
+        "book_odds":       odds,
+        "prob_source":     "no_vig_pct" if pick.get("no_vig_pct") else "win_probability",
+        "prob_used":       prob,
+        **kelly,
+    }
+
+
+# ── Phase 5c — Steam detection ──────────────────────────────────────
+@router.get("/analytics/steam")
+async def steam_endpoint(
+    user: Annotated[UserPublic, Depends(current_user)],
+    hours: int = 6,
+    direction: Optional[str] = None,
+    limit: int = 50,
+):
+    """Recent steam-flagged pending picks.
+
+    Query params:
+        hours     : lookback window (default 6h)
+        direction : 'toward' (line moved TOWARD your side — market
+                    agreement) or 'away' (reverse steam — market
+                    disagreement). Default = both.
+        limit     : max rows (default 50)
+
+    Returns array sorted by magnitude_pp descending."""
+    from steam_detector import get_steam_picks
+    picks = await get_steam_picks(
+        db,
+        hours=max(1, min(48, hours)),
+        direction=direction if direction in ("toward", "away") else None,
+        limit=max(1, min(200, limit)),
+    )
+    return {
+        "count": len(picks),
+        "hours": hours,
+        "direction_filter": direction or "any",
+        "picks": picks,
+    }
