@@ -1298,6 +1298,12 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         # Exclude special-tab markets (NRFI/YRFI lives in its own MLB
         # sub-tab — user explicitly asked to keep these off the main board).
         "hide_from_main_board": {"$ne": True},
+        # 2026-07-16 — never show "Pass" grade picks on the main board.
+        # Pass = pick failed lock-tier thresholds. User: "pass should not
+        # make the board". Also filter no_bet globally so tennis-dropped
+        # picks with stale shadow lock fields can't leak through.
+        "grade": {"$ne": "Pass"},
+        "no_bet": {"$ne": True},
         "$or": [standard_q, elite_q, model_only_q, tennis_ml_q, tennis_alt_q, tennis_extra_q, mlb_k_q, mlb_hitter_q, soccer_scorer_q, high_lock_bypass_q],
     }
     # ── User-supplied min_lock floor (global enforcement) ────────────
