@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from services.tennis.sources import tml_database as tml
+from services.tennis.sources import tml_stats as tml_stats
 
 logger = logging.getLogger("lockscore.services.tennis.fallback")
 
@@ -48,23 +49,61 @@ def _match_key(m: dict) -> dict:
 
 async def refresh_tennis_history(db, years: tuple = None) -> dict:
     """Bulk fetch year files from TML-Database + upsert.
-    Then recompute per-player rolling aggregates."""
+    Then recompute per-player rolling aggregates.
+
+    Ingests THREE sources:
+        1. TML-Database (github, ATP main tour)                — `tml_database`
+        2. TennisMyLife stats (Challenger main draws)          — `tml_stats`
+        3. TennisMyLife stats (ATP Tour qualifying rounds)     — `tml_stats`
+
+    Adding challenger + qualifying roughly doubles our match volume and
+    fills coverage gaps for lower-ranked players that only appear on the
+    challenger circuit."""
     if years is None:
         this_year = datetime.now(timezone.utc).year
         years = tuple(range(this_year - 3, this_year + 1))
     total_matches = 0
+    per_source: dict[str, int] = {"tml_database": 0, "tml_stats_ch": 0,
+                                   "tml_stats_quali": 0}
     for year in years:
         matches = await tml.fetch_year(year)
         for m in matches:
             await db.tennis_matches_history.update_one(
                 _match_key(m), {"$set": m}, upsert=True,
             )
+        per_source["tml_database"] += len(matches)
         total_matches += len(matches)
-        logger.info("Tennis history year %d: %d matches", year, len(matches))
+        logger.info("Tennis history year %d (main tour): %d matches",
+                    year, len(matches))
+
+        # Phase 3b — ATP Challenger circuit
+        ch_matches = await tml_stats.fetch_challenger_year(year)
+        for m in ch_matches:
+            await db.tennis_matches_history.update_one(
+                _match_key(m), {"$set": m}, upsert=True,
+            )
+        per_source["tml_stats_ch"] += len(ch_matches)
+        total_matches += len(ch_matches)
+
+        # Phase 3b — ATP Tour Qualifying rounds
+        q_matches = await tml_stats.fetch_atp_quali_year(year)
+        for m in q_matches:
+            await db.tennis_matches_history.update_one(
+                _match_key(m), {"$set": m}, upsert=True,
+            )
+        per_source["tml_stats_quali"] += len(q_matches)
+        total_matches += len(q_matches)
+
     # Recompute player rolling stats
     stats_count = await _recompute_player_stats(db)
-    logger.info("Tennis player stats: %d players aggregated", stats_count)
-    return {"years": years, "matches": total_matches, "players": stats_count}
+    logger.info("Tennis player stats: %d players aggregated (sources: %s)",
+                stats_count, per_source)
+    return {
+        "years": years,
+        "matches": total_matches,
+        "players": stats_count,
+        "per_source": per_source,
+    }
 
 
 async def _recompute_player_stats(db) -> int:

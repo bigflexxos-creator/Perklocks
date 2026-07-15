@@ -561,3 +561,52 @@ agent_communication:
       - "stuck_pick_reaper does NOT void picks with grade_disagreement flag"
     test_all: false
     test_priority: "high_first"
+
+
+  - agent: "main"
+    message: |
+      Iteration 75 — Phase 1.2 (Fangraphs Stuff+/Location+/Pitching+) + Coverage Expansion
+      for Mexican Liga MX and ITF/Challenger tennis.
+
+      NEW MODULES:
+        - /app/backend/services/mlb_stuff_plus.py — Baseball Savant pitch-arsenal source.
+          Fangraphs is CF-protected (verified with curl_cffi chrome124 → 403). We compute
+          Stuff+/Location+/Pitching+ *analog* scores from Baseball Savant `pitch-arsenal-stats`
+          CSV, usage-weighted per pitcher, calibrated to Fangraphs' mean=100 SD=10.
+          Emits `mlb_stuff_plus_players` docs keyed by (player_id, year).
+        - /app/backend/services/tennis/sources/tml_stats.py — new source for ATP
+          Challenger main draws + ATP Tour qualifying rounds via
+          stats.tennismylife.org/data/. Sackmann-compatible parser.
+
+      WIRING:
+        - routes/picks_routes.py — on-read enrichment attaches `stuff_plus` block to
+          every MLB pitcher prop.
+        - server.py — daily refresh loop scheduled ("Stuff+ daily refresh loop scheduled").
+        - services/signal_engine/calculators.py — Stuff+/Location+ nudges to
+          mlb_deep_signal for pitcher K/IP/ER props (±2 pts for elite/weak stuff, ±1 pt
+          for command).
+        - services/tennis/fallback.py — refresh_tennis_history now ingests
+          Challenger + Qualifying alongside main tour.
+        - services/soccer/models.py, sources/football_data_co_uk.py, sources/thesportsdb.py
+          — Liga MX canonical code `LigaMX` (previously ambiguous "MEX"), TheSportsDB
+          league id 4350.
+
+      TESTS (all green):
+        - tests/test_mlb_stuff_plus.py — 14 tests (scale math, aggregation, pitcher extraction).
+        - tests/test_coverage_expansion_iter75.py — 8 tests (Liga MX codes + tml_stats URLs).
+        - No regressions on 85+ existing tests.
+
+      DEFERRED:
+        - WTA challenger + ITF Futures — no publicly-mirrored source available (WTA Sackmann
+          repo deleted, no fork ships lower-tier WTA).
+        - Fangraphs direct scraping — needs headless browser or Fangraphs API key.
+
+  test_plan_iter75:
+    current_focus:
+      - "Phase 1.2 Stuff+ ingester loads, aggregates, and enriches MLB pitcher picks"
+      - "Signal engine nudges pitcher K/IP/ER props based on Stuff+/Location+ scores"
+      - "ATP Challenger + Qualifying histories ingest and merge into rolling player stats"
+      - "Liga MX canonical league code registered across football-data.co.uk + TheSportsDB"
+      - "Daily refresh loops scheduled at backend startup without errors"
+    test_all: false
+    test_priority: "high_first"

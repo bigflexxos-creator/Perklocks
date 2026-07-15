@@ -809,6 +809,48 @@ def mlb_deep_signal(pick: dict) -> dict:
             elif xera >= 4.60 and is_over:
                 pts += 1.0
 
+    # Phase 1.2 — Fangraphs-style Stuff+/Location+/Pitching+ (computed
+    # from Baseball Savant pitch-arsenal — see services.mlb_stuff_plus).
+    # Independent of the xwOBA-against signal above: xwOBA-against
+    # measures RESULTS, Stuff+ measures the INPUTS (pitch quality). Both
+    # can move independently — an elite Stuff+ pitcher with bad xwOBA
+    # is running hot on BABIP (regression buy). A weak Stuff+ pitcher
+    # with elite xwOBA is running lucky (fade).
+    sp_grades = pick.get("stuff_plus") or {}
+    if sp_grades and family in ("pitcher_k", "pitcher_ip", "pitcher_er"):
+        stuff = sp_grades.get("stuff_plus")
+        loc = sp_grades.get("location_plus")
+        if isinstance(stuff, (int, float)):
+            found = True
+            # 100 = league avg. Every +/-5 Stuff+ = ~1pp K rate shift.
+            stuff_dev = stuff - 100.0
+            if family in ("pitcher_k", "pitcher_ip"):
+                # Elite stuff (+K rate, +swings-and-miss) helps K/IP Overs.
+                lift = stuff_dev * 0.06
+                pts += _clamp(lift if is_over else -lift, -2.0, 2.0)
+                if stuff >= 115:
+                    details.append(f"Elite Stuff+ ({stuff:.0f}) — top-tier pitch quality")
+                elif stuff <= 90:
+                    details.append(f"Below-avg Stuff+ ({stuff:.0f}) — hittable arsenal")
+            elif family == "pitcher_er":
+                # Better stuff → fewer earned runs.
+                lift = -stuff_dev * 0.05
+                pts += _clamp(lift if is_over else -lift, -1.5, 1.5)
+        if isinstance(loc, (int, float)) and family in ("pitcher_k", "pitcher_er"):
+            found = True
+            # Location+ moves walks and hit contact — matters for ER props
+            # more than raw Ks, but still relevant for K rate because
+            # ahead-in-count pitchers get more strikeouts.
+            loc_dev = loc - 100.0
+            if family == "pitcher_er":
+                lift = -loc_dev * 0.04
+                pts += _clamp(lift if is_over else -lift, -1.0, 1.0)
+            else:
+                lift = loc_dev * 0.03
+                pts += _clamp(lift if is_over else -lift, -0.8, 0.8)
+            if loc >= 110:
+                details.append(f"Elite Location+ ({loc:.0f}) — command edge")
+
     return {
         "key": "mlb_deep", "label": "MLB Context",
         "points": round(_clamp(pts, -MLB_DEEP_MAX, MLB_DEEP_MAX), 1),

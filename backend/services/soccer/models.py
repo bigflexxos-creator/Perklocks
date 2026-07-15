@@ -127,6 +127,7 @@ LEAGUE_CODES: dict[str, dict] = {
     "MLS":           {"name": "USA Major League Soccer",   "country": "USA",      "tier": 1},
     "Brasileirao":   {"name": "Brazilian Série A",         "country": "Brazil",   "tier": 1},
     "Argentina":     {"name": "Argentine Primera",         "country": "Argentina","tier": 1},
+    "LigaMX":        {"name": "Mexican Liga MX",            "country": "Mexico",   "tier": 1},
     "UCL":           {"name": "UEFA Champions League",     "country": "Europe",   "tier": 0},
     "UEL":           {"name": "UEFA Europa League",        "country": "Europe",   "tier": 0},
     "UECL":          {"name": "UEFA Conference League",    "country": "Europe",   "tier": 0},
