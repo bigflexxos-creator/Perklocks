@@ -1,4 +1,5 @@
 import { storage } from "@/src/utils/storage";
+import { Platform } from "react-native";
 
 // Backend URL resolution:
 //   1. Prefer EXPO_PUBLIC_BACKEND_URL if set at build time (dev preview / native builds)
@@ -22,6 +23,19 @@ const PINNED_PREVIEW_URL = "https://bet-edge-ai-1.preview.emergentagent.com";
 function resolveBaseUrl(): string {
   if (FORCE_PREVIEW_BACKEND) return PINNED_PREVIEW_URL;
   const envUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
+
+  // ── Native (Expo Go / built app): always use EXPO_PUBLIC_BACKEND_URL. ──
+  // On native, `window.location.origin` is polyfilled by RN to the Metro
+  // dev-server URL (e.g. "http://192.168.x.x:8081"), which DOES NOT serve
+  // `/api/*`. The web-only previewMismatch branch below would incorrectly
+  // return that Metro URL and every request would 404 — verified in Expo
+  // Go 2026-07-15 when picks showed skeleton loaders and "GAME · 0".
+  // Platform.OS is imported synchronously so it's safe to gate on here.
+  if (Platform.OS !== "web") {
+    return (envUrl && envUrl.trim().length > 0) ? envUrl : PINNED_PREVIEW_URL;
+  }
+
+  // ── Web: keep the existing dev/prod-origin swap logic ──────────────
   if (envUrl && envUrl.trim().length > 0) {
     // Avoid pinning the bundle to the dev preview URL in production builds.
     if (typeof window !== "undefined" && window.location && window.location.origin) {
