@@ -610,3 +610,60 @@ agent_communication:
       - "Daily refresh loops scheduled at backend startup without errors"
     test_all: false
     test_priority: "high_first"
+
+
+  - agent: "main"
+    message: |
+      Iteration 76 — Phase 4 (NFL nflverse) + Phase 5 (Kelly/CLV/Steam) COMPLETE.
+
+      NEW MODULES:
+        - /app/backend/services/nfl_nflfastr.py — nflverse GitHub Releases
+          parquet ingester (snap counts + player_stats_season). Live-verified
+          on 2024 season: 659 snap-count docs + 570 stat docs upserted.
+        - /app/backend/steam_detector.py — 60s-cadence background loop watching
+          pick_line_history for ≥3pp implied-prob moves inside a 5-min window;
+          tags picks with `steam` block. Uses existing observer data — no new
+          external calls.
+        - /app/backend/analytics.py:kelly_stake() — ¼-Kelly default, 5% cap,
+          accepts prob as 0..1 or 0..100, handles negative-edge picks.
+
+      NEW ENDPOINTS (in /app/backend/routes/analytics_routes.py):
+        - GET /api/analytics/kelly — inline Kelly calc.
+        - GET /api/analytics/kelly/for-pick — Kelly for a specific pick_id.
+        - GET /api/analytics/steam — recent steam-flagged pending picks.
+
+      WIRING:
+        - server.py — 2 new background loops (NFL weekly refresh + Steam
+          detector). All 6 loops confirmed in startup logs.
+        - routes/picks_routes.py — on-read NFL usage enrichment for skill
+          props (RB / WR / TE / QB).
+        - services/signal_engine/calculators.py — volume_signal now applies
+          NFL nudges: ±1.5-1.8 pts on target share, ±1.5 pts on snap %,
+          +1.2 pts on WOPR, +0.8 pts on aDOT.
+
+      FRONTEND (Lab tab in /app/frontend/app/(tabs)/lab.tsx):
+        - New Analytics module with 3 sub-tabs — CLV report, Kelly Calc,
+          Steam alerts. All rendering correctly against live backend.
+        - Kelly Calc verified live: 58% at -110 with $1000 bankroll →
+          $29.50 stake (2.95%), +10.73pp edge, +0.107 EV/unit.
+        - CLV shows 4007 picks, 55.8% win rate, per-odds-band breakdown.
+        - Steam empty-state renders correctly.
+
+      DEPENDENCIES:
+        - pyarrow==25.0.0 added to requirements.txt (parquet ingest).
+
+      TESTS (28/28 GREEN):
+        - tests/test_iter76_phase4_5.py — 16 unit tests.
+        - tests/test_iter76_live_integration.py — 12 live-DB integration tests
+          (added by testing agent).
+        - No regressions on prior 100+ tests.
+
+  test_plan_iter76:
+    current_focus:
+      - "NFL nflverse parquet ingest populates nfl_player_usage with 500+ docs"
+      - "Kelly endpoint math correct (positive stake for edge, zero for neg edge, 5% cap)"
+      - "Steam detector loop scheduled and returns valid empty response when no data"
+      - "Signal engine NFL nudges fire on target_share / snap_pct thresholds"
+      - "Lab Analytics tab renders CLV, Kelly, and Steam sections without crash"
+    test_all: false
+    test_priority: "high_first"

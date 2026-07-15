@@ -420,3 +420,54 @@ reality.
 - `tests/test_coverage_expansion_iter75.py` — 8 tests (Liga MX canonical
   codes across 3 sources, tml_stats URL format + parsing).
 - Existing test suite still green (85+ tests).
+
+---
+
+## 2026-07-15 Iter 76 — Phase 4 + Phase 5 Advanced Analytics
+
+### Phase 4 — NFL nflfastR / nflverse (pre-season prep)
+- **Module**: `/app/backend/services/nfl_nflfastr.py`
+- **Source**: nflverse GitHub Releases (public CDN, no auth)
+  - `snap_counts/snap_counts_YYYY.parquet` — per-game offensive/ST snap %
+  - `player_stats/player_stats_season.parquet` — season-aggregated stats
+- **Signals captured**: snap %, target share, air yards share, WOPR (weighted
+  opportunity), aDOT (avg depth of target), YPRR (yards per route run, estimated),
+  receiving_epa, rushing_epa, carries, passing yards/TDs.
+- **Live verification**: 2024 season fetched successfully — 659 snap-count docs +
+  570 season-stat docs.
+- **Wiring**: daily refresh (weekly cadence, ~2 MB per parquet), on-read
+  enrichment via `enrich_picks_with_nfl_usage_bulk`, signal engine nudges in
+  `services/signal_engine/calculators.py::volume_signal` (±1.5 pts on
+  target-share, ±1.5 pts on snap %, +1.2 pts on high WOPR, +0.8 pts on aDOT).
+
+### Phase 5a — Kelly staking calculator
+- **Function**: `analytics.kelly_stake(prob, odds, bankroll, fraction=0.25, max_stake_pct=0.05)`
+- **Endpoints**: `GET /api/analytics/kelly` + `GET /api/analytics/kelly/for-pick`
+- **Default**: ¼-Kelly with 5% max-stake safety cap. Supports probability as
+  0..1 or 0..100. `for-pick` uses `no_vig_pct` when available.
+
+### Phase 5b — CLV tracking UI
+- **New Lab tab**: Analytics (with CLV / Kelly / Steam sub-sections).
+- **Data source**: existing `/api/analytics/clv` endpoint.
+- **Rendering**: `frontend/app/(tabs)/lab.tsx::CLVSection` — 4-cell headline
+  (N / Win% / ROI-per-100u / Beat-Close %) + by-odds-band breakdown.
+
+### Phase 5c — Steam detection
+- **Module**: `/app/backend/steam_detector.py`
+- **Data source**: existing `pick_line_history` collection (populated by
+  `closing_line_snapshotter.line_observer_loop` every ~5 min for pending picks).
+- **Detection**: implied-probability delta ≥3.0pp (~5¢) inside 5-minute
+  rolling window → tag pick with `steam` block (direction, magnitude_pp,
+  american_delta, observations).
+- **Endpoint**: `GET /api/analytics/steam?hours=6&direction=toward&limit=50`
+- **Background loop**: sweeps every 60s.
+
+### Test coverage
+- `tests/test_iter76_phase4_5.py` — 16 unit tests (Kelly math, steam math,
+  NFL classifiers).
+- `tests/test_iter76_live_integration.py` — 12 live-DB integration tests
+  covering nflverse fetch, endpoint contracts, signal-engine nudges,
+  enrichment behavior. All 28 tests green.
+
+### Dependencies
+- `pyarrow==25.0.0` added to `requirements.txt` for parquet ingest.
