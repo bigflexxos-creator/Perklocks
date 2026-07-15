@@ -657,13 +657,18 @@ async def apply_tennis_engine(db, picks: list[dict]) -> list[dict]:
             comp.surface >= 92.0 and comp.serve_return >= 88.0 and
             _elite_implied >= 65.0
         )
+        # STRICT market elite (2026-07-16 v5): "I want the locks 95-99
+        # lock scores only so we don't get a lot of noise". WP≥80% AND
+        # implied≥78% — the intersection of "strong data + strong
+        # market" that produces at most 3-8 elite locks per day rather
+        # than 40+ ITF chaff hitting 99.
         market_elite = (
-            _elite_wp >= 78.0 and _elite_implied >= 72.0
+            _elite_wp >= 80.0 and _elite_implied >= 78.0
         )
         aligned_elite = (
-            _elite_wp >= 72.0 and _elite_implied >= 70.0
-            and comp.market_edge >= 2.0
-            and (comp.surface >= 78.0 or comp.serve_return >= 78.0)
+            _elite_wp >= 76.0 and _elite_implied >= 74.0
+            and comp.market_edge >= 3.0
+            and (comp.surface >= 82.0 or comp.serve_return >= 82.0)
         )
         elite_calibrated = sackmann_elite or market_elite or aligned_elite
         is_99_eligible = comp.is_99_lock_eligible or elite_calibrated
@@ -707,11 +712,29 @@ async def apply_tennis_engine(db, picks: list[dict]) -> list[dict]:
             else:
                 market_bump = 0.0
 
-            raw = 88.0 + surface_bump + sr_bump + edge_bump + form_bump \
+            # 2026-07-16 v5 formula — base band depends on tour tier:
+            # ITF Futures / M25 / W25: base 82, cap 96 (need to earn 95+
+            #   via genuine strong calibration to clear the strict ITF filter)
+            # Main tour (ATP/WTA/Challenger): base 90, cap 99 — full
+            #   Lock band per user mandate "90-99 range not 97".
+            # The elite gates (Sackmann/market/aligned) still pin genuine
+            # locks at exactly 99; the formula naturally spreads
+            # non-elite picks across 91-98 based on calibrated evidence.
+            _tier_str = str(p.get("league") or p.get("tier") or "").lower()
+            _is_itf = any(k in _tier_str for k in (
+                "itf", "futures", "m15", "m25", "w15", "w25", "w35",
+            ))
+            if _is_itf:
+                base = 82.0
+                floor = 82.0
+                ceiling = 96.0
+            else:
+                base = 90.0
+                floor = 90.0
+                ceiling = 99.0
+            raw = base + surface_bump + sr_bump + edge_bump + form_bump \
                 - var_pen + tier_bonus + market_bump
-            # Clamp within the Lock band [90, 97] so 99 remains reserved
-            # for the elite-calibrated gate above.
-            new_lock = round(max(90.0, min(97.0, raw)), 1)
+            new_lock = round(max(floor, min(ceiling, raw)), 1)
             p["lock_score_99_eligible"] = False
         else:
             # 99-LOCK eligible — Sackmann-verified elite player with
