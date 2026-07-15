@@ -369,3 +369,54 @@ your 71.6% chalk band from −4.7u/100 to positive-EV.
 
 **File status:** written 2026-07-14. Update whenever a Phase completes so the roadmap reflects
 reality.
+
+---
+
+## 2026-07-15 update — Phase 1.2 + Coverage Expansion (Iter 75)
+
+### Phase 1.2 — Stuff+/Location+/Pitching+ (MLB)
+- **Source**: Baseball Savant `pitch-arsenal-stats` (Fangraphs' own site is behind
+  an interactive Cloudflare challenge that server-side scrapers cannot bypass;
+  we compute a Stuff+/Location+ *analog* from Baseball Savant's per-pitch data —
+  calibrated to Fangraphs' actual mean=100/SD=10 distribution).
+- **Module**: `/app/backend/services/mlb_stuff_plus.py`
+- **Storage**: `mlb_stuff_plus_players` — one doc per (player_id, year) with
+  `stuff_plus`, `location_plus`, `pitching_plus`, weighted `whiff_pct`/`k_pct`,
+  and per-pitch arsenal breakdown.
+- **Refresh loop**: daily, wired into `server.py` alongside Statcast.
+- **On-read enrichment**: `routes/picks_routes.py` attaches `stuff_plus` block
+  to every MLB pitcher prop (K, Outs Recorded, ER, Hits Allowed).
+- **Signal wiring**: `services/signal_engine/calculators.py` adds ±2 pts to
+  pitcher K/IP Overs for elite/weak Stuff+, and ±1.5 pts to ER props for
+  Location+ command signals.
+
+### Coverage expansion — Mexican Liga MX
+- **Canonical league code** `LigaMX` (added to `services/soccer/models.py`).
+- **Sources**: football-data.co.uk extra-leagues `MEX.csv` (historical + odds)
+  and TheSportsDB league id `4350` (metadata + fixtures).
+- Both league name aliases ("Mexico Liga MX", "Mexican Liga MX", "Mexican
+  Primera División") resolve to `LigaMX`.
+
+### Coverage expansion — ITF/Challenger tennis
+- **Source**: `stats.tennismylife.org/data/` — the maintainer's extended mirror
+  that hosts ATP Challenger main draws + ATP Tour qualifying (NOT in the
+  GitHub TML-Database repo).
+- **New source module**: `/app/backend/services/tennis/sources/tml_stats.py`
+  - `fetch_challenger_year(year)` — challenger main draw
+  - `fetch_atp_quali_year(year)` — ATP Tour qualifying rounds
+- **Wiring**: `services/tennis/fallback.py`'s `refresh_tennis_history` now
+  ingests all three sources (main tour + challenger + qualifying), roughly
+  doubling match volume and unlocking rolling stats for the ~300 players
+  who cycle between tour and challenger levels.
+- Circuit disambiguation via new `circuit` field on each match doc:
+  `"challenger" | "atp_quali" | "atp"` (implicit).
+- **Note**: WTA challenger + ITF Futures are NOT publicly mirrored anywhere
+  we could find — WTA Sackmann repo was also deleted and no alternative
+  fork ships lower-tier WTA data. Deferred.
+
+### Test coverage
+- `tests/test_mlb_stuff_plus.py` — 14 tests (scale math, aggregation weighting,
+  pitcher-market extraction).
+- `tests/test_coverage_expansion_iter75.py` — 8 tests (Liga MX canonical
+  codes across 3 sources, tml_stats URL format + parsing).
+- Existing test suite still green (85+ tests).

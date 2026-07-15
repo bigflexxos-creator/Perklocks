@@ -1,0 +1,26 @@
+{
+  "summary": "Iteration 75 (Phase 1.2 Fangraphs Stuff+ analog + Phase 3b ATP Challenger/Quali + Phase 2 Liga MX) fully verified. All 22 unit tests + 7 live-integration tests pass. Baseball Savant CSV fetch works, refresh_stuff_plus upserted 493 real pitchers for year 2026 into mlb_stuff_plus_players, get_pitcher_stuff is case-insensitive with prior-year fallback, bulk enrichment attaches stuff_plus block on MLB pitcher props (dedupe cache verified), and the mlb_deep_signal Stuff+ nudge awards positive points for Elite Stuff+ Over K and negative points for weak Stuff+ Over K (and elite Stuff+ Under K). TennisMyLife stats mirror returns >500 challenger and >50 qualifying matches for 2024. Server startup logs confirm all four background refresh loops are scheduled: Statcast, Stuff+, Soccer multi-source, Tennis Sackmann weekly. No deprecated Expo packages introduced in backend changes.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": [], "react_native_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_mlb_stuff_plus.py",
+    "/app/backend/tests/test_coverage_expansion_iter75.py",
+    "/app/backend/tests/test_iter75_live_integration.py",
+    "/app/test_reports/pytest/iter75_unit.xml",
+    "/app/test_reports/pytest/iter75_live.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "services/mlb_stuff_plus.py — clean, defensive Cloudflare workaround (Savant analog). RV→Stuff+ mapping calibrated to Fangraphs' SD; 60/40 Stuff+/Location+ Pitching+ blend matches Fangraphs public formula. Dedupe cache in enrich_picks_with_stuff_plus_bulk keeps DB reads tight.",
+    "services/tennis/sources/tml_stats.py — reuses the Sackmann-compatible _parse_row from tml_database, so schema stays consistent across all 3 sources.",
+    "services/signal_engine/calculators.py — Stuff+ nudge is directionally correct (elite→Over K +, weak→Over K −, elite→Under K −) and clamped ±2.0 pts so it can't dominate the composite MLB score.",
+    "routes/picks_routes.py:1730-1744 — on-read Stuff+ attach guarded by try/except and only fetches when the block is missing, so a Savant outage cannot break /picks."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter75_live_integration.py"],
+  "success_rate": {"backend": "100%", "frontend": "n/a (backend-only review requested)"},
+  "seed_data_creation": "None — used real Baseball Savant + TennisMyLife public endpoints. A transient TEST_FALLBACK pitcher doc was inserted and cleaned up inside the year-fallback assertion.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iter75 introduced services/mlb_stuff_plus.py (Baseball Savant pitch-arsenal aggregation → Stuff+/Location+/Pitching+ analog), services/tennis/sources/tml_stats.py (ATP Challenger + Qualifying CSVs from stats.tennismylife.org), Liga MX canonical code across soccer sources, and an on-read enrichment hook in picks_routes.py plus a daily background refresh loop in server.py. Live-integration test lives at tests/test_iter75_live_integration.py — each test wraps its whole flow in a single asyncio.run() to keep the Motor client bound to one event loop (multi-asyncio.run + Motor causes 'Event loop is closed'). If retesting, prefer combining Mongo assertions into one async block for the same reason.",
+  "rca_of_issue": "n/a — no bugs found."
+}

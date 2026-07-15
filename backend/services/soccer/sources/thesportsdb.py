@@ -44,6 +44,7 @@ _LEAGUE_ID_MAP: dict[str, str] = {
     "Allsvenskan":  "4347",
     "Eliteserien":  "4342",
     "MLS":          "4346",
+    "LigaMX":       "4350",
     "Brasileirao":  "4351",
     "UCL":          "4480",
     "UEL":          "4481",

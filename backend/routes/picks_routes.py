@@ -1727,6 +1727,22 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     except Exception as e:
         logger.debug("on-read umpire enrichment failed: %s", e)
 
+    # Phase 1.2 — On-read Stuff+/Location+/Pitching+ attach for pitcher
+    # props (strikeouts, outs recorded, earned runs, hits allowed). Sourced
+    # from Baseball Savant pitch-arsenal-stats and cached daily. Adds
+    # ~1 DB read per unique pitcher on the slate.
+    try:
+        mlb_pitcher_picks = [
+            _p for _p in canonical
+            if (_p.get("sport") or "").upper() == "MLB"
+            and _p.get("stuff_plus") is None
+        ]
+        if mlb_pitcher_picks:
+            from services.mlb_stuff_plus import enrich_picks_with_stuff_plus_bulk
+            await enrich_picks_with_stuff_plus_bulk(db, mlb_pitcher_picks)
+    except Exception as e:
+        logger.debug("on-read Stuff+ enrichment failed: %s", e)
+
     # Phase 3 — Tennis Sackmann/TML on-read attach. Adds surface-specific
     # rolling serve/return stats + career H2H for tennis moneyline / totals /
     # spread picks. Dedupes per-player lookup so a full slate of

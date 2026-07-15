@@ -4019,6 +4019,33 @@ async def on_startup():
     except Exception as e:
         logger.warning("Statcast refresh loop failed to start: %s", e)
 
+    # Phase 1.2 — Baseball Savant pitch-arsenal (Stuff+/Location+/Pitching+
+    # analog) daily refresh loop. Uses the same Savant CSV pipeline as
+    # Statcast, so it's cheap and reliable. Populates
+    # `mlb_stuff_plus_players` with usage-weighted composite grades
+    # consumed by signal_engine.mlb_deep_signal for pitcher K/Outs props.
+    try:
+        from services.mlb_stuff_plus import refresh_stuff_plus as _stuffplus_refresh
+
+        async def _mlb_stuff_plus_loop():
+            while True:
+                try:
+                    r = await _stuffplus_refresh(db)
+                    logger.info(
+                        "Stuff+ refresh: %d pitchers (year %s)",
+                        (r or {}).get("upserted", 0),
+                        (r or {}).get("year"),
+                    )
+                except Exception as e:
+                    logger.warning("Stuff+ refresh cycle failed: %s", e)
+                # 24h — Baseball Savant leaderboards update daily post-slate.
+                await asyncio.sleep(24 * 60 * 60)
+
+        _deferred_task(_mlb_stuff_plus_loop, DEFER_BASE * 8)
+        logger.info("Stuff+ daily refresh loop scheduled")
+    except Exception as e:
+        logger.warning("Stuff+ refresh loop failed to start: %s", e)
+
     # Phase 2 — Soccer multi-source fallback ingest (football-data.co.uk
     # + Football-Data.org + TheSportsDB + OpenLigaDB). Runs once daily.
     # See services/soccer/README (also docstring in services/soccer/__init__.py)
