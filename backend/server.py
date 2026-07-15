@@ -3618,6 +3618,20 @@ async def on_startup():
     await db.picks.create_index([("pick_date", 1), ("lock_score", -1)])
     await db.picks.create_index([("status", 1), ("settled_at", -1)])
     await db.picks.create_index("id", unique=True)
+
+    # PRODUCTION HANG FIX 2026-07-15: index the on-read Soccer form
+    # enrichment's lookup path (`soccer_matches.home_team` /
+    # `.away_team` with an anchored regex + status filter). Without
+    # these, /api/picks/today does a full-collection scan per team
+    # per pick which on a large production dataset takes >100s and
+    # returns 504 Gateway Timeout. Idempotent — Motor will no-op if
+    # the index already exists.
+    try:
+        await db.soccer_matches.create_index("home_team")
+        await db.soccer_matches.create_index("away_team")
+        await db.soccer_matches.create_index([("status", 1), ("date", -1)])
+    except Exception as e:
+        logger.debug("soccer_matches index creation skipped: %s", e)
     # ── Historical Sports Intelligence Engine — wire DB handles ───────────
     # Read side (lookup) is called from the Lock Engine on every pick gen, so
     # we MUST set the db handle before any pick generation kicks off. Write

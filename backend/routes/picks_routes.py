@@ -1692,9 +1692,10 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         ]
         if mlb_picks_missing_usage:
             from services.mlb_usage import enrich_picks_with_usage_bulk
-            await enrich_picks_with_usage_bulk(mlb_picks_missing_usage)
-    except Exception as e:
-        logger.debug("on-read MLB usage enrichment failed: %s", e)
+            await asyncio.wait_for(
+                enrich_picks_with_usage_bulk(mlb_picks_missing_usage), timeout=5.0)
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.debug("on-read MLB usage enrichment failed/timeout: %s", e)
 
     # Phase 1.1 — On-read Statcast attach. Very cheap (single Mongo
     # find_one per distinct player) so we run unconditionally on MLB
@@ -1709,9 +1710,10 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         ]
         if mlb_picks_missing_statcast:
             from services.mlb_statcast import enrich_picks_with_statcast_bulk
-            await enrich_picks_with_statcast_bulk(db, mlb_picks_missing_statcast)
-    except Exception as e:
-        logger.debug("on-read Statcast enrichment failed: %s", e)
+            await asyncio.wait_for(
+                enrich_picks_with_statcast_bulk(db, mlb_picks_missing_statcast), timeout=5.0)
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.debug("on-read Statcast enrichment failed/timeout: %s", e)
 
     # Phase 1.4 — On-read umpire K-zone attach for pitcher K props.
     try:
@@ -1723,9 +1725,10 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         ]
         if mlb_k_picks_missing_ump:
             from services.mlb_umpire import enrich_picks_with_umpire_bulk
-            await enrich_picks_with_umpire_bulk(db, mlb_k_picks_missing_ump)
-    except Exception as e:
-        logger.debug("on-read umpire enrichment failed: %s", e)
+            await asyncio.wait_for(
+                enrich_picks_with_umpire_bulk(db, mlb_k_picks_missing_ump), timeout=3.0)
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.debug("on-read umpire enrichment failed/timeout: %s", e)
 
     # Phase 1.2 — On-read Stuff+/Location+/Pitching+ attach for pitcher
     # props (strikeouts, outs recorded, earned runs, hits allowed). Sourced
@@ -1739,9 +1742,10 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         ]
         if mlb_pitcher_picks:
             from services.mlb_stuff_plus import enrich_picks_with_stuff_plus_bulk
-            await enrich_picks_with_stuff_plus_bulk(db, mlb_pitcher_picks)
-    except Exception as e:
-        logger.debug("on-read Stuff+ enrichment failed: %s", e)
+            await asyncio.wait_for(
+                enrich_picks_with_stuff_plus_bulk(db, mlb_pitcher_picks), timeout=5.0)
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.debug("on-read Stuff+ enrichment failed/timeout: %s", e)
 
     # Phase 4 — NFL nflverse usage attach for skill-position props
     # (WR / RB / TE / QB). Adds target share, snap %, WOPR, aDOT, YPRR.
@@ -1755,9 +1759,10 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         ]
         if nfl_picks_missing_usage:
             from services.nfl_nflfastr import enrich_picks_with_nfl_usage_bulk
-            await enrich_picks_with_nfl_usage_bulk(db, nfl_picks_missing_usage)
-    except Exception as e:
-        logger.debug("on-read NFL usage enrichment failed: %s", e)
+            await asyncio.wait_for(
+                enrich_picks_with_nfl_usage_bulk(db, nfl_picks_missing_usage), timeout=5.0)
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.debug("on-read NFL usage enrichment failed/timeout: %s", e)
 
     # Phase 3 — Tennis Sackmann/TML on-read attach. Adds surface-specific
     # rolling serve/return stats + career H2H for tennis moneyline / totals /
@@ -1807,64 +1812,89 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # Phase 2b — Soccer recent-form attach (using multi-source cache
     # populated by services.soccer). Adds `soccer_form` dict with home/
     # away last-5 W/D/L, GF, GA, and position from cached standings.
-    try:
+    #
+    # PRODUCTION HANG FIX 2026-07-15: the previous regex query pattern
+    # `{"home_team": {"$regex": name, "$options": "i"}}` was UNANCHORED
+    # and matched anywhere in the string, forcing MongoDB into a full
+    # collection scan for every team lookup. On preview (25K matches,
+    # SSD, no other load) this cost ~20ms/team. On production with a
+    # larger backing collection + shared cluster resources the pattern
+    # piled up to >100s cumulative and blew past the Cloudflare 100s
+    # gateway timeout → `/api/picks/today` returned 504 while every
+    # other endpoint stayed fast. Fix:
+    #   1) Use an anchored ^-prefix regex so an index on `home_team` /
+    #      `away_team` can serve prefix matches without a full scan.
+    #   2) Wrap the whole block in asyncio.wait_for(...) with a hard
+    #      3s cap so even a pathological slowdown can't stall the
+    #      response — enrichment is BEST-EFFORT, missing form on a
+    #      few picks is much better than a 504.
+    async def _enrich_soccer_form():
         soccer_picks = [p for p in canonical if (p.get("sport") or "").upper() == "SOCCER"
                         and p.get("soccer_form") is None]
-        if soccer_picks:
-            from datetime import timedelta as _td
-            recent_cache: dict[str, dict] = {}
-            for p in soccer_picks:
-                event = p.get("event") or ""
-                if "@" not in event:
+        if not soccer_picks:
+            return
+        recent_cache: dict[str, dict] = {}
+        for p in soccer_picks:
+            event = p.get("event") or ""
+            if "@" not in event:
+                continue
+            away, home = [x.strip() for x in event.split("@", 1)]
+            form_data = {}
+            for role, name in (("home", home), ("away", away)):
+                if not name:
                     continue
-                away, home = [x.strip() for x in event.split("@", 1)]
-                form_data = {}
-                for role, name in (("home", home), ("away", away)):
-                    if not name:
-                        continue
-                    if name not in recent_cache:
-                        # Last-10 finished matches involving this team
-                        q = {
-                            "$or": [
-                                {"home_team": {"$regex": name, "$options": "i"}},
-                                {"away_team": {"$regex": name, "$options": "i"}},
-                            ],
-                            "status": "finished",
-                        }
-                        matches = await db.soccer_matches.find(
-                            q, {"_id": 0, "home_team": 1, "away_team": 1,
-                                "home_score": 1, "away_score": 1, "date": 1},
-                        ).sort("date", -1).limit(10).to_list(10)
-                        # Compute rolling GF/GA/form
-                        wins = draws = losses = 0
-                        gf = ga = 0
-                        form_str = ""
-                        for m in matches:
-                            hn = (m.get("home_team") or "").lower()
-                            is_home = name.lower() in hn
-                            fs = m.get("home_score") if is_home else m.get("away_score")
-                            as_ = m.get("away_score") if is_home else m.get("home_score")
-                            if fs is None or as_ is None:
-                                continue
-                            gf += fs
-                            ga += as_
-                            if fs > as_:
-                                wins += 1; form_str += "W"
-                            elif fs < as_:
-                                losses += 1; form_str += "L"
-                            else:
-                                draws += 1; form_str += "D"
-                        n = wins + draws + losses
-                        recent_cache[name] = {
-                            "n_matches": n,
-                            "wins": wins, "draws": draws, "losses": losses,
-                            "gf_avg": round(gf / n, 2) if n else None,
-                            "ga_avg": round(ga / n, 2) if n else None,
-                            "form": form_str[:5],
-                        }
-                    form_data[role] = recent_cache[name]
-                if form_data:
-                    p["soccer_form"] = form_data
+                if name not in recent_cache:
+                    # ^-anchored prefix regex uses an index (unanchored
+                    # regexes force a COLLSCAN). We escape the team name
+                    # so special characters in team names don't break
+                    # the pattern.
+                    import re as _re
+                    esc = _re.escape(name)
+                    q = {
+                        "$or": [
+                            {"home_team": {"$regex": f"^{esc}", "$options": "i"}},
+                            {"away_team": {"$regex": f"^{esc}", "$options": "i"}},
+                        ],
+                        "status": "finished",
+                    }
+                    matches = await db.soccer_matches.find(
+                        q, {"_id": 0, "home_team": 1, "away_team": 1,
+                            "home_score": 1, "away_score": 1, "date": 1},
+                    ).sort("date", -1).limit(10).to_list(10)
+                    # Compute rolling GF/GA/form
+                    wins = draws = losses = 0
+                    gf = ga = 0
+                    form_str = ""
+                    for m in matches:
+                        hn = (m.get("home_team") or "").lower()
+                        is_home = name.lower() in hn
+                        fs = m.get("home_score") if is_home else m.get("away_score")
+                        as_ = m.get("away_score") if is_home else m.get("home_score")
+                        if fs is None or as_ is None:
+                            continue
+                        gf += fs
+                        ga += as_
+                        if fs > as_:
+                            wins += 1; form_str += "W"
+                        elif fs < as_:
+                            losses += 1; form_str += "L"
+                        else:
+                            draws += 1; form_str += "D"
+                    n = wins + draws + losses
+                    recent_cache[name] = {
+                        "n_matches": n,
+                        "wins": wins, "draws": draws, "losses": losses,
+                        "gf_avg": round(gf / n, 2) if n else None,
+                        "ga_avg": round(ga / n, 2) if n else None,
+                        "form": form_str[:5],
+                    }
+                form_data[role] = recent_cache[name]
+            if form_data:
+                p["soccer_form"] = form_data
+    try:
+        await asyncio.wait_for(_enrich_soccer_form(), timeout=3.0)
+    except asyncio.TimeoutError:
+        logger.warning("on-read Soccer form enrichment TIMED OUT — skipping to keep response fast")
     except Exception as e:
         logger.debug("on-read Soccer form enrichment failed: %s", e)
 
