@@ -71,6 +71,116 @@ def clv_units(odds_at_pick: float | None, closing_odds: float | None) -> float:
     return round(american_to_implied_pct(closing_odds) - american_to_implied_pct(odds_at_pick), 3)
 
 
+# ── Phase 5a — Kelly staking ────────────────────────────────────────
+def kelly_stake(
+    win_probability: float | None,
+    american_odds: int | float | None,
+    bankroll: float = 100.0,
+    fraction: float = 0.25,
+    max_stake_pct: float = 0.05,
+) -> dict:
+    """Fractional Kelly Criterion stake sizing.
+
+    Formula (standard):
+        f* = (bp - q) / b
+        where b = decimal_odds - 1 (profit per unit staked)
+              p = your estimated win probability (0..1)
+              q = 1 - p
+
+    We return the **fractional Kelly** stake — `fraction` × f* — because
+    full-Kelly is aggressive and volatile even for correctly-estimated
+    edges. Industry default for sharp bettors is ¼-Kelly.
+
+    Args:
+        win_probability : Your model's implied win probability (0..1 or 0..100).
+                          Auto-detects — >1 is treated as a percentage.
+        american_odds   : Book's American price (e.g. -110, +250).
+        bankroll        : User's total bankroll (in the same unit as the return).
+        fraction        : Kelly fraction; 0.25 = ¼-Kelly (default),
+                          0.125 = ⅛-Kelly, 0.5 = ½-Kelly, 1.0 = full-Kelly.
+        max_stake_pct   : Hard cap on stake as % of bankroll — safety
+                          net if a bad probability estimate produces a
+                          runaway recommendation. Default 5%.
+
+    Returns:
+        {
+          "stake":            recommended stake in bankroll units
+          "stake_pct":        stake as % of bankroll (0..100)
+          "kelly_f":          full-Kelly fraction (before applying `fraction`)
+          "fractional_kelly": fractional f after `fraction` multiplier
+          "expected_value":   EV per unit at your probability estimate
+          "edge_pp":          bp − q in implied-probability points
+          "note":             human-readable rationale or a WARN if edge negative
+        }
+
+    If the pick has NO edge (bp − q ≤ 0), stake=0 and note explains it.
+    """
+    # Normalise probability to 0..1
+    p = float(win_probability) if win_probability is not None else 0.0
+    if p > 1.0:
+        p = p / 100.0
+    p = max(0.0, min(1.0, p))
+    q = 1.0 - p
+
+    if not american_odds or bankroll <= 0:
+        return {
+            "stake": 0.0, "stake_pct": 0.0,
+            "kelly_f": 0.0, "fractional_kelly": 0.0,
+            "expected_value": 0.0, "edge_pp": 0.0,
+            "note": "No odds or bankroll — no stake.",
+        }
+
+    b = american_to_decimal_payout(american_odds) - 1.0    # profit per unit
+    if b <= 0:
+        return {
+            "stake": 0.0, "stake_pct": 0.0,
+            "kelly_f": 0.0, "fractional_kelly": 0.0,
+            "expected_value": 0.0, "edge_pp": 0.0,
+            "note": "Invalid odds — no positive payout.",
+        }
+
+    # Full-Kelly optimal fraction
+    kelly_f = (b * p - q) / b
+    ev_per_unit = p * b - q                # expected value on a 1-unit stake
+    edge_pp = (p * (1 + b) - 1) * 100.0   # your prob vs implied
+
+    # Negative-edge pick — no stake recommended
+    if kelly_f <= 0:
+        return {
+            "stake": 0.0, "stake_pct": 0.0,
+            "kelly_f": round(kelly_f, 4),
+            "fractional_kelly": 0.0,
+            "expected_value": round(ev_per_unit, 4),
+            "edge_pp": round(edge_pp, 2),
+            "note": (
+                f"Negative Kelly ({kelly_f:.3f}) — book's implied "
+                f"probability ({american_to_implied_pct(american_odds):.1f}%) "
+                f"exceeds your model estimate ({p * 100:.1f}%). No stake."
+            ),
+        }
+
+    fractional = kelly_f * fraction
+    # Safety cap
+    fractional_capped = min(fractional, max_stake_pct)
+    stake = round(bankroll * fractional_capped, 2)
+    note = (
+        f"Full-Kelly {kelly_f * 100:.2f}% → {fraction} × Kelly = "
+        f"{fractional * 100:.2f}%"
+    )
+    if fractional_capped < fractional:
+        note += f" (capped at {max_stake_pct * 100:.1f}%)"
+
+    return {
+        "stake": stake,
+        "stake_pct": round(fractional_capped * 100.0, 3),
+        "kelly_f": round(kelly_f, 4),
+        "fractional_kelly": round(fractional_capped, 4),
+        "expected_value": round(ev_per_unit, 4),
+        "edge_pp": round(edge_pp, 2),
+        "note": note,
+    }
+
+
 def confidence_bucket(lock_score: float) -> str:
     if lock_score is None:
         return "Unknown"

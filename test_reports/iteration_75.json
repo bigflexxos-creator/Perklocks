@@ -1,0 +1,28 @@
+{
+  "summary": "Iter 76 (Phase 4 NFL nflverse ingest + Phase 5 Kelly staking / CLV / Steam detection) fully verified. All 16 unit tests in test_iter76_phase4_5.py pass. Live integration adds 12 more tests (11 fast + 1 slow parquet-download): (a) unit tests 16/16, (b) live nflverse parquet fetch for 2024 upserted 659 snap-count docs + 570 stat docs into nfl_player_usage (both >500 threshold), case-insensitive lookup of Ja'Marr Chase returns full doc with receiving.targets>0, (c) enrich_picks_with_nfl_usage_bulk attaches nfl_usage block only to NFL receiver/rusher pick and correctly skips MLB + NFL team-total picks, (d) HTTP /api/analytics/kelly returns stake=40, stake_pct=4.0%, kelly_f=0.16, edge_pp=14.55 for prob=60/-110/$1000/¼ — 5% cap respected; 50%/-110 returns stake=0 with 'Negative' in note; percentage-vs-fraction inputs equivalent; kelly/for-pick 404 handled cleanly, (e) HTTP /api/analytics/steam returns spec-compliant empty payload {count:0, picks:[], hours, direction_filter}, (f) volume_signal correctly applies +1.8 for target_share≥0.25 Over receiving, -1.5 for target_share≤0.13 Over receiving, +1.2 for WOPR≥0.7, +0.8 for aDOT≥13, +1.5 for snap_pct≥0.65 Over rushing, and no-ops for non-NFL picks even with nfl_usage present. Startup logs confirm all 6 background loops scheduled: Statcast, Stuff+, Soccer multi-source, Tennis Sackmann weekly, NFL nflverse weekly (pre-season prep), Steam detector. No deprecated Expo packages, no React Native issues (backend-only iteration).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": [], "react_native_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter76_phase4_5.py",
+    "/app/backend/tests/test_iter76_live_integration.py",
+    "/app/test_reports/pytest/iter76_unit.xml",
+    "/app/test_reports/pytest/iter76_live_fast.xml",
+    "/app/test_reports/pytest/iter76_live_nflverse.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "services/nfl_nflfastr.py — clean nflverse ingester. Parquet read runs in asyncio thread executor to avoid blocking event loop. Idempotent upserts keyed on (player, season). Case-insensitive normalization + most-recent-season fallback in get_nfl_player_usage. YPRR estimated from receiving_yards / (targets*1.6) — league-avg route/target factor is documented.",
+    "steam_detector.py — 5-min rolling window + 3.0pp implied-prob threshold matches industry standard (5¢ ≈ Pinnacle auto-limit trigger). _sweep_once bounded to kickoff-in-12h window keeps Mongo scan cheap. get_steam_picks correctly filters by steam.observed_at recency AND status=pending.",
+    "analytics.kelly_stake — full/fractional formula correct (b*p-q)/b, dual-input probability handling (0..1 or 0..100), negative-edge short-circuit with helpful note, hard cap at max_stake_pct=5% enforced. edge_pp exposed for UI dashboards.",
+    "routes/analytics_routes.py:585-684 — Kelly + Steam endpoints hardened with parameter clamps (fraction 0.05..1.0, max_stake_pct 0.005..0.25, steam hours 1..48, limit 1..200). kelly/for-pick prefers no_vig_pct (devigged truth) over win_probability.",
+    "routes/picks_routes.py:1746-1760 — on-read NFL usage enrichment wrapped in try/except with debug logging (fails soft). Only triggers when nfl_usage block is missing, so per-request cost is zero when nflverse loop has run.",
+    "signal_engine/calculators.py:432-498 — NFL nudges gated on sport=='NFL' + explicit market-keyword match; won't pollute non-NFL picks even if nfl_usage block is present. Points clamped to VOLUME_MAX so nudges can't dominate the composite score."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter76_live_integration.py"],
+  "success_rate": {"backend": "100% (28/28: 16 unit + 12 live integration)", "frontend": "n/a (backend-only review)"},
+  "seed_data_creation": "Live nflverse fetch upserted 659 snap_count docs + 570 season-stat docs for the 2024 NFL season into nfl_player_usage (real data, permanent — used by the app in production). No test-only seed data created.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iter76 shipped services/nfl_nflfastr.py (nflverse parquet ingest → nfl_player_usage collection), analytics.kelly_stake + /api/analytics/kelly + /api/analytics/kelly/for-pick, steam_detector.py + /api/analytics/steam + steam_detector_loop, NFL nudges in services/signal_engine/calculators.py::volume_signal, and on-read enrichment hooks in routes/picks_routes.py. Live-integration tests live at tests/test_iter76_live_integration.py — the slow live nflverse test is guarded by @pytest.mark.slow (registered mark warning is benign). If retesting, keep the asyncio.run() single-loop wrapper pattern for any Motor-touching test — same reason as iter75 (Motor's per-loop executor invariant). Public preview URL resolves from EXPO_PACKAGER_HOSTNAME when EXPO_BACKEND_URL isn't set (test loads both frontend/.env and backend/.env).",
+  "rca_of_issue": "n/a — no bugs found."
+}
