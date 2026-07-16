@@ -1926,6 +1926,45 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     except Exception as e:
         logger.debug("on-read Soccer form enrichment failed: %s", e)
 
+    # ── Cross-match dedupe (2026-07-16) ──────────────────────────────
+    # For tennis moneyline picks, keep only ONE side of each match on
+    # the board. Two opposing sides can't both be locks (mathematical
+    # impossibility — the market's implied probs must sum to ~100%).
+    # User report 2026-07-16: "How is this possible?" — same match's
+    # Shcherbinina AND Lu J. both showed as LOCK 92. Deduping by
+    # sorted(player_pair) + pick_date catches "A vs B" and "B vs A"
+    # rows from separate ingest sources (Odds API + tennis_extra).
+    try:
+        def _tennis_match_key(pick):
+            if (pick.get("sport") or "").lower() != "tennis":
+                return None
+            market = str(pick.get("market") or "").lower()
+            if "moneyline" not in market:
+                return None
+            event = pick.get("event") or ""
+            for sep in (" vs ", " vs. ", " @ "):
+                if sep in event:
+                    a, b = event.split(sep, 1)
+                    pair = tuple(sorted([a.strip().lower(), b.strip().lower()]))
+                    return (pick.get("pick_date"), pair)
+            return None
+        best_by_match: dict = {}
+        for p in canonical:
+            k = _tennis_match_key(p)
+            if k is None:
+                continue
+            cur = best_by_match.get(k)
+            if cur is None or (p.get("lock_score") or 0) > (cur.get("lock_score") or 0):
+                best_by_match[k] = p
+        # Filter canonical: keep non-tennis picks + only best side of each tennis match
+        canonical = [
+            p for p in canonical
+            if _tennis_match_key(p) is None
+            or best_by_match.get(_tennis_match_key(p)) is p
+        ]
+    except Exception as e:
+        logger.debug("cross-match dedupe failed: %s", e)
+
     # ── Payload slimming (2026-07-16) ────────────────────────────────
     # /picks/today ships 3.2MB when heavy Deep Dive fields (sportsbook
     # mapping, signal engine, evidence breakdown, etc.) are inline for
