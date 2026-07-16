@@ -98,7 +98,7 @@ except Exception as _lab_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.07.15-tennis-99lock-cleanup-v44"
+DATA_VERSION = "2026.07.16-dedupe-both-sides-v45"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 
@@ -250,15 +250,34 @@ def _canonicalize_lock_score(pick: dict) -> dict:
       • grade + confidence re-derived when we promote, so the badge,
         progress bar, and label always agree with the headline number.
     """
+    # ── Tennis global lock authority (2026-07-16) ────────────────────
+    # For ANY tennis pick, `lock_score` is the authoritative value.
+    # Skip the MAX-of-shadow-fields promotion regardless of the
+    # tennis_calibrated flag — that flag can be stripped by a stale
+    # ingestion writer, leaving the shadow fields (v2/raw/peak) with
+    # pre-calibration values that MAX would then promote back up. User
+    # report 2026-07-16: "How is this possible?" — a pick with DB
+    # lock_score=86.2 was displaying as LOCK 92 because lock_score_v2
+    # still held 91.9 from evidence_engine before tennis calibration ran.
+    if (pick.get("sport") or "").lower() == "tennis":
+        try:
+            from sports_engine import _grade as _tc_grade, _confidence as _tc_conf
+            final_lock = float(pick.get("lock_score") or 0)
+            if final_lock > 0:
+                pick["grade"]      = _tc_grade(final_lock)
+                pick["confidence"] = _tc_conf(final_lock)
+        except Exception:
+            pass
+        try:
+            from probability_engine import unified_probability_report
+            pick["probability"] = unified_probability_report(pick)
+        except Exception as e:
+            logger.debug("probability_engine attach skipped (tennis): %s", e)
+        return pick
+
     # ── Tennis-calibrated fast-path (2026-07-16) ────────────────────
-    # Tennis picks that have gone through the Sackmann-calibrated
-    # tennis engine carry `tennis_calibrated=True`. Their lock_score
-    # is the AUTHORITATIVE value — do not promote to max() of stale
-    # shadow fields. This is the fix for "everyone shows 92 on tennis"
-    # (user report 2026-07-15): peak=99 residue from pre-calibration
-    # refresh cycles was over-promoting every tennis pick to 99, and
-    # the mid-90 v2/raw shadows were dragging every other pick up to
-    # 91-92 regardless of the calibrated evidence.
+    # Retained for parity with the above but the tennis check runs
+    # first now — everything falls through this block.
     if pick.get("tennis_calibrated"):
         try:
             from sports_engine import _grade as _tc_grade, _confidence as _tc_conf
