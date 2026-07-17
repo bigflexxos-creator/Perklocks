@@ -102,7 +102,19 @@ async def compute_signals(db, pick: dict) -> dict:
     ]
 
     total = sum(c["points"] for c in components)
-    score = int(round(max(0.0, min(100.0, 50.0 + total))))
+    # ── Range amplification (2026-07-17) ─────────────────────────────
+    # Raw signal budget is ~±50 but real components rarely stack above
+    # ±15 in aggregate, so scores compressed to 45-58 and the user
+    # filter had nothing to slice on. Non-linear stretch pushes strong
+    # positive signals into the 70-95 band and cold signals into 20-40:
+    #    total ≥ 0 → amplify positive delta ×2.5  (delta 8 → 20 = score 70)
+    #    total < 0 → amplify negative delta ×2.0  (delta -6 → -12 = score 38)
+    # Capped at ±48 so we never quite hit the extremes.
+    if total >= 0:
+        adjusted = min(48.0, total * 2.5)
+    else:
+        adjusted = max(-48.0, total * 2.0)
+    score = int(round(max(0.0, min(100.0, 50.0 + adjusted))))
     why = build_why(pick, score, components)
 
     pick["signal_engine"] = {
