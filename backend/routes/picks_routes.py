@@ -862,6 +862,7 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                       sort: Optional[str] = "time",
                       direction: Optional[str] = "desc",
                       min_lock: Optional[float] = None,
+                      min_signal: Optional[float] = None,
                       min_implied: Optional[float] = None,
                       max_implied: Optional[float] = None,
                       market: Optional[str] = None,
@@ -1348,6 +1349,14 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         if max_implied is not None:
             imp_q["$lte"] = float(max_implied)
         q["implied_probability"] = imp_q
+    # ── Signal Score floor (2026-07-17) ─────────────────────────────
+    # User request: filter by signal_score so picks below the calibrated
+    # signal threshold are hidden. Signal Score is the composite
+    # evidence weight (form/matchup/volume/injury/market/value) that
+    # underpins Lock Score. Users want to surface picks where the
+    # underlying signal is strong even if lock happens to be mid-band.
+    if min_signal is not None and float(min_signal) > 0:
+        q["signal_score"] = {"$gte": float(min_signal)}
     # Market family filter — uses the same labelling we use in analytics so
     # the same token works on every sport (e.g. "moneyline", "spread",
     # "game_total", "btts", "1x2", "goalscorer", "player_points", etc.).
@@ -1994,6 +2003,15 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     for _slim in canonical:
         for _f in _HEAVY_LIST_FIELDS:
             _slim.pop(_f, None)
+        # ── Why this pick fallback (2026-07-17) ─────────────────────
+        # Tennis picks & most non-soccer sports don't set why_this_pick
+        # (only Soccer goalscorer + MLB HR pipelines do). Fall back to
+        # the always-populated key_insights bullets so the "Why This
+        # Pick" UI section renders for every sport.
+        if not _slim.get("why_this_pick"):
+            ki = _slim.get("key_insights") or []
+            if ki:
+                _slim["why_this_pick"] = ki[:6]
 
     return {"picks": canonical, "alt_availability": alt_availability}
 

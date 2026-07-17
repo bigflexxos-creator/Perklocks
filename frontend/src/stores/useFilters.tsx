@@ -48,6 +48,7 @@ export type FilterState = {
   // Scalar narrowing filters (kept singular by design).
   searchText: string;
   minLock: number;         // 0–100; 0 = no floor
+  minSignal: number;       // 0–100; 0 = no floor. Signal Score filter
   minImplied: number;      // 0–100; American-odds derived implied prob floor
   maxImplied: number;      // 0–100; 100 = no ceiling
   simEdgeFloor: number;    // 0–100; 0 = no floor
@@ -67,6 +68,7 @@ export const DEFAULT_FILTERS: FilterState = {
   events: [],
   searchText: "",
   minLock: 0,
+  minSignal: 0,
   minImplied: 0,
   maxImplied: 100,
   simEdgeFloor: 0,
@@ -87,7 +89,7 @@ type Action =
 
 type ArrayKey = "sports" | "leagues" | "markets" | "gameIds" | "events";
 type ScalarKey =
-  | "searchText" | "minLock" | "minImplied" | "maxImplied"
+  | "searchText" | "minLock" | "minSignal" | "minImplied" | "maxImplied"
   | "simEdgeFloor" | "lineType" | "sortKey" | "sortDir";
 
 function reducer(state: FilterState, action: Action): FilterState {

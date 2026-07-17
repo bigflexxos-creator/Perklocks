@@ -295,6 +295,7 @@ export type SortDirection = "desc" | "asc";
 
 export type PickFilters = {
   minLock?: number;
+  minSignal?: number;
   minImplied?: number;
   maxImplied?: number;
   /** Market filter token — matched against /picks/markets/{sport} tokens. */
@@ -820,6 +821,7 @@ export const api = {
     if (extra?.gameIds?.length)  qs.set("game_ids", extra.gameIds.join(","));
     if (extra?.search)           qs.set("search",   extra.search);
     if (filters?.minLock != null && filters.minLock > 85) qs.set("min_lock", String(filters.minLock));
+    if (filters?.minSignal != null && filters.minSignal > 0) qs.set("min_signal", String(filters.minSignal));
     if (filters?.minImplied != null) qs.set("min_implied", String(filters.minImplied));
     if (filters?.maxImplied != null) qs.set("max_implied", String(filters.maxImplied));
     if (filters?.market) qs.set("market", filters.market);
