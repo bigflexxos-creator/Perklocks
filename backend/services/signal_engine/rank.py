@@ -53,17 +53,37 @@ _LOCK = asyncio.Lock()
 
 
 def _percentile_rank(values: list[float]) -> list[int]:
-    """Return the percentile rank (0-100) of every value in `values`.
+    """Return the percentile rank (0-100 → visible 20-99) of every value.
 
     Uses the "average rank on ties" convention so a uniform slate maps
-    into a clean 0..100 spread without gaps. Handles empty / single-item
-    lists gracefully.
+    into a clean spread without gaps. Handles empty / single-item lists
+    gracefully.
+
+    ── UX floor (2026-07-17) ────────────────────────────────────────
+    A raw percentile rank of 0-100 has a nasty side effect: when ~23%
+    of the slate lands on exactly raw=50 (neutral, no component
+    deltas), the picks that are just slightly below that pile get
+    ranked in the single digits and the UI shows "4/100" or "0/100"
+    on picks with strong Lock Score. User feedback 2026-07-17: "I
+    see 4/100 on strikeout with high locks score" — reads as
+    "signal is broken".
+
+    Fix: map percentile rank into a visible band of [20, 99]. Bottom
+    pick of the slate now shows 20 (below-average), the median lands
+    at 60 (feels neutral), and the very top pick hits 99 (elite).
+    Ordering is preserved so the filter surfaces the same relative
+    picks — just with a friendlier scale. Filter thresholds:
+        slider ≥ 90 → top ~12%
+        slider ≥ 70 → top ~37%
+        slider ≥ 50 → top ~62%
     """
+    FLOOR = 20
+    CEIL = 99
     n = len(values)
     if n == 0:
         return []
     if n == 1:
-        return [50]
+        return [FLOOR + (CEIL - FLOOR) // 2]
     indexed = sorted(range(n), key=lambda i: values[i])
     # Walk the sorted order and average tied ranks so equal raw scores
     # get equal percentiles.
@@ -78,12 +98,11 @@ def _percentile_rank(values: list[float]) -> list[int]:
         for k in range(i, j + 1):
             ranks[indexed[k]] = avg_pos
         i = j + 1
-    # Map 1..n → 0..100. Give the very top of the slate exactly 100
-    # (the user's mental model of "elite" corresponds to the max slider
-    # position) and the very bottom exactly 0.
-    if n == 1:
-        return [50]
-    scaled = [int(round((r - 1) / (n - 1) * 100)) for r in ranks]
+    span = float(CEIL - FLOOR)
+    scaled = [
+        int(round(FLOOR + (r - 1) / (n - 1) * span))
+        for r in ranks
+    ]
     return scaled
 
 
