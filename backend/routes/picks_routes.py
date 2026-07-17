@@ -848,6 +848,18 @@ def _cooldown_payload(last_iso, now: datetime) -> dict:
     }
 
 
+# ─── /picks/signal-rank/refresh (admin trigger) ──────────────────────
+# Forces a slate-wide signal-score backfill + percentile-rank pass.
+# Handy for debugging when the front-end reports "signal filter is
+# there just no picks" — one call and every pick on today's board is
+# ranked 0-100 on its raw Signal Engine output.
+@router.post("/signal-rank/refresh")
+async def refresh_signal_rank(user: Annotated[UserPublic, Depends(current_user)]):
+    from server import _today_str
+    from services.signal_engine import refresh_slate_signal_rank
+    return await refresh_slate_signal_rank(db, _today_str(), force=True)
+
+
 # ─── /picks/today (main home feed) ───────────────────────────────────
 # Lifted verbatim from server.py — see git history for the change log.
 # Only the decorator was rewritten (`@api.get("/picks/today")` →
@@ -902,6 +914,20 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         _strip_for_lite,
     )
     await _ensure_today_picks()
+
+    # ── Slate-wide Signal Score percentile ranking (2026-07-17) ─────
+    # Coverage sweep + percentile-rank pass. Without this, ~65% of
+    # today's picks (MLB: 5%, UFC: 0%) had no `signal_score` at all and
+    # the `min_signal` filter silently nuked the board. Ranking makes
+    # the 0-100 slider actually span the full slate: top 10% → 90+,
+    # top 25% → 75+, median → 50. TTL-cached at 3 min so it doesn't
+    # add latency to every request. Skipped silently on error — the
+    # handler falls back to whatever ranks were already persisted.
+    try:
+        from services.signal_engine import refresh_slate_signal_rank
+        await refresh_slate_signal_rank(db, _today_str())
+    except Exception as _rank_err:
+        logger.warning("Signal-rank slate refresh skipped: %s", _rank_err)
     # ── Normalise the multi-select params to lists, merging with legacy ──
     def _split_csv(s: Optional[str]) -> list[str]:
         if not s:
@@ -1355,8 +1381,27 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # evidence weight (form/matchup/volume/injury/market/value) that
     # underpins Lock Score. Users want to surface picks where the
     # underlying signal is strong even if lock happens to be mid-band.
+    #
+    # ── 2026-07-17 (rank fix) ────────────────────────────────────────
+    # `signal_score` is a slate-wide percentile rank (0-100) refreshed
+    # by `refresh_slate_signal_rank` at the top of this handler. Picks
+    # ingested BETWEEN sweeps may still be missing the field; treat
+    # them as neutral (50) so a low/mid slider doesn't nuke the board
+    # while enrichment catches up. A high slider (>50) still excludes
+    # missing-field picks — desired: user is asking for elite signals
+    # only, so it's OK to hide unranked-yet picks.
     if min_signal is not None and float(min_signal) > 0:
-        q["signal_score"] = {"$gte": float(min_signal)}
+        _min_sig = float(min_signal)
+        if _min_sig <= 50.0:
+            q["$and"] = (q.get("$and") or []) + [{
+                "$or": [
+                    {"signal_score": {"$gte": _min_sig}},
+                    {"signal_score": {"$exists": False}},
+                    {"signal_score": None},
+                ],
+            }]
+        else:
+            q["signal_score"] = {"$gte": _min_sig}
     # Market family filter — uses the same labelling we use in analytics so
     # the same token works on every sport (e.g. "moneyline", "spread",
     # "game_total", "btts", "1x2", "goalscorer", "player_points", etc.).

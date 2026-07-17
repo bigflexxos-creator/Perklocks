@@ -120,13 +120,28 @@ async def compute_signals(db, pick: dict) -> dict:
     pick["signal_engine"] = {
         "version": SIGNAL_VERSION,
         "score": score,
+        "score_raw": score,   # explicit alias for downstream consumers
         "grade": _grade(score),
         "breakdown": signal_breakdown_line(components),
         "components": components,
         "why": why,
         "computed_at": datetime.now(timezone.utc).isoformat(),
     }
-    pick["signal_score"] = score
+    # ── signal_score vs signal_score_raw (2026-07-17) ────────────────
+    # `signal_score_raw` is the amplified 0-100 raw calculator output.
+    # `signal_score` is the slate-wide percentile rank (0-100) written
+    # by `services.signal_engine.rank.refresh_slate_signal_rank`. Once
+    # a pick has been ranked, we MUST NOT clobber `signal_score` with
+    # the raw value here — that would silently un-rank the pick on the
+    # next /picks/today decoration pass and the min_signal slider
+    # would collapse back to a 45-86 band (user report 2026-07-17:
+    # "signal filter is there just no picks"). We only seed
+    # signal_score with the raw value when no rank has ever been
+    # persisted; the very next slate-rank pass will replace it with
+    # the correct percentile.
+    pick["signal_score_raw"] = score
+    if pick.get("signal_score") is None:
+        pick["signal_score"] = score
 
     _inject_rationale(pick, score, components)
     return pick
@@ -207,8 +222,18 @@ async def decorate_signals_bulk(db, picks: list[dict], persist: bool = True) -> 
             if persist and p.get("id") and after and after != before:
                 set_doc = {
                     "signal_engine": p["signal_engine"],
-                    "signal_score": p["signal_score"],
                 }
+                # Only overwrite `signal_score` in the DB if we don't
+                # already have a persisted percentile rank. If we do,
+                # let the slate-rank refresher own that field (see
+                # `services.signal_engine.rank`).
+                if p.get("signal_score_raw") is not None:
+                    set_doc["signal_score_raw"] = p["signal_score_raw"]
+                if p.get("signal_score") is not None and \
+                   p.get("signal_score_raw") is None:
+                    # Legacy path: only write signal_score if we haven't
+                    # split it out into raw + rank yet.
+                    set_doc["signal_score"] = p["signal_score"]
                 # Persist deep-signal blocks so subsequent queries have
                 # them without re-enrichment (Rollover ranker, admin
                 # dashboards, mobile detail modal all read raw docs).

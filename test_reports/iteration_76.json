@@ -1,0 +1,35 @@
+{
+  "summary": "Backend-only regression tests for the Signal Score percentile-rank fix (iter 76). Wrote /app/backend/tests/test_signal_rank_iter76.py with 14 pytest tests covering every scenario in the review request: threshold bands (0/50/70/90/95), monotonic decrease, field coverage (signal_score + signal_score_raw on all picks), 0-100 range, admin refresh endpoint shape, combined filters (sport+signal, lock+signal), pick detail signal_engine block, and <3s latency budget. All 14/14 tests PASSED against the public preview URL. Live counts: min_signal=0->238, 50->170, 70->123, 90->37, 95->23 — matches the buckets specified in the request. POST /api/picks/signal-rank/refresh returns {ok:true, n_total:651, n_computed_raw:310, n_persisted:651, bands:{90+:64,75+:183,50+:314,25+:447}} — 100% coverage, monotonic bands, healthy spread. Cached /picks/today?min_signal=70 responds in ~200ms. The 'signal filter is there just no picks' bug is fixed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_signal_rank_iter76.py",
+    "/app/test_reports/pytest/iter76_signal_rank.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "picks_routes.py is 2483 lines — well past the 700-line guideline. Consider splitting into sub-routers (today/history/detail/admin) in a future refactor.",
+    "rank._LAST_RUN is an in-process dict — with multiple gunicorn workers each worker rebuilds ranks independently up to once per TTL. Not a bug (still correct, TTL just becomes per-worker) but a Redis-backed TTL would be nicer if the app is ever horizontally scaled.",
+    "In refresh_slate_signal_rank, the fallback branch (line 165-170) sets p['signal_score']=50 locally but that value is not fed into raw_scores below — the fallback pick will still be ranked using the default 50.0 in the raw_scores loop. Consistent by accident, but worth an explicit comment."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_signal_rank_iter76.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (14/14)",
+    "frontend": "N/A (backend-only request)"
+  },
+  "seed_data_creation": "None — tests run against the live today-slate ingested by the scheduler.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Signal-score percentile-rank fix is verified. If iter 77 touches signal_engine/rank.py or the min_signal query branch in picks_routes.py, re-run pytest backend/tests/test_signal_rank_iter76.py. Auth via demo@lockscore.ai/demo123 works fine. Note: /picks/today response is a bare JSON array, not a wrapped {picks:[...]} object — the helper _get_picks in the test file handles both shapes just in case.",
+  "rca_of_issue": "N/A — this was a verification pass, not a bug hunt. The fix summarised in the review request is confirmed working end-to-end."
+}

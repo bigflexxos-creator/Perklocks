@@ -2214,6 +2214,16 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         await _shadow_capture_gs_v2(safe_picks)
     except Exception as e:
         logger.debug("gs_v2 shadow capture failed (non-fatal): %s", e)
+    # ── Invalidate the slate-wide Signal Rank cache (2026-07-17) ────
+    # We just replaced today's picks — any percentile ranks persisted
+    # from the previous slate are now stale. Drop the TTL cache so the
+    # next /picks/today call rebuilds the ranks against the fresh
+    # slate. Safe fallback if the module isn't importable.
+    try:
+        from services.signal_engine import invalidate_signal_rank
+        invalidate_signal_rank(date_str)
+    except Exception as _iv_err:
+        logger.debug("signal_rank invalidate skipped: %s", _iv_err)
     return len(safe_picks)
 
 
