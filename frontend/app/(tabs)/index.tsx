@@ -181,6 +181,7 @@ export default function LocksScreen() {
 
   const activeFilterCount =
     (filters.minLock && filters.minLock > 85 ? 1 : 0) +
+    ((filters as any).minSignal && (filters as any).minSignal > 0 ? 1 : 0) +
     (filters.minImplied ? 1 : 0) +
     (filters.maxImplied && filters.maxImplied < 100 ? 1 : 0) +
     ((typeof filters.simEdgeFloor === "number" && filters.simEdgeFloor > 0) || filters.simEdgeOnly ? 1 : 0);
@@ -204,6 +205,7 @@ export default function LocksScreen() {
     filterStore.gameIds.length > 0 ||
     filterStore.sports.length > 0 ||   // ← include multi-sport so empty state offers CLEAR FILTERS
     (typeof filters.minLock === "number" && filters.minLock > 85) ||
+    (typeof (filters as any).minSignal === "number" && (filters as any).minSignal > 0) ||
     !!filters.minImplied ||
     (typeof filters.maxImplied === "number" && filters.maxImplied < 100);
 

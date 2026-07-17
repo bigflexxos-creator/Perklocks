@@ -36,6 +36,7 @@ export function FilterSheet({
 }: Props) {
   // Local state so users can scrub without firing API calls on every drag.
   const [minLock, setMinLock] = useState<number>(filters.minLock ?? 85);
+  const [minSignal, setMinSignal] = useState<number>((filters as any).minSignal ?? 0);
   const [minImplied, setMinImplied] = useState<number>(filters.minImplied ?? 0);
   const [maxImplied, setMaxImplied] = useState<number>(filters.maxImplied ?? 100);
   // Sim Edge floor (replaces the old binary toggle, 2026-06-24).
@@ -56,6 +57,7 @@ export function FilterSheet({
   useEffect(() => {
     if (visible) {
       setMinLock(filters.minLock ?? 85);
+      setMinSignal((filters as any).minSignal ?? 0);
       setMinImplied(filters.minImplied ?? 0);
       setMaxImplied(filters.maxImplied ?? 100);
       const next =
@@ -70,34 +72,28 @@ export function FilterSheet({
 
   const reset = () => {
     setMinLock(85);
+    setMinSignal(0);
     setMinImplied(0);
     setMaxImplied(100);
     setSimEdgeFloor(0);
   };
 
   const apply = () => {
-    // CRITICAL: spread the existing `filters` first so we PRESERVE
-    // `market` / `league` / `event` / `team` etc. that live OUTSIDE
-    // this sheet (set by the market-pill row + game-filter sheet).
-    // Without the spread, applying the FilterSheet (which only owns
-    // lock-time / implied / sim-edge) silently wipes the user's
-    // active market & game selection — user reported 2026-06-26:
-    // "I can be on baseball hits and try to lock time etc to sort it
-    // take me back to main tab".
     onApply({
       ...filters,
       minLock: minLock > 85 ? minLock : undefined,
+      minSignal: minSignal > 0 ? minSignal : undefined,
       minImplied: minImplied > 0 ? minImplied : undefined,
       maxImplied: maxImplied < 100 ? maxImplied : undefined,
-      // Legacy field cleared so it can't fight the new floor.
       simEdgeOnly: undefined,
       simEdgeFloor: simEdgeFloor > 0 ? simEdgeFloor : undefined,
-    });
+    } as any);
     onClose();
   };
 
   const activeCount = [
     minLock > 85,
+    minSignal > 0,
     minImplied > 0,
     maxImplied < 100,
     simEdgeFloor > 0,
@@ -196,6 +192,58 @@ export function FilterSheet({
             <Text style={styles.scaleLabel}>85 GOOD</Text>
             <Text style={styles.scaleLabel}>92 STRONG</Text>
             <Text style={styles.scaleLabel}>95 ELITE</Text>
+          </View>
+        </View>
+
+        {/* Signal Score floor (2026-07-17). Signal Score is the
+            calibrated form/matchup/volume/injury/market/value composite —
+            the underlying evidence weight behind each Lock Score. Users
+            asked to filter directly on it so they can find picks where
+            the signal is strong even if lock happens to be mid-band. */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <View style={styles.sectionTitleRow}>
+              <Ionicons name="radio" size={14} color={COLORS.neonGreen} />
+              <Text style={styles.sectionTitle}>MIN SIGNAL SCORE</Text>
+            </View>
+            <Text style={styles.value}>
+              {minSignal > 0 ? `${Math.round(minSignal)}+` : "OFF"}
+            </Text>
+          </View>
+          <Slider
+            testID="filter-min-signal"
+            style={styles.slider}
+            minimumValue={0}
+            maximumValue={100}
+            step={5}
+            value={minSignal}
+            onValueChange={setMinSignal}
+            minimumTrackTintColor={COLORS.neonGreen}
+            maximumTrackTintColor={COLORS.borderDefault}
+            thumbTintColor={Platform.OS === "android" ? COLORS.neonGreen : undefined}
+          />
+          <View style={styles.presetRow}>
+            {[0, 60, 70, 80, 85, 90].map((v) => {
+              const isActive = Math.round(minSignal) === v;
+              return (
+                <Pressable
+                  key={v}
+                  testID={`filter-min-signal-preset-${v}`}
+                  onPress={() => setMinSignal(v)}
+                  style={[styles.presetChip, isActive && styles.presetChipActive]}
+                  hitSlop={6}
+                >
+                  <Text style={[styles.presetChipText, isActive && styles.presetChipTextActive]}>
+                    {v === 0 ? "OFF" : `${v}+`}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <View style={styles.scaleRow}>
+            <Text style={styles.scaleLabel}>0 OFF</Text>
+            <Text style={styles.scaleLabel}>70 STRONG</Text>
+            <Text style={styles.scaleLabel}>85 ELITE</Text>
           </View>
         </View>
 
