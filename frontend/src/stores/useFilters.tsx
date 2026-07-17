@@ -94,8 +94,34 @@ type ScalarKey =
 
 function reducer(state: FilterState, action: Action): FilterState {
   switch (action.type) {
-    case "HYDRATE":
-      return { ...state, ...action.state };
+    case "HYDRATE": {
+      // ── Cross-session drop-list (2026-07-17) ────────────────────
+      // Categorical NARROWING arrays are session-scoped, not
+      // cross-session. If a previous session persisted
+      // `events=["Yankees @ Red Sox"]` and the user cold-launches
+      // the next day (when that game doesn't exist on the slate),
+      // the array silently filters the ALL tab to zero picks while
+      // the MLB tab appears to "work" because the sport-chip tap
+      // handler clears these arrays as a side effect. User report
+      // 2026-07-17: "picks show up under MLB tab but not on home
+      // tab". Root cause verified: sport-bound narrowing arrays
+      // survive a cold launch, contradicting the user's mental
+      // model of "opening the app shows today's full slate".
+      //
+      // Fix: drop `sports`, `leagues`, `markets`, `gameIds`,
+      // `events`, and `searchText` from the hydration payload so
+      // every cold launch starts with a wide-open view. Scalar
+      // preferences (minLock, minSignal, minImplied, maxImplied,
+      // simEdgeFloor, lineType, sortKey, sortDir) DO carry across
+      // sessions because they represent a durable user preference
+      // ("I always want ≥90 lock") rather than a transient scope.
+      const {
+        sports: _s, leagues: _l, markets: _m,
+        gameIds: _g, events: _e, searchText: _q,
+        ...persistScalars
+      } = action.state as Partial<FilterState>;
+      return { ...state, ...persistScalars };
+    }
     case "TOGGLE_ARRAY": {
       const current = state[action.key] || [];
       const exists = current.includes(action.value);
@@ -218,6 +244,24 @@ export function FiltersProvider({ children }: { children: React.ReactNode }) {
   // 1) Hydrate on mount.
   useEffect(() => {
     let cancelled = false;
+    // ── Hydration timeout (2026-07-17) ─────────────────────────────
+    // AsyncStorage on Android has been observed to hang for tens of
+    // seconds under memory pressure. Without a fallback, `hydrated`
+    // stays `false` forever and consumers that gate on it (e.g. the
+    // home tab's `load()` effect) never fire → user sees an infinite
+    // spinner. 5s is well past the p99 for a warm storage read and
+    // still short enough that the user doesn't sit staring at the
+    // splash. On timeout we accept the default state and move on;
+    // the user can still filter/sort — they just start with a clean
+    // slate instead of their persisted preferences.
+    const timeout = setTimeout(() => {
+      if (cancelled) return;
+      if (!hydratedRef.current) {
+        console.warn("[useFilters] hydration timed out after 5s — using defaults");
+        hydratedRef.current = true;
+        setHydrated(true);
+      }
+    }, 5_000);
     (async () => {
       const saved = await loadPersisted();
       if (cancelled) return;
@@ -226,8 +270,9 @@ export function FiltersProvider({ children }: { children: React.ReactNode }) {
       }
       hydratedRef.current = true;
       setHydrated(true);
+      clearTimeout(timeout);
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; clearTimeout(timeout); };
   }, []);
 
   // 2) Persist on every change AFTER initial hydrate.
@@ -274,6 +319,7 @@ export function FiltersProvider({ children }: { children: React.ReactNode }) {
     + state.events.length
     + (state.searchText ? 1 : 0)
     + (state.minLock > 0 ? 1 : 0)
+    + (state.minSignal > 0 ? 1 : 0)   // Signal Score filter — added 2026-07-17
     + (state.minImplied > 0 ? 1 : 0)
     + (state.maxImplied < 100 ? 1 : 0)
     + (state.simEdgeFloor > 0 ? 1 : 0),
@@ -288,6 +334,11 @@ export function FiltersProvider({ children }: { children: React.ReactNode }) {
     if (state.events.length) out["events"] = state.events.join("|");  // | bc events may contain commas
     if (state.searchText) out["q"] = state.searchText;
     if (state.minLock > 0) out["min_lock"] = String(state.minLock);
+    // Signal Score floor — parity with `min_lock` (2026-07-17). Added
+    // so any screen calling `toQueryParams()` (Rollover, Parlay, Lab)
+    // also honours the user's Signal Score slider, not just the home
+    // tab which passes it via `PickFilters`.
+    if (state.minSignal > 0) out["min_signal"] = String(state.minSignal);
     if (state.minImplied > 0) out["min_implied"] = String(state.minImplied);
     if (state.maxImplied < 100) out["max_implied"] = String(state.maxImplied);
     if (state.simEdgeFloor > 0) out["sim_edge_floor"] = String(state.simEdgeFloor);

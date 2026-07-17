@@ -48,8 +48,25 @@ logger = logging.getLogger("lockscore.signal_rank")
 # reuses the previously persisted ranks. The scheduler's own refresh
 # cycle also invalidates this cache (see picks_routes / scheduler tasks).
 _TTL_SECS = 180
+_MAX_CACHE_ENTRIES = 14   # ~2 weeks of pick_date keys; older = evicted
 _LAST_RUN: dict[str, float] = {}
 _LOCK = asyncio.Lock()
+
+
+def _prune_cache() -> None:
+    """Evict oldest cache entries when we exceed `_MAX_CACHE_ENTRIES`.
+
+    Prevents the module-level `_LAST_RUN` dict from growing indefinitely
+    across days/weeks of uptime. Keeps the most-recent 14 pick_date
+    keys (older dates are unlikely to be requested again anyway — the
+    /picks/today handler only ever asks for the current UTC date).
+    """
+    if len(_LAST_RUN) <= _MAX_CACHE_ENTRIES:
+        return
+    # Sort by timestamp (oldest first), evict until we're back under
+    # the limit. Cheap because the dict stays small in practice.
+    for k in sorted(_LAST_RUN, key=lambda x: _LAST_RUN[x])[: len(_LAST_RUN) - _MAX_CACHE_ENTRIES]:
+        _LAST_RUN.pop(k, None)
 
 
 def _percentile_rank(values: list[float]) -> list[int]:
@@ -165,6 +182,7 @@ async def refresh_slate_signal_rank(
         n_total = len(picks)
         if n_total == 0:
             _LAST_RUN[pick_date] = time.time()
+            _prune_cache()
             return {"ok": True, "n_total": 0}
 
         # 1) Ensure every pick has a raw signal computed. This is a
@@ -225,6 +243,7 @@ async def refresh_slate_signal_rank(
                 logger.warning("signal rank persist failed: %s", e)
 
         _LAST_RUN[pick_date] = time.time()
+        _prune_cache()
 
         # Simple summary bands for logging so we can eyeball whether the
         # spread looks healthy (top 10% should be ≥90, etc.).
