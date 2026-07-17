@@ -584,9 +584,24 @@ def _block_reason(pick: dict) -> str | None:
     #     "odds" are synthesized from our own probability, not book-
     #     priced — the historical dead-zone stat doesn't apply and it
     #     was silently killing Nordic hot-scorer picks (Kasper Høgh).
+    #     PLAYER PROPS EXEMPT too (2026-07-16 user report: "I thought
+    #     we updated mlb props bets why is none on board" — the -140
+    #     dead-zone was silently killing Aaron Nola Over 16.5 Outs at
+    #     LOCK 99 with edge 5.6%). Prop markets like Over/Under Outs
+    #     Recorded, Strikeouts, Hits, Total Bases, etc. price these
+    #     odds as normal book lines, not coin-flip favourites.
+    _PLAYER_PROP_MARKET_KEYWORDS = (
+        "outs recorded", "strikeouts", "total bases", "hits allowed",
+        "earned runs", "over 0.5 hits", "over 1.5 hits", "walks",
+        "player prop", "batter prop", "pitcher prop",
+    )
+    _is_player_prop = any(
+        kw in market.lower() for kw in _PLAYER_PROP_MARKET_KEYWORDS
+    )
     odds = pick.get("book_odds")
     if (isinstance(odds, (int, float)) and sport in ("mlb", "soccer")
-            and not pick.get("fair_odds_model")):
+            and not pick.get("fair_odds_model")
+            and not _is_player_prop):
         if _ODDS_DEAD_ZONE_LO <= float(odds) < _ODDS_DEAD_ZONE_HI:
             return f"odds_dead_zone_{_ODDS_DEAD_ZONE_LO}_{_ODDS_DEAD_ZONE_HI}_48pct"
 
