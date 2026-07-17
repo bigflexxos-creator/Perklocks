@@ -1,0 +1,45 @@
+{
+  "summary": "Iteration 77 stability regression (backend + frontend). BACKEND 7/8 pytest tests PASSED — signal floor=20 confirmed, monotonic decrease (min_signal 0→30→50→70→90→95 counts strictly non-increasing), ALL tab is multi-sport superset of MLB, POST /picks/signal-rank/refresh returns healthy bands (25+ >= 50+ >= 75+ >= 90+) with n_total>0, in-memory cache stays bounded at _MAX_CACHE_ENTRIES=14. One backend test failed: cold /picks/today?min_signal=50 took 5.73s (>3s budget) — real perf concern for uncached calls. FRONTEND all critical checks PASSED. CRITICAL POISONING TEST PASSED — seeded localStorage with stale narrowing arrays (sports=['MLB'], leagues=['MLB'], markets=['Strikeouts'], gameIds=['stale_evt_xyz'], events=['Stale Team @ Stale Team']) BEFORE cold-launch → HYDRATE reducer correctly dropped every narrowing array → ALL tab rendered 245 picks post-hydrate (verified localStorage post-hydrate shows empty arrays). MLB→ALL round-trip works (MLB=26, ALL=245, superset). FilterSheet renders Signal Score slider (OFF/60+/70+/80+/85+/90+) alongside Min Lock. Visible pick-card signal scores range 76-99 — the 4/100/0/100 UX bug is fixed. No infinite spinner — hydration timeout path works. Minor testID collision: 'signal-score-chip' is reused between the FilterSheet chip buttons AND the pick-card SIGNAL badges (223 elements share the id on one page), making the filter chip untargetable by testID alone.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/picks/today?min_signal=50", "issue": "First (uncached) call latency 5.73s > 3s budget. Warm calls (0/30/70/90) all <3s. Signal-rank refresh + query blend cold-path is slow; consider prewarming or lowering rank TTL check cost."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "SignalScoreChip / LockPickCard", "issue": "testID 'signal-score-chip' is reused on 223 elements per page — the FilterSheet chip buttons AND every pick-card signal badge share the exact same testID string. Makes precise Playwright targeting of filter chips impossible without index arithmetic. Suggested fix: FilterSheet chips use testID='signal-filter-chip-{value}' (e.g. signal-filter-chip-90); pick-card badges use testID='pick-signal-badge-{id}'.", "testID": "signal-score-chip", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "global (RN Web)", "issues": ["Deprecation: 'shadow*' style props are deprecated — use 'boxShadow' (multiple warnings in console). Deprecation: 'props.pointerEvents' — use 'style.pointerEvents'. Both are React Native Web warnings that add noise to console; harmless functionally."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter77_stability.py",
+    "/app/test_reports/pytest/iter77_stability.xml"
+  ],
+  "action_items": [
+    "PERF: investigate why /api/picks/today?min_signal=50 cold path takes ~5.7s (other thresholds under 3s). Likely the rank refresh runs synchronously inside the first request after TTL expiry. Consider fire-and-forget refresh or reduce the sweep projection.",
+    "TEST HYGIENE: rename FilterSheet Signal-Score chip testIDs to avoid collision with pick-card badges (see ui_bug entry). Non-blocking.",
+    "OPTIONAL: address RN-Web 'shadow*' + 'pointerEvents' deprecation warnings to clean up console noise."
+  ],
+  "critical_code_review_comments": [
+    "picks_routes.py is 2483 lines — still exceeds the 700-line guideline. Splitting into subrouters (today/detail/admin/history) remains outstanding from iter76.",
+    "The double-JSON-encoding through storage.setItem (JSON.stringify wraps an already-JSON.stringified payload from savePersisted in useFilters.tsx) is subtle. Poisoning attempt with a single JSON.stringify caused hydrate to fail and default state to be used — good graceful degradation, but the storage contract could be documented (or savePersisted could stop double-stringifying if storage.setItem already does it).",
+    "In rank.py refresh_slate_signal_rank the fallback branch (compute_signals raises) sets p['signal_score']=50 but the loop right below uses signal_score_raw or falls back to 50 — the two paths coincide but only by convention. A comment or explicit p['signal_score_raw']=50 in the except branch would harden intent."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter77_stability.py (new — 8 pytest cases)"
+  ],
+  "success_rate": {
+    "backend": "87.5% (7/8) — 1 latency-only failure",
+    "frontend": "100% on the 4 critical stability checks (poisoning survivability, MLB⊂ALL, FilterSheet render, no infinite spinner)"
+  },
+  "seed_data_creation": "None. Poisoning test seeds localStorage['perkslocks_filters_v6'] client-side per test run and does not touch backend state.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The Playwright poisoning test in this iteration is the canonical repro for the 'picks disappearing on ALL tab' bug — if any future iteration touches useFilters.tsx (HYDRATE reducer) or storage.tsx, re-run it. Note the storage layer double-JSON-encodes payloads: to seed a valid poisoned state from Playwright you must localStorage.setItem(KEY, JSON.stringify(JSON.stringify(state))). A single stringify produces a hydrate parse error and default state (still safe but doesn't exercise the HYDRATE-drop path). Backend has a warm-cache dependency — first call at a new min_signal takes ~5.7s while ranks are re-computed; if you re-run test_iter77_stability.py::TestLoad it may pass on second run.",
+  "rca_of_issue": "Bug: 'picks disappearing on ALL tab / signal 4/100 with high lock / infinite spinner / cache growing unbounded'. RCAs verified:\n  (1) Stale persisted narrowing arrays (events/gameIds/leagues/markets/sports) survived cold launches. FIX VERIFIED: useFilters HYDRATE reducer drops those arrays. Poisoning test confirms: post-hydrate localStorage shows all arrays empty even when seed had them populated.\n  (2) Percentile-rank 0-100 → visible 0-100 mapping compressed picks under the median into single digits. FIX VERIFIED: rank.py FLOOR=20/CEIL=99 — no pick returns signal_score<20 (0/238 picks under 20). Visible spread now 20-99 with pick-card badges observed at 76-99.\n  (3) AsyncStorage hydration could hang forever. FIX VERIFIED: 5s setTimeout in FiltersProvider force-completes hydration on timeout. Home tab loaded within 7s in all runs.\n  (4) Signal-rank _LAST_RUN dict grew unbounded. FIX VERIFIED: _MAX_CACHE_ENTRIES=14 with _prune_cache() sorted-by-timestamp eviction; module-level constant asserted in test."
+}
