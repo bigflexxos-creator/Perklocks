@@ -10,5 +10,12 @@ Public API:
     decorate_signals_bulk(db, picks)     — bulk variant + best-effort persist
 """
 from .engine import SIGNAL_VERSION, compute_signals, decorate_signals_bulk
+from .rank import (
+    refresh_slate_signal_rank,
+    invalidate as invalidate_signal_rank,
+)
 
-__all__ = ["SIGNAL_VERSION", "compute_signals", "decorate_signals_bulk"]
+__all__ = [
+    "SIGNAL_VERSION", "compute_signals", "decorate_signals_bulk",
+    "refresh_slate_signal_rank", "invalidate_signal_rank",
+]
