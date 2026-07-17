@@ -923,9 +923,34 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # top 25% → 75+, median → 50. TTL-cached at 3 min so it doesn't
     # add latency to every request. Skipped silently on error — the
     # handler falls back to whatever ranks were already persisted.
+    #
+    # ── 2026-07-17 (perf) ────────────────────────────────────────────
+    # Iteration 77 flagged a 5.7s cold hit when the TTL was expired
+    # — rank refresh was running SYNC on the first post-expiry
+    # request. Split the path:
+    #   • Cold start (no ranks ever computed) → await SYNC (must
+    #     ensure signal_score exists before the min_signal filter
+    #     runs, otherwise the board is empty on first launch).
+    #   • Warm start (ranks exist but stale) → fire-and-forget in
+    #     the background. The current request uses the previously
+    #     persisted ranks (worst case: 3 min stale) and the next
+    #     request gets the refreshed values.
     try:
         from services.signal_engine import refresh_slate_signal_rank
-        await refresh_slate_signal_rank(db, _today_str())
+        from services.signal_engine.rank import _LAST_RUN
+        _today_ymd = _today_str()
+        _has_ranks = await db.picks.count_documents(
+            {"pick_date": _today_ymd, "signal_score": {"$exists": True}},
+            limit=1,
+        ) > 0
+        if _has_ranks and _today_ymd in _LAST_RUN:
+            # Warm path: refresh in the background so the current
+            # request isn't blocked by a full slate resweep.
+            asyncio.create_task(refresh_slate_signal_rank(db, _today_ymd))
+        else:
+            # Cold path: must run synchronously so the query below
+            # can filter on `signal_score`.
+            await refresh_slate_signal_rank(db, _today_ymd)
     except Exception as _rank_err:
         logger.warning("Signal-rank slate refresh skipped: %s", _rank_err)
     # ── Normalise the multi-select params to lists, merging with legacy ──
