@@ -182,8 +182,9 @@ async def refresh_slate_signal_rank(
                 # without them in the projection, Mbappe / Kane / etc.
                 # look "non-elite" to the rank pass even though the
                 # elite_players.py pipeline tagged them.
+                # (`player_name` is already projected above.)
                 "is_elite": 1, "elite_boost": 1, "elite_striker": 1,
-                "player_tags": 1, "player_name": 1,
+                "player_tags": 1,
             },
         )
         picks: list[dict] = []
