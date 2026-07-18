@@ -173,6 +173,14 @@ async def refresh_slate_signal_rank(
                 "home_team": 1, "away_team": 1,
                 "team": 1, "opponent": 1,
                 "is_alt": 1, "line": 1, "grade": 1,
+                # Elite-player conviction inputs (2026-07-18):
+                # `services.signal_engine.engine.compute_signals` reads
+                # these when applying the star-player signal floor —
+                # without them in the projection, Mbappe / Kane / etc.
+                # look "non-elite" to the rank pass even though the
+                # elite_players.py pipeline tagged them.
+                "is_elite": 1, "elite_boost": 1, "elite_striker": 1,
+                "player_tags": 1, "player_name": 1,
             },
         )
         picks: list[dict] = []
@@ -185,12 +193,21 @@ async def refresh_slate_signal_rank(
             _prune_cache()
             return {"ok": True, "n_total": 0}
 
-        # 1) Ensure every pick has a raw signal computed. This is a
-        #    no-op for picks that already have a fresh block (idempotent).
+        # 1) Ensure every pick has a raw signal computed. `compute_signals`
+        #    is idempotent within `_REFRESH_SECS` (default ~1h) — it
+        #    short-circuits when a fresh `signal_engine` block already
+        #    exists. That's the right default for the request path but
+        #    means slate-wide rank refreshes cannot pick up newly-added
+        #    engine logic (e.g. the 2026-07-18 elite-player floor)
+        #    until every cached block ages out. Force a fresh
+        #    recompute here by dropping the stale `signal_engine`
+        #    block first — cheap because we're already re-scoring
+        #    the whole slate and the calculators run in-memory.
         n_computed_raw = 0
         for p in picks:
             had_before = isinstance(p.get("signal_engine"), dict) and \
                          p["signal_engine"].get("score") is not None
+            p.pop("signal_engine", None)   # force compute_signals to rescore
             try:
                 await compute_signals(db, p)
                 if not had_before:

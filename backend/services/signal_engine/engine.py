@@ -114,6 +114,74 @@ async def compute_signals(db, pick: dict) -> dict:
         adjusted = min(48.0, total * 2.5)
     else:
         adjusted = max(-48.0, total * 2.0)
+
+    # ── Elite Player + Lock-Score conviction floor (2026-07-18) ─────
+    # User feedback: "I see only 1 goalscorer Saka not Mbappe or Kane".
+    # Root cause verified in the API response — Mbappe / Kane /
+    # Bellingham were shipping with signal 21-25 (bottom of the slate)
+    # despite lock_score=99 (Elite Lock). The composite calculators
+    # can't produce a strong positive signal for an international
+    # friendly (no player_form data because it's a national team
+    # game, no injury chip, no historical H2H) so raw stayed around
+    # 50 and the per-sport rank buried them behind grinding
+    # Norwegian Eliteserien scorers with lucky component alignments.
+    #
+    # The Elite Player pipeline (`elite_players.py`) already flags
+    # these picks with `is_elite=True` / `elite_boost>0`. If the
+    # betting engine has ALREADY committed to a 99-Elite-Lock
+    # conviction on the pick, the SIGNAL engine cannot be putting
+    # them in the bottom 25% of the slate — that's a contradictory
+    # story and the user rightly reads it as broken.
+    #
+    # Apply a conviction floor: elite-tagged picks OR picks with
+    # lock_score ≥ 97 receive a signal-raw uplift so their bucket
+    # rank lands in the top third of their sport instead of the
+    # bottom third. This is a POST-composite adjustment (not a
+    # component) because we're conveying meta-model confidence, not
+    # signal-strength evidence.
+    is_elite_tagged = bool(
+        pick.get("is_elite")
+        or pick.get("elite_boost")
+        or pick.get("elite_striker")
+        or (pick.get("player_tags") or {}).get("elite")
+    )
+    # Read BOTH lock_score and lock_score_v2 and use the max. The v2
+    # is the calibrated shadow score that's been tuned per-sport per-
+    # market — it's often more accurate than the base lock_score. On
+    # 2026-07-18, Mbappe's SoA had lock=85 but lock_v2=95.4 (Elite);
+    # trusting only the base score meant the ≥92 conviction boost
+    # never fired for him. Taking the max protects users from either
+    # scoring path suppressing a signal that the other confirms.
+    _lock_a = pick.get("lock_score")
+    _lock_b = pick.get("lock_score_v2")
+    try:
+        _lock_a = float(_lock_a) if _lock_a is not None else 0.0
+    except (TypeError, ValueError):
+        _lock_a = 0.0
+    try:
+        _lock_b = float(_lock_b) if _lock_b is not None else 0.0
+    except (TypeError, ValueError):
+        _lock_b = 0.0
+    lock_v = max(_lock_a, _lock_b)
+    conviction_boost = 0.0
+    if is_elite_tagged:
+        # Star player on a market they're priced to hit — floor at
+        # +12 raw points (score 62 minimum before rank).
+        conviction_boost = max(conviction_boost, 12.0)
+    if lock_v >= 97:
+        # Elite Lock — floor at +18 (score 68). Only stacks if it's
+        # ALSO an elite-tagged player (which pushes it further).
+        conviction_boost = max(conviction_boost, 18.0)
+    elif lock_v >= 92:
+        # Strong Lock — modest floor at +6 raw (score 56).
+        conviction_boost = max(conviction_boost, 6.0)
+    if is_elite_tagged and lock_v >= 97:
+        # Elite player on an Elite Lock — add a stacking bonus so
+        # they DEFINITELY land top-quartile of their sport bucket.
+        conviction_boost = min(conviction_boost + 10.0, 40.0)
+    if conviction_boost > 0:
+        adjusted = max(adjusted, conviction_boost)
+
     score = int(round(max(0.0, min(100.0, 50.0 + adjusted))))
     why = build_why(pick, score, components)
 
