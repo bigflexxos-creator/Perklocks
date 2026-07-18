@@ -464,6 +464,48 @@ def govern_pick(
     governed_lock    = apply_lock_governor(raw_lock,    score) if raw_lock    is not None else None
     governed_lock_v2 = apply_lock_governor(raw_lock_v2, score) if raw_lock_v2 is not None else None
 
+    # ── Always-Starter Elite Floor (2026-07-18) ─────────────────────
+    # User feedback: "Harry Kane should always make the board — he's
+    # one of the best scorers in the world". Kane's raw lock landed
+    # around 75 but the evidence governor multiplier of 0.78 (because
+    # his form data was thin during the international break) capped
+    # him at 58.4 — grade=Pass, hidden from the board. This bypasses
+    # that specific failure mode by flooring the governed lock at 85
+    # (Playable tier, always visible) for a hand-curated whitelist of
+    # world-class scorers who ARE their team's starter by definition.
+    # The v2 model already gives Kane 93.5, so this brings v1 up to
+    # a comparable band without inflating other picks.
+    try:
+        from elite_players import is_always_starter_soccer
+        player_name = (
+            pick.get("player_name")
+            or pick.get("player")
+            or pick.get("elite_player_name")
+            or ""
+        )
+        if not player_name and pick.get("sport") == "Soccer":
+            # Try to recover the name from the market string:
+            # "Harry Kane Anytime Goal Scorer" → "Harry Kane"
+            market = pick.get("market") or ""
+            for suffix in (" Anytime Goal Scorer", " To Score",
+                           " To Score or Assist", " Anytime Scorer",
+                           " Score or Assist"):
+                if market.endswith(suffix):
+                    player_name = market[: -len(suffix)].strip()
+                    break
+        if pick.get("sport") == "Soccer" and is_always_starter_soccer(player_name):
+            _FLOOR = 85.0
+            if governed_lock is not None and governed_lock < _FLOOR:
+                governed_lock = _FLOOR
+                pick["always_starter_floor_applied"] = True
+                pick["always_starter_name"] = player_name
+            if governed_lock_v2 is not None and governed_lock_v2 < _FLOOR:
+                governed_lock_v2 = _FLOOR
+    except Exception:
+        # Never let this floor break the pipeline — governor result
+        # is still valid, we just skip the elite lift on failure.
+        pass
+
     # Sort features by (importance × reliability) descending for the
     # admin inspector "top features" view.
     sorted_feats = sorted(
