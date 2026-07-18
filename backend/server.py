@@ -3673,6 +3673,28 @@ async def on_startup():
     await db.picks.create_index([("pick_date", 1), ("lock_score", -1)])
     await db.picks.create_index([("status", 1), ("settled_at", -1)])
     await db.picks.create_index("id", unique=True)
+    # ── Signal-rank index (2026-07-18) ────────────────────────────
+    # `signal_score` is queried in the `min_signal` filter on every
+    # /picks/today request. Without a supporting index it fell back
+    # to a full-collection scan on days with >500 picks, contributing
+    # to the 12+s p99 that Expo Go users experienced as "connection
+    # hiccup". Compound with `pick_date` because the filter is
+    # always scoped to today's slate.
+    await db.picks.create_index([("pick_date", 1), ("signal_score", -1)])
+
+    # ── Warm the signal-rank cache at boot (2026-07-18) ───────────
+    # Every backend restart previously left `_LAST_RUN` empty, so the
+    # very first /picks/today request paid a 3-5s sync ranking cost.
+    # Kick off a background rank refresh here so by the time the
+    # first user hits the endpoint, the ranks are already fresh and
+    # the request path is fully non-blocking.
+    _deferred_task(
+        lambda: (
+            __import__("services.signal_engine", fromlist=["refresh_slate_signal_rank"])
+            .refresh_slate_signal_rank(db, _today_str())
+        ),
+        delay=2.0,
+    )
 
     # PRODUCTION HANG FIX 2026-07-15: index the on-read Soccer form
     # enrichment's lookup path (`soccer_matches.home_team` /
