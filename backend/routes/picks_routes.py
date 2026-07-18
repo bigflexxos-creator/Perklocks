@@ -916,41 +916,34 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     await _ensure_today_picks()
 
     # ── Slate-wide Signal Score percentile ranking (2026-07-17) ─────
-    # Coverage sweep + percentile-rank pass. Without this, ~65% of
-    # today's picks (MLB: 5%, UFC: 0%) had no `signal_score` at all and
-    # the `min_signal` filter silently nuked the board. Ranking makes
-    # the 0-100 slider actually span the full slate: top 10% → 90+,
-    # top 25% → 75+, median → 50. TTL-cached at 3 min so it doesn't
-    # add latency to every request. Skipped silently on error — the
-    # handler falls back to whatever ranks were already persisted.
+    # Coverage sweep + percentile-rank pass. Ranks are persisted on
+    # disk by `services.signal_engine.rank.refresh_slate_signal_rank`,
+    # invoked by the scheduler tick and by `_refresh_picks` post-
+    # ingestion. This request never blocks on the rank pass; the
+    # `min_signal` filter runs against whatever ranks are already in
+    # the DB, and freshly-ingested picks missing the field are
+    # transparently treated as neutral 50 (see the query builder).
     #
-    # ── 2026-07-17 (perf) ────────────────────────────────────────────
-    # Iteration 77 flagged a 5.7s cold hit when the TTL was expired
-    # — rank refresh was running SYNC on the first post-expiry
-    # request. Split the path:
-    #   • Cold start (no ranks ever computed) → await SYNC (must
-    #     ensure signal_score exists before the min_signal filter
-    #     runs, otherwise the board is empty on first launch).
-    #   • Warm start (ranks exist but stale) → fire-and-forget in
-    #     the background. The current request uses the previously
-    #     persisted ranks (worst case: 3 min stale) and the next
-    #     request gets the refreshed values.
+    # ── 2026-07-18 (mobile stability) ────────────────────────────────
+    # Previous versions ran a "hybrid" path here that awaited the
+    # rank refresh on the first request after a backend restart or
+    # after the 3-min TTL expired. That could block the handler for
+    # 3-13s while mongo hummed under scheduler load, and Expo Go
+    # users hit the client-side 20s ceiling more often than not on
+    # cellular. User feedback: "Expo Go home tab still not loading
+    # picks and saying connection hiccup".
+    #
+    # Fix: fire-and-forget in ALL cases. The rank refresh is
+    # idempotent, TTL-cached at 3 min, and cheap enough that
+    # bouncing it every request in the background is a no-op after
+    # the first tick. If the first tick has never run (very cold
+    # boot) the filter degrades gracefully — picks with no
+    # `signal_score` are included as neutral (see min_signal branch
+    # above) so the board is never empty just because ranking is
+    # still catching up.
     try:
         from services.signal_engine import refresh_slate_signal_rank
-        from services.signal_engine.rank import _LAST_RUN
-        _today_ymd = _today_str()
-        _has_ranks = await db.picks.count_documents(
-            {"pick_date": _today_ymd, "signal_score": {"$exists": True}},
-            limit=1,
-        ) > 0
-        if _has_ranks and _today_ymd in _LAST_RUN:
-            # Warm path: refresh in the background so the current
-            # request isn't blocked by a full slate resweep.
-            asyncio.create_task(refresh_slate_signal_rank(db, _today_ymd))
-        else:
-            # Cold path: must run synchronously so the query below
-            # can filter on `signal_score`.
-            await refresh_slate_signal_rank(db, _today_ymd)
+        asyncio.create_task(refresh_slate_signal_rank(db, _today_str()))
     except Exception as _rank_err:
         logger.warning("Signal-rank slate refresh skipped: %s", _rank_err)
     # ── Normalise the multi-select params to lists, merging with legacy ──

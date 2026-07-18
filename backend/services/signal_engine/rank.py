@@ -210,8 +210,30 @@ async def refresh_slate_signal_rank(
         #    split); fall back to `signal_score` for docs decorated by
         #    the older engine. Either way, `signal_score` will be
         #    overwritten below with the percentile rank.
+        #
+        # ── Per-sport ranking (2026-07-17 v2) ────────────────────────
+        # User feedback: "for tennis you only putting bad signal on
+        # picks not the good one". Root cause: a global slate-wide
+        # rank punished tennis picks unfairly because many tennis
+        # picks (moneylines with no player_form / injury data) get
+        # raw=50 neutral, while MLB pitchers get raw=60-80 from rich
+        # matchup data. Ranking them TOGETHER meant every tennis
+        # pick ended up in the bottom 20-40% of the slate — even
+        # the genuine "good" ones (Sinner favorites, etc.).
+        #
+        # Fix: rank WITHIN each sport bucket. Tennis's best picks
+        # now score 90+, MLB's best score 90+, Soccer's best score
+        # 90+ — the slider is meaningful per-sport instead of
+        # cross-penalising smaller / lower-signal-data leagues.
+        # Sports with <5 picks fall back to a shared "misc" bucket
+        # so a lone UFC pick doesn't automatically become the
+        # top-of-slate (n=1 → 60 by default) or the bottom-of-slate.
+        MIN_BUCKET = 5
+        # Group indexes by sport for grouped ranking.
+        sport_buckets: dict[str, list[int]] = {}
+        misc_indices: list[int] = []
         raw_scores: list[float] = []
-        for p in picks:
+        for i, p in enumerate(picks):
             raw = p.get("signal_score_raw")
             if raw is None:
                 raw = p.get("signal_score")
@@ -219,7 +241,28 @@ async def refresh_slate_signal_rank(
                 raw_scores.append(float(raw) if raw is not None else 50.0)
             except (TypeError, ValueError):
                 raw_scores.append(50.0)
-        ranks = _percentile_rank(raw_scores)
+        # First pass: bucket by sport
+        by_sport: dict[str, list[int]] = {}
+        for i, p in enumerate(picks):
+            sport_key = str(p.get("sport") or "Other")
+            by_sport.setdefault(sport_key, []).append(i)
+        # Second pass: sports with fewer than MIN_BUCKET picks are
+        # merged into "_misc" so they don't get degenerate rank distributions.
+        for sport_key, idxs in by_sport.items():
+            if len(idxs) < MIN_BUCKET:
+                misc_indices.extend(idxs)
+            else:
+                sport_buckets[sport_key] = idxs
+        if misc_indices:
+            sport_buckets["_misc"] = misc_indices
+
+        # Rank inside each bucket and stitch back to the master array.
+        ranks: list[int] = [50] * len(picks)
+        for sport_key, idxs in sport_buckets.items():
+            bucket_scores = [raw_scores[i] for i in idxs]
+            bucket_ranks = _percentile_rank(bucket_scores)
+            for pos, i in enumerate(idxs):
+                ranks[i] = bucket_ranks[pos]
 
         # 3) Persist rank + raw in one bulk_write.
         ops: list[UpdateOne] = []
