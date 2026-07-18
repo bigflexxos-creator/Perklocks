@@ -151,18 +151,21 @@ async def compute_signals(db, pick: dict) -> dict:
     # 2026-07-18, Mbappe's SoA had lock=85 but lock_v2=95.4 (Elite);
     # trusting only the base score meant the ≥92 conviction boost
     # never fired for him. Taking the max protects users from either
-    # scoring path suppressing a signal that the other confirms.
+    # scoring path suppressing a signal that the other confirms. Also
+    # include `lock_score_peak` because that's the highest confidence
+    # the pick has ever earned (elite-boost/always-starter floor lifts
+    # write to peak) — it's the same number the read-time
+    # canonicalizer surfaces to the user, so the signal engine should
+    # be scoring against the same conviction the user sees on the card.
     _lock_a = pick.get("lock_score")
     _lock_b = pick.get("lock_score_v2")
-    try:
-        _lock_a = float(_lock_a) if _lock_a is not None else 0.0
-    except (TypeError, ValueError):
-        _lock_a = 0.0
-    try:
-        _lock_b = float(_lock_b) if _lock_b is not None else 0.0
-    except (TypeError, ValueError):
-        _lock_b = 0.0
-    lock_v = max(_lock_a, _lock_b)
+    _lock_c = pick.get("lock_score_peak")
+    def _f(x):
+        try:
+            return float(x) if x is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+    lock_v = max(_f(_lock_a), _f(_lock_b), _f(_lock_c))
     conviction_boost = 0.0
     if is_elite_tagged:
         # Star player on a market they're priced to hit — floor at

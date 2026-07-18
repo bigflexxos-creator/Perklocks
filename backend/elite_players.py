@@ -48,6 +48,133 @@ logger = logging.getLogger("lockscore.elite")
 ELITE_BOOST_PCT = 15.0   # added to lock_score (clamped to 99 max)
 ELITE_LOCK_FLOOR = 95.0  # ensures elite picks land in Elite Lock tier (≥95)
 
+# ── Reputation-Anchored strikers (2026-07-18) ─────────────────────
+# User feedback: "Harry Kane should always make the board — he's one
+# of the best scorers in the world". These world-class scorers ARE
+# their team's starter by definition — the 45-day starter-gate that
+# suppressed the reputation boost when their form data was thin (e.g.
+# international break, off-season club rotation) was over-filtering.
+# For this hand-curated top-tier list, we skip the starter gate AND
+# floor their post-quality-gate lock_score at 85 so they never fall
+# off the board due to a marginal negative-edge miss.
+_ALWAYS_STARTER_SOCCER_RAW = [
+    "Harry Kane", "Kylian Mbappé", "Kylian Mbappe",
+    "Erling Haaland", "Erling Braut Haaland",
+    "Lionel Messi", "Cristiano Ronaldo",
+    "Mohamed Salah", "Mo Salah",
+    "Robert Lewandowski",
+    "Vinicius Junior", "Vinicius Jr", "Vinícius Júnior",
+    "Jude Bellingham", "Bukayo Saka",
+    "Phil Foden", "Bruno Fernandes",
+    "Lamine Yamal", "Julian Alvarez", "Julián Álvarez",
+    "Lautaro Martinez", "Lautaro Martínez",
+    "Kevin De Bruyne",
+]
+
+# ── Per-player market preference (2026-07-18) ─────────────────────
+# User feedback: "Saka is better at score or assist than just
+# goalscorer — my app should know this". Players who are ASSIST-HEAVY
+# (creators / wide attackers) have a higher hit-rate on the "To Score
+# or Assist" market than on the pure "Anytime Goal Scorer" market —
+# the SoA market rewards them for chance creation as well as goals.
+# Conversely, pure poachers (Kane, Haaland, Lewandowski) score more
+# often than they assist — their best-priced market is Anytime.
+_ASSIST_HEAVY_RAW = [
+    "Bukayo Saka", "Kevin De Bruyne", "Jude Bellingham",
+    "Phil Foden", "Bruno Fernandes", "Bernardo Silva",
+    "Cole Palmer", "Lamine Yamal",
+    "Vinicius Junior", "Vinicius Jr", "Vinícius Júnior",
+    "Kylian Mbappé", "Kylian Mbappe",  # dual-threat but SoA-edge
+    "Neymar Jr", "Neymar", "Ousmane Dembélé", "Ousmane Dembele",
+    "Florian Wirtz", "Jamal Musiala",
+    "Leroy Sané", "Son Heung-min", "Heung-min Son",
+    "Marcus Rashford", "Rodrygo",
+    "Bryan Mbeumo", "Yoane Wissa", "Cody Gakpo",
+    "Antoine Griezmann", "Federico Valverde",
+    "Eberechi Eze", "Mikel Oyarzabal",
+]
+
+# Pure poachers — Anytime Goal Scorer is their best market.
+_PURE_SCORER_RAW = [
+    "Harry Kane", "Erling Haaland", "Erling Braut Haaland",
+    "Robert Lewandowski",
+    "Victor Osimhen", "Alexander Isak", "Ivan Toney", "Ollie Watkins",
+    "Dušan Vlahović", "Dusan Vlahovic",
+    "Rasmus Højlund", "Rasmus Hojlund", "Serhou Guirassy",
+    "Niclas Füllkrug", "Niclas Fullkrug",
+    "Viktor Gyökeres", "Viktor Gyokeres",
+    "Benjamin Šeško", "Benjamin Sesko",
+    "Mateo Retegui", "Artem Dovbyk", "Santiago Giménez",
+    "Santiago Gimenez", "Darwin Núñez", "Darwin Nunez",
+    "Romelu Lukaku", "Gabriel Jesus", "Julián Álvarez", "Julian Alvarez",
+    "Lautaro Martinez", "Lautaro Martínez",
+]
+
+
+# Lazy-initialized normalized sets — populated on first use because
+# `_normalize` is defined further down this file.
+_ALWAYS_STARTER_SOCCER: set[str] | None = None
+_ASSIST_HEAVY_PLAYERS: set[str] | None = None
+_PURE_SCORER_PLAYERS:  set[str] | None = None
+
+
+def _get_always_starter_set() -> set[str]:
+    global _ALWAYS_STARTER_SOCCER
+    if _ALWAYS_STARTER_SOCCER is None:
+        _ALWAYS_STARTER_SOCCER = {_normalize(n) for n in _ALWAYS_STARTER_SOCCER_RAW}
+    return _ALWAYS_STARTER_SOCCER
+
+
+def _get_assist_heavy_set() -> set[str]:
+    global _ASSIST_HEAVY_PLAYERS
+    if _ASSIST_HEAVY_PLAYERS is None:
+        _ASSIST_HEAVY_PLAYERS = {_normalize(n) for n in _ASSIST_HEAVY_RAW}
+    return _ASSIST_HEAVY_PLAYERS
+
+
+def _get_pure_scorer_set() -> set[str]:
+    global _PURE_SCORER_PLAYERS
+    if _PURE_SCORER_PLAYERS is None:
+        _PURE_SCORER_PLAYERS = {_normalize(n) for n in _PURE_SCORER_RAW}
+    return _PURE_SCORER_PLAYERS
+
+
+def is_assist_heavy(player_name: str | None) -> bool:
+    """Return True if the player's best market is `To Score or Assist`."""
+    if not player_name:
+        return False
+    return _normalize(player_name) in _get_assist_heavy_set()
+
+
+def is_pure_scorer(player_name: str | None) -> bool:
+    """Return True if the player's best market is `Anytime Goal Scorer`."""
+    if not player_name:
+        return False
+    return _normalize(player_name) in _get_pure_scorer_set()
+
+
+def preferred_scorer_market(player_name: str | None) -> str | None:
+    """Return the preferred market family for a player, or None if
+    unopinionated. Values match `_market_family` in server.py:
+        "score_or_assist" | "anytime" | None
+    """
+    if is_assist_heavy(player_name):
+        return "score_or_assist"
+    if is_pure_scorer(player_name):
+        return "anytime"
+    return None
+
+
+def is_always_starter_soccer(player_name: str | None) -> bool:
+    """Return True for the world-class scorer whitelist that bypasses
+    the 45-day starter gate. Kane / Mbappe / Haaland / etc. — these
+    players ARE their team's #1 option by definition and shouldn't be
+    hidden because of stale form data during an international break."""
+    if not player_name:
+        return False
+    return _normalize(player_name) in _get_always_starter_set()
+
+
 # ── Starter-gate cache (Soccer only) ─────────────────────────────
 # `_STARTER_CACHE` maps normalized-lowercase player name → 1 if the
 # player has been observed on a roster in the last 45 days, 0 otherwise.
@@ -397,7 +524,15 @@ def apply_elite_boost(picks: list[dict]) -> list[dict]:
         # appearances in a 45-day window.  We also scope the gate to
         # the league-kind of the pick — a World Cup pick requires
         # national-team starts, not club starts.
-        if sport == "Soccer":
+        #
+        # ── 2026-07-18 always-starter override ─────────────────────
+        # User feedback: "Harry Kane should always make the board".
+        # For the hand-curated top-tier world-class scorers we bypass
+        # the 45-day starter gate — Kane / Mbappe / Haaland / Messi /
+        # Salah / etc. are their team's #1 option by definition and
+        # missing their form data (typical during international
+        # breaks / off-seasons) shouldn't hide them.
+        if sport == "Soccer" and not is_always_starter_soccer(canonical):
             kind = _classify_event_league_kind(p.get("event"), p.get("league"))
             if not _is_actively_starting_soccer(canonical, league_kind=kind):
                 p["elite_player"] = False
