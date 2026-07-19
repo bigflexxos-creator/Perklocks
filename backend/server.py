@@ -321,6 +321,49 @@ def _canonicalize_lock_score(pick: dict) -> dict:
     # carve-out to all 30+ writers. (2026-06-26: user fix for recurring
     # CSL/elite lock demotion bug.)
     canonical = max(v1, v2, raw, peak)
+    # ── Always-Starter Read-Time Floor (2026-07-18) ────────────────────
+    # User feedback: "Harry Kane should always make the board — he's
+    # one of the best scorers in the world". The pipeline is a Rube-
+    # Goldberg of writers (apply_learning → apply_elite_boost →
+    # govern_pick → pick_validator → learning_v2 → bandit → …) and
+    # any of them can silently reset an always-starter's lock_score
+    # to its pre-boost value between refreshes. Instead of chasing
+    # every one of those writers, guarantee the floor here at
+    # SERIALIZATION time — the read-time canonicalizer is the single
+    # last line of defense before a pick hits the wire.
+    #
+    # Floor the canonical lock at 85 for hand-curated world-class
+    # scorers (Kane / Mbappe / Haaland / etc.) so they always land
+    # on the Home board with at least Playable grade. Preserves the
+    # ordering of the rest of the slate.
+    try:
+        sport = (pick.get("sport") or "").lower()
+        if sport == "soccer":
+            from elite_players import is_always_starter_soccer
+            player_name = (
+                pick.get("player_name")
+                or pick.get("elite_player_name")
+                or pick.get("always_starter_name")
+                or ""
+            )
+            if not player_name:
+                market = pick.get("market") or ""
+                for suffix in (" Anytime Goal Scorer", " To Score or Assist",
+                               " Anytime Scorer", " To Score",
+                               " Score or Assist"):
+                    if market.endswith(suffix):
+                        player_name = market[: -len(suffix)].strip()
+                        break
+            if is_always_starter_soccer(player_name):
+                _ALWAYS_STARTER_READ_FLOOR = 85.0
+                if canonical < _ALWAYS_STARTER_READ_FLOOR:
+                    canonical = _ALWAYS_STARTER_READ_FLOOR
+                    pick["always_starter_read_floor_applied"] = True
+    except Exception:
+        # Never let the always-starter floor break the read path;
+        # any exception here just falls back to the unadjusted
+        # canonical value from the MAX-of-shadows above.
+        pass
     # ── Coherence cap ceiling (2026-06-30, code-review HIGH) ───────────
     # `quality_gate._apply_lockscore_coherence` and `_apply_display_cap`
     # set `coherence_cap_ceiling` when they DELIBERATELY lower a pick's
