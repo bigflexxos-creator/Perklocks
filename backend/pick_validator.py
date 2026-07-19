@@ -315,6 +315,44 @@ async def validate_and_heal(db) -> dict:
                         p_copy.pop("lock_score_v2_raw", None)
                         govern_pick(p_copy, build_features_from_pick(p_copy))
                         target_lock = p_copy.get("lock_score", target_lock)
+                        # ── Always-starter floor after re-govern (2026-07-18) ──
+                        # `govern_pick` already applies the world-class-scorer
+                        # floor (Kane / Mbappe / Haaland / etc.) but the
+                        # validator's own drift cap + CLV demotion above run
+                        # BEFORE we call it — if those had already pushed
+                        # target_lock below 85 for an always-starter, the
+                        # governor's floor may have been unable to fully
+                        # recover it (evidence multiplier can shave 15%
+                        # off). Re-apply the floor here so the pick lands
+                        # on the board with at least Playable grade.
+                        try:
+                            from elite_players import is_always_starter_soccer
+                            player_name = (
+                                p.get("player_name")
+                                or p.get("elite_player_name")
+                                or ""
+                            )
+                            if not player_name:
+                                market = p.get("market") or ""
+                                for suffix in (
+                                    " Anytime Goal Scorer", " To Score or Assist",
+                                    " Anytime Scorer", " To Score",
+                                    " Score or Assist",
+                                ):
+                                    if market.endswith(suffix):
+                                        player_name = market[: -len(suffix)].strip()
+                                        break
+                            if (
+                                (p.get("sport") or "").lower() == "soccer"
+                                and is_always_starter_soccer(player_name)
+                                and target_lock < 85.0
+                            ):
+                                target_lock = 85.0
+                                p_copy["lock_score"] = 85.0
+                                p_copy["always_starter_floor_applied"] = True
+                                p_copy["always_starter_name"] = player_name
+                        except Exception:
+                            pass
                         _gov_lock_raw     = p_copy.get("lock_score_raw")
                         _gov_lock_v2      = p_copy.get("lock_score_v2")
                         _gov_lock_v2_raw  = p_copy.get("lock_score_v2_raw")

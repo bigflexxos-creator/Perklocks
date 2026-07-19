@@ -142,6 +142,19 @@ async def refresh_slate_signal_rank(
     if not force and (now - cached_at) < _TTL_SECS:
         return {"ok": True, "cached": True, "age_sec": int(now - cached_at)}
 
+    # ── Non-blocking lock acquisition (2026-07-18) ─────────────────
+    # iter78 flagged 5.8s p99 under 5-concurrent load — the lock
+    # serialized ALL background refreshes on a single date, so
+    # concurrent /picks/today handlers piled up waiting for their
+    # turn. Since the caller is already fire-and-forget in
+    # picks_routes.py and the persisted ranks stay valid across
+    # refreshes, a second caller that finds the lock held can just
+    # exit cleanly — one refresh per TTL window is sufficient and
+    # any concurrent caller can safely no-op instead of blocking on
+    # the pool.
+    if not force and _LOCK.locked():
+        return {"ok": True, "cached": False, "skipped": "another_refresh_in_flight"}
+
     async with _LOCK:
         # Re-check inside the lock so two concurrent requests don't both
         # rebuild the ranks (thundering-herd guard).
