@@ -291,9 +291,41 @@ async def refresh_slate_signal_rank(
             sport_buckets["_misc"] = misc_indices
 
         # Rank inside each bucket and stitch back to the master array.
+        # ── Tie-breaker fix (2026-07-19) ──────────────────────────────
+        # User feedback: "everything 71/100 that's good ... before we had
+        # 80+ that was hitting". Root cause: on the current slate 67 of
+        # 80 Tennis picks share the exact same raw score (56.0) because
+        # the tennis calculators can't differentiate doubles picks (no
+        # per-player Sackmann / Elo / form data). Percentile ranking
+        # averages tied ranks, so those 67 picks ALL collapse to rank 71
+        # and no tennis pick ever hits 90+ regardless of lock_score.
+        #
+        # Fix: add a sub-integer lock_score tie-breaker (~ +0.001 per
+        # lock point) to the sort key. Doesn't change which picks are
+        # "better" \u2014 raw score still dominates \u2014 but breaks
+        # calculator-zero ties by conviction so a lock=93.6 pick ranks
+        # above a lock=92.7 pick. Spreads the compressed cluster back
+        # across the 20-99 band the user expects.
         ranks: list[int] = [50] * len(picks)
         for sport_key, idxs in sport_buckets.items():
-            bucket_scores = [raw_scores[i] for i in idxs]
+            bucket_scores = []
+            for i in idxs:
+                base = raw_scores[i]
+                # Prefer max(lock_score, lock_score_v2, lock_score_peak)
+                # to match the conviction floor already applied in
+                # engine.py. Fall back to 50 when none are present.
+                lock_vals = []
+                for k in ("lock_score", "lock_score_v2", "lock_score_peak"):
+                    v = picks[i].get(k)
+                    try:
+                        if v is not None:
+                            lock_vals.append(float(v))
+                    except (TypeError, ValueError):
+                        pass
+                lock_v = max(lock_vals) if lock_vals else 50.0
+                # +0.001 per lock point \u2014 large enough to break the
+                # tie, small enough that a 3-point raw gap always wins.
+                bucket_scores.append(base + lock_v * 0.001)
             bucket_ranks = _percentile_rank(bucket_scores)
             for pos, i in enumerate(idxs):
                 ranks[i] = bucket_ranks[pos]
