@@ -89,6 +89,31 @@ async def compute_signals(db, pick: dict) -> dict:
     except Exception as e:
         logger.debug("tennis_deep enrich failed for pick %s: %s", pick.get("id"), e)
 
+    # ── Phase-1 external-data enrichments (2026-07-19) ────────────────
+    # User feedback: "Are we missing any data or anything to make picks
+    # and signal better?". These three enrichments were the highest-
+    # impact gaps:
+    #   • Weather (OpenWeather) — wind/temp/rain shifts MLB HR + totals
+    #   • MLB umpire K-tendency — a wide-zone plate ump adds 0.6 K/starter
+    #   • Confirmed lineup — kills the "bench player" false-positive
+    # Each `enrich_*` is idempotent and no-ops on missing keys / network
+    # errors, so a failure here never breaks the signal computation.
+    try:
+        from services.enrichment.weather import enrich_pick_with_weather
+        await enrich_pick_with_weather(pick)
+    except Exception as e:
+        logger.debug("weather enrich failed for pick %s: %s", pick.get("id"), e)
+    try:
+        from services.enrichment.umpires import enrich_pick_with_umpire
+        await enrich_pick_with_umpire(pick)
+    except Exception as e:
+        logger.debug("umpire enrich failed for pick %s: %s", pick.get("id"), e)
+    try:
+        from services.enrichment.lineups import enrich_pick_with_lineup
+        await enrich_pick_with_lineup(pick)
+    except Exception as e:
+        logger.debug("lineup enrich failed for pick %s: %s", pick.get("id"), e)
+
     components = [
         await form_signal(db, pick),
         await matchup_signal(db, pick),
@@ -100,6 +125,30 @@ async def compute_signals(db, pick: dict) -> dict:
         soccer_deep_signal(pick),
         tennis_deep_signal(pick),
     ]
+
+    # ── Phase-1 external-signal components (2026-07-19) ───────────────
+    # Bolt-on components from the newly-added enrichments. Each returns
+    # (delta_points, explanation) and only contributes when there's
+    # actual data — otherwise 0 points, no component added to the list.
+    try:
+        from services.enrichment.weather import weather_signal_component
+        from services.enrichment.umpires import umpire_signal_component
+        from services.enrichment.lineups import lineup_signal_component
+        for label, comp_fn in [
+            ("weather", weather_signal_component),
+            ("umpire",  umpire_signal_component),
+            ("lineup",  lineup_signal_component),
+        ]:
+            pts, why = comp_fn(pick)
+            if pts != 0.0 or why:
+                components.append({
+                    "label": label,
+                    "points": float(pts),
+                    "delta": float(pts),
+                    "why": why,
+                })
+    except Exception as e:
+        logger.debug("phase1 signal components failed: %s", e)
 
     total = sum(c["points"] for c in components)
     # ── Range amplification (2026-07-17) ─────────────────────────────
