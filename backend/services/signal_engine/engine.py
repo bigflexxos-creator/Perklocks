@@ -34,7 +34,7 @@ from .rationale import build_why, signal_breakdown_line
 
 logger = logging.getLogger("lockscore.services.signal_engine")
 
-SIGNAL_VERSION = 4  # bumped for Phase B.5 (adds tennis_deep component)
+SIGNAL_VERSION = 5  # bumped for Phase 2 (adds park-hand, pitch-mix, rolling xG, context, first-set)
 _REFRESH_SECS = 1800  # 30 min — market signal tracks live line movement
 
 
@@ -113,6 +113,39 @@ async def compute_signals(db, pick: dict) -> dict:
         await enrich_pick_with_lineup(pick)
     except Exception as e:
         logger.debug("lineup enrich failed for pick %s: %s", pick.get("id"), e)
+
+    # ── Phase-2 sport-specific depth (2026-07-19) ────────────────────
+    # MLB: park HR by batter hand, pitch-mix vs batter tendency.
+    # Soccer: rolling 10-match team xG, set-piece / manager / pressure context.
+    # Tennis: first-set return-points-won estimate.
+    # All are pure additive enrichers \u2014 blocking-free and no-op on missing
+    # data. Wrap each in a defensive try so a single API/DB miss can't
+    # break signal computation for the entire slate.
+    try:
+        from services.enrichment.mlb_park_hand import enrich_pick_with_hand_factor
+        enrich_pick_with_hand_factor(pick)
+    except Exception as e:
+        logger.debug("mlb_park_hand enrich failed for pick %s: %s", pick.get("id"), e)
+    try:
+        from services.enrichment.mlb_pitch_mix import enrich_pick_with_pitch_mix
+        enrich_pick_with_pitch_mix(pick)
+    except Exception as e:
+        logger.debug("mlb_pitch_mix enrich failed for pick %s: %s", pick.get("id"), e)
+    try:
+        from services.enrichment.soccer_rolling_xg import enrich_pick_with_rolling_xg
+        await enrich_pick_with_rolling_xg(db, pick)
+    except Exception as e:
+        logger.debug("soccer_rolling_xg enrich failed for pick %s: %s", pick.get("id"), e)
+    try:
+        from services.enrichment.soccer_context import enrich_pick_with_context
+        enrich_pick_with_context(pick)
+    except Exception as e:
+        logger.debug("soccer_context enrich failed for pick %s: %s", pick.get("id"), e)
+    try:
+        from services.enrichment.tennis_first_set import enrich_pick_with_first_set
+        enrich_pick_with_first_set(pick)
+    except Exception as e:
+        logger.debug("tennis_first_set enrich failed for pick %s: %s", pick.get("id"), e)
 
     components = [
         await form_signal(db, pick),

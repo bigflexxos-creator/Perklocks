@@ -914,6 +914,48 @@ def mlb_deep_signal(pick: dict) -> dict:
             if loc >= 110:
                 details.append(f"Elite Location+ ({loc:.0f}) — command edge")
 
+    # Phase 2 — Park HR factor by BATTER HANDEDNESS. Populated by
+    # services.enrichment.mlb_park_hand. When a LHB is playing at a
+    # LHB-friendly park (Yankee Stadium's short right porch, LHB
+    # factor 118) the base park factor (~103) understates the
+    # boost \u2014 this catches the extra 15 points and moves the
+    # signal on HR / Total Bases Overs.
+    hand_pf = pick.get("park_hr_hand_factor")
+    hand_side = pick.get("park_hr_hand_side")
+    if (isinstance(hand_pf, int)
+            and hand_side in ("L", "R")
+            and family in ("hr", "total_bases")):
+        found = True
+        # Delta vs BASE HR factor (not vs 100) \u2014 we only want the
+        # ADDITIONAL edge from handedness, since the base park HR
+        # signal already fired above.
+        base = hr_pf if hr_pf else 100
+        delta_hand = hand_pf - base
+        if abs(delta_hand) >= 3:
+            direction_mult = 1.0 if is_over else -1.0
+            pts += _clamp(delta_hand * 0.06 * direction_mult, -2.0, 2.0)
+            side_label = "LHB" if hand_side == "L" else "RHB"
+            details.append(
+                f"Park HR factor for {side_label} = {hand_pf} "
+                f"({'+' if delta_hand > 0 else ''}{delta_hand} vs base {base})"
+            )
+
+    # Phase 2 \u2014 Pitch-mix compatibility. Populated by
+    # services.enrichment.mlb_pitch_mix. Positive = pitcher throws
+    # lots of pitches the batter feasts on; negative = arsenal
+    # counters the batter's strengths. Scale of \u00b15, applied only
+    # to hitter Overs / Unders in the alignment direction.
+    pmx_edge = pick.get("pitch_mix_edge")
+    if isinstance(pmx_edge, (int, float)) and family in (
+        "hr", "hits", "total_bases", "rbi", "hrr"
+    ):
+        found = True
+        pmx = float(pmx_edge)
+        direction_mult = 1.0 if is_over else -1.0
+        pts += _clamp(pmx * 0.35 * direction_mult, -1.8, 1.8)
+        for d in (pick.get("pitch_mix_details") or [])[:1]:
+            details.append(d)
+
     return {
         "key": "mlb_deep", "label": "MLB Context",
         "points": round(_clamp(pts, -MLB_DEEP_MAX, MLB_DEEP_MAX), 1),
@@ -1093,6 +1135,121 @@ def soccer_deep_signal(pick: dict) -> dict:
                     f"Both teams average only {avg_goals_per_match:.1f} goals "
                     f"per match recently — supports Under")
 
+    # Phase 2 — Rolling 10-match team xG (services.enrichment.soccer_rolling_xg)
+    # Populated by a periodic background job from Understat / FBref. When
+    # the pick side's rolling xG_diff (xG - xGA per match) is >+0.4, that's
+    # a durable underlying-quality edge above what point-in-time form
+    # captures. When it's <-0.4 the team is being flattered by results.
+    xg_roll = pick.get("xg_rolling") or {}
+    if xg_roll and (is_team_market or is_scorer):
+        # Detect pick side from event / selection.
+        sel_l = (pick.get("selection") or "").lower()
+        event_l = (pick.get("event") or "").lower()
+        pick_side = None
+        if "@" in event_l:
+            away_name, home_name = [x.strip() for x in event_l.split("@", 1)]
+            if home_name and (home_name in sel_l or sel_l in home_name):
+                pick_side = "home"
+            elif away_name and (away_name in sel_l or sel_l in away_name):
+                pick_side = "away"
+        side_doc = xg_roll.get(pick_side) if pick_side else None
+        if isinstance(side_doc, dict):
+            xg_diff = side_doc.get("xg_diff")
+            matches = side_doc.get("matches") or 0
+            if isinstance(xg_diff, (int, float)) and matches >= 5:
+                found = True
+                pts += _clamp(float(xg_diff) * 1.5, -2.0, 2.0)
+                if xg_diff >= 0.4:
+                    details.append(
+                        f"Rolling xG diff +{xg_diff:.2f}/match over last "
+                        f"{matches} \u2014 durable quality edge")
+                elif xg_diff <= -0.4:
+                    details.append(
+                        f"Rolling xG diff {xg_diff:.2f}/match over last "
+                        f"{matches} \u2014 outperforming poor underlying")
+        # Total-goals markets: pick's xG_avg + opponent's xG_avg vs the line.
+        market_l2 = (pick.get("market") or "").lower()
+        if any(t in market_l2 for t in ("over", "under")) and "goals" in market_l2:
+            h = xg_roll.get("home") or {}
+            a = xg_roll.get("away") or {}
+            if (isinstance(h.get("xg_avg"), (int, float))
+                    and isinstance(a.get("xg_avg"), (int, float))):
+                proj = float(h["xg_avg"]) + float(a["xg_avg"])
+                # Extract line from market
+                _, direction = _extract_line(market_l2)
+                if direction == "over" and proj >= 2.9:
+                    found = True
+                    pts += 1.2
+                    details.append(
+                        f"Combined rolling xG {proj:.1f}/match supports Over")
+                elif direction == "under" and proj <= 2.2:
+                    found = True
+                    pts += 1.2
+                    details.append(
+                        f"Combined rolling xG only {proj:.1f}/match supports Under")
+
+    # Phase 2 — Set-piece specialists / Manager tactics / High-pressure
+    # (services.enrichment.soccer_context)
+    ctx = pick.get("soccer_context") or {}
+    if ctx:
+        duties = ctx.get("set_piece_duties") or []
+        if is_scorer and duties:
+            found = True
+            # PK = biggest boost (~10-15% scoring conversion per attempt).
+            # FK / CK = mid boost. Cap so it can't drown the composite.
+            boost = 0.0
+            reasons = []
+            if "PK" in duties:
+                boost += 1.6
+                reasons.append("penalty taker")
+            if "FK" in duties:
+                boost += 0.8
+                reasons.append("direct free-kick specialist")
+            if "CK" in duties:
+                boost += 0.4
+                reasons.append("corner threat")
+            pts += min(2.5, boost)
+            if reasons:
+                details.append("Set-piece duties: " + ", ".join(reasons))
+
+        # Manager tactics: adjust team totals & goalscorer variance.
+        style_home = ctx.get("manager_style_home") or "balanced"
+        style_away = ctx.get("manager_style_away") or "balanced"
+        market_l3 = (pick.get("market") or "").lower()
+        if (any(t in market_l3 for t in ("over", "under")) and
+                "goals" in market_l3):
+            _, direction = _extract_line(market_l3)
+            attacks = int(style_home == "attacking") + int(style_away == "attacking")
+            defends = int(style_home == "defensive") + int(style_away == "defensive")
+            if attacks - defends >= 1:
+                if direction == "over":
+                    found = True
+                    pts += 0.6
+                    details.append("Both bosses lean attacking \u2014 supports Over")
+                elif direction == "under":
+                    found = True
+                    pts -= 0.4
+            elif defends - attacks >= 1:
+                if direction == "under":
+                    found = True
+                    pts += 0.6
+                    details.append("Managers lean defensive \u2014 supports Under")
+                elif direction == "over":
+                    found = True
+                    pts -= 0.4
+
+        # High-pressure fixture: signal-flat, but if it's a derby/cup KO
+        # AND we're on a chalk favourite (implied \u2265 70%), tiny fade because
+        # upsets spike in these matches.
+        if ctx.get("pressure") == "high":
+            imp = _f(pick.get("implied_probability"))
+            if imp >= 70.0:
+                found = True
+                pts -= 0.5
+                details.append(
+                    f"High-pressure fixture ({ctx.get('pressure_reason') or 'derby'}) \u2014 "
+                    f"chalk fade")
+
     return {
         "key": "soccer_deep", "label": "Soccer Context",
         "points": round(_clamp(pts, -SOCCER_DEEP_MAX, SOCCER_DEEP_MAX), 1),
@@ -1263,6 +1420,20 @@ def tennis_deep_signal(pick: dict) -> dict:
             # +/- 1.5 pts at 100% dominance either way
             pts += _clamp((pick_share - 0.5) * 3.0, -1.5, 1.5)
             details.append(f"Career H2H: {aw}-{bw} ({h2h.get('surface') or 'all surfaces'})")
+
+    # Phase 2 — First-set return-points-won edge. Populated by
+    # services.enrichment.tennis_first_set. First-set RPW is a stronger
+    # predictor than career RPW because most best-of-3 matches are
+    # decided by whoever breaks in set 1. +5pp edge is meaningful.
+    fs = pick.get("tennis_first_set") or {}
+    edge_1st = fs.get("edge_1st")
+    if isinstance(edge_1st, (int, float)):
+        if abs(edge_1st) >= 3.0:
+            found = True
+            pts += _clamp(edge_1st * 0.12, -1.5, 1.5)
+            details.append(
+                f"1st-set RPW edge {edge_1st:+.1f}pp "
+                f"({fs.get('pick_rpw_1st')}% vs {fs.get('opp_rpw_1st')}%)")
 
     return {
         "key": "tennis_deep", "label": "Tennis Context",
