@@ -1723,6 +1723,16 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     except Exception as _se:
         logger.warning("Real-streak enrichment skipped on /picks/today: %s", _se)
     canonical = _canonicalize_picks(picks)
+    # ── Team Total suppression (2026-07-19) ───────────────────────────
+    # User request: "get rid of team total it confuses me I just total
+    # for the game to generate". Strip any legacy Team Total picks from
+    # the response (already disabled at ingest time in
+    # sports_engine._build_mlb_alt_picks). Left generation off + read-
+    # time filter = clean board even during the cache-drain window.
+    canonical = [
+        p for p in canonical
+        if "team total" not in (p.get("market") or "").lower()
+    ]
     if lite:
         canonical = [_strip_for_lite(p) for p in canonical]
 

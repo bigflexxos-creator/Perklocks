@@ -2039,12 +2039,10 @@ def _build_mlb_alt_picks(
     rng = random.Random(seed)
 
     # ── Team Totals (MAIN) ─────────────────────────────────────────────
-    # Odds API shape: outcomes have {name: "Over"|"Under", description:
-    # <team name>, point, price}. Emit one pick per (team, side) whose
-    # book_implied is at least 0.50 — we don't want to surface a coin-
-    # flip. The 8% gate does NOT apply to main lines (only alt lines
-    # in the 2.5-3.5 range).
-    tt_outs = _alt_outcomes_for_market_desc(alt_payload, "team_totals")
+    # DISABLED 2026-07-19 per user request: "get rid of team total it
+    # confuses me I just total for the game to generate". Keep the alt
+    # run-line generation below since spreads aren't team totals.
+    tt_outs: list = []
     for o in tt_outs:
         team = o.get("description")
         side = o.get("name")
@@ -2088,12 +2086,10 @@ def _build_mlb_alt_picks(
             out_picks.append(pick)
 
     # ── Alternate Team Totals ─────────────────────────────────────────
-    # Same shape as team_totals but chalkier lines further from consensus.
-    # USER SPEC 2026-07-02: "Only surface ALT TEAM TOTALS (2.5-3.5 range)
-    # when the model projects a minimum 8-12% edge." So we ONLY generate
-    # alt team totals whose line is in [2.5, 3.5]. Everything else on
-    # the alt ladder is dropped at generation time.
-    att_outs = _alt_outcomes_for_market_desc(alt_payload, "alternate_team_totals")
+    # DISABLED 2026-07-19 per user request. Alt team totals were the
+    # 2.5-3.5 chalk band; removing entirely so only whole-game totals
+    # remain on the board.
+    att_outs: list = []
     for o in att_outs:
         team = o.get("description")
         side = o.get("name")

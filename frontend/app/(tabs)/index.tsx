@@ -629,68 +629,10 @@ export default function LocksScreen() {
           <Text style={styles.updateBtnTxt}>{refreshing ? "…" : "UPDATE"}</Text>
         </TouchableOpacity>
       </View>
-      {(sport === "Soccer" || sport === "MLB" || sport === "Tennis" || sport === "UFC" || sport === "NBA" || sport === "NFL") && (
-        <TouchableOpacity
-          onPress={() => router.push(`/soccer-lab?sport=${encodeURIComponent(sport)}` as any)}
-          style={styles.soccerLabBtn}
-          activeOpacity={0.8}
-          testID="soccer-lab-cta"
-        >
-          <Text style={styles.soccerLabIcon}>
-            {sport === "Soccer" ? "🌍" : sport === "MLB" ? "⚾" : sport === "Tennis" ? "🎾" : sport === "UFC" ? "🥊" : sport === "NBA" ? "🏀" : "🏈"}
-          </Text>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.soccerLabTitle}>{sport.toUpperCase()} LAB</Text>
-            <Text style={styles.soccerLabSub}>
-              {sport === "Soccer"
-                ? "All active leagues · global ranked feed"
-                : `Confidence-ranked ${sport} feed across every league`}
-            </Text>
-          </View>
-          <Text style={styles.soccerLabChevron}>›</Text>
-        </TouchableOpacity>
-      )}
-      {/* ── NFL Intelligence — three feature rows surfacing the new
-          Safe-Locks, ATD-Leaderboard, and Game-Bets engines. Only shown
-          on NFL or when NFL is one of the active sports in the multi-
-          select. Re-fetches each row on user-triggered refresh via the
-          shared `refreshTick`. */}
-      {(sport === "NFL" || filterStore.sports.includes("NFL")) && (
-        <NFLIntelligenceSection refreshTick={nflRefreshTick} />
-      )}
-      {/* NFL ATD CTA — full-screen Anytime-TD leaderboard with Top 5 /
-          Full Board toggle. Mirrors the MLB NRFI/YRFI CTA pattern.
-          Backed by /api/nfl/atd/leaderboard. */}
-      {sport === "NFL" && (
-        <TouchableOpacity
-          onPress={() => router.push("/atd" as any)}
-          style={styles.nrfiBtn}
-          activeOpacity={0.8}
-          testID="nfl-atd-cta"
-        >
-          <Text style={styles.nrfiIcon}>🏈</Text>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.nrfiTitle}>ATD PICKS</Text>
-            <Text style={styles.nrfiSub}>Top 5 anytime-TD scorers · touches × opp × archetype</Text>
-          </View>
-          <Text style={styles.soccerLabChevron}>›</Text>
-        </TouchableOpacity>
-      )}
-      {sport === "MLB" && (
-        <TouchableOpacity
-          onPress={() => router.push("/nrfi-yrfi" as any)}
-          style={styles.nrfiBtn}
-          activeOpacity={0.8}
-          testID="nrfi-yrfi-cta"
-        >
-          <Text style={styles.nrfiIcon}>🥎</Text>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.nrfiTitle}>NRFI / YRFI</Text>
-            <Text style={styles.nrfiSub}>1st-inning model · pitcher × lineup × park</Text>
-          </View>
-          <Text style={styles.soccerLabChevron}>›</Text>
-        </TouchableOpacity>
-      )}
+      {/* Banners removed 2026-07-19 per user request:
+          "delete banners off app nrfi/yrfi and sports lab across all
+          sports tabs". Kept the top slate header + game-total picks
+          only; no more per-sport lab / NRFI / ATD / NFL Intel CTAs. */}
       {/* HR entry point moved to SportFilterBar — appears as a "🚀 HR"
           chip next to Hits / H+R+RBI / Strikeouts / Outs Recorded. */}
       <FilterSheet

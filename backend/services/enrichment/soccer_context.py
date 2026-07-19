@@ -83,6 +83,103 @@ _SET_PIECE_TAKERS: dict[str, list[str]] = {
     "alexis mac allister": ["PK"],
     "exequiel palacios":  ["PK", "FK"],
     "riccardo orsolini":  ["FK", "CK"],
+    # ── Nordic leagues (Eliteserien / Allsvenskan / Superliga /
+    # Veikkausliiga / Úrvalsdeild) — top penalty takers + FK specialists.
+    # Sourced from 2025-26 season starting rosters. Added 2026-07-19 per
+    # user feedback: top of the board is Norwegian scorers but their
+    # PKs weren't lifting the signal.
+    # Norway (Eliteserien)
+    "erik botheim":       ["PK"],           # Bodø/Glimt
+    "kasper høgh":        ["PK"],
+    "kasper hogh":        ["PK"],
+    "håkon evjen":        ["FK", "CK"],
+    "hakon evjen":        ["FK", "CK"],
+    "kristian lien":      ["PK"],           # Molde
+    "ola brynhildsen":    ["PK"],
+    "eman markovic":      ["FK"],
+    "sondre brunstad fet": ["CK"],
+    "veton berisha":      ["PK"],           # Viking
+    "ola solbakken":      ["PK", "FK"],
+    "aron dønnum":        ["PK"],           # Vålerenga
+    "aron donnum":        ["PK"],
+    "sivert mannsverk":   ["FK"],
+    "petter strand":      ["FK", "CK"],
+    "torgeir børven":     ["PK"],
+    "torgeir borven":     ["PK"],
+    # Sweden (Allsvenskan)
+    "isaac kiese thelin": ["PK"],           # Malmö
+    "sead haksabanović":  ["PK", "FK"],
+    "sead haksabanovic":  ["PK", "FK"],
+    "gustav ludwigson":   ["PK"],
+    "victor claesson":    ["FK", "CK"],     # Häcken
+    "amor layouni":       ["PK"],           # Djurgården
+    "jesper karlsson":    ["PK", "FK"],
+    "tesfaldet tekie":    ["FK"],
+    # Denmark (Superliga)
+    "mikael uhre":        ["PK"],
+    "andreas skov olsen": ["PK"],
+    "gustav isaksen":     ["PK", "FK"],
+    "hakon arnar haraldsson": ["CK"],
+    "conrad harder":      ["PK"],
+    "kevin diks":         ["FK"],
+    # Finland (Veikkausliiga)
+    "anthony olusanya":   ["PK"],           # HJK
+    "roope riski":        ["PK"],
+    "atomu tanaka":       ["FK", "CK"],
+    "topias tarkkio":     ["PK"],
+    # Iceland (Úrvalsdeild)
+    "atli sigurjónsson":  ["PK"],
+    "atli sigurjonsson":  ["PK"],
+    "sveinn aron gudjohnsen": ["PK"],
+    "elias mar omarsson": ["PK"],
+    # ── China Super League (CSL) ───────────────────────────────────────
+    "wu lei":             ["PK"],           # Shanghai Port
+    "oscar":              ["PK", "FK", "CK"],
+    "cesc fabregas":      ["FK", "CK"],
+    "gustavo scarpa":     ["FK"],
+    "aaron mooy":         ["FK"],
+    "elkeson":            ["PK"],
+    "paulinho":           ["PK", "FK"],
+    "moussa dembele":     ["PK"],           # Beijing Guoan
+    "adrian mierzejewski": ["FK", "CK"],
+    "fernandinho":        ["FK"],           # Shanghai Shenhua
+    "wei shihao":         ["PK"],
+    "wang shangyuan":     ["CK"],
+    # ── South America (Libertadores / Sudamericana context) ───────────
+    "arturo vidal":       ["FK", "CK"],
+    "gabriel barbosa":    ["PK"],           # Gabigol
+    "gabigol":            ["PK"],
+    "hulk":               ["PK", "FK"],     # Atlético Mineiro
+    "germán cano":        ["PK"],           # Fluminense
+    "german cano":        ["PK"],
+    "raphael veiga":      ["FK", "CK"],     # Palmeiras
+    "déyverson":          ["PK"],
+    "deyverson":          ["PK"],
+    "eduardo salvio":     ["PK"],
+    "sebastian villa":    ["FK"],
+    "yeferson soteldo":   ["FK"],
+    # ── MLS / Liga MX top PK takers ────────────────────────────────────
+    "denis bouanga":      ["PK", "FK"],     # LAFC
+    "hany mukhtar":       ["PK"],           # Nashville
+    "carles gil":         ["PK", "FK"],     # New England
+    "cristian arango":    ["PK"],
+    "sebastián driussi":  ["PK"],
+    "sebastian driussi":  ["PK"],
+    "cucho hernández":    ["PK"],
+    "cucho hernandez":    ["PK"],
+    "diego rossi":        ["PK", "FK"],
+    "julian carranza":    ["PK"],
+    "germán berterame":   ["PK"],           # Monterrey
+    "german berterame":   ["PK"],
+    "andré-pierre gignac": ["PK", "FK"],    # Tigres
+    "andre-pierre gignac": ["PK", "FK"],
+    "julián quiñones":    ["PK"],           # América
+    "julian quinones":    ["PK"],
+    "henry martin":       ["PK"],
+    # ── Other leagues (K-League / J1 / A-League) ────────────────────────
+    "wanderson":          ["PK"],
+    "ricardo goulart":    ["PK", "FK"],
+    "adam le fondre":     ["PK"],           # A-League
 }
 
 
