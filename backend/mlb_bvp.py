@@ -63,7 +63,37 @@ async def lookup_player_id(name: str) -> Optional[int]:
     pid = data["people"][0].get("id")
     if pid:
         _PLAYER_ID_CACHE[norm] = pid
+        # Piggyback: cache batter handedness while we have the response
+        # in hand. Zero extra API cost \u2014 the /people/search payload
+        # already includes batSide / pitchHand. This backfills every
+        # MLB hitter with a handedness signal so the Phase-2
+        # park-HR-by-hand enricher (services.enrichment.mlb_park_hand)
+        # actually fires during regular season without a second API call.
+        try:
+            bs = ((data["people"][0].get("batSide") or {}).get("code") or "")
+            if bs in ("L", "R", "S"):   # S = switch-hitter
+                _BAT_SIDE_CACHE[norm] = bs
+        except Exception:
+            pass
     return pid
+
+
+_BAT_SIDE_CACHE: dict[str, str] = {}
+
+
+async def lookup_bat_side(name: str) -> Optional[str]:
+    """Return 'L' / 'R' / 'S' for a batter, using the MLB StatsAPI
+    /people/search endpoint. Piggybacks on the id cache when we've
+    already resolved the player."""
+    if not name:
+        return None
+    norm = name.strip()
+    cached = _BAT_SIDE_CACHE.get(norm)
+    if cached:
+        return cached
+    # Force a resolve which also fills _BAT_SIDE_CACHE
+    await lookup_player_id(norm)
+    return _BAT_SIDE_CACHE.get(norm)
 
 
 async def get_probable_pitchers(game_pk: int) -> dict:
@@ -164,6 +194,13 @@ async def enrich_pick_with_bvp(pick: dict, game_pk: Optional[int]) -> dict:
     batter_id = await lookup_player_id(batter_name)
     if not batter_id:
         return pick
+    # Phase 2 \u2014 attach batter handedness for the park-HR-by-hand signal.
+    # lookup_player_id already populates the bat_side cache when it
+    # resolves the id from the /people/search response, so this is
+    # a zero-cost read.
+    bs = _BAT_SIDE_CACHE.get(batter_name.strip())
+    if bs and pick.get("batter_hand") is None:
+        pick["batter_hand"] = bs
 
     probables = await get_probable_pitchers(game_pk)
     # Determine which pitcher the batter faces — opposing team's starter.

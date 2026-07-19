@@ -1,0 +1,38 @@
+{
+  "summary": "Iter 79 — Phase 2 data-enrichment backend regression. 27/27 pytest tests PASSED (test_iter79_phase2_enrichment.py). Coverage: (1) /api/picks/today 200 in <10s with populated multi-sport slate, (2) signal_engine.version==5 on 100% of sampled deep-dives, (3) signal_score distribution healthy: spread across sports, min<40, max>80, no values outside 0-100, (4) backend.err.log tail (500KB) contains NO traceback referencing mlb_park_hand / mlb_pitch_mix / soccer_rolling_xg / soccer_context / tennis_first_set, (5) enrichers no-op cleanly when upstream data is missing — park_hr_hand_factor either absent or in 70-140 range, xg_rolling either absent/None/dict, tennis_first_set either absent or dict, (6) /api/picks/{id} returns valid mlb_deep / soccer_deep / tennis_deep components with numeric points in the -100..100 range for MLB, SOCCER, TENNIS picks, (7) unit tests on the five Phase 2 modules with synthetic picks confirm each fires correctly with data AND correctly no-ops without: park_hand Yankees LHB=118 boost, pitch_mix positive edge when FB-crushing batter faces 60% FB pitcher, soccer_context set-piece + manager style + high-pressure fixture, soccer_rolling_xg form_proxy fallback fires, tennis_first_set estimator produces positive edge. SIGNAL_VERSION module constant asserted =5. compute_signals(None, empty_pick) returns a dict without raising. Deprecated packages detected: NONE.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter79_phase2_enrichment.py",
+    "/app/test_reports/pytest/iter79_phase2_enrichment.xml"
+  ],
+  "action_items": [
+    "None blocking. Phase 2 enrichment pipeline is regression-clean and wired end-to-end.",
+    "OPTIONAL (carryover from iter77/78, not re-validated this run): the 5-concurrent /picks/today ~5.8s latency and 'signal-score-chip' testID collision remain outstanding — not in Phase-2 scope."
+  ],
+  "critical_code_review_comments": [
+    "engine.py Phase 2 wiring: all 5 enrichers are guarded by try/except that only logs at debug level. This is correct for a production-safe additive pipeline, but means silent enricher regressions would only surface via missing signal points. Consider bumping to logger.warning for repeated per-pick failures (>=N in a slate).",
+    "soccer_rolling_xg.enrich_pick_with_rolling_xg: falls back to form_proxy when the dedicated soccer_team_xg collection is empty. That path is correct, but pick['xg_rolling'] then contains {'home': {...proxy...}, 'away': None} when only home has form data — downstream calculators should tolerate half-populated blocks (verified by unit test that a fully-populated pick works; edge case with only one side present isn't covered by a live pick yet).",
+    "mlb_bvp.lookup_bat_side / _BAT_SIDE_CACHE: the batter-hand piggyback on the MLB StatsAPI /people/search call means bat-side resolution depends on that path being exercised. If BVP lookup is skipped (e.g., off-season), park_hr_hand_factor will legitimately be None for the whole slate — which matches the current observed behaviour and is documented in the PRD as expected."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter79_phase2_enrichment.py (new — 27 pytest cases covering all Phase 2 modules + engine wiring + no-regression + deep-dive integration)"
+  ],
+  "success_rate": {
+    "backend": "100% (27/27 pytest cases)",
+    "frontend": "not tested (backend-only review request)"
+  },
+  "seed_data_creation": "None. Unit tests use ephemeral in-process synthetic picks; API tests use the existing demo slate.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase 2 enrichment pipeline is verified regression-clean end-to-end. SIGNAL_VERSION=5 constant is asserted at both the module level and via /api/picks/{id} deep-dive integration. The Phase 2 fields (park_hr_hand_factor, pitch_mix_edge, xg_rolling, soccer_context, tennis_first_set) are legitimately None on the current slate because upstream data (batter_hand from MLB StatsAPI, mature 5+ match soccer form on tier-1 collection, tennis Sackmann attached only on deep-dive) is off-season / pre-season / intentionally deferred. This is documented and the unit tests fully cover the with-data code paths using synthetic inputs. On future runs, if you want to verify a Phase 2 field is actually attached in production, hit /api/picks/{id} on an in-season pick and inspect the pick body (deep dives strip through the full enrichment path). Test file at /app/backend/tests/test_iter79_phase2_enrichment.py is safe to re-run any time — it uses live /api endpoints + demo credentials + synthetic unit data, no seed cleanup needed.",
+  "rca_of_issue": "N/A — no bugs found. Phase 2 modules are cleanly additive: each enricher is idempotent, non-throwing, and no-ops when upstream data is missing. engine.py wires them between Phase 1 enrichers and the composite score with try/except guards. calculators.py consumes the new fields only when present so missing data does not zero out or crash the base signal. SIGNAL_VERSION bump ensures the client cache-invalidates old blocks. All acceptance criteria from the review request are met."
+}
