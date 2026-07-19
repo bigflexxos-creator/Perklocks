@@ -330,18 +330,36 @@ async def refresh_slate_signal_rank(
             for pos, i in enumerate(idxs):
                 ranks[i] = bucket_ranks[pos]
 
-        # 3) Persist rank + raw in one bulk_write.
+        # 3) Persist rank + raw + Phase 1/2 enrichment blocks in one
+        #    bulk_write. Persisting the enrichment blocks (weather,
+        #    umpire, lineup_status, xg_rolling, soccer_context,
+        #    tennis_first_set, park_hr_hand_factor, pitch_mix_edge,
+        #    batter_hand) means subsequent /picks/{id} deep-dive reads
+        #    and mobile card renders see the actual data instead of
+        #    a stale None \u2014 which was the 2026-07-19 bug where
+        #    weather looked broken even though the API key was live.
         ops: list[UpdateOne] = []
+        _ENRICH_FIELDS = (
+            "weather", "umpire", "lineup_status", "xg_rolling",
+            "soccer_context", "tennis_first_set",
+            "park_hr_hand_factor", "park_hr_hand_side",
+            "pitch_mix_edge", "pitch_mix_details", "batter_hand",
+        )
         for p, raw, rank in zip(picks, raw_scores, ranks):
             if not p.get("id"):
                 continue
+            set_doc: dict = {
+                "signal_score": int(rank),
+                "signal_score_raw": round(float(raw), 2),
+                "signal_rank_computed_at": datetime.now(timezone.utc).isoformat(),
+            }
+            for f in _ENRICH_FIELDS:
+                v = p.get(f)
+                if v is not None:
+                    set_doc[f] = v
             ops.append(UpdateOne(
                 {"id": p["id"]},
-                {"$set": {
-                    "signal_score": int(rank),
-                    "signal_score_raw": round(float(raw), 2),
-                    "signal_rank_computed_at": datetime.now(timezone.utc).isoformat(),
-                }},
+                {"$set": set_doc},
             ))
         n_persisted = 0
         if ops:

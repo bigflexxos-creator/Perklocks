@@ -76,6 +76,45 @@ _STADIUM_LATLON: dict[str, tuple[float, float, bool]] = {
 }
 
 
+# Team-name → canonical stadium key for picks that only carry `home_team`
+# (nearly all our MLB ingest). Enables weather enrichment without needing
+# a stadium field on every pick.
+_TEAM_TO_VENUE: dict[str, str] = {
+    "Los Angeles Angels":     "Angel Stadium",
+    "Houston Astros":         "Minute Maid Park",
+    "New York Yankees":       "Yankee Stadium",
+    "Chicago Cubs":           "Wrigley Field",
+    "Boston Red Sox":         "Fenway Park",
+    "Colorado Rockies":       "Coors Field",
+    "Cincinnati Reds":        "Great American Ball Park",
+    "Cleveland Guardians":    "Progressive Field",
+    "Arizona Diamondbacks":   "Chase Field",
+    "Miami Marlins":          "loanDepot park",
+    "Toronto Blue Jays":      "Rogers Centre",
+    "Seattle Mariners":       "T-Mobile Park",
+    "Milwaukee Brewers":      "American Family Field",
+    "Texas Rangers":          "Globe Life Field",
+    "Kansas City Royals":     "Kauffman Stadium",
+    "Detroit Tigers":         "Comerica Park",
+    "Minnesota Twins":        "Target Field",
+    "Pittsburgh Pirates":     "PNC Park",
+    "Atlanta Braves":         "Truist Park",
+    "Washington Nationals":   "Nationals Park",
+    "New York Mets":          "Citi Field",
+    "Philadelphia Phillies":  "Citizens Bank Park",
+    "Baltimore Orioles":      "Oriole Park at Camden Yards",
+    "San Diego Padres":       "Petco Park",
+    "Los Angeles Dodgers":    "Dodger Stadium",
+    "San Francisco Giants":   "Oracle Park",
+    "Oakland Athletics":      "Sutter Health Park",
+    "Athletics":              "Sutter Health Park",
+    "Chicago White Sox":      "Guaranteed Rate Field",
+    "St. Louis Cardinals":    "Busch Stadium",
+    "Tampa Bay Rays":         "George M. Steinbrenner Field",
+    "St. Louis":              "Busch Stadium",
+}
+
+
 async def get_weather(lat: float, lon: float) -> Optional[dict[str, Any]]:
     """Fetch cached / live weather for a coordinate pair.
 
@@ -124,11 +163,32 @@ async def enrich_pick_with_weather(pick: dict) -> dict:
     Idempotent — if `pick["weather"]` is already set (recent enrich pass)
     we short-circuit. Silently no-ops for domes / unknown venues so we
     don't waste API calls on Rays / Astros home games.
+
+    Venue resolution priority (fixes 2026-07-19 issue where MLB picks
+    ship without a `venue` field and weather never fired):
+      1. Explicit `venue` / `stadium` field on the pick.
+      2. Resolve from `home_team` via the static `_TEAM_TO_VENUE` map.
+      3. Parse "Away @ Home" from the `event` string and lookup.
     """
     if pick.get("weather"):
         return pick  # already enriched
+    # 1) Explicit venue / stadium
     venue = pick.get("venue") or pick.get("stadium") or ""
     coords = _STADIUM_LATLON.get(venue)
+    # 2) Fallback: derive venue from home_team
+    if not coords:
+        home_team = (pick.get("home_team") or "").strip()
+        if home_team and home_team in _TEAM_TO_VENUE:
+            venue = _TEAM_TO_VENUE[home_team]
+            coords = _STADIUM_LATLON.get(venue)
+    # 3) Fallback: parse "Away @ Home" from event
+    if not coords:
+        ev = pick.get("event") or ""
+        if " @ " in ev:
+            home_from_event = ev.split(" @ ", 1)[1].strip()
+            if home_from_event in _TEAM_TO_VENUE:
+                venue = _TEAM_TO_VENUE[home_from_event]
+                coords = _STADIUM_LATLON.get(venue)
     if not coords:
         return pick  # unknown venue → skip
     lat, lon, is_dome = coords
