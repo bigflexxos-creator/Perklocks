@@ -47,6 +47,19 @@ def compute_off_board(pick: dict[str, Any]) -> tuple[bool, list[str]]:
         reasons.append("validation_block")
     if pick.get("is_model_only") is True:
         reasons.append("model_only")
+
+    # ── Chalk Trap exemption (2026-07-21) ─────────────────────────────
+    # User mandate: "I still want the 200 picks for options because me
+    # or users don't bet every pick just the app grading all picks".
+    # Chalk-trapped picks intentionally get lock_score capped to 72 and
+    # grade demoted to "Solid Lean" so users see the ⚠️ TRAP warning —
+    # but they must STAY visible on the board (that's the whole point
+    # of showing the trap, not hiding it). Bypass the lock/grade rules
+    # entirely for these picks. Chalk-verified picks (rare +EV chalk
+    # that cleared the kill switch) also always stay visible.
+    if pick.get("chalk_trap") is True or pick.get("chalk_verified") is True:
+        return (bool(reasons), reasons)
+
     try:
         lock = float(pick.get("lock_score") or 0.0)
     except (TypeError, ValueError):

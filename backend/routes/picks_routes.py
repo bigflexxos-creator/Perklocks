@@ -1068,25 +1068,50 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # silently. The serializer (`_canonicalize_lock_score`) then promotes
     # whichever is higher before returning, so the user sees the right number.
     standard_q = {
-        "$or": [
-            # Filter compares against ALL canonical lock fields so the
-            # min_lock = 99 user filter doesn't hide Neymar/Memphis/etc.
-            # whose DB lock_score has drifted down to 64 while v2/peak
-            # still hold 99. User report 2026-06-26: "when I select 99
-            # nothing populate but 99 are on board". This OR mirrors the
-            # `_canonicalize_lock_score` max() at read time so what the
-            # UI sees and what the filter matches are consistent.
-            {"lock_score": {"$gte": floor}},
-            {"lock_score_v2": {"$gte": floor}},
-            {"lock_score_raw": {"$gte": floor}},
-            {"lock_score_peak": {"$gte": floor}},
-        ],
         "no_bet": {"$ne": True},
-        # Hide negative-edge picks from the main feed entirely.
-        # Picks where model_WP < book_implied are by definition bad
-        # bets (book is sharper than us). The Locks tab is for
-        # actionable +EV picks only.
-        "edge_percent": {"$gte": 0},
+        # NOTE: Two $or clauses combined via $and (Python dict can't hold
+        # two "$or" keys — the second overwrites the first).
+        "$and": [
+            {"$or": [
+                # Filter compares against ALL canonical lock fields so the
+                # min_lock = 99 user filter doesn't hide Neymar/Memphis/etc.
+                # whose DB lock_score has drifted down to 64 while v2/peak
+                # still hold 99. User report 2026-06-26: "when I select 99
+                # nothing populate but 99 are on board". This OR mirrors the
+                # `_canonicalize_lock_score` max() at read time so what the
+                # UI sees and what the filter matches are consistent.
+                {"lock_score": {"$gte": floor}},
+                {"lock_score_v2": {"$gte": floor}},
+                {"lock_score_raw": {"$gte": floor}},
+                {"lock_score_peak": {"$gte": floor}},
+                # ── Chalk Trap picks (2026-07-21) ─────────────────────
+                # User: "I still want the 200 picks for options" —
+                # chalk-trapped picks have lock=72 (below floor) BUT must
+                # stay visible so the ⚠️ TRAP warning surfaces. Match on
+                # `chalk_trap_meta.original_lock` (the pre-demotion score)
+                # so a pick that was Elite/Strong Lock before the trap
+                # still passes floor.
+                {"chalk_trap": True, "chalk_trap_meta.original_lock": {"$gte": floor}},
+                {"chalk_verified": True},
+            ]},
+            # ── Edge filter (relaxed 2026-07-21) ─────────────────────
+            # OLD: `edge_percent >= 0` was killing 82% of MLB picks
+            # (115 of 141) because heavy-juiced favorites routinely
+            # price -6 to -12pp below book implied. User mandate:
+            # "I still want the 200 picks for options because me or
+            # users don't bet every pick — just the app grading all
+            # picks". NEW: `edge_percent >= -8` still hides truly bad
+            # picks (model says book is 8pp+ sharper) but keeps the
+            # informational slate visible. Chalk-trap/verified picks
+            # always pass regardless of edge.
+            {"$or": [
+                {"edge_percent": {"$gte": -8}},
+                {"edge_percent": {"$exists": False}},
+                {"edge_percent": None},
+                {"chalk_verified": True},
+                {"chalk_trap": True},
+            ]},
+        ],
         # ── ITF Tennis carve-out (2026-07-16) ────────────────────────
         # ITF Futures picks (source=tennis_extra, league contains
         # itf/futures/m15/m25/w15/w25/w35) must NOT enter through
