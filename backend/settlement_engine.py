@@ -306,7 +306,13 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
         MLB-only 5-min loop to avoid burning Odds API credits on
         Soccer/Tennis/UFC/NBA on every tick (those use a 15-min cadence).
     """
-    query: dict = {"status": {"$in": [None, "pending"]}}
+    query: dict = {"status": {"$in": [None, "pending"]},
+                   # ── Board-visibility gate (2026-07-21): only settle
+                   # picks that actually surfaced on the user board.
+                   # off_board picks (Brain-filtered, validator-blocked,
+                   # low-lock, model-only) stay pending forever so ROI
+                   # analytics reflect the *visible* slate.
+                   "off_board": {"$ne": True}}
     if sport_filter:
         query["sport"] = {"$in": list(sport_filter)}
     cursor = db.picks.find(query, {"_id": 0})

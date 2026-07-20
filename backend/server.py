@@ -2228,6 +2228,25 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as _ck_err:
         logger.warning("Chalk Kill Switch skipped: %s", _ck_err)
 
+    # ── Board Visibility Gate (2026-07-21) ────────────────────────────
+    # User mandate: "I don't want the app to grade picks that don't make
+    # it to board". Tags every pick with `off_board=True` when it would
+    # be hidden from the user (below lock 85, no_bet, validation_block,
+    # low-tier grade, or model_only). Settlement modules filter with
+    # `off_board: {"$ne": True}` so status stays `pending` on hidden
+    # picks — analytics / ROI / bandit / learning ignore them.
+    # Runs LAST so it captures every state change made above.
+    try:
+        from services.board_visibility import tag_board_visibility
+        _bv_stats = tag_board_visibility(safe_picks)
+        logger.info(
+            "Board Visibility: on_board=%d off_board=%d (of %d) reasons=%s",
+            _bv_stats["on_board"], _bv_stats["off_board"],
+            _bv_stats["total"], _bv_stats.get("reasons") or {},
+        )
+    except Exception as _bv_err:
+        logger.warning("Board Visibility tagging skipped: %s", _bv_err)
+
     if safe_picks:
         # ATOMIC-SWAP: do the wipe NOW, immediately before the insert.
         # The enrichment passes above ran on in-memory `safe_picks` —
