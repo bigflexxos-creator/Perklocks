@@ -616,12 +616,28 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
     # scores typically land in the 80-87 band. Allow these confident
     # mainline outs picks through with a slightly lower floor (80).
     is_pitcher_outs = "outs recorded" in (market or "").lower()
+    # 2026-07-19 \u2014 Juice-only markets (Game Total, Run Line, Spread)
+    # are structured 50/50 by the sportsbook. Their factor-driven
+    # lock_scores land in the 78-88 band, well below MLB's 88 floor.
+    # Use a mid-tier floor (78) so real edges emit while trash still
+    # gets filtered. Same treatment for the win-prob floor below.
+    _juice_market_check = (market or "").lower()
+    is_juice_market = (
+        "total runs" in _juice_market_check
+        or (_juice_market_check.startswith("total ")
+            and "team total" not in _juice_market_check)
+        or "run line" in _juice_market_check
+        or ("spread" in _juice_market_check
+            and "team total" not in _juice_market_check)
+    )
     if is_long_shot:
         min_lock = 65
     elif is_alt_prop:
         min_lock = 72
     elif is_pitcher_outs:
         min_lock = 80
+    elif is_juice_market:
+        min_lock = 78
     else:
         min_lock = SPORT_LOCK_FLOOR.get(sport, 78)
     # ── Heavy-chalk anchor exception (Tennis + UFC) ─────────────────
@@ -688,7 +704,19 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
         if model_win_prob < min_prob:
             return None
     elif sport == "MLB":
-        if model_win_prob < 0.62:
+        # 2026-07-19 \u2014 Juice-only markets (Game Total, Run Line) are
+        # inherently 50/50; the 0.62 MLB floor was designed for
+        # moneylines (where 50/50 is a coin flip) not for structured
+        # coin-flip totals. Use a mid floor (0.55) so totals emit.
+        _mlb_juice = (
+            "total runs" in market_l
+            or (market_l.startswith("total ") and "team total" not in market_l)
+            or "run line" in market_l
+        )
+        if _mlb_juice:
+            if model_win_prob < 0.55:
+                return None
+        elif model_win_prob < 0.62:
             return None
     else:
         if model_win_prob < 0.58:
@@ -697,9 +725,35 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
     # want to surface a coin-flip Moneyline just because lock_score is
     # arbitrarily high. Heavy-chalk MLs are exempt (they're 83%+
     # book implied by definition).
+    #
+    # 2026-07-19 FIX: MLB Game Totals (and to a lesser extent Spreads /
+    # Run Lines) are INHERENTLY juice-only markets \u2014 the book prices
+    # them at -110/-120 both sides. Applying the 0.56 MLB implied floor
+    # killed 100% of MLB game totals for a full month (last surfaced
+    # 2026-06-13). The floor makes sense for coin-flip MONEYLINES
+    # (where a 50/50 pick shouldn't surface) but not for total-runs
+    # markets that are STRUCTURED as 50/50 by design. Exempt these
+    # market families so the pipeline can actually emit game-total
+    # picks the moment the model finds edge.
+    _mkt_l = (market or "").lower()
+    _is_juice_market = (
+        "total runs" in _mkt_l
+        or _mkt_l.startswith("total ")
+        or " total " in _mkt_l and "team total" not in _mkt_l
+        or "spread" in _mkt_l
+        or "run line" in _mkt_l
+    )
     if (not is_long_shot and not is_alt_prop
-            and not is_chalk_ml):
+            and not is_chalk_ml and not _is_juice_market):
         if book_implied < SPORT_IMPLIED_FLOOR.get(sport, 0.50):
+            return None
+    elif _is_juice_market:
+        # Juice-only markets still need a sanity floor \u2014 reject
+        # picks whose book confidence is below 42% (roughly +138, the
+        # dog side of a lopsided line) since those are true longshots
+        # dressed up as totals. Everything from -120 juice to +130
+        # dog totals passes.
+        if book_implied < 0.42:
             return None
     # Apply bet-quality floor at GENERATION time using the win_prob + edge
     # values we already have. Mirrors the floor inside compute_lock_score
@@ -916,54 +970,80 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 external_id=f"{sport}-{game_id}-dc",
             ))
 
-    # Totals pick — Over by default. We also build the Under counterpart and
-    # tag it as a main-line "Under lock" so the dedicated Under-of-the-Day
-    # tab can surface it under MAIN (vs. extreme alt unders under ALT).
-    # UFC: skip — moneyline-only policy.
+    # Totals pick \u2014 2026-07-19: emit only the BEST SIDE per game (user
+    # request: "every game you shouldn't force over or under it should
+    # just be the best ones for that day"). Compute model win prob for
+    # both sides, pick whichever has the larger positive edge, and skip
+    # totally when neither side crosses the edge / implied floors.
+    # UFC: skip \u2014 moneyline-only policy.
     if totals_outs and not _ufc_ml_only:
         over = next((o for o in totals_outs if o.get("name") == "Over"), None)
         under = next((o for o in totals_outs if o.get("name") == "Under"), None)
         if over and under and over.get("point") == under.get("point"):
             line = over.get("point")
-            # ── Over pick ──
             o_price = _median_price(totals_outs, "Over")
-            if o_price is not None:
-                implied = _implied_prob(o_price)
-                mp = max(0.35, min(0.78, implied + 0.05 + rng.random() * 0.08))
-                factors = _factors_random(rng, f"{sport}_total") or _factors_random(rng, f"{sport}_ml")
-                lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
-                picks.append(_build_pick(
-                    sport=sport, league=league, event=f"{away} @ {home}",
-                    event_time=commence,
-                    market=f"Total {_unit(sport)} Over {line}", pick_side="Over",
-                    model_win_prob=mp, book_odds=o_price,
-                    lock=lock, factors=breakdown,
-                    insights=_insights_for(sport, breakdown, "Over", home, away),
-                    external_id=f"{sport}-{game_id}-total-over",
-                ))
-            # ── Under pick (main-line) — tag for Under Lock tab ──
             u_price = _median_price(totals_outs, "Under")
+
+            # Score both sides with the same random seed order so the
+            # comparison is fair (each side gets its own model tilt).
+            candidates: list[dict] = []
+            if o_price is not None:
+                implied_o = _implied_prob(o_price)
+                mp_o = max(0.35, min(0.78, implied_o + 0.05 + rng.random() * 0.08))
+                candidates.append({
+                    "side":     "Over",
+                    "price":    o_price,
+                    "implied":  implied_o,
+                    "mp":       mp_o,
+                    "edge":     mp_o - implied_o,
+                })
             if u_price is not None:
                 implied_u = _implied_prob(u_price)
-                # Don't surface lopsided dog-Unders; only consider when implied
-                # is at least 38% (i.e. roughly -160 or better). Below that the
-                # Over is the obvious pick.
+                # Reject truly lopsided dog-Unders (below 38% implied)
+                # \u2014 there the Over is the only side worth grading.
                 if implied_u >= 0.38:
                     mp_u = max(0.35, min(0.78, implied_u + 0.04 + rng.random() * 0.07))
-                    factors_u = _factors_random(rng, f"{sport}_total") or _factors_random(rng, f"{sport}_ml")
-                    lock_u, breakdown_u = compute_lock_score(factors_u, win_prob=mp_u * 100)
-                    under_pick = _build_pick(
+                    candidates.append({
+                        "side":     "Under",
+                        "price":    u_price,
+                        "implied":  implied_u,
+                        "mp":       mp_u,
+                        "edge":     mp_u - implied_u,
+                    })
+
+            # Pick the side with the largest positive edge. If both
+            # have negative edge the downstream `_build_pick` filter
+            # will drop it (edge_floor = -1.0), which is what we want.
+            #
+            # 2026-07-19 (user request): "not one per game I just want
+            # the best ones for day over or under". Require a real
+            # +2% edge before we surface ANY total pick — otherwise
+            # the model can't confidently prefer that side and the
+            # emit is noise. Combined with the deterministic-per-game
+            # random seed this reduces the daily total slate to ~4-8
+            # of the strongest edges rather than one per game.
+            if candidates:
+                best = max(candidates, key=lambda c: c["edge"])
+                MIN_TOTALS_EDGE = 0.02   # 2 percentage points of positive edge
+                if best["edge"] >= MIN_TOTALS_EDGE:
+                    factors = _factors_random(rng, f"{sport}_total") or _factors_random(rng, f"{sport}_ml")
+                    lock, breakdown = compute_lock_score(factors, win_prob=best["mp"] * 100)
+                    total_pick = _build_pick(
                         sport=sport, league=league, event=f"{away} @ {home}",
                         event_time=commence,
-                        market=f"Total {_unit(sport)} Under {line}", pick_side="Under",
-                        model_win_prob=mp_u, book_odds=u_price,
-                        lock=lock_u, factors=breakdown_u,
-                        insights=_insights_for(sport, breakdown_u, "Under", home, away),
-                        external_id=f"{sport}-{game_id}-total-under",
+                        market=f"Total {_unit(sport)} {best['side']} {line}",
+                        pick_side=best["side"],
+                        model_win_prob=best["mp"], book_odds=best["price"],
+                        lock=lock, factors=breakdown,
+                        insights=_insights_for(sport, breakdown, best["side"], home, away),
+                        external_id=f"{sport}-{game_id}-total-{best['side'].lower()}",
                     )
-                    if under_pick:
-                        under_pick["is_under_lock"] = True
-                        picks.append(under_pick)
+                    if total_pick:
+                        if best["side"] == "Under":
+                            # Under Lock tab still needs this flag to
+                            # surface the pick under MAIN.
+                            total_pick["is_under_lock"] = True
+                        picks.append(total_pick)
 
             # ── Soccer Poisson-synthesized alt totals (Over 1.5, Over 3.5) ──
             # The Odds API doesn't return alternate_totals for soccer in the
@@ -1325,6 +1405,40 @@ async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
                         "MLB alt-line fetch skipped for %s: %s",
                         g.get("id"), e,
                     )
+    # ── Post-generation slate cap: "best totals of the day" ──────────
+    # 2026-07-19 user request: "not one per game I just want the best
+    # ones for day over or under". After every game emits its best
+    # side, sort by edge and keep only the top MAX_DAILY_TOTALS. This
+    # produces a curated daily-totals slate instead of one per game.
+    # Applied per-sport so MLB / NBA / NFL each get their own cap.
+    MAX_DAILY_TOTALS = 6
+    def _is_game_total(p: dict) -> bool:
+        m = (p.get("market") or "").lower()
+        return (
+            m.startswith("total ")
+            and "team total" not in m
+            and "(alt)" not in m
+        )
+    totals_picks = [p for p in all_picks if _is_game_total(p)]
+    non_totals   = [p for p in all_picks if not _is_game_total(p)]
+    if len(totals_picks) > MAX_DAILY_TOTALS:
+        # Rank by (model_win_prob - implied) edge \u2014 highest first.
+        def _edge(p: dict) -> float:
+            try:
+                mp = float(p.get("model_win_prob") or p.get("win_probability", 0))
+                if mp > 1: mp /= 100.0
+                ip = float(p.get("implied_probability") or 0)
+                if ip > 1: ip /= 100.0
+                return mp - ip
+            except Exception:
+                return 0.0
+        totals_picks.sort(key=_edge, reverse=True)
+        totals_picks = totals_picks[:MAX_DAILY_TOTALS]
+        logger.info(
+            "%s: capped daily totals to top %d by edge (was %d)",
+            sport, MAX_DAILY_TOTALS, len([p for p in all_picks if _is_game_total(p)]),
+        )
+        all_picks = non_totals + totals_picks
     return all_picks
 
 

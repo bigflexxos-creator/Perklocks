@@ -27,7 +27,27 @@ export function SignalEnginePanel({ pick }: { pick: Pick }) {
   const se = pick.signal_engine;
   if (!se || !Array.isArray(se.components)) return null;
 
-  const tint = GRADE_TINTS[se.grade] || COLORS.voltBlue;
+  // 2026-07-19 fix: the CARD shows `pick.signal_score` (per-sport
+  // percentile rank 0-99) but the BREAKDOWN was showing
+  // `se.score` (raw composite 20-99 pre-rank). Same pick → two
+  // different numbers. Sync both to the rank so users see the
+  // same "SIGNAL 92/100" everywhere. Fall back to raw only when
+  // rank isn't set yet (very fresh v5 blocks before the ranker
+  // has run).
+  const displayScore = (typeof pick.signal_score === "number")
+    ? Math.round(pick.signal_score)
+    : Math.round(se.score);
+  // Derive grade from the RANK so the "STRONG / MODERATE / FADE"
+  // pill matches the card's colour. Grade thresholds are the
+  // same rank-percentile boundaries the backend uses on the card.
+  const derivedGrade = (
+    displayScore >= 88 ? "Elite"
+    : displayScore >= 72 ? "Strong"
+    : displayScore >= 55 ? "Moderate"
+    : displayScore >= 35 ? "Weak"
+    : "Fade"
+  );
+  const tint = GRADE_TINTS[derivedGrade] || COLORS.voltBlue;
   // Only components that actually had data get a row.
   const rows = se.components.filter((c) => c.found);
   if (rows.length === 0) return null;
@@ -37,12 +57,12 @@ export function SignalEnginePanel({ pick }: { pick: Pick }) {
       <View style={styles.headerRow}>
         <Text style={styles.title}>📡 SIGNAL ENGINE</Text>
         <View style={[styles.gradePill, { borderColor: tint + "66", backgroundColor: tint + "14" }]}>
-          <Text style={[styles.gradeText, { color: tint }]}>{se.grade.toUpperCase()}</Text>
+          <Text style={[styles.gradeText, { color: tint }]}>{derivedGrade.toUpperCase()}</Text>
         </View>
       </View>
 
       <View style={styles.scoreRow}>
-        <Text style={[styles.scoreBig, { color: tint }]}>{se.score}</Text>
+        <Text style={[styles.scoreBig, { color: tint }]}>{displayScore}</Text>
         <Text style={styles.scoreOutOf}>/100</Text>
         <Text style={styles.scoreLabel}>SIGNAL SCORE</Text>
       </View>
