@@ -317,3 +317,310 @@ def mlb_hitter_prob(
         "used_data":     used,
         "total_lift":    total_lift,
     }
+
+
+# ══ MLB PITCHER PROP (Strikeouts / Outs Recorded) ══════════════════════════
+def mlb_pitcher_prop_prob(
+    market: str,
+    side: str,
+    line: float,
+    implied: float,
+    ctx: dict,
+) -> dict[str, Any]:
+    """Data-driven prob for MLB pitcher Ks / Outs props.
+
+    ctx (populated by ``build_mlb_game_context`` + per-pitcher lookups):
+      - ctx['pitcher_stats'] = {'stuff_plus','k_pct','xERA','xwoba_allowed'}
+      - ctx['pitcher_stamina_ip_avg'] = float (career avg IP per start)
+      - ctx['opposing_lineup_k_pct'] = float (team K% vs same-hand pitcher)
+      - ctx['weather'] = {...}
+    """
+    contribs: dict[str, float] = {}
+    used: list[str] = []
+    lift = 0.0
+    market_l = (market or "").lower()
+    is_ks   = "strikeout" in market_l
+    is_outs = "outs recorded" in market_l
+
+    ps = ctx.get("pitcher_stats") or {}
+    stuff = ps.get("stuff_plus")
+    if isinstance(stuff, (int, float)):
+        # Elite Stuff+ (110+) → more Ks + deeper starts.
+        s_lift = _clamp((stuff - 100.0) * 0.003, -CAP_PITCHER, CAP_PITCHER)
+        if abs(s_lift) >= 0.003:
+            contribs["stuff_plus"] = round(s_lift, 4)
+            lift += s_lift
+            used.append("stuff_plus")
+
+    if is_ks:
+        opp_k = ctx.get("opposing_lineup_k_pct")
+        if isinstance(opp_k, (int, float)):
+            # League avg K% ~ 22%. Whiff-happy lineups (25%+) boost Ks.
+            k_lift = _clamp((opp_k - 22.0) * 0.005, -CAP_LINEUP, CAP_LINEUP)
+            if abs(k_lift) >= 0.003:
+                contribs["opp_lineup_k"] = round(k_lift, 4)
+                lift += k_lift
+                used.append("opp_lineup_k")
+
+    if is_outs:
+        stamina = ctx.get("pitcher_stamina_ip_avg")
+        if isinstance(stamina, (int, float)):
+            # Line is often 15.5-17.5 outs (5-6 IP). Deep-starter (18+
+            # outs avg) lifts Over meaningfully.
+            outs_avg = stamina * 3.0
+            gap = outs_avg - float(line)
+            stam_lift = _clamp(gap * 0.02, -CAP_LINEUP, CAP_LINEUP)
+            if abs(stam_lift) >= 0.003:
+                contribs["stamina"] = round(stam_lift, 4)
+                lift += stam_lift
+                used.append("stamina")
+
+    # Weather - pitchers hate hot humid days (fatigue) → shave outs.
+    weather = ctx.get("weather") or {}
+    if weather and not weather.get("is_dome"):
+        temp = weather.get("temp_f")
+        if isinstance(temp, (int, float)) and temp >= 90 and is_outs:
+            w_lift = -0.010
+            contribs["heat_fatigue"] = w_lift
+            lift += w_lift
+            used.append("heat_fatigue")
+
+    if side.lower() == "under":
+        lift = -lift
+        contribs = {k: -v for k, v in contribs.items()}
+    total_lift = _clamp(lift, -CAP_TOTAL, CAP_TOTAL)
+    mp = _clamp(implied + total_lift, 0.15, 0.90)
+    return {
+        "mp": mp, "anchor": implied,
+        "contributions": contribs, "used_data": used,
+        "confidence": min(1.0, len(used) / 3.0),
+        "total_lift": total_lift,
+    }
+
+
+# ══ SOCCER MONEYLINE ═══════════════════════════════════════════════════════
+def soccer_ml_prob(
+    side: str,           # home team name or away team name (of the pick)
+    home_team: str,
+    away_team: str,
+    implied: float,
+    ctx: dict,
+) -> dict[str, Any]:
+    """Data-driven prob for Soccer 1X2 moneyline picks.
+
+    ctx (populated by ``build_soccer_game_context``):
+      - ctx['home_form'] / ctx['away_form'] = {'gf_avg','ga_avg','n_matches','wins','draws','losses'}
+      - ctx['home_xg_rolling'] / ctx['away_xg_rolling'] = {'xg_avg','xga_avg','xg_diff'}
+      - ctx['home_manager_style'] / ctx['away_manager_style'] = 'attacking'|'defensive'|'balanced'
+      - ctx['pressure'] = 'high'|'normal'
+    """
+    contribs: dict[str, float] = {}
+    used: list[str] = []
+    lift = 0.0
+
+    is_home_side = (side.strip().lower() == home_team.strip().lower())
+    perspective = "home" if is_home_side else "away"
+
+    # Form-based lift: goal difference over the last N matches.
+    my_form  = ctx.get(f"{perspective}_form") or {}
+    opp_form = ctx.get(f"{'away' if is_home_side else 'home'}_form") or {}
+    if my_form.get("n_matches", 0) >= 5 and opp_form.get("n_matches", 0) >= 5:
+        my_gd  = float(my_form.get("gf_avg", 0)) - float(my_form.get("ga_avg", 0))
+        opp_gd = float(opp_form.get("gf_avg", 0)) - float(opp_form.get("ga_avg", 0))
+        form_gap = my_gd - opp_gd
+        form_lift = _clamp(form_gap * 0.03, -0.04, 0.04)
+        if abs(form_lift) >= 0.005:
+            contribs["form"] = round(form_lift, 4)
+            lift += form_lift
+            used.append("form")
+
+    # xG rolling window lift
+    my_xg  = ctx.get(f"{perspective}_xg_rolling") or {}
+    opp_xg = ctx.get(f"{'away' if is_home_side else 'home'}_xg_rolling") or {}
+    if isinstance(my_xg.get("xg_diff"), (int, float)) and isinstance(opp_xg.get("xg_diff"), (int, float)):
+        xg_gap = float(my_xg["xg_diff"]) - float(opp_xg["xg_diff"])
+        xg_lift = _clamp(xg_gap * 0.025, -CAP_XG, CAP_XG)
+        if abs(xg_lift) >= 0.005:
+            contribs["xg_rolling"] = round(xg_lift, 4)
+            lift += xg_lift
+            used.append("xg_rolling")
+
+    # Manager style bias (attacking home team vs defensive away = +goals)
+    my_style  = ctx.get(f"{perspective}_manager_style") or "balanced"
+    opp_style = ctx.get(f"{'away' if is_home_side else 'home'}_manager_style") or "balanced"
+    if my_style == "attacking" and opp_style == "defensive":
+        mgr_lift = 0.010
+    elif my_style == "defensive" and opp_style == "attacking":
+        mgr_lift = -0.006
+    else:
+        mgr_lift = 0.0
+    if abs(mgr_lift) >= 0.003:
+        contribs["manager"] = mgr_lift
+        lift += mgr_lift
+        used.append("manager")
+
+    # Home-field advantage (~3-4pp on average in soccer)
+    if is_home_side:
+        contribs["home_field"] = 0.020
+        lift += 0.020
+        used.append("home_field")
+
+    # High-pressure fixture on a chalk favorite → fade (upsets more common)
+    if ctx.get("pressure") == "high" and implied >= 0.70:
+        contribs["pressure_fade"] = -0.015
+        lift += -0.015
+        used.append("pressure_fade")
+
+    total_lift = _clamp(lift, -CAP_TOTAL, CAP_TOTAL)
+    mp = _clamp(implied + total_lift, 0.10, 0.92)
+    return {
+        "mp": mp, "anchor": implied,
+        "contributions": contribs, "used_data": used,
+        "confidence": min(1.0, len(used) / 4.0),
+        "total_lift": total_lift,
+    }
+
+
+# ══ SOCCER TOTALS ══════════════════════════════════════════════════════════
+def soccer_total_prob(
+    side: str,           # "Over" | "Under"
+    line: float,
+    implied: float,
+    ctx: dict,
+) -> dict[str, Any]:
+    """Data-driven prob for Soccer Total Goals Over/Under."""
+    contribs: dict[str, float] = {}
+    used: list[str] = []
+    over_bias = 0.0
+
+    # Projected goals from rolling xG (both teams' scoring + conceding).
+    hx = ctx.get("home_xg_rolling") or {}
+    ax = ctx.get("away_xg_rolling") or {}
+    hf = ctx.get("home_form") or {}
+    af = ctx.get("away_form") or {}
+    proj = None
+    if isinstance(hx.get("xg_avg"), (int, float)) and isinstance(ax.get("xg_avg"), (int, float)):
+        proj = float(hx["xg_avg"]) + float(ax["xg_avg"])
+        used.append("xg_projection")
+    elif hf.get("gf_avg") and af.get("gf_avg"):
+        proj = float(hf["gf_avg"]) + float(af["gf_avg"])
+        used.append("gf_projection")
+    if proj is not None:
+        gap = proj - float(line)
+        proj_lift = _clamp(gap * 0.035, -0.06, 0.06)
+        contribs["projected_goals"] = round(proj_lift, 4)
+        over_bias += proj_lift
+
+    # Manager tempo — both attacking = extra goals.
+    hs = ctx.get("home_manager_style") or "balanced"
+    as_ = ctx.get("away_manager_style") or "balanced"
+    if hs == "attacking" and as_ == "attacking":
+        contribs["managers"] = 0.015
+        over_bias += 0.015
+        used.append("managers_attacking")
+    elif hs == "defensive" and as_ == "defensive":
+        contribs["managers"] = -0.018
+        over_bias += -0.018
+        used.append("managers_defensive")
+
+    # High-pressure derby → more variance but slightly more goals
+    # historically (attacking urgency + red cards + PKs).
+    if ctx.get("pressure") == "high":
+        contribs["derby_variance"] = 0.008
+        over_bias += 0.008
+        used.append("derby")
+
+    if side.lower() == "under":
+        over_bias = -over_bias
+        contribs = {k: -v for k, v in contribs.items()}
+    total_lift = _clamp(over_bias, -CAP_TOTAL, CAP_TOTAL)
+    mp = _clamp(implied + total_lift, 0.15, 0.90)
+    return {
+        "mp": mp, "anchor": implied,
+        "contributions": contribs, "used_data": used,
+        "confidence": min(1.0, len(used) / 3.0),
+        "total_lift": total_lift,
+    }
+
+
+# ══ TENNIS MONEYLINE ═══════════════════════════════════════════════════════
+def tennis_ml_prob(
+    side: str,           # player name of the pick
+    player_a: str,
+    player_b: str,
+    surface: str,
+    implied: float,
+    ctx: dict,
+) -> dict[str, Any]:
+    """Data-driven prob for Tennis Moneyline picks.
+
+    ctx (populated by ``build_tennis_match_context``):
+      - ctx['sackmann_a'] / ctx['sackmann_b'] = {'first_serve_won_pct',
+                                                  'return_pts_won_pct',
+                                                  'break_pct'}
+      - ctx['surface_elo_a'] / ctx['surface_elo_b'] = float
+      - ctx['fatigue_a_matches_7d'] / ctx['fatigue_b_matches_7d'] = int
+      - ctx['h2h_a_wins'] / ctx['h2h_b_wins'] = int
+    """
+    contribs: dict[str, float] = {}
+    used: list[str] = []
+    lift = 0.0
+
+    is_a = (side.strip().lower() == player_a.strip().lower())
+    my_suffix = "a" if is_a else "b"
+    opp_suffix = "b" if is_a else "a"
+
+    # Surface Elo
+    my_elo  = ctx.get(f"surface_elo_{my_suffix}")
+    opp_elo = ctx.get(f"surface_elo_{opp_suffix}")
+    if isinstance(my_elo, (int, float)) and isinstance(opp_elo, (int, float)):
+        # Elo diff of 100 pts = roughly +14pp win prob
+        elo_gap = my_elo - opp_elo
+        elo_lift = _clamp(elo_gap * 0.00035, -CAP_TENNIS_ELO, CAP_TENNIS_ELO)
+        if abs(elo_lift) >= 0.005:
+            contribs["surface_elo"] = round(elo_lift, 4)
+            lift += elo_lift
+            used.append("surface_elo")
+
+    # First-serve won% differential — sustained holds win matches
+    sm_my  = ctx.get(f"sackmann_{my_suffix}") or {}
+    sm_opp = ctx.get(f"sackmann_{opp_suffix}") or {}
+    fs_my  = sm_my.get("first_serve_won_pct")
+    fs_opp = sm_opp.get("first_serve_won_pct")
+    if isinstance(fs_my, (int, float)) and isinstance(fs_opp, (int, float)):
+        fs_lift = _clamp((fs_my - fs_opp) * 0.003, -CAP_TENNIS_SVC, CAP_TENNIS_SVC)
+        if abs(fs_lift) >= 0.005:
+            contribs["first_serve"] = round(fs_lift, 4)
+            lift += fs_lift
+            used.append("first_serve")
+
+    # Fatigue: 3+ matches in the last 7 days = -1pp
+    fm = ctx.get(f"fatigue_{my_suffix}_matches_7d") or 0
+    fo = ctx.get(f"fatigue_{opp_suffix}_matches_7d") or 0
+    if isinstance(fm, int) and isinstance(fo, int):
+        f_lift = _clamp((fo - fm) * 0.007, -0.020, 0.020)
+        if abs(f_lift) >= 0.005:
+            contribs["fatigue"] = round(f_lift, 4)
+            lift += f_lift
+            used.append("fatigue")
+
+    # H2H career
+    aw = ctx.get("h2h_a_wins") or 0
+    bw = ctx.get("h2h_b_wins") or 0
+    total_h2h = aw + bw
+    if total_h2h >= 3:
+        share = (aw if is_a else bw) / total_h2h
+        h_lift = _clamp((share - 0.5) * 0.04, -0.020, 0.020)
+        if abs(h_lift) >= 0.005:
+            contribs["h2h"] = round(h_lift, 4)
+            lift += h_lift
+            used.append("h2h")
+
+    total_lift = _clamp(lift, -CAP_TOTAL, CAP_TOTAL)
+    mp = _clamp(implied + total_lift, 0.10, 0.92)
+    return {
+        "mp": mp, "anchor": implied,
+        "contributions": contribs, "used_data": used,
+        "confidence": min(1.0, len(used) / 4.0),
+        "total_lift": total_lift,
+    }
