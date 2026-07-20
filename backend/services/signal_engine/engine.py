@@ -348,7 +348,32 @@ async def compute_signals(db, pick: dict) -> dict:
         # 5+ signals, ≥2.5pp positive lift → floor at +44 raw (score 94)
         conviction_boost = max(conviction_boost, 44.0)
     if conviction_boost > 0:
-        adjusted = max(adjusted, conviction_boost)
+        # ── Signal spread fix (2026-07-21) ─────────────────────────────
+        # OLD: `adjusted = max(adjusted, conviction_boost)` — this
+        # HARD-PINNED every pick in each Lock band to the same score
+        # (133/163 picks were showing signal=78 because every Strong
+        # Lock landed at exactly the 78 floor). The floor overrode all
+        # component signal so weather / matchup / DD contribs became
+        # invisible.
+        # NEW: use conviction as a soft floor with headroom for
+        # component-driven variance. Elite Locks (≥40 boost) get NO
+        # headroom so they stay pinned at 90+; lower bands get a 4pt
+        # window to reveal component differentiation.
+        # Effect: Strong Locks now spread 74-88 based on data strength
+        # (was pinned at 78); Elite Locks stay 88-98 depending on data.
+        if conviction_boost >= 40.0:
+            floor_headroom = 0.0   # Elite Lock — pin at floor minimum
+        elif conviction_boost >= 28.0:
+            floor_headroom = 4.0   # Strong Lock — 4pt drop allowed
+        else:
+            floor_headroom = 3.0   # Moderate/Elite-tag — 3pt drop
+        base = max(adjusted, conviction_boost - floor_headroom)
+        # Add a bounded slice of the raw component signal on top so
+        # picks with real data lift/drag beat picks with no evidence.
+        component_kick = max(-8.0, min(10.0, total * 0.6))
+        adjusted = base + component_kick
+        # Never fall below (floor - headroom); never exceed 48.
+        adjusted = max(conviction_boost - floor_headroom, min(48.0, adjusted))
 
     score = int(round(max(0.0, min(100.0, 50.0 + adjusted))))
     why = build_why(pick, score, components)
@@ -388,8 +413,8 @@ def _inject_rationale(pick: dict, score: int, components: list[dict]) -> None:
     so the card's expandable "Why This Pick?" panel surfaces them.
     Deduped case-insensitively against existing lines."""
     strongest = sorted(
-        (c for c in components if abs(c["points"]) >= 2 and c["details"]),
-        key=lambda c: abs(c["points"]), reverse=True,
+        (c for c in components if abs(c.get("points", 0)) >= 2 and c.get("details")),
+        key=lambda c: abs(c.get("points", 0)), reverse=True,
     )[:2]
     if not strongest:
         return
