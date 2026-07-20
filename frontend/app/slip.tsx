@@ -1,5 +1,5 @@
 import React, { useRef, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Alert } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, Alert, Modal } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { Stack, useRouter } from "expo-router";
@@ -33,6 +33,11 @@ export default function SlipScreen() {
   const parlay = computeParlay(slip.picks);
   const cardRef = useRef<View>(null);
   const [busy, setBusy] = useState(false);
+  // 2026-07-21 — inline modal instead of Alert.alert. Alert with buttons
+  // is unreliable on React Native Web: on the /slip screen, tapping
+  // CLEAR fired the Alert but the "Clear" button in the Alert popup
+  // silently no-op'd (native-only handler). Modal works everywhere.
+  const [clearConfirm, setClearConfirm] = useState(false);
 
   const onShare = async () => {
     if (slip.count === 0 || busy) return;
@@ -76,14 +81,12 @@ export default function SlipScreen() {
         stake_units: 1.0,
         parlay_legs: legIds,
       });
-      Alert.alert(
-        "✓ Parlay Tracked",
-        `${legIds.length}-leg parlay logged at 1u. It'll auto-grade in My Bets when every leg settles.`,
-        [
-          { text: "Keep Slip", style: "cancel" },
-          { text: "Clear Slip", onPress: () => slip.clear() },
-        ],
-      );
+      // Auto-clear the slip on success — user has already committed
+      // the parlay to My Bets, so keeping the same picks in the slip
+      // would only invite double-tracking. Feedback via router push
+      // so the user lands directly on My Bets and sees the new entry.
+      slip.clear();
+      router.replace("/(tabs)/my-bets");
     } catch (e: any) {
       Alert.alert("Track failed", String(e?.message || e));
     } finally {
@@ -101,10 +104,7 @@ export default function SlipScreen() {
         <Text style={styles.title}>MY BET SLIP</Text>
         <View style={styles.headerActions}>
           <Pressable
-            onPress={() => slip.count > 0 && Alert.alert("Clear slip?", "Remove all picks?", [
-              { text: "Cancel", style: "cancel" },
-              { text: "Clear", style: "destructive", onPress: () => slip.clear() },
-            ])}
+            onPress={() => slip.count > 0 && setClearConfirm(true)}
             hitSlop={10}
             testID="slip-clear"
           >
@@ -224,6 +224,39 @@ export default function SlipScreen() {
           </>
         )}
       </ScrollView>
+
+      {/* ── Clear Slip confirmation (2026-07-21) ────────────────────
+          Web Alert with buttons was silently no-op'ing the Clear
+          action; Modal renders identically on iOS / Android / web. */}
+      <Modal
+        visible={clearConfirm}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setClearConfirm(false)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setClearConfirm(false)}>
+          <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.modalTitle}>Clear Slip?</Text>
+            <Text style={styles.modalMeta}>
+              Remove all {slip.count} pick{slip.count === 1 ? "" : "s"} from your slip? This can&apos;t be undone.
+            </Text>
+            <View style={styles.confirmRow}>
+              <Pressable style={styles.cancelBtn} onPress={() => setClearConfirm(false)}>
+                <Text style={styles.cancelBtnText}>Keep Picks</Text>
+              </Pressable>
+              <Pressable
+                style={styles.destructiveBtn}
+                onPress={() => {
+                  slip.clear();
+                  setClearConfirm(false);
+                }}
+              >
+                <Text style={styles.destructiveBtnText}>Clear All</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -289,6 +322,32 @@ const styles = StyleSheet.create({
   },
   trackAllTxt: {
     color: COLORS.bg, fontSize: 13, fontWeight: "900", letterSpacing: 1.3,
+  },
+  // ── Clear-slip confirmation modal styles ──────────────────────────
+  modalBackdrop: {
+    flex: 1, backgroundColor: "rgba(0,0,0,0.75)",
+    alignItems: "center", justifyContent: "center", padding: 24,
+  },
+  modalSheet: {
+    width: "100%", maxWidth: 400,
+    backgroundColor: "#111", borderRadius: 16,
+    borderWidth: 1, borderColor: COLORS.borderDefault,
+    padding: 20,
+  },
+  modalTitle: {
+    color: COLORS.textPrimary, fontSize: 18, fontWeight: "900",
+    letterSpacing: 0.3,
+  },
+  modalMeta: { color: COLORS.textMuted, fontSize: 13, marginTop: 8, lineHeight: 18 },
+  confirmRow: { flexDirection: "row", gap: 12, marginTop: 20, alignItems: "center" },
+  cancelBtn: { flex: 1, paddingVertical: 12, alignItems: "center" },
+  cancelBtnText: { color: COLORS.textMuted, fontSize: 13, fontWeight: "700" },
+  destructiveBtn: {
+    flex: 1, paddingVertical: 12, borderRadius: 8, alignItems: "center",
+    backgroundColor: COLORS.electricBlaze,
+  },
+  destructiveBtnText: {
+    color: "#000", fontSize: 13, fontWeight: "900", letterSpacing: 1.1,
   },
   bookBtn: { flex: 1, minWidth: 90, flexDirection: "row", alignItems: "center", justifyContent: "center",
     gap: 6, paddingVertical: 12, backgroundColor: COLORS.surface, borderRadius: 10,
