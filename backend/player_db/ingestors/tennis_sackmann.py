@@ -33,7 +33,16 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 logger = logging.getLogger("lockscore.player_db.tennis")
 
-_BASE = "https://raw.githubusercontent.com/Tennismylife/TML-Database/master"
+_BASE_ATP = "https://raw.githubusercontent.com/Tennismylife/TML-Database/master"
+# WTA base: Jeff Sackmann's `tennis_wta` repo has been renamed/removed
+# (404 across all URL variants as of 2026-07-20). Left as a placeholder;
+# `refresh_wta` will no-op cleanly until we point this at a working
+# WTA CSV mirror. Alternatives to evaluate:
+#   • Sportradar Tennis (paid)
+#   • Universal Tennis Rating (paid)
+#   • Match-Charting Project (public, deeper stats)
+_BASE_WTA = "https://raw.githubusercontent.com/JeffSackmann/tennis_wta/master"
+_BASE = _BASE_ATP  # backward-compat alias
 _HEADERS = {"User-Agent": "Mozilla/5.0 (PerksLocks/1.0)"}
 _TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 _SEM = asyncio.Semaphore(6)             # one CSV per file — be polite
@@ -61,21 +70,27 @@ def _safe_float(v: Any) -> float | None:
         return None
 
 
-async def _fetch_year_csv(client: httpx.AsyncClient, year: int) -> str | None:
+async def _fetch_year_csv(client: httpx.AsyncClient, year: int, tour: str = "atp") -> str | None:
     """Download one year's match CSV. Returns text or None on error."""
     async with _SEM:
         try:
-            url = f"{_BASE}/{year}.csv"
+            # ATP uses TML-Database (adds recent months faster). WTA
+            # uses JeffSackmann/tennis_wta and follows the filename
+            # convention `wta_matches_YYYY.csv`.
+            if tour == "wta":
+                url = f"{_BASE_WTA}/wta_matches_{year}.csv"
+            else:
+                url = f"{_BASE_ATP}/{year}.csv"
             r = await client.get(url, timeout=_TIMEOUT)
             if r.status_code == 200:
                 return r.text
-            logger.warning("TML-Database %d → HTTP %d", year, r.status_code)
+            logger.warning("Sackmann %s %d → HTTP %d", tour.upper(), year, r.status_code)
         except Exception as e:
-            logger.warning("TML-Database %d exception: %s", year, e)
+            logger.warning("Sackmann %s %d exception: %s", tour.upper(), year, e)
         return None
 
 
-def _parse_year(text: str, year: int) -> list[dict]:
+def _parse_year(text: str, year: int, tour: str = "atp") -> list[dict]:
     """Stream-parse a year CSV into a list of normalised match dicts.
     Each row yields one match record we can derive player + match data from."""
     rows: list[dict] = []
@@ -90,7 +105,7 @@ def _parse_year(text: str, year: int) -> list[dict]:
                 except ValueError:
                     iso_date = None
             rows.append({
-                "tour": "atp",
+                "tour": tour,
                 "year": year,
                 "tourney_id":    r.get("tourney_id"),
                 "tourney_name":  r.get("tourney_name"),
@@ -187,6 +202,28 @@ async def refresh_atp(
     *,
     years: int = 10,
 ) -> dict:
+    return await _refresh_tour(db, "atp", years=years)
+
+
+async def refresh_wta(
+    db: AsyncIOMotorDatabase,
+    *,
+    years: int = 10,
+) -> dict:
+    """Bulk-load last `years` years of WTA match data from
+    JeffSackmann/tennis_wta and rebuild WTA player profiles. Same
+    schema as ATP; picks/context builders find WTA and ATP players
+    in the same collections."""
+    return await _refresh_tour(db, "wta", years=years)
+
+
+async def _refresh_tour(
+    db: AsyncIOMotorDatabase,
+    tour: str,
+    *,
+    years: int = 10,
+) -> dict:
+    """Shared bulk-load path for ATP + WTA."""
     """Bulk-load last `years` years of ATP match data and rebuild the
     player profiles. Default 10y is enough to cover every active player
     while keeping the row count manageable (~3-5k matches/year ≈ 40k)."""
@@ -201,7 +238,7 @@ async def refresh_atp(
     async with httpx.AsyncClient(headers=_HEADERS) as client:
         # Fetch all years in parallel
         texts = await asyncio.gather(
-            *[_fetch_year_csv(client, y) for y in year_list],
+            *[_fetch_year_csv(client, y, tour) for y in year_list],
             return_exceptions=False,
         )
 
@@ -209,7 +246,7 @@ async def refresh_atp(
         if not text:
             csv_errors += 1
             continue
-        rows = _parse_year(text, year)
+        rows = _parse_year(text, year, tour)
         # Persist matches (in modestly-sized batches; idempotent)
         for r in rows:
             await _upsert_match(db, r)

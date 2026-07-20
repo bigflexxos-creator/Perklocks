@@ -570,11 +570,10 @@ def tennis_ml_prob(
     my_suffix = "a" if is_a else "b"
     opp_suffix = "b" if is_a else "a"
 
-    # Surface Elo
+    # Surface Elo (if attached to Sackmann doc; often absent so skip cleanly)
     my_elo  = ctx.get(f"surface_elo_{my_suffix}")
     opp_elo = ctx.get(f"surface_elo_{opp_suffix}")
     if isinstance(my_elo, (int, float)) and isinstance(opp_elo, (int, float)):
-        # Elo diff of 100 pts = roughly +14pp win prob
         elo_gap = my_elo - opp_elo
         elo_lift = _clamp(elo_gap * 0.00035, -CAP_TENNIS_ELO, CAP_TENNIS_ELO)
         if abs(elo_lift) >= 0.005:
@@ -582,17 +581,57 @@ def tennis_ml_prob(
             lift += elo_lift
             used.append("surface_elo")
 
-    # First-serve won% differential — sustained holds win matches
     sm_my  = ctx.get(f"sackmann_{my_suffix}") or {}
     sm_opp = ctx.get(f"sackmann_{opp_suffix}") or {}
-    fs_my  = sm_my.get("first_serve_won_pct")
-    fs_opp = sm_opp.get("first_serve_won_pct")
+
+    # ── Win% (52-week rolling) — strongest single Sackmann signal ─────
+    wp_my  = sm_my.get("win_pct")
+    wp_opp = sm_opp.get("win_pct")
+    if isinstance(wp_my, (int, float)) and isinstance(wp_opp, (int, float)):
+        # 20pp win-pct gap ≈ +6pp match win prob
+        wp_lift = _clamp((wp_my - wp_opp) * 0.003, -0.040, 0.040)
+        if abs(wp_lift) >= 0.003:
+            contribs["win_pct"] = round(wp_lift, 4)
+            lift += wp_lift
+            used.append("win_pct")
+
+    # ── Hold% (serve dominance) ────────────────────────────────────────
+    hp_my  = sm_my.get("hold_pct")
+    hp_opp = sm_opp.get("hold_pct")
+    if isinstance(hp_my, (int, float)) and isinstance(hp_opp, (int, float)):
+        hp_lift = _clamp((hp_my - hp_opp) * 0.002, -0.030, 0.030)
+        if abs(hp_lift) >= 0.003:
+            contribs["hold_pct"] = round(hp_lift, 4)
+            lift += hp_lift
+            used.append("hold_pct")
+
+    # ── First-serve won% ───────────────────────────────────────────────
+    fs_my  = (sm_my.get("first_serve_won_pct") or sm_my.get("first_serve_win_pct"))
+    fs_opp = (sm_opp.get("first_serve_won_pct") or sm_opp.get("first_serve_win_pct"))
     if isinstance(fs_my, (int, float)) and isinstance(fs_opp, (int, float)):
-        fs_lift = _clamp((fs_my - fs_opp) * 0.003, -CAP_TENNIS_SVC, CAP_TENNIS_SVC)
-        if abs(fs_lift) >= 0.005:
+        fs_lift = _clamp((fs_my - fs_opp) * 0.002, -CAP_TENNIS_SVC, CAP_TENNIS_SVC)
+        if abs(fs_lift) >= 0.003:
             contribs["first_serve"] = round(fs_lift, 4)
             lift += fs_lift
             used.append("first_serve")
+
+    # ── Break-saved% (composure on the ropes) ──────────────────────────
+    bs_my  = sm_my.get("break_saved_pct")
+    bs_opp = sm_opp.get("break_saved_pct")
+    if isinstance(bs_my, (int, float)) and isinstance(bs_opp, (int, float)):
+        bs_lift = _clamp((bs_my - bs_opp) * 0.0015, -0.020, 0.020)
+        if abs(bs_lift) >= 0.003:
+            contribs["break_saved"] = round(bs_lift, 4)
+            lift += bs_lift
+            used.append("break_saved")
+
+    # ── Retirement risk penalty (chalk fade) ──────────────────────────
+    rr_my = sm_my.get("retirement_rate_pct")
+    if isinstance(rr_my, (int, float)) and rr_my >= 5.0:
+        # >5% retirement rate = injury-prone; shave 1-2pp off chalk favs
+        contribs["retirement_risk"] = -0.015
+        lift += -0.015
+        used.append("retirement_risk")
 
     # Fatigue: 3+ matches in the last 7 days = -1pp
     fm = ctx.get(f"fatigue_{my_suffix}_matches_7d") or 0
