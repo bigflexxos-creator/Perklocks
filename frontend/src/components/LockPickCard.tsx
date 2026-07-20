@@ -642,6 +642,115 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
                 })()
               )}
 
+              {/* ── Batter-vs-Pitcher career splits (populated by
+                   /app/backend/mlb_bvp.py). Only renders when the batter
+                   has actually faced the opposing starter previously and
+                   the sample is meaningful (≥3 PA). This is the "we
+                   missing data not showing batter vs pitcher" fix — the
+                   BvP was in the pick doc but was hidden in the detail
+                   view; now surfaces on the card itself. */}
+              {(() => {
+                const bvp = (pick as any).bvp_history as
+                  | {
+                      ab?: number;
+                      h?: number;
+                      hr?: number;
+                      so?: number;
+                      bb?: number;
+                      avg?: number;
+                      batter_name?: string;
+                      pitcher_name?: string;
+                    }
+                  | undefined;
+                if (!bvp || !bvp.ab || bvp.ab < 3) return null;
+                const bvpAdj = (pick as any).bvp_lock_adjustment as
+                  | number
+                  | undefined;
+                const hot = (bvp.avg ?? 0) >= 0.300;
+                const cold = (bvp.avg ?? 0) < 0.200 && (bvp.ab ?? 0) >= 6;
+                return (
+                  <View style={styles.whySection}>
+                    <Text style={styles.whySectionLabel}>
+                      BATTER vs PITCHER
+                    </Text>
+                    <View style={styles.whyPqRow}>
+                      <View
+                        style={[
+                          styles.whyPqChip,
+                          hot && styles.whyPqChipGood,
+                          cold && styles.whyPqChipBad,
+                        ]}
+                      >
+                        <Text style={styles.whyPqChipLabel}>H/AB</Text>
+                        <Text
+                          style={[
+                            styles.whyPqChipVal,
+                            hot && { color: "#86EFAC" },
+                            cold && { color: "#FCA5A5" },
+                          ]}
+                        >
+                          {bvp.h}/{bvp.ab}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.whyPqChipLabel,
+                            { fontSize: 9, opacity: 0.7 },
+                          ]}
+                        >
+                          {(bvp.avg ?? 0).toFixed(3).replace(/^0/, "")} avg
+                        </Text>
+                      </View>
+                      {(bvp.hr ?? 0) > 0 && (
+                        <View style={styles.whyPqChip}>
+                          <Text style={styles.whyPqChipLabel}>HR</Text>
+                          <Text
+                            style={[
+                              styles.whyPqChipVal,
+                              { color: "#86EFAC" },
+                            ]}
+                          >
+                            {bvp.hr}
+                          </Text>
+                        </View>
+                      )}
+                      {(bvp.so ?? 0) > 0 && (
+                        <View style={styles.whyPqChip}>
+                          <Text style={styles.whyPqChipLabel}>K</Text>
+                          <Text
+                            style={[
+                              styles.whyPqChipVal,
+                              { color: "#FCA5A5" },
+                            ]}
+                          >
+                            {bvp.so}
+                          </Text>
+                        </View>
+                      )}
+                      {(bvp.bb ?? 0) > 0 && (
+                        <View style={styles.whyPqChip}>
+                          <Text style={styles.whyPqChipLabel}>BB</Text>
+                          <Text style={styles.whyPqChipVal}>{bvp.bb}</Text>
+                        </View>
+                      )}
+                    </View>
+                    {typeof bvpAdj === "number" && bvpAdj !== 0 && (
+                      <Text
+                        style={[
+                          styles.whySplitHint,
+                          {
+                            color:
+                              bvpAdj > 0 ? "#86EFAC" : "#FCA5A5",
+                          },
+                        ]}
+                      >
+                        {bvpAdj > 0 ? "+" : ""}
+                        {bvpAdj} Lock Score from BvP history
+                      </Text>
+                    )}
+                  </View>
+                );
+              })()}
+
               {/* ── Recent Form rolling windows (L5 / L10 / L20) ────
                    Real player game-log data. Format depends on engine:
                    • MLB HITTERS → "5/5" (games with ≥1 hit / games)

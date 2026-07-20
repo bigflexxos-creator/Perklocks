@@ -219,6 +219,48 @@ async def build_tennis_match_context(game: dict) -> dict[str, Any]:
     if "/" in home or "/" in away:
         return ctx  # doubles \u2014 no per-player data available
 
+    # ── Book consensus & match tier (WORKS FOR EVERY MATCH — no
+    # player-level data needed). Book consensus = how tight is the
+    # pick's implied prob across all bookmakers on this game? Sharp
+    # market = tight spread. Match tier from the tourney/league.
+    try:
+        h2h_bks = []
+        for bk in (game.get("bookmakers") or []):
+            for m in bk.get("markets") or []:
+                if m.get("key") != "h2h":
+                    continue
+                for o in m.get("outcomes") or []:
+                    name = (o.get("name") or "").strip()
+                    price = o.get("price")
+                    if isinstance(price, (int, float)) and name == home:
+                        # American odds → implied prob
+                        p = 100.0 / (price + 100.0) if price >= 100 else -price / (-price + 100.0)
+                        h2h_bks.append(p)
+        if len(h2h_bks) >= 3:
+            spread_pp = (max(h2h_bks) - min(h2h_bks)) * 100.0
+            ctx["book_consensus_spread_pp"] = round(spread_pp, 2)
+    except Exception as e:
+        logger.debug("tennis book-consensus ctx failed: %s", e)
+
+    # Match tier detection
+    league = (game.get("sport_title") or game.get("league") or "").lower()
+    event  = (game.get("event") or game.get("tournament") or "").lower()
+    combo  = f"{league} {event}"
+    if any(t in combo for t in ("australian open","french open","wimbledon","us open","grand slam")):
+        ctx["match_tier"] = "slam"
+    elif any(t in combo for t in ("atp1000","masters 1000","atp masters","indian wells","miami open","monte carlo","madrid open","italian open","canadian open","cincinnati open","shanghai masters","paris masters")):
+        ctx["match_tier"] = "atp1000"
+    elif "wta 1000" in combo or "wta1000" in combo:
+        ctx["match_tier"] = "wta1000"
+    elif "atp 500" in combo or "wta 500" in combo:
+        ctx["match_tier"] = "atp500"
+    elif "atp 250" in combo or "wta 250" in combo:
+        ctx["match_tier"] = "atp250"
+    elif "challenger" in combo:
+        ctx["match_tier"] = "challenger"
+    elif "itf" in combo or "w15" in combo or "w25" in combo or "w40" in combo or "w60" in combo or "m15" in combo or "m25" in combo:
+        ctx["match_tier"] = "itf"
+
     # 1) Sackmann career stats via services.tennis.fallback (real cache)
     try:
         from motor.motor_asyncio import AsyncIOMotorClient

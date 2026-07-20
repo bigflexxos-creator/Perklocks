@@ -951,7 +951,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             except Exception as e:
                 logger.debug("soccer DD ml failed: %s", e)
                 dd_ml_result = None
-        elif sport == "Tennis" and game_ctx and "sackmann_a" in game_ctx:
+        elif sport == "Tennis" and game_ctx:
             try:
                 from services.data_driven_model import tennis_ml_prob
                 surface = (game.get("surface") or "hard").lower()
@@ -1677,6 +1677,80 @@ async def _backfill_tennis_moneylines(picks: list[dict], date_str: str) -> list[
             "is_alt": False,
             "no_bet": False,
         }
+
+        # ── Wire DATA-DRIVEN scoring into the backfill path (2026-07-20).
+        # Previously tennis picks bypassed DD entirely because they were
+        # emitted directly here, not via `_build_pick`. Compute book
+        # consensus spread + match tier from the live_alt_lines rows
+        # (already fetched, zero extra API cost) and feed them into
+        # tennis_ml_prob. Sackmann + H2H are also pulled from DB for
+        # ATP players when available. Contribs then land on the pick
+        # and flow into the Signal Engine breakdown.
+        try:
+            from services.data_driven_model import tennis_ml_prob
+            # Build a lightweight ctx from the rows we already have.
+            all_prices = [float(r.get("price")) for r in rows if isinstance(r.get("price"), (int, float))]
+            # Convert American→implied for the FAVOURITE side prices
+            fav_prices = by_side.get(fav_side, [])
+            fav_probs = []
+            for pr in fav_prices:
+                if pr >= 100:
+                    fav_probs.append(100.0 / (pr + 100.0))
+                else:
+                    fav_probs.append(-pr / (-pr + 100.0))
+            ctx = {}
+            if len(fav_probs) >= 3:
+                ctx["book_consensus_spread_pp"] = round((max(fav_probs) - min(fav_probs)) * 100.0, 2)
+            # Tier detection from league + event name
+            league_l = (rows[0].get("league") or "").lower()
+            evt_l    = event_name.lower()
+            combo    = f"{league_l} {evt_l}"
+            if any(t in combo for t in ("australian open","french open","wimbledon","us open")):
+                ctx["match_tier"] = "slam"
+            elif "atp 1000" in combo or "wta 1000" in combo or "masters 1000" in combo:
+                ctx["match_tier"] = "atp1000"
+            elif "atp 500" in combo or "wta 500" in combo:
+                ctx["match_tier"] = "atp500"
+            elif "atp 250" in combo or "wta 250" in combo:
+                ctx["match_tier"] = "atp250"
+            elif "challenger" in combo:
+                ctx["match_tier"] = "challenger"
+            elif any(t in combo for t in ("itf","w15","w25","w40","w60","m15","m25")):
+                ctx["match_tier"] = "itf"
+            # Sackmann lookup for ATP players (silent no-op for WTA / challenger)
+            try:
+                from services.tennis.fallback import get_player_stats, get_h2h
+                # Extract opponent name (other player in `by_side`)
+                other_side = next((s for s in by_side.keys() if s != fav_side), "")
+                # Surface heuristic from event name
+                if any(x in evt_l for x in ("wimbledon","grass")):
+                    surface_key = "Grass"
+                elif any(x in evt_l for x in ("french","clay","roland","monte carlo","madrid","rome","barcelona")):
+                    surface_key = "Clay"
+                else:
+                    surface_key = "Hard"
+                sa = await get_player_stats(db, fav_side, surface_key)
+                sb = await get_player_stats(db, other_side, surface_key) if other_side else None
+                if sa: ctx["sackmann_a"] = sa
+                if sb: ctx["sackmann_b"] = sb
+                if other_side:
+                    h = await get_h2h(db, fav_side, other_side)
+                    if h and h.get("matches", 0) >= 1:
+                        ctx["h2h_a_wins"] = h.get("a_wins", 0)
+                        ctx["h2h_b_wins"] = h.get("b_wins", 0)
+            except Exception:
+                pass
+            other_side = next((s for s in by_side.keys() if s != fav_side), fav_side)
+            dd = tennis_ml_prob(fav_side, fav_side, other_side, "hard", implied, ctx)
+            if dd.get("contributions"):
+                pick["data_driven_used"] = True
+                pick["data_driven_contribs"] = dd["contributions"]
+                # Refine win_prob using the DD lift instead of the flat +2%
+                pick["win_probability"] = round(dd["mp"] * 100, 1)
+                pick["edge_percent"] = round((dd["mp"] - implied) * 100, 2)
+        except Exception as e:
+            logger.debug("tennis DD backfill scoring failed for %s: %s", event_name, e)
+
         picks.append(pick)
         added += 1
     if added:

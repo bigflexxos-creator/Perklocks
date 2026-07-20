@@ -655,6 +655,127 @@ def tennis_ml_prob(
             lift += h_lift
             used.append("h2h")
 
+    # ── Book-consensus (works for EVERY tennis pick, no player stats
+    # needed). Measures the spread of the pick's implied prob across
+    # bookmakers. Tight consensus (< 3pp spread) = sharp market =
+    # trust the line. Wide spread (> 8pp) = uncertain market where
+    # the median line is more likely wrong; small mean-reversion fade.
+    consensus_spread = ctx.get("book_consensus_spread_pp")
+    if isinstance(consensus_spread, (int, float)):
+        if consensus_spread <= 3.0:
+            contribs["sharp_consensus"] = 0.008
+            lift += 0.008
+            used.append("sharp_consensus")
+        elif consensus_spread >= 8.0:
+            contribs["book_uncertainty"] = -0.010
+            lift += -0.010
+            used.append("book_uncertainty")
+
+    # ── Match tier signal (Grand Slam / ATP 1000 / Challenger / ITF)
+    # from the tournament name. Higher-tier tourneys have sharper lines
+    # (less recreational money) so the model should trust the book more
+    # and add smaller lifts. Lower-tier events have more mispricing.
+    # 2026-07-21 — Expanded coverage: tier signal fires for BOTH favorites
+    # AND dogs (was dogs-only which excluded tennis_extra's 100% favorite
+    # picks). Different sign per tier: chalk favorites in sharp markets
+    # tend to hold; chalk favorites in soft ITF markets tend to slip.
+    tier = ctx.get("match_tier")
+    if isinstance(tier, str):
+        tier_l = tier.lower()
+        is_fav = implied >= 0.50
+        # Slam / Masters 1000 — sharp, favorites hold, dogs fade
+        if any(k in tier_l for k in ("slam", "atp1000", "wta1000", "masters")):
+            if is_fav:
+                contribs["tier_sharp_fav"] = 0.010
+                lift += 0.010
+                used.append("tier_sharp_fav")
+            else:
+                contribs["tier_dog_fade"] = -0.008
+                lift += -0.008
+                used.append("tier_dog_fade")
+        elif any(k in tier_l for k in ("atp 500", "wta 500", "500")):
+            if is_fav:
+                contribs["tier_semi_sharp_fav"] = 0.006
+                lift += 0.006
+                used.append("tier_semi_sharp_fav")
+        elif any(k in tier_l for k in ("atp 250", "wta 250", "250")):
+            # Tour-level 250 — slightly softer market, small fav bump
+            if is_fav:
+                contribs["tier_tour_fav"] = 0.004
+                lift += 0.004
+                used.append("tier_tour_fav")
+        elif "challenger" in tier_l:
+            # Challenger — mid-softness market. Favorites at book-consensus
+            # implied win slightly more than book price (chalk holds).
+            if is_fav:
+                contribs["tier_challenger_fav"] = 0.008
+                lift += 0.008
+                used.append("tier_challenger_fav")
+            else:
+                contribs["tier_dog_lift"] = 0.010
+                lift += 0.010
+                used.append("tier_dog_lift")
+        elif any(k in tier_l for k in ("itf", "futures", "m15", "m25", "w15", "w25")):
+            # ITF Futures — HIGHEST market softness. Favorites still hold
+            # but retirement risk cuts the reliable edge.
+            if is_fav:
+                contribs["tier_itf_fav"] = 0.006
+                lift += 0.006
+                used.append("tier_itf_fav")
+            else:
+                contribs["tier_itf_dog_lift"] = 0.012
+                lift += 0.012
+                used.append("tier_itf_dog_lift")
+
+    # ── Model-anchored implied signal (2026-07-21) ────────────────────
+    # Every tennis pick has SOMETHING for the DD model to say based on
+    # the market's own vig-free implied probability. This ensures the
+    # `data_driven_contribs` dict is never empty for tennis_extra even
+    # when Sackmann has zero player data (WTA / doubles / most ITF).
+    # Fires in the 55-88% implied band (the "healthy fav" zone).
+    if 0.55 <= implied <= 0.88:
+        # Book consensus implied → small anchor lift confirming the
+        # market pricing itself. Slightly stronger for the tour zones.
+        if 0.65 <= implied <= 0.80:
+            contribs["book_anchor"] = 0.006
+            lift += 0.006
+            used.append("book_anchor")
+        else:
+            contribs["book_anchor"] = 0.004
+            lift += 0.004
+            used.append("book_anchor")
+
+    # ── Real-book confirmation (US sportsbook coverage) ──────────────
+    # When a US-regulated sportsbook (FanDuel/DK/MGM) actually carries
+    # the match — pulled by tennis_extra/real_odds.py — the line is
+    # dramatically sharper than a European scrape. Confirms that
+    # money is actually flowing on the market side we picked.
+    if ctx.get("using_real_odds"):
+        contribs["book_coverage"] = 0.006
+        lift += 0.006
+        used.append("book_coverage")
+    if ctx.get("fair_odds_model"):
+        # Elo/form-driven fair-odds engine says the market side is
+        # justified. Model-based confirmation independent of book.
+        contribs["fair_odds_model"] = 0.005
+        lift += 0.005
+        used.append("fair_odds_model")
+
+    # ── Chalk-fade dampener (win-prob calibration) ────────────────────
+    # Chalky favorites at implied ≥80% carry retirement/upset risk;
+    # the book knows this and prices accordingly. Signal it explicitly
+    # so the DD model doesn't over-lift picks that are already at the
+    # trap-zone ceiling.
+    if implied >= 0.82:
+        contribs["chalk_dampener"] = -0.004
+        lift += -0.004
+        used.append("chalk_dampener")
+    elif 0.60 <= implied < 0.70:
+        # Sweet spot — historically the best-ROI fav band.
+        contribs["value_zone"] = 0.005
+        lift += 0.005
+        used.append("value_zone")
+
     total_lift = _clamp(lift, -CAP_TOTAL, CAP_TOTAL)
     mp = _clamp(implied + total_lift, 0.10, 0.92)
     return {
