@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from "react";
-import { View, Text, StyleSheet, Pressable, Platform, LayoutAnimation, UIManager, Alert, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, Pressable, Platform, LayoutAnimation, UIManager, ActivityIndicator, Modal, TextInput } from "react-native";
 import { useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
 import { Pick, PickRationale, api } from "@/src/lib/api";
@@ -1000,25 +1000,18 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
 function TrackBetButton({ pick }: { pick: LockPick }) {
   const [tracked, setTracked] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const [customStake, setCustomStake] = useState("1");
 
-  const onTrack = useCallback((e: any) => {
+  const openPicker = useCallback((e: any) => {
     e?.stopPropagation?.();
     if (busy || tracked) return;
-    // Prompt user for stake — small options list, easy one-tap
-    Alert.alert(
-      "Track This Bet",
-      `Log ${pick.selection} at ${pick.book_odds >= 0 ? "+" : ""}${pick.book_odds} as a personal bet?`,
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "0.5u", onPress: () => submit(0.5) },
-        { text: "1u",   onPress: () => submit(1.0) },
-        { text: "2u",   onPress: () => submit(2.0) },
-      ],
-      { cancelable: true },
-    );
-  }, [pick, busy, tracked]);
+    setModalOpen(true);
+  }, [busy, tracked]);
 
-  const submit = async (stake_units: number) => {
+  const submit = useCallback(async (stake_units: number) => {
+    setModalOpen(false);
     setBusy(true);
     try {
       await api.trackBet({
@@ -1027,35 +1020,111 @@ function TrackBetButton({ pick }: { pick: LockPick }) {
         stake_units,
       });
       setTracked(true);
-      Alert.alert("✓ Bet Tracked", `${stake_units}u on ${pick.selection}. View it in My Bets.`);
+      setFeedback(`✓ ${stake_units}u tracked`);
+      setTimeout(() => setFeedback(null), 3000);
     } catch (err: any) {
-      Alert.alert("Could not track bet", err?.message ?? "Try again in a moment.");
+      setFeedback(err?.message ?? "Track failed");
+      setTimeout(() => setFeedback(null), 3500);
     } finally {
       setBusy(false);
     }
-  };
+  }, [pick.id]);
+
+  const oddsStr = pick.book_odds >= 0 ? `+${pick.book_odds}` : String(pick.book_odds);
 
   return (
-    <Pressable
-      onPress={onTrack}
-      hitSlop={8}
-      style={({ pressed }) => [
-        styles.trackBtn,
-        tracked && styles.trackBtnDone,
-        pressed && { opacity: 0.7 },
-      ]}
-    >
-      {busy ? (
-        <ActivityIndicator size="small" color={COLORS.neonGreen} />
-      ) : (
-        <>
-          <Text style={styles.trackBtnIcon}>{tracked ? "✓" : "🎯"}</Text>
+    <>
+      <Pressable
+        onPress={openPicker}
+        hitSlop={8}
+        style={({ pressed }) => [
+          styles.trackBtn,
+          tracked && styles.trackBtnDone,
+          pressed && { opacity: 0.7 },
+        ]}
+      >
+        {busy ? (
+          <ActivityIndicator size="small" color={COLORS.neonGreen} />
+        ) : feedback ? (
           <Text style={[styles.trackBtnText, tracked && styles.trackBtnTextDone]}>
-            {tracked ? "TRACKED" : "TRACK BET"}
+            {feedback}
           </Text>
-        </>
-      )}
-    </Pressable>
+        ) : (
+          <>
+            <Text style={styles.trackBtnIcon}>{tracked ? "✓" : "🎯"}</Text>
+            <Text style={[styles.trackBtnText, tracked && styles.trackBtnTextDone]}>
+              {tracked ? "TRACKED" : "TRACK BET"}
+            </Text>
+          </>
+        )}
+      </Pressable>
+
+      <Modal
+        visible={modalOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setModalOpen(false)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setModalOpen(false)}>
+          <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.modalTitle}>Track This Bet</Text>
+            <Text style={styles.modalSub} numberOfLines={2}>
+              {pick.selection}
+            </Text>
+            <Text style={styles.modalMeta}>
+              {pick.sport} · {oddsStr}
+            </Text>
+
+            <Text style={styles.modalLabel}>Choose your stake</Text>
+            <View style={styles.stakeGrid}>
+              {[0.25, 0.5, 1, 1.5, 2, 3].map((s) => (
+                <Pressable
+                  key={s}
+                  onPress={() => submit(s)}
+                  style={({ pressed }) => [
+                    styles.stakeChip,
+                    pressed && { opacity: 0.7 },
+                  ]}
+                >
+                  <Text style={styles.stakeChipText}>{s}u</Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <View style={styles.customStakeRow}>
+              <Text style={styles.customStakeLabel}>Custom</Text>
+              <TextInput
+                value={customStake}
+                onChangeText={setCustomStake}
+                keyboardType="decimal-pad"
+                placeholder="1.0"
+                placeholderTextColor={COLORS.textMuted}
+                style={styles.customStakeInput}
+                onSubmitEditing={() => {
+                  const n = parseFloat(customStake);
+                  if (Number.isFinite(n) && n > 0 && n <= 100) submit(n);
+                }}
+                returnKeyType="done"
+              />
+              <Text style={styles.customStakeLabel}>u</Text>
+              <Pressable
+                style={styles.confirmBtn}
+                onPress={() => {
+                  const n = parseFloat(customStake);
+                  if (Number.isFinite(n) && n > 0 && n <= 100) submit(n);
+                }}
+              >
+                <Text style={styles.confirmBtnText}>Log</Text>
+              </Pressable>
+            </View>
+
+            <Pressable style={styles.cancelBtn} onPress={() => setModalOpen(false)}>
+              <Text style={styles.cancelBtnText}>Cancel</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </>
   );
 }
 
@@ -1274,6 +1343,67 @@ const styles = StyleSheet.create({
     letterSpacing: 1.3,
   },
   trackBtnTextDone: { color: COLORS.neonGreen },
+  // ── Stake picker modal ─────────────────────────────────────────────
+  modalBackdrop: {
+    flex: 1, backgroundColor: "rgba(0,0,0,0.75)",
+    alignItems: "center", justifyContent: "center", padding: 24,
+  },
+  modalSheet: {
+    width: "100%", maxWidth: 400,
+    backgroundColor: "#111", borderRadius: 16,
+    borderWidth: 1, borderColor: COLORS.borderDefault,
+    padding: 20,
+  },
+  modalTitle: {
+    color: COLORS.textPrimary, fontSize: 18, fontWeight: "900",
+    letterSpacing: 0.3,
+  },
+  modalSub: {
+    color: COLORS.textPrimary, fontSize: 14, fontWeight: "700",
+    marginTop: 8,
+  },
+  modalMeta: { color: COLORS.textMuted, fontSize: 12, marginTop: 2 },
+  modalLabel: {
+    color: COLORS.textMuted, fontSize: 11, fontWeight: "800",
+    letterSpacing: 1.2, marginTop: 20, marginBottom: 10,
+  },
+  stakeGrid: {
+    flexDirection: "row", flexWrap: "wrap", gap: 8,
+  },
+  stakeChip: {
+    flexBasis: "31%", flexGrow: 1,
+    paddingVertical: 14, borderRadius: 10, alignItems: "center",
+    backgroundColor: COLORS.neonGreen + "15",
+    borderWidth: 1, borderColor: COLORS.neonGreen + "55",
+  },
+  stakeChipText: {
+    color: COLORS.neonGreen, fontSize: 16, fontWeight: "900",
+  },
+  customStakeRow: {
+    flexDirection: "row", alignItems: "center", gap: 8, marginTop: 16,
+  },
+  customStakeLabel: {
+    color: COLORS.textMuted, fontSize: 12, fontWeight: "700",
+  },
+  customStakeInput: {
+    flex: 1, height: 40, paddingHorizontal: 12,
+    borderRadius: 8, borderWidth: 1, borderColor: COLORS.borderDefault,
+    color: COLORS.textPrimary, fontSize: 14,
+    backgroundColor: "rgba(255,255,255,0.04)",
+  },
+  confirmBtn: {
+    paddingHorizontal: 14, paddingVertical: 10, borderRadius: 8,
+    backgroundColor: COLORS.neonGreen,
+  },
+  confirmBtnText: {
+    color: "#000", fontSize: 12, fontWeight: "900", letterSpacing: 1,
+  },
+  cancelBtn: {
+    marginTop: 16, paddingVertical: 12, alignItems: "center",
+  },
+  cancelBtnText: {
+    color: COLORS.textMuted, fontSize: 13, fontWeight: "700",
+  },
   league: { color: COLORS.textMuted, fontSize: 11, fontWeight: "600", flex: 1 },
   event: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 2, fontWeight: "500" },
   gameTime: { color: COLORS.voltBlue, fontSize: 11, fontWeight: "700", letterSpacing: 0.3, marginBottom: 6 },

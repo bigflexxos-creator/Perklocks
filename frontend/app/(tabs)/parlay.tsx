@@ -763,6 +763,44 @@ function ParlayCardView({
           <Text style={[styles.actionTxt, { color: COLORS.goldElite }]}>SAVE</Text>
         </Pressable>
 
+        {/* ── Track to My Bets — 2026-07-21 ────────────────────────────
+            Logs the parlay as a `bet_type="parlay"` user_bet with all
+            leg IDs. Auto-settles when ALL legs are done (parlay wins iff
+            every leg won, loses if any leg lost, pushes on mixed
+            push+win). Feeds the /my-bets tab's personal ROI. */}
+        <Pressable
+          testID={`parlay-track-${card.label}`}
+          onPress={async () => {
+            try {
+              const first = card.legs?.[0]?.id;
+              const legIds = card.legs.map((l: any) => l.id).filter(Boolean);
+              if (!first || legIds.length < 2) {
+                Alert.alert("Nothing to track", "Parlay needs ≥ 2 legs.");
+                return;
+              }
+              await api.trackBet({
+                pick_id: first,
+                bet_type: "parlay",
+                stake_units: 1.0,
+                parlay_legs: legIds,
+              });
+              Alert.alert(
+                "✓ Tracked",
+                `${legIds.length}-leg parlay logged at 1u. See My Bets for auto-graded status.`,
+              );
+            } catch (e: any) {
+              Alert.alert("Track failed", String(e?.message || e));
+            }
+          }}
+          style={({ pressed }) => [
+            styles.actionBtn,
+            { borderColor: COLORS.neonGreen, opacity: pressed ? 0.6 : 1 },
+          ]}
+        >
+          <Ionicons name="wallet-outline" size={14} color={COLORS.neonGreen} />
+          <Text style={[styles.actionTxt, { color: COLORS.neonGreen }]}>TRACK</Text>
+        </Pressable>
+
         {/* Native share sheet — Gambly + any installed share target */}
         <Pressable
           testID={`parlay-share-${card.label}`}

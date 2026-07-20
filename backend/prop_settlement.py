@@ -1319,5 +1319,12 @@ async def _record(db, pick: dict, outcome: str, detail: dict, counts: dict):
             **({"confidence_bucket": conf} if conf else {}),
         }},
     )
+    # ── Propagate to user_bets (2026-07-21) — see routes/user_bets_routes.py
+    try:
+        from routes.user_bets_routes import propagate_pick_settlement
+        await propagate_pick_settlement(pick["id"], outcome,
+                                        book_odds=pick.get("book_odds"))
+    except Exception:
+        pass  # non-fatal, propagator logs its own errors
     counts[outcome] = counts.get(outcome, 0) + 1
     counts["settled"] += 1
