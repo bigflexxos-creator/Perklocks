@@ -132,15 +132,14 @@ export default function ProfileScreen() {
           </>
         ) : null}
 
-        <Pressable
-          testID="analytics-button"
-          onPress={() => router.push("/analytics")}
-          style={[styles.actionBtn, styles.actionBtnPrimary]}
-        >
-          <Ionicons name="stats-chart" size={18} color={COLORS.goldElite} />
-          <Text style={[styles.actionText, { color: COLORS.goldElite }]}>MODEL PERFORMANCE & ROI</Text>
-          <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
-        </Pressable>
+        {/* ── Model Performance / ROI (2026-07-21) ─────────────────
+            REMOVED: previously this was a "MODEL PERFORMANCE & ROI"
+            button that navigated to /analytics. Confusing because the
+            new ADMIN tab in the bottom bar renders the exact same
+            screen — users saw two ways into identical analytics view.
+            Admins now reach analytics via the ADMIN tab. Non-admins
+            never had access to /analytics (server 403s + client
+            redirect), so removing this button doesn't affect them. */}
 
         {/* Admin Dashboard — owner-only. Hidden for regular users. */}
         {((user as { role?: string } | null)?.role === "admin") && (
