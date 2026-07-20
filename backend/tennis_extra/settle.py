@@ -129,6 +129,7 @@ async def settle_tennis_extra(db, *, days_back: int = 3) -> dict:
             "source": "tennis_extra",
             "status": "pending",
             "pick_date": date_str,
+            "off_board": {"$ne": True},  # Board-visibility gate (2026-07-21)
         })
         async for p in cursor:
             # ── Guard: don't settle picks whose match hasn't finished ─

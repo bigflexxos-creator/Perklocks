@@ -828,7 +828,8 @@ async def settle_player_props(db, max_picks: int = 800) -> dict:
     """
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
     cursor = db.picks.find(
-        {"status": {"$in": [None, "pending"]}},
+        {"status": {"$in": [None, "pending"]},
+         "off_board": {"$ne": True}},  # Board-visibility gate (2026-07-21)
         {"_id": 0},
     ).limit(max_picks)
     picks = await cursor.to_list(length=max_picks)

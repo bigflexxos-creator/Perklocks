@@ -290,6 +290,9 @@ async def compute_model_performance(db, days: int = 30) -> dict[str, Any]:
     cursor = db.picks.find(
         {"status": {"$in": ["won", "lost", "push"]},
          "excluded_from_history": {"$ne": True},
+         # Board-visibility gate (2026-07-21) — analytics only counts
+         # picks that actually surfaced on the user-visible board.
+         "off_board": {"$ne": True},
          "$and": [
              *exclusion_filters,
              {"$or": [

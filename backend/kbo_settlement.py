@@ -197,7 +197,8 @@ async def settle_kbo_picks(db) -> dict:
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
     cursor = db.picks.find(
-        {"sport": "KBO", "status": {"$in": [None, "pending"]}},
+        {"sport": "KBO", "status": {"$in": [None, "pending"]},
+         "off_board": {"$ne": True}},  # Board-visibility gate (2026-07-21)
         {"_id": 0},
     )
     picks = await cursor.to_list(length=1000)
