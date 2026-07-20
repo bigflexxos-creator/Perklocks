@@ -2800,14 +2800,20 @@ def _slim_rationale(r: dict) -> dict:
         "edge_percent": r.get("edge_percent"),
         "espn_rank": r.get("espn_rank"),
     }
-    # Keep at most the TOP evidence + concern bullet for the collapsed
-    # card. Full lists ride along with the detail fetch.
+    # ── Keep the top EVIDENCE + CONCERN bullets for the collapsed card.
+    # Was 1 each (2026-06-28) — user feedback 2026-07-21: "I don't want
+    # generic why this pick need real data and h2h history" — now that
+    # rationale is populated with real H2H / weather / player_form /
+    # tennis_components bullets, show up to 5 evidence + 2 concerns so
+    # the card surfaces the actual data-driven reasoning inline.
+    # Bump adds ~400B/pick to lite payload — well within budget after
+    # heavy fields were slimmed in the 2026-07-16 pass.
     ev = r.get("evidence")
     if isinstance(ev, list) and ev:
-        slim["evidence"] = ev[:1]
+        slim["evidence"] = ev[:5]
     cn = r.get("concerns")
     if isinstance(cn, list) and cn:
-        slim["concerns"] = cn[:1]
+        slim["concerns"] = cn[:2]
     # Tag the slim payload so the frontend can spot it and lazy-load
     # the rest on first expand.
     slim["_slim"] = True
