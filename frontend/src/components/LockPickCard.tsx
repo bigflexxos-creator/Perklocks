@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from "react";
-import { View, Text, StyleSheet, Pressable, Platform, LayoutAnimation, UIManager } from "react-native";
+import { View, Text, StyleSheet, Pressable, Platform, LayoutAnimation, UIManager, Alert, ActivityIndicator } from "react-native";
 import { useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
 import { Pick, PickRationale, api } from "@/src/lib/api";
@@ -7,6 +7,10 @@ import { formatGameTime } from "@/src/lib/formatGameTime";
 import { useMLBLive } from "@/src/contexts/MLBLiveContext";
 import { getDisplayLock } from "@/src/lib/lockScore";
 import { PickEventRow } from "@/src/components/PickEventRow";
+
+// Local alias so TrackBetButton props type-check without pulling
+// the full Pick type through the closure.
+type LockPick = Pick;
 
 function LockPickCardImpl({ pick }: { pick: Pick }) {
   const router = useRouter();
@@ -983,6 +987,74 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
           )}
         </View>
       )}
+
+      {/* ── Track Bet button (2026-07-21) ────────────────────────────
+          Logs the pick as a user_bet at the chosen stake. Server
+          scopes everything to user_id, so bets stay private.
+          Auto-settles when the pick's status flips to won/lost/push. */}
+      <TrackBetButton pick={pick} />
+    </Pressable>
+  );
+}
+
+function TrackBetButton({ pick }: { pick: LockPick }) {
+  const [tracked, setTracked] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const onTrack = useCallback((e: any) => {
+    e?.stopPropagation?.();
+    if (busy || tracked) return;
+    // Prompt user for stake — small options list, easy one-tap
+    Alert.alert(
+      "Track This Bet",
+      `Log ${pick.selection} at ${pick.book_odds >= 0 ? "+" : ""}${pick.book_odds} as a personal bet?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "0.5u", onPress: () => submit(0.5) },
+        { text: "1u",   onPress: () => submit(1.0) },
+        { text: "2u",   onPress: () => submit(2.0) },
+      ],
+      { cancelable: true },
+    );
+  }, [pick, busy, tracked]);
+
+  const submit = async (stake_units: number) => {
+    setBusy(true);
+    try {
+      await api.trackBet({
+        pick_id: pick.id,
+        bet_type: "straight",
+        stake_units,
+      });
+      setTracked(true);
+      Alert.alert("✓ Bet Tracked", `${stake_units}u on ${pick.selection}. View it in My Bets.`);
+    } catch (err: any) {
+      Alert.alert("Could not track bet", err?.message ?? "Try again in a moment.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Pressable
+      onPress={onTrack}
+      hitSlop={8}
+      style={({ pressed }) => [
+        styles.trackBtn,
+        tracked && styles.trackBtnDone,
+        pressed && { opacity: 0.7 },
+      ]}
+    >
+      {busy ? (
+        <ActivityIndicator size="small" color={COLORS.neonGreen} />
+      ) : (
+        <>
+          <Text style={styles.trackBtnIcon}>{tracked ? "✓" : "🎯"}</Text>
+          <Text style={[styles.trackBtnText, tracked && styles.trackBtnTextDone]}>
+            {tracked ? "TRACKED" : "TRACK BET"}
+          </Text>
+        </>
+      )}
     </Pressable>
   );
 }
@@ -1181,6 +1253,27 @@ const styles = StyleSheet.create({
     color: COLORS.neonGreen, fontSize: 10, fontWeight: "900",
     letterSpacing: 1.2,
   },
+  // ── Track Bet button — bottom of every card (2026-07-21) ──────────
+  // Adds a lightweight "log this to my personal bets" action so users
+  // can build their own ROI outside of the model's auto-graded slate.
+  // Server enforces user_id scope on all reads.
+  trackBtn: {
+    marginTop: 8, marginHorizontal: 12, paddingVertical: 10,
+    borderRadius: 8, alignItems: "center", flexDirection: "row",
+    justifyContent: "center", gap: 6,
+    backgroundColor: COLORS.neonGreen + "18",
+    borderWidth: 1, borderColor: COLORS.neonGreen + "55",
+  },
+  trackBtnDone: {
+    backgroundColor: COLORS.neonGreen + "33",
+    borderColor: COLORS.neonGreen,
+  },
+  trackBtnIcon: { fontSize: 14 },
+  trackBtnText: {
+    color: COLORS.neonGreen, fontSize: 12, fontWeight: "900",
+    letterSpacing: 1.3,
+  },
+  trackBtnTextDone: { color: COLORS.neonGreen },
   league: { color: COLORS.textMuted, fontSize: 11, fontWeight: "600", flex: 1 },
   event: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 2, fontWeight: "500" },
   gameTime: { color: COLORS.voltBlue, fontSize: 11, fontWeight: "700", letterSpacing: 0.3, marginBottom: 6 },

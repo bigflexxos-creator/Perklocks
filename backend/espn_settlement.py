@@ -702,6 +702,13 @@ async def _record_settlement(db, pick: dict, outcome: str, ref: dict, source: st
             "settlement_source": source,
         }},
     )
+    # ── Propagate to user_bets (2026-07-21) ─────────────────────────
+    try:
+        from routes.user_bets_routes import propagate_pick_settlement
+        await propagate_pick_settlement(pick["id"], outcome,
+                                        book_odds=pick.get("book_odds"))
+    except Exception:
+        pass  # non-fatal — audited via logger inside propagator
 
 
 # ───────────────────────── Unified entry point ─────────────────────────

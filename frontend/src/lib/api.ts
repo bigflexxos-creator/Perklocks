@@ -295,7 +295,7 @@ export type PickRationale = {
   model_prob?: number;
 };
 
-export type User = { id: string; email: string; name?: string };
+export type User = { id: string; email: string; name?: string; role?: "user" | "admin" };
 export type LineType = "both" | "main" | "alt";
 export type SortKey = "lock" | "time" | "edge" | "win" | "implied";
 export type SortDirection = "desc" | "asc";
@@ -1305,6 +1305,50 @@ export const api = {
   }>("/analytics/v2"),
   analyticsV2Recompute: () => request<{ gated: boolean; total_settled: number; rows: number }>(
     "/analytics/v2/recompute", { method: "POST" }),
+
+  // ── User Bets + Personal Analytics (2026-07-21) ─────────────────────
+  // User-scoped: server enforces `user_id == current_user.id` on every
+  // read. Admin analytics above are locked to admin role via
+  // require_admin_user; these endpoints are open to any logged-in user
+  // but only ever return that user's own data.
+  trackBet: (payload: {
+    pick_id: string;
+    bet_type?: "straight" | "parlay";
+    stake_units?: number;
+    parlay_legs?: string[];
+    notes?: string;
+  }) => request<{
+    id: string; user_id: string; pick_id: string; bet_type: string;
+    stake_units: number; odds_at_bet: number | null; status: string;
+    pnl_units: number; sport: string | null; market: string | null;
+    event: string | null; selection: string | null; created_at: string;
+  }>("/user/bets/track", { method: "POST", body: payload as any }),
+  listMyBets: (opts?: { status?: "pending"|"won"|"lost"|"push"; sport?: string; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (opts?.status) qs.set("status_filter", opts.status);
+    if (opts?.sport) qs.set("sport", opts.sport);
+    if (opts?.limit) qs.set("limit", String(opts.limit));
+    return request<{ bets: any[]; count: number }>(`/user/bets${qs.toString() ? `?${qs}` : ""}`);
+  },
+  deleteMyBet: (betId: string) =>
+    request<{ ok: boolean; deleted_id: string }>(`/user/bets/${betId}`, { method: "DELETE" }),
+  myAnalyticsSummary: () => request<{
+    total_bets: number; pending: number; won: number; lost: number; push: number;
+    hit_rate_pct: number; units_risked: number; pnl_units: number; roi_pct: number;
+  }>("/user/analytics/summary"),
+  myAnalyticsBySport: () => request<{
+    rows: Array<{ sport: string; n: number; won: number; lost: number;
+      hit_rate_pct: number; units_risked: number; pnl_units: number; roi_pct: number }>;
+  }>("/user/analytics/by-sport"),
+  myAnalyticsByMarket: () => request<{
+    rows: Array<{ market: string; n: number; won: number; lost: number;
+      hit_rate_pct: number; units_risked: number; pnl_units: number; roi_pct: number }>;
+  }>("/user/analytics/by-market"),
+  myAnalyticsHistory: (limit = 50, status?: "pending"|"won"|"lost"|"push") => {
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (status) qs.set("status_filter", status);
+    return request<{ history: any[]; count: number }>(`/user/analytics/history?${qs}`);
+  },
 
   // ── Phase 3 — Multi-Armed Bandit (Thompson sampling) ───────────────
   bandit: () => request<{

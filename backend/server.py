@@ -3208,6 +3208,15 @@ try:
     logger.info("Admin Users dashboard routes mounted at /api/admin/users/*")
     app.include_router(analytics_routes.router)
     logger.info("Analytics routes mounted at /api/analytics/* (15 endpoints)")
+    # ── User Bets + Personal Analytics (2026-07-21) ──────────────────
+    # New endpoints for user-scoped bet tracking (see routes/user_bets_routes.py).
+    # ALL admin analytics (/analytics/*) are locked to admin role — users
+    # tap the "Track this Bet" button on the board, and everything they
+    # see under /user/bets and /user/analytics/* is scoped to their own
+    # user_id at the DB query level.
+    from routes import user_bets_routes
+    app.include_router(user_bets_routes.router)
+    logger.info("User Bets + Personal Analytics routes mounted at /api/user/*")
     # NFL High-Hit-Rate + ATD engines (added 2026-06-26).
     from routes import nfl_routes
     app.include_router(nfl_routes.router)
