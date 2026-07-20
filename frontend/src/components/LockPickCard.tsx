@@ -226,28 +226,39 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
           {/* SIGNAL chip — PerksLocks Signal Engine 0-100 score. Only
               renders when the score meaningfully deviates from the
               neutral 50 (±8) so average picks don't get badge noise.
-              Full component breakdown lives in the detail screen. */}
-          {typeof pick.signal_score === "number" &&
-           Math.abs(pick.signal_score - 50) >= 8 && (
-            <View
-              style={[
-                styles.signalBadge,
-                pick.signal_score >= 50 ? styles.signalBadgePos : styles.signalBadgeNeg,
-              ]}
-              testID="signal-score-chip"
-            >
-              <Text style={styles.signalIcon}>📡</Text>
-              <Text
+              Full component breakdown lives in the detail screen.
+              2026-07-19 — Prefer `signal_score_raw` (absolute quality)
+              over `signal_score` (per-sport percentile rank). Rank
+              masked real edges; raw reflects the pick's actual
+              evidence strength on the same scale as the Pick
+              Breakdown detail panel. */}
+          {(() => {
+            const sig = (typeof pick.signal_score_raw === "number")
+              ? pick.signal_score_raw
+              : pick.signal_score;
+            if (typeof sig !== "number") return null;
+            if (Math.abs(sig - 50) < 8) return null;
+            return (
+              <View
                 style={[
-                  styles.signalText,
-                  { color: pick.signal_score >= 65 ? "#86EFAC"
-                         : pick.signal_score >= 50 ? "#93C5FD" : "#FCA5A5" },
+                  styles.signalBadge,
+                  sig >= 50 ? styles.signalBadgePos : styles.signalBadgeNeg,
                 ]}
+                testID="signal-score-chip"
               >
-                SIGNAL {Math.round(pick.signal_score)}/100
-              </Text>
-            </View>
-          )}
+                <Text style={styles.signalIcon}>📡</Text>
+                <Text
+                  style={[
+                    styles.signalText,
+                    { color: sig >= 65 ? "#86EFAC"
+                           : sig >= 50 ? "#93C5FD" : "#FCA5A5" },
+                  ]}
+                >
+                  SIGNAL {Math.round(sig)}/100
+                </Text>
+              </View>
+            );
+          })()}
           {/* xG FORM chip — Understat-derived season form for soccer
               goalscorer markets. Renders only HOT or COLD (we hide
               NEUTRAL because every average player would otherwise

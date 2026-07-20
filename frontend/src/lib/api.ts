@@ -200,7 +200,14 @@ export type Pick = {
   // signals (Form/Matchup/Volume/Injury/Market/Value) combined into a
   // 0-100 Signal Score. `signal_score` survives the lite payload for
   // the card chip; the full block is detail-endpoint only.
-  signal_score?: number;
+  // 2026-07-19 — Raw score exists in the API when the signal engine
+  // has run. Card and Detail should ALWAYS prefer the raw absolute
+  // score (`signal_score_raw`) over the per-sport rank (`signal_score`)
+  // because raw reflects a pick's actual evidence strength on an
+  // absolute 0-99 scale. Rank was meant as an internal sort key but
+  // was misrendered as a "quality" number on the card.
+  signal_score?: number;      // per-sport percentile rank (0-99) — SORT ONLY
+  signal_score_raw?: number;  // absolute quality score (0-99) — DISPLAY
   signal_engine?: {
     version: number;
     score: number;
