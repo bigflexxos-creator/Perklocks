@@ -5,7 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Stack, useRouter } from "expo-router";
 import { COLORS } from "@/src/theme";
 import { useBetSlip, computeParlay, MAX_SLIP_SIZE } from "@/src/contexts/BetSlipContext";
-import { Pick } from "@/src/lib/api";
+import { Pick, api } from "@/src/lib/api";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { getDisplayLock, getDisplayLockRounded } from "@/src/lib/lockScore";
 import { buildSlipText, shareSlip, saveSlipImage, copySlipText } from "@/src/lib/shareBetSlip";
@@ -53,6 +53,42 @@ export default function SlipScreen() {
     if (slip.count === 0 || busy) return;
     setBusy(true);
     try { await saveSlipImage(cardRef); } finally { setBusy(false); }
+  };
+
+  // ── Track the whole slip as a parlay in My Bets (2026-07-21) ──────
+  // Sends bet_type=parlay + all pick_ids to /user/bets/track. Server
+  // computes combined odds automatically. Prompts for stake first via
+  // an Alert on native; native prompt-with-buttons is unreliable on
+  // web so on web we just use 1u default (users can edit in My Bets
+  // by untrack+retrack if needed).
+  const onTrackToMyBets = async () => {
+    if (slip.count === 0 || busy) return;
+    if (slip.count < 2) {
+      Alert.alert("Need ≥ 2 legs", "Parlays require at least 2 picks.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const legIds = slip.picks.map((p) => p.id);
+      await api.trackBet({
+        pick_id: legIds[0],
+        bet_type: "parlay",
+        stake_units: 1.0,
+        parlay_legs: legIds,
+      });
+      Alert.alert(
+        "✓ Parlay Tracked",
+        `${legIds.length}-leg parlay logged at 1u. It'll auto-grade in My Bets when every leg settles.`,
+        [
+          { text: "Keep Slip", style: "cancel" },
+          { text: "Clear Slip", onPress: () => slip.clear() },
+        ],
+      );
+    } catch (e: any) {
+      Alert.alert("Track failed", String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -160,6 +196,27 @@ export default function SlipScreen() {
                 <Text style={[styles.shareTxt, { color: COLORS.bg }]}>SHARE TO GAMBLY</Text>
               </Pressable>
             </View>
+
+            {/* ── Track parlay to My Bets (2026-07-21) ────────────────
+                Only visible when the slip has ≥ 2 legs (a parlay). Logs
+                the whole slip as bet_type=parlay so it auto-grades in
+                My Bets when all legs settle. */}
+            {slip.count >= 2 && (
+              <Pressable
+                onPress={onTrackToMyBets}
+                disabled={busy}
+                testID="slip-track-mybets"
+                style={({ pressed }) => [
+                  styles.trackAllBtn,
+                  (pressed || busy) && { opacity: 0.65 },
+                ]}
+              >
+                <Ionicons name="wallet" size={16} color={COLORS.bg} />
+                <Text style={styles.trackAllTxt}>
+                  TRACK {slip.count}-LEG PARLAY IN MY BETS
+                </Text>
+              </Pressable>
+            )}
             <Text style={styles.helper}>
               SHARE opens the system share sheet (Gambly, Messages, more) with a PNG of this slip.
               Structured text is also copied to your clipboard so any target can paste it.
@@ -223,6 +280,16 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.goldElite,
   },
   shareTxt: { color: COLORS.textPrimary, fontSize: 11, fontWeight: "900", letterSpacing: 1.2 },
+  // ── Track parlay in My Bets ─ full-width button below share row
+  trackAllBtn: {
+    marginTop: 10, paddingVertical: 14, paddingHorizontal: 16,
+    borderRadius: 10, alignItems: "center",
+    flexDirection: "row", justifyContent: "center", gap: 8,
+    backgroundColor: COLORS.neonGreen,
+  },
+  trackAllTxt: {
+    color: COLORS.bg, fontSize: 13, fontWeight: "900", letterSpacing: 1.3,
+  },
   bookBtn: { flex: 1, minWidth: 90, flexDirection: "row", alignItems: "center", justifyContent: "center",
     gap: 6, paddingVertical: 12, backgroundColor: COLORS.surface, borderRadius: 10,
     borderWidth: 1, borderColor: COLORS.voltBlue },
