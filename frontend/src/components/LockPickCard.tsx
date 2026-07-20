@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { View, Text, StyleSheet, Pressable, Platform, LayoutAnimation, UIManager, ActivityIndicator, Modal, TextInput } from "react-native";
 import { useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
@@ -7,6 +7,7 @@ import { formatGameTime } from "@/src/lib/formatGameTime";
 import { useMLBLive } from "@/src/contexts/MLBLiveContext";
 import { getDisplayLock } from "@/src/lib/lockScore";
 import { PickEventRow } from "@/src/components/PickEventRow";
+import { useBetSlip } from "@/src/contexts/BetSlipContext";
 
 // Local alias so TrackBetButton props type-check without pulling
 // the full Pick type through the closure.
@@ -988,38 +989,127 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
         </View>
       )}
 
-      {/* ── Track Bet button (2026-07-21) ────────────────────────────
-          Logs the pick as a user_bet at the chosen stake. Server
-          scopes everything to user_id, so bets stay private.
-          Auto-settles when the pick's status flips to won/lost/push. */}
-      <TrackBetButton pick={pick} />
+      {/* ── Card action row (2026-07-21) ───────────────────────────
+          Two toggleable actions:
+            • TRACK BET   — logs the pick as a personal bet with a
+                            stake picker modal. Second tap opens an
+                            "Untrack?" confirmation.
+            • + PARLAY    — adds the pick to the Bet Slip (in-memory
+                            multi-pick parlay builder). Second tap
+                            removes it. Slip is accessible via the
+                            floating pill or the Parlay tab.
+          Both buttons are opt-in and independent — user can track
+          and/or slip the same pick. */}
+      <View style={styles.actionRow}>
+        <TrackBetButton pick={pick} />
+        <ParlaySlipButton pick={pick} />
+      </View>
+    </Pressable>
+  );
+}
+
+function ParlaySlipButton({ pick }: { pick: LockPick }) {
+  const { has, addPick, removePick, count } = useBetSlip();
+  const inSlip = has(pick.id);
+
+  const onTap = useCallback((e: any) => {
+    e?.stopPropagation?.();
+    if (inSlip) {
+      removePick(pick.id);
+    } else {
+      const res = addPick(pick);
+      if (!res.ok && Platform.OS === "web") {
+        // Silent — the badge doesn't update but the reason (e.g.
+        // "Slip is full") will show if user taps again. Native
+        // Alert is intentionally omitted here since Alerts on web
+        // are unreliable and interrupt flow.
+      }
+    }
+  }, [inSlip, pick, addPick, removePick]);
+
+  return (
+    <Pressable
+      onPress={onTap}
+      hitSlop={8}
+      style={({ pressed }) => [
+        styles.slipBtn,
+        inSlip && styles.slipBtnDone,
+        pressed && { opacity: 0.7 },
+      ]}
+    >
+      <Text style={styles.slipBtnIcon}>{inSlip ? "✓" : "+"}</Text>
+      <Text style={[styles.slipBtnText, inSlip && styles.slipBtnTextDone]}>
+        {inSlip ? `IN SLIP (${count})` : "PARLAY"}
+      </Text>
     </Pressable>
   );
 }
 
 function TrackBetButton({ pick }: { pick: LockPick }) {
-  const [tracked, setTracked] = useState(false);
+  // ── Toggle state (2026-07-21) ──────────────────────────────────────
+  // Two states: NOT_TRACKED → tap opens stake picker → TRACKED → tap
+  // opens untrack confirmation → NOT_TRACKED again. `trackedBetId`
+  // stores the user_bet.id returned by /user/bets/track so we can
+  // DELETE /user/bets/{id} on untap without a lookup.
+  const [trackedBetId, setTrackedBetId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [modalOpen, setModalOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [customStake, setCustomStake] = useState("1");
+  const [stake, setStake] = useState<number | null>(null);
 
-  const openPicker = useCallback((e: any) => {
+  // On mount: check the per-session cache to hydrate the tracked state
+  // without hammering /user/bets on every card. First card triggers the
+  // fetch; the rest read from cache.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const cached = trackedCache.get();
+      if (cached) {
+        const match = cached.find(
+          (b) => b.pick_id === pick.id && b.status === "pending",
+        );
+        if (!cancelled && match) {
+          setTrackedBetId(match.id);
+          setStake(match.stake_units);
+        }
+        return;
+      }
+      try {
+        const res = await api.listMyBets({ status: "pending", limit: 500 });
+        trackedCache.set(res.bets as any);
+        const match = res.bets.find(
+          (b: any) => b.pick_id === pick.id && b.status === "pending",
+        );
+        if (!cancelled && match) {
+          setTrackedBetId(match.id);
+          setStake(match.stake_units);
+        }
+      } catch { /* silent — non-critical */ }
+    })();
+    return () => { cancelled = true; };
+  }, [pick.id]);
+
+  const openAction = useCallback((e: any) => {
     e?.stopPropagation?.();
-    if (busy || tracked) return;
-    setModalOpen(true);
-  }, [busy, tracked]);
+    if (busy) return;
+    if (trackedBetId) setConfirmOpen(true);
+    else setPickerOpen(true);
+  }, [busy, trackedBetId]);
 
-  const submit = useCallback(async (stake_units: number) => {
-    setModalOpen(false);
+  const submitTrack = useCallback(async (stake_units: number) => {
+    setPickerOpen(false);
     setBusy(true);
     try {
-      await api.trackBet({
+      const bet = await api.trackBet({
         pick_id: pick.id,
         bet_type: "straight",
         stake_units,
       });
-      setTracked(true);
+      setTrackedBetId(bet.id);
+      setStake(stake_units);
+      trackedCache.add({ id: bet.id, pick_id: pick.id, status: "pending", stake_units } as any);
       setFeedback(`✓ ${stake_units}u tracked`);
       setTimeout(() => setFeedback(null), 3000);
     } catch (err: any) {
@@ -1030,42 +1120,63 @@ function TrackBetButton({ pick }: { pick: LockPick }) {
     }
   }, [pick.id]);
 
+  const submitUntrack = useCallback(async () => {
+    if (!trackedBetId) return;
+    setConfirmOpen(false);
+    setBusy(true);
+    const oldId = trackedBetId;
+    try {
+      await api.deleteMyBet(oldId);
+      setTrackedBetId(null);
+      setStake(null);
+      trackedCache.remove(oldId);
+      setFeedback("Untracked");
+      setTimeout(() => setFeedback(null), 2000);
+    } catch (err: any) {
+      setFeedback(err?.message ?? "Untrack failed");
+      setTimeout(() => setFeedback(null), 3000);
+    } finally {
+      setBusy(false);
+    }
+  }, [trackedBetId]);
+
   const oddsStr = pick.book_odds >= 0 ? `+${pick.book_odds}` : String(pick.book_odds);
 
   return (
     <>
       <Pressable
-        onPress={openPicker}
+        onPress={openAction}
         hitSlop={8}
         style={({ pressed }) => [
           styles.trackBtn,
-          tracked && styles.trackBtnDone,
+          trackedBetId && styles.trackBtnDone,
           pressed && { opacity: 0.7 },
         ]}
       >
         {busy ? (
           <ActivityIndicator size="small" color={COLORS.neonGreen} />
         ) : feedback ? (
-          <Text style={[styles.trackBtnText, tracked && styles.trackBtnTextDone]}>
+          <Text style={[styles.trackBtnText, !!trackedBetId && styles.trackBtnTextDone]}>
             {feedback}
           </Text>
         ) : (
           <>
-            <Text style={styles.trackBtnIcon}>{tracked ? "✓" : "🎯"}</Text>
-            <Text style={[styles.trackBtnText, tracked && styles.trackBtnTextDone]}>
-              {tracked ? "TRACKED" : "TRACK BET"}
+            <Text style={styles.trackBtnIcon}>{trackedBetId ? "✓" : "🎯"}</Text>
+            <Text style={[styles.trackBtnText, !!trackedBetId && styles.trackBtnTextDone]}>
+              {trackedBetId ? `TRACKED ${stake ?? ""}u` : "TRACK"}
             </Text>
           </>
         )}
       </Pressable>
 
+      {/* ── Stake picker modal ────────────────────────────────────── */}
       <Modal
-        visible={modalOpen}
+        visible={pickerOpen}
         transparent
         animationType="fade"
-        onRequestClose={() => setModalOpen(false)}
+        onRequestClose={() => setPickerOpen(false)}
       >
-        <Pressable style={styles.modalBackdrop} onPress={() => setModalOpen(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setPickerOpen(false)}>
           <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
             <Text style={styles.modalTitle}>Track This Bet</Text>
             <Text style={styles.modalSub} numberOfLines={2}>
@@ -1080,7 +1191,7 @@ function TrackBetButton({ pick }: { pick: LockPick }) {
               {[0.25, 0.5, 1, 1.5, 2, 3].map((s) => (
                 <Pressable
                   key={s}
-                  onPress={() => submit(s)}
+                  onPress={() => submitTrack(s)}
                   style={({ pressed }) => [
                     styles.stakeChip,
                     pressed && { opacity: 0.7 },
@@ -1102,7 +1213,7 @@ function TrackBetButton({ pick }: { pick: LockPick }) {
                 style={styles.customStakeInput}
                 onSubmitEditing={() => {
                   const n = parseFloat(customStake);
-                  if (Number.isFinite(n) && n > 0 && n <= 100) submit(n);
+                  if (Number.isFinite(n) && n > 0 && n <= 100) submitTrack(n);
                 }}
                 returnKeyType="done"
               />
@@ -1111,22 +1222,66 @@ function TrackBetButton({ pick }: { pick: LockPick }) {
                 style={styles.confirmBtn}
                 onPress={() => {
                   const n = parseFloat(customStake);
-                  if (Number.isFinite(n) && n > 0 && n <= 100) submit(n);
+                  if (Number.isFinite(n) && n > 0 && n <= 100) submitTrack(n);
                 }}
               >
                 <Text style={styles.confirmBtnText}>Log</Text>
               </Pressable>
             </View>
 
-            <Pressable style={styles.cancelBtn} onPress={() => setModalOpen(false)}>
+            <Pressable style={styles.cancelBtn} onPress={() => setPickerOpen(false)}>
               <Text style={styles.cancelBtnText}>Cancel</Text>
             </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ── Untrack confirmation modal ────────────────────────────── */}
+      <Modal
+        visible={confirmOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setConfirmOpen(false)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setConfirmOpen(false)}>
+          <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.modalTitle}>Untrack Bet?</Text>
+            <Text style={styles.modalSub} numberOfLines={2}>
+              {pick.selection}
+            </Text>
+            <Text style={styles.modalMeta}>
+              Currently at {stake ?? "?"}u — remove from My Bets?
+            </Text>
+            <View style={styles.confirmRow}>
+              <Pressable style={styles.cancelBtn} onPress={() => setConfirmOpen(false)}>
+                <Text style={styles.cancelBtnText}>Keep</Text>
+              </Pressable>
+              <Pressable style={styles.destructiveBtn} onPress={submitUntrack}>
+                <Text style={styles.destructiveBtnText}>Untrack</Text>
+              </Pressable>
+            </View>
           </Pressable>
         </Pressable>
       </Modal>
     </>
   );
 }
+
+// ── Per-session cache of user's pending bets (2026-07-21) ────────────
+// 50 cards on screen used to fire 50 GET /user/bets requests. Cache is
+// populated by the FIRST mounted card; the rest read synchronously.
+// Track/untrack ops update the cache in place so state stays consistent
+// without a re-fetch.
+const trackedCache = (() => {
+  let bets: { id: string; pick_id: string; status: string; stake_units: number }[] | null = null;
+  return {
+    get: () => bets,
+    set: (list: any) => { bets = list; },
+    add: (bet: any) => { if (bets) bets.push(bet); else bets = [bet]; },
+    remove: (id: string) => { if (bets) bets = bets.filter((b) => b.id !== id); },
+    clear: () => { bets = null; },
+  };
+})();
 
 function HeroBadge({
   icon, value, label, sub, color,
@@ -1327,7 +1482,7 @@ const styles = StyleSheet.create({
   // can build their own ROI outside of the model's auto-graded slate.
   // Server enforces user_id scope on all reads.
   trackBtn: {
-    marginTop: 8, marginHorizontal: 12, paddingVertical: 10,
+    flex: 1, paddingVertical: 10,
     borderRadius: 8, alignItems: "center", flexDirection: "row",
     justifyContent: "center", gap: 6,
     backgroundColor: COLORS.neonGreen + "18",
@@ -1403,6 +1558,38 @@ const styles = StyleSheet.create({
   },
   cancelBtnText: {
     color: COLORS.textMuted, fontSize: 13, fontWeight: "700",
+  },
+  // ── Two-button action row + Parlay-slip toggle ─────────────────────
+  actionRow: {
+    flexDirection: "row", gap: 8,
+    marginTop: 8, marginHorizontal: 12,
+  },
+  slipBtn: {
+    flex: 1, paddingVertical: 10, borderRadius: 8,
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+    backgroundColor: COLORS.goldElite + "18",
+    borderWidth: 1, borderColor: COLORS.goldElite + "55",
+  },
+  slipBtnDone: {
+    backgroundColor: COLORS.goldElite + "33",
+    borderColor: COLORS.goldElite,
+  },
+  slipBtnIcon: { color: COLORS.goldElite, fontSize: 14, fontWeight: "900" },
+  slipBtnText: {
+    color: COLORS.goldElite, fontSize: 12, fontWeight: "900",
+    letterSpacing: 1.3,
+  },
+  slipBtnTextDone: { color: COLORS.goldElite },
+  // Confirmation modal row for the untrack flow
+  confirmRow: {
+    flexDirection: "row", gap: 12, marginTop: 16, alignItems: "center",
+  },
+  destructiveBtn: {
+    flex: 1, paddingVertical: 12, borderRadius: 8, alignItems: "center",
+    backgroundColor: COLORS.electricBlaze,
+  },
+  destructiveBtnText: {
+    color: "#000", fontSize: 13, fontWeight: "900", letterSpacing: 1.1,
   },
   league: { color: COLORS.textMuted, fontSize: 11, fontWeight: "600", flex: 1 },
   event: { color: COLORS.textSecondary, fontSize: 12, marginBottom: 2, fontWeight: "500" },
