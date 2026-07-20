@@ -122,26 +122,138 @@ def _build_team_rationale(pick: dict, sport: Optional[str]) -> dict:
       • "MLB · Spread: model 69% confidence"
       • "⚾ MLB: Pick · Event"
       • "📉 Longshot — model gives only X% win prob"
-    These are not evidence — they restate what the card header already
-    shows and degrade trust. The frontend's `hasRationale` check (in
-    LockPickCard.tsx) hides the "Why this pick?" toggle entirely when
-    summary + evidence + concerns are all empty, so returning an empty
-    rationale produces a CLEAN card without a misleading toggle.
 
-    For now we return a stub. Sport-specific team rationale (e.g. MLB
-    pitcher matchup from `mlb_matchup_resolver_cache`, soccer xG-vs-xGA,
-    NFL line trends) is generated async downstream in
-    `services/sport_rationale.build_sport_specific` and merged in via
-    the deep enrichment loop — that builder DOES emit real, factual
-    bullets (e.g. "⚾ Red Sox: facing Gerrit Cole today — opportunity
-    to hit a rated arm"). If that pass doesn't find any real signal,
-    the toggle stays hidden, which is the correct UX.
+    UPDATED 2026-07-21 (user: "I still don't see why this pick on the
+    card"). We now generate REAL, DATA-BACKED evidence bullets from
+    whatever signals the pick actually carries: DD contribs, weather,
+    park factors, xG, tennis surface Elo, market edge, book consensus,
+    and Lock V2 tier. If NOTHING real is present we still return an
+    empty rationale — the LockPickCard hides the toggle in that case.
     """
+    evidence: list[str] = []
+    concerns: list[str] = []
+    summary_bits: list[str] = []
+
+    # ── DD contributions — biggest source of "why" for auto-generated
+    #    picks (MLB Totals, Tennis ML, Soccer 1X2, hitter props). Each
+    #    contrib is a pp lift on the model's win prob. Show top 3.
+    dd = pick.get("data_driven_contribs")
+    if isinstance(dd, dict) and dd:
+        _labels = {
+            "weather": "🌤️ Weather",
+            "park_hr": "🏟️ Park HR factor",
+            "park_hand": "🏟️ Park + handedness",
+            "pitcher": "⚾ Starting pitcher",
+            "batter": "⚾ Batter Statcast",
+            "platoon": "⚔️ Platoon edge",
+            "team_offense": "📊 Team offense (L15)",
+            "surface_elo": "🎾 Surface Elo edge",
+            "win_pct": "📈 52-wk win% edge",
+            "hold_pct": "🎯 Serve hold%",
+            "first_serve": "⚡ First-serve won%",
+            "break_saved": "🛡️ Break-saved%",
+            "book_anchor": "📊 Book consensus",
+            "book_coverage": "🏦 US book coverage",
+            "fair_odds_model": "🧮 Fair-odds model",
+            "value_zone": "💎 Value-zone favorite",
+            "chalk_dampener": "⚠️ Chalk trap zone",
+            "tier_sharp_fav": "🏆 Sharp market fav",
+            "tier_tour_fav": "🎾 Tour-level fav",
+            "tier_challenger_fav": "🎾 Challenger fav",
+            "tier_itf_fav": "🎾 ITF-level fav",
+            "tier_dog_lift": "🐕 Dog value",
+            "xg_gap": "⚽ xG advantage",
+            "setpiece": "⚽ Set-piece edge",
+            "form_gap": "📈 Form differential",
+            "rest_gap": "😴 Rest edge",
+            "retirement_risk": "⚠️ Retirement risk",
+            "fatigue": "😴 Fatigue mismatch",
+            "h2h": "🥊 H2H record",
+        }
+        sorted_dd = sorted(
+            ((k, v) for k, v in dd.items() if isinstance(v, (int, float))),
+            key=lambda kv: -abs(kv[1]),
+        )
+        for k, v in sorted_dd[:4]:
+            label = _labels.get(k, k.replace("_", " ").title())
+            sign = "+" if v > 0 else ""
+            if v > 0:
+                evidence.append(f"{label}: {sign}{v*100:.1f}pp win-prob lift")
+            elif v < -0.005:
+                concerns.append(f"{label}: {v*100:.1f}pp drag")
+
+    # ── Weather (if attached separately from DD)
+    w = pick.get("weather") or pick.get("weather_context")
+    if isinstance(w, dict) and w and not any("Weather" in e for e in evidence):
+        wind = w.get("wind_mph")
+        temp = w.get("temp_f")
+        cond = w.get("conditions")
+        parts = []
+        if isinstance(temp, (int, float)):
+            parts.append(f"{int(temp)}°F")
+        if isinstance(wind, (int, float)) and wind >= 8:
+            parts.append(f"wind {int(wind)}mph")
+        if cond and cond != "Clear":
+            parts.append(str(cond))
+        if parts:
+            evidence.append(f"🌤️ Conditions: {', '.join(parts)}")
+
+    # ── Market edge — always available for real book picks
+    try:
+        edge = float(pick.get("edge_percent") or 0.0)
+    except (TypeError, ValueError):
+        edge = 0.0
+    try:
+        wp = float(pick.get("win_probability") or 0.0)
+    except (TypeError, ValueError):
+        wp = 0.0
+    try:
+        imp = float(pick.get("implied_probability") or 0.0)
+    except (TypeError, ValueError):
+        imp = 0.0
+    if edge >= 3.0:
+        evidence.append(f"📈 Model edge: +{edge:.1f}pp over book implied")
+    elif edge <= -3.0:
+        concerns.append(f"📉 Model under book by {abs(edge):.1f}pp")
+
+    # ── Book coverage — how many books are quoting this line
+    n_books = pick.get("n_books") or pick.get("num_books")
+    if isinstance(n_books, int) and n_books >= 5:
+        evidence.append(f"🏦 {n_books} books quoting this line — sharp market")
+    elif isinstance(n_books, int) and 1 <= n_books <= 2:
+        concerns.append(f"⚠️ Only {n_books} book(s) quoting — thin market")
+
+    # ── Lock V2 tier as evidence when it agrees with the pick direction
+    tier_v2 = pick.get("tier_v2")
+    if tier_v2 in ("Apex Lock", "Rare Lock"):
+        evidence.append(f"⚡ Lock V2: {tier_v2} — meta-model concurs")
+
+    # ── Sport-specific summary line
+    if sport == "tennis":
+        surface = (pick.get("surface") or "").title()
+        if wp and imp:
+            surf_str = f" on {surface}" if surface else ""
+            summary_bits.append(
+                f"{pick.get('selection','')} · {wp:.0f}% model vs {imp:.0f}% book{surf_str}"
+            )
+    elif sport == "soccer":
+        if wp:
+            summary_bits.append(
+                f"{pick.get('selection','')}: {wp:.0f}% model win prob"
+            )
+    elif sport == "mlb":
+        if wp and edge:
+            summary_bits.append(
+                f"{pick.get('selection','')}: {wp:.0f}% model ({edge:+.1f}pp vs book)"
+            )
+
+    summary = summary_bits[0] if summary_bits else ""
+
     return {
-        "summary": "",
+        "summary": summary,
         "data_source": pick.get("source") or "model",
-        "evidence": [],
-        "concerns": [],
+        "evidence": evidence,
+        "concerns": concerns,
         "model_win_prob_pct": pick.get("win_probability"),
         "edge_percent": pick.get("edge_percent"),
         "lock_score": pick.get("lock_score"),
