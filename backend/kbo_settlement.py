@@ -285,6 +285,12 @@ async def settle_kbo_picks(db) -> dict:
                 "settlement_source": "naver_kbo",
             }},
         )
+        # ── Propagate to user_bets (2026-07-21) ─────────────────────
+        try:
+            from routes.user_bets_routes import propagate_pick_settlement
+            await propagate_pick_settlement(pick["id"], outcome, book_odds=odds_used)
+        except Exception:
+            pass
         counts[outcome] += 1
         counts["settled"] += 1
 

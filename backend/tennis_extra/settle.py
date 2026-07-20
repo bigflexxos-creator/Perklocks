@@ -198,6 +198,13 @@ async def settle_tennis_extra(db, *, days_back: int = 3) -> dict:
                     "settle_winner": match["winner_norm"],
                 }},
             )
+            # ── Propagate to user_bets (2026-07-21) ─────────────────
+            try:
+                from routes.user_bets_routes import propagate_pick_settlement
+                await propagate_pick_settlement(p["id"], status,
+                                                book_odds=p.get("book_odds"))
+            except Exception:
+                pass
             if status == "won":
                 won += 1
             else:

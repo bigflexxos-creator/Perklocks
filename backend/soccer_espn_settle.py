@@ -867,6 +867,12 @@ async def settle_soccer_picks_via_espn(db, *, days_back: int = 14,
                 "settled_by": "soccer_espn_batch_v1",
             }},
         )
+        # ── Propagate to user_bets (2026-07-21) ─────────────────────
+        try:
+            from routes.user_bets_routes import propagate_pick_settlement
+            await propagate_pick_settlement(p.get("id"), outcome, book_odds=odds)
+        except Exception:
+            pass
         summary["settled"] += 1
         summary[outcome] = summary.get(outcome, 0) + 1
     return summary
