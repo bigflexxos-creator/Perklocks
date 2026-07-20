@@ -984,31 +984,57 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             o_price = _median_price(totals_outs, "Over")
             u_price = _median_price(totals_outs, "Under")
 
-            # Score both sides with the same random seed order so the
-            # comparison is fair (each side gets its own model tilt).
+            # Score both sides. For MLB, use the DATA-DRIVEN model
+            # (weather / park HR / pitcher Stuff+ / team scoring)
+            # attached upstream via ``game['_ctx']``. Other sports still
+            # use the small random tilt until their per-sport models
+            # land. Falls back to random tilt when ctx is missing so
+            # the ingest path never blocks on a bad enrichment.
             candidates: list[dict] = []
+            game_ctx = (game.get("_ctx") or {}) if isinstance(game, dict) else {}
+            _use_dd = (sport == "MLB" and bool(game_ctx))
+            _dd_fn = None
+            if _use_dd:
+                try:
+                    from services.data_driven_model import mlb_total_prob as _dd_fn
+                except Exception:
+                    _use_dd = False
             if o_price is not None:
                 implied_o = _implied_prob(o_price)
-                mp_o = max(0.35, min(0.78, implied_o + 0.05 + rng.random() * 0.08))
+                if _use_dd and _dd_fn:
+                    dd = _dd_fn("Over", float(line), implied_o, game_ctx)
+                    mp_o = dd["mp"]
+                    contribs_o = dd["contributions"]
+                else:
+                    mp_o = max(0.35, min(0.78, implied_o + 0.05 + rng.random() * 0.08))
+                    contribs_o = None
                 candidates.append({
                     "side":     "Over",
                     "price":    o_price,
                     "implied":  implied_o,
                     "mp":       mp_o,
                     "edge":     mp_o - implied_o,
+                    "contribs": contribs_o,
                 })
             if u_price is not None:
                 implied_u = _implied_prob(u_price)
                 # Reject truly lopsided dog-Unders (below 38% implied)
                 # \u2014 there the Over is the only side worth grading.
                 if implied_u >= 0.38:
-                    mp_u = max(0.35, min(0.78, implied_u + 0.04 + rng.random() * 0.07))
+                    if _use_dd and _dd_fn:
+                        dd = _dd_fn("Under", float(line), implied_u, game_ctx)
+                        mp_u = dd["mp"]
+                        contribs_u = dd["contributions"]
+                    else:
+                        mp_u = max(0.35, min(0.78, implied_u + 0.04 + rng.random() * 0.07))
+                        contribs_u = None
                     candidates.append({
                         "side":     "Under",
                         "price":    u_price,
                         "implied":  implied_u,
                         "mp":       mp_u,
                         "edge":     mp_u - implied_u,
+                        "contribs": contribs_u,
                     })
 
             # Pick the side with the largest positive edge. If both
@@ -1043,6 +1069,14 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                             # Under Lock tab still needs this flag to
                             # surface the pick under MAIN.
                             total_pick["is_under_lock"] = True
+                        # Attach data-driven contributions so the
+                        # signal engine + pick rationale can surface
+                        # the actual reasoning behind this side
+                        # (\"Wind 15mph blowing out at Wrigley + Coors
+                        # air = Over 8.5\" instead of a random tilt).
+                        if best.get("contribs"):
+                            total_pick["data_driven_contribs"] = best["contribs"]
+                            total_pick["data_driven_used"] = True
                         picks.append(total_pick)
 
             # ── Soccer Poisson-synthesized alt totals (Over 1.5, Over 3.5) ──
@@ -1364,6 +1398,20 @@ async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
         games = await _fetch_odds_for(key, regions=region, sport=sport)
         league_label = LEAGUE_LABELS.get(key, sport)
         for g in games[:40]:  # tennis-friendly cap (Wimbledon has 48+ matches/day)
+            # ─── Data-driven context prefetch (2026-07-19) ────────────
+            # Fetch weather, park HR factor, probable pitchers, Stuff+
+            # etc. BEFORE generating picks so the model can compute an
+            # actual data-driven `model_win_prob` instead of a random
+            # tilt. Wired specifically for MLB right now (highest
+            # leverage market); other sports still random-tilt until
+            # Phase 3.1.
+            if sport == "MLB":
+                try:
+                    from services.game_context import build_mlb_game_context
+                    g["_ctx"] = await build_mlb_game_context(g)
+                except Exception as e:
+                    logger.debug("MLB context prefetch failed for %s: %s",
+                                 g.get("id"), e)
             all_picks.extend(_picks_from_game(sport, league_label, g, date_str))
             # ─── Tennis alt-line augmentation ────────────────────────
             # Per user spec: "Tennis have alt line available pls add and
