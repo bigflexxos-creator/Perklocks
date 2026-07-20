@@ -487,6 +487,17 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
                     "confidence_bucket": confidence_bucket(pick.get("lock_score")),
                 }},
             )
+            # ── Propagate to user_bets (2026-07-21) ─────────────────
+            # If any user has tracked this pick via /user/bets/track,
+            # their personal bet gets settled with the same outcome.
+            # Straight bets settle immediately; parlays settle only
+            # once ALL legs are done.
+            try:
+                from routes.user_bets_routes import propagate_pick_settlement
+                await propagate_pick_settlement(pick["id"], outcome,
+                                                book_odds=odds_used)
+            except Exception as _upe:
+                logger.debug("user_bets propagation skipped: %s", _upe)
             counts[outcome] += 1
             counts["settled"] += 1
     logger.info("Settlement complete: %s", counts)

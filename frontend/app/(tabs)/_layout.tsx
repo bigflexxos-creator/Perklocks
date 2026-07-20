@@ -116,6 +116,18 @@ export default function TabsLayout() {
           tabBarButtonTestID: "tab-parlay",
         }}
       />
+      {/* ── My Bets (personal tracked bets + ROI) ─ 2026-07-21 ──────
+          Available to every logged-in user. Server enforces
+          `user_id == current_user.id` on every read via
+          routes/user_bets_routes.py so users only see their own bets. */}
+      <Tabs.Screen
+        name="my-bets"
+        options={{
+          title: "MY BETS",
+          tabBarIcon: ({ color, size }) => <Ionicons name="wallet" color={color} size={size} />,
+          tabBarButtonTestID: "tab-my-bets",
+        }}
+      />
       <Tabs.Screen
         name="lab"
         options={{

@@ -10,6 +10,7 @@ import { router, Stack } from "expo-router";
 import { api, AnalyticsRow } from "@/src/lib/api";
 import { COLORS } from "@/src/theme";
 import { XGFormShadowCard } from "@/src/components/XGFormShadowCard";
+import { useAuth } from "@/src/contexts/AuthContext";
 
 type Performance = Awaited<ReturnType<typeof api.modelPerformance>>;
 type Learned = Awaited<ReturnType<typeof api.learnedWeights>>;
@@ -19,6 +20,21 @@ const sign = (n: number) => (n > 0 ? "+" : "");
 const fmt = (n: number, d = 2) => (Number.isFinite(n) ? n.toFixed(d) : "—");
 
 export default function AnalyticsScreen() {
+  // ── Role-based access gate (2026-07-21) ────────────────────────────
+  // Admin-only screen. Non-admin users tapping any deep-link to this
+  // route (or a stale bookmark) get bounced to My Bets. This mirrors
+  // the API-side lockdown in routes/analytics_routes.py where every
+  // /analytics/* endpoint requires Depends(current_admin) → 403 on
+  // non-admin tokens.
+  const { user, loading: authLoading } = useAuth();
+  const isAdmin = (user?.role || "user") === "admin";
+
+  useEffect(() => {
+    if (!authLoading && user && !isAdmin) {
+      router.replace("/(tabs)/my-bets");
+    }
+  }, [authLoading, user, isAdmin]);
+
   const [data, setData] = useState<Performance | null>(null);
   const [learned, setLearned] = useState<Learned | null>(null);
   const [v2, setV2] = useState<V2 | null>(null);
@@ -69,7 +85,12 @@ export default function AnalyticsScreen() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    // Only fetch analytics data if the caller is confirmed admin —
+    // avoids a 403 flash + spurious API call from a non-admin user.
+    if (!authLoading && isAdmin) load();
+    else if (!authLoading && !isAdmin) setLoading(false);
+  }, [load, authLoading, isAdmin]);
 
   const onRefresh = useCallback(() => { setRefreshing(true); load(); }, [load]);
 

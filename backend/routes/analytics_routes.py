@@ -32,7 +32,7 @@ from typing import Annotated, Any, Optional
 from fastapi import APIRouter, Depends
 
 from auth import UserPublic
-from deps import current_user, db, today_str
+from deps import current_user, current_admin, db, today_str
 from rate_limit import rate_limit
 
 router = APIRouter(prefix="/api")
@@ -46,10 +46,29 @@ router = APIRouter(prefix="/api")
 # scope=user policy applied elsewhere in server.py.
 _analytics_throttle = rate_limit(rate_per_min=30, burst=10, scope="user")
 
+# ── SEC-004 (2026-07-21) — role-based access control ─────────────────
+# ALL `/analytics/*` endpoints below expose MODEL / GRADING / ROI
+# aggregates across every generated pick — sensitive proprietary data
+# and internal calibration state. User mandate: "Enforce role
+# permissions at the API/database level, not just hiding UI elements.
+# A user should not be able to access admin analytics endpoints."
+#
+# `_admin_only` is the shared dependency injected via `Depends(...)`
+# on every analytics handler. Non-admin callers hit a 403 at the
+# router boundary BEFORE any DB query runs, so `db.picks` never gets
+# touched with a normal-user token even if the caller crafts a
+# direct HTTP request. Users get a clean 403 with `detail="Admin
+# role required"` (auth.require_admin_user).
+#
+# Existing `current_user` dependency stays imported for the small
+# handful of endpoints that need the caller's identity for audit logs
+# (learn / recompute) — those wrap `require_admin_user` too.
+_admin_only = Depends(current_admin)
+
 
 @router.get("/analytics/model-performance")
 async def model_performance(
-    user: Annotated[UserPublic, Depends(current_user)],
+    user: Annotated[UserPublic, Depends(current_admin)],
     days: int = 30,
     backfill: bool = True,
 ):
@@ -64,7 +83,7 @@ async def model_performance(
 
 @router.get("/analytics/sim-backtest")
 async def sim_backtest_endpoint(
-    user: Annotated[UserPublic, Depends(current_user)],
+    user: Annotated[UserPublic, Depends(current_admin)],
     days: int = 30,
     sport: str | None = None,
 ):
@@ -76,7 +95,7 @@ async def sim_backtest_endpoint(
 
 
 @router.get("/analytics/learned-weights")
-async def learned_weights(user: Annotated[UserPublic, Depends(current_user)]):
+async def learned_weights(user: Annotated[UserPublic, Depends(current_admin)]):
     """What the self-tuning engine has learned from past picks."""
     doc = await db.learned_weights.find_one({"_id": "current"}, {"_id": 0})
     if not doc:
@@ -85,7 +104,7 @@ async def learned_weights(user: Annotated[UserPublic, Depends(current_user)]):
 
 
 @router.get("/analytics/bandit")
-async def bandit_state(user: Annotated[UserPublic, Depends(current_user)]):
+async def bandit_state(user: Annotated[UserPublic, Depends(current_admin)]):
     """Phase-3 learning: Multi-Armed Bandit (Thompson sampling) arm
     states. Returns every strategy arm with its Beta(α, β) posterior,
     n samples, wins/losses, units P&L, ROI, posterior mean, and last
@@ -98,7 +117,7 @@ async def bandit_state(user: Annotated[UserPublic, Depends(current_user)]):
 
 @router.get("/analytics/backtest")
 async def backtest_endpoint(
-    user: Annotated[UserPublic, Depends(current_user)],
+    user: Annotated[UserPublic, Depends(current_admin)],
     days: int = 30,
 ):
     """Phase-3 back-test: replay every strategy arm against the last N
@@ -110,7 +129,7 @@ async def backtest_endpoint(
 
 @router.get("/analytics/backtest-custom")
 async def backtest_custom_endpoint(
-    user: Annotated[UserPublic, Depends(current_user)],
+    user: Annotated[UserPublic, Depends(current_admin)],
     days: int = 30,
     lock_floor: float = 0,
     edge_floor: float = -100,
@@ -130,7 +149,7 @@ async def backtest_custom_endpoint(
 
 
 @router.get("/analytics/v2")
-async def analytics_v2(user: Annotated[UserPublic, Depends(current_user)]):
+async def analytics_v2(user: Annotated[UserPublic, Depends(current_admin)]):
     """Learning System v2 dashboard payload.
 
     Returns: market performance rows, band calibration, market weights,
@@ -205,7 +224,7 @@ async def analytics_v2(user: Annotated[UserPublic, Depends(current_user)]):
 
 
 @router.post("/analytics/v2/recompute")
-async def analytics_v2_recompute(user: Annotated[UserPublic, Depends(current_user)]):
+async def analytics_v2_recompute(user: Annotated[UserPublic, Depends(current_admin)]):
     """Force re-run of the v2 learning aggregation (market perf,
     calibration, band gates, market weights, audit log). Returns the
     new state summary."""
@@ -222,7 +241,7 @@ async def analytics_v2_recompute(user: Annotated[UserPublic, Depends(current_use
 
 
 @router.get("/analytics/buckets")
-async def analytics_buckets(user: Annotated[UserPublic, Depends(current_user)]):
+async def analytics_buckets(user: Annotated[UserPublic, Depends(current_admin)]):
     """Return per-sport, per-market-type, per-prop-type bucket
     performance. NEVER influences live predictions. Pure analytics."""
     from learning_buckets import get_buckets
@@ -230,7 +249,7 @@ async def analytics_buckets(user: Annotated[UserPublic, Depends(current_user)]):
 
 
 @router.get("/analytics/calibration")
-async def analytics_calibration(user: Annotated[UserPublic, Depends(current_user)]):
+async def analytics_calibration(user: Annotated[UserPublic, Depends(current_admin)]):
     """Lock-score calibration report — Expected vs Actual vs Delta per
     band. Driven by the isotonic-regression curve fit nightly (or
     every 100 newly-settled picks via the settlement loop)."""
@@ -239,7 +258,7 @@ async def analytics_calibration(user: Annotated[UserPublic, Depends(current_user
 
 
 @router.post("/analytics/calibration/refit")
-async def analytics_calibration_refit(user: Annotated[UserPublic, Depends(current_user)]):
+async def analytics_calibration_refit(user: Annotated[UserPublic, Depends(current_admin)]):
     """Manual trigger to refit the calibration curve right now (admin
     safety valve — does the same thing the auto-loop does on a
     100-pick cadence)."""
@@ -249,7 +268,7 @@ async def analytics_calibration_refit(user: Annotated[UserPublic, Depends(curren
 
 @router.get("/analytics/xg-form-shadow")
 async def analytics_xg_form_shadow(
-    user: Annotated[UserPublic, Depends(current_user)],
+    user: Annotated[UserPublic, Depends(current_admin)],
 ):
     """xG Form A/B shadow report — does HOT form actually correlate
     with higher hit rate?
@@ -363,7 +382,7 @@ async def analytics_xg_form_shadow(
 
 
 @router.post("/analytics/buckets/recompute")
-async def analytics_buckets_recompute(user: Annotated[UserPublic, Depends(current_user)]):
+async def analytics_buckets_recompute(user: Annotated[UserPublic, Depends(current_admin)]):
     """Force re-scan settled picks and rebuild all isolated learning
     buckets. Snapshots the previous state for rollback (keeps last 5).
     Analytics-only."""
@@ -373,7 +392,7 @@ async def analytics_buckets_recompute(user: Annotated[UserPublic, Depends(curren
 
 @router.post("/analytics/buckets/rollback")
 async def analytics_buckets_rollback(
-    user: Annotated[UserPublic, Depends(current_user)],
+    user: Annotated[UserPublic, Depends(current_admin)],
     snapshot_index: int = 1,
 ):
     """Restore the Nth-most-recent bucket snapshot. snapshot_index=1 =
@@ -385,7 +404,7 @@ async def analytics_buckets_rollback(
 
 
 @router.post("/analytics/learn")
-async def learn_now(user: Annotated[UserPublic, Depends(current_user)]):
+async def learn_now(user: Annotated[UserPublic, Depends(current_admin)]):
     """Force a recompute of learned weights and re-apply to today's
     pending picks."""
     from learning_engine import recompute_learned_weights, apply_learning
@@ -422,7 +441,7 @@ async def learn_now(user: Annotated[UserPublic, Depends(current_user)]):
 # ── Phase 0.3 — CLV dashboard ────────────────────────────────────────
 @router.get("/analytics/clv")
 async def clv_report(
-    user: Annotated[UserPublic, Depends(current_user)],
+    user: Annotated[UserPublic, Depends(current_admin)],
     days: int = 30,
 ):
     """CLV (Closing Line Value) breakdown for the user's picks over the
@@ -585,7 +604,7 @@ async def clv_report(
 # ── Phase 5a — Kelly staking ────────────────────────────────────────
 @router.get("/analytics/kelly")
 async def kelly_endpoint(
-    user: Annotated[UserPublic, Depends(current_user)],
+    user: Annotated[UserPublic, Depends(current_admin)],
     win_probability: float,
     american_odds: float,
     bankroll: float = 100.0,
@@ -615,7 +634,7 @@ async def kelly_endpoint(
 
 @router.get("/analytics/kelly/for-pick")
 async def kelly_for_pick_endpoint(
-    user: Annotated[UserPublic, Depends(current_user)],
+    user: Annotated[UserPublic, Depends(current_admin)],
     pick_id: str,
     bankroll: float = 100.0,
     fraction: float = 0.25,
@@ -654,7 +673,7 @@ async def kelly_for_pick_endpoint(
 # ── Phase 5c — Steam detection ──────────────────────────────────────
 @router.get("/analytics/steam")
 async def steam_endpoint(
-    user: Annotated[UserPublic, Depends(current_user)],
+    user: Annotated[UserPublic, Depends(current_admin)],
     hours: int = 6,
     direction: Optional[str] = None,
     limit: int = 50,
