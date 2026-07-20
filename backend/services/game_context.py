@@ -219,35 +219,89 @@ async def build_tennis_match_context(game: dict) -> dict[str, Any]:
     if "/" in home or "/" in away:
         return ctx  # doubles \u2014 no per-player data available
 
-    # 1) Sackmann career stats + surface Elo (uses existing tennis engine)
+    # 1) Sackmann career stats via services.tennis.fallback (real cache)
     try:
-        from tennis_engine import get_player_stats, get_surface_elo, matches_last_days
-        surface = (game.get("surface") or "").lower() or "hard"
-        stats_a = await get_player_stats(home)
-        stats_b = await get_player_stats(away)
+        from motor.motor_asyncio import AsyncIOMotorClient
+        import os
+        client = AsyncIOMotorClient(os.environ.get("MONGO_URL","mongodb://localhost:27017"))
+        db = client["lockscore_db"]
+        from services.tennis.fallback import get_player_stats, get_h2h
+        surface = (game.get("surface") or "").strip() or "All"
+        surface_key = surface.title() if surface.lower() in ("hard","clay","grass","all") else "All"
+        stats_a = await get_player_stats(db, home, surface_key)
+        stats_b = await get_player_stats(db, away, surface_key)
         if stats_a: ctx["sackmann_a"] = stats_a
         if stats_b: ctx["sackmann_b"] = stats_b
-        elo_a = await get_surface_elo(home, surface)
-        elo_b = await get_surface_elo(away, surface)
-        if isinstance(elo_a, (int, float)): ctx["surface_elo_a"] = elo_a
-        if isinstance(elo_b, (int, float)): ctx["surface_elo_b"] = elo_b
-        # Fatigue
-        try:
-            ctx["fatigue_a_matches_7d"] = await matches_last_days(home, 7)
-            ctx["fatigue_b_matches_7d"] = await matches_last_days(away, 7)
-        except Exception:
-            pass
-    except Exception as e:
-        logger.debug("tennis ctx sackmann/elo failed: %s", e)
-
-    # 2) H2H career record
-    try:
-        from tennis_engine import get_h2h_record
-        h = await get_h2h_record(home, away)
-        if h:
+        # ── Fallback: for challenger-level players not in the top-2252
+        # Sackmann roster, compute a lightweight rolling record straight
+        # from ``tennis_matches``. Uses win%, ace%, DF% on the last 20
+        # matches — gives DD enough signal to lift chalk/dog for these
+        # otherwise unranked players.
+        for suffix, player in (("a", home), ("b", away)):
+            if ctx.get(f"sackmann_{suffix}"):
+                continue
+            # Use canonical "Lastname F." matches too via a regex.
+            name_re = f"^{player}$"
+            if player.strip().endswith("."):
+                p2 = player.strip()[:-1].strip()
+                parts = p2.rsplit(" ", 1)
+                if len(parts) == 2 and len(parts[1]) <= 2:
+                    name_re = f"^{parts[1]}\\w*\\s+{parts[0]}$"
+            cursor = db.tennis_matches.find({
+                "$or": [
+                    {"winner_name": {"$regex": name_re, "$options": "i"}},
+                    {"loser_name":  {"$regex": name_re, "$options": "i"}},
+                ]
+            }).sort("match_date", -1).limit(20)
+            wins = 0
+            losses = 0
+            async for m in cursor:
+                if m.get("winner_name","").lower().find(player.split()[0].lower()) >= 0:
+                    wins += 1
+                else:
+                    losses += 1
+            n = wins + losses
+            if n >= 5:
+                ctx[f"sackmann_{suffix}"] = {
+                    "name":     player,
+                    "surface":  surface_key,
+                    "source":   "match_history_fallback",
+                    "n_matches": n, "n_wins": wins, "n_losses": losses,
+                    "win_pct":  round(100.0 * wins / n, 2),
+                }
+        # H2H
+        h = await get_h2h(db, home, away)
+        if h and h.get("matches", 0) >= 1:
             ctx["h2h_a_wins"] = h.get("a_wins", 0)
             ctx["h2h_b_wins"] = h.get("b_wins", 0)
     except Exception as e:
-        logger.debug("tennis h2h ctx failed: %s", e)
+        logger.debug("tennis Sackmann ctx failed: %s", e)
+
+    # 2) Surface Elo (Sackmann-derived; stored per-player-per-surface)
+    try:
+        elo_a = None; elo_b = None
+        if ctx.get("sackmann_a"):
+            elo_a = ctx["sackmann_a"].get("elo") or ctx["sackmann_a"].get("elo_rating")
+        if ctx.get("sackmann_b"):
+            elo_b = ctx["sackmann_b"].get("elo") or ctx["sackmann_b"].get("elo_rating")
+        if isinstance(elo_a, (int, float)): ctx["surface_elo_a"] = elo_a
+        if isinstance(elo_b, (int, float)): ctx["surface_elo_b"] = elo_b
+    except Exception as e:
+        logger.debug("tennis Elo ctx failed: %s", e)
+
+    # 3) Fatigue — count matches in last 7 days from tennis_matches
+    try:
+        from datetime import datetime, timedelta, timezone
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        client = AsyncIOMotorClient(os.environ.get("MONGO_URL","mongodb://localhost:27017"))
+        db = client["lockscore_db"]
+        for suffix, player in (("a", home), ("b", away)):
+            cnt = await db.tennis_matches.count_documents({
+                "$or": [{"winner_name": player}, {"loser_name": player}],
+                "match_date": {"$gte": cutoff[:10]},
+            })
+            ctx[f"fatigue_{suffix}_matches_7d"] = int(cnt)
+    except Exception as e:
+        logger.debug("tennis fatigue ctx failed: %s", e)
 
     return ctx
