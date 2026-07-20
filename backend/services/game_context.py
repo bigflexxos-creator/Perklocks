@@ -111,3 +111,143 @@ async def build_mlb_game_context(game: dict) -> dict[str, Any]:
         logger.debug("stuff+ ctx fetch failed: %s", e)
 
     return ctx
+
+
+# ── SOCCER GAME CONTEXT ─────────────────────────────────────────────
+async def build_soccer_game_context(game: dict) -> dict[str, Any]:
+    """Fetch soccer-specific context BEFORE picks are generated.
+
+    Populates:
+      - home_form / away_form from soccer_form cache
+      - home_xg_rolling / away_xg_rolling from soccer_team_xg collection
+      - home_manager_style / away_manager_style from context table
+      - pressure = 'high' | 'normal' from context detector
+    """
+    ctx: dict[str, Any] = {}
+    home_team = (game.get("home_team") or "").strip()
+    away_team = (game.get("away_team") or "").strip()
+
+    # 1) Team form via sportdb_client (working cache in DB)
+    try:
+        from motor.motor_asyncio import AsyncIOMotorClient
+        import os
+        client = AsyncIOMotorClient(os.environ.get("MONGO_URL","mongodb://localhost:27017"))
+        db = client["lockscore_db"]
+        from sportdb_client import lookup_team_form
+        hf = await lookup_team_form(db, home_team)
+        af = await lookup_team_form(db, away_team)
+        if hf and hf.get("n_matches", 0) >= 3: ctx["home_form"] = hf
+        if af and af.get("n_matches", 0) >= 3: ctx["away_form"] = af
+    except Exception as e:
+        logger.debug("soccer form ctx failed: %s", e)
+
+    # 2) Rolling xG from dedicated collection with form fallback
+    try:
+        from services.enrichment.soccer_rolling_xg import _lookup
+        from motor.motor_asyncio import AsyncIOMotorClient
+        import os
+        client = AsyncIOMotorClient(os.environ.get("MONGO_URL","mongodb://localhost:27017"))
+        db = client["lockscore_db"]
+        h_doc = await _lookup(db, home_team)
+        a_doc = await _lookup(db, away_team)
+        if h_doc: ctx["home_xg_rolling"] = h_doc
+        if a_doc: ctx["away_xg_rolling"] = a_doc
+        # Form-proxy fallback
+        if not h_doc and ctx.get("home_form", {}).get("n_matches", 0) >= 5:
+            hf = ctx["home_form"]
+            ctx["home_xg_rolling"] = {
+                "xg_avg":  float(hf.get("gf_avg", 0)),
+                "xga_avg": float(hf.get("ga_avg", 0)),
+                "xg_diff": float(hf.get("gf_avg", 0)) - float(hf.get("ga_avg", 0)),
+                "matches": int(hf.get("n_matches", 0)),
+                "source":  "form_proxy",
+            }
+        if not a_doc and ctx.get("away_form", {}).get("n_matches", 0) >= 5:
+            af = ctx["away_form"]
+            ctx["away_xg_rolling"] = {
+                "xg_avg":  float(af.get("gf_avg", 0)),
+                "xga_avg": float(af.get("ga_avg", 0)),
+                "xg_diff": float(af.get("gf_avg", 0)) - float(af.get("ga_avg", 0)),
+                "matches": int(af.get("n_matches", 0)),
+                "source":  "form_proxy",
+            }
+    except Exception as e:
+        logger.debug("soccer xg ctx failed: %s", e)
+
+    # 3) Manager styles (currently only inferred from lineup/coach if attached)
+    try:
+        from services.enrichment.soccer_context import manager_style
+        hm = game.get("home_manager") or ""
+        am = game.get("away_manager") or ""
+        ctx["home_manager_style"] = manager_style(hm) if hm else "balanced"
+        ctx["away_manager_style"] = manager_style(am) if am else "balanced"
+    except Exception as e:
+        logger.debug("manager ctx failed: %s", e)
+
+    # 4) High-pressure fixture detector
+    try:
+        from services.enrichment.soccer_context import high_pressure_context
+        stub = {
+            "sport": "Soccer",
+            "event": f"{away_team} @ {home_team}",
+            "league": game.get("league") or "",
+            "round": game.get("round") or "",
+        }
+        pressure, reason = high_pressure_context(stub)
+        ctx["pressure"] = pressure
+        ctx["pressure_reason"] = reason
+    except Exception as e:
+        logger.debug("pressure ctx failed: %s", e)
+
+    return ctx
+
+
+# ── TENNIS MATCH CONTEXT ─────────────────────────────────────────────
+async def build_tennis_match_context(game: dict) -> dict[str, Any]:
+    """Fetch tennis-specific context BEFORE picks are generated.
+
+    Populates (for both players a=home, b=away):
+      - sackmann_a / sackmann_b = career serve/return stats
+      - surface_elo_a / surface_elo_b = surface-adjusted Elo
+      - fatigue_a_matches_7d / fatigue_b_matches_7d = int
+      - h2h_a_wins / h2h_b_wins = int
+    Doubles picks ("A / A2") skip enrichment (no per-player data).
+    """
+    ctx: dict[str, Any] = {}
+    home = (game.get("home_team") or "").strip()
+    away = (game.get("away_team") or "").strip()
+    if "/" in home or "/" in away:
+        return ctx  # doubles \u2014 no per-player data available
+
+    # 1) Sackmann career stats + surface Elo (uses existing tennis engine)
+    try:
+        from tennis_engine import get_player_stats, get_surface_elo, matches_last_days
+        surface = (game.get("surface") or "").lower() or "hard"
+        stats_a = await get_player_stats(home)
+        stats_b = await get_player_stats(away)
+        if stats_a: ctx["sackmann_a"] = stats_a
+        if stats_b: ctx["sackmann_b"] = stats_b
+        elo_a = await get_surface_elo(home, surface)
+        elo_b = await get_surface_elo(away, surface)
+        if isinstance(elo_a, (int, float)): ctx["surface_elo_a"] = elo_a
+        if isinstance(elo_b, (int, float)): ctx["surface_elo_b"] = elo_b
+        # Fatigue
+        try:
+            ctx["fatigue_a_matches_7d"] = await matches_last_days(home, 7)
+            ctx["fatigue_b_matches_7d"] = await matches_last_days(away, 7)
+        except Exception:
+            pass
+    except Exception as e:
+        logger.debug("tennis ctx sackmann/elo failed: %s", e)
+
+    # 2) H2H career record
+    try:
+        from tennis_engine import get_h2h_record
+        h = await get_h2h_record(home, away)
+        if h:
+            ctx["h2h_a_wins"] = h.get("a_wins", 0)
+            ctx["h2h_b_wins"] = h.get("b_wins", 0)
+    except Exception as e:
+        logger.debug("tennis h2h ctx failed: %s", e)
+
+    return ctx

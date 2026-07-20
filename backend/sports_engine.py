@@ -930,8 +930,43 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
         # book implied with a small (±2-3%) personalization shift instead of
         # ±9% which produced overconfident 75%+ win prob claims on 50/50
         # MLB games (the bulk of last week's losses).
-        model_lift = (rng.random() - 0.5) * 0.08
-        home_model = max(0.1, min(0.9, home_implied + model_lift))
+        #
+        # 2026-07-20 — For Soccer / Tennis MLs we now use the data-
+        # driven models. MLB / other sports still random-tilt until
+        # `mlb_ml_prob` ships. Falls back cleanly to random on missing
+        # context.
+        game_ctx = (game.get("_ctx") or {}) if isinstance(game, dict) else {}
+        dd_ml_result = None
+        if sport == "Soccer" and game_ctx:
+            try:
+                from services.data_driven_model import soccer_ml_prob
+                # Score BOTH sides; pick the winning-implied side (as before)
+                # and get its DD prob.
+                if home_implied >= away_implied:
+                    dd_ml_result = soccer_ml_prob(home, home, away, home_implied, game_ctx)
+                    home_model = dd_ml_result["mp"]
+                else:
+                    dd_ml_result = soccer_ml_prob(away, home, away, 1 - home_implied, game_ctx)
+                    home_model = 1 - dd_ml_result["mp"]
+            except Exception as e:
+                logger.debug("soccer DD ml failed: %s", e)
+                dd_ml_result = None
+        elif sport == "Tennis" and game_ctx and "sackmann_a" in game_ctx:
+            try:
+                from services.data_driven_model import tennis_ml_prob
+                surface = (game.get("surface") or "hard").lower()
+                if home_implied >= away_implied:
+                    dd_ml_result = tennis_ml_prob(home, home, away, surface, home_implied, game_ctx)
+                    home_model = dd_ml_result["mp"]
+                else:
+                    dd_ml_result = tennis_ml_prob(away, home, away, surface, 1 - home_implied, game_ctx)
+                    home_model = 1 - dd_ml_result["mp"]
+            except Exception as e:
+                logger.debug("tennis DD ml failed: %s", e)
+                dd_ml_result = None
+        if dd_ml_result is None:
+            model_lift = (rng.random() - 0.5) * 0.08
+            home_model = max(0.1, min(0.9, home_implied + model_lift))
         if home_model >= 0.5:
             side, side_ml, mp = home, home_ml, home_model
         else:
@@ -939,14 +974,19 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
 
         factors = _factors_random(rng, f"{sport}_ml") or _factors_random(rng, "Tennis_ml")
         lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
-        picks.append(_build_pick(
+        ml_pick = _build_pick(
             sport=sport, league=league, event=f"{away} @ {home}",
             event_time=commence, market=f"{side} Moneyline", pick_side=side,
             model_win_prob=mp, book_odds=side_ml,
             lock=lock, factors=breakdown,
             insights=_insights_for(sport, breakdown, side, home, away),
             external_id=f"{sport}-{game_id}-ml",
-        ))
+        )
+        if ml_pick and dd_ml_result:
+            ml_pick["data_driven_used"] = True
+            ml_pick["data_driven_contribs"] = dd_ml_result.get("contributions") or {}
+        if ml_pick:
+            picks.append(ml_pick)
 
         # Soccer-only: Win-or-Draw (Double Chance) picks computed from 3-way market.
         if draw_ml is not None and sport == "Soccer":
@@ -986,17 +1026,21 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
 
             # Score both sides. For MLB, use the DATA-DRIVEN model
             # (weather / park HR / pitcher Stuff+ / team scoring)
-            # attached upstream via ``game['_ctx']``. Other sports still
+            # attached upstream via ``game['_ctx']``. Soccer uses xG
+            # rolling + manager style + pressure. Other sports still
             # use the small random tilt until their per-sport models
             # land. Falls back to random tilt when ctx is missing so
             # the ingest path never blocks on a bad enrichment.
             candidates: list[dict] = []
             game_ctx = (game.get("_ctx") or {}) if isinstance(game, dict) else {}
-            _use_dd = (sport == "MLB" and bool(game_ctx))
+            _use_dd = bool(game_ctx) and sport in ("MLB", "Soccer")
             _dd_fn = None
             if _use_dd:
                 try:
-                    from services.data_driven_model import mlb_total_prob as _dd_fn
+                    if sport == "MLB":
+                        from services.data_driven_model import mlb_total_prob as _dd_fn
+                    else:  # Soccer
+                        from services.data_driven_model import soccer_total_prob as _dd_fn
                 except Exception:
                     _use_dd = False
             if o_price is not None:
@@ -1398,20 +1442,26 @@ async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
         games = await _fetch_odds_for(key, regions=region, sport=sport)
         league_label = LEAGUE_LABELS.get(key, sport)
         for g in games[:40]:  # tennis-friendly cap (Wimbledon has 48+ matches/day)
-            # ─── Data-driven context prefetch (2026-07-19) ────────────
-            # Fetch weather, park HR factor, probable pitchers, Stuff+
-            # etc. BEFORE generating picks so the model can compute an
-            # actual data-driven `model_win_prob` instead of a random
-            # tilt. Wired specifically for MLB right now (highest
-            # leverage market); other sports still random-tilt until
-            # Phase 3.1.
-            if sport == "MLB":
-                try:
+            # ─── Data-driven context prefetch (2026-07-19/20) ─────────
+            # Fetch weather, park HR, xG rolling, Sackmann etc. BEFORE
+            # generating picks so the model can compute an actual data-
+            # driven `model_win_prob` instead of a random tilt. Wired
+            # for MLB (weather + park + starters), Soccer (form + xG +
+            # managers + pressure), Tennis (Sackmann + surface Elo +
+            # fatigue + H2H). Other sports still random-tilt.
+            try:
+                if sport == "MLB":
                     from services.game_context import build_mlb_game_context
                     g["_ctx"] = await build_mlb_game_context(g)
-                except Exception as e:
-                    logger.debug("MLB context prefetch failed for %s: %s",
-                                 g.get("id"), e)
+                elif sport == "Soccer":
+                    from services.game_context import build_soccer_game_context
+                    g["_ctx"] = await build_soccer_game_context(g)
+                elif sport == "Tennis":
+                    from services.game_context import build_tennis_match_context
+                    g["_ctx"] = await build_tennis_match_context(g)
+            except Exception as e:
+                logger.debug("%s context prefetch failed for %s: %s",
+                             sport, g.get("id"), e)
             all_picks.extend(_picks_from_game(sport, league_label, g, date_str))
             # ─── Tennis alt-line augmentation ────────────────────────
             # Per user spec: "Tennis have alt line available pls add and

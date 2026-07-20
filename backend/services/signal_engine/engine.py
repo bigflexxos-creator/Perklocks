@@ -34,7 +34,7 @@ from .rationale import build_why, signal_breakdown_line
 
 logger = logging.getLogger("lockscore.services.signal_engine")
 
-SIGNAL_VERSION = 7  # bumped for Phase 3 (data-driven MLB totals contribs component)
+SIGNAL_VERSION = 8  # bumped for Phase 3 expansion (Soccer + Tennis DD models)
 _REFRESH_SECS = 1800  # 30 min — market signal tracks live line movement
 
 
