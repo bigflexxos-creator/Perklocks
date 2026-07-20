@@ -151,6 +151,16 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
                 <Text style={styles.modelTagText}>MODEL</Text>
               </View>
             )}
+            {(pick as any).chalk_trap && (
+              <View style={styles.chalkTrapTag}>
+                <Text style={styles.chalkTrapTagText}>⚠️ TRAP</Text>
+              </View>
+            )}
+            {(pick as any).chalk_verified && (
+              <View style={styles.chalkVerifiedTag}>
+                <Text style={styles.chalkVerifiedTagText}>✓ CHALK+</Text>
+              </View>
+            )}
             <Text style={styles.league} numberOfLines={1}>{pick.league}</Text>
             <View style={[styles.gradePill, { borderColor: gradeColor, backgroundColor: gradeColor + "18" }]}>
               <Text style={[styles.gradePillText, { color: gradeColor }]} numberOfLines={1}>
@@ -1141,6 +1151,34 @@ const styles = StyleSheet.create({
   },
   modelTagText: {
     color: "#A78BFA", fontSize: 10, fontWeight: "900",
+    letterSpacing: 1.2,
+  },
+  // ── CHALK TRAP badge — red warning on picks priced -250 or worse
+  // that lack strong data-driven confirmation. User still sees the
+  // pick but the app is explicitly warning: "high juice, thin edge —
+  // needs ~72%+ hit rate just to break even". Paired with the
+  // demoted "Solid Lean" grade so a user glancing at the card
+  // instantly clocks it as informational, not a Lock.
+  chalkTrapTag: {
+    paddingHorizontal: 7, paddingVertical: 3, borderRadius: 4,
+    borderWidth: 1, borderColor: "#F87171",
+    backgroundColor: "#F8717122",
+  },
+  chalkTrapTagText: {
+    color: "#F87171", fontSize: 10, fontWeight: "900",
+    letterSpacing: 1.2,
+  },
+  // ── CHALK VERIFIED (CHALK+) badge — green stamp on picks priced
+  // -250 or worse that CLEARED the kill switch (>=8pp true edge and
+  // >=3 aligned data signals). Rare — usually 0-3 per slate — but
+  // when they hit, they're the genuine +EV chalk plays.
+  chalkVerifiedTag: {
+    paddingHorizontal: 7, paddingVertical: 3, borderRadius: 4,
+    borderWidth: 1, borderColor: COLORS.neonGreen,
+    backgroundColor: COLORS.neonGreen + "22",
+  },
+  chalkVerifiedTagText: {
+    color: COLORS.neonGreen, fontSize: 10, fontWeight: "900",
     letterSpacing: 1.2,
   },
   league: { color: COLORS.textMuted, fontSize: 11, fontWeight: "600", flex: 1 },
