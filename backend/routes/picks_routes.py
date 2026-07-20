@@ -1425,26 +1425,41 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # underpins Lock Score. Users want to surface picks where the
     # underlying signal is strong even if lock happens to be mid-band.
     #
-    # ── 2026-07-17 (rank fix) ────────────────────────────────────────
-    # `signal_score` is a slate-wide percentile rank (0-100) refreshed
-    # by `refresh_slate_signal_rank` at the top of this handler. Picks
-    # ingested BETWEEN sweeps may still be missing the field; treat
-    # them as neutral (50) so a low/mid slider doesn't nuke the board
-    # while enrichment catches up. A high slider (>50) still excludes
-    # missing-field picks — desired: user is asking for elite signals
-    # only, so it's OK to hide unranked-yet picks.
+    # ── Signal filter fix (2026-07-21) ───────────────────────────────
+    # CRITICAL: The LockPickCard displays `signal_score_raw` (the
+    # absolute 0-100 conviction from services/signal_engine/engine.py)
+    # NOT `signal_score` (the slate-wide percentile rank). Filter MUST
+    # match what the card shows or the "80+" filter looks broken:
+    # user sees "75" on a card in an "80+" filtered view. Query only
+    # on signal_score_raw; fall back to signal_score only when raw is
+    # missing (picks awaiting decoration).
     if min_signal is not None and float(min_signal) > 0:
         _min_sig = float(min_signal)
+        raw_clause = {"signal_score_raw": {"$gte": _min_sig}}
+        # Fallback for picks where signal_score_raw hasn't been written
+        # yet (mid-refresh) — use the percentile as a proxy so they
+        # don't drop off the board silently.
+        fallback_clause = {
+            "signal_score_raw": {"$in": [None]},
+            "signal_score": {"$gte": _min_sig},
+        }
         if _min_sig <= 50.0:
+            # At low thresholds also allow "no signal yet" picks through
+            # so a fresh slate doesn't render blank while enrichment
+            # catches up.
             q["$and"] = (q.get("$and") or []) + [{
                 "$or": [
-                    {"signal_score": {"$gte": _min_sig}},
-                    {"signal_score": {"$exists": False}},
-                    {"signal_score": None},
+                    raw_clause,
+                    fallback_clause,
+                    {"signal_score_raw": {"$exists": False}, "signal_score": {"$exists": False}},
                 ],
             }]
         else:
-            q["signal_score"] = {"$gte": _min_sig}
+            # High threshold — must have a real raw score meeting the
+            # floor. Percentile-only picks are the fallback fringe.
+            q["$and"] = (q.get("$and") or []) + [{
+                "$or": [raw_clause, fallback_clause],
+            }]
     # Market family filter — uses the same labelling we use in analytics so
     # the same token works on every sport (e.g. "moneyline", "spread",
     # "game_total", "btts", "1x2", "goalscorer", "player_points", etc.).
