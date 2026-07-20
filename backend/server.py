@@ -2204,6 +2204,30 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as _sim_err:
         logger.warning("Sim engine failed (continuing): %s", _sim_err)
 
+    # ── Chalk Kill Switch (2026-07-21) ────────────────────────────────
+    # User mandate: "auto-fade any pick priced worse than -250 unless
+    # model edge >= 8pp with >=3 aligned data signals". Trap picks stay
+    # visible on the board (per user: "I still want the 200 picks for
+    # options") but get their lock_score / signal_score capped and a
+    # visible warning attached, so users can SEE them without the app
+    # RECOMMENDING them as a Lock. This must run LAST — after all
+    # lock_score writers (learning_v2 / brain sim_runner) so the cap
+    # is authoritative and can't be overwritten downstream.
+    # See services/chalk_trap.py for gate details.
+    try:
+        from services.chalk_trap import apply_chalk_kill_switch
+        _ck_stats = apply_chalk_kill_switch(safe_picks)
+        logger.info(
+            "Chalk Kill Switch: trapped=%d spared_edge=%d spared_dd=%d "
+            "spared_alt=%d already_low=%d (of %d chalk / %d total)",
+            _ck_stats["trapped"], _ck_stats["spared_by_edge"],
+            _ck_stats["spared_by_dd"], _ck_stats["spared_alt"],
+            _ck_stats["already_low"], _ck_stats["chalk_seen"],
+            _ck_stats["total"],
+        )
+    except Exception as _ck_err:
+        logger.warning("Chalk Kill Switch skipped: %s", _ck_err)
+
     if safe_picks:
         # ATOMIC-SWAP: do the wipe NOW, immediately before the insert.
         # The enrichment passes above ran on in-memory `safe_picks` —
