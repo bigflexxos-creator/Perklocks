@@ -20,8 +20,11 @@ So we:
 from __future__ import annotations
 
 import hashlib
+import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+
+logger = logging.getLogger("lockscore.tennis_extra")
 
 from .scraper import fetch_today_matches
 from .real_odds import (
@@ -374,6 +377,133 @@ async def fetch_extra_tennis_picks(
         }
         if using_real and all_books:
             pick_doc["all_book_odds"] = all_books
+
+        # ── DATA-DRIVEN scoring wired into tennis_extra path (2026-07-20).
+        # This is where 100% of ATP-250/WTA-250/Challenger picks come
+        # from. Previously bypassed DD entirely, so every pick sat at
+        # the +2% market-anchored win_prob and clustered at signal 78.
+        # Compute book_consensus + match_tier + optional Sackmann
+        # lookup, then run tennis_ml_prob and refine win_prob accordingly.
+        try:
+            import os as _os
+            from motor.motor_asyncio import AsyncIOMotorClient as _AC
+            from services.data_driven_model import tennis_ml_prob
+            from services.tennis.fallback import get_player_stats, get_h2h
+            _client = _AC(_os.environ.get("MONGO_URL","mongodb://localhost:27017"))
+            _db = _client["lockscore_db"]
+            ctx: dict = {
+                "match_tier": tier if tier else None,
+                "using_real_odds": bool(using_real),
+                "fair_odds_model": bool(is_model_pick),
+            }
+            # Book consensus spread across all bookmakers for this game
+            all_probs = []
+            for _bk_name, _bk in (all_books or {}).items():
+                _p = _bk.get("fav_price")
+                if isinstance(_p, (int, float)):
+                    if _p >= 100:
+                        all_probs.append(100.0 / (_p + 100.0))
+                    else:
+                        all_probs.append(-_p / (-_p + 100.0))
+            # 2026-07-21: lowered threshold from 3 → 2 books so any real-
+            # odds match with a second-book comparison also gets consensus
+            # signaling. Tennis_extra without real odds still has 0-1
+            # books so this quietly no-ops there.
+            if len(all_probs) >= 2:
+                ctx["book_consensus_spread_pp"] = round((max(all_probs) - min(all_probs)) * 100.0, 2)
+            # Sackmann lookup (ATP only — silently no-op for WTA / challenger)
+            surface_key = "Hard"
+            _tour_l = (m.get("tournament") or "").lower() + " " + event_label.lower()
+            if any(x in _tour_l for x in ("wimbledon","grass","halle","queen")):
+                surface_key = "Grass"
+            elif any(x in _tour_l for x in ("french","clay","roland","monte carlo","madrid","rome","barcelona","umag","bastad","gstaad","kitzbuhel","hamburg","bucharest","estoril")):
+                surface_key = "Clay"
+            try:
+                sa = await get_player_stats(_db, fav_clean, surface_key)
+                sb = await get_player_stats(_db, dog_clean, surface_key)
+                if sa: ctx["sackmann_a"] = sa
+                if sb: ctx["sackmann_b"] = sb
+                h = await get_h2h(_db, fav_clean, dog_clean)
+                if h and h.get("matches", 0) >= 1:
+                    ctx["h2h_a_wins"] = h.get("a_wins", 0)
+                    ctx["h2h_b_wins"] = h.get("b_wins", 0)
+            except Exception:
+                pass
+            dd = tennis_ml_prob(fav_clean, fav_clean, dog_clean, surface_key.lower(), fav_implied, ctx)
+            if dd.get("contributions"):
+                pick_doc["data_driven_used"] = True
+                pick_doc["data_driven_contribs"] = dd["contributions"]
+                pick_doc["win_probability"] = round(dd["mp"] * 100, 2)
+                pick_doc["model_win_probability"] = round(dd["mp"] * 100, 2)
+                pick_doc["edge_percent"] = round((dd["mp"] - fav_implied) * 100, 2)
+
+                # ── Populate pick_rationale (2026-07-21) ─────────────
+                # User: "why this picks should be back on card". Tennis
+                # picks previously had empty rationale (LockPickCard's
+                # `hasRationale` check hid the toggle entirely). Now
+                # every DD tennis pick surfaces its data-driven reasoning
+                # as evidence bullets that render in the "Why this pick?"
+                # panel.
+                _evidence = []
+                _labels = {
+                    "surface_elo":       "🎾 Surface Elo edge",
+                    "win_pct":           "📈 52-week win% edge",
+                    "hold_pct":          "🎯 Serve hold% edge",
+                    "first_serve":       "⚡ First-serve won%",
+                    "break_saved":       "🛡️ Break-saved%",
+                    "retirement_risk":   "⚠️ Retirement risk",
+                    "fatigue":           "😴 Fatigue mismatch",
+                    "h2h":                "🥊 H2H history",
+                    "sharp_consensus":   "🎯 Sharp market consensus",
+                    "book_uncertainty":  "❓ Books disagree",
+                    "book_anchor":       "📊 Book-implied anchor",
+                    "book_coverage":     "🏦 US book coverage",
+                    "fair_odds_model":   "🧮 Fair-odds model agrees",
+                    "chalk_dampener":    "⚠️ Chalk trap zone",
+                    "value_zone":        "💎 Sweet-spot fav band",
+                    "tier_sharp_fav":    "🏆 Sharp-market favorite",
+                    "tier_semi_sharp_fav": "🏆 500-level favorite",
+                    "tier_tour_fav":     "🎾 Tour-level favorite",
+                    "tier_challenger_fav": "🎾 Challenger favorite",
+                    "tier_itf_fav":      "🎾 ITF-level favorite",
+                    "tier_dog_fade":     "🚫 Slam dog fade",
+                    "tier_dog_lift":     "🐕 Challenger dog value",
+                    "tier_itf_dog_lift": "🐕 ITF upset value",
+                }
+                for _k, _v in sorted(
+                    dd["contributions"].items(),
+                    key=lambda kv: -abs(kv[1]) if isinstance(kv[1], (int, float)) else 0,
+                )[:5]:
+                    if not isinstance(_v, (int, float)):
+                        continue
+                    _label = _labels.get(_k, _k.replace("_", " ").title())
+                    _sign = "+" if _v > 0 else ""
+                    _evidence.append(f"{_label}: {_sign}{_v*100:.1f}pp")
+
+                _summary_parts = [
+                    f"{fav_clean} ({round(dd['mp']*100)}% model win prob"
+                ]
+                if dd.get("total_lift"):
+                    _summary_parts.append(f", lift {dd['total_lift']*100:+.1f}pp")
+                _summary_parts.append(f") vs {dog_clean} on {surface_key.lower()}")
+                _summary = "".join(_summary_parts)
+
+                pick_doc["pick_rationale"] = {
+                    "summary": _summary,
+                    "data_source": source_label,
+                    "evidence": _evidence,
+                    "concerns": [],
+                    "model_win_prob_pct": round(dd["mp"] * 100, 2),
+                    "edge_percent": round((dd["mp"] - fav_implied) * 100, 2),
+                    "lock_score": lock,
+                    "confidence_score": min(100, int(50 + len(dd.get("used_data") or []) * 8)),
+                    "lean": None,
+                    "matchup": {"surface": surface_key.lower(), "tournament": m.get("tournament")},
+                }
+        except Exception as _dd_err:
+            logger.debug("tennis_extra DD scoring failed for %s: %s",
+                         event_label, _dd_err)
+
         picks.append(pick_doc)
 
     return picks
