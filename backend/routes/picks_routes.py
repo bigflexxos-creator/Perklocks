@@ -2063,7 +2063,12 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         "v2_reasons",           # 106 KB
         "sim_result",           # 96 KB
         "brain",                # 82 KB
-        "pick_rationale",       # 55 KB — full text; keep top_reasons/key_insights
+        # NOTE (2026-07-21): `pick_rationale` was previously stripped
+        # here but that broke the "Why this pick?" card toggle for
+        # every pick that hit /picks/today. It's now slimmed inline
+        # below via `_slim_rationale` — keeps the top summary/lean/
+        # evidence bullet (140B avg) so the collapsed card renders
+        # the toggle, while the deep blocks ride on /picks/{id}.
         "factors",              # 50 KB
         "learning",             # 42 KB
         "player_intel_full",    # variable, sometimes huge
@@ -2073,9 +2078,17 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         "nflfastr_snapshot",
         "soccer_head_to_head",
     )
+    # Slim (not strip) `pick_rationale` so the card can render the
+    # "Why this pick?" toggle while keeping the payload small.
+    try:
+        from server import _slim_rationale as _slim_pr
+    except Exception:
+        _slim_pr = None
     for _slim in canonical:
         for _f in _HEAVY_LIST_FIELDS:
             _slim.pop(_f, None)
+        if _slim_pr and isinstance(_slim.get("pick_rationale"), dict):
+            _slim["pick_rationale"] = _slim_pr(_slim["pick_rationale"])
         # ── Why this pick fallback (2026-07-17) ─────────────────────
         # Tennis picks & most non-soccer sports don't set why_this_pick
         # (only Soccer goalscorer + MLB HR pipelines do). Fall back to
