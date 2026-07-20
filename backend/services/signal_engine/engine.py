@@ -34,7 +34,7 @@ from .rationale import build_why, signal_breakdown_line
 
 logger = logging.getLogger("lockscore.services.signal_engine")
 
-SIGNAL_VERSION = 5  # bumped for Phase 2 (adds park-hand, pitch-mix, rolling xG, context, first-set)
+SIGNAL_VERSION = 6  # bumped for conviction ceiling raise (elite Lock → 90+)
 _REFRESH_SECS = 1800  # 30 min — market signal tracks live line movement
 
 
@@ -248,22 +248,34 @@ async def compute_signals(db, pick: dict) -> dict:
         except (TypeError, ValueError):
             return 0.0
     lock_v = max(_f(_lock_a), _f(_lock_b), _f(_lock_c))
+    # 2026-07-19 — Conviction boost ceiling raised so elite Locks land
+    # in the 88-99 raw band (matching what users expect when the card
+    # says "SIGNAL 90+"). Previous ceiling (~68 raw for lock=97) made
+    # every strong Lock look mediocre. Bands:
+    #   Elite Lock 97+           →  +40 raw (score 90)
+    #   Strong Lock 92-96        →  +28 raw (score 78)
+    #   Moderate Lock 85-91      →  +14 raw (score 64)
+    #   Elite tag alone          →  +22 raw (score 72)
+    #   Elite tag + Elite Lock   →  +48 raw (score ~98)  \u2190 top of scale
     conviction_boost = 0.0
     if is_elite_tagged:
-        # Star player on a market they're priced to hit — floor at
-        # +12 raw points (score 62 minimum before rank).
-        conviction_boost = max(conviction_boost, 12.0)
+        # Star player on a market they're priced to hit \u2014 floor at
+        # +22 raw points (score 72 minimum before rank).
+        conviction_boost = max(conviction_boost, 22.0)
     if lock_v >= 97:
-        # Elite Lock — floor at +18 (score 68). Only stacks if it's
-        # ALSO an elite-tagged player (which pushes it further).
-        conviction_boost = max(conviction_boost, 18.0)
+        # Elite Lock \u2014 floor at +40 (score 90). Elite Locks are the
+        # highest-conviction picks the engine emits; they should
+        # dominate the top of the signal board.
+        conviction_boost = max(conviction_boost, 40.0)
     elif lock_v >= 92:
-        # Strong Lock — modest floor at +6 raw (score 56).
-        conviction_boost = max(conviction_boost, 6.0)
+        # Strong Lock \u2014 floor at +28 raw (score 78).
+        conviction_boost = max(conviction_boost, 28.0)
+    elif lock_v >= 85:
+        # Moderate Lock \u2014 floor at +14 raw (score 64).
+        conviction_boost = max(conviction_boost, 14.0)
     if is_elite_tagged and lock_v >= 97:
-        # Elite player on an Elite Lock — add a stacking bonus so
-        # they DEFINITELY land top-quartile of their sport bucket.
-        conviction_boost = min(conviction_boost + 10.0, 40.0)
+        # Elite player on an Elite Lock \u2014 stack for a 98 ceiling.
+        conviction_boost = min(conviction_boost + 8.0, 48.0)
     if conviction_boost > 0:
         adjusted = max(adjusted, conviction_boost)
 
