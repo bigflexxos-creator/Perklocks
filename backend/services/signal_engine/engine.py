@@ -34,11 +34,10 @@ from .rationale import build_why, signal_breakdown_line
 
 logger = logging.getLogger("lockscore.services.signal_engine")
 
-SIGNAL_VERSION = 10  # 2026-07-21 negative-edge conviction cap. Picks with
-# edge < 0 no longer get artificial Lock-floor boost. User caught Mookie
-# Betts Over 0.5 Hits @ -194 with edge=-4.8% still scoring Signal 90.
-# Fix: conviction floors now respect edge quality — edge < -5pp gets 0
-# floor, -5..-2pp caps at 14 (score 64), -2..+2pp caps at 22 (score 72).
+SIGNAL_VERSION = 11  # 2026-07-21 Tier-1: Real MLB team K% vs pitcher hand
+# (statsapi.mlb.com), Under K props enabled, pitcher K% + stamina factored
+# into mlb_deep_signal. Replaces previous random-uniform placeholder for
+# "Opp K% vs same hand" that had no real data behind it.
 _REFRESH_SECS = 1800  # 30 min — market signal tracks live line movement
 
 

@@ -2848,8 +2848,21 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     # KEEP Unders — they fuel the "Under of the Day" feature
                     # (alt Unders with super-high lines are some of the safest
                     # bets on the board).
+                    #
+                    # 2026-07-21 EXCEPTION: MLB main-line pitcher_strikeouts
+                    # UNDER props are HIGH-value — SportsbookReview experts
+                    # regularly recommend K UNDERS ("Reynaldo Lopez Under 4.5
+                    # K vs Padres -150" — Padres K at 16% vs him). Our
+                    # historical bleed was ALL Over K props. Enabling Unders
+                    # gives us the fade side of overpriced-K-Over chalk.
                     is_alt_mk = mk in _ALT_PROP_MARKETS
-                    if not is_alt_mk and str(side).lower() == "under":
+                    is_k_main_under = (
+                        mk == "pitcher_strikeouts"
+                        and str(side).lower() == "under"
+                    )
+                    if (not is_alt_mk
+                            and not is_k_main_under
+                            and str(side).lower() == "under"):
                         continue
                     # Drop Total Bases at the 0.5 line entirely — it's the
                     # same outcome as Hits 0.5 (any base = at least 1 hit) and
@@ -2986,6 +2999,46 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 "Park Strikeout Factor":      player_rng.uniform(0.55, 0.85),
                 "Recent Strikeout Form (L5)": player_rng.uniform(0.7, 0.95) if is_alt else player_rng.uniform(0.6, 0.95),
             }
+            # ── Real-data override (2026-07-21 Tier-1) ─────────────────
+            # Replace the "Opp K% vs same hand" random placeholder with
+            # actual opposing-team K% vs the starter's throwing hand,
+            # sourced from statsapi.mlb.com via mlb_team_k_intel. This
+            # is the SINGLE most predictive feature for K props after
+            # pitcher K/9. Also expose the raw values so signal_engine
+            # can surface "Rangers 4th worst K% vs LHP" style rationale.
+            _game_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
+            _sph = _game_ctx.get("starting_pitcher_home") or {}
+            _spa = _game_ctx.get("starting_pitcher_away") or {}
+            _pitcher_name = (player or "").strip().lower()
+            _match = None
+            for _sp in (_sph, _spa):
+                if _sp.get("name", "").strip().lower() == _pitcher_name:
+                    _match = _sp
+                    break
+            if _match and _match.get("opp_k_pct") is not None:
+                _opp_k = float(_match["opp_k_pct"])
+                _opp_rank = _match.get("opp_k_rank") or 15
+                # Map K% into 0..1 factor score.
+                # League avg K% ~22%. Range in practice ~18-28%.
+                # 28% (worst-hitting team) → 0.95, 18% (best contact) → 0.55.
+                _factor = (_opp_k - 0.18) / (0.10) * 0.40 + 0.55
+                _factor = max(0.40, min(0.97, _factor))
+                # For UNDER K props, flip the factor (weak K teams = good Under).
+                if str(side).lower() == "under":
+                    _factor = 1.52 - _factor  # 0.95 ↔ 0.57 mirror around 0.76
+                    _factor = max(0.40, min(0.97, _factor))
+                factors["Opp K% vs same hand"] = _factor
+                # Stash raw data on the pick doc so signal engine + rationale
+                # can surface it. `game.setdefault('_real_data', ...)` is
+                # attached and later read into pick by _attach_real_data.
+                game.setdefault("_real_k_data", {})[player] = {
+                    "opp_team": _match.get("opp_k_team"),
+                    "opp_k_pct": _opp_k,
+                    "opp_k_rank": _opp_rank,
+                    "pitcher_throws": _match.get("throws"),
+                    "pitcher_k_pct": _match.get("k_pct"),
+                    "pitcher_ip_per_start": _match.get("ip_per_start"),
+                }
         else:
             factors = {
                 "Recent Volume / Usage": player_rng.uniform(0.7, 0.95) if is_alt else player_rng.uniform(0.6, 0.95),
@@ -3084,6 +3137,20 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         # detection further below.
         if new_pick is not None and is_elite_scorer:
             new_pick["elite_player"] = True
+        # ── Attach real MLB K data (2026-07-21 Tier-1) ────────────────
+        # If this pick is a pitcher K prop and we resolved real
+        # opposing-team K% + pitcher hand data upstream, attach the
+        # structured payload to the pick so signal_engine + pick
+        # rationale can render "Rangers 4th-worst K% vs LHP (25.4% K)"
+        # style evidence lines.
+        if new_pick is not None and is_pitcher_prop and isinstance(game, dict):
+            _rk = (game.get("_real_k_data") or {}).get(player)
+            if _rk:
+                new_pick["k_prop_data"] = {
+                    **_rk,
+                    "side": str(side).lower(),
+                    "line": point,
+                }
         picks.append(new_pick)
     # Tag every Under pick so the main Locks feed can exclude them and the
     # dedicated "Under of the Day" tab can surface them. Anything where the
