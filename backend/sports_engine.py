@@ -74,6 +74,13 @@ SPORT_KEYS: dict[str, list[str]] = {
         "soccer_sweden_superettan", "soccer_finland_veikkausliiga",
         "soccer_chile_campeonato", "soccer_china_superleague",
         "soccer_league_of_ireland",
+        # Australian A-League (added 2026-07-21 per user request). Season
+        # runs October-May; The Odds API returns inactive during offseason.
+        # Will start producing picks automatically when the season resumes.
+        # Note: Australia Cup, Australian NPL (Capital Territory), and the
+        # Chinese Cup are NOT available on The Odds API — those FanDuel
+        # markets come from broader vendors (Sportradar/OpticOdds).
+        "soccer_australia_aleague",
         # Major international competitions
         "soccer_conmebol_copa_america", "soccer_uefa_euro",
         "soccer_mexico_ligamx", "soccer_usa_mls",
@@ -1385,6 +1392,7 @@ LEAGUE_LABELS: dict[str, str] = {
     "soccer_chile_campeonato": "Primera Chile",
     "soccer_china_superleague": "China Super League",
     "soccer_league_of_ireland": "League of Ireland",
+    "soccer_australia_aleague": "A-League",
     "soccer_mexico_ligamx": "Liga MX",
     "soccer_usa_mls": "MLS",
     "tennis_atp_wimbledon": "ATP Wimbledon",
