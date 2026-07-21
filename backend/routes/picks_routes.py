@@ -1388,8 +1388,38 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             }
         ],
     }
+    # 2026-07-21 (USER REPORT): "why didn't JL Struff and Cerundolo make
+    # board — they play today". Root cause: their tennis picks had
+    # pick_date=2026-07-19 (when first ingested) but their Kitzbühel
+    # first-round matches shifted to 2026-07-21. The `pick_date == today`
+    # filter excluded them. FIX: widen the date match to include picks
+    # whose event_time falls in today's UTC window, even if pick_date is
+    # stale. This handles rescheduled matches, timezone-crossing events,
+    # and ingest lag where a pick was created 1-3 days ahead.
+    _today = _today_str()
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    _now = _dt.now(_tz.utc)
+    # Widen to -30h / +30h: matches sometimes get rescheduled by a full
+    # day (weather delays, schedule adjustments). Struff & Cerundolo at
+    # Kitzbühel are the case that motivated this — their picks had
+    # event_time=2026-07-20T09Z but the actual match was 2026-07-21T09Z
+    # (24-hour reschedule). Pending-status + off_board filters below
+    # keep this from resurrecting settled picks or explicit no-bet flags.
+    _win_start = (_now - _td(hours=30)).isoformat().replace("+00:00", "Z")
+    _win_end   = (_now + _td(hours=30)).isoformat().replace("+00:00", "Z")
+
     q: dict = {
-        "pick_date": _today_str(),
+        # Accept picks matching EITHER pick_date=today OR event_time in
+        # today's UTC window. Both must still pass the pending/no_bet/
+        # off_board filters below, so this only rescues genuinely-
+        # upcoming picks with stale pick_date, never resurrects settled
+        # picks or picks that got explicitly no_bet-flagged.
+        "$and": [
+            {"$or": [
+                {"pick_date": _today},
+                {"event_time": {"$gte": _win_start, "$lte": _win_end}},
+            ]}
+        ],
         # Exclude special-tab markets (NRFI/YRFI lives in its own MLB
         # sub-tab — user explicitly asked to keep these off the main board).
         "hide_from_main_board": {"$ne": True},
@@ -1406,6 +1436,9 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         # through if the trap wasn't run, but with the trap running
         # they now get off_board=True and are hidden).
         "off_board": {"$ne": True},
+        # Only show still-open picks — safety net so a stale pick_date
+        # from 3 days ago can't resurrect a settled pick.
+        "status": {"$in": ["pending", "open", None]},
         "$or": [standard_q, elite_q, model_only_q, tennis_ml_q, tennis_alt_q, tennis_extra_q, mlb_k_q, mlb_hitter_q, soccer_scorer_q, high_lock_bypass_q],
     }
     # ── User-supplied min_lock floor (global enforcement) ────────────
