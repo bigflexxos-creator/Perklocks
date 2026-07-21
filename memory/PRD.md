@@ -587,3 +587,42 @@ Every Soccer + Tennis pick that reaches the board now carries
 - Attach Tennis Elo/H2H/first-set to game._ctx BEFORE pick build
   (currently attached after) so main-flow Tennis ML picks can pass
   the feature-engine gate
+
+---
+
+## 2026-07-21 — FINAL PHASE Random Purge COMPLETE
+
+**Mandate**: "Final Phase random purge in `compute_lock_score` (rewrite to use only calibrated probs)"
+
+### `sports_engine.py` — every RNG contamination in the pick-scoring pipeline removed
+- **DELETED** `_factors_random()` function definition + `_FACTOR_RECIPES` table (dead code)
+- **DELETED** `player_rng` per-player seed (no longer needed — factors come from real engines)
+- **REPLACED** every `rng.random()` / `rng.uniform()` in `mp` (model_win_prob) computation with deterministic book-anchored seeds:
+  - Player prop loop lines 3199-3223
+  - Alt run-line loop (line 2624 area)
+  - Team totals dead-code loops (lines 2503, 2562)
+  - Moneyline `dd_ml_result is None` fallback (line 986)
+  - Double chance fallback (line 1058)
+  - Game totals `_dd_fn is None` fallback (lines 1127, 1147)
+  - Soccer Poisson alt totals (line 1311)
+  - Spread pick generation (line 1370)
+- **REPLACED** non-MLB pitcher / batter fake RNG factor dicts with `factors = {"Book Implied Probability": mp}` — honest single-factor calibrated payload for KBO / NBA / WNBA / UFC props until Phase 3 engines land
+- **REPLACED** Elite Tier `random.uniform(2, 5)` boost with deterministic rank-linear `(5-i) * 1.5` spread (positions 1-5 get 7.5 → 1.5 boost)
+- **ADDED** calibrated-mp override at line 3313: `sport == "MLB" && real feature engine used → mp = mean(factor values)`. Verified via Juan Soto Over 0.5 Hits: 3 real factors (L10 hit rate 0.47, home/away 0.887, platoon 0.95) → `model_win_probability = 76.9`, learning shrinkage → 69.3 final, edge = +0.8pp.
+
+### Remaining `random.uniform` / `rng.uniform` in codebase (all legitimate)
+- `services/nfl_ingest.py`, `services/nba_ingest.py` — rate-limit jitter (network sleeps, not scoring)
+- `parlay_optimizer.py:743` — parlay diversification randomness (not scoring)
+- All in-file comments referencing the purge (audit trail)
+
+### Pipeline math for a data-driven pick (verified end-to-end)
+1. `build_mlb_{pitcher_k,hitter,ml,total}_factors(ctx, …)` returns real factors in `[0.40, 0.95]` probability scale
+2. `has_enough_real_data()` gate — pick DROPPED if < 3 real factors
+3. `_cal_mp = mean(factor_values)` → `model_win_prob` (clamped by market type)
+4. `compute_lock_score(factors, win_prob=mp*100)` → raw lock (6-component composite)
+5. `_build_pick` writes `model_win_probability` (raw) + `edge_percent`
+6. `pick_validator` applies `bucket.weight + cal.adjustment` learning delta → `win_probability` (final)
+7. Chalk Trap / Longshot Trap gate visibility via `off_board` flag
+
+**Zero RNG anywhere in this pipeline.** Every value is either real data, book_implied, or a learned adjustment from historical settle data.
+

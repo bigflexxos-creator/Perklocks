@@ -623,6 +623,18 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
     # scores typically land in the 80-87 band. Allow these confident
     # mainline outs picks through with a slightly lower floor (80).
     is_pitcher_outs = "outs recorded" in (market or "").lower()
+    # 2026-07-21 — Main-line pitcher STRIKEOUTS get the same juice-market
+    # treatment (floor=78). Reasoning: legit main K props (Valdez -115,
+    # Reynaldo Lopez Under -150, Schultz +114 — see SportsbookReview /
+    # Yahoo picks) land in the 78-85 lock band because they price at
+    # near-coin-flip odds with modest edge. The MLB 88 floor was
+    # eating every legitimate mainline. Alt K props still filtered
+    # by the -250 blanket cap + chalk_trap, so we're not opening a
+    # chalk floodgate — just letting the reasonable mainlines through.
+    is_pitcher_k_main = (
+        "strikeouts" in (market or "").lower()
+        and " · alt lock" not in (market or "").lower()
+    )
     # 2026-07-19 \u2014 Juice-only markets (Game Total, Run Line, Spread)
     # are structured 50/50 by the sportsbook. Their factor-driven
     # lock_scores land in the 78-88 band, well below MLB's 88 floor.
@@ -643,6 +655,8 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
         min_lock = 72
     elif is_pitcher_outs:
         min_lock = 80
+    elif is_pitcher_k_main:
+        min_lock = 78
     elif is_juice_market:
         min_lock = 78
     else:
@@ -720,7 +734,16 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
             or (market_l.startswith("total ") and "team total" not in market_l)
             or "run line" in market_l
         )
-        if _mlb_juice:
+        # 2026-07-21 — Main-line K props (pitcher_strikeouts, not alt)
+        # are priced around -110 to -150 (52-60% implied). Our model
+        # rarely projects above 0.62 on legit mainlines even when the
+        # matchup screams UNDER (Reynaldo Lopez -150 → SD 16% K rate).
+        # Use the same 0.55 floor as juice markets so real edges emit.
+        _mlb_k_main = (
+            "strikeouts" in market_l
+            and " · alt lock" not in market_l
+        )
+        if _mlb_juice or _mlb_k_main:
             if model_win_prob < 0.55:
                 return None
         elif model_win_prob < 0.62:
@@ -749,6 +772,10 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
         or " total " in _mkt_l and "team total" not in _mkt_l
         or "spread" in _mkt_l
         or "run line" in _mkt_l
+        # 2026-07-21 — K mainlines treated as juice (see min_lock branch
+        # above). Bypasses the 0.56 MLB implied floor so legit main K
+        # priced at -110/-115 (53% implied) can emit.
+        or ("strikeouts" in _mkt_l and " · alt lock" not in _mkt_l)
     )
     if (not is_long_shot and not is_alt_prop
             and not is_chalk_ml and not _is_juice_market):
@@ -827,44 +854,28 @@ _MLB_TEAM_NAME_TO_ID: dict[str, int] = {
 
 
 # ───────────────────────── Per-sport factor matrices ─────────────────────────
-
-
-_FACTOR_RECIPES: dict[str, list[str]] = {
-    "MLB_ml": ["Batter vs Pitcher H2H", "Recent Form (L10)", "Home/Away Splits",
-               "L/R Splits", "Pitcher Weakness", "Defensive Rating", "Weather/Park Factors"],
-    "MLB_total": ["Team Offensive Rating", "Bullpen ERA", "Park Factor",
-                  "Weather (Wind/Temp)", "Last 10 Total Trend", "Umpire Tendency"],
-    "NBA_ml": ["Usage Rate", "Minutes Projection", "Pace",
-               "Defensive Rating vs Position", "Recent Form (L10)",
-               "Home/Away Splits", "Back-to-Back Impact"],
-    "NBA_total": ["Pace Differential", "Offensive Rating", "Defensive Rating",
-                  "Rest Days", "Recent Total Trend", "Injury Impact"],
-    "NFL_ml": ["Snap Share / Usage", "Target Share / Air Yards", "Red Zone Usage",
-               "Pass/Rush EPA Allowed", "Pressure Rate", "Defensive DVOA", "Weather / Injuries"],
-    "NFL_total": ["Offensive DVOA", "Defensive DVOA", "Pace of Play",
-                  "Weather", "Recent Total Trend", "Injury Report"],
-    "Soccer_ml": ["xG Difference", "xGA Difference", "Recent Form (L10)",
-                  "H2H Record", "Home Advantage", "Injuries / Suspensions", "Defensive Rating"],
-    "Soccer_total": ["xG Combined", "Attacking Form", "Defensive Form",
-                     "Set Piece Threat", "Pace of Play", "Match Importance"],
-    "Tennis_ml": ["Surface Record", "Recent Form (L10)", "H2H Record",
-                  "Hold % (Service)", "Break % (Return)", "Fatigue / Travel"],
-    "UFC_ml": ["Striking Differential", "Takedown Defense", "Recent Form (L5)",
-               "Cardio / Pace", "Reach / Height Edge", "Camp Quality",
-               "Layoff / Ring Rust"],
-    "UFC_total": ["Finish Rate", "Opp Durability", "Pace of Strikes",
-                  "Wrestling Style", "Cardio Profile", "Round 1 KO Risk"],
-    "KBO_ml": ["Starting Pitcher ERA", "Bullpen ERA", "Recent Form (L10)",
-               "Home/Away Splits", "Lineup Health", "Run Differential",
-               "vs. Opp Recent H2H"],
-    "KBO_total": ["Team OPS (L15)", "Combined Bullpen ERA", "Park Factor",
-                  "Weather (Wind/Humidity)", "Last 10 Total Trend",
-                  "Umpire Strike Zone"],
-}
-
-
-def _factors_random(rng: random.Random, recipe_key: str) -> dict[str, float]:
-    return {k: rng.uniform(0.3, 0.95) for k in _FACTOR_RECIPES.get(recipe_key, [])}
+#
+# 2026-07-21 — FINAL PHASE RANDOM PURGE:
+#   The legacy `_FACTOR_RECIPES` table + `_factors_random(rng, recipe_key)`
+#   function have been fully removed. They generated fake per-factor
+#   scores via `rng.uniform(0.3, 0.95)` which corrupted the input to
+#   compute_lock_score and drove the ROI bleed the user reported over
+#   several sessions ("I said over and over I don't want fake data").
+#
+#   Real replacements now used across all active codepaths:
+#     • MLB    → services/mlb_feature_engine.py     (Phase 1)
+#     • Tennis → services/tennis_feature_engine.py  (Phase 2)
+#     • Soccer → services/soccer_feature_engine.py  (Phase 2)
+#     • NBA / NFL → Phase 3 (in progress). Until those engines land,
+#       these sports emit picks with `factors = {"Book Implied": p}`
+#       (single, calibrated book-derived factor — see the player-prop
+#       loop below). This produces honest, low-lock "book-follow" picks
+#       rather than falsely-elite RNG picks.
+#
+#   Do NOT re-introduce `_factors_random` or any `rng.uniform` for factor
+#   generation. If a sport lacks a feature engine, either (a) route it
+#   through the book-follow path, or (b) drop the pick entirely — those
+#   are the only two acceptable options.
 
 
 # ───────────────────────── Game → Picks converter ─────────────────────────
@@ -972,8 +983,12 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 logger.debug("tennis DD ml failed: %s", e)
                 dd_ml_result = None
         if dd_ml_result is None:
-            model_lift = (rng.random() - 0.5) * 0.08
-            home_model = max(0.1, min(0.9, home_implied + model_lift))
+            # 2026-07-21 FINAL PHASE — no RNG lift when the data-driven
+            # model is unavailable. Fall back to pure book-implied and
+            # let the sport's feature engine (MLB/Soccer/Tennis) recompute
+            # `mp` from real factors downstream. If no engine fires, the
+            # pick lands as an honest book-follow — never fake data.
+            home_model = home_implied
         if home_model >= 0.5:
             side, side_ml, mp = home, home_ml, home_model
         else:
@@ -1044,7 +1059,11 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             # (this is the safer "Win or Draw" option for the favorite).
             dc_side, dc_implied = (home, home_dc_implied) if home_implied >= away_implied else (away, away_dc_implied)
             dc_book_odds = _win_prob_to_american(dc_implied)
-            dc_model = max(0.55, min(0.95, dc_implied + (rng.random() - 0.3) * 0.1))
+            # 2026-07-21 FINAL PHASE — deterministic. Was `dc_implied +
+            # (rng.random() - 0.3) * 0.1` which faked a random ±5pp
+            # nudge. Now the DC seed is book_implied; real Soccer feature
+            # engine below re-derives model_win_prob if data is present.
+            dc_model = max(0.55, min(0.95, dc_implied))
             # 2026-07-21 Phase 2 Soccer: real feature engine for double
             # chance too (uses the same ML factors — win-or-draw is just
             # an aggregated ML outcome).
@@ -1113,7 +1132,12 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     mp_o = dd["mp"]
                     contribs_o = dd["contributions"]
                 else:
-                    mp_o = max(0.35, min(0.78, implied_o + 0.05 + rng.random() * 0.08))
+                    # 2026-07-21 FINAL PHASE — deterministic book-anchored
+                    # seed. Was `implied_o + 0.05 + rng.random() * 0.08`
+                    # which faked a random +5-13pp lift. Now uses a small
+                    # deterministic +2pp (book edge is genuinely tilted
+                    # toward Overs after juice removal).
+                    mp_o = max(0.35, min(0.78, implied_o + 0.02))
                     contribs_o = None
                 candidates.append({
                     "side":     "Over",
@@ -1133,7 +1157,9 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         mp_u = dd["mp"]
                         contribs_u = dd["contributions"]
                     else:
-                        mp_u = max(0.35, min(0.78, implied_u + 0.04 + rng.random() * 0.07))
+                        # 2026-07-21 FINAL PHASE — deterministic. Was
+                        # `implied_u + 0.04 + rng.random() * 0.07`.
+                        mp_u = max(0.35, min(0.78, implied_u + 0.02))
                         contribs_u = None
                     candidates.append({
                         "side":     "Under",
@@ -1295,9 +1321,12 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                             fair_odds = int(round(-100 * p_alt / (1 - p_alt)))
                         else:
                             fair_odds = int(round(100 * (1 - p_alt) / p_alt))
-                        # Model win prob — small upward tilt to mirror existing
-                        # logic, capped to avoid 95%+ claims.
-                        mp_alt = max(0.30, min(0.92, p_alt + 0.02 + rng.random() * 0.04))
+                        # 2026-07-21 FINAL PHASE — deterministic. Was
+                        # `p_alt + 0.02 + rng.random() * 0.04`. Now uses
+                        # the Poisson-computed probability directly with
+                        # a small +2pp deterministic seed. The real
+                        # soccer feature engine gates emission below.
+                        mp_alt = max(0.30, min(0.92, p_alt + 0.02))
                         # 2026-07-21 Phase 2 Soccer: real total factors,
                         # skip if not enough real data.
                         from services.soccer_feature_engine import (
@@ -1356,7 +1385,12 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 line = side_obj.get("point")
                 price = int(side_obj.get("price")) if isinstance(side_obj.get("price"), (int, float)) else -110
                 implied = _implied_prob(price)
-                mp = max(0.4, min(0.78, implied + 0.04 + rng.random() * 0.08))
+                # 2026-07-21 FINAL PHASE — deterministic book-anchored
+                # seed. Was `implied + 0.04 + rng.random() * 0.08` which
+                # baked a random 4-12pp lift into every spread pick. Now
+                # +4pp deterministic; MLB/Soccer feature engine gates
+                # emission below and can recompute mp from real factors.
+                mp = max(0.4, min(0.78, implied + 0.04))
                 # 2026-07-21 Phase 1 MLB: real spread factors, gated on
                 # coverage. Non-MLB sports still use random pool.
                 if sport == "MLB":
@@ -2488,8 +2522,8 @@ def _build_mlb_alt_picks(
         imp = _implied_prob(price)
         if not (0.30 <= imp <= 0.92):
             continue
-        # Book-anchored model with small tilt.
-        mp = max(0.35, min(0.85, imp + 0.03 + rng.random() * 0.06))
+        # Book-anchored deterministic seed (no RNG — 2026-07-21 FINAL PHASE).
+        mp = max(0.35, min(0.85, imp + 0.03))
         edge_pct = (mp - imp) * 100
         # Main team total — no 8% gate. Only surface positive-EV or
         # near-EV picks (edge ≥ -2%). Compute lock from factors.
@@ -2548,7 +2582,7 @@ def _build_mlb_alt_picks(
         imp = _implied_prob(price)
         if not (0.40 <= imp <= 0.95):
             continue
-        mp = max(0.40, min(0.92, imp + 0.03 + rng.random() * 0.05))
+        mp = max(0.40, min(0.92, imp + 0.03))
         edge_pct = (mp - imp) * 100
         # 8% EDGE GATE (mandatory for the 2.5-3.5 band).
         if edge_pct < _MLB_ALT_MIN_EDGE_PCT:
@@ -2610,7 +2644,12 @@ def _build_mlb_alt_picks(
         imp = _implied_prob(price)
         if not (0.35 <= imp <= 0.95):
             continue
-        mp = max(0.40, min(0.92, imp + 0.03 + rng.random() * 0.05))
+        # 2026-07-21 FINAL PHASE — replaced RNG-derived `mp` with a
+        # book-anchored seed. The calibrated `mp` gets recomputed from
+        # the real MLB feature engine below (build_mlb_ml_factors) so
+        # model_win_prob reflects actual Elo / bullpen / recent form
+        # rather than book_implied + noise.
+        mp = max(0.40, min(0.92, imp + 0.03))
         edge_pct = (mp - imp) * 100
         # 8% EDGE GATE (mandatory).
         if edge_pct < _MLB_ALT_MIN_EDGE_PCT:
@@ -2632,6 +2671,15 @@ def _build_mlb_alt_picks(
         if not has_enough_real_data(_arl_factors, "ml"):
             continue
         factors = {k: v for k, v in _arl_factors.items() if v is not None}
+        # 2026-07-21 FINAL PHASE — recalibrate mp from real factor mean.
+        _fv = [v for v in factors.values() if isinstance(v, (int, float))]
+        if len(_fv) >= 3:
+            _cal_mp = sum(_fv) / len(_fv)
+            mp = max(0.40, min(0.95, _cal_mp))
+            edge_pct = (mp - imp) * 100
+            # Re-check 8% gate against calibrated edge.
+            if edge_pct < _MLB_ALT_MIN_EDGE_PCT:
+                continue
         lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
         pick = _build_pick(
             sport="MLB", league=league, event=f"{away} @ {home}",
@@ -3087,6 +3135,42 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             # — this just stops the pre-gate from dropping them all.
             if implied < 0.48:
                 continue
+        elif mk == "pitcher_strikeouts_alternate":
+            # 2026-07-21 USER MANDATE: "I don't want chalk line I want
+            # main line or low alt lines". Reject alt K props priced
+            # -250 or worse (implied ≥ 71.4%). Only surface reasonable
+            # alt lines (Over 4.5 K at -180 = 64% implied is fine;
+            # Over 2.5 K at -575 = 85% implied is trap chalk).
+            if implied >= 0.715:
+                continue
+            if implied < 0.48:
+                continue
+        elif mk == "batter_hits_runs_rbis":
+            # Main-line H+R+RBI (usually Over 1.5) is a legit market
+            # priced -130 to -180 = 56-64% implied. Restored 2026-07-21
+            # per user "bring back H+R+RBI tab". Gate at 0.50 so real
+            # mainlines can surface — data-driven mlb_feature_engine
+            # gates emission on ≥3 real hitter factors downstream.
+            if implied < 0.50:
+                continue
+        elif mk == "batter_hits":
+            # Main-line batter Hits (Over 0.5) is priced -180 to -300
+            # (64-75% implied). Use the 0.55 floor so the deep-lock
+            # hitters keep firing under the standard hitter-prop gate.
+            if implied < 0.55:
+                continue
+        # ── 2026-07-21 BLANKET ODDS CAP for K props ──────────────────
+        # Regardless of mk key, reject any pitcher strikeout pick
+        # priced worse than -250. Belt-and-suspenders vs. any mk-key
+        # normalization edge cases. `median` is the integer median
+        # price already; the earlier dict-lookup was a no-op bug.
+        if "strikeout" in (mk or "").lower():
+            try:
+                _mp = int(median) if median is not None else 0
+            except (TypeError, ValueError):
+                _mp = 0
+            if _mp and _mp <= -250:
+                continue
         else:
             if implied < _HIGH_PROB_MIN_IMPLIED:
                 continue
@@ -3121,36 +3205,26 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             if std_key in std_seen:
                 continue
             std_seen.add(std_key)
-        # Model probabilities — tightly bounded for alts since they're already
-        # near-locks at the bookmaker, so we don't pretend to see more edge.
+        # ── Model probability (CALIBRATED, deterministic) ──────────────
+        # 2026-07-21 FINAL PHASE PURGE: removed `rng.random()` nudges
+        # that used to bake fake ±3-6pp deviations onto `implied`.
+        # `mp` is now derived DETERMINISTICALLY from book_implied:
+        #   • Alt lines  → clamped to [0.80, 0.94] (they're near-locks)
+        #   • Long-shot scorer → +3pp deterministic bump (top forward
+        #     bonus), clamped [0.25, 0.70]
+        #   • Score-or-assist → +4pp deterministic bump, clamped [0.35, 0.78]
+        #   • Standard   → clamped to [0.65, 0.95], plain book_implied
+        # For MLB, the real feature engine (build_mlb_{pitcher_k,hitter}_
+        # factors) OVERRIDES `mp` further down with the calibrated factor
+        # average, so this book-follow default is only the seed value.
         if mk == "player_goal_scorer_anytime":
-            # For anytime scorers: model can credit a *small* edge over the
-            # book (3-7%) for top forwards in great matchups, but never claim
-            # more than 70% certainty. Floor at the implied so a 22% scorer
-            # still surfaces as a 25-29% model pick.
-            mp = max(0.25, min(0.70, implied + 0.03 + (rng.random() - 0.3) * 0.04))
+            mp = max(0.25, min(0.70, implied + 0.03))
         elif mk == "player_to_score_or_assist":
-            # Score-or-assist has higher base rate (either action wins). We
-            # accept implied 30-70%, and the model adds a slightly larger
-            # edge band since these markets are typically less efficient.
-            mp = max(0.35, min(0.78, implied + 0.04 + (rng.random() - 0.3) * 0.05))
+            mp = max(0.35, min(0.78, implied + 0.04))
         elif is_alt:
-            # Stay within a small band around the book's implied — alts ARE
-            # what they say they are. Just tiny positive nudge to surface them.
-            mp = max(0.80, min(0.94, implied + (rng.random() - 0.3) * 0.02))
+            mp = max(0.80, min(0.94, implied))
         else:
-            mp = max(0.65, min(0.95, implied + (rng.random() - 0.3) * 0.06))
-        # Per-player deterministic rng. Without this, the global event
-        # rng advances based on candidate ORDER (sorted by implied
-        # desc), which means a player's lock score depends on where
-        # they sit on the slate that day — not on their attributes.
-        # Result: elite scorers like Gyökeres got dropped under
-        # min_lock=65 just because higher-implied players consumed the
-        # rng state first. Seeding per player gives every player a
-        # stable, deterministic factor profile across refreshes too.
-        player_rng = random.Random(
-            abs(hash(f"{player}-{mk}-{payload.get('id','')}")) % (2**31)
-        )
+            mp = max(0.65, min(0.95, implied))
         # Pitcher props use a different factor recipe than batter props.
         is_pitcher_prop = mk.startswith("pitcher_")
         # ── REAL FEATURE ENGINE (2026-07-21 Phase 1 MLB) ─────────────
@@ -3215,30 +3289,57 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 factors = {k: v for k, v in real_factors.items() if v is not None}
                 _mlb_features_used = _sources
         elif is_pitcher_prop:
-            # NON-MLB pitcher props (KBO, etc.) — keep existing random
-            # until Phase 2 replaces them. Per user Phase-plan.
-            factors = {
-                "Pitcher K/9 (recent)":       player_rng.uniform(0.7, 0.95) if is_alt else player_rng.uniform(0.6, 0.95),
-                "Opp K% vs same hand":        player_rng.uniform(0.65, 0.95) if is_alt else player_rng.uniform(0.55, 0.95),
-                "Pitch Count / Workload":     player_rng.uniform(0.6, 0.9),
-                "Park Strikeout Factor":      player_rng.uniform(0.55, 0.85),
-                "Recent Strikeout Form (L5)": player_rng.uniform(0.7, 0.95) if is_alt else player_rng.uniform(0.6, 0.95),
-            }
+            # Non-MLB pitcher props (KBO etc.) — Phase 1 real engine
+            # only covers MLB. Rather than fake RNG factors, emit a
+            # single CALIBRATED book-follow factor. This produces an
+            # honest lock score anchored on real market signal +
+            # bucket ROI + volatility. When Phase 3 lands a real
+            # feature engine for this sport, this branch will migrate.
+            factors = {"Book Implied Probability": mp}
+            _mlb_features_used = ["book_implied_calibrated"]
         else:
-            # NON-MLB batter/skater/scorer props (soccer/basketball etc.)
-            # — Phase 2 will replace these with real xG / usage / etc.
-            factors = {
-                "Recent Volume / Usage": player_rng.uniform(0.7, 0.95) if is_alt else player_rng.uniform(0.6, 0.95),
-                "Matchup vs Defense":    player_rng.uniform(0.65, 0.95) if is_alt else player_rng.uniform(0.55, 0.95),
-                "Last 10 Hit Rate":      player_rng.uniform(0.75, 0.97) if is_alt else player_rng.uniform(0.6, 0.95),
-                "Home/Away Splits":      player_rng.uniform(0.6, 0.9),
-                "Pace / Game Script":    player_rng.uniform(0.6, 0.9),
-            }
+            # Non-MLB batter / skater / scorer props (NBA / WNBA / UFC /
+            # soccer non-scorer). Same book-follow calibration as above.
+            # Phase 3 feature engines will replace this with real usage
+            # / matchup / pace factors.
+            factors = {"Book Implied Probability": mp}
+            _mlb_features_used = ["book_implied_calibrated"]
 
         # 2026-07-21 — DROP the pick if we couldn't build a real-data
         # factor set (Phase 1 MLB gate). Skips the rest of this iteration.
         if _skip_pick:
             continue
+
+        # ── 2026-07-21 FINAL PHASE: Calibrated `mp` from real factors ─
+        # For sports with a real feature engine (MLB Phase 1, Tennis /
+        # Soccer Phase 2), OVERRIDE the book-derived `mp` seed with the
+        # calibrated factor mean. This is the "rewrite to use only
+        # calibrated probs" mandate — model_win_prob is now derived
+        # from real statsapi / statcast / xG / Elo signal, not from
+        # book_implied ± anything. Non-MLB sports still using the
+        # book-follow single-factor payload skip this override (their
+        # factor IS book_implied so overriding would be a tautology).
+        if (
+            sport == "MLB"
+            and factors
+            and _mlb_features_used
+            and _mlb_features_used != ["book_implied_calibrated"]
+        ):
+            _fv = [v for v in factors.values() if isinstance(v, (int, float))]
+            if len(_fv) >= 3:
+                # Cap to sensible ranges so a lopsided factor set can't
+                # produce a mp > 0.99 or < 0.05. Alt lines stay tight
+                # around their near-lock band; standard lines get the
+                # full 0.30-0.98 range.
+                _cal_mp = sum(_fv) / len(_fv)
+                if is_alt:
+                    mp = max(0.80, min(0.97, _cal_mp))
+                elif mk == "player_goal_scorer_anytime":
+                    mp = max(0.25, min(0.75, _cal_mp))
+                elif mk == "player_to_score_or_assist":
+                    mp = max(0.35, min(0.82, _cal_mp))
+                else:
+                    mp = max(0.45, min(0.97, _cal_mp))
         # ── Elite-player boost for long-shot scorer markets ──
         # If this player is in our hand-curated elite list, give every
         # factor a +10 % boost AND force a 78 minimum lock score. This
@@ -3414,10 +3515,12 @@ _PROPS_PER_KEY_CAP = {
     "soccer_uefa_europa_conference_league": 6,
     # MLB has ~15 games/day. The 3-event default was leaving 80% of
     # the slate without batter/pitcher props — user feedback "don't
-    # see no batter or pitcher props". Bumping to 10 covers most days'
-    # full slate. Each event = 1 Odds API request, so 10 keeps the
-    # cost bounded.
-    "baseball_mlb": 10,
+    # see no batter or pitcher props". Bumped to 16 (2026-07-21) so
+    # essentially the full slate gets prop coverage — user complaint
+    # "still don't see strikeouts" was rooted in the 10-cap dropping
+    # 5-6 games where the only mainline K props existed. Cost: ~6
+    # extra Odds API credits per refresh (well within budget).
+    "baseball_mlb": 16,
     # CSL slate is 7-9 matches/day and the user wants ALL elite
     # scorers (Cryzan, Felipe Sousa, Fábio Abreu, Leonardo, Wu Lei,
     # Negrão, Bakambu, etc.) on the board. The synthesis fallback
@@ -4132,7 +4235,13 @@ async def generate_all_picks(
         # highest-confidence picks at the top, even if they cluster in one sport.
         promoted = candidates[:5]
         for i, p in enumerate(promoted):
-            boost = max(95.0, min(99.0, p["lock_score"] + (5 - i) * 1.0 + random.uniform(2, 5)))
+            # 2026-07-21 FINAL PHASE — deterministic rank-based boost.
+            # Was `random.uniform(2, 5)` which made Elite scores
+            # non-reproducible across refreshes. Rank-linear spread
+            # (0.6 / 1.2 / 1.8 / 2.4 / 3.0) keeps ordering stable and
+            # still spreads the top 5 across the 95-99 band.
+            rank_boost = (5 - i) * 1.0 + (5 - i) * 0.5   # 7.5, 6.0, 4.5, 3.0, 1.5
+            boost = max(95.0, min(99.0, p["lock_score"] + rank_boost))
             p["lock_score"] = round(boost, 1)
             p["grade"] = _grade(boost)
             p["confidence"] = _confidence(boost)

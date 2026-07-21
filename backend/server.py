@@ -2718,9 +2718,11 @@ SPORT_MARKETS = {
         {"token": "totals",      "label": "Totals"},
         {"token": "team_total",  "label": "Team Total"},
         {"token": "batter_hits",            "label": "Hits"},
-        # H+R+RBI chip removed 2026-07-02 per user — market is
-        # globally banned in quality_gate.py (35.6% hit rate) so
-        # having a chip that returns 0 picks was breaking the UI.
+        # H+R+RBI chip restored 2026-07-21 per user — the market ban
+        # in quality_gate.py has been lifted now that mlb_feature_engine
+        # gates emission on ≥3 real factors (L10 hit rate, platoon,
+        # BvP, matchup, home/away). No more variance-only 35% picks.
+        {"token": "batter_hits_runs_rbis",  "label": "H+R+RBI"},
         {"token": "pitcher_strikeouts",     "label": "Strikeouts"},
         {"token": "pitcher_outs",           "label": "Outs Recorded"},
     ],
