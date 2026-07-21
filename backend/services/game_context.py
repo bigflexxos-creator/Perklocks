@@ -275,6 +275,107 @@ async def build_mlb_game_context(game: dict) -> dict[str, Any]:
     # Left as None for now — ML picks depending on this factor will
     # instead get the 4th factor from park + weather when available.
 
+    # 9) Per-hitter enrichment (2026-07-21) — the missing piece that
+    # was gating ALL MLB hitter props to 0/5 factors. User: "Why are
+    # Lane Thomas and Ty France not on the board — they hot".
+    # For every hitter on both starting lineups, populate:
+    #   ctx["hitters"][name.lower()] = {
+    #     "l10_hit_rate": float,      # hits/AB over last 10 games
+    #     "home_ops": float,          # season home OPS
+    #     "away_ops": float,          # season away OPS
+    #     "vs_l_ops"/"vs_r_ops": float,  # platoon splits
+    #     "opp_pitcher_hand": "L"|"R",
+    #     "is_home": bool,
+    #     "bvp": {"pa": int, "ops": float, "hits": int, "ab": int},
+    #   }
+    # This unblocks hitter props (Hits, HRs, TBs, R, RBIs).
+    try:
+        import httpx
+        from services.mlb_hitter_intel import fetch_batter_splits
+        from mlb_bvp import _get_json, MLB_STATS_BASE
+        season = int((game.get("commence_time") or str(datetime.now(timezone.utc).year))[:4] or 2026)
+        ctx.setdefault("hitters", {})
+
+        # Resolve gamePk to fetch lineups.
+        game_pk = None
+        commence = game.get("commence_time") or ""
+        date_str = commence[:10] if commence else None
+        if date_str:
+            sched = await _get_json(
+                f"{MLB_STATS_BASE}/schedule?sportId=1&date={date_str}"
+                f"&hydrate=probablePitcher"
+            )
+            for d in (sched or {}).get("dates", []):
+                for gm in d.get("games", []):
+                    t = gm.get("teams") or {}
+                    h = ((t.get("home") or {}).get("team") or {})
+                    if h.get("name") == home_team:
+                        game_pk = gm.get("gamePk")
+                        break
+
+        if game_pk:
+            # Fetch boxscore for lineups.
+            box = await _get_json(f"{MLB_STATS_BASE.replace('/v1', '/v1.1')}/game/{game_pk}/feed/live")
+            teams_data = ((box or {}).get("liveData") or {}).get("boxscore", {}).get("teams") or {}
+
+            sph_hand = ((ctx.get("starting_pitcher_home") or {}).get("throws") or "").upper()
+            spa_hand = ((ctx.get("starting_pitcher_away") or {}).get("throws") or "").upper()
+            sph_id = (ctx.get("starting_pitcher_home") or {}).get("id")
+            spa_id = (ctx.get("starting_pitcher_away") or {}).get("id")
+
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                for side_key, is_home_side in (("home", True), ("away", False)):
+                    tside = teams_data.get(side_key) or {}
+                    batting_order = tside.get("battingOrder") or []
+                    players = tside.get("players") or {}
+                    # Away team faces home SP; home team faces away SP.
+                    opp_hand = (sph_hand if not is_home_side else spa_hand) or None
+                    opp_pid = sph_id if not is_home_side else spa_id
+                    for pid in (batting_order[:9] if batting_order else []):
+                        pdata = players.get(f"ID{pid}") or {}
+                        pname = ((pdata.get("person") or {}).get("fullName") or "").strip()
+                        if not pname or not pid:
+                            continue
+                        try:
+                            bs = await fetch_batter_splits(client, int(pid), season)
+                        except Exception:
+                            continue
+                        hitter_row: dict[str, Any] = {
+                            "is_home": is_home_side,
+                            "opp_pitcher_hand": opp_hand if opp_hand in ("L", "R") else None,
+                            "opp_pitcher_name": (
+                                (ctx.get("starting_pitcher_away") if is_home_side
+                                 else ctx.get("starting_pitcher_home")) or {}
+                            ).get("name"),
+                        }
+                        if bs.last10_avg is not None:
+                            hitter_row["l10_hit_rate"] = bs.last10_avg
+                        if bs.ops_vs_l is not None:
+                            hitter_row["vs_l_ops"] = bs.ops_vs_l
+                        if bs.ops_vs_r is not None:
+                            hitter_row["vs_r_ops"] = bs.ops_vs_r
+                        if bs.season_ops is not None:
+                            # Use season OPS as a proxy for home/away
+                            # until we fetch true home/away splits.
+                            hitter_row["home_ops" if is_home_side else "away_ops"] = bs.season_ops
+                        # BvP vs opposing SP (mlb_bvp cache).
+                        if opp_pid:
+                            try:
+                                from mlb_bvp import fetch_bvp
+                                bvp_row = await fetch_bvp(int(pid), int(opp_pid))
+                                if bvp_row and bvp_row.get("pa"):
+                                    hitter_row["bvp"] = {
+                                        "pa": bvp_row.get("pa"),
+                                        "ops": bvp_row.get("ops"),
+                                        "hits": bvp_row.get("hits"),
+                                        "ab": bvp_row.get("ab"),
+                                    }
+                            except Exception:
+                                pass
+                        ctx["hitters"][pname.strip().lower()] = hitter_row
+    except Exception as e:
+        logger.debug("hitter enrichment failed: %s", e)
+
     return ctx
 
 
