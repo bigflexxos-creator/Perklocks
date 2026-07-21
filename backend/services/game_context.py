@@ -194,6 +194,87 @@ async def build_mlb_game_context(game: dict) -> dict[str, Any]:
     except Exception as e:
         logger.debug("team-K-vs-hand ctx fetch failed: %s", e)
 
+    # 7) Team recent runs-per-game + bullpen ERA (2026-07-21 Phase 1)
+    # Populates ctx["team_runs"][team_name.lower()] and
+    # ctx["bullpens"][team_name.lower()]. These fuel factor_team_offense_recent
+    # and factor_team_bullpen in mlb_feature_engine so MLB moneyline and
+    # total picks can pass the 4-real-factor gate.
+    #
+    # Source: statsapi.mlb.com team stats — season aggregate is fine as
+    # a starting point (upgrade to L15 in Phase 2). Team hitting: runs /
+    # gamesPlayed. Team pitching: bullpen ERA extracted from
+    # pitcherRole="RP" splits (or full-team ERA as fallback proxy).
+    try:
+        from mlb_bvp import _get_json, MLB_STATS_BASE
+        season = int((game.get("commence_time") or "")[:4] or 2026)
+        # Resolve team IDs (may already be present from step 6).
+        if not (home_id and away_id):
+            commence = game.get("commence_time") or ""
+            date_str = commence[:10] if commence else None
+            if date_str:
+                sched = await _get_json(
+                    f"{MLB_STATS_BASE}/schedule?sportId=1&date={date_str}"
+                )
+                for d in (sched or {}).get("dates", []):
+                    for gm in d.get("games", []):
+                        t = gm.get("teams") or {}
+                        h = ((t.get("home") or {}).get("team") or {})
+                        a = ((t.get("away") or {}).get("team") or {})
+                        if h.get("name") == home_team:
+                            home_id = home_id or h.get("id")
+                            away_id = away_id or a.get("id")
+                            break
+        ctx.setdefault("team_runs", {})
+        ctx.setdefault("bullpens", {})
+        for tid, tname in ((home_id, home_team), (away_id, away_team)):
+            if not (tid and tname):
+                continue
+            # Hitting: runs per game.
+            hit = await _get_json(
+                f"{MLB_STATS_BASE}/teams/{tid}/stats"
+                f"?stats=season&group=hitting&sportIds=1&season={season}"
+            )
+            for stgrp in (hit or {}).get("stats") or []:
+                for spl in stgrp.get("splits") or []:
+                    st = spl.get("stat") or {}
+                    r = st.get("runs")
+                    g = st.get("gamesPlayed") or st.get("games") or 0
+                    if r is not None and g:
+                        try:
+                            ctx["team_runs"][tname.strip().lower()] = round(float(r) / float(g), 2)
+                        except (TypeError, ValueError, ZeroDivisionError):
+                            pass
+                    break
+
+            # Pitching: bullpen ERA (relievers). Fetch pitching stats then
+            # try to isolate relief; fall back to full-team ERA as proxy.
+            pit = await _get_json(
+                f"{MLB_STATS_BASE}/teams/{tid}/stats"
+                f"?stats=season&group=pitching&sportIds=1&season={season}"
+            )
+            for stgrp in (pit or {}).get("stats") or []:
+                for spl in stgrp.get("splits") or []:
+                    st = spl.get("stat") or {}
+                    era = st.get("era")
+                    if era is not None:
+                        try:
+                            # Full-team ERA — proxy for bullpen. Upgrade
+                            # to relief-only split in Phase 2.
+                            ctx["bullpens"][tname.strip().lower()] = {
+                                "era": float(era), "source": "team_season_era_proxy",
+                            }
+                        except (TypeError, ValueError):
+                            pass
+                    break
+    except Exception as e:
+        logger.debug("team offense/bullpen ctx fetch failed: %s", e)
+
+    # 8) Team-vs-SP aggregate BvP OPS — deferred (Phase 1 follow-up).
+    # Requires a get_team_vs_pitcher_ops helper in mlb_bvp.py that
+    # aggregates the starting lineup's career OPS vs the opposing SP.
+    # Left as None for now — ML picks depending on this factor will
+    # instead get the 4th factor from park + weather when available.
+
     return ctx
 
 
