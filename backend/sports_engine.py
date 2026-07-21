@@ -3344,8 +3344,8 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         # structured payload to the pick so signal_engine + pick
         # rationale can render "Rangers 4th-worst K% vs LHP (25.4% K)"
         # style evidence lines.
-        if new_pick is not None and is_pitcher_prop and isinstance(game, dict):
-            _rk = (game.get("_real_k_data") or {}).get(player)
+        if new_pick is not None and is_pitcher_prop and isinstance(payload, dict):
+            _rk = (payload.get("_real_k_data") or {}).get(player)
             if _rk:
                 new_pick["k_prop_data"] = {
                     **_rk,
@@ -3542,6 +3542,21 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
             book_had_player_markets = isinstance(payload, dict) and bool(payload.get("bookmakers"))
             if book_had_player_markets:
                 payload["id"] = ev["id"]
+                # 2026-07-21 — attach real game context to prop payload
+                # so the MLB feature engine sees pitchers, hitters,
+                # team_k_intel, park factors, etc. Without this, every
+                # MLB prop was silently gated out (0/5 factors → skip).
+                if sport == "MLB":
+                    try:
+                        from services.game_context import build_mlb_game_context
+                        payload["_ctx"] = await build_mlb_game_context({
+                            "home_team": ev.get("home_team"),
+                            "away_team": ev.get("away_team"),
+                            "commence_time": ev.get("commence_time"),
+                            "id": ev.get("id"),
+                        })
+                    except Exception as _ctx_err:
+                        logger.debug("MLB props ctx build failed: %s", _ctx_err)
                 rng = random.Random(abs(hash(ev["id"])) % 10000)
                 all_picks.extend(_props_picks_from_event(
                     sport, LEAGUE_LABELS.get(key, sport), payload,
