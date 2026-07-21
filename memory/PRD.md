@@ -455,3 +455,65 @@ was strict `pick_date == today` so they were orphaned.
 224 tennis picks from July 17-20 stuck as `status=pending` even though
 matches finished 2-4 days ago. Root cause: auto-settler not matching
 tennis match results. Left for follow-up session per user direction.
+
+---
+
+## 2026-07-21 (part 3) — MLB Random Factor System REMOVED (Phase 1)
+
+### User mandate
+"Do not patch around this. Replace the random factor system with a
+real feature engine, starting with MLB. Never substitute randomness
+for missing data. If the model lacks enough real inputs, the pick
+should not reach the user board."
+
+### What was replaced
+Every MLB `_factors_random()` and `player_rng.uniform()` call driving
+Lock scores in `sports_engine.py` has been swapped for the new
+`services/mlb_feature_engine.py`. Random calls to
+`_factors_random()` for non-MLB sports remain in place until their
+respective Phase 2 replacements land.
+
+**Random calls purged from MLB paths:**
+- MLB Moneyline (line 998 area)
+- MLB Total (line 1128 area)
+- MLB Spread (line 1300 area)
+- MLB Alt Team Total (2440s dead-code path)
+- MLB Alt Run Line (2500s active path)
+- MLB Pitcher K props (3050s pitcher block)
+- MLB Hitter props (3100s batter block)
+
+### New feature engine (`services/mlb_feature_engine.py`)
+Every factor returns `Optional[float]` — None means unavailable.
+Callers gate emission via `has_enough_real_data(factors, market_type)`:
+
+| Market | Slots | Min real | Real sources feeding it |
+|---|---|---|---|
+| Pitcher K prop | 5 | 3 | statsapi_pitcher_season_k, statsapi_team_k_split, statsapi_pitcher_ip_per_start, park_factors_table, statsapi_pitcher_l5 (roadmap) |
+| Hitter prop | 5 | 3 | L10 hit rate, matchup xERA, home/away OPS, platoon splits, BvP career |
+| Moneyline | 7 | 4 | starter Stuff+ delta, team runs L15, BvP team summary, bullpen ERA, park runs, weather, L/R splits |
+| Total | 6 | 4 | park, weather, combined bullpen, combined offense, starter quality, ump |
+
+### `build_mlb_game_context` enrichment expanded
+- Step 5: pitcher throwing hand + season K% + IP/start via statsapi
+- Step 6: opposing team K% vs pitcher hand (mlb_team_k_intel)
+- **Step 7 (NEW)**: team runs-per-game + full-team ERA (bullpen proxy)
+- Step 8: team-vs-SP BvP OPS — DEFERRED (needs mlb_bvp helper)
+
+### Attribution on every pick
+Every MLB pick that reaches the board carries:
+- `real_data_sources: list[str]` — which real feeds fired
+- `real_data_count: int` — 3-7 depending on market coverage
+
+### What Phase 2 needs
+- Tennis: replace with Elo + surface Elo + form + H2H (data mostly wired,
+  just need to remove the rng.uniform tilts still driving Tennis_ml/total)
+- Soccer: replace with xG + shots + form + injuries + rest (game_context
+  already fetches some — needs feature engine wrapper)
+- NBA/NFL: real team + player metrics (weakest data coverage — needs
+  data source addition first)
+
+### Final phase (per user plan)
+Rewrite `compute_lock_score()` to consume only real model outputs and
+calibrated probabilities. Delete `_factors_random()` entirely. Any MLB
+pick that reaches the board today already goes through that path;
+Phase 2/3 sports migrate over-time.

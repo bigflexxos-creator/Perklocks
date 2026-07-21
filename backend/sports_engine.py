@@ -979,21 +979,43 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
         else:
             side, side_ml, mp = away, away_ml, 1 - home_model
 
-        factors = _factors_random(rng, f"{sport}_ml") or _factors_random(rng, "Tennis_ml")
-        lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
-        ml_pick = _build_pick(
-            sport=sport, league=league, event=f"{away} @ {home}",
-            event_time=commence, market=f"{side} Moneyline", pick_side=side,
-            model_win_prob=mp, book_odds=side_ml,
-            lock=lock, factors=breakdown,
-            insights=_insights_for(sport, breakdown, side, home, away),
-            external_id=f"{sport}-{game_id}-ml",
-        )
-        if ml_pick and dd_ml_result:
-            ml_pick["data_driven_used"] = True
-            ml_pick["data_driven_contribs"] = dd_ml_result.get("contributions") or {}
-        if ml_pick:
-            picks.append(ml_pick)
+        # 2026-07-21 Phase 1 MLB: use real feature engine, skip pick if
+        # not enough real coverage. Other sports still use random pool
+        # until their Phase 2 replacements land.
+        _skip_ml = False
+        if sport == "MLB":
+            from services.mlb_feature_engine import (
+                build_mlb_ml_factors, has_enough_real_data,
+            )
+            _game_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
+            real_ml_factors, _ml_sources = build_mlb_ml_factors(_game_ctx, pick_team=side)
+            if not has_enough_real_data(real_ml_factors, "ml"):
+                # Not enough real data → do NOT emit this MLB moneyline pick.
+                _skip_ml = True
+            else:
+                factors = {k: v for k, v in real_ml_factors.items() if v is not None}
+        else:
+            factors = _factors_random(rng, f"{sport}_ml") or _factors_random(rng, "Tennis_ml")
+
+        if not _skip_ml:
+            lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
+            ml_pick = _build_pick(
+                sport=sport, league=league, event=f"{away} @ {home}",
+                event_time=commence, market=f"{side} Moneyline", pick_side=side,
+                model_win_prob=mp, book_odds=side_ml,
+                lock=lock, factors=breakdown,
+                insights=_insights_for(sport, breakdown, side, home, away),
+                external_id=f"{sport}-{game_id}-ml",
+            )
+            if ml_pick and dd_ml_result:
+                ml_pick["data_driven_used"] = True
+                ml_pick["data_driven_contribs"] = dd_ml_result.get("contributions") or {}
+            if ml_pick:
+                # 2026-07-21 Phase 1 MLB: attach real data attribution
+                if sport == "MLB" and _ml_sources:
+                    ml_pick["real_data_sources"] = list(_ml_sources)
+                    ml_pick["real_data_count"] = len(_ml_sources)
+                picks.append(ml_pick)
 
         # Soccer-only: Win-or-Draw (Double Chance) picks computed from 3-way market.
         if draw_ml is not None and sport == "Soccer":
@@ -1103,32 +1125,55 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 best = max(candidates, key=lambda c: c["edge"])
                 MIN_TOTALS_EDGE = 0.02   # 2 percentage points of positive edge
                 if best["edge"] >= MIN_TOTALS_EDGE:
-                    factors = _factors_random(rng, f"{sport}_total") or _factors_random(rng, f"{sport}_ml")
-                    lock, breakdown = compute_lock_score(factors, win_prob=best["mp"] * 100)
-                    total_pick = _build_pick(
-                        sport=sport, league=league, event=f"{away} @ {home}",
-                        event_time=commence,
-                        market=f"Total {_unit(sport)} {best['side']} {line}",
-                        pick_side=best["side"],
-                        model_win_prob=best["mp"], book_odds=best["price"],
-                        lock=lock, factors=breakdown,
-                        insights=_insights_for(sport, breakdown, best["side"], home, away),
-                        external_id=f"{sport}-{game_id}-total-{best['side'].lower()}",
-                    )
-                    if total_pick:
-                        if best["side"] == "Under":
-                            # Under Lock tab still needs this flag to
-                            # surface the pick under MAIN.
-                            total_pick["is_under_lock"] = True
-                        # Attach data-driven contributions so the
-                        # signal engine + pick rationale can surface
-                        # the actual reasoning behind this side
-                        # (\"Wind 15mph blowing out at Wrigley + Coors
-                        # air = Over 8.5\" instead of a random tilt).
-                        if best.get("contribs"):
-                            total_pick["data_driven_contribs"] = best["contribs"]
-                            total_pick["data_driven_used"] = True
-                        picks.append(total_pick)
+                    # 2026-07-21 Phase 1 MLB: real total factors, skip if
+                    # not enough coverage.
+                    _skip_total = False
+                    _t_src: list[str] = []
+                    if sport == "MLB":
+                        from services.mlb_feature_engine import (
+                            build_mlb_total_factors, has_enough_real_data,
+                        )
+                        _game_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
+                        real_tot_factors, _t_src = build_mlb_total_factors(
+                            _game_ctx, side=best["side"]
+                        )
+                        if not has_enough_real_data(real_tot_factors, "total"):
+                            _skip_total = True
+                        else:
+                            factors = {k: v for k, v in real_tot_factors.items() if v is not None}
+                    else:
+                        factors = _factors_random(rng, f"{sport}_total") or _factors_random(rng, f"{sport}_ml")
+
+                    if not _skip_total:
+                        lock, breakdown = compute_lock_score(factors, win_prob=best["mp"] * 100)
+                        total_pick = _build_pick(
+                            sport=sport, league=league, event=f"{away} @ {home}",
+                            event_time=commence,
+                            market=f"Total {_unit(sport)} {best['side']} {line}",
+                            pick_side=best["side"],
+                            model_win_prob=best["mp"], book_odds=best["price"],
+                            lock=lock, factors=breakdown,
+                            insights=_insights_for(sport, breakdown, best["side"], home, away),
+                            external_id=f"{sport}-{game_id}-total-{best['side'].lower()}",
+                        )
+                        if total_pick:
+                            if best["side"] == "Under":
+                                # Under Lock tab still needs this flag to
+                                # surface the pick under MAIN.
+                                total_pick["is_under_lock"] = True
+                            # Attach data-driven contributions so the
+                            # signal engine + pick rationale can surface
+                            # the actual reasoning behind this side
+                            # (\"Wind 15mph blowing out at Wrigley + Coors
+                            # air = Over 8.5\" instead of a random tilt).
+                            if best.get("contribs"):
+                                total_pick["data_driven_contribs"] = best["contribs"]
+                                total_pick["data_driven_used"] = True
+                            # 2026-07-21 Phase 1 MLB: real-data attribution
+                            if sport == "MLB" and _t_src:
+                                total_pick["real_data_sources"] = list(_t_src)
+                                total_pick["real_data_count"] = len(_t_src)
+                            picks.append(total_pick)
 
             # ── Soccer Poisson-synthesized alt totals (Over 1.5, Over 3.5) ──
             # The Odds API doesn't return alternate_totals for soccer in the
@@ -1249,7 +1294,19 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 price = int(side_obj.get("price")) if isinstance(side_obj.get("price"), (int, float)) else -110
                 implied = _implied_prob(price)
                 mp = max(0.4, min(0.78, implied + 0.04 + rng.random() * 0.08))
-                factors = _factors_random(rng, f"{sport}_ml")
+                # 2026-07-21 Phase 1 MLB: real spread factors, gated on
+                # coverage. Non-MLB sports still use random pool.
+                if sport == "MLB":
+                    from services.mlb_feature_engine import (
+                        build_mlb_ml_factors, has_enough_real_data,
+                    )
+                    _game_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
+                    real_sp_factors, _sp_src = build_mlb_ml_factors(_game_ctx, pick_team=side)
+                    if not has_enough_real_data(real_sp_factors, "ml"):
+                        continue
+                    factors = {k: v for k, v in real_sp_factors.items() if v is not None}
+                else:
+                    factors = _factors_random(rng, f"{sport}_ml")
                 lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
                 sign = "+" if (line or 0) > 0 else ""
                 # Deterministic per-side external id so re-runs don't
@@ -2334,8 +2391,11 @@ def _build_mlb_alt_picks(
 
     # ── Team Totals (MAIN) ─────────────────────────────────────────────
     # DISABLED 2026-07-19 per user request: "get rid of team total it
-    # confuses me I just total for the game to generate". Keep the alt
-    # run-line generation below since spreads aren't team totals.
+    # confuses me I just total for the game to generate".
+    # 2026-07-21: block fully purged (was still using _factors_random
+    # even though disabled). Kept only the alt run-line generation below.
+    # If team totals are re-enabled later, wire them to
+    # build_mlb_total_factors() — never to _factors_random.
     tt_outs: list = []
     for o in tt_outs:
         team = o.get("description")
@@ -2360,7 +2420,17 @@ def _build_mlb_alt_picks(
         # near-EV picks (edge ≥ -2%). Compute lock from factors.
         if edge_pct < -2.0:
             continue
-        factors = _factors_random(rng, "MLB_total") or _factors_random(rng, "MLB_ml")
+        # 2026-07-21: dead-code path, but per user's mandate never
+        # substitute randomness for missing data. If this block is
+        # ever re-enabled, wire real factors here — never _factors_random.
+        _ctx = (event_payload.get("_ctx") if isinstance(event_payload, dict) else None) or {}
+        from services.mlb_feature_engine import (
+            build_mlb_total_factors, has_enough_real_data,
+        )
+        _tt_factors, _tt_src = build_mlb_total_factors(_ctx, side=side)
+        if not has_enough_real_data(_tt_factors, "total"):
+            continue
+        factors = {k: v for k, v in _tt_factors.items() if v is not None}
         lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
         pick = _build_pick(
             sport="MLB", league=league, event=f"{away} @ {home}",
@@ -2408,7 +2478,15 @@ def _build_mlb_alt_picks(
         # 8% EDGE GATE (mandatory for the 2.5-3.5 band).
         if edge_pct < _MLB_ALT_MIN_EDGE_PCT:
             continue
-        factors = _factors_random(rng, "MLB_total") or _factors_random(rng, "MLB_ml")
+        # 2026-07-21 Phase 1 MLB: real total factors, skip if unavailable.
+        _ctx = (event_payload.get("_ctx") if isinstance(event_payload, dict) else None) or {}
+        from services.mlb_feature_engine import (
+            build_mlb_total_factors, has_enough_real_data,
+        )
+        _alt_factors, _sources = build_mlb_total_factors(_ctx, side=side)
+        if not has_enough_real_data(_alt_factors, "total"):
+            continue
+        factors = {k: v for k, v in _alt_factors.items() if v is not None}
         lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
         pick = _build_pick(
             sport="MLB", league=league, event=f"{away} @ {home}",
@@ -2469,7 +2547,16 @@ def _build_mlb_alt_picks(
         # -200 fav-dog or +180 dog-dog) is a legit alt variant.
         if point_f == 1.5 and -170 <= price <= 170:
             continue
-        factors = _factors_random(rng, "MLB_ml")
+        # 2026-07-21 Phase 1 MLB: real ML factors for alt run lines,
+        # skip if not enough real coverage.
+        _ctx = (event_payload.get("_ctx") if isinstance(event_payload, dict) else None) or {}
+        from services.mlb_feature_engine import (
+            build_mlb_ml_factors, has_enough_real_data,
+        )
+        _arl_factors, _sources = build_mlb_ml_factors(_ctx, pick_team=team)
+        if not has_enough_real_data(_arl_factors, "ml"):
+            continue
+        factors = {k: v for k, v in _arl_factors.items() if v is not None}
         lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
         pick = _build_pick(
             sport="MLB", league=league, event=f"{away} @ {home}",
@@ -2991,7 +3078,70 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         )
         # Pitcher props use a different factor recipe than batter props.
         is_pitcher_prop = mk.startswith("pitcher_")
-        if is_pitcher_prop:
+        # ── REAL FEATURE ENGINE (2026-07-21 Phase 1 MLB) ─────────────
+        # USER MANDATE: "Never substitute randomness for missing data."
+        # Every MLB prop factor is now sourced from actual statsapi /
+        # statcast / park data. Picks lacking enough real coverage are
+        # DROPPED (return None) — no random fallback anywhere.
+        _mlb_features_used: list[str] = []
+        _skip_pick = False
+        if sport == "MLB" and is_pitcher_prop:
+            from services.mlb_feature_engine import (
+                build_mlb_pitcher_k_factors, has_enough_real_data,
+            )
+            _game_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
+            real_factors, _sources = build_mlb_pitcher_k_factors(
+                _game_ctx, player=player, side=str(side),
+                line=point if isinstance(point, (int, float)) else None,
+            )
+            if not has_enough_real_data(real_factors, "k_prop"):
+                _skip_pick = True
+            else:
+                # Drop None values before feeding compute_lock_score.
+                factors = {k: v for k, v in real_factors.items() if v is not None}
+                _mlb_features_used = _sources
+                # Stash raw K data for signal engine / rationale.
+                _sph = _game_ctx.get("starting_pitcher_home") or {}
+                _spa = _game_ctx.get("starting_pitcher_away") or {}
+                _match = None
+                for _sp in (_sph, _spa):
+                    if _sp.get("name", "").strip().lower() == player.strip().lower():
+                        _match = _sp
+                        break
+                if _match and _match.get("opp_k_pct") is not None:
+                    game.setdefault("_real_k_data", {})[player] = {
+                        "opp_team": _match.get("opp_k_team"),
+                        "opp_k_pct": _match.get("opp_k_pct"),
+                        "opp_k_rank": _match.get("opp_k_rank"),
+                        "pitcher_throws": _match.get("throws"),
+                        "pitcher_k_pct": _match.get("k_pct"),
+                        "pitcher_ip_per_start": _match.get("ip_per_start"),
+                    }
+        elif sport == "MLB" and not is_pitcher_prop:
+            # Hitter props (Hits, HRs, TBs, Runs, RBIs)
+            from services.mlb_feature_engine import (
+                build_mlb_hitter_factors, has_enough_real_data,
+            )
+            _game_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
+            _is_home = False
+            _game_home = _game_ctx.get("home_team") or ""
+            # Match player to team via ctx.hitters map when available.
+            _hitters = _game_ctx.get("hitters") or {}
+            _hb = _hitters.get(player.strip().lower()) or {}
+            _is_home = bool(_hb.get("is_home"))
+            _opp_sp = _hb.get("opp_pitcher_name")
+            real_factors, _sources = build_mlb_hitter_factors(
+                _game_ctx, player=player, is_home=_is_home,
+                opp_pitcher_name=_opp_sp,
+            )
+            if not has_enough_real_data(real_factors, "hitter_prop"):
+                _skip_pick = True
+            else:
+                factors = {k: v for k, v in real_factors.items() if v is not None}
+                _mlb_features_used = _sources
+        elif is_pitcher_prop:
+            # NON-MLB pitcher props (KBO, etc.) — keep existing random
+            # until Phase 2 replaces them. Per user Phase-plan.
             factors = {
                 "Pitcher K/9 (recent)":       player_rng.uniform(0.7, 0.95) if is_alt else player_rng.uniform(0.6, 0.95),
                 "Opp K% vs same hand":        player_rng.uniform(0.65, 0.95) if is_alt else player_rng.uniform(0.55, 0.95),
@@ -2999,47 +3149,9 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 "Park Strikeout Factor":      player_rng.uniform(0.55, 0.85),
                 "Recent Strikeout Form (L5)": player_rng.uniform(0.7, 0.95) if is_alt else player_rng.uniform(0.6, 0.95),
             }
-            # ── Real-data override (2026-07-21 Tier-1) ─────────────────
-            # Replace the "Opp K% vs same hand" random placeholder with
-            # actual opposing-team K% vs the starter's throwing hand,
-            # sourced from statsapi.mlb.com via mlb_team_k_intel. This
-            # is the SINGLE most predictive feature for K props after
-            # pitcher K/9. Also expose the raw values so signal_engine
-            # can surface "Rangers 4th worst K% vs LHP" style rationale.
-            _game_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
-            _sph = _game_ctx.get("starting_pitcher_home") or {}
-            _spa = _game_ctx.get("starting_pitcher_away") or {}
-            _pitcher_name = (player or "").strip().lower()
-            _match = None
-            for _sp in (_sph, _spa):
-                if _sp.get("name", "").strip().lower() == _pitcher_name:
-                    _match = _sp
-                    break
-            if _match and _match.get("opp_k_pct") is not None:
-                _opp_k = float(_match["opp_k_pct"])
-                _opp_rank = _match.get("opp_k_rank") or 15
-                # Map K% into 0..1 factor score.
-                # League avg K% ~22%. Range in practice ~18-28%.
-                # 28% (worst-hitting team) → 0.95, 18% (best contact) → 0.55.
-                _factor = (_opp_k - 0.18) / (0.10) * 0.40 + 0.55
-                _factor = max(0.40, min(0.97, _factor))
-                # For UNDER K props, flip the factor (weak K teams = good Under).
-                if str(side).lower() == "under":
-                    _factor = 1.52 - _factor  # 0.95 ↔ 0.57 mirror around 0.76
-                    _factor = max(0.40, min(0.97, _factor))
-                factors["Opp K% vs same hand"] = _factor
-                # Stash raw data on the pick doc so signal engine + rationale
-                # can surface it. `game.setdefault('_real_data', ...)` is
-                # attached and later read into pick by _attach_real_data.
-                game.setdefault("_real_k_data", {})[player] = {
-                    "opp_team": _match.get("opp_k_team"),
-                    "opp_k_pct": _opp_k,
-                    "opp_k_rank": _opp_rank,
-                    "pitcher_throws": _match.get("throws"),
-                    "pitcher_k_pct": _match.get("k_pct"),
-                    "pitcher_ip_per_start": _match.get("ip_per_start"),
-                }
         else:
+            # NON-MLB batter/skater/scorer props (soccer/basketball etc.)
+            # — Phase 2 will replace these with real xG / usage / etc.
             factors = {
                 "Recent Volume / Usage": player_rng.uniform(0.7, 0.95) if is_alt else player_rng.uniform(0.6, 0.95),
                 "Matchup vs Defense":    player_rng.uniform(0.65, 0.95) if is_alt else player_rng.uniform(0.55, 0.95),
@@ -3047,6 +3159,11 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 "Home/Away Splits":      player_rng.uniform(0.6, 0.9),
                 "Pace / Game Script":    player_rng.uniform(0.6, 0.9),
             }
+
+        # 2026-07-21 — DROP the pick if we couldn't build a real-data
+        # factor set (Phase 1 MLB gate). Skips the rest of this iteration.
+        if _skip_pick:
+            continue
         # ── Elite-player boost for long-shot scorer markets ──
         # If this player is in our hand-curated elite list, give every
         # factor a +10 % boost AND force a 78 minimum lock score. This
@@ -3137,6 +3254,15 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         # detection further below.
         if new_pick is not None and is_elite_scorer:
             new_pick["elite_player"] = True
+        # ── Real MLB feature attribution (2026-07-21 Phase 1) ─────────
+        # Attach the list of real data sources that fired for this pick
+        # so the signal engine + "Why this pick?" rationale can surface
+        # "Sourced from: statsapi_pitcher_season_k, statsapi_team_k_split..."
+        # No pick reaches the board without at least MIN_FACTORS real
+        # sources firing (gated by has_enough_real_data() upstream).
+        if new_pick is not None and _mlb_features_used:
+            new_pick["real_data_sources"] = list(_mlb_features_used)
+            new_pick["real_data_count"] = len(_mlb_features_used)
         # ── Attach real MLB K data (2026-07-21 Tier-1) ────────────────
         # If this pick is a pitcher K prop and we resolved real
         # opposing-team K% + pitcher hand data upstream, attach the
