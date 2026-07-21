@@ -979,10 +979,11 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
         else:
             side, side_ml, mp = away, away_ml, 1 - home_model
 
-        # 2026-07-21 Phase 1 MLB: use real feature engine, skip pick if
-        # not enough real coverage. Other sports still use random pool
-        # until their Phase 2 replacements land.
+        # 2026-07-21 Phase 1 MLB + Phase 2 Tennis/Soccer: real feature
+        # engines gate emission on real-data coverage. NBA / NFL / others
+        # still use random pool until their Phase 3 replacements land.
         _skip_ml = False
+        _ml_sources: list[str] = []
         if sport == "MLB":
             from services.mlb_feature_engine import (
                 build_mlb_ml_factors, has_enough_real_data,
@@ -990,12 +991,28 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             _game_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
             real_ml_factors, _ml_sources = build_mlb_ml_factors(_game_ctx, pick_team=side)
             if not has_enough_real_data(real_ml_factors, "ml"):
-                # Not enough real data → do NOT emit this MLB moneyline pick.
+                _skip_ml = True
+            else:
+                factors = {k: v for k, v in real_ml_factors.items() if v is not None}
+        elif sport == "Soccer":
+            from services.soccer_feature_engine import (
+                build_soccer_ml_factors, has_enough_soccer_data,
+            )
+            _game_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
+            real_ml_factors, _ml_sources = build_soccer_ml_factors(_game_ctx, pick_team=side)
+            if not has_enough_soccer_data(real_ml_factors, "ml"):
                 _skip_ml = True
             else:
                 factors = {k: v for k, v in real_ml_factors.items() if v is not None}
         else:
-            factors = _factors_random(rng, f"{sport}_ml") or _factors_random(rng, "Tennis_ml")
+            # 2026-07-21 Phase 2/3: Tennis / NBA / NFL / KBO
+            # For Tennis: real Elo/H2H/first-set data isn't attached at
+            # THIS build stage (it's added by tennis enrichment AFTER
+            # pick construction). Rather than dice-roll factors, use
+            # book-anchored model probability alone. The tennis_deep
+            # signal engine component contributes real data post-enrich.
+            # For NBA/NFL: real team metrics await Phase 3.
+            factors = {}
 
         if not _skip_ml:
             lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
@@ -1011,8 +1028,9 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 ml_pick["data_driven_used"] = True
                 ml_pick["data_driven_contribs"] = dd_ml_result.get("contributions") or {}
             if ml_pick:
-                # 2026-07-21 Phase 1 MLB: attach real data attribution
-                if sport == "MLB" and _ml_sources:
+                # 2026-07-21 Phase 1 MLB + Phase 2 Tennis/Soccer:
+                # attach real-data attribution
+                if sport in ("MLB", "Soccer") and _ml_sources:
                     ml_pick["real_data_sources"] = list(_ml_sources)
                     ml_pick["real_data_count"] = len(_ml_sources)
                 picks.append(ml_pick)
@@ -1027,17 +1045,33 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             dc_side, dc_implied = (home, home_dc_implied) if home_implied >= away_implied else (away, away_dc_implied)
             dc_book_odds = _win_prob_to_american(dc_implied)
             dc_model = max(0.55, min(0.95, dc_implied + (rng.random() - 0.3) * 0.1))
-            factors2 = _factors_random(rng, "Soccer_ml")
-            lock2, breakdown2 = compute_lock_score(factors2, win_prob=dc_model * 100)
-            picks.append(_build_pick(
-                sport=sport, league=league, event=f"{away} @ {home}",
-                event_time=commence,
-                market=f"{dc_side} Win or Draw", pick_side=dc_side,
-                model_win_prob=dc_model, book_odds=dc_book_odds,
-                lock=lock2, factors=breakdown2,
-                insights=_insights_for(sport, breakdown2, dc_side, home, away),
-                external_id=f"{sport}-{game_id}-dc",
-            ))
+            # 2026-07-21 Phase 2 Soccer: real feature engine for double
+            # chance too (uses the same ML factors — win-or-draw is just
+            # an aggregated ML outcome).
+            from services.soccer_feature_engine import (
+                build_soccer_ml_factors, has_enough_soccer_data,
+            )
+            _game_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
+            real_dc_factors, _dc_sources = build_soccer_ml_factors(_game_ctx, pick_team=dc_side)
+            if not has_enough_soccer_data(real_dc_factors, "ml"):
+                pass  # Not enough real data — do NOT emit DC pick
+            else:
+                factors2 = {k: v for k, v in real_dc_factors.items() if v is not None}
+                lock2, breakdown2 = compute_lock_score(factors2, win_prob=dc_model * 100)
+                dc_pick = _build_pick(
+                    sport=sport, league=league, event=f"{away} @ {home}",
+                    event_time=commence,
+                    market=f"{dc_side} Win or Draw", pick_side=dc_side,
+                    model_win_prob=dc_model, book_odds=dc_book_odds,
+                    lock=lock2, factors=breakdown2,
+                    insights=_insights_for(sport, breakdown2, dc_side, home, away),
+                    external_id=f"{sport}-{game_id}-dc",
+                )
+                if dc_pick:
+                    if _dc_sources:
+                        dc_pick["real_data_sources"] = list(_dc_sources)
+                        dc_pick["real_data_count"] = len(_dc_sources)
+                    picks.append(dc_pick)
 
     # Totals pick \u2014 2026-07-19: emit only the BEST SIDE per game (user
     # request: "every game you shouldn't force over or under it should
@@ -1125,8 +1159,8 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 best = max(candidates, key=lambda c: c["edge"])
                 MIN_TOTALS_EDGE = 0.02   # 2 percentage points of positive edge
                 if best["edge"] >= MIN_TOTALS_EDGE:
-                    # 2026-07-21 Phase 1 MLB: real total factors, skip if
-                    # not enough coverage.
+                    # 2026-07-21 Phase 1 MLB + Phase 2 Soccer: real total
+                    # factors, skip if not enough coverage.
                     _skip_total = False
                     _t_src: list[str] = []
                     if sport == "MLB":
@@ -1141,8 +1175,25 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                             _skip_total = True
                         else:
                             factors = {k: v for k, v in real_tot_factors.items() if v is not None}
+                    elif sport == "Soccer":
+                        from services.soccer_feature_engine import (
+                            build_soccer_total_factors, has_enough_soccer_data,
+                        )
+                        _game_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
+                        real_tot_factors, _t_src = build_soccer_total_factors(
+                            _game_ctx, side=best["side"]
+                        )
+                        if not has_enough_soccer_data(real_tot_factors, "total"):
+                            _skip_total = True
+                        else:
+                            factors = {k: v for k, v in real_tot_factors.items() if v is not None}
                     else:
-                        factors = _factors_random(rng, f"{sport}_total") or _factors_random(rng, f"{sport}_ml")
+                        # 2026-07-21: NBA/NFL/Tennis totals — Phase 3
+                        # replaces these with real data. For now, use
+                        # book-anchored win_prob with NO random factor
+                        # dice-roll (empty factors dict → lock derived
+                        # purely from model probability, no noise).
+                        factors = {}
 
                     if not _skip_total:
                         lock, breakdown = compute_lock_score(factors, win_prob=best["mp"] * 100)
@@ -1169,8 +1220,9 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                             if best.get("contribs"):
                                 total_pick["data_driven_contribs"] = best["contribs"]
                                 total_pick["data_driven_used"] = True
-                            # 2026-07-21 Phase 1 MLB: real-data attribution
-                            if sport == "MLB" and _t_src:
+                            # 2026-07-21 Phase 1 MLB + Phase 2 Soccer:
+                            # real-data attribution
+                            if sport in ("MLB", "Soccer") and _t_src:
                                 total_pick["real_data_sources"] = list(_t_src)
                                 total_pick["real_data_count"] = len(_t_src)
                             picks.append(total_pick)
@@ -1246,7 +1298,18 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         # Model win prob — small upward tilt to mirror existing
                         # logic, capped to avoid 95%+ claims.
                         mp_alt = max(0.30, min(0.92, p_alt + 0.02 + rng.random() * 0.04))
-                        factors_alt = _factors_random(rng, "Soccer_total") or _factors_random(rng, "Soccer_ml")
+                        # 2026-07-21 Phase 2 Soccer: real total factors,
+                        # skip if not enough real data.
+                        from services.soccer_feature_engine import (
+                            build_soccer_total_factors, has_enough_soccer_data,
+                        )
+                        _game_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
+                        real_alt_factors, _alt_src = build_soccer_total_factors(
+                            _game_ctx, side=side_label
+                        )
+                        if not has_enough_soccer_data(real_alt_factors, "total"):
+                            continue  # do NOT emit
+                        factors_alt = {k: v for k, v in real_alt_factors.items() if v is not None}
                         lock_alt, breakdown_alt = compute_lock_score(factors_alt, win_prob=mp_alt * 100)
                         alt_pick = _build_pick(
                             sport=sport, league=league,
@@ -1305,8 +1368,19 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     if not has_enough_real_data(real_sp_factors, "ml"):
                         continue
                     factors = {k: v for k, v in real_sp_factors.items() if v is not None}
+                elif sport == "Soccer":
+                    from services.soccer_feature_engine import (
+                        build_soccer_ml_factors, has_enough_soccer_data,
+                    )
+                    _game_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
+                    real_sp_factors, _sp_src = build_soccer_ml_factors(_game_ctx, pick_team=side)
+                    if not has_enough_soccer_data(real_sp_factors, "ml"):
+                        continue
+                    factors = {k: v for k, v in real_sp_factors.items() if v is not None}
                 else:
-                    factors = _factors_random(rng, f"{sport}_ml")
+                    # 2026-07-21: NBA/NFL/Tennis spreads — Phase 3 replaces.
+                    # For now use book-anchored win_prob only (no random noise).
+                    factors = {}
                 lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
                 sign = "+" if (line or 0) > 0 else ""
                 # Deterministic per-side external id so re-runs don't
@@ -2256,10 +2330,13 @@ def _build_tennis_alt_picks(
                 price = int(pick_obj.get("price"))
                 imp = _implied_prob(price)
                 mp = max(0.50, min(0.92, imp + 0.02))
-                factors = _factors_random(
-                    random.Random(abs(hash(f"{event_id}-altsp-{side}-{line}")) % 10000),
-                    "Tennis_ml",
-                )
+                # 2026-07-21 Phase 2: tennis alt spread — no random factors.
+                # Tennis-specific real data (Elo/H2H) isn't attached at
+                # this build stage; we compute lock from model_win_prob
+                # alone (which is book-anchored, not random). Tennis
+                # picks get their real signal boost downstream via the
+                # tennis_deep_signal component in the signal engine.
+                factors = {}
                 lock, breakdown = compute_lock_score(
                     factors, win_prob=mp * 100, edge_percent=(mp * 100 - imp * 100)
                 )
@@ -2298,10 +2375,8 @@ def _build_tennis_alt_picks(
                 price = int(pick_obj.get("price"))
                 imp = _implied_prob(price)
                 mp = max(0.50, min(0.92, imp + 0.02))
-                factors = _factors_random(
-                    random.Random(abs(hash(f"{event_id}-alttot-{side}-{line}")) % 10000),
-                    "Tennis_ml",
-                )
+                # 2026-07-21 Phase 2: tennis alt total — no random factors.
+                factors = {}
                 lock, breakdown = compute_lock_score(
                     factors, win_prob=mp * 100, edge_percent=(mp * 100 - imp * 100)
                 )
