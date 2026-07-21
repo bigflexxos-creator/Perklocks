@@ -349,3 +349,71 @@ Both now EXCLUDE:
 - MLB H+R+RBI: 27.6% hit / -66% ROI on 29 picks
 - MLB Strikeouts: 56% hit / -32% ROI on 16 picks
 - MLB Hits: 67% hit / -6% ROI on 116 picks
+
+---
+
+## 2026-07-21 — Tennis Signal Rebalance + Longshot Trap + MLB K Bleed Fix
+
+### Tennis Signal Rebalance (Option C + Elite Registry)
+User: "why signal not getting higher on tennis everything under 80". Root
+cause: 5/6 universal calculators return 0 for tennis (form/matchup/volume/
+injury/market read MLB/NBA-shaped fields), so tennis_deep alone couldn't
+push scores above the 78 conviction floor. Fix:
+- **`calculators.py`**: `TENNIS_DEEP_MAX` 7→12; per-pillar awards bumped
+  (surface/serve-return 1.5→2.5, elo scale ±2→±3); pillar-alignment bonus
+  (+2/+3 for 3/4 aligned pillars).
+- **`engine.py`**: tennis-specific conviction floors — Strong Lock (92-96)
+  baseline 78→80; data-anchored floors 76/82/88 based on pillar alignment.
+- **NEW `services/tennis_elite_players.py`**: Curated top-20 ATP + top-20
+  WTA registry granting +22 elite boost (matches soccer Mbappé treatment).
+- **SIGNAL_VERSION 8→9** forces recompute.
+- **Result**: Tennis distribution 32-78 (avg 55) → 69-91 (avg 81.8); 86%
+  ≥ 80. 376 pending tennis picks recomputed and persisted.
+
+### Longshot Trap (NEW service) — Soccer 92+ ROI Fix
+Data-driven diagnosis of 5,309 settled picks revealed Soccer Strong Lock
+(92-96) bled **-21% ROI (-48u)** — concentrated in Goal Scorer / SoA
+markets and +100-and-up longshot odds. Soccer chalk 92+ (< -150) stays
+profitable (+1.6% to +11%).
+- **NEW `services/longshot_trap.py`**: Mirror of Chalk Kill Switch for
+  over-confident plus-money picks. Triggers on Soccer + lock≥92 + odds
+  ≥ -100. Escapes: elite anchors, edge≥12pp + 3 DD signals.
+- Wired into `server.py` post-chalk-trap.
+- **Historical simulation: +61.5u ROI recovered.**
+
+### MLB Strikeout Bleed Fix
+Analysis of 300 settled K picks showed **-16.65% ROI overall**, with
+board-visible K picks bleeding **-43.82% ROI (-15.34u)** and 89% having
+edge < -5%. Additionally: **only 5 main-line K picks in entire DB
+history vs 311 alt-K picks** (user asked "can we get the main lines?").
+- **`chalk_trap.py`**: narrowed blanket `is_alt` escape — alt-lines now
+  only spared with edge ≥ 2pp (was: spared all alts).
+- **`board_visibility.py`**: chalk_trap + longshot_trap picks now
+  **off_board=True** instead of staying visible with warnings. Users
+  can't accidentally bet known losers.
+- **`sports_engine.py`**: added `pitcher_strikeouts` (main-line)
+  exception with implied ≥ 0.48 (was blocked by 0.62 gate designed for
+  hit props). Main-line K props at -115 to -140 will now generate picks.
+- **`routes/picks_routes.py`**: main board query excludes off_board=True;
+  `mlb_k_q` edge floor tightened -12 → 0; `high_lock_bypass_q` now
+  excludes negative-edge K props to prevent bypass.
+- **Immediate impact**: 11 live MLB K picks now off_board; 157 chalk
+  picks trapped; only 7 alt-lines spared (down from ~all alts).
+
+### Non-Change: Soccer Goalscorer Longshot Filter
+Handoff hypothesized blocked +EV longshot goalscorers were losing +124u
+of profit. **Historical data proved the opposite**: +300+ longshots
+already on-board generate **+183.8u profit**; blocked picks (edge≥3%,
+lock≥70) would have LOST -18u. Current filter is correctly protecting
+ROI. **No change made.**
+
+### Files touched
+- `services/signal_engine/calculators.py` (tennis rebalance)
+- `services/signal_engine/engine.py` (conviction floors + elite tennis)
+- `services/tennis_elite_players.py` (NEW)
+- `services/longshot_trap.py` (NEW)
+- `services/chalk_trap.py` (narrowed alt escape)
+- `services/board_visibility.py` (trapped → off_board)
+- `sports_engine.py` (main-line K threshold)
+- `routes/picks_routes.py` (edge floors + off_board filter)
+- `server.py` (wired longshot_trap after chalk_trap)
