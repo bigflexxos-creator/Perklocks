@@ -3164,7 +3164,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             from services.mlb_feature_engine import (
                 build_mlb_pitcher_k_factors, has_enough_real_data,
             )
-            _game_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
+            _game_ctx = (payload.get("_ctx") if isinstance(payload, dict) else None) or {}
             real_factors, _sources = build_mlb_pitcher_k_factors(
                 _game_ctx, player=player, side=str(side),
                 line=point if isinstance(point, (int, float)) else None,
@@ -3184,7 +3184,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                         _match = _sp
                         break
                 if _match and _match.get("opp_k_pct") is not None:
-                    game.setdefault("_real_k_data", {})[player] = {
+                    payload.setdefault("_real_k_data", {})[player] = {
                         "opp_team": _match.get("opp_k_team"),
                         "opp_k_pct": _match.get("opp_k_pct"),
                         "opp_k_rank": _match.get("opp_k_rank"),
@@ -3197,7 +3197,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             from services.mlb_feature_engine import (
                 build_mlb_hitter_factors, has_enough_real_data,
             )
-            _game_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
+            _game_ctx = (payload.get("_ctx") if isinstance(payload, dict) else None) or {}
             _is_home = False
             _game_home = _game_ctx.get("home_team") or ""
             # Match player to team via ctx.hitters map when available.
