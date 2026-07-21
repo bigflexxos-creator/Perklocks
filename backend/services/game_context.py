@@ -110,6 +110,90 @@ async def build_mlb_game_context(game: dict) -> dict[str, Any]:
     except Exception as e:
         logger.debug("stuff+ ctx fetch failed: %s", e)
 
+    # 5) Pitcher throwing hand + season K stats (2026-07-21 Tier-1 fix)
+    # Needed so K-prop picks can look up opposing team K% vs same hand.
+    # Previously "Opp K% vs same hand" was a random uniform(0.65, 0.95)
+    # placeholder — no real data behind pitcher K prop lock scores.
+    try:
+        from mlb_bvp import _get_json, MLB_STATS_BASE
+        for side_key in ("starting_pitcher_home", "starting_pitcher_away"):
+            sp = ctx.get(side_key)
+            if not (isinstance(sp, dict) and sp.get("id")):
+                continue
+            pdata = await _get_json(
+                f"{MLB_STATS_BASE}/people/{sp['id']}?hydrate=stats(group=[pitching],type=[season])"
+            )
+            person = ((pdata or {}).get("people") or [{}])[0]
+            hand = ((person.get("pitchHand") or {}).get("code") or "").upper()
+            if hand in ("L", "R"):
+                sp["throws"] = hand
+            # Season K% + IP for stamina.
+            for stgrp in person.get("stats") or []:
+                for spl in stgrp.get("splits") or []:
+                    st = spl.get("stat") or {}
+                    ks = st.get("strikeOuts") or st.get("strikeouts")
+                    bf = st.get("battersFaced") or st.get("plateAppearances")
+                    ip = st.get("inningsPitched")
+                    gs = st.get("gamesStarted") or st.get("gamesPitched") or 0
+                    if ks is not None and bf:
+                        try:
+                            sp["k_pct"] = round(float(ks) / float(bf), 4)
+                        except (TypeError, ValueError, ZeroDivisionError):
+                            pass
+                    if ip and gs:
+                        try:
+                            sp["ip_per_start"] = round(float(ip) / float(gs), 2)
+                        except (TypeError, ValueError, ZeroDivisionError):
+                            pass
+                    break
+    except Exception as e:
+        logger.debug("pitcher hand/stats ctx fetch failed: %s", e)
+
+    # 6) Opposing team K% vs starter's throwing hand — the KEY signal
+    # for pitcher K props. Uses MLB Stats API team-splits endpoint via
+    # our new mlb_team_k_intel cache (lazy-refreshed once per day).
+    # Populates BOTH home starter (facing away lineup) and away starter
+    # (facing home lineup) so build_pick can pick the right one per prop.
+    try:
+        from services.mlb_team_k_intel import get_team_k_pct_vs_hand
+        # Resolve team IDs if game context doesn't already have them.
+        home_id = game.get("home_team_id") or game.get("homeTeamId")
+        away_id = game.get("away_team_id") or game.get("awayTeamId")
+        if not (home_id and away_id):
+            from mlb_bvp import _get_json, MLB_STATS_BASE
+            commence = game.get("commence_time") or game.get("event_time") or ""
+            date_str = commence[:10] if commence else None
+            if date_str:
+                sched = await _get_json(
+                    f"{MLB_STATS_BASE}/schedule?sportId=1&date={date_str}"
+                )
+                for d in (sched or {}).get("dates", []):
+                    for gm in d.get("games", []):
+                        t = gm.get("teams") or {}
+                        h = ((t.get("home") or {}).get("team") or {})
+                        a = ((t.get("away") or {}).get("team") or {})
+                        if h.get("name") == home_team:
+                            home_id = home_id or h.get("id")
+                            away_id = away_id or a.get("id")
+                            break
+        sph = ctx.get("starting_pitcher_home") or {}
+        spa = ctx.get("starting_pitcher_away") or {}
+        # db=None → lazy motor client inside mlb_team_k_intel.
+        if sph.get("throws") and away_id:
+            k = await get_team_k_pct_vs_hand(None, int(away_id), sph["throws"])
+            if k:
+                sph["opp_k_pct"] = k["k_pct"]
+                sph["opp_k_rank"] = k.get("rank")
+                sph["opp_k_team"] = k.get("team_name")
+        if spa.get("throws") and home_id:
+            k = await get_team_k_pct_vs_hand(None, int(home_id), spa["throws"])
+            if k:
+                spa["opp_k_pct"] = k["k_pct"]
+                spa["opp_k_rank"] = k.get("rank")
+                spa["opp_k_team"] = k.get("team_name")
+    except Exception as e:
+        logger.debug("team-K-vs-hand ctx fetch failed: %s", e)
+
     return ctx
 
 

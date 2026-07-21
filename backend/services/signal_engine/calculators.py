@@ -721,10 +721,11 @@ def mlb_deep_signal(pick: dict) -> dict:
     deep = pick.get("mlb_deep") or {}
     sb_present = bool(pick.get("statcast_batter"))
     sp_present = bool(pick.get("statcast_pitcher"))
-    # If neither park factors NOR statcast data are attached, we have
-    # nothing to say — return neutral. But if Statcast is present even
-    # without park data, we can still fire the xwOBA / barrel signals.
-    if not deep and not sb_present and not sp_present:
+    k_data_present = bool(pick.get("k_prop_data"))  # 2026-07-21 Tier-1
+    # If neither park factors NOR statcast NOR K-prop data are attached,
+    # we have nothing to say — return neutral. But if any of these fire,
+    # the calculator can still produce meaningful evidence.
+    if not deep and not sb_present and not sp_present and not k_data_present:
         return {
             "key": "mlb_deep", "label": "MLB Context",
             "points": 0.0, "max": MLB_DEEP_MAX,
@@ -958,6 +959,61 @@ def mlb_deep_signal(pick: dict) -> dict:
         pts += _clamp(pmx * 0.35 * direction_mult, -1.8, 1.8)
         for d in (pick.get("pitch_mix_details") or [])[:1]:
             details.append(d)
+
+    # ── Real Opp-Team K% vs Pitcher Hand (2026-07-21 Tier-1) ─────────
+    # Only fires for pitcher_strikeouts markets. Uses statsapi.mlb.com
+    # team-splits data attached by sports_engine._real_k_data pipeline.
+    # This replaces the previous random-uniform placeholder — now the
+    # signal engine actually sees "Rangers K at 25.4% vs LHP, MLB Rank #5"
+    # as concrete evidence.
+    kdata = pick.get("k_prop_data") or {}
+    if kdata and kdata.get("opp_k_pct") is not None:
+        found = True
+        opp_k = float(kdata["opp_k_pct"])
+        rank = kdata.get("opp_k_rank") or 15
+        team = kdata.get("opp_team") or "Opp"
+        pitcher_hand = kdata.get("pitcher_throws") or "?"
+        is_under_k = kdata.get("side") == "under"
+
+        # League avg ~22%. Scale: +2 pts at 28% K team (Over) / +2 pts
+        # at 17% K team (Under). Symmetric mirror for the opposite side.
+        deviation = opp_k - 0.22   # positive = whiff-happy lineup
+        raw = _clamp(deviation * 30.0, -2.0, 2.0)  # ±2 pts at ±6.7pp deviation
+        if is_under_k:
+            raw = -raw   # Under K props like weak K teams
+        pts += raw
+
+        # Human-readable evidence line — appears in "Why this pick?"
+        label = "worst" if rank <= 5 else "top 10" if rank <= 10 else "mid" if rank <= 20 else "best"
+        hand_label = "LHP" if pitcher_hand == "L" else "RHP"
+        if abs(raw) >= 0.4:
+            direction = "Over" if raw > 0 else "Under"
+            details.append(
+                f"{team} K% vs {hand_label}: {opp_k * 100:.1f}% (#{rank} in MLB, "
+                f"{label}) — supports {direction} K"
+            )
+
+        # Also feed the pitcher's own K% (career-level context).
+        pk = kdata.get("pitcher_k_pct")
+        if isinstance(pk, (int, float)) and pk >= 0.28 and not is_under_k:
+            pts += 0.8
+            details.append(f"Pitcher K%: {pk * 100:.1f}% — elite strikeout profile")
+        elif isinstance(pk, (int, float)) and pk <= 0.18 and is_under_k:
+            pts += 0.8
+            details.append(f"Pitcher K%: {pk * 100:.1f}% — soft K profile favors Under")
+
+        # Stamina check for Over K on higher lines (5.5+).
+        ips = kdata.get("pitcher_ip_per_start")
+        line = kdata.get("line") or 0
+        if isinstance(ips, (int, float)) and line and not is_under_k:
+            projected_outs = float(ips) * 3.0
+            projected_ks = projected_outs * (pk if isinstance(pk, (int, float)) else 0.22)
+            if projected_ks >= float(line) + 1.0:
+                pts += 0.6
+                details.append(f"Projects {projected_ks:.1f} Ks in {ips:.1f} IP — beats line comfortably")
+            elif projected_ks <= float(line) - 1.0:
+                pts -= 0.8
+                details.append(f"Projects {projected_ks:.1f} Ks in {ips:.1f} IP — falls short of line")
 
     return {
         "key": "mlb_deep", "label": "MLB Context",
