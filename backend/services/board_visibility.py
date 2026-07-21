@@ -48,24 +48,37 @@ def compute_off_board(pick: dict[str, Any]) -> tuple[bool, list[str]]:
     if pick.get("is_model_only") is True:
         reasons.append("model_only")
 
-    # ── Chalk Trap exemption (2026-07-21) ─────────────────────────────
-    # User mandate: "I still want the 200 picks for options because me
-    # or users don't bet every pick just the app grading all picks".
-    # Chalk-trapped picks intentionally get lock_score capped to 72 and
-    # grade demoted to "Solid Lean" so users see the ⚠️ TRAP warning —
-    # but they must STAY visible on the board (that's the whole point
-    # of showing the trap, not hiding it). Bypass the lock/grade rules
-    # entirely for these picks. Chalk-verified picks (rare +EV chalk
-    # that cleared the kill switch) also always stay visible.
-    if pick.get("chalk_trap") is True or pick.get("chalk_verified") is True:
+    # ── Chalk Trap: HIDE from board (2026-07-21 update) ───────────────
+    # ORIGINAL POLICY: chalk-trapped picks stayed visible with a ⚠️
+    # warning + capped lock=72. Rationale was "users want to see the
+    # 200 picks for options".
+    #
+    # USER FEEDBACK 2026-07-21: "If lock drops that low shouldn't be
+    # on board at all — any K bets winning?". Correct — historical ROI
+    # analysis of trapped K picks showed -43.8% ROI even when shown
+    # with warnings (users still bet them, because the pick card still
+    # looks like a "Lock"). Trapped picks are structurally losing
+    # bets; showing them AT ALL degrades user outcomes.
+    #
+    # NEW POLICY: chalk-trapped picks are OFF-BOARD. They stay in the
+    # DB for research / audit (analytics can filter to them explicitly)
+    # but never surface on the main board or in the /picks/today feed.
+    # Chalk-VERIFIED picks (the rare +8pp edge + 3 DD signal survivors)
+    # remain visible as normal high-conviction picks.
+    if pick.get("chalk_trap") is True:
+        reasons.append("chalk_trap")
+        return (True, reasons)
+    if pick.get("chalk_verified") is True:
         return (bool(reasons), reasons)
 
-    # ── Longshot Trap exemption (2026-07-21) ──────────────────────────
-    # Same reasoning as chalk_trap: longshot-trapped picks are demoted
-    # (lock capped at 82, grade → "Lock", warning attached) but STAY on
-    # the board so users see them with the ⚠️ warning. Verified
-    # longshots (elite anchor / extreme +EV+DD) also always visible.
-    if pick.get("longshot_trap") is True or pick.get("longshot_verified") is True:
+    # ── Longshot Trap: HIDE from board (2026-07-21 update) ────────────
+    # Same reasoning as chalk_trap — historical Soccer 92+ longshot-
+    # trapped picks bled -52.6% ROI (-61u) when shown. Hiding them
+    # protects users from acting on structurally losing bets.
+    if pick.get("longshot_trap") is True:
+        reasons.append("longshot_trap")
+        return (True, reasons)
+    if pick.get("longshot_verified") is True:
         return (bool(reasons), reasons)
 
     try:

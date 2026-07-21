@@ -2889,6 +2889,21 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             # via factor weighting.
             if implied < 0.55:
                 continue
+        elif mk == "pitcher_strikeouts":
+            # Main-line pitcher strikeouts (Over 5.5, 6.5, 7.5 K etc.).
+            # 2026-07-21 fix: User asked "can we get the main lines?".
+            # Root cause: main K props price at -115 to -140 (52-58%
+            # implied), below the 0.62 _HIGH_PROB_MIN_IMPLIED gate that
+            # was designed for hitting/HR markets. Result: 5 main-line
+            # K picks vs 311 alt-K picks in history, and 100% of the
+            # -43.8% ROI board bleed came from alt-K props.
+            #
+            # Lower the gate to 0.48 so main-line K props with balanced
+            # odds can generate picks. Downstream filters (mlb_k_q with
+            # edge>=0, lock>=70, chalk_trap) will still enforce quality
+            # — this just stops the pre-gate from dropping them all.
+            if implied < 0.48:
+                continue
         else:
             if implied < _HIGH_PROB_MIN_IMPLIED:
                 continue
