@@ -293,7 +293,13 @@ ELITE_LOCK_FLOOR_PROB = 0.65     # below this, never tag "Elite Lock"
 # MLB markets that historically underperform — these are coin-flips at
 # best so they pull our headline win % below the user's 75-80% target.
 # Updated 2026-07-01 after 1,441-pick history audit:
-#   • Moneyline: 44.0%  • NRFI/YRFI: 41.5%  • H+R+RBI: 35.6%
+#   • Moneyline: 44.0%  • NRFI/YRFI: 41.5%
+# NOTE 2026-07-21 — H+R+RBI is NO LONGER banned here. Ban was based
+# on legacy random-factor pick generation (35.6% hit rate). Now that
+# mlb_feature_engine gates every H+R+RBI on ≥3 REAL data factors
+# (L10 hit rate, platoon splits, BvP, matchup, home/away), the market
+# gets to prove itself again. If historical audit shows it still
+# underperforms after 100+ data-driven picks settle, we'll re-add.
 _MLB_BLOCKED_MARKET_RE = re.compile(
     r"(moneyline"
     r"|h2h\b"
@@ -301,12 +307,6 @@ _MLB_BLOCKED_MARKET_RE = re.compile(
     r"|yrfi"
     r"|first\s+inning"
     r"|no\s+runs"
-    # H+R+RBI family — 35.6% historically, the worst MLB market
-    r"|hits\s*\+\s*runs\s*\+\s*rbi"
-    r"|h\s*\+\s*r\s*\+\s*rbi"
-    r"|hits,\s*runs\s*(?:and|&|,)?\s*rbi"
-    r"|hits\s+runs\s+rbi"
-    r"|hits\s*&\s*runs\s*&\s*rbi"
     r")",
     re.IGNORECASE,
 )
@@ -605,11 +605,11 @@ def _block_reason(pick: dict) -> str | None:
         if _ODDS_DEAD_ZONE_LO <= float(odds) < _ODDS_DEAD_ZONE_HI:
             return f"odds_dead_zone_{_ODDS_DEAD_ZONE_LO}_{_ODDS_DEAD_ZONE_HI}_48pct"
 
-    # 3. Sub-50% MLB markets (Moneyline, NRFI/YRFI, H+R+RBI). All decided
+    # 3. Sub-50% MLB markets (Moneyline, NRFI/YRFI). All decided
     #    by single-event variance:
     #      • Moneyline 44.0% (baseball is chaotic)
     #      • NRFI/YRFI 41.5% (single bunt single torches YRFI)
-    #      • H+R+RBI   35.6% (3-way variance compounds)
+    # (H+R+RBI un-blocked 2026-07-21 — now data-gated by feature engine.)
     if sport == "mlb" and _MLB_BLOCKED_MARKET_RE.search(market):
         return "mlb_low_winrate_market"
 
