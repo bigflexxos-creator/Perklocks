@@ -164,6 +164,27 @@ export default function ProfileScreen() {
           <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
         </Pressable>
 
+        {/* ── Moved off tab bar 2026-07-21 (see _layout comment) ─── */}
+        <Pressable
+          testID="lab-button"
+          onPress={() => router.push("/lab")}
+          style={styles.actionBtn}
+        >
+          <Ionicons name="flask" size={18} color={COLORS.voltBlue} />
+          <Text style={styles.actionText}>STRATEGY LAB</Text>
+          <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+        </Pressable>
+
+        <Pressable
+          testID="under-button"
+          onPress={() => router.push("/under")}
+          style={styles.actionBtn}
+        >
+          <Ionicons name="trending-down" size={18} color={COLORS.voltBlue} />
+          <Text style={styles.actionText}>UNDERDOG OF THE DAY</Text>
+          <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+        </Pressable>
+
         <Pressable
           testID="force-refresh-button"
           onPress={onForceRefresh}
