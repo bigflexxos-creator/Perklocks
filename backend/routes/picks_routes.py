@@ -1282,11 +1282,20 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # Lab but missing from the home board. User: "not putting lock bets on
     # board but they in the lab like strikeouts." Lab uses lock >= 78 with
     # no edge gate — board now matches that universe for the K market.
+    #
+    # 2026-07-21 update — ROI DATA reversed the -12 decision:
+    # Analysis of 300 settled K picks + 35 board-visible K picks showed
+    # -43.8% ROI on board-visible K picks, with 89% having edge < -5%.
+    # The wide edge floor was inviting -400 to -750 chalk alt-locks with
+    # negative edge onto the board, where they consistently lost money.
+    # Tightening back to edge >= 0 (positive-edge only) kills the entire
+    # bleeding segment. Chalk-trap catches any residual chalk K picks
+    # that manage positive edge (still requires 8pp + DD confirmation).
     mlb_k_q = {
         "sport": "MLB",
         "market": {"$regex": "strikeout", "$options": "i"},
         "no_bet": {"$ne": True},
-        "edge_percent": {"$gte": -12.0},
+        "edge_percent": {"$gte": 0.0},   # was -12.0 — tightened per ROI analysis
         "$or": [
             {"lock_score": {"$gte": 70.0}},
             {"lock_score_v2": {"$gte": 70.0}},
@@ -1356,11 +1365,27 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # edge gate) so the board stops disagreeing with the Lab.
     # User report 2026-06-25: "not putting lock bets on board but they
     # in the lab like strikeouts".
+    # 2026-07-21 update: EXCLUDE negative-edge MLB strikeout props from
+    # this bypass. The high_lock_bypass was letting -100/-249 K props with
+    # lock 90+ but edge < 0 through the mlb_k_q's new edge >= 0 gate.
+    # Historical Elite Lock 97+ K picks had 0% win rate on 5 picks. Even
+    # at 90+ lock, K props with negative edge are structurally losing.
     high_lock_bypass_q = {
         "no_bet": {"$ne": True},
         "$or": [
             {"lock_score":    {"$gte": 90.0}},
             {"lock_score_v2": {"$gte": 90.0}},
+        ],
+        # Exclusion: prevent negative-edge K props from re-entering via
+        # the high-lock bypass. The mlb_k_q sub-query handles positive-
+        # edge K props; anything with negative edge here is exactly the
+        # bleed segment (see 2026-07-21 ROI analysis: -43.8% ROI).
+        "$nor": [
+            {
+                "sport": "MLB",
+                "market": {"$regex": "strikeout", "$options": "i"},
+                "edge_percent": {"$lt": 0.0},
+            }
         ],
     }
     q: dict = {
@@ -1374,6 +1399,13 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         # picks with stale shadow lock fields can't leak through.
         "grade": {"$ne": "Pass"},
         "no_bet": {"$ne": True},
+        # 2026-07-21 — trapped picks (chalk_trap / longshot_trap) are
+        # tagged off_board by board_visibility. Filter them out here so
+        # they never surface on the main board even if a sub-query
+        # would otherwise match (e.g. mlb_k_q would let a -400 alt K
+        # through if the trap wasn't run, but with the trap running
+        # they now get off_board=True and are hidden).
+        "off_board": {"$ne": True},
         "$or": [standard_q, elite_q, model_only_q, tennis_ml_q, tennis_alt_q, tennis_extra_q, mlb_k_q, mlb_hitter_q, soccer_scorer_q, high_lock_bypass_q],
     }
     # ── User-supplied min_lock floor (global enforcement) ────────────

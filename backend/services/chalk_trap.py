@@ -109,8 +109,24 @@ def apply_chalk_kill_switch(picks: list[dict]) -> dict[str, int]:
             continue
         stats["chalk_seen"] += 1
 
-        # Alt-lines have their own edge economics — skip.
-        if p.get("is_alt") or (p.get("line_type") or "").lower().find("alt") >= 0:
+        # ── Alt-line escape (narrowed 2026-07-21) ─────────────────────
+        # OLD: blanket-spared ALL alt-lines because "alt-lines have their
+        # own edge economics". Problem discovered via ROI analysis:
+        # MLB strikeout Over Alt-Locks (295/300 settled picks were alts)
+        # bled -16.6% ROI overall, -43.8% ROI on board-visible K picks
+        # (89% had edge < -5%). The blanket alt-line escape sprayed
+        # negative-edge -400 chalk K props onto the board unchecked.
+        #
+        # NEW: alt-lines are only spared when they have genuine positive
+        # edge (>= +2pp). Alt-lines priced as chalk with negative edge
+        # are structurally the same bleed pattern as regular chalk —
+        # over-priced favorites with juice eating profit.
+        is_alt = bool(p.get("is_alt") or (p.get("line_type") or "").lower().find("alt") >= 0)
+        try:
+            _alt_edge = float(p.get("edge_percent") or 0.0)
+        except (TypeError, ValueError):
+            _alt_edge = 0.0
+        if is_alt and _alt_edge >= 2.0:
             stats["spared_alt"] += 1
             continue
 
