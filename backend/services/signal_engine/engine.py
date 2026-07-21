@@ -34,7 +34,9 @@ from .rationale import build_why, signal_breakdown_line
 
 logger = logging.getLogger("lockscore.services.signal_engine")
 
-SIGNAL_VERSION = 8  # bumped for Phase 3 expansion (Soccer + Tennis DD models)
+SIGNAL_VERSION = 9  # 2026-07-21 Option C: tennis rebalance (bigger tennis_deep
+# budget, pillar-alignment bonus, elite ATP/WTA registry, tennis-specific
+# conviction floors). Bumping forces re-compute on all cached blocks.
 _REFRESH_SECS = 1800  # 30 min — market signal tracks live line movement
 
 
@@ -277,6 +279,28 @@ async def compute_signals(db, pick: dict) -> dict:
         or pick.get("elite_striker")
         or (pick.get("player_tags") or {}).get("elite")
     )
+    # ── Tennis elite-player detection (2026-07-21 Option C) ────────────
+    # Tennis picks never received the `is_elite` tag because the elite
+    # pipeline is team-sport shaped. Consult the curated top-ATP/WTA
+    # registry so Alcaraz / Sinner / Djokovic / Sabalenka / Świątek etc.
+    # inherit the same +22 conviction floor Mbappé gets in soccer.
+    is_elite_tennis = False
+    if (pick.get("sport") or "").lower() == "tennis":
+        try:
+            from services.tennis_elite_players import is_elite_tennis_player
+            pick_side_name = (pick.get("pick_side")
+                              or pick.get("selection")
+                              or pick.get("pick") or "").strip()
+            # Selection is often "Player Name Moneyline" — strip trailing market words.
+            for tail in (" Moneyline", " ML", " to Win", " Over", " Under"):
+                if pick_side_name.endswith(tail):
+                    pick_side_name = pick_side_name[: -len(tail)].strip()
+            if pick_side_name and is_elite_tennis_player(pick_side_name):
+                is_elite_tennis = True
+                is_elite_tagged = True
+                pick["tennis_elite"] = True
+        except Exception as e:
+            logger.debug("tennis elite check failed for pick %s: %s", pick.get("id"), e)
     # Read BOTH lock_score and lock_score_v2 and use the max. The v2
     # is the calibrated shadow score that's been tuned per-sport per-
     # market — it's often more accurate than the base lock_score. On
@@ -347,6 +371,39 @@ async def compute_signals(db, pick: dict) -> dict:
     if dd_num_signals >= 5 and dd_total_pp >= 0.025:
         # 5+ signals, ≥2.5pp positive lift → floor at +44 raw (score 94)
         conviction_boost = max(conviction_boost, 44.0)
+
+    # ── Tennis data-anchored conviction floor (2026-07-21 Option C) ───
+    # Tennis-specific floor bump: universal calculators (form / matchup /
+    # volume / injury / market) contribute ~0 for tennis picks, so the
+    # generic floor bands consistently produced score 76-78 for every
+    # Strong Lock. When tennis_deep itself reports strong evidence
+    # (≥3 aligned pillars OR high absolute point total), raise the
+    # floor so aligned Strong Locks land in the 82-88 band that other
+    # sports' Strong Locks reach when their universal calcs fire.
+    if (pick.get("sport") or "").lower() == "tennis":
+        tennis_comp = next(
+            (c for c in components if c.get("key") == "tennis_deep"),
+            None,
+        )
+        if tennis_comp:
+            tp = float(tennis_comp.get("points") or 0.0)
+            pillars = int(tennis_comp.get("aligned_pillars") or 0)
+            if pillars >= 4 or tp >= 5.0:
+                # Data-anchored strong tennis pick: floor at +38 (score 88).
+                conviction_boost = max(conviction_boost, 38.0)
+            elif pillars >= 3 or tp >= 3.5:
+                # Solid alignment: floor at +32 (score 82).
+                conviction_boost = max(conviction_boost, 32.0)
+            elif pillars >= 2 or tp >= 2.0:
+                # Modest alignment: floor at +26 (score 76).
+                conviction_boost = max(conviction_boost, 26.0)
+            # Strong-Lock tennis floor bump: even without strong pillar
+            # alignment, a 92-96 Lock tennis pick should not be pinned
+            # at 76 when the universal calcs are structurally 0. Bump
+            # Strong-Lock tennis baseline to +30 (score 80) — no higher
+            # unless data corroborates.
+            if 92.0 <= lock_v < 97.0 and tp >= 0.0:
+                conviction_boost = max(conviction_boost, 30.0)
     if conviction_boost > 0:
         # ── Signal spread fix (2026-07-21) ─────────────────────────────
         # OLD: `adjusted = max(adjusted, conviction_boost)` — this

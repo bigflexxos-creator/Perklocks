@@ -45,7 +45,10 @@ SOCCER_DEEP_MAX = 5.0
 # Phase B.5 — Tennis deep signal (surface fit + serve/return dominance +
 # motivation + variance risk + surface-Elo delta + recent match load).
 # Same ±5 budget for cross-sport consistency.
-TENNIS_DEEP_MAX = 7.0  # bumped in Phase 3 for Sackmann serve/return + H2H signals
+TENNIS_DEEP_MAX = 12.0  # 2026-07-21 Option C: bumped from 7 → 12 to match FORM
+# budget. Rationale: 5 of 6 universal calculators return 0 for tennis picks
+# (no player_form, no MLB/NBA-shaped injury/volume/matchup fields), so
+# tennis_deep must carry the same weight FORM carries for team sports.
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -1290,17 +1293,23 @@ def tennis_deep_signal(pick: dict) -> dict:
     surface = str(deep.get("surface") or "Hard").title()
 
     # 1. Surface fit (from tennis_components)
+    # 2026-07-21 Option C: pillar payouts bumped so aligned data earns 80+ scores.
     sf = deep.get("surface_fit")
+    aligned_pillars = 0  # 2026-07-21: track how many strong pillars fire
     if isinstance(sf, (int, float)):
         found = True
         v = float(sf)
         if v >= 80:
-            pts += 1.5
+            pts += 2.5  # was 1.5
+            aligned_pillars += 1
             details.append(f"Surface specialist ({round(v)}/100 on {surface})")
-        elif v >= 65:
+        elif v >= 70:
+            pts += 1.5  # NEW mid-tier band
+            aligned_pillars += 1
+        elif v >= 60:
             pts += 0.6
         elif v <= 35:
-            pts -= 1.2
+            pts -= 1.8  # was 1.2 — poor surface fit is a strong fade
             details.append(f"Poor surface fit ({round(v)}/100 on {surface})")
 
     # 2. Serve/return dominance
@@ -1309,10 +1318,14 @@ def tennis_deep_signal(pick: dict) -> dict:
         found = True
         v = float(sr)
         if v >= 80:
-            pts += 1.5
+            pts += 2.5  # was 1.5
+            aligned_pillars += 1
             details.append(f"Elite hold/break profile ({round(v)}/100)")
+        elif v >= 70:
+            pts += 1.5  # NEW mid-tier band
+            aligned_pillars += 1
         elif v <= 40:
-            pts -= 1.0
+            pts -= 1.5  # was 1.0
             details.append(f"Weak serve+return ({round(v)}/100)")
 
     # 3. Motivation
@@ -1325,7 +1338,8 @@ def tennis_deep_signal(pick: dict) -> dict:
             details.append(f"Low motivation flag ({round(v)}/100)")
         elif v >= 85:
             found = True
-            pts += 0.5
+            pts += 0.8  # was 0.5
+            aligned_pillars += 1
 
     # 4. Variance risk
     var = deep.get("variance")
@@ -1333,17 +1347,23 @@ def tennis_deep_signal(pick: dict) -> dict:
         v = float(var)
         if v >= 60:
             found = True
-            pts -= 1.0
+            pts -= 1.2  # was 1.0
             details.append(f"High variance profile ({round(v)}/100) — upset risk")
+        elif v <= 25:
+            # NEW: very consistent player is a positive signal
+            found = True
+            pts += 0.5
 
     # 5. Surface-Elo delta (from tennis_players DB)
     edge = deep.get("elo_edge")
     if isinstance(edge, (int, float)):
         found = True
         e = float(edge)
-        # +100 Elo ≈ +64% win prob head-to-head. Scale to ±2 points at ±150.
-        pts += _clamp(e / 150.0 * 2.0, -2.0, 2.0)
+        # 2026-07-21 Option C: scale from ±2 → ±3 pts at ±150 Elo. Elite Elo
+        # gaps (>150) are among the strongest structural predictors in tennis.
+        pts += _clamp(e / 150.0 * 3.0, -3.0, 3.0)
         if e >= 100:
+            aligned_pillars += 1
             details.append(f"Surface Elo edge +{round(e)} on {surface}")
         elif e <= -100:
             details.append(f"Surface Elo deficit {round(e)} on {surface}")
@@ -1419,6 +1439,8 @@ def tennis_deep_signal(pick: dict) -> dict:
             found = True
             # +/- 1.5 pts at 100% dominance either way
             pts += _clamp((pick_share - 0.5) * 3.0, -1.5, 1.5)
+            if pick_share >= 0.65:
+                aligned_pillars += 1  # 2026-07-21: dominant H2H counts as pillar
             details.append(f"Career H2H: {aw}-{bw} ({h2h.get('surface') or 'all surfaces'})")
 
     # Phase 2 — First-set return-points-won edge. Populated by
@@ -1431,13 +1453,32 @@ def tennis_deep_signal(pick: dict) -> dict:
         if abs(edge_1st) >= 3.0:
             found = True
             pts += _clamp(edge_1st * 0.12, -1.5, 1.5)
+            if edge_1st >= 3.0:
+                aligned_pillars += 1  # 2026-07-21
             details.append(
                 f"1st-set RPW edge {edge_1st:+.1f}pp "
                 f"({fs.get('pick_rpw_1st')}% vs {fs.get('opp_rpw_1st')}%)")
+
+    # ── Pillar-alignment bonus (2026-07-21 Option C) ─────────────────
+    # When ≥3 independent pillars point the same direction (surface fit,
+    # serve/return, elite motivation, positive Elo, dominant H2H,
+    # first-set edge), it's a genuine data-anchored strong pick — not
+    # just one lucky metric. Award a compounding bonus so these picks
+    # break through the "everything under 80" ceiling. This is the
+    # difference between a Strong Lock LANDING at signal 78 vs 88.
+    if aligned_pillars >= 4:
+        pts += 3.0
+        details.append(f"{aligned_pillars} tennis pillars aligned — data-anchored strong pick")
+    elif aligned_pillars >= 3:
+        pts += 2.0
+        details.append(f"{aligned_pillars} tennis pillars aligned")
+    elif aligned_pillars >= 2:
+        pts += 0.8
 
     return {
         "key": "tennis_deep", "label": "Tennis Context",
         "points": round(_clamp(pts, -TENNIS_DEEP_MAX, TENNIS_DEEP_MAX), 1),
         "max": TENNIS_DEEP_MAX, "details": details, "found": found,
+        "aligned_pillars": aligned_pillars,  # NEW: exposed for engine.py floor logic
     }
 
