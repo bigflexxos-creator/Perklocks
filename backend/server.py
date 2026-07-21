@@ -2228,6 +2228,28 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as _ck_err:
         logger.warning("Chalk Kill Switch skipped: %s", _ck_err)
 
+    # ── Longshot Trap (2026-07-21) ────────────────────────────────────
+    # Mirror of the Chalk Kill Switch for the OPPOSITE bleed: Soccer
+    # 92+ Strong-Lock picks priced at plus-money odds. ROI analysis of
+    # 5,309 settled picks: Soccer Strong Lock (92-96) bled -21% ROI
+    # (-48u), concentrated in Goal Scorer / SoA markets and +200-and-
+    # up longshots (-30% to -74% ROI). Chalk 92+ (<-150 odds) stays
+    # profitable (+1.6% to +11%). Trap only touches the bleeding tier.
+    # Elite anchor players (Kane / Haaland / Mbappé) and extreme +EV
+    # picks (edge >= 12pp + 3 DD signals) escape unchanged.
+    try:
+        from services.longshot_trap import apply_longshot_trap
+        _ls_stats = apply_longshot_trap(safe_picks)
+        logger.info(
+            "Longshot Trap: trapped=%d spared_elite=%d spared_edge_dd=%d "
+            "(of %d seen / %d total)",
+            _ls_stats["trapped"], _ls_stats["spared_elite"],
+            _ls_stats["spared_edge_dd"], _ls_stats["seen"],
+            _ls_stats["total"],
+        )
+    except Exception as _ls_err:
+        logger.warning("Longshot Trap skipped: %s", _ls_err)
+
     # ── Board Visibility Gate (2026-07-21) ────────────────────────────
     # User mandate: "I don't want the app to grade picks that don't make
     # it to board". Tags every pick with `off_board=True` when it would
