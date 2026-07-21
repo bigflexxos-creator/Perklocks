@@ -128,20 +128,26 @@ export default function TabsLayout() {
           tabBarButtonTestID: "tab-my-bets",
         }}
       />
+      {/* ── LAB moved off the bottom bar (2026-07-21) ──────────────
+          User: "Still don't see admin user section where I see my
+          personal bets" — with 8 tabs (LOCKS · ROLLOVER · PARLAY ·
+          MY BETS · LAB · UNDER · PROFILE · ADMIN) the tab bar was
+          overflowing on 390px devices and MY BETS was getting pushed
+          off-screen. LAB and UNDER moved to href:null (accessed via
+          Profile → shortcuts) so the tab bar stays clean at 6 tabs
+          for admin (5 for regular user). */}
       <Tabs.Screen
         name="lab"
         options={{
+          href: null,
           title: "LAB",
-          tabBarIcon: ({ color, size }) => <Ionicons name="flask" color={color} size={size} />,
-          tabBarButtonTestID: "tab-lab",
         }}
       />
       <Tabs.Screen
         name="under"
         options={{
+          href: null,
           title: "UNDER",
-          tabBarIcon: ({ color, size }) => <Ionicons name="trending-down" color={color} size={size} />,
-          tabBarButtonTestID: "tab-under-of-day",
         }}
       />
       <Tabs.Screen
