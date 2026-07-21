@@ -517,3 +517,73 @@ Rewrite `compute_lock_score()` to consume only real model outputs and
 calibrated probabilities. Delete `_factors_random()` entirely. Any MLB
 pick that reaches the board today already goes through that path;
 Phase 2/3 sports migrate over-time.
+
+---
+
+## 2026-07-21 (part 4) — Phase 2 Tennis + Soccer Feature Engines
+
+### User mandate
+"Phase 2: Replace Tennis random factors with Elo + surface Elo + form
++ H2H (data mostly wired already). Replace Soccer with xG + shots +
+form + injuries + rest."
+
+### New `services/tennis_feature_engine.py`
+5 factor slots, minimum 3 real for pick emission:
+- Surface Elo Edge (from tennis_deep.elo_edge)
+- Overall Elo (from tennis_players.pick_elo_overall)
+- H2H Dominance (from tennis_h2h; needs ≥3 matches)
+- Recent Form / Fit (matches_7d + surface_fit)
+- First-Set RPW Edge (from tennis_first_set.edge_1st)
+
+Live test: real Elo/H2H/first-set data produces **5/5 factors** with
+`has_enough=True`. Empty pick correctly returns 0/5.
+
+### New `services/soccer_feature_engine.py`
+7 factor slots (ML), 6 slots (Total), minimum 3 real:
+- xG Differential (home/away xg_rolling)
+- Form PPG (soccer_form cache)
+- Goals Scored avg (form.gf_avg)
+- Goals Conceded avg (form.ga_avg)
+- H2H Recent (roadmap: team_h2h_recent)
+- Injuries (roadmap: team_injuries)
+- Rest Days (team_rest_days)
+
+Live test: Man City vs Arsenal example → **5/7 factors real** (rest
+days + xG diff + form PPG + goals scored + goals conceded fire).
+H2H and injuries return None (data not yet populated by ctx builder).
+
+### `sports_engine.py` — all `_factors_random(rng, "Tennis…")` /
+`_factors_random(rng, "Soccer…")` calls REMOVED. Remaining:
+- Function definition (line 866) — retained for potential Phase 3 emergency fallback but NEVER called
+- 3 comments referencing removed calls (audit trail)
+- Zero live invocations.
+
+### Non-MLB, non-Soccer, non-Tennis paths (NBA/NFL/KBO/etc)
+Previously fell through to `_factors_random(rng, f"{sport}_ml")`.
+Replaced with **`factors = {}`** — an empty dict tells compute_lock_score
+to derive Lock purely from book-anchored `model_win_prob` with zero
+dice-roll additions. No random noise. Phase 3 will wire real NBA/NFL
+data or drop non-MLB/Tennis/Soccer picks entirely.
+
+### Tennis alt spread / alt total (2303, 2345 area)
+Removed the seed-based `_factors_random(random.Random(hash(...)),
+"Tennis_ml")` calls. Now use empty factors — lock derives from book
+implied + model tilt only, no dice-roll noise. Real tennis data
+still boosts these picks via the tennis_deep_signal component in the
+signal engine after enrichment.
+
+### Attribution on every emitted pick
+Every Soccer + Tennis pick that reaches the board now carries
+`real_data_sources` list (when applicable) alongside MLB picks.
+
+### Remaining work (Phase 3 / Final)
+- NBA/NFL feature engines (needs new data sources — nfldata,
+  basketball-reference or ESPN API)
+- `compute_lock_score()` rewrite: consume calibrated model outputs
+  directly instead of factor averages
+- Delete `_factors_random()` function definition entirely
+- Populate Soccer ctx.team_injuries + ctx.team_h2h_recent for the
+  currently-None soccer factors
+- Attach Tennis Elo/H2H/first-set to game._ctx BEFORE pick build
+  (currently attached after) so main-flow Tennis ML picks can pass
+  the feature-engine gate
