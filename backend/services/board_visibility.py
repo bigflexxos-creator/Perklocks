@@ -60,6 +60,14 @@ def compute_off_board(pick: dict[str, Any]) -> tuple[bool, list[str]]:
     if pick.get("chalk_trap") is True or pick.get("chalk_verified") is True:
         return (bool(reasons), reasons)
 
+    # ── Longshot Trap exemption (2026-07-21) ──────────────────────────
+    # Same reasoning as chalk_trap: longshot-trapped picks are demoted
+    # (lock capped at 82, grade → "Lock", warning attached) but STAY on
+    # the board so users see them with the ⚠️ warning. Verified
+    # longshots (elite anchor / extreme +EV+DD) also always visible.
+    if pick.get("longshot_trap") is True or pick.get("longshot_verified") is True:
+        return (bool(reasons), reasons)
+
     try:
         lock = float(pick.get("lock_score") or 0.0)
     except (TypeError, ValueError):
