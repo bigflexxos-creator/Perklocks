@@ -417,3 +417,41 @@ ROI. **No change made.**
 - `sports_engine.py` (main-line K threshold)
 - `routes/picks_routes.py` (edge floors + off_board filter)
 - `server.py` (wired longshot_trap after chalk_trap)
+
+---
+
+## 2026-07-21 (part 2) — Negative-Edge Cap + Board Date Fix
+
+### Negative-Edge Conviction Cap (Signal Engine)
+User: "How is this a 90 signal when he doesn't do good against this
+pitcher?" — Mookie Betts Over 0.5 Hits @ -194 with edge=-4.8% was
+scoring Signal 90 / Lock 99 despite negative edge and 0-for-8 BvP.
+Root cause: conviction floors fired purely off `lock_score`, ignoring
+edge quality. Chalky favorites got Signal 90+ regardless of price.
+- **`engine.py`**: added negative-edge cap on conviction_boost applied
+  BOTH before and after DD/tennis floor bumps.
+  - edge < -5pp → conviction_boost=0 (no floor)
+  - edge -5 to -2pp → cap at 14 (score 64)
+  - edge -2 to +2pp → cap at 22 (score 72)
+  - edge ≥ +2pp → full floor available
+- **SIGNAL_VERSION 9→10**, 832 pending picks recomputed.
+- **Result**: 0 negative-edge picks at Signal 90+ (was several). Every
+  Signal 90+ pick now has genuine positive edge.
+
+### Board Date Window Fix (Struff/Cerundolo Kitzbühel)
+User: "Why didn't JL Struff and Cerundolo make board — they play today".
+Their Kitzbühel first-round picks had `pick_date=2026-07-19` (when
+ingested) but their matches got rescheduled to 2026-07-21. Board query
+was strict `pick_date == today` so they were orphaned.
+- **`routes/picks_routes.py`**: widened board query to accept picks
+  matching either `pick_date == today` OR `event_time` within
+  [now-30h, now+30h]. Added `status: pending` safety net.
+- Handles reschedules by up to a full day + timezone-crossing morning
+  matches + 1-3 day ingest lag.
+- **Result**: Struff (Signal 82, +5.96% edge) and Cerundolo (Signal
+  76, +2.49% edge) now visible on today's board.
+
+### Known deferred: Tennis Settler Stuck-Pending
+224 tennis picks from July 17-20 stuck as `status=pending` even though
+matches finished 2-4 days ago. Root cause: auto-settler not matching
+tennis match results. Left for follow-up session per user direction.
