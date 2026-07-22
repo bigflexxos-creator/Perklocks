@@ -3515,18 +3515,23 @@ _PROPS_PER_KEY_CAP = {
     "soccer_uefa_europa_conference_league": 6,
     # MLB has ~15 games/day. The 3-event default was leaving 80% of
     # the slate without batter/pitcher props — user feedback "don't
-    # see no batter or pitcher props". Bumped to 16 (2026-07-21) so
-    # essentially the full slate gets prop coverage — user complaint
-    # "still don't see strikeouts" was rooted in the 10-cap dropping
-    # 5-6 games where the only mainline K props existed. Cost: ~6
-    # extra Odds API credits per refresh (well within budget).
-    "baseball_mlb": 16,
+    # see no batter or pitcher props". 2026-07-22 bump to 24 — user
+    # said "last 3 MLB games had no props" (max slate ~15-16 games
+    # + doubleheaders can push to 18-20; 24 gives full-slate coverage
+    # with breathing room). Cost: ~14 extra Odds API credits/refresh.
+    "baseball_mlb": 24,
     # CSL slate is 7-9 matches/day and the user wants ALL elite
     # scorers (Cryzan, Felipe Sousa, Fábio Abreu, Leonardo, Wu Lei,
     # Negrão, Bakambu, etc.) on the board. The synthesis fallback
     # is free (no Odds API cost) so we lift the cap to 10.
     "soccer_china_superleague": 10,
     "soccer_china_league_one":   10,
+    # 2026-07-22 — MLS slate is 12-15 matches on Wed/Sat. User
+    # feedback: "think we missing picks for MLS". The 3-event default
+    # was fetching only 3/15 games, capping MLS coverage at 20%.
+    # Bumped to 15 for full-slate MLS coverage. MLS is a core
+    # user-region league (US Soccer) so justifies the extra credits.
+    "soccer_usa_mls": 15,
 }
 _DEFAULT_PROPS_PER_KEY = 3
 
