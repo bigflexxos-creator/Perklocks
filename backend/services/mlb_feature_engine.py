@@ -201,6 +201,9 @@ def build_mlb_pitcher_k_factors(ctx: dict, player: str,
         "Pitch Count / Workload":     factor_pitch_count_workload(ctx, player, line),
         "Park Strikeout Factor":      factor_park_k(ctx),
         "Recent Strikeout Form (L5)": factor_recent_k_form(ctx, player),
+        # 2026-07-22 Statcast xwOBA-against layer — captures elite whiff
+        # pitchers even before their raw K/9 catches up.
+        "Pitcher xwOBA-Against (Statcast)": factor_pitcher_statcast_k_upside(ctx, player),
     }
     sources = []
     if factors["Pitcher K/9 (recent)"] is not None:
@@ -213,6 +216,8 @@ def build_mlb_pitcher_k_factors(ctx: dict, player: str,
         sources.append("park_factors_table")
     if factors["Recent Strikeout Form (L5)"] is not None:
         sources.append("statsapi_pitcher_l5")
+    if factors["Pitcher xwOBA-Against (Statcast)"] is not None:
+        sources.append("baseball_savant_statcast")
     return factors, sources
 
 
@@ -311,15 +316,117 @@ def factor_batter_bvp(ctx: dict, batter_name: str) -> Optional[float]:
     return round(_scale(float(ops), 0.500, 1.100), 3)
 
 
+# ── STATCAST xSTATS FACTORS (2026-07-22) ─────────────────────────────
+# Blend Baseball Savant expected stats (xBA/xwOBA/barrel%/hard-hit%)
+# with the recent-form / matchup / platoon factors already above. This
+# is what Fangraphs / PropsBot use to hit 55%+ on hitter Overs — decouples
+# TRUE quality of contact from short-run BABIP luck.
+
+def factor_batter_statcast_xba(ctx: dict, batter_name: str) -> Optional[float]:
+    """Expected batting average factor. Higher xBA = more hits expected.
+
+    Source: services.mlb_statcast (Baseball Savant CSV). Populated via
+    game_context.build_mlb_game_context which now attaches
+    `hitters[name]["statcast"]`.
+    Scale: xBA 0.220 (weak) → 0.40, 0.320 (elite) → 0.95
+    """
+    hitters = ctx.get("hitters") or {}
+    hb = hitters.get(batter_name.strip().lower()) or {}
+    sc = hb.get("statcast") or {}
+    xba = sc.get("xba")
+    if not isinstance(xba, (int, float)):
+        return None
+    return round(_scale(float(xba), 0.220, 0.320), 3)
+
+
+def factor_batter_statcast_barrel(ctx: dict, batter_name: str) -> Optional[float]:
+    """Barrel% factor — biggest single HR / total-bases signal.
+
+    Barrel% is % of batted balls with the perfect exit-velo/launch-angle
+    combo that produces XBH ~80% of the time. 0% = zero pop, 15% = elite
+    power (Judge, Ohtani).
+    Scale: 3% (weak) → 0.40, 12% (elite) → 0.95
+    """
+    hitters = ctx.get("hitters") or {}
+    hb = hitters.get(batter_name.strip().lower()) or {}
+    sc = hb.get("statcast") or {}
+    brl = sc.get("barrel_pct")
+    if not isinstance(brl, (int, float)):
+        return None
+    return round(_scale(float(brl), 3.0, 12.0), 3)
+
+
+def factor_batter_statcast_hardhit(ctx: dict, batter_name: str) -> Optional[float]:
+    """Hard-hit % factor (95+ mph exit velo).
+
+    Correlates strongly with xBA regression and total-bases upside.
+    Scale: 30% (weak) → 0.40, 55% (elite) → 0.95
+    """
+    hitters = ctx.get("hitters") or {}
+    hb = hitters.get(batter_name.strip().lower()) or {}
+    sc = hb.get("statcast") or {}
+    hh = sc.get("hard_hit")
+    if not isinstance(hh, (int, float)):
+        return None
+    return round(_scale(float(hh), 30.0, 55.0), 3)
+
+
+def factor_batter_statcast_luck(ctx: dict, batter_name: str) -> Optional[float]:
+    """Positive-regression signal: xBA − BA gap.
+
+    A hitter batting .240 with a .290 xBA is due for positive
+    regression — great buy on Overs. Negative gap = regression risk.
+    Scale: −0.030 (unlucky = due) → 0.30, +0.030 (lucky = fade) → 0.85
+    Note: INVERTED — positive delta means picks are OVER-value fade.
+    """
+    hitters = ctx.get("hitters") or {}
+    hb = hitters.get(batter_name.strip().lower()) or {}
+    sc = hb.get("statcast") or {}
+    diff = sc.get("xba_diff")
+    if not isinstance(diff, (int, float)):
+        return None
+    # diff = xba - ba. Positive = due for regression UP (good for Over).
+    # Scale: -0.030 (fade) → 0.40, +0.030 (buy) → 0.90
+    return round(_scale(float(diff), -0.030, 0.030), 3)
+
+
+def factor_pitcher_statcast_k_upside(ctx: dict, pitcher_name: str) -> Optional[float]:
+    """Pitcher xwOBA-against + whiff% signal for K props.
+
+    Elite whiff pitchers with low xwOBA-against carry Overs on K props
+    even when their raw K/9 hasn't caught up (e.g. Skenes early '24).
+    Scale composite: xwoba_against 0.320 (bad) → 0.40, 0.260 (elite) → 0.95
+    """
+    for side_key in ("starting_pitcher_home", "starting_pitcher_away"):
+        sp = ctx.get(side_key) or {}
+        if sp.get("name", "").strip().lower() != pitcher_name.strip().lower():
+            continue
+        sc = sp.get("statcast") or {}
+        xw = sc.get("xwoba_against") or sc.get("xwoba")
+        if not isinstance(xw, (int, float)):
+            return None
+        # INVERT: lower xwOBA against = better pitcher = higher K factor
+        return round(_scale(0.600 - float(xw), 0.280, 0.340), 3)
+    return None
+
+
 def build_mlb_hitter_factors(ctx: dict, player: str, is_home: bool = True,
                              opp_pitcher_name: Optional[str] = None) -> tuple[dict, list[str]]:
-    """Build hitter-prop factors from REAL data (or None)."""
+    """Build hitter-prop factors from REAL data (or None).
+
+    2026-07-22 — expanded from 5 factors to 8 with Statcast xStats.
+    """
     factors: dict[str, Optional[float]] = {
-        "Recent L10 Hit Rate":     factor_batter_recent_form(ctx, player),
-        "Matchup vs Defense":      factor_batter_matchup_vs_defense(ctx, player),
-        "Home/Away Splits":        factor_batter_home_away(ctx, player, is_home),
-        "Platoon Advantage":       factor_batter_platoon(ctx, player, opp_pitcher_name),
-        "BvP (career vs pitcher)": factor_batter_bvp(ctx, player),
+        "Recent L10 Hit Rate":       factor_batter_recent_form(ctx, player),
+        "Matchup vs Defense":        factor_batter_matchup_vs_defense(ctx, player),
+        "Home/Away Splits":          factor_batter_home_away(ctx, player, is_home),
+        "Platoon Advantage":         factor_batter_platoon(ctx, player, opp_pitcher_name),
+        "BvP (career vs pitcher)":   factor_batter_bvp(ctx, player),
+        # ── Statcast xStats layer ────────────────────────────────
+        "Expected BA (Statcast)":    factor_batter_statcast_xba(ctx, player),
+        "Barrel% (Quality of Contact)": factor_batter_statcast_barrel(ctx, player),
+        "Hard-Hit % (Statcast)":     factor_batter_statcast_hardhit(ctx, player),
+        "Regression Signal (xBA-BA)": factor_batter_statcast_luck(ctx, player),
     }
     sources = []
     for k, v in factors.items():
