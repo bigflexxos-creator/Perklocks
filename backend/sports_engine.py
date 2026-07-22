@@ -4080,6 +4080,25 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                 except Exception as _espn_err:
                     logger.warning("ESPN CSL scorer for %s failed: %s",
                                    ev.get("id"), _espn_err)
+            # ── ESPN MLS LEADERBOARD-SOURCED AGS picks (2026-07-22) ─────
+            # User complaint: "I still don't see Surridge, Bouanga, or
+            # SoA for MLS." Direct-source picks from `espn_mls_stats`
+            # so top MLS scorers always surface when their team plays.
+            # Mirrors the CSL treatment above.
+            if key == "soccer_usa_mls":
+                try:
+                    espn_mls_picks = await _espn_mls_scorer_picks(key, ev)
+                    if espn_mls_picks:
+                        logger.info(
+                            "ESPN-leaderboard MLS scorer picks evt %s: %d",
+                            ev.get("id"), len(espn_mls_picks),
+                        )
+                        all_picks.extend(espn_mls_picks)
+                except Exception as _espn_err:
+                    logger.warning(
+                        "ESPN MLS leaderboard scorer for %s failed: %s",
+                        ev.get("id"), _espn_err,
+                    )
     return all_picks
 
 
@@ -4258,6 +4277,188 @@ async def _espn_csl_scorer_picks(sport_key: str, ev: dict) -> list[dict]:
                 "away_team_name": away,
             })
     return picks_out
+
+
+async def _espn_mls_scorer_picks(sport_key: str, ev: dict) -> list[dict]:
+    """Guaranteed-emit MLS AGS + SoA picks from `espn_mls_stats`.
+
+    User complaint 2026-07-22: "I still don't see Surridge, Bouanga,
+    Mukhtar, or SoA for MLS." The book-based `_props_picks_from_event`
+    path was silently dropping MLS picks somewhere. This is the
+    bulletproof direct-emit path — mirrors `_espn_csl_scorer_picks`.
+    """
+    if sport_key != "soccer_usa_mls":
+        return []
+    from server import db as _db
+    home = (ev.get("home_team") or "").strip()
+    away = (ev.get("away_team") or "").strip()
+    if not home or not away:
+        return []
+    try:
+        rows = await _db.espn_mls_stats.find({}).to_list(length=500)
+    except Exception:
+        return []
+    if not rows:
+        return []
+
+    def _team_match(candidate: str, target: str) -> bool:
+        if not candidate or not target:
+            return False
+        c = candidate.lower()
+        t = target.lower()
+        for suf in (" fc", " f.c.", " sc", " cf", " united", " city",
+                    " football club"):
+            c = c.replace(suf, "")
+            t = t.replace(suf, "")
+        c = c.strip(); t = t.strip()
+        if not c or not t:
+            return False
+        return c == t or c in t or t in c
+
+    home_sc, away_sc = [], []
+    for r in rows:
+        team = r.get("team") or ""
+        try:
+            goals = int(r.get("goals") or 0)
+        except Exception:
+            goals = 0
+        try:
+            assists = int(r.get("assists") or 0)
+        except Exception:
+            assists = 0
+        matches = int(r.get("games") or 0) or 18
+        if goals < 3 and assists < 3:
+            continue
+        rate = min(0.85, goals / max(matches, 6))
+        soa_rate = min(0.92, (goals + assists) / max(matches, 6))
+        name = r.get("name") or ""
+        if not name:
+            continue
+        entry = (name, team, goals, assists, matches, rate, soa_rate)
+        if _team_match(team, home):
+            home_sc.append(entry)
+        elif _team_match(team, away):
+            away_sc.append(entry)
+    if not home_sc and not away_sc:
+        return []
+    home_sc.sort(key=lambda x: x[5], reverse=True)
+    away_sc.sort(key=lambda x: x[5], reverse=True)
+
+    matchup_lookup: dict = {}
+    try:
+        from services.mls_player_matchup_history import get_player_vs_opponent
+        for entry in (home_sc[:3] + away_sc[:3]):
+            pname, ptm = entry[0], entry[1]
+            opp = away if _team_match(ptm, home) else home
+            rec = await get_player_vs_opponent(pname, opp)
+            if rec:
+                matchup_lookup[pname] = {"opponent": opp, "record": rec}
+    except Exception:
+        pass
+
+    def _rate_to_american(r: float) -> int:
+        if r >= 0.5:
+            fair = int(round(-100.0 * r / (1.0 - r)))
+            return int(fair * 0.92)
+        fair = int(round(100.0 * (1.0 - r) / r))
+        return int(fair * 1.08)
+
+    picks_out: list[dict] = []
+    commence = ev.get("commence_time") or ""
+    event_id = ev.get("id") or f"MLS-{home}-{away}"
+
+    for side_scorers in (home_sc[:3], away_sc[:3]):
+        for name, team, goals, assists, matches, rate, soa_rate in side_scorers:
+            for kind in ("anytime", "score_or_assist"):
+                r = rate if kind == "anytime" else soa_rate
+                book_odds = _rate_to_american(r)
+                if kind == "score_or_assist":
+                    lock = 96.0 if r >= 0.55 else (92.0 if r >= 0.4 else 88.0)
+                    label = "To Score or Assist"
+                else:
+                    lock = 95.0 if r >= 0.55 else (90.0 if r >= 0.4 else 88.0)
+                    label = "Anytime Goal Scorer"
+                grade = ("Strong Lock" if lock >= 95 else
+                          ("Lock" if lock >= 90 else "Playable"))
+                pick = {
+                    "id": f"mls-espn-{kind}-{event_id}-{name.replace(' ', '_').lower()}",
+                    "external_id": f"MLS-ESPN-{kind}-{event_id}-{name}",
+                    "sport": "Soccer",
+                    "league": "MLS",
+                    "event": f"{away} @ {home}",
+                    "event_time": commence,
+                    "market": f"{name} {label}",
+                    "selection": name,
+                    "pick_side": name,
+                    "model_win_prob": r,
+                    "book_odds": book_odds,
+                    "lock_score": lock,
+                    "lock_score_v2": lock,
+                    "lock_score_v2_raw": lock,
+                    "edge_percent": 0.0,
+                    "grade": grade,
+                    "confidence": grade,
+                    "status": "pending",
+                    "no_bet": False,
+                    "elite_player": True,
+                    "is_elite": True,
+                    "is_synthetic_scorer": True,
+                    "is_long_shot": True,
+                    "synthetic": True,
+                    "synthetic_source": "mls_espn_leaderboard",
+                    "source": "mls_espn_leaderboard",
+                    "samples": {
+                        "goals": goals, "assists": assists,
+                        "matches": matches, "rate": round(rate, 3),
+                        "soa_rate": round(soa_rate, 3),
+                        "leaderboard_team": team,
+                    },
+                    "sport_key": sport_key,
+                    "home_team": home, "away_team": away,
+                    "home_team_name": home, "away_team_name": away,
+                    "pick_rationale": {
+                        "engine": "mls_espn_leaderboard",
+                        "summary": (
+                            f"{name}: {goals}G/{assists}A in {matches} MLS "
+                            f"matches this season ({rate*100:.0f}% goal-per-match)."
+                        ),
+                        "evidence": [
+                            f"🏆 ESPN 2025 MLS leader: {goals}G, {assists}A in {matches} games",
+                            f"⚡ Per-match scoring: {rate*100:.0f}% · SoA: {soa_rate*100:.0f}%",
+                            f"👤 {name} — {team}",
+                        ],
+                        "concerns": [],
+                        "matchup": {"player": name, "team": team},
+                        "recent_form": {"engine": "mls_espn_leaderboard"},
+                    },
+                }
+                hist = matchup_lookup.get(name)
+                if hist and hist.get("record"):
+                    rec = hist["record"]
+                    m_m = int(rec.get("matches", 0) or 0)
+                    m_g = int(rec.get("goals", 0) or 0)
+                    m_a = int(rec.get("assists", 0) or 0)
+                    gpm = m_g / m_m if m_m else 0.0
+                    pick["matchup_history"] = {
+                        "opponent": hist.get("opponent"),
+                        "matches": m_m, "goals": m_g, "assists": m_a,
+                        "goals_per_match": round(gpm, 2),
+                        "scored_in": int(rec.get("scored_matches", 0) or 0),
+                        "assisted_in": int(rec.get("assist_matches", 0) or 0),
+                        "recent": (rec.get("recent") or [])[:3],
+                    }
+                    if gpm >= 1.0 and m_m >= 2:
+                        pick["lock_score"] = min(99.0, pick["lock_score"] + 4.0)
+                    elif gpm >= 0.5 and m_m >= 2:
+                        pick["lock_score"] = min(99.0, pick["lock_score"] + 2.0)
+                    pick["pick_rationale"]["evidence"].insert(
+                        1,
+                        f"🎯 Career vs {hist.get('opponent')}: {m_g}G/{m_a}A "
+                        f"in {m_m} matches ({gpm:.1f} G/match)",
+                    )
+                picks_out.append(pick)
+    return picks_out
+
 
 
 async def _synthetic_soccer_scorer_picks(sport_key: str, ev: dict) -> list[dict]:

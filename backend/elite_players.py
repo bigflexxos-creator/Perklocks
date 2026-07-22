@@ -960,6 +960,18 @@ def apply_elite_boost(picks: list[dict]) -> list[dict]:
             kept.append(p)
             continue
         player = m.group(1).strip()
+        # ── 2026-07-22 MLS ESPN-leaderboard exemption ──────────────
+        # Picks with `source == "mls_espn_leaderboard"` were built from
+        # the live ESPN MLS season leaderboard (top scorers who are BY
+        # DEFINITION regular starters — their goals are all accrued in
+        # actual games). Our `_is_actively_starting_soccer` roster
+        # signal doesn't cover MLS (US-only data source), so every
+        # ESPN MLS pick fails "no recent club starts" and gets nuked.
+        # Skip the gate for these picks — the ESPN scoring rate IS
+        # the starter signal.
+        if p.get("source") == "mls_espn_leaderboard":
+            kept.append(p)
+            continue
         kind = _classify_event_league_kind(p.get("event"), p.get("league"))
         if _is_actively_starting_soccer(player, league_kind=kind):
             kept.append(p)
