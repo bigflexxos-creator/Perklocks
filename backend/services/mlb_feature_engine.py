@@ -204,6 +204,10 @@ def build_mlb_pitcher_k_factors(ctx: dict, player: str,
         # 2026-07-22 Statcast xwOBA-against layer — captures elite whiff
         # pitchers even before their raw K/9 catches up.
         "Pitcher xwOBA-Against (Statcast)": factor_pitcher_statcast_k_upside(ctx, player),
+        # 2026-07-22 Home-plate umpire K-zone bias (durable ±2.5pp signal)
+        "Umpire K-Zone Bias":         factor_umpire_pitcher_k(ctx, side),
+        # 2026-07-22 DFS-style locally-projected K line probability
+        "DFS K Projection vs Line":   factor_dfs_pitcher_k_projection(ctx, player, line, side),
     }
     sources = []
     if factors["Pitcher K/9 (recent)"] is not None:
@@ -218,6 +222,10 @@ def build_mlb_pitcher_k_factors(ctx: dict, player: str,
         sources.append("statsapi_pitcher_l5")
     if factors["Pitcher xwOBA-Against (Statcast)"] is not None:
         sources.append("baseball_savant_statcast")
+    if factors["Umpire K-Zone Bias"] is not None:
+        sources.append("plate_umpire_zone_table")
+    if factors["DFS K Projection vs Line"] is not None:
+        sources.append("dfs_projection_local")
     return factors, sources
 
 
@@ -410,11 +418,84 @@ def factor_pitcher_statcast_k_upside(ctx: dict, pitcher_name: str) -> Optional[f
     return None
 
 
+# ── UMPIRE K-ZONE FACTORS (2026-07-22) ────────────────────────────────
+# Home-plate umpires have measurable, persistent K% zone biases:
+#   - Angel Hernandez / Ron Kulpa: +2.5pp K (pitcher-friendly)
+#   - Pat Hoberg / Jansen Visconti: -2.5pp K (hitter-friendly)
+# When the plate ump has been posted (available ~2h pre-game), we lift
+# the K factor for wide-zone umps and cap it for tight-zone umps.
+# Correlations year-over-year are ~0.60 so this is durable signal.
+
+def factor_umpire_pitcher_k(ctx: dict, pitcher_side: str = "over") -> Optional[float]:
+    """Umpire zone factor for pitcher K props.
+    Wide zone (positive delta_pct) → higher factor for Over K, lower for Under.
+    Tight zone (negative delta_pct) → opposite.
+    Scale: -3.0pp → 0.30, +3.0pp → 0.90 for Overs (inverted for Unders).
+    """
+    ump = ctx.get("plate_umpire") or {}
+    delta = ump.get("delta_pct")
+    if not isinstance(delta, (int, float)):
+        return None
+    v = _scale(float(delta), -3.0, 3.0)
+    # For Under K props, invert (tight zone helps Under)
+    if pitcher_side.lower().startswith("under"):
+        v = 1.0 - v
+        v = max(0.30, min(0.90, v))
+    else:
+        v = max(0.30, min(0.90, v))
+    return round(v, 3)
+
+
+def factor_umpire_hitter(ctx: dict) -> Optional[float]:
+    """Umpire zone factor for HITTER props (Hits, H+R+RBI, Total Bases).
+    Tight zone (negative delta_pct → hitter-friendly) → higher factor.
+    Wide zone → lower factor. Inverted from pitcher factor.
+    Scale: +3.0pp (bad for hitters) → 0.30, -3.0pp (great for hitters) → 0.90
+    """
+    ump = ctx.get("plate_umpire") or {}
+    delta = ump.get("delta_pct")
+    if not isinstance(delta, (int, float)):
+        return None
+    # Invert delta so negative (tight = good for hitters) maps to high factor
+    v = _scale(-float(delta), -3.0, 3.0)
+    return round(max(0.30, min(0.90, v)), 3)
+
+
+# ── DFS PROJECTION FACTORS (2026-07-22) ───────────────────────────────
+# Locally-computed daily projections from Statcast + lineup + park + ump.
+# Same math as Steamer/BAT-X but with TODAY's opp SP + park + weather +
+# ump — usually more accurate for props than the aggregate season proj.
+
+def factor_dfs_hitter_projection(ctx: dict, player: str,
+                                 market_type: str,
+                                 line: Optional[float] = None) -> Optional[float]:
+    """Return the DFS projection factor for a hitter prop, or None."""
+    try:
+        from services.mlb_dfs_projections import dfs_hitter_factor
+        return dfs_hitter_factor(ctx, player, market_type, line)
+    except Exception:
+        return None
+
+
+def factor_dfs_pitcher_k_projection(ctx: dict, pitcher: str,
+                                    line: Optional[float] = None,
+                                    side: str = "over") -> Optional[float]:
+    """Return the DFS K-projection factor for a pitcher prop."""
+    try:
+        from services.mlb_dfs_projections import dfs_pitcher_factor
+        return dfs_pitcher_factor(ctx, pitcher, line, side)
+    except Exception:
+        return None
+
+
 def build_mlb_hitter_factors(ctx: dict, player: str, is_home: bool = True,
-                             opp_pitcher_name: Optional[str] = None) -> tuple[dict, list[str]]:
+                             opp_pitcher_name: Optional[str] = None,
+                             market_type: str = "hits",
+                             line: Optional[float] = None) -> tuple[dict, list[str]]:
     """Build hitter-prop factors from REAL data (or None).
 
-    2026-07-22 — expanded from 5 factors to 8 with Statcast xStats.
+    2026-07-22 — expanded to 11 factors with Statcast xStats, umpire
+    zone, and DFS-style daily projection.
     """
     factors: dict[str, Optional[float]] = {
         "Recent L10 Hit Rate":       factor_batter_recent_form(ctx, player),
@@ -427,6 +508,10 @@ def build_mlb_hitter_factors(ctx: dict, player: str, is_home: bool = True,
         "Barrel% (Quality of Contact)": factor_batter_statcast_barrel(ctx, player),
         "Hard-Hit % (Statcast)":     factor_batter_statcast_hardhit(ctx, player),
         "Regression Signal (xBA-BA)": factor_batter_statcast_luck(ctx, player),
+        # 2026-07-22 Umpire zone bias (tight = hitter-friendly)
+        "Umpire Zone (Hitter Bias)": factor_umpire_hitter(ctx),
+        # 2026-07-22 DFS-style locally-projected line probability
+        "DFS Projection vs Line":    factor_dfs_hitter_projection(ctx, player, market_type, line),
     }
     sources = []
     for k, v in factors.items():

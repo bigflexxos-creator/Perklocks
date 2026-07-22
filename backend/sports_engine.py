@@ -1989,6 +1989,20 @@ PLAYER_PROP_MARKETS = {
         "player_points_alternate", "player_rebounds_alternate",
         "player_assists_alternate",
     ],
+    # NFL — Phase 3 (2026-07-22). Every prop market routes through
+    # services.nfl_feature_engine.build_nfl_prop_factors which uses
+    # NFLverse historical data (2019-2025) — no RNG, no placeholders.
+    "NFL": [
+        "player_pass_yds",       "player_pass_yds_alternate",
+        "player_pass_tds",       "player_pass_attempts",
+        "player_pass_completions",
+        "player_rush_yds",       "player_rush_yds_alternate",
+        "player_rush_attempts",  "player_rush_tds",
+        "player_receptions",     "player_receptions_alternate",
+        "player_reception_yds",  "player_reception_yds_alternate",
+        "player_reception_tds",
+        "player_anytime_td",     "player_1st_td",
+    ],
     # KBO removed 2026-06-18 — KBO sport disabled entirely.
     # Soccer: anytime goal scorer is the marquee prop. We also try the
     # "to score or assist" market when the bookmakers carry it — it nearly
@@ -2035,6 +2049,71 @@ _ALT_PROP_MAX_IMPLIED = 0.95  # cap absurd chalk like -2000 (95% implied)
 # accept down to 22% so picks always show; weaker (<22%) are real lottery
 # tickets that don't qualify as "intelligence" picks.
 _SOCCER_PROP_MIN_IMPLIED = 0.22
+
+
+# ── NFL Phase 3 helpers (2026-07-22) ─────────────────────────────────
+# Map The Odds API market keys to the stat field names used in our
+# nflverse ingest / feature engine. Add new mappings as we support
+# additional markets.
+_NFL_MARKET_TO_STAT = {
+    "player_pass_yds":              "passing_yards",
+    "player_pass_yds_alternate":    "passing_yards",
+    "player_pass_tds":              "passing_tds",
+    "player_pass_attempts":         "attempts",
+    "player_pass_completions":      "completions",
+    "player_rush_yds":              "rushing_yards",
+    "player_rush_yds_alternate":    "rushing_yards",
+    "player_rush_attempts":         "carries",
+    "player_rush_tds":              "rushing_tds",
+    "player_receptions":            "receptions",
+    "player_receptions_alternate":  "receptions",
+    "player_reception_yds":         "receiving_yards",
+    "player_reception_yds_alternate": "receiving_yards",
+    "player_reception_tds":         "receiving_tds",
+}
+
+
+def _infer_nfl_position_from_market(mk: str) -> str:
+    """Best-effort position guess from the market key. Feature engine
+    tolerates a wrong guess (it just falls back to full defensive
+    allowances)."""
+    if not mk:
+        return "WR"
+    m = mk.lower()
+    if "pass" in m:
+        return "QB"
+    if "rush" in m:
+        return "RB"
+    if "reception" in m or "rec" in m or "tds" in m and "reception" in m:
+        return "WR"
+    return "WR"
+
+
+def _current_nfl_season() -> int:
+    """Return the current NFL season year. NFL season kicks off Sept
+    and runs into Feb — pre-July we're still in the previous season."""
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    return now.year if now.month >= 7 else now.year - 1
+
+
+def _current_nfl_week() -> int:
+    """Rough current-week estimator. Season Week 1 typically first
+    Thursday after Labor Day (~Sep 5). Preseason weeks 1-3 in August.
+    Returns a positive integer that's safe for the feature engine's
+    `week < current_week` history filter (any large value works pre-season)."""
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    if now.month < 8:
+        return 22       # post-season done — pull full history
+    if now.month == 8:
+        # Preseason. Return 0 so no games this season are excluded.
+        return 0
+    if now.month in (9, 10, 11, 12, 1, 2):
+        # Rough weeks-since-Sep-1 calc
+        sep1 = _dt.datetime(now.year if now.month >= 8 else now.year - 1, 9, 1, tzinfo=_dt.timezone.utc)
+        return max(1, ((now - sep1).days // 7) + 1)
+    return 22
 
 
 async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) -> dict:
@@ -3282,12 +3361,39 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             real_factors, _sources = build_mlb_hitter_factors(
                 _game_ctx, player=player, is_home=_is_home,
                 opp_pitcher_name=_opp_sp,
+                market_type=mk,
+                line=point if isinstance(point, (int, float)) else None,
             )
             if not has_enough_real_data(real_factors, "hitter_prop"):
                 _skip_pick = True
             else:
                 factors = {k: v for k, v in real_factors.items() if v is not None}
                 _mlb_features_used = _sources
+        elif sport == "NFL":
+            # Phase 3 (2026-07-22) — NFL props route through the real
+            # feature engine backed by NFLverse historical data. Zero
+            # RNG, zero placeholders. The full data-loading is done
+            # ONCE per game in the async pre-loader and cached to
+            # ctx["nfl_precomputed"][player][mk]. The synchronous
+            # branch here just looks the pre-built factor dict up.
+            _game_ctx = (payload.get("_ctx") if isinstance(payload, dict) else None) or {}
+            _pc = ((_game_ctx.get("nfl_precomputed") or {}).get(player.strip().lower()) or {}).get(mk) or {}
+            _nfl_stat = _NFL_MARKET_TO_STAT.get(mk)
+            if not _pc or not _nfl_stat:
+                _skip_pick = True
+            else:
+                try:
+                    from services.nfl_feature_engine import has_enough_real_data_nfl
+                    real_factors = _pc.get("factors") or {}
+                    _sources = _pc.get("sources") or []
+                    if not has_enough_real_data_nfl(real_factors):
+                        _skip_pick = True
+                    else:
+                        factors = {k: v for k, v in real_factors.items() if v is not None}
+                        _mlb_features_used = _sources
+                except Exception as e:
+                    logger.debug("NFL sync gate failed for %s / %s: %s", player, mk, e)
+                    _skip_pick = True
         elif is_pitcher_prop:
             # Non-MLB pitcher props (KBO etc.) — Phase 1 real engine
             # only covers MLB. Rather than fake RNG factors, emit a

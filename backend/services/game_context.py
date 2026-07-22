@@ -240,6 +240,34 @@ async def build_mlb_game_context(game: dict) -> dict[str, Any]:
     except Exception as e:
         logger.debug("pitcher statcast ctx fetch failed: %s", e)
 
+    # 6c) Plate-umpire K-zone attachment (2026-07-22).
+    # Feeds factor_umpire_k in mlb_feature_engine — wide-zone umps
+    # (Angel Hernandez +2.8pp K) boost pitcher K Overs and fade hitter
+    # Overs; tight-zone umps (Pat Hoberg -2.9pp K) do the opposite.
+    # Non-blocking — home-plate ump only posts alongside lineups ~2h
+    # pre-game so most regens will see None until near tip-off.
+    try:
+        from services.mlb_umpire import _fetch_plate_umpire, get_umpire_zone
+        import httpx
+        gid = game.get("id") or ""
+        commence = game.get("commence_time") or game.get("event_time") or ""
+        # gamePk resolution: reuse the mlb_usage helper.
+        from services.mlb_usage import _find_gamepk_for_event
+        home_name = ctx.get("home_team") or game.get("home_team", "")
+        away_name = ctx.get("away_team") or game.get("away_team", "")
+        event_str = f"{away_name} @ {home_name}"
+        async with httpx.AsyncClient(timeout=8.0) as cx:
+            pk = await _find_gamepk_for_event(cx, event_str, commence)
+            if pk:
+                ump_name = await _fetch_plate_umpire(cx, int(pk))
+                if ump_name:
+                    ctx["plate_umpire"] = {"name": ump_name}
+                    z = get_umpire_zone(ump_name)
+                    if z:
+                        ctx["plate_umpire"].update(z)
+    except Exception as e:
+        logger.debug("plate umpire ctx fetch failed: %s", e)
+
     # 7) Team recent runs-per-game + bullpen ERA (2026-07-21 Phase 1)
     # Populates ctx["team_runs"][team_name.lower()] and
     # ctx["bullpens"][team_name.lower()]. These fuel factor_team_offense_recent
