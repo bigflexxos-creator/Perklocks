@@ -1576,6 +1576,13 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as _odds_st_err:
         logger.debug("Could not read Odds API status: %s", _odds_st_err)
     picks = await generate_all_picks(date_str, sport_filter=sport_filter)
+    # 2026-07-22 diagnostic — count MLS ESPN picks right off the pipeline.
+    _mls_espn_from_engine = sum(
+        1 for p in (picks or []) if isinstance(p, dict)
+        and p.get("source") == "mls_espn_leaderboard"
+    )
+    if _mls_espn_from_engine:
+        logger.info("MLS ESPN picks from engine: %d", _mls_espn_from_engine)
     # Post-refresh observability so the operator can spot a slate that
     # came back smaller than expected without having to tail logs.
     try:
@@ -2034,6 +2041,7 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     REQUIRED = ("id", "sport", "event_time", "market", "book_odds")
     safe_picks = []
     dropped = 0
+    _mls_espn_debug = 0   # 2026-07-22 diagnostic
     for p in picks:
         if not isinstance(p, dict):
             dropped += 1
@@ -2044,7 +2052,14 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
                          missing, p.get("event"), p.get("market"))
             dropped += 1
             continue
+        if p.get("source") == "mls_espn_leaderboard":
+            _mls_espn_debug += 1
         safe_picks.append(p)
+    if _mls_espn_debug:
+        logger.info(
+            "MLS ESPN picks reached safe_picks: %d (post malformed-drop)",
+            _mls_espn_debug,
+        )
     if dropped:
         logger.warning("Skipped %d malformed picks before insert", dropped)
 
