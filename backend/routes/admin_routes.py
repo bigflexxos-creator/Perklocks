@@ -1271,3 +1271,127 @@ async def soccer_team_lookup(
                     "n": wins + draws + losses},
     }
 
+
+
+# ────────────── Player Prop Intelligence System (Phase 2) ──────────────
+# Debug endpoint to inspect what the archetype engine + 3 market models
+# predict for any given player. Useful for validating model behaviour on
+# real MLS / EPL rosters before / after tuning.
+#
+#   GET /api/admin/player-props/analyze/{player_name}?opponent=Nashville%20SC
+#
+# Returns: unified PlayerStats, computed Archetype, and outputs of
+# goalscorer / assist / goal_involvement models.
+@router.get("/admin/player-props/analyze/{player_name}")
+async def admin_player_props_analyze(
+    player_name: str,
+    user: Annotated[UserPublic, Depends(current_admin)],
+    opponent: Optional[str] = None,
+    league_hint: Optional[str] = None,
+):
+    """Return the Player Prop Intelligence model outputs for one player."""
+    from services.player_props import (
+        get_player_stats, get_matchup_split,
+        classify_archetype,
+        predict_goal, predict_assist, predict_goal_involvement,
+    )
+    stats = await get_player_stats(player_name, league_hint=league_hint)
+    if not stats:
+        raise HTTPException(status_code=404, detail=(
+            f"No stats found for '{player_name}'. Searched: "
+            f"soccer_player_form, espn_mls_stats, wiki_top_scorers."
+        ))
+    split = None
+    if opponent:
+        split = await get_matchup_split(player_name, opponent)
+
+    archetype = classify_archetype(stats)
+    goal_rec = predict_goal(stats, split, archetype)
+    assist_rec = predict_assist(stats, split, archetype)
+    gi_rec = predict_goal_involvement(stats, split, archetype)
+
+    return {
+        "player_name": stats.player_name,
+        "stats": {
+            "source": stats.source,
+            "league": stats.league,
+            "team": stats.team,
+            "season": stats.season,
+            "games": stats.games,
+            "minutes": stats.minutes,
+            "goals": stats.goals,
+            "assists": stats.assists,
+            "goals_per_90": stats.goals_per_90,
+            "assists_per_90": stats.assists_per_90,
+            "shots_per_90": stats.shots_per_90,
+            "key_passes_per_90": stats.key_passes_per_90,
+            "npxg_per_90": stats.npxg_per_90,
+            "form_score": stats.form_score,
+            "form_label": stats.form_label,
+            "position": stats.position,
+        },
+        "matchup_split": ({
+            "opponent": split.opponent,
+            "matches": split.matches,
+            "goals": split.goals,
+            "assists": split.assists,
+            "scored_matches": split.scored_matches,
+            "assist_matches": split.assist_matches,
+            "gpm": round(split.gpm(), 3),
+            "apm": round(split.apm(), 3),
+            "gi_rate": round(split.gi_rate(), 3),
+        } if split else None),
+        "archetype": {
+            "code": archetype.value,
+            "display": archetype.display(),
+        },
+        "models": {
+            "anytime_goal_scorer":    goal_rec.to_dict(),
+            "anytime_assist":         assist_rec.to_dict(),
+            "anytime_goal_involvement": gi_rec.to_dict(),
+        },
+    }
+
+
+# Batch endpoint — classify every player currently in `espn_mls_stats`
+# so admins can spot-check the archetype distribution + flag any weird
+# thresholds needing tuning.
+@router.get("/admin/player-props/mls-archetypes")
+async def admin_mls_archetypes(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    limit: int = 200,
+):
+    """Return archetype distribution across every MLS scorer in
+    `espn_mls_stats` — quick QA for the classifier.
+    """
+    from services.player_props import get_player_stats, classify_archetype
+
+    scorers = await db.espn_mls_stats.find({}).to_list(length=limit)
+    rows: list[dict] = []
+    dist: dict[str, int] = {}
+    for sc in scorers:
+        stats = await get_player_stats(sc.get("name", ""), league_hint="MLS")
+        if not stats:
+            continue
+        arch = classify_archetype(stats)
+        dist[arch.value] = dist.get(arch.value, 0) + 1
+        rows.append({
+            "name": stats.player_name,
+            "team": stats.team,
+            "goals": stats.goals,
+            "assists": stats.assists,
+            "games": stats.games,
+            "g90": stats.goals_per_90,
+            "a90": stats.assists_per_90,
+            "archetype": arch.value,
+            "archetype_display": arch.display(),
+        })
+    # sort by (archetype, -g90) for easier scanning.
+    rows.sort(key=lambda r: (r["archetype"], -r["g90"]))
+    return {
+        "total_scorers": len(scorers),
+        "classified": len(rows),
+        "distribution": dist,
+        "players": rows,
+    }
+
