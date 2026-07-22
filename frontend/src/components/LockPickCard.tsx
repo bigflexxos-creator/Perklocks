@@ -312,6 +312,34 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
             </View>
           )}
           <Text style={styles.market} numberOfLines={2}>{pick.market}</Text>
+          {/* ── Player Prop Intelligence archetype badge (v2 engine) ── */}
+          {(() => {
+            const arch = (pick as any).archetype as string | undefined;
+            const archDisplay = (pick as any).archetype_display as string | undefined;
+            const marketFit = (pick as any).market_fit as number | undefined;
+            if (!arch || !archDisplay) return null;
+            const chipStyle =
+              arch === "goal_scorer"     ? styles.archChipScorer :
+              arch === "creator"         ? styles.archChipCreator :
+              arch === "dual_threat"     ? styles.archChipDual :
+              arch === "playmaker"       ? styles.archChipPlaymaker :
+              styles.archChipDefault;
+            const chipIcon =
+              arch === "goal_scorer"     ? "⚡" :
+              arch === "creator"         ? "🎯" :
+              arch === "dual_threat"     ? "🔥" :
+              arch === "playmaker"       ? "🔑" :
+              "🏷";
+            return (
+              <View style={[styles.archChip, chipStyle]} testID="archetype-chip">
+                <Text style={styles.archChipIcon}>{chipIcon}</Text>
+                <Text style={styles.archChipText}>
+                  {archDisplay.toUpperCase()}
+                  {typeof marketFit === "number" && ` · FIT ${marketFit}%`}
+                </Text>
+              </View>
+            );
+          })()}
           {(pick as any).model_line === true && (
             <Text style={styles.modelLineText} numberOfLines={1}>
               📐 Model line — synthesized from market O/U
@@ -929,11 +957,20 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
               {(rationale!.evidence?.length ?? 0) > 0 && (
                 <View style={styles.whySection}>
                   <Text style={styles.whySectionLabel}>WHY WE LIKE IT</Text>
-                  {rationale!.evidence!.slice(0, 4).map((e, i) => (
-                    <Text key={`ev-${i}`} style={styles.whyBullet}>
-                      {e}
-                    </Text>
-                  ))}
+                  {(() => {
+                    // Show more evidence bullets when the pick came from
+                    // the Player Prop Intelligence v2 engine (which
+                    // emits archetype / matchup / form context together).
+                    const isV2 =
+                      (rationale as any).engine === "player_prop_intelligence_v2" ||
+                      (pick as any).source === "player_prop_intelligence_v2";
+                    const maxLines = isV2 ? 8 : 4;
+                    return rationale!.evidence!.slice(0, maxLines).map((e, i) => (
+                      <Text key={`ev-${i}`} style={styles.whyBullet}>
+                        {e}
+                      </Text>
+                    ));
+                  })()}
                 </View>
               )}
 
@@ -1700,6 +1737,26 @@ const styles = StyleSheet.create({
   },
   xgFormIcon: { fontSize: 10 },
   xgFormText: { fontSize: 9, fontWeight: "900", letterSpacing: 0.9 },
+  // ── Player Prop Intelligence archetype chip ──
+  archChip: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    marginTop: 6,
+    marginBottom: 2,
+  },
+  archChipScorer:    { borderColor: "rgba(252,165,165,0.55)", backgroundColor: "rgba(252,165,165,0.12)" },
+  archChipCreator:   { borderColor: "rgba(147,197,253,0.55)", backgroundColor: "rgba(147,197,253,0.12)" },
+  archChipDual:      { borderColor: "rgba(216,180,254,0.55)", backgroundColor: "rgba(216,180,254,0.14)" },
+  archChipPlaymaker: { borderColor: "rgba(134,239,172,0.55)", backgroundColor: "rgba(134,239,172,0.12)" },
+  archChipDefault:   { borderColor: "rgba(180,180,180,0.55)", backgroundColor: "rgba(180,180,180,0.12)" },
+  archChipIcon:  { fontSize: 11 },
+  archChipText:  { color: COLORS.textPrimary, fontSize: 9.5, fontWeight: "900", letterSpacing: 0.8 },
   market: { color: COLORS.textPrimary, fontSize: 17, fontWeight: "800", letterSpacing: -0.3 },
   metricsRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 18, marginBottom: 12 },
   metric: { flex: 1 },

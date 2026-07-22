@@ -736,3 +736,62 @@ agent_communication:
 #   • Phase 3: Matchup Intelligence & Market Selection Engine.
 #   • Wire archetype tags into frontend "Why This Pick" panel.
 #   • Extend to EPL/UCL/La Liga picks (currently only MLS bypass uses it).
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-07-22 · Player Prop Intelligence System — Phase 3
+# ─────────────────────────────────────────────────────────────────────
+# TASKS DELIVERED:
+#   ✅ Matchup Intelligence layer (rest days, home/away, form extremes,
+#      opp defense hook, aggregated ±25% multiplier)
+#   ✅ Market Selector (archetype × market fit table, prob floors, auto-
+#      routes each player to their best-fit markets)
+#   ✅ Frontend archetype chip on LockPickCard.tsx (color-coded by
+#      archetype, shows FIT %, integrates with "Why this pick?" panel
+#      showing full v2 evidence bullets)
+#   ✅ Big-5 + UCL extension via services/soccer_prop_inject.py
+#
+# NEW MODULES:
+#   /app/backend/services/player_props/
+#     ├── matchup_intelligence.py    (MatchupContext + signal computers)
+#     └── market_selector.py         (MarketRoute + select_markets/best_market)
+#   /app/backend/services/soccer_prop_inject.py
+#     (generalized Understat-driven injector for EPL, La Liga, Serie A,
+#      Bundesliga, Ligue 1, UCL)
+#
+# FRONTEND:
+#   /app/frontend/src/components/LockPickCard.tsx
+#     • Added color-coded archetype badge below market title:
+#       🔥 DUAL THREAT · FIT 95%   (purple)
+#       ⚡ GOAL SCORER · FIT 92%   (red)
+#       🎯 CREATOR · FIT 92%       (blue)
+#       🔑 PLAYMAKER · FIT 85%     (green)
+#     • Evidence panel now shows up to 8 bullets for v2 picks (was 4).
+#
+# VERIFICATION (live run 2026-07-22 20:22):
+#   MLS Direct-Inject:     376 picks
+#   EPL:                   144 picks
+#   La Liga:               205 picks
+#   Serie A:               181 picks
+#   Bundesliga:            161 picks
+#   Ligue 1:               152 picks
+#   ── TOTAL v2 picks:   1,219 picks across 91 events
+#
+# Total v2 in DB (by league): MLS=660, La liga=205, Serie A=181,
+# Bundesliga=161, Ligue 1=152, EPL=144.
+#
+# Frontend verified: archetype chip renders ("🔥 DUAL THREAT · FIT 80%")
+# and expanded Why panel shows summary + evidence + source line
+# ("Source: model · player_prop_intelligence_v2").
+#
+# STARTUP WIRING (server.py):
+#   • mls_direct_inject.loop()        — 15-min cadence
+#   • soccer_prop_inject.loop()       — 15-min cadence, Big-5+UCL
+#
+# NEXT STEPS:
+#   • Populate opp_defense_strength (currently None → neutral 1.0):
+#     needs a team defensive stats fetcher (goals conceded/90, xGA).
+#   • Add UCL fixture roster mapping (soccer_uefa_champs_league returned
+#     0 events at run time — likely off-season; retry during UCL matchdays).
+#   • Wire archetype tag into ROI/analytics for archetype-level bleed
+#     tracking.
+
