@@ -667,3 +667,72 @@ agent_communication:
       - "Lab Analytics tab renders CLV, Kelly, and Steam sections without crash"
     test_all: false
     test_priority: "high_first"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-07-22 · Player Prop Intelligence System — Phase 2
+# ─────────────────────────────────────────────────────────────────────
+# USER MANDATE:
+#   "Upgrade the soccer betting engine into a complete Player Prop
+#    Intelligence System with distinct models for Anytime Goalscorer,
+#    Anytime Assist, and Goal Involvement."
+#
+# NEW MODULE:  /app/backend/services/player_props/
+#   ├── __init__.py                    (public API)
+#   ├── models.py                      (Archetype enum, PlayerStats,
+#   │                                    MatchupSplit, PickRecommendation)
+#   ├── stats_aggregator.py            (unified stats from
+#   │                                    soccer_player_form + espn_mls_stats
+#   │                                    + wiki_top_scorers +
+#   │                                    mls_player_matchup_history)
+#   ├── archetype_engine.py            (5-way classifier: Goal Scorer /
+#   │                                    Creator / Dual Threat / Playmaker
+#   │                                    / Low Involvement)
+#   ├── goalscorer_model.py            (P(anytime goal))
+#   ├── assist_model.py                (P(anytime assist))
+#   └── goal_involvement_model.py      (P(goal OR assist), correlation-adj)
+#
+# ARCHETYPE THRESHOLDS (per-90, standard analytics defaults):
+#   Goal Scorer      → G/90 ≥ 0.35 (or ≥ 0.28 with npxg ≥ 0.30)
+#   Creator          → A/90 ≥ 0.25 AND G/90 < 0.20
+#   Dual Threat      → G/90 ≥ 0.25 AND A/90 ≥ 0.20
+#   Playmaker        → A/90 ≥ 0.15 AND KP/90 ≥ 2.0
+#   Low Involvement  → G/90 < 0.15 AND A/90 < 0.15
+#
+# MODEL FORMULAS:
+#   Goalscorer  base = min(g/90 * 0.95, 0.75)
+#                    × form_mult (±15%)
+#                    × matchup_mult (±25%)
+#                    × archetype_mult (0.25–1.10)
+#   Assist      base = min(a/90 * 0.90, 0.72)
+#                    × kp_boost (up to +15%)
+#                    × form_mult (±10%)
+#                    × matchup_mult × archetype_mult
+#   Goal Involvement:
+#     p_gi = p_g + p_a - p_g * p_a * (1 - ρ)     ρ ∈ [0.15..0.45]
+#     Blended with empirical gi_rate when matches ≥ 3.
+#
+# INTEGRATION:
+#   • services/mls_direct_inject.py rewrote _generate_for_event() to
+#     use classify_archetype + predict_goal/assist/goal_involvement.
+#     Emitted 392 picks across 30 events on first live run.
+#   • Distribution: dual_threat=54+54+54, creator=54+51, goal_scorer=
+#     26+50+50+18 — clean market/archetype fit.
+#
+# NEW ADMIN ENDPOINTS (routes/admin_routes.py):
+#   • GET  /api/admin/player-props/analyze/{player}?opponent=…
+#         → stats + archetype + 3 model outputs for a single player.
+#   • GET  /api/admin/player-props/mls-archetypes
+#         → archetype distribution + roster classification for MLS.
+#
+# VERIFICATION (real MLS data — no RNG):
+#   Messi     → Dual Threat  Goal p=0.85 (Nashville boost) · A p=0.62 · GI p=0.90
+#   Surridge  → Goal Scorer  Goal p=0.73 · A p=0.10 · GI p=0.59
+#   Bouanga   → Dual Threat  Goal p=0.85 · A p=0.24 · GI p=0.90
+#   Haaland   → Dual Threat  (Understat source, full per-90 stats)
+#   KDB       → Goal Scorer  (Serie A, 5G/2A/18g, npxG-aided classification)
+#
+# NEXT STEPS:
+#   • Phase 3: Matchup Intelligence & Market Selection Engine.
+#   • Wire archetype tags into frontend "Why This Pick" panel.
+#   • Extend to EPL/UCL/La Liga picks (currently only MLS bypass uses it).

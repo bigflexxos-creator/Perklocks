@@ -1974,6 +1974,7 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         "soccer_hot_scorers_v1",
         "csl_espn_leaderboard",
         "csl_espn_live",
+        "mls_espn_leaderboard",   # 2026-07-22 — MLS top-scorer picks
         "tennis_extra",
         "tennis_extra_model",
         "tennis_real_odds",
@@ -2316,6 +2317,23 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
                 n_inserted, len(dup_errors),
             )
     logger.info("Stored %d picks for %s", len(safe_picks), date_str)
+    # 2026-07-22 MLS ESPN post-insert diagnostic. Should reveal whether
+    # picks were persisted to Mongo or silently dropped.
+    try:
+        _mls_espn_in_db = await db.picks.count_documents({
+            "id": {"$regex": "^mls-espn"},
+            "pick_date": date_str,
+        })
+        _mls_espn_safe = sum(
+            1 for p in safe_picks
+            if p.get("source") == "mls_espn_leaderboard"
+        )
+        logger.info(
+            "MLS ESPN diagnostic — safe_picks=%d, in DB for %s=%d",
+            _mls_espn_safe, date_str, _mls_espn_in_db,
+        )
+    except Exception as _e:
+        logger.warning("MLS ESPN diagnostic failed: %s", _e)
     # ── Cross-run contradiction reconciliation (2026-07-22) ───────────
     # User bug: "Gerrit Cole Over 6.5 K AND Under 6.5 K both showing as
     # 99 Elite Lock". Root cause: sticky-pin logic (lock_score_peak ≥ 95)
@@ -4256,6 +4274,18 @@ async def on_startup():
         logger.info("MLS matchup history armed — weekly refresh loop")
     except Exception as e:
         logger.warning("MLS matchup history loop failed to start: %s", e)
+
+    # ── MLS Direct-Inject worker (2026-07-22) ──────────────────────
+    # Bypasses the entire pick pipeline (chalk trap, longshot trap,
+    # starter-gate, correlated dedupe, board validator) because those
+    # layers keep killing MLS scorer picks (Surridge, Bouanga, Messi,
+    # etc.). Writes picks straight to db.picks every 15 minutes.
+    try:
+        from services.mls_direct_inject import loop as _mls_direct_loop
+        asyncio.create_task(_mls_direct_loop())
+        logger.info("MLS Direct-Inject worker armed — 15min refresh loop")
+    except Exception as e:
+        logger.warning("MLS Direct-Inject worker failed to start: %s", e)
 
     # ── CSL ESPN Live (retired-player filter, user-requested 2026-06-27) ─
     # ESPN's free public soccer endpoints provide the authoritative ACTIVE

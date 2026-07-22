@@ -326,7 +326,16 @@ _BOARD_QUALITY_FLOORS: dict[str, dict[str, float]] = {
     # User report 2026-07-12: "Why are these tennis games not being picked
     # up?" (Umag/Bastad/Gstaad on TU 14.07 all missing).
     "Tennis_scrape":          {"lock_min": 65, "edge_min": -10.0, "win_prob_min": 0.45},
+    # 2026-07-22 — MLS ESPN leaderboard picks are LEADERBOARD-anchored
+    # (source itself IS the evidence). Their `factors` dict is empty
+    # (no bucket_n/xg model) and `apply_v2_calibration` doesn't touch
+    # them so edge/win_prob defaults are looser. Give them their own
+    # floor so board_quality doesn't nuke them.
+    "Soccer_ags_scrape":      {"lock_min": 80, "edge_min": -1.0, "win_prob_min": 0.25},
 }
+
+
+_SOCCER_SCRAPE_SOURCES = {"mls_espn_leaderboard", "csl_espn_leaderboard"}
 
 
 _TENNIS_SCRAPE_SOURCES = {"tennis_extra", "tennis_extra_model"}
@@ -342,6 +351,10 @@ def _quality_key(pick: dict) -> str:
     if sport == "SOCCER" and (
         "goal scorer" in market or "to score or assist" in market
     ):
+        # 2026-07-22 — Leaderboard-sourced picks (source == mls_espn_
+        # leaderboard) get their own lenient floor.
+        if (pick.get("source") or "").lower() in _SOCCER_SCRAPE_SOURCES:
+            return "Soccer_ags_scrape"
         return "Soccer_ags"
     if sport == "TENNIS":
         # Book-anchored scrape picks get their own key (see explanation on
@@ -556,11 +569,34 @@ def integrity_check(picks: list[dict]) -> tuple[list[dict], dict]:
 # Threshold: at least 3 of 6 must be present.
 
 MIN_EVIDENCE_COUNT = 3
+# ── LOW-EVIDENCE SOURCES (2026-07-22) ──────────────────────────────
+# Sources listed here get a reduced evidence threshold (1 of 6 signals)
+# because they're SELF-VALIDATING pipelines — the source itself IS
+# strong evidence (ESPN MLS leaderboard = player has actual season
+# scoring history; tennis_extra = ATP/WTA verified match). Without
+# this, MLS ESPN picks were dropped en masse by evidence_threshold
+# because `pick_rationale` gets rebuilt by pick_enrichment and loses
+# our custom `matchup` field.
+_LOW_EVIDENCE_SOURCES = {
+    "tennis_extra",
+    "tennis_extra_model",
+    "mls_espn_leaderboard",
+    "csl_espn_leaderboard",
+}
+MIN_EVIDENCE_COUNT_SCRAPE = 1
 # Book-anchored scrape picks (TennisExplorer for Umag/Bastad/Gstaad/
 # Athens/Iasi/Kitzbuhel etc.) don't have bucket_n / recent_form / EV
 # columns — the scrape itself IS the evidence. Use a lower threshold
 # for them so the ATP/WTA 250 slate surfaces (2026-07-12 user report).
-_LOW_EVIDENCE_SOURCES = {"tennis_extra", "tennis_extra_model"}
+# NB: this second binding is the ACTIVE one used by evidence_threshold
+# (Python late-binding — last assignment wins). Keep this in sync with
+# the primary definition above.
+_LOW_EVIDENCE_SOURCES = {
+    "tennis_extra",
+    "tennis_extra_model",
+    "mls_espn_leaderboard",
+    "csl_espn_leaderboard",
+}
 MIN_EVIDENCE_COUNT_SCRAPE = 1
 
 
