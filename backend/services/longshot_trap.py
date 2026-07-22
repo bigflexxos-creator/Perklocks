@@ -79,12 +79,33 @@ def _odds(pick: dict) -> int:
 def _is_elite_anchor(pick: dict) -> bool:
     """Elite ATP-tier soccer players get the escape hatch — their +200
     goalscorer prices are systematically undervalued vs. weak defenses."""
-    return bool(
-        pick.get("is_elite")
-        or pick.get("elite_boost")
-        or pick.get("elite_striker")
-        or (pick.get("player_tags") or {}).get("elite")
-    )
+    if pick.get("is_elite") or pick.get("elite_boost") or pick.get("elite_striker"):
+        return True
+    if (pick.get("player_tags") or {}).get("elite"):
+        return True
+    # ── MLS elite check (2026-07-22) ──────────────────────────────────
+    # User report: Surridge (-145), Bouanga (-115), Mukhtar (-195),
+    # Talles Magno (+185), Hannes Wolf, Chris Mueller — all real MLS
+    # starters and season-leaders were being TRAPPED as "longshots"
+    # because is_elite=True wasn't set on the synth-scorer path. Query
+    # the MLS scorer gate directly: any ESPN-leaderboard player or
+    # curated MLS starter escapes the trap.
+    league = str(pick.get("league") or "").upper()
+    if league in ("MLS", "MAJOR LEAGUE SOCCER"):
+        player = (pick.get("selection")
+                  or pick.get("player")
+                  or "").strip()
+        if player:
+            try:
+                from services.mls_scorer_gate import is_mls_scorer_pick_ok
+                # implied=1.0 -> gate falls back to "in ESPN/starter list"
+                # check only, ignoring the market-favorite escape hatch.
+                ok, reason = is_mls_scorer_pick_ok(player, 0.0)
+                if ok:
+                    return True
+            except Exception:
+                pass
+    return False
 
 
 def _dd_confirmed(pick: dict) -> tuple[bool, dict[str, Any]]:
