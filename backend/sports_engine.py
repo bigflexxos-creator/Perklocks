@@ -3082,6 +3082,14 @@ def _prop_market_label(market_key: str, side: str, point: float | None) -> str:
     # Anytime goal scorer has no point — just "Yes" the player scores at all.
     if market_key == "player_goal_scorer_anytime":
         return "Anytime Goal Scorer"
+    # 2026-07-22 — Distinguish Score-or-Assist from Anytime Goal Scorer.
+    # User bug: "app not distinguishing between goal scorer and score or
+    # assist bets". Without this override the default fallthrough emitted
+    # "Yes 0.5 Player To Score Or Assist" (ugly + confusing).
+    if market_key == "player_to_score_or_assist":
+        return "To Score or Assist"
+    if market_key == "player_first_goal_scorer":
+        return "First Goal Scorer"
     is_alt = market_key.endswith("_alternate")
     base_key = market_key.replace("_alternate", "")
     pretty = {

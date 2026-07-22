@@ -2301,6 +2301,22 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
                 n_inserted, len(dup_errors),
             )
     logger.info("Stored %d picks for %s", len(safe_picks), date_str)
+    # ── Cross-run contradiction reconciliation (2026-07-22) ───────────
+    # User bug: "Gerrit Cole Over 6.5 K AND Under 6.5 K both showing as
+    # 99 Elite Lock". Root cause: sticky-pin logic (lock_score_peak ≥ 95)
+    # protects a pick from `_apply_atomic_delete`. When a NEW refresh
+    # generates the OPPOSITE side of a pinned pick (e.g. Under 6.5 K
+    # after an earlier Over 6.5 K was pinned), both survive and the
+    # in-run dedupe never fires because they're in different batches.
+    # Fix: after every insert, sweep the just-inserted player-prop picks
+    # and any contradicting DB picks for the SAME event + player +
+    # market family — keep the higher-edge one and remove the loser
+    # (regardless of sticky-pin, because contradictions are always
+    # user-facing garbage).
+    try:
+        await _reconcile_player_prop_contradictions(safe_picks, date_str)
+    except Exception as e:
+        logger.warning("Prop contradiction reconciliation skipped: %s", e)
     # ── CSL Guaranteed Elite Injection ──
     # The standard refresh pipeline (learning + bandit + brain + evidence
     # governor + dedupe trims) systematically drops CSL synth picks even
@@ -2333,6 +2349,126 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as _iv_err:
         logger.debug("signal_rank invalidate skipped: %s", _iv_err)
     return len(safe_picks)
+
+
+def _prop_family_key(market: str) -> str:
+    """Categorise a player-prop market label into a coarse family.
+
+    Returned families group Over/Under sides of the SAME stat together so
+    the contradiction reconciler can identify "same player, opposite
+    side" pairs even across refresh runs. Returns "" when the market
+    isn't a supported player-prop family.
+    """
+    m = (market or "").lower()
+    # Order matters — check compound families before their sub-strings.
+    if "hits + runs + rbis" in m or "hits + runs" in m: return "MLB_HRR"
+    if "hits allowed" in m:              return "MLB_HALLOWED"
+    if "home run" in m:                  return "MLB_HR"
+    if "total bases" in m:               return "MLB_TB"
+    if "rbis" in m:                      return "MLB_RBI"
+    if "outs recorded" in m:             return "MLB_OUTS"
+    if "strikeout" in m:                 return "MLB_K"
+    if "hits" in m:                      return "MLB_HITS"
+    if "passing yards" in m or "pass yds" in m:  return "NFL_PASS_YDS"
+    if "rushing yards" in m or "rush yds" in m:  return "NFL_RUSH_YDS"
+    if "receiving yards" in m or "reception yds" in m: return "NFL_REC_YDS"
+    if "receptions" in m:                return "NFL_REC"
+    if "pass tds" in m or "passing tds" in m: return "NFL_PASS_TDS"
+    if "rush tds" in m or "rushing tds" in m: return "NFL_RUSH_TDS"
+    if "points" in m:                    return "NBA_PTS"
+    if "rebounds" in m:                  return "NBA_REB"
+    if "assists" in m:                   return "NBA_AST"
+    return ""
+
+
+async def _reconcile_player_prop_contradictions(safe_picks: list, date_str: str) -> None:
+    """After insert, remove any Over/Under contradictions for the SAME
+    (event, player, market_family) — keep only the higher-edge side.
+
+    Scope: only player-prop markets where the pick has a `selection`
+    that names a specific player. Team totals / spreads / totals are
+    left alone (they're handled by other dedup passes upstream).
+    """
+    if not safe_picks:
+        return
+    # Build a set of (event, player, family) touched by this insert so we
+    # only re-query rows that could have new contradictions.
+    touched: set[tuple[str, str, str]] = set()
+    for p in safe_picks:
+        market = p.get("market") or ""
+        sel = (p.get("selection") or "").strip()
+        event = p.get("event") or ""
+        family = _prop_family_key(market)
+        if not (event and sel and family):
+            continue
+        # Skip aggregate-selection labels ("Yes", "Over", "Under" without
+        # a player) — those aren't player-props.
+        if sel.lower() in ("yes", "no", "over", "under"):
+            continue
+        # Must have an Over or Under indicator to qualify as a two-sided
+        # prop where contradiction is possible.
+        m_l = market.lower()
+        if " over " not in m_l and " under " not in m_l and "over " not in m_l[:5] and "under " not in m_l[:6]:
+            continue
+        touched.add((event, sel, family))
+    if not touched:
+        return
+    removed_total = 0
+    # Consider picks from the last 72h so cross-refresh contradictions for
+    # the same event are caught even when pick_date differs (a late-night
+    # refresh may bucket a pick under tomorrow's pick_date while the
+    # earlier refresh bucketed it under today's — same event/player).
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    cutoff_iso = (_dt.now(_tz.utc) - _td(hours=72)).isoformat()
+    for event, player, family in touched:
+        rows = await db.picks.find(
+            {"event": event, "selection": player,
+             "no_bet": {"$ne": True},
+             "created_at": {"$gte": cutoff_iso}},
+            {"_id": 0, "id": 1, "market": 1, "edge_percent": 1,
+             "lock_score": 1, "created_at": 1, "pick_date": 1},
+        ).to_list(length=200)
+        # Group by family with side.
+        by_side: dict[str, list[dict]] = {"over": [], "under": []}
+        for r in rows:
+            m = r.get("market") or ""
+            if _prop_family_key(m) != family:
+                continue
+            ml = m.lower()
+            if " over " in ml or ml.startswith("over "):
+                by_side["over"].append(r)
+            elif " under " in ml or ml.startswith("under "):
+                by_side["under"].append(r)
+        if not (by_side["over"] and by_side["under"]):
+            continue
+        # Pick the single best row across BOTH sides — that's the winner.
+        # Everything else in the loser side gets `no_bet=True` tagged so
+        # the contradiction disappears from user-facing endpoints. We do
+        # NOT delete the loser rows outright — settled ROI history and
+        # the audit trail rely on the pick existing.
+        all_rows = by_side["over"] + by_side["under"]
+        def _rank(r: dict) -> tuple:
+            return (float(r.get("edge_percent") or 0),
+                    float(r.get("lock_score") or 0))
+        winner = max(all_rows, key=_rank)
+        winner_side = "over" if winner in by_side["over"] else "under"
+        loser_side = "under" if winner_side == "over" else "over"
+        loser_ids = [r["id"] for r in by_side[loser_side] if r.get("id")]
+        if not loser_ids:
+            continue
+        res = await db.picks.update_many(
+            {"id": {"$in": loser_ids}},
+            {"$set": {"no_bet": True,
+                       "no_bet_reason": f"contradicts {winner_side} {family} for {player}"}},
+        )
+        removed_total += int(getattr(res, "modified_count", 0) or 0)
+    if removed_total:
+        logger.info(
+            "Prop contradiction reconciliation: neutralised %d contradicting picks across %d groups",
+            removed_total, len(touched),
+        )
+
+
 
 
 async def _ensure_csl_elite_picks(date_str: str) -> None:
