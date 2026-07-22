@@ -4189,6 +4189,59 @@ async def on_startup():
     except Exception as e:
         logger.warning("NBA/NFL/CFB player_db loop failed to start: %s", e)
 
+    # ── ESPN MLS scorer leaderboard ingest (2026-07-22) ──────────────
+    # Scrapes ESPN's public MLS scoring + assists tables into
+    # `espn_mls_stats` collection. Used by `mls_scorer_gate` to
+    # hard-gate MLS Anytime Goal Scorer / Score-or-Assist / First Goal
+    # Scorer picks so reserves (Malachi Jones, Chase Adams, Seymour
+    # Reid) can't surface as Elite Locks over real starters (Messi,
+    # Mercau, Rossi, Cuypers, etc.). Refresh every 12h.
+    try:
+        from services.espn_mls_stats import refresh_mls_leaders, load_gate_snapshot
+        from services.mls_scorer_gate import apply_espn_snapshot
+        async def _mls_stats_loop() -> None:
+            await asyncio.sleep(15)   # let boot settle
+            while True:
+                try:
+                    summary = await refresh_mls_leaders(season=2025)
+                    logger.info("ESPN MLS stats refresh: %s", summary)
+                    by, names = await load_gate_snapshot()
+                    apply_espn_snapshot(by, names)
+                    logger.info(
+                        "MLS scorer gate hydrated: %d players from ESPN", len(names),
+                    )
+                except Exception as e:
+                    logger.warning("ESPN MLS stats refresh failed: %s", e)
+                await asyncio.sleep(12 * 60 * 60)   # 12h
+        asyncio.create_task(_mls_stats_loop())
+        logger.info("ESPN MLS scorer stats armed — 12h refresh loop")
+    except Exception as e:
+        logger.warning("ESPN MLS stats loop failed to start: %s", e)
+
+    # ── MLS player-vs-opponent matchup history (2026-07-22) ─────────
+    # User request: "Also should pick up per-opponent scoring history"
+    # (screenshot: Messi 7G vs Nashville, Surridge brace vs Charlotte).
+    # Ingests every top-scorer's game log from ESPN core API and
+    # aggregates per-opponent goals/assists. Used as a factor boost in
+    # the pick engine so we upweight bets where the player has strong
+    # scoring history vs the specific opponent tonight.
+    try:
+        from services.mls_player_matchup_history import refresh_all_top_scorers
+        async def _mls_matchup_loop() -> None:
+            # First run 90s after boot so espn_mls_stats has hydrated.
+            await asyncio.sleep(90)
+            while True:
+                try:
+                    summary = await refresh_all_top_scorers()
+                    logger.info("MLS matchup history refresh: %s", summary)
+                except Exception as e:
+                    logger.warning("MLS matchup history refresh failed: %s", e)
+                await asyncio.sleep(7 * 24 * 60 * 60)   # weekly
+        asyncio.create_task(_mls_matchup_loop())
+        logger.info("MLS matchup history armed — weekly refresh loop")
+    except Exception as e:
+        logger.warning("MLS matchup history loop failed to start: %s", e)
+
     # ── CSL ESPN Live (retired-player filter, user-requested 2026-06-27) ─
     # ESPN's free public soccer endpoints provide the authoritative ACTIVE
     # roster + current-season top scorers for the Chinese Super League.

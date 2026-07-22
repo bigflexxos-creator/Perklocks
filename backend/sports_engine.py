@@ -3226,6 +3226,20 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         elif mk == "player_goal_scorer_anytime":
             if implied < _SOCCER_PROP_MIN_IMPLIED:
                 continue
+            # ── MLS scorer hard-gate (2026-07-22 user report) ─────────
+            # Block reserves like Malachi Jones, Chase Adams, Seymour
+            # Reid from surfacing as "Elite Locks" over real starters
+            # (Messi, Mercau, Alonso Martinez, Rossi, etc.). See
+            # services/mls_scorer_gate.py for the rules.
+            if league.upper() in ("MLS", "MAJOR LEAGUE SOCCER"):
+                try:
+                    from services.mls_scorer_gate import is_mls_scorer_pick_ok
+                    ok, reason = is_mls_scorer_pick_ok(player, implied)
+                    if not ok:
+                        logger.debug("MLS scorer gate reject: %s (%s)", player, reason)
+                        continue
+                except Exception:
+                    pass
         elif mk == "player_to_score_or_assist":
             # SoA is a SUPERSET of Anytime Goal Scorer (either action wins),
             # so its implied probability is ALWAYS ≥ Anytime's. Using a
@@ -3236,6 +3250,16 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             # thresholds — if Anytime passes, SoA must also pass.
             if implied < _SOCCER_PROP_MIN_IMPLIED:
                 continue
+            # Same MLS scorer gate applies to SoA picks.
+            if league.upper() in ("MLS", "MAJOR LEAGUE SOCCER"):
+                try:
+                    from services.mls_scorer_gate import is_mls_scorer_pick_ok
+                    ok, reason = is_mls_scorer_pick_ok(player, implied)
+                    if not ok:
+                        logger.debug("MLS SoA gate reject: %s (%s)", player, reason)
+                        continue
+                except Exception:
+                    pass
         elif mk == "mma_method_of_victory":
             # Method of victory is inherently a low-implied market (each
             # outcome carves the win pie into 3 methods). Accept 18%+ which
@@ -3610,6 +3634,43 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     "side": str(side).lower(),
                     "line": point,
                 }
+        # ── MLS matchup-history boost (2026-07-22) ────────────────────
+        # Attach per-opponent scoring history (preloaded by async
+        # caller into `payload["_mls_matchup"]`) to MLS Anytime Goal
+        # Scorer / SoA / FGS picks so the "Why this pick" rationale can
+        # render e.g. "Messi 7G/2A career vs Nashville". Also lifts the
+        # lock score when the player has ≥ 0.5 goals/match vs opponent.
+        if (new_pick is not None
+                and league.upper() in ("MLS", "MAJOR LEAGUE SOCCER")
+                and mk in ("player_goal_scorer_anytime",
+                            "player_to_score_or_assist",
+                            "player_first_goal_scorer")):
+            _hist = (payload.get("_mls_matchup") or {}).get(player)
+            if _hist and _hist.get("record"):
+                _rec = _hist["record"]
+                matches = int(_rec.get("matches", 0) or 0)
+                g = int(_rec.get("goals", 0) or 0)
+                a = int(_rec.get("assists", 0) or 0)
+                gpm = g / matches if matches else 0.0
+                new_pick["matchup_history"] = {
+                    "opponent": _hist.get("opponent"),
+                    "matches": matches,
+                    "goals": g,
+                    "assists": a,
+                    "goals_per_match": round(gpm, 2),
+                    "scored_in": int(_rec.get("scored_matches", 0) or 0),
+                    "assisted_in": int(_rec.get("assist_matches", 0) or 0),
+                    "recent": (_rec.get("recent") or [])[:3],
+                }
+                # Lock boost: strong track record vs opponent.
+                if gpm >= 1.0 and matches >= 2:
+                    new_pick["lock_score"] = min(
+                        99.0, float(new_pick.get("lock_score") or 0) + 6.0,
+                    )
+                elif gpm >= 0.5 and matches >= 2:
+                    new_pick["lock_score"] = min(
+                        99.0, float(new_pick.get("lock_score") or 0) + 3.0,
+                    )
         picks.append(new_pick)
     # Tag every Under pick so the main Locks feed can exclude them and the
     # dedicated "Under of the Day" tab can surface them. Anything where the
@@ -3918,6 +3979,46 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                         )
                     except Exception as _ctx_err:
                         logger.debug("NFL props ctx build failed: %s", _ctx_err)
+                # 2026-07-22 — MLS matchup-history preloader. Loads the
+                # per-opponent scoring history for every player that
+                # will surface in the props pipeline, and stuffs it in
+                # `payload["_mls_matchup"]` so the sync
+                # `_props_picks_from_event` can attach it to picks
+                # without needing to hit the event loop.
+                if sport == "Soccer" and LEAGUE_LABELS.get(key, "") in (
+                        "MLS", "Major League Soccer"):
+                    try:
+                        from services.mls_player_matchup_history import (
+                            get_player_vs_opponent,
+                        )
+                        # Extract unique player names from the goal-
+                        # scorer / SoA / FGS markets.
+                        _players = set()
+                        for _bm in payload.get("bookmakers", []):
+                            for _m in _bm.get("markets", []):
+                                if _m.get("key") not in (
+                                        "player_goal_scorer_anytime",
+                                        "player_to_score_or_assist",
+                                        "player_first_goal_scorer"):
+                                    continue
+                                for _o in _m.get("outcomes", []):
+                                    nm = _o.get("description") or _o.get("name") or ""
+                                    if nm:
+                                        _players.add(nm.strip())
+                        _lookup = {}
+                        for _pname in _players:
+                            for _team in (ev.get("home_team"), ev.get("away_team")):
+                                if not _team:
+                                    continue
+                                _rec = await get_player_vs_opponent(_pname, _team)
+                                if _rec:
+                                    _lookup[_pname] = {"opponent": _team,
+                                                        "record": _rec}
+                                    break
+                        if _lookup:
+                            payload["_mls_matchup"] = _lookup
+                    except Exception as _ctx_err:
+                        logger.debug("MLS matchup preload failed: %s", _ctx_err)
                 rng = random.Random(abs(hash(ev["id"])) % 10000)
                 all_picks.extend(_props_picks_from_event(
                     sport, LEAGUE_LABELS.get(key, sport), payload,
