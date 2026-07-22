@@ -2116,6 +2116,49 @@ def _current_nfl_week() -> int:
     return 22
 
 
+def _extract_nfl_prop_candidates(payload: dict) -> list[dict]:
+    """Walk the bookmaker payload and return a flat list of NFL prop
+    candidates ready for `build_nfl_game_context`.
+
+    We only care about NFL markets registered in `_NFL_MARKET_TO_STAT`
+    (the mapping to nflverse stat fields). We median-price across
+    books per (player, market, side, point) so precomputes happen once
+    per unique candidate — mirrors the dedup approach used in
+    `_props_picks_from_event`.
+    """
+    cands: dict[tuple, dict] = {}
+    for bm in (payload.get("bookmakers") or []):
+        for m in (bm.get("markets") or []):
+            mkey = m.get("key")
+            if mkey not in _NFL_MARKET_TO_STAT:
+                continue
+            for o in (m.get("outcomes") or []):
+                player = _clean_player_name(o.get("description") or o.get("name"))
+                if not player:
+                    continue
+                side = str(o.get("name") or "over").lower()
+                point = o.get("point")
+                price = o.get("price")
+                try:
+                    implied = _implied_prob(int(price))
+                except (TypeError, ValueError):
+                    implied = None
+                key = (player.strip().lower(), mkey, side,
+                       float(point) if isinstance(point, (int, float)) else None)
+                if key in cands:
+                    continue
+                cands[key] = {
+                    "player": player,
+                    "market": mkey,
+                    "side": side,
+                    "line": float(point) if isinstance(point, (int, float)) else 0.0,
+                    "book_implied": implied,
+                    "team": None,          # OddsAPI doesn't include team on prop rows
+                    "position": _infer_nfl_position_from_market(mkey),
+                }
+    return list(cands.values())
+
+
 async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) -> dict:
     markets = PLAYER_PROP_MARKETS.get(sport)
     if not markets:
@@ -3771,6 +3814,36 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                         })
                     except Exception as _ctx_err:
                         logger.debug("MLB props ctx build failed: %s", _ctx_err)
+                # 2026-07-22 — Phase 3 NFL pre-loader. Walks the
+                # bookmaker payload once, builds a prop_candidates
+                # list, and hits nflverse to precompute the 6-factor
+                # feature dict per (player, market). The sync
+                # `_props_picks_from_event` branch then reads directly
+                # from `_ctx["nfl_precomputed"]`.
+                if sport == "NFL":
+                    try:
+                        from services.nfl_feature_engine import build_nfl_game_context
+                        from motor.motor_asyncio import AsyncIOMotorClient
+                        _nfl_db = AsyncIOMotorClient(os.getenv("MONGO_URL"))[
+                            os.getenv("DB_NAME") or "perkslocks_production"
+                        ]
+                        # Extract the prop candidates from the bookmaker
+                        # payload (player, market, line, side, book_implied)
+                        _candidates = _extract_nfl_prop_candidates(payload)
+                        payload["_ctx"] = await build_nfl_game_context(
+                            _nfl_db,
+                            game={
+                                "home_team": ev.get("home_team"),
+                                "away_team": ev.get("away_team"),
+                                "commence_time": ev.get("commence_time"),
+                                "id": ev.get("id"),
+                            },
+                            prop_candidates=_candidates,
+                            season=_current_nfl_season(),
+                            week=_current_nfl_week(),
+                        )
+                    except Exception as _ctx_err:
+                        logger.debug("NFL props ctx build failed: %s", _ctx_err)
                 rng = random.Random(abs(hash(ev["id"])) % 10000)
                 all_picks.extend(_props_picks_from_event(
                     sport, LEAGUE_LABELS.get(key, sport), payload,
