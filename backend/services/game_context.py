@@ -26,9 +26,33 @@ factor lookups are already TTL-cached.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 logger = logging.getLogger("lockscore.game_context")
+
+
+# 2026-07-22 — lazy Mongo handle for Statcast lookups. Avoids threading
+# a `db` argument through the entire ctx-builder call chain (which
+# would require touching every caller in sports_engine.py).
+_MOTOR_CLIENT = None
+_MOTOR_DB = None
+
+
+def _get_db():
+    """Return the Mongo db handle, initialising a lazy motor client
+    on first call. Same DB name resolution as backend.deps."""
+    global _MOTOR_CLIENT, _MOTOR_DB
+    if _MOTOR_DB is not None:
+        return _MOTOR_DB
+    try:
+        from motor.motor_asyncio import AsyncIOMotorClient
+        _MOTOR_CLIENT = AsyncIOMotorClient(os.getenv("MONGO_URL"))
+        _MOTOR_DB = _MOTOR_CLIENT[os.getenv("DB_NAME") or "perkslocks_production"]
+    except Exception as e:
+        logger.debug("Lazy Mongo init failed: %s", e)
+        _MOTOR_DB = None
+    return _MOTOR_DB
 
 
 async def build_mlb_game_context(game: dict) -> dict[str, Any]:
@@ -193,6 +217,28 @@ async def build_mlb_game_context(game: dict) -> dict[str, Any]:
                 spa["opp_k_team"] = k.get("team_name")
     except Exception as e:
         logger.debug("team-K-vs-hand ctx fetch failed: %s", e)
+
+    # 6b) Statcast xwOBA-against attachment for both starting pitchers.
+    # 2026-07-22 — feeds factor_pitcher_statcast_k_upside so elite whiff
+    # pitchers surface Overs before their raw K/9 catches up.
+    try:
+        from services.mlb_statcast import get_pitcher_statcast
+        for side_key in ("starting_pitcher_home", "starting_pitcher_away"):
+            sp = ctx.get(side_key) or {}
+            sp_name = sp.get("name")
+            if not sp_name:
+                continue
+            sc = await get_pitcher_statcast(_get_db(), sp_name)
+            if sc:
+                sp["statcast"] = {
+                    "xba_against":   sc.get("xba_against") or sc.get("xba"),
+                    "xslg_against":  sc.get("xslg_against") or sc.get("xslg"),
+                    "xwoba_against": sc.get("xwoba_against") or sc.get("xwoba"),
+                    "xera":          sc.get("xera"),
+                    "era":           sc.get("era"),
+                }
+    except Exception as e:
+        logger.debug("pitcher statcast ctx fetch failed: %s", e)
 
     # 7) Team recent runs-per-game + bullpen ERA (2026-07-21 Phase 1)
     # Populates ctx["team_runs"][team_name.lower()] and
@@ -372,6 +418,28 @@ async def build_mlb_game_context(game: dict) -> dict[str, Any]:
                                     }
                             except Exception:
                                 pass
+                        # 2026-07-22 Statcast xStats attachment.
+                        # Uses the mlb_statcast_players cache — free
+                        # signal for the feature engine (xBA/xwOBA/
+                        # barrel%/hard-hit%). Silent on cache miss so
+                        # non-qualifying hitters don't block picks.
+                        try:
+                            from services.mlb_statcast import get_batter_statcast
+                            sc = await get_batter_statcast(_get_db(), pname)
+                            if sc:
+                                hitter_row["statcast"] = {
+                                    "xba":         sc.get("xba"),
+                                    "xslg":        sc.get("xslg"),
+                                    "xwoba":       sc.get("xwoba"),
+                                    "xba_diff":    sc.get("xba_diff"),
+                                    "barrel_pct":  sc.get("barrel_pct"),
+                                    "hard_hit":    sc.get("hard_hit"),
+                                    "avg_ev":      sc.get("avg_ev"),
+                                    "launch_angle":sc.get("launch_angle"),
+                                    "sweet_spot":  sc.get("sweet_spot"),
+                                }
+                        except Exception:
+                            pass
                         ctx["hitters"][pname.strip().lower()] = hitter_row
     except Exception as e:
         logger.debug("hitter enrichment failed: %s", e)
