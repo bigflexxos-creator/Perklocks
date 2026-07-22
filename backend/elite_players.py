@@ -358,6 +358,94 @@ ELITE_PLAYERS = {
         "Loïs Openda", "Lois Openda", "Santiago Giménez", "Santiago Gimenez",
         "Mikel Oyarzabal", "Bryan Mbeumo", "Yoane Wissa",
         "Cody Gakpo", "Memphis Depay",
+
+        # ─────────────────────────────────────────────────────────
+        # 2026-07-22 League-leaderboard sweep — added the top scorers
+        # from every major domestic league so their Anytime Scorer / To
+        # Score or Assist props get the +10% factor boost + 88 lock
+        # floor. Was leaving significant edge on the table for MLS
+        # and Liga MX bettors especially.
+        # ─────────────────────────────────────────────────────────
+
+        # MLS 2025-26 top-22 (Messi already above)
+        "Sam Surridge", "Denis Bouanga", "Anders Dreyer",
+        "Dejan Joveljic", "Evander", "Petar Musa",
+        "Hugo Cuypers", "Eric Maxim Choupo-Moting",
+        "Alonso Martínez", "Alonso Martinez",
+        "Hany Mukhtar", "Martín Ojeda", "Martin Ojeda",
+        "Diego Rossi", "Tai Baribo", "Brian White",
+        "Philip Zinckernagel", "Kévin Denkey", "Kevin Denkey",
+        "Daniel Musovski", "Josef Martínez", "Josef Martinez",
+        "Djordje Mihailovic", "Prince Owusu",
+        "Cristian Arango", "Cristian Espinoza",
+        "Carles Gil",  # NE PK / FK taker
+
+        # EPL 2025-26 top scorers (Haaland/Isak/Kane/Watkins/Salah/
+        # Palmer already above)
+        "Bryan Mbeumo", "Chris Wood", "Jean-Philippe Mateta",
+        "Yoane Wissa",  "Dominic Solanke", "Nicolas Jackson",
+        "Kai Havertz",  "João Pedro", "Joao Pedro",
+        "Matheus Cunha", "Anthony Gordon",
+        "Danny Welbeck", "Callum Wilson",
+
+        # La Liga 2025-26 leaders (Mbappé/Lewy/Vinicius already above)
+        "Ferran Torres", "Ante Budimir", "Alexander Sørloth",
+        "Alexander Sorloth", "Iago Aspas", "Cucho Hernández",
+        "Cucho Hernandez", "Álvaro Morata", "Alvaro Morata",
+        "Raphinha", "Nico Williams", "Álvaro García",
+
+        # Bundesliga 2025-26 leaders (Kane / Guirassy / Musiala / Wirtz above)
+        "Ermedin Demirović", "Ermedin Demirovic",
+        "Deniz Undav", "Jonas Hofmann", "Tim Kleindienst",
+        "Omar Marmoush", "Nick Woltemade", "Sébastien Haller",
+        "Sebastien Haller", "Jonathan Burkardt",
+
+        # Serie A 2025-26 leaders (Retegui / Lautaro / Vlahović above)
+        "Marcus Thuram", "Ademola Lookman", "Moise Kean",
+        "Christian Pulisic", "Mikel Merino", "Kenan Yıldız",
+        "Kenan Yildiz", "Rafael Leão", "Rafael Leao",
+        "Paulo Dybala",  "Romelu Lukaku",
+
+        # Ligue 1 2025-26 leaders (Dembélé above)
+        "Bradley Barcola", "Jonathan David", "Wissam Ben Yedder",
+        "Mika Biereth",  "Junya Ito", "Habib Diarra",
+        "Georges Mikautadze", "Ludovic Ajorque",
+        "Emanuel Emegha", "Randal Kolo Muani",
+
+        # Liga MX 2025-26 leaders (was empty)
+        "André-Pierre Gignac", "Andre-Pierre Gignac",
+        "Julián Quiñones", "Julian Quinones",
+        "Germán Berterame", "German Berterame",
+        "Uriel Antuna", "Rogelio Funes Mori",
+        "Nicolás Ibáñez", "Nicolas Ibanez",
+        "Henry Martín", "Henry Martin",
+        "Guillermo Martínez", "Guillermo Martinez",
+        "Salomón Rondón", "Salomon Rondon",
+        "Ángel Sepúlveda", "Angel Sepulveda",
+        "Juan Brunetta", "John Kennedy",
+
+        # Brasileirão 2025-26 leaders (was empty)
+        "Pedro", "Yuri Alberto", "Endrick",
+        "Rony", "Hulk", "Marlon",
+        "Gustavo Scarpa", "Talles Magno", "Vitor Roque",
+        "Cleiton", "Estêvão", "Kaio Jorge",
+        "Alerrandro", "Erick Pulgar",
+
+        # Saudi PL 2025-26 leaders (Ronaldo / Benzema / Mané above)
+        "Aleksandar Mitrović", "Aleksandar Mitrovic",
+        "Roberto Firmino", "Jhon Durán", "Jhon Duran",
+        "Kingsley Coman", "Ivan Toney", "Otávio", "Otavio",
+        "Anderson Talisca", "Aymeric Laporte",
+
+        # J1 League / K-League / A-League — cover the anchor scorers
+        # (Australian A-League added to fetch list earlier)
+        "Adam Taggart", "Bruno Fornaroli", "Kusini Yengi",
+        "Jamie Maclaren",  "Tomi Juric",
+
+        # CSL 2025-26 (some already elite by team boost — add explicit)
+        "Cryzan", "Felipe Sousa", "Fábio Abreu", "Leonardo",
+        "Wu Lei", "Marko Arnautović", "Marko Arnautovic",
+        "Cédric Bakambu", "Cedric Bakambu", "Oscar",
     },
 
     "MLB": {
@@ -372,11 +460,28 @@ ELITE_PLAYERS = {
         "Trea Turner", "Kyle Tucker", "Matt Olson", "Austin Riley",
         "Salvador Perez", "Jose Altuve", "Anthony Santander",
         "Cody Bellinger", "Christian Yelich", "Marcus Semien", "Corey Seager",
+        # 2026-07-22 top-40 hitters sweep (was missing 13 top bats)
+        "William Contreras", "Kyle Schwarber", "Cal Raleigh",
+        "Steven Kwan", "Bryan Reynolds", "Willy Adames",
+        "Josh Naylor", "Josh Smith", "Kerry Carpenter",
+        "Alec Bohm", "Ketel Marte", "Corbin Carroll",
+        "Fernando Tatis Jr.", "Fernando Tatis Jr",
+        "Riley Greene", "Yandy Díaz", "Yandy Diaz",
+        "George Springer", "Isaac Paredes", "Colt Keith",
         # Top pitchers (auto-boost on K props)
         "Gerrit Cole", "Tarik Skubal", "Paul Skenes", "Zack Wheeler",
         "Logan Webb", "Corbin Burnes", "Spencer Strider", "Yoshinobu Yamamoto",
         "Tyler Glasnow", "Cole Ragans", "Dylan Cease", "Jacob deGrom",
         "Blake Snell", "Aaron Nola", "Pablo López", "Pablo Lopez",
+        # 2026-07-22 top-30 pitchers sweep
+        "Framber Valdez", "Freddy Peralta", "Chris Sale",
+        "Sonny Gray", "Zac Gallen", "Justin Steele",
+        "George Kirby", "Logan Gilbert", "Bryce Miller",
+        "Bailey Ober", "Reynaldo López", "Reynaldo Lopez",
+        "Kevin Gausman", "Cristopher Sánchez", "Cristopher Sanchez",
+        "Ranger Suárez", "Ranger Suarez", "Michael King",
+        "Hunter Greene", "Nick Pivetta", "Emmet Sheehan",
+        "Ryan Pepiot", "Shota Imanaga", "Roki Sasaki",
     },
 
     "Tennis": {
@@ -406,6 +511,68 @@ ELITE_PLAYERS = {
         "Trae Young", "De'Aaron Fox", "Domantas Sabonis",
         "Bam Adebayo", "Karl-Anthony Towns", "Pascal Siakam",
         "Paolo Banchero", "Victor Wembanyama", "Jalen Brunson",
+        # 2026-07-22 all-star / usage-heavy top-40 sweep (added 15)
+        "Ja Morant", "Zion Williamson", "Cade Cunningham",
+        "Alperen Sengun", "Alperen Şengün", "Jaylen Brown",
+        "Rudy Gobert", "Chet Holmgren", "Franz Wagner",
+        "Scottie Barnes", "LaMelo Ball", "Julius Randle",
+        "Jimmy Butler", "James Harden", "Kawhi Leonard",
+        "Paul George", "Zach LaVine", "Nikola Vučević",
+        "Nikola Vucevic", "OG Anunoby", "DeMar DeRozan",
+        "Brandon Ingram", "Tyler Herro", "CJ McCollum",
+        "Fred VanVleet", "Jrue Holiday", "Derrick White",
+    },
+
+    "NFL": {
+        # 2026-07-22 QB1 tier — high volume pass yards / TD props
+        "Patrick Mahomes", "Josh Allen", "Lamar Jackson",
+        "Jalen Hurts", "Joe Burrow", "Justin Herbert",
+        "Dak Prescott", "C.J. Stroud", "CJ Stroud",
+        "Jayden Daniels", "Caleb Williams", "Aaron Rodgers",
+        "Kyler Murray", "Jared Goff", "Brock Purdy",
+        "Tua Tagovailoa", "Trevor Lawrence", "Baker Mayfield",
+        "Geno Smith", "Matthew Stafford", "Kirk Cousins",
+        # RB1 tier — anytime TD + rush yards + rec props
+        "Christian McCaffrey", "Saquon Barkley", "Derrick Henry",
+        "Bijan Robinson", "Jonathan Taylor", "Josh Jacobs",
+        "Alvin Kamara", "Kenneth Walker III", "Breece Hall",
+        "Jahmyr Gibbs", "De'Von Achane", "Devon Achane",
+        "James Cook", "David Montgomery", "Isiah Pacheco",
+        "Kyren Williams", "Rachaad White", "Aaron Jones",
+        "Joe Mixon", "Najee Harris", "Travis Etienne Jr.",
+        # WR1 tier — receiving props gold
+        "Tyreek Hill", "Justin Jefferson", "CeeDee Lamb",
+        "Ja'Marr Chase", "A.J. Brown", "AJ Brown",
+        "Amon-Ra St. Brown", "Puka Nacua", "Nico Collins",
+        "Malik Nabers", "Marvin Harrison Jr.", "Garrett Wilson",
+        "Chris Olave", "DK Metcalf", "DeAndre Hopkins",
+        "Cooper Kupp", "Davante Adams", "Deebo Samuel",
+        "Stefon Diggs", "Terry McLaurin", "Jaylen Waddle",
+        "Mike Evans", "Jaxon Smith-Njigba", "Rashee Rice",
+        "Zay Flowers", "Drake London",
+        # TE1 tier
+        "Brock Bowers", "Travis Kelce", "George Kittle",
+        "Sam LaPorta", "Trey McBride", "Mark Andrews",
+        "T.J. Hockenson", "Evan Engram", "David Njoku",
+        "Kyle Pitts", "Dallas Goedert",
+    },
+
+    "CFB": {
+        # 2026-07-22 top Heisman contenders / QB1 for prop boost
+        "Arch Manning", "Garrett Nussmeier", "DJ Lagway",
+        "Cade Klubnik", "Drew Allar", "Julian Sayin",
+        "Nico Iamaleava", "Dante Moore", "Jaxson Dart",
+        "Miller Moss", "Riley Leonard", "Carson Beck",
+        # Top RBs
+        "Jeremiyah Love", "Cam Skattebo", "Ollie Gordon II",
+        "Nicholas Singleton", "Kaytron Allen", "Ashton Jeanty",
+        "Damien Martinez", "Donovan Edwards", "Le'Veon Moss",
+        "Devin Neal", "Trevor Etienne", "Kaleb Johnson",
+        # Top WRs
+        "Ryan Williams", "Jeremiah Smith", "Tetairoa McMillan",
+        "Luther Burden III", "Isaiah Bond", "Tre Harris",
+        "Elic Ayomanor", "Emeka Egbuka", "Kyren Lacy",
+        "Barion Brown", "Evan Stewart",
     },
 
     "WNBA": {
