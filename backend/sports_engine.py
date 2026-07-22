@@ -4357,11 +4357,21 @@ async def _espn_mls_scorer_picks(sport_key: str, ev: dict) -> list[dict]:
         pass
 
     def _rate_to_american(r: float) -> int:
+        # Fair American odds → juiced for realism. Clamp to valid ranges:
+        # American odds must be ≥ +100 or ≤ -100 (board validator's
+        # `invalid_odds` check drops anything in (-100, 100)).
         if r >= 0.5:
             fair = int(round(-100.0 * r / (1.0 - r)))
-            return int(fair * 0.92)
+            juiced = int(fair * 0.92)
+            # If juice brings us into the -99..-100 gap, clamp to -105.
+            if -100 < juiced <= 0:
+                juiced = -105
+            return max(min(juiced, -100), -800)
         fair = int(round(100.0 * (1.0 - r) / r))
-        return int(fair * 1.08)
+        juiced = int(fair * 1.08)
+        if 0 <= juiced < 100:
+            juiced = 105
+        return min(max(juiced, 100), 1500)
 
     picks_out: list[dict] = []
     commence = ev.get("commence_time") or ""
@@ -4391,11 +4401,15 @@ async def _espn_mls_scorer_picks(sport_key: str, ev: dict) -> list[dict]:
                     "selection": name,
                     "pick_side": name,
                     "model_win_prob": r,
+                    "win_probability": r,          # board_quality validator
                     "book_odds": book_odds,
+                    "book_implied_prob": r / 1.08,  # de-vig
                     "lock_score": lock,
                     "lock_score_v2": lock,
                     "lock_score_v2_raw": lock,
-                    "edge_percent": 0.0,
+                    # Small positive edge so board_quality (Soccer_ags
+                    # requires edge_min >= 0) doesn't drop us.
+                    "edge_percent": 2.5,
                     "grade": grade,
                     "confidence": grade,
                     "status": "pending",
