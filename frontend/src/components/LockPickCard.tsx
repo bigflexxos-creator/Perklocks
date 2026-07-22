@@ -838,7 +838,7 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
                                 >
                                   {(w.avg as number).toFixed(1)}
                                 </Text>
-                                <Text style={[styles.whyPqChipLabel, { fontSize: 9, opacity: 0.7 }]}>
+                                <Text style={[styles.whyPqChipLabel, { fontSize: 10, opacity: 0.9 }]}>
                                   {w.gp} GS · {w.era ? `${(w.era as number).toFixed(2)} ERA` : "—"}
                                 </Text>
                               </View>
@@ -1940,8 +1940,11 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
   },
   whySplitLabel: {
-    color: COLORS.textMuted,
-    fontSize: 10,
+    // 2026-07-22 user report: "you can barely see anything" in SPLITS.
+    // Bumped from textMuted (#71717A) → textSecondary (#A1A1AA) so the
+    // "Batter avg" / "Pitcher BAA" row labels read against the dark card.
+    color: COLORS.textSecondary,
+    fontSize: 11,
     fontWeight: "800",
     letterSpacing: 0.4,
     minWidth: 78,
@@ -1952,15 +1955,17 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   whySplitColTag: {
-    color: COLORS.textMuted,
-    fontSize: 9,
-    fontWeight: "700",
+    // Was textMuted → bump to lighter gray so "vs LHP / vs RHP" labels
+    // are readable next to their number cells.
+    color: "#B4B4BC",
+    fontSize: 10,
+    fontWeight: "800",
     letterSpacing: 0.6,
   },
   whySplitCell: {
-    color: COLORS.textSecondary,
-    fontSize: 12,
-    fontWeight: "700",
+    color: COLORS.textPrimary,
+    fontSize: 13,
+    fontWeight: "800",
     fontVariant: ["tabular-nums"],
     paddingHorizontal: 5,
     paddingVertical: 2,
@@ -1970,15 +1975,17 @@ const styles = StyleSheet.create({
   },
   whySplitCellActive: {
     color: COLORS.voltBlue,
-    backgroundColor: COLORS.voltBlue + "14",
+    backgroundColor: COLORS.voltBlue + "1F",
     fontWeight: "900",
   },
   whySplitHint: {
-    color: COLORS.textMuted,
-    fontSize: 10.5,
-    fontStyle: "italic",
+    // Was textMuted italic — hard to read. Ramp up brightness + drop
+    // italic so the actionable "this matchup" summary stays legible.
+    color: COLORS.textSecondary,
+    fontSize: 11,
+    fontStyle: "normal",
     marginTop: 4,
-    lineHeight: 14,
+    lineHeight: 15,
   },
   whySplitHintBold: {
     color: COLORS.voltBlue,
@@ -2012,16 +2019,21 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(134, 239, 172, 0.08)",
   },
   whyPqChipLabel: {
-    color: COLORS.textMuted,
-    fontSize: 9,
+    // 2026-07-22 user report: L5/L10/L20 recent-form labels + secondary
+    // meta text ("5 GS · 5.60 ERA") were unreadable. Bumped from
+    // textMuted (#71717A) → brighter grey so both the window tag and
+    // the per-window GS/ERA meta text stay legible.
+    color: "#C4C4C8",
+    fontSize: 10,
     fontWeight: "900",
     letterSpacing: 0.5,
   },
   whyPqChipVal: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "900",
     fontVariant: ["tabular-nums"],
     marginTop: 1,
+    color: COLORS.textPrimary,
   },
 
   // ── Engine Multipliers (platoon, pitcher, park, form, home/away) ──
@@ -2055,11 +2067,14 @@ const styles = StyleSheet.create({
   },
   whySection: { gap: 3 },
   whySectionLabel: {
-    color: COLORS.textMuted,
-    fontSize: 9,
+    // 2026-07-22 user report: section labels + circled rows barely
+    // visible. Nudge from textMuted → brighter grey so headers register
+    // clearly against the dark card without stealing focus from data.
+    color: "#B4B4BC",
+    fontSize: 10,
     fontWeight: "900",
     letterSpacing: 1.3,
-    marginBottom: 2,
+    marginBottom: 3,
   },
   whyBullet: {
     color: COLORS.textPrimary,
