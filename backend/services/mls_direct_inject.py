@@ -87,23 +87,17 @@ async def _fetch_mls_events(cx: httpx.AsyncClient) -> list[dict]:
 
 async def _generate_for_event(ev: dict, all_scorers: list[dict],
                                matchup_get) -> list[dict]:
-    """Generate picks using the Player Prop Intelligence System (Phase 2).
+    """Generate picks using the Player Prop Intelligence System (Phase 3).
 
-    For each candidate scorer, we:
-      1. Load unified PlayerStats.
-      2. Classify archetype (Goal Scorer / Creator / Dual Threat /
-         Playmaker / Low Involvement).
-      3. Run all three market models: goalscorer, assist,
-         goal_involvement.
-      4. Only emit picks the archetype is a fit for — pure goal scorers
-         skip Anytime Assist; low-involvement skips everything.
+    Uses matchup intelligence + market selector to route each player
+    to their best-fit market(s) with a live probability boost/drop from
+    the MatchupContext (home/away, form extremes, rest days).
     """
     from services.player_props import (
         get_player_stats,
         classify_archetype,
-        predict_goal,
-        predict_assist,
-        predict_goal_involvement,
+        select_markets,
+        build_matchup_context,
     )
     from services.player_props.models import MatchupSplit, Archetype
 
@@ -139,7 +133,6 @@ async def _generate_for_event(ev: dict, all_scorers: list[dict],
             home_sc.append(entry)
         elif _team_match(team, away):
             away_sc.append(entry)
-    # Top-6 per side by (goals+assists) so we cover ~12 candidates/game.
     home_sc.sort(key=lambda x: x["goals"] + x["assists"], reverse=True)
     away_sc.sort(key=lambda x: x["goals"] + x["assists"], reverse=True)
 
@@ -147,16 +140,14 @@ async def _generate_for_event(ev: dict, all_scorers: list[dict],
     commence = ev.get("commence_time") or ""
     event_id = ev.get("id") or f"MLS-{home}-{away}"
 
-    async def _emit_for(entry: dict, opp: str) -> list[dict]:
+    async def _emit_for(entry: dict, opp: str, is_home: bool) -> list[dict]:
         name = entry["name"]
         team = entry["team"]
 
-        # ─── Load unified stats via the Player Prop Intelligence System.
         stats = await get_player_stats(name, league_hint="MLS")
         if not stats or not stats.data_ok:
             return []
 
-        # ─── Load matchup history split.
         rec = await matchup_get(name, opp)
         split = None
         if rec:
@@ -174,59 +165,47 @@ async def _generate_for_event(ev: dict, all_scorers: list[dict],
         if archetype in (Archetype.LOW_INVOLVEMENT, Archetype.UNKNOWN):
             return []
 
-        # Run the three market models.
-        goal_rec  = predict_goal(stats, split, archetype)
-        assist_rec = predict_assist(stats, split, archetype)
-        gi_rec    = predict_goal_involvement(stats, split, archetype)
+        matchup_ctx = build_matchup_context(
+            stats, opp,
+            is_home=is_home,
+            event_commence=commence,
+            last_match_iso=None,
+            split=split,
+        )
+
+        routes = select_markets(stats, archetype, split, matchup_ctx)
+        if not routes:
+            return []
 
         out: list[dict] = []
-        # Emit rules based on archetype — plus a hard prob floor so we
-        # skip long-tail low-probability noise.
-        market_specs = [
-            ("anytime",          "Anytime Goal Scorer",     goal_rec,
-             (Archetype.GOAL_SCORER, Archetype.DUAL_THREAT, Archetype.CREATOR, Archetype.PLAYMAKER),
-             0.10),
-            ("anytime_assist",   "Anytime Assist",          assist_rec,
-             (Archetype.CREATOR, Archetype.PLAYMAKER, Archetype.DUAL_THREAT, Archetype.GOAL_SCORER),
-             0.08),
-            ("score_or_assist",  "To Score or Assist",      gi_rec,
-             (Archetype.GOAL_SCORER, Archetype.DUAL_THREAT, Archetype.CREATOR, Archetype.PLAYMAKER),
-             0.15),
-        ]
-
-        for kind, label, mrec, allowed_archs, prob_floor in market_specs:
-            if not mrec.data_ok:
-                continue
-            if archetype not in allowed_archs:
-                continue
-            if mrec.probability < prob_floor:
-                continue
-
-            p = mrec.probability
+        for route in routes:
+            p = route.probability
             book_odds = _american(p)
 
-            # Lock score: 80-99 based on model probability + confidence.
             if p >= 0.55: lock = 95.0
             elif p >= 0.40: lock = 91.0
             elif p >= 0.25: lock = 87.0
             elif p >= 0.15: lock = 83.0
             else:            lock = 80.0
-            if mrec.confidence == "HIGH":
-                lock = min(99.0, lock + 2.0)
-            elif mrec.confidence == "LOW":
-                lock = max(75.0, lock - 3.0)
+            if route.confidence == "HIGH": lock = min(99.0, lock + 2.0)
+            elif route.confidence == "LOW": lock = max(75.0, lock - 3.0)
+            if route.market_fit >= 90:
+                lock = min(99.0, lock + 1.0)
+            elif route.market_fit < 40:
+                lock = max(75.0, lock - 2.0)
+
             grade = ("Strong Lock" if lock >= 95 else
                       ("Lock" if lock >= 90 else "Playable"))
 
             pick = {
-                "id": f"mls-direct-{kind}-{event_id}-{name.replace(' ', '_').lower()}",
-                "external_id": f"MLS-DIRECT-{kind}-{event_id}-{name}",
+                "id": f"mls-direct-{route.market}-{event_id}-{name.replace(' ', '_').lower()}",
+                "external_id": f"MLS-DIRECT-{route.market}-{event_id}-{name}",
                 "sport": "Soccer",
                 "league": "MLS",
                 "event": f"{away} @ {home}",
                 "event_time": commence,
-                "market": f"{name} {label}",
-                "market_type": mrec.market,
+                "market": f"{name} {route.label}",
+                "market_type": route.market,
                 "selection": name,
                 "pick_side": name,
                 "model_win_prob": p,
@@ -257,6 +236,7 @@ async def _generate_for_event(ev: dict, all_scorers: list[dict],
                 "sport_key": "soccer_usa_mls",
                 "archetype": archetype.value,
                 "archetype_display": archetype.display(),
+                "market_fit": route.market_fit,
                 "samples": {
                     "goals": stats.goals,
                     "assists": stats.assists,
@@ -271,23 +251,24 @@ async def _generate_for_event(ev: dict, all_scorers: list[dict],
                     "summary": (
                         f"{name} ({archetype.display()}): "
                         f"model p={p*100:.0f}% · {stats.goals}G/{stats.assists}A "
-                        f"in {stats.games} games."
+                        f"in {stats.games} games · fit {route.market_fit}%."
                     ),
-                    "evidence": mrec.evidence,
-                    "concerns": mrec.concerns,
+                    "evidence": route.recommendation.evidence,
+                    "concerns": route.recommendation.concerns,
                     "matchup": {
                         "player": name, "team": team, "opponent": opp,
+                        "is_home": is_home,
                     },
                     "recent_form": {
                         "engine": "player_prop_intelligence_v2",
                         "form_score": stats.form_score,
                         "form_label": stats.form_label,
                     },
-                    "model_debug": mrec.debug,
+                    "model_debug": route.recommendation.debug,
+                    "market_fit": route.market_fit,
                 },
             }
 
-            # Attach matchup history block if we have it.
             if split and split.matches:
                 pick["matchup_history"] = {
                     "opponent": split.opponent,
@@ -305,13 +286,13 @@ async def _generate_for_event(ev: dict, all_scorers: list[dict],
             out.append(pick)
         return out
 
-    # Fire per-player generation in parallel with bounded concurrency.
     sem = asyncio.Semaphore(6)
-    async def _run(entry: dict, opp: str):
+    async def _run(entry: dict, opp: str, is_home: bool):
         async with sem:
-            return await _emit_for(entry, opp)
+            return await _emit_for(entry, opp, is_home)
 
-    tasks = [_run(e, away) for e in home_sc[:6]] + [_run(e, home) for e in away_sc[:6]]
+    tasks = [_run(e, away, True) for e in home_sc[:6]]
+    tasks += [_run(e, home, False) for e in away_sc[:6]]
     for lst in await asyncio.gather(*tasks, return_exceptions=True):
         if isinstance(lst, list):
             picks.extend(lst)

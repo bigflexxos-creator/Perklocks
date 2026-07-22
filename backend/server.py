@@ -4287,6 +4287,18 @@ async def on_startup():
     except Exception as e:
         logger.warning("MLS Direct-Inject worker failed to start: %s", e)
 
+    # ── Soccer Prop Inject (Big-5 + UCL, 2026-07-22) ───────────────
+    # Extends the Player Prop Intelligence System to EPL / La Liga /
+    # Serie A / Bundesliga / Ligue 1 / UCL. Pulls candidates from
+    # `soccer_player_form` (Understat) and runs the archetype + market
+    # selector for each event on the board.
+    try:
+        from services.soccer_prop_inject import loop as _soccer_prop_loop
+        asyncio.create_task(_soccer_prop_loop())
+        logger.info("Soccer Prop Inject worker armed — Big-5+UCL, 15min loop")
+    except Exception as e:
+        logger.warning("Soccer Prop Inject worker failed to start: %s", e)
+
     # ── CSL ESPN Live (retired-player filter, user-requested 2026-06-27) ─
     # ESPN's free public soccer endpoints provide the authoritative ACTIVE
     # roster + current-season top scorers for the Chinese Super League.

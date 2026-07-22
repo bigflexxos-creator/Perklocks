@@ -32,6 +32,12 @@ from .archetype_engine import classify_archetype, archetype_multiplier
 from .goalscorer_model import predict_goal
 from .assist_model import predict_assist
 from .goal_involvement_model import predict_goal_involvement
+from .matchup_intelligence import (
+    MatchupContext,
+    build_matchup_context,
+    apply_matchup_context,
+)
+from .market_selector import MarketRoute, select_markets, best_market
 
 __all__ = [
     # types
@@ -39,6 +45,8 @@ __all__ = [
     "PlayerStats",
     "MatchupSplit",
     "PickRecommendation",
+    "MatchupContext",
+    "MarketRoute",
     # stats
     "get_player_stats",
     "get_matchup_split",
@@ -49,4 +57,9 @@ __all__ = [
     "predict_goal",
     "predict_assist",
     "predict_goal_involvement",
+    # phase 3: matchup + selector
+    "build_matchup_context",
+    "apply_matchup_context",
+    "select_markets",
+    "best_market",
 ]
