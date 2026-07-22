@@ -3614,6 +3614,72 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         selection = (p.get("selection") or "").lower()
         if "under" in market or "under" in selection:
             p["is_under_lock"] = True
+
+    # 2026-07-22 — PLAYER-PROP CONTRADICTION DEDUPE.
+    # User bug: "Gerrit Cole Over 6.5 K AND Under 6.5 K both showed as
+    # 99 Elite Lock — should not be possible". For every (player,
+    # market_family, line) group, keep ONLY the side with higher edge.
+    def _prop_family(m: str) -> str:
+        m_l = (m or "").lower()
+        if "strikeout" in m_l:      return "K"
+        if "outs recorded" in m_l:  return "OUTS"
+        if "hits + runs" in m_l:    return "HRR"
+        if "home run" in m_l:       return "HR"
+        if "total bases" in m_l:    return "TB"
+        if "hits allowed" in m_l:   return "HALLOWED"
+        if "hits" in m_l:           return "H"
+        if "passing yards" in m_l or "pass yds" in m_l:      return "PASS_YDS"
+        if "rushing yards" in m_l or "rush yds" in m_l:      return "RUSH_YDS"
+        if "receiving yards" in m_l or "reception yds" in m_l: return "REC_YDS"
+        if "receptions" in m_l:     return "REC"
+        if "pass tds" in m_l or "passing tds" in m_l: return "PASS_TDS"
+        if "rush tds" in m_l or "rushing tds" in m_l: return "RUSH_TDS"
+        if "goal scorer" in m_l:    return "GOAL"
+        return ""
+
+    def _prop_key(pk: dict) -> tuple:
+        m = pk.get("market") or ""
+        fam = _prop_family(m)
+        if not fam:
+            return None
+        player_hint = None
+        for delim in (" (", " Over ", " Under "):
+            if delim in m:
+                player_hint = m.split(delim, 1)[0].strip()
+                break
+        if not player_hint:
+            return None
+        import re
+        _m = re.search(r"(?:Over|Under)\s+(\d+\.?\d*)", m)
+        line_hint = float(_m.group(1)) if _m else None
+        return (player_hint.lower(), fam, line_hint)
+
+    prop_best: dict[tuple, dict] = {}
+    prop_unkeyed: list[dict] = []
+    _before = len([p for p in picks if p])
+    for p in picks:
+        if not p:
+            continue
+        k = _prop_key(p)
+        if k is None:
+            prop_unkeyed.append(p)
+            continue
+        cur = prop_best.get(k)
+        if cur is None:
+            prop_best[k] = p
+            continue
+        edge_new = float(p.get("edge_percent") or 0)
+        edge_cur = float(cur.get("edge_percent") or 0)
+        if edge_new > edge_cur or (edge_new == edge_cur and
+            float(p.get("lock_score") or 0) > float(cur.get("lock_score") or 0)):
+            prop_best[k] = p
+    picks = list(prop_best.values()) + prop_unkeyed
+    if len(picks) < _before:
+        logger.info(
+            "Player-prop contradiction dedupe: %d → %d picks (removed opposite-side dupes)",
+            _before, len(picks),
+        )
+
     return [p for p in picks if p is not None]
 
 
