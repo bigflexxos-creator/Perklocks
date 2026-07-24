@@ -1,0 +1,33 @@
+{
+  "summary": "Frontend-only verification of the stale-closure fix on /app/frontend/app/(tabs)/index.tsx for the cache-preservation guard (iter-84 root cause). All 5 requested tests PASS. The `picksRef.current.length > 0` guard on line ~358 now fires correctly on empty-payload refreshes: cached picks stay visible, the 'Connection hiccup — Showing your last good slate. Tap to retry.' banner appears, and tapping RETRY successfully reloads. Regression checks confirmed the normal flow renders picks on All (352) / MLB (69) / Soccer (278) tabs without the banner, and NBA (legitimate offseason empty) correctly shows the 'No locks on the board' empty state (the sameFilter check prevents stale-sport bleed). Fix verified as working.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "The visible banner text uses hardcoded copy ('Connection hiccup' / 'Showing your last good slate. Tap to retry.') at index.tsx:727-732 and does NOT display the loadError string set on line 359 ('Slate refreshing… showing your cached picks. Tap to retry.'). Functionally correct (banner appears because loadError is truthy) but the setLoadError message string is effectively dead — consider either surfacing it in the banner or dropping the message argument.",
+    "index.tsx is 1151 lines — well past the 700-line soft limit. Recommend splitting into hooks (usePicksLoader, useFilters wiring, useRefresh) and a leaner presentational component."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a", "frontend": "100% (5/5 tests pass)"},
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The stale-closure fix (picksRef mirror + guard on line ~358) is verified working via Playwright route interception. Test approach that works: (1) log in as demo@lockscore.ai/demo123, (2) wait for [data-testid^='pick-card-'] to render, (3) enable route interception on /api/picks/today to return {picks:[], alt_availability:null}, (4) tap [data-testid='locks-update'] to trigger load() without changing sport (this keeps sameFilter=true), (5) assert cards remain rendered and 'Connection hiccup' banner is visible, (6) disable interception and tap 'RETRY ↻' text button to verify recovery. NOTE: MLB tab load can take up to 6-8 seconds under load — use a generous wait (>=6s) after sport-switch before asserting card counts. Sport chip testIDs follow pattern 'sport-chip-{lowercase}' (e.g. sport-chip-mlb, sport-chip-nba, sport-chip-soccer).",
+  "rca_of_issue": "N/A — verification-only iteration. Iter-84 already identified the root cause (useCallback closure over `picks` state without listing it in deps). The main-agent fix (picksRef.current mirror kept in sync via useEffect on line 81) correctly breaks the stale closure without triggering a fetch storm from adding `picks` to the useCallback deps. Verified: on an empty response with sameFilter=true, guard on line 358 fires and setPicks([]) is skipped; on sport switch (sameFilter=false), guard correctly does NOT fire and the empty state renders as expected.",
+  "tests_executed": [
+    {"id": "A", "name": "Cache preserved on empty-payload refresh", "result": "PASS", "detail": "350 cards before interception, 350 cards after empty response tick"},
+    {"id": "B", "name": "'Connection hiccup — Showing your last good slate. Tap to retry.' banner visible", "result": "PASS", "detail": "Both title and subtitle rendered; RETRY ↻ button visible"},
+    {"id": "C", "name": "Tap RETRY re-fetches and clears banner", "result": "PASS", "detail": "Call #3 passed through, 352 cards rendered, banner dismissed"},
+    {"id": "D", "name": "Regression: All/MLB/Soccer render normally, no banner", "result": "PASS", "detail": "All=352, MLB=69, Soccer=278 (with ≥6s wait after sport switch)"},
+    {"id": "E", "name": "Regression: NBA (offseason, empty) shows legitimate empty state, not stale MLB picks", "result": "PASS", "detail": "empty-board testID rendered, 'No locks on the board' title visible, no banner — sameFilter check working correctly"}
+  ]
+}
