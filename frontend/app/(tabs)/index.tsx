@@ -67,6 +67,18 @@ export default function LocksScreen() {
   // store setter as `setEvents`.
   const setStoreEvents = setEvents;
   const [picks, setPicks] = useState<Pick[]>([]);
+  // Ref mirror of `picks` — read INSIDE useCallback closures where reading
+  // `picks` directly would capture a stale snapshot. Adding `picks` to the
+  // useCallback deps would recreate `load()` on every setPicks call and
+  // cause a re-fetch storm every time we hydrate the list. `picksRef` lets
+  // us read the current length without invalidating the callback.
+  // (2026-02 — iter-84 root cause of "loaded picks then crashed" report:
+  // the transient-empty-payload guard at ~line 339 was reading `picks`
+  // from the initial-render closure, so the guard was ALWAYS false and
+  // any backend refresh tick that briefly returned picks=[] silently
+  // wiped the user's cached slate to "No locks on the board".)
+  const picksRef = useRef<Pick[]>([]);
+  useEffect(() => { picksRef.current = picks; }, [picks]);
   // Network error state — set when /api/picks/today fails (e.g. Cloudflare
   // 520 during a backend uvicorn --reload window). When non-null, we DO
   // NOT clear the existing `picks` array; we just overlay a retry banner
@@ -327,16 +339,23 @@ export default function LocksScreen() {
             p.sim_win_probability >= simFloor),
         );
       }
-      // CRITICAL (2026-06-28): if the new response came back EMPTY but
-      // we already had cached picks for the same sport filter, treat
-      // it as a transient "slate refreshing" signal and KEEP the cached
-      // picks visible. The backend refresh briefly returns picks=[] for
-      // <100ms during the atomic-swap window; without this guard the
-      // user sees their slate vanish to "No locks on the board" every
-      // refresh tick. Per user spec: "do NOT clear existing picks".
+      // CRITICAL (2026-06-28, patched 2026-02 iter-84): if the new
+      // response came back EMPTY but we already had cached picks for
+      // the same sport filter, treat it as a transient "slate
+      // refreshing" signal and KEEP the cached picks visible. The
+      // backend refresh briefly returns picks=[] for <100ms during the
+      // atomic-swap window; without this guard the user sees their
+      // slate vanish to "No locks on the board" every refresh tick.
+      // Per user spec: "do NOT clear existing picks".
+      //
+      // IMPORTANT: read cached count from `picksRef.current` (mirror
+      // of the picks state) — reading `picks` directly here captures
+      // the initial-render snapshot from the useCallback closure and
+      // the guard NEVER fires. This was the confirmed root cause of
+      // the iter-84 "loaded picks then crashed" bug report.
       const lastSport = lastLoadedForSportRef.current;
       const sameFilter = lastSport === requestedSport;
-      if (fresh.length === 0 && picks.length > 0 && sameFilter) {
+      if (fresh.length === 0 && picksRef.current.length > 0 && sameFilter) {
         setLoadError("Slate refreshing… showing your cached picks. Tap to retry.");
         // Skip setPicks([]) — keep cached.
         return;
