@@ -27,7 +27,7 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 BASE_URL = (
     os.environ.get("EXPO_BACKEND_URL")
     or os.environ.get("EXPO_PUBLIC_BACKEND_URL")
-    or "https://bet-edge-ai-1.preview.emergentagent.com"
+    or "https://player-intel-engine.preview.emergentagent.com"
 ).rstrip("/")
 
 MONGO_URL = os.environ.get("MONGO_URL") or "mongodb://localhost:27017"

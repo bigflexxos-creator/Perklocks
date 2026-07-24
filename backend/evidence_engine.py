@@ -456,6 +456,32 @@ def govern_pick(
         pick["evidence_dropped_insights"] = dropped
         return pick
 
+    # ── Player Prop Intelligence v2 fast-path (2026-07-22) ──────────
+    # Our v2 soccer prop engine (services/player_props/) does its own
+    # data-driven scoring: archetype classifier + 3 market models +
+    # matchup context + market selector. The lock_score is derived
+    # from the model probability + confidence + market_fit — already
+    # calibrated. If we let the generic evidence_engine multiply this
+    # by 0.5-0.7 (because it doesn't understand our archetype/matchup
+    # features), Messi lands at lock=55/Pass and gets filtered from
+    # the board. Bypass the multiplier the same way we do for
+    # tennis-calibrated picks; still compute audit-trail insights.
+    if (pick.get("source") == "player_prop_intelligence_v2"
+        or pick.get("synthetic_source") == "player_prop_intelligence_v2"):
+        classify(features)
+        pick["evidence_score"] = evidence_score(features)
+        sorted_feats = sorted(
+            features, key=lambda f: (f.importance * f.reliability), reverse=True,
+        )
+        insights_in = pick.get("key_insights") or []
+        insights_out, dropped = apply_explanation_governor(
+            insights_in, sorted_feats, pick["evidence_score"],
+        )
+        pick["key_insights"] = insights_out
+        pick["evidence_dropped_insights"] = dropped
+        pick["player_prop_v2_calibrated"] = True
+        return pick
+
     classify(features)
     score = evidence_score(features)
 

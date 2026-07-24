@@ -7,7 +7,7 @@ import re
 import pytest
 import requests
 
-BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://bet-edge-ai-1.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://player-intel-engine.preview.emergentagent.com").rstrip("/")
 
 # Market patterns that count as "game-outcome" picks (Moneyline / Win-or-Draw / Double Chance / etc.)
 GAME_OUTCOME_PATTERNS = [

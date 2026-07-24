@@ -12,7 +12,7 @@ import requests
 
 BASE_URL = os.environ.get(
     "EXPO_PUBLIC_BACKEND_URL",
-    "https://bet-edge-ai-1.preview.emergentagent.com",
+    "https://player-intel-engine.preview.emergentagent.com",
 ).rstrip("/")
 
 

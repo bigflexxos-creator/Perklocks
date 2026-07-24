@@ -1,0 +1,170 @@
+<analysis>### original_problem_statement: 
+Implement Phase 2 and Phase 3 Data Enrichments for Soccer (Player Prop Intelligence System with archetype tags, distinct models, Matchup Intelligence, Market Selection). Later evolve data pipelines to completely eradicate random/RNG factors.
+**PRODUCT REQUIREMENTS:**
+1. Upgrade the soccer betting engine into a complete Player Prop Intelligence System.
+2. Distinct models for Anytime Goalscorer, Anytime Assist, and Goal Involvement.
+3. Replace all synthetic/random factors with real data pipeline (xG, shots, form).
+4. Wire team-level home/away goals-split for Soccer.
+5. Extend the engine to EPL/UCL/La Liga picks (Big-5 leagues).
+6. Render archetype tags in the frontend Why This Pick panel.
+
+**User's preferred language**: English
+*(INSTRUCTION: Next agent must respond in English)*
+
+**what currently exists?** 
+A full-stack Expo/FastAPI sports betting analytics app. Randomness has been entirely purged from pick scoring. The soccer engine has been successfully upgraded to the Player Prop Intelligence System (Phase 2 & 3). It now features a 5-way archetype classification (Goal Scorer, Creator, Dual Threat, etc.), Matchup Intelligence, and Market Selection across MLS and Big-5 European Leagues. The frontend () has been updated to render archetype badges and expanded evidence. 
+
+**Last working item**:
+    - Last item agent was working: Fixing a bug where the newly generated Soccer v2 goalscorer picks were being aggressively downgraded to a  of 55.0 (Pass) and effectively hidden. The agent identified that  was applying a shrinkage penalty because the new  picks don't use the old . The agent just added a fast-path bypass for v2 picks in .
+    - Status: TESTING PENDING
+    - Agent Testing Done: N (Fix was applied in the final step but not verified via script/DB).
+    - Which testing method agent to use? manual testing by python -c / curl (to trigger pick generation and verify DB documents retain high lock scores).
+    - User Testing Done: N
+
+**All Pending/In progress Issue list**:
+  Issue 1: Verify Soccer  bypass for Goalscorer picks (P0)
+     - Attempted fixes: Added a fast-path bypass for  in .
+     - Next debug checklist: Check  (lines 460-490). Run  or trigger the backend script, then verify in the DB that  picks retain their calculated  /  grades (>89 lock_score) and are not crushed to 55.0.
+     - Why fix this issue and what will be achieved with the fix? It will fix the user's immediate complaint (only seeing assist now no real goalscorers or score or assist) and ensure the new Phase 3 features are actually visible on the app.
+     - Status: TESTING PENDING
+     - Is recurring issue? Y
+     - Should Test frontend/backend/both after fix? Backend
+     - Blocked on other issue: None
+
+  Issue 2: 224 Tennis Picks Stuck as Pending (P1)
+     - Attempted fixes: None. Deferred from previous session.
+     - Next debug checklist: Investigate the tennis auto-settler script. Matches from July 17-20 finished days ago but remain pending in the database. 
+     - Why fix this issue and what will be achieved with the fix? Will ensure ROI analytics are accurate and users' personal bets get settled.
+     - Status: NOT STARTED
+     - Is recurring issue? Y
+     - Should Test frontend/backend/both after fix? Backend
+     - Blocked on other issue: None
+
+  Issue 3: Monitor ROI of Feature Engines, Chalk Trap, and Longshot Trap (P2)
+     - Attempted fixes: Implemented traps and feature engines.
+     - Next debug checklist: Wait for new picks to settle over the next ~7 days to verify bleeding has stopped.
+     - Why fix this issue and what will be achieved with the fix? Verifies the system architecture rewrite protects users from negative EV.
+     - Status: BLOCKED (Waiting for new data)
+     - Is recurring issue? N
+     - Should Test frontend/backend/both after fix? Backend
+     - Blocked on other issue: Time/Volume of new picks.
+
+**In progress Task List**:
+  Task 1: NFL Phase 3 - M4 Backtesting + Learning loop (P1)
+     - Where to resume:  /  / new backtesting script.
+     - What will be achieved with this? Historical replay against the 2024 NFL season to track ROI/CLV/win% by prop type.
+     - Status: NOT STARTED
+     - Should Test frontend/backend/both after fix? Backend
+     - Blocked on something: None
+
+  Task 2: CFB Phase 3 Feature Engine (P2)
+     - Where to resume: 
+     - What will be achieved with this? Build  replacing book implied-only logic.
+     - Status: NOT STARTED
+     - Should Test frontend/backend/both after fix? Backend
+     - Blocked on something: None
+
+  Task 3: NBA Phase 3 Feature Engine (P2)
+     - Where to resume: 
+     - What will be achieved with this? Build  for real-data feature engines.
+     - Status: NOT STARTED
+     - Should Test frontend/backend/both after fix? Backend
+     - Blocked on something: None
+
+**Upcoming and Future Tasks**
+  - P3: Break down  monolith into modular routers/services (~4700 lines).
+  - P3: Break down  into modular  files.
+
+**Completed work in this session**
+- **Soccer Phase 2**: Built  modules (, , , , , ). Implemented 5-way archetype classification.
+- **Soccer Phase 3**: Added  and . Built  to ingest and process picks for Big-5 Leagues + UCL. 
+- **API & Wiring**: Refactored  to unify with the new models. Wired the new soccer worker into the server startup. Added  endpoints to introspect player form models.
+- **Frontend UI**: Updated  to render the Archetype chip (e.g., 🔥 DUAL THREAT · FIT 80%) and expanded the Why this pick? evidence bullets.
+
+**Earlier issues found/mentioned but not fixed**
+   Issue 1: Tennis Auto-Settler for July 17-20 matches
+   - Debug checklist: Manually trigger settlement for dates '2026-07-17' to '2026-07-20' or fix the cron job query parameters.
+   - Why to solve this issue and what will be achieved with this? Fixes inaccurate user ROI stats.
+   - Should Test frontend/backend/both after fix: Backend
+   - Is recurring issue? Y
+
+**Known issue recurrence from previous fork**
+  - Issue recurrence in previous fork: None
+  - Recurrence count: 0
+  - Status: RESOLVED
+
+**Code Architecture**
+
+
+**Key Technical Concepts**
+- Backend: FastAPI, MongoDB, Python Data Pipelines.
+- Frontend: React Native, Expo Router.
+- Feature Engines: Player Prop Intelligence System using Archetype thresholds instead of RNG.
+
+**key DB schema**
+  - : Now expects  and  for soccer picks. 
+  - Player props collections.
+
+**changes in tech stack**
+  - No new dependencies added in this session.
+
+**All files of reference** 
+  -  (Core logic for the new Soccer Phase 2 and 3).
+  -  (Script for Big 5 league processing).
+  -  (Where the  penalty bug fix was just applied).
+  -  (Handles the frontend display of archetypes and evidence).
+
+**Areas that need refactoring**: 
+  -  is overly monolithic (~4700 lines).
+  -  is highly coupled to old schema layouts and breaks easily on new pick types (as witnessed with the  penalty bug).
+
+**key api endpoints**
+  - Admin endpoints in 
+  - 
+
+**Critical Info for New Agent**
+  - **Goalscorer Penalty Bug**: The previous agent identified that  was downgrading high-quality  picks to 55.0 because it expected legacy data models. A fix was applied in the final step, but **it has not been tested**. You MUST verify that soccer picks now generate with / grades (>89 lock_score) before moving to a new task.
+  - **Soccer Expansion**: The Soccer system now encompasses both MLS and the Big-5 Leagues, categorized by archetypes.
+  - **NO FAKE DATA / RNG**: All random pick scoring has been completely removed across all sports.
+
+**documents and test reports created in this job**
+  -  (Updated with test metrics).
+
+**Last 10 User Messages and any pending HUMAN messages** 
+ 1. *User*: Handed over problem statement from previous fork.
+ 2. *User*: Please use ask_human tool and confirm your plan now.
+ 3. *User*: Confirmed Phase 2 for soccer (MLS + EPL/UCL, standard analytics).
+ 4. *User*: Phase 3: Matchup Intelligence + Market Selection Engine. Wire archetype tags into frontend... Extend engine to EPL/UCL/La Liga picks
+ 5. *User*: Skipped clarification request.
+ 6. *User*: Look good but only seeing assist now no real goalscorers or score or assist (Triggered the debug of the  downgrade issue).
+
+**Project Health Check:**
+- Broken:  was breaking new picks. Potential fix applied; needs verification.
+- Mocked: None.
+
+**3rd Party Integrations** 
+  - Football-Data.org API — requires User API Key.
+  - OpenWeather API — requires User API Key.
+  - The Odds API — requires User API Key.
+  - ESPN Public APIs (No key required - dynamically fetched).
+
+**Testing status**
+  - Testing agent used after significant changes: NO (Agent performed backend manual validation via  scripts, but did NOT test the final bug fix).
+  - Troubleshoot agent used after agent stuck in loop: NO.
+  - Test files created: None.
+  - Known regressions:  broke backwards compatibility for new pick formats.
+
+**Credentials to test flow:**
+Demo User (ADMIN ROLE)
+- Email: 
+- Password: 
+
+**What agent forgot to execute**
+- The agent applied a code fix for the missing Goalscorer picks in the very last step, but did not execute a test or check the database to confirm it actually solved the user's issue.
+
+**Debugging checklist for current issue**
+    Issue: Goalscorer picks downgraded to 55.0 lock score.
+    Backend files to check: 
+    -  (Check  and  methods to ensure the fast-path bypass for  is functioning properly).
+    -  (Run this to inject new picks, then inspect DB to ensure  > 89 for elite picks).
+    </analysis>

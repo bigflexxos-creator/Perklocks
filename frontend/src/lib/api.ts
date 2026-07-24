@@ -18,7 +18,7 @@ import { Platform } from "react-native";
 // FORCE_PREVIEW_BACKEND is back to FALSE so the published app routes
 // to its proper production backend.
 const FORCE_PREVIEW_BACKEND = false;
-const PINNED_PREVIEW_URL = "https://bet-edge-ai-1.preview.emergentagent.com";
+const PINNED_PREVIEW_URL = "https://player-intel-engine.preview.emergentagent.com";
 
 function resolveBaseUrl(): string {
   if (FORCE_PREVIEW_BACKEND) return PINNED_PREVIEW_URL;

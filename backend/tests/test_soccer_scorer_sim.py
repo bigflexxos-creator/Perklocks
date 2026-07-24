@@ -12,7 +12,7 @@ import os
 import pytest
 import requests
 
-BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://bet-edge-ai-1.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://player-intel-engine.preview.emergentagent.com").rstrip("/")
 
 OYARZABAL_PICK_ID = "fc87a363-f776-5a6e-b107-bd8c8d099693"   # Mikel Oyarzabal ATGS
 MESSI_PICK_ID = "2fada0b5-cea7-5634-93a7-da8b9a7df446"        # Lionel Messi ATGS

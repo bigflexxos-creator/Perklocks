@@ -17,7 +17,7 @@ import requests
 import pytest
 from datetime import datetime, timezone, timedelta
 
-BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://bet-edge-ai-1.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://player-intel-engine.preview.emergentagent.com").rstrip("/")
 CREDENTIALS = {"email": "demo@lockscore.ai", "password": "demo123"}
 
 

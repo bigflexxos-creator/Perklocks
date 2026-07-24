@@ -722,6 +722,51 @@ async def _picks_for_side(
         except Exception:
             csl_filter_active = None
 
+    # ── MLS ESPN live active-player filter (2026-02, modeled on
+    #    csl_filter_active) ──
+    # Same problem as CSL: SportDB MLS squads are stale and include
+    # transferred / retired players. ESPN's `usa.1` endpoints (already
+    # ingested by `services.espn_mls_stats.refresh_mls_leaders`) are the
+    # authoritative source of who is currently active in MLS. We wire a
+    # lightweight callable that returns:
+    #   • True  → name matches ESPN live leaderboard OR a curated MLS
+    #             top-scorer / regular-starter row (populated from ESPN).
+    #   • False → known-inactive (nothing matches).
+    #   • None  → data not yet loaded → don't block (defer to legacy path).
+    mls_filter_active: Optional["callable"] = None  # type: ignore
+    is_mls = (comp or "").lower().startswith("mls:") or comp == "soccer_usa_mls"
+    if is_mls:
+        try:
+            from services import mls_scorer_gate as _mls_gate
+
+            def _mls_active_check(name: str, team_hint: Optional[str] = None):
+                if not name:
+                    return None
+                n = _mls_gate._norm(name)
+                # ESPN live index (populated by espn_mls_stats refresher)
+                # is the source of truth for who's currently active.
+                if _mls_gate._espn_names:
+                    if n in _mls_gate._espn_names:
+                        return True
+                    # Curated top-scorer / starter fallback (also ESPN-
+                    # derived — see `MLS_TOP_SCORERS_2025`).
+                    if n in _mls_gate._TOP_SCORER_INDEX:
+                        return True
+                    if n in _mls_gate._STARTER_INDEX:
+                        return True
+                    # ESPN loaded but name not found anywhere → inactive.
+                    return False
+                # ESPN snapshot not loaded yet — fall back to curated
+                # lists; if still no hit, return None (unknown) so we
+                # don't block picks before the refresher runs.
+                if n in _mls_gate._TOP_SCORER_INDEX or n in _mls_gate._STARTER_INDEX:
+                    return True
+                return None
+
+            mls_filter_active = _mls_active_check
+        except Exception:
+            mls_filter_active = None
+
     def _csl_espn_rank(name: str) -> Optional[int]:
         """Returns 1-indexed scorer rank from the live ESPN board, or None
         when the player isn't on the leaderboard (= no goals this season)."""
@@ -755,6 +800,18 @@ async def _picks_for_side(
                     player.get("name"), team_name,
                 )
                 continue  # ESPN says this player is not active → skip
+        # ── MLS retired/transferred-player block (modeled on CSL) ──
+        if mls_filter_active is not None:
+            verdict = mls_filter_active(
+                _format_player_name(player, None) or player.get("name") or "",
+                team_hint=team_name,
+            )
+            if verdict is False:
+                logger.debug(
+                    "MLS ESPN: dropping inactive player %s (team=%s)",
+                    player.get("name"), team_name,
+                )
+                continue  # ESPN MLS roster/stats says not active → skip
         rate = await get_player_goal_rate(
             db, player.get("slug") or "", player.get("id") or "",
             comp, season,
