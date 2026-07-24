@@ -1,0 +1,39 @@
+{
+  "summary": "iter-89 batter H2H + player-prop team-meeting suppression: ALL PASS. Backend pytest suite (test_iter89_batter_h2h.py — 10/10, 100%). Live MLB slate: 17 batter-prop chips checked → 0 violations (every one matches `\\d+-for-\\d+ vs ` and NO chip contains 'H2H X-Y' or ' L\\d+'); 2 pitcher-K chips → all contain 'K / start'; 10 team-market chips → all contain 'avg runs'; 0 player-prop chips carry the ' · L\\d+' tail. Deep-dives: batter Hits pick returns player_h2h.sample_unit='AB' + is_player_prop=true + display uses X-for-Y; team spread returns is_player_prop=false + team_h2h.avg_total present; pitcher K pick returns player_h2h.primary_stat='avg_k'. Perf: warm /api/picks/today?sport=MLB = 2.56s / 435.9KB (well under 5s / 800KB budgets). Regression: no same-line O/U contradictions; no 5xx on any /api/picks/*/h2h probe. FRONTEND Playwright (mobile 390x844) on public preview: demo login → 352 pick-cards + 7 h2h-chips visible above the fold, sample chips all in 'X-for-Y vs <team> (0.YYY avg, ZZ%)' format. Batter Hits deep-dive (Riley Greene DET Over 0.5 Hits): BLUE h2h-player card RENDERS with primary line '10-for-24 vs Kansas City Royals (0.417 avg, 42%)' and sub-line 'Riley Greene vs Kansas City Royals · 24 AB' — the ' AB' unit is present, the generic 'sample' fallback is NOT. h2h-team card renders WITHOUT the AVG cell on this player-prop pick (RECORD 4-5, MEETINGS 9 only). Team Spread deep-dive (NYY +1.5 Spread vs PHI): h2h-team card DOES include the AVG RUNS cell (value 9.8) with 5 meetings. Iter-88 design-gap observation (batter BLUE card missing on Hits picks) is NOW RESOLVED — the batter card renders with real vs-team data. All 8 review checklist items pass.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter89_batter_h2h.py",
+    "/app/test_reports/pytest/iter89_batter_h2h.xml"
+  ],
+  "action_items": [
+    "No action required — all iter-89 contract points pass on backend + frontend."
+  ],
+  "critical_code_review_comments": [
+    "mlb_batter_h2h.fetch_batter_h2h() cleanly mirrors the pitcher module: re-uses _get(URL cache), resolve_opp_team_name, _resolve_team_id from mlb_pitcher_h2h so team-abbrev normalisation stays consistent across both branches. sample_unit='AB', sample_size=vs_ab is exactly what the frontend H2HPanel expects.",
+    "h2h_enricher._mlb_player_h2h split cleanly into pitcher / batter branches by market keyword; batter branch produces primary_value_display 'X-for-Y vs OPP (avg, pct%)' which is what the UI chip renders verbatim.",
+    "_build_summary(is_player) suppresses the team-meeting bit ('H2H X-Y L\\d+') entirely on player-prop picks and keeps it on team bets — verified empirically on the live slate: 0 offending chips.",
+    "build_h2h_bundle(fast_mode=True) NOW allows the MLB player_h2h path (was skipped before). Fine given the 12h URL cache in mlb_pitcher_h2h._get and warm /picks/today response = 2.56s.",
+    "H2HPanel.tsx `${sample_size} ${sample_unit || 'sample'}` correctly renders '24 AB' when backend passes sample_unit='AB'; falls back to 'sample' only when unit is omitted (won't happen on the new batter path)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter89_batter_h2h.py (new — 10 tests, 100% pass)"
+  ],
+  "success_rate": {
+    "backend": "10/10 (100%)",
+    "frontend": "100% — batter deep-dive shows ' AB' sub-line (not 'sample'); team spread deep-dive shows AVG RUNS cell; batter deep-dive HIDES AVG cell; 17/17 batter chips clean; 10/10 team chips carry 'avg runs'"
+  },
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "iter-89 verification pass — batter H2H is now wired end-to-end. Test file /app/backend/tests/test_iter89_batter_h2h.py locks the contract: X-for-Y format on batter chips, no ' L\\d+' tail on player props, sample_unit=='AB' on deep-dive, is_player_prop toggle drives AVG cell in team card. If h2h_enricher.py or mlb_batter_h2h.py is touched, re-run this + iter-88 + iter-86/87 suites (all still relevant). Perf remains within budget (2.56s warm, 435.9KB). No P0 or P1 issues.",
+  "rca_of_issue": "N/A — verification pass. User-reported problem ('Make sure L3 represents At bats should also h2h at bat against team') is FULLY RESOLVED: batter chips now read `H-for-AB vs <team> (avg, pct%)` where AB is the batter's actual at-bats vs that opponent (not team meetings), and the 'L3'/'L6' tail from team H2H is stripped from all player-prop chips. Deep-dive sub-line reads e.g. '24 AB' with proper unit label. The frontend BLUE h2h-player card now renders on batter Hits picks — closing the design-gap flagged in iter-88."
+}

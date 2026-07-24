@@ -264,55 +264,118 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
 
 # ── Sport-specific player H2H (delegates to existing modules) ─────────────
 async def _mlb_player_h2h(pick: dict) -> Optional[dict]:
-    """MLB pitcher-vs-team H2H via mlb_pitcher_h2h (already cached).
+    """MLB player-vs-team H2H, split by prop family:
 
-    Enabled for the pitcher props where the historical vs-team K/BB/ER
-    line moves the needle. Hitter H2H (batter vs pitcher) is intentionally
-    left to `services.mlb_hr_intel` (already exposes vs-pitcher OPS in
-    the HR slate) — wiring it here would duplicate that path.
+    • Pitcher props (K / outs / walks / earned runs / hits allowed)
+      → `mlb_pitcher_h2h.fetch_pitcher_h2h`, keyed off the pitcher's
+        team abbrev in the market string.
+    • Batter props (hits / HR / RBI / total bases / runs scored /
+      singles / doubles / triples / stolen bases / at bats)
+      → `mlb_batter_h2h.fetch_batter_h2h`. Same market-string parse
+        (Player name in parens with team abbreviation) — we treat the
+        parens team as the batter's team and derive the opponent from
+        `pick.event`. `sample_size` becomes the batter's at-bats vs
+        that opponent so the compact chip reads "3-for-12 vs KC (25%)"
+        instead of the meaningless team-meetings count.
     """
-    market = (pick.get("market") or "").lower()
-    # Cover the strikeout / outs / walks / earned-runs pitcher families.
-    if not any(k in market for k in (
-        "strikeout", "strikeouts", "outs recorded", "pitching outs",
-        "walks", "walks recorded", "walks allowed",
-        "earned runs", "hits allowed",
-    )):
-        return None
+    market_raw = pick.get("market") or ""
+    market = market_raw.lower()
+    # Parse "Firstname Lastname (KC) …" — same regex on both paths.
+    import re as _re
     try:
-        from mlb_pitcher_h2h import fetch_pitcher_h2h, resolve_opp_team_name
+        from mlb_pitcher_h2h import resolve_opp_team_name
     except Exception:
         return None
-    # Pull pitcher name + team abbreviation from "Firstname Lastname (KC) Over 6.5 Strikeouts"
-    m = re.match(r"^\s*(.*?)\s*\(([A-Z]{2,4})\)\s+", pick.get("market") or "")
+    m = _re.match(r"^\s*(.*?)\s*\(([A-Z]{2,4})\)\s+", market_raw)
     if not m:
         return None
-    pitcher = m.group(1).strip()
+    name = m.group(1).strip()
     abbr = m.group(2).strip()
     opp = resolve_opp_team_name(pick.get("event") or "", abbr)
     if not opp:
         return None
-    try:
-        data = await fetch_pitcher_h2h(pitcher, opp)
-    except Exception as e:
-        logger.debug("MLB pitcher H2H failed: %s", e)
-        return None
-    if not data or not data.get("ok"):
-        return None
-    starts = int(data.get("vs_team_starts") or 0)
-    avg_k = data.get("vs_team_avg_k") or 0.0
-    return {
-        "player": pitcher,
-        "vs_opponent": opp,
-        "sample_size": starts,
-        "primary_stat": "avg_k",
-        "primary_value": float(avg_k),
-        "primary_value_display": f"{avg_k:.1f} K / start vs {opp}" if starts else "No prior starts",
-        "season_avg_k": data.get("season_avg_k"),
-        "season_starts": data.get("season_starts"),
-        "recent": data.get("vs_team_recent") or [],
-        "l5": data.get("last5"),
-    }
+
+    # ── Pitcher branch ────────────────────────────────────────────
+    if any(k in market for k in (
+        "strikeout", "strikeouts", "outs recorded", "pitching outs",
+        "walks", "walks recorded", "walks allowed",
+        "earned runs", "hits allowed",
+    )):
+        try:
+            from mlb_pitcher_h2h import fetch_pitcher_h2h
+        except Exception:
+            return None
+        try:
+            data = await fetch_pitcher_h2h(name, opp)
+        except Exception as e:
+            logger.debug("MLB pitcher H2H failed: %s", e)
+            return None
+        if not data or not data.get("ok"):
+            return None
+        starts = int(data.get("vs_team_starts") or 0)
+        avg_k = data.get("vs_team_avg_k") or 0.0
+        return {
+            "player": name,
+            "vs_opponent": opp,
+            "sample_size": starts,
+            "sample_unit": "starts",
+            "primary_stat": "avg_k",
+            "primary_value": float(avg_k),
+            "primary_value_display": (
+                f"{avg_k:.1f} K / start vs {opp}" if starts
+                else "No prior starts"
+            ),
+            "season_avg_k": data.get("season_avg_k"),
+            "season_starts": data.get("season_starts"),
+            "recent": data.get("vs_team_recent") or [],
+            "l5": data.get("last5"),
+        }
+
+    # ── Batter branch ─────────────────────────────────────────────
+    if any(k in market for k in (
+        "hits", "home run", "homer", "total bases", "rbi",
+        "runs scored", "singles", "doubles", "triples",
+        "stolen base", "at bats",
+    )):
+        try:
+            from mlb_batter_h2h import fetch_batter_h2h
+        except Exception:
+            return None
+        try:
+            data = await fetch_batter_h2h(name, opp)
+        except Exception as e:
+            logger.debug("MLB batter H2H failed: %s", e)
+            return None
+        if not data or not data.get("ok"):
+            return None
+        vs_ab = int(data.get("vs_team_ab") or 0)
+        vs_h = int(data.get("vs_team_hits") or 0)
+        vs_avg = float(data.get("vs_team_avg") or 0.0)
+        vs_games = int(data.get("vs_team_games") or 0)
+        if vs_ab == 0:
+            display = f"No prior at-bats vs {opp}"
+        else:
+            pct = int(round(vs_avg * 100))
+            display = f"{vs_h}-for-{vs_ab} vs {opp} ({vs_avg:.3f} avg, {pct}%)"
+        return {
+            "player": name,
+            "vs_opponent": opp,
+            "sample_size": vs_ab,           # <-- at-bats, NOT team meetings
+            "sample_unit": "AB",
+            "primary_stat": "vs_team_avg",
+            "primary_value": vs_avg,
+            "primary_value_display": display,
+            "season_avg": data.get("season_avg"),
+            "season_ab": data.get("season_ab"),
+            "season_hits": data.get("season_hits"),
+            "season_games": data.get("season_games"),
+            "vs_team_games": vs_games,
+            "vs_team_hr": data.get("vs_team_hr"),
+            "vs_team_rbi": data.get("vs_team_rbi"),
+            "recent": data.get("vs_team_recent") or [],
+        }
+
+    return None
 
 
 async def _tennis_player_h2h(db, pick: dict) -> Optional[dict]:
@@ -519,6 +582,7 @@ def _build_summary(sport: str, team_h2h: Optional[dict],
       stat, which was confusing users. Kept for totals / moneyline / spread.
     """
     bits: list[str] = []
+    is_player = _is_player_prop_market(pick_market)
     if player_h2h and (player_h2h.get("sample_size") or 0) > 0:
         disp = str(player_h2h.get("primary_value_display") or "")
         if disp and "No prior" not in disp:
@@ -526,13 +590,17 @@ def _build_summary(sport: str, team_h2h: Optional[dict],
     if team_h2h:
         hw = int(team_h2h.get("home_wins") or 0)
         aw = int(team_h2h.get("away_wins") or 0)
-        if hw + aw > 0:
+        # On PLAYER-prop picks the team meetings count (L6, L10, etc.) is
+        # confusing — users read the "L6" as a player at-bat sample count
+        # (user report: "Make sure L3 represents At bats"). Suppress the
+        # team-meeting bit entirely on player-prop chips; keep it on team
+        # bets (moneyline / spread / total) where it's the primary signal.
+        if hw + aw > 0 and not is_player:
             rec = team_h2h.get("record") or ""
             avg = team_h2h.get("avg_total")
             unit = _avg_unit(sport)
-            is_player = _is_player_prop_market(pick_market)
             avg_s = ""
-            if avg is not None and not is_player:
+            if avg is not None:
                 avg_s = f" · {avg} avg {unit}".rstrip()
             bits.append(f"H2H {rec} L{team_h2h['meetings']}{avg_s}")
     return " · ".join([b for b in bits if b]) or ""
@@ -585,10 +653,14 @@ async def build_h2h_bundle(db, pick: dict, *, fast_mode: bool = False) -> dict:
     # Player-level H2H — sport-specific.
     player_h2h: Optional[dict] = None
     try:
-        if sport == "MLB" and not fast_mode:
-            # MLB pitcher H2H hits the external MLB Stats API (~200-800ms
-            # per pitcher). Skip in fast_mode; deep-dive endpoint still
-            # computes it because it calls without fast_mode.
+        if sport == "MLB":
+            # MLB pitcher + batter H2H both hit the external MLB Stats
+            # API but response times are ~200ms and the module maintains
+            # a 12h in-process cache, so it's cheap enough to run in
+            # fast_mode too. That gives us the batter's "X-for-Y vs OPP"
+            # chip on /picks/today, not just on the deep-dive screen
+            # (user report: "Make sure L3 represents At bats should also
+            # h2h at bat against team").
             player_h2h = await _mlb_player_h2h(pick)
             if player_h2h:
                 sources.append("mlb_stats_api")
