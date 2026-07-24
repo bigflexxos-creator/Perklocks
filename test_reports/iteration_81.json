@@ -1,0 +1,33 @@
+{
+  "summary": "Iter 81 — verified fixes for (a) MLB pitcher strikeout Over/Under contradictions (Skubal/Drohan), (b) MLS Anytime Goal Scorer visibility, and (c) `_apply_atomic_delete._pin_filter` allowing no_bet=True picks to be deleted even at lock_score_peak >= 95. Wrote /app/backend/tests/test_iter81_contradiction_and_mls.py — 7 tests, all PASSED. Live /api/picks/today?sport=MLB shows zero Over+Under strikeout contradictions across the full slate; specifically no Skubal (DET) or Drohan (MIL) contradictions. /api/picks/today?sport=Soccer&leagues=MLS returns 30 Anytime Goal Scorer + 54 Anytime Assist + 6 Score-or-Assist picks (91 total MLS), so the 'only showing assist' complaint is resolved at the API layer. Integration test against Mongo confirmed `_pin_filter` deletes the no_bet=True + peak=99 doc while protecting out-of-band-source docs. Direct call to server._reconcile_player_prop_contradictions on synthetic Over 7.5 / Under 8.5 K picks (same event+player) correctly tagged the loser (Over 7.5) with no_bet=True and reason 'contradicts under MLB_K for <player>' — winner (Under 8.5) untouched.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter81_contradiction_and_mls.py",
+    "/app/test_reports/pytest/iter81.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "`_reconcile_player_prop_contradictions` correctly ranks by (edge_percent, lock_score) and tags the loser side with no_bet=True + no_bet_reason. Verified end-to-end.",
+    "`_pin_filter` now includes `{'no_bet': True}` in the inner $or, so contradiction-reconciled picks are wiped on the next atomic delete pass regardless of lock_score_peak. Verified via live Mongo integration test.",
+    "picks_today endpoint filter `no_bet: {$ne: True}` correctly excludes tagged loser picks — MLB slate is clean of Skubal/Drohan contradictions."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter81_contradiction_and_mls.py (new)",
+    "/app/test_reports/pytest/iter81.xml (new)"
+  ],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "not tested (backend-only per request)"},
+  "seed_data_creation": "Synthetic docs used TEST_iter81_* ids on TEST_iter81_* pick_dates; all seed data cleaned up in test teardown (finally blocks). No production picks touched.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "iter81.xml holds the JUnit output. The reconciler test directly calls server._reconcile_player_prop_contradictions using the live Mongo client via motor; keep the TEST_iter81_* pick_date/id prefixes to remain isolated from the real slate. MLS market counts observed today: 30 Goal Scorer / 54 Assist / 6 Score-or-Assist — if this asymmetry regresses (Goal Scorer count → 0) it's likely `sportdb_player_scorer` MLS side generation or a filter downstream.",
+  "rca_of_issue": "Root cause was `_apply_atomic_delete._pin_filter` protecting any pick with `lock_score_peak >= 95` from deletion, even those tagged by the contradiction reconciler with `no_bet=True`. Fix (extending inner $or with `{'no_bet': True}`) is present in server.py:1984-2007 and verified by live-Mongo integration test — no_bet=True doc with peak=99 gets deleted while OOB-source protected docs remain."
+}
