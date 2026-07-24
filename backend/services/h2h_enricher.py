@@ -100,6 +100,12 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
     """
     if not (home and away):
         return None
+    # Team-level H2H (aggregated score totals) doesn't make sense for
+    # Tennis — set scores like "6-4, 7-5" get summed into meaningless
+    # 22-24-style totals. Tennis has proper player-vs-player H2H in
+    # `_tennis_player_h2h`, so return None here and let that path win.
+    if sport == "Tennis":
+        return None
 
     meetings: list[dict] = []
     home_l = home.strip().lower()
@@ -434,8 +440,68 @@ def _situational(pick: dict) -> Optional[dict]:
     return {"venue": venue, "notes": notes}
 
 
+def _avg_unit(sport: str) -> str:
+    """Unit label for team H2H `avg_total` — MLB is runs, Soccer is goals,
+    US-team sports are points. Prevents the compact chip from looking like
+    it's mixing player-stat units with team-total units (user report:
+    '7.11 avg' looked like strikeouts but it was runs).
+    """
+    if sport == "MLB":
+        return "runs"
+    if sport == "Soccer":
+        return "goals"
+    if sport in {"NBA", "NFL", "NHL"}:
+        return "pts"
+    return ""
+
+
+def _is_player_prop_market(market: str) -> bool:
+    """True if the pick is a player-specific prop (hits, HRs, strikeouts,
+    goals, assists, receiving yards, points, rebounds, etc.) as opposed to
+    a team/game bet (moneyline, spread, total).
+
+    Team-total `avg_total` (avg runs / avg goals) is meaningful for game
+    totals and moneylines but IRRELEVANT on a batter's hit prop or a
+    goalscorer prop (user report: "7.11 avg shouldn't be on player hit
+    cards don't make sense, should only be on total bets"). We use this
+    classifier to strip the avg from the chip on player props.
+    """
+    if not market:
+        return False
+    ml = market.lower()
+    # Player-prop keywords across all sports we support.
+    for kw in (
+        # MLB batter
+        "hits", "home run", "homer", "total bases", "rbi", "runs scored",
+        "singles", "doubles", "triples", "stolen base", "at bats",
+        # MLB pitcher
+        "strikeout", "strikeouts", "outs recorded", "pitching outs",
+        "walks", "walks recorded", "walks allowed", "earned runs",
+        "hits allowed", "pitches thrown",
+        # Soccer
+        "anytime goal scorer", "anytime scorer", "first goal scorer",
+        "last goal scorer", "anytime assist", "to score or assist",
+        "shots on target", "player shots", "player passes", "player tackles",
+        "player cards", "to be booked", "to be carded",
+        # Tennis
+        "aces", "double faults", "player games", "sets won",
+        # NBA player
+        "points", "rebounds", "assists", "3-pointers", "three-pointers",
+        "steals", "blocks", "double-double", "triple-double",
+        "player rebounds", "player assists",
+        # NFL player
+        "passing yards", "rushing yards", "receiving yards", "receptions",
+        "passing touchdown", "rushing touchdown", "receiving touchdown",
+        "anytime touchdown", "first touchdown", "player interceptions",
+    ):
+        if kw in ml:
+            return True
+    return False
+
+
 def _build_summary(sport: str, team_h2h: Optional[dict],
-                   player_h2h: Optional[dict]) -> str:
+                   player_h2h: Optional[dict],
+                   pick_market: str = "") -> str:
     """Compact one-liner for the LockPickCard chip. Keep it short (<48 chars).
 
     Rules:
@@ -445,6 +511,12 @@ def _build_summary(sport: str, team_h2h: Optional[dict],
     - Team H2H is shown ONLY when at least one side has a win recorded
       (avoids the useless "H2H 0-0 L1" chip when we only have a scheduled
       meeting but no settled final score yet).
+    - Team `avg` is labelled with its unit (runs / goals / pts) so the
+      user can tell it apart from player-stat units at a glance.
+    - Team `avg` is SUPPRESSED on player-prop markets (hits, HRs, K's,
+      goals, assists, receiving yards, etc.) — the number is average
+      game-total scoring and has no bearing on a player's individual
+      stat, which was confusing users. Kept for totals / moneyline / spread.
     """
     bits: list[str] = []
     if player_h2h and (player_h2h.get("sample_size") or 0) > 0:
@@ -457,7 +529,11 @@ def _build_summary(sport: str, team_h2h: Optional[dict],
         if hw + aw > 0:
             rec = team_h2h.get("record") or ""
             avg = team_h2h.get("avg_total")
-            avg_s = f" · {avg} avg" if avg is not None else ""
+            unit = _avg_unit(sport)
+            is_player = _is_player_prop_market(pick_market)
+            avg_s = ""
+            if avg is not None and not is_player:
+                avg_s = f" · {avg} avg {unit}".rstrip()
             bits.append(f"H2H {rec} L{team_h2h['meetings']}{avg_s}")
     return " · ".join([b for b in bits if b]) or ""
 
@@ -536,11 +612,16 @@ async def build_h2h_bundle(db, pick: dict, *, fast_mode: bool = False) -> dict:
     bundle = {
         "ok": bool(team_h2h or player_h2h),
         "sport": sport,
-        "summary": _build_summary(sport, team_h2h, player_h2h),
+        "summary": _build_summary(sport, team_h2h, player_h2h,
+                                   pick_market=pick.get("market") or ""),
         "team_h2h": team_h2h,
         "player_h2h": player_h2h,
         "situational": situational,
         "sources": sources,
+        # is_player_prop tells the frontend whether the team's `avg_total`
+        # cell should be shown in the deep-dive team card — same rationale
+        # as the compact chip: avg game score is irrelevant on a player prop.
+        "is_player_prop": _is_player_prop_market(pick.get("market") or ""),
     }
     _cache_put(ck, bundle)
     return bundle
