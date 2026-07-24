@@ -1,0 +1,63 @@
+{
+  "summary": "Iter 84 — FRONTEND-ONLY reproduction sweep of the 'loaded picks then crashed' report. Login → sport tabs → pick cards → non-home screens all render with ZERO uncaught JS exceptions and ZERO console errors. Payload integrity across MLB/NBA/NFL/Soccer/Tennis/UFC: 0 NaN, 0 Infinity, 0 -Infinity, 0 non-string dates (strict json.loads() succeeds on every response; 400KB MLB, 1.05MB Soccer, 27KB Tennis, empty for NBA/NFL/UFC as expected today). Playwright route-interception tests (P0-critical): (A) 500-once + fallback 200: retry system in /app/frontend/src/lib/api.ts swallowed the failure — user never saw the hiccup banner (works as designed). (B) empty payload {picks:[]}: **STALE-CLOSURE BUG FOUND** — the cache-preservation guard at /app/frontend/app/(tabs)/index.tsx:339 (`if (fresh.length === 0 && picks.length > 0 && sameFilter)`) reads `picks` from the load() useCallback closure, but `picks` is NOT in the useCallback deps (only filterStore.* is). The closure captures the initial-render value `[]` forever, so `picks.length > 0` is always false → the 'Slate refreshing…' banner NEVER fires → an empty response silently wipes the visible slate to 'No locks on the board'. This exactly matches the user's screenshot ('Connection hiccup' + 'No locks on the board'). (C) 10-second delay: cached picks stay visible during the slow request, no crash, no console error after completion. Deep-dive click did not navigate (LockPickCard has no testID and my text-target click landed on inner Text, not the outer Pressable — not a functional issue, but a testability gap). Non-home screens /parlay /my-bets /profile /admin all load with zero errors. Note: /rollovers 404's because the actual file is (tabs)/rollover.tsx (singular) — the review request had a typo, not a bug. No React error boundary trips, no red-screen, no white-screen anywhere.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "LocksScreen load() cache-preservation guard",
+        "issue": "Stale-closure at /app/frontend/app/(tabs)/index.tsx:339 — the check `picks.length > 0` reads from the useCallback closure created on initial render when picks=[]. Since `picks` is not in the deps array (line 395-403 only lists filterStore.sports/leagues/markets/gameIds/searchText), the guard is permanently false and the 'Slate refreshing…' banner never fires. Consequence: any transient empty-picks response (e.g. the backend atomic-swap window the comment at line 332-336 warns about) silently drops the user to the 'No locks on the board' empty state — exactly the behavior in the user's screenshot.",
+        "testID": "n/a (visible bug, not selector issue)",
+        "priority": "P1"
+      },
+      {
+        "component": "LockPickCard",
+        "issue": "No testID prop on the outer Pressable/TouchableOpacity — the deep-dive tap can only be triggered by clicking on inner Text elements, which is unreliable. Add testID={`lock-pick-card-${pick.id}`} for testability.",
+        "testID": "lock-pick-card-<pick.id>",
+        "priority": "P2"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Empty /api/picks/today response during backend atomic-swap window",
+        "issue": "Cached picks are wiped instead of preserved. Root cause = stale-closure over `picks` state in the load() useCallback. See ui_bugs[0].",
+        "affected_testIDs": ["empty-board", "board-skeleton"]
+      }
+    ],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/tmp/payload_scan.py (NaN/Infinity/required-field scan across all 6 sports)",
+    "/tmp/picks_MLB.json /tmp/picks_Soccer.json /tmp/picks_Tennis.json (captured payloads)",
+    "/tmp/testA_500once.png /tmp/testB_empty.png /tmp/testC_slow_mid.png /tmp/testC_slow_done.png (interception screenshots)",
+    "/tmp/scr_parlay.png /tmp/scr_my-bets.png /tmp/scr_profile.png /tmp/scr_admin.png (non-home screen screenshots)"
+  ],
+  "action_items": [
+    "MINIMAL FIX for the stale-closure at /app/frontend/app/(tabs)/index.tsx:339 — add a `picksRef` that mirrors `picks` and read `picksRef.current.length` instead of `picks.length`. Example patch: `const picksRef = useRef<Pick[]>([]); useEffect(() => { picksRef.current = picks; }, [picks]);` and change line 339 to `if (fresh.length === 0 && picksRef.current.length > 0 && sameFilter)`. Adding `picks` directly to the useCallback deps would work but recreates load() on every setPicks() call (undesirable). The ref pattern is the standard fix.",
+    "Add `testID={`lock-pick-card-${pick.id}`}` to the outer Pressable in /app/frontend/src/components/LockPickCard.tsx so future Playwright tests can reliably click cards.",
+    "OPTIONAL: consider showing a lightweight skeleton or dim overlay during a manual UPDATE-triggered refresh (currently the UPDATE button uses `refreshing`, not `loading`, so the skeleton never shows; user has no visual feedback for 3-5s on slow refreshes). Not a bug, just UX polish."
+  ],
+  "critical_code_review_comments": [
+    "index.tsx:339 stale-closure is the actionable root cause of the 'loaded picks then crashed' user report. The retry banner (line 686) and the cache-preservation guard (line 339) are two INDEPENDENT recovery paths — only the retry banner works today; the cache-preservation is silently no-op.",
+    "index.tsx is 1132 lines and should be broken up (load flow, empty-state renderer, filter management, banners are each 100-200 line concerns).",
+    "api.ts retry+timeout is well-designed — 500-once test confirmed the exponential-backoff swallows single transient failures cleanly.",
+    "LockPickCard.tsx renders successfully on every current MLB/Soccer/Tennis pick sampled — no crash-on-mount on any pick field (matchup_score, understat_form, archetype, pick_rationale.splits, sim_win_probability, signal_score_raw all safely accessed with `?.` or fallbacks in the rendered output).",
+    "Backend payload for all 6 sports is 100% JSON-strict-compliant — 0 NaN, 0 Infinity, 0 non-JSON date types. Cannot repro the theorized 'React crash on serialized Infinity' — that failure mode is not present in the current data."
+  ],
+  "updated_files": [
+    "/app/test_reports/iteration_84.json (this report)",
+    "/tmp/payload_scan.py (scratch scanner)"
+  ],
+  "success_rate": {
+    "backend": "not tested (frontend-only per request)",
+    "frontend": "6/7 tests PASS. Home render / sport tabs / non-home screens / 500-once retry / 10s slow / payload integrity all PASS. Empty-payload cache-preservation FAILS (stale closure)."
+  },
+  "seed_data_creation": "None — read-only test session, no fixtures written, no DB mutations.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "The 'loaded picks then crashed' user report is NOT a React error boundary trip or an unhandled JS exception — it is a UX bug where an empty /api/picks/today response (which the backend can briefly emit during its atomic-swap window per the comment at index.tsx:332-336) wipes the visible slate because the intended cache-preservation guard is defeated by a stale closure. To reproduce cheaply: log in, wait for picks to render, then in DevTools set a network breakpoint on /api/picks/today that returns `{\"picks\":[],\"alt_availability\":null}` — the slate will vanish to 'No locks on the board' even though the comment at line 336 explicitly promises the opposite. Once fixed with the `picksRef` pattern (see action_items[0]), rerun the same interception in a Playwright script and assert the 'Slate refreshing…' text is visible AND that a Riley-Greene-style pick from the previously cached slate remains visible.",
+  "rca_of_issue": "ROOT CAUSE (P1): /app/frontend/app/(tabs)/index.tsx:339 — the guard `if (fresh.length === 0 && picks.length > 0 && sameFilter)` reads `picks` from the enclosing useCallback closure. The useCallback deps at line 401-402 include only `filterStore.sports/leagues/markets/gameIds/searchText`. State `picks` (declared at line 69) is NOT in the deps, so the closure captures whatever `picks` was at the moment the useCallback was memoized — which, on first render before any fetch has completed, is `[]`. React does not update the closure just because `setPicks(fresh)` was called elsewhere; the same load() function reference (with stale `picks=[]`) is invoked on every subsequent UPDATE tap and every focus refetch. Therefore `picks.length > 0` is permanently false and the cache-preservation branch is dead code. The user observes: (1) initial fetch succeeds → cards render (state `picks` is populated); (2) any subsequent fetch that returns `{picks:[]}` (backend refresh mid-swap OR upstream returning empty for the current sport tab) hits the load() success path with `fresh.length === 0`; (3) the guard fails silently, execution falls through to `setPicks(fresh)` at line 344, and the visible slate is replaced by the 'No locks on the board' empty state. MINIMAL FIX: introduce a picksRef that always mirrors the latest picks and reference it from the guard — see action_items[0]. This does not require changing the useCallback deps or any other subsystem."
+}
