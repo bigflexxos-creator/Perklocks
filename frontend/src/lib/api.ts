@@ -260,6 +260,17 @@ export type Pick = {
   market_rank?: number | null;
   why_this_pick?: string[];
   why_not_this_pick?: string[];
+  // ── H2H compact (2026-02) — unified head-to-head chip ──────────
+  // Populated by `/api/picks/today` via `services.h2h_enricher`.
+  // Empty string / undefined means we have no meaningful H2H data;
+  // in that case the LockPickCard suppresses the chip entirely.
+  h2h_summary?: string;
+  h2h_compact?: {
+    record?: string;               // e.g. "3-2"
+    meetings?: number;             // total prior meetings we have data for
+    player_display?: string;       // e.g. "8.2 K / start vs KC"
+    player_sample?: number;        // starts / meetings / matches
+  };
 };
 
 export type PickRationale = {
@@ -1021,6 +1032,37 @@ export const api = {
         ip: string;
       }>;
     }>(`/picks/${id}/pitcher-h2h`),
+  // Unified H2H bundle (2026-02) — used by the deep-dive `/pick/[id]` screen.
+  h2h: (id: string) =>
+    request<{
+      ok: boolean;
+      sport?: string;
+      summary?: string;
+      team_h2h?: {
+        meetings: number;
+        record: string;
+        home_wins: number;
+        away_wins: number;
+        avg_total?: number | null;
+        last_meeting?: { date: string; score: string; venue?: string | null; winner?: string } | null;
+        recent?: Array<{ date: string; score: string; winner: string; venue?: string }>;
+      } | null;
+      player_h2h?: {
+        player: string;
+        vs_opponent: string;
+        sample_size: number;
+        primary_stat: string;
+        primary_value: number;
+        primary_value_display: string;
+        season_avg_k?: number;
+        season_starts?: number;
+        recent?: Array<Record<string, any>>;
+        l5?: Record<string, any>;
+      } | null;
+      situational?: { venue?: string | null; notes: string[] } | null;
+      sources?: string[];
+      error?: string;
+    }>(`/picks/${id}/h2h`),
   simBacktest: (days: number = 30, sport?: string) =>
     request<{
       n: number;
