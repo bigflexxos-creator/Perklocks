@@ -1,0 +1,44 @@
+{
+  "summary": "iter-90 batter H2H career + per-game stat rendering: ALL PASS. Backend pytest (test_iter90_batter_h2h_career.py) 7/7 (100%). Direct function call fetch_batter_h2h('Shohei Ohtani','New York Mets') returns vs_team_hits=20, vs_team_ab=71, vs_team_avg=0.282 (perfect match with StatMuse's 20 hits / .282 avg career vs Mets). Riley Greene vs Kansas City Royals returns 195 career AB. On live MLB slate (19 batter-Hits picks with h2h_summary), 19/19 chips match strict regex '^\\d+-for-\\d+ vs .+ \\(0\\.\\d{3} avg, \\d+%\\)$'; 0 contain 'H2H X-Y' or ' L\\d+' tail. Deep-dive /api/picks/{id}/h2h: 9/19 batter Hits picks return a non-empty player_h2h.recent (batters who faced opp in 2026), and EVERY row in those recent lists has stat matching /^\\d+-\\d+$/ — e.g. '0-3', '0-4', '1-4'. The other 10 have empty recent lists because those batters have 0 games vs opp in the CURRENT 2026 season gameLog (career vs-team totals still come through correctly via the new vsTeam endpoint — this is the expected trade-off since only current season is fetched for per-game breakdown; noted as design gap, not P0). Team spread deep-dive still is_player_prop=False + team_h2h.avg_total populated (iter-88 regression PASS). Perf: cold=1.89s, warm=1.75s (well inside 10s / 6s budgets). FRONTEND Playwright (mobile 390x844) on public preview: demo login → MLB tab → located Ohtani Over 0.5 Hits card, chip reads '20-for-71 vs New York Mets (0.282 avg, 28%)' — matches user's StatMuse reference exactly, and the '0-for-7' bug from iter-89 is GONE. Deep-dive PLAYER MATCHUP blue card: headline '20-for-71 vs New York Mets (0.282 avg, 28%)', sub-line 'Shohei Ohtani vs New York Mets · 71 AB', two recent rows visible: '2026-04-14 vs New York Mets 0-3' and '2026-04-13 vs New York Mets 0-4' — the H-AB stat renders in the right-hand recentValue column exactly as the fix intended. All 8 review checklist items pass on this iteration.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "/api/picks/{id}/h2h (batter Hits deep-dive)",
+        "issue": "player_h2h.recent is empty for ~53% of batter Hits picks (10 of 19 on live slate) because mlb_batter_h2h only fetches CURRENT-SEASON gameLog for the per-game breakdown. Career vsTeam totals still populate correctly via the new /people/{pid}/stats?stats=vsTeam endpoint, so chips show correct '20-for-71'-style numbers — but if the batter hasn't faced the opponent yet in 2026, the deep-dive shows NO recent-list at all. Consider adding prior season gameLogs (season=2025) as a supplemental source for the recent list when current-season is empty. Not blocking — the user's original 'stat column empty when rows exist' complaint IS fully fixed."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter90_batter_h2h_career.py",
+    "/app/test_reports/pytest/iter90_batter_h2h_career.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: extend mlb_batter_h2h.fetch_batter_h2h to also fetch season=2025 gameLog (and prior) so player_h2h.recent is populated for batters who haven't faced the opp in the current 2026 season — currently ~10/19 batter Hits picks show an empty recent-list in the deep-dive PLAYER MATCHUP card. Not P0; chips + headline + sub-line are correct end-to-end."
+  ],
+  "critical_code_review_comments": [
+    "mlb_batter_h2h.py:74-99 — vsTeam endpoint correctly parses stats[0].splits[*].stat and sums atBats/hits/homeRuns/rbi/gamesPlayed. Belt-and-suspenders fallback (lines 144-150) uses current-season gameLog counts if vsTeam returns empty; sensible.",
+    "mlb_batter_h2h.py:138 — stat field pre-formatted as f'{h}-{ab}' avoids frontend string-building. Good.",
+    "H2HPanel.tsx:140-148 — recentValue now correctly renders r.stat / r.k / r.result and appends '  n HR' and '  n RBI' inline. minWidth=90 (line 441) fits '1-4  1 HR'. Verified rendering on live Ohtani pick.",
+    "h2h_enricher.py:375 — passes through vs_team_recent as player_h2h.recent. But because fetch_batter_h2h only uses current-season gameLog, the recent list is empty for ~53% of picks. Noted in minor issues.",
+    "Cache: mlb_pitcher_h2h._get() has 12h TTL — perf remains excellent (1.75s warm). No changes needed."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter90_batter_h2h_career.py (new — 7 tests, 100% pass)"
+  ],
+  "success_rate": {
+    "backend": "7/7 (100%)",
+    "frontend": "100% on the 3 verified checks — chip reads correct X-for-Y, PLAYER MATCHUP headline renders career totals, recent rows show H-AB values (0-3, 0-4). Ohtani vs Mets '0-for-7' bug is confirmed FIXED end-to-end."
+  },
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "iter-90 verification pass — the two user-reported bugs are FIXED end-to-end: (a) Ohtani-vs-Mets chip now reads '20-for-71 vs New York Mets (0.282 avg, 28%)' matching StatMuse's career figures (was '0-for-7' iter-89 bug), and (b) PLAYER MATCHUP recent-row value cell renders H-AB (e.g. '0-3', '0-4') for batters that have faced the opp in the current season. Test file /app/backend/tests/test_iter90_batter_h2h_career.py locks the contract: vsTeam career endpoint, chip regex, stat-field format, perf budgets. One remaining design gap: recent list is empty for batters with 0 current-season games vs opp — not blocking, but worth extending to prior-season gameLogs. Perf remains 1.89s cold / 1.75s warm.",
+  "rca_of_issue": "Bug 1 (Ohtani '0-for-7' vs Mets): fetch_batter_h2h previously derived vs-team stats from CURRENT SEASON gameLog only, so Ohtani's 2026 sample against Mets (7 AB, 0 hits) was rendered as the career total. Fix in mlb_batter_h2h.py switches the PRIMARY source to /people/{pid}/stats?stats=vsTeam&opposingTeamId={tid} which returns career totals — the same endpoint StatMuse uses. Verified: 20 hits, 71 AB, .282 avg, 5 HR, 13 RBI in 50 career games (matches StatMuse; StatMuse counts 19 starts, MLB API counts 50 appearances-with-a-PA, delta is expected). Bug 2 (deep-dive recent-row value column empty): H2HPanel.recentValue rendered only r.k (pitcher) or r.result (tennis/soccer) but not batter H-AB. Fix in H2HPanel.tsx:140-148 adds r.stat rendering (pre-formatted by backend as 'h-ab') + inline '  n HR' / '  n RBI' badges when the batter recorded HRs/RBIs; minWidth bumped 40→90 so '1-4  1 HR' fits. Verified end-to-end via Playwright: Ohtani deep-dive shows '0-3' and '0-4' in the right-hand column of the recent rows."
+}
