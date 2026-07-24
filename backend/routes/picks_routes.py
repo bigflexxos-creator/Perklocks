@@ -2189,6 +2189,19 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         from server import _slim_rationale as _slim_pr
     except Exception:
         _slim_pr = None
+    # ── H2H compact-summary attach (2026-02) ────────────────────────
+    # Compute a one-liner H2H summary (see `services.h2h_enricher`) for
+    # each returned pick. The full bundle stays behind `/picks/{id}/h2h`
+    # so /picks/today doesn't balloon. Wrapped in try/except so a single
+    # failure never blocks the response. Bounded to top-200 picks by the
+    # canonical list size — beyond that the marginal UX value doesn't
+    # justify the DB churn.
+    try:
+        from services.h2h_enricher import build_h2h_bundle
+        _h2h_budget = 200
+    except Exception:
+        build_h2h_bundle = None  # type: ignore
+        _h2h_budget = 0
     for _slim in canonical:
         for _f in _HEAVY_LIST_FIELDS:
             _slim.pop(_f, None)
@@ -2203,6 +2216,27 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             ki = _slim.get("key_insights") or []
             if ki:
                 _slim["why_this_pick"] = ki[:6]
+        # ── Attach H2H summary chip (compact, cheap; full bundle on
+        #    the deep-dive endpoint) ────────────────────────────────
+        if build_h2h_bundle is not None and _h2h_budget > 0:
+            try:
+                _bundle = await build_h2h_bundle(db, _slim, fast_mode=True)
+                _summary = (_bundle or {}).get("summary") or ""
+                if _summary:
+                    _slim["h2h_summary"] = _summary
+                    # Also stash the tiny team-record + player-primary so
+                    # the LockPickCard can pill without another API call.
+                    _team = (_bundle or {}).get("team_h2h") or {}
+                    _player = (_bundle or {}).get("player_h2h") or {}
+                    _slim["h2h_compact"] = {
+                        "record":   _team.get("record"),
+                        "meetings": _team.get("meetings"),
+                        "player_display": _player.get("primary_value_display"),
+                        "player_sample":  _player.get("sample_size"),
+                    }
+                _h2h_budget -= 1
+            except Exception:
+                pass
 
     return {"picks": canonical, "alt_availability": alt_availability}
 
@@ -2558,6 +2592,32 @@ async def pick_player_form(
         "updated_at":      updated_at,
         "source":          form_doc.get("source") or "understat",
     }
+
+
+@router.get("/{pick_id}/h2h")
+async def pick_h2h(
+    pick_id: str,
+    user: Annotated[UserPublic, Depends(current_user)],
+):
+    """Unified head-to-head bundle for a single pick.
+
+    Returns a normalised H2H shape (see `services.h2h_enricher.build_h2h_bundle`
+    for the contract) that the deep-dive `/pick/[id]` screen renders.
+
+    Works across MLB (pitcher-vs-team), Tennis (player-vs-player career),
+    Soccer (player-vs-opponent hit rate), and team-level H2H for every
+    sport that has final scores logged in our own settled picks history.
+    """
+    pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
+    if not pick:
+        raise HTTPException(status_code=404, detail="Pick not found")
+    from services.h2h_enricher import build_h2h_bundle
+    try:
+        return await build_h2h_bundle(db, pick)
+    except Exception as e:
+        # Never 500 on an enrichment call — the deep-dive should still
+        # render even if the H2H pipeline hits a transient hiccup.
+        return {"ok": False, "error": str(e), "sport": pick.get("sport")}
 
 
 @router.get("/{pick_id}/pitcher-h2h")

@@ -1,0 +1,43 @@
+{
+  "summary": "H2H enrichment feature: 8/8 backend contract tests PASS and the deep-dive H2HPanel renders with the correct light-amber theme (rgb(254,243,199) bg, rgb(0,0,0) text) and shows the graceful empty-state copy without white-screening. HOWEVER, a CRITICAL data bug was found: `h2h_summary` is populated on 0/68 MLB picks and 0/777 Soccer picks in /api/picks/today. Root cause: services/h2h_enricher.py:_team_h2h_from_settled parses `final_score` with regex `^\\d+[-:]\\d+$` but the DB stores final_score as a DICT (Soccer: {'Jaro':'2','SJK Seinäjoki':'1'}; MLB: prop-keyed {'Michael King Strikeouts':7.0,'Line':4.5}). Regex never matches → home_wins=away_wins=0 → _build_summary suppresses the chip. Result: the compact chip UX is completely non-functional, and by extension the LockPickCard chip (h2h-chip) and why-block (h2h-why-block) cannot render on any pick. Secondary bug: Tennis /api/picks/{id}/h2h returns ok=true but summary='' — likely a name-format mismatch between short pick selection ('Bublik A.') and full names in tennis_matches_history ('Grigor Dimitrov'). Deep-dive panel + endpoint contract are correct; frontend is coded correctly. Backend enricher needs fixing.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "/api/picks/today (h2h attach) + services/h2h_enricher.py:_team_h2h_from_settled", "issue": "final_score in DB is a dict (Soccer team-keyed: {'Jaro':'2','SJK Seinäjoki':'1'}; MLB prop-keyed: {'Michael King Strikeouts':7.0,'Line':4.5}). Enricher does `str(final_score)` and regex-matches ^\\d+[-:]\\d+$ — NEVER matches → home_wins/away_wins always 0 → _build_summary always returns '' → h2h_summary attached on 0/68 MLB, 0/777 Soccer picks. The compact chip feature is dead on arrival.", "priority": "CRITICAL"},
+      {"endpoint": "/api/picks/{id}/h2h (Tennis)", "issue": "Returns ok=true but summary='' on tested tennis pick. Pick.selection uses short-format names ('Bublik A.') while tennis_matches_history.winner_name uses full names ('Grigor Dimitrov'). services/tennis/fallback.get_h2h name matching likely fails on this format mismatch.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "services/h2h_enricher.py:_mlb_player_h2h", "issue": "MLB player H2H is scoped to markets containing 'strikeout|outs recorded|walks|earned runs' — but MLB has HR/hits/hitter props too. Hitter-prop picks will never get a player_h2h even on the deep-dive endpoint."},
+      {"endpoint": "/api/picks/{id}/h2h", "issue": "When bundle is empty the endpoint returns ok=false but the shape still includes sport/summary/team_h2h/player_h2h/situational/sources — good, but 'error' key is only present when an actual exception is caught. Consider a 'reason' field for the empty-bundle case for consistency."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "LockPickCard h2h-chip + h2h-why-block visibility", "issue": "Cannot be visually verified because backend never populates pick.h2h_summary (see CRITICAL backend bug). Frontend code is coded to render conditionally so this is not a frontend bug per se — once the backend is fixed re-verify.", "affected_testIDs": ["h2h-chip", "h2h-why-block"]}
+    ],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter86_h2h_enrichment.py",
+    "/app/test_reports/pytest/iter86_h2h.xml"
+  ],
+  "action_items": [
+    "FIX (CRITICAL): services/h2h_enricher.py:_team_h2h_from_settled must parse the dict shape of `final_score`. For Soccer rows with team-keyed dicts ({home_name: 'N', away_name: 'M'}), extract wins directly. For MLB rows where final_score is prop-keyed (no game score at all), skip win-tallying but still count the meeting, OR (better) source game scores from a separate collection (mlb_games / mlb_boxscores) if available. Without this fix h2h_summary is never emitted.",
+    "FIX (HIGH): Tennis H2H — normalise selection names ('Bublik A.') to the fully-qualified form used in tennis_matches_history ('Alexander Bublik') before calling services.tennis.fallback.get_h2h. Add a lookup in tennis_players or map short-form → full-form.",
+    "FOLLOW-UP: Expand _mlb_player_h2h market whitelist to include hitter-prop markets (hits, home_runs, total_bases, RBIs) OR gate the pitcher-only whitelist on prop_type instead of substring match.",
+    "AFTER BACKEND FIX: Re-run this test file (test_iter86_h2h_enrichment.py) and Playwright to verify h2h-chip renders on at least one LockPickCard and h2h-why-block appears on expand."
+  ],
+  "critical_code_review_comments": [
+    "h2h_enricher.py:141 — regex `^\\s*(\\d+)\\s*[-:]\\s*(\\d+)\\s*$` on str(final_score) will match `\"{'Jaro': '2'\"...` as False. This is the entire root cause of the dead chip. Move to a schema-aware parser that inspects the dict shape.",
+    "h2h_enricher.py:60 _cache_key includes `sport|home|away|selection|market` — the cache is per-selection/market. That's correct, but note the 6h TTL means the CRITICAL bug's empty result will be sticky in-process for 6h after any startup. Backend restart flushes the process cache; keep that in mind while iterating.",
+    "picks_routes.py:2205 — the h2h attach loop runs `await build_h2h_bundle(db, _slim, fast_mode=True)` inside a sync-looking `for _slim in canonical` — this is fine because we're already inside an async endpoint, but the 200-item budget hits ~200 sequential await/Mongo hops. For a 777-pick Soccer response this contributes ~50-70ms/pick × 200 ≈ 10-14s if data existed. Currently unnoticed because every call returns None almost immediately. Post-fix, consider asyncio.gather-batching in groups of 20."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "8/8 endpoint contract tests pass, but feature is functionally broken: 0/845 picks emit h2h_summary", "frontend": "H2HPanel deep-dive renders correctly (theme + empty-state); chip/why-block not testable due to backend data bug"},
+  "seed_data_creation": "None",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Test file: /app/backend/tests/test_iter86_h2h_enrichment.py — reuse for regression. IMPORTANT: even though all 8 tests PASS, the feature is functionally broken because _build_summary correctly refuses to emit a chip when home_wins+away_wins==0. Do not treat 'tests pass' as 'feature works'. After the enricher fix, add an assertion in TestPicksTodayH2HAttach.test_mlb_response_perf_and_h2h_summary requiring len(with_summary) > 0 for MLB and Soccer. Playwright deep-dive test that PASSED: navigate to /pick/{id} on any MLB pick (e.g. first card testID → strip 'pick-card-' prefix), scroll down 6x, assert [data-testid='h2h-panel'] count > 0 and its computed backgroundColor equals rgb(254, 243, 199).",
+  "rca_of_issue": "ROOT CAUSE: services/h2h_enricher.py:_team_h2h_from_settled (lines 130-171) treats the settled pick's `final_score` field as a plain string ('3-2') and matches it with regex `^\\d+[-:]\\d+$`. Empirical DB inspection shows final_score is stored as a DICT in every settled row: Soccer team-keyed like {'Jaro':'2','SJK Seinäjoki':'1'} and MLB prop-keyed like {'Michael King Strikeouts':7.0,'Line':4.5}. `str({...})` never matches the regex, so home_wins and away_wins stay 0 across all meetings. _build_summary (line 358-365) requires hw+aw > 0 before emitting the team-H2H chip, so summary is always ''. Since /picks/today only attaches h2h_summary when non-empty (picks_routes.py:2225), no pick ever carries the field. Frontend LockPickCard renders the chip conditionally on h2h_summary — hence 0 chips on the entire slate. REPRO: (1) call GET /api/picks/today?sport=Soccer as demo user, count picks where h2h_summary is truthy → returns 0 out of 777. (2) MongoDB query: db.picks.countDocuments({sport:'MLB', final_score: {$type:'string'}}) → 0; db.picks.countDocuments({sport:'MLB', final_score: {$type:'object'}}) → 2200+. MITIGATION: rewrite the parser to inspect the final_score dict — for Soccer use team_name → goals mapping, for MLB use a separate mlb_games collection or a game-scores field if one exists. Until then the chip UX is a no-op."
+}

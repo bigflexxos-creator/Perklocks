@@ -350,6 +350,19 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
               ⚡ Almost Apex — blocked by {firstBlocker}
             </Text>
           )}
+          {/* ── H2H compact chip (2026-02) ─────────────────────────
+              Always visible when the backend attached `h2h_summary`.
+              Light theme per user request "make it look good, no dark
+              colors". Tapping the card exposes the full H2H block on
+              the deep-dive screen. */}
+          {!!(pick as any).h2h_summary && (
+            <View style={styles.h2hChip} testID="h2h-chip">
+              <Text style={styles.h2hChipIcon}>⚔️</Text>
+              <Text style={styles.h2hChipText} numberOfLines={1}>
+                {(pick as any).h2h_summary}
+              </Text>
+            </View>
+          )}
         </View>
       </View>
 
@@ -514,6 +527,35 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
                       ))}
                   </View>
                 )}
+
+              {/* ── H2H inline block inside "Why this pick" ─────────
+                  Shows the compact H2H summary and top splits without
+                  requiring a tap through to the deep-dive. Rendered
+                  as a light-theme pill so it stays legible on both
+                  dark and light card variants. */}
+              {(!!(pick as any).h2h_summary || !!(pick as any).h2h_compact) && (
+                <View style={styles.h2hWhyBlock} testID="h2h-why-block">
+                  <Text style={styles.h2hWhyLabel}>⚔ HEAD-TO-HEAD</Text>
+                  {!!(pick as any).h2h_summary && (
+                    <Text style={styles.h2hWhySummary}>
+                      {(pick as any).h2h_summary}
+                    </Text>
+                  )}
+                  {!!(pick as any).h2h_compact?.player_display && (
+                    <Text style={styles.h2hWhyLine}>
+                      👤 {(pick as any).h2h_compact.player_display}
+                    </Text>
+                  )}
+                  {!!(pick as any).h2h_compact?.record && (
+                    <Text style={styles.h2hWhyLine}>
+                      📊 Team record: {(pick as any).h2h_compact.record}
+                      {(pick as any).h2h_compact.meetings
+                        ? ` over last ${(pick as any).h2h_compact.meetings} meeting${(pick as any).h2h_compact.meetings === 1 ? "" : "s"}`
+                        : ""}
+                    </Text>
+                  )}
+                </View>
+              )}
 
               {Array.isArray((pick as any).why_not_this_pick) &&
                 ((pick as any).why_not_this_pick as string[]).length > 0 && (
@@ -1757,6 +1799,60 @@ const styles = StyleSheet.create({
   archChipDefault:   { borderColor: "rgba(180,180,180,0.55)", backgroundColor: "rgba(180,180,180,0.12)" },
   archChipIcon:  { fontSize: 11 },
   archChipText:  { color: COLORS.textPrimary, fontSize: 9.5, fontWeight: "900", letterSpacing: 0.8 },
+  // ── H2H compact chip (2026-02) ─────────────────────────────
+  // Light, high-contrast chip so it's ALWAYS legible on the card.
+  // Per user spec: "make it look good, ensure you can see visible
+  // no dark colors". Amber-tinted background, near-black text.
+  h2hChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    marginTop: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: "rgba(251,191,36,0.75)",   // amber-400 border
+    backgroundColor: "rgba(254,243,199,0.98)", // amber-100 fill
+    gap: 6,
+  },
+  h2hChipIcon: { fontSize: 12 },
+  h2hChipText: {
+    color: "#78350F",                       // amber-900 for high contrast
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
+  // H2H block inside "Why this pick" — light amber surface so the H2H
+  // section is always highly legible inside the expanded panel.
+  h2hWhyBlock: {
+    marginTop: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#F59E0B",
+    backgroundColor: "#FEF3C7",
+    padding: 10,
+    gap: 4,
+  },
+  h2hWhyLabel: {
+    color: "#78350F",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 1.3,
+    marginBottom: 2,
+  },
+  h2hWhySummary: {
+    color: "#1F2937",
+    fontSize: 13,
+    fontWeight: "800",
+    lineHeight: 18,
+  },
+  h2hWhyLine: {
+    color: "#374151",
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 17,
+  },
   market: { color: COLORS.textPrimary, fontSize: 17, fontWeight: "800", letterSpacing: -0.3 },
   metricsRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 18, marginBottom: 12 },
   metric: { flex: 1 },

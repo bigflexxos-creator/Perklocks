@@ -17,6 +17,7 @@ import { SimulatorPanel } from "@/src/components/SimulatorPanel";
 import { RiskMeterPanel } from "@/src/components/RiskMeterPanel";
 import { EvidencePanel } from "@/src/components/EvidencePanel";
 import { PitcherH2HPanel } from "@/src/components/PitcherH2HPanel";
+import { H2HPanel } from "@/src/components/H2HPanel";
 import { XGFormPanel } from "@/src/components/XGFormPanel";
 import { ProbabilityBreakdownPanel } from "@/src/components/ProbabilityBreakdownPanel";
 import { MarkdownText } from "@/src/components/MarkdownText";
@@ -366,6 +367,12 @@ export default function PickDetail() {
                 (career + last 5 starts). Renders nothing on non-MLB or
                 non-strikeout picks. */}
             <PitcherH2HPanel pick={pick} />
+
+            {/* Unified H2H (2026-02) — team-level for every sport, plus
+                player-level splits sourced from the sport-specific engines
+                (MLB Stats, tennis history DB, soccer settled picks).
+                Light-theme card for visible high-contrast rendering. */}
+            <H2HPanel pickId={pick.id} />
 
             {/* Batter-vs-Pitcher card — MLB hit/total bases/HR props only.
                 Populated by /app/backend/mlb_bvp.py at pick-generation time
