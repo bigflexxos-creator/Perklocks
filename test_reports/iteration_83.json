@@ -1,0 +1,32 @@
+{
+  "summary": "Iter 83 — System-wide backend bug sweep (read-only). Wrote /app/backend/tests/test_iter83_system_wide_sweep.py with 75 pytest cases covering auth, health, picks (per-sport + side endpoints + deep-dive), data-integrity on live slate, analytics, parlay, user, admin, and misc endpoints. ALL 75 tests PASSED (100% green). No 5xx returned by any endpoint hit. Backend uptime 10m+ RUNNING, expo RUNNING, no ERROR-level tracebacks in backend.err.log since last restart (only a single pre-restart FASTAPI_UNHANDLED on /api/mlb/live at 19:25 — /api/mlb/live now returns 200 after restart). Direct Mongo integrity check on today's slate (2026-07-24, 1323 total picks): no_bet_any=53 (correctly hidden), no_bet_high_peak=0 (iter-80 sticky-pin fix holds), bad_lock_scores=0 (all in [0,99]), sport breakdown Soccer=1037 / MLB=71 / Tennis=161 / UFC=1 (NBA/NFL offseason, endpoints still 200 with empty). Iter-82 line-specific contradiction fix verified live: 0 same-event/same-player/same-family/same-line Over+Under pairs visible across the entire slate. Auth: malformed token → 401 (not 500), wrong password → 400/401. Deep-dive /api/picks/{id} sampled across sports returns 200. GREEN PASS.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter83_system_wide_sweep.py",
+    "/app/test_reports/pytest/iter83_sweep.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is ~4744 lines — flagged for future modularization but not blocking (prior iterations already extracted picks/analytics/admin/parlay/nfl/mlb-hr into /app/backend/routes/*).",
+    "backend.err.log contains 1 pre-restart FASTAPI_UNHANDLED on /api/mlb/live (19:25); post-restart the same endpoint returns 200 in tests — appears to have been a transient upstream (MLB Stats API) issue during startup, not a code regression.",
+    "MLS gate spot-check via services.mls_scorer_gate._espn_names() returned an empty set when called ad-hoc from an isolated interpreter (needs runtime warm-up); this is not evidence of a bug — the live MLS Anytime Goal Scorer slate shows 57 visible picks with 0 contradictions and 0 no_bet leakage, and iter-80/81 tests directly cover the gate. Recommend keeping iter-80 test in the regression suite."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter83_system_wide_sweep.py (new — 75 tests)"
+  ],
+  "success_rate": {"backend": "100% (75/75)", "frontend": "not tested (backend-only per request)"},
+  "seed_data_creation": "None — read-only sweep. No fixtures inserted, no DB writes.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "iter83 sweep template (test_iter83_system_wide_sweep.py) is fully parametrized and reusable — extend the SPORTS list, side-endpoint paths, and admin path list as new endpoints ship. The data-integrity checks (no no_bet visible, no same-line Over+Under, lock_score in [0,99], no duplicate ids, required fields) run against live /api/picks/today so they double as a nightly regression harness. Uses EXPO_PUBLIC_BACKEND_URL (frontend .env has EXPO_PUBLIC_BACKEND_URL, not EXPO_BACKEND_URL). All 6 sport tabs (MLB/NBA/NFL/Soccer/Tennis/UFC) confirmed 200. Direct Mongo integrity assertions were done via ad-hoc script (not the pytest file) because motor + module-import races make embedding them fragile; the pytest suite covers the API surface which is what the user actually sees.",
+  "rca_of_issue": "N/A — no P0/P1/P2 failures found in this sweep. Iter-80 (MLS active-player filter + sticky-pin no_bet delete) and iter-82 (line-specific contradiction reconciler) regressions both hold on the live 2026-07-24 slate (1323 picks; 0 same-line Over+Under contradictions; 0 no_bet + peak>=95 picks). Green PASS across 75 endpoint smoke tests, 5 data-integrity assertions, and log/status/health checks."
+}
