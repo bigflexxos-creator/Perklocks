@@ -104,6 +104,7 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
     meetings: list[dict] = []
     home_l = home.strip().lower()
     away_l = away.strip().lower()
+    src_label: Optional[str] = None  # audit trail — which collection served the data
 
     # 1) MLB / NFL / NBA / NHL — `games` collection
     if sport in {"MLB", "NFL", "NBA", "NHL"}:
@@ -130,8 +131,6 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
                 if h_score is None or a_score is None:
                     continue
                 g_home = str(g.get("home") or "")
-                g_away = str(g.get("away") or "")
-                # Normalise into "our home" perspective.
                 is_flipped = g_home.strip().lower() == away_l
                 meetings.append({
                     "date": str(g.get("date") or "")[:10],
@@ -140,6 +139,8 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
                     "away_team_score": int(h_score) if is_flipped else int(a_score),
                     "venue": g.get("venue") or "",
                 })
+            if meetings:
+                src_label = "games"
         except Exception as e:
             logger.debug("games coll scan failed: %s", e)
 
@@ -173,6 +174,8 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
                     "away_team_score": int(h_score) if is_flipped else int(a_score),
                     "venue": m.get("league") or "",
                 })
+            if meetings:
+                src_label = "soccer_matches"
         except Exception as e:
             logger.debug("soccer_matches scan failed: %s", e)
 
@@ -221,6 +224,8 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
                     })
                 if len(meetings) >= limit:
                     break
+            if meetings:
+                src_label = "settled_picks_db"
         except Exception as e:
             logger.debug("h2h picks fallback failed: %s", e)
 
@@ -247,6 +252,7 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
         "avg_total": round(sum(totals) / len(totals), 2) if totals else None,
         "last_meeting": recent[0] if recent else None,
         "recent": recent,
+        "source": src_label,
     }
 
 
@@ -496,7 +502,9 @@ async def build_h2h_bundle(db, pick: dict, *, fast_mode: bool = False) -> dict:
     # Team-level H2H — works for every sport that has final scores logged.
     team_h2h = await _team_h2h_from_settled(db, sport, home, away, limit=10)
     if team_h2h:
-        sources.append("settled_picks_db")
+        # Use the specific collection label so the audit trail (`sources`)
+        # accurately reflects where the H2H data actually came from.
+        sources.append(team_h2h.get("source") or "settled_picks_db")
 
     # Player-level H2H — sport-specific.
     player_h2h: Optional[dict] = None
