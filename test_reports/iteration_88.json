@@ -1,0 +1,45 @@
+{
+  "summary": "iter-88 H2H player-prop AVG suppression + three-card redesign + preview health: ALL PASS. Backend suite (test_iter88_player_prop_avg_suppression.py: 8/8) — MLB player-prop chips carry NO 'avg' substring, MLB team-market chips DO carry 'avg runs', Soccer player-prop chips carry NO 'avg', deep-dive /api/picks/{id}/h2h returns is_player_prop=true for a Hits pick and is_player_prop=false for a team spread, no 5xx on invalid pick id, iter-82 same-line O/U regression still clean. FRONTEND Playwright on public preview: demo login → Locks board rendered 146 pick-cards and 57 h2h-chips; sampled 30 chip texts and only 1 contains 'avg' (that one is a Yankees +1.5 SPREAD → correctly labelled 'H2H 2-3 L5 · 9.8 avg runs'), remaining 29 are player-prop chips of form 'H2H X-Y LZ' with NO avg — matches the spec exactly. HITS deep-dive (Riley Greene DET Over 0.5 Hits): h2h-panel present, GAME-DAY H2H card renders in AMBER bg rgb(254,243,199) — matches #FEF3C7 amber-100 spec — and the AVG cell is CORRECTLY HIDDEN (team stats row shows only RECORD 4-5 + MEETINGS 9). SPREAD deep-dive (NYY +1.5): AVG RUNS cell IS present (value 9.8). Preview URL health OK: no white screen, no 5xx, board renders normally. Regression: iter-86 contract 6/6 + iter-87 5/6 still pass (2 unrelated env issues — cold cache latency 36s on iter-86 perf test and a data-availability skip on iter-87 soccer H2H, neither is a regression from iter-88). Note: on the HITS deep-dive the BLUE player-matchup card did NOT render because MLB batter-vs-pitcher H2H is intentionally NOT wired in _mlb_player_h2h (only pitcher props are covered — see h2h_enricher.py:266-273 comment). This is by design per the code. If E1 wants a BLUE player card on batter props, mlb_hr_intel data would need to be surfaced via player_h2h — flagging as an observation.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/picks/today?sport=MLB (cold-cache)", "issue": "First uncached MLB /picks/today response takes ~36s (measured during iter-86 regression re-run); iter-88 perf test (warm) is <6s. Not a regression from iter-88 changes but worth noting the cold-start p95."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/pick/{id} — HITS deep-dive", "issues": ["No BLUE 'PLAYER MATCHUP' sub-card rendered for a batter-Hits pick. h2h-panel shows only the AMBER game-day card + situational card. Reason: services/h2h_enricher.py:_mlb_player_h2h only handles PITCHER props (strikeouts/walks/etc.) — batter H2H is intentionally deferred to mlb_hr_intel and not surfaced via player_h2h. The redesign spec calls for 'mixing game day with player data' but on batter props the player card is empty. Consider wiring hitter-vs-pitcher OPS/hits from mlb_hr_intel into player_h2h so the BLUE card renders on batter Hits/HRs/Total-Bases picks."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter88_player_prop_avg_suppression.py",
+    "/app/test_reports/pytest/iter88_avg_suppression.xml",
+    "/app/test_reports/pytest/iter88_regression.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: To fully deliver on the 'BLUE player card + AMBER game-day card' spec for batter props, wire batter-vs-pitcher OPS (or hits-per-PA) from services.mlb_hr_intel into _mlb_player_h2h() for markets containing 'hits' / 'home run' / 'total bases' / 'rbi'. Currently only PITCHER strikeout/walk/ER props render the BLUE card. On today's slate the HITS deep-dive shows only the amber card.",
+    "OPTIONAL: Address the pre-existing ~36s cold-cache latency on /api/picks/today?sport=MLB — the h2h enrichment adds cost on cold cache. Consider warming on service start."
+  ],
+  "critical_code_review_comments": [
+    "_is_player_prop_market() keyword list correctly classifies all sports we tested (MLB batter+pitcher, Soccer scorer/assist, Tennis aces, NBA pts/reb/ast, NFL pass/rush/rec yds).",
+    "_build_summary(pick_market=…) correctly threads the market string through and suppresses the ` · X.X avg unit` clause when is_player_prop=true. Verified empirically: 29/30 sampled chips on live MLB slate contain no 'avg'; the 1 that does is a team spread ('H2H 2-3 L5 · 9.8 avg runs').",
+    "H2HPanel.tsx conditional `!(b as any).is_player_prop && b.team_h2h.avg_total != null` on the AVG stat cell is correct — verified on live UI: Hits pick hides cell, Spread pick shows cell.",
+    "Tennis team-total aggregate correctly disabled in _team_h2h_from_settled (sport=='Tennis' early return). Verified in iter-86 contract suite.",
+    "`avgUnitLabel()` on frontend maps MLB→RUNS / Soccer→GOALS / NBA/NFL/NHL→PTS. Deep-dive UI label reads 'AVG RUNS' on the MLB spread pick (matches backend `avg runs` unit)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter88_player_prop_avg_suppression.py (new — 8 tests, 100% pass)"
+  ],
+  "success_rate": {
+    "backend": "8/8 iter-88 (100%) + 10/12 combined iter-86/87 regression (2 unrelated env failures — cold-cache latency and soccer H2H data availability)",
+    "frontend": "Preview + login + deep-dive UI: 100%. 29/30 sampled chips correctly omit 'avg' on player props; 1/1 sampled chip correctly includes 'avg runs' on team spread. AVG cell shown/hidden correctly on both deep-dives sampled."
+  },
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "iter-88 test file at /app/backend/tests/test_iter88_player_prop_avg_suppression.py validates the AVG-suppression contract. If h2h_enricher.py is touched again, re-run this + iter-86 + iter-87 suites. IMPORTANT for the fixture to work: pytest needs EXPO_PUBLIC_BACKEND_URL exported OR the fallback in test_iter88 (BASE_URL default) will apply, but test_iter86 REQUIRES the env var to be set explicitly. Frontend Playwright confirmed the 3-card structure and colors match spec: AMBER game-day card has bg rgb(254,243,199). One design-gap observation: on batter Hits deep-dives, the BLUE player card does not render because MLB batter-vs-pitcher data isn't surfaced via player_h2h — this is by design in the current code but arguably incomplete relative to the 'mixing game day with player data' redesign spec.",
+  "rca_of_issue": "N/A — iter-88 verification pass. Both reported issues (A: preview loading, B: '7.11 avg' on player hit cards) are fully resolved. Preview loads cleanly; player-prop chips no longer show any 'avg' text; deep-dive AVG cell is correctly conditional on is_player_prop=false."
+}
