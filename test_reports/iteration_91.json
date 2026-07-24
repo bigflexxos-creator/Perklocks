@@ -1,0 +1,38 @@
+{
+  "summary": "iter-91 batter H2H multi-season + expand toggle + wired H2H signal into why_this_pick: ALL PASS end-to-end. Backend pytest (test_iter91_batter_h2h_multi_season.py) 4/4 (100%). (1) fetch_batter_h2h('Shohei Ohtani','New York Mets') returns 17 real per-game rows spanning years {2023, 2024, 2025, 2026} — up from 2 in iter-90. Every row's `stat` matches /^\\d+-\\d+$/. Career totals still 20-for-71 .282 avg (StatMuse parity holds). (2) /api/picks/{id}/h2h across 15 live batter Hits picks: 11/15 return player_h2h.recent length >= 10, 13/15 have rows spanning >= 2 distinct years — the empty-recent-list design gap from iter-90 is CLOSED. (3) /api/picks/today?sport=MLB: 12 picks carry an 'H2H tailwind' or 'H2H headwind' bullet in why_this_pick (Miguel Vargas headwind .179 vs Astros, Yordan Alvarez headwind .284 vs White Sox, Willson Contreras tailwind .327 vs Blue Jays, Jonathan Aranda headwind .176 vs Guardians, Miguel Rojas headwind .256 vs Mets, and 7 more). Perf: cold 6.5s < 10s budget, warm 1.8s < 6s budget. Iter-89 regression (no 'H2H X-Y' or ' L\\d+' tail on batter chips) and iter-90 regression (Ohtani chip = '20-for-71 vs New York Mets (0.282 avg, 28%)') both HOLD. FRONTEND Playwright (mobile 390x844, public preview): (a) demo login → MLB tab → in-page fetch located target pick 'Miguel Vargas Over 0.5 Hits vs Houston Astros' with 13 recent rows; navigated to /pick/{id}; asserted [data-testid=\"h2h-player-expand\"] visible with text '▼ SEE ALL 13 GAMES vs Houston Astros'; only 5 date rows rendered default; tapped toggle; text became '▲ COLLAPSE' and 13 rows rendered — screenshot /tmp/iter91_expanded.png confirms all 13 dates from 2023-06-23 through 2025-06-12 fully rendered with H-AB stat + '1 RBI' badge inline. (b) On MLB LOCKS page, after expanding all Why-this-pick toggles, page innerText contained bullet: '• Career .306 vs Baltimore Orioles (33-for-108) — well above his season .267 avg (H2H tailwind)' — H2H signal WIRED THROUGH to LockPickCard rationale bullets. All 6 review checklist items pass.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter91_batter_h2h_multi_season.py",
+    "/app/test_reports/pytest/iter91_batter_h2h.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: LockPickCard.tsx:522 caps why_this_pick bullets at .slice(0, 6) — if a pick ever accumulates more than 6 upstream bullets, the H2H tailwind/headwind bullet (appended last by picks_routes.py) could be truncated. Live slate today shows H2H bullets rendering fine because typical picks have <=6 bullets. Consider either bumping the cap to 8, or having picks_routes.py splice the H2H bullet in at position [-2] (before a summary/CTA bullet) so it survives the cap even on verbose picks. Not blocking — verified rendering end-to-end on today's slate."
+  ],
+  "critical_code_review_comments": [
+    "mlb_batter_h2h.py:109-115 — season_years = [season, season-1, season-2, season-3]; correctly iterates 2026,2025,2024,2023. Season totals gated on `yr == season` on line 129 so career gameLog data doesn't pollute season_avg. Verified: Ohtani season_avg still reflects 2026 only.",
+    "mlb_batter_h2h.py:170 — [:50] cap on vs_team_recent list matches spec (bumped 5→50). Sorted DESC by date so the front-end default slice(0,5) gives the most recent 5 games — correct UX.",
+    "h2h_enricher.py:368-384 — h2h_insight threshold (delta >= ±0.030, vs_ab >= 15) correctly filters noise. Verified 12 real bullets on live slate, all cite career vs-opp avg vs season avg with correctly-signed delta.",
+    "H2HPanel.tsx:138 — slice(0, showAllPlayer ? recent.length : 5) collapses correctly to 5 by default and expands to full length; testID h2h-player-expand toggle text 'SEE ALL {N} GAMES vs {OPP}' / 'COLLAPSE' rendering verified via Playwright.",
+    "LockPickCard.tsx:522 — .slice(0, 6) on why_this_pick could truncate the appended H2H bullet on verbose picks. Noted in action_items."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter91_batter_h2h_multi_season.py (new — 4 tests, 100% pass)"
+  ],
+  "success_rate": {
+    "backend": "4/4 (100%)",
+    "frontend": "3/3 (100%) — expand toggle Playwright PASS (5 rows default → 13 rows after tap on Miguel Vargas vs Astros deep-dive), H2H tailwind bullet visible in Why-this-pick expanded panel on MLB LOCKS page, Ohtani chip regression PASS."
+  },
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "iter-91 verification pass — all three user-requested changes work end-to-end: (1) multi-season game log restored to 17 real rows across 2023-2026 for Ohtani vs Mets, and 13/15 sampled batter Hits picks now have recent lists spanning >=2 years; (2) blue PLAYER MATCHUP deep-dive card has functional ▼ SEE ALL {N} / ▲ COLLAPSE toggle (testID h2h-player-expand); (3) H2H tailwind/headwind bullets flow from services/h2h_enricher.py through picks_routes.py into pick.why_this_pick and render inside LockPickCard 'Why this pick?' bullet list. Perf: cold 6.5s, warm 1.8s — within budgets. Test file /app/backend/tests/test_iter91_batter_h2h_multi_season.py locks the contract. Minor future risk: LockPickCard.tsx:522 .slice(0,6) cap could truncate the appended H2H bullet on verbose picks but no evidence of truncation on today's live slate."
+}

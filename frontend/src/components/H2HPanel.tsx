@@ -33,7 +33,7 @@
  * data you're reading.
  */
 import React, { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, ActivityIndicator, Pressable } from "react-native";
 import { api } from "@/src/lib/api";
 
 // Team-total avg unit — MLB is runs, Soccer is goals, US-team sports
@@ -54,6 +54,9 @@ function avgUnitLabel(sport?: string): string {
 export function H2HPanel({ pickId }: { pickId: string }) {
   const [bundle, setBundle] = useState<Awaited<ReturnType<typeof api.h2h>> | null>(null);
   const [loading, setLoading] = useState(true);
+  // iter-91: user wants ability to tap the player card to see ALL
+  // historical games vs the opponent (default view shows only 5).
+  const [showAllPlayer, setShowAllPlayer] = useState(false);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -131,7 +134,9 @@ export function H2HPanel({ pickId }: { pickId: string }) {
             )}
             {Array.isArray(b.player_h2h.recent) && b.player_h2h.recent.length > 0 && (
               <View style={[styles.recentBox, styles.recentBoxPlayer]}>
-                {b.player_h2h.recent.slice(0, 5).map((r, i) => (
+                {b.player_h2h.recent
+                  .slice(0, showAllPlayer ? b.player_h2h.recent.length : 5)
+                  .map((r, i) => (
                   <View key={i} style={styles.recentRow}>
                     <Text style={styles.recentDate}>{String(r.date || "").slice(0, 10)}</Text>
                     <Text style={styles.recentBody} numberOfLines={1}>
@@ -148,6 +153,21 @@ export function H2HPanel({ pickId }: { pickId: string }) {
                     </Text>
                   </View>
                 ))}
+                {/* Expand / collapse toggle — only surfaces when we
+                    actually have more than 5 games logged. */}
+                {b.player_h2h.recent.length > 5 && (
+                  <Pressable
+                    onPress={() => setShowAllPlayer(v => !v)}
+                    style={styles.expandTapRow}
+                    testID="h2h-player-expand"
+                  >
+                    <Text style={styles.expandTapText}>
+                      {showAllPlayer
+                        ? "▲ COLLAPSE"
+                        : `▼ SEE ALL ${b.player_h2h.recent.length} GAMES vs ${b.player_h2h.vs_opponent}`}
+                    </Text>
+                  </Pressable>
+                )}
               </View>
             )}
           </View>
@@ -440,6 +460,21 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     minWidth: 90,
     textAlign: "right",
+  },
+  // Expand toggle at the bottom of the player recent list.
+  expandTapRow: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: "#DBEAFE",   // blue-100
+    borderTopWidth: 1,
+    borderTopColor: "#93C5FD",
+    alignItems: "center",
+  },
+  expandTapText: {
+    color: "#1E3A8A",
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 1.2,
   },
   emptyText: {
     color: "#4B5563",
