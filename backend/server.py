@@ -2460,6 +2460,22 @@ async def _reconcile_player_prop_contradictions(safe_picks: list, date_str: str)
     # earlier refresh bucketed it under today's — same event/player).
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
     cutoff_iso = (_dt.now(_tz.utc) - _td(hours=72)).isoformat()
+
+    # ── Line-value extractor (2026-02) ───────────────────────────────
+    # Over 7.5 vs Under 7.5 IS a contradiction (strict opposites).
+    # Over 7.5 vs Under 8.5 IS NOT (both win at K=8 — user report:
+    # "His line is 7.5 not 8.5 so the over should of stayed").
+    # Grouping must include the numeric line so we only pair sides of
+    # the SAME line.
+    import re as _re
+    _line_re = _re.compile(r"(?i)(?:over|under)\s+(-?\d+(?:\.\d+)?)")
+
+    def _extract_line(market: str) -> str:
+        if not market:
+            return ""
+        m = _line_re.search(market)
+        return m.group(1) if m else ""
+
     for event, player, family in touched:
         rows = await db.picks.find(
             {"event": event, "selection": player,
@@ -2468,40 +2484,49 @@ async def _reconcile_player_prop_contradictions(safe_picks: list, date_str: str)
             {"_id": 0, "id": 1, "market": 1, "edge_percent": 1,
              "lock_score": 1, "created_at": 1, "pick_date": 1},
         ).to_list(length=200)
-        # Group by family with side.
-        by_side: dict[str, list[dict]] = {"over": [], "under": []}
+        # Group by (family, line) with side. Same family + same line
+        # is required for a genuine contradiction — different lines
+        # can both win (e.g. Over 7.5 K's AND Under 8.5 K's both hit
+        # if the pitcher records exactly 8 strikeouts).
+        by_group: dict[str, dict[str, list[dict]]] = {}
         for r in rows:
             m = r.get("market") or ""
             if _prop_family_key(m) != family:
                 continue
+            line = _extract_line(m)
+            if not line:
+                # No numeric line detected — skip; can't reason about
+                # contradictions when the line is unknown.
+                continue
             ml = m.lower()
             if " over " in ml or ml.startswith("over "):
-                by_side["over"].append(r)
+                by_group.setdefault(line, {"over": [], "under": []})["over"].append(r)
             elif " under " in ml or ml.startswith("under "):
-                by_side["under"].append(r)
-        if not (by_side["over"] and by_side["under"]):
-            continue
-        # Pick the single best row across BOTH sides — that's the winner.
-        # Everything else in the loser side gets `no_bet=True` tagged so
-        # the contradiction disappears from user-facing endpoints. We do
-        # NOT delete the loser rows outright — settled ROI history and
-        # the audit trail rely on the pick existing.
-        all_rows = by_side["over"] + by_side["under"]
-        def _rank(r: dict) -> tuple:
-            return (float(r.get("edge_percent") or 0),
-                    float(r.get("lock_score") or 0))
-        winner = max(all_rows, key=_rank)
-        winner_side = "over" if winner in by_side["over"] else "under"
-        loser_side = "under" if winner_side == "over" else "over"
-        loser_ids = [r["id"] for r in by_side[loser_side] if r.get("id")]
-        if not loser_ids:
-            continue
-        res = await db.picks.update_many(
-            {"id": {"$in": loser_ids}},
-            {"$set": {"no_bet": True,
-                       "no_bet_reason": f"contradicts {winner_side} {family} for {player}"}},
-        )
-        removed_total += int(getattr(res, "modified_count", 0) or 0)
+                by_group.setdefault(line, {"over": [], "under": []})["under"].append(r)
+        for line, by_side in by_group.items():
+            if not (by_side["over"] and by_side["under"]):
+                continue
+            # Pick the single best row across BOTH sides — that's the winner.
+            # Everything else in the loser side gets `no_bet=True` tagged so
+            # the contradiction disappears from user-facing endpoints. We do
+            # NOT delete the loser rows outright — settled ROI history and
+            # the audit trail rely on the pick existing.
+            all_rows = by_side["over"] + by_side["under"]
+            def _rank(r: dict) -> tuple:
+                return (float(r.get("edge_percent") or 0),
+                        float(r.get("lock_score") or 0))
+            winner = max(all_rows, key=_rank)
+            winner_side = "over" if winner in by_side["over"] else "under"
+            loser_side = "under" if winner_side == "over" else "over"
+            loser_ids = [r["id"] for r in by_side[loser_side] if r.get("id")]
+            if not loser_ids:
+                continue
+            res = await db.picks.update_many(
+                {"id": {"$in": loser_ids}},
+                {"$set": {"no_bet": True,
+                           "no_bet_reason": f"contradicts {winner_side} {family} {line} for {player}"}},
+            )
+            removed_total += int(getattr(res, "modified_count", 0) or 0)
     if removed_total:
         logger.info(
             "Prop contradiction reconciliation: neutralised %d contradicting picks across %d groups",
