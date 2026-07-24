@@ -1,0 +1,32 @@
+{
+  "summary": "Backend-only verification of the line-specific contradiction reconciler fix in _reconcile_player_prop_contradictions. All 6 targeted tests pass: (1) Skubal-style Over 7.5 + Under 8.5 both survive (different lines, both win at K=8); (2) Same-line Over 6.5 + Under 6.5 correctly reconciled with lower-edge side tagged no_bet=True; (3) Multi-line seed (Over 6.5 + Under 6.5 + Over 7.5 + Under 8.5) only pairs the 6.5 sides, both 7.5/8.5 picks untouched; (4) no_bet_reason includes numeric line ('contradicts under MLB_K 6.5 for <player>'); (5) Line-less markets (Over/Under Home Run without numeric line) skipped safely without raise; (6) Live /api/picks/today?sport=MLB returns 200 with zero same-line Over/Under strikeout contradictions.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter82_line_specific_contradiction.py",
+    "/app/test_reports/pytest/iter82_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "The `_extract_line` regex `(?i)(?:over|under)\\s+(-?\\d+(?:\\.\\d+)?)` correctly captures floats and negatives; verified against 'Player Over 7.5 Strikeouts' → '7.5' and 'Under 8.5 Strikeouts' → '8.5'. Line-less markets like 'Over Home Run' return '' and are correctly skipped.",
+    "Grouping keys on stringified line values ('7.5' vs '7.50' would not match). Not an issue with current market label formatter (Odds API always emits one decimal), but flag if upstream normalization changes.",
+    "Winner selection ranks by (edge_percent, lock_score) tuple — same as before; the loser side gets update_many with $set no_bet=True. Behavior unchanged from iter 81 apart from the same-line gate."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter82_line_specific_contradiction.py (new)"
+  ],
+  "success_rate": {"backend": "100% (6/6)", "frontend": "n/a (backend only)"},
+  "seed_data_creation": "All seed picks prefixed with TEST_iter82_* and cleaned up in finally blocks. Pick_date values TEST_iter82_diff_lines / TEST_iter82_same_line / TEST_iter82_multi_line / TEST_iter82_lineless used only in tests; no impact on production picks.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "iter82 introduced pytest.helper pattern that rebinds server.db to a fresh AsyncIOMotorClient bound to the CURRENT event loop before every asyncio.run() in _get_db(). This avoids the 'Event loop is closed' error that occurs when multiple test methods each call asyncio.run() and reuse motor clients created at module import. Reuse this helper pattern in future tests that call server.db from multiple asyncio.run() blocks.",
+  "rca_of_issue": "User reported: Over 7.5 K's + Under 8.5 K's for Skubal — the iter81 reconciler treated them as a contradiction (family MLB_K, opposite sides). Correct behavior: both can win at K=8 (Over 7.5 hits, Under 8.5 hits). Fix in _reconcile_player_prop_contradictions adds `_extract_line(market)` regex and groups by (family, line) via `by_group[line][side]` — only Over N vs Under N (same numeric line) is now treated as a contradiction. Verified via 6 pytest cases in test_iter82_line_specific_contradiction.py."
+}
