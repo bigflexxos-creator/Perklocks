@@ -2202,6 +2202,7 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     except Exception:
         build_h2h_bundle = None  # type: ignore
         _h2h_budget = 0
+    # ── First pass: heavy fields cleanup + why_this_pick fallback ───
     for _slim in canonical:
         for _f in _HEAVY_LIST_FIELDS:
             _slim.pop(_f, None)
@@ -2216,27 +2217,42 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             ki = _slim.get("key_insights") or []
             if ki:
                 _slim["why_this_pick"] = ki[:6]
-        # ── Attach H2H summary chip (compact, cheap; full bundle on
-        #    the deep-dive endpoint) ────────────────────────────────
-        if build_h2h_bundle is not None and _h2h_budget > 0:
-            try:
-                _bundle = await build_h2h_bundle(db, _slim, fast_mode=True)
-                _summary = (_bundle or {}).get("summary") or ""
-                if _summary:
-                    _slim["h2h_summary"] = _summary
-                    # Also stash the tiny team-record + player-primary so
-                    # the LockPickCard can pill without another API call.
-                    _team = (_bundle or {}).get("team_h2h") or {}
-                    _player = (_bundle or {}).get("player_h2h") or {}
-                    _slim["h2h_compact"] = {
-                        "record":   _team.get("record"),
-                        "meetings": _team.get("meetings"),
-                        "player_display": _player.get("primary_value_display"),
-                        "player_sample":  _player.get("sample_size"),
+
+    # ── Second pass: parallel H2H attach ────────────────────────────
+    # Cold-start /picks/today was 13s+ when batter H2H ran sequentially
+    # (each MLB Stats API call ~200-800ms × ~30 batters). Fan out with a
+    # semaphore-bounded asyncio.gather so we stay under the 20s frontend
+    # timeout even on a cold cache.
+    if build_h2h_bundle is not None and _h2h_budget > 0 and canonical:
+        import asyncio as _asyncio
+        _sem = _asyncio.Semaphore(8)
+
+        async def _attach_h2h(slim: dict) -> None:
+            async with _sem:
+                try:
+                    bundle = await build_h2h_bundle(db, slim, fast_mode=True)
+                except Exception:
+                    return
+                summary = (bundle or {}).get("summary") or ""
+                if summary:
+                    slim["h2h_summary"] = summary
+                    team_b = (bundle or {}).get("team_h2h") or {}
+                    player_b = (bundle or {}).get("player_h2h") or {}
+                    slim["h2h_compact"] = {
+                        "record":   team_b.get("record"),
+                        "meetings": team_b.get("meetings"),
+                        "player_display": player_b.get("primary_value_display"),
+                        "player_sample":  player_b.get("sample_size"),
                     }
-                _h2h_budget -= 1
-            except Exception:
-                pass
+        try:
+            await _asyncio.wait_for(
+                _asyncio.gather(*(_attach_h2h(p) for p in canonical[:_h2h_budget])),
+                timeout=15.0,
+            )
+        except _asyncio.TimeoutError:
+            # Never let H2H enrichment block the response — cold slate
+            # may partially populate; subsequent calls hit the 6h cache.
+            pass
 
     return {"picks": canonical, "alt_availability": alt_availability}
 

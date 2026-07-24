@@ -119,7 +119,9 @@ export function H2HPanel({ pickId }: { pickId: string }) {
             </Text>
             <Text style={styles.subLine}>
               {b.player_h2h.player} vs {b.player_h2h.vs_opponent}
-              {b.player_h2h.sample_size ? ` · ${b.player_h2h.sample_size} sample` : ""}
+              {b.player_h2h.sample_size
+                ? ` · ${b.player_h2h.sample_size} ${(b.player_h2h as any).sample_unit || "sample"}`
+                : ""}
             </Text>
             {b.sport === "MLB" && b.player_h2h.season_avg_k != null && (
               <Text style={styles.subLine}>
