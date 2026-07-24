@@ -98,14 +98,21 @@ async def fetch_batter_h2h(batter_name: str, opp_team_name: str) -> dict:
             vs_avg = round(vs_h / vs_ab, 3)
 
     # ── SEASON + recent gameLog for the per-game breakdown ─────────
+    # Iter-91 (user report: "now only showing 2 games") — pull the last
+    # 4 seasons of gameLog so the recent-vs-team list reflects real
+    # historical meetings, not just 2026. Elite batters like Ohtani
+    # rack up 10-30 real games vs common opponents across recent years.
     season_ab = 0
     season_h = 0
     season_games = 0
     recent_vs: list[dict] = []
-    log_url = (f"{MLB_BASE}/people/{bid}/stats"
-               f"?stats=gameLog&group=hitting&season={season}")
-    log_data = await _pitcher_get(log_url)
-    if log_data:
+    season_years = [season, season - 1, season - 2, season - 3]
+    for yr in season_years:
+        log_url = (f"{MLB_BASE}/people/{bid}/stats"
+                   f"?stats=gameLog&group=hitting&season={yr}")
+        log_data = await _pitcher_get(log_url)
+        if not log_data:
+            continue
         log_splits = ((log_data.get("stats") or [{}])[0]).get("splits") or []
         for sp in log_splits:
             st = sp.get("stat") or {}
@@ -117,14 +124,14 @@ async def fetch_batter_h2h(batter_name: str, opp_team_name: str) -> dict:
             rbi = int(st.get("rbi") or 0)
             date = sp.get("date") or ""
 
-            # Season totals — count every game with a plate appearance.
-            if ab > 0 or int(st.get("plateAppearances") or 0) > 0:
-                season_games += 1
-            season_ab += ab
-            season_h += h
+            # Season totals — only current-year games count toward season stats.
+            if yr == season:
+                if ab > 0 or int(st.get("plateAppearances") or 0) > 0:
+                    season_games += 1
+                season_ab += ab
+                season_h += h
 
-            # Per-game log vs the opponent (for the recent list only —
-            # career totals above are the source of truth for the H2H).
+            # Per-game log vs the opponent — accumulate across all years.
             if op_id == tid:
                 recent_vs.append({
                     "date": date,
@@ -133,8 +140,6 @@ async def fetch_batter_h2h(batter_name: str, opp_team_name: str) -> dict:
                     "h": h,
                     "hr": hr,
                     "rbi": rbi,
-                    # Pre-formatted display string like "1-4" so the
-                    # frontend doesn't have to string-build.
                     "stat": f"{h}-{ab}",
                 })
 
@@ -162,7 +167,7 @@ async def fetch_batter_h2h(batter_name: str, opp_team_name: str) -> dict:
     out["vs_team_avg"] = vs_avg
     out["vs_team_recent"] = sorted(
         recent_vs, key=lambda x: x["date"], reverse=True,
-    )[:5]
+    )[:50]  # bumped from 5 → 50 so the frontend "SEE ALL" toggle has data
     return out
 
 

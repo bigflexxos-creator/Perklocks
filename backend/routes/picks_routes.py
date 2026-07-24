@@ -2244,6 +2244,22 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                         "player_display": player_b.get("primary_value_display"),
                         "player_sample":  player_b.get("sample_size"),
                     }
+                    # ── H2H → Why this pick bullet (iter-91) ────
+                    # When H2H shows a meaningful tailwind/headwind
+                    # (>=30 pts of BA vs season avg), surface it into
+                    # the pick's reasoning bullets so the H2H data
+                    # actually informs the user's read of the pick.
+                    insight = (player_b or {}).get("h2h_insight")
+                    if insight:
+                        ki = slim.get("why_this_pick") or []
+                        if isinstance(ki, list) and insight not in ki:
+                            slim["why_this_pick"] = ki + [insight]
+                    # Also expose the raw edge (bp = basis points of BA
+                    # difference) so downstream sorting / calibration
+                    # can consume it if we wire it into the model later.
+                    edge_bp = (player_b or {}).get("h2h_edge_bp")
+                    if edge_bp:
+                        slim["h2h_edge_bp"] = edge_bp
         try:
             await _asyncio.wait_for(
                 _asyncio.gather(*(_attach_h2h(p) for p in canonical[:_h2h_budget])),

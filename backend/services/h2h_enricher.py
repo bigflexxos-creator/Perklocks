@@ -352,11 +352,36 @@ async def _mlb_player_h2h(pick: dict) -> Optional[dict]:
         vs_h = int(data.get("vs_team_hits") or 0)
         vs_avg = float(data.get("vs_team_avg") or 0.0)
         vs_games = int(data.get("vs_team_games") or 0)
+        season_avg = float(data.get("season_avg") or 0.0)
         if vs_ab == 0:
             display = f"No prior at-bats vs {opp}"
         else:
             pct = int(round(vs_avg * 100))
             display = f"{vs_h}-for-{vs_ab} vs {opp} ({vs_avg:.3f} avg, {pct}%)"
+
+        # ── H2H signal → "Why this pick" bullet ────────────────────
+        # Compare the batter's CAREER vs-opp average to their current-
+        # season average. A meaningful gap (± ~30 pts of BA) becomes a
+        # tailwind/headwind bullet that the pick card renders in the
+        # "Why this pick?" section. This is the user's requested
+        # linkage between H2H data and the actual pick reasoning.
+        h2h_insight: Optional[str] = None
+        h2h_edge_bp: int = 0   # signed basis-points of BA diff
+        if vs_ab >= 15 and season_avg > 0:
+            delta = vs_avg - season_avg
+            h2h_edge_bp = int(round(delta * 1000))
+            if delta >= 0.030:
+                h2h_insight = (
+                    f"Career .{int(vs_avg*1000):03d} vs {opp} "
+                    f"({vs_h}-for-{vs_ab}) — well above his season "
+                    f".{int(season_avg*1000):03d} avg (H2H tailwind)"
+                )
+            elif delta <= -0.030:
+                h2h_insight = (
+                    f"Career .{int(vs_avg*1000):03d} vs {opp} "
+                    f"({vs_h}-for-{vs_ab}) — well below his season "
+                    f".{int(season_avg*1000):03d} avg (H2H headwind)"
+                )
         return {
             "player": name,
             "vs_opponent": opp,
@@ -373,6 +398,8 @@ async def _mlb_player_h2h(pick: dict) -> Optional[dict]:
             "vs_team_hr": data.get("vs_team_hr"),
             "vs_team_rbi": data.get("vs_team_rbi"),
             "recent": data.get("vs_team_recent") or [],
+            "h2h_insight": h2h_insight,
+            "h2h_edge_bp": h2h_edge_bp,
         }
 
     return None
