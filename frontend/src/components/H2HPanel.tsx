@@ -135,10 +135,16 @@ export function H2HPanel({ pickId }: { pickId: string }) {
                   <View key={i} style={styles.recentRow}>
                     <Text style={styles.recentDate}>{String(r.date || "").slice(0, 10)}</Text>
                     <Text style={styles.recentBody} numberOfLines={1}>
-                      {r.opp ? `vs ${r.opp}` : (r.event || r.result || "")}
+                      {r.opp ? `vs ${r.opp}` : (r.event || "")}
                     </Text>
                     <Text style={styles.recentValue}>
-                      {r.k != null ? `${r.k} K` : (r.result ? String(r.result).toUpperCase() : "")}
+                      {/* Batter: pre-formatted "H-AB" stat + HR/RBI badges.
+                          Pitcher: K count. Tennis / soccer fall back to `result`. */}
+                      {r.stat != null ? String(r.stat) :
+                       r.k != null ? `${r.k} K` :
+                       r.result ? String(r.result).toUpperCase() : ""}
+                      {(r.hr ?? 0) > 0 ? `  ${r.hr} HR` : ""}
+                      {(r.rbi ?? 0) > 0 ? `  ${r.rbi} RBI` : ""}
                     </Text>
                   </View>
                 ))}
@@ -432,7 +438,7 @@ const styles = StyleSheet.create({
     color: "#111827",
     fontSize: 12,
     fontWeight: "900",
-    minWidth: 40,
+    minWidth: 90,
     textAlign: "right",
   },
   emptyText: {
