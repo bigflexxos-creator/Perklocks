@@ -1,0 +1,40 @@
+{
+  "summary": "H2H enrichment RE-TEST after iter-86 fixes: ALL PASS. Backend contract suite (test_iter86_h2h_enrichment.py: 8/8) + new regression suite (test_iter87_h2h_regression.py: 4/4). MLB /picks/today attaches h2h_summary on 59/68 picks (was 0/68 in iter-86). Soccer 37/279 (was 0/777) covering EPL/LaLiga/SerieA/Bundesliga/Ligue1. Deep-dive /api/picks/{id}/h2h returns ok=true with team_h2h.meetings>0 and populated record for both a live MLB pitcher-strikeout pick (Spencer Arrighetti HOU Under 5.5 K → meetings=3, record='1-2', summary='H2H 1-2 L3 · 10.0 avg') and a Bundesliga soccer pick (TSG Hoffenheim @ 1. FC Köln → meetings=4, record='1-1'). Invalid pick_id → 404 (not 500). Perf: MLB /picks/today = 2.4s, 427KB (well under 6s/800KB budgets). Regression: no same-line O/U contradictions detected. FRONTEND Playwright: h2h-chip renders 59 instances on MLB Locks view with correct light-amber theme, and h2h-panel on deep-dive shows bg rgb(254,243,199) avg=232, contains 'TEAM MEETINGS' header and non-empty record '4-5' as required. MINOR NIT: E1's fix description promised `sources` would include 'games' for MLB (from db.games priority chain), but the actual endpoint returns sources=['settled_picks_db', 'mlb_stats_api'] — the data IS correct, only the source label doesn't reflect the new priority chain. Non-blocking.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/picks/{id}/h2h", "issue": "sources[] does not include 'games' label for MLB even though _team_h2h_from_settled now prioritizes db.games collection (per iter-87 spec). Actual sources returned: ['settled_picks_db', 'mlb_stats_api']. The team_h2h data IS correctly populated — only the audit label is inconsistent with E1's description. Consider labeling the games-collection contribution as 'games' or 'settled_games' for the audit trail."},
+      {"endpoint": "services/h2h_enricher.py:_team_h2h_from_settled", "issue": "Soccer /picks/today attaches h2h_summary on only 37/279 picks — coverage limited to top-5 European leagues (EPL, LaLiga, SerieA, Bundesliga, Ligue1) because soccer_matches collection only carries those. Lower-tier leagues (Allsvenskan, MLS, etc.) still get no chip. Not a bug; documented limitation. Ingest more leagues to expand."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter86_h2h_enrichment.py",
+    "/app/backend/tests/test_iter87_h2h_regression.py",
+    "/app/test_reports/pytest/iter87_h2h.xml",
+    "/app/test_reports/pytest/iter87_regression.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: In services/h2h_enricher.py:_team_h2h_from_settled, label the audit `sources` entry differently based on which priority-chain collection served the data ('games' when db.games matched, 'soccer_matches' when db.soccer_matches matched, 'settled_picks_fallback' when picks-collection fallback ran). Currently everything is tagged 'settled_picks_db'. This is a documentation/observability nit, not a functional bug — team_h2h data itself is correct.",
+    "OPTIONAL: Expand soccer_matches ingest beyond top-5 European leagues to grow h2h_summary coverage on Allsvenskan / MLS / Eredivisie / etc."
+  ],
+  "critical_code_review_comments": [
+    "The iter-86 CRITICAL bug (dict-vs-string final_score parsing) is fully fixed. Verified empirically on the live slate: 59 MLB + 37 Soccer picks now emit h2h_summary that render as chips on LockPickCard.",
+    "The event-parser fix (`\\s+(?:vs|v|@)\\s+`) works for Soccer H2H — TSG Hoffenheim @ 1. FC Köln correctly resolves home/away when pick.home_team/away_team are None.",
+    "Tennis empty-state (0/5 chips in current slate) is correct behavior given the slate is Challenger-level doubles with no historical rows. Non-issue."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter87_h2h_regression.py (new regression tests)"
+  ],
+  "success_rate": {"backend": "12/12 (8 iter-86 + 4 iter-87 regression) — 100%", "frontend": "h2h-chip x59 rendered on MLB view; h2h-panel deep-dive shows amber theme + record '4-5' + 9 meetings — 100%"},
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "iter-87 fully validates iter-86 H2H bug fixes. Test files: /app/backend/tests/test_iter86_h2h_enrichment.py (contract) + /app/backend/tests/test_iter87_h2h_regression.py (regression). Both use BASE_URL from EXPO_PUBLIC_BACKEND_URL. Chip presence and deep-dive panel verified via Playwright. If future iterations touch h2h_enricher.py, re-run both files. The `sources` label mismatch is the only outstanding nit — consider fixing when touching the audit trail.",
+  "rca_of_issue": "N/A — this iteration was a fix-verification pass. iter-86 CRITICAL bug (final_score dict-vs-string) and HIGH bug (Tennis '@' separator + None home/away) both resolved. Verified via 12 pytest tests + Playwright UI check."
+}

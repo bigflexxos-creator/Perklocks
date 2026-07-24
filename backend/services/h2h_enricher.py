@@ -82,101 +82,190 @@ def _cache_put(k: str, val: dict) -> None:
     _CACHE[k] = (time.time(), val)
 
 
-# ── Team-level H2H from our own settled picks (works for every sport) ─────
+# ── Team-level H2H from dedicated game/match collections ─────────────────
 async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
                                  limit: int = 10) -> Optional[dict]:
-    """Aggregate our own historical picks (settled outcomes) for the
-    home-vs-away pairing. Cheap: just a Mongo aggregate.
+    """Aggregate historical meetings between the two teams.
+
+    Priority sources (all cheap DB scans):
+      • MLB / NFL / NBA / NHL → `games` collection (schema: `home`, `away`,
+        `date`, `result: {home:int, away:int}`, `status: 'Final'`).
+      • Soccer                → `soccer_matches` collection (schema:
+        `home_team`, `away_team`, `date`, `home_score`, `away_score`).
+      • Fallback              → scan our own `picks` collection for rows
+        where `final_score` is a team-keyed dict (`{'HomeTeam': '3',
+        'AwayTeam': '2'}` — Soccer team-level picks). Player-prop
+        dicts (`{'<Player> Strikeouts': 7.0}`) are ignored — those
+        don't give us team-level scores.
     """
     if not (home and away):
         return None
-    home_re = re.escape(home)
-    away_re = re.escape(away)
-    # Match either "home @ away" or "away @ home" event strings.
-    q = {
-        "sport": sport,
-        "status": {"$in": ["won", "lost", "push"]},
-        "$or": [
-            {"event": {"$regex": f"^{home_re}\\s*@\\s*{away_re}$", "$options": "i"}},
-            {"event": {"$regex": f"^{away_re}\\s*@\\s*{home_re}$", "$options": "i"}},
-        ],
-    }
-    projection = {
-        "_id": 0, "event": 1, "market": 1, "selection": 1, "status": 1,
-        "event_time": 1, "pick_date": 1, "final_score": 1,
-        "home_team": 1, "away_team": 1, "settled_at": 1,
-    }
-    try:
-        cur = db.picks.find(q, projection).sort("event_time", -1).limit(limit * 3)
-        rows = await cur.to_list(length=limit * 3)
-    except Exception as e:
-        logger.warning("h2h team lookup failed: %s", e)
-        return None
-    if not rows:
-        return None
-    # Group by unique event_time so we get one entry per meeting.
-    by_meeting: dict[str, dict] = {}
-    for r in rows:
-        key = str(r.get("event_time") or r.get("pick_date") or "")
-        if not key or key in by_meeting:
-            continue
-        by_meeting[key] = r
-        if len(by_meeting) >= limit:
-            break
-    meetings = list(by_meeting.values())
+
+    meetings: list[dict] = []
+    home_l = home.strip().lower()
+    away_l = away.strip().lower()
+
+    # 1) MLB / NFL / NBA / NHL — `games` collection
+    if sport in {"MLB", "NFL", "NBA", "NHL"}:
+        try:
+            games_coll = db.games
+            q = {
+                "sport": sport.lower(),
+                "status": {"$in": ["Final", "final", "FT", "Completed"]},
+                "$or": [
+                    {"home": {"$regex": f"^{re.escape(home)}$", "$options": "i"},
+                     "away": {"$regex": f"^{re.escape(away)}$", "$options": "i"}},
+                    {"home": {"$regex": f"^{re.escape(away)}$", "$options": "i"},
+                     "away": {"$regex": f"^{re.escape(home)}$", "$options": "i"}},
+                ],
+            }
+            cur = games_coll.find(q, {
+                "_id": 0, "home": 1, "away": 1, "date": 1,
+                "result": 1, "venue": 1,
+            }).sort("date", -1).limit(limit)
+            for g in await cur.to_list(length=limit):
+                res = g.get("result") or {}
+                h_score = res.get("home")
+                a_score = res.get("away")
+                if h_score is None or a_score is None:
+                    continue
+                g_home = str(g.get("home") or "")
+                g_away = str(g.get("away") or "")
+                # Normalise into "our home" perspective.
+                is_flipped = g_home.strip().lower() == away_l
+                meetings.append({
+                    "date": str(g.get("date") or "")[:10],
+                    "score": f"{h_score}-{a_score}",
+                    "home_team_score": int(a_score) if is_flipped else int(h_score),
+                    "away_team_score": int(h_score) if is_flipped else int(a_score),
+                    "venue": g.get("venue") or "",
+                })
+        except Exception as e:
+            logger.debug("games coll scan failed: %s", e)
+
+    # 2) Soccer — `soccer_matches` collection
+    if sport == "Soccer" and not meetings:
+        try:
+            sm = db.soccer_matches
+            q = {
+                "status": {"$in": ["finished", "Finished", "FT", "Completed"]},
+                "$or": [
+                    {"home_team": {"$regex": f"^{re.escape(home)}$", "$options": "i"},
+                     "away_team": {"$regex": f"^{re.escape(away)}$", "$options": "i"}},
+                    {"home_team": {"$regex": f"^{re.escape(away)}$", "$options": "i"},
+                     "away_team": {"$regex": f"^{re.escape(home)}$", "$options": "i"}},
+                ],
+            }
+            cur = sm.find(q, {
+                "_id": 0, "home_team": 1, "away_team": 1, "date": 1,
+                "home_score": 1, "away_score": 1, "league": 1,
+            }).sort("date", -1).limit(limit)
+            for m in await cur.to_list(length=limit):
+                h_score = m.get("home_score")
+                a_score = m.get("away_score")
+                if h_score is None or a_score is None:
+                    continue
+                is_flipped = str(m.get("home_team") or "").strip().lower() == away_l
+                meetings.append({
+                    "date": str(m.get("date") or "")[:10],
+                    "score": f"{h_score}-{a_score}",
+                    "home_team_score": int(a_score) if is_flipped else int(h_score),
+                    "away_team_score": int(h_score) if is_flipped else int(a_score),
+                    "venue": m.get("league") or "",
+                })
+        except Exception as e:
+            logger.debug("soccer_matches scan failed: %s", e)
+
+    # 3) Fallback — settled picks with team-keyed final_score dict
+    if not meetings:
+        try:
+            home_re = re.escape(home)
+            away_re = re.escape(away)
+            q = {
+                "sport": sport,
+                "status": {"$in": ["won", "lost", "push"]},
+                "final_score": {"$type": "object"},
+                "$or": [
+                    {"event": {"$regex": f"^{home_re}\\s*@\\s*{away_re}$", "$options": "i"}},
+                    {"event": {"$regex": f"^{away_re}\\s*@\\s*{home_re}$", "$options": "i"}},
+                ],
+            }
+            cur = db.picks.find(q, {
+                "_id": 0, "event": 1, "event_time": 1, "final_score": 1,
+                "home_team": 1, "away_team": 1,
+            }).sort("event_time", -1).limit(limit * 4)
+            seen: set = set()
+            for r in await cur.to_list(length=limit * 4):
+                key = str(r.get("event_time") or "")[:10]
+                if not key or key in seen:
+                    continue
+                fs = r.get("final_score") or {}
+                if not isinstance(fs, dict):
+                    continue
+                # Only keep team-keyed dicts (both keys match team names).
+                # Case-insensitive.
+                keys_l = {str(k).strip().lower(): k for k in fs.keys()}
+                if home_l in keys_l and away_l in keys_l:
+                    try:
+                        h_score = int(fs[keys_l[home_l]])
+                        a_score = int(fs[keys_l[away_l]])
+                    except (TypeError, ValueError):
+                        continue
+                    seen.add(key)
+                    meetings.append({
+                        "date": key,
+                        "score": f"{h_score}-{a_score}",
+                        "home_team_score": h_score,
+                        "away_team_score": a_score,
+                        "venue": r.get("event") or "",
+                    })
+                if len(meetings) >= limit:
+                    break
+        except Exception as e:
+            logger.debug("h2h picks fallback failed: %s", e)
+
     if not meetings:
         return None
 
-    # Parse final_score if present ("3-2", "108-102", "1-1").
-    home_wins = 0
-    away_wins = 0
-    totals: list[float] = []
-    recent: list[dict] = []
-    for r in meetings:
-        fs = str(r.get("final_score") or "").strip()
-        # Which side is home in the STORED row?
-        row_home = (r.get("home_team") or "").strip()
-        row_away = (r.get("away_team") or "").strip()
-        # Recognise formats like "3-2", "3 - 2", "3:2"
-        m = re.match(r"^\s*(\d+)\s*[-:]\s*(\d+)\s*$", fs)
-        winner = None
-        score_str = fs or "—"
-        if m:
-            h, a = int(m.group(1)), int(m.group(2))
-            totals.append(h + a)
-            if h > a:
-                winner = row_home
-            elif a > h:
-                winner = row_away
-            # Attribute the win to OUR home team (function arg), not stored home.
-            if winner and winner.strip().lower() == home.strip().lower():
-                home_wins += 1
-            elif winner and winner.strip().lower() == away.strip().lower():
-                away_wins += 1
-        recent.append({
-            "date": str(r.get("event_time") or r.get("pick_date") or "")[:10],
-            "score": score_str,
-            "winner": winner or "—",
-            "venue": r.get("event") or "",
-        })
-    last_meeting = recent[0] if recent else None
+    # Aggregate
+    home_wins = sum(1 for m in meetings if m["home_team_score"] > m["away_team_score"])
+    away_wins = sum(1 for m in meetings if m["away_team_score"] > m["home_team_score"])
+    totals = [m["home_team_score"] + m["away_team_score"] for m in meetings]
+    recent = [{
+        "date": m["date"],
+        "score": m["score"],
+        "winner": (home if m["home_team_score"] > m["away_team_score"]
+                   else (away if m["away_team_score"] > m["home_team_score"] else "Draw")),
+        "venue": m.get("venue") or "",
+    } for m in meetings[:5]]
+
     return {
         "meetings": len(meetings),
         "record": f"{home_wins}-{away_wins}",
         "home_wins": home_wins,
         "away_wins": away_wins,
         "avg_total": round(sum(totals) / len(totals), 2) if totals else None,
-        "last_meeting": last_meeting,
-        "recent": recent[:5],
+        "last_meeting": recent[0] if recent else None,
+        "recent": recent,
     }
 
 
 # ── Sport-specific player H2H (delegates to existing modules) ─────────────
 async def _mlb_player_h2h(pick: dict) -> Optional[dict]:
-    """MLB pitcher-vs-team H2H via mlb_pitcher_h2h (already cached)."""
+    """MLB pitcher-vs-team H2H via mlb_pitcher_h2h (already cached).
+
+    Enabled for the pitcher props where the historical vs-team K/BB/ER
+    line moves the needle. Hitter H2H (batter vs pitcher) is intentionally
+    left to `services.mlb_hr_intel` (already exposes vs-pitcher OPS in
+    the HR slate) — wiring it here would duplicate that path.
+    """
     market = (pick.get("market") or "").lower()
-    # Only strikeout / outs / walks-recorded pitcher props for now.
-    if not any(k in market for k in ("strikeout", "outs recorded", "walks", "earned runs")):
+    # Cover the strikeout / outs / walks / earned-runs pitcher families.
+    if not any(k in market for k in (
+        "strikeout", "strikeouts", "outs recorded", "pitching outs",
+        "walks", "walks recorded", "walks allowed",
+        "earned runs", "hits allowed",
+    )):
         return None
     try:
         from mlb_pitcher_h2h import fetch_pitcher_h2h, resolve_opp_team_name
@@ -218,8 +307,9 @@ async def _tennis_player_h2h(db, pick: dict) -> Optional[dict]:
     """Tennis A-vs-B career H2H (surface-agnostic)."""
     sel = (pick.get("selection") or "").strip()
     event = (pick.get("event") or "").strip()
-    # Event format: "Player A vs Player B"
-    parts = re.split(r"\s+(?:vs\.?|v\.?)\s+", event, maxsplit=1, flags=re.IGNORECASE)
+    # Event format is typically "Player A @ Player B" in our DB (some
+    # older imports use "vs" / "v"). Split on ANY of them.
+    parts = re.split(r"\s+(?:vs\.?|v\.?|@)\s+", event, maxsplit=1, flags=re.IGNORECASE)
     if len(parts) != 2:
         return None
     a, b = parts[0].strip(), parts[1].strip()
@@ -386,6 +476,20 @@ async def build_h2h_bundle(db, pick: dict, *, fast_mode: bool = False) -> dict:
     sport = (pick.get("sport") or "").strip() or "Unknown"
     home = (pick.get("home_team") or "").strip()
     away = (pick.get("away_team") or "").strip()
+
+    # ── Fallback: parse home/away from `event` when the top-level
+    # fields are null (common for Soccer/Tennis/UFC picks). Event
+    # format is "Home @ Away" everywhere in the app. ──
+    if not (home and away):
+        event = (pick.get("event") or "").strip()
+        if event:
+            parts = re.split(r"\s+(?:vs\.?|v\.?|@)\s+", event, maxsplit=1,
+                             flags=re.IGNORECASE)
+            if len(parts) == 2:
+                if not home:
+                    home = parts[0].strip()
+                if not away:
+                    away = parts[1].strip()
 
     sources: list[str] = []
 
