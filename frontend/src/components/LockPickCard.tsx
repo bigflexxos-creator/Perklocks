@@ -519,7 +519,7 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
                 ((pick as any).why_this_pick as string[]).length > 0 && (
                   <View style={styles.whyMatchupBullets}>
                     {((pick as any).why_this_pick as string[])
-                      .slice(0, 6)
+                      .slice(0, 8)
                       .map((b, i) => (
                         <Text key={`why-${i}`} style={styles.whyMatchupBullet}>
                           • {b}
