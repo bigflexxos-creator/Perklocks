@@ -28,5 +28,5 @@
   "retest_needed": false,
   "should_main_agent_self_test": false,
   "context_for_next_testing_agent": "Phase-1 refactor verified clean. If/when Phase-2 (further server.py extraction) lands, reuse /app/backend/tests/test_refactor_phase1_iter46.py as a regression suite — it exercises auth, parlay-history CRUD, all 5 admin endpoints, and 8 regression hot-spots in /api/picks/*. EXPO_PUBLIC_BACKEND_URL is the key in /app/frontend/.env (not EXPO_BACKEND_URL — the test file falls back across both).",
-  "rca_of_issue": "N/A — pure internal refactor, no behavior change. All extracted routes verified against live backend at https://bet-edge-ai-1.preview.emergentagent.com with demo creds."
+  "rca_of_issue": "N/A — pure internal refactor, no behavior change. All extracted routes verified against live backend at https://player-intel-engine.preview.emergentagent.com with demo creds."
 }

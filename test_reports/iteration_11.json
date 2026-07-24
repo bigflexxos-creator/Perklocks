@@ -1,5 +1,5 @@
 {
-  "summary": "Re-tested WIN% sort button (Feature 1) and validated NEW Soccer Lab (Feature 2) end-to-end on the public Expo web preview at https://bet-edge-ai-1.preview.emergentagent.com. Login flow from iteration_10 is now WORKING — demo@lockscore.ai/demo123 successfully authenticates and lands on the LOCKS tab. All 12 specified test cases PASS. Backend endpoints verified separately via curl: /api/auth/login (200), /api/picks/today?sort=win (40 picks), /api/soccer-lab/leagues (15 active leagues), /api/soccer-lab/feed?limit=100&min_lock=78 (100 picks across 7 leagues, top conf 79.84, top lock 98.8).",
+  "summary": "Re-tested WIN% sort button (Feature 1) and validated NEW Soccer Lab (Feature 2) end-to-end on the public Expo web preview at https://player-intel-engine.preview.emergentagent.com. Login flow from iteration_10 is now WORKING — demo@lockscore.ai/demo123 successfully authenticates and lands on the LOCKS tab. All 12 specified test cases PASS. Backend endpoints verified separately via curl: /api/auth/login (200), /api/picks/today?sort=win (40 picks), /api/soccer-lab/leagues (15 active leagues), /api/soccer-lab/feed?limit=100&min_lock=78 (100 picks across 7 leagues, top conf 79.84, top lock 98.8).",
   "backend_issues": {
     "critical": [],
     "minor": []

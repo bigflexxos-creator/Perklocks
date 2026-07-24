@@ -1,0 +1,38 @@
+{
+  "summary": "Iter 80 — targeted backend verification of two surgical fixes: (1) MLS active-player filter in sportdb_player_scorer._picks_for_side (mirrors CSL), (2) no_bet=True inclusion in server._apply_atomic_delete _pin_filter. 23/23 pytest cases PASSED (test_iter80_mls_filter_and_no_bet_delete.py). Coverage: (A) MLS filter — mls_scorer_gate exposes _espn_names/_TOP_SCORER_INDEX/_STARTER_INDEX/_norm; closure returns True for curated top-scorer (Messi, Bouanga) both when ESPN empty and loaded, returns False for unknown names ONLY when ESPN is loaded (correctly non-blocking on cold start via None), returns None for empty input; source-level grep confirms MLS init block (is_mls gate on 'mls:' / 'soccer_usa_mls'), per-player loop uses `continue` on `verdict is False`, CSL block precedes MLS block in the loop (regression), and neither gate matches 'soccer_epl' (non-MLS leagues untouched). (B) _pin_filter — verbatim clause copied from server.py + minimal in-memory Mongo matcher: {peak=99, no_bet=True, source=the_odds_api} → deleted, {peak=99, no no_bet} / {peak=99, no_bet=False} → protected, {peak<95} / {no peak} → deleted regardless, {peak=99, no_bet=True, source in _OUT_OF_BAND_SOURCES (mls_espn_leaderboard)} → protected, {peak=99, no_bet=True, source=sportdb_scorer_v1/synth} → protected (regex guard), {peak=99, no_bet=True, is_model_only=True} → protected. Structural source check confirms new $or clause `{\"no_bet\": True}` is present and _pin_filter shape is intact. (C) Live Mongo integration test — seeded 5 synthetic picks on TEST_2099-01-01 with the exact _pin_filter, verified delete_many wiped ONLY the no_bet=True/the_odds_api/no is_model_only pick (deleted_count=1), and the 4 protected picks remained. (D) /api/picks/today returns HTTP 200 with valid {picks:[]} envelope twice consecutively — no 500s introduced. Backend err.log tail contains no traceback referencing sportdb_player_scorer, _pin_filter, _apply_atomic_delete, or mls_scorer_gate. Deprecated packages detected: NONE.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter80_mls_filter_and_no_bet_delete.py",
+    "/app/test_reports/pytest/iter80_mls_and_no_bet.xml"
+  ],
+  "action_items": [
+    "None blocking. Both surgical fixes verified end-to-end."
+  ],
+  "critical_code_review_comments": [
+    "MLS filter (sportdb_player_scorer.py ~L736-768) faithfully mirrors the CSL contract (True/False/None) and correctly gates the ESPN-empty case with `if _mls_gate._espn_names:` before returning False. This avoids over-blocking on cold start — good.",
+    "MLS filter fallback path (ESPN empty) uses OR across _TOP_SCORER_INDEX and _STARTER_INDEX and returns None (not False) when neither hits — this means before the ESPN refresher runs, only curated names are actively confirmed; unknowns pass through. Aligns with 'don't block picks before the refresher runs' comment.",
+    "server.py _pin_filter (~L1984-2007): the new `{\"no_bet\": True}` clause was added as a third disjunct in the inner $or, leaving all three outer $and guards (_OUT_OF_BAND_SOURCES $nin, sportdb_scorer* $not-$regex, is_model_only $ne True) intact. Verified via unit tests that these still protect their respective sources even when no_bet=True.",
+    "Minor: the MLS init in sportdb_player_scorer wraps mls_scorer_gate import inside a broad try/except that silently sets `mls_filter_active = None` on any ImportError. This is defensive-consistent with CSL, but a missing services/mls_scorer_gate.py would go unlogged. Not blocking — current file exists and imports cleanly."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter80_mls_filter_and_no_bet_delete.py (new — 23 pytest cases covering both fixes + regression guards + /api/picks/today health + live Mongo integration test)"
+  ],
+  "success_rate": {
+    "backend": "100% (23/23 pytest cases)",
+    "frontend": "not tested (backend-only review request)"
+  },
+  "seed_data_creation": "TestLivePicksNoBetDeletion seeds 5 synthetic picks under pick_date='TEST_2099-01-01' and cleans them in a try/finally teardown — no live slate is touched.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Both surgical fixes are regression-clean and additive. The MLS filter block sits between the CSL block and the goal-rate lookup in _picks_for_side, and is only constructed when comp starts with 'mls:' or equals 'soccer_usa_mls'. The _pin_filter change is a single new $or clause; all four protection paths (out-of-band sources, sportdb_scorer regex, is_model_only, and now-inverted no_bet sticky bypass) were unit-tested with a Python-side Mongo matcher AND a live delete_many round-trip. Test file at /app/backend/tests/test_iter80_mls_filter_and_no_bet_delete.py is safe to re-run — self-contained, loads /app/backend/.env, uses TEST_ prefix on all seed data.",
+  "rca_of_issue": "N/A — no bugs found. Both fixes exactly match the specifications in the review request. Fix 1: MLS branch added in two places (init at ~L736, per-player skip at ~L803) and is symmetric to the CSL branch (~L716 init, ~L791 skip). Fix 2: new `{\"no_bet\": True}` disjunct added to the inner $or of _pin_filter (~L1995) without disturbing any of the three outer $and guards. python -c 'import sportdb_player_scorer; import server' succeeds; backend restarted cleanly; /api/picks/today returns 200."
+}

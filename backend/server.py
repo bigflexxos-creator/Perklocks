@@ -1986,6 +1986,13 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
             {"$or": [
                 {"lock_score_peak": {"$exists": False}},
                 {"lock_score_peak": {"$lt": 95}},
+                # 2026-02 — picks tagged `no_bet=True` (e.g. by the
+                # settler / contradiction resolver) MUST be included in
+                # the deletion filter even when their `lock_score_peak`
+                # crossed the 95 sticky-pin threshold. Otherwise a
+                # once-elite pick that was later invalidated will remain
+                # pinned forever and keep showing up on the board.
+                {"no_bet": True},
             ]},
             # Never wipe out-of-band pipeline picks — they refresh on
             # their own cadence (hot_scorers = 4h, SportDB = 6h, etc.)
