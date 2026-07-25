@@ -1,0 +1,42 @@
+{
+  "summary": "iter-92 Soccer market-family tiebreaker fix VERIFIED — PASS. Under sort=lock (the frontend default per useFilters.tsx L76), /api/picks/today?sport=Soccer&leagues=MLS now returns top-5 = 5x 'Anytime Goal Scorer' (Alonso Martínez x2, Sam Surridge, Tai Baribo, Brian White) and positions 6-15 = 10x 'To Score or Assist'; zero 'Anytime Assist' in the top 15 (was 9/10 assists before). All 3 primary MLS assertions PASS: >=3 goalscorer in top-10 (got 5), top-5 not exclusively assists, and within any lock_score bucket no Anytime Assist precedes an Anytime Goal Scorer. Soccer no-league-filter top-10 also carries scorer/score-or-assist picks. Regressions PASS: MLB sort=lock still strictly descending by lock_score; sort=edge still descending by edge_percent; sort=time still monotonic (desc = latest first per backend default direction); iter-82 no line-specific contradictions detected in Soccer slate. Perf: Soccer response 2.1s (budget 9s). One test skipped: iter-91 batter H2H bullets — today's MLB slate has only 8 team-market picks (Chicago White Sox moneyline/totals), no batter Hits/HR/RBI picks to attach H2H bullets to (not a regression, just no applicable data today). Backend pytest: 9 passed, 1 skipped, 0 failed. IMPORTANT NON-BLOCKING FINDING: the /api/picks/today query-string default is sort='time' (picks_routes.py L874) — the iter-92 fix ONLY runs on the sort=lock branch. If any client calls the endpoint without an explicit sort param (e.g. curl smoke tests, third-party integrations, or a future non-mobile client), the user's assist-first symptom will re-surface. The Expo frontend is safe because useFilters.tsx defaults sortKey='lock', but consider aligning the backend default (change L874 to sort='lock') for defense in depth.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "/api/picks/today",
+        "issue": "Query-string default is sort='time' (picks_routes.py:874) but the iter-92 goalscorer-first fix only applies to sort='lock'. Any caller that omits ?sort= will still see the top of the feed dominated by Anytime Assist picks. Frontend passes sort=lock so users are unaffected, but this is a footgun for API smoke tests / partner integrations. Consider aligning the default to 'lock' to match the frontend and the docstring comment at L1786."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter92_soccer_family_sort.py",
+    "/app/test_reports/pytest/iter92_soccer_family.xml"
+  ],
+  "action_items": [
+    "OPTIONAL (defense in depth): change /api/picks/today `sort` query-param default from 'time' (picks_routes.py:874) to 'lock' so callers that omit ?sort= receive the same goalscorer-first ordering the Expo app does. Or, better, apply `_soccer_family_rank` inside the sort='time' bucket too so the market-family diversification survives any sort mode.",
+    "OPTIONAL: today's MLB slate has no batter picks, so iter-91 H2H batter bullet regression could not be re-verified this run. Skipped in the pytest file — re-run when MLB batter picks are on the board."
+  ],
+  "critical_code_review_comments": [
+    "picks_routes.py:1806-1818 — `_soccer_family_rank` correctly returns 0 for non-Soccer picks, so MLB/NBA/NFL/Tennis ordering is unchanged (verified by MLB descending lock_score assertion). Both asc and desc branches use the same tiebreaker key — no asymmetry.",
+    "picks_routes.py:874 — sort query-param default is 'time', which BYPASSES the iter-92 fix. The frontend defaults to sort='lock' (useFilters.tsx:76) so end-users are unaffected, but callers hitting the endpoint without an explicit sort param will still see the assist-dominance symptom. See minor backend issue.",
+    "picks_routes.py:1739-1743 — `_bucket` helper (today-first vs later) is defined but never actually inserted into the sort key tuples at L1774/1780/1783/1785/1816/1818. Comment at L1732-1735 promises today-first behaviour but the code doesn't deliver it. Pre-existing (not iter-92)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter92_soccer_family_sort.py (new — 10 tests covering primary MLS surfacing, Soccer all-leagues, MLB regression, sort=edge/time regression, iter-91 H2H, iter-82 contradiction, perf)"
+  ],
+  "success_rate": {
+    "backend": "9/9 executed passed (1 skipped due to no applicable batter picks in today's MLB slate — 100% of applicable assertions PASS)",
+    "frontend": "not tested (review request: backend only)"
+  },
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "iter-92 fix is landed and working under sort=lock — top 5 MLS picks are all Anytime Goal Scorer. Test file /app/backend/tests/test_iter92_soccer_family_sort.py explicitly appends ?sort=lock to every primary assertion because the API's own default (?sort=time) bypasses the fix. If you re-run and MLS top-10 is again dominated by assists, first confirm the request URL includes sort=lock. Non-blocking footgun documented in action_items — backend query default vs frontend default mismatch."
+}
