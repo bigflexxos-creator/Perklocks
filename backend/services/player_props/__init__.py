@@ -37,7 +37,15 @@ from .matchup_intelligence import (
     build_matchup_context,
     apply_matchup_context,
 )
-from .market_selector import MarketRoute, select_markets, best_market
+from .market_selector import MarketRoute, select_markets, best_market, select_markets_v3
+from .goal_scorer_v3 import (
+    LineupInfo, V3GoalOutput,
+    predict_goal_v3, to_pick_recommendation,
+    ENGINE_VERSION as GS_V3_VERSION,
+)
+from .team_strength import (
+    TeamStrength, LeagueStrength, get_league_strength, clear_cache,
+)
 
 __all__ = [
     # types
@@ -61,5 +69,16 @@ __all__ = [
     "build_matchup_context",
     "apply_matchup_context",
     "select_markets",
+    "select_markets_v3",
     "best_market",
+    # Goal Scorer Engine v3
+    "predict_goal_v3",
+    "to_pick_recommendation",
+    "LineupInfo",
+    "V3GoalOutput",
+    "GS_V3_VERSION",
+    # Team strength (v3 support)
+    "TeamStrength",
+    "LeagueStrength",
+    "get_league_strength",
 ]

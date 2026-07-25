@@ -418,6 +418,33 @@ test_plan:
   test_priority: "high_first"
 
 agent_communication:
+  - agent: "testing"
+    message: |
+      iter-96 GoalScorer Engine v3 backend verification — 12/13 PASS.
+
+      ✅ Admin endpoints all functional:
+        - GET  /api/admin/goalscorer/v3/status  → engine_version=gs_v3.0.0, all 6 leagues indexed with correct teams/seasons.
+        - POST /api/admin/goalscorer/v3/refresh → {ok:true, refreshed:{...}}
+        - POST /api/admin/goalscorer/v3/predict → Salah/Chelsea (home, XI) p_anytime in [0.20,0.55], confidence=HIGH,
+          lam_team>1.5, full ensemble{monte_carlo,closed_form,form_baseline}. Messi/LA Galaxy MLS also valid
+          (confidence≠LOW). Nonexistent player → 404.
+
+      ✅ Regression: /api/health, /api/picks/today (all sort modes except edge), /api/admin/odds-diagnostic all 200.
+      ✅ Non-goal-scorer soccer picks (assist/goal_involvement) correctly stay on player_prop_intelligence_v2.
+      ✅ /api/picks/{id} detail endpoint returns full v3 metadata correctly.
+
+      ❌ THREE list-endpoint bugs (all in read/decorate layer — storage is correct):
+        1. `_slim_rationale` (server.py:2998-3045) drops pick_rationale.v3_signals for 100/100 v3 picks in lite payload.
+           Fix: add v3_signals to slim whitelist OR bypass slimming when engine=='goal_scorer_v3'.
+        2. `_odds_decorate` (picks_routes.py:~2309) overwrites odds_source='model_derived' → 'odds_api' on 100/100 v3 picks.
+           Fix: guard with `if pick.get('source') == 'goal_scorer_v3': return`.
+        3. Elite-anchor pipeline recomputes numeric edge_percent (22.75, 1.93, etc.) on ~7% of v3 picks despite
+           writer storing None. Detail endpoint also affected (edge_percent=-25.18 seen on a v3 pick).
+
+      Full details + reproducer curl in /app/test_reports/iteration_96.json (rca_of_issue). Main agent should
+      patch the two decorators and re-run `pytest tests/test_iter96_goalscorer_v3.py -v` — the single failing
+      test (TestPicksV3Stamp::test_soccer_picks_include_v3_stamp_list) should then pass.
+
   - agent: "main"
     message: |
       Please run a full E2E regression across all 5 tabs (Locks, Rollover, Parlay, Bet Killer, Profile).

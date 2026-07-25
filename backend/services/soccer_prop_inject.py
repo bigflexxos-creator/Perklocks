@@ -31,7 +31,7 @@ from services.player_props import (
     classify_archetype,
     get_matchup_split,
     get_player_stats,
-    select_markets,
+    select_markets_v3,
 )
 
 logger = logging.getLogger("lockscore.soccer_prop_inject")
@@ -162,6 +162,7 @@ async def _generate_for_event(ev: dict, sport_key: str,
     event_id = ev.get("id") or f"{sport_key}-{home}-{away}"
 
     async def _emit_for(entry: dict, opp: str, is_home: bool) -> list[dict]:
+        from deps import db
         name = entry["name"]
         stats = await get_player_stats(name, league_hint=league_hint)
         if not stats or not stats.data_ok:
@@ -183,7 +184,13 @@ async def _generate_for_event(ev: dict, sport_key: str,
             split=split,
         )
 
-        routes = select_markets(stats, archetype, split, matchup_ctx)
+        routes = await select_markets_v3(
+            db, stats, archetype, split, matchup_ctx,
+            opp_team_name=opp,
+            sport_key=sport_key,
+            is_home=is_home,
+            lineup_status="unknown",
+        )
         if not routes:
             return []
 
@@ -225,6 +232,16 @@ async def _generate_for_event(ev: dict, sport_key: str,
             grade = ("Strong Lock" if lock >= 95 else
                       ("Lock" if lock >= 90 else "Playable"))
 
+            # ── Strict Edge Gate (v3) ──────────────────────────────
+            # We DO NOT calculate a "true betting edge" for goal-scorer
+            # v3 picks because we don't have real sportsbook player-prop
+            # lines to measure against. The `book_odds` we display is a
+            # model-derived fair price + juice; edge would be circular.
+            # This directive is per user (2026-07-22).
+            is_v3 = (route.market == "anytime_goal_scorer")
+            edge_val = None if is_v3 else 4.0
+            odds_source_val = "model_derived" if is_v3 else "model_derived"
+
             pick = {
                 "id": f"soccer-prop-{route.market}-{event_id}-{name.replace(' ', '_').lower()}",
                 "external_id": f"SOCCER-PROP-{route.market}-{event_id}-{name}",
@@ -244,7 +261,10 @@ async def _generate_for_event(ev: dict, sport_key: str,
                 "lock_score_v2": lock,
                 "lock_score_v2_raw": lock,
                 "lock_score_peak": lock,
-                "edge_percent": 4.0,
+                "edge_percent": edge_val,
+                "odds_source": odds_source_val,
+                "odds_status": "no_book_line",
+                "confidence_penalty": -5 if is_v3 else 0,
                 "grade": grade,
                 "confidence": grade,
                 "status": "pending",
@@ -255,8 +275,14 @@ async def _generate_for_event(ev: dict, sport_key: str,
                 "is_synthetic_scorer": True,
                 "is_long_shot": True,
                 "synthetic": True,
-                "synthetic_source": "player_prop_intelligence_v2",
-                "source": "player_prop_intelligence_v2",
+                "synthetic_source": (
+                    "goal_scorer_v3" if route.market == "anytime_goal_scorer"
+                    else "player_prop_intelligence_v2"
+                ),
+                "source": (
+                    "goal_scorer_v3" if route.market == "anytime_goal_scorer"
+                    else "player_prop_intelligence_v2"
+                ),
                 "home_team": home,
                 "away_team": away,
                 "home_team_name": home,
@@ -278,7 +304,8 @@ async def _generate_for_event(ev: dict, sport_key: str,
                     "league": stats.league,
                 },
                 "pick_rationale": {
-                    "engine": "player_prop_intelligence_v2",
+                    "engine": "goal_scorer_v3" if route.market == "anytime_goal_scorer" else "player_prop_intelligence_v2",
+                    "engine_version": route.recommendation.debug.get("engine", "player_prop_intelligence_v2"),
                     "summary": (
                         f"{name} ({archetype.display()}): "
                         f"model p={p*100:.0f}% · {stats.goals}G/{stats.assists}A "
@@ -299,6 +326,20 @@ async def _generate_for_event(ev: dict, sport_key: str,
                     },
                     "model_debug": route.recommendation.debug,
                     "market_fit": route.market_fit,
+                    # v3-only signals — surface team λ and ensemble
+                    "v3_signals": (
+                        {
+                            "lam_player":    route.recommendation.debug.get("lam_player"),
+                            "lam_team":      route.recommendation.debug.get("lam_team"),
+                            "lam_opponent":  route.recommendation.debug.get("lam_opponent"),
+                            "expected_minutes": route.recommendation.debug.get("expected_minutes"),
+                            "goal_share":    route.recommendation.debug.get("goal_share"),
+                            "ensemble":      route.recommendation.debug.get("ensemble"),
+                            "p_first":       route.recommendation.debug.get("p_first"),
+                            "p_2plus":       route.recommendation.debug.get("p_2plus"),
+                            "seasons_used":  route.recommendation.debug.get("seasons_used"),
+                        } if route.market == "anytime_goal_scorer" else None
+                    ),
                 },
             }
             out.append(pick)
