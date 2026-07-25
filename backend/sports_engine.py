@@ -204,6 +204,12 @@ async def _get(url: str, params: dict) -> list | dict | None:
                     _API_FAIL_STREAK += 1
                     _API_TOTAL_FAIL += 1
                     _API_LAST_ERR = f"401: {body}"
+                    # ── iter-93: notify odds_provider fallback layer ──
+                    try:
+                        from services.odds_provider import report_failure as _op_fail
+                        _op_fail(401, body[:60])
+                    except Exception:
+                        pass
                     # ANY repeat 401 is auth failure — trip the breaker so
                     # we stop burning 8s per endpoint × 50 endpoints (the
                     # exact production hang the operator hit). Previously
@@ -221,6 +227,11 @@ async def _get(url: str, params: dict) -> list | dict | None:
                     _API_FAIL_STREAK += 1
                     _API_TOTAL_FAIL += 1
                     _API_LAST_ERR = "429: rate limited"
+                    try:
+                        from services.odds_provider import report_failure as _op_fail
+                        _op_fail(429, "rate_limited")
+                    except Exception:
+                        pass
                     # Brief backoff so the next call in the burst doesn't also trip.
                     await asyncio.sleep(1.2)
                     logger.warning("OddsAPI %s -> 429 (rate limited)", url)
@@ -229,6 +240,11 @@ async def _get(url: str, params: dict) -> list | dict | None:
                     _API_FAIL_STREAK += 1
                     _API_TOTAL_FAIL += 1
                     _API_LAST_ERR = f"{r.status_code}: {r.text[:160]}"
+                    try:
+                        from services.odds_provider import report_failure as _op_fail
+                        _op_fail(r.status_code, "non_200")
+                    except Exception:
+                        pass
                     logger.warning("OddsAPI %s -> %s %s", url, r.status_code, r.text[:160])
                     if _API_FAIL_STREAK >= _API_FAIL_TRIP:
                         _API_DISABLED = True
@@ -239,6 +255,11 @@ async def _get(url: str, params: dict) -> list | dict | None:
                 _API_401_STREAK = 0
                 _API_FAIL_STREAK = 0
                 _API_TOTAL_OK += 1
+                try:
+                    from services.odds_provider import report_success as _op_ok
+                    _op_ok()
+                except Exception:
+                    pass
                 return r.json()
         except Exception as e:
             _API_FAIL_STREAK += 1

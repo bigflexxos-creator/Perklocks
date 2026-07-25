@@ -178,7 +178,33 @@ async def _generate_for_event(ev: dict, all_scorers: list[dict],
             return []
 
         out: list[dict] = []
+        # ── Data-quality gate (iter-93) ─────────────────────────────
+        # User report: "Still got a bunch of fake stats and picks that
+        # shouldn't be on board for mls ... I don't want random goal-
+        # scorers or assist bets I want real data bets".
+        #
+        # Reject picks whose upstream signal is too weak to trust:
+        #   • no real season sample (games < 3 AND minutes < 180)
+        #   • no attacking output signal (goals_per_90 + assists_per_90
+        #     + npxg_per_90 all zero — data was never populated)
+        #   • market_fit BELOW 40 (already partial-penalised further
+        #     down, but at market_fit<40 the model has essentially told
+        #     us this player is a bad match — no reason to surface it)
+        #   • confidence LOW + market_fit < 60 combined — two weak
+        #     signals stacking means junk pick.
+        _game_sample_ok = stats.games >= 3 or stats.minutes >= 180
+        _has_attack_signal = (
+            (stats.goals_per_90 or 0) > 0.02
+            or (stats.assists_per_90 or 0) > 0.02
+            or (stats.npxg_per_90 or 0) > 0.02
+        )
+        if not (_game_sample_ok and _has_attack_signal and stats.data_ok):
+            return []
         for route in routes:
+            if route.market_fit < 40:
+                continue
+            if route.confidence == "LOW" and route.market_fit < 60:
+                continue
             p = route.probability
             book_odds = _american(p)
 

@@ -91,6 +91,20 @@ async def admin_refresh_soccer_player_form(
     return await refresh_soccer_player_form(db)
 
 
+@router.get("/admin/odds-health")
+async def admin_odds_health(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Public odds-provider health & active-source snapshot (iter-93).
+
+    Returns whether we're serving live Odds API data, or degraded to
+    API-Sports / ESPN backup. Use this to monitor the Sat-Sun weekend
+    when the Odds API subscription is expected to be down.
+    """
+    from services.odds_provider import status as _odds_status
+    return await _odds_status()
+
+
 @router.post("/admin/backfill-tennis-elo")
 async def admin_backfill_tennis_elo(
     user: Annotated[UserPublic, Depends(current_admin)],

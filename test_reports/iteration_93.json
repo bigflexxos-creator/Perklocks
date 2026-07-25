@@ -1,0 +1,44 @@
+{
+  "summary": "iter-93 backend verification: Odds provider fallback layer (Part A) is fully working — /api/admin/odds-health returns all expected keys (state=live, active_source=odds_api, primary_provider=odds_api, api_sports_keys_configured=3, failures_in_window=0). /api/picks/today envelope carries odds_provider={state:live, active_source:odds_api}. Every one of the 7 MLB and 184 Soccer/MLS picks is decorated with odds_source=odds_api, odds_status=live, confidence_penalty=0. In-process circuit-breaker simulation (3× report_failure(429) → status()) correctly flips state=degraded/active_source=api_sports and decorate_pick returns odds_source=api_sports/odds_status=backup/confidence_penalty=-10/edge_percent=None/lock_score docked by 10 (95→85). report_success() clears the state and decorate_pick leaves edge_percent unchanged on live picks. Part B (MLS data-quality gate) is working — inspected all 184 MLS picks, ZERO have games==0/minutes<180/all-zero attack signals; every scorer/assist/GI pick has a real-stat rationale via pick_rationale.evidence. Performance: MLB<10s, Soccer<12s. Regression FAIL: iter-92 tiebreaker — top-10 MLS picks in API-returned order are 9× anytime_assist + 1× null, ZERO anytime_goal_scorer / anytime_goal_involvement entries (test expected >=3). NOTE: when sorted client-side by lock_score, the true top-10 is 8× goal_involvement + 2× goal_scorer at lock_score 98.0 (vs the 95.0 assist picks that lead the response) — so the API is not applying its own lock_score ordering to the response. iter-91 batter H2H regression could not be exercised: today's MLB slate is a cold 7-pick moneyline board with zero batter props (skipped, not failed).",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "/api/picks/today?sport=Soccer&leagues=MLS",
+        "issue": "iter-92 tiebreaker regression: the response order of the top-10 MLS picks contains 9× anytime_assist + 1× null and ZERO anytime_goal_scorer / anytime_goal_involvement entries. When re-sorted by lock_score client-side, the true top slots are 8× anytime_goal_involvement (lock_score 98.0, market_fit 95) + 2× anytime_goal_scorer (lock_score 98.0) — meaning higher-lock scorers exist but are being pushed BELOW lower-lock (95.0) assist picks in the returned envelope. Either the final sort/tiebreaker in picks_routes was inverted by iter-93's decoration path, or the market_family sort key was flipped.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter93_odds_provider_and_mls_gate.py",
+    "/app/test_reports/pytest/iter93_results.xml"
+  ],
+  "action_items": [
+    "Investigate iter-92 tiebreaker: why does /api/picks/today?sport=Soccer&leagues=MLS return 9× anytime_assist picks at lock_score 95.0 ahead of anytime_goal_involvement/anytime_goal_scorer picks at lock_score 98.0? The MLS scorer family sort (iter-92) appears to be re-shuffled or overridden after decoration. Suspect the final canonical-list ordering in picks_routes.py — check that odds_provider.decorate_pick() (which docks lock_score in degraded state) is NOT re-running after the sort, OR check the market-family tiebreaker precedence order.",
+    "OPTIONAL — cold-slate coverage: the current MLB board has 7 team-level moneyline picks and zero batter props, so the iter-91 H2H bullet regression could not be re-verified. Consider seeding a batter fixture or re-running when a live MLB slate populates."
+  ],
+  "critical_code_review_comments": [
+    "odds_provider.py: `_probe_primary` throttles both live and degraded paths behind the SAME `_RECHECK_INTERVAL` (30 min) — a fresh 401 on the primary won't be surfaced by the /admin/odds-health endpoint for up to 30 min after boot. Fine for the interim weekend window, but worth flagging if this becomes long-lived.",
+    "odds_provider.decorate_pick: when active=='espn' or 'unavailable', it also docks lock_score by 10; this is correct per spec but no test exercised that branch — the current env has 3 API-Sports keys so 'espn' fallback is only reachable if the operator clears all 3.",
+    "picks_routes.py L2299: `decorate_pick(_slim)` mutates the pick dict in-place inside the sorted `canonical` list. Because it can dock lock_score by 10 (in the degraded branch), sorting must have happened BEFORE decoration — otherwise the pretty-tier lock_score ordering will be corrupted mid-loop. Please verify the canonical sort is finalized before the decorate loop."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter93_odds_provider_and_mls_gate.py"
+  ],
+  "success_rate": {
+    "backend": "83% (10/12 executed; 1 skipped for cold MLB slate; 1 real regression on iter-92 tiebreaker ordering)",
+    "frontend": "not tested (backend-only request)"
+  },
+  "seed_data_creation": "None — used the live demo user (demo@lockscore.ai / demo123) and today's real board.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "iter-93 shipped two independent changes. Part A (odds fallback + circuit breaker + decorate_pick) is FULLY VERIFIED including a live-path envelope, an in-process degraded-path simulation, and a live→degraded→live round-trip on the odds_provider module. Part B (MLS scorer data-quality gate) is verified — no zero-sample scorer/assist picks are leaking through and every surviving scorer/assist/GI pick has a real-stat rationale (checked via pick_rationale.evidence keywords). ONLY blocker is the iter-92 tiebreaker regression: /api/picks/today?sport=Soccer&leagues=MLS is returning 9× anytime_assist at lock_score 95 ahead of the actual top-lock (98) anytime_goal_involvement/scorer picks. Suspect post-decoration re-sort or family precedence flip in picks_routes.py. iter-91 batter H2H bullet could not be exercised — cold slate (7 MLB team picks, zero batter props today). Test file at /app/backend/tests/test_iter93_odds_provider_and_mls_gate.py is reusable; run it after the main agent addresses the sort regression.",
+  "rca_of_issue": "iter-92 tiebreaker regression RCA (partial): running /api/picks/today?sport=Soccer&leagues=MLS with the demo user, the picks list of length 184 has this distribution: anytime_goal_involvement=69, anytime_assist=54, anytime_goal_scorer=45, null=16. The first 10 picks in the API-returned order are all anytime_assist except position 9 which is null; every one has lock_score=95.0. The lock_score-sorted list has 8× anytime_goal_involvement + 2× anytime_goal_scorer at lock_score 98.0 as the true top-10 — proving higher-lock scorer/involvement picks exist but are ordered BELOW lower-lock assists in the response. Reproduction: `curl -H 'Authorization: Bearer <tok>' https://player-intel-engine.preview.emergentagent.com/api/picks/today?sport=Soccer&leagues=MLS | jq '.picks[:10] | map({m:.market_type, ls:.lock_score})'`. Mitigation: audit the final sort in picks_routes.py to ensure (a) it happens AFTER decoration (or that decoration cannot dock lock_score in the live-path, which it doesn't) and (b) the iter-92 market-family precedence still runs on the sorted output."
+}

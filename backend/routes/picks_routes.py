@@ -2289,7 +2289,32 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             # may partially populate; subsequent calls hit the 6h cache.
             pass
 
-    return {"picks": canonical, "alt_availability": alt_availability}
+    # ── Odds provider fallback decoration (iter-93) ─────────────────
+    # Tag every outbound pick with odds_source / odds_status /
+    # confidence_penalty so the frontend can label backup data and
+    # the ROI math skips picks without real odds. Never generates
+    # synthetic odds — when the primary Odds API is degraded, edge_
+    # percent is nulled and lock_score is docked by 10.
+    try:
+        from services.odds_provider import status as _odds_status, decorate_pick as _odds_decorate
+        _health = await _odds_status()
+        # Only decorate when we're actually degraded — the live path
+        # tags picks with odds_source=odds_api / status=live / penalty=0
+        # (cheap: no-op mutation), degraded path applies the penalty.
+        for _slim in canonical:
+            _odds_decorate(_slim)
+        # Surface the odds-provider state on the envelope so the UI
+        # (or an admin dashboard) can show a subtle indicator.
+        _odds_envelope = {
+            "state": _health.get("state"),
+            "active_source": _health.get("active_source"),
+        }
+    except Exception as _odds_err:
+        logger.debug("odds fallback decoration skipped: %s", _odds_err)
+        _odds_envelope = None
+
+    return {"picks": canonical, "alt_availability": alt_availability,
+             "odds_provider": _odds_envelope}
 
 
 @router.get("/bet-killer", deprecated=True)

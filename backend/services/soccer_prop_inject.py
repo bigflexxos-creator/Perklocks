@@ -188,7 +188,24 @@ async def _generate_for_event(ev: dict, sport_key: str,
             return []
 
         out: list[dict] = []
+        # ── Data-quality gate (iter-93) — same rule as mls_direct_inject.
+        #   Reject picks lacking a real season sample OR any attacking
+        #   signal OR flagged data_ok=False. Also drop routes with
+        #   market_fit < 40 or LOW+<60 combos (junk picks the user
+        #   explicitly asked to purge from the board).
+        _game_sample_ok = stats.games >= 3 or stats.minutes >= 180
+        _has_attack_signal = (
+            (stats.goals_per_90 or 0) > 0.02
+            or (stats.assists_per_90 or 0) > 0.02
+            or (stats.npxg_per_90 or 0) > 0.02
+        )
+        if not (_game_sample_ok and _has_attack_signal and stats.data_ok):
+            return []
         for route in routes:
+            if route.market_fit < 40:
+                continue
+            if route.confidence == "LOW" and route.market_fit < 60:
+                continue
             p = route.probability
             book_odds = _american(p)
 
