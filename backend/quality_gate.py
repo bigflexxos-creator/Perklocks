@@ -712,6 +712,18 @@ def _apply_elite_scorer_anchor(pick: dict) -> None:
     if sport != "soccer" or not _SOCCER_GOALSCORER_FAMILY_RE.search(market):
         return
 
+    # v3 goal-scorer picks own their own λ_player / λ_team math and
+    # publish `edge_percent=None` deliberately (no real book line).
+    # Overriding win_probability with a naive per-match rate would
+    # undo the correlated Monte-Carlo output; recomputing edge would
+    # fabricate a number the engine refused to publish. Skip.
+    if (pick.get("source") == "goal_scorer_v3"
+            or pick.get("odds_source") == "model_derived"):
+        # Still suppress the misleading cold tag / mark as anchored for UI.
+        pick["suppress_cold_tag"] = True
+        pick["player_elite_anchored"] = True
+        return
+
     player = _extract_player_from_pick(pick)
     anchor = _elite_anchor_rate(player, market)
     if anchor is None:

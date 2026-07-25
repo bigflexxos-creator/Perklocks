@@ -223,6 +223,51 @@ async def select_markets_v3(db,
          predict_goal_involvement(stats, split, archetype)),
     ]
 
+    # ── GI recompute using v3 goal-prob ─────────────────────────────
+    # The default `predict_goal_involvement` internally calls v1's
+    # `predict_goal`, which historically overshoots (Evander example:
+    # v1 P(goal)=0.56 vs v3 P(goal)=0.34). To keep the "Score or
+    # Assist" market consistent with the v3 anytime scorer engine,
+    # we recompute p_gi using the v3 goal-probability + v1 assist-
+    # probability with the same Poisson-union math.
+    if _USE_V3_GOAL_SCORER and rec_g.data_ok:
+        try:
+            import math
+            p_g_v3 = max(0.001, min(0.95, rec_g.probability))
+            rec_gi = market_models[2][2]     # PickRecommendation
+            rec_a  = market_models[1][2]
+            if rec_gi.data_ok and rec_a.data_ok:
+                p_a = max(0.001, min(0.95, rec_a.probability))
+                lam_g_v3 = -math.log(1.0 - p_g_v3)
+                lam_a    = -math.log(1.0 - p_a)
+                lam_ga   = lam_g_v3 + lam_a
+                p_model_new = 1.0 - math.exp(-lam_ga)
+
+                # Blend with empirical history when we have games.
+                if split and split.matches >= 3:
+                    emp = split.gi_rate()
+                    w = 0.4 if split.matches < 5 else 0.6
+                    p_blend_new = (1.0 - w) * p_model_new + w * emp
+                else:
+                    p_blend_new = p_model_new
+
+                p_final_new = max(0.03, min(0.90, p_blend_new))
+                # Rewrite the GI recommendation with the v3-aligned math.
+                rec_gi.probability = round(p_final_new, 4)
+                rec_gi.debug.update({
+                    "p_goal":    round(p_g_v3, 4),
+                    "p_assist":  round(p_a, 4),
+                    "lam_g":     round(lam_g_v3, 4),
+                    "lam_a":     round(lam_a, 4),
+                    "lam_ga":    round(lam_ga, 4),
+                    "p_model":   round(p_model_new, 4),
+                    "p_blend":   round(p_blend_new, 4),
+                    "engine":    "gi_poisson_v3",
+                    "p_goal_source": "goal_scorer_v3",
+                })
+        except Exception as _gi_err:
+            logger.debug("GI v3-align skipped: %s", _gi_err)
+
     for market, label, rec in market_models:
         if not rec.data_ok:
             continue
@@ -234,11 +279,14 @@ async def select_markets_v3(db,
         # Apply matchup context multiplier — but for v3 goal scorer we
         # already baked team/opp strength INTO the probability. So we
         # only apply a small residual context (form extremes + rest).
+        # Same half-weight applies to GI since we recomputed it above
+        # using the v3 goal-prob.
         if matchup_ctx is not None:
-            if market == "anytime_goal_scorer" and _USE_V3_GOAL_SCORER:
+            if (market in ("anytime_goal_scorer", "anytime_goal_involvement")
+                    and _USE_V3_GOAL_SCORER):
                 # Half-weight the context so we don't double-count.
                 residual = 1.0 + 0.5 * (matchup_ctx.total_multiplier() - 1.0)
-                p = max(0.02, min(0.85, rec.probability * residual))
+                p = max(0.02, min(0.90, rec.probability * residual))
             else:
                 p = apply_matchup_context(rec.probability, matchup_ctx)
         else:
