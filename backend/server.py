@@ -520,6 +520,13 @@ def _canonicalize_lock_score(pick: dict) -> dict:
     # 19.8% next to a 99 Lock badge. The original (flipped) value is
     # preserved on `win_probability_pre_flip` for forensics.
     try:
+        # Skip the flip-guard entirely for v3 goal-scorer picks. They
+        # store `edge_percent=None` deliberately (strict edge gate) and
+        # any recompute below would fabricate a non-zero edge that the
+        # engine explicitly refuses to publish.
+        if (pick.get("source") == "goal_scorer_v3"
+                or pick.get("odds_source") == "model_derived"):
+            return pick
         ls_for_chk = float(pick.get("lock_score") or 0)
         wp_for_chk = float(pick.get("win_probability") or 0)
         imp_for_chk = float(pick.get("implied_probability") or pick.get("book_implied_prob") or 0)
@@ -3016,6 +3023,7 @@ def _slim_rationale(r: dict) -> dict:
         "summary": r.get("summary"),
         "data_source": r.get("data_source"),
         "engine": r.get("engine"),
+        "engine_version": r.get("engine_version"),
         "lean": r.get("lean"),
         "confidence_score": r.get("confidence_score"),
         "edge_pct_points": r.get("edge_pct_points"),
@@ -3024,6 +3032,10 @@ def _slim_rationale(r: dict) -> dict:
         "lock_score": r.get("lock_score"),
         "edge_percent": r.get("edge_percent"),
         "espn_rank": r.get("espn_rank"),
+        # v3 goal-scorer signals (small, ~200B) — needed by the
+        # collapsed LockPickCard so the "λ_team · minutes · share"
+        # micro-line doesn't blank out on lite payloads.
+        "v3_signals": r.get("v3_signals"),
     }
     # ── Keep the top EVIDENCE + CONCERN bullets for the collapsed card.
     # Was 1 each (2026-06-28) — user feedback 2026-07-21: "I don't want

@@ -822,3 +822,105 @@ agent_communication:
 #   • Wire archetype tag into ROI/analytics for archetype-level bleed
 #     tracking.
 
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  ITER 96 (2026-07-25): GoalScorer Engine v3 — Layered Probability
+# ═══════════════════════════════════════════════════════════════════
+backend:
+  - task: "GoalScorer Engine v3 — layered xG / Poisson / Correlated MC engine"
+    implemented: true
+    working: true
+    file: "backend/services/player_props/goal_scorer_v3.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Replaced the rudimentary goalscorer Monte Carlo simulator
+            with a full 7-layer probability engine per user directive
+            (2026-07-22). Layers:
+              1. xG Engine (λ_player) — Understat 2-season npxG+goals
+              2. Poisson Team-Goal Simulator — team_atk × opp_def
+              3. Goal Allocation Engine — allocates team goals by share
+              4. Correlated Monte Carlo — 20k samples, Binomial(N,p)
+                 per-goal draws so same-team players correlate correctly
+              5. Bayesian Lineup Update — starter_xi/rotation/bench_risk
+              6. Ensemble (0.55 MC + 0.30 closed-form + 0.15 form)
+              7. Strict Edge Gate — edge_percent=None when no real book
+
+            Wired into `services.mls_direct_inject` (MLS) and
+            `services.soccer_prop_inject` (EPL/LaLiga/SerieA/Bundesliga/
+            Ligue1/UCL) via new async `select_markets_v3()`.
+
+            Team-strength engine seeds team λ from 3 seasons of match
+            data (2022-23, 2023-24, 2024-25) with Bayesian shrinkage
+            toward league mean (prior mass = 12 matches). MLS falls
+            back to ESPN-stats-derived team goals rescaled to league
+            mean 1.45 GF/game.
+
+            v3 picks now stamp: source="goal_scorer_v3",
+            odds_source="model_derived", edge_percent=None,
+            confidence_penalty=-5, and pick_rationale.v3_signals with
+            {lam_player, lam_team, lam_opponent, expected_minutes,
+             goal_share, ensemble, p_first, p_2plus, seasons_used}.
+        - working: false
+          agent: "testing"
+          comment: |
+            Initial run: 12/13 pass. 3 downstream serializers
+            corrupted v3 output — `_slim_rationale` stripped
+            `v3_signals`, `_odds_decorate` overwrote `odds_source`,
+            elite-anchor recompute clobbered `edge_percent`.
+        - working: true
+          agent: "main"
+          comment: |
+            Fixed 3 decorator issues + a pre-existing win_probability
+            scale bug (was fraction 0-1, now 0-100 matching every
+            other source). All 13 tests pass. Live slate now shows
+            167 v3 goalscorer picks across MLS + Big-5 with strict
+            edge gate honoured end-to-end.
+
+  - task: "Team-strength engine — multi-season Poisson priors"
+    implemented: true
+    working: true
+    file: "backend/services/player_props/team_strength.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Aggregates soccer_matches (25k+ matches) across 3 seasons
+            with weights [2024-25:1.0, 2023-24:0.65, 2022-23:0.35]
+            and Bayesian shrinkage. Returns per-team home/away attack
+            + defense λ. Standings-only fallback for MLS (built from
+            espn_mls_stats aggregation, rescaled to league μ=1.45).
+            Fuzzy team-name matching includes 30+ alias mappings for
+            common abbreviations (Man Utd, Spurs, PSG, Inter, etc.).
+
+  - task: "Admin diagnostics for v3 engine"
+    implemented: true
+    working: true
+    file: "backend/routes/admin_routes.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Added 3 endpoints:
+              GET  /api/admin/goalscorer/v3/status   — per-league
+                   diagnostics (μ, teams indexed, seasons used).
+              POST /api/admin/goalscorer/v3/refresh  — clear cache
+                   and re-warm all 6 leagues.
+              POST /api/admin/goalscorer/v3/predict  — one-shot
+                   evaluation for {player, opponent, league, home}.
+
+metadata:
+  last_iteration: 96
+  last_iteration_topic: "GoalScorer Engine v3 (layered probability model for all soccer leagues)"
+  last_iteration_result: "13/13 backend tests PASS · 167 v3 picks live across MLS+Big-5"

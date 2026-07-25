@@ -28,9 +28,22 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 
 
 def _base_prob(stats: PlayerStats) -> float:
+    """Convert per-match assist intensity → P(≥1 assist per match).
+
+    Uses the Poisson-tail identity  P(N≥1) = 1 - e^-λ  where λ is the
+    per-match assist rate. Previous linear approximation
+    (`a/90 * 0.9`) systematically over-estimated for high-A/90 players
+    (Olise A/90=0.75 → 0.68 vs correct 0.53).
+    """
+    import math
     if stats.assists_per_90 > 0:
-        return min(stats.assists_per_90 * 0.90, 0.72)
-    return min(stats.apm() * 0.88, 0.70)
+        # A/90 is already an intensity per 90-minute match — use directly.
+        lam = min(1.5, stats.assists_per_90)
+    else:
+        lam = min(1.5, stats.apm())
+    if lam <= 0:
+        return 0.02
+    return min(0.65, 1.0 - math.exp(-lam))
 
 
 def _kp_boost(kp90: float) -> float:
@@ -109,7 +122,7 @@ def predict_assist(stats: PlayerStats,
     arch_m = archetype_multiplier(archetype, "assist_market")
 
     raw = base * kp_m * form_m * match_m * arch_m
-    prob = round(_clamp(raw, 0.02, 0.75), 4)
+    prob = round(_clamp(raw, 0.02, 0.65), 4)
 
     confidence, data_ok = _confidence(stats)
     if archetype in (Archetype.LOW_INVOLVEMENT, Archetype.UNKNOWN):

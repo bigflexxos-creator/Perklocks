@@ -2306,6 +2306,14 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         # tags picks with odds_source=odds_api / status=live / penalty=0
         # (cheap: no-op mutation), degraded path applies the penalty.
         for _slim in canonical:
+            # Skip v3 goal-scorer picks — they carry authoritative
+            # `odds_source=model_derived` and null edge_percent set by
+            # the v3 engine writer. The odds-fallback decorator would
+            # incorrectly stamp them as `odds_api` and could recompute
+            # a fabricated edge.
+            if (_slim.get("source") == "goal_scorer_v3"
+                    or _slim.get("odds_source") == "model_derived"):
+                continue
             _odds_decorate(_slim)
         # Surface the odds-provider state on the envelope so the UI
         # (or an admin dashboard) can show a subtle indicator.
