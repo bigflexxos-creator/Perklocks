@@ -1792,7 +1792,19 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             if asc:
                 picks.sort(key=lambda p: (_event_dt(p), -p.get("lock_score", 0), _soccer_family_rank(p)))
             else:
-                picks.sort(key=lambda p: (_event_dt(p), -p.get("lock_score", 0), _soccer_family_rank(p)), reverse=True)
+                # iter-94 fix: `reverse=True` would flip EVERY key
+                # including the family tiebreaker (rank 4 first, rank 0
+                # last). Negate the primary time key instead so only
+                # the kickoff direction reverses; -lock and family_rank
+                # stay in their natural (higher-first / rank-0-first)
+                # order. Convert dt → timestamp so we can sign it.
+                def _neg_dt(p: dict) -> float:
+                    dt = _event_dt(p)
+                    try:
+                        return -dt.timestamp()
+                    except Exception:
+                        return 0.0
+                picks.sort(key=lambda p: (_neg_dt(p), -p.get("lock_score", 0), _soccer_family_rank(p)))
         elif s == "edge":
             # Pure edge sort — no today-first bucket so highest edges
             # always at top regardless of date.
