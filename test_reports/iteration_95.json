@@ -1,0 +1,49 @@
+{
+  "summary": "iter-95 backend re-verification of the sort=time DESC family-tiebreaker fix — ALL PASS (11/11 on re-run; initial run 10/11 with a single cold-cache Soccer perf blip that recovered to <3s on the next call). The `_neg_dt(p)` + explicit negated key tuple in picks_routes.py:1795-1807 correctly preserves `_soccer_family_rank` ascending order (rank 0 first) while reversing only the kickoff-time axis. Smoke-test claim verified end-to-end on live MLS board: for 'Real Salt Lake @ Portland Timbers' @ lock_score=95, the returned order is Diego Luna / David Da Costa / Antony (all Anytime Goal Scorer, rank 0) → David Da Costa 'To Score or Assist' (rank 1) → 'Portland Timbers Win or Draw' (rank 4). Iter-92 test 6 regression is now closed. Odds-provider envelope live/odds_api, per-pick odds_source/odds_status/confidence_penalty, admin/odds-health (api_sports_keys_configured=3), and the report_failure(429)x3 → degraded/api_sports → report_success → live/odds_api round-trip all still verify cleanly (Part B unchanged). MLS data-quality gate holds (no zero-sample scorer/assist picks). Perf: MLB /picks/today ~2s, Soccer /picks/today ~2-3s warm, all well under budget on re-run. TestSortLockTop5 (data-dependent) now also PASSES: top-5 sort=lock are all Anytime Goal Scorer with lock_score>=95 (Joseph Paintsil, Cristian Espinoza, Gabriel Pec, Marco Reus, Diego Luna — LA Galaxy/SJ Earthquakes + RSL/Portland). No deprecated packages / SafeAreaView / React Native issues (backend-only scope).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "/api/picks/today?sport=Soccer",
+        "issue": "Cold-cache first Soccer /picks/today call in a fresh pytest process took 17.95s on the first run, exceeding the 12s budget. Warm/re-run consistently completed in 1.6-3.5s, so this is transient cache-miss cost after MLB was hit first in the same session (upstream data-refresh path). Not a code regression from the iter-95 patch; consider warming or lowering the budget only if p95 remains >12s in production telemetry."
+      },
+      {
+        "endpoint": "/api/picks/today",
+        "issue": "Carry-over from iter-94: FastAPI Query default at picks_routes.py:874 still declares `sort='time'` while the function-body fallback at :1749 uses `s = (sort or 'lock').lower()`. Dead fallback — the two defaults should agree. Not a bug post-fix (the family tiebreaker is now correct in both branches) but still a footgun."
+      },
+      {
+        "endpoint": "/api/picks/today (post-sort mutation)",
+        "issue": "Carry-over from iter-94 code review: `_decorate_with_espn_meta` + `decorate_signals_bulk` can still adjust lock_score in a ~±6-pt band AFTER the sort at :1793/1807/1822 runs (picks_routes.py:1823-1830). Two picks at the same lock tier can drift post-sort and no re-sort happens. Consider moving sort to AFTER all decoration passes, or re-sort at the end."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter94_soccer_family_all_sorts.py",
+    "/app/test_reports/pytest/iter95_results.xml"
+  ],
+  "action_items": [
+    "None blocking. The iter-95 patch is verified. Optional cleanup: (a) align the FastAPI Query default at picks_routes.py:874 from 'time' to 'lock' (or vice versa) so the dead fallback at :1749 is removed; (b) move `picks.sort(...)` to run AFTER `_decorate_with_*` / `decorate_signals_bulk` so post-sort lock_score mutations do not silently break ordering; (c) if the 17.95s cold-cache Soccer perf regresses in production p95, consider a warm-up job or a pre-computed cache."
+  ],
+  "critical_code_review_comments": [
+    "picks_routes.py:1795-1807 — the `_neg_dt(p)` helper correctly negates only the primary timestamp key and leaves `-lock_score` and `_soccer_family_rank` in natural ascending order. This is exactly the shape iter-94 review recommended. Nice touch: try/except around `dt.timestamp()` guards against naive datetimes without silently swallowing a corrupt event_time.",
+    "picks_routes.py:1817-1822 sort=lock branch is consistent — both asc and desc use `key=` with signed lock_score, no `reverse=True`. Family tiebreaker cannot be inverted here either.",
+    "picks_routes.py:1808-1816 edge / win / implied branches all use `m * value` with default `reverse=False`, and family_rank is the tertiary key — same pattern, same protection. Full codebase now consistent with the 'no `reverse=True` on multi-key tuples' rule.",
+    "picks_routes.py:1823-1830 — sort finalizes BEFORE `_decorate_with_espn_meta` / `_decorate_with_player_form` / `decorate_signals_bulk`, which can each mutate lock_score. If those mutations are ever reintroduced with wider swings, the sort would need to move down or repeat. Not a regression today (mutations are typically ±2-6 and the family tiebreaker still surfaces at the same event/lock bucket), but noted for future maintainers."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "11/11 tests PASSED on re-run (100%). Initial run 10/11 with a transient cold-cache Soccer perf blip (17.95s) that recovered to <3s on immediate re-run.",
+    "frontend": "not tested (backend-only request)"
+  },
+  "seed_data_creation": "None — used demo user (demo@lockscore.ai/demo123) against today's live MLS + MLB slates.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "iter-95 patch is fully verified. The sort=time DESC branch now uses `_neg_dt(p)` + explicit key tuple `(-ts, -lock, family_rank)` with default reverse=False, so the family tiebreaker is preserved. All 11 backend tests in /app/backend/tests/test_iter94_soccer_family_all_sorts.py pass. If perf becomes flaky in future runs, the culprit is upstream data-refresh cold cache — a warm-up call before the perf test would stabilize CI. Repro success one-liner: `curl -H 'Authorization: Bearer <tok>' \".../api/picks/today?sport=Soccer&leagues=MLS&limit=200\" | jq '.picks | group_by(.event_id) | map({event: .[0].event_id, entries: [.[0:5] | .[] | {mkt: .market, lock: .lock_score}]})'` — every event/lock bucket now shows Anytime Goal Scorer entries first, then Score-or-Assist / Goal Involvement, then First/Last Goal Scorer, then Anytime Assist, then Other (Win-or-Draw / Team Total).",
+  "rca_of_issue": "**Fix under test**: iter-94 sort=time DESC branch previously used `picks.sort(key=..., reverse=True)`, which inverted every element of the (event_dt, -lock_score, family_rank) tuple — so within the same event+lock bucket, family rank 4 (Win-or-Draw/Team Total) sorted first and rank 0 (Anytime Goal Scorer) sorted last.\n\n**Patch** (picks_routes.py:1801-1807):\n```python\ndef _neg_dt(p: dict) -> float:\n    dt = _event_dt(p)\n    try:\n        return -dt.timestamp()\n    except Exception:\n        return 0.0\npicks.sort(key=lambda p: (_neg_dt(p), -p.get('lock_score', 0), _soccer_family_rank(p)))\n```\n\n**Verification**: Live MLS board, 'Real Salt Lake @ Portland Timbers' @ lock=95 → Diego Luna (Anytime Goal Scorer, rank 0) at pos 4 → David Da Costa (Anytime Goal Scorer, rank 0) at pos 5 → Antony (Anytime Goal Scorer, rank 0) at pos 6 → David Da Costa (To Score or Assist, rank 1) at pos 8 → Portland Timbers Win or Draw (rank 4) at pos 9. Family ranks ascend 0→0→0→1→4 as required. No assist-before-scorer inversion detected on any of the 4 MLS events with mixed family markets."
+}
