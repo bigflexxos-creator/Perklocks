@@ -96,10 +96,11 @@ async def _generate_for_event(ev: dict, all_scorers: list[dict],
     from services.player_props import (
         get_player_stats,
         classify_archetype,
-        select_markets,
+        select_markets_v3,
         build_matchup_context,
     )
     from services.player_props.models import MatchupSplit, Archetype
+    from deps import db as _v3_db
 
     home = (ev.get("home_team") or "").strip()
     away = (ev.get("away_team") or "").strip()
@@ -173,7 +174,13 @@ async def _generate_for_event(ev: dict, all_scorers: list[dict],
             split=split,
         )
 
-        routes = select_markets(stats, archetype, split, matchup_ctx)
+        routes = await select_markets_v3(
+            _v3_db, stats, archetype, split, matchup_ctx,
+            opp_team_name=opp,
+            sport_key="soccer_usa_mls",
+            is_home=is_home,
+            lineup_status="unknown",
+        )
         if not routes:
             return []
 
@@ -223,6 +230,13 @@ async def _generate_for_event(ev: dict, all_scorers: list[dict],
             grade = ("Strong Lock" if lock >= 95 else
                       ("Lock" if lock >= 90 else "Playable"))
 
+            # ── Strict Edge Gate (v3) ──────────────────────────────
+            # No real sportsbook player-prop line → no true edge to
+            # measure. Model-derived book_odds are fair-value + juice
+            # only; reporting a fabricated edge would be circular.
+            is_v3 = (route.market == "anytime_goal_scorer")
+            edge_val = None if is_v3 else 4.0
+
             pick = {
                 "id": f"mls-direct-{route.market}-{event_id}-{name.replace(' ', '_').lower()}",
                 "external_id": f"MLS-DIRECT-{route.market}-{event_id}-{name}",
@@ -242,7 +256,10 @@ async def _generate_for_event(ev: dict, all_scorers: list[dict],
                 "lock_score_v2": lock,
                 "lock_score_v2_raw": lock,
                 "lock_score_peak": lock,
-                "edge_percent": 4.0,
+                "edge_percent": edge_val,
+                "odds_source": "model_derived",
+                "odds_status": "no_book_line",
+                "confidence_penalty": -5 if is_v3 else 0,
                 "grade": grade,
                 "confidence": grade,
                 "status": "pending",
@@ -253,8 +270,14 @@ async def _generate_for_event(ev: dict, all_scorers: list[dict],
                 "is_synthetic_scorer": True,
                 "is_long_shot": True,
                 "synthetic": True,
-                "synthetic_source": "player_prop_intelligence_v2",
-                "source": "player_prop_intelligence_v2",
+                "synthetic_source": (
+                    "goal_scorer_v3" if route.market == "anytime_goal_scorer"
+                    else "player_prop_intelligence_v2"
+                ),
+                "source": (
+                    "goal_scorer_v3" if route.market == "anytime_goal_scorer"
+                    else "player_prop_intelligence_v2"
+                ),
                 "home_team": home,
                 "away_team": away,
                 "home_team_name": home,
@@ -273,7 +296,8 @@ async def _generate_for_event(ev: dict, all_scorers: list[dict],
                     "source": stats.source,
                 },
                 "pick_rationale": {
-                    "engine": "player_prop_intelligence_v2",
+                    "engine": "goal_scorer_v3" if route.market == "anytime_goal_scorer" else "player_prop_intelligence_v2",
+                    "engine_version": route.recommendation.debug.get("engine", "player_prop_intelligence_v2"),
                     "summary": (
                         f"{name} ({archetype.display()}): "
                         f"model p={p*100:.0f}% · {stats.goals}G/{stats.assists}A "
@@ -292,6 +316,20 @@ async def _generate_for_event(ev: dict, all_scorers: list[dict],
                     },
                     "model_debug": route.recommendation.debug,
                     "market_fit": route.market_fit,
+                    # v3-only signals for the goal-scorer market
+                    "v3_signals": (
+                        {
+                            "lam_player":    route.recommendation.debug.get("lam_player"),
+                            "lam_team":      route.recommendation.debug.get("lam_team"),
+                            "lam_opponent":  route.recommendation.debug.get("lam_opponent"),
+                            "expected_minutes": route.recommendation.debug.get("expected_minutes"),
+                            "goal_share":    route.recommendation.debug.get("goal_share"),
+                            "ensemble":      route.recommendation.debug.get("ensemble"),
+                            "p_first":       route.recommendation.debug.get("p_first"),
+                            "p_2plus":       route.recommendation.debug.get("p_2plus"),
+                            "seasons_used":  route.recommendation.debug.get("seasons_used"),
+                        } if route.market == "anytime_goal_scorer" else None
+                    ),
                 },
             }
 

@@ -1409,3 +1409,114 @@ async def admin_mls_archetypes(
         "players": rows,
     }
 
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  GoalScorer Engine v3 — diagnostics & sample predictions
+# ═══════════════════════════════════════════════════════════════════
+@router.get("/admin/goalscorer/v3/status")
+async def goalscorer_v3_status(
+    admin: Annotated[UserPublic, Depends(current_admin)],
+) -> dict:
+    """Return engine version + per-league team-strength diagnostics."""
+    from services.player_props import (
+        GS_V3_VERSION, get_league_strength, clear_cache,
+    )
+    leagues = ["EPL", "LaLiga", "SerieA", "Bundesliga", "Ligue1", "MLS"]
+    out: dict = {
+        "engine_version": GS_V3_VERSION,
+        "leagues": {},
+    }
+    for lg in leagues:
+        lg_strength, teams = await get_league_strength(db, lg)
+        out["leagues"][lg] = {
+            "mean_home_goals":     lg_strength.mean_home_goals,
+            "mean_away_goals":     lg_strength.mean_away_goals,
+            "mean_total_goals":    lg_strength.mean_total_goals,
+            "home_advantage_mult": round(lg_strength.home_advantage_mult, 3),
+            "matches_used":        lg_strength.matches_used,
+            "seasons_used":        lg_strength.seasons_used,
+            "teams_indexed":       len(teams),
+            "sample_teams":        [
+                {"team": t.team, "matches": t.matches,
+                 "atk_home": t.lam_attack_home, "atk_away": t.lam_attack_away,
+                 "def_home": t.lam_defense_home, "def_away": t.lam_defense_away}
+                for t in list(teams.values())[:5]
+            ],
+        }
+    return out
+
+
+@router.post("/admin/goalscorer/v3/refresh")
+async def goalscorer_v3_refresh(
+    admin: Annotated[UserPublic, Depends(current_admin)],
+) -> dict:
+    """Force-refresh the team-strength cache from mongo."""
+    from services.player_props import get_league_strength, clear_cache
+    clear_cache()
+    leagues = ["EPL", "LaLiga", "SerieA", "Bundesliga", "Ligue1", "MLS"]
+    refreshed = {}
+    for lg in leagues:
+        lg_strength, teams = await get_league_strength(db, lg, force_refresh=True)
+        refreshed[lg] = {
+            "teams_indexed": len(teams),
+            "matches_used": lg_strength.matches_used,
+        }
+    return {"ok": True, "refreshed": refreshed}
+
+
+class V3PredictReq(BaseModel):
+    player: str
+    opponent: str
+    league_hint: Optional[str] = None
+    sport_key: Optional[str] = None
+    is_home: bool = True
+    lineup_status: str = "unknown"
+
+
+@router.post("/admin/goalscorer/v3/predict")
+async def goalscorer_v3_predict(
+    body: V3PredictReq,
+    admin: Annotated[UserPublic, Depends(current_admin)],
+) -> dict:
+    """One-shot v3 prediction for a (player, opponent) pair."""
+    from services.player_props import (
+        predict_goal_v3, LineupInfo, get_player_stats, classify_archetype,
+    )
+    stats = await get_player_stats(body.player, league_hint=body.league_hint)
+    if not stats:
+        raise HTTPException(404, f"no stats for player '{body.player}'")
+
+    archetype = classify_archetype(stats)
+    out = await predict_goal_v3(
+        db, stats, body.opponent,
+        sport_key=body.sport_key or "",
+        is_home=body.is_home,
+        lineup=LineupInfo(status=body.lineup_status),
+        archetype=archetype,
+    )
+    return {
+        "player": stats.player_name,
+        "team":   stats.team,
+        "league": stats.league,
+        "archetype": archetype.value,
+        "opponent": body.opponent,
+        "is_home": body.is_home,
+        "prediction": {
+            "p_anytime":   out.p_anytime,
+            "p_first":     out.p_first,
+            "p_2plus":     out.p_2plus,
+            "lam_player":  out.lam_player,
+            "lam_team":    out.lam_team,
+            "lam_opponent": out.lam_opponent,
+            "expected_minutes": out.expected_minutes,
+            "goal_share":  out.goal_share,
+            "confidence":  out.confidence,
+            "ensemble":    out.ensemble_components,
+            "evidence":    out.evidence,
+            "concerns":    out.concerns,
+            "debug":       out.debug,
+        },
+        "engine_version": out.engine_version,
+    }
+

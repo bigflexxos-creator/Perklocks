@@ -22,6 +22,9 @@ from .matchup_intelligence import MatchupContext, apply_matchup_context
 
 logger = logging.getLogger("lockscore.player_props.market_selector")
 
+# Feature flag — allows quick rollback if v3 has a data issue in prod.
+_USE_V3_GOAL_SCORER = True
+
 
 @dataclass
 class MarketRoute:
@@ -162,3 +165,104 @@ def best_market(stats: PlayerStats,
     """Return the single best-fit market — for callers who want one pick."""
     routes = select_markets(stats, archetype, split, matchup_ctx)
     return routes[0] if routes else None
+
+
+# ── V3 async variant ────────────────────────────────────────────────
+async def select_markets_v3(db,
+                             stats: PlayerStats,
+                             archetype: Archetype,
+                             split: Optional[MatchupSplit],
+                             matchup_ctx: Optional[MatchupContext] = None,
+                             *,
+                             opp_team_name: str = "",
+                             sport_key: str = "",
+                             is_home: bool = True,
+                             lineup_status: str = "unknown",
+                             ) -> list[MarketRoute]:
+    """V3 variant of `select_markets` — uses the layered GoalScorer Engine
+    v3 for the anytime_goal_scorer market, falls back to sync models for
+    assist / goal_involvement.
+
+    The v3 engine reads team-strength priors (2 seasons of match data
+    per user directive) plus per-player Understat xG/npxG stats and
+    runs a correlated Monte Carlo team-goal simulation.
+    """
+    if archetype in (Archetype.LOW_INVOLVEMENT, Archetype.UNKNOWN):
+        return []
+
+    fits = _FIT.get(archetype, _FIT[Archetype.UNKNOWN])
+    routes: list[MarketRoute] = []
+
+    # ── Anytime Goal Scorer via v3 ──────────────────────────────────
+    if _USE_V3_GOAL_SCORER:
+        try:
+            from .goal_scorer_v3 import (
+                LineupInfo, predict_goal_v3, to_pick_recommendation,
+            )
+            v3_out = await predict_goal_v3(
+                db, stats, opp_team_name,
+                sport_key=sport_key,
+                is_home=is_home,
+                lineup=LineupInfo(status=lineup_status),
+                split=split, archetype=archetype,
+            )
+            rec_g = to_pick_recommendation(v3_out, stats, archetype)
+        except Exception as e:
+            logger.warning("v3 goal predict failed for %s (%s) — "
+                            "falling back to v1: %s",
+                            stats.player_name, sport_key, e)
+            rec_g = predict_goal(stats, split, archetype)
+    else:
+        rec_g = predict_goal(stats, split, archetype)
+
+    market_models = [
+        ("anytime_goal_scorer", "Anytime Goal Scorer", rec_g),
+        ("anytime_assist", "Anytime Assist",
+         predict_assist(stats, split, archetype)),
+        ("anytime_goal_involvement", "To Score or Assist",
+         predict_goal_involvement(stats, split, archetype)),
+    ]
+
+    for market, label, rec in market_models:
+        if not rec.data_ok:
+            continue
+
+        fit = fits.get(market, 50)
+        if fit < _FIT_FLOOR:
+            continue
+
+        # Apply matchup context multiplier — but for v3 goal scorer we
+        # already baked team/opp strength INTO the probability. So we
+        # only apply a small residual context (form extremes + rest).
+        if matchup_ctx is not None:
+            if market == "anytime_goal_scorer" and _USE_V3_GOAL_SCORER:
+                # Half-weight the context so we don't double-count.
+                residual = 1.0 + 0.5 * (matchup_ctx.total_multiplier() - 1.0)
+                p = max(0.02, min(0.85, rec.probability * residual))
+            else:
+                p = apply_matchup_context(rec.probability, matchup_ctx)
+        else:
+            p = rec.probability
+
+        if p < _PROB_FLOOR.get(market, 0.10):
+            continue
+
+        confidence = _adjust_confidence(rec.confidence, fit)
+
+        if matchup_ctx is not None:
+            rec.evidence = list(rec.evidence) + list(matchup_ctx.evidence)
+            rec.concerns = list(rec.concerns) + list(matchup_ctx.concerns)
+            rec.debug["matchup_mult"] = round(matchup_ctx.total_multiplier(), 4)
+            rec.probability = p
+
+        routes.append(MarketRoute(
+            market=market,
+            label=label,
+            probability=p,
+            confidence=confidence,
+            market_fit=fit,
+            recommendation=rec,
+        ))
+
+    routes.sort(key=lambda r: (r.market_fit, r.probability), reverse=True)
+    return routes

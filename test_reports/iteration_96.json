@@ -1,0 +1,68 @@
+{
+  "summary": "iter-96 GoalScorer Engine v3 backend verification — 12/13 PASS. All 3 new admin endpoints work correctly: (1) GET /api/admin/goalscorer/v3/status returns engine_version='gs_v3.0.0' with per-league diagnostics — EPL/LaLiga/SerieA/Bundesliga/Ligue1 all have teams_indexed>=20 and seasons_used covering all 3 target seasons ['2022-23','2023-24','2024-25']; MLS has teams_indexed>=25 derived from espn_mls_stats. (2) POST /api/admin/goalscorer/v3/refresh returns {ok:true,refreshed:{...}}. (3) POST /api/admin/goalscorer/v3/predict: Salah@Chelsea (home, starting_xi) returns p_anytime within [0.20,0.55], confidence='HIGH', lam_team>1.5, and full ensemble with monte_carlo/closed_form/form_baseline keys; Messi@LA Galaxy (MLS, home, starting_xi) returns valid confidence (MEDIUM); nonexistent player returns HTTP 404. Non-goal-scorer picks (assist/goal_involvement) correctly stay on player_prop_intelligence_v2 (no v3 leak). Regression endpoints /api/health, /api/picks/today, /api/picks/today?sport=Soccer&sort=time, /api/admin/odds-diagnostic all 200 OK. Detail endpoint /api/picks/{id} correctly exposes stored v3 metadata (odds_source='model_derived', pick_rationale.v3_signals fully populated with all 9 fields incl. seasons_used=['2022-23','2023-24','2024-25']). **HOWEVER — the LIST endpoint /api/picks/today?sport=Soccer&sort=confidence&limit=500 does NOT meet spec for 3 of the v3-metadata assertions:** (a) 100/100 v3 picks in list have odds_source='odds_api' instead of stored 'model_derived' (rewritten by _odds_decorate in picks_routes.py:2309); (b) 7/100 v3 picks in list have numeric edge_percent (e.g. 22.75, 1.93) instead of None — strict edge gate broken for elite-anchor picks; (c) 0/100 v3 picks retain pick_rationale.v3_signals — _slim_rationale (server.py:2998-3045) strips the field because it is not in the allowed key list. No deprecated packages / SafeAreaView / React Native issues (backend-only scope).",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/picks/today (list/lite payload)",
+        "issue": "_slim_rationale at server.py:2998-3045 does NOT preserve `pick_rationale.v3_signals`. It slims pick_rationale down to a whitelist of ~11 keys (summary/data_source/engine/lean/…/evidence/concerns) — v3_signals is silently dropped for 100/100 v3 picks. Detail endpoint /api/picks/{id} returns v3_signals correctly. Fix: add `if r.get('v3_signals'): slim['v3_signals'] = r['v3_signals']` inside _slim_rationale, or bypass slimming when engine == 'goal_scorer_v3'.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "GET /api/picks/today (list/lite payload)",
+        "issue": "100/100 v3-stamped picks in the list have `odds_source == 'odds_api'` — the writer stored 'model_derived' (soccer_prop_inject.py:243/265 and mls_direct_inject.py:260), but `_odds_decorate` in picks_routes.py:2309 (invoked per-pick during lite payload build) unconditionally overwrites odds_source to 'odds_api'. Detail endpoint /api/picks/{id} correctly returns 'model_derived'. Fix: make _odds_decorate skip picks where source == 'goal_scorer_v3' OR odds_status == 'no_book_line' OR odds_source is already 'model_derived'.",
+        "priority": "HIGH"
+      },
+      {
+        "endpoint": "GET /api/picks/today (list/lite payload)",
+        "issue": "7/100 v3-stamped picks return numeric edge_percent (e.g. 22.75, 1.93 on Harry Kane anchor pick) instead of None. Writer stored edge_percent=None (soccer_prop_inject.py:242,264). Something in the read pipeline is computing a post-hoc edge for elite-anchor / model-derived odds — likely the same `_odds_decorate` pass or a downstream `edge_from_probability` recompute. Strict edge gate broken for these anchor picks. 93/100 v3 picks still have edge_percent=None correctly. Fix: gate edge recompute on `if pick.get('odds_source') == 'model_derived' or pick.get('source') == 'goal_scorer_v3': skip`.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "GET /api/picks/{id} (detail)",
+        "issue": "Detail returned edge_percent=-25.18 on a v3 pick where writer stored None. Same root cause as above (edge recompute in read pipeline), but detail endpoint uses a different transformation than list. Inconsistent behavior between list (edge_percent=None for 93% of v3 picks) and detail (edge_percent=-25.18 for the same pick). Fix same as critical bullet 3."
+      },
+      {
+        "endpoint": "GET /api/picks/today?sport=Soccer&sort=edge",
+        "issue": "sort=edge returns total=0 picks for Soccer while sort=lock/time/confidence/win all return 337. Not a v3 regression per se (v3 picks have edge=None so they'd be filtered from sort=edge intentionally), but the drop from 337→0 suggests the endpoint may not be excluding null-edge picks correctly and is dropping everything else too. Verify."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter96_goalscorer_v3.py",
+    "/app/test_reports/pytest/iter96_results.xml"
+  ],
+  "action_items": [
+    "1) Preserve `v3_signals` in `_slim_rationale` (server.py:2998-3045) — either add it to the slim whitelist, or bypass slimming entirely when `r.get('engine') == 'goal_scorer_v3'`. Currently 100% of v3 picks in the /picks/today lite response lose their v3_signals block.",
+    "2) Fix `_odds_decorate` (picks_routes.py:~2309) to NOT overwrite `odds_source='model_derived'` on v3 picks. Guard: `if pick.get('odds_source') == 'model_derived' or pick.get('source') == 'goal_scorer_v3' or pick.get('odds_status') == 'no_book_line': return`. Currently 100/100 v3 picks get their odds_source silently flipped to 'odds_api'.",
+    "3) Investigate why 7/100 v3 picks (elite-anchor picks including Harry Kane) get a numeric edge_percent (22.75, 1.93 …) in the list endpoint despite the writer storing None. Locate the edge-recompute pass in picks_routes / anchor pipeline and skip it when `source == 'goal_scorer_v3'` or `odds_source == 'model_derived'`. Same fix should also stop the detail endpoint from returning edge_percent=-25.18 on a v3 pick.",
+    "4) Verify `sort=edge` returning 0 Soccer picks isn't a regression from the v3 rollout (v3 picks legitimately have edge=None, but the drop from 337 → 0 across the whole soccer feed is suspicious)."
+  ],
+  "critical_code_review_comments": [
+    "team_strength.py:264 line `total_home_g += hs * w` and equivalent for away — correct weighted match aggregation. Bayesian shrinkage in _shrink() uses `_PRIOR_MATCHES=12` with home/away split — sensible defaults. Season weights 1.00/0.65/0.35 with a shrinkage floor of 0.15 for unknown seasons is a good pull-toward-mean strategy.",
+    "goal_scorer_v3.py:400-410 correctly uses `team_goals_league_mean=lg_strength.mean_total_goals / 2.0` (per-team mean, not match total). Bounds `lam_team = max(0.30, min(4.5, lam_team))` prevent runaway sim from small-sample teams. Correlated MC uses `rng.binomial(team_goals, p_alloc)` which correctly captures 'player can only score if team scores' — mathematically clean.",
+    "goal_scorer_v3.py:266 P(first) ≈ P(match has ≥1 goal) · (player_lam / (lam_team + lam_opp)) — Poisson-thinning approximation is correct at first order but ignores the fact that if the player is much stronger than average teammate, P(first) is understated. Acceptable for v3.0.0.",
+    "soccer_prop_inject.py:243 `odds_source_val = 'model_derived' if is_v3 else 'model_derived'` — the ternary is a no-op (both branches return the same value). Either intentional (all synthetic picks are model_derived) or a leftover. Not a bug but worth cleaning up.",
+    "admin_routes.py:1477-1521 POST /admin/goalscorer/v3/predict returns full debug envelope including `expected_minutes`, `goal_share`, `ensemble` (via `out.ensemble_components`). Response shape matches spec exactly. Nice touch: 404 on missing player rather than returning zeros.",
+    "Detail endpoint /api/picks/{id} correctly exposes stored v3 metadata (odds_source='model_derived', v3_signals populated). The bugs live entirely in the LIST endpoint transformation pipeline — a good sign that storage is correct and only the read/decorate layer needs surgery."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter96_goalscorer_v3.py (new test file with 13 tests)"
+  ],
+  "success_rate": {
+    "backend": "12/13 tests PASSED (92%). 1 failure is the list-endpoint v3-metadata assertion covering 3 distinct issues (odds_source rewritten, edge_percent leaks for 7% of v3 picks, v3_signals stripped by _slim_rationale). All admin endpoints, all regression endpoints, and the detail endpoint pass.",
+    "frontend": "not tested (backend-only scope)"
+  },
+  "seed_data_creation": "None — used demo user (demo@lockscore.ai/demo123) against today's live soccer slate. 337 soccer picks in feed with 21-100 v3-stamped anytime_goal_scorer picks visible (count fluctuates with the 15-min inject cadence).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "The v3 engine is correctly wired end-to-end (admin endpoints, DB storage, detail endpoint). The three list-endpoint bugs are all in the same read-path decorator chain: _odds_decorate (picks_routes.py:~2309) and _slim_rationale (server.py:2998-3045). After the main agent patches those, re-run `pytest tests/test_iter96_goalscorer_v3.py -v` — the single failing test (TestPicksV3Stamp::test_soccer_picks_include_v3_stamp_list) should pass. Verify with `curl -H 'Authorization: Bearer <tok>' '.../api/picks/today?sport=Soccer&sort=confidence&limit=500' | jq '[.picks[] | select(.source==\"goal_scorer_v3\")] | map({os: .odds_source, edge: .edge_percent, sig: (.pick_rationale.v3_signals|keys)}) | group_by(.os) | map({os: .[0].os, count: length})'`. Expected: 100% odds_source='model_derived', 100% edge=null, 100% v3_signals with 9 keys.",
+  "rca_of_issue": "**Storage layer is correct.** `soccer_prop_inject.py:265` and `mls_direct_inject.py:260` correctly write `odds_source='model_derived'`. `soccer_prop_inject.py:242,264` correctly write `edge_percent=None` for v3 picks. `soccer_prop_inject.py:330-342` correctly write `pick_rationale.v3_signals` with all 9 fields.\n\n**Read/decorate layer is where the divergence happens** — the lite/list endpoint applies two transformation passes that don't respect v3 semantics:\n\n1. `_slim_rationale(server.py:2998-3045)`: builds a whitelist-only dict from pick_rationale. `v3_signals` is not in the whitelist so it's silently dropped for every v3 pick in the lite payload. Fix: add `if r.get('v3_signals'): slim['v3_signals'] = r['v3_signals']` OR skip slimming when engine=='goal_scorer_v3'.\n\n2. `_odds_decorate(picks_routes.py:~2309)`: called per-pick during lite payload build. Unconditionally rewrites `odds_source='odds_api'` and recomputes `edge_percent` from book_odds vs model_win_prob — the recompute overwrites the writer's None on ~7% of picks (specifically the ones where downstream elite-anchor logic sets an odds line). Fix: `if pick.get('source') == 'goal_scorer_v3' or pick.get('odds_source') == 'model_derived': return` at the top of _odds_decorate.\n\n**Repro one-liner** (after login): `curl -s -H 'Authorization: Bearer $TOK' '.../api/picks/today?sport=Soccer&sort=confidence&limit=500' | jq '[.picks[] | select(.source==\"goal_scorer_v3\")] | length as $n | {v3_picks:$n, odds_source_model_derived:([.[] | select(.odds_source==\"model_derived\")]|length), edge_null:([.[] | select(.edge_percent==null)]|length), v3_signals_present:([.[] | select(.pick_rationale.v3_signals != null and (.pick_rationale.v3_signals | length) > 0)]|length)}'`. Currently returns `{v3_picks:100, odds_source_model_derived:0, edge_null:93, v3_signals_present:0}`. After fixes should return `{v3_picks:100, odds_source_model_derived:100, edge_null:100, v3_signals_present:100}`."
+}
