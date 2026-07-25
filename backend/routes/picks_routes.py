@@ -1763,6 +1763,25 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         # to the top.
         def _elite_rank(p: dict) -> int:
             return 0 if p.get("elite_player") else 1
+        # ── Soccer market-family tiebreaker (iter-93 fix) ───────
+        # Applied inside EVERY sort mode as the FINAL tiebreaker so
+        # goal-scorer / involvement / score-or-assist picks beat pure
+        # assist picks on ties. iter-92 only patched sort=lock; this
+        # fixes the frontend default sort=time where lock is only a
+        # secondary key — previously higher-lock scorer picks got
+        # buried under lower-lock assist picks whenever alphabetical
+        # fallback kicked in.
+        def _soccer_family_rank(p: dict) -> int:
+            if (p.get("sport") or "") != "Soccer":
+                return 0
+            mm = (p.get("market") or "")
+            if "Anytime Goal Scorer" in mm:                     return 0
+            if "Goal Involvement" in mm:                        return 1
+            if "To Score or Assist" in mm or "Score or Assist" in mm: return 1
+            if "First Goal Scorer" in mm or "Last Goal Scorer" in mm: return 2
+            if "Anytime Assist" in mm:                          return 3
+            return 4
+
         if s == "time":
             # Pure chronological — earliest kickoff first by default;
             # latest first when asc=False reversed (we treat time asc as
@@ -1771,47 +1790,20 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             # Default 'time' direction is "soonest first" which is asc by
             # natural time ordering — keep that as the default.
             if asc:
-                picks.sort(key=lambda p: (_event_dt(p), -p.get("lock_score", 0)))
+                picks.sort(key=lambda p: (_event_dt(p), -p.get("lock_score", 0), _soccer_family_rank(p)))
             else:
-                picks.sort(key=lambda p: (_event_dt(p), -p.get("lock_score", 0)), reverse=True)
+                picks.sort(key=lambda p: (_event_dt(p), -p.get("lock_score", 0), _soccer_family_rank(p)), reverse=True)
         elif s == "edge":
             # Pure edge sort — no today-first bucket so highest edges
             # always at top regardless of date.
-            picks.sort(key=lambda p: (m * p.get("edge_percent", 0), -p.get("lock_score", 0)))
+            picks.sort(key=lambda p: (m * p.get("edge_percent", 0), -p.get("lock_score", 0), _soccer_family_rank(p)))
         elif s == "win":
             # Win % sort — model win_probability highest first by default.
-            picks.sort(key=lambda p: (m * p.get("win_probability", 0), -p.get("lock_score", 0)))
+            picks.sort(key=lambda p: (m * p.get("win_probability", 0), -p.get("lock_score", 0), _soccer_family_rank(p)))
         elif s == "implied":
-            picks.sort(key=lambda p: (m * p.get("implied_probability", 0), -p.get("lock_score", 0)))
+            picks.sort(key=lambda p: (m * p.get("implied_probability", 0), -p.get("lock_score", 0), _soccer_family_rank(p)))
         else:  # "lock" (default)
-            # Pure lock_score sort. The user's explicit ask: "It should
-            # take highest score" — sorting by Lock Score should be a
-            # strict ordering with no elite-player anchor, no league
-            # round-robin, no bucket pre-sort. If a smaller-league pick
-            # has a higher lock, it should win the top slot. Period.
-            #
-            # (League diversification still exists as a separate
-            # affordance via the explicit league filter — surfacing
-            # smaller leagues is the league pill's job, not the sort's.)
-            #
-            # Soccer market-family diversification (iter-92):
-            # user report ("only assist cards popping up, not goalscorers")
-            # — when many picks tie at lock=95, alphabetical fallback
-            # ranks "Anytime Assist" before "Anytime Goal Scorer", so the
-            # top of the list was flooded with assist picks and users
-            # never scrolled far enough to see the goalscorer picks. Fix:
-            # inside the same lock tier, prefer Goal Scorer > Score-or-
-            # Assist > Assist > Other. This ensures the primary product
-            # (goalscorer picks) leads the visible feed on Soccer.
-            def _soccer_family_rank(p: dict) -> int:
-                if (p.get("sport") or "") != "Soccer":
-                    return 0
-                m = (p.get("market") or "")
-                if "Anytime Goal Scorer" in m:                     return 0
-                if "To Score or Assist" in m or "Score or Assist" in m: return 1
-                if "First Goal Scorer" in m or "Last Goal Scorer" in m: return 2
-                if "Anytime Assist" in m:                          return 3
-                return 4
+            # Pure lock_score sort with the shared Soccer family tiebreaker.
             if asc:
                 picks.sort(key=lambda p: (p.get("lock_score", 0), _soccer_family_rank(p)))
             else:
