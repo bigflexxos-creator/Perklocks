@@ -1793,10 +1793,29 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             # (League diversification still exists as a separate
             # affordance via the explicit league filter — surfacing
             # smaller leagues is the league pill's job, not the sort's.)
+            #
+            # Soccer market-family diversification (iter-92):
+            # user report ("only assist cards popping up, not goalscorers")
+            # — when many picks tie at lock=95, alphabetical fallback
+            # ranks "Anytime Assist" before "Anytime Goal Scorer", so the
+            # top of the list was flooded with assist picks and users
+            # never scrolled far enough to see the goalscorer picks. Fix:
+            # inside the same lock tier, prefer Goal Scorer > Score-or-
+            # Assist > Assist > Other. This ensures the primary product
+            # (goalscorer picks) leads the visible feed on Soccer.
+            def _soccer_family_rank(p: dict) -> int:
+                if (p.get("sport") or "") != "Soccer":
+                    return 0
+                m = (p.get("market") or "")
+                if "Anytime Goal Scorer" in m:                     return 0
+                if "To Score or Assist" in m or "Score or Assist" in m: return 1
+                if "First Goal Scorer" in m or "Last Goal Scorer" in m: return 2
+                if "Anytime Assist" in m:                          return 3
+                return 4
             if asc:
-                picks.sort(key=lambda p: p.get("lock_score", 0))
+                picks.sort(key=lambda p: (p.get("lock_score", 0), _soccer_family_rank(p)))
             else:
-                picks.sort(key=lambda p: -p.get("lock_score", 0))
+                picks.sort(key=lambda p: (-p.get("lock_score", 0), _soccer_family_rank(p)))
     picks = await _decorate_with_player_form(picks)
     picks = await _decorate_with_understat_form(picks)
     picks = await _decorate_with_espn_meta(picks)
