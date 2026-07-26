@@ -2826,6 +2826,13 @@ _MARKET_REGEX = {
     "anytime_scorer":  r"anytime goal scorer",
     "score_or_assist": r"to score or assist",
     "first_goal_scorer": r"first goal scorer|last goal scorer",
+    # Soccer Anytime Assist market (2026-07-26). User requested a
+    # dedicated Assists tab — anchored on "anytime assist" to avoid
+    # collision with the score_or_assist token above (which also
+    # contains "assist"). Order-matters: score_or_assist regex uses
+    # the explicit "to score or assist" phrase, so this narrower
+    # pattern below is safe.
+    "anytime_assist":  r"\banytime assist\b",
     "goalscorer":      r"anytime goal scorer|first goal scorer|last goal scorer|to score or assist",
 
     # ── Generic team markets ──────────────────────────────────────────────
@@ -2901,6 +2908,7 @@ SPORT_MARKETS = {
         {"token": "totals",            "label": "Over/Under"},
         {"token": "btts",              "label": "BTTS"},
         {"token": "anytime_scorer",    "label": "Anytime Scorer"},
+        {"token": "anytime_assist",    "label": "Assists"},
         {"token": "score_or_assist",   "label": "Score or Assist"},
         {"token": "first_goal_scorer", "label": "FGS"},
     ],

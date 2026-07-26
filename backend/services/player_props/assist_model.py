@@ -124,6 +124,46 @@ def predict_assist(stats: PlayerStats,
     raw = base * kp_m * form_m * match_m * arch_m
     prob = round(_clamp(raw, 0.02, 0.65), 4)
 
+    # ── Assist-quality gate (2026-07-26) ──────────────────────────────
+    # User report: too many assist bets on the board for players who
+    # aren't real creators (defenders, deep midfielders, small-sample
+    # attackers). Only players "expected to get" assists should surface.
+    # Gate: require ONE of:
+    #   - A/90 ≥ 0.20 (top ~20% of Understat player pool)
+    #   - key_passes/90 ≥ 2.0 (elite creator profile)
+    #   - CREATOR or PLAYMAKER archetype (~15% of squad)
+    #   - Historical H2H rate vs this opponent ≥ 40% (proven vs this
+    #     defence).
+    # Players failing all four → mark data_ok=False so the market
+    # selector drops the pick from the routes list.
+    _expected_creator = (
+        stats.assists_per_90 >= 0.20
+        or stats.key_passes_per_90 >= 2.0
+        or archetype in (Archetype.CREATOR, Archetype.PLAYMAKER, Archetype.DUAL_THREAT)
+        or (split is not None and split.matches >= 3 and split.apm() >= 0.40)
+    )
+    if not _expected_creator:
+        return PickRecommendation(
+            market="anytime_assist",
+            player_name=stats.player_name,
+            probability=prob,
+            confidence="LOW",
+            archetype=archetype,
+            data_ok=False,
+            evidence=[],
+            concerns=[
+                "Not an expected creator: "
+                f"A/90={stats.assists_per_90:.2f}, "
+                f"KP/90={stats.key_passes_per_90:.2f}, "
+                f"archetype={archetype.display()}"
+            ],
+            debug={"gated": "not_expected_creator",
+                   "assists_per_90": stats.assists_per_90,
+                   "key_passes_per_90": stats.key_passes_per_90,
+                   "archetype": archetype.value,
+                   "source": stats.source},
+        )
+
     confidence, data_ok = _confidence(stats)
     if archetype in (Archetype.LOW_INVOLVEMENT, Archetype.UNKNOWN):
         confidence = "LOW"
