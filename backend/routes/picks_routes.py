@@ -1093,6 +1093,16 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 # still passes floor.
                 {"chalk_trap": True, "chalk_trap_meta.original_lock": {"$gte": floor}},
                 {"chalk_verified": True},
+                # ── ESPN fallback bypass (iter-97, 2026-07-26) ────────
+                # Lower-tier soccer leagues (CSL, Sweden, Norway, Finland)
+                # are covered by `espn_soccer_fixtures` while The Odds
+                # API is 401ing. ESPN scoreboards have thin odds data so
+                # these picks land at lock 50-75 (below the default 85
+                # floor). Bypass the floor for `source=espn_fallback` so
+                # these leagues remain visible; the pick payload carries
+                # `odds_source=espn_fallback` + `confidence_penalty=-8`
+                # so the frontend can flag it as a soft/fallback pick.
+                {"source": "espn_fallback"},
             ]},
             # ── Edge filter (relaxed 2026-07-21) ─────────────────────
             # OLD: `edge_percent >= 0` was killing 82% of MLB picks

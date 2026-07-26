@@ -4107,6 +4107,18 @@ async def on_startup():
     #   T+64 — Line observer / closing snapshotter (line shopping)
     asyncio.create_task(_historical_props_loop())
     asyncio.create_task(_daily_refresh_loop())
+    # ── ESPN Soccer Fixture Fallback (iter-97) ─────────────────────
+    # Pulls upcoming fixtures + moneyline picks for the 4 lower-tier
+    # soccer leagues (CSL, Sweden, Norway, Finland) from ESPN's public
+    # scoreboards while The Odds API subscription is unavailable
+    # (currently returning 401). Try/except so a startup failure
+    # doesn't break the rest of the backend.
+    try:
+        from services.espn_soccer_fixtures import refresh_loop as _espn_soccer_loop
+        _deferred_task(_espn_soccer_loop, DEFER_BASE * 1)
+        logger.info("ESPN soccer fixture fallback loop armed")
+    except Exception as _e:
+        logger.warning("Failed to arm ESPN soccer fixture fallback: %s", _e)
     _deferred_task(_mlb_pregame_loop,                       DEFER_BASE * 1)
     logger.info(
         "MLB pregame quick-refresh loop armed (%d-sec cadence during UTC %02d:00–%02d:00)",

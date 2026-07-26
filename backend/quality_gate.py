@@ -599,9 +599,21 @@ def _block_reason(pick: dict) -> str | None:
         kw in market.lower() for kw in _PLAYER_PROP_MARKET_KEYWORDS
     )
     odds = pick.get("book_odds")
+    # ESPN-fallback picks (iter-97) are exempt from the odds dead zone
+    # rule too — their `book_odds` is synthesized by inverting our
+    # probability estimate, not a real bookmaker line, so the -140/-110
+    # dead-zone stat (measured on real books) doesn't apply. This was
+    # silently killing all China Super League moneylines while Norway
+    # and Sweden also fell into the band on some games. User report
+    # 2026-07-26: "why isn't China / Norway / Sweden showing".
+    _is_espn_fallback = (
+        (pick.get("source") or "") == "espn_fallback"
+        or (pick.get("odds_source") or "") == "espn_fallback"
+    )
     if (isinstance(odds, (int, float)) and sport in ("mlb", "soccer")
             and not pick.get("fair_odds_model")
-            and not _is_player_prop):
+            and not _is_player_prop
+            and not _is_espn_fallback):
         if _ODDS_DEAD_ZONE_LO <= float(odds) < _ODDS_DEAD_ZONE_HI:
             return f"odds_dead_zone_{_ODDS_DEAD_ZONE_LO}_{_ODDS_DEAD_ZONE_HI}_48pct"
 

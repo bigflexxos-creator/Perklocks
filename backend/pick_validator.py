@@ -146,9 +146,14 @@ async def validate_and_heal(db) -> dict:
         # real sportsbook player-prop line exists to measure against.
         # Recomputing wp - ip would fabricate a number the engine
         # explicitly refuses to publish (user directive 2026-07-22).
+        # ESPN-fallback picks (iter-97) follow the same rule — the
+        # scoreboard doesn't publish a real book price we can measure
+        # edge against.
         _is_v3_model_derived = (
             (p.get("source") or "") == "goal_scorer_v3"
             or (p.get("odds_source") or "") == "model_derived"
+            or (p.get("source") or "") == "espn_fallback"
+            or (p.get("odds_source") or "") == "espn_fallback"
         )
         if _is_v3_model_derived:
             # Only touch edge if it's not already None — preserve the
@@ -480,10 +485,21 @@ async def validate_and_heal(db) -> dict:
         # cycle demoted lock_score but didn't update the stored grade.
         # This unconditional pass guarantees grade and lock_score always
         # tell the same story to the user.
+        #
+        # Exception: ESPN-fallback picks (iter-97) have low lock scores
+        # (50-72) because ESPN scoreboards don't publish real bookmaker
+        # lines. Auto-grading them to "Pass" (which then hides them from
+        # the board via the `grade: {$ne: 'Pass'}` filter) would defeat
+        # the entire point of the fallback layer. Preserve their
+        # explicit "Playable" grade so lower-tier soccer leagues (CSL,
+        # Sweden, Norway, Finland) stay visible when the Odds API is
+        # unavailable.
+        _is_espn_fallback = ((p.get("source") or "") == "espn_fallback"
+                              or (p.get("odds_source") or "") == "espn_fallback")
         try:
             from sports_engine import _grade as _g_fn, _confidence as _c_fn
             ls = p.get("lock_score")
-            if ls is not None:
+            if ls is not None and not _is_espn_fallback:
                 gx = _g_fn(float(ls))
                 cx = _c_fn(float(ls))
                 if gx != p.get("grade"):
