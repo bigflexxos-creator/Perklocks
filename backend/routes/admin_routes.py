@@ -1520,3 +1520,120 @@ async def goalscorer_v3_predict(
         "engine_version": out.engine_version,
     }
 
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  /picks/today per-sport cap diagnostic (2026-07-26)
+# ═══════════════════════════════════════════════════════════════════
+@router.get("/admin/picks-today/cap-diagnostic")
+async def picks_today_cap_diagnostic(
+    admin: Annotated[UserPublic, Depends(current_admin)],
+) -> dict:
+    """Introspect the /picks/today per-sport cap.
+
+    Returns per-sport counts of picks in the candidate pool BEFORE and
+    AFTER the 100-pick cap, plus a breakdown of dropped picks by lock
+    band (≥90, 85-89, <85). Use this to verify the cap isn't hiding
+    legit high-lock picks on heavy MLB / Soccer slates.
+
+    Response shape:
+        {
+          "cap":             100,
+          "safety_valve":    90.0,
+          "sports": {
+             "MLB":    {"total": 8,   "kept": 8,   "dropped": 0,
+                        "top_lock": 93.2, "cap_boundary_lock": null,
+                        "dropped_ge90": 0, "dropped_85_89": 0, "dropped_lt85": 0,
+                        "safety_valve_kept": 0},
+             "Soccer": {"total": 151, "kept": 100, "dropped": 51, ...}
+          }
+        }
+    """
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    now = _dt.now(_tz.utc)
+    today_str = now.strftime("%Y-%m-%d")
+    horizon   = (now + _td(hours=72)).isoformat().replace("+00:00", "Z")
+    win_start = (now - _td(hours=30)).isoformat().replace("+00:00", "Z")
+    win_end   = (now + _td(hours=30)).isoformat().replace("+00:00", "Z")
+
+    # Match the /picks/today outer filters (before market-specific carve-outs).
+    q: dict = {
+        "$and": [
+            {"$or": [
+                {"pick_date": today_str},
+                {"event_time": {"$gte": win_start, "$lte": win_end}},
+            ]},
+            {"$or": [
+                {"event_time": {"$lte": horizon}},
+                {"event_time": {"$in": [None, ""]}},
+                {"event_time": {"$exists": False}},
+            ]},
+        ],
+        "hide_from_main_board": {"$ne": True},
+        "grade":     {"$ne": "Pass"},
+        "no_bet":    {"$ne": True},
+        "off_board": {"$ne": True},
+        "status":    {"$in": ["pending", "open", None]},
+    }
+
+    CAP    = 100
+    VALVE  = 90.0
+    result: dict = {"cap": CAP, "safety_valve": VALVE, "generated_at": now.isoformat(), "sports": {}}
+
+    sports = await db.picks.distinct("sport", q)
+    for sport in sorted([s for s in sports if s]):
+        cursor = db.picks.find(
+            {**q, "sport": sport},
+            {"lock_score": 1, "lock_score_v2": 1, "selection": 1,
+             "event": 1, "market_type": 1, "source": 1, "_id": 0},
+        ).sort([("lock_score_v2", -1), ("lock_score", -1)]).limit(500)
+        picks = await cursor.to_list(length=500)
+        total = len(picks)
+        if total == 0:
+            continue
+
+        def _lk(p: dict) -> float:
+            return float(p.get("lock_score_v2") or p.get("lock_score") or 0)
+
+        kept = picks[:CAP]
+        beyond = picks[CAP:]
+        # Safety-valve rescues from `beyond`
+        rescued = [p for p in beyond if _lk(p) >= VALVE]
+        dropped = [p for p in beyond if _lk(p) < VALVE]
+
+        top_lock = round(_lk(picks[0]), 1) if picks else None
+        cap_boundary_lock = round(_lk(picks[CAP - 1]), 1) if total > CAP else None
+
+        # Break down dropped by lock band
+        drop_ge90 = sum(1 for d in dropped if _lk(d) >= 90)  # should always be 0 (rescued)
+        drop_85_89 = sum(1 for d in dropped if 85 <= _lk(d) < 90)
+        drop_lt85  = sum(1 for d in dropped if _lk(d) < 85)
+
+        sample_dropped = [
+            {"selection": d.get("selection"), "event": d.get("event"),
+             "lock": round(_lk(d), 1),
+             "market": d.get("market_type") or d.get("market"),
+             "source": d.get("source")}
+            for d in dropped[:5]
+        ]
+        sample_rescued = [
+            {"selection": r.get("selection"), "event": r.get("event"),
+             "lock": round(_lk(r), 1)}
+            for r in rescued[:5]
+        ]
+
+        result["sports"][sport] = {
+            "total":               total,
+            "kept":                len(kept) + len(rescued),
+            "dropped":             len(dropped),
+            "top_lock":            top_lock,
+            "cap_boundary_lock":   cap_boundary_lock,
+            "dropped_ge90":        drop_ge90,
+            "dropped_85_89":       drop_85_89,
+            "dropped_lt85":        drop_lt85,
+            "safety_valve_kept":   len(rescued),
+            "sample_dropped":      sample_dropped,
+            "sample_safety_valve": sample_rescued,
+        }
+    return result
+
