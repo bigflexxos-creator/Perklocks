@@ -1875,23 +1875,61 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # the frontend renders in <2s even on 3G. Per-sport tabs still get
     # their full slate up to 100 picks; higher-lock picks are always
     # kept first (sort already applied above).
+    #
+    # ── Safety valve (2026-07-26 follow-up) ───────────────────────────
+    # ALWAYS keep picks with lock_score >= 90 regardless of the per-
+    # sport count. Diagnostic run showed a busy Soccer slate can have
+    # 150+ picks all clustered in the 85-92 lock band; hard-capping at
+    # position 100 could drop legit 90-lock picks (esp. on heavy days).
+    # The safety-valve guarantees any near-elite pick makes the board
+    # while still bounding the payload for typical slates (~99% of
+    # days have <100 lock≥90 picks per sport).
     _PER_SPORT_CAP = 100
+    _SAFETY_VALVE_LOCK = 90.0
     if canonical:
         _cap_counts: dict[str, int] = {}
+        _cap_diag: dict[str, dict[str, int]] = {}
         _capped: list[dict] = []
         _dropped_by_cap = 0
         for p in canonical:
             sp = str(p.get("sport") or "").strip() or "Unknown"
+            lk = float(p.get("lock_score_v2") or p.get("lock_score") or 0)
             if _cap_counts.get(sp, 0) >= _PER_SPORT_CAP:
+                # Safety-valve: keep if lock >= 90 even past the cap.
+                if lk >= _SAFETY_VALVE_LOCK:
+                    _capped.append(p)
+                    _cap_counts[sp] = _cap_counts.get(sp, 0) + 1
+                    diag = _cap_diag.setdefault(sp, {"safety_valve_kept": 0,
+                                                     "dropped_ge90": 0,
+                                                     "dropped_85_89": 0,
+                                                     "dropped_lt85": 0})
+                    diag["safety_valve_kept"] = diag.get("safety_valve_kept", 0) + 1
+                    continue
                 _dropped_by_cap += 1
+                diag = _cap_diag.setdefault(sp, {"safety_valve_kept": 0,
+                                                 "dropped_ge90": 0,
+                                                 "dropped_85_89": 0,
+                                                 "dropped_lt85": 0})
+                if   lk >= 90: diag["dropped_ge90"]  = diag.get("dropped_ge90", 0) + 1
+                elif lk >= 85: diag["dropped_85_89"] = diag.get("dropped_85_89", 0) + 1
+                else:          diag["dropped_lt85"]  = diag.get("dropped_lt85", 0) + 1
                 continue
             _cap_counts[sp] = _cap_counts.get(sp, 0) + 1
             _capped.append(p)
         if _dropped_by_cap:
             logger.info(
-                "picks_today per-sport cap: kept=%d dropped=%d counts=%s",
-                len(_capped), _dropped_by_cap, _cap_counts,
+                "picks_today per-sport cap: kept=%d dropped=%d counts=%s diag=%s",
+                len(_capped), _dropped_by_cap, _cap_counts, _cap_diag,
             )
+            # Alert-level if any lock≥90 got dropped despite safety valve
+            # (should never happen — cap check happens BEFORE safety
+            # valve — but log for forensic clarity).
+            _bad = sum(v.get("dropped_ge90", 0) for v in _cap_diag.values())
+            if _bad > 0:
+                logger.warning(
+                    "picks_today per-sport cap DROPPED %d lock≥90 picks — "
+                    "safety valve failed. diag=%s", _bad, _cap_diag,
+                )
         canonical = _capped
     # ── Team Total suppression (2026-07-19) ───────────────────────────
     # User request: "get rid of team total it confuses me I just total
