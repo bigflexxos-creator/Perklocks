@@ -37,19 +37,115 @@ def _norm(n: str) -> str:
     return "".join(c for c in nk if not unicodedata.combining(c)).lower().strip()
 
 
+# ─── MLS team-name aliases (2026-07-26) ──────────────────────────────
+# ESPN's `espn_mls_stats.team` uses short forms ("LAFC", "RBNY") while
+# The Odds API returns long forms ("Los Angeles FC", "Red Bull New
+# York"). Substring match alone fails for LAFC/LAGalaxy/NYCFC etc.
+# This alias table lets `_team_match` recognise the equivalent names.
+_MLS_TEAM_ALIASES: dict[str, list[str]] = {
+    "lafc":            ["los angeles fc", "la fc", "los angeles"],
+    "los angeles fc":  ["lafc", "la fc"],
+    "la galaxy":       ["los angeles galaxy", "galaxy"],
+    "los angeles galaxy": ["la galaxy", "galaxy"],
+    "nycfc":           ["new york city fc", "new york city", "ny city"],
+    "new york city fc":["nycfc", "ny city fc", "new york city"],
+    "rbny":            ["red bull new york", "new york red bulls", "ny red bulls"],
+    "red bull new york":["rbny", "new york red bulls", "ny red bulls"],
+    "new york red bulls":["rbny", "red bull new york"],
+    "cf montreal":     ["montreal impact", "cf mtl"],
+    "cf mtl":          ["cf montreal", "montreal"],
+    "d.c. united":     ["dc united", "d c united", "washington dc"],
+    "dc united":       ["d.c. united", "d c united"],
+    "sporting kc":     ["sporting kansas city", "kansas city sc"],
+    "sporting kansas city": ["sporting kc", "kansas city sc"],
+    "sjq":             ["san jose earthquakes", "quakes"],
+    "san jose earthquakes":["sjq", "quakes"],
+    "portland":        ["portland timbers", "timbers"],
+    "portland timbers":["portland", "timbers"],
+    "salt lake":       ["real salt lake", "rsl"],
+    "real salt lake":  ["salt lake", "rsl"],
+    "st louis":        ["st. louis city sc", "st louis city sc", "stl city"],
+    "st. louis city sc":["st louis", "stl city"],
+    "st louis city sc":["st louis", "stl city"],
+    "philly":          ["philadelphia union", "union"],
+    "philadelphia union":["philly", "union"],
+    "columbus":        ["columbus crew sc", "crew"],
+    "columbus crew sc":["columbus", "crew"],
+    "seattle":         ["seattle sounders fc", "sounders"],
+    "seattle sounders fc":["seattle", "sounders"],
+    "atlanta":         ["atlanta united fc", "atlanta united"],
+    "atlanta united fc":["atlanta", "atlanta united"],
+    "new england":     ["new england revolution", "revolution", "revs"],
+    "new england revolution":["new england", "revs"],
+    "colorado":        ["colorado rapids", "rapids"],
+    "colorado rapids": ["colorado", "rapids"],
+    "chicago":         ["chicago fire", "fire"],
+    "chicago fire":    ["chicago", "fire"],
+    "houston":         ["houston dynamo fc", "dynamo"],
+    "houston dynamo fc":["houston", "dynamo"],
+    "minnesota":       ["minnesota united fc", "loons"],
+    "minnesota united fc":["minnesota", "loons"],
+    "vancouver":       ["vancouver whitecaps", "whitecaps"],
+    "vancouver whitecaps":["vancouver", "whitecaps"],
+    "toronto":         ["toronto fc"],
+    "toronto fc":      ["toronto"],
+    "orlando":         ["orlando city sc"],
+    "orlando city sc": ["orlando"],
+    "cincinnati":      ["fc cincinnati"],
+    "fc cincinnati":   ["cincinnati"],
+    "dallas":          ["fc dallas"],
+    "fc dallas":       ["dallas"],
+    "miami":           ["inter miami cf"],
+    "inter miami cf":  ["miami"],
+    "austin":          ["austin fc"],
+    "austin fc":       ["austin"],
+    "nashville":       ["nashville sc"],
+    "nashville sc":    ["nashville"],
+    "san diego":       ["san diego fc"],
+    "san diego fc":    ["san diego"],
+    "charlotte":       ["charlotte fc"],
+    "charlotte fc":    ["charlotte"],
+}
+
+
 def _team_match(a: str, b: str) -> bool:
     if not a or not b:
         return False
-    for x in (a, b):
-        pass
-    a = a.lower()
-    b = b.lower()
-    for suf in (" fc", " f.c.", " sc", " cf", " united", " city",
+    a = a.lower().strip()
+    b = b.lower().strip()
+    # Strip common suffixes.
+    for suf in (" fc", " f.c.", " sc", " cf", " united",
                 " football club"):
         a = a.replace(suf, "")
         b = b.replace(suf, "")
     a = a.strip(); b = b.strip()
-    return a == b or a in b or b in a
+    if not a or not b:
+        return False
+    # Direct / substring match — safe only when strings are meaningful.
+    # Require min length 4 on the shorter side to avoid false positives
+    # like "la" matching "atlanta" or "cin" matching "cincinnati".
+    if a == b:
+        return True
+    short, long_ = (a, b) if len(a) <= len(b) else (b, a)
+    if len(short) >= 4 and short in long_:
+        return True
+    # Alias table: check whether any alias of `a` matches `b` (or vice
+    # versa). This is what fixes LAFC↔"Los Angeles FC". We check the
+    # alias against the OTHER string only, never against the target
+    # itself (that would be a self-alias false positive — the reason
+    # Cincinnati was matching LAFC previously).
+    #
+    # NOTE: Only accept EXACT alias matches (alt == other). Partial
+    # substring matches through aliases cause "LA Galaxy" to match
+    # "Los Angeles FC" through the "los angeles galaxy" alias containing
+    # "los angeles". Exact-match is safe because the alias table lists
+    # every canonical form explicitly.
+    for target, other in ((a, b), (b, a)):
+        aliases = _MLS_TEAM_ALIASES.get(target, [])
+        for alt in aliases:
+            if alt and alt == other:
+                return True
+    return False
 
 
 def _american(r: float) -> int:
