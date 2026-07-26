@@ -1407,6 +1407,12 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # keep this from resurrecting settled picks or explicit no-bet flags.
     _win_start = (_now - _td(hours=30)).isoformat().replace("+00:00", "Z")
     _win_end   = (_now + _td(hours=30)).isoformat().replace("+00:00", "Z")
+    # ── 72-hour board horizon (2026-07-26) ─────────────────────────────
+    # Hide picks for games starting > 72h from now regardless of
+    # `pick_date`. Fixes user report: Soccer tab timing out because
+    # UEFA/CFB injectors were tagging today's `pick_date` on games 4-5
+    # days away (1082 Soccer picks on the board vs realistic ~200).
+    _horizon_end = (_now + _td(hours=72)).isoformat().replace("+00:00", "Z")
 
     q: dict = {
         # Accept picks matching EITHER pick_date=today OR event_time in
@@ -1418,7 +1424,18 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             {"$or": [
                 {"pick_date": _today},
                 {"event_time": {"$gte": _win_start, "$lte": _win_end}},
-            ]}
+            ]},
+            # 72-hour horizon — a hard upper bound on event_time so
+            # far-future picks (mis-tagged with today's pick_date by
+            # the ingest pipeline) can never leak onto the board.
+            # Missing event_time is allowed through so picks without
+            # a scheduled time (rare — usually MLB DH game 2 etc.)
+            # aren't silently hidden.
+            {"$or": [
+                {"event_time": {"$lte": _horizon_end}},
+                {"event_time": {"$in": [None, ""]}},
+                {"event_time": {"$exists": False}},
+            ]},
         ],
         # Exclude special-tab markets (NRFI/YRFI lives in its own MLB
         # sub-tab — user explicitly asked to keep these off the main board).
@@ -1851,6 +1868,31 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     except Exception as _se:
         logger.warning("Real-streak enrichment skipped on /picks/today: %s", _se)
     canonical = _canonicalize_picks(picks)
+    # ── Per-sport cap of 100 (2026-07-26) ─────────────────────────────
+    # Mobile home + soccer tabs were timing out because Soccer alone
+    # returned 400+ picks in a ~2MB response. Cap each sport to the
+    # TOP 100 by lock_score so the wire payload stays under ~500KB and
+    # the frontend renders in <2s even on 3G. Per-sport tabs still get
+    # their full slate up to 100 picks; higher-lock picks are always
+    # kept first (sort already applied above).
+    _PER_SPORT_CAP = 100
+    if canonical:
+        _cap_counts: dict[str, int] = {}
+        _capped: list[dict] = []
+        _dropped_by_cap = 0
+        for p in canonical:
+            sp = str(p.get("sport") or "").strip() or "Unknown"
+            if _cap_counts.get(sp, 0) >= _PER_SPORT_CAP:
+                _dropped_by_cap += 1
+                continue
+            _cap_counts[sp] = _cap_counts.get(sp, 0) + 1
+            _capped.append(p)
+        if _dropped_by_cap:
+            logger.info(
+                "picks_today per-sport cap: kept=%d dropped=%d counts=%s",
+                len(_capped), _dropped_by_cap, _cap_counts,
+            )
+        canonical = _capped
     # ── Team Total suppression (2026-07-19) ───────────────────────────
     # User request: "get rid of team total it confuses me I just total
     # for the game to generate". Strip any legacy Team Total picks from

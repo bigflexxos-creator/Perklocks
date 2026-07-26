@@ -35,6 +35,29 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+
+def _derive_pick_date(event_time: Optional[str]) -> str:
+    """Return pick_date derived from event_time (games > 24h away
+    get their actual event date, not today). See soccer_prop_inject
+    for rationale — fixes 2026-07-26 mobile timeout report where
+    UEFA qualifiers 4-5 days away were bloating today's board.
+    """
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if not event_time:
+        return today_str
+    try:
+        s = str(event_time).replace("Z", "+00:00")
+        et = datetime.fromisoformat(s)
+        if et.tzinfo is None:
+            et = et.replace(tzinfo=timezone.utc)
+        delta_hours = (et - datetime.now(timezone.utc)).total_seconds() / 3600.0
+        if delta_hours <= 24:
+            return today_str
+        return et.astimezone(timezone.utc).strftime("%Y-%m-%d")
+    except Exception:
+        return today_str
+
+
 import httpx
 
 logger = logging.getLogger("lockscore.uefa_espn")
@@ -336,7 +359,7 @@ def _build_moneyline_pick(fx: dict) -> Optional[dict]:
         "lock_score":       conf,
         "lock_score_v2":    conf,
         "grade":            _grade_from_conf(conf),
-        "pick_date":        datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "pick_date":        _derive_pick_date(fx["kickoff_utc"]),
         "is_under_lock":    False,
         "no_bet":           conf < 60.0,
         "elite_player":     False,
@@ -398,7 +421,7 @@ def _build_total_pick(fx: dict) -> Optional[dict]:
         "lock_score":       conf,
         "lock_score_v2":    conf,
         "grade":            _grade_from_conf(conf),
-        "pick_date":        datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "pick_date":        _derive_pick_date(fx["kickoff_utc"]),
         "is_under_lock":    False,
         "no_bet":           conf < 60.0,
         "elite_player":     False,
@@ -472,7 +495,7 @@ def _build_double_chance_pick(fx: dict) -> Optional[dict]:
         "lock_score":       conf,
         "lock_score_v2":    conf,
         "grade":            _grade_from_conf(conf),
-        "pick_date":        datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "pick_date":        _derive_pick_date(fx["kickoff_utc"]),
         "is_under_lock":    False,
         "no_bet":           False,
         "elite_player":     False,
@@ -583,7 +606,7 @@ def _synthetic_ml_from_form(fx: dict) -> Optional[dict]:
         "lock_score":       conf,
         "lock_score_v2":    conf,
         "grade":            _grade_from_conf(conf),
-        "pick_date":        datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "pick_date":        _derive_pick_date(fx["kickoff_utc"]),
         "is_under_lock":    False,
         "no_bet":           conf < 60.0,
         "elite_player":     False,

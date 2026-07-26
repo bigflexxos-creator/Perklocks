@@ -83,9 +83,68 @@ def _cache_put(k: str, val: dict) -> None:
 
 
 # ── Team-level H2H from dedicated game/match collections ─────────────────
+def _infer_pick_team(pick: dict, home: str, away: str) -> Optional[str]:
+    """Determine which of {home, away} the pick was made on.
+
+    Returns the matching team name, or None if we can't tell (e.g.
+    a player prop that doesn't clearly point to either team).
+    """
+    if not (home or away):
+        return None
+    home_l = (home or "").strip().lower()
+    away_l = (away or "").strip().lower()
+
+    # 1) `selected_team` explicit field (moneyline/spread injectors).
+    st = (pick.get("selected_team") or "").strip().lower()
+    if st:
+        if st == home_l:
+            return home
+        if st == away_l:
+            return away
+
+    # 2) `pick_team` field (some newer injectors).
+    pt = (pick.get("pick_team") or "").strip().lower()
+    if pt == home_l:
+        return home
+    if pt == away_l:
+        return away
+
+    # 3) Parse the visible `selection` string. Handles patterns like
+    #    "Boston Red Sox +1.5 Spread"
+    #    "AC Oulu Moneyline"
+    #    "Toronto Blue Jays To Win"
+    #    "Over 2.5 Goals" (no team → return None)
+    sel = (pick.get("selection") or "").strip().lower()
+    if sel:
+        # Match longer name first so "Man City" doesn't shadow "Man".
+        cand = sorted([(home_l, home), (away_l, away)],
+                      key=lambda x: -len(x[0]))
+        for team_l, team_name in cand:
+            if team_l and team_l in sel:
+                return team_name
+
+    # 4) Team-prop selections (e.g. anytime goalscorer for a player on
+    #    home team) — read the pick's own `team` field.
+    tf = (pick.get("team") or "").strip().lower()
+    if tf == home_l:
+        return home
+    if tf == away_l:
+        return away
+
+    return None
+
+
+
 async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
-                                 limit: int = 10) -> Optional[dict]:
+                                 limit: int = 10,
+                                 pick_team: Optional[str] = None) -> Optional[dict]:
     """Aggregate historical meetings between the two teams.
+
+    Args:
+        pick_team: When provided, the returned `record` is stamped from
+            this team's perspective (wins-losses). When absent, we
+            default to the picked team = HOME (matching pre-existing
+            behaviour for team bets where home was implicitly favoured).
 
     Priority sources (all cheap DB scans):
       • MLB / NFL / NBA / NHL → `games` collection (schema: `home`, `away`,
@@ -238,10 +297,20 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
     if not meetings:
         return None
 
-    # Aggregate
+    # Aggregate.
     home_wins = sum(1 for m in meetings if m["home_team_score"] > m["away_team_score"])
     away_wins = sum(1 for m in meetings if m["away_team_score"] > m["home_team_score"])
     totals = [m["home_team_score"] + m["away_team_score"] for m in meetings]
+
+    # Score-format fix: the event label everywhere in the app is
+    # "AWAY @ HOME" (e.g. "Toronto Blue Jays @ Boston Red Sox"). The
+    # score chip must be read in the SAME direction, i.e.
+    # "AWAY-HOME". Previous code showed HOME-AWAY, which caused users
+    # to mis-read "Boston 3, Toronto 4" as "Toronto 3, Boston 4"
+    # (2026-07-25 user report).
+    for m in meetings:
+        m["score"] = f"{m['away_team_score']}-{m['home_team_score']}"
+
     recent = [{
         "date": m["date"],
         "score": m["score"],
@@ -250,9 +319,26 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
         "venue": m.get("venue") or "",
     } for m in meetings[:5]]
 
+    # Record from PICK's perspective (wins-losses of the picked team).
+    # This is what the user expects to see on the H2H card of a pick
+    # made on a specific team (moneyline, spread, etc). If pick_team
+    # is unset we default to the home team's perspective (legacy).
+    picked_l = (pick_team or "").strip().lower()
+    if picked_l == away.strip().lower():
+        pick_wins   = away_wins
+        pick_losses = home_wins
+    else:
+        pick_wins   = home_wins
+        pick_losses = away_wins
+    record_str = f"{pick_wins}-{pick_losses}"
+
     return {
         "meetings": len(meetings),
-        "record": f"{home_wins}-{away_wins}",
+        "record": record_str,
+        "pick_wins": pick_wins,
+        "pick_losses": pick_losses,
+        # Kept for backward compatibility and internal consumers that
+        # need the raw home/away split (e.g. team-comparison charts).
         "home_wins": home_wins,
         "away_wins": away_wins,
         "avg_total": round(sum(totals) / len(totals), 2) if totals else None,
@@ -656,22 +742,39 @@ async def build_h2h_bundle(db, pick: dict, *, fast_mode: bool = False) -> dict:
 
     # ── Fallback: parse home/away from `event` when the top-level
     # fields are null (common for Soccer/Tennis/UFC picks). Event
-    # format is "Home @ Away" everywhere in the app. ──
+    # format is "AWAY @ HOME" everywhere in the app (industry-standard
+    # sports notation — "Toronto Blue Jays @ Boston Red Sox" means
+    # Toronto is playing at Boston, so Boston is home). Previous
+    # comment claimed "Home @ Away" which was the source of the H2H
+    # record inversion the user reported 2026-07-25.
     if not (home and away):
         event = (pick.get("event") or "").strip()
         if event:
             parts = re.split(r"\s+(?:vs\.?|v\.?|@)\s+", event, maxsplit=1,
                              flags=re.IGNORECASE)
             if len(parts) == 2:
+                # "@" separator → AWAY @ HOME. "vs" separator has no
+                # canonical direction (Tennis/UFC use "vs"); pick[0]
+                # remains the visually-first side.
+                if "@" in event:
+                    away_parsed, home_parsed = parts[0].strip(), parts[1].strip()
+                else:
+                    away_parsed, home_parsed = parts[0].strip(), parts[1].strip()
                 if not home:
-                    home = parts[0].strip()
+                    home = home_parsed
                 if not away:
-                    away = parts[1].strip()
+                    away = away_parsed
+
+    # ── Derive the pick's chosen team, so the H2H record can be shown
+    # from that team's perspective instead of always defaulting to
+    # home (fixes the "0-3 should be 3-0" user report).
+    pick_team = _infer_pick_team(pick, home, away)
 
     sources: list[str] = []
 
     # Team-level H2H — works for every sport that has final scores logged.
-    team_h2h = await _team_h2h_from_settled(db, sport, home, away, limit=10)
+    team_h2h = await _team_h2h_from_settled(db, sport, home, away, limit=10,
+                                            pick_team=pick_team)
     if team_h2h:
         # Use the specific collection label so the audit trail (`sources`)
         # accurately reflects where the H2H data actually came from.
