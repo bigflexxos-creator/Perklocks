@@ -1528,6 +1528,7 @@ async def goalscorer_v3_predict(
 @router.get("/admin/picks-today/cap-diagnostic")
 async def picks_today_cap_diagnostic(
     admin: Annotated[UserPublic, Depends(current_admin)],
+    pick_date: Optional[str] = None,
 ) -> dict:
     """Introspect the /picks/today per-sport cap.
 
@@ -1536,31 +1537,53 @@ async def picks_today_cap_diagnostic(
     band (≥90, 85-89, <85). Use this to verify the cap isn't hiding
     legit high-lock picks on heavy MLB / Soccer slates.
 
+    Args:
+        pick_date: Optional YYYY-MM-DD. When supplied, the diagnostic
+            runs against that historical `pick_date`'s slate instead
+            of today (useful for backtesting the cap against a heavy
+            Saturday MLB slate). Note: the event_time window is still
+            anchored at NOW ± 30h in today mode; in historical mode it
+            widens to ±3d so all games from that pick_date qualify.
+
     Response shape:
         {
+          "pick_date":       "2026-07-19",
+          "mode":            "historical" | "today",
           "cap":             100,
           "safety_valve":    90.0,
           "sports": {
-             "MLB":    {"total": 8,   "kept": 8,   "dropped": 0,
-                        "top_lock": 93.2, "cap_boundary_lock": null,
-                        "dropped_ge90": 0, "dropped_85_89": 0, "dropped_lt85": 0,
-                        "safety_valve_kept": 0},
-             "Soccer": {"total": 151, "kept": 100, "dropped": 51, ...}
+             "MLB":    {"total": 152, "kept": 100, "dropped": 52, ...},
+             ...
           }
         }
     """
     from datetime import datetime as _dt, timezone as _tz, timedelta as _td
     now = _dt.now(_tz.utc)
     today_str = now.strftime("%Y-%m-%d")
-    horizon   = (now + _td(hours=72)).isoformat().replace("+00:00", "Z")
-    win_start = (now - _td(hours=30)).isoformat().replace("+00:00", "Z")
-    win_end   = (now + _td(hours=30)).isoformat().replace("+00:00", "Z")
+    is_historical = bool(pick_date) and pick_date != today_str
+    target_date = pick_date or today_str
+
+    if is_historical:
+        # Historical mode: anchor the event-time window on the pick_date
+        # itself (00:00 UTC ± 30h) so we replay the cap against past
+        # slates.
+        try:
+            anchor = _dt.strptime(target_date, "%Y-%m-%d").replace(tzinfo=_tz.utc)
+        except ValueError as e:
+            raise HTTPException(400, f"invalid pick_date '{pick_date}': {e}")
+        win_start = (anchor - _td(hours=6)).isoformat().replace("+00:00", "Z")
+        win_end   = (anchor + _td(hours=54)).isoformat().replace("+00:00", "Z")
+        horizon   = (anchor + _td(hours=72)).isoformat().replace("+00:00", "Z")
+    else:
+        horizon   = (now + _td(hours=72)).isoformat().replace("+00:00", "Z")
+        win_start = (now - _td(hours=30)).isoformat().replace("+00:00", "Z")
+        win_end   = (now + _td(hours=30)).isoformat().replace("+00:00", "Z")
 
     # Match the /picks/today outer filters (before market-specific carve-outs).
     q: dict = {
         "$and": [
             {"$or": [
-                {"pick_date": today_str},
+                {"pick_date": target_date},
                 {"event_time": {"$gte": win_start, "$lte": win_end}},
             ]},
             {"$or": [
@@ -1573,12 +1596,22 @@ async def picks_today_cap_diagnostic(
         "grade":     {"$ne": "Pass"},
         "no_bet":    {"$ne": True},
         "off_board": {"$ne": True},
-        "status":    {"$in": ["pending", "open", None]},
     }
+    # In historical mode the picks are already settled, so we can't
+    # filter by pending/open. In today mode we do (matches production).
+    if not is_historical:
+        q["status"] = {"$in": ["pending", "open", None]}
 
     CAP    = 100
     VALVE  = 90.0
-    result: dict = {"cap": CAP, "safety_valve": VALVE, "generated_at": now.isoformat(), "sports": {}}
+    result: dict = {
+        "pick_date":     target_date,
+        "mode":          "historical" if is_historical else "today",
+        "cap":           CAP,
+        "safety_valve":  VALVE,
+        "generated_at":  now.isoformat(),
+        "sports":        {},
+    }
 
     sports = await db.picks.distinct("sport", q)
     for sport in sorted([s for s in sports if s]):
