@@ -140,7 +140,24 @@ async def validate_and_heal(db) -> dict:
         # book-anchored pick is 0.
         wp = p.get("win_probability")
         ip = p.get("implied_probability")
-        if is_book_anchored and wp is not None and ip is not None:
+
+        # ── Strict edge gate for v3 goal-scorer / model-derived picks ──
+        # These picks have `edge_percent=None` by design because no
+        # real sportsbook player-prop line exists to measure against.
+        # Recomputing wp - ip would fabricate a number the engine
+        # explicitly refuses to publish (user directive 2026-07-22).
+        _is_v3_model_derived = (
+            (p.get("source") or "") == "goal_scorer_v3"
+            or (p.get("odds_source") or "") == "model_derived"
+        )
+        if _is_v3_model_derived:
+            # Only touch edge if it's not already None — preserve the
+            # engine's explicit "no book line" signal.
+            if p.get("edge_percent") is not None:
+                updates["edge_percent"] = None
+                p["edge_percent"] = None
+                counts["fixed_edge"] += 1
+        elif is_book_anchored and wp is not None and ip is not None:
             stored_edge = p.get("edge_percent")
             if stored_edge is None or abs(stored_edge - 0.0) > 0.05:
                 updates["edge_percent"] = 0.0

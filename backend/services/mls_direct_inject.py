@@ -399,10 +399,13 @@ async def run_once() -> dict:
 
     # Direct upsert bypassing all pipeline filters.
     from pymongo import ReplaceOne
+    from services.soccer_prop_inject import _derive_pick_date
     ops = []
     for p in all_picks:
         p["created_at"] = now
-        p["pick_date"] = today_str
+        # Games > 24h away get stamped with their actual event date so
+        # they don't crowd today's board (2026-07-26 user report).
+        p["pick_date"] = _derive_pick_date(p.get("event_time"), today_str)
         p["updated_at"] = now
         ops.append(ReplaceOne({"id": p["id"]}, p, upsert=True))
     if ops:

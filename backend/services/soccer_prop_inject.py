@@ -34,6 +34,33 @@ from services.player_props import (
     select_markets_v3,
 )
 
+
+def _derive_pick_date(event_time: Optional[str], today_str: str) -> str:
+    """Return the pick_date that should be stamped for a given event.
+
+    Games starting today or overnight (within ~24h) → today's date.
+    Games further out → the calendar date of `event_time` in UTC.
+
+    Fixes user report (2026-07-26): UEFA/Big-5 injectors were tagging
+    today's `pick_date` on games 4-5 days out, bloating /picks/today
+    and forcing the mobile app into a 5-10s timeout.
+    """
+    if not event_time:
+        return today_str
+    try:
+        # event_time is ISO-8601 like "2026-07-30T17:00Z"
+        s = str(event_time).replace("Z", "+00:00")
+        et = datetime.fromisoformat(s)
+        if et.tzinfo is None:
+            et = et.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        delta_hours = (et - now).total_seconds() / 3600.0
+        if delta_hours <= 24:
+            return today_str
+        return et.astimezone(timezone.utc).strftime("%Y-%m-%d")
+    except Exception:
+        return today_str
+
 logger = logging.getLogger("lockscore.soccer_prop_inject")
 
 
@@ -401,7 +428,12 @@ async def run_once() -> dict:
             ops = []
             for p in all_picks:
                 p["created_at"] = now
-                p["pick_date"] = today_str
+                # ── pick_date derivation (2026-07-26) ───────────────
+                # Set pick_date from the actual event_time when the
+                # game is > 24h away. Fixes user report: UEFA/Big-5
+                # picks for games 4-5 days out were being tagged with
+                # today's pick_date, bloating the /picks/today board.
+                p["pick_date"] = _derive_pick_date(p.get("event_time"), today_str)
                 p["updated_at"] = now
                 ops.append(ReplaceOne({"id": p["id"]}, p, upsert=True))
             try:
