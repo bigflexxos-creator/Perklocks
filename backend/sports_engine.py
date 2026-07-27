@@ -992,14 +992,54 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 dd_ml_result = None
         elif sport == "Tennis" and game_ctx:
             try:
+                # 2026-07-27 UPSET DETECTION FIX (Korpatsch vs Sherif):
+                # Previously only the FAVORITE side was scored via tennis_ml_prob
+                # and the caller trusted `home_model >= 0.5` to flip picks.
+                # But CAP_TOTAL=±10pp made it mathematically impossible to flip
+                # a legitimate underdog picked at ~+180 (book implied ~35%).
+                # Now score BOTH sides independently via the tennis math engine
+                # and pick whichever model says wins more often — regardless
+                # of the book's favorite. Real signals (surface Elo, form,
+                # H2H, fatigue) decide. If neither side clears a real edge
+                # threshold the pick is dropped downstream by tennis_engine's
+                # gating.
                 from services.data_driven_model import tennis_ml_prob
+                from services.tennis_math_engine import (
+                    score_tennis_matchup, has_real_tennis_signal,
+                )
                 surface = (game.get("surface") or "hard").lower()
-                if home_implied >= away_implied:
-                    dd_ml_result = tennis_ml_prob(home, home, away, surface, home_implied, game_ctx)
-                    home_model = dd_ml_result["mp"]
+                dd_home = tennis_ml_prob(home, home, away, surface, home_implied, game_ctx)
+                dd_away = tennis_ml_prob(away, home, away, surface, 1 - home_implied, game_ctx)
+                # Normalize (both mp anchored on their own implied). We prefer
+                # the side whose (mp - implied) is highest — that's the side
+                # where the model finds VALUE relative to the book.
+                # If model probs sum to >1 we still take whichever mp is larger.
+                home_edge = dd_home["mp"] - home_implied
+                away_edge = dd_away["mp"] - (1 - home_implied)
+                # Deep math override — surface-Elo based hard model.
+                math_signal = score_tennis_matchup(
+                    home, away, surface, home_implied, game_ctx,
+                )
+                if math_signal and has_real_tennis_signal(math_signal):
+                    # Math engine says one player wins by X margin — use it.
+                    home_model = math_signal["home_win_prob"]
+                    dd_ml_result = dd_home if home_model >= 0.5 else dd_away
+                    # Merge math_signal contributions into dd contribs
+                    if dd_ml_result is not None:
+                        merged = dict(dd_ml_result.get("contributions") or {})
+                        merged.update(math_signal.get("contributions") or {})
+                        dd_ml_result["contributions"] = merged
+                        dd_ml_result["math_engine_used"] = True
+                        dd_ml_result["mp"] = home_model if home_model >= 0.5 else (1 - home_model)
                 else:
-                    dd_ml_result = tennis_ml_prob(away, home, away, surface, 1 - home_implied, game_ctx)
-                    home_model = 1 - dd_ml_result["mp"]
+                    # No hard math signal — fall back to comparing dd edges.
+                    # Take the side with a positive edge (model > book).
+                    if home_edge >= away_edge:
+                        dd_ml_result = dd_home
+                        home_model = dd_home["mp"]
+                    else:
+                        dd_ml_result = dd_away
+                        home_model = 1 - dd_away["mp"]
             except Exception as e:
                 logger.debug("tennis DD ml failed: %s", e)
                 dd_ml_result = None
@@ -1829,29 +1869,128 @@ async def _backfill_tennis_moneylines(picks: list[dict], date_str: str) -> list[
             for side, prices in by_side.items()
         }
         fav_side, fav_price = min(medians.items(), key=lambda x: x[1])
+        dog_side, dog_price = max(medians.items(), key=lambda x: x[1])
         # Chalk cap — skip if too extreme
         if fav_price < -750:
             continue
-        # Simple implied-prob → lock_score mapping (same shape as _build_pick)
-        implied = (-fav_price) / ((-fav_price) + 100.0) if fav_price < 0 else 100.0 / (fav_price + 100.0)
-        win_prob = round(min(0.95, max(0.35, implied + 0.02)) * 100, 1)
-        edge_pct = round((win_prob / 100.0 - implied) * 100.0, 2)
-        # Lock score: match the internal calibrator's rough shape —
-        # ≥95 for implied≥0.75, ≥89 for implied≥0.65, etc.
-        if implied >= 0.85: lock_score = 96.0
-        elif implied >= 0.75: lock_score = 92.0
-        elif implied >= 0.65: lock_score = 88.0
-        elif implied >= 0.55: lock_score = 82.0
-        else: lock_score = 75.0
+        # Compute implied for both sides
+        fav_implied = (-fav_price) / ((-fav_price) + 100.0) if fav_price < 0 else 100.0 / (fav_price + 100.0)
+        dog_implied = (-dog_price) / ((-dog_price) + 100.0) if dog_price < 0 else 100.0 / (dog_price + 100.0)
+
+        # ── 2026-07-27 UPSET DETECTION FIX ─────────────────────────
+        # User: "I don't just want random dog picks. I want the app
+        # to do MATH — if the dog comes out on top, it should hit
+        # the board." Previously this backfill hardcoded fav-side.
+        # Now score BOTH sides through the tennis_math_engine and
+        # pick whichever the MODEL says wins. Book still gets its
+        # priors on the seed; math flips when it has real signal.
+
+        # Build ctx (surface, tier, book consensus, Sackmann) once — shared
+        # between fav & dog evaluations.
+        _all_prices = [float(r.get("price")) for r in rows if isinstance(r.get("price"), (int, float))]
+        _fav_prices = by_side.get(fav_side, [])
+        _fav_probs = []
+        for _pr in _fav_prices:
+            if _pr >= 100:
+                _fav_probs.append(100.0 / (_pr + 100.0))
+            else:
+                _fav_probs.append(-_pr / (-_pr + 100.0))
+        _ctx: dict = {}
+        if len(_fav_probs) >= 3:
+            _ctx["book_consensus_spread_pp"] = round((max(_fav_probs) - min(_fav_probs)) * 100.0, 2)
+        _league_l = (rows[0].get("league") or "").lower()
+        _evt_l = event_name.lower()
+        _combo = f"{_league_l} {_evt_l}"
+        if any(t in _combo for t in ("australian open","french open","wimbledon","us open")):
+            _ctx["match_tier"] = "slam"
+        elif "atp 1000" in _combo or "wta 1000" in _combo or "masters 1000" in _combo:
+            _ctx["match_tier"] = "atp1000"
+        elif "atp 500" in _combo or "wta 500" in _combo:
+            _ctx["match_tier"] = "atp500"
+        elif "atp 250" in _combo or "wta 250" in _combo:
+            _ctx["match_tier"] = "atp250"
+        elif "challenger" in _combo:
+            _ctx["match_tier"] = "challenger"
+        elif any(t in _combo for t in ("itf","w15","w25","w40","w60","m15","m25")):
+            _ctx["match_tier"] = "itf"
+        # Surface heuristic
+        if any(x in _evt_l for x in ("wimbledon","grass")):
+            _surface_key = "Grass"
+        elif any(x in _evt_l for x in ("french","clay","roland","monte carlo","madrid","rome","barcelona")):
+            _surface_key = "Clay"
+        else:
+            _surface_key = "Hard"
+        # Sackmann lookup (silent no-op for WTA/Challenger)
+        try:
+            from services.tennis.fallback import get_player_stats, get_h2h
+            _sa = await get_player_stats(db, fav_side, _surface_key)
+            _sb = await get_player_stats(db, dog_side, _surface_key)
+            if _sa: _ctx["sackmann_a"] = _sa
+            if _sb: _ctx["sackmann_b"] = _sb
+            _h = await get_h2h(db, fav_side, dog_side)
+            if _h and _h.get("matches", 0) >= 1:
+                _ctx["h2h_a_wins"] = _h.get("a_wins", 0)
+                _ctx["h2h_b_wins"] = _h.get("b_wins", 0)
+        except Exception:
+            pass
+
+        # Run the math engine on both perspectives (fav = home, dog = away)
+        chosen_side = fav_side
+        chosen_price = fav_price
+        chosen_implied = fav_implied
+        model_wp = fav_implied  # default fallback
+        dd_contribs: dict = {}
+        try:
+            from services.tennis_math_engine import (
+                score_tennis_matchup, has_real_tennis_signal,
+            )
+            _math_ctx = dict(_ctx)  # copy
+            # For math engine, "home"=fav_side, "away"=dog_side
+            math_signal = score_tennis_matchup(
+                fav_side, dog_side, _surface_key.lower(), fav_implied, _math_ctx,
+            )
+            if math_signal and has_real_tennis_signal(math_signal):
+                math_wp_fav = math_signal["home_win_prob"]
+                # If model says DOG wins more often, flip the pick
+                if math_wp_fav < 0.50:
+                    chosen_side = dog_side
+                    chosen_price = dog_price
+                    chosen_implied = dog_implied
+                    model_wp = 1.0 - math_wp_fav
+                else:
+                    chosen_side = fav_side
+                    chosen_price = fav_price
+                    chosen_implied = fav_implied
+                    model_wp = math_wp_fav
+                dd_contribs = dict(math_signal.get("contributions") or {})
+                dd_contribs["math_engine_used"] = True
+                logger.debug(
+                    "tennis math backfill: %s vs %s → chose %s (model_wp=%.3f, book_implied=%.3f)",
+                    fav_side, dog_side, chosen_side, model_wp, chosen_implied,
+                )
+        except Exception as _mx:
+            logger.debug("tennis math engine failed on %s: %s", event_name, _mx)
+
+        # Final win_prob / edge / lock — computed from chosen side
+        implied = chosen_implied  # legacy variable name kept for below
+        win_prob = round(min(0.95, max(0.15, model_wp)) * 100, 1)
+        edge_pct = round((win_prob / 100.0 - chosen_implied) * 100.0, 2)
+        # Lock score: match the internal calibrator's rough shape
+        if model_wp >= 0.85: lock_score = 96.0
+        elif model_wp >= 0.75: lock_score = 92.0
+        elif model_wp >= 0.65: lock_score = 88.0
+        elif model_wp >= 0.55: lock_score = 82.0
+        elif model_wp >= 0.50: lock_score = 76.0    # dog-flip case
+        else: lock_score = 70.0
 
         import uuid, hashlib
         commence = rows[0].get("commence_time") or ""
         pick_id = str(uuid.uuid5(
             uuid.NAMESPACE_DNS,
-            f"tennis-ml-backfill-{event_name}-{fav_side}-{date_str}",
+            f"tennis-ml-backfill-{event_name}-{chosen_side}-{date_str}",
         ))
         external_id = hashlib.md5(
-            f"tennis-ml-backfill-{event_name}-{fav_side}-{date_str}".encode()
+            f"tennis-ml-backfill-{event_name}-{chosen_side}-{date_str}".encode()
         ).hexdigest()
         pick = {
             "id": pick_id,
@@ -1860,9 +1999,9 @@ async def _backfill_tennis_moneylines(picks: list[dict], date_str: str) -> list[
             "league": (rows[0].get("league") or "Tennis"),
             "event": event_name,
             "event_time": commence,
-            "market": f"{fav_side} Moneyline",
-            "selection": fav_side,
-            "book_odds": int(fav_price),
+            "market": f"{chosen_side} Moneyline",
+            "selection": chosen_side,
+            "book_odds": int(chosen_price),
             "win_probability": win_prob,
             "edge_percent": edge_pct,
             "lock_score": lock_score,
@@ -1871,87 +2010,31 @@ async def _backfill_tennis_moneylines(picks: list[dict], date_str: str) -> list[
             "is_alt": False,
             "no_bet": False,
         }
+        if dd_contribs:
+            pick["data_driven_used"] = True
+            pick["data_driven_contribs"] = dd_contribs
+            pick["is_upset_pick"] = (chosen_side != fav_side)
 
-        # ── Wire DATA-DRIVEN scoring into the backfill path (2026-07-20).
-        # Previously tennis picks bypassed DD entirely because they were
-        # emitted directly here, not via `_build_pick`. Compute book
-        # consensus spread + match tier from the live_alt_lines rows
-        # (already fetched, zero extra API cost) and feed them into
-        # tennis_ml_prob. Sackmann + H2H are also pulled from DB for
-        # ATP players when available. Contribs then land on the pick
-        # and flow into the Signal Engine breakdown.
-        try:
-            from services.data_driven_model import tennis_ml_prob
-            # Build a lightweight ctx from the rows we already have.
-            all_prices = [float(r.get("price")) for r in rows if isinstance(r.get("price"), (int, float))]
-            # Convert American→implied for the FAVOURITE side prices
-            fav_prices = by_side.get(fav_side, [])
-            fav_probs = []
-            for pr in fav_prices:
-                if pr >= 100:
-                    fav_probs.append(100.0 / (pr + 100.0))
-                else:
-                    fav_probs.append(-pr / (-pr + 100.0))
-            ctx = {}
-            if len(fav_probs) >= 3:
-                ctx["book_consensus_spread_pp"] = round((max(fav_probs) - min(fav_probs)) * 100.0, 2)
-            # Tier detection from league + event name
-            league_l = (rows[0].get("league") or "").lower()
-            evt_l    = event_name.lower()
-            combo    = f"{league_l} {evt_l}"
-            if any(t in combo for t in ("australian open","french open","wimbledon","us open")):
-                ctx["match_tier"] = "slam"
-            elif "atp 1000" in combo or "wta 1000" in combo or "masters 1000" in combo:
-                ctx["match_tier"] = "atp1000"
-            elif "atp 500" in combo or "wta 500" in combo:
-                ctx["match_tier"] = "atp500"
-            elif "atp 250" in combo or "wta 250" in combo:
-                ctx["match_tier"] = "atp250"
-            elif "challenger" in combo:
-                ctx["match_tier"] = "challenger"
-            elif any(t in combo for t in ("itf","w15","w25","w40","w60","m15","m25")):
-                ctx["match_tier"] = "itf"
-            # Sackmann lookup for ATP players (silent no-op for WTA / challenger)
+        # Legacy DD-lift path for cases where math engine didn't fire
+        # (kept for backwards compat / non-Elo picks).
+        if not dd_contribs:
             try:
-                from services.tennis.fallback import get_player_stats, get_h2h
-                # Extract opponent name (other player in `by_side`)
-                other_side = next((s for s in by_side.keys() if s != fav_side), "")
-                # Surface heuristic from event name
-                if any(x in evt_l for x in ("wimbledon","grass")):
-                    surface_key = "Grass"
-                elif any(x in evt_l for x in ("french","clay","roland","monte carlo","madrid","rome","barcelona")):
-                    surface_key = "Clay"
-                else:
-                    surface_key = "Hard"
-                sa = await get_player_stats(db, fav_side, surface_key)
-                sb = await get_player_stats(db, other_side, surface_key) if other_side else None
-                if sa: ctx["sackmann_a"] = sa
-                if sb: ctx["sackmann_b"] = sb
-                if other_side:
-                    h = await get_h2h(db, fav_side, other_side)
-                    if h and h.get("matches", 0) >= 1:
-                        ctx["h2h_a_wins"] = h.get("a_wins", 0)
-                        ctx["h2h_b_wins"] = h.get("b_wins", 0)
-            except Exception:
-                pass
-            other_side = next((s for s in by_side.keys() if s != fav_side), fav_side)
-            dd = tennis_ml_prob(fav_side, fav_side, other_side, "hard", implied, ctx)
-            if dd.get("contributions"):
-                pick["data_driven_used"] = True
-                pick["data_driven_contribs"] = dd["contributions"]
-                # Refine win_prob using the DD lift instead of the flat +2%
-                pick["win_probability"] = round(dd["mp"] * 100, 1)
-                pick["edge_percent"] = round((dd["mp"] - implied) * 100, 2)
-        except Exception as e:
-            logger.debug("tennis DD backfill scoring failed for %s: %s", event_name, e)
+                from services.data_driven_model import tennis_ml_prob
+                other_side_ml = next((s for s in by_side.keys() if s != fav_side), fav_side)
+                dd = tennis_ml_prob(fav_side, fav_side, other_side_ml, "hard", fav_implied, _ctx)
+                if dd.get("contributions"):
+                    pick["data_driven_used"] = True
+                    pick["data_driven_contribs"] = dd["contributions"]
+                    # Only refine win_prob if the DD model kept us on fav side
+                    if chosen_side == fav_side:
+                        pick["win_probability"] = round(dd["mp"] * 100, 1)
+                        pick["edge_percent"] = round((dd["mp"] - fav_implied) * 100, 2)
+            except Exception as e:
+                logger.debug("tennis DD backfill scoring failed for %s: %s", event_name, e)
 
         picks.append(pick)
         added += 1
     if added:
-        # Downgraded to debug (2026-07-07): the bulk /odds fetch now
-        # requests h2h-only for Tennis so the primary path succeeds
-        # natively — the backfill should be a rare last-resort. If it
-        # keeps firing, that's a signal something upstream regressed.
         logger.debug("tennis ML backfill: added %d moneyline picks from live_alt_lines", added)
     return picks
 
@@ -3421,26 +3504,59 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             if not has_enough_real_data(real_factors, "k_prop"):
                 _skip_pick = True
             else:
-                # Drop None values before feeding compute_lock_score.
-                factors = {k: v for k, v in real_factors.items() if v is not None}
-                _mlb_features_used = _sources
-                # Stash raw K data for signal engine / rationale.
-                _sph = _game_ctx.get("starting_pitcher_home") or {}
-                _spa = _game_ctx.get("starting_pitcher_away") or {}
-                _match = None
-                for _sp in (_sph, _spa):
-                    if _sp.get("name", "").strip().lower() == player.strip().lower():
-                        _match = _sp
-                        break
-                if _match and _match.get("opp_k_pct") is not None:
-                    payload.setdefault("_real_k_data", {})[player] = {
-                        "opp_team": _match.get("opp_k_team"),
-                        "opp_k_pct": _match.get("opp_k_pct"),
-                        "opp_k_rank": _match.get("opp_k_rank"),
-                        "pitcher_throws": _match.get("throws"),
-                        "pitcher_k_pct": _match.get("k_pct"),
-                        "pitcher_ip_per_start": _match.get("ip_per_start"),
-                    }
+                # ── 2026-07-27 SHARPER K MATH GATE ────────────────────
+                # User: "K picks need to be sharper. Went 6/11, want 8/11+."
+                # Route Strikeout picks through the Poisson probability
+                # engine. Drop picks where:
+                #   • Book odds worse than -220 (chalk trap)
+                #   • Model prob doesn't beat book implied by 5+ pp
+                #   • Model win prob < 60%
+                #   • Under X.5 fired when expected K's >= X.5 (self-contradict)
+                # Also stores conflict-key so cross-market dedup can kill
+                # the weaker side when both Over + Under emit for same pitcher.
+                if "strikeout" in (mk or "").lower() and isinstance(point, (int, float)):
+                    try:
+                        from services.mlb_k_probability import evaluate_k_pick
+                        _k_eval = evaluate_k_pick(
+                            _game_ctx, pitcher_name=player, line=float(point),
+                            side=str(side), book_odds=int(median) if median is not None else None,
+                        )
+                        if not _k_eval.get("emit"):
+                            _skip_pick = True
+                            logger.debug(
+                                "K pick dropped by Poisson gate: %s %s %s reason=%s exp_k=%.2f",
+                                player, side, point, _k_eval.get("reason"), _k_eval.get("expected_k", 0.0),
+                            )
+                        else:
+                            # Override the seed mp with the model prob.
+                            mp = float(_k_eval["model_prob"])
+                            # Stash for downstream signal engine & rationale
+                            payload.setdefault("_k_math", {})[player] = _k_eval
+                    except Exception as _kx:
+                        logger.debug("K math eval failed for %s: %s", player, _kx)
+                if _skip_pick:
+                    pass
+                else:
+                    # Drop None values before feeding compute_lock_score.
+                    factors = {k: v for k, v in real_factors.items() if v is not None}
+                    _mlb_features_used = _sources
+                    # Stash raw K data for signal engine / rationale.
+                    _sph = _game_ctx.get("starting_pitcher_home") or {}
+                    _spa = _game_ctx.get("starting_pitcher_away") or {}
+                    _match = None
+                    for _sp in (_sph, _spa):
+                        if _sp.get("name", "").strip().lower() == player.strip().lower():
+                            _match = _sp
+                            break
+                    if _match and _match.get("opp_k_pct") is not None:
+                        payload.setdefault("_real_k_data", {})[player] = {
+                            "opp_team": _match.get("opp_k_team"),
+                            "opp_k_pct": _match.get("opp_k_pct"),
+                            "opp_k_rank": _match.get("opp_k_rank"),
+                            "pitcher_throws": _match.get("throws"),
+                            "pitcher_k_pct": _match.get("k_pct"),
+                            "pitcher_ip_per_start": _match.get("ip_per_start"),
+                        }
         elif sport == "MLB" and not is_pitcher_prop:
             # Hitter props (Hits, HRs, TBs, Runs, RBIs)
             from services.mlb_feature_engine import (
@@ -4745,11 +4861,15 @@ async def generate_all_picks(
     # Market-family preference when two correlated picks tie on dedup key.
     # User preferences (verified by historical results):
     #   - "Win or Draw" / "Double Chance" over straight "Moneyline" for
-    #     soccer — the draw safety net wins games where the favorite ties
-    #     (e.g. Sport Recife drew today; W-or-D would have cashed).
+    #     soccer — the draw safety net wins games where the favorite ties.
+    #   - 2026-07-27 H+R+RBI equal priority to Hits (user request: expand
+    #     H+R+RBI coverage since it has ~10-15pp higher base rate than Hits).
     # Lower number = higher preference.
     def _market_priority(market: str) -> int:
         m = (market or "").lower()
+        # H+R+RBI now on equal footing with Hits (was implicitly deprioritized)
+        if "hits + runs + rbi" in m or "h+r+rbi" in m or "hits+runs+rbi" in m:
+            return 0
         if "hits" in m:
             return 0
         if "win or draw" in m or "double chance" in m:
@@ -4757,6 +4877,34 @@ async def generate_all_picks(
         if "moneyline" in m:
             return 2
         return 1
+
+    # ── 2026-07-27 Cross-side conflict resolver for MLB K's ─────────────
+    # User feedback: "Went 6/11 on K's — need better research." We saw
+    # duplicate emissions per pitcher (Shane Drohan Over 5.5 + Under 6.5,
+    # Roki Sasaki Under 5.5 + Over 4.5). Keep only the STRONGEST K pick
+    # per pitcher.
+    def _k_conflict_key(p: dict):
+        m = (p.get("market") or "").lower()
+        if "strikeout" not in m:
+            return None
+        sel = p.get("selection") or ""
+        # Extract pitcher name (before " Over " or " Under ")
+        import re as _re
+        pname_match = _re.match(r"(.+?)\s+(over|under)\s+", sel, _re.IGNORECASE)
+        pname = pname_match.group(1).strip() if pname_match else sel
+        return (p.get("sport"), p.get("event"), "MLB_K_FAMILY", pname.lower())
+
+    k_conflict_best: dict = {}
+    non_k_picks: list = []
+    for p in all_picks:
+        kc = _k_conflict_key(p)
+        if kc is None:
+            non_k_picks.append(p)
+        else:
+            existing = k_conflict_best.get(kc)
+            if existing is None or p.get("lock_score", 0) > existing.get("lock_score", 0):
+                k_conflict_best[kc] = p
+    all_picks = non_k_picks + list(k_conflict_best.values())
 
     for p in all_picks:
         k = _dedup_key(p)
