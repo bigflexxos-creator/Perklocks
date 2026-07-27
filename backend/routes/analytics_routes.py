@@ -153,22 +153,39 @@ async def backtest_mlb_k_pvt(
     user: Annotated[UserPublic, Depends(current_admin)],
     days: int = 30,
 ):
-    """PvT-aware replay of settled MLB Strikeout picks.
-
-    Answers: "How many bad K picks would the new Pitcher-vs-Team math
-    have caught / flipped / rejected if it had been live?"
-
-    Query params:
-      days: trailing window in days (default 30, max 180)
-
-    Response includes counts (kept/rejected/flipped), simulated ROI &
-    hit rate under the new math, and samples of the biggest flips
-    (would-have-won-if-flipped) and top rejects (chalky losers the
-    gate would have blocked).
-    """
+    """PvT-aware replay of settled MLB Strikeout picks."""
     from services.pvt_backtest import backtest_mlb_k_with_pvt
     days = max(1, min(180, days))
     return await backtest_mlb_k_with_pvt(db, days=days)
+
+
+@router.get("/analytics/backtest/sport/{sport}")
+async def backtest_sport(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    sport: str,
+    days: int = 30,
+):
+    """Multi-sport backtest replay. `sport` ∈ {MLB, Tennis, NFL, NBA}.
+
+    Applies each sport's new math (PvT for MLB, math-engine lifts for
+    Tennis, career-vs-opp for NFL, under-prop lock check for NBA)
+    against settled picks and reports counterfactual ROI + hit rate.
+    """
+    from services.backtest_framework import run_sport_backtest
+    days = max(1, min(180, days))
+    return await run_sport_backtest(db, sport=sport, days=days)
+
+
+@router.get("/analytics/backtest/all")
+async def backtest_all(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    days: int = 30,
+):
+    """Run backtest across ALL sports in parallel — one call to see the
+    entire counterfactual impact of the new math stack."""
+    from services.backtest_framework import run_all_sports_backtest
+    days = max(1, min(180, days))
+    return await run_all_sports_backtest(db, days=days)
 
 
 @router.get("/analytics/v2")
