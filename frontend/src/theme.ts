@@ -35,13 +35,18 @@ export const SPORT_ICONS: Record<string, string> = {
   MLB: "baseball",
   NBA: "basketball",
   NFL: "football",
+  CFB: "american-football",
   Soccer: "soccer",
   Tennis: "tennis",
   UFC: "barbell",
   KBO: "baseball",
 };
 
-export const SPORTS = ["All", "MLB", "NBA", "NFL", "Soccer", "Tennis", "UFC"] as const;
+// SPORTS is the master ordered list of sport chips rendered in the Home /
+// Rollover / Under / Parlay screens. CFB added 2026-07-27 in prep for the
+// Week-0 kickoff (Aug 23). Ordered by peak season overlap: NFL / CFB
+// grouped together, Tennis last because it's a specialty tab.
+export const SPORTS = ["All", "MLB", "NBA", "NFL", "CFB", "Soccer", "Tennis", "UFC"] as const;
 
 export const SHADOW = {
   shadowColor: "#000",
