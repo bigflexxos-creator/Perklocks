@@ -481,12 +481,13 @@ export default function LocksScreen() {
   ]);
 
   // Smart refetch on screen focus: hit /api/picks/today again every time the
-  // user opens the Locks tab, but skip if the last successful fetch was less
-  // than 30 s ago. No interval polling — focus + manual refresh only.
+  // user opens the Locks tab. 5 s cooldown (down from 30 s on 2026-07-28) so
+  // freshly-emitted picks (e.g. new H+R+RBI market family) surface as soon
+  // as the user tabs back — without hammering the API on every focus.
   useFocusRefetch(
     () => { load(sport, lineType, sortKey, filters, sortDir); loadCooldown(); },
     [sport, lineType, sortKey, filters, sortDir, load, loadCooldown],
-    30_000,
+    5_000,
   );
 
   const onRefresh = () => {
