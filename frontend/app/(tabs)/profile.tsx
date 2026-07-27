@@ -155,6 +155,16 @@ export default function ProfileScreen() {
         )}
 
         <Pressable
+          testID="model-edge-button"
+          onPress={() => router.push("/model-edge")}
+          style={styles.actionBtn}
+        >
+          <Ionicons name="analytics" size={18} color={COLORS.neonGreen} />
+          <Text style={styles.actionText}>MODEL EDGE · CLV DASHBOARD</Text>
+          <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+        </Pressable>
+
+        <Pressable
           testID="history-button"
           onPress={() => router.push("/history")}
           style={styles.actionBtn}

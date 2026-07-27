@@ -3472,6 +3472,12 @@ try:
     from routes import mlb_hr_routes
     app.include_router(mlb_hr_routes.router)
     logger.info("MLB HR intelligence mounted at /api/mlb/hr-slate")
+    # ── User-facing performance / CLV dashboard (2026-07-27) ─────────
+    # Public (any logged-in user) endpoints proving the picks board is
+    # +EV. Backs the new CLV Dashboard screen in the mobile app.
+    from routes import me_performance_routes
+    app.include_router(me_performance_routes.router)
+    logger.info("User Performance + CLV dashboard mounted at /api/me/*")
 except Exception as _routes_mount_err:
     logger.exception("Extracted route modules failed to mount: %s", _routes_mount_err)
 
