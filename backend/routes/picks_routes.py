@@ -324,6 +324,64 @@ async def pick_rollover(
         _canonicalize_lock_score, _canonicalize_picks, _market_regex,
     )
     await _ensure_today_picks()
+
+    # ── 2026-07-27 STICKY ROLLOVER (bug: bets shuffled every visit) ────
+    # Rollover is meant to be the "3 safest bets of the day" — it must
+    # be STABLE across tab visits. Previously every call recomputed the
+    # ranking, so live changes to `signal_score`, `historical_signal`
+    # hot/cold labels, or fresh edge_percent from odds movement kept
+    # shuffling which picks won the top-3 slots.
+    #
+    # Fix: cache the emitted top-3 pick IDs per (date, line_type, sport,
+    # market, league) filter tuple for 4 hours. On subsequent calls,
+    # look up the cached IDs, refetch the pick docs, validate they're
+    # still qualifying (not off_board, not settled, still in play
+    # window), and return them AS-IS. Only recompute when a slot is
+    # invalidated OR the cache expires.
+    #
+    # Cache is process-local (no Redis) — good enough for typical usage
+    # and cleared on backend restart.
+    global _ROLLOVER_STICKY_CACHE  # noqa: PLW0603
+    if "_ROLLOVER_STICKY_CACHE" not in globals():
+        _ROLLOVER_STICKY_CACHE = {}    # type: ignore
+    _sticky_key = (
+        _today_str(),
+        (line_type or "").lower(),
+        (sport or "all").lower(),
+        (market or "").lower(),
+        (league or "").lower(),
+    )
+    _now_ts = datetime.now(timezone.utc)
+    is_sticky_hit = False
+    cached = _ROLLOVER_STICKY_CACHE.get(_sticky_key)
+    if cached and (_now_ts - cached["at"]).total_seconds() < 14400:  # 4h TTL
+        cached_ids = cached.get("ids") or []
+        if cached_ids:
+            docs = await db.picks.find(
+                {"id": {"$in": cached_ids}, "no_bet": {"$ne": True},
+                 "off_board": {"$ne": True}, "status": {"$in": ["pending", None]}},
+                {"_id": 0},
+            ).to_list(length=len(cached_ids))
+            # Preserve the original ranked order
+            by_id = {d["id"]: d for d in docs if "id" in d}
+            docs_ordered = [by_id[i] for i in cached_ids if i in by_id]
+            # Filter to picks still in play window
+            docs_ordered = _filter_in_play_window(docs_ordered)
+            if len(docs_ordered) == len(cached_ids):
+                # All cached picks still valid — return sticky result
+                is_sticky_hit = True
+                return {
+                    "picks": _canonicalize_picks(docs_ordered),
+                    "pick": _canonicalize_lock_score(docs_ordered[0]) if docs_ordered else None,
+                    "composite_rank": None,
+                    "total_evaluated": len(docs_ordered),
+                    "scoped_to_today": True,
+                    "rollover_version": "v4-sticky",
+                    "sticky": True,
+                    "survivability": cached.get("survivability", {"mode": "sticky_hit"}),
+                }
+    # Sticky miss or expired — proceed with full recompute below.
+
     base_q: dict = {"pick_date": _today_str(), "no_bet": {"$ne": True}}
     lt = (line_type or "").lower()
     if lt == "main":
@@ -541,6 +599,29 @@ async def pick_rollover(
         top.append({**p, "composite_rank": round(_ev_score(p), 2)})
         if len(top) >= MAX_LEGS:
             break
+    # ── Persist sticky cache before returning (2026-07-27) ────────────
+    _survivability = {
+        "mode": "data_driven",
+        "lock_floor": LOCK_FLOOR,
+        "lock_dead_zone": [LOCK_DEAD_LO, LOCK_DEAD_HI],
+        "wp_floor": WP_FLOOR,
+        "edge_floor": EDGE_FLOOR,
+        "edge_cap": EDGE_CAP,
+        "odds_floor": CHALK_CAP,
+        "odds_dead_zone": [ODDS_DEAD_LO, ODDS_DEAD_HI],
+        "max_legs": MAX_LEGS,
+        "market_boosts": [{"pattern": p, "multiplier": m} for p, m in MARKET_BOOSTS],
+        "candidates_scanned": total_candidates,
+        "rejected_by_gate": rejected_by_gate,
+        "reject_reasons": reject_reasons,
+    }
+    if top:
+        _ROLLOVER_STICKY_CACHE[_sticky_key] = {
+            "ids":            [p.get("id") for p in top if p.get("id")],
+            "at":             _now_ts,
+            "survivability":  _survivability,
+        }
+
     return {
         "picks": _canonicalize_picks(top),
         "pick": _canonicalize_lock_score(top[0]) if top else None,
@@ -548,21 +629,8 @@ async def pick_rollover(
         "total_evaluated": len(pool),
         "scoped_to_today": bool(today_picks),
         "rollover_version": "v4",
-        "survivability": {
-            "mode": "data_driven",
-            "lock_floor": LOCK_FLOOR,
-            "lock_dead_zone": [LOCK_DEAD_LO, LOCK_DEAD_HI],
-            "wp_floor": WP_FLOOR,
-            "edge_floor": EDGE_FLOOR,
-            "edge_cap": EDGE_CAP,
-            "odds_floor": CHALK_CAP,
-            "odds_dead_zone": [ODDS_DEAD_LO, ODDS_DEAD_HI],
-            "max_legs": MAX_LEGS,
-            "market_boosts": [{"pattern": p, "multiplier": m} for p, m in MARKET_BOOSTS],
-            "candidates_scanned": total_candidates,
-            "rejected_by_gate": rejected_by_gate,
-            "reject_reasons": reject_reasons,
-        },
+        "sticky": is_sticky_hit,
+        "survivability": _survivability,
     }
 
 
