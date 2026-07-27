@@ -2279,6 +2279,26 @@ async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) 
         f"{BASE}/sports/{sport_key}/events/{event_id}/odds",
         {"regions": regions, "markets": ",".join(markets), "oddsFormat": "american"},
     )
+    # ── 2026-07-28 Data-availability diagnostics ───────────────────────
+    # Log per-market outcome counts (esp. H+R+RBI) so we can distinguish
+    # provider data gaps from downstream gate drops.
+    if isinstance(data, dict) and sport == "MLB":
+        counts: dict[str, int] = {}
+        for b in data.get("bookmakers", []) or []:
+            for m in b.get("markets", []) or []:
+                mk = m.get("key") or ""
+                counts[mk] = counts.get(mk, 0) + len(m.get("outcomes", []) or [])
+        hrr = counts.get("batter_hits_runs_rbis", 0) + counts.get("batter_hits_runs_rbis_alternate", 0)
+        if hrr == 0:
+            logger.warning(
+                "MLB H+R+RBI data-gap: event=%s no batter_hits_runs_rbis outcomes returned by provider",
+                event_id,
+            )
+        else:
+            logger.info(
+                "MLB H+R+RBI availability: event=%s outcomes=%d",
+                event_id, hrr,
+            )
     return data if isinstance(data, dict) else {}
 
 
@@ -4979,50 +4999,43 @@ async def generate_all_picks(
         overs = [p for p in group if _k_pick_side(p) == "over"]
         unders = [p for p in group if _k_pick_side(p) == "under"]
         if overs and unders:
-            # Contradiction — resolve by PvT expected K alignment first,
-            # then lock score, then safety valve.
+            # Contradiction — resolve via shared K-math helper (kept in
+            # services.k_conflict_resolver so BOTH the in-memory resolver
+            # here AND the DB-level `_reconcile_player_prop_contradictions`
+            # use identical math. See 2026-07-28 consolidation.).
             best_over = max(overs, key=lambda x: x.get("lock_score", 0))
             best_under = max(unders, key=lambda x: x.get("lock_score", 0))
-            # Parse the line from either market string
             import re as _re
             def _line(p):
                 m = _re.search(r"(\d+\.?\d*)\s+Strikeouts", p.get("market") or "", _re.I)
                 return float(m.group(1)) if m else None
             line = _line(best_over) or _line(best_under)
-            # Get expected K if we have it (attached at emission time)
-            exp_k = best_over.get("k_math_expected_k") or best_under.get("k_math_expected_k")
-            # Fallback: check `k_prop_data.opp_k_pct` context on either pick
+            try:
+                from services.k_conflict_resolver import resolve_k_family_winner
+                winning_side, reason = resolve_k_family_winner(best_over, best_under, line)
+            except Exception as _kc_err:
+                logger.warning("k_conflict_resolver import failed: %s", _kc_err)
+                winning_side, reason = (None, "indeterminate")
             resolved = None
-            if isinstance(exp_k, (int, float)) and isinstance(line, (int, float)):
-                # PvT-driven decision: keep the side that AGREES with math
-                if exp_k > line + 0.3:
-                    resolved = best_over
-                    logger.info(
-                        "MLB K Over/Under conflict → OVER wins (PvT): %s line=%.1f exp_k=%.2f",
-                        kc[3], line, exp_k,
-                    )
-                elif exp_k < line - 0.3:
-                    resolved = best_under
-                    logger.info(
-                        "MLB K Over/Under conflict → UNDER wins (PvT): %s line=%.1f exp_k=%.2f",
-                        kc[3], line, exp_k,
-                    )
-            if resolved is None:
-                # No PvT signal → fall back to lock-score gap
-                lock_gap = abs(best_over.get("lock_score", 0) - best_under.get("lock_score", 0))
-                if lock_gap >= 3:
-                    resolved = (best_over
-                                if best_over.get("lock_score", 0) > best_under.get("lock_score", 0)
-                                else best_under)
-                else:
-                    # Truly indeterminate — safety valve, drop both
-                    logger.info(
-                        "MLB K Over/Under conflict dropped BOTH (no PvT, tied lock): %s "
-                        "Over=%.0f Under=%.0f",
-                        kc[3], best_over.get("lock_score", 0), best_under.get("lock_score", 0),
-                    )
-                    continue
-            k_conflict_kept.append(resolved)
+            if winning_side == "over":
+                resolved = best_over
+            elif winning_side == "under":
+                resolved = best_under
+            if resolved is not None:
+                logger.info(
+                    "MLB K Over/Under conflict → %s wins (%s): %s line=%s",
+                    winning_side.upper(), reason, kc[3], line,
+                )
+                k_conflict_kept.append(resolved)
+            else:
+                # Truly indeterminate — safety valve, drop both.
+                logger.info(
+                    "MLB K Over/Under conflict dropped BOTH (%s): %s "
+                    "Over lock=%.0f Under lock=%.0f",
+                    reason, kc[3],
+                    best_over.get("lock_score", 0), best_under.get("lock_score", 0),
+                )
+                continue
         else:
             # Same-side dupes — keep highest lock
             k_conflict_kept.append(max(group, key=lambda x: x.get("lock_score", 0)))
