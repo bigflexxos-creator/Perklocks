@@ -2928,6 +2928,18 @@ SPORT_MARKETS = {
         {"token": "rushing_yards",   "label": "Rushing Yds"},
         {"token": "receiving_yards", "label": "Receiving Yds"},
     ],
+    # CFB added 2026-07-27 in prep for Week 0 (Aug 23). Mirrors NFL market
+    # tokens — the Odds API `americanfootball_ncaaf` feed uses identical
+    # keys, and CFB picks flow through the same NFL pipeline in
+    # sports_engine.fetch_cfb_picks. Feature engine landing separately.
+    "CFB": [
+        {"token": "moneyline",       "label": "Moneyline"},
+        {"token": "spread",          "label": "Spread"},
+        {"token": "totals",          "label": "Totals"},
+        {"token": "passing_yards",   "label": "Passing Yds"},
+        {"token": "rushing_yards",   "label": "Rushing Yds"},
+        {"token": "receiving_yards", "label": "Receiving Yds"},
+    ],
     "MLB": [
         {"token": "moneyline",   "label": "Moneyline"},
         {"token": "run_line",    "label": "Run Line"},

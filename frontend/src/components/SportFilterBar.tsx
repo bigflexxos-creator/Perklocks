@@ -17,7 +17,7 @@ import { api, PickFilters, SportLeague, SportMarket } from "@/src/lib/api";
 import { useFilters } from "@/src/stores/useFilters";
 import { COLORS } from "@/src/theme";
 
-const SUPPORTED = new Set(["Soccer", "NBA", "NFL", "MLB", "Tennis"]);
+const SUPPORTED = new Set(["Soccer", "NBA", "NFL", "CFB", "MLB", "Tennis"]);
 
 type Props = {
   sport: string;
