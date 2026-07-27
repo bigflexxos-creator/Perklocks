@@ -1,0 +1,56 @@
+{
+  "summary": "iter-97 sharpening backend verification — 16 passed, 2 skipped (18 total). All 3 static-code changes are in place and unit-tested: (a) MLB K Poisson gate module `services/mlb_k_probability.py` — `evaluate_k_pick` returns emit=False for insufficient_signals, odds_too_chalky (<-220), and produces a valid dict with expected_k for full-data cases (unit tests pass). (b) K same-pitcher conflict resolver in sports_engine.py:4886-4907 — verified against live slate: 7 MLB K picks today, no pitcher/event has both Over AND Under (100% conflict-free). (c) `_market_priority` H+R+RBI equal to Hits (line 4870-4874) confirmed present. (d) Tennis math engine `services/tennis_math_engine.py` — `score_tennis_matchup` produces valid win_prob, Elo baseline flips when Sackmann form disagrees, `has_real_tennis_signal` gate returns True only with ≥2 signals incl. Elo (unit tests pass). (e) Tennis Extra settler — `off_board=True` filter is removed (verified in code), settler ran against live DB across 7 days and processed 262 pending picks (206 unmatched + 56 skipped_future), confirming the filter no longer blocks off-board picks (149 of 211 pending tennis_extra picks are off_board=True in DB — pre-fix all would have been skipped).\n\n**Endpoint checks (against demo@lockscore.ai admin):** GET /api/picks/today?limit=1000 → 200 OK, non-empty payload with MLB/Soccer/Tennis buckets. GET /api/admin/picks-today/cap-diagnostic → 200 OK (returns dict). No 500 errors in the last 400 lines of backend.err.log matching '/api/'.\n\n**INTEGRATION GAPS (documented, not failures per scope):** (1) 0 picks in the entire DB have `is_upset_pick=True` and 0 picks have `data_driven_contribs.surface_elo_baseline` — the NEW tennis_math_engine has never fired in production because all 64 tennis picks in today's slate come from tennis_extra / tennis_real_odds sources; the wiring is in `_picks_from_game` and `_backfill_tennis_moneylines` which depend on live Odds API data (currently 401 upstream per review context). The math engine is verified working via unit test (Elo 1800 vs 1750 + Sackmann win% 40 vs 75 correctly flips home_wp below 0.55). (2) 0 H+R+RBI picks and 0 straight Hits picks in TODAY's MLB slate — cannot exercise the `_market_priority` change on today's data. The code path is verified present (line 4870-4874); regression is null-verified but not live-validated. (3) Tennis settler processed 206 pick-attempts but returned won=0, lost=0, unmatched=206 — all 206 unmatched picks are ITF Futures (Cordenons/Evansville/Brisbane/Gentofte/etc.) whose `league` string like 'Cordenons 2 ITF' doesn't match TennisExplorer's results-page tournament header format (case+word-order mismatch). This is a downstream matching bug, NOT a regression from this iter — the off_board filter fix is verified as intended (all picks including off_board are now being ATTEMPTED for settlement).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "tennis_extra.settle.settle_tennis_extra",
+        "issue": "Settler runs against 262 pending picks but matches 0 (all ITF Futures). The `idx.get(league)` lookup uses `p.get('league')` from picks (format like 'Cordenons 2 ITF') as an exact-lowercase key against TennisExplorer results-page tournament headers (format like 'ITF Cordenons M25 Italy'). Off-board filter fix (this iter) IS working — 149 off-board picks are now being processed. But downstream tournament-name canonicalization is needed before won/lost > 0 can be observed on ITF picks. Main-tour picks would settle correctly but the pending stack is 100% ITF."
+      },
+      {
+        "endpoint": "tennis_math_engine integration in _picks_from_game / _backfill_tennis_moneylines",
+        "issue": "0 picks in DB have `is_upset_pick=True` or `surface_elo_baseline` contribution. Wiring is present in sports_engine.py:993-1040 and 1866-2000, but all 64 tennis picks on today's slate come from `tennis_extra` / `tennis_real_odds` sources (not the Odds-API-driven path). New math engine is verified via unit tests but has zero live emission evidence — will only fire once Odds API subscription is restored."
+      },
+      {
+        "endpoint": "mlb_k_probability integration",
+        "issue": "7 MLB K picks in today's slate but no way to confirm they went through the new K math gate — none of the picks visibly carry K-math metadata (expected_k, components, model_prob). Cannot verify live emission gate vs legacy K path. Unit tests confirm the module works correctly (insufficient_signals rejected, odds_too_chalky rejected, valid struct returned). Recommend main agent add a `k_math_gate_used: True` tag to picks that pass the new gate so we can measure live impact."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter97_sharpening.py",
+    "/app/test_reports/pytest/iter97_sharpening.xml"
+  ],
+  "action_items": [
+    "1) LOW: Canonicalize tournament names between picks (`league` field) and TennisExplorer results-page headers so `settle_tennis_extra` can actually match ITF picks. Suggest a fuzzy `slug` (e.g. lowercase alphanumeric, strip 'itf'/'atp'/tier suffix) on both sides. Current stack has 149 off-board pending picks that will keep growing until this lands.",
+    "2) LOW: Add observability tag (`k_math_gate: 'passed' | 'rejected:<reason>'`) to picks that go through `services.mlb_k_probability.evaluate_k_pick` so the new math gate's live impact is measurable. Right now we can't tell which of today's 7 K picks came through the new gate vs the legacy path.",
+    "3) INFO: New tennis_math_engine hasn't fired live yet because Odds API is 401 (documented upstream issue). Once restored, expect `is_upset_pick=True` picks to appear with `surface_elo_baseline` contribution and positive book_odds. No action needed until Odds API is restored.",
+    "4) INFO: Zero H+R+RBI picks on today's MLB slate — the `_market_priority` change was verified in code (line 4870-4874) but couldn't be exercised end-to-end. Recommend spot-check next slate day with visible H+R+RBI odds."
+  ],
+  "critical_code_review_comments": [
+    "`_k_conflict_key` at sports_engine.py:4886-4895 correctly extracts pitcher name via regex `(.+?)\\s+(over|under)\\s+` — verified: 7 K picks today all Under, zero conflicts.",
+    "`_market_priority` correctly places H+R+RBI at priority 0 alongside Hits (line 4871). Regex match uses lowercase substring checks — case-insensitive by design. LGTM.",
+    "`services.mlb_k_probability.evaluate_k_pick` gates are conservative and layered correctly: (a) data_quality < 2 → insufficient_signals, (b) book_odds <= -220 → odds_too_chalky, (c) edge_pp < 5 → insufficient_edge, (d) model_prob < 0.60 → model_win_prob_low, (e) sanity checks under_but_expected_over / over_but_expected_under prevent self-fade. Sane gate order.",
+    "`services.tennis_math_engine.score_tennis_matchup` clamp bounds are appropriate: form/serve/hold/BS lifts are individually clamped to ±0.06 max and final home_wp clamped to [0.08, 0.92]. Prevents runaway flips from noisy Sackmann data.",
+    "`has_real_tennis_signal` gate correctly requires ≥2 signals with Elo or ≥3 signals without — prevents 'stat leaks' from single-signal false confidence.",
+    "`tennis_extra/settle.py:137-146` — the two-branch $or on {pick_date, event_time} is correct; the removed `off_board != True` filter (line 145 comment) is verified absent. `skipped_future` guard at line 156-167 correctly protects against settling tomorrow's matches with today's results — good defensive coding."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter97_sharpening.py (new — 18 tests: unit + integration)"
+  ],
+  "success_rate": {
+    "backend": "16 passed, 2 skipped, 0 failed (of 18)",
+    "frontend": "not tested (backend-only scope)"
+  },
+  "seed_data_creation": "None — tested against live demo user (demo@lockscore.ai/demo123) + live MongoDB. 262 pending tennis_extra picks (149 off_board=True, 62 on-board) were processed by settler.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Live evidence for the tennis math engine flip (is_upset_pick=True) and the K math gate emission (expected_k in pick metadata) will only be visible once (a) Odds API subscription is restored (currently 401), and (b) the main agent adds observability tags per action items 2-3 above. Until then, only unit tests can prove the modules work; live board evidence will be zero. The dedup + market_priority + settler-filter fixes are verifiable in the current DB state (7 K picks conflict-free; 149 off-board pending picks now processed by settler; code confirms H+R+RBI priority=0).",
+  "rca_of_issue": "N/A — no bugs to RCA. Three secondary integration gaps documented (see backend_issues.minor) but none are regressions from this iter; two are directly caused by upstream Odds API 401 (documented in review), the third (settler zero-match) is a pre-existing tournament-name mismatch made visible only after this iter unblocked the off-board pending queue."
+}

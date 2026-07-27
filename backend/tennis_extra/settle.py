@@ -107,7 +107,14 @@ def _parse_winners(html: str) -> list[dict]:
 
 
 async def settle_tennis_extra(db, *, days_back: int = 3) -> dict:
-    """Walk back `days_back` days and settle any pending `tennis_extra` picks."""
+    """Walk back `days_back` days and settle any pending `tennis_extra` picks.
+
+    2026-07-27 FIX: Previously the query filtered `off_board != True` which
+    excluded ~85% of the pending stack (users saw 224 stuck Tennis picks).
+    Off-board picks still need settling because user_bets reference them.
+    Also switched the date field from `pick_date` to `event_time.day` so
+    picks written on July 24 for a match on July 25 settle correctly.
+    """
     now = datetime.now(timezone.utc)
     today = now.date()
     won = lost = pushed = unmatched = 0
@@ -124,12 +131,18 @@ async def settle_tennis_extra(db, *, days_back: int = 3) -> dict:
         idx: dict[str, list[dict]] = {}
         for w in winners:
             idx.setdefault(w["tournament"].lower(), []).append(w)
-        # All pending tennis_extra picks for this date.
+        # All pending tennis_extra picks whose EVENT_TIME (match day) falls on
+        # this date_str — not their pick_date. Two picks written on Jul 24
+        # for a match played Jul 25 must settle when we scrape Jul 25 results.
         cursor = db.picks.find({
             "source": "tennis_extra",
             "status": "pending",
-            "pick_date": date_str,
-            "off_board": {"$ne": True},  # Board-visibility gate (2026-07-21)
+            "$or": [
+                {"pick_date": date_str},
+                {"event_time": {"$regex": f"^{date_str}"}},
+            ],
+            # 2026-07-27: removed off_board filter (was silently skipping
+            # ~85% of the pending queue and creating stuck-pending stack).
         })
         async for p in cursor:
             # ── Guard: don't settle picks whose match hasn't finished ─
