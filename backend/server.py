@@ -2489,7 +2489,18 @@ async def _reconcile_player_prop_contradictions(safe_picks: list, date_str: str)
              "no_bet": {"$ne": True},
              "created_at": {"$gte": cutoff_iso}},
             {"_id": 0, "id": 1, "market": 1, "edge_percent": 1,
-             "lock_score": 1, "created_at": 1, "pick_date": 1},
+             "lock_score": 1, "created_at": 1, "pick_date": 1,
+             # 2026-07-28 — pull the K-math signals so we can consult
+             # the shared resolver for MLB_K family contradictions.
+             "k_math_gate": 1, "k_math_expected_k": 1,
+             # Fields required for cross-pick_date "update-in-place"
+             # so the loser row can be transformed into the winner
+             # instead of leaving a stale row sitting on the earlier
+             # pick_date tagged `no_bet=True`.
+             "selection": 1, "book_odds": 1, "book": 1, "side": 1,
+             "key_insights": 1, "k_prop_data": 1, "sport": 1,
+             "event": 1, "grade": 1, "confidence": 1,
+             "probability": 1},
         ).to_list(length=200)
         # Group by (family, line) with side. Same family + same line
         # is required for a genuine contradiction — different lines
@@ -2513,27 +2524,150 @@ async def _reconcile_player_prop_contradictions(safe_picks: list, date_str: str)
         for line, by_side in by_group.items():
             if not (by_side["over"] and by_side["under"]):
                 continue
-            # Pick the single best row across BOTH sides — that's the winner.
-            # Everything else in the loser side gets `no_bet=True` tagged so
-            # the contradiction disappears from user-facing endpoints. We do
-            # NOT delete the loser rows outright — settled ROI history and
-            # the audit trail rely on the pick existing.
-            all_rows = by_side["over"] + by_side["under"]
+            # ── Winner selection ───────────────────────────────────────
+            # For MLB_K family, consult the shared K-math resolver first
+            # (identical logic to the in-memory K conflict resolver in
+            # sports_engine.py). For all other families, or when the
+            # K-math signal is missing/indeterminate, fall back to
+            # (edge_percent, lock_score).
             def _rank(r: dict) -> tuple:
                 return (float(r.get("edge_percent") or 0),
                         float(r.get("lock_score") or 0))
-            winner = max(all_rows, key=_rank)
+            all_rows = by_side["over"] + by_side["under"]
+            winner = None
+            if family == "MLB_K":
+                try:
+                    from services.k_conflict_resolver import resolve_k_family_winner
+                    best_over = max(by_side["over"], key=_rank)
+                    best_under = max(by_side["under"], key=_rank)
+                    try:
+                        line_f = float(line)
+                    except ValueError:
+                        line_f = None
+                    winning_side, reason = resolve_k_family_winner(
+                        best_over, best_under, line_f,
+                    )
+                    if winning_side == "over":
+                        winner = best_over
+                    elif winning_side == "under":
+                        winner = best_under
+                    if winner is not None:
+                        logger.info(
+                            "Reconciler K-math winner: %s %s %s @ line=%s (%s)",
+                            winning_side, family, player, line, reason,
+                        )
+                except Exception as _kmath_err:
+                    logger.debug("K-math resolver skipped (%s): %s",
+                                 player, _kmath_err)
+            if winner is None:
+                winner = max(all_rows, key=_rank)
             winner_side = "over" if winner in by_side["over"] else "under"
             loser_side = "under" if winner_side == "over" else "over"
-            loser_ids = [r["id"] for r in by_side[loser_side] if r.get("id")]
-            if not loser_ids:
+            loser_rows = by_side[loser_side]
+            if not loser_rows:
                 continue
-            res = await db.picks.update_many(
-                {"id": {"$in": loser_ids}},
-                {"$set": {"no_bet": True,
-                           "no_bet_reason": f"contradicts {winner_side} {family} {line} for {player}"}},
-            )
-            removed_total += int(getattr(res, "modified_count", 0) or 0)
+
+            # ── Cross-pick_date "update in place" (2026-07-28) ─────────
+            # If a corrected pick landed as a NEW row on a LATER
+            # pick_date while the WRONG-side row still exists on an
+            # EARLIER pick_date, update the earlier (loser) row in
+            # place with the winner's payload and delete the redundant
+            # new row. This prevents the DB from accumulating
+            # `no_bet=True` stragglers under older pick_dates every
+            # time the K resolver flips a side.
+            winner_id = winner.get("id")
+            winner_pd = winner.get("pick_date") or ""
+            same_side_losers = [
+                r for r in loser_rows if r.get("id") and r.get("id") != winner_id
+            ]
+            older_losers = [
+                r for r in same_side_losers
+                if (r.get("pick_date") or "") < winner_pd
+            ]
+
+            if older_losers and winner_pd:
+                keeper = min(older_losers, key=lambda r: r.get("pick_date") or "")
+                # Copy the winner's payload into the keeper row. We
+                # intentionally do NOT copy `id`, `created_at`, or
+                # `event` — the audit trail preserves the original
+                # slot. `pick_date` MUST be updated so the corrected
+                # pick shows up on today's board.
+                update_payload = {}
+                for k in ("market", "selection", "side", "book_odds",
+                          "book", "edge_percent", "lock_score",
+                          "key_insights", "k_math_gate",
+                          "k_math_expected_k", "k_prop_data",
+                          "pick_date", "grade", "confidence",
+                          "probability"):
+                    v = winner.get(k)
+                    if v is not None:
+                        update_payload[k] = v
+                update_payload["corrected_from_side"] = loser_side
+                update_payload["corrected_at"] = _dt.now(_tz.utc).isoformat()
+                update_payload["corrected_by"] = "reconciler_k_math"
+                # Ensure the keeper is NOT flagged no_bet (it's the
+                # winner now). Also clear any prior no_bet_reason.
+                update_payload["no_bet"] = False
+                update_payload["no_bet_reason"] = ""
+                try:
+                    await db.picks.update_one(
+                        {"id": keeper["id"]},
+                        {"$set": update_payload},
+                    )
+                    # Delete the newer winner row (redundant now that
+                    # the keeper carries the winner's payload).
+                    await db.picks.delete_one({"id": winner_id})
+                    logger.info(
+                        "Reconciler in-place update: keeper=%s (was %s, "
+                        "pick_date %s → %s), deleted duplicate winner=%s",
+                        keeper["id"], loser_side,
+                        keeper.get("pick_date"), winner_pd, winner_id,
+                    )
+                    removed_total += 1
+                except Exception as _upd_err:
+                    logger.warning(
+                        "In-place reconcile failed (%s → %s): %s",
+                        keeper.get("id"), winner_id, _upd_err,
+                    )
+
+                # Any remaining loser dupes (not the keeper) → atomic
+                # no_bet write. Both fields written in a single $set so
+                # `no_bet_reason` can never persist without `no_bet=True`.
+                remaining_ids = [
+                    r["id"] for r in same_side_losers
+                    if r["id"] != keeper["id"]
+                ]
+                if remaining_ids:
+                    res = await db.picks.update_many(
+                        {"id": {"$in": remaining_ids}},
+                        {"$set": {
+                            "no_bet": True,
+                            "no_bet_reason": (
+                                f"contradicts {winner_side} {family} "
+                                f"{line} for {player} (corrected)"
+                            ),
+                        }},
+                    )
+                    removed_total += int(getattr(res, "modified_count", 0) or 0)
+            else:
+                # Standard same-pick_date contradiction path — atomic
+                # no_bet write. `no_bet` and `no_bet_reason` are ALWAYS
+                # set together in a single $set so the reason can never
+                # be written without the flag being set.
+                loser_ids = [r["id"] for r in loser_rows if r.get("id")]
+                if not loser_ids:
+                    continue
+                res = await db.picks.update_many(
+                    {"id": {"$in": loser_ids}},
+                    {"$set": {
+                        "no_bet": True,
+                        "no_bet_reason": (
+                            f"contradicts {winner_side} {family} "
+                            f"{line} for {player}"
+                        ),
+                    }},
+                )
+                removed_total += int(getattr(res, "modified_count", 0) or 0)
     if removed_total:
         logger.info(
             "Prop contradiction reconciliation: neutralised %d contradicting picks across %d groups",
