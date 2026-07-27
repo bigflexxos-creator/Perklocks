@@ -3808,6 +3808,14 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     "side": str(side).lower(),
                     "line": point,
                 }
+            # ── 2026-07-27 Wheeler-bug fix: attach K math signals to pick ──
+            # Copy the K math gate's expected_k + edge onto the pick dict so
+            # the downstream Over/Under conflict resolver can pick the side
+            # that ALIGNS with PvT expected K's (not just tie-break on lock).
+            if payload.get("k_math_gate") == "passed":
+                new_pick["k_math_gate"] = "passed"
+                new_pick["k_math_expected_k"] = payload.get("k_math_expected_k")
+                new_pick["k_math_edge_pp"] = payload.get("k_math_edge_pp")
         # ── MLS matchup-history boost (2026-07-22) ────────────────────
         # Attach per-opponent scoring history (preloaded by async
         # caller into `payload["_mls_matchup"]`) to MLS Anytime Goal
@@ -4918,30 +4926,108 @@ async def generate_all_picks(
     # ── 2026-07-27 Cross-side conflict resolver for MLB K's ─────────────
     # User feedback: "Went 6/11 on K's — need better research." We saw
     # duplicate emissions per pitcher (Shane Drohan Over 5.5 + Under 6.5,
-    # Roki Sasaki Under 5.5 + Over 4.5). Keep only the STRONGEST K pick
-    # per pitcher.
+    # Roki Sasaki Under 5.5 + Over 4.5, Wheeler Under 6.5 + Over 6.5).
+    #
+    # 2026-07-27 (post-Wheeler bug reoccurrence): the previous version used
+    #   `higher lock_score wins`, but Over+Under for the same pitcher often
+    #   tie at lock=99, making the winner non-deterministic across
+    #   refreshes. When both sides tie AND they contradict (one Over + one
+    #   Under), SAFETY WINS: drop BOTH. We would rather miss a pick than
+    #   surface the wrong side.
     def _k_conflict_key(p: dict):
         m = (p.get("market") or "").lower()
         if "strikeout" not in m:
             return None
-        sel = p.get("selection") or ""
-        # Extract pitcher name (before " Over " or " Under ")
+        # Extract pitcher name from MARKET (selection is just name; side
+        # info lives in market string).
         import re as _re
-        pname_match = _re.match(r"(.+?)\s+(over|under)\s+", sel, _re.IGNORECASE)
-        pname = pname_match.group(1).strip() if pname_match else sel
+        mk_match = _re.match(
+            r"(.+?)\s+\([A-Z]+\)\s+(Over|Under)\s+([\d.]+)\s+Strikeouts",
+            p.get("market") or "", _re.IGNORECASE,
+        )
+        if mk_match:
+            pname = mk_match.group(1).strip()
+        else:
+            pname = (p.get("selection") or "").strip()
         return (p.get("sport"), p.get("event"), "MLB_K_FAMILY", pname.lower())
 
-    k_conflict_best: dict = {}
+    def _k_pick_side(p: dict) -> str:
+        """Return 'over', 'under' or 'unknown' for a K prop pick."""
+        m = (p.get("market") or "").lower()
+        if " over " in m:
+            return "over"
+        if " under " in m:
+            return "under"
+        return "unknown"
+
+    # First pass: group same-pitcher K picks and detect Over/Under conflicts
+    k_grouped: dict = {}
     non_k_picks: list = []
     for p in all_picks:
         kc = _k_conflict_key(p)
         if kc is None:
             non_k_picks.append(p)
         else:
-            existing = k_conflict_best.get(kc)
-            if existing is None or p.get("lock_score", 0) > existing.get("lock_score", 0):
-                k_conflict_best[kc] = p
-    all_picks = non_k_picks + list(k_conflict_best.values())
+            k_grouped.setdefault(kc, []).append(p)
+
+    k_conflict_kept: list = []
+    for kc, group in k_grouped.items():
+        if len(group) == 1:
+            k_conflict_kept.append(group[0])
+            continue
+        # Multiple K picks for same pitcher — resolve conflict
+        overs = [p for p in group if _k_pick_side(p) == "over"]
+        unders = [p for p in group if _k_pick_side(p) == "under"]
+        if overs and unders:
+            # Contradiction — resolve by PvT expected K alignment first,
+            # then lock score, then safety valve.
+            best_over = max(overs, key=lambda x: x.get("lock_score", 0))
+            best_under = max(unders, key=lambda x: x.get("lock_score", 0))
+            # Parse the line from either market string
+            import re as _re
+            def _line(p):
+                m = _re.search(r"(\d+\.?\d*)\s+Strikeouts", p.get("market") or "", _re.I)
+                return float(m.group(1)) if m else None
+            line = _line(best_over) or _line(best_under)
+            # Get expected K if we have it (attached at emission time)
+            exp_k = best_over.get("k_math_expected_k") or best_under.get("k_math_expected_k")
+            # Fallback: check `k_prop_data.opp_k_pct` context on either pick
+            resolved = None
+            if isinstance(exp_k, (int, float)) and isinstance(line, (int, float)):
+                # PvT-driven decision: keep the side that AGREES with math
+                if exp_k > line + 0.3:
+                    resolved = best_over
+                    logger.info(
+                        "MLB K Over/Under conflict → OVER wins (PvT): %s line=%.1f exp_k=%.2f",
+                        kc[3], line, exp_k,
+                    )
+                elif exp_k < line - 0.3:
+                    resolved = best_under
+                    logger.info(
+                        "MLB K Over/Under conflict → UNDER wins (PvT): %s line=%.1f exp_k=%.2f",
+                        kc[3], line, exp_k,
+                    )
+            if resolved is None:
+                # No PvT signal → fall back to lock-score gap
+                lock_gap = abs(best_over.get("lock_score", 0) - best_under.get("lock_score", 0))
+                if lock_gap >= 3:
+                    resolved = (best_over
+                                if best_over.get("lock_score", 0) > best_under.get("lock_score", 0)
+                                else best_under)
+                else:
+                    # Truly indeterminate — safety valve, drop both
+                    logger.info(
+                        "MLB K Over/Under conflict dropped BOTH (no PvT, tied lock): %s "
+                        "Over=%.0f Under=%.0f",
+                        kc[3], best_over.get("lock_score", 0), best_under.get("lock_score", 0),
+                    )
+                    continue
+            k_conflict_kept.append(resolved)
+        else:
+            # Same-side dupes — keep highest lock
+            k_conflict_kept.append(max(group, key=lambda x: x.get("lock_score", 0)))
+
+    all_picks = non_k_picks + k_conflict_kept
 
     for p in all_picks:
         k = _dedup_key(p)
