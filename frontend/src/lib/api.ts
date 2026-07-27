@@ -98,6 +98,33 @@ export type Pick = {
   lock_score_peak?: number;
   lock_score_raw?: number;
 
+  // ─── Steam Move detector (2026-07-27) ────────────────────────────
+  // Populated by services/steam_detector.py when a pick's median
+  // implied prob moves ≥ threshold_pp in the rolling window. Frontend
+  // renders a 🔥 STEAM / 🧊 FADE badge on the pick card.
+  steam?: {
+    direction: "toward" | "away";
+    magnitude_pp: number;
+    american_delta: number;
+    american_start: number;
+    american_end: number;
+    observed_at: string;
+    window_minutes: number;
+    observations: number;
+  };
+
+  // ─── Tennis math upset pick (2026-07-27) ─────────────────────────
+  // True when the tennis math engine flipped the pick from the book
+  // favorite to the dog because surface Elo + Sackmann form
+  // disagreed with the market price. Rendered as 🎯 MODEL UPSET
+  // badge on the card.
+  is_upset_pick?: boolean;
+
+  // ─── MLB K math gate observability (2026-07-27) ──────────────────
+  k_math_gate?: "passed";
+  k_math_expected_k?: number;
+  k_math_edge_pp?: number;
+
   // ─── Sportsbook Mapping Engine (book-agnostic + per-book deep links) ──
   selection_v2?: {
     league: string;
@@ -307,6 +334,64 @@ export type PickRationale = {
 };
 
 export type User = { id: string; email: string; name?: string; role?: "user" | "admin" };
+
+// ─── User Performance / CLV Dashboard types (2026-07-27) ───────────
+export type PerfSummary = {
+  n: number;
+  won: number;
+  lost: number;
+  hit_rate_pct: number;
+  roi_pct: number;
+  clv_avg_pct: number;
+  clv_sample_size: number;
+};
+export type PerfBySport = {
+  sport: string;
+  n: number;
+  won: number;
+  lost: number;
+  hit_rate_pct: number;
+  roi_pct: number;
+  clv_avg_pct: number;
+};
+export type PerfByBand = {
+  band: "90+" | "80-89" | "70-79" | "60-69" | "<60" | "unknown";
+  n: number;
+  won: number;
+  lost: number;
+  hit_rate_pct: number;
+  roi_pct: number;
+};
+export type PerfTrendRow = {
+  day: string;
+  n: number;
+  won: number;
+  lost: number;
+  profit: number;
+  cumulative_profit: number;
+  hit_rate_pct: number;
+};
+export type SteamMove = {
+  direction: "toward" | "away";
+  magnitude_pp: number;
+  american_delta: number;
+  american_start: number;
+  american_end: number;
+  observed_at: string;
+  window_minutes: number;
+  observations: number;
+};
+export type SteamPick = {
+  id: string;
+  sport: string;
+  market: string;
+  selection: string;
+  event: string;
+  event_time: string;
+  book_odds: number;
+  lock_score: number;
+  steam: SteamMove;
+};
 export type LineType = "both" | "main" | "alt";
 export type SortKey = "lock" | "time" | "edge" | "win" | "implied";
 export type SortDirection = "desc" | "asc";
@@ -596,6 +681,36 @@ export const api = {
       auth: false,
     }),
   me: () => request<User>("/auth/me"),
+
+  // ─── User Performance / CLV Dashboard (2026-07-27) ───────────────
+  // Backs the CLV Dashboard screen. All endpoints are user-scoped but
+  // aggregate over the WHOLE picks board (not per-user bets) — the
+  // model's proof-of-EV, not a personal bet log.
+  mePerformance: (days = 30) =>
+    request<{
+      all_time: PerfSummary;
+      recent: PerfSummary & { window_days: number };
+      high_conviction: PerfSummary;
+      note: string;
+    }>(`/me/performance?days=${days}`),
+  mePerformanceBySport: (days?: number) =>
+    request<{ rows: PerfBySport[]; window_days: number | null }>(
+      `/me/performance/by-sport${days ? `?days=${days}` : ""}`,
+    ),
+  mePerformanceByBand: (days?: number) =>
+    request<{ rows: PerfByBand[]; window_days: number | null }>(
+      `/me/performance/by-band${days ? `?days=${days}` : ""}`,
+    ),
+  mePerformanceTrend: (days = 30) =>
+    request<{
+      rows: PerfTrendRow[];
+      window_days: number;
+      cumulative_units: number;
+    }>(`/me/performance/trend?days=${days}`),
+  meSteamPicks: (hours = 6, direction?: "toward" | "away") =>
+    request<{ picks: SteamPick[]; hours: number; count: number }>(
+      `/me/steam-picks?hours=${hours}${direction ? `&direction=${direction}` : ""}`,
+    ),
   playerForm: (pickId: string) =>
     request<{
       player_name: string;

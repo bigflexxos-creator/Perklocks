@@ -196,6 +196,35 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
               </Text>
             </View>
           )}
+          {/* 🔥 STEAM MOVE badge (2026-07-27) — the steam detector flags
+              this pick when the median implied prob moved ≥ threshold_pp
+              in the rolling window. "toward" = sharps moving into OUR
+              side (bullish), "away" = market moving against our side
+              (fade signal). Rendered only for pending picks close to
+              kickoff to keep the UI clean. */}
+          {(pick as any).steam && (pick as any).steam.magnitude_pp >= 1.5 && (
+            <View style={[
+              styles.steamBadge,
+              (pick as any).steam.direction === "toward" ? styles.steamBadgeToward : styles.steamBadgeAway,
+            ]}>
+              <Text style={styles.steamIcon}>{(pick as any).steam.direction === "toward" ? "🔥" : "🧊"}</Text>
+              <Text style={[
+                styles.steamText,
+                { color: (pick as any).steam.direction === "toward" ? "#FCA5A5" : "#93C5FD" },
+              ]}>
+                {(pick as any).steam.direction === "toward" ? "STEAM" : "FADE"} · {(pick as any).steam.magnitude_pp.toFixed(1)}pp
+              </Text>
+            </View>
+          )}
+          {/* 🎯 UPSET pick (2026-07-27) — tennis math engine flipped the
+              board pick from the book favorite to the dog because
+              surface Elo + Sackmann form disagreed with the price. */}
+          {(pick as any).is_upset_pick && (
+            <View style={styles.upsetBadge}>
+              <Text style={styles.upsetIcon}>🎯</Text>
+              <Text style={styles.upsetText}>MODEL UPSET</Text>
+            </View>
+          )}
           {/* PINNED 95+ peak badge — once a pick crosses 95 lock_score on
               any refresh cycle, it stays on the board across subsequent
               refreshes so users who saw a 99-lock pick can always find it.
@@ -1757,6 +1786,46 @@ const styles = StyleSheet.create({
   },
   streakIcon: { fontSize: 10 },
   streakText: { fontSize: 9, fontWeight: "900", letterSpacing: 0.9 },
+  // ── 🔥 STEAM / 🧊 FADE badge (2026-07-27) ──
+  steamBadge: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    marginTop: 4,
+  },
+  steamBadgeToward: {
+    borderColor: "rgba(252, 165, 165, 0.55)",
+    backgroundColor: "rgba(252, 165, 165, 0.15)",
+  },
+  steamBadgeAway: {
+    borderColor: "rgba(147, 197, 253, 0.55)",
+    backgroundColor: "rgba(147, 197, 253, 0.15)",
+  },
+  steamIcon: { fontSize: 10 },
+  steamText: { fontSize: 9, fontWeight: "900", letterSpacing: 0.9 },
+  // ── 🎯 UPSET pick badge (2026-07-27) ──
+  upsetBadge: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: "rgba(255, 215, 0, 0.55)",
+    backgroundColor: "rgba(255, 215, 0, 0.12)",
+    marginTop: 4,
+  },
+  upsetIcon: { fontSize: 10 },
+  upsetText: {
+    color: "#FCD34D", fontSize: 9, fontWeight: "900", letterSpacing: 0.9,
+  },
   // ── xG FORM badge (Understat-derived, soccer goalscorer markets) ──
   xgFormBadge: {
     alignSelf: "flex-start",
