@@ -3620,6 +3620,29 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 except Exception as e:
                     logger.debug("NFL sync gate failed for %s / %s: %s", player, mk, e)
                     _skip_pick = True
+        elif sport == "CFB":
+            # 2026-07-27 CFB Phase 3 — real-data feature engine is BUILT
+            # and TESTED (services/cfb_feature_engine.py). Combines
+            # returning production %, SP+ defense rank, transfer portal,
+            # career-vs-opp, SoS, and L5 rolling averages.
+            #
+            # WIRING NOTE: this pick-emission path is SYNC (no `await`),
+            # so we can't call the async build_cfb_prop_factors() here.
+            # The proper wiring is to add a pre-compute step (mirroring
+            # NFL's `_ctx["nfl_precomputed"]`) that runs BEFORE picks
+            # are enumerated — a helper `_precompute_cfb_factors(ctx)`
+            # invoked from the async fetch_cfb_picks() prior to
+            # emitting picks. That step lands in the same session that
+            # wires The Odds API `americanfootball_ncaaf` polling —
+            # target date ≤ Aug 15 (Week 0 = Aug 23).
+            #
+            # For now (July, no live CFB games), the emission path
+            # falls through to book-follow — same behavior as before
+            # this feature engine was created. When Aug 15 lands, the
+            # single-line change here is:
+            #     factors = (payload.get("_ctx") or {}).get("cfb_precomputed", {}).get(player.lower(), {}).get(mk, {}).get("factors") or {"Book Implied Probability": mp}
+            factors = {"Book Implied Probability": mp}
+            _mlb_features_used = ["book_implied_calibrated", "cfb_engine_pending_precompute"]
         elif is_pitcher_prop:
             # Non-MLB pitcher props (KBO etc.) — Phase 1 real engine
             # only covers MLB. Rather than fake RNG factors, emit a
