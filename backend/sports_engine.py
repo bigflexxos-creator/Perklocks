@@ -3450,7 +3450,28 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             if _mp and _mp <= -250:
                 continue
         else:
-            if implied < _HIGH_PROB_MIN_IMPLIED:
+            # ── 2026-07-28 H+R+RBI drop-bug fix ──────────────────────
+            # Markets that already passed their OWN mk-specific implied
+            # gate above (0.48-0.55) must NOT be re-blocked by the
+            # generic 0.62 floor — that's a double-gate bug that
+            # silently killed all main-line H+R+RBI picks priced -130
+            # to -160 (implied 0.565-0.615), plus main-line Hits at
+            # -160 and pitcher_outs at -125. Only markets NOT covered
+            # by an mk-specific gate fall through to the 0.62 floor.
+            _mk_gated = mk in {
+                "batter_hits_runs_rbis",
+                "batter_hits_runs_rbis_alternate",
+                "batter_hits",
+                "batter_hits_alternate",
+                "pitcher_outs",
+                "pitcher_strikeouts",
+                "pitcher_strikeouts_alternate",
+                "player_goal_scorer_anytime",
+                "player_to_score_or_assist",
+                "player_first_goal_scorer",
+                "mma_method_of_victory",
+            }
+            if not _mk_gated and implied < _HIGH_PROB_MIN_IMPLIED:
                 continue
         candidates.append((implied, mk, player, point, side, median, is_alt))
     candidates.sort(reverse=True)
