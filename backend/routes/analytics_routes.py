@@ -148,6 +148,29 @@ async def backtest_custom_endpoint(
     )
 
 
+@router.get("/analytics/backtest/mlb-k-pvt")
+async def backtest_mlb_k_pvt(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    days: int = 30,
+):
+    """PvT-aware replay of settled MLB Strikeout picks.
+
+    Answers: "How many bad K picks would the new Pitcher-vs-Team math
+    have caught / flipped / rejected if it had been live?"
+
+    Query params:
+      days: trailing window in days (default 30, max 180)
+
+    Response includes counts (kept/rejected/flipped), simulated ROI &
+    hit rate under the new math, and samples of the biggest flips
+    (would-have-won-if-flipped) and top rejects (chalky losers the
+    gate would have blocked).
+    """
+    from services.pvt_backtest import backtest_mlb_k_with_pvt
+    days = max(1, min(180, days))
+    return await backtest_mlb_k_with_pvt(db, days=days)
+
+
 @router.get("/analytics/v2")
 async def analytics_v2(user: Annotated[UserPublic, Depends(current_admin)]):
     """Learning System v2 dashboard payload.
