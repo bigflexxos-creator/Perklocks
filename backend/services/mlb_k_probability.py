@@ -134,6 +134,31 @@ def compute_expected_k(ctx: dict, pitcher_name: str) -> Optional[dict]:
         components["opp_k_multiplier"] = round(opp_mult, 3)
         signals += 1
 
+    # ── PITCHER-vs-TEAM (PvT) multiplier ──────────────────────────
+    # 2026-07-27 BUG FIX (Wheeler bug): we picked Wheeler Under 6.5 K's
+    # even though he goes for 8-9 K's every time vs the Marlins. The
+    # opponent K% multiplier only knows the AVERAGE team K% — not how
+    # THIS pitcher performs against THIS specific team.
+    # PvT is pre-fetched into sp_data["pvt"] by the pipeline. See
+    # services/mlb_pvt.py for the data model.
+    pvt = sp_data.get("pvt")
+    if isinstance(pvt, dict) and pvt.get("significance") in ("medium", "high"):
+        try:
+            from services.mlb_pvt import compute_pvt_k_multiplier
+            # league_avg_k_per_gs = the pitcher's own baseline K per game
+            # (approximated as k_per_9 × exp_ip / 9). Prevents double-
+            # counting: PvT multiplier reflects DEVIATION from this
+            # pitcher's own average, not from league.
+            baseline_k_per_gs = (float(k_per_9) / 9.0) * float(exp_ip)
+            pvt_mult = compute_pvt_k_multiplier(pvt, league_avg_k_per_gs=baseline_k_per_gs)
+            lam *= pvt_mult
+            components["pvt_multiplier"] = round(pvt_mult, 3)
+            components["pvt_career_k_per_gs"] = pvt.get("k_per_gs_vs_team")
+            components["pvt_recent_k"] = pvt.get("recent_k_vs_team")
+            signals += 1
+        except Exception as _pvtx:
+            logger.debug("PvT multiplier failed for %s: %s", pitcher_name, _pvtx)
+
     # ── Park K factor ──
     try:
         from services.signal_engine.mlb_deep import _PARK_FACTORS

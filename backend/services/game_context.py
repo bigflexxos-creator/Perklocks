@@ -218,6 +218,48 @@ async def build_mlb_game_context(game: dict) -> dict[str, Any]:
     except Exception as e:
         logger.debug("team-K-vs-hand ctx fetch failed: %s", e)
 
+    # 6a) Pitcher-vs-Team (PvT) career + recent K's ─────────────────
+    # 2026-07-27 Wheeler bug fix — attach how each starter has done
+    # against THIS specific opposing team historically. Feeds into
+    # services.mlb_k_probability.compute_expected_k as a multiplier
+    # that can shift λ (expected K) up or down 25%. This is what
+    # would have caught the Wheeler Under 6.5 K blunder — his
+    # career vs MIA is 198 K in 28 GS (7.07 K/start).
+    try:
+        from services.mlb_pvt import fetch_pvt, lookup_team_id
+        sph = ctx.get("starting_pitcher_home") or {}
+        spa = ctx.get("starting_pitcher_away") or {}
+        # For the HOME starter, opponent = away team
+        away_team_name = game.get("away_team") or game.get("awayTeam") or ""
+        if sph.get("id") and away_team_name:
+            aw_tid = away_id if isinstance(away_id, int) else await lookup_team_id(away_team_name)
+            if aw_tid:
+                pvt = await fetch_pvt(int(sph["id"]), int(aw_tid))
+                if pvt:
+                    sph["pvt"] = pvt
+                    logger.debug(
+                        "PvT attached: %s vs %s → %d GS / %d K / recent %s",
+                        sph.get("name"), away_team_name,
+                        pvt.get("gs_vs_team", 0), pvt.get("k_vs_team", 0),
+                        pvt.get("recent_k_vs_team"),
+                    )
+        # For the AWAY starter, opponent = home team
+        home_team_name = home_team or game.get("home_team") or ""
+        if spa.get("id") and home_team_name:
+            hm_tid = home_id if isinstance(home_id, int) else await lookup_team_id(home_team_name)
+            if hm_tid:
+                pvt = await fetch_pvt(int(spa["id"]), int(hm_tid))
+                if pvt:
+                    spa["pvt"] = pvt
+                    logger.debug(
+                        "PvT attached: %s vs %s → %d GS / %d K / recent %s",
+                        spa.get("name"), home_team_name,
+                        pvt.get("gs_vs_team", 0), pvt.get("k_vs_team", 0),
+                        pvt.get("recent_k_vs_team"),
+                    )
+    except Exception as e:
+        logger.debug("PvT ctx fetch failed: %s", e)
+
     # 6b) Statcast xwOBA-against attachment for both starting pitchers.
     # 2026-07-22 — feeds factor_pitcher_statcast_k_upside so elite whiff
     # pitchers surface Overs before their raw K/9 catches up.
