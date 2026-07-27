@@ -3523,15 +3523,29 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                         )
                         if not _k_eval.get("emit"):
                             _skip_pick = True
-                            logger.debug(
-                                "K pick dropped by Poisson gate: %s %s %s reason=%s exp_k=%.2f",
-                                player, side, point, _k_eval.get("reason"), _k_eval.get("expected_k", 0.0),
+                            logger.info(
+                                "K_MATH_GATE_DROP: %s %s %s reason=%s exp_k=%.2f model=%.3f book=%.3f",
+                                player, side, point, _k_eval.get("reason"),
+                                _k_eval.get("expected_k", 0.0),
+                                _k_eval.get("model_prob", 0.0),
+                                _k_eval.get("book_implied", 0.0),
                             )
                         else:
                             # Override the seed mp with the model prob.
                             mp = float(_k_eval["model_prob"])
                             # Stash for downstream signal engine & rationale
                             payload.setdefault("_k_math", {})[player] = _k_eval
+                            # Persistent observability tag (2026-07-27) — so
+                            # downstream/testing agents can grep for gate-passed
+                            # K picks and monitor the sharper-K feature.
+                            payload["k_math_gate"] = "passed"
+                            payload["k_math_expected_k"] = _k_eval["expected_k"]
+                            payload["k_math_edge_pp"] = _k_eval["edge_pp"]
+                            logger.info(
+                                "K_MATH_GATE_PASS: %s %s %s exp_k=%.2f edge=%.1fpp model=%.3f",
+                                player, side, point, _k_eval["expected_k"],
+                                _k_eval["edge_pp"], _k_eval["model_prob"],
+                            )
                     except Exception as _kx:
                         logger.debug("K math eval failed for %s: %s", player, _kx)
                 if _skip_pick:
