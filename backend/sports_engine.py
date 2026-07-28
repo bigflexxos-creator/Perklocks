@@ -5279,6 +5279,176 @@ async def generate_all_picks(
             # Same-side dupes — keep highest lock
             k_conflict_kept.append(max(group, key=lambda x: x.get("lock_score", 0)))
 
+    # ── 2026-07-28 DEFECT #3 FIX: DB-aware K conflict resolver ────────
+    # ────────────────────────────────────────────────────────────────
+    # The in-memory pass above only sees THIS refresh batch. A
+    # wrong-side K pick from a previous refresh window (same day,
+    # different sub-batch) or from a previous pick_date (game
+    # scheduled across the UTC midnight boundary) lives in the DB and
+    # never enters `all_picks`. Every surviving K pick now cross-
+    # checks the DB for opposite-side active rows on:
+    #   • same event
+    #   • same selection (pitcher name)
+    #   • same market family (MLB pitcher_strikeouts / _alternate)
+    #   • same numeric line
+    #   • opposite side (over ↔ under)
+    #   • any pick_date within a 72h look-back
+    #   • not already flagged no_bet
+    #
+    # Resolution uses the SAME shared helper (`resolve_k_family_winner`)
+    # so identical math wins on both sides of the DB boundary.
+    # Outcomes:
+    #   • New pick wins   → mark DB row `no_bet=True` atomically.
+    #   • DB row wins     → drop new pick from `k_conflict_kept`.
+    #   • Indeterminate   → mark DB row no_bet AND drop new pick
+    #                       (safety: better zero picks than wrong side).
+    if k_conflict_kept:
+        try:
+            from server import db as _db_kc
+            import re as _re_kc
+            from services.k_conflict_resolver import resolve_k_family_winner as _rkfw
+            _cutoff_iso = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
+            def _kc_line(pick: dict) -> Optional[float]:
+                _m = _re_kc.search(
+                    r"(\d+\.?\d*)\s+Strikeouts",
+                    pick.get("market") or "", _re_kc.IGNORECASE,
+                )
+                return float(_m.group(1)) if _m else None
+            def _kc_side(pick: dict) -> str:
+                _m = (pick.get("market") or "").lower()
+                if " over " in _m:
+                    return "over"
+                if " under " in _m:
+                    return "under"
+                return "unknown"
+
+            _kc_drop_ids: set = set()   # id-of(new pick) → drop from batch
+            _kc_db_flagged = 0
+            _kc_new_dropped = 0
+
+            for _new_pick in list(k_conflict_kept):
+                if "strikeout" not in (_new_pick.get("market") or "").lower():
+                    continue
+                _new_line = _kc_line(_new_pick)
+                _new_side = _kc_side(_new_pick)
+                if _new_line is None or _new_side == "unknown":
+                    continue
+                _opp = "under" if _new_side == "over" else "over"
+                _event = _new_pick.get("event")
+                _selection = _new_pick.get("selection")
+                if not _event or not _selection:
+                    continue
+
+                # Look for active DB rows with opposite side + same event + same pitcher.
+                _db_rows = await _db_kc.picks.find({
+                    "sport": "MLB",
+                    "event": _event,
+                    "selection": _selection,
+                    "no_bet": {"$ne": True},
+                    "created_at": {"$gte": _cutoff_iso},
+                }).to_list(length=20)
+
+                for _row in _db_rows:
+                    _row_market = (_row.get("market") or "")
+                    if "strikeout" not in _row_market.lower():
+                        continue
+                    _row_line = _kc_line(_row)
+                    _row_side = _kc_side(_row)
+                    if _row_line != _new_line or _row_side != _opp:
+                        continue
+                    # Genuine cross-DB contradiction. Route through shared helper.
+                    if _new_side == "over":
+                        _over_pick, _under_pick = _new_pick, _row
+                    else:
+                        _over_pick, _under_pick = _row, _new_pick
+                    try:
+                        _win_side, _win_reason = _rkfw(_over_pick, _under_pick, _new_line)
+                    except Exception as _rkfw_err:
+                        logger.warning("K_CROSS_DB resolver failed: %s", _rkfw_err)
+                        _win_side, _win_reason = (None, "resolver_error")
+
+                    if _win_side == _new_side:
+                        # New pick wins — flag DB row atomically.
+                        try:
+                            await _db_kc.picks.update_one(
+                                {"id": _row.get("id")},
+                                {"$set": {
+                                    "no_bet": True,
+                                    "no_bet_reason": (
+                                        f"cross-refresh K conflict: new-{_new_side} "
+                                        f"wins over DB-{_row_side} line={_new_line} "
+                                        f"pitcher={_selection} ({_win_reason})"
+                                    ),
+                                }},
+                            )
+                            _kc_db_flagged += 1
+                            logger.info(
+                                "K_CROSS_DB: new-%s wins DB-%s (%s) pitcher=%s "
+                                "line=%s db_pick_date=%s",
+                                _new_side, _row_side, _win_reason, _selection,
+                                _new_line, _row.get("pick_date"),
+                            )
+                        except Exception as _updx:
+                            logger.warning(
+                                "K_CROSS_DB update failed for row=%s: %s",
+                                _row.get("id"), _updx,
+                            )
+                    elif _win_side == _opp:
+                        # DB row wins — drop new pick.
+                        _kc_drop_ids.add(id(_new_pick))
+                        _kc_new_dropped += 1
+                        logger.info(
+                            "K_CROSS_DB: DB-%s wins new-%s (%s) pitcher=%s "
+                            "line=%s db_pick_date=%s",
+                            _row_side, _new_side, _win_reason, _selection,
+                            _new_line, _row.get("pick_date"),
+                        )
+                        break  # this new pick is out — stop scanning
+                    else:
+                        # Indeterminate → drop BOTH.
+                        try:
+                            await _db_kc.picks.update_one(
+                                {"id": _row.get("id")},
+                                {"$set": {
+                                    "no_bet": True,
+                                    "no_bet_reason": (
+                                        f"cross-refresh K conflict: indeterminate "
+                                        f"vs new-{_new_side} line={_new_line} "
+                                        f"pitcher={_selection}"
+                                    ),
+                                }},
+                            )
+                            _kc_db_flagged += 1
+                        except Exception as _updx:
+                            logger.warning(
+                                "K_CROSS_DB indeterminate update failed: %s", _updx,
+                            )
+                        _kc_drop_ids.add(id(_new_pick))
+                        _kc_new_dropped += 1
+                        logger.info(
+                            "K_CROSS_DB: BOTH dropped (indeterminate) pitcher=%s "
+                            "line=%s db_pick_date=%s",
+                            _selection, _new_line, _row.get("pick_date"),
+                        )
+                        break
+
+            # Rebuild k_conflict_kept with drops applied.
+            if _kc_drop_ids:
+                k_conflict_kept = [
+                    p for p in k_conflict_kept if id(p) not in _kc_drop_ids
+                ]
+            if _kc_db_flagged or _kc_new_dropped:
+                logger.info(
+                    "K_CROSS_DB summary: db_flagged=%d new_dropped=%d "
+                    "surviving_k_picks=%d",
+                    _kc_db_flagged, _kc_new_dropped, len(k_conflict_kept),
+                )
+        except Exception as _dbkc_err:
+            logger.warning(
+                "DB-aware K conflict resolver skipped: %s", _dbkc_err,
+            )
+    # ── /DEFECT #3 FIX ──────────────────────────────────────────────
+
     all_picks = non_k_picks + k_conflict_kept
 
     for p in all_picks:
