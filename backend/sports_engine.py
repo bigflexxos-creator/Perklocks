@@ -3338,6 +3338,126 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                         continue
                     point_key = point
                 bucket.setdefault((mk, player, point_key, side), []).append(int(price))
+    # ── 2026-07-28 DEFECT #1 FIX: emission-time symmetric-pair defense ──
+    # ────────────────────────────────────────────────────────────────────
+    # Before Odds-API iteration order got to decide which side of a
+    # (player, market, line) group survived the downstream (player,
+    # market_family) dedup, both Over and Under of e.g. Zack Wheeler
+    # 6.5 K's could enter the candidate list. This block collapses each
+    # symmetric pair to a SINGLE side using **existing model logic** —
+    # never iteration order — so downstream janitors have no
+    # contradiction to reconcile.
+    #
+    # Rules (deterministic, one decision per (family, player, line)):
+    #   • Pitcher K props (family == "pitcher_strikeouts", MLB only):
+    #       Call `services.mlb_k_probability.evaluate_k_pick` for BOTH
+    #       sides. Keep the side that `emit=True`s. If both emit → the
+    #       side with higher `edge_pp` (deterministic tiebreaker). If
+    #       neither emits → DROP BOTH (better zero picks than the
+    #       wrong side).
+    #   • All other markets (batter props, ML, spreads, totals,
+    #       soccer/NBA/NFL props):
+    #       Use median-price book_implied. Higher-implied side wins.
+    #       If the two sides are within ±5pp → DROP BOTH (indeterminate
+    #       market, book can't tell either — no bet is the safest).
+    #
+    # Grouping key: `_mk_family(mk)` (collapses `_alternate` → std) +
+    # player + point. This treats e.g. Over 5.5 K (alt) and Under 5.5 K
+    # (main) as a genuine contradiction (they are — same event, same
+    # threshold, opposite direction).
+    def _mk_family_local(mk_key: str) -> str:
+        return (mk_key or "").replace("_alternate", "")
+    _pair_index: dict[tuple, dict[str, tuple]] = {}
+    for (_mkb, _pb, _ptb, _sb), _prices_b in bucket.items():
+        _fam = _mk_family_local(_mkb)
+        _side_lo = str(_sb).lower()
+        _median_b = sorted(_prices_b)[len(_prices_b) // 2]
+        _pair_index.setdefault((_fam, _pb, _ptb), {})[_side_lo] = (_mkb, _median_b)
+    _allowed_sides: dict[tuple, set] = {}
+    for _key, _side_map in _pair_index.items():
+        _fam, _player_b, _point_b = _key
+        if len(_side_map) < 2:
+            # Only one side present → no contradiction possible.
+            _allowed_sides[_key] = set(_side_map.keys())
+            continue
+        # BOTH sides present. Run deterministic side-selector.
+        _winner = None
+        _reason = "no_rule"
+        _is_k_prop = (_fam == "pitcher_strikeouts" and sport == "MLB"
+                      and isinstance(_point_b, (int, float)))
+        if _is_k_prop:
+            try:
+                from services.mlb_k_probability import evaluate_k_pick
+                _game_ctx = (payload.get("_ctx") if isinstance(payload, dict) else None) or {}
+                _o_mk, _o_price = _side_map.get("over", (None, None))
+                _u_mk, _u_price = _side_map.get("under", (None, None))
+                _o_eval = evaluate_k_pick(
+                    _game_ctx, pitcher_name=_player_b, line=float(_point_b),
+                    side="over",
+                    book_odds=int(_o_price) if _o_price is not None else None,
+                ) if _o_price is not None else None
+                _u_eval = evaluate_k_pick(
+                    _game_ctx, pitcher_name=_player_b, line=float(_point_b),
+                    side="under",
+                    book_odds=int(_u_price) if _u_price is not None else None,
+                ) if _u_price is not None else None
+                _o_ok = bool(_o_eval and _o_eval.get("emit"))
+                _u_ok = bool(_u_eval and _u_eval.get("emit"))
+                if _o_ok and not _u_ok:
+                    _winner, _reason = "over", "kmath_over_only"
+                elif _u_ok and not _o_ok:
+                    _winner, _reason = "under", "kmath_under_only"
+                elif _o_ok and _u_ok:
+                    _o_edge = float((_o_eval or {}).get("edge_pp") or 0)
+                    _u_edge = float((_u_eval or {}).get("edge_pp") or 0)
+                    _winner = "over" if _o_edge >= _u_edge else "under"
+                    _reason = f"kmath_both_pass_edge_tiebreak({_o_edge:.1f}vs{_u_edge:.1f})"
+                else:
+                    _winner, _reason = None, "kmath_neither_pass"
+                logger.info(
+                    "PAIR_DEDUP_K: pitcher=%s line=%s over_ok=%s under_ok=%s winner=%s reason=%s",
+                    _player_b, _point_b, _o_ok, _u_ok, _winner, _reason,
+                )
+            except Exception as _pdx:
+                logger.debug("Pair dedup K math failed for %s (line=%s): %s",
+                             _player_b, _point_b, _pdx)
+                # Failed K math → indeterminate → drop both.
+                _winner, _reason = None, "kmath_error"
+        else:
+            # Non-K symmetric pair → deterministic book-consensus.
+            _o_median = _side_map.get("over", (None, None))[1]
+            _u_median = _side_map.get("under", (None, None))[1]
+            if _o_median is not None and _u_median is not None:
+                _o_imp = _implied_prob(_o_median)
+                _u_imp = _implied_prob(_u_median)
+                if abs(_o_imp - _u_imp) < 0.05:
+                    _winner, _reason = None, f"balanced({_o_imp:.3f}vs{_u_imp:.3f})"
+                elif _o_imp > _u_imp:
+                    _winner, _reason = "over", f"book_over({_o_imp:.3f}vs{_u_imp:.3f})"
+                else:
+                    _winner, _reason = "under", f"book_under({_o_imp:.3f}vs{_u_imp:.3f})"
+                logger.info(
+                    "PAIR_DEDUP_STD: player=%s family=%s line=%s winner=%s (%s)",
+                    _player_b, _fam, _point_b, _winner, _reason,
+                )
+        _allowed_sides[_key] = {_winner} if _winner else set()
+    # Filter bucket in place — keep only entries whose side is allowed.
+    _filtered_bucket = {}
+    _dropped = 0
+    for (_mkb, _pb, _ptb, _sb), _prices_b in bucket.items():
+        _key = (_mk_family_local(_mkb), _pb, _ptb)
+        if str(_sb).lower() in _allowed_sides.get(_key, set()):
+            _filtered_bucket[(_mkb, _pb, _ptb, _sb)] = _prices_b
+        else:
+            _dropped += 1
+    if _dropped:
+        logger.info(
+            "PAIR_DEDUP: dropped %d symmetric-pair candidates (%d kept) — "
+            "%s vs %s",
+            _dropped, len(_filtered_bucket), home, away,
+        )
+    bucket = _filtered_bucket
+    # ── /DEFECT #1 FIX ──────────────────────────────────────────────────
     candidates = []
     for (mk, player, point, side), prices in bucket.items():
         median = sorted(prices)[len(prices) // 2]
