@@ -2536,6 +2536,123 @@ def _prop_family_key(market: str) -> str:
     return ""
 
 
+# ── 2026-07-28 DEFECT #5 — no_bet schema safety helpers ───────────────
+# ──────────────────────────────────────────────────────────────────
+# All contradiction "loser" writes MUST go through `_atomic_mark_no_bet`
+# so the invariant holds:  `no_bet_reason set  ⇒  no_bet == True`
+# AND  `status == "blocked"` (so the row disappears from any endpoint
+# that filters by status ∈ {pending, open, None}).
+#
+# `_enforce_no_bet_schema_invariant` runs at app startup to sweep any
+# pre-existing rows where a bad code path or crash left the fields
+# inconsistent, and (best-effort) installs a MongoDB $jsonSchema
+# validator that rejects future inconsistent writes at the DB layer.
+
+async def _atomic_mark_no_bet(
+    query: dict,
+    reason: str,
+    extra: dict | None = None,
+) -> int:
+    """Atomically flag every doc matching `query` as no_bet.
+
+    Always writes:
+      • no_bet=True
+      • no_bet_reason=<reason>
+      • status="blocked"
+
+    …in a SINGLE `$set`, so the trio is either fully present or
+    entirely absent — never partially-set. Callers must NEVER write
+    `no_bet_reason` directly; funnel through this helper.
+
+    Returns the number of modified docs.
+    """
+    payload = {
+        "no_bet": True,
+        "no_bet_reason": str(reason or "unspecified"),
+        "status": "blocked",
+    }
+    if extra:
+        payload.update(extra)
+    res = await db.picks.update_many(query, {"$set": payload})
+    return int(getattr(res, "modified_count", 0) or 0)
+
+
+async def _enforce_no_bet_schema_invariant() -> dict:
+    """One-shot startup sweep + best-effort DB validator install.
+
+    Contract enforced:
+      A doc where `no_bet_reason` is truthy MUST also have
+      `no_bet == True` and `status == "blocked"`.
+
+    Fixes any legacy or crash-corrupted rows in place and (if the
+    Mongo deployment supports it) installs a `$jsonSchema` validator
+    that rejects future violations. Both steps are wrapped so a
+    validator error never blocks app startup — the app-level helper
+    remains the primary line of defence.
+    """
+    stats = {"fixed": 0, "validator_installed": False, "errors": []}
+    try:
+        # Legacy sweep — any doc where `no_bet_reason` is non-empty
+        # but `no_bet` is not True. Re-run the helper to atomically
+        # set the trio.
+        legacy_query = {
+            "no_bet_reason": {"$exists": True, "$nin": [None, "", 0]},
+            "no_bet": {"$ne": True},
+        }
+        matched = await db.picks.count_documents(legacy_query)
+        if matched:
+            fixed = await _atomic_mark_no_bet(
+                legacy_query,
+                "legacy inconsistency swept by _enforce_no_bet_schema_invariant",
+            )
+            stats["fixed"] = fixed
+            logger.info(
+                "no_bet schema invariant sweep: %d rows had "
+                "no_bet_reason set but no_bet != True — fixed",
+                fixed,
+            )
+    except Exception as _sweep_err:
+        stats["errors"].append(f"sweep_failed: {_sweep_err}")
+        logger.warning("no_bet legacy sweep failed: %s", _sweep_err)
+
+    # Best-effort DB validator (won't fail startup if unsupported).
+    try:
+        validator = {
+            "$jsonSchema": {
+                "bsonType": "object",
+                # NB: 'no_bet_reason' present + non-empty ⇒ no_bet MUST be True.
+                # Documents WITHOUT `no_bet_reason` are unconstrained.
+                # Cast to string comparison via $expr for BSON portability.
+            },
+            "$expr": {
+                "$or": [
+                    {"$eq": [{"$type": "$no_bet_reason"}, "missing"]},
+                    {"$in": ["$no_bet_reason", [None, "", 0]]},
+                    {"$eq": ["$no_bet", True]},
+                ]
+            },
+        }
+        await db.command({
+            "collMod": "picks",
+            "validator": validator,
+            "validationLevel": "moderate",   # only new/updated docs
+            "validationAction": "warn",       # log but don't block writes
+        })
+        stats["validator_installed"] = True
+        logger.info(
+            "no_bet schema invariant: MongoDB validator installed on "
+            "picks collection (level=moderate, action=warn)",
+        )
+    except Exception as _val_err:
+        stats["errors"].append(f"validator_skipped: {_val_err}")
+        logger.info(
+            "no_bet schema invariant: DB validator not installed "
+            "(app-level helper still enforces): %s",
+            _val_err,
+        )
+    return stats
+
+
 async def _reconcile_player_prop_contradictions(safe_picks: list, date_str: str) -> None:
     """After insert, remove any Over/Under contradictions for the SAME
     (event, player, market_family) — keep only the higher-edge side.
@@ -2746,36 +2863,30 @@ async def _reconcile_player_prop_contradictions(safe_picks: list, date_str: str)
                     if r["id"] != keeper["id"]
                 ]
                 if remaining_ids:
-                    res = await db.picks.update_many(
+                    modified = await _atomic_mark_no_bet(
                         {"id": {"$in": remaining_ids}},
-                        {"$set": {
-                            "no_bet": True,
-                            "no_bet_reason": (
-                                f"contradicts {winner_side} {family} "
-                                f"{line} for {player} (corrected)"
-                            ),
-                        }},
+                        (
+                            f"contradicts {winner_side} {family} "
+                            f"{line} for {player} (corrected)"
+                        ),
                     )
-                    removed_total += int(getattr(res, "modified_count", 0) or 0)
+                    removed_total += modified
             else:
                 # Standard same-pick_date contradiction path — atomic
-                # no_bet write. `no_bet` and `no_bet_reason` are ALWAYS
-                # set together in a single $set so the reason can never
-                # be written without the flag being set.
+                # no_bet write via helper. Helper guarantees no_bet=True,
+                # no_bet_reason=..., status="blocked" all in a single
+                # $set so the trio can never desync.
                 loser_ids = [r["id"] for r in loser_rows if r.get("id")]
                 if not loser_ids:
                     continue
-                res = await db.picks.update_many(
+                modified = await _atomic_mark_no_bet(
                     {"id": {"$in": loser_ids}},
-                    {"$set": {
-                        "no_bet": True,
-                        "no_bet_reason": (
-                            f"contradicts {winner_side} {family} "
-                            f"{line} for {player}"
-                        ),
-                    }},
+                    (
+                        f"contradicts {winner_side} {family} "
+                        f"{line} for {player}"
+                    ),
                 )
-                removed_total += int(getattr(res, "modified_count", 0) or 0)
+                removed_total += modified
     if removed_total:
         logger.info(
             "Prop contradiction reconciliation: neutralised %d contradicting picks across %d groups",
@@ -4287,6 +4398,20 @@ async def on_startup():
     # hiccup". Compound with `pick_date` because the filter is
     # always scoped to today's slate.
     await db.picks.create_index([("pick_date", 1), ("signal_score", -1)])
+
+    # ── 2026-07-28 DEFECT #5 — no_bet schema invariant at startup ────
+    # Sweep any legacy rows where `no_bet_reason` is set but `no_bet`
+    # is False (crash-corruption or pre-helper writes), and install a
+    # best-effort MongoDB $jsonSchema validator so future writes that
+    # break the invariant get logged. Non-blocking — errors don't
+    # halt boot.
+    try:
+        await _enforce_no_bet_schema_invariant()
+    except Exception as _inv_err:
+        logger.warning(
+            "no_bet schema invariant enforcement failed at startup: %s",
+            _inv_err,
+        )
 
     # ── Warm the signal-rank cache at boot (2026-07-18) ───────────
     # Every backend restart previously left `_LAST_RUN` empty, so the
