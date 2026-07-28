@@ -2155,6 +2155,66 @@ _ALT_PROP_MAX_IMPLIED = 0.95  # cap absurd chalk like -2000 (95% implied)
 _SOCCER_PROP_MIN_IMPLIED = 0.22
 
 
+# ── 2026-07-28 DEFECT #2 — module-level prop-family map ─────────────
+# `_prop_family_key(mk)` is the canonical family key used by the
+# `std_seen` dedup inside `_props_picks_from_event`. Kept at module
+# scope so tests + other services can share the same mapping without
+# duplicating knowledge.
+#
+# Rules:
+#   • Collapse `_alternate` variants to their base family (e.g.
+#     `batter_hits_alternate` → `batter_hits`).
+#   • Keep genuinely distinct families separate (e.g. `pitcher_strikeouts`
+#     ≠ `pitcher_outs` — those are different bets on the same pitcher).
+#   • Group soccer goal-scorer markets under one family so we don't
+#     surface both "anytime goal" and "to score or assist" for the
+#     same player (they're highly correlated bets).
+_PROP_FAMILY_MAP = {
+    # MLB pitcher families
+    "pitcher_strikeouts": "pitcher_strikeouts",
+    "pitcher_strikeouts_alternate": "pitcher_strikeouts",
+    "pitcher_outs": "pitcher_outs",
+    "pitcher_outs_alternate": "pitcher_outs",
+    "pitcher_walks": "pitcher_walks",
+    "pitcher_hits_allowed": "pitcher_hits_allowed",
+    "pitcher_earned_runs": "pitcher_earned_runs",
+    # MLB batter families
+    "batter_hits": "batter_hits",
+    "batter_hits_alternate": "batter_hits",
+    "batter_home_runs": "batter_home_runs",
+    "batter_home_runs_alternate": "batter_home_runs",
+    "batter_hits_runs_rbis": "batter_hits_runs_rbis",
+    "batter_hits_runs_rbis_alternate": "batter_hits_runs_rbis",
+    "batter_rbis": "batter_rbis",
+    "batter_rbis_alternate": "batter_rbis",
+    "batter_runs_scored": "batter_runs_scored",
+    "batter_total_bases": "batter_total_bases",
+    "batter_total_bases_alternate": "batter_total_bases",
+    # Soccer goal-scorer families (grouped — highly correlated bets)
+    "player_goal_scorer_anytime": "goal_scorer",
+    "player_to_score_or_assist": "goal_scorer",
+    "player_first_goal_scorer": "goal_scorer",
+    # MMA
+    "mma_method_of_victory": "mma_method",
+}
+
+
+def _prop_family_key(mk: str) -> str:
+    """Canonical family key for the `std_seen` dedup.
+
+    Explicit strict mapping (not a regex/replace). Returns the base
+    family so that `batter_hits` + `batter_hits_alternate` collapse
+    to `batter_hits`, but `pitcher_strikeouts` + `pitcher_outs` STAY
+    separate (they're distinct bets on the same pitcher).
+
+    Falls back to `.replace('_alternate','')` for any mk not in the
+    explicit map — defensive against new Odds-API markets.
+    """
+    if mk in _PROP_FAMILY_MAP:
+        return _PROP_FAMILY_MAP[mk]
+    return (mk or "").replace("_alternate", "")
+
+
 # ── NFL Phase 3 helpers (2026-07-22) ─────────────────────────────────
 # Map The Odds API market keys to the stat field names used in our
 # nflverse ingest / feature engine. Add new mappings as we support
@@ -3594,23 +3654,61 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             if not _mk_gated and implied < _HIGH_PROB_MIN_IMPLIED:
                 continue
         candidates.append((implied, mk, player, point, side, median, is_alt))
-    candidates.sort(reverse=True)
+    # ── 2026-07-28 DEFECT #2 FIX: deterministic dedup ordering ──────────
+    # ────────────────────────────────────────────────────────────────────
+    # Prior to this fix, `candidates.sort(reverse=True)` relied on the
+    # tuple's positional ordering — `implied` was the primary key
+    # (good), but ties on implied fell through to `mk` string sort
+    # DESC, then `player` DESC, etc. Those secondary keys aren't
+    # quality signals; they leaked Odds-API iteration order back into
+    # dedup winner selection any time two candidates for the same
+    # (player, family) group tied on `implied`.
+    #
+    # The named `_dedup_sort_key` below makes tie-breaking SEMANTIC:
+    #   1. is_alt False first  → prefer standard mainlines over alts
+    #      when both survive (alt candidates route to their own cap
+    #      path anyway, so this is defense-in-depth).
+    #   2. implied DESC        → higher book_implied = safer = better.
+    #   3. mk ASC              → alphabetical mk name (stable across
+    #      refreshes, but same-family markets like `batter_hits` vs
+    #      `batter_hits_alternate` are already collapsed by Defect #1).
+    #   4. point ASC (numeric) → lower line wins on ties (safer bet).
+    #   5. side ASC            → alphabetical "over" < "under".
+    #   6. median ASC          → cheaper price on ties.
+    def _dedup_sort_key(c):
+        _implied, _mk, _player, _point, _side, _median, _is_alt = c
+        return (
+            0 if not _is_alt else 1,
+            -float(_implied),
+            str(_mk or ""),
+            float(_point) if isinstance(_point, (int, float)) else 0.0,
+            str(_side or ""),
+            int(_median) if isinstance(_median, (int, float)) else 0,
+        )
+    candidates.sort(key=_dedup_sort_key)
     picks: list[dict] = []
     # Track per-player caps separately for Over alts vs Under alts so they
     # don't compete for the same player slots. This ensures the "Under of
     # the Day" pool always has enough variety even when Overs dominate.
     alt_over_per_player: dict = {}
     alt_under_per_player: dict = {}
-    # std_seen is keyed by (player, market_family) so a pitcher can surface
-    # in BOTH the Strikeouts and Outs Recorded markets — they're distinct
-    # bets, not correlated dupes. Previous behaviour locked one std pick
-    # per player which masked pitcher_outs picks whenever the same pitcher
-    # had a stronger Strikeouts price.
+    # ── 2026-07-28 DEFECT #2 FIX: std_seen dedup key ────────────────────
+    # `std_seen` still enforces "at most ONE standard mainline pick per
+    # (player, family)" so a pitcher doesn't spam the board with 3-4
+    # different K lines. But the WINNER of the dedup is now driven by
+    # `_dedup_sort_key` above — quality-first, not iteration-order —
+    # so identical input across refreshes always produces the identical
+    # winner. Same-family alts route through `alt_over_per_player` /
+    # `alt_under_per_player` (up to 3 per side) and never reach this
+    # dedup, so `_prop_family_key` only sees standard mks.
+    #
+    # `_prop_family_key` is intentionally a strict mapping (not a regex
+    # or `.replace` on `_alternate`) so future mk keys with non-obvious
+    # suffixes get an explicit entry.
     std_seen: set = set()
-    def _market_family(mk: str) -> str:
-        # Collapse "_alternate" so std + alt of the same stat stay correlated,
-        # though alts use their own cap path and never hit this branch.
-        return mk.replace("_alternate", "")
+    # `_PROP_FAMILY_MAP` and `_prop_family_key` are module-level (see
+    # top of file) so tests + other services can share the same mapping
+    # without duplicating knowledge.
     for implied, mk, player, point, side, median, is_alt in candidates:
         side_lower = str(side).lower()
         if is_alt:
@@ -3620,7 +3718,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 continue
             cap_dict[player] = cap_dict.get(player, 0) + 1
         else:
-            std_key = (player, _market_family(mk))
+            std_key = (player, _prop_family_key(mk))
             if std_key in std_seen:
                 continue
             std_seen.add(std_key)
