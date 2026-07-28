@@ -2050,6 +2050,114 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
                 )
             else:
                 await db.picks.delete_many({"id": {"$in": list(seen_ids)}})
+
+        # ── 2026-07-28 DEFECT #4 FIX: semantic-identity delete ─────────
+        # ────────────────────────────────────────────────────────────
+        # The pick_date-scoped + id-scoped deletes above cannot catch a
+        # contradictory row whose (event, player, family, line) matches
+        # an incoming pick but whose pick_date sits on a DIFFERENT
+        # bucket and whose id is DIFFERENT from any current pick. That
+        # was the Wheeler bug — yesterday's Under 6.5 K survived under
+        # pick_date=2026-07-27 while today's Over 6.5 K landed on
+        # pick_date=2026-07-28.
+        #
+        # Semantic identity of a prop pick = (sport, event, selection,
+        # family, line). Any DB row matching this tuple against ANY
+        # incoming pick — regardless of pick_date, id, or side — is
+        # stale by definition (Defect #3 has already picked the correct
+        # side, and same-side rows on other dates are outdated). Line
+        # is REQUIRED so we never accidentally purge a legitimate
+        # different-line alt for the same player.
+        try:
+            import re as _re_sid
+            # Ordered longest-first so "Hits + Runs + RBIs" wins over "Hits".
+            _MARKET_STAT_PATTERN = _re_sid.compile(
+                r"(\d+\.?\d*)\s+(Hits \+ Runs \+ RBIs|Home Runs|Pitching Outs|Earned Runs|Hits Allowed|Total Bases|Runs Scored|Strikeouts|Walks|Hits|RBIs)\s*$",
+                _re_sid.IGNORECASE,
+            )
+            _MARKET_STAT_TO_FAMILY = {
+                "strikeouts": "pitcher_strikeouts",
+                "hits": "batter_hits",
+                "home runs": "batter_home_runs",
+                "hits + runs + rbis": "batter_hits_runs_rbis",
+                "total bases": "batter_total_bases",
+                "rbis": "batter_rbis",
+                "runs scored": "batter_runs_scored",
+                "walks": "pitcher_walks",
+                "pitching outs": "pitcher_outs",
+                "earned runs": "pitcher_earned_runs",
+                "hits allowed": "pitcher_hits_allowed",
+            }
+            def _semantic_id(pick_or_row: dict) -> Optional[tuple]:
+                _sport = pick_or_row.get("sport")
+                _event = pick_or_row.get("event")
+                _selection = pick_or_row.get("selection")
+                _mkt = pick_or_row.get("market") or ""
+                if not (_sport and _event and _selection and _mkt):
+                    return None
+                _m = _MARKET_STAT_PATTERN.search(_mkt)
+                if not _m:
+                    return None
+                _line = _m.group(1)
+                _stat = _m.group(2).lower().strip()
+                _family = _MARKET_STAT_TO_FAMILY.get(_stat)
+                if not _family:
+                    return None
+                return (_sport, _event, _selection, _family, _line)
+
+            # Build target index from incoming safe_picks.
+            _semantic_targets: dict = {}   # semantic_id → set of incoming ids to preserve
+            for _p in safe_picks:
+                _sid = _semantic_id(_p)
+                if _sid is None:
+                    continue
+                _semantic_targets.setdefault(_sid, set()).add(_p.get("id"))
+
+            _semantic_deleted = 0
+            for _sid, _keep_ids in _semantic_targets.items():
+                _sport, _event, _selection, _family, _line = _sid
+                _query = {
+                    "sport": _sport,
+                    "event": _event,
+                    "selection": _selection,
+                }
+                _query.update(_pin_filter)  # never nuke sticky pins here
+                _stale_ids: list = []
+                async for _row in db.picks.find(
+                    _query,
+                    {"_id": 0, "id": 1, "market": 1, "pick_date": 1,
+                     "sport": 1, "event": 1, "selection": 1},
+                ):
+                    _row_id = _row.get("id")
+                    if not _row_id or _row_id in _keep_ids:
+                        continue
+                    _row_sid = _semantic_id(_row)
+                    if _row_sid == _sid:
+                        _stale_ids.append(_row_id)
+                        logger.info(
+                            "SEMANTIC_DELETE: stale (sport=%s, event=%s, "
+                            "selection=%s, family=%s, line=%s) row id=%s "
+                            "pick_date=%s market=%r",
+                            _sport, _event, _selection, _family, _line,
+                            _row_id, _row.get("pick_date"),
+                            (_row.get("market") or "")[:80],
+                        )
+                if _stale_ids:
+                    _res = await db.picks.delete_many(
+                        {"id": {"$in": _stale_ids}},
+                    )
+                    _semantic_deleted += int(getattr(_res, "deleted_count", 0) or 0)
+            if _semantic_deleted:
+                logger.info(
+                    "SEMANTIC_DELETE: purged %d stale contradictory rows "
+                    "across %d semantic targets",
+                    _semantic_deleted, len(_semantic_targets),
+                )
+        except Exception as _sid_err:
+            logger.warning(
+                "Semantic-identity delete pass skipped: %s", _sid_err,
+            )
+        # ── /DEFECT #4 FIX ─────────────────────────────────────────────
     # Defensive write: drop malformed pick docs (missing required fields)
     # so a single broken doc never aborts the entire batch insert. Required
     # fields: id, sport, event_time, market, book_odds.
