@@ -74,6 +74,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 import statistics
 import uuid
 from dataclasses import dataclass, field, asdict
@@ -230,14 +231,49 @@ def _confidence_label(n_signals: int, agreement_score: float,
 # ─────────────────────────────────────────────────────────────────────
 # Component runners
 # ─────────────────────────────────────────────────────────────────────
+async def _lookup_player_position(db, sport: str,
+                                    player_name: str) -> Optional[str]:
+    """Best-effort position lookup — used by the ML component to
+    disambiguate market→model routing (e.g. MLB pitcher Ks vs batter Ks).
+
+    Never raises. Returns None if no cache row or the player isn't in
+    `players`. Cached in-process to keep the fusion hot-path cheap."""
+    if not sport or not player_name:
+        return None
+    key = ((sport or "").lower(), (player_name or "").strip().lower())
+    cached = _POSITION_CACHE.get(key)
+    if cached is not None:
+        return cached[1]        # (fetched_at, position)
+    try:
+        row = await db.players.find_one(
+            {"sport": key[0], "name": {"$regex": f"^{re.escape(player_name)}$",
+                                        "$options": "i"}},
+            {"_id": 0, "position": 1},
+        )
+    except Exception:
+        row = None
+    pos = (row or {}).get("position") if isinstance(row, dict) else None
+    _POSITION_CACHE[key] = (0, pos)
+    return pos
+
+
+_POSITION_CACHE: dict[tuple[str, str], tuple[float, Optional[str]]] = {}
+
+
 async def _run_ml_component(db, sport, player, stat, opponent,
                              threshold) -> ComponentPrediction:
     cp = ComponentPrediction(name="ml")
     try:
         from services.trained_prediction_engine import predict_player_prop
+        # Best-effort position hint — feeds the market→model router so
+        # MLB "strikeouts" props resolve to the pitcher-Ks model when
+        # the player is a pitcher (and batter Ks safe-fail cleanly).
+        # NEVER raises; NEVER blocks the ML component if lookup fails.
+        player_position = await _lookup_player_position(db, sport, player)
         r = await predict_player_prop(
             db, sport=sport, player=player, stat=stat,
             opponent=opponent, line=threshold,
+            player_position=player_position,
         )
     except Exception as e:
         cp.notes.append(f"error: {e}")

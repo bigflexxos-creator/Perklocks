@@ -80,9 +80,10 @@ _NBA_MARKET_STAT_MAP: list[tuple[re.Pattern, str]] = [
 ]
 
 _TENNIS_MARKET_STAT_MAP: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"ace", re.I),          "aces"),
-    (re.compile(r"double\s*fault", re.I), "double_faults"),
-    (re.compile(r"total\s*games", re.I),  "total_games"),
+    (re.compile(r"ace", re.I),                     "aces"),
+    (re.compile(r"double\s*fault", re.I),          "double_faults"),
+    (re.compile(r"break\s*point", re.I),           "break_points_won"),
+    (re.compile(r"total\s*games", re.I),           "total_games"),
 ]
 
 
