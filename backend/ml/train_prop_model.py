@@ -377,6 +377,54 @@ async def train_mlb(stat: str, split_date: str = "2025-01-01") -> dict:
                         {"split_date": split_date, "position": None})
 
 
+async def _load_nba_rows() -> pd.DataFrame:
+    """Load all NBA player_game_logs rows sorted by date ascending."""
+    client = AsyncIOMotorClient(os.getenv("MONGO_URL"))
+    db = client["lockscore_db"]
+    logger.info("loading NBA rows ...")
+    t0 = time.time()
+    rows = [r async for r in
+             db.player_game_logs.find({"sport": "nba"}, {"_id": 0}).sort("date", 1)]
+    logger.info("loaded %d NBA rows in %.1fs", len(rows), time.time() - t0)
+    return pd.DataFrame(rows)
+
+
+async def train_nba(stat: str, split_date: str = "2025-01-01") -> dict:
+    """Train a dual (LightGBM + XGBoost) NBA prop model for `stat`.
+
+    Uses the same training pipeline as MLB / Tennis. Time-based split
+    honours the `date` column; falls back to game_id quantile split if
+    dates are missing."""
+    from ml.features.nba import build_nba_training_frame
+    df = await _load_nba_rows()
+    tf = build_nba_training_frame(df, stat=stat, min_prior_games=5)
+    if tf.features.empty:
+        raise SystemExit(f"NBA training frame empty for stat={stat}")
+    logger.info("NBA training frame: X=%s, y=%s",
+                tf.features.shape, tf.target.shape)
+    if "date" in tf.row_meta.columns and \
+       tf.row_meta["date"].notna().any():
+        mask_tr = (tf.row_meta["date"] < split_date) | tf.row_meta["date"].isna()
+        mask_va = tf.row_meta["date"] >= split_date
+    else:
+        gids = tf.row_meta["game_id"].astype(float)
+        threshold = float(gids.quantile(0.85))
+        mask_tr = gids <= threshold
+        mask_va = gids > threshold
+        logger.info("NBA date column empty — splitting on game_id > %s (15%% val)",
+                    threshold)
+    X_tr = tf.features.loc[mask_tr].reset_index(drop=True)
+    y_tr = tf.target.loc[mask_tr].reset_index(drop=True)
+    X_va = tf.features.loc[mask_va].reset_index(drop=True)
+    y_va = tf.target.loc[mask_va].reset_index(drop=True)
+    if len(y_tr) < 500 or len(y_va) < 50:
+        raise SystemExit(
+            f"NBA split too thin: train={len(y_tr)}, val={len(y_va)}"
+        )
+    return _train_dual("nba", stat, tf, X_tr, y_tr, X_va, y_va,
+                        {"split_date": split_date, "position": None})
+
+
 async def train_tennis(stat: str, split_date: str = "2024-01-01",
                         surface: Optional[str] = None) -> dict:
     from ml.features.tennis import build_tennis_training_frame
@@ -454,7 +502,7 @@ def _train_dual(sport_tag: str, stat: str, tf,
 def main():
     ap = argparse.ArgumentParser(description="Train a player-prop model.")
     ap.add_argument("--sport", default="NFL",
-                     choices=["NFL", "MLB", "Tennis"])
+                     choices=["NFL", "MLB", "Tennis", "NBA"])
     ap.add_argument("--stat", required=True)
     ap.add_argument("--position", default=None)
     ap.add_argument("--split-season", type=int, default=2024)
@@ -483,6 +531,11 @@ def main():
             stat=args.stat,
             split_date=args.split_date or "2024-01-01",
             surface=args.surface,
+        ))
+    elif args.sport == "NBA":
+        meta = asyncio.run(train_nba(
+            stat=args.stat,
+            split_date=args.split_date or "2025-01-01",
         ))
     else:
         raise SystemExit(f"sport {args.sport} not yet supported by trainer")

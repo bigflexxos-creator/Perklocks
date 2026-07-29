@@ -292,7 +292,7 @@ async def predict_player_prop(
     Zero raises — errors are folded into `notes` inside the payload.
     """
     sport_u = (sport or "").upper()
-    if sport_u not in ("NFL", "MLB", "TENNIS"):
+    if sport_u not in ("NFL", "MLB", "TENNIS", "NBA"):
         return {
             "supported": False,
             "reason": f"sport {sport_u} not yet supported by trained engine",
@@ -343,6 +343,12 @@ async def predict_player_prop(
         elif sport_u == "TENNIS":
             from ml.features.tennis import build_tennis_live_features
             feat_dict, feat_order, feat_meta = await build_tennis_live_features(
+                db, player_name=player, opponent_team=opponent,
+                stat=effective_stat,
+            )
+        elif sport_u == "NBA":
+            from ml.features.nba import build_nba_live_features
+            feat_dict, feat_order, feat_meta = await build_nba_live_features(
                 db, player_name=player, opponent_team=opponent,
                 stat=effective_stat,
             )

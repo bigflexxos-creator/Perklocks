@@ -143,3 +143,4 @@ websockets==16.0
 xgboost==3.2.0
 yarl==1.24.2
 zipp==4.1.0
+nba_api==1.11.4
