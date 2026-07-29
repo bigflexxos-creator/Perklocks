@@ -44,13 +44,20 @@ logger = logging.getLogger("lockscore.odds_provider")
 
 _ODDS_API_KEY = os.getenv("THE_ODDS_API_KEY") or ""
 _PRIMARY = (os.getenv("ODDS_PRIMARY_PROVIDER") or "odds_api").strip().lower()
-_API_SPORTS_KEYS = [
-    k for k in (
+# Accept BOTH the rotated-pool names AND the single `APISPORTS_KEY` that is
+# what actually ships in this app's secrets. Previously only the _1/_2/_3
+# names were read, so on a real deployment `_API_SPORTS_KEYS` was always
+# empty and the breaker could never fall back to api_sports — it went
+# straight to "espn"/"unavailable", stripping edge_percent and docking
+# lock_score on every pick instead of serving backup odds.
+_API_SPORTS_KEYS = list(dict.fromkeys(
+    k.strip() for k in (
         os.getenv("API_SPORTS_KEY_1"),
         os.getenv("API_SPORTS_KEY_2"),
         os.getenv("API_SPORTS_KEY_3"),
-    ) if k
-]
+        os.getenv("APISPORTS_KEY"),
+    ) if k and k.strip()
+))
 
 _HEALTH_LOCK = asyncio.Lock()
 _FAIL_WINDOW_SECONDS = 300         # 5-minute rolling window
@@ -63,6 +70,13 @@ _state: str = "live"                # "live" | "degraded"
 _failures: list[float] = []         # UNIX timestamps of recent 401/403/429/5xx
 _last_probe_ts: float = 0.0
 _active_source: str = "odds_api"    # tracks which provider served the last odds
+
+# Why the primary is unhealthy, so /api/admin/odds-health and the client can
+# show a real reason instead of a silent empty board. "key_deactivated" is
+# terminal until someone renews the subscription — no amount of retrying
+# fixes it, and it must NOT be reported as a rate limit.
+_last_failure_reason: Optional[str] = None
+_KEY_DEAD_REASONS = frozenset({"key_deactivated", "key_invalid", "no_odds_api_key"})
 
 
 def get_active_source() -> str:
@@ -78,14 +92,33 @@ def report_failure(status_code: Optional[int], detail: str = "") -> None:
     """Callers hitting The Odds API should invoke this on any hard failure
     (401 / 403 / 429 / 5xx / timeout). Enough failures in the window and we
     flip the circuit breaker to `degraded` so the pick decorator switches.
+
+    An auth failure (401/403) trips the breaker IMMEDIATELY — a deactivated
+    or revoked key is not a transient condition, so waiting for
+    `_FAIL_THRESHOLD` failures just burns 5 more minutes of empty boards.
     """
-    global _state, _active_source
+    global _state, _active_source, _last_failure_reason
     now = time.time()
+    if detail:
+        _last_failure_reason = detail
     _failures.append(now)
     # Drop entries outside the rolling window.
     cutoff = now - _FAIL_WINDOW_SECONDS
     while _failures and _failures[0] < cutoff:
         _failures.pop(0)
+    # Auth failures are terminal, not transient — degrade on the first one.
+    _auth_dead = status_code in (401, 403) or detail in _KEY_DEAD_REASONS
+    if _auth_dead and _state != "degraded":
+        _state = "degraded"
+        _active_source = "api_sports" if _API_SPORTS_KEYS else "espn"
+        logger.error(
+            "The Odds API key REJECTED (status=%s reason=%s) — this is an "
+            "account/subscription problem, NOT a rate limit. Renew the key "
+            "or set THE_ODDS_API_KEY. Falling back to %s; picks will carry "
+            "edge_percent=None until the primary recovers.",
+            status_code, detail or "auth_rejected", _active_source,
+        )
+        return
     if len(_failures) >= _FAIL_THRESHOLD and _state != "degraded":
         _state = "degraded"
         _active_source = "api_sports" if _API_SPORTS_KEYS else "espn"
@@ -99,11 +132,12 @@ def report_failure(status_code: Optional[int], detail: str = "") -> None:
 
 def report_success() -> None:
     """Successful primary call — clear degraded state if we were degraded."""
-    global _state, _active_source
+    global _state, _active_source, _last_failure_reason
     if _state == "degraded":
         logger.info("Odds primary recovered — clearing degraded flag.")
     _state = "live"
     _active_source = "odds_api"
+    _last_failure_reason = None
     _failures.clear()
 
 
@@ -127,7 +161,23 @@ async def _probe_primary() -> bool:
             if r.status_code == 200:
                 report_success()
                 return True
-            report_failure(r.status_code, "probe_bad_status")
+            # Surface the provider's own error_code. The Odds API answers a
+            # lapsed/cancelled subscription with 401 + DEACTIVATED_KEY; that
+            # must be reported as an account problem, not "probe_bad_status",
+            # or the real cause stays invisible in the logs.
+            reason = "probe_bad_status"
+            try:
+                body = r.json()
+                code = str(body.get("error_code") or "").upper()
+                if code == "DEACTIVATED_KEY":
+                    reason = "key_deactivated"
+                elif code in ("INVALID_KEY", "MISSING_KEY"):
+                    reason = "key_invalid"
+                elif code:
+                    reason = f"probe:{code.lower()}"
+            except Exception:
+                pass
+            report_failure(r.status_code, reason)
             return False
     except Exception as e:
         report_failure(None, f"probe_exc:{e.__class__.__name__}")
@@ -156,6 +206,17 @@ async def status() -> dict:
         "api_sports_keys_configured": len(_API_SPORTS_KEYS),
         "failures_in_window": len(_failures),
         "last_probe_age_seconds": int(time.time() - _last_probe_ts) if _last_probe_ts else None,
+        # Actionable reason + operator-facing message, so a dead subscription
+        # reads as a dead subscription rather than an empty props board.
+        "failure_reason": _last_failure_reason,
+        "key_status": ("dead" if _last_failure_reason in _KEY_DEAD_REASONS
+                       else "ok" if _state == "live" else "unknown"),
+        "operator_message": (
+            "The Odds API key is deactivated or invalid — renew the "
+            "subscription and update THE_ODDS_API_KEY. Player-prop markets "
+            "cannot be fetched until then."
+            if _last_failure_reason in _KEY_DEAD_REASONS else None
+        ),
     }
 
 
