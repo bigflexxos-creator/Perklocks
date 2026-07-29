@@ -377,6 +377,65 @@ async def train_mlb(stat: str, split_date: str = "2025-01-01") -> dict:
                         {"split_date": split_date, "position": None})
 
 
+async def _load_soccer_rows() -> pd.DataFrame:
+    """Load all soccer_player_game_logs rows sorted by match_date."""
+    client = AsyncIOMotorClient(os.getenv("MONGO_URL"))
+    db = client["lockscore_db"]
+    logger.info("loading Soccer rows ...")
+    t0 = time.time()
+    rows = [r async for r in
+             db.soccer_player_game_logs.find({}, {"_id": 0}).sort("match_date", 1)]
+    logger.info("loaded %d Soccer rows in %.1fs", len(rows), time.time() - t0)
+    return pd.DataFrame(rows)
+
+
+async def train_soccer(
+    stat: str,
+    split_date: str = "2025-01-01",
+    min_prior_matches: int = 5,
+) -> dict:
+    """Train a dual (LightGBM + XGBoost) Soccer prop model for `stat`.
+
+    Uses the per-match rolling features from
+    `ml.features.soccer.build_soccer_training_frame`.  Time-based split
+    on `match_date`.  Fails loudly (SystemExit) if fewer than 500
+    training rows or 50 validation rows are available.
+    """
+    from ml.features.soccer import build_soccer_training_frame
+    df = await _load_soccer_rows()
+    tf = build_soccer_training_frame(df, stat=stat,
+                                       min_prior_matches=min_prior_matches)
+    if tf.features.empty:
+        raise SystemExit(f"Soccer training frame empty for stat={stat}")
+    logger.info("Soccer training frame: X=%s, y=%s",
+                tf.features.shape, tf.target.shape)
+    # Time-based split — prefer `match_date`.
+    if "match_date" in tf.row_meta.columns and \
+       tf.row_meta["match_date"].notna().any():
+        dates = pd.to_datetime(tf.row_meta["match_date"], errors="coerce")
+        cutoff = pd.to_datetime(split_date)
+        mask_tr = (dates < cutoff) | dates.isna()
+        mask_va = dates >= cutoff
+    else:
+        # Fallback: last-15 % percentile split.
+        n = len(tf.target)
+        cut = int(n * 0.85)
+        mask_tr = pd.Series([True] * cut + [False] * (n - cut))
+        mask_va = ~mask_tr
+        logger.info("Soccer match_date missing — split-idx %s / %s", cut, n)
+    X_tr = tf.features.loc[mask_tr].reset_index(drop=True)
+    y_tr = tf.target.loc[mask_tr].reset_index(drop=True)
+    X_va = tf.features.loc[mask_va].reset_index(drop=True)
+    y_va = tf.target.loc[mask_va].reset_index(drop=True)
+    if len(y_tr) < 500 or len(y_va) < 50:
+        raise SystemExit(
+            f"Soccer split too thin: train={len(y_tr)}, val={len(y_va)}"
+        )
+    return _train_dual("soccer", stat, tf, X_tr, y_tr, X_va, y_va,
+                        {"split_date": split_date,
+                          "min_prior_matches": min_prior_matches})
+
+
 async def _load_nba_rows() -> pd.DataFrame:
     """Load all NBA player_game_logs rows sorted by date ascending."""
     client = AsyncIOMotorClient(os.getenv("MONGO_URL"))
@@ -502,7 +561,7 @@ def _train_dual(sport_tag: str, stat: str, tf,
 def main():
     ap = argparse.ArgumentParser(description="Train a player-prop model.")
     ap.add_argument("--sport", default="NFL",
-                     choices=["NFL", "MLB", "Tennis", "NBA"])
+                     choices=["NFL", "MLB", "Tennis", "NBA", "Soccer"])
     ap.add_argument("--stat", required=True)
     ap.add_argument("--position", default=None)
     ap.add_argument("--split-season", type=int, default=2024)
@@ -534,6 +593,11 @@ def main():
         ))
     elif args.sport == "NBA":
         meta = asyncio.run(train_nba(
+            stat=args.stat,
+            split_date=args.split_date or "2025-01-01",
+        ))
+    elif args.sport == "Soccer":
+        meta = asyncio.run(train_soccer(
             stat=args.stat,
             split_date=args.split_date or "2025-01-01",
         ))

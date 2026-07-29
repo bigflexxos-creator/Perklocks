@@ -93,6 +93,11 @@ def _parse_pick(pick: dict) -> Optional[dict]:
             threshold = float(tm.group(1))
         except (TypeError, ValueError):
             threshold = None
+    # Soccer: implicit ≥1 threshold (0.5 line) for "Anytime Goal Scorer",
+    # "First Goal Scorer", "To Score or Assist" style markets.
+    if threshold is None and sport.upper() == "SOCCER":
+        from services.pick_matchup_wiring import _infer_soccer_threshold
+        threshold = _infer_soccer_threshold(market)
     # Opponent.
     from services.pick_matchup_wiring import (
         _parse_opponent_mlb, _parse_opponent_generic,
@@ -248,6 +253,21 @@ async def enrich_pick_with_fusion(
             "reason": "not a supported player-prop market",
         }
         return pick
+    # ── Soccer: replace naïve opponent (2nd side of event) with the
+    #     team-lookup-based opponent (async), so if the player plays
+    #     for the LEFT-side team we get the RIGHT-side team and vice
+    #     versa. Falls back gracefully if the player isn't in the
+    #     player-game-logs collection yet.
+    if (parsed.get("sport") or "").upper() == "SOCCER":
+        try:
+            from services.pick_matchup_wiring import _parse_opponent_soccer
+            resolved = await _parse_opponent_soccer(
+                db, pick.get("event") or "", parsed.get("player"),
+            )
+            if resolved:
+                parsed["opponent"] = resolved
+        except Exception:
+            pass
     try:
         from services.prediction_fusion_engine import fuse_prediction
         result = await fuse_prediction(

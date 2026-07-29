@@ -1,0 +1,302 @@
+{
+  "sport": "Soccer",
+  "stat": "shots",
+  "trained_at": "2026-07-29 17:37:46 UTC",
+  "winner": "xgb",
+  "feature_names": [
+    "stat_last3_avg",
+    "stat_last5_avg",
+    "stat_last10_avg",
+    "stat_last10_median",
+    "stat_last10_std",
+    "minutes_last5_avg",
+    "starts_rate_last10",
+    "xg_last5_avg",
+    "xa_last5_avg",
+    "shots_per_start_last10",
+    "opp_goals_conceded_last10_avg",
+    "opp_xg_conceded_last10_avg",
+    "team_goals_scored_last10_avg",
+    "is_home",
+    "days_rest",
+    "position_encoded"
+  ],
+  "lgbm": {
+    "n_train": 12346,
+    "n_val": 5580,
+    "mae": 0.73,
+    "rmse": 0.998,
+    "r2": 0.3198,
+    "auc_by_thr": {
+      "p25": 0.7723,
+      "p50": 0.7723,
+      "p75": 0.821
+    },
+    "brier_by_thr": {
+      "p25": 0.2897,
+      "p50": 0.2897,
+      "p75": 0.1751
+    },
+    "calibration": [
+      {
+        "bucket": "0.45-0.61",
+        "n": 558,
+        "expected_pct": 54.49,
+        "observed_pct": 7.71,
+        "delta": -46.78
+      },
+      {
+        "bucket": "0.61-0.64",
+        "n": 558,
+        "expected_pct": 62.47,
+        "observed_pct": 24.37,
+        "delta": -38.09
+      },
+      {
+        "bucket": "0.64-0.67",
+        "n": 558,
+        "expected_pct": 65.56,
+        "observed_pct": 30.82,
+        "delta": -34.74
+      },
+      {
+        "bucket": "0.67-0.70",
+        "n": 558,
+        "expected_pct": 68.47,
+        "observed_pct": 32.8,
+        "delta": -35.67
+      },
+      {
+        "bucket": "0.70-0.73",
+        "n": 558,
+        "expected_pct": 71.3,
+        "observed_pct": 39.25,
+        "delta": -32.06
+      },
+      {
+        "bucket": "0.73-0.77",
+        "n": 558,
+        "expected_pct": 74.93,
+        "observed_pct": 44.44,
+        "delta": -30.48
+      },
+      {
+        "bucket": "0.77-0.83",
+        "n": 558,
+        "expected_pct": 80.09,
+        "observed_pct": 52.51,
+        "delta": -27.58
+      },
+      {
+        "bucket": "0.83-0.92",
+        "n": 558,
+        "expected_pct": 87.61,
+        "observed_pct": 64.16,
+        "delta": -23.45
+      },
+      {
+        "bucket": "0.92-0.97",
+        "n": 558,
+        "expected_pct": 94.83,
+        "observed_pct": 75.99,
+        "delta": -18.84
+      },
+      {
+        "bucket": "0.97-1.00",
+        "n": 558,
+        "expected_pct": 99.02,
+        "observed_pct": 89.78,
+        "delta": -9.23
+      }
+    ],
+    "top_features": [
+      [
+        "position_encoded",
+        39968.23424696922
+      ],
+      [
+        "stat_last10_avg",
+        15835.185544490814
+      ],
+      [
+        "opp_xg_conceded_last10_avg",
+        6286.5132175683975
+      ],
+      [
+        "xa_last5_avg",
+        4663.829920053482
+      ],
+      [
+        "stat_last10_std",
+        4591.564024209976
+      ],
+      [
+        "shots_per_start_last10",
+        4247.363188743591
+      ],
+      [
+        "opp_goals_conceded_last10_avg",
+        3820.955535173416
+      ],
+      [
+        "team_goals_scored_last10_avg",
+        3480.4886313676834
+      ],
+      [
+        "minutes_last5_avg",
+        3031.741367816925
+      ],
+      [
+        "xg_last5_avg",
+        2661.45325922966
+      ]
+    ],
+    "residual_std": 0.998
+  },
+  "xgb": {
+    "n_train": 12346,
+    "n_val": 5580,
+    "mae": 0.727,
+    "rmse": 0.993,
+    "r2": 0.3268,
+    "auc_by_thr": {
+      "p25": 0.7724,
+      "p50": 0.7724,
+      "p75": 0.8197
+    },
+    "brier_by_thr": {
+      "p25": 0.2898,
+      "p50": 0.2898,
+      "p75": 0.1752
+    },
+    "calibration": [
+      {
+        "bucket": "0.48-0.60",
+        "n": 558,
+        "expected_pct": 53.77,
+        "observed_pct": 8.24,
+        "delta": -45.52
+      },
+      {
+        "bucket": "0.60-0.64",
+        "n": 558,
+        "expected_pct": 62.37,
+        "observed_pct": 26.16,
+        "delta": -36.21
+      },
+      {
+        "bucket": "0.64-0.67",
+        "n": 558,
+        "expected_pct": 65.96,
+        "observed_pct": 30.11,
+        "delta": -35.86
+      },
+      {
+        "bucket": "0.67-0.70",
+        "n": 558,
+        "expected_pct": 68.66,
+        "observed_pct": 32.26,
+        "delta": -36.4
+      },
+      {
+        "bucket": "0.70-0.73",
+        "n": 558,
+        "expected_pct": 71.52,
+        "observed_pct": 37.81,
+        "delta": -33.71
+      },
+      {
+        "bucket": "0.73-0.77",
+        "n": 558,
+        "expected_pct": 74.94,
+        "observed_pct": 43.55,
+        "delta": -31.39
+      },
+      {
+        "bucket": "0.77-0.84",
+        "n": 558,
+        "expected_pct": 80.3,
+        "observed_pct": 53.76,
+        "delta": -26.54
+      },
+      {
+        "bucket": "0.84-0.92",
+        "n": 558,
+        "expected_pct": 87.92,
+        "observed_pct": 61.29,
+        "delta": -26.63
+      },
+      {
+        "bucket": "0.92-0.97",
+        "n": 558,
+        "expected_pct": 94.9,
+        "observed_pct": 78.14,
+        "delta": -16.76
+      },
+      {
+        "bucket": "0.97-1.00",
+        "n": 558,
+        "expected_pct": 99.03,
+        "observed_pct": 90.5,
+        "delta": -8.52
+      }
+    ],
+    "top_features": [
+      [
+        "position_encoded",
+        134.803955078125
+      ],
+      [
+        "stat_last10_avg",
+        21.456064224243164
+      ],
+      [
+        "stat_last10_median",
+        15.677889823913574
+      ],
+      [
+        "is_home",
+        12.616063117980957
+      ],
+      [
+        "stat_last5_avg",
+        11.418861389160156
+      ],
+      [
+        "shots_per_start_last10",
+        10.449992179870605
+      ],
+      [
+        "opp_xg_conceded_last10_avg",
+        9.017586708068848
+      ],
+      [
+        "opp_goals_conceded_last10_avg",
+        8.0643892288208
+      ],
+      [
+        "stat_last10_std",
+        7.866796970367432
+      ],
+      [
+        "xa_last5_avg",
+        7.729532718658447
+      ]
+    ],
+    "residual_std": 0.993
+  },
+  "split_date": "2025-01-01",
+  "min_prior_matches": 5,
+  "interim": true,
+  "interim_reason": "Trained on partial dataset (EPL 2024-25 only)",
+  "interim_dataset": {
+    "leagues": [
+      "EPL"
+    ],
+    "seasons": [
+      2024
+    ],
+    "total_rows": 21346,
+    "trained_at": "2026-07-29 17:37:46 UTC"
+  }
+}

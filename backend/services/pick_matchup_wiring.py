@@ -92,9 +92,45 @@ _TENNIS_MARKET_STAT_MAP: list[tuple[re.Pattern, str]] = [
     (re.compile(r"total\s*games", re.I),           "total_games"),
 ]
 
+# ─────────────────────────────────────────────────────────────────────
+# Soccer market → stat map (Phase 7 Part 4c, 2026-06)
+# ─────────────────────────────────────────────────────────────────────
+# Order matters — most specific first. "goal_contributions" (G+A) must
+# match before plain "goals" or "assists" so composite markets don't
+# collapse into one component. "shots on target" must match before
+# plain "shots" for the same reason.
+_SOCCER_MARKET_STAT_MAP: list[tuple[re.Pattern, str]] = [
+    # Composite (G+A) — MUST come first, before individual G / A regexes.
+    (re.compile(r"to\s*score\s*or\s*assist|score\s*or\s*assist|"
+                 r"goal\s*contribut|goals?\s*\+\s*assists?|"
+                 r"goals?\s*&\s*assists?",
+                 re.I),                                 "goal_contributions"),
+    (re.compile(r"shots?\s*on\s*target|sot\b", re.I),   "shots_on_target"),
+    # Assists AFTER goal_contributions so "score or assist" isn't captured
+    # by "assist" alone.
+    (re.compile(r"anytime\s*assist|to\s*assist|assists?", re.I),
+                                                        "assists"),
+    (re.compile(r"anytime\s*(?:goal\s*)?scorer|to\s*score|"
+                 r"first\s*(?:goal\s*)?scorer|player\s*(?:to\s*)?score|"
+                 r"\bgoals?\b",
+                 re.I),                                 "goals"),
+    (re.compile(r"\bxg\b|expected\s*goals?", re.I),     "xg"),
+    (re.compile(r"\bshots?\b", re.I),                   "shots"),
+]
+
+# Match-level (non-player) SOCCER markets — safe-skip.
+_SOCCER_MATCH_LEVEL_RE = re.compile(
+    r"both\s*teams\s*to\s*score|btts\b|"
+    r"total\s*goals?|total\s*(?:corners?|cards?|bookings?)|"
+    r"first\s*half\s*result|correct\s*score|double\s*chance|"
+    r"handicap|asian\s*handicap",
+    re.I,
+)
+
 
 def _detect_stat(sport: str, market: str) -> Optional[str]:
     sport_u = (sport or "").upper()
+    market_s = market or ""
     if sport_u == "MLB":
         table = _MLB_MARKET_STAT_MAP
     elif sport_u == "NFL":
@@ -103,10 +139,15 @@ def _detect_stat(sport: str, market: str) -> Optional[str]:
         table = _NBA_MARKET_STAT_MAP
     elif sport_u == "TENNIS":
         table = _TENNIS_MARKET_STAT_MAP
+    elif sport_u == "SOCCER":
+        # Match-level (non-player) soccer markets safe-skip first.
+        if _SOCCER_MATCH_LEVEL_RE.search(market_s):
+            return None
+        table = _SOCCER_MARKET_STAT_MAP
     else:
         return None
     for pat, key in table:
-        if pat.search(market or ""):
+        if pat.search(market_s):
             return key
     return None
 
@@ -170,6 +211,28 @@ def _parse_threshold(market: str) -> Optional[float]:
         return float(m.group(1))
     except (TypeError, ValueError):
         return None
+
+
+# Soccer implicit-threshold markets: "Anytime Goal Scorer",
+# "First Goal Scorer", "To Score or Assist", etc. all mean "≥ 1".
+# Standard books quote them as 0.5-line binary props. This helper is
+# used by the fusion parser to infer the threshold when the market
+# string doesn't contain a numeric line.
+_SOCCER_IMPLICIT_HALF_RE = re.compile(
+    r"anytime\s*(?:goal\s*)?scorer|first\s*(?:goal\s*)?scorer|"
+    r"to\s*score\s*or\s*assist|to\s*score|"
+    r"anytime\s*assist",
+    re.I,
+)
+
+
+def _infer_soccer_threshold(market: str) -> Optional[float]:
+    """Return 0.5 for implicit-≥1 soccer markets, else None."""
+    if not market:
+        return None
+    if _SOCCER_IMPLICIT_HALF_RE.search(market):
+        return 0.5
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -277,6 +340,66 @@ def _parse_opponent_tennis(event: str, player_name: Optional[str]) -> Optional[s
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Soccer opponent resolver (Phase 7 Part 4c)
+# ─────────────────────────────────────────────────────────────────────
+# Soccer picks store the event as "Team A @ Team B" and the market as
+# "{Player} Anytime Goal Scorer" — no team abbrev. We look up the
+# player's most-recent team in soccer_player_game_logs and return the
+# opposite side of the fixture.
+_SOCCER_TEAM_CACHE: dict[str, Optional[str]] = {}
+
+
+async def _resolve_soccer_player_team(db, player_name: str) -> Optional[str]:
+    if not player_name:
+        return None
+    if player_name in _SOCCER_TEAM_CACHE:
+        return _SOCCER_TEAM_CACHE[player_name]
+    import unicodedata
+    def _canon(s: str) -> str:
+        d = "".join(c for c in unicodedata.normalize("NFKD", s)
+                     if not unicodedata.combining(c))
+        return re.sub(r"\s+", " ",
+                       re.sub(r"[\.\-'\"\u2019]", "", d).strip().lower())
+    name_c = _canon(player_name)
+    doc = await db.soccer_player_game_logs.find_one(
+        {"name_canonical": name_c},
+        {"_id": 0, "team_name": 1},
+        sort=[("match_date", -1)],
+    )
+    team = doc["team_name"] if doc else None
+    _SOCCER_TEAM_CACHE[player_name] = team
+    return team
+
+
+async def _parse_opponent_soccer(db, event: str,
+                                   player_name: Optional[str]) -> Optional[str]:
+    """Resolve opponent for a soccer pick by looking up the player's team."""
+    if not event:
+        return None
+    parts = re.split(r"\s+(?:@|vs)\s+", event)
+    if len(parts) != 2:
+        return None
+    a, b = parts[0].strip(), parts[1].strip()
+    if not player_name:
+        return b
+    team = await _resolve_soccer_player_team(db, player_name)
+    if team:
+        t_low = team.lower()
+        if t_low in a.lower() or a.lower() in t_low:
+            return b
+        if t_low in b.lower() or b.lower() in t_low:
+            return a
+    # Fallback: last-name substring match (rare — teams usually anchor).
+    p_low = player_name.lower()
+    for tok in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ']{3,}", p_low):
+        if tok in a.lower():
+            return b
+        if tok in b.lower():
+            return a
+    return b
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Empty payload builder
 # ─────────────────────────────────────────────────────────────────────
 def _empty_payload(sport: str, reason: str) -> dict:
@@ -317,8 +440,11 @@ async def build_matchup_payload(db, pick: dict) -> dict:
     if not stat:
         return _empty_payload(sport, f"unrecognised stat in market: {market!r}")
 
-    # 3. Threshold.
+    # 3. Threshold — explicit line in market, else infer implicit for
+    #     soccer "Anytime Goal Scorer" / "To Score or Assist" markets.
     threshold = _parse_threshold(market)
+    if threshold is None and sport.upper() == "SOCCER":
+        threshold = _infer_soccer_threshold(market)
 
     # 4. Opponent.
     if sport.upper() == "MLB":
@@ -328,6 +454,11 @@ async def build_matchup_payload(db, pick: dict) -> dict:
         # which doesn't exist for tennis) so we pick the OPPOSITE side
         # of the "Player A @ Player B" event string.
         opponent = _parse_opponent_tennis(event, player_name)
+    elif sport.upper() == "SOCCER":
+        # Soccer: look up the player's most-recent team from
+        # `soccer_player_game_logs` to pick the OPPOSITE side of the
+        # "Team A @ Team B" event string.
+        opponent = await _parse_opponent_soccer(db, event, player_name)
     else:
         # Use home_team / away_team hint if present, else naïve split.
         own_hint = None
@@ -450,4 +581,5 @@ def _grade_from_nfl(nfl_res, stat: str, threshold: Optional[float]) -> tuple[str
     return grade, round(hr, 4)
 
 
-__all__ = ["build_matchup_payload", "_parse_opponent_tennis"]
+__all__ = ["build_matchup_payload", "_parse_opponent_tennis",
+             "_parse_opponent_soccer", "_resolve_soccer_player_team"]

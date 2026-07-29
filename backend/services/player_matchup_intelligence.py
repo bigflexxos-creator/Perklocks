@@ -115,6 +115,13 @@ _STAT_ALIAS: dict[tuple[str, str], str] = {
     ("tennis", "total_games"):       "total_games_match",
     ("tennis", "break_points_won"):  "break_points_won",
     ("tennis", "bp_won"):             "break_points_won",
+    # Soccer stats (Phase 7 Part 4c) — canonical.
+    ("soccer", "goals"):               "goals",
+    ("soccer", "assists"):             "assists",
+    ("soccer", "shots"):               "shots",
+    ("soccer", "shots_on_target"):     "shots_on_target",
+    ("soccer", "xg"):                  "xg",
+    ("soccer", "goal_contributions"):  "goal_contributions",
 }
 
 
@@ -410,6 +417,82 @@ async def _lookup_tennis_vs_opponent(db, player_id: Any,
 # ─────────────────────────────────────────────────────────────────────
 # Public entry point
 # ─────────────────────────────────────────────────────────────────────
+async def _lookup_soccer_vs_opponent(
+    db, player_name: str, opponent_team_name: Optional[str],
+    stat_key: str, limit: int = 20,
+) -> list[float]:
+    """Pull last-N raw stat values from `soccer_player_game_logs` where
+    the player played AGAINST the given opponent team.  Read-only.
+    """
+    if not player_name or not opponent_team_name:
+        return []
+    import re
+    import unicodedata
+
+    def _canon(s: str) -> str:
+        d = "".join(c for c in unicodedata.normalize("NFKD", s)
+                     if not unicodedata.combining(c))
+        return re.sub(r"\s+", " ",
+                       re.sub(r"[\.\-'\"\u2019]", "", d).strip().lower())
+
+    name_c = _canon(player_name)
+    # Match by exact opponent_team_name first, then by canonical prefix.
+    q = {"name_canonical": name_c,
+          "opponent_team_name": opponent_team_name}
+    cursor = db.soccer_player_game_logs.find(q).sort("match_date", -1) \
+        .limit(limit)
+    out: list[float] = []
+    async for d in cursor:
+        v = d.get(stat_key)
+        if v is None:
+            # Composite fallback: goal_contributions = goals + assists
+            if stat_key == "goal_contributions":
+                g = d.get("goals") or 0
+                a = d.get("assists") or 0
+                v = g + a
+            else:
+                continue
+        try:
+            out.append(float(v))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+async def _lookup_soccer_recent(
+    db, player_name: str, stat_key: str, limit: int = 25,
+) -> list[float]:
+    """Last-N raw stat values from `soccer_player_game_logs` (any opponent)."""
+    if not player_name:
+        return []
+    import re
+    import unicodedata
+
+    def _canon(s: str) -> str:
+        d = "".join(c for c in unicodedata.normalize("NFKD", s)
+                     if not unicodedata.combining(c))
+        return re.sub(r"\s+", " ",
+                       re.sub(r"[\.\-'\"\u2019]", "", d).strip().lower())
+
+    name_c = _canon(player_name)
+    q = {"name_canonical": name_c}
+    cursor = db.soccer_player_game_logs.find(q).sort("match_date", -1) \
+        .limit(limit)
+    out: list[float] = []
+    async for d in cursor:
+        v = d.get(stat_key)
+        if v is None:
+            if stat_key == "goal_contributions":
+                v = (d.get("goals") or 0) + (d.get("assists") or 0)
+            else:
+                continue
+        try:
+            out.append(float(v))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 async def get_matchup_intelligence(
     db,
     *,
@@ -470,6 +553,14 @@ async def get_matchup_intelligence(
         )
         if career_values:
             sources.append("tennis_matches_history")
+    elif sport_l == "soccer":
+        # Career vs OPPONENT — soccer_player_game_logs stores
+        # opponent_team_name per row so we can query it directly.
+        career_values = await _lookup_soccer_vs_opponent(
+            db, player_name, opponent_team, stat_canon, limit=20,
+        )
+        if career_values:
+            sources.append("soccer_player_game_logs")
     result.career_vs_opponent = _build_slice(career_values, threshold)
 
     # ── 2. props_history (pre-computed windows + consistency) ──────
@@ -517,11 +608,19 @@ async def get_matchup_intelligence(
             result.avg_stat_output = float(ph["last10_avg"])
 
     # ── 3. player_game_logs fallback (raw last-25) ─────────────────
-    raw_values = await _lookup_player_game_logs(
-        db, sport_l, player_id, player_name, stat_canon, limit=25,
-    )
+    # Soccer reads from soccer_player_game_logs (not the mixed
+    # player_game_logs collection).
+    if sport_l == "soccer":
+        raw_values = await _lookup_soccer_recent(
+            db, player_name, stat_canon, limit=25,
+        )
+    else:
+        raw_values = await _lookup_player_game_logs(
+            db, sport_l, player_id, player_name, stat_canon, limit=25,
+        )
     if raw_values:
-        sources.append("player_game_logs")
+        sources.append("player_game_logs" if sport_l != "soccer"
+                        else "soccer_player_game_logs")
         # Populate any slices props_history didn't cover.
         if result.overall_last_5.games == 0:
             result.overall_last_5 = _build_slice(raw_values[:5], threshold)
