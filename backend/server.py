@@ -6,6 +6,7 @@ import uuid
 import asyncio
 from datetime import datetime, timezone, timedelta, time as dtime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from typing import Annotated, Any, Optional
 
 from dotenv import load_dotenv
@@ -197,8 +198,27 @@ async def me(user: Annotated[UserPublic, Depends(current_user)]):
 # ────────────────────── Picks ──────────────────────
 
 
+# The betting "slate date" is the US EASTERN calendar date, never the UTC
+# date. Every US slate (MLB/NBA/NFL/NHL) is published, graded and settled
+# against ET, and an ET-evening game is ALREADY TOMORROW in UTC: a 7:41 PM
+# ET first pitch is 23:41Z, and anything written after 8 PM ET crosses
+# midnight UTC.
+#
+# Stamping pick_date from UTC therefore pushed the whole evening slate onto
+# tomorrow's board. Observed 2026-07-29: hitter props written at 00:08Z for
+# games with event_time 2026-07-28T22:41Z-23:50Z were stamped
+# pick_date=2026-07-29, so /picks/today served last night's ALREADY-SETTLED
+# Hits and H+R+RBI props while today's real slate showed none of them.
+#
+# `_today_str()` backs BOTH the write path (`_refresh_picks(_today_str())`)
+# and every read path (`{"pick_date": _today_str()}` in picks_routes /
+# parlay_routes), so moving it to ET keeps generation and querying aligned.
+_SLATE_TZ = ZoneInfo("America/New_York")
+
+
 def _today_str() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    """Current slate date (US Eastern) as YYYY-MM-DD."""
+    return datetime.now(_SLATE_TZ).strftime("%Y-%m-%d")
 
 
 # Game-time cutoff for "today" feeds. We only want PREGAME picks — once

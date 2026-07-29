@@ -2661,6 +2661,18 @@ async def pick_detail(
         await decorate_signals_bulk(db, [pick], persist=True)
     except Exception as _sig_err:
         logger.debug("Signal Engine failed on /picks/{id}: %s", _sig_err)
+    # ── Fusion Enrichment (2026-07-28, Phase-1 wire-up) ──────────────
+    # Attach the "Why This Pick" fusion block. Uses only existing
+    # engines (Trained ML, Similar Matchup, Player H2H, MC Simulator)
+    # via the Prediction Fusion Engine. NEVER modifies lock_score,
+    # win_probability, or simulator math. Falls back silently on any
+    # engine hiccup. Persists to `fusion_predictions` for backtesting.
+    try:
+        from services.pick_fusion_decorator import enrich_pick_with_fusion
+        await enrich_pick_with_fusion(db, pick, persist=True)
+    except Exception as _fusion_err:
+        logger.debug("Fusion enrichment failed on /picks/{id}: %s",
+                     _fusion_err)
     return pick
 
 

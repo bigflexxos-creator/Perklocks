@@ -23,6 +23,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 from dotenv import load_dotenv
@@ -50,8 +51,16 @@ EDGE_THRESHOLD = 0.04     # 4% over fair to surface a pick
 LOCK_BAND = (60.0, 92.0)  # range we map our prob-edge into
 
 
+# Slate date must match `server._today_str()` — US Eastern, not UTC.
+# NRFI/YRFI rows stamp `pick_date` from this, so a UTC date here would
+# bucket the ET-evening slate onto tomorrow's board while the rest of the
+# app queried today's. See the _SLATE_TZ note in server.py.
+_SLATE_TZ = ZoneInfo("America/New_York")
+
+
 def _today_str() -> str:
-    return datetime.now(timezone.utc).date().isoformat()
+    """Current slate date (US Eastern) as YYYY-MM-DD."""
+    return datetime.now(_SLATE_TZ).date().isoformat()
 
 
 async def _fetch_schedule(client: httpx.AsyncClient, date_iso: str) -> list[dict]:

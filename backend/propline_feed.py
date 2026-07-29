@@ -51,6 +51,15 @@ logger = logging.getLogger("lockscore.propline_feed")
 PROPLINE_API_KEY = os.getenv("PROPLINE_API_KEY")
 PROPLINE_BASE = "https://api.prop-line.com/v1"
 
+# Latch set when prop-line rejects our credentials (401/403) or when no key is
+# configured at all. Both are terminal for the lifetime of the process: the
+# old code retried them forever through the 429 branch, emitting a
+# "rate-limited ... sleeping 30s" line every 30s per sport. That message named
+# the wrong cause and buried the real one — an unconfigured/rejected key looked
+# exactly like provider throttling.
+_auth_dead: bool = False
+_no_key_warned: bool = False
+
 # US retail books — pick PRICES users can actually take.
 US_RETAIL_BOOKS = frozenset({
     "draftkings", "fanduel", "betmgm", "betrivers", "bovada",
@@ -199,12 +208,46 @@ def _composite_key(event_id: str, book: str, market: str, sel: str,
 
 async def _request(cx: httpx.AsyncClient, path: str,
                    params: Optional[dict] = None) -> Optional[object]:
+    global _auth_dead, _no_key_warned
+
+    # No credentials — don't send a request with a None/empty header and then
+    # misreport the rejection as throttling. Warn once, then stay quiet.
+    if not PROPLINE_API_KEY:
+        if not _no_key_warned:
+            _no_key_warned = True
+            logger.error(
+                "prop-line DISABLED: PROPLINE_API_KEY is not set. This is the "
+                "secondary alt-line source (line-existence + best-price "
+                "validation); primary pricing still comes from The Odds API. "
+                "Set PROPLINE_API_KEY to re-enable."
+            )
+        return None
+
+    # Credentials already rejected once — further calls cannot succeed.
+    if _auth_dead:
+        return None
+
     headers = {"X-API-Key": PROPLINE_API_KEY, "Accept": "application/json"}
     try:
         r = await cx.get(f"{PROPLINE_BASE}{path}", params=params,
                          headers=headers, timeout=20)
+        # Auth failure is NOT a rate limit. Latch it, say so plainly, and stop
+        # retrying instead of sleeping 30s forever.
+        if r.status_code in (401, 403):
+            _auth_dead = True
+            logger.error(
+                "prop-line REJECTED our API key (status=%s on %s, body=%s). "
+                "Not a rate limit — the key is invalid, expired, or the "
+                "subscription lapsed. Disabling the prop-line feed until "
+                "restart; alt-line validation falls back to The Odds API.",
+                r.status_code, path, r.text[:200],
+            )
+            return None
         if r.status_code == 429:
-            logger.warning("prop-line rate-limited on %s, sleeping 30s", path)
+            logger.warning(
+                "prop-line genuinely rate-limited (429) on %s, sleeping 30s",
+                path,
+            )
             await asyncio.sleep(30)
             return None
         if r.status_code != 200:
