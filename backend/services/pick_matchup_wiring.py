@@ -73,10 +73,16 @@ _NFL_MARKET_STAT_MAP: list[tuple[re.Pattern, str]] = [
 ]
 
 _NBA_MARKET_STAT_MAP: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"point", re.I),   "points"),
-    (re.compile(r"rebound", re.I), "rebounds"),
-    (re.compile(r"assist", re.I),  "assists"),
-    (re.compile(r"three|3-?pt", re.I), "threes"),
+    (re.compile(r"rebound", re.I),                          "rebounds"),
+    (re.compile(r"assist", re.I),                           "assists"),
+    # 3PT / 3-pointer / three-pointer variants — must precede `point`
+    (re.compile(
+        r"three|3\s*-?\s*p(?:t|oint)|3s?\s*made",
+        re.I), "threes_made"),
+    (re.compile(r"steal", re.I),                            "steals"),
+    (re.compile(r"block", re.I),                            "blocks"),
+    # `point` last so "3-Pointers" doesn't match here first.
+    (re.compile(r"point", re.I),                            "points"),
 ]
 
 _TENNIS_MARKET_STAT_MAP: list[tuple[re.Pattern, str]] = [

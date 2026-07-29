@@ -244,15 +244,34 @@ def test_nba_feature_builder_reports_empty_gracefully():
 
 
 def test_nba_live_features_returns_stub():
+    """NBA live features now hit real data. This test used to assert
+    the pre-Phase-7 scaffold's 'pending' message; updated to reflect
+    the live path — with an empty DB stub, the builder short-circuits
+    at the ID lookup with `player_id not resolvable`."""
     from ml.features.nba import build_nba_live_features
 
-    class _DB: pass
+    class _StubColl:
+        async def find_one(self, *_a, **_kw): return None
+        def find(self, *_a, **_kw):
+            class _C:
+                def sort(self, *_a, **_k): return self
+                def limit(self, *_a, **_k): return self
+                def __aiter__(self): return self
+                async def __anext__(self): raise StopAsyncIteration
+            return _C()
+    class _DB:
+        def __getattr__(self, _): return _StubColl()
+
     r = _run(build_nba_live_features(_DB(), player_name="LeBron",
                                        opponent_team="BOS", stat="points"))
     assert isinstance(r, tuple) and len(r) == 3
     vec, names, meta = r
     assert all(math.isnan(v) for v in vec.values())
-    assert "pending" in " ".join(meta["notes"]).lower()
+    # Live builder message: either "not resolvable" or "no historical rows"
+    notes_joined = " ".join(meta["notes"]).lower()
+    assert ("resolvable" in notes_joined
+            or "no historical rows" in notes_joined
+            or "pending" in notes_joined)
 
 
 # ═════════════════════════════════════════════════════════════════════
