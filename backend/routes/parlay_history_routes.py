@@ -102,3 +102,52 @@ async def parlay_resettle(
     except Exception as e:
         logger.exception("resettle_parlay failed")
         raise HTTPException(500, f"resettle failed: {e}")
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Phase 5 · Parlay Intelligence backtest snapshot
+# ═════════════════════════════════════════════════════════════════════
+@router.get("/parlay/intelligence/backtest")
+async def parlay_intelligence_backtest(
+    user: Annotated[UserPublic, Depends(current_user)],
+    days: int = 60,
+    persist: bool = False,
+):
+    """Return the parlay intelligence backtest report.
+
+    Aggregates the last N days of settled parlays from `parlay_history`
+    into win-rate, best-combo, common-losing-leg, and confidence
+    calibration metrics. Read-only unless `persist=True` (admin snapshot)."""
+    try:
+        from services.parlay_intelligence import backtest_parlays, summarize_backtest
+        days_clamped = max(7, min(365, int(days or 60)))
+        report = await backtest_parlays(
+            db, days=days_clamped, persist=bool(persist),
+        )
+        return {
+            "report": report,
+            "bullets": summarize_backtest(report),
+        }
+    except Exception as e:
+        logger.exception("parlay backtest failed")
+        raise HTTPException(500, f"backtest failed: {e}")
+
+
+@router.get("/parlay/intelligence/reliability")
+async def parlay_intelligence_reliability(
+    user: Annotated[UserPublic, Depends(current_user)],
+    min_samples: int = 5,
+):
+    """Return the current parlay leg reliability map (per sport/family).
+    Populated by the learning loop as parlays settle."""
+    try:
+        rows = await db.parlay_leg_reliability.find(
+            {}, {"_id": 0},
+        ).to_list(length=500)
+        # Filter down to rows past the sample gate
+        filtered = [r for r in rows
+                    if int(r.get("n_total") or 0) >= int(min_samples or 0)]
+        filtered.sort(key=lambda r: (r.get("hit_rate") or 0), reverse=True)
+        return {"rows": filtered, "count": len(filtered)}
+    except Exception as e:
+        raise HTTPException(500, f"reliability read failed: {e}")

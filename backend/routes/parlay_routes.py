@@ -282,6 +282,22 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         if isinstance(_card.get("legs"), list):
             _card["legs"] = _canonicalize_picks(_card["legs"])
 
+    # ─── Phase 5 · Intelligence Enrichment (non-destructive) ─────────
+    # Attach `intelligence` block per card (leg rankings, correlation
+    # report, mode metadata). Never modifies existing keys — pure
+    # additive. Safe to disable via `?intelligence=0`.
+    try:
+        from services.parlay_intelligence.api import enrich_parlays
+        _mode_for_intel = (
+            "aggressive" if is_high_risk else
+            "safe"       if is_today_window or (is_advanced and
+                                                advanced_sub_norm == "safer")
+            else "balanced"
+        )
+        payloads = enrich_parlays(payloads, mode=_mode_for_intel)
+    except Exception as _intel_err:
+        logger.warning("parlay intelligence enrichment skipped: %s", _intel_err)
+
     # ─── Substitute / Combination support ─────────────────────────────
     used_event_ids_per_card = [
         {leg.get("event_id") for leg in (c.get("legs") or []) if leg.get("event_id")}

@@ -77,6 +77,21 @@ async def record_parlay_shown(db, parlay_card: dict, *,
             }
             for L in legs
         ]
+        # Snapshot the intelligence block (rankings + correlation) at
+        # show-time so the learning loop can attribute post-hoc failures
+        # to specific pregame signals.
+        intel = parlay_card.get("intelligence") or {}
+        ranking_snapshot: dict = {}
+        for r in (intel.get("leg_rankings") or []):
+            pid = r.get("pick_id")
+            if pid:
+                ranking_snapshot[pid] = {
+                    "parlay_score": r.get("parlay_score"),
+                    "confidence_grade": r.get("confidence_grade"),
+                    "risk_level": r.get("risk_level"),
+                    "components": r.get("components"),
+                }
+        correlation_snapshot = intel.get("correlation") or {}
         await db[HISTORY_COLL].update_one(
             {"signature": sig},
             {
@@ -91,6 +106,8 @@ async def record_parlay_shown(db, parlay_card: dict, *,
                     "shown_at":   now,
                     "survival_pct": parlay_card.get("survival_pct"),
                     "combined_american_odds": parlay_card.get("combined_american_odds"),
+                    "ranking_snapshot":     ranking_snapshot,
+                    "correlation_snapshot": correlation_snapshot,
                 },
                 "$inc": {"shown_count": 1},
                 "$set": {"last_shown_at": now},
@@ -143,6 +160,26 @@ async def settle_parlays(db) -> dict:
             }},
         )
         summary["settled"] += 1
+        # ─── Phase 5 · Learning-loop event record ────────────────────
+        # Every settled parlay gets one telemetry event + per-(sport,
+        # family) reliability counter bumps. Errors here must NEVER
+        # block the settle pass; log & move on.
+        try:
+            from services.parlay_intelligence import record_completed_parlay
+            settled_row = {**parlay, "status": outcome,
+                           "signature": parlay.get("signature"),
+                           "legs": parlay.get("legs") or [],
+                           "leg_count": parlay.get("leg_count"),
+                           "survival_pct": parlay.get("survival_pct"),
+                           "mode": parlay.get("mode")}
+            await record_completed_parlay(
+                db, settled_row,
+                pick_statuses=statuses,
+                ranking_snapshot=parlay.get("ranking_snapshot") or {},
+                correlation_snapshot=parlay.get("correlation_snapshot") or {},
+            )
+        except Exception as _pi_err:
+            logger.warning("learning loop record failed: %s", _pi_err)
     return summary
 
 
