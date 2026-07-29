@@ -2427,6 +2427,55 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as _bv_err:
         logger.warning("Board Visibility tagging skipped: %s", _bv_err)
 
+    # ── Fusion Enrichment (2026-07-29) ────────────────────────────────
+    # Attach Prediction Fusion Engine output (ML + Similar Matchup +
+    # Matchup Intelligence + Simulator consensus) to every ON-BOARD
+    # player-prop pick BEFORE insert. Off-board picks are skipped to
+    # save cycles — they're hidden from the user anyway.
+    #
+    # We persist to `fusion_predictions` (with pick_id linkage) so the
+    # post-settlement grading loop can back-solve `correct` /
+    # `winning_component` and feed the adaptive-learning stack.
+    #
+    # Lazy single-pick enrichment (GET /api/picks/{id}) still works and
+    # returns the SAME payload — but now the board also carries it.
+    #
+    # Bounded concurrency + wrapped exceptions: a fusion engine failure
+    # can NEVER take down the pick refresh.
+    try:
+        from services.pick_fusion_decorator import enrich_picks_bulk
+        on_board_picks = [p for p in safe_picks
+                           if not p.get("off_board")
+                           and not p.get("no_bet")]
+        if on_board_picks:
+            import time as _t
+            _fu_t0 = _t.time()
+            await enrich_picks_bulk(
+                db, on_board_picks,
+                persist=True,
+                include_simulator=False,   # simulator excluded from board
+                concurrency=8,
+            )
+            _fu_supported = sum(
+                1 for p in on_board_picks
+                if isinstance(p.get("fusion"), dict)
+                and p["fusion"].get("supported")
+            )
+            _fu_prob_available = sum(
+                1 for p in on_board_picks
+                if isinstance(p.get("fusion"), dict)
+                and p["fusion"].get("supported")
+                and (p["fusion"].get("final_probability") or 0) > 0
+            )
+            logger.info(
+                "Fusion Enrichment: %d/%d on-board picks supported "
+                "(%d with non-zero probability) in %.1fs",
+                _fu_supported, len(on_board_picks),
+                _fu_prob_available, _t.time() - _fu_t0,
+            )
+    except Exception as _fu_err:
+        logger.warning("Fusion Enrichment skipped: %s", _fu_err)
+
     if safe_picks:
         # ATOMIC-SWAP: do the wipe NOW, immediately before the insert.
         # The enrichment passes above ran on in-memory `safe_picks` —
@@ -4275,6 +4324,32 @@ async def _settlement_loop():
                 await on_settlement(db)
             except Exception as e:
                 logger.warning("Brain cache-bust error: %s", e)
+            # ── Fusion Grading (2026-07-29) ─────────────────────────
+            # Back-solve `fusion_predictions` for every pick that just
+            # settled: writes `actual_value`, `outcome`, `correct`, and
+            # `winning_component`. Feeds the Adaptive Learning stack
+            # (calibration curves, per-component weights, drift metrics).
+            #
+            # Runs on the FULL tick (every 15 min) — not every 60s — to
+            # amortise the lookback over MLB's fast tick without burning
+            # DB cycles when no non-MLB games have settled.
+            if is_full:
+                try:
+                    from services.pick_fusion_decorator import (
+                        grade_settled_fusion_predictions,
+                    )
+                    fg = await grade_settled_fusion_predictions(
+                        db, hours_lookback=48, limit=500,
+                    )
+                    if fg.get("graded", 0) or fg.get("scanned", 0):
+                        logger.info(
+                            "Fusion Grading: scanned=%d graded=%d "
+                            "no_actual=%d errors=%d",
+                            fg["scanned"], fg["graded"],
+                            fg["no_actual"], fg["errors"],
+                        )
+                except Exception as e:
+                    logger.warning("Fusion grading error: %s", e)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -4418,6 +4493,24 @@ async def on_startup():
     # hiccup". Compound with `pick_date` because the filter is
     # always scoped to today's slate.
     await db.picks.create_index([("pick_date", 1), ("signal_score", -1)])
+
+    # ── 2026-07-29 Fusion Predictions indexes ────────────────────────
+    # Grading loop scans by (actual_value=None, pick_id set, created_at)
+    # every 15 min. UI lazy-fetch reads by prediction_id.
+    try:
+        await db.fusion_predictions.create_index(
+            [("actual_value", 1), ("created_at", -1)],
+            name="fusion_grading_idx",
+        )
+        await db.fusion_predictions.create_index(
+            "prediction_id", unique=True, name="fusion_pid_idx",
+        )
+        await db.fusion_predictions.create_index(
+            [("pick_id", 1), ("created_at", -1)],
+            name="fusion_pick_idx",
+        )
+    except Exception as _fpi_err:
+        logger.warning("fusion_predictions index skipped: %s", _fpi_err)
 
     # ── 2026-07-28 DEFECT #5 — no_bet schema invariant at startup ────
     # Sweep any legacy rows where `no_bet_reason` is set but `no_bet`
