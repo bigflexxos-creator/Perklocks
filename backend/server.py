@@ -4350,6 +4350,43 @@ async def _settlement_loop():
                         )
                 except Exception as e:
                     logger.warning("Fusion grading error: %s", e)
+            # ── Daily Learning Snapshot (2026-07-29) ────────────────
+            # Runs at most once per calendar day (UTC). Aggregates the
+            # real settled-pick + fusion-prediction history into a
+            # single dated snapshot: lock-tier ROI, WP calibration,
+            # engine performance, sport perf, market perf, learned
+            # fusion weights.
+            #
+            # Uses only REAL data — never synthesises training rows.
+            # Errors NEVER halt the loop.
+            try:
+                if is_full:
+                    from datetime import datetime as _dt2, timezone as _tz2
+                    from services.adaptive_learning import (
+                        run_daily_learning_job,
+                    )
+                    today_utc = _dt2.now(_tz2.utc).strftime("%Y-%m-%d")
+                    already = await db["learning_snapshots"].find_one(
+                        {"snapshot_date": today_utc},
+                        {"_id": 0, "id": 1},
+                    )
+                    if not already:
+                        lj = await run_daily_learning_job(
+                            db, days=60, persist=True,
+                        )
+                        n_tiers = len((lj.get("lock_tier_performance")
+                                        or {}).get("buckets") or [])
+                        n_engines = len((lj.get("engine_performance")
+                                          or {}).get("engines") or [])
+                        n_sports = len(lj.get("sport_performance") or [])
+                        logger.info(
+                            "Daily learning snapshot [%s]: tiers=%d "
+                            "engines=%d sports=%d errors=%d",
+                            lj.get("snapshot_id"), n_tiers, n_engines,
+                            n_sports, len(lj.get("errors") or []),
+                        )
+            except Exception as e:
+                logger.warning("Daily learning job error: %s", e)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -4511,6 +4548,20 @@ async def on_startup():
         )
     except Exception as _fpi_err:
         logger.warning("fusion_predictions index skipped: %s", _fpi_err)
+
+    # ── 2026-07-29 Learning snapshots index ──────────────────────────
+    # The daily job upserts one row per UTC day; the analytics endpoint
+    # fetches the latest by `generated_at` DESC. Also index by
+    # `snapshot_date` for the once-per-day gate in `_settlement_loop`.
+    try:
+        await db.learning_snapshots.create_index(
+            [("generated_at", -1)], name="learning_generated_idx",
+        )
+        await db.learning_snapshots.create_index(
+            "snapshot_date", unique=True, name="learning_date_idx",
+        )
+    except Exception as _lsi_err:
+        logger.warning("learning_snapshots index skipped: %s", _lsi_err)
 
     # ── 2026-07-28 DEFECT #5 — no_bet schema invariant at startup ────
     # Sweep any legacy rows where `no_bet_reason` is set but `no_bet`

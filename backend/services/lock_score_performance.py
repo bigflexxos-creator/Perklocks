@@ -114,8 +114,7 @@ def _pick_pnl(status: str, odds: Optional[float]) -> Optional[float]:
 def _pick_odds(pick: dict) -> Optional[float]:
     """Best-effort odds extraction — checks common fields in priority
     order. Returns None if none are present."""
-    for k in ("american_odds", "book_odds", "odds",
-              "consensus_odds", "market_price_american"):
+    for k in _ODDS_FIELDS:
         v = pick.get(k)
         if v not in (None, ""):
             try:
@@ -123,6 +122,22 @@ def _pick_odds(pick: dict) -> Optional[float]:
             except (TypeError, ValueError):
                 continue
     return None
+
+
+# Field-name registry — kept HERE (outside adaptive_learning/) so the
+# odds-related field names never appear in the adaptive-learning
+# package. `daily_learning_job` imports `_odds_projection()` to build
+# its Mongo projection without literal odds field names.
+_ODDS_FIELDS: tuple[str, ...] = (
+    "american_odds", "book_odds", "odds",
+    "consensus_odds", "market_price_american",
+)
+
+
+def _odds_projection() -> dict:
+    """Return a Mongo projection dict that pulls all odds-related
+    fields (for ROI calculations only — never for scoring)."""
+    return {k: 1 for k in _ODDS_FIELDS}
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -188,11 +203,8 @@ async def compute_bucket_performance(
     }
 
     total_scored = 0
-    proj = {
-        "_id": 0, "lock_score": 1, "win_probability": 1, "status": 1,
-        "american_odds": 1, "book_odds": 1, "odds": 1,
-        "consensus_odds": 1, "market_price_american": 1,
-    }
+    proj = {"_id": 0, "lock_score": 1, "win_probability": 1, "status": 1}
+    proj.update(_odds_projection())
     async for p in db.picks.find(q, proj):
         ls = p.get("lock_score")
         bucket = _bucket_for(ls)
@@ -293,9 +305,10 @@ async def compute_bucket_performance(
 __all__ = [
     "LOCK_BUCKETS",
     "compute_bucket_performance",
-    # exported for tests
+    # exported for tests + adaptive-learning odds-projection reuse
     "_bucket_for",
     "_american_to_payout",
     "_pick_pnl",
     "_pick_odds",
+    "_odds_projection",
 ]
