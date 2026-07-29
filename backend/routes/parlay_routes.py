@@ -29,6 +29,7 @@ Author: PerkLocks AI · 2026-06-28
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import datetime, timezone, timedelta
 from typing import Annotated, Optional
@@ -213,7 +214,13 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         logger.warning("Parlay synergy map load failed: %s", _sm_err)
 
     # ─── Build ───
-    top = build_top_parlays(
+    # `build_top_parlays` is CPU-heavy (nested O(candidates × target_legs
+    # × pool) plus an auto-expand ladder that can rerun it 5×). Running
+    # it directly on the event loop was blocking every concurrent
+    # request during peak. Offload to a worker thread so other sockets
+    # keep flowing while we score parlays.
+    top = await asyncio.to_thread(
+        build_top_parlays,
         pool, target_legs=target_legs, high_risk=is_high_risk,
         bucket_map=bucket_map, rank=max(1, rank),
         locked_picks=locked_picks if locked_picks else None,
@@ -236,7 +243,8 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
             fb_pool = await db.picks.find(fb_q, {"_id": 0}).sort("lock_score", -1).limit(400).to_list(length=400)
             if len(fb_pool) < 5:
                 continue
-            fb_top = build_top_parlays(
+            fb_top = await asyncio.to_thread(
+                build_top_parlays,
                 fb_pool, target_legs=target_legs, high_risk=is_high_risk,
                 bucket_map=bucket_map, rank=max(1, rank),
                 locked_picks=locked_picks if locked_picks else None,

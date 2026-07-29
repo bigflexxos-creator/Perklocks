@@ -4546,8 +4546,27 @@ async def on_startup():
             [("pick_id", 1), ("created_at", -1)],
             name="fusion_pick_idx",
         )
+        # Audit follow-up (2026-07-29): standalone `pick_id` +
+        # `pick_date` indexes for the analytics + lazy-enrichment paths.
+        # Compound `pick_id`+`created_at` above already covers pick_id
+        # equality, but a plain single-key index keeps EXPLAIN plans
+        # simpler for read-mostly aggregators and is cheap.
+        await db.fusion_predictions.create_index(
+            "pick_date", name="fusion_pick_date_idx",
+        )
     except Exception as _fpi_err:
         logger.warning("fusion_predictions index skipped: %s", _fpi_err)
+
+    # ── 2026-07-29 Learning log index (audit follow-up) ──────────────
+    # Analytics dashboard reads with .sort("ts", -1).limit(30) on a
+    # 35k-row collection every request. Add a descending index so the
+    # sort is a single index scan instead of an in-memory sort.
+    try:
+        await db.learning_log.create_index(
+            [("ts", -1)], name="learning_log_ts_idx",
+        )
+    except Exception as _lli_err:
+        logger.warning("learning_log index skipped: %s", _lli_err)
 
     # ── 2026-07-29 Learning snapshots index ──────────────────────────
     # The daily job upserts one row per UTC day; the analytics endpoint
