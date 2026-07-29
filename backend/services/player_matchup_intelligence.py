@@ -113,6 +113,8 @@ _STAT_ALIAS: dict[tuple[str, str], str] = {
     ("tennis", "aces"):              "aces",
     ("tennis", "double_faults"):     "double_faults",
     ("tennis", "total_games"):       "total_games_match",
+    ("tennis", "break_points_won"):  "break_points_won",
+    ("tennis", "bp_won"):             "break_points_won",
 }
 
 
@@ -369,11 +371,29 @@ async def _lookup_tennis_vs_opponent(db, player_id: Any,
         # Map stat_key → tennis column prefix (w_* for winner, l_* for loser)
         is_winner = d.get("winner_id") == player_id
         prefix = "w_" if is_winner else "l_"
+        # Simple 1-to-1 column mappings.
         col_map = {
             "aces": f"{prefix}ace",
             "double_faults": f"{prefix}df",
             "total_games_match": "total_games_match",
         }
+        # Composite stat: break_points_won = bpFaced - bpSaved
+        # (breaks earned by the RETURNER off the opposite server side).
+        # The winner-perspective "break_points_won" = losses's bpFaced -
+        # loser's bpSaved. i.e. this player's break_points_won =
+        # opponent's bpFaced - opponent's bpSaved.
+        if stat_key == "break_points_won":
+            opp_prefix = "l_" if is_winner else "w_"
+            faced = d.get(f"{opp_prefix}bpFaced")
+            saved = d.get(f"{opp_prefix}bpSaved")
+            if faced is None or saved is None:
+                continue
+            try:
+                v = max(0.0, float(faced) - float(saved))
+            except (TypeError, ValueError):
+                continue
+            out.append(v)
+            continue
         col = col_map.get(stat_key)
         if not col:
             continue

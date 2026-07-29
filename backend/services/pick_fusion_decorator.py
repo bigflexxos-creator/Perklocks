@@ -39,6 +39,14 @@ logger = logging.getLogger("lockscore.services.pick_fusion_decorator")
 # ─────────────────────────────────────────────────────────────────────
 _MONEYLINE_RE = re.compile(r"moneyline|winner", re.I)
 _TEAM_TOTALS_RE = re.compile(r"total\s*(?:runs|goals|points|score)", re.I)
+# Match-level (non-player) tennis markets — these are game/set totals
+# for the whole match, not a player prop. They must SAFE-SKIP so we
+# don't wire "Over"/"Under" as a fake player name into the fusion path.
+_TENNIS_MATCH_GAME_TOTAL_RE = re.compile(
+    r"total\s*games|^\s*(?:over|under)\s+-?\d+(?:\.\d+)?\s+games?\b",
+    re.I,
+)
+_TENNIS_SPREAD_RE = re.compile(r"[+\-]\d+(?:\.\d+)?\s*(?:spread|games?)?\s*$", re.I)
 _PLAYER_TEAM_RE = re.compile(r"^([A-Z][A-Za-z\.'\-\s]+?)\s*\(([A-Z0-9]{2,4})\)")
 _THRESHOLD_RE = re.compile(r"(?:Over|Under|O|U)\s+(-?\d+(?:\.\d+)?)", re.I)
 
@@ -54,12 +62,23 @@ def _parse_pick(pick: dict) -> Optional[dict]:
         return None
     if _MONEYLINE_RE.search(market) or _TEAM_TOTALS_RE.search(market):
         return None
+    # Tennis match-level game totals / spreads are NOT player props →
+    # skip them cleanly instead of parsing "Over"/"Under" as a player.
+    if (sport or "").upper() == "TENNIS":
+        if _TENNIS_MATCH_GAME_TOTAL_RE.search(market):
+            return None
+        if _TENNIS_SPREAD_RE.search(market):
+            return None
     # Player + team-abbrev shape (MLB) → resolve opponent via existing
     # helper. Otherwise use `selection` as the player name.
     m = _PLAYER_TEAM_RE.match(market)
     player_name = m.group(1).strip() if m else selection.strip()
     team_abbr = m.group(2).upper() if m else None
     if not player_name:
+        return None
+    # Reject nonsensical "player_name" values like "Over"/"Under" that
+    # can leak in when a market's selection is a direction not a player.
+    if player_name.lower() in {"over", "under"}:
         return None
     # Stat detection — reuse `pick_matchup_wiring._detect_stat`.
     from services.pick_matchup_wiring import _detect_stat  # lazy
@@ -77,9 +96,12 @@ def _parse_pick(pick: dict) -> Optional[dict]:
     # Opponent.
     from services.pick_matchup_wiring import (
         _parse_opponent_mlb, _parse_opponent_generic,
+        _parse_opponent_tennis,
     )
     if sport.upper() == "MLB":
         opponent = _parse_opponent_mlb(event, team_abbr)
+    elif sport.upper() == "TENNIS":
+        opponent = _parse_opponent_tennis(event, player_name)
     else:
         opponent = _parse_opponent_generic(event, team_abbr)
     return {

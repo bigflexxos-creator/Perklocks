@@ -124,6 +124,12 @@ _THRESHOLD_RE = re.compile(
 _PLAYER_PARENS_RE = re.compile(r"^([A-Z][A-Za-z\.'\-\s]+?)\s*\(([A-Z0-9]{2,4})\)")
 _MONEYLINE_RE = re.compile(r"moneyline|winner", re.I)
 _TEAM_RE = re.compile(r"total\s*(?:runs|goals|points|score)", re.I)
+# Tennis-specific: match-level game totals / spreads are NOT player props.
+_TENNIS_MATCH_LEVEL_RE = re.compile(
+    r"total\s*games|^\s*(?:over|under)\s+-?\d+(?:\.\d+)?\s+games?\b|"
+    r"[+\-]\d+(?:\.\d+)?\s*(?:spread|games?)?\s*$",
+    re.I,
+)
 
 
 def _parse_player_and_team_abbr(pick: dict) -> tuple[str, Optional[str]]:
@@ -134,8 +140,12 @@ def _parse_player_and_team_abbr(pick: dict) -> tuple[str, Optional[str]]:
     """
     market = pick.get("market") or ""
     selection = pick.get("selection") or ""
+    sport = (pick.get("sport") or "").upper()
     # Team markets short-circuit — no player.
     if _MONEYLINE_RE.search(market) or _TEAM_RE.search(market):
+        return "", None
+    # Tennis match-level game totals / spreads have no player anchor.
+    if sport == "TENNIS" and _TENNIS_MATCH_LEVEL_RE.search(market):
         return "", None
     # MLB / player-with-team-abbrev shape.
     m = _PLAYER_PARENS_RE.match(market)
@@ -144,7 +154,11 @@ def _parse_player_and_team_abbr(pick: dict) -> tuple[str, Optional[str]]:
     # Fallback: use selection as player name (props usually store the
     # player in `selection`).
     if selection:
-        return selection.strip(), None
+        s = selection.strip()
+        # Reject direction words that leak in for game/team-total markets.
+        if s.lower() in {"over", "under"}:
+            return "", None
+        return s, None
     return "", None
 
 
@@ -229,6 +243,39 @@ def _parse_opponent_generic(event: str, own_team_hint: Optional[str]) -> Optiona
     return b
 
 
+def _parse_opponent_tennis(event: str, player_name: Optional[str]) -> Optional[str]:
+    """Tennis: use the player's name to disambiguate which side of the
+    event string is the opponent.
+
+    Tennis events come as "Player A @ Player B" or "Player A vs Player B"
+    (also "Bertea E. / Pace F. vs Pieri T. / Tsygourov" for doubles).
+    We do a fuzzy last-name / first-initial match so "Alcaraz" resolves
+    inside "Carlos Alcaraz" and "Alcaraz C." both.
+    """
+    if not event:
+        return None
+    parts = re.split(r"\s+(?:@|vs)\s+", event)
+    if len(parts) != 2:
+        return None
+    a, b = parts[0].strip(), parts[1].strip()
+    if not player_name:
+        return b       # best-effort
+    p_low = player_name.lower().strip()
+    a_low, b_low = a.lower(), b.lower()
+    # Exact / substring first.
+    if p_low in a_low or a_low in p_low:
+        return b
+    if p_low in b_low or b_low in p_low:
+        return a
+    # Last-name fallback: try match on any token ≥ 3 chars.
+    for tok in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ']{3,}", p_low):
+        if tok in a_low:
+            return b
+        if tok in b_low:
+            return a
+    return b
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Empty payload builder
 # ─────────────────────────────────────────────────────────────────────
@@ -276,6 +323,11 @@ async def build_matchup_payload(db, pick: dict) -> dict:
     # 4. Opponent.
     if sport.upper() == "MLB":
         opponent = _parse_opponent_mlb(event, team_abbr)
+    elif sport.upper() == "TENNIS":
+        # Tennis: anchor off the player's name (not the team abbrev,
+        # which doesn't exist for tennis) so we pick the OPPOSITE side
+        # of the "Player A @ Player B" event string.
+        opponent = _parse_opponent_tennis(event, player_name)
     else:
         # Use home_team / away_team hint if present, else naïve split.
         own_hint = None
@@ -398,4 +450,4 @@ def _grade_from_nfl(nfl_res, stat: str, threshold: Optional[float]) -> tuple[str
     return grade, round(hr, 4)
 
 
-__all__ = ["build_matchup_payload"]
+__all__ = ["build_matchup_payload", "_parse_opponent_tennis"]
