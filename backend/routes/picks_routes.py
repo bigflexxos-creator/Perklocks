@@ -2932,3 +2932,32 @@ async def pick_simulation(
         raise HTTPException(status_code=404, detail="Simulator could not route this market")
     return sim
 
+
+@router.get("/{pick_id}/matchup")
+async def pick_matchup(
+    pick_id: str,
+    user: Annotated[UserPublic, Depends(current_user)],
+):
+    """Historical player-vs-opponent matchup intelligence for a pick.
+
+    Returns a rich payload with:
+      • matchup_grade (A+..F)
+      • sample_confidence (high|medium|low|none)
+      • threshold_hit_rate against the pick's over/under line
+      • career_vs_opponent, recent_vs_similar, overall_last_10, overall_season
+      • NFL only: position, last_meeting, per-stat threshold breakdowns
+
+    Works for MLB (K/H/HR/RBI/TB/HRRI), NFL (QB/RB/WR/TE), NBA, and
+    Tennis prop markets. Team/moneyline markets return
+    `{ supported: false }` and the frontend should hide the badge.
+
+    Zero writes. Zero HTTP calls. Never 500s — engine errors are
+    reported inside the payload's `notes` list.
+    """
+    pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
+    if not pick:
+        raise HTTPException(status_code=404, detail="Pick not found")
+    from services.pick_matchup_wiring import build_matchup_payload  # lazy
+    payload = await build_matchup_payload(db, pick)
+    payload["pick_id"] = pick_id
+    return payload

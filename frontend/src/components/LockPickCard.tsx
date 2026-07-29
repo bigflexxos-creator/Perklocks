@@ -8,6 +8,7 @@ import { useMLBLive } from "@/src/contexts/MLBLiveContext";
 import { getDisplayLock } from "@/src/lib/lockScore";
 import { PickEventRow } from "@/src/components/PickEventRow";
 import { useBetSlip } from "@/src/contexts/BetSlipContext";
+import { MatchupGradeBadge } from "@/src/components/MatchupGradeBadge";
 
 // Local alias so TrackBetButton props type-check without pulling
 // the full Pick type through the closure.
@@ -392,6 +393,11 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
               </Text>
             </View>
           )}
+          {/* ── Player-vs-Opponent Matchup Intelligence badge (2026-07-28) ──
+              Lazy-fetches /api/picks/{id}/matchup and shows a letter grade
+              only when the pick supports it AND we have historical rows.
+              Silently hides for team/moneyline markets and cold caches. */}
+          {!!pick.id && <MatchupGradeBadge pickId={pick.id} />}
         </View>
       </View>
 
