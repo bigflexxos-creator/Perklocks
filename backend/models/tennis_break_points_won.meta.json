@@ -1,0 +1,292 @@
+{
+  "sport": "Tennis",
+  "stat": "break_points_won",
+  "trained_at": "2026-07-29 09:28:09 UTC",
+  "winner": "lgbm",
+  "feature_names": [
+    "stat_last_3_avg",
+    "stat_last_5_avg",
+    "stat_last_10_avg",
+    "stat_last_20_avg",
+    "stat_last_10_median",
+    "stat_last_10_std",
+    "ace_rate_l10",
+    "df_rate_l10",
+    "first_in_rate_l10",
+    "service_games_l10",
+    "opp_ace_allowed_l10",
+    "rank_diff",
+    "surface_hard",
+    "surface_clay",
+    "surface_grass",
+    "surface_carpet",
+    "best_of_5",
+    "matches_played_ytd"
+  ],
+  "lgbm": {
+    "n_train": 14168,
+    "n_val": 48707,
+    "mae": 1.44,
+    "rmse": 1.756,
+    "r2": 0.1075,
+    "auc_by_thr": {
+      "p25": 0.6466,
+      "p50": 0.654,
+      "p75": 0.6826
+    },
+    "brier_by_thr": {
+      "p25": 0.2211,
+      "p50": 0.247,
+      "p75": 0.1325
+    },
+    "calibration": [
+      {
+        "bucket": "0.18-0.45",
+        "n": 4871,
+        "expected_pct": 40.77,
+        "observed_pct": 26.3,
+        "delta": -14.47
+      },
+      {
+        "bucket": "0.45-0.51",
+        "n": 4871,
+        "expected_pct": 48.27,
+        "observed_pct": 35.5,
+        "delta": -12.77
+      },
+      {
+        "bucket": "0.51-0.55",
+        "n": 4870,
+        "expected_pct": 53.11,
+        "observed_pct": 41.01,
+        "delta": -12.11
+      },
+      {
+        "bucket": "0.55-0.59",
+        "n": 4871,
+        "expected_pct": 57.2,
+        "observed_pct": 44.63,
+        "delta": -12.57
+      },
+      {
+        "bucket": "0.59-0.63",
+        "n": 4870,
+        "expected_pct": 60.97,
+        "observed_pct": 48.93,
+        "delta": -12.04
+      },
+      {
+        "bucket": "0.63-0.66",
+        "n": 4871,
+        "expected_pct": 64.63,
+        "observed_pct": 52.35,
+        "delta": -12.28
+      },
+      {
+        "bucket": "0.66-0.70",
+        "n": 4871,
+        "expected_pct": 68.23,
+        "observed_pct": 56.58,
+        "delta": -11.65
+      },
+      {
+        "bucket": "0.70-0.74",
+        "n": 4870,
+        "expected_pct": 72.21,
+        "observed_pct": 61.03,
+        "delta": -11.19
+      },
+      {
+        "bucket": "0.74-0.80",
+        "n": 4871,
+        "expected_pct": 76.91,
+        "observed_pct": 64.4,
+        "delta": -12.51
+      },
+      {
+        "bucket": "0.80-0.99",
+        "n": 4871,
+        "expected_pct": 84.33,
+        "observed_pct": 72.61,
+        "delta": -11.72
+      }
+    ],
+    "top_features": [
+      [
+        "rank_diff",
+        19304.330063819885
+      ],
+      [
+        "ace_rate_l10",
+        17011.77136325836
+      ],
+      [
+        "best_of_5",
+        11529.379703521729
+      ],
+      [
+        "surface_clay",
+        9837.432112693787
+      ],
+      [
+        "stat_last_20_avg",
+        9295.356714248657
+      ],
+      [
+        "opp_ace_allowed_l10",
+        6570.593592643738
+      ],
+      [
+        "matches_played_ytd",
+        4311.581383705139
+      ],
+      [
+        "df_rate_l10",
+        3881.665699005127
+      ],
+      [
+        "service_games_l10",
+        3788.1400079727173
+      ],
+      [
+        "stat_last_10_std",
+        3704.425302505493
+      ]
+    ],
+    "residual_std": 1.756
+  },
+  "xgb": {
+    "n_train": 14168,
+    "n_val": 48707,
+    "mae": 1.443,
+    "rmse": 1.757,
+    "r2": 0.1066,
+    "auc_by_thr": {
+      "p25": 0.646,
+      "p50": 0.6534,
+      "p75": 0.6823
+    },
+    "brier_by_thr": {
+      "p25": 0.222,
+      "p50": 0.2479,
+      "p75": 0.1326
+    },
+    "calibration": [
+      {
+        "bucket": "0.23-0.46",
+        "n": 4871,
+        "expected_pct": 41.71,
+        "observed_pct": 26.24,
+        "delta": -15.48
+      },
+      {
+        "bucket": "0.46-0.52",
+        "n": 4871,
+        "expected_pct": 49.43,
+        "observed_pct": 36.28,
+        "delta": -13.16
+      },
+      {
+        "bucket": "0.52-0.56",
+        "n": 4870,
+        "expected_pct": 54.06,
+        "observed_pct": 39.71,
+        "delta": -14.34
+      },
+      {
+        "bucket": "0.56-0.60",
+        "n": 4871,
+        "expected_pct": 57.8,
+        "observed_pct": 45.86,
+        "delta": -11.93
+      },
+      {
+        "bucket": "0.60-0.63",
+        "n": 4870,
+        "expected_pct": 61.41,
+        "observed_pct": 48.5,
+        "delta": -12.91
+      },
+      {
+        "bucket": "0.63-0.66",
+        "n": 4871,
+        "expected_pct": 64.58,
+        "observed_pct": 53.13,
+        "delta": -11.45
+      },
+      {
+        "bucket": "0.66-0.70",
+        "n": 4871,
+        "expected_pct": 67.91,
+        "observed_pct": 55.45,
+        "delta": -12.46
+      },
+      {
+        "bucket": "0.70-0.74",
+        "n": 4870,
+        "expected_pct": 71.85,
+        "observed_pct": 60.47,
+        "delta": -11.38
+      },
+      {
+        "bucket": "0.74-0.79",
+        "n": 4871,
+        "expected_pct": 76.47,
+        "observed_pct": 64.94,
+        "delta": -11.53
+      },
+      {
+        "bucket": "0.79-0.99",
+        "n": 4871,
+        "expected_pct": 84.13,
+        "observed_pct": 72.76,
+        "delta": -11.37
+      }
+    ],
+    "top_features": [
+      [
+        "surface_clay",
+        104.94390106201172
+      ],
+      [
+        "best_of_5",
+        104.86453247070312
+      ],
+      [
+        "ace_rate_l10",
+        43.88199234008789
+      ],
+      [
+        "rank_diff",
+        34.23492431640625
+      ],
+      [
+        "surface_grass",
+        32.685508728027344
+      ],
+      [
+        "surface_hard",
+        31.786815643310547
+      ],
+      [
+        "surface_carpet",
+        27.54177474975586
+      ],
+      [
+        "stat_last_20_avg",
+        23.172454833984375
+      ],
+      [
+        "opp_ace_allowed_l10",
+        16.759904861450195
+      ],
+      [
+        "matches_played_ytd",
+        16.193471908569336
+      ]
+    ],
+    "residual_std": 1.757
+  },
+  "split_date": "2024-01-01",
+  "surface": null
+}

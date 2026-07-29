@@ -319,29 +319,182 @@ async def train_nfl(stat: str, position: Optional[str],
     return meta
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Multi-sport data loaders + trainers (2026-07-28 extension)
+# ─────────────────────────────────────────────────────────────────────
+async def _load_mlb_rows() -> pd.DataFrame:
+    client = AsyncIOMotorClient(os.getenv("MONGO_URL"))
+    db = client["lockscore_db"]
+    logger.info("loading MLB rows ...")
+    t0 = time.time()
+    rows = [r async for r in
+             db.player_game_logs.find({"sport": "mlb"}, {"_id": 0}).sort("date", 1)]
+    logger.info("loaded %d MLB rows in %.1fs", len(rows), time.time() - t0)
+    return pd.DataFrame(rows)
+
+
+async def _load_tennis_matches() -> pd.DataFrame:
+    client = AsyncIOMotorClient(os.getenv("MONGO_URL"))
+    db = client["lockscore_db"]
+    logger.info("loading Tennis matches ...")
+    t0 = time.time()
+    rows = [r async for r in
+             db.tennis_matches_history.find({}, {"_id": 0}).sort("date", 1)]
+    logger.info("loaded %d Tennis matches in %.1fs", len(rows), time.time() - t0)
+    return pd.DataFrame(rows)
+
+
+async def train_mlb(stat: str, split_date: str = "2025-01-01") -> dict:
+    from ml.features.mlb import build_mlb_training_frame
+    df = await _load_mlb_rows()
+    tf = build_mlb_training_frame(df, stat=stat, min_prior_games=5)
+    if tf.features.empty:
+        raise SystemExit(f"MLB training frame empty for stat={stat}")
+    logger.info("MLB training frame: X=%s, y=%s",
+                tf.features.shape, tf.target.shape)
+    # Time-based split — prefer `date`; fall back to game_id percentile.
+    if "date" in tf.row_meta.columns and \
+       tf.row_meta["date"].notna().any():
+        mask_tr = (tf.row_meta["date"] < split_date) | tf.row_meta["date"].isna()
+        mask_va = tf.row_meta["date"] >= split_date
+    else:
+        # Split by game_id — take the last 15 % as validation.
+        gids = tf.row_meta["game_id"].astype(float)
+        threshold = float(gids.quantile(0.85))
+        mask_tr = gids <= threshold
+        mask_va = gids > threshold
+        logger.info("MLB date column empty — splitting on game_id > %s (15%% val)",
+                    threshold)
+    X_tr = tf.features.loc[mask_tr].reset_index(drop=True)
+    y_tr = tf.target.loc[mask_tr].reset_index(drop=True)
+    X_va = tf.features.loc[mask_va].reset_index(drop=True)
+    y_va = tf.target.loc[mask_va].reset_index(drop=True)
+    if len(y_tr) < 500 or len(y_va) < 50:
+        raise SystemExit(
+            f"MLB split too thin: train={len(y_tr)}, val={len(y_va)}"
+        )
+    return _train_dual("mlb", stat, tf, X_tr, y_tr, X_va, y_va,
+                        {"split_date": split_date, "position": None})
+
+
+async def train_tennis(stat: str, split_date: str = "2024-01-01",
+                        surface: Optional[str] = None) -> dict:
+    from ml.features.tennis import build_tennis_training_frame
+    df = await _load_tennis_matches()
+    tf = build_tennis_training_frame(df, stat=stat,
+                                       min_prior_matches=10,
+                                       surface=surface)
+    if tf.features.empty:
+        raise SystemExit(f"Tennis training frame empty for stat={stat}")
+    logger.info("Tennis training frame: X=%s, y=%s",
+                tf.features.shape, tf.target.shape)
+    mask_tr = tf.row_meta["date"] < split_date
+    mask_va = tf.row_meta["date"] >= split_date
+    X_tr = tf.features.loc[mask_tr].reset_index(drop=True)
+    y_tr = tf.target.loc[mask_tr].reset_index(drop=True)
+    X_va = tf.features.loc[mask_va].reset_index(drop=True)
+    y_va = tf.target.loc[mask_va].reset_index(drop=True)
+    if len(y_tr) < 500 or len(y_va) < 50:
+        raise SystemExit(
+            f"Tennis split too thin: train={len(y_tr)}, val={len(y_va)}"
+        )
+    return _train_dual("tennis", stat, tf, X_tr, y_tr, X_va, y_va,
+                        {"split_date": split_date, "surface": surface})
+
+
+def _train_dual(sport_tag: str, stat: str, tf,
+                 X_tr, y_tr, X_va, y_va, extra_meta: dict) -> dict:
+    """Shared LightGBM + XGBoost trainer + persister for MLB / Tennis."""
+    booster_lgb, preds_lgb, top_lgb = _train_lightgbm(
+        X_tr, y_tr, X_va, y_va, tf.feature_names,
+    )
+    metrics_lgb = _evaluate(preds_lgb, y_va, y_tr)
+    metrics_lgb.top_features = top_lgb
+    booster_xgb, preds_xgb, top_xgb = _train_xgboost(
+        X_tr, y_tr, X_va, y_va, tf.feature_names,
+    )
+    metrics_xgb = _evaluate(preds_xgb, y_va, y_tr)
+    metrics_xgb.top_features = top_xgb
+    winner = "lgbm" if metrics_lgb.mae <= metrics_xgb.mae else "xgb"
+    logger.info("[%s/%s] winner=%s | LGB MAE=%.3f XGB MAE=%.3f",
+                sport_tag.upper(), stat, winner,
+                metrics_lgb.mae, metrics_xgb.mae)
+
+    tag = f"{sport_tag}_{stat}"
+    with open(MODEL_DIR / f"{tag}_lgbm.pkl", "wb") as f:
+        pickle.dump({
+            "booster": booster_lgb,
+            "feature_names": tf.feature_names,
+            "sport": tf.sport, "stat": stat,
+            "residual_std": metrics_lgb.residual_std,
+        }, f)
+    with open(MODEL_DIR / f"{tag}_xgb.pkl", "wb") as f:
+        pickle.dump({
+            "booster": booster_xgb,
+            "feature_names": tf.feature_names,
+            "sport": tf.sport, "stat": stat,
+            "residual_std": metrics_xgb.residual_std,
+        }, f)
+    meta = {
+        "sport": tf.sport,
+        "stat": stat,
+        "trained_at": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+        "winner": winner,
+        "feature_names": tf.feature_names,
+        "lgbm": metrics_lgb.to_dict(),
+        "xgb":  metrics_xgb.to_dict(),
+        **extra_meta,
+    }
+    with open(MODEL_DIR / f"{tag}.meta.json", "w") as f:
+        json.dump(meta, f, indent=2, default=str)
+    logger.info("saved %s models to %s", tag, MODEL_DIR)
+    return meta
+
+
 def main():
     ap = argparse.ArgumentParser(description="Train a player-prop model.")
-    ap.add_argument("--sport", default="NFL", choices=["NFL"])
+    ap.add_argument("--sport", default="NFL",
+                     choices=["NFL", "MLB", "Tennis"])
     ap.add_argument("--stat", required=True)
     ap.add_argument("--position", default=None)
     ap.add_argument("--split-season", type=int, default=2024)
+    ap.add_argument("--split-date", default=None,
+                     help="For MLB/Tennis — ISO date splitting train vs val")
+    ap.add_argument("--surface", default=None,
+                     help="Tennis only: filter to one surface")
     ap.add_argument("--seasons-min", type=int, default=2019)
     ap.add_argument("--limit-rows", type=int, default=None)
     args = ap.parse_args()
 
-    meta = asyncio.run(train_nfl(
-        stat=args.stat,
-        position=args.position,
-        split_season=args.split_season,
-        seasons_min=args.seasons_min,
-        limit_rows=args.limit_rows,
-    ))
+    if args.sport == "NFL":
+        meta = asyncio.run(train_nfl(
+            stat=args.stat, position=args.position,
+            split_season=args.split_season,
+            seasons_min=args.seasons_min,
+            limit_rows=args.limit_rows,
+        ))
+    elif args.sport == "MLB":
+        meta = asyncio.run(train_mlb(
+            stat=args.stat,
+            split_date=args.split_date or "2025-01-01",
+        ))
+    elif args.sport == "Tennis":
+        meta = asyncio.run(train_tennis(
+            stat=args.stat,
+            split_date=args.split_date or "2024-01-01",
+            surface=args.surface,
+        ))
+    else:
+        raise SystemExit(f"sport {args.sport} not yet supported by trainer")
+
     print(json.dumps({
-        "winner": meta["winner"],
-        "lgbm_mae": meta["lgbm"]["mae"],
-        "xgb_mae":  meta["xgb"]["mae"],
-        "lgbm_auc_p50": meta["lgbm"]["auc_by_thr"].get("p50"),
-        "xgb_auc_p50":  meta["xgb"]["auc_by_thr"].get("p50"),
+        "sport":       meta["sport"],
+        "stat":        meta["stat"],
+        "winner":      meta["winner"],
+        "lgbm_mae":    meta["lgbm"]["mae"],
+        "xgb_mae":     meta["xgb"]["mae"],
+        "lgbm_auc_p50":meta["lgbm"]["auc_by_thr"].get("p50"),
+        "xgb_auc_p50": meta["xgb"]["auc_by_thr"].get("p50"),
     }, indent=2))
 
 

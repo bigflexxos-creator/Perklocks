@@ -211,7 +211,7 @@ async def predict_player_prop(
     Zero raises — errors are folded into `notes` inside the payload.
     """
     sport_u = (sport or "").upper()
-    if sport_u != "NFL":
+    if sport_u not in ("NFL", "MLB", "TENNIS"):
         return {
             "supported": False,
             "reason": f"sport {sport_u} not yet supported by trained engine",
@@ -224,15 +224,29 @@ async def predict_player_prop(
             "reason": f"no trained model for {sport_u}/{stat}",
         }
 
-    # 1. Live feature vector.
+    # 1. Live feature vector — sport-specific dispatch.
     try:
-        feat_dict, feat_order, feat_meta = await build_nfl_live_features(
-            db,
-            player_name=player,
-            opponent_team=opponent,
-            stat=stat,
-            position=bundle.get("position"),
-        )
+        if sport_u == "NFL":
+            feat_dict, feat_order, feat_meta = await build_nfl_live_features(
+                db,
+                player_name=player,
+                opponent_team=opponent,
+                stat=stat,
+                position=bundle.get("position"),
+            )
+        elif sport_u == "MLB":
+            from ml.features.mlb import build_mlb_live_features
+            feat_dict, feat_order, feat_meta = await build_mlb_live_features(
+                db, player_name=player, opponent_team=opponent, stat=stat,
+            )
+        elif sport_u == "TENNIS":
+            from ml.features.tennis import build_tennis_live_features
+            feat_dict, feat_order, feat_meta = await build_tennis_live_features(
+                db, player_name=player, opponent_team=opponent, stat=stat,
+            )
+        else:
+            return {"supported": False,
+                     "reason": f"live feature builder missing for {sport_u}"}
     except Exception as e:
         logger.exception("live feature build failed: %s", e)
         return {"supported": False, "reason": f"feature build error: {e}"}
@@ -280,7 +294,7 @@ async def predict_player_prop(
 
     result = {
         "supported":               True,
-        "sport":                   "NFL",
+        "sport":                   sport_u,
         "player":                  player,
         "stat":                    stat,
         "opponent":                opponent,

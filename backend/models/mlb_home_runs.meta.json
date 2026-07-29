@@ -1,0 +1,290 @@
+{
+  "sport": "MLB",
+  "stat": "home_runs",
+  "trained_at": "2026-07-29 09:27:15 UTC",
+  "winner": "lgbm",
+  "feature_names": [
+    "stat_last_3_avg",
+    "stat_last_5_avg",
+    "stat_last_10_avg",
+    "stat_last_20_avg",
+    "stat_last_10_median",
+    "stat_last_10_std",
+    "stat_last_5_max",
+    "stat_last_5_min",
+    "stat_last_10_cv",
+    "volume_last_5_avg",
+    "games_played_ytd",
+    "league_avg_prior_month",
+    "stat_season_to_date_avg",
+    "stat_last_10_hit_rate",
+    "is_batter",
+    "is_pitcher"
+  ],
+  "lgbm": {
+    "n_train": 30981,
+    "n_val": 5450,
+    "mae": 0.196,
+    "rmse": 0.348,
+    "r2": 0.0018,
+    "auc_by_thr": {
+      "p25": 0.5736,
+      "p50": 0.5736,
+      "p75": 0.5736
+    },
+    "brier_by_thr": {
+      "p25": 0.3449,
+      "p50": 0.3449,
+      "p75": 0.3449
+    },
+    "calibration": [
+      {
+        "bucket": "0.36-0.55",
+        "n": 545,
+        "expected_pct": 53.96,
+        "observed_pct": 9.54,
+        "delta": -44.42
+      },
+      {
+        "bucket": "0.55-0.57",
+        "n": 539,
+        "expected_pct": 56.05,
+        "observed_pct": 9.46,
+        "delta": -46.59
+      },
+      {
+        "bucket": "0.57-0.58",
+        "n": 551,
+        "expected_pct": 57.31,
+        "observed_pct": 7.99,
+        "delta": -49.32
+      },
+      {
+        "bucket": "0.58-0.59",
+        "n": 544,
+        "expected_pct": 58.37,
+        "observed_pct": 10.29,
+        "delta": -48.08
+      },
+      {
+        "bucket": "0.59-0.60",
+        "n": 546,
+        "expected_pct": 59.33,
+        "observed_pct": 9.89,
+        "delta": -49.44
+      },
+      {
+        "bucket": "0.60-0.61",
+        "n": 545,
+        "expected_pct": 60.33,
+        "observed_pct": 13.76,
+        "delta": -46.57
+      },
+      {
+        "bucket": "0.61-0.62",
+        "n": 545,
+        "expected_pct": 61.4,
+        "observed_pct": 9.91,
+        "delta": -51.49
+      },
+      {
+        "bucket": "0.62-0.64",
+        "n": 545,
+        "expected_pct": 62.96,
+        "observed_pct": 14.68,
+        "delta": -48.28
+      },
+      {
+        "bucket": "0.64-0.68",
+        "n": 545,
+        "expected_pct": 65.75,
+        "observed_pct": 15.05,
+        "delta": -50.7
+      },
+      {
+        "bucket": "0.68-0.93",
+        "n": 545,
+        "expected_pct": 73.51,
+        "observed_pct": 17.8,
+        "delta": -55.71
+      }
+    ],
+    "top_features": [
+      [
+        "stat_season_to_date_avg",
+        906.0845944434404
+      ],
+      [
+        "league_avg_prior_month",
+        692.511529289186
+      ],
+      [
+        "games_played_ytd",
+        494.5890302658081
+      ],
+      [
+        "volume_last_5_avg",
+        299.9804741591215
+      ],
+      [
+        "stat_last_20_avg",
+        235.57930414378643
+      ],
+      [
+        "stat_last_10_cv",
+        155.415251865983
+      ],
+      [
+        "stat_last_10_std",
+        117.85400401055813
+      ],
+      [
+        "stat_last_5_avg",
+        106.09490039944649
+      ],
+      [
+        "stat_last_3_avg",
+        87.05689811706543
+      ],
+      [
+        "stat_last_10_avg",
+        77.99482084810734
+      ]
+    ],
+    "residual_std": 0.347
+  },
+  "xgb": {
+    "n_train": 30981,
+    "n_val": 5450,
+    "mae": 0.202,
+    "rmse": 0.349,
+    "r2": -0.0009,
+    "auc_by_thr": {
+      "p25": 0.5753,
+      "p50": 0.5753,
+      "p75": 0.5753
+    },
+    "brier_by_thr": {
+      "p25": 0.3536,
+      "p50": 0.3536,
+      "p75": 0.3536
+    },
+    "calibration": [
+      {
+        "bucket": "0.48-0.55",
+        "n": 544,
+        "expected_pct": 53.94,
+        "observed_pct": 7.35,
+        "delta": -46.58
+      },
+      {
+        "bucket": "0.55-0.57",
+        "n": 546,
+        "expected_pct": 56.16,
+        "observed_pct": 11.36,
+        "delta": -44.8
+      },
+      {
+        "bucket": "0.57-0.58",
+        "n": 545,
+        "expected_pct": 57.53,
+        "observed_pct": 9.72,
+        "delta": -47.8
+      },
+      {
+        "bucket": "0.58-0.59",
+        "n": 545,
+        "expected_pct": 58.74,
+        "observed_pct": 8.26,
+        "delta": -50.48
+      },
+      {
+        "bucket": "0.59-0.60",
+        "n": 545,
+        "expected_pct": 59.8,
+        "observed_pct": 11.93,
+        "delta": -47.87
+      },
+      {
+        "bucket": "0.60-0.61",
+        "n": 545,
+        "expected_pct": 60.88,
+        "observed_pct": 9.91,
+        "delta": -50.97
+      },
+      {
+        "bucket": "0.61-0.63",
+        "n": 545,
+        "expected_pct": 62.26,
+        "observed_pct": 12.11,
+        "delta": -50.15
+      },
+      {
+        "bucket": "0.63-0.65",
+        "n": 545,
+        "expected_pct": 64.21,
+        "observed_pct": 15.23,
+        "delta": -48.98
+      },
+      {
+        "bucket": "0.65-0.70",
+        "n": 545,
+        "expected_pct": 67.43,
+        "observed_pct": 14.5,
+        "delta": -52.93
+      },
+      {
+        "bucket": "0.70-0.94",
+        "n": 545,
+        "expected_pct": 76.26,
+        "observed_pct": 17.98,
+        "delta": -58.28
+      }
+    ],
+    "top_features": [
+      [
+        "stat_season_to_date_avg",
+        0.7687191963195801
+      ],
+      [
+        "stat_last_20_avg",
+        0.6358264088630676
+      ],
+      [
+        "stat_last_5_max",
+        0.5863149762153625
+      ],
+      [
+        "stat_last_10_cv",
+        0.5515797734260559
+      ],
+      [
+        "league_avg_prior_month",
+        0.5391213297843933
+      ],
+      [
+        "stat_last_10_hit_rate",
+        0.5318852663040161
+      ],
+      [
+        "games_played_ytd",
+        0.5232195854187012
+      ],
+      [
+        "stat_last_10_avg",
+        0.5084425210952759
+      ],
+      [
+        "stat_last_5_avg",
+        0.4962734580039978
+      ],
+      [
+        "volume_last_5_avg",
+        0.4834236204624176
+      ]
+    ],
+    "residual_std": 0.348
+  },
+  "split_date": "2025-01-01",
+  "position": null
+}
