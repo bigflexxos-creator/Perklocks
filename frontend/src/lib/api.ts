@@ -1147,6 +1147,61 @@ export const api = {
         ip: string;
       }>;
     }>(`/picks/${id}/pitcher-h2h`),
+  // Player-vs-Opponent Matchup Intelligence (2026-07-28) — historical
+  // performance grade against this specific opponent. See
+  // `services/pick_matchup_wiring.py` for the payload contract.
+  pickMatchup: (id: string) =>
+    request<{
+      pick_id: string;
+      supported: boolean;
+      sport: string;
+      reason?: string;
+      player_name?: string;
+      opponent_team?: string | null;
+      stat?: string;
+      threshold?: number | null;
+      matchup_grade?: string | null;   // "A+" | "A" | "B" | "C" | "D" | "F"
+      sample_confidence?: "high" | "medium" | "low" | "none";
+      sample_size?: number;
+      threshold_hit_rate?: number;
+      avg_stat_output?: number;
+      median_stat_output?: number;
+      consistency_score?: number;
+      position?: string | null;
+      career_vs_opponent?: {
+        games: number; over_hits: number; hit_rate: number;
+        avg: number; median: number; stat_values: number[];
+      };
+      recent_vs_similar?: {
+        games: number; over_hits: number; hit_rate: number;
+        avg: number; median: number; stat_values: number[];
+      };
+      overall_last_5?: {
+        games: number; over_hits: number; hit_rate: number;
+        avg: number; median: number; stat_values: number[];
+      };
+      overall_last_10?: {
+        games: number; over_hits: number; hit_rate: number;
+        avg: number; median: number; stat_values: number[];
+      };
+      overall_season?: {
+        games: number; over_hits: number; hit_rate: number;
+        avg: number; median: number; stat_values: number[];
+      };
+      last_meeting?: Record<string, any> | null;
+      stat_lines?: Record<string, {
+        stat_key: string;
+        games: number;
+        avg: number;
+        median: number;
+        minimum: number;
+        maximum: number;
+        values: number[];
+        thresholds: Record<string, { threshold: number; hits: number; games: number; hit_rate: number }>;
+      }>;
+      data_sources_used?: string[];
+      notes?: string[];
+    }>(`/picks/${id}/matchup`),
   // Unified H2H bundle (2026-02) — used by the deep-dive `/pick/[id]` screen.
   h2h: (id: string) =>
     request<{

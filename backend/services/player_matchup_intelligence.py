@@ -299,13 +299,26 @@ async def _lookup_player_game_logs(db, sport: str, player_id: Any,
 
 
 async def _lookup_mlb_pvt(db, pitcher_name: str,
-                          opponent_team: Optional[str]) -> Optional[dict]:
+                          opponent_team: Optional[str],
+                          pitcher_id: Optional[int] = None) -> Optional[dict]:
     """MLB Pitcher-vs-Team — delegate to the existing service."""
     if not opponent_team:
         return None
     try:
-        from services.mlb_pvt import get_pitcher_vs_team_line  # type: ignore
-        return await get_pitcher_vs_team_line(db, pitcher_name, opponent_team)
+        from services.mlb_pvt import get_pvt_for_pitcher_vs_team  # type: ignore
+        # PvT service takes pitcher_id (int) + opp_team_name. Resolve
+        # name → id via the H2H helper when the caller didn't supply
+        # one. Both helpers are cached, so this stays cheap.
+        pid = pitcher_id
+        if not pid:
+            try:
+                from mlb_pitcher_h2h import _resolve_pitcher_id  # type: ignore
+                pid = await _resolve_pitcher_id(pitcher_name)
+            except Exception:
+                pid = None
+        if not pid:
+            return None
+        return await get_pvt_for_pitcher_vs_team(int(pid), opponent_team)
     except (ImportError, AttributeError):
         return None
     except Exception as e:
@@ -409,7 +422,7 @@ async def get_matchup_intelligence(
     # ── 1. career vs specific opponent ─────────────────────────────
     career_values: list[float] = []
     if sport_l == "mlb":
-        pvt = await _lookup_mlb_pvt(db, player_name, opponent_team)
+        pvt = await _lookup_mlb_pvt(db, player_name, opponent_team, pitcher_id=player_id)
         if pvt and pvt.get("significance") in ("medium", "high"):
             sources.append("mlb_pvt")
             gs = pvt.get("n_gs") or 0
