@@ -70,6 +70,86 @@ def _model_key(sport: str, stat: str) -> str:
     return f"{sport.lower()}_{stat.lower()}"
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Market → model routing (2026-07-29 fix)
+# ─────────────────────────────────────────────────────────────────────
+# The market detector produces canonical "family" stat keys (`strikeouts`,
+# `hits`, `passing_yards`, …) but some markets need position-aware
+# disambiguation before hitting the model registry.
+#
+# Example: MLB "strikeouts" is BOTH batter Ks (Aaron Judge Over 0.5) AND
+# pitcher Ks (Aaron Nola Over 4.5). The trained model on disk is
+# `mlb_pitcher_strikeouts.pkl` — batter Ks have no model yet (deliberately
+# gated by the trained-engine roadmap).
+#
+# We disambiguate here so:
+#   • pitcher K props     → route to pitcher_strikeouts model (loads)
+#   • batter K props      → stay on "strikeouts" (fails safely with a
+#                             clear "no batter-Ks model yet" reason)
+#
+# The rules are deliberately conservative — when in doubt, we prefer the
+# safe-fail path over misrouting a batter prop into a pitcher model.
+#
+# Threshold heuristic: pitcher K props are almost never below 3.5; batter
+# K props are almost never above 2.5. The 3.0 midpoint is the standard
+# industry cut used by BetGraph, DFS Karma, and Rotogrinders.
+_PITCHER_K_THRESHOLD_CUT = 3.0
+
+# Player position hints — populated from callers where available (via
+# active_registry lookup upstream). None = unknown → threshold fallback.
+_MLB_PITCHER_POSITIONS = {"P", "SP", "RP", "PITCHER"}
+_MLB_BATTER_POSITIONS = {
+    "1B", "2B", "3B", "SS", "C", "OF", "LF", "CF", "RF", "DH", "IF",
+    "BATTER",
+}
+
+
+def _resolve_model_key(
+    sport: str,
+    stat: str,
+    *,
+    line: Optional[float] = None,
+    player_position: Optional[str] = None,
+) -> tuple[str, list[str]]:
+    """Resolve the canonical market stat to a specific model registry key.
+
+    Returns ``(effective_stat, notes)``. `notes` explains any routing
+    decision so callers can log/telemetry it.
+
+    This function is the single source of truth for market → model
+    routing. It NEVER creates a stat key that doesn't correspond to a
+    trained model — safe-fail behaviour is guaranteed by returning the
+    canonical (batter) stat when disambiguation is uncertain, which then
+    naturally fails in `_load_model` for un-trained families.
+    """
+    notes: list[str] = []
+    sport_u = (sport or "").upper()
+    stat_l = (stat or "").lower().strip()
+
+    # ── MLB · disambiguate "strikeouts" → pitcher_strikeouts ──────────
+    if sport_u == "MLB" and stat_l == "strikeouts":
+        pos_u = (player_position or "").upper().strip()
+        if pos_u in _MLB_PITCHER_POSITIONS:
+            notes.append(
+                f"routed strikeouts → pitcher_strikeouts by position={pos_u}")
+            return "pitcher_strikeouts", notes
+        if pos_u in _MLB_BATTER_POSITIONS:
+            notes.append(f"kept batter strikeouts by position={pos_u}")
+            return "strikeouts", notes
+        # Position unknown — fall back to threshold heuristic.
+        if isinstance(line, (int, float)) and line >= _PITCHER_K_THRESHOLD_CUT:
+            notes.append(
+                f"routed strikeouts → pitcher_strikeouts by threshold "
+                f"{line:.1f} ≥ {_PITCHER_K_THRESHOLD_CUT}")
+            return "pitcher_strikeouts", notes
+        notes.append(
+            f"kept batter strikeouts (line {line}, position unknown)")
+        return "strikeouts", notes
+
+    # No routing rule matched — pass through unchanged.
+    return stat_l, notes
+
+
 def _load_model(sport: str, stat: str) -> Optional[dict]:
     key = _model_key(sport, stat)
     with _CACHE_LOCK:
@@ -205,6 +285,7 @@ async def predict_player_prop(
     stat: str,
     opponent: str,
     line: Optional[float] = None,
+    player_position: Optional[str] = None,
 ) -> dict:
     """Predict P(player exceeds line) for the given prop.
 
@@ -217,32 +298,53 @@ async def predict_player_prop(
             "reason": f"sport {sport_u} not yet supported by trained engine",
         }
 
-    bundle = _load_model(sport_u, stat)
+    # Market → model routing (see `_resolve_model_key` docstring).
+    effective_stat, routing_notes = _resolve_model_key(
+        sport_u, stat, line=line, player_position=player_position,
+    )
+
+    bundle = _load_model(sport_u, effective_stat)
     if not bundle:
+        # Give callers actionable diagnostics: the family they asked for
+        # AND the routing decision. When batter Ks safe-fail (no trained
+        # model exists yet) the reason includes "batter" so the fusion
+        # engine can annotate its `notes` properly.
+        family_note = (f" (batter market · no trained model)"
+                        if sport_u == "MLB" and stat.lower() == "strikeouts"
+                           and effective_stat == "strikeouts"
+                        else "")
         return {
             "supported": False,
-            "reason": f"no trained model for {sport_u}/{stat}",
+            "reason": (f"no trained model for {sport_u}/{effective_stat}"
+                        f"{family_note}"),
+            "requested_stat": stat,
+            "effective_stat": effective_stat,
+            "routing_notes":  routing_notes,
         }
 
     # 1. Live feature vector — sport-specific dispatch.
+    # Use `effective_stat` so position-gated feature builders (e.g. MLB
+    # pitcher K path) select the right rows from `player_game_logs`.
     try:
         if sport_u == "NFL":
             feat_dict, feat_order, feat_meta = await build_nfl_live_features(
                 db,
                 player_name=player,
                 opponent_team=opponent,
-                stat=stat,
+                stat=effective_stat,
                 position=bundle.get("position"),
             )
         elif sport_u == "MLB":
             from ml.features.mlb import build_mlb_live_features
             feat_dict, feat_order, feat_meta = await build_mlb_live_features(
-                db, player_name=player, opponent_team=opponent, stat=stat,
+                db, player_name=player, opponent_team=opponent,
+                stat=effective_stat,
             )
         elif sport_u == "TENNIS":
             from ml.features.tennis import build_tennis_live_features
             feat_dict, feat_order, feat_meta = await build_tennis_live_features(
-                db, player_name=player, opponent_team=opponent, stat=stat,
+                db, player_name=player, opponent_team=opponent,
+                stat=effective_stat,
             )
         else:
             return {"supported": False,
@@ -297,6 +399,8 @@ async def predict_player_prop(
         "sport":                   sport_u,
         "player":                  player,
         "stat":                    stat,
+        "effective_stat":          effective_stat,
+        "routing_notes":           routing_notes,
         "opponent":                opponent,
         "line":                    line,
         "expected_value":          round(mu, 3),
@@ -315,6 +419,10 @@ async def predict_player_prop(
         "similar_games_used":      int(sim_n),
         "notes":                   feat_meta.get("notes", []),
     }
+    # Prepend any routing decision to the notes so downstream telemetry
+    # can trace WHY this model was picked (esp. batter vs pitcher Ks).
+    if routing_notes:
+        result["notes"] = list(routing_notes) + list(result["notes"])
     return result
 
 
