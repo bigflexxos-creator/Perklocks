@@ -340,6 +340,80 @@ async def analytics_lock_tiers(
     )
 
 
+# ═════════════════════════════════════════════════════════════════════
+# Adaptive Learning Snapshot (2026-07-29)
+# ═════════════════════════════════════════════════════════════════════
+@router.get("/analytics/learning/snapshot")
+async def analytics_learning_snapshot(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Return the LATEST persisted daily learning snapshot.
+
+    The snapshot is generated once per calendar day by the settlement
+    loop; contains lock-tier performance, WP calibration, engine
+    performance, sport perf, market perf, and re-fitted fusion weights.
+    """
+    from services.adaptive_learning import load_latest_snapshot
+    row = await load_latest_snapshot(db)
+    if row is None:
+        return {"snapshot": None,
+                 "message": "no learning snapshot yet — the daily job "
+                            "runs from `_settlement_loop`. Try POST "
+                            "/api/analytics/learning/run to force it."}
+    return {"snapshot": row}
+
+
+@router.post("/analytics/learning/run")
+async def analytics_learning_run(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    days: int = 60,
+    persist: bool = True,
+):
+    """Force-run the daily learning job right now (admin safety valve —
+    same routine the `_settlement_loop` fires once per UTC day)."""
+    from services.adaptive_learning import run_daily_learning_job
+    return await run_daily_learning_job(db, days=days, persist=bool(persist))
+
+
+@router.get("/analytics/learning/win-probability")
+async def analytics_learning_wp_calibration(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    days: Optional[int] = None,
+    sport: Optional[str] = None,
+):
+    """Win-probability calibration: bins settled picks by
+    `win_probability` and reports observed hit-rate vs predicted."""
+    from services.adaptive_learning import compute_win_probability_calibration
+    return await compute_win_probability_calibration(
+        db, days=days, sport=sport,
+    )
+
+
+@router.get("/analytics/learning/sport-performance")
+async def analytics_learning_sport_perf(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    days: Optional[int] = None,
+):
+    """Per-sport ROI + hit-rate on settled picks (real data only)."""
+    from services.adaptive_learning import compute_sport_performance
+    return {"rows": await compute_sport_performance(db, days=days)}
+
+
+@router.get("/analytics/learning/market-performance")
+async def analytics_learning_market_perf(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    days: Optional[int] = None,
+    sport: Optional[str] = None,
+    min_samples: int = 10,
+):
+    """Per-market_family ROI + hit-rate. Families below `min_samples`
+    are omitted to keep the report sample-honest."""
+    from services.adaptive_learning import compute_market_performance
+    return {"rows": await compute_market_performance(
+        db, days=days, sport=sport, min_samples=int(min_samples),
+    )}
+
+
 @router.get("/analytics/xg-form-shadow")
 async def analytics_xg_form_shadow(
     user: Annotated[UserPublic, Depends(current_admin)],

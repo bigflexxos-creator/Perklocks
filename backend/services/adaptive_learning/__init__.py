@@ -31,3 +31,11 @@ from .weight_optimizer import (                              # noqa: F401
 )
 from .retraining_pipeline import RetrainingOrchestrator     # noqa: F401
 from .drift_detector import detect_drift                    # noqa: F401
+from .daily_learning_job import (                            # noqa: F401
+    run_daily_learning_job,
+    load_latest_snapshot,
+    compute_win_probability_calibration,
+    compute_sport_performance,
+    compute_market_performance,
+    SNAPSHOT_COLL,
+)
