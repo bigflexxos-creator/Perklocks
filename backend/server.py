@@ -4088,7 +4088,7 @@ async def _daily_refresh_loop():
 # wiped from the DB.
 _MLB_QUICK_REFRESH_INTERVAL = 5 * 60   # 5 minutes
 _MLB_WINDOW_START_UTC_HOUR = 15        # 11 AM ET
-_MLB_WINDOW_END_UTC_HOUR = 23          # 7 PM ET (catches late west-coast first pitches)
+_MLB_WINDOW_END_UTC_HOUR = 3           # 11 PM ET / 8 PM PT — covers late West Coast first pitches (wraps past midnight UTC)
 
 
 async def _mlb_pregame_loop():
@@ -4107,7 +4107,7 @@ async def _mlb_pregame_loop():
         try:
             now = datetime.now(timezone.utc)
             hour = now.hour
-            if _MLB_WINDOW_START_UTC_HOUR <= hour < _MLB_WINDOW_END_UTC_HOUR:
+            if hour >= _MLB_WINDOW_START_UTC_HOUR or hour < _MLB_WINDOW_END_UTC_HOUR:
                 # Today's slate (real-time refresh — pregame line moves,
                 # scratch news, weather, etc.)
                 await _refresh_picks(_today_str(), sport_filter="MLB")
@@ -4510,6 +4510,32 @@ async def on_startup():
         _MLB_QUICK_REFRESH_INTERVAL,
         _MLB_WINDOW_START_UTC_HOUR, _MLB_WINDOW_END_UTC_HOUR,
     )
+    # ── 2026-07-28 late-night one-shot MLB refresh ────────────────────
+    # If the server boots between 23:00–03:00 UTC (i.e. late West Coast
+    # first-pitch window), fire an immediate MLB refresh so the current
+    # slate populates without waiting for the 5-min loop cadence.
+    try:
+        _boot_hour = datetime.now(timezone.utc).hour
+        if _boot_hour >= 23 or _boot_hour < _MLB_WINDOW_END_UTC_HOUR:
+            async def _mlb_late_night_boot_refresh():
+                try:
+                    logger.info(
+                        "MLB late-night boot refresh firing (UTC hour=%02d, "
+                        "inside 23:00–%02d:00 window)",
+                        _boot_hour, _MLB_WINDOW_END_UTC_HOUR,
+                    )
+                    await _refresh_picks(_today_str(), sport_filter="MLB")
+                except Exception as _bn_err:
+                    logger.warning(
+                        "MLB late-night boot refresh failed: %s", _bn_err,
+                    )
+            _deferred_task(_mlb_late_night_boot_refresh, DEFER_BASE * 1)
+            logger.info(
+                "MLB late-night one-shot boot refresh armed (UTC hour=%02d)",
+                _boot_hour,
+            )
+    except Exception as _lnb_err:
+        logger.warning("MLB late-night boot check failed: %s", _lnb_err)
     _deferred_task(_settlement_loop,                        DEFER_BASE * 1)
     _deferred_task(_weekly_model_tuning_loop,               DEFER_BASE * 2)
     # Soccer module: pregame pipeline every 15 min (user choice 3A — no
