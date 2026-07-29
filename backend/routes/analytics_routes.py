@@ -306,6 +306,40 @@ async def analytics_calibration_refit(user: Annotated[UserPublic, Depends(curren
     return await fit_from_db(db)
 
 
+# ═════════════════════════════════════════════════════════════════════
+# Lock Score Tier Performance (2026-07-29)
+# ═════════════════════════════════════════════════════════════════════
+@router.get("/analytics/lock-tiers")
+async def analytics_lock_tiers(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    days: Optional[int] = None,
+    sport: Optional[str] = None,
+    include_off_board: bool = False,
+):
+    """Per-tier performance for the 0-99 Lock Score scale.
+
+    Answers the honest question: **at each Lock tier, what is the real
+    hit rate and ROI on settled picks?** Buckets are 99, 95-98, 90-94,
+    85-89, 80-84, 70-79, <70.
+
+    The `lock_score` field is proprietary — NOT a win probability.
+    `win_probability` is the calibrated statistical hit chance. This
+    endpoint publishes the delta between the two so users see the honest
+    per-tier accuracy.
+
+    Query params:
+      • `days`  — lookback (int, days). None = all-time.
+      • `sport` — filter to one sport (e.g. "MLB"). None = every sport.
+      • `include_off_board` — include picks hidden from the user board.
+        Default False.
+    """
+    from services.lock_score_performance import compute_bucket_performance
+    return await compute_bucket_performance(
+        db, days=days, sport=sport,
+        include_off_board=bool(include_off_board),
+    )
+
+
 @router.get("/analytics/xg-form-shadow")
 async def analytics_xg_form_shadow(
     user: Annotated[UserPublic, Depends(current_admin)],
