@@ -1059,6 +1059,34 @@ export const api = {
     }>(`/picks/parlay?${qs.toString()}`);
   },
   pickDetail: (id: string) => request<Pick & { ai_pending?: boolean }>(`/picks/${id}`),
+  altLines: (pickId: string) =>
+    request<{
+      pick_id: string;
+      supported?: boolean;
+      reason?: string;
+      bundle?: {
+        sport: string;
+        player: string;
+        stat: string;
+        opponent?: string | null;
+        projected?: number | null;
+        alt_lines: {
+          line: number;
+          side: "Over" | "Under";
+          source: "market" | "model_projection";
+          p_model: number;
+          p_implied: number | null;
+          edge: number | null;
+          confidence: number;
+          bucket_roi: number | null;
+          stability: number;
+          composite_score: number;
+          market_odds: { bookmaker?: string; american?: number; decimal?: number } | null;
+          explanation: string;
+        }[];
+        notes: string[];
+      };
+    }>(`/alt-lines/${pickId}`),
   saveParlay: (legs: Pick[], mode: string = "standard", stake: number = 1.0) =>
     request<{ id: string; status: string; combined_odds: number; legs_pending: number; legs_won: number; legs_lost: number; payout: number | null }>(
       "/parlay/save", { method: "POST", body: { legs, mode, stake } }
