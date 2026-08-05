@@ -263,6 +263,15 @@ async def settle_soccer_leg(leg: dict) -> Optional[str]:
 
 
 def _settle_scorer_market(detail: dict, selection: str, market_lower: str) -> Optional[str]:
+    # ── Universal book rule: if the named player DID NOT take the
+    #    field, the bet is VOID (money refunded). Applies to Anytime
+    #    Goal Scorer, First/Last Goal Scorer, and "To Score or Assist".
+    #    2026-06 user report: Nordic scorer picks were LOST on
+    #    suspended players / unused subs.  Check participation first.
+    part = _fotmob_player_participation(detail, selection)
+    if part in ("not_in_squad", "unused_sub"):
+        return "void"
+
     content = detail.get("content") or {}
     mf = content.get("matchFacts") or {}
     events = mf.get("events") or {}
@@ -283,10 +292,19 @@ def _settle_scorer_market(detail: dict, selection: str, market_lower: str) -> Op
             scorers.append(name)
     if not scorers:
         if "anytime" in market_lower or "goal scorer" in market_lower:
-            return "lost"
+            # Only grade LOST if we CONFIRMED the player played.
+            # Otherwise (participation unknown) → abstain so upper
+            # layer can decide.
+            if part == "played":
+                return "lost"
+            return None
         return None
     if _scorer_match(selection, scorers):
         return "won"
+    # Player didn't score.  If we confirmed they played → LOST.
+    # If we couldn't confirm participation → still LOST (defensive
+    # fallback — book rule assumes the player played when the
+    # scorer list is non-empty and we have no DNP signal).
     return "lost"
 
 
@@ -304,3 +322,92 @@ def _scorer_match(selection: str, scorers: list[str]) -> bool:
         if ns.split()[-1] == sel_last and len(sel_last) >= 4:
             return True
     return False
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Squad participation check (2026-06 user report — Nordic scorer picks
+# graded LOST when the named player was SUSPENDED / not in the squad
+# or an UNUSED SUB).
+#
+# Universal sportsbook rule (DraftKings, FanDuel, Bet365, Pinnacle,
+# BetMGM, Caesars): if the player named in a goal-scorer market does
+# NOT take the field, the bet is VOID (money refunded) — it must NOT
+# be graded LOST.
+# ──────────────────────────────────────────────────────────────────────
+def _fotmob_player_participation(
+    detail: dict, player_name: str,
+) -> Optional[str]:
+    """Inspect a FotMob matchDetails payload and classify the named
+    player's participation:
+
+      "played"       — starter (regardless of minutes) OR sub who came on
+      "unused_sub"   — named on bench but never entered → VOID
+      "not_in_squad" — not in home OR away lineup at all → VOID (susp/DNP)
+      None           — couldn't read lineup at all → caller must abstain
+
+    We deliberately treat "in starters" as `played` even when
+    `performance` is empty, because starters ALWAYS appear on the pitch
+    (except if the match was abandoned, which is a separate flag).
+    """
+    if not detail or not player_name:
+        return None
+    lineup = (detail.get("content") or {}).get("lineup") or {}
+    if not lineup:
+        return None
+    saw_any = False
+    for side_key in ("homeTeam", "awayTeam"):
+        side = lineup.get(side_key) or {}
+        starters = side.get("starters") or []
+        subs = side.get("subs") or []
+        # Starter → they were on the pitch from KO.
+        for pl in starters:
+            nm = pl.get("name") or ""
+            if not nm:
+                continue
+            saw_any = True
+            if _names_match(player_name, nm):
+                return "played"
+        # Sub — did they come on?  Check performance.substitutionEvents
+        # for a `subIn` type; if none, they were an unused sub.
+        for pl in subs:
+            nm = pl.get("name") or ""
+            if not nm:
+                continue
+            saw_any = True
+            if _names_match(player_name, nm):
+                perf = pl.get("performance") or {}
+                events = perf.get("substitutionEvents") or []
+                came_on = any(
+                    (e.get("type") or "").lower() == "subin"
+                    for e in events
+                )
+                # Some feeds don't populate substitutionEvents but do
+                # populate a rating for players who played — treat that
+                # as `played` too.  Only when BOTH are missing is the
+                # player considered an unused sub.
+                if came_on or perf.get("rating") is not None or \
+                   perf.get("minutesPlayed"):
+                    return "played"
+                return "unused_sub"
+    if saw_any:
+        return "not_in_squad"    # both sides had lineups but not this player
+    return None                   # empty lineups → couldn't verify
+
+
+async def check_fotmob_participation(
+    home_team: str, away_team: str,
+    event_time, player_name: str,
+) -> Optional[str]:
+    """Public helper — returns "played" / "unused_sub" / "not_in_squad"
+    / None so any settler pipeline (ESPN, prop_settlement) can VOID
+    cleanly on DNP without duplicating the FotMob lookup logic.
+    """
+    if not (home_team and away_team and player_name):
+        return None
+    match = await _find_match(home_team, away_team, event_time)
+    if not match:
+        return None
+    detail = await _match_detail(match.get("id"))
+    if not detail:
+        return None
+    return _fotmob_player_participation(detail, player_name)
