@@ -1719,3 +1719,97 @@ async def admin_odds_cache_stats(
         "expired": expired,
     }
 
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Phase 8 — Alt-Line Magic Tier (on-demand computation)
+# ═════════════════════════════════════════════════════════════════════
+@router.get("/alt-lines/{pick_id}")
+async def alt_lines_for_pick(pick_id: str):
+    """Compute ranked alt-line opportunities for a given pick.
+
+    Reads the pick from `db.picks`, extracts (sport, player, stat,
+    opponent), and returns a ranked list of alt lines with:
+      • win probability (from ML model)
+      • edge vs market implied prob (when book alt lines available)
+      • historical bucket ROI (from learning_snapshots)
+      • simulation stability
+      • plain-English explanation
+    """
+    from services.alt_line_engine import generate_alt_lines
+    from services.pick_fusion_decorator import _parse_pick
+    pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
+    if not pick:
+        raise HTTPException(404, "pick not found")
+    parsed = _parse_pick(pick)
+    if not parsed:
+        return {"pick_id": pick_id, "supported": False,
+                "reason": "pick market not supported for alt lines"}
+    # Fetch market alt lines if we've already cached them.
+    market_alt: list[dict] = []
+    try:
+        from services.odds_cache import _get_db as _oc_db
+        # Look for a cached event_alt_lines payload matching this event.
+        event_id = pick.get("event_id") or pick.get("id")
+        if event_id:
+            doc = await db.odds_api_cache.find_one(
+                {"endpoint_type": "event_alt_lines",
+                  "url": {"$regex": event_id}},
+                {"body": 1},
+            )
+            if doc and isinstance(doc.get("body"), dict):
+                for bk in doc["body"].get("bookmakers", []):
+                    for mkt in bk.get("markets", []):
+                        for outcome in mkt.get("outcomes", []):
+                            if outcome.get("name") in ("Over", "Under"):
+                                market_alt.append({
+                                    "line":       outcome.get("point"),
+                                    "side":       outcome.get("name"),
+                                    "american":   outcome.get("price"),
+                                    "bookmaker":  bk.get("key"),
+                                })
+    except Exception:
+        pass
+    bundle = await generate_alt_lines(
+        db,
+        sport=parsed["sport"],
+        player=parsed["player"],
+        stat=parsed["stat"],
+        opponent=parsed.get("opponent"),
+        market_alt_lines=market_alt or None,
+    )
+    return {
+        "pick_id":  pick_id,
+        "bundle":   bundle.to_dict(),
+    }
+
+
+@router.get("/alt-lines/board")
+async def alt_lines_board(sport: str, limit: int = 20):
+    """Compute alt-line bundles for every open pick in a sport.
+
+    Bulk endpoint for Lab / Parlay. Read-only, cache-first.
+    """
+    from services.alt_line_engine import generate_alt_lines
+    from services.pick_fusion_decorator import _parse_pick
+    cursor = db.picks.find(
+        {"sport": {"$regex": sport, "$options": "i"},
+          "status": {"$in": [None, "pending", "open"]}},
+        {"_id": 0},
+    ).limit(int(limit))
+    out = []
+    async for pick in cursor:
+        parsed = _parse_pick(pick)
+        if not parsed:
+            continue
+        bundle = await generate_alt_lines(
+            db,
+            sport=parsed["sport"],
+            player=parsed["player"],
+            stat=parsed["stat"],
+            opponent=parsed.get("opponent"),
+        )
+        if bundle.alt_lines:
+            out.append({"pick_id": pick.get("id"),
+                          "bundle": bundle.to_dict()})
+    return {"sport": sport, "n": len(out), "boards": out}
