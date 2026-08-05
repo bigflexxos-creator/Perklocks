@@ -86,6 +86,130 @@ _TTL_POLICY: dict[str, tuple[int, int]] = {
 
 
 # ═════════════════════════════════════════════════════════════════════
+# Phase 3 — Time-aware TTL scaling (2026-08)
+# ═════════════════════════════════════════════════════════════════════
+# Odds move MUCH more aggressively as tip-off approaches. If the
+# nearest game in a sport is 12 hours away, refreshing every 5 minutes
+# is pure waste — the line barely moves. But the same feed 30 minutes
+# before tip needs tight refresh.
+#
+# `_TIME_AWARE_TTL_MULTIPLIER` maps "hours to nearest game" → TTL
+# multiplier for `bulk_odds` and `event_odds` endpoints. The multiplier
+# is applied to BOTH the fresh window AND the stale window, but the
+# stale window is capped at 24 h.
+#
+# The base 5-min fresh × 12 = 60 min fresh for far-out games. The
+# 30-min stale × 12 = 6 h stale (safe — odds don't jump wildly 24h
+# before puck-drop / tip-off).
+_TIME_AWARE_MULTIPLIERS: list[tuple[float, float]] = [
+    # (max_hours_until_nearest_game, multiplier)
+    (2.0,   1.0),      # < 2 h    →  base TTL (aggressive)
+    (6.0,   3.0),      # 2 – 6 h  →  base × 3
+    (12.0,  6.0),      # 6 – 12 h →  base × 6
+    (24.0,  12.0),     # 12 – 24 h → base × 12
+    (48.0,  24.0),     # 24 – 48 h → base × 24
+    (float("inf"), 48.0),   # ≥ 48 h  → base × 48
+]
+_TIME_AWARE_ENDPOINTS = {"bulk_odds", "event_odds", "event_alt_lines"}
+_TIME_AWARE_MAX_STALE = 24 * 3600     # never let stale exceed 24 h
+
+# ─── Per-sport "nearest game" cache (avoids per-request Mongo lookup)
+_NEAREST_GAME_CACHE: dict[str, tuple[float, Optional[float]]] = {}
+_NEAREST_GAME_CACHE_TTL = 600   # 10 min — recomputed after this
+
+
+async def _compute_hours_to_nearest_game(
+    db, sport_key: Optional[str],
+) -> Optional[float]:
+    """Return hours until the earliest upcoming game for this sport,
+    based on the most-recently-cached events/bulk-odds payload in the
+    SWR cache. Falls back to None (→ base TTL) if we have no signal.
+    """
+    if not sport_key or db is None:
+        return None
+    # Local micro-cache — recompute at most once per 10 min.
+    now_t = time.time()
+    cached = _NEAREST_GAME_CACHE.get(sport_key)
+    if cached and (now_t - cached[0]) < _NEAREST_GAME_CACHE_TTL:
+        return cached[1]
+
+    try:
+        # Look for cached payloads for this sport that have events
+        # with a `commence_time` — bulk_odds and events_list both
+        # store an array of game dicts.
+        candidates = db.odds_api_cache.find(
+            {"sport_key": sport_key,
+              "endpoint_type": {"$in": ["bulk_odds", "events_list"]}},
+            {"body": 1},
+        ).sort("refreshed_at", -1).limit(3)
+        now_utc = datetime.now(timezone.utc)
+        earliest: Optional[datetime] = None
+        async for doc in candidates:
+            body = doc.get("body")
+            if not isinstance(body, list):
+                continue
+            for g in body:
+                if not isinstance(g, dict):
+                    continue
+                ct = g.get("commence_time")
+                if not ct:
+                    continue
+                try:
+                    ct_dt = datetime.fromisoformat(
+                        str(ct).replace("Z", "+00:00"))
+                    if ct_dt.tzinfo is None:
+                        ct_dt = ct_dt.replace(tzinfo=timezone.utc)
+                except Exception:
+                    continue
+                # Only consider FUTURE games (or in-progress within 4h).
+                if ct_dt < now_utc - timedelta(hours=4):
+                    continue
+                if earliest is None or ct_dt < earliest:
+                    earliest = ct_dt
+        hours = None
+        if earliest is not None:
+            delta_sec = (earliest - now_utc).total_seconds()
+            hours = max(0.0, delta_sec / 3600.0)
+        _NEAREST_GAME_CACHE[sport_key] = (now_t, hours)
+        return hours
+    except Exception as e:
+        logger.debug("_compute_hours_to_nearest_game err %s: %s",
+                      sport_key, e)
+        return None
+
+
+def _select_ttl_multiplier(hours_to_nearest: Optional[float]) -> float:
+    """Look up the TTL multiplier for a given hours-to-nearest-game."""
+    if hours_to_nearest is None:
+        return 1.0
+    for hmax, mult in _TIME_AWARE_MULTIPLIERS:
+        if hours_to_nearest <= hmax:
+            return mult
+    return 1.0
+
+
+async def _time_aware_ttls(
+    db, endpoint_type: str, sport_key: Optional[str],
+) -> tuple[int, int, dict]:
+    """Return (fresh_ttl, stale_ttl, debug_meta) after applying the
+    time-aware scaling multiplier for this sport.
+
+    debug_meta is a dict with `hours_to_nearest_game` + `multiplier`
+    so callers can log the reason a request was served from cache.
+    """
+    base_fresh, base_stale = _TTL_POLICY.get(
+        endpoint_type, _TTL_POLICY["generic"])
+    if endpoint_type not in _TIME_AWARE_ENDPOINTS:
+        return base_fresh, base_stale, {}
+    hours = await _compute_hours_to_nearest_game(db, sport_key)
+    mult = _select_ttl_multiplier(hours)
+    fresh = int(base_fresh * mult)
+    stale = min(int(base_stale * mult), _TIME_AWARE_MAX_STALE)
+    return fresh, stale, {"hours_to_nearest_game": hours,
+                           "ttl_multiplier": mult}
+
+
+# ═════════════════════════════════════════════════════════════════════
 # Mongo helpers (lazy, so tests can inject a fake db)
 # ═════════════════════════════════════════════════════════════════════
 _DB_CACHE: dict[str, Any] = {"client": None, "db": None, "inited": False}
@@ -308,8 +432,44 @@ async def cached_odds_get(
     params = params or {}
     fresh_ttl, stale_ttl = _TTL_POLICY.get(endpoint_type,
                                             _TTL_POLICY["generic"])
+    # Phase 3 — time-aware TTL scaling. If the nearest game in this
+    # sport is many hours away, extend the fresh window so we don't
+    # burn credits refreshing lines that barely move. Only applies to
+    # sport-specific endpoints (bulk_odds / event_odds / alt_lines).
+    ttl_meta: dict = {}
+    if sport_key and endpoint_type in _TIME_AWARE_ENDPOINTS \
+       and db is not None:
+        try:
+            fresh_ttl, stale_ttl, ttl_meta = await _time_aware_ttls(
+                db, endpoint_type, sport_key,
+            )
+        except Exception as e:
+            logger.debug("time-aware TTL failed for %s: %s",
+                          sport_key, e)
     key = _cache_key(url, params)
     now = time.time()
+
+    # Phase 3 — "no games in horizon" pre-flight. If the events list
+    # for this sport has been cached AND shows zero games within the
+    # next 48 h, skip odds fetches entirely for a while (we already
+    # know the response will be empty). This is a huge saving for
+    # off-season sports keys the app still lists (e.g. `basketball_nba`
+    # in July, `americanfootball_nfl` in April).
+    if (sport_key and endpoint_type == "bulk_odds"
+            and db is not None and not force_refresh):
+        try:
+            hours = await _compute_hours_to_nearest_game(db, sport_key)
+            if hours is not None and hours > 48.0:
+                await _write_request_log(
+                    db, url=url, params=params, sport_key=sport_key,
+                    markets=markets, caller=caller,
+                    cache_status="hit", upstream_called=False,
+                    reason=f"no_games_in_48h · nearest_h={hours:.1f}",
+                )
+                return []
+        except Exception as e:
+            logger.debug("no-games pre-flight err %s: %s",
+                          sport_key, e)
 
     async def _do_upstream_and_persist(reason: str,
                                         cache_status: str) -> Any:
@@ -396,11 +556,16 @@ async def cached_odds_get(
         if age <= fresh_ttl:
             # HIT — fresh, no upstream needed.
             if db is not None:
+                reason = f"fresh (age={int(age)}s < ttl={fresh_ttl}s)"
+                if ttl_meta:
+                    h = ttl_meta.get("hours_to_nearest_game")
+                    m = ttl_meta.get("ttl_multiplier")
+                    reason += f" · nearest_game_h={h} · mult={m}"
                 await _write_request_log(
                     db, url=url, params=params, sport_key=sport_key,
                     markets=markets, caller=caller,
                     cache_status="hit", upstream_called=False,
-                    reason=f"fresh (age={int(age)}s < ttl={fresh_ttl}s)",
+                    reason=reason,
                 )
             return (_drop_completed_games(payload)
                     if skip_completed else payload)
