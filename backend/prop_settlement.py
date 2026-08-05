@@ -1090,6 +1090,44 @@ async def _settle_group(cx, db, sport: str, date_str: str, batch: list[dict], co
                               counts)
                 continue
 
+            # ─── FotMob lineup fallback (2026-06 user report) ───────────
+            # ESPN doesn't publish squad lineups for many Nordic /
+            # lower-tier competitions (Allsvenskan, Eliteserien,
+            # Veikkausliiga, Superligaen, etc.), so `_espn_player_appeared`
+            # returns None. Before grading LOST for "player didn't
+            # score", consult FotMob's matchDetails lineup — FotMob has
+            # first-party feeds for virtually every league.
+            #
+            # Only invoke this on Nordic slugs (where the coverage gap
+            # is known and the network cost is worth it). Elsewhere we
+            # rely on ESPN and safe-fail through the existing pipeline.
+            fotmob_participation = None
+            if appeared is None:
+                nordic_league = event_league_map.get(ev_id, "").lower()
+                if any(k in nordic_league for k in (
+                    "nor.1", "swe.1", "den.1", "fin.1",
+                    "isl.1", "irl.1", "sco.1",
+                )):
+                    try:
+                        from soccer_fotmob_settle import (
+                            check_fotmob_participation as _fot_part,
+                        )
+                        fotmob_participation = await _fot_part(
+                            home, away, ev.get("date"), player,
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            "FotMob lineup check failed for %s: %s",
+                            player, e,
+                        )
+                if fotmob_participation in ("not_in_squad", "unused_sub"):
+                    await _record(db, p, "void",
+                                  {"player": player, "stat": "dnp_void",
+                                   "value": 0, "line": 0.5,
+                                   "void_reason": f"fotmob_{fotmob_participation}"},
+                                  counts)
+                    continue
+
             # ─── Per-user feedback 2026-06-22: "Don't drop the goalscorer
             # I just want them to grade in history" ────────────────────────
             # Previously the engine VOIDED any goalscorer pick whose player
@@ -1309,6 +1347,10 @@ async def _record(db, pick: dict, outcome: str, detail: dict, counts: dict):
         {"id": pick["id"]},
         {"$set": {
             "status": outcome,
+            # Also mirror to `result` for legacy UI compat (History /
+            # ledger reads `result`; older records had it stale after
+            # a re-grade).
+            "result": outcome,
             "settled_at": datetime.now(timezone.utc).isoformat(),
             "settlement_detail": detail,
             "settled_via": "prop_engine",
