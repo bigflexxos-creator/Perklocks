@@ -133,12 +133,22 @@ async def _fetch_event_odds(sport_key: str, event_id: str) -> Optional[list]:
     if not _ODDS_API_KEY:
         return None
     url = f"{_ODDS_BASE}/sports/{sport_key}/events/{event_id}/odds"
-    data = await _http_get(url, {
-        "apiKey":     _ODDS_API_KEY,
-        "regions":    "us",
-        "markets":    "h2h,spreads,totals",
-        "oddsFormat": "american",
-    })
+    try:
+        from services.odds_cache import cached_httpx_get
+        data = await cached_httpx_get(
+            url,
+            {"regions": "us", "markets": "h2h,spreads,totals",
+              "oddsFormat": "american"},
+            api_key=_ODDS_API_KEY,
+            endpoint_type="event_odds",
+            caller="closing_line_snapshotter._fetch_event_odds",
+            sport_key=sport_key,
+            markets="h2h,spreads,totals",
+            timeout=12.0,
+        )
+    except Exception as e:
+        logger.debug("Odds API request failed: %s", e)
+        return None
     if not data:
         return None
     return data.get("bookmakers") or []

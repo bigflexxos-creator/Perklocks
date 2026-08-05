@@ -184,7 +184,68 @@ def reset_odds_api_circuit() -> dict:
     return get_odds_api_status()
 
 
-async def _get(url: str, params: dict) -> list | dict | None:
+async def _get(url: str, params: dict, *,
+                endpoint_type: Optional[str] = None,
+                caller: Optional[str] = None,
+                sport_key: Optional[str] = None,
+                skip_completed: bool = False) -> list | dict | None:
+    """Cache-first Odds API fetch.
+
+    All callers route through the centralized SWR cache in
+    `services/odds_cache.py`. On MISS the actual upstream fetch runs
+    inside `_upstream_fetch` (below) — the same code that used to be
+    inline here, with all the circuit-breaker / 401 / 429 / retry
+    handling intact.
+
+    Skipping the cache: pass `endpoint_type=None` and it still calls
+    upstream directly (used by /sports probe on startup).
+    """
+    if not ODDS_KEY or _API_DISABLED:
+        return None
+
+    # Infer endpoint_type + markets tag from the URL if the caller
+    # didn't provide one — keeps every call site auto-tagged.
+    ep_type = endpoint_type
+    if ep_type is None:
+        if url.endswith("/sports"):
+            ep_type = "sports_list"
+        elif "/events/" in url and url.endswith("/odds"):
+            ep_type = "event_odds"
+        elif url.endswith("/events"):
+            ep_type = "events_list"
+        elif url.endswith("/odds"):
+            ep_type = "bulk_odds"
+        else:
+            ep_type = "generic"
+    markets_tag = (params or {}).get("markets") or ""
+
+    async def _upstream_fetch():
+        return await _real_upstream_get(url, params)
+
+    try:
+        from services.odds_cache import cached_odds_get
+        return await cached_odds_get(
+            url=url,
+            params=params,
+            endpoint_type=ep_type,
+            caller=caller or "sports_engine._get",
+            sport_key=sport_key,
+            markets=markets_tag,
+            upstream_fetch=_upstream_fetch,
+            skip_completed=skip_completed,
+        )
+    except Exception as e:
+        # Cache infrastructure failure MUST NOT block a real fetch.
+        logger.warning("odds_cache path failed (%s) — falling through to direct fetch",
+                        e)
+        return await _real_upstream_get(url, params)
+
+
+async def _real_upstream_get(url: str, params: dict) -> list | dict | None:
+    """Actual HTTP call — the code that used to live inline in `_get`.
+
+    Keeps all the circuit-breaker / 401 / 429 / retry logic exactly as
+    it was; `_get` above is now a thin cache-wrapper around this."""
     global _API_DISABLED, _API_DISABLED_REASON
     global _API_401_STREAK, _API_FAIL_STREAK, _API_TOTAL_OK, _API_TOTAL_FAIL, _API_LAST_ERR
     if not ODDS_KEY or _API_DISABLED:
@@ -313,6 +374,10 @@ async def _fetch_odds_for(sport_key: str, regions: str = "us", sport: str | None
     data = await _get(
         f"{BASE}/sports/{sport_key}/odds",
         {"regions": regions, "markets": markets_param, "oddsFormat": "american"},
+        endpoint_type="bulk_odds",
+        caller="sports_engine._fetch_odds_for",
+        sport_key=sport_key,
+        skip_completed=True,
     )
     # Defensive 422-retry: if the multi-market request came back empty
     # for a team sport (rare, but happens on obscure minor leagues),
@@ -321,6 +386,10 @@ async def _fetch_odds_for(sport_key: str, regions: str = "us", sport: str | None
         data = await _get(
             f"{BASE}/sports/{sport_key}/odds",
             {"regions": regions, "markets": "h2h", "oddsFormat": "american"},
+            endpoint_type="bulk_odds",
+            caller="sports_engine._fetch_odds_for.retry",
+            sport_key=sport_key,
+            skip_completed=True,
         )
     return data if isinstance(data, list) else []
 

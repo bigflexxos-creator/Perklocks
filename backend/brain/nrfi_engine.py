@@ -166,17 +166,20 @@ async def _fetch_sportsbook_nrfi(
     if not _ODDS_KEY:
         return None
     url = f"{_ODDS_BASE}/sports/baseball_mlb/events/{event_id}/odds"
-    params = {
-        "apiKey": _ODDS_KEY,
-        "regions": "us",
-        "markets": "totals_1st_1_innings",
-        "oddsFormat": "american",
-    }
     try:
-        r = await client.get(url, params=params, timeout=_TIMEOUT)
-        if r.status_code != 200:
+        from services.odds_cache import cached_httpx_get
+        data = await cached_httpx_get(
+            url,
+            {"regions": "us", "markets": "totals_1st_1_innings",
+              "oddsFormat": "american"},
+            api_key=_ODDS_KEY,
+            endpoint_type="event_odds",
+            caller="brain.nrfi_engine._fetch_sportsbook_nrfi",
+            sport_key="baseball_mlb",
+            markets="totals_1st_1_innings",
+        )
+        if not data:
             return None
-        data = r.json()
     except Exception as e:
         logger.debug("Odds API NRFI fetch failed for %s: %s", event_id, e)
         return None

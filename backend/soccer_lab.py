@@ -53,14 +53,21 @@ async def _fetch_active_soccer_leagues() -> list[dict[str, Any]]:
     if not api_key:
         logger.warning("Soccer Lab: THE_ODDS_API_KEY missing — cannot discover")
         return []
-    async with httpx.AsyncClient(timeout=15.0) as cx:
-        try:
-            r = await cx.get(f"{_ODDS_API_BASE}/sports", params={"apiKey": api_key})
-            r.raise_for_status()
-            data = r.json()
-        except Exception as e:
-            logger.warning("Soccer Lab: /sports fetch failed: %s", e)
-            return []
+    try:
+        from services.odds_cache import cached_httpx_get
+        data = await cached_httpx_get(
+            f"{_ODDS_API_BASE}/sports",
+            {},
+            api_key=api_key,
+            endpoint_type="sports_list",
+            caller="soccer_lab._fetch_active_soccer_leagues",
+            timeout=15.0,
+        )
+    except Exception as e:
+        logger.warning("Soccer Lab: /sports fetch failed: %s", e)
+        return []
+    if not data:
+        return []
     out = []
     for s in data:
         key = s.get("key") or ""

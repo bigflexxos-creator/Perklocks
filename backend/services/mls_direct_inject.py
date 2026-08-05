@@ -169,16 +169,21 @@ async def _fetch_mls_events(cx: httpx.AsyncClient) -> list[dict]:
     if not key:
         return []
     try:
-        r = await cx.get(
+        from services.odds_cache import cached_httpx_get
+        data = await cached_httpx_get(
             "https://api.the-odds-api.com/v4/sports/soccer_usa_mls/events",
-            params={"apiKey": key}, timeout=10,
+            {},
+            api_key=key,
+            endpoint_type="events_list",
+            caller="mls_direct_inject._fetch_mls_events",
+            sport_key="soccer_usa_mls",
+            skip_completed=True,
+            timeout=10,
         )
-        if r.status_code == 200:
-            data = r.json()
-            return data if isinstance(data, list) else []
+        return data if isinstance(data, list) else []
     except Exception as e:
         logger.warning("MLS events fetch failed: %s", e)
-    return []
+        return []
 
 
 async def _generate_for_event(ev: dict, all_scorers: list[dict],

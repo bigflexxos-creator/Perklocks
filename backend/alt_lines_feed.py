@@ -120,75 +120,70 @@ def _composite_key(event_id: str, book: str, market: str, sel: str,
 
 
 async def _fetch_events(cx: httpx.AsyncClient, sport_key: str) -> list[dict]:
-    url = f"{ODDS_API_BASE}/sports/{sport_key}/events"
-    params = {"apiKey": ODDS_API_KEY}
-    try:
-        r = await cx.get(url, params=params, timeout=15)
-        if r.status_code != 200:
-            logger.warning("events fetch failed %s status=%s body=%s",
-                           sport_key, r.status_code, r.text[:200])
-            return []
-        return r.json() or []
-    except Exception as e:
-        logger.warning("events fetch error %s: %s", sport_key, e)
-        return []
+    from services.odds_cache import cached_httpx_get
+    data = await cached_httpx_get(
+        f"{ODDS_API_BASE}/sports/{sport_key}/events",
+        {},
+        api_key=ODDS_API_KEY,
+        endpoint_type="events_list",
+        caller="alt_lines_feed._fetch_events",
+        sport_key=sport_key,
+        skip_completed=True,
+    )
+    return data or []
 
 
 async def _fetch_event_odds(cx: httpx.AsyncClient, sport_key: str,
                              event_id: str, markets: list[str]) -> Optional[dict]:
-    url = f"{ODDS_API_BASE}/sports/{sport_key}/events/{event_id}/odds"
-    params = {
-        "apiKey": ODDS_API_KEY,
-        "regions": "us",
-        "bookmakers": BOOKMAKERS,
-        "markets": ",".join(markets),
-        "oddsFormat": "american",
-    }
-    try:
-        r = await cx.get(url, params=params, timeout=15)
-        if r.status_code == 422:
-            # One or more markets aren't supported for this sport — try
-            # markets one-by-one to keep the supported ones.
-            return await _fetch_event_odds_individual(cx, sport_key, event_id, markets)
-        if r.status_code != 200:
-            logger.warning("event odds fetch %s/%s status=%s body=%s",
-                           sport_key, event_id, r.status_code, r.text[:200])
-            return None
-        return r.json()
-    except Exception as e:
-        logger.warning("event odds fetch error %s/%s: %s", sport_key, event_id, e)
-        return None
+    from services.odds_cache import cached_httpx_get
+    data = await cached_httpx_get(
+        f"{ODDS_API_BASE}/sports/{sport_key}/events/{event_id}/odds",
+        {"regions": "us", "bookmakers": BOOKMAKERS,
+          "markets": ",".join(markets), "oddsFormat": "american"},
+        api_key=ODDS_API_KEY,
+        endpoint_type="event_alt_lines",
+        caller="alt_lines_feed._fetch_event_odds",
+        sport_key=sport_key,
+        markets=",".join(markets),
+    )
+    # If the cache miss returned None (422 or upstream error), retry
+    # market-by-market so unsupported markets don't kill the batch.
+    if data is None:
+        return await _fetch_event_odds_individual(cx, sport_key,
+                                                    event_id, markets)
+    return data
 
 
 async def _fetch_event_odds_individual(cx: httpx.AsyncClient, sport_key: str,
                                         event_id: str, markets: list[str]) -> Optional[dict]:
     """Try each market individually so unsupported ones don't kill the batch."""
+    from services.odds_cache import cached_httpx_get
     merged_bookmakers: dict[str, dict] = {}
     combined_meta: Optional[dict] = None
     for mkt in markets:
-        url = f"{ODDS_API_BASE}/sports/{sport_key}/events/{event_id}/odds"
-        params = {
-            "apiKey": ODDS_API_KEY, "regions": "us",
-            "bookmakers": BOOKMAKERS, "markets": mkt, "oddsFormat": "american",
-        }
-        try:
-            r = await cx.get(url, params=params, timeout=15)
-            if r.status_code != 200:
+        obj = await cached_httpx_get(
+            f"{ODDS_API_BASE}/sports/{sport_key}/events/{event_id}/odds",
+            {"regions": "us", "bookmakers": BOOKMAKERS,
+              "markets": mkt, "oddsFormat": "american"},
+            api_key=ODDS_API_KEY,
+            endpoint_type="event_alt_lines",
+            caller="alt_lines_feed._fetch_event_odds_individual",
+            sport_key=sport_key,
+            markets=mkt,
+        )
+        if not obj:
+            continue
+        if combined_meta is None:
+            combined_meta = {k: obj.get(k) for k in
+                             ("id", "sport_key", "sport_title",
+                              "commence_time", "home_team", "away_team")}
+        for bm in obj.get("bookmakers") or []:
+            key = bm.get("key")
+            if not key:
                 continue
-            obj = r.json() or {}
-            if combined_meta is None:
-                combined_meta = {k: obj.get(k) for k in
-                                 ("id", "sport_key", "sport_title",
-                                  "commence_time", "home_team", "away_team")}
-            for bm in obj.get("bookmakers") or []:
-                key = bm.get("key")
-                if not key:
-                    continue
-                merged_bookmakers.setdefault(key, {"key": key, "title": bm.get("title"),
-                                                   "markets": []})
-                merged_bookmakers[key]["markets"].extend(bm.get("markets") or [])
-        except Exception as e:
-            logger.debug("indiv fetch %s/%s/%s skip: %s", sport_key, event_id, mkt, e)
+            merged_bookmakers.setdefault(key, {"key": key, "title": bm.get("title"),
+                                               "markets": []})
+            merged_bookmakers[key]["markets"].extend(bm.get("markets") or [])
     if combined_meta is None:
         return None
     combined_meta["bookmakers"] = list(merged_bookmakers.values())

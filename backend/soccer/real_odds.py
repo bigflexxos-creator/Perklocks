@@ -94,32 +94,29 @@ def _decimal_to_implied_pct(price: float) -> float:
 async def fetch_odds_for_sport(sport_key: str, timeout: float = 6.0) -> list[dict]:
     """One-shot fetch of all h2h events + odds for a sport_key.
 
-    Returns the raw Odds-API event list, or an empty list on any error
-    (rate limit, network, missing key). Logs at WARN so failures are
-    visible in supervisord output but never crash the pipeline.
+    Now cached through the centralized SWR cache
+    (`services.odds_cache`). Returns the raw Odds-API event list, or
+    an empty list on any error.
     """
     api_key = (os.environ.get("THE_ODDS_API_KEY") or "").strip()
     if not api_key:
         return []
     try:
-        async with httpx.AsyncClient(timeout=timeout) as cx:
-            r = await cx.get(
-                f"{_ODDS_API_BASE}/sports/{sport_key}/odds",
-                params={
-                    "apiKey": api_key,
-                    "regions": "us",
-                    "markets": "h2h",
-                    "bookmakers": ",".join(_PREFERRED_BOOKS),
-                    "oddsFormat": "decimal",
-                },
-            )
-            if r.status_code != 200:
-                logger.warning(
-                    "Odds-API %s returned %d (body=%s)",
-                    sport_key, r.status_code, r.text[:200],
-                )
-                return []
-            return r.json() or []
+        from services.odds_cache import cached_httpx_get
+        data = await cached_httpx_get(
+            f"{_ODDS_API_BASE}/sports/{sport_key}/odds",
+            {"regions": "us", "markets": "h2h",
+              "bookmakers": ",".join(_PREFERRED_BOOKS),
+              "oddsFormat": "decimal"},
+            api_key=api_key,
+            endpoint_type="bulk_odds",
+            caller="soccer.real_odds.fetch_odds_for_sport",
+            sport_key=sport_key,
+            markets="h2h",
+            timeout=timeout,
+            skip_completed=True,
+        )
+        return data or []
     except Exception as e:
         logger.warning("Odds-API fetch failed for %s: %s", sport_key, e)
         return []
