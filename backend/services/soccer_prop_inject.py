@@ -115,16 +115,21 @@ async def _fetch_events(cx: httpx.AsyncClient, sport_key: str) -> list[dict]:
     if not key:
         return []
     try:
-        r = await cx.get(
+        from services.odds_cache import cached_httpx_get
+        data = await cached_httpx_get(
             f"https://api.the-odds-api.com/v4/sports/{sport_key}/events",
-            params={"apiKey": key}, timeout=10,
+            {},
+            api_key=key,
+            endpoint_type="events_list",
+            caller="soccer_prop_inject._fetch_events",
+            sport_key=sport_key,
+            skip_completed=True,
+            timeout=10,
         )
-        if r.status_code == 200:
-            data = r.json()
-            return data if isinstance(data, list) else []
+        return data if isinstance(data, list) else []
     except Exception as e:
         logger.warning("Events fetch %s failed: %s", sport_key, e)
-    return []
+        return []
 
 
 async def _fetch_scorers_for_league(league_hint: Optional[str]

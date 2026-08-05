@@ -1670,3 +1670,52 @@ async def picks_today_cap_diagnostic(
         }
     return result
 
+
+# ─────────────────────────────────────────────────────────────────────
+# Odds API Usage & Cache Report (Phase optim: 2026-06)
+# Public visibility for the SWR odds-cache in services/odds_cache.py
+# ─────────────────────────────────────────────────────────────────────
+@router.get("/admin/odds-usage")
+async def admin_odds_usage(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    hours: int = 24,
+):
+    """Return SWR odds-cache statistics + credit-usage projection.
+
+    Fields:
+      window_hours, total_requests, upstream_requests, cache_hits,
+      cache_hit_rate_percent, estimated_credits_used,
+      projected_monthly_credits, projected_monthly_at_10x,
+      by_endpoint (top 15), by_sport (top 15), top_callers (top 10).
+    """
+    from services.odds_cache import get_odds_usage_report
+    return await get_odds_usage_report(hours=int(hours))
+
+
+@router.get("/admin/odds-cache-stats")
+async def admin_odds_cache_stats(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Raw size + freshness snapshot of the persisted odds cache."""
+    from datetime import datetime as _dt, timezone as _tz
+    cache_count = await db.odds_api_cache.count_documents({})
+    log_count   = await db.odds_api_request_log.count_documents({})
+    now = _dt.now(_tz.utc).timestamp()
+    # Fresh vs stale vs expired
+    from services.odds_cache import _TTL_POLICY
+    fresh = stale = expired = 0
+    async for d in db.odds_api_cache.find({}, {"refreshed_at": 1, "endpoint_type": 1}):
+        age = now - float(d.get("refreshed_at") or 0)
+        ep = d.get("endpoint_type") or "generic"
+        f_ttl, s_ttl = _TTL_POLICY.get(ep, _TTL_POLICY["generic"])
+        if age <= f_ttl: fresh += 1
+        elif age <= s_ttl: stale += 1
+        else: expired += 1
+    return {
+        "cached_entries": cache_count,
+        "request_log_entries": log_count,
+        "fresh": fresh,
+        "stale": stale,
+        "expired": expired,
+    }
+

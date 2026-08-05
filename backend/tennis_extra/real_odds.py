@@ -77,21 +77,19 @@ def _decimal_to_implied_pct(price: float) -> float:
 
 
 async def _list_active_tennis_sport_keys(client: httpx.AsyncClient, api_key: str) -> list[str]:
-    """Query /v4/sports once and return every active `tennis_*` sport_key.
-
-    Empty list on any failure. Cached implicitly per pipeline run by
-    the caller, so this hits the network at most once per refresh.
-    """
+    """Cached through `services.odds_cache` — hits network at most
+    once per 24 h."""
     try:
-        r = await client.get(
+        from services.odds_cache import cached_httpx_get
+        data = await cached_httpx_get(
             f"{_ODDS_API_BASE}/sports",
-            params={"apiKey": api_key},
+            {},
+            api_key=api_key,
+            endpoint_type="sports_list",
+            caller="tennis_extra.real_odds._list_active_tennis_sport_keys",
         )
-        if r.status_code != 200:
-            logger.warning("/v4/sports returned %d", r.status_code)
-            return []
         return [
-            s.get("key") for s in (r.json() or [])
+            s.get("key") for s in (data or [])
             if s.get("active") and (s.get("key") or "").startswith("tennis_")
         ]
     except Exception as e:
@@ -103,22 +101,22 @@ async def _fetch_odds_for_sport(
     client: httpx.AsyncClient, api_key: str, sport_key: str,
 ) -> list[dict]:
     """Fetch all live h2h events + odds for a tennis sport_key.
-    Returns raw event list or [] on any error."""
+    Cached; returns raw event list or [] on any error."""
     try:
-        r = await client.get(
+        from services.odds_cache import cached_httpx_get
+        data = await cached_httpx_get(
             f"{_ODDS_API_BASE}/sports/{sport_key}/odds",
-            params={
-                "apiKey": api_key,
-                "regions": "us",
-                "markets": "h2h",
-                "bookmakers": ",".join(_PREFERRED_BOOKS),
-                "oddsFormat": "decimal",
-            },
+            {"regions": "us", "markets": "h2h",
+              "bookmakers": ",".join(_PREFERRED_BOOKS),
+              "oddsFormat": "decimal"},
+            api_key=api_key,
+            endpoint_type="bulk_odds",
+            caller="tennis_extra.real_odds._fetch_odds_for_sport",
+            sport_key=sport_key,
+            markets="h2h",
+            skip_completed=True,
         )
-        if r.status_code != 200:
-            logger.warning("%s odds returned %d", sport_key, r.status_code)
-            return []
-        return r.json() or []
+        return data or []
     except Exception as e:
         logger.warning("Tennis odds fetch failed for %s: %s", sport_key, e)
         return []
