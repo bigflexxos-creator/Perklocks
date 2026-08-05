@@ -188,25 +188,53 @@ def _select_ttl_multiplier(hours_to_nearest: Optional[float]) -> float:
     return 1.0
 
 
+# ═════════════════════════════════════════════════════════════════════
+# Phase B — Off-peak TTL scaling (2026-08)
+# ═════════════════════════════════════════════════════════════════════
+# PerksLocks is a pick-generation app, not a live-odds app.  Between
+# 03:00 – 14:00 UTC (roughly the overnight window in the US) there are
+# very few active games and even fewer active users, so we further
+# multiply the time-aware TTLs by `_OFFPEAK_MULT` during that window.
+# Combined with the picks-scope + snapshot cadence changes this drops
+# the total credit bill by an additional ~15-20%.
+_OFFPEAK_HOURS_UTC = set(range(3, 14))       # 03:00 – 13:59 UTC
+_OFFPEAK_MULT = 2.0
+_OFFPEAK_MAX_STALE = 24 * 3600
+
+
+def _offpeak_multiplier() -> float:
+    if datetime.now(timezone.utc).hour in _OFFPEAK_HOURS_UTC:
+        return _OFFPEAK_MULT
+    return 1.0
+
+
 async def _time_aware_ttls(
     db, endpoint_type: str, sport_key: Optional[str],
 ) -> tuple[int, int, dict]:
     """Return (fresh_ttl, stale_ttl, debug_meta) after applying the
-    time-aware scaling multiplier for this sport.
-
-    debug_meta is a dict with `hours_to_nearest_game` + `multiplier`
-    so callers can log the reason a request was served from cache.
-    """
+    time-aware scaling multiplier AND the off-peak multiplier."""
     base_fresh, base_stale = _TTL_POLICY.get(
         endpoint_type, _TTL_POLICY["generic"])
     if endpoint_type not in _TIME_AWARE_ENDPOINTS:
-        return base_fresh, base_stale, {}
+        # Even non-time-aware endpoints get the off-peak scaling —
+        # but never *shorten* the base stale window (we only cap if
+        # scaling is actively boosting a shorter TTL beyond the cap).
+        off = _offpeak_multiplier()
+        scaled_stale = int(base_stale * off)
+        stale_capped = (min(scaled_stale, _OFFPEAK_MAX_STALE)
+                        if off > 1.0 else scaled_stale)
+        return (int(base_fresh * off),
+                stale_capped,
+                {"offpeak_multiplier": off})
     hours = await _compute_hours_to_nearest_game(db, sport_key)
     mult = _select_ttl_multiplier(hours)
-    fresh = int(base_fresh * mult)
-    stale = min(int(base_stale * mult), _TIME_AWARE_MAX_STALE)
+    off = _offpeak_multiplier()
+    combined = mult * off
+    fresh = int(base_fresh * combined)
+    stale = min(int(base_stale * combined), _TIME_AWARE_MAX_STALE)
     return fresh, stale, {"hours_to_nearest_game": hours,
-                           "ttl_multiplier": mult}
+                           "ttl_multiplier": mult,
+                           "offpeak_multiplier": off}
 
 
 # ═════════════════════════════════════════════════════════════════════

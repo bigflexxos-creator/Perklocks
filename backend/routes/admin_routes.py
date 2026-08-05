@@ -105,6 +105,65 @@ async def admin_odds_health(
     return await _odds_status()
 
 
+# ═════════════════════════════════════════════════════════════════════
+# Phase A/B — Odds API burn control endpoints (2026-08)
+# ═════════════════════════════════════════════════════════════════════
+@router.post("/admin/alt-lines/snapshot")
+async def admin_alt_lines_snapshot(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    picks_scope: bool = True,
+    event_window_hours: int = 36,
+):
+    """Trigger a one-shot alt-lines snapshot immediately.
+
+    Normal cadence is 3×/day (12:00 / 18:00 / 23:00 UTC).  Ops can
+    fire an out-of-band snapshot from this endpoint — e.g. after a
+    new game-day board drops.  `picks_scope=True` restricts fetching
+    to sports/events that already have picks today.
+    """
+    from alt_lines_feed import refresh_alt_lines
+    return await refresh_alt_lines(
+        db, picks_scope=picks_scope,
+        event_window_hours=max(6, min(96, event_window_hours)),
+    )
+
+
+@router.get("/admin/alt-lines/bad-markets")
+async def admin_bad_market_registry(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Return the current bad-market registry contents.
+
+    Any (sport_key, market) pair here has returned a 422 from The
+    Odds API in the last 24 h.  We skip these tuples during alt-line
+    snapshots to avoid burning credits on markets Odds API doesn't
+    support for that sport.  Entries auto-expire after 24 h.
+    """
+    from services.bad_market_registry import stats as bmr_stats
+    return await bmr_stats(db)
+
+
+@router.get("/admin/odds-usage")
+async def admin_odds_usage_report(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    hours: int = 24,
+):
+    """Aggregate the Odds API request log over the last `hours` hours.
+
+    Returns:
+      • total_requests, upstream_requests, cache_hit_rate
+      • estimated_credits_used + monthly projection
+      • by_endpoint / by_sport / top_callers breakdowns
+
+    Powers the ops dashboard that shows whether the burn-reduction
+    changes (picks-scope, snapshot cadence, bad-market registry) are
+    delivering the expected savings.
+    """
+    from services.odds_cache import get_odds_usage_report
+    return await get_odds_usage_report(hours=max(1, min(168, hours)))
+
+
+
 @router.post("/admin/backfill-tennis-elo")
 async def admin_backfill_tennis_elo(
     user: Annotated[UserPublic, Depends(current_admin)],

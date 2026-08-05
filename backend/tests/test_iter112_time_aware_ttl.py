@@ -25,6 +25,17 @@ load_dotenv("/app/backend/.env")
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _pin_offpeak_off(monkeypatch):
+    """These tests verify time-aware TTL scaling in isolation from
+    the Phase B off-peak multiplier (which is tested separately in
+    iter114).  Pin it to 1.0 so exact TTL assertions are stable
+    regardless of wall-clock hour."""
+    from services import odds_cache
+    monkeypatch.setattr(odds_cache, "_offpeak_multiplier", lambda: 1.0)
+    yield
+
+
 def _run(c): return asyncio.run(c)
 
 
@@ -119,7 +130,9 @@ def test_B2_time_aware_ttls_no_effect_on_sports_list():
         db = _fresh_db()
         fresh, stale, meta = await _time_aware_ttls(
             db, "sports_list", "anything")
-        assert meta == {}
+        # Off-peak multiplier is pinned to 1.0 for this test (see
+        # module-level fixture) — only that key appears in meta.
+        assert meta.get("offpeak_multiplier", 1.0) == 1.0
         assert fresh == 24 * 3600
         assert stale == 7 * 24 * 3600
     _run(go())

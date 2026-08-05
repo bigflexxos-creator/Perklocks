@@ -134,8 +134,28 @@ async def _fetch_events(cx: httpx.AsyncClient, sport_key: str) -> list[dict]:
 
 
 async def _fetch_event_odds(cx: httpx.AsyncClient, sport_key: str,
-                             event_id: str, markets: list[str]) -> Optional[dict]:
+                             event_id: str, markets: list[str],
+                             db: Optional[AsyncIOMotorDatabase] = None,
+                             ) -> Optional[dict]:
+    """Fetch alt-line markets for one event.
+
+    Phase A (2026-08) — burn-reduction changes:
+      1. Consult the bad-market registry before fetching.  Any (sport,
+         market) tuple that returned 422 in the last 24 h is skipped.
+      2. If the batch returns None (422 / upstream error) we mark the
+         *entire* market set as bad — no more per-market fallback that
+         used to double our call volume.
+    """
     from services.odds_cache import cached_httpx_get
+    from services.bad_market_registry import filter_markets, mark_bad
+
+    # (1) Drop any markets we already know are unsupported for this sport.
+    if db is not None:
+        markets = await filter_markets(
+            db, sport_key=sport_key, markets=markets)
+    if not markets:
+        return None
+
     data = await cached_httpx_get(
         f"{ODDS_API_BASE}/sports/{sport_key}/events/{event_id}/odds",
         {"regions": "us", "bookmakers": BOOKMAKERS,
@@ -146,11 +166,13 @@ async def _fetch_event_odds(cx: httpx.AsyncClient, sport_key: str,
         sport_key=sport_key,
         markets=",".join(markets),
     )
-    # If the cache miss returned None (422 or upstream error), retry
-    # market-by-market so unsupported markets don't kill the batch.
-    if data is None:
-        return await _fetch_event_odds_individual(cx, sport_key,
-                                                    event_id, markets)
+    # (2) Bulk failed → mark the whole set as bad so future cycles skip
+    # them.  We do NOT retry per-market anymore; that was burning 4k+
+    # credits/day.  If a market later becomes valid the 24 h TTL will
+    # let us rediscover it on the next day's snapshot.
+    if data is None and db is not None:
+        await mark_bad(db, sport_key=sport_key, markets=markets,
+                        reason="batch_422_or_error")
     return data
 
 
@@ -304,14 +326,118 @@ SOCCER_MARKETS = [
 ]
 
 
-async def refresh_alt_lines(db: AsyncIOMotorDatabase) -> dict:
-    """Pull alt-line markets for all active events across configured sports."""
+# Canonical `sport` string → Odds API sport_key fallback.  Used when
+# picks lack a `sport_key` field (e.g. MLB NRFI picks).  Multi-league
+# sports (Soccer, Tennis) are excluded — they must carry an explicit
+# `sport_key` because we can't guess which league.
+_SPORT_TO_ODDS_KEY: dict[str, str] = {
+    "mlb":  "baseball_mlb",
+    "nfl":  "americanfootball_nfl",
+    "nba":  "basketball_nba",
+    "nhl":  "icehockey_nhl",
+    "ncaaf": "americanfootball_ncaaf",
+    "ncaab": "basketball_ncaab",
+    "cfb":  "americanfootball_ncaaf",
+}
+
+
+async def _todays_pick_scope(db: AsyncIOMotorDatabase) -> dict:
+    """Return the set of sports + team-pairs that appear in TODAY's
+    picks board.  Used by `refresh_alt_lines` to restrict alt-line
+    fetching to games that actually have picks — avoiding the "poll
+    every discovered soccer league" credit-burn pattern.
+
+    Because picks are stored WITHOUT `event_id` today, we match on
+    normalized team-pair tuples `(norm(home), norm(away))` — which is
+    stable across data sources.
+
+    Returns:
+        {
+          "sport_keys":     set[str],                 # sports with picks
+          "team_pairs":     set[tuple[str, str]],      # (norm_home, norm_away)
+          "by_sport_key":   dict[str, set[tuple[str, str]]],
+        }
+    """
+    from datetime import date
+    empty = {"sport_keys": set(), "team_pairs": set(),
+             "by_sport_key": {}}
+    if db is None:
+        return empty
+    today = date.today().isoformat()
+    yday = (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
+    try:
+        cursor = db.picks.find(
+            {"pick_date": {"$in": [today, yday]}},
+            {"odds_api_sport_key": 1, "sport_key": 1,
+             "home_team": 1, "away_team": 1, "sport": 1},
+        )
+        sports: set[str] = set()
+        pairs: set[tuple[str, str]] = set()
+        by_sport: dict[str, set[tuple[str, str]]] = {}
+        async for p in cursor:
+            sk = (p.get("odds_api_sport_key") or p.get("sport_key")
+                   or "").strip()
+            # Fallback: derive sport_key from `sport` string for
+            # single-league sports.  Multi-league sports (Soccer,
+            # Tennis) MUST carry an explicit sport_key — we skip if
+            # missing rather than guess.
+            if not sk:
+                sport_lc = (p.get("sport") or "").strip().lower()
+                sk = _SPORT_TO_ODDS_KEY.get(sport_lc, "")
+            if sk:
+                sports.add(sk)
+            home = _norm(p.get("home_team") or "")
+            away = _norm(p.get("away_team") or "")
+            if home and away:
+                # store both orderings so we match regardless of
+                # home/away designation across data sources
+                pair_ab = (home, away)
+                pair_ba = (away, home)
+                pairs.add(pair_ab)
+                pairs.add(pair_ba)
+                if sk:
+                    by_sport.setdefault(sk, set()).update([pair_ab, pair_ba])
+        return {"sport_keys": sports, "team_pairs": pairs,
+                "by_sport_key": by_sport}
+    except Exception as e:
+        logger.warning("_todays_pick_scope err: %s", e)
+        return empty
+
+
+async def refresh_alt_lines(
+    db: AsyncIOMotorDatabase,
+    *,
+    picks_scope: bool = True,
+    max_events_per_sport: int = 30,
+    event_window_hours: int = 36,
+) -> dict:
+    """Pull alt-line markets for all active events across configured sports.
+
+    Phase A (2026-08) — burn-reduction changes:
+      • `picks_scope=True` restricts fetching to sports/events that
+        appear in today's `picks` collection.  Sports that don't have
+        picks yet still get a *shortlist* fetch (events list only) so
+        the pick-generation snapshot can find candidates, but we skip
+        per-event alt-line pulls for un-picked events.
+      • Event window narrowed from +4 d → +36 h (rarely posted earlier).
+      • `_fetch_event_odds` now consults the bad-market registry and
+        no longer falls back to per-market retries on 422.
+    """
+    from services.bad_market_registry import ensure_indices as _ensure_bmr
+    await _ensure_bmr(db)
+
     if not ODDS_API_KEY:
         return {"ok": False, "reason": "no_api_key"}
 
     stats = {"sports": 0, "events": 0, "rows": 0, "errors": 0,
-             "tennis_tournaments": 0}
+             "tennis_tournaments": 0, "picks_scope": picks_scope,
+             "skipped_no_picks": 0, "skipped_out_of_window": 0}
     now = datetime.now(timezone.utc)
+
+    scope = await _todays_pick_scope(db) if picks_scope else \
+        {"sport_keys": set(), "team_pairs": set(), "by_sport_key": {}}
+    stats["scope_sports"] = len(scope["sport_keys"])
+    stats["scope_team_pairs"] = len(scope["team_pairs"]) // 2  # dedupe ordering
 
     async with httpx.AsyncClient(headers={"User-Agent": "PerkLocks/1.0"}) as cx:
         # Build the effective config on each cycle: static entries +
@@ -321,18 +447,19 @@ async def refresh_alt_lines(db: AsyncIOMotorDatabase) -> dict:
         for cfg_key, sport_key in await _discover_active_tennis_tournaments(cx):
             effective_config[cfg_key] = (sport_key, TENNIS_MARKETS)
             stats["tennis_tournaments"] += 1
-        # Soccer auto-discovery — replaces static WC/EPL/UCL entries
-        # with WHATEVER leagues are live right now. Static entries stay
-        # in SPORT_CONFIG so they act as a safety net if the catalog
-        # endpoint fails.
+        # Soccer auto-discovery — only add leagues that either have
+        # picks today OR are in the static safety-net list.  This is
+        # the key change that stops us polling Argentina Primera / J-
+        # League / Superettan / etc. when we don't have picks in them.
         discovered_soccer = 0
         for cfg_key, sport_key in await _discover_active_soccer_leagues(cx):
-            # Only add if not already covered by the static config (to
-            # avoid double-fetching EPL/WC/UCL when they ARE active).
             already_covered = any(
                 sk == sport_key for _, (sk, _) in effective_config.items()
             )
             if already_covered:
+                continue
+            # picks-scope filter: only add if we have picks in this sport
+            if picks_scope and sport_key not in scope["sport_keys"]:
                 continue
             effective_config[cfg_key] = (sport_key, SOCCER_MARKETS)
             discovered_soccer += 1
@@ -343,23 +470,39 @@ async def refresh_alt_lines(db: AsyncIOMotorDatabase) -> dict:
             if not events:
                 continue
             stats["sports"] += 1
-            for ev in events[:30]:  # cap per sport — protect quota
+            # Restrict events to those that have picks today (if we're
+            # in picks-scope AND this sport has any picks at all).
+            scoped_pairs = scope["by_sport_key"].get(sport_key, set())
+            for ev in events[:max_events_per_sport]:
                 ev_id = ev.get("id")
                 if not ev_id:
                     continue
                 stats["events"] += 1
+
+                # picks-scope filter: skip events where neither team
+                # pair appears in today's picks
+                if picks_scope and scoped_pairs:
+                    home_n = _norm(ev.get("home_team") or "")
+                    away_n = _norm(ev.get("away_team") or "")
+                    pair = (home_n, away_n)
+                    if not home_n or not away_n or pair not in scoped_pairs:
+                        stats["skipped_no_picks"] += 1
+                        continue
+
                 try:
                     commence = datetime.fromisoformat(
                         (ev.get("commence_time") or "").replace("Z", "+00:00")
                     )
                     if commence < now - timedelta(hours=2):
                         continue  # already over
-                    if commence > now + timedelta(days=4):
-                        continue  # too far out — Odds API usually has no alt yet
+                    if commence > now + timedelta(hours=event_window_hours):
+                        stats["skipped_out_of_window"] += 1
+                        continue  # too far out
                 except Exception:
                     pass
 
-                odds = await _fetch_event_odds(cx, sport_key, ev_id, markets)
+                odds = await _fetch_event_odds(cx, sport_key, ev_id,
+                                                markets, db=db)
                 if not odds:
                     continue
                 rows = _flatten_odds(odds, cfg_key, sport_key, now)
