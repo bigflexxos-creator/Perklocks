@@ -494,9 +494,12 @@ async def nrfi_yrfi_loop(db: AsyncIOMotorDatabase) -> None:
                 logger.info("NRFI/YRFI settler: %s", settled)
         except Exception as e:
             logger.warning("NRFI/YRFI settler failed: %s", e)
-        # cadence
+        # cadence — throttled 2026-08 as part of the Odds API burn
+        # reduction pass.  NRFI odds don't move quickly and picks are
+        # settled off Play-by-Play (not odds), so we only refresh the
+        # market often enough to catch pre-tip line moves.
         hr_utc = datetime.now(timezone.utc).hour
-        sleep_sec = 30 * 60 if 15 <= hr_utc <= 23 else 60 * 60
+        sleep_sec = 90 * 60 if 15 <= hr_utc <= 23 else 3 * 60 * 60
         await asyncio.sleep(sleep_sec)
 
 

@@ -4938,22 +4938,56 @@ async def on_startup():
     # starter-gate, correlated dedupe, board validator) because those
     # layers keep killing MLS scorer picks (Surridge, Bouanga, Messi,
     # etc.). Writes picks straight to db.picks every 15 minutes.
+    # ── MLS Direct Inject (2026-07-16, DB-first snapshot) ─────────
+    # Extends Player Prop Intelligence to MLS.  Historically ran every
+    # 15 min; converted 2026-08 to the 3×/day scheduled-snapshot
+    # cadence (12:00 / 18:00 / 23:00 UTC) that matches the alt-lines
+    # feed.  Writes picks straight to db.picks — the UI reads from DB
+    # so there is no user-facing impact.
     try:
-        from services.mls_direct_inject import loop as _mls_direct_loop
-        asyncio.create_task(_mls_direct_loop())
-        logger.info("MLS Direct-Inject worker armed — 15min refresh loop")
+        from services.mls_direct_inject import run_once as _mls_direct_run
+        from services.scheduled_snapshot import schedule_utc_hours
+
+        async def _mls_direct_snapshot_loop():
+            async for _ in schedule_utc_hours(
+                name="mls_direct_inject",
+                hours=[12, 18, 23],
+                run_immediately=True,
+            ):
+                try:
+                    summary = await _mls_direct_run()
+                    logger.info("MLS Direct-Inject snapshot: %s", summary)
+                except Exception as e:
+                    logger.warning("MLS Direct-Inject snapshot err: %s", e)
+
+        asyncio.create_task(_mls_direct_snapshot_loop())
+        logger.info("MLS Direct-Inject snapshot armed — 3×/day (12/18/23 UTC)")
     except Exception as e:
         logger.warning("MLS Direct-Inject worker failed to start: %s", e)
 
     # ── Soccer Prop Inject (Big-5 + UCL, 2026-07-22) ───────────────
-    # Extends the Player Prop Intelligence System to EPL / La Liga /
-    # Serie A / Bundesliga / Ligue 1 / UCL. Pulls candidates from
-    # `soccer_player_form` (Understat) and runs the archetype + market
-    # selector for each event on the board.
+    # DB-first snapshot: was continuous 15-min loop; now runs on the
+    # same 3×/day schedule as alt-lines to eliminate continuous Odds
+    # API polling.  Frontend reads from db.picks so cadence change is
+    # invisible to users.
     try:
-        from services.soccer_prop_inject import loop as _soccer_prop_loop
-        asyncio.create_task(_soccer_prop_loop())
-        logger.info("Soccer Prop Inject worker armed — Big-5+UCL, 15min loop")
+        from services.soccer_prop_inject import run_once as _soccer_prop_run
+        from services.scheduled_snapshot import schedule_utc_hours
+
+        async def _soccer_prop_snapshot_loop():
+            async for _ in schedule_utc_hours(
+                name="soccer_prop_inject",
+                hours=[12, 18, 23],
+                run_immediately=True,
+            ):
+                try:
+                    summary = await _soccer_prop_run()
+                    logger.info("Soccer Prop Inject snapshot: %s", summary)
+                except Exception as e:
+                    logger.warning("Soccer Prop Inject snapshot err: %s", e)
+
+        asyncio.create_task(_soccer_prop_snapshot_loop())
+        logger.info("Soccer Prop Inject snapshot armed — 3×/day (12/18/23 UTC)")
     except Exception as e:
         logger.warning("Soccer Prop Inject worker failed to start: %s", e)
 
@@ -5337,23 +5371,45 @@ async def on_startup():
     # pick whose (sportsbook, market_key, selection, line) isn't in the
     # live feed within the last 15 min is REJECTED with one of:
     #   line_not_found / market_removed / stale_odds / invalid_alt_mapping.
+    # Live alt-line feed — DB-first, scheduled snapshots (2026-08).
+    # Originally polled every 10 min (144 sweeps/day) which drove 77%
+    # of the Odds API bill.  Now runs on the same 3×/day cadence as
+    # the other snapshot loops (12:00 / 18:00 / 23:00 UTC) and only
+    # fetches alt lines for events that already appear in today's
+    # picks board (`picks_scope=True`).
+    #
+    # The quality gate still validates every alt-line pick against
+    # `live_alt_lines`; picks referencing a market missing from the
+    # last snapshot fail with `stale_odds` / `line_not_found` and are
+    # hidden from users — same behavior as before, less credit burn.
     try:
         from alt_lines_feed import ensure_indices, refresh_alt_lines
+        from services.scheduled_snapshot import schedule_utc_hours
 
         async def _alt_lines_loop():
             try:
                 await ensure_indices(db)
             except Exception as ie:
                 logger.warning("alt_lines indices failed: %s", ie)
-            while True:
+            async for _ in schedule_utc_hours(
+                name="alt_lines_feed",
+                hours=[12, 18, 23],
+                run_immediately=True,
+            ):
                 try:
-                    await refresh_alt_lines(db)
+                    summary = await refresh_alt_lines(
+                        db, picks_scope=True,
+                        event_window_hours=36,
+                    )
+                    logger.info("alt_lines snapshot: %s", summary)
                 except Exception as re_:
-                    logger.warning("alt_lines refresh error: %s", re_)
-                await asyncio.sleep(600)  # 10 min
+                    logger.warning("alt_lines snapshot err: %s", re_)
 
         _deferred_task(_alt_lines_loop, DEFER_BASE * 8)
-        logger.info("Live alt-line feed armed (DK + FanDuel via Odds API, 10-min cadence)")
+        logger.info(
+            "Live alt-line feed armed (DK+FanDuel via Odds API, "
+            "3×/day snapshots at 12/18/23 UTC, picks-scope-only)"
+        )
     except Exception as e:
         logger.warning("alt_lines_feed failed to start: %s", e)
 
