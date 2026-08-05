@@ -9,6 +9,7 @@ import { getDisplayLock } from "@/src/lib/lockScore";
 import { PickEventRow } from "@/src/components/PickEventRow";
 import { useBetSlip } from "@/src/contexts/BetSlipContext";
 import { MatchupGradeBadge } from "@/src/components/MatchupGradeBadge";
+import { AltLineChips } from "@/src/components/AltLineChips";
 
 // Local alias so TrackBetButton props type-check without pulling
 // the full Pick type through the closure.
@@ -1098,6 +1099,13 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
                 Source: {rationale!.data_source || "model"}
                 {rationale!.engine ? ` · ${rationale!.engine}` : ""}
               </Text>
+
+              {/* Phase 8b — Alt-Line Magic Chips.  Renders only when
+                  the pick is in a supported sport/market (NFL / MLB
+                  / NBA / TENNIS) AND at least one alt-line candidate
+                  clears the composite-score threshold.  Otherwise
+                  renders nothing so the "Why" section stays clean. */}
+              <AltLineChips pickId={pick.id} />
             </View>
           )}
         </View>
