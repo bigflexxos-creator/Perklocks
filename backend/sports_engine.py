@@ -3552,6 +3552,12 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         if is_alt:
             # Alt lines must be near-locks AND not absurd chalk.
             if implied < _ALT_PROP_MIN_IMPLIED or implied > _ALT_PROP_MAX_IMPLIED:
+                if mk and mk.startswith("batter_") or mk and mk.startswith("pitcher_"):
+                    try:
+                        from services.mlb_gates import record_rejection as _mlb_reject
+                        _mlb_reject("implied_probability_gate", market_key=mk)
+                    except Exception:
+                        pass
                 continue
         elif mk == "player_goal_scorer_anytime":
             if implied < _SOCCER_PROP_MIN_IMPLIED:
@@ -3781,6 +3787,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             from services.mlb_feature_engine import (
                 build_mlb_pitcher_k_factors, has_enough_real_data,
             )
+            from services.mlb_gates import record_rejection as _mlb_reject
             _game_ctx = (payload.get("_ctx") if isinstance(payload, dict) else None) or {}
             real_factors, _sources = build_mlb_pitcher_k_factors(
                 _game_ctx, player=player, side=str(side),
@@ -3788,6 +3795,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             )
             if not has_enough_real_data(real_factors, "k_prop"):
                 _skip_pick = True
+                _mlb_reject("missing_feature_data", market_key=mk)
             else:
                 # ── 2026-07-27 SHARPER K MATH GATE ────────────────────
                 # User: "K picks need to be sharper. Went 6/11, want 8/11+."
@@ -3808,6 +3816,18 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                         )
                         if not _k_eval.get("emit"):
                             _skip_pick = True
+                            try:
+                                from services.mlb_gates import record_rejection as _mlb_reject
+                                _reason_map = {
+                                    "book_odds_chalk_trap":  "implied_probability_gate",
+                                    "edge_too_low":          "edge_gate",
+                                    "model_prob_too_low":    "ev_gate",
+                                    "under_self_contradict": "correlation_conflict",
+                                }
+                                _mlb_reject(_reason_map.get(_k_eval.get("reason"), "ev_gate"),
+                                             market_key=mk)
+                            except Exception:
+                                pass
                             logger.info(
                                 "K_MATH_GATE_DROP: %s %s %s reason=%s exp_k=%.2f model=%.3f book=%.3f",
                                 player, side, point, _k_eval.get("reason"),
@@ -3877,9 +3897,32 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             )
             if not has_enough_real_data(real_factors, "hitter_prop"):
                 _skip_pick = True
+                try:
+                    from services.mlb_gates import record_rejection as _mlb_reject
+                    _mlb_reject("missing_feature_data", market_key=mk)
+                except Exception:
+                    pass
             else:
                 factors = {k: v for k, v in real_factors.items() if v is not None}
                 _mlb_features_used = _sources
+                # ── Phase 4C finalization: enrich pick with H+R+RBI context
+                # so `sim_mlb._simulate_hrr` can consume it via
+                # `sim_runner._player_stats_from_pick`.
+                try:
+                    _lineup_slot = _hb.get("lineup_slot") or _hb.get("batting_order")
+                    if _lineup_slot is not None:
+                        payload.setdefault("_mlb_ctx_for_sim", {}).setdefault(
+                            player.strip().lower(), {})["lineup_slot"] = int(_lineup_slot)
+                    _team_runs = _hb.get("team_runs_projection") or _game_ctx.get("team_runs_projection")
+                    if _team_runs is not None:
+                        payload.setdefault("_mlb_ctx_for_sim", {}).setdefault(
+                            player.strip().lower(), {})["team_runs_projection"] = float(_team_runs)
+                    _obp = _hb.get("obp") or _hb.get("season_obp")
+                    if _obp is not None:
+                        payload.setdefault("_mlb_ctx_for_sim", {}).setdefault(
+                            player.strip().lower(), {})["obp"] = float(_obp)
+                except Exception:
+                    pass
         elif sport == "NFL":
             # Phase 3 (2026-07-22) — NFL props route through the real
             # feature engine backed by NFLverse historical data. Zero
