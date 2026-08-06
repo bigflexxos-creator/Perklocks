@@ -2502,22 +2502,41 @@ async def picks_bet_killer(user: Annotated[UserPublic, Depends(current_user)],
 
 
 
-# ─── /picks/refresh (1h rate-limited manual refresh) ─────────────────
+# ─── /picks/refresh (Phase 2β — DB-only for normal users) ───────────
+# Historically this endpoint kicked off `_refresh_picks(today)` which
+# fanned out ~250-400 credits of Odds API calls per invocation.  Any
+# authenticated user could trigger it.  Phase 2β removes the paid
+# generation capability from ordinary users:
+#
+#   • Response shape is UNCHANGED (frontend compatibility preserved).
+#   • Zero paid API calls.  We simply return the current DB state.
+#   • No _refresh_picks call.  No background generation.
+#   • No emergency-reserve consumption.
+#
+# Admins retain a separate paid-refresh path via
+# `POST /api/admin/picks/force-refresh`, which is guarded by
+# JobCoordinator + ProviderBudget.  See routes/admin_routes.py.
 @router.post("/refresh")
 async def force_refresh(user: Annotated[UserPublic, Depends(current_user)]):
-    """Manually refresh today's picks. Rate-limited to 1× per hour per user
-    to prevent button-mashing that burns The Odds API credits
-    (each refresh costs ~250-400 credits)."""
-    # Lazy import — see /picks/today for the rationale.
-    from server import _today_str, _refresh_picks
+    """DB-only refresh — Phase 2β.  Returns the latest published picks
+    from Mongo without triggering any paid third-party work.  The
+    response envelope matches the pre-2β shape so the mobile client
+    continues to update its state on tap.  Global paid refresh is now
+    an admin-only operation gated by JobCoordinator + ProviderBudget.
+    """
+    from server import _today_str
     now = datetime.now(timezone.utc)
-    # Check last refresh time for this user (stored in user doc).
+    today = _today_str()
+    # Still enforce the 1h user-scoped rate limit — protects against
+    # tap-mashing hitting Mongo unnecessarily, and preserves the
+    # cooldown response fields the mobile client already handles.
     user_doc = await db.users.find_one({"id": user.id}, {"_id": 0, "last_refresh_at": 1})
     last_iso = (user_doc or {}).get("last_refresh_at")
     cd = _cooldown_payload(last_iso, now)
+    existing = await db.picks.count_documents({"pick_date": today})
     if not cd["can_refresh"]:
-        remaining_min = (cd["cooldown_seconds"] // 60) + (1 if cd["cooldown_seconds"] % 60 else 0)
-        existing = await db.picks.count_documents({"pick_date": _today_str()})
+        remaining_min = (cd["cooldown_seconds"] // 60) + (
+            1 if cd["cooldown_seconds"] % 60 else 0)
         return {
             "refreshed": False,
             "rate_limited": True,
@@ -2526,32 +2545,37 @@ async def force_refresh(user: Annotated[UserPublic, Depends(current_user)]):
             "next_refresh_at": cd["next_refresh_at"],
             "last_refresh_at": cd["last_refresh_at"],
             "count": existing,
-            "date": _today_str(),
-            "message": f"Picks were refreshed recently. Try again in {remaining_min} min — saves API credits.",
+            "date": today,
+            "message": f"Refresh available in {remaining_min} min.",
         }
-    # Fire-and-forget: kick off the actual refresh in the background.
-    # `_refresh_picks` takes ~45 s end-to-end (Odds API fetch +
-    # generation + brain filter + validator) which exceeds mobile HTTP
-    # timeouts, so the user's app would show "Refresh failed" even
-    # when the refresh actually succeeded. We now mark cooldown
-    # immediately, return instantly, and let the user's existing
-    # focus-refetch (30 s) pull the new picks once they land.
     await db.users.update_one(
         {"id": user.id},
         {"$set": {"last_refresh_at": now.isoformat()}},
     )
-    asyncio.create_task(_refresh_picks(_today_str()))
-    existing = await db.picks.count_documents({"pick_date": _today_str()})
+    # Audit-log the user-triggered call so ops can prove no paid work
+    # was performed.  Best-effort; failures don't affect the response.
+    try:
+        from services.job_coordinator import JobCoordinator
+        await JobCoordinator(db).audit(
+            "user_refresh_db_only",
+            caller=f"user:{user.id}",
+            reason="picks_refresh_db_only",
+            metadata={"date": today, "count": existing},
+        )
+    except Exception:
+        pass
     next_dt = now + timedelta(seconds=REFRESH_COOLDOWN_SECONDS)
     return {
         "refreshed": True,
-        "queued": True,
-        "count": existing,                   # current count; new count lands soon
-        "date": _today_str(),
+        "queued": False,                   # no background job — Phase 2β
+        "db_only": True,                   # explicit signal to any UI hook
+        "count": existing,
+        "date": today,
         "cooldown_seconds": REFRESH_COOLDOWN_SECONDS,
         "next_refresh_at": next_dt.isoformat(),
         "last_refresh_at": now.isoformat(),
-        "note": "Refresh started in background (~45 s). New picks will appear automatically on the next focus-refetch.",
+        "note": "Returning the latest published picks. Refreshes now "
+                 "come from the scheduled snapshot cadence.",
     }
 
 

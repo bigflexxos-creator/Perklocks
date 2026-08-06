@@ -3671,6 +3671,12 @@ try:
     logger.info("Parlay-History routes mounted at /api/parlay/*")
     app.include_router(admin_routes.router)
     logger.info("Admin routes mounted at /api/admin/*")
+    # ── Phase 2β observability (2026-08-15) ─────────────────────────
+    # /api/admin/ops/* — JobCoordinator + ProviderBudget introspection.
+    # Every route is admin-only; no secrets are ever exposed.
+    from routes import ops_routes
+    app.include_router(ops_routes.router)
+    logger.info("Ops observability routes mounted at /api/admin/ops/*")
     # Admin user-management dashboard routes (added 2026-06-24).
     from routes import admin_users_routes
     app.include_router(admin_users_routes.router)
@@ -4372,6 +4378,23 @@ async def on_startup():
     except Exception as _lsi_err:
         logger.warning("learning_snapshots index skipped: %s", _lsi_err)
 
+    # ── Phase 2β — JobCoordinator + ProviderBudget bootstrap ─────────
+    # Foundational infrastructure for the Phase 2γ cutover: distributed
+    # leases + shared paid-credit budget.  Creates the required Mongo
+    # indices for `scheduled_jobs`, `job_execution_log`, `job_audit_log`,
+    # `provider_budget_state`, `provider_request_intents`.  Idempotent.
+    try:
+        from services.job_coordinator import JobCoordinator
+        from services.provider_budget import ProviderBudget
+        await JobCoordinator(db).ensure_indices()
+        await ProviderBudget(db).ensure_indices()
+        logger.info(
+            "Phase 2β infra armed — JobCoordinator + ProviderBudget "
+            "indices created (shadow-mode)."
+        )
+    except Exception as _p2_err:
+        logger.warning("Phase 2β infra bootstrap failed: %s", _p2_err)
+
     # ── 2026-07-28 DEFECT #5 — no_bet schema invariant at startup ────
     # Sweep any legacy rows where `no_bet_reason` is set but `no_bet`
     # is False (crash-corruption or pre-helper writes), and install a
@@ -4744,6 +4767,18 @@ async def on_startup():
                 hours=[12, 18, 23],
                 run_immediately=True,
             ):
+                # Phase 2β shadow observation — record what the
+                # JobCoordinator + ProviderBudget WOULD have done.
+                # Never blocks the real run.
+                try:
+                    from services.shadow_wiring import shadow_check
+                    await shadow_check(
+                        db, job_name="mls_direct_inject",
+                        caller="startup_scheduler",
+                        reason="scheduled_snapshot",
+                    )
+                except Exception as _sh_err:
+                    logger.debug("mls shadow_check err: %s", _sh_err)
                 try:
                     summary = await _mls_direct_run()
                     logger.info("MLS Direct-Inject snapshot: %s", summary)
@@ -4770,6 +4805,16 @@ async def on_startup():
                 hours=[12, 18, 23],
                 run_immediately=True,
             ):
+                # Phase 2β shadow observation.
+                try:
+                    from services.shadow_wiring import shadow_check
+                    await shadow_check(
+                        db, job_name="soccer_prop_inject",
+                        caller="startup_scheduler",
+                        reason="scheduled_snapshot",
+                    )
+                except Exception as _sh_err:
+                    logger.debug("soccer shadow_check err: %s", _sh_err)
                 try:
                     summary = await _soccer_prop_run()
                     logger.info("Soccer Prop Inject snapshot: %s", summary)
@@ -5186,6 +5231,16 @@ async def on_startup():
                 hours=[12, 18, 23],
                 run_immediately=True,
             ):
+                # Phase 2β shadow observation.
+                try:
+                    from services.shadow_wiring import shadow_check
+                    await shadow_check(
+                        db, job_name="alt_lines_feed",
+                        caller="startup_scheduler",
+                        reason="scheduled_snapshot",
+                    )
+                except Exception as _sh_err:
+                    logger.debug("alt_lines shadow_check err: %s", _sh_err)
                 try:
                     summary = await refresh_alt_lines(
                         db, picks_scope=True,
