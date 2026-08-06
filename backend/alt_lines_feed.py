@@ -113,6 +113,38 @@ def _norm(name: str) -> str:
     return re.sub(r"\s+", " ", n).strip()
 
 
+# Phase 4E follow-up (2026-08-06) — some leagues have team-name
+# transliteration drift between the Odds API and our internal
+# picks/DB source (e.g. CSL: "Beijing Guoan" (DB) vs "Beijing FC"
+# (Odds API), "Shenzhen Xinpengcheng" (DB) vs "Shenzhen Peng City"
+# (Odds API)).  The picks-scope filter at ``refresh_alt_lines``
+# compared normalised team pairs literally, so scorer-market requests
+# for CSL never fired even when events existed.
+#
+# Fix: canonicalise both sides through the existing per-league alias
+# tables BEFORE forming the pair tuple.  This does NOT loosen scorer
+# quality gates, does NOT synthesize odds, and does NOT change any
+# grading logic — it only closes the alias gap on the pair-equality
+# check.
+def _team_key(sport_key: str, raw_name: str) -> str:
+    """Return the canonical, alias-resolved, normalised team key for
+    the given sport.  For sports without an alias table this is just
+    the plain normalised name."""
+    n = _norm(raw_name)
+    if not n:
+        return ""
+    try:
+        if sport_key == "soccer_china_superleague":
+            from csl_form_seed import _TEAM_ALIASES as _CSL
+            return _CSL.get(n, n)
+        # (Other leagues can be wired here as needed — MLS uses a
+        # different multi-alias structure that maps to lists, not a
+        # 1-1 canonical, so we skip it here.  Reserved for later.)
+    except Exception:
+        pass
+    return n
+
+
 def _composite_key(event_id: str, book: str, market: str, sel: str,
                    line: Optional[float]) -> str:
     line_s = "" if line is None else f"@{line}"
@@ -350,8 +382,11 @@ async def _todays_pick_scope(db: AsyncIOMotorDatabase) -> dict:
                 sk = _SPORT_TO_ODDS_KEY.get(sport_lc, "")
             if sk:
                 sports.add(sk)
-            home = _norm(p.get("home_team") or "")
-            away = _norm(p.get("away_team") or "")
+            # Phase 4E follow-up — use the per-sport canonical team
+            # key so aliases (e.g. CSL "Beijing Guoan" ≡ "Beijing FC")
+            # collapse to a single scope-pair entry.
+            home = _team_key(sk, p.get("home_team") or "")
+            away = _team_key(sk, p.get("away_team") or "")
             if home and away:
                 # store both orderings so we match regardless of
                 # home/away designation across data sources
@@ -446,8 +481,10 @@ async def refresh_alt_lines(
                 # picks-scope filter: skip events where neither team
                 # pair appears in today's picks
                 if picks_scope and scoped_pairs:
-                    home_n = _norm(ev.get("home_team") or "")
-                    away_n = _norm(ev.get("away_team") or "")
+                    # Phase 4E follow-up — canonicalise via alias map
+                    # so CSL etc. resolve across name variants.
+                    home_n = _team_key(sport_key, ev.get("home_team") or "")
+                    away_n = _team_key(sport_key, ev.get("away_team") or "")
                     pair = (home_n, away_n)
                     if not home_n or not away_n or pair not in scoped_pairs:
                         stats["skipped_no_picks"] += 1
