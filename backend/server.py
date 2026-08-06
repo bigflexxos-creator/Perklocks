@@ -4539,6 +4539,23 @@ async def on_startup():
     except Exception as _p2_err:
         logger.warning("Phase 2β infra bootstrap failed: %s", _p2_err)
 
+    # ── Phase 2δ — Background lifecycle bootstrap ───────────────────
+    # Recovers stale leases and orphaned budget reservations from the
+    # previous instance BEFORE any snapshot loop is armed.  Multiple
+    # workers can boot simultaneously — the lease recovery is
+    # atomic-single-document so no work is duplicated.
+    try:
+        from services.background_lifecycle import BackgroundLifecycle
+        _lifecycle = BackgroundLifecycle(db)
+        _startup_summary = await _lifecycle.on_startup()
+        app.state.lifecycle = _lifecycle
+        logger.info(
+            "Phase 2δ lifecycle armed — startup recovery: %s",
+            _startup_summary,
+        )
+    except Exception as _lc_err:
+        logger.warning("Phase 2δ lifecycle bootstrap failed: %s", _lc_err)
+
     # ── 2026-07-28 DEFECT #5 — no_bet schema invariant at startup ────
     # Sweep any legacy rows where `no_bet_reason` is set but `no_bet`
     # is False (crash-corruption or pre-helper writes), and install a
@@ -5552,4 +5569,14 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
+    # Phase 2δ: gracefully cancel every background task and release
+    # any leases owned by this process so the next instance's
+    # startup recovery has less to clean up.
+    try:
+        lc = getattr(app.state, "lifecycle", None)
+        if lc is not None:
+            summary = await lc.on_shutdown(timeout=10.0)
+            logger.info("Phase 2δ shutdown summary: %s", summary)
+    except Exception as e:
+        logger.warning("Phase 2δ shutdown error: %s", e)
     client.close()
