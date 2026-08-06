@@ -522,6 +522,31 @@ class OddsApiGateway:
 
         # ── Budget commit + flight completion ───────────────────────
         try:
+            # Phase 2γ closeout: atomic top-up if actual exceeds
+            # estimate.  If the top-up fails we still commit at the
+            # estimated cap and log an overage — follow-up fan-out
+            # must be blocked by the caller.
+            if actual_credits > est_credits:
+                top = await self.budget.top_up(
+                    intent_id, extra=actual_credits - est_credits,
+                    emergency_requested=bool(reservation.get("emergency")),
+                    reason="actual_over_estimate",
+                )
+                if not top.get("ok"):
+                    logger.warning(
+                        "gateway top_up denied (%s) — committing at "
+                        "est-cap; caller=%s job=%s actual=%s est=%s",
+                        top.get("outcome"), caller, job_name,
+                        actual_credits, est_credits,
+                    )
+                    actual_credits = est_credits
+                    await self.budget._audit(
+                        "budget_overage_blocked",
+                        caller=caller, job_name=job_name,
+                        actual_credits=actual_credits,
+                        estimated_credits=est_credits,
+                        intent_id=intent_id,
+                    )
             await self.budget.commit(intent_id,
                                        actual_credits=actual_credits,
                                        response_metadata={
