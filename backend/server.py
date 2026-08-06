@@ -3951,7 +3951,8 @@ async def _daily_refresh_loop():
 # UTC = 11 AM – 7 PM ET). Cheap because we filter to MLB only — non-MLB
 # fetchers are skipped (saves Odds credits) and other sports' picks are not
 # wiped from the DB.
-_MLB_QUICK_REFRESH_INTERVAL = 5 * 60   # 5 minutes
+_MLB_QUICK_REFRESH_INTERVAL = 5 * 60   # 5 minutes (today, near-start games)
+_MLB_TOMORROW_REFRESH_INTERVAL = 30 * 60   # 30 minutes (tomorrow's board — Phase 2γ)
 _MLB_WINDOW_START_UTC_HOUR = 15        # 11 AM ET
 _MLB_WINDOW_END_UTC_HOUR = 3           # 11 PM ET / 8 PM PT — covers late West Coast first pitches (wraps past midnight UTC)
 
@@ -3960,30 +3961,114 @@ async def _mlb_pregame_loop():
     """Refresh MLB picks every 5 min during US daytime so player props
     surface 60–90 min pre-game instead of 5–10 min pre-game.
 
-    Look-ahead behaviour (2026-07-15 fix): the loop was only fetching
-    `today` which meant during MLB All-Star break (~July 14–16) or any
-    other empty day the slate went bone-dry until the following day
-    rolled over. We now ALSO fetch tomorrow's slate on every cycle so
-    Friday's post-All-Star games are on the board Thursday afternoon.
+    Phase 2γ (2026-08-06): the today+tomorrow every-5-min fan-out was
+    the biggest MLB paid burn.  We now:
+
+      • Refresh **today** at 5-min cadence during the US window
+        (unchanged — this is the user-visible value).
+      • Refresh **tomorrow** at 30-min cadence (was 5-min) — books
+        post next-day slates hours in advance, no need to poll them
+        that hard.
+      • Both paths acquire a JobCoordinator lease + ProviderBudget
+        reservation so rolling deployments and multi-worker
+        containers cannot fire duplicate paid work.
     """
     # Let startup settle so the initial seed completes first.
     await asyncio.sleep(120)
+    from services.job_coordinator import JobCoordinator as _MJC
+    from services.provider_budget import ProviderBudget as _MPB
+    last_tomorrow_at: float = 0.0
     while True:
         try:
             now = datetime.now(timezone.utc)
             hour = now.hour
             if hour >= _MLB_WINDOW_START_UTC_HOUR or hour < _MLB_WINDOW_END_UTC_HOUR:
-                # Today's slate (real-time refresh — pregame line moves,
-                # scratch news, weather, etc.)
-                await _refresh_picks(_today_str(), sport_filter="MLB")
-                # Tomorrow's slate — surfaces post-break / next-day games
-                # 24h in advance. Same idempotent upsert path, cost is
-                # a single extra Odds API call per cycle.
-                try:
-                    tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-                    await _refresh_picks(tomorrow_str, sport_filter="MLB")
-                except Exception as e:
-                    logger.debug("MLB tomorrow lookahead failed: %s", e)
+                # ── Today's slate ─────────────────────────────────
+                coord = _MJC(db)
+                budget = _MPB(db)
+                lease = await coord.acquire(
+                    "mlb_pregame_refresh_today",
+                    lease_seconds=180,
+                    min_interval_seconds=180,   # min 3-min spacing
+                    caller="mlb_pregame_loop",
+                    reason="pregame_5min",
+                )
+                if lease:
+                    token = lease.lease_token
+                    r = await budget.reserve(
+                        estimated_credits=60,
+                        endpoint_type="picks_refresh_mlb_today",
+                        caller="mlb_pregame_loop",
+                        job_name="mlb_pregame_refresh_today",
+                        reason="pregame_5min",
+                        request_key=f"mlb_today:{token}",
+                        ttl_seconds=240,
+                    )
+                    if r.get("allowed"):
+                        intent = r["intent_id"]
+                        try:
+                            await _refresh_picks(_today_str(), sport_filter="MLB")
+                            await budget.commit(intent)
+                            await coord.complete(
+                                "mlb_pregame_refresh_today", token,
+                            )
+                        except Exception as e:
+                            await budget.release(intent, reason=f"err:{e}")
+                            await coord.fail(
+                                "mlb_pregame_refresh_today", token,
+                                error=str(e), retry_after_seconds=120,
+                            )
+                    else:
+                        await coord.fail(
+                            "mlb_pregame_refresh_today", token,
+                            error=f"budget_denied:{r.get('outcome')}",
+                            retry_after_seconds=300,
+                        )
+                # ── Tomorrow's slate — much slower cadence ────────
+                t_now = asyncio.get_event_loop().time()
+                if t_now - last_tomorrow_at >= _MLB_TOMORROW_REFRESH_INTERVAL:
+                    last_tomorrow_at = t_now
+                    coord = _MJC(db)
+                    budget = _MPB(db)
+                    lease = await coord.acquire(
+                        "mlb_pregame_refresh_tomorrow",
+                        lease_seconds=180,
+                        min_interval_seconds=_MLB_TOMORROW_REFRESH_INTERVAL,
+                        caller="mlb_pregame_loop",
+                        reason="pregame_tomorrow_30min",
+                    )
+                    if lease:
+                        token = lease.lease_token
+                        r = await budget.reserve(
+                            estimated_credits=40,
+                            endpoint_type="picks_refresh_mlb_tomorrow",
+                            caller="mlb_pregame_loop",
+                            job_name="mlb_pregame_refresh_tomorrow",
+                            reason="pregame_tomorrow_30min",
+                            request_key=f"mlb_tomorrow:{token}",
+                            ttl_seconds=240,
+                        )
+                        if r.get("allowed"):
+                            intent = r["intent_id"]
+                            try:
+                                tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+                                await _refresh_picks(tomorrow_str, sport_filter="MLB")
+                                await budget.commit(intent)
+                                await coord.complete(
+                                    "mlb_pregame_refresh_tomorrow", token,
+                                )
+                            except Exception as e:
+                                await budget.release(intent, reason=f"err:{e}")
+                                await coord.fail(
+                                    "mlb_pregame_refresh_tomorrow", token,
+                                    error=str(e), retry_after_seconds=120,
+                                )
+                        else:
+                            await coord.fail(
+                                "mlb_pregame_refresh_tomorrow", token,
+                                error=f"budget_denied:{r.get('outcome')}",
+                                retry_after_seconds=300,
+                            )
                 await asyncio.sleep(_MLB_QUICK_REFRESH_INTERVAL)
             else:
                 # Outside MLB hours — sleep until the window reopens.
@@ -4760,33 +4845,87 @@ async def on_startup():
     try:
         from services.mls_direct_inject import run_once as _mls_direct_run
         from services.scheduled_snapshot import schedule_utc_hours
+        from services.cold_start import maybe_recover_on_cold_start
+        from services.job_coordinator import JobCoordinator
+        from services.provider_budget import ProviderBudget
+        from services.job_registry import get_job
+
+        async def _run_under_lease_and_budget(job_name, runner, *, caller, reason):
+            """Phase 2γ — every paid scheduled run acquires a
+            coordinator lease + reserves budget before firing."""
+            coord = JobCoordinator(db)
+            budget = ProviderBudget(db)
+            reg = get_job(job_name) or {}
+            lease_s = int(reg.get("lease_seconds") or 600)
+            min_iv  = int(reg.get("min_interval_seconds") or 1800)
+            est     = int(reg.get("estimated_max_credits") or 100)
+            lease = await coord.acquire(
+                job_name,
+                lease_seconds=lease_s,
+                min_interval_seconds=min_iv,
+                caller=caller,
+                reason=reason,
+                metadata={"scheduled": True},
+            )
+            if not lease:
+                logger.info("[%s] scheduled skip: %s",
+                             job_name, lease.get("reason"))
+                return
+            token = lease.lease_token
+            reservation = await budget.reserve(
+                estimated_credits=est, endpoint_type="snapshot",
+                caller=caller, job_name=job_name,
+                emergency_requested=False, reason=reason,
+                request_key=f"scheduled:{job_name}:{token}",
+                ttl_seconds=lease_s + 60,
+            )
+            if not reservation.get("allowed"):
+                await coord.fail(job_name, token,
+                                  error=f"budget_denied:{reservation.get('outcome')}",
+                                  retry_after_seconds=300)
+                logger.warning("[%s] scheduled budget denied: %s",
+                                job_name, reservation.get("outcome"))
+                return
+            intent_id = reservation.get("intent_id")
+            try:
+                summary = await runner()
+                await budget.commit(intent_id)
+                await coord.complete(job_name, token,
+                                      result_metadata={"summary": str(summary)[:400]})
+                logger.info("[%s] scheduled complete: %s",
+                             job_name, str(summary)[:200])
+            except Exception as e:
+                await budget.release(intent_id,
+                                       reason=f"scheduled_error:{e}")
+                await coord.fail(job_name, token, error=str(e),
+                                  retry_after_seconds=300)
+                logger.warning("[%s] scheduled err: %s", job_name, e)
 
         async def _mls_direct_snapshot_loop():
+            # Phase 2γ: on cold start, read the last saved snapshot;
+            # trigger recovery only if the board is missing or
+            # critically stale.  No unconditional startup fan-out.
+            try:
+                await maybe_recover_on_cold_start(
+                    db, job_name="mls_direct_inject",
+                    runner=_mls_direct_run,
+                    caller="startup_cold_check",
+                )
+            except Exception as _cs_err:
+                logger.debug("mls cold_start err: %s", _cs_err)
             async for _ in schedule_utc_hours(
                 name="mls_direct_inject",
                 hours=[12, 18, 23],
-                run_immediately=True,
+                run_immediately=False,
             ):
-                # Phase 2β shadow observation — record what the
-                # JobCoordinator + ProviderBudget WOULD have done.
-                # Never blocks the real run.
-                try:
-                    from services.shadow_wiring import shadow_check
-                    await shadow_check(
-                        db, job_name="mls_direct_inject",
-                        caller="startup_scheduler",
-                        reason="scheduled_snapshot",
-                    )
-                except Exception as _sh_err:
-                    logger.debug("mls shadow_check err: %s", _sh_err)
-                try:
-                    summary = await _mls_direct_run()
-                    logger.info("MLS Direct-Inject snapshot: %s", summary)
-                except Exception as e:
-                    logger.warning("MLS Direct-Inject snapshot err: %s", e)
+                await _run_under_lease_and_budget(
+                    "mls_direct_inject", _mls_direct_run,
+                    caller="scheduler:mls_direct_inject",
+                    reason="scheduled_snapshot",
+                )
 
         asyncio.create_task(_mls_direct_snapshot_loop())
-        logger.info("MLS Direct-Inject snapshot armed — 3×/day (12/18/23 UTC)")
+        logger.info("MLS Direct-Inject snapshot armed — 3×/day (12/18/23 UTC), lease-gated")
     except Exception as e:
         logger.warning("MLS Direct-Inject worker failed to start: %s", e)
 
@@ -4798,31 +4937,30 @@ async def on_startup():
     try:
         from services.soccer_prop_inject import run_once as _soccer_prop_run
         from services.scheduled_snapshot import schedule_utc_hours
+        from services.cold_start import maybe_recover_on_cold_start
 
         async def _soccer_prop_snapshot_loop():
+            try:
+                await maybe_recover_on_cold_start(
+                    db, job_name="soccer_prop_inject",
+                    runner=_soccer_prop_run,
+                    caller="startup_cold_check",
+                )
+            except Exception as _cs_err:
+                logger.debug("soccer cold_start err: %s", _cs_err)
             async for _ in schedule_utc_hours(
                 name="soccer_prop_inject",
                 hours=[12, 18, 23],
-                run_immediately=True,
+                run_immediately=False,
             ):
-                # Phase 2β shadow observation.
-                try:
-                    from services.shadow_wiring import shadow_check
-                    await shadow_check(
-                        db, job_name="soccer_prop_inject",
-                        caller="startup_scheduler",
-                        reason="scheduled_snapshot",
-                    )
-                except Exception as _sh_err:
-                    logger.debug("soccer shadow_check err: %s", _sh_err)
-                try:
-                    summary = await _soccer_prop_run()
-                    logger.info("Soccer Prop Inject snapshot: %s", summary)
-                except Exception as e:
-                    logger.warning("Soccer Prop Inject snapshot err: %s", e)
+                await _run_under_lease_and_budget(
+                    "soccer_prop_inject", _soccer_prop_run,
+                    caller="scheduler:soccer_prop_inject",
+                    reason="scheduled_snapshot",
+                )
 
         asyncio.create_task(_soccer_prop_snapshot_loop())
-        logger.info("Soccer Prop Inject snapshot armed — 3×/day (12/18/23 UTC)")
+        logger.info("Soccer Prop Inject snapshot armed — 3×/day (12/18/23 UTC), lease-gated")
     except Exception as e:
         logger.warning("Soccer Prop Inject worker failed to start: %s", e)
 
@@ -5220,40 +5358,92 @@ async def on_startup():
     try:
         from alt_lines_feed import ensure_indices, refresh_alt_lines
         from services.scheduled_snapshot import schedule_utc_hours
+        from services.cold_start import maybe_recover_on_cold_start
+        from services.job_coordinator import JobCoordinator as _JC_alt
+        from services.provider_budget import ProviderBudget as _PB_alt
+        from services.job_registry import get_job as _get_job_alt
+
+        async def _alt_lines_runner():
+            return await refresh_alt_lines(
+                db, picks_scope=True, event_window_hours=36,
+            )
+
+        async def _alt_lines_run_under_lease(caller: str, reason: str):
+            coord = _JC_alt(db)
+            budget = _PB_alt(db)
+            reg = _get_job_alt("alt_lines_feed") or {}
+            lease_s = int(reg.get("lease_seconds") or 600)
+            min_iv  = int(reg.get("min_interval_seconds") or 1800)
+            est     = int(reg.get("estimated_max_credits") or 400)
+            lease = await coord.acquire(
+                "alt_lines_feed",
+                lease_seconds=lease_s,
+                min_interval_seconds=min_iv,
+                caller=caller, reason=reason,
+                metadata={"scheduled": True},
+            )
+            if not lease:
+                logger.info("[alt_lines_feed] scheduled skip: %s",
+                             lease.get("reason"))
+                return
+            token = lease.lease_token
+            reservation = await budget.reserve(
+                estimated_credits=est, endpoint_type="alt_lines_snapshot",
+                caller=caller, job_name="alt_lines_feed",
+                emergency_requested=False, reason=reason,
+                request_key=f"scheduled:alt_lines_feed:{token}",
+                ttl_seconds=lease_s + 60,
+            )
+            if not reservation.get("allowed"):
+                await coord.fail("alt_lines_feed", token,
+                                  error=f"budget_denied:{reservation.get('outcome')}",
+                                  retry_after_seconds=300)
+                logger.warning("[alt_lines_feed] budget denied: %s",
+                                reservation.get("outcome"))
+                return
+            intent_id = reservation.get("intent_id")
+            try:
+                summary = await _alt_lines_runner()
+                await budget.commit(intent_id)
+                await coord.complete("alt_lines_feed", token,
+                                      result_metadata={"summary": str(summary)[:400]})
+                logger.info("alt_lines snapshot: %s", summary)
+            except Exception as e:
+                await budget.release(intent_id, reason=f"error:{e}")
+                await coord.fail("alt_lines_feed", token, error=str(e),
+                                  retry_after_seconds=300)
+                logger.warning("alt_lines snapshot err: %s", e)
 
         async def _alt_lines_loop():
             try:
                 await ensure_indices(db)
             except Exception as ie:
                 logger.warning("alt_lines indices failed: %s", ie)
+            # Phase 2γ cold-start check — recover only if the last
+            # snapshot is missing or critically stale, single-owner
+            # across the fleet.
+            try:
+                await maybe_recover_on_cold_start(
+                    db, job_name="alt_lines_feed",
+                    runner=_alt_lines_runner,
+                    caller="startup_cold_check",
+                )
+            except Exception as _cs_err:
+                logger.debug("alt_lines cold_start err: %s", _cs_err)
             async for _ in schedule_utc_hours(
                 name="alt_lines_feed",
                 hours=[12, 18, 23],
-                run_immediately=True,
+                run_immediately=False,
             ):
-                # Phase 2β shadow observation.
-                try:
-                    from services.shadow_wiring import shadow_check
-                    await shadow_check(
-                        db, job_name="alt_lines_feed",
-                        caller="startup_scheduler",
-                        reason="scheduled_snapshot",
-                    )
-                except Exception as _sh_err:
-                    logger.debug("alt_lines shadow_check err: %s", _sh_err)
-                try:
-                    summary = await refresh_alt_lines(
-                        db, picks_scope=True,
-                        event_window_hours=36,
-                    )
-                    logger.info("alt_lines snapshot: %s", summary)
-                except Exception as re_:
-                    logger.warning("alt_lines snapshot err: %s", re_)
+                await _alt_lines_run_under_lease(
+                    "scheduler:alt_lines_feed", "scheduled_snapshot",
+                )
 
         _deferred_task(_alt_lines_loop, DEFER_BASE * 8)
         logger.info(
             "Live alt-line feed armed (DK+FanDuel via Odds API, "
-            "3×/day snapshots at 12/18/23 UTC, picks-scope-only)"
+            "3×/day snapshots at 12/18/23 UTC, picks-scope-only, "
+            "coordinator+budget-gated)"
         )
     except Exception as e:
         logger.warning("alt_lines_feed failed to start: %s", e)

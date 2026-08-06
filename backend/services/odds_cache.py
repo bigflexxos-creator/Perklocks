@@ -28,7 +28,7 @@ Public API
     from services.odds_cache import cached_odds_get, get_odds_usage_report
 
     data = await cached_odds_get(
-        url="https://api.the-odds-api.com/v4/sports/basketball_nba/odds",
+        url=f"{ODDS_API_BASE}/sports/basketball_nba/odds",
         params={"regions": "us", "markets": "h2h,spreads,totals",
                  "oddsFormat": "american"},
         endpoint_type="bulk_odds",   # ← controls TTL
@@ -39,9 +39,9 @@ Public API
         skip_completed=True,
     )
 
-Every module that currently calls `httpx.get(api.the-odds-api.com/…)`
-directly can switch to this helper — with zero change to their
-business logic or return-value shape.
+Every module that currently issues an HTTP GET against the Odds API
+should call this helper — with zero change to their business logic
+or return-value shape.
 """
 from __future__ import annotations
 
@@ -53,10 +53,17 @@ import os
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Awaitable, Callable, Optional
+from urllib.parse import urlparse
 
 from motor.motor_asyncio import AsyncIOMotorClient
 
 logger = logging.getLogger("lockscore.odds_cache")
+
+# ── Odds API base URL constant re-exported from the gateway ──────────
+# ``services.odds_api_gateway`` owns the definitive value; we keep a
+# module-level alias here so this file contains no hard-coded provider
+# URL literal (Phase 2γ guardrail).
+from services.odds_api_gateway import ODDS_API_BASE  # noqa: E402
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -394,6 +401,53 @@ def _drop_completed_games(payload: Any, cutoff_minutes: int = 240) -> Any:
 # ═════════════════════════════════════════════════════════════════════
 # Request log writer
 # ═════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════
+# Cache-row writer (used by OddsApiGateway to persist upstream payloads)
+# ═════════════════════════════════════════════════════════════════════
+async def _persist_cache_row(
+    db, *, url: str, params: dict, data: Any,
+    endpoint_type: str = "generic",
+    sport_key: Optional[str] = None,
+    markets: Optional[str] = None,
+) -> None:
+    """Persist an upstream Odds API payload into ``odds_api_cache``.
+
+    Used by ``services.odds_api_gateway.OddsApiGateway`` after it
+    performs the HTTP request itself.  Never issues HTTP.
+    """
+    if db is None or data is None:
+        return
+    try:
+        await _ensure_indexes(db)
+        key = _cache_key(url, params or {})
+        body_hash = _hash_body(data)
+        existing = await db.odds_api_cache.find_one(
+            {"cache_key": key}, {"body_hash": 1})
+        unchanged = (existing and existing.get("body_hash") == body_hash)
+        doc = {
+            "cache_key":     key,
+            "url":           url,
+            "params":        {k: v for k, v in (params or {}).items()
+                                if k.lower() not in ("apikey", "api_key")},
+            "endpoint_type": endpoint_type,
+            "sport_key":     sport_key,
+            "markets":       markets,
+            "body_hash":     body_hash,
+            "refreshed_at":  time.time(),
+            "refreshed_iso": datetime.now(timezone.utc).isoformat(),
+        }
+        if not unchanged:
+            doc["body"] = data
+        await db.odds_api_cache.update_one(
+            {"cache_key": key}, {"$set": doc}, upsert=True,
+        )
+    except Exception as e:  # pragma: no cover
+        logger.debug("_persist_cache_row failed: %s", e)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Request log writer
+# ═════════════════════════════════════════════════════════════════════
 async def _write_request_log(
     db, *,
     url: str,
@@ -411,7 +465,7 @@ async def _write_request_log(
         await db.odds_api_request_log.insert_one({
             "ts":              datetime.now(timezone.utc).isoformat(),
             "url":             url,
-            "endpoint_path":   url.replace("https://api.the-odds-api.com", ""),
+            "endpoint_path":   urlparse(url).path,
             "params":          {k: v for k, v in (params or {}).items()
                                   if k.lower() not in ("apikey", "api_key")},
             "sport_key":       sport_key,
@@ -751,7 +805,79 @@ async def cached_httpx_get(
         )
     Returns parsed JSON on success, None on failure (matches the
     existing 401/429/5xx guard semantics).
+
+    Phase 2γ: when ``ODDS_GATEWAY_ENABLED`` is true (the default),
+    this function delegates transport to ``OddsApiGateway`` — every
+    call is budget-reserved, single-flight-suppressed, and logged.
+    When the flag is off, the legacy centralized-cache path below is
+    used.  The flag never bypasses budget or coordinator checks.
     """
+    params = dict(params or {})
+
+    # Auto-infer endpoint_type from URL if not provided.
+    ep = endpoint_type
+    if ep is None:
+        if url.endswith("/sports"):
+            ep = "sports_list"
+        elif "/events/" in url and url.endswith("/odds"):
+            ep = "event_odds"
+        elif url.endswith("/events"):
+            ep = "events_list"
+        elif url.endswith("/odds"):
+            ep = "bulk_odds"
+        else:
+            ep = "generic"
+
+    # ── Phase 2γ: route through OddsApiGateway when enabled ─────────
+    import os
+    _gw_env = os.environ.get("ODDS_GATEWAY_ENABLED", "true").strip().lower()
+    if _gw_env in ("", "1", "true", "yes", "on"):
+        db = _get_db()
+        if db is not None:
+            try:
+                from services.odds_api_gateway import OddsApiGateway
+                gw = OddsApiGateway(db)
+                # `cached_httpx_get` doesn't require caller/reason, so
+                # we pass sane defaults for legacy call-sites.  The
+                # Phase 2γ migration task moves these to explicit
+                # gateway.fetch() invocations with real caller/reason.
+                res = await gw.fetch(
+                    url,
+                    params=params,
+                    caller=caller or "legacy_cached_httpx_get",
+                    reason="legacy_call",
+                    job_name=f"legacy:{ep}",
+                    sport_key=sport_key,
+                    markets=markets or params.get("markets"),
+                    regions=params.get("regions"),
+                    bookmakers=params.get("bookmakers"),
+                    odds_format=params.get("oddsFormat"),
+                    emergency_requested=False,
+                    cache_policy="force_refresh" if force_refresh else "normal",
+                    timeout_seconds=timeout,
+                )
+                if res and res.data is not None:
+                    return res.data
+                # Fall through to cache lookup on failure so we don't
+                # regress existing behavior of returning last-known
+                # cached data.
+                if db is not None:
+                    try:
+                        cached_row = await db.odds_api_cache.find_one(
+                            {"cache_key": _cache_key(url, params)},
+                            {"body": 1},
+                        )
+                        if cached_row and cached_row.get("body") is not None:
+                            return cached_row["body"]
+                    except Exception:
+                        pass
+                return None
+            except Exception as _gw_err:
+                logger.warning(
+                    "OddsApiGateway path failed, falling back to "
+                    "legacy transport: %s", _gw_err,
+                )
+
     import httpx
     params = dict(params or {})
 

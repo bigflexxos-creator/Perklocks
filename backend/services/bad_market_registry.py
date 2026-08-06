@@ -3,7 +3,7 @@
 The Odds API returns HTTP 422 when a sport does not carry a market
 (e.g. `player_goal_scorer_anytime` in China Super League, or
 `alternate_totals_games` in a lower-tier WTA 250 event).  Historically
-`alt_lines_feed._fetch_event_odds_individual` would then retry EACH
+`alt_lines_feed` historically retried EACH
 market individually — burning ~4,000 credits/day on markets we know
 don't exist.
 

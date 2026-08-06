@@ -1,0 +1,82 @@
+Phase 2γ — 24-hour measurement (PARTIAL — collection just started)
+======================================================================
+
+Start timestamp (UTC): 2026-08-06T14:22:38Z
+Baseline (Phase 2α):
+  • Upstream requests / day:   1,988
+  • Credits consumed / day:    3,270
+  • Projected monthly credits: 98,100
+  • Cache hit-rate:            55.4 %
+  • Duplicate calls within 1 min: 617
+
+TARGETS
+=======
+  • Credits / day  ≤ 3,000  (must)
+  • Credits / day  ≈ 1,300  (preferred)
+  • Projected monthly credits  < 100,000  (comfortable)
+  • Duplicate upstream calls   reduced materially
+  • Cache hit-rate             improved
+
+
+PRODUCTION MEASUREMENT COMMANDS (deployment-neutral)
+====================================================
+
+24 h AFTER the start timestamp above, run the following two commands
+inside the running backend pod (or any environment with MONGO_URL set):
+
+    cd /app/backend
+    python scripts/phase2gamma_24h_report.py --hours 24 \
+        --out /app/reports/phase2gamma_24h_final.txt
+
+That script writes an aggregated summary comparing observed usage to
+the Phase 2α baseline and exits non-zero if any of the SUCCESS
+criteria are missed.
+
+Ad-hoc sanity check (any time):
+
+    curl -sS -H "Authorization: Bearer <ADMIN_TOKEN>" \
+        http://localhost:8001/api/admin/ops/budget/status
+
+    curl -sS -H "Authorization: Bearer <ADMIN_TOKEN>" \
+        "http://localhost:8001/api/admin/ops/budget/reconcile?day=$(date -u +%F)"
+
+    curl -sS -H "Authorization: Bearer <ADMIN_TOKEN>" \
+        "http://localhost:8001/api/admin/ops/jobs?limit=50"
+
+
+CURRENT PARTIAL DATA (labelled PARTIAL — session end reached
+before the 24 h window closed)
+============================================================
+
+Provider budget snapshot at 2026-08-06T14:23 UTC (mid-day):
+
+    provider:              odds_api
+    day_key:               2026-08-06
+    day_used:              1,102 credits
+    day_reserved:          400 credits (in-flight)
+    day_remaining:         1,498 credits
+    month_used:            1,102 credits
+    month_reserved:        400 credits
+    month_remaining:       88,498 credits (normal cap = 90,000)
+    emergency_remaining:   10,000
+
+Registry migration status (see /api/admin/ops/jobs/registry):
+
+    alt_lines_feed              → fully_managed
+    mls_direct_inject           → fully_managed
+    soccer_prop_inject          → fully_managed
+    picks_refresh_today         → leased
+    mlb_pregame_refresh_today   → leased  (Phase 2γ split)
+    mlb_pregame_refresh_tomorrow → leased  (30-min cadence, was 5-min)
+
+Notes
+=====
+- These numbers include a day of prior background traffic PLUS the
+  Phase 2γ cutover activity in the current session.  They are NOT
+  representative of a steady-state 24 h post-cutover window.
+- Duplicate-suppression counters will show up in
+  odds_request_flights and odds_api_request_log after the first full
+  scheduled snapshot cycle.
+
+DO NOT CLAIM the daily target has been achieved from this data —
+collection just started.  Wait for the full 24 h window to close.
