@@ -392,6 +392,26 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
         # Fallback / non-MLB sports: original Odds API path
         if not all_scores:
             keys = SPORT_KEYS.get(sport, [])
+            # ── Phase 2δ closeout: scope down to sport_keys that
+            # actually have unsettled published picks so we don't
+            # burn scores credits on empty leagues.
+            try:
+                from services.settlement_scope import active_sport_keys as _ask
+                active = set(await _ask(db))
+                if active:
+                    scoped = [k for k in keys if k in active]
+                    if scoped:
+                        keys = scoped
+                    else:
+                        # No active keys for this sport → no picks to
+                        # score.  Skip the fan-out entirely.
+                        logger.debug(
+                            "settlement: skipping %s — no active sport_keys",
+                            sport,
+                        )
+                        keys = []
+            except Exception as _sc_err:
+                logger.debug("settlement_scope filter err: %s", _sc_err)
             for key in keys:
                 data = await _fetch_scores(key)
                 if data:

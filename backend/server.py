@@ -3913,13 +3913,71 @@ async def _daily_refresh_loop():
 
             current_date = _today_str()
             if current_date != last_refresh_date:
-                # Day rolled over — force a refresh NOW so new-day picks
-                # show up within 5 minutes instead of waiting an hour.
+                # ── Phase 2δ closeout: day-rollover refresh must go
+                # through JobCoordinator + ProviderBudget + gateway.
+                # Distributed lease guarantees only ONE instance runs
+                # the refresh when multiple workers detect the rollover.
                 logger.info(
-                    "Daily loop: UTC day rolled %s → %s, forcing refresh",
+                    "Daily loop: UTC day rolled %s → %s — attempting "
+                    "coordinated rollover refresh",
                     last_refresh_date, current_date,
                 )
-                await _refresh_picks(current_date)
+                try:
+                    from services.job_coordinator import JobCoordinator as _JCR
+                    from services.provider_budget import ProviderBudget as _PBR
+                    coord = _JCR(db)
+                    budget = _PBR(db)
+                    lease = await coord.acquire(
+                        "picks_refresh_today",
+                        lease_seconds=900,
+                        min_interval_seconds=1800,
+                        caller="daily_refresh_loop.day_rollover",
+                        reason=f"day_rollover:{last_refresh_date}->{current_date}",
+                    )
+                    if lease:
+                        token = lease.lease_token
+                        r = await budget.reserve(
+                            estimated_credits=800,
+                            endpoint_type="picks_refresh",
+                            caller="daily_refresh_loop.day_rollover",
+                            job_name="picks_refresh_today",
+                            reason="day_rollover",
+                            request_key=f"day_rollover:{current_date}:{token}",
+                            ttl_seconds=960,
+                        )
+                        if r.get("allowed"):
+                            try:
+                                await _refresh_picks(current_date)
+                                await budget.commit(r["intent_id"])
+                                await coord.complete(
+                                    "picks_refresh_today", token,
+                                    result_metadata={"day_rollover": current_date},
+                                )
+                            except Exception as _e:
+                                await budget.release(r["intent_id"],
+                                                       reason=f"rollover_err:{_e}")
+                                await coord.fail(
+                                    "picks_refresh_today", token,
+                                    error=str(_e), retry_after_seconds=300,
+                                )
+                        else:
+                            await coord.fail(
+                                "picks_refresh_today", token,
+                                error=f"budget_denied:{r.get('outcome')}",
+                                retry_after_seconds=300,
+                            )
+                            logger.warning(
+                                "Day rollover refresh budget denied: %s",
+                                r.get("outcome"),
+                            )
+                    else:
+                        logger.info(
+                            "Day rollover refresh already owned by another "
+                            "instance (%s) — skipping", lease.get("reason"),
+                        )
+                except Exception as _rov_err:
+                    logger.warning("Day rollover coordinated refresh err: %s",
+                                    _rov_err)
                 last_refresh_date = current_date
                 continue
 
