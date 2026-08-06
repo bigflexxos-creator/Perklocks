@@ -1,0 +1,186 @@
+{
+  "started_at": "2026-08-06T18:24:44.146979+00:00",
+  "finished_at": "2026-08-06T18:24:44.223096+00:00",
+  "mode": "execute",
+  "filter_user_id_present": false,
+  "resume_from": null,
+  "limit": null,
+  "batch_size": 100,
+  "migration_version": 1,
+  "pre_index_preflight": {
+    "ok": true,
+    "name": "migration_source_1_migration_source_id_1_uniq_partial",
+    "present": true,
+    "keys_match": true,
+    "unique": true,
+    "partial_filter_present": true,
+    "conflict_note": null,
+    "registry_spec_summary": {
+      "name": "migration_source_1_migration_source_id_1_uniq_partial",
+      "keys": [
+        [
+          "migration_source",
+          1
+        ],
+        [
+          "migration_source_id",
+          1
+        ]
+      ],
+      "unique": true,
+      "partial_filter": {
+        "migration_source": {
+          "$exists": true,
+          "$type": "string"
+        },
+        "migration_source_id": {
+          "$exists": true,
+          "$type": "string"
+        }
+      }
+    },
+    "live_index_summary": {
+      "keys": [
+        [
+          "migration_source",
+          1
+        ],
+        [
+          "migration_source_id",
+          1
+        ]
+      ],
+      "unique": true,
+      "partial_filter_present": true
+    }
+  },
+  "pre_ledger_preflight": {
+    "ok": true,
+    "checked_at": "2026-08-06T18:24:44.154382+00:00",
+    "total_user_bets": 2,
+    "duplicate_user_bet_id": 0,
+    "duplicate_client_bet_id_per_user": 0,
+    "duplicate_idempotency_key_per_user": 0,
+    "duplicate_migration_source_id": 0,
+    "conflicts": []
+  },
+  "pre_dryrun_summary": {
+    "eligible_p_star": 4,
+    "excluded_plearn": 190,
+    "counts_by_classification": {
+      "migration_ready": 4,
+      "duplicate_existing": 0,
+      "manual_review": 0,
+      "unsafe": 0,
+      "excluded_learning": 190,
+      "excluded_missing_user": 0,
+      "excluded_invalid_structure": 0
+    },
+    "status_mapping_breakdown": {
+      "legacy:won": 1,
+      "canonical:won": 1,
+      "legacy:lost": 3,
+      "canonical:lost": 3
+    },
+    "payout_gaps": {
+      "won_missing_payout": 0,
+      "lost_missing_stake": 0
+    },
+    "leg_identity_coverage": {
+      "prediction_id": "19/19",
+      "snapshot_id": "0/19",
+      "market_contract_id": "0/19",
+      "exact_line": "0/19",
+      "original_odds": "19/19"
+    }
+  },
+  "pre_gate_ok": true,
+  "pre_gate_blockers": [],
+  "collection_counts_before": {
+    "user_bets": 2,
+    "parlay_history": 194,
+    "prediction_snapshots": 14710,
+    "settlement_events": 0
+  },
+  "selected_count": 4,
+  "inserted_count": 4,
+  "skipped_existing_count": 0,
+  "inserted_records": [
+    {
+      "legacy_id": "p_4b0c7225f2fe81",
+      "user_bet_id": "bd10b40a-4357-4260-9b91-cfda0f76c195",
+      "wager_type": "parlay",
+      "canonical_status": "won",
+      "original_status": "won",
+      "legs_count": 3,
+      "combined_odds": 285,
+      "stake_amount": 10.0,
+      "inserted_at": "2026-08-06 18:24:44.190373+00:00"
+    },
+    {
+      "legacy_id": "p_e1af69205d77aa",
+      "user_bet_id": "606da1f0-1c55-4dc0-99a4-e9409b2e1248",
+      "wager_type": "parlay",
+      "canonical_status": "lost",
+      "original_status": "lost",
+      "legs_count": 7,
+      "combined_odds": 6688,
+      "stake_amount": 10.0,
+      "inserted_at": "2026-08-06 18:24:44.192018+00:00"
+    },
+    {
+      "legacy_id": "p_e7a0f677d0298d",
+      "user_bet_id": "60223d44-784c-43f5-94d2-146ec00efc20",
+      "wager_type": "parlay",
+      "canonical_status": "lost",
+      "original_status": "lost",
+      "legs_count": 7,
+      "combined_odds": 1223,
+      "stake_amount": 10.0,
+      "inserted_at": "2026-08-06 18:24:44.193204+00:00"
+    },
+    {
+      "legacy_id": "p_fbd8fdb05daf5b",
+      "user_bet_id": "112e5075-bb21-405a-bbd9-960c86c44f60",
+      "wager_type": "parlay",
+      "canonical_status": "lost",
+      "original_status": "lost",
+      "legs_count": 2,
+      "combined_odds": 105,
+      "stake_amount": 10.0,
+      "inserted_at": "2026-08-06 18:24:44.194324+00:00"
+    }
+  ],
+  "inserted_legacy_ids": [
+    "p_4b0c7225f2fe81",
+    "p_e1af69205d77aa",
+    "p_e7a0f677d0298d",
+    "p_fbd8fdb05daf5b"
+  ],
+  "inserted_user_bet_ids": [
+    "bd10b40a-4357-4260-9b91-cfda0f76c195",
+    "606da1f0-1c55-4dc0-99a4-e9409b2e1248",
+    "60223d44-784c-43f5-94d2-146ec00efc20",
+    "112e5075-bb21-405a-bbd9-960c86c44f60"
+  ],
+  "collection_counts_after": {
+    "user_bets": 6,
+    "parlay_history": 194,
+    "prediction_snapshots": 14710,
+    "settlement_events": 0
+  },
+  "forbidden_mutations": [],
+  "post_dryrun_summary": {
+    "eligible_p_star": 4,
+    "counts_by_classification": {
+      "migration_ready": 0,
+      "duplicate_existing": 4,
+      "manual_review": 0,
+      "unsafe": 0,
+      "excluded_learning": 190,
+      "excluded_missing_user": 0,
+      "excluded_invalid_structure": 0
+    }
+  },
+  "post_migrated_all_duplicate": true
+}
