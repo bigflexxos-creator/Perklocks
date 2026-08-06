@@ -36,23 +36,25 @@ async def parlay_save(
 ):
     """Save a parlay ticket.
 
-    Phase 3G Step 6 semantics:
-      1. Canonical write via ``UserBetLedger.create_parlay`` — first.
-      2. Compatibility mirror into ``parlay_history`` via the legacy
-         ``save_parlay`` path so ``GET /api/parlay/history`` (still
-         reads ``parlay_history``) continues to see the row.  The
-         mirror is stamped with ``source="user_bet_ledger_mirror"``,
-         ``user_bet_id``, and ``mirrored_at``.
-      3. Response envelope is identical to the pre-Step-6 shape
-         (returns the mirrored ``parlay_history`` row).
+    Phase 3G Step 7 semantics (final cutover):
+      1. Canonical write via ``UserBetLedger.create_parlay`` — only.
+      2. The compatibility mirror into ``parlay_history`` is SUNSET —
+         no rows are written there for new user-owned parlays.
+      3. Response envelope is identical to the pre-Step-6 shape,
+         serialized directly from the canonical row via
+         :func:`user_bet_ledger.serialize_parlay_history_row`.
+      4. Legacy alias fields (``pick_id``, ``bet_type``,
+         ``parlay_legs``, ``stake_units``, ``odds_at_bet``,
+         ``pnl_units``, denormalized ``sport``/``market``/
+         ``event``/``selection``) are stamped onto the canonical
+         ``user_bets`` document so the existing settlement engine
+         and per-user analytics endpoints keep working byte-for-byte.
 
     Learning-loop rows (``plearn_*``) are UNTOUCHED — never mirrored,
-    never migrated.
+    never migrated, never resolved by this route.
     """
     try:
         from services import user_bet_ledger as _UBL
-        from parlay_history import save_parlay
-        from datetime import datetime as _dt, timezone as _tz
 
         # Validate input at the same threshold the legacy path used.
         if not isinstance(req.legs, list) or len(req.legs) < 2:
@@ -87,36 +89,50 @@ async def parlay_save(
         )
         canonical_result = await _UBL.create_parlay(canonical_req)
 
-        # ── Step 2 — compatibility mirror into parlay_history ──────
-        # ``save_parlay`` is idempotent by its own deterministic p_ id
-        # so this step is safe to rerun.
-        mirror_doc = await save_parlay(
-            db, user_id=user.id, legs=req.legs,
-            mode=req.mode, stake=req.stake,
-        )
-        # Stamp the compat markers post-save (idempotent — only fills
-        # missing keys).
-        try:
-            await db.parlay_history.update_one(
-                {"id": mirror_doc.get("id"),
-                 "$or": [{"user_bet_id": {"$exists": False}},
-                         {"user_bet_id": None}]},
-                {"$set": {
-                    "source":       "user_bet_ledger_mirror",
-                    "user_bet_id":  canonical_result.bet.user_bet_id,
-                    "mirrored_at":  _dt.now(_tz.utc),
-                }},
+        # ── Step 2 (Step 7 cutover) — mirror SUNSET ────────────────
+        # New user-owned parlays no longer write to parlay_history.
+        # Existing legacy p_* rows and pre-Step-7 mirror rows in
+        # parlay_history remain untouched.  Learning-loop plearn_*
+        # rows are untouched (parlay_learning writes them directly).
+        #
+        # ── Legacy-alias stamping (Step 7 settlement/analytics parity)
+        # The settlement propagator (:func:`propagate_pick_settlement`)
+        # and per-user analytics endpoints predate the canonical schema
+        # and match/aggregate on legacy field names.  We stamp those
+        # aliases on the fresh canonical row so both paths keep working
+        # byte-for-byte against parlays created via this route.  We use
+        # a conditional update so we NEVER clobber a value a settler /
+        # admin has already written (idempotent + race-safe).
+        leg_pick_ids = [L.prediction_id for L in canonical_result.bet.legs
+                        if L.prediction_id]
+        leg_first = (req.legs[0] if isinstance(req.legs, list) and req.legs else {}) or {}
+        legs_ct = len(leg_pick_ids)
+        legacy_aliases = {
+            "id":          canonical_result.bet.user_bet_id,
+            "pick_id":     (leg_pick_ids[0] if leg_pick_ids else None),
+            "bet_type":    "parlay",
+            "parlay_legs": leg_pick_ids,
+            "stake_units": float(req.stake),
+            "odds_at_bet": (int(canonical_result.bet.combined_odds)
+                            if canonical_result.bet.combined_odds is not None else None),
+            "pnl_units":   0.0,
+            "sport":       leg_first.get("sport"),
+            "market":      f"{legs_ct}-leg parlay",
+            "event":       " + ".join(str(L.get("event", "") or "")
+                                       for L in req.legs[:3] if isinstance(L, dict)),
+            "selection":   " · ".join(str(L.get("selection", "") or "")
+                                       for L in req.legs[:3] if isinstance(L, dict)),
+        }
+        for k, v in legacy_aliases.items():
+            await db.user_bets.update_one(
+                {"user_bet_id": canonical_result.bet.user_bet_id,
+                 "$or": [{k: {"$exists": False}}, {k: None}]},
+                {"$set": {k: v}},
             )
-            # Re-read so the returned envelope carries the markers.
-            fresh = await db.parlay_history.find_one(
-                {"id": mirror_doc.get("id")}, {"_id": 0},
-            )
-            if fresh:
-                mirror_doc = fresh
-        except Exception as _e:
-            logger.warning("parlay_history mirror annotation failed: %s", _e)
 
-        return strip_mongo(mirror_doc)
+        # Return the canonical wager serialized in the exact legacy
+        # response envelope so the frontend contract is preserved.
+        return _UBL.serialize_parlay_history_row(canonical_result.bet)
     except HTTPException:
         raise
     except ValueError as e:
@@ -132,10 +148,17 @@ async def parlay_history_list(
     filter: Optional[str] = None,
     limit: int = 50,
 ):
-    """List the user's saved parlays. `filter` = won | live | lost | all."""
+    """List the user's saved parlays. `filter` = won | live | lost | all.
+
+    Phase 3G Step 7: reads from the canonical UserBetLedger.
+    plearn_* rows can never appear here (user_bets scope only).
+    Migrated legacy parlays already inserted into user_bets show up
+    exactly once; the legacy parlay_history row (if any) is suppressed
+    from the response to avoid duplicate display.
+    """
     try:
-        from parlay_history import list_history
-        rows = await list_history(
+        from services import user_bet_ledger as _UBL
+        rows = await _UBL.list_parlays_history_shape(
             db, user_id=user.id, status_filter=filter, limit=limit,
         )
         return {"parlays": rows, "count": len(rows)}
