@@ -43,19 +43,20 @@ MLB_BASE = "https://statsapi.mlb.com/api/v1"
 COLLECTION = "mlb_team_k_splits"
 CACHE_TTL_HOURS = 20  # refresh once per day
 
-# Lazy singleton motor client so callers can pass db=None.
+# Phase 3B — shared client owner (services/database.py) replaces the
+# local lazy singleton.  Keeps the _get_db() name for callers.
 _LAZY_DB = None
 
 
 def _get_db():
     global _LAZY_DB
-    if _LAZY_DB is None:
-        url = os.environ.get("MONGO_URL")
-        name = os.environ.get("DB_NAME", "test_database")
-        if not url:
-            return None
-        client = AsyncIOMotorClient(url)
-        _LAZY_DB = client[name]
+    if _LAZY_DB is not None:
+        return _LAZY_DB
+    try:
+        from services.database import get_database
+        _LAZY_DB = get_database()
+    except Exception:
+        return None
     return _LAZY_DB
 
 # Human-readable team-id map for LOGS (statsapi tolerates ID look-ups).
