@@ -1987,6 +1987,14 @@ try:
     from routes import ops_routes
     app.include_router(ops_routes.router)
     logger.info("Ops observability routes mounted at /api/admin/ops/*")
+    # ── Phase 4C finalization (2026-08-06) ────────────────────────
+    # /api/admin/mlb/rejections — structured MLB rejection counters.
+    try:
+        from routes import mlb_admin_diagnostics
+        app.include_router(mlb_admin_diagnostics.router)
+        logger.info("Phase 4C MLB diagnostics mounted at /api/admin/mlb/*")
+    except Exception as _e_mlb_diag:
+        logger.warning("Phase 4C MLB diagnostics failed to mount: %s", _e_mlb_diag)
     # Admin user-management dashboard routes (added 2026-06-24).
     from routes import admin_users_routes
     app.include_router(admin_users_routes.router)

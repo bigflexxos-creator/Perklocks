@@ -30,6 +30,9 @@ def _player_stats_from_pick(pick: dict) -> dict:
     Reads from `mlb_bvp` enrichment + `player_intel` cache. Falls back to
     league averages inside the simulator if these are missing. Soccer/NBA/
     Tennis sims read directly from `pick.factors` instead.
+
+    **Phase 4C finalization (2026-08-06):** now also plumbs the H+R+RBI
+    lineup / team-run / OBP context populated by the emission path.
     """
     stats: dict = {}
     bvp = pick.get("mlb_bvp") or {}
@@ -45,6 +48,17 @@ def _player_stats_from_pick(pick: dict) -> dict:
     elif "season_k_rate" in pi: stats["k_rate"] = pi.get("season_k_rate")
     if "bf_per_inning" in pi: stats["bf_per_inning"] = pi.get("bf_per_inning")
     if "expected_innings" in pi: stats["expected_innings"] = pi.get("expected_innings")
+    # ── Phase 4C H+R+RBI context ─────────────────────────────────────
+    ls = (bvp.get("lineup_slot") or pi.get("lineup_slot")
+          or pick.get("lineup_slot"))
+    if ls is not None:
+        stats["lineup_slot"] = ls
+    trp = (pi.get("team_runs_projection") or pick.get("team_runs_projection"))
+    if trp is not None:
+        stats["team_runs_projection"] = trp
+    obp = (bvp.get("obp") or pi.get("season_obp") or pi.get("obp"))
+    if obp is not None:
+        stats["obp"] = obp
     return stats
 
 

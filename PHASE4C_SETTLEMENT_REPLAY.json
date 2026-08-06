@@ -1,0 +1,27 @@
+{
+  "sport": "MLB",
+  "generated_at": "2026-08-06T20:29:04.361973+00:00",
+  "window_days": 90,
+  "total_settled": 2736,
+  "by_status": {
+    "won": 1691,
+    "lost": 939,
+    "push": 0,
+    "void": 106
+  },
+  "by_market": {
+    "1st_inning_runs": {
+      "lost": 81,
+      "void": 21,
+      "won": 81
+    },
+    "unknown": {
+      "lost": 858,
+      "void": 85,
+      "won": 1610
+    }
+  },
+  "ambiguous": [],
+  "elapsed_s": 0.32,
+  "notice": "READ-ONLY REPLAY. No policy changes applied. Ambiguous cases require human review before any settlement mutation."
+}
