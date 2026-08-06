@@ -237,4 +237,75 @@ async def ops_audit_log(
     return {"count": len(rows), "events": rows}
 
 
+# ─────────────────────── Phase 2δ additions ─────────────────
+@router.get("/cache/policy")
+async def ops_cache_policy(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Return the centralized Odds API cache policy in effect."""
+    from services.cache_policy import POLICIES
+    return {"policies": POLICIES}
+
+
+@router.get("/settlement/scope")
+async def ops_settlement_scope(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    lookback_days: int = Query(14, ge=1, le=90),
+):
+    """List the sport_keys currently requiring settlement (i.e.
+    have unsettled published picks).  Used to verify that the
+    settlement loop is not fetching leagues we don't price."""
+    from services.settlement_scope import scope_summary
+    return await scope_summary(db, lookback_days=lookback_days)
+
+
+@router.get("/lifecycle/status")
+async def ops_lifecycle_status(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Return the state of every long-running background task."""
+    from server import app as _app
+    lc = getattr(_app.state, "lifecycle", None)
+    if lc is None:
+        return {"present": False}
+    return {"present": True, **lc.status()}
+
+
+@router.get("/health")
+async def ops_health(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """One-stop dashboard summary: budget, active leases, expired
+    leases, active reservations, settlement scope size, lifecycle
+    task count, gateway feature flags."""
+    from services.job_coordinator import JobCoordinator
+    from services.provider_budget import ProviderBudget
+    from services.odds_api_gateway import _gateway_enabled, _global_refresh_mode
+    from services.settlement_scope import active_sport_keys
+    now = datetime.now(timezone.utc)
+    coord = JobCoordinator(db)
+    budget = ProviderBudget(db)
+    active_leases = await db[JOB_COLL].count_documents(
+        {"status": "running", "lease_until": {"$gt": now}})
+    expired_leases = await db[JOB_COLL].count_documents(
+        {"status": "running", "lease_until": {"$lt": now}})
+    active_reservations = await db[INTENTS_COLL].count_documents(
+        {"provider": "odds_api", "status": INTENT_RESERVED})
+    budget_status = await budget.get_budget_status()
+    from server import app as _app
+    lc = getattr(_app.state, "lifecycle", None)
+    lc_tasks = len(lc._tasks) if lc is not None else 0  # type: ignore[attr-defined]
+    return {
+        "now_utc":              now.isoformat(),
+        "gateway_enabled":      _gateway_enabled(),
+        "global_refresh_mode":  _global_refresh_mode(),
+        "active_leases":        active_leases,
+        "expired_leases":       expired_leases,
+        "active_reservations":  active_reservations,
+        "budget":               budget_status,
+        "settlement_leagues":   len(await active_sport_keys(db)),
+        "lifecycle_tasks":      lc_tasks,
+    }
+
+
 __all__ = ["router"]
