@@ -215,21 +215,22 @@ def test_every_ttl_spec_has_purpose_or_migration_notes():
         )
 
 
-# ── 12. publication_mismatch TTL is BLOCKED with rationale ─────────
-def test_publication_mismatch_ttl_blocked_with_migration_notes():
+# ── 12. publication_mismatch TTL is UNBLOCKED as of Phase 3K ───────
+def test_publication_mismatch_ttl_applied_in_phase3k():
+    """Phase 3K (2026-08) applied the 30-day TTL.  Verify the
+    registry now declares exactly one TTL spec on logged_at_dt with
+    expire_after_seconds=2592000."""
     specs = get_specs_for_collection("publication_mismatch_report")
-    assert specs, "publication_mismatch_report must be declared"
-    for s in specs:
-        # No TTL was applied — the field is stored as a string.
-        assert s.expire_after_seconds is None, (
-            "TTL must not be applied on publication_mismatch_report "
-            "until logged_at_dt (BSON Date) exists"
-        )
-    logged_at_spec = next(
+    ttl_specs = [s for s in specs if s.expire_after_seconds is not None]
+    assert len(ttl_specs) == 1, f"expected 1 TTL spec, got {len(ttl_specs)}"
+    s = ttl_specs[0]
+    assert s.keys == (("logged_at_dt", 1),)
+    assert s.expire_after_seconds == 2_592_000
+    # Legacy string field remains for compatibility, no TTL on it.
+    legacy = next(
         s for s in specs if s.name == "mismatch_logged_at_idx"
     )
-    assert "TTL" in (logged_at_spec.migration_notes or "").upper()
-    assert "STRING" in (logged_at_spec.migration_notes or "").upper()
+    assert legacy.expire_after_seconds is None
 
 
 # ── 13. Lazy runtime index creation removed ────────────────────────

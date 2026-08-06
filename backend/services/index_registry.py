@@ -130,14 +130,22 @@ _INDEX_SPECS: list[IndexSpec] = [
     IndexSpec("publication_mismatch_report", "mismatch_logged_at_idx",
               keys=(("logged_at", 1),), critical=False,
               owner_service="prediction_publication_service",
-              purpose="chronological audit scan",
+              purpose="chronological audit scan (legacy ISO-string field)"),
+    IndexSpec("publication_mismatch_report", "mismatch_logged_at_dt_ttl",
+              keys=(("logged_at_dt", 1),),
+              expire_after_seconds=2592000,   # 30 days
+              critical=False,
+              owner_service="prediction_publication_service",
+              purpose="Phase 3K — 30-day retention on BSON-Date logged_at_dt",
               migration_notes=(
-                  "PHASE3C: TTL declined here — logged_at is stored "
-                  "as ISO 8601 STRING, not BSON Date.  The 30-day TTL "
-                  "decision is captured but implementation is BLOCKED "
-                  "until a `logged_at_dt` BSON Date field is added to "
-                  "new writes and old rows migrated.  See "
-                  "PHASE3C_INDEX_CONFLICT_REPORT.md.")),
+                  "PHASE3K (2026-08): TTL now applied.  logged_at_dt is a "
+                  "BSON Date populated by both new writers (in "
+                  "prediction_publication_service._log_mismatch) AND the "
+                  "backfill script at "
+                  "scripts/backfills/backfill_publication_mismatch_logged_at_dt.py.  "
+                  "42,756/42,756 historical rows backfilled with 0 invalid.  "
+                  "Legacy `logged_at` ISO-string field kept for "
+                  "backward compatibility; DO NOT drop it in this phase.")),
 
     # ── settlement + enrichment ──────────────────────────────────────
     IndexSpec("settlement_events", "prediction_settled_at_idx",

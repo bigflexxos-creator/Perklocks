@@ -426,4 +426,47 @@ async def ops_lifecycle_tasks(
     }
 
 
+# ═════════════════════════════════════════════════════════════════════
+# Phase 3K — publication_mismatch_report TTL migration observability
+# ═════════════════════════════════════════════════════════════════════
+@router.get("/mismatch-ttl/status")
+async def ops_mismatch_ttl_status(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Phase 3K — TTL migration health for the mismatch collection.
+    Returns coverage % of logged_at_dt, current TTL index settings,
+    and estimated rows older than the 30-day retention window.  Does
+    NOT return document payloads."""
+    from datetime import datetime, timezone, timedelta
+    coll = db["publication_mismatch_report"]
+    total = await coll.count_documents({})
+    with_dt = await coll.count_documents({"logged_at_dt": {"$type": "date"}})
+    missing = await coll.count_documents({"logged_at_dt": {"$exists": False}})
+    invalid_query = {
+        "logged_at":    {"$type": "string"},
+        "logged_at_dt": {"$exists": False},
+    }
+    still_pending = await coll.count_documents(invalid_query)
+    older_than_30d = 0
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+        older_than_30d = await coll.count_documents(
+            {"logged_at_dt": {"$lt": cutoff}})
+    except Exception:
+        pass
+    idx = await coll.index_information()
+    ttl_idx = idx.get("mismatch_logged_at_dt_ttl", {})
+    return {
+        "total_rows":                total,
+        "rows_with_logged_at_dt":    with_dt,
+        "rows_missing_logged_at_dt": missing,
+        "rows_pending_backfill":     still_pending,
+        "coverage_pct":              (100.0 * with_dt / total) if total else 100.0,
+        "rows_older_than_30d":       older_than_30d,
+        "ttl_index_present":         "mismatch_logged_at_dt_ttl" in idx,
+        "ttl_expire_after_seconds":  ttl_idx.get("expireAfterSeconds"),
+        "ttl_key":                   ttl_idx.get("key"),
+    }
+
+
 __all__ = ["router"]

@@ -1,0 +1,11 @@
+{
+  "phase": "3K_backfill",
+  "execute": true,
+  "scanned": 42756,
+  "would_migrate": 0,
+  "migrated": 42756,
+  "invalid_count": 0,
+  "invalid_sample": [],
+  "last_id": "6a74bd78f9e507b0d42c7cf1",
+  "resume_hint": "6a74bd78f9e507b0d42c7cf1"
+}

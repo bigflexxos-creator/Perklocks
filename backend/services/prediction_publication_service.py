@@ -466,11 +466,13 @@ class PredictionPublicationService:
         if applied and pre_state:
             drifts = _compute_drifts(pre_state, snap_doc)
             if drifts:
+                _now = datetime.now(timezone.utc)
                 await self.db[MISMATCH_COLLECTION].insert_one({
                     "prediction_id": payload.prediction_id,
                     "board_version": payload.board_version,
-                    "logged_at": datetime.now(timezone.utc).isoformat(),
-                    "drifts": drifts,
+                    "logged_at":     _now.isoformat(),   # legacy compat
+                    "logged_at_dt":  _now,               # Phase 3K TTL field (BSON Date)
+                    "drifts":        drifts,
                 })
                 mismatch_logged = True
         return applied, mismatch_logged
