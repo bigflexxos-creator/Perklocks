@@ -379,7 +379,12 @@ class PredictionPublicationService:
             pick_id=pid,
             snapshot_version=1,   # Phase 1a always writes v1
             board_version=self._board_version,
-            published_probability=_f("win_probability"),
+            # Phase 1b (2026-08): probability is canonicalized to a
+            # [0, 1] fraction at publication time.  Both fraction and
+            # percentage inputs are accepted — see
+            # services/published_prediction_reader.normalize_probability
+            published_probability=_normalize_probability_at_publish(
+                _f_or_none("win_probability")),
             published_edge=_f("edge_percent"),
             published_lock_score=round(_f("lock_score"), 2),
             published_grade=_s("grade", default="Pass"),
@@ -401,7 +406,15 @@ class PredictionPublicationService:
     async def _dual_write(self, payload: PublishedPayload,
                            snap_doc: dict) -> tuple[bool, bool]:
         """Best-effort dual-write of published_* onto the picks doc.
-        Returns (applied, mismatch_logged)."""
+        Returns (applied, mismatch_logged).
+
+        This method IS the publication service itself, so it is the
+        only caller allowed to touch the immutable published fields
+        on `picks` — see `services/published_write_guard.py`.
+        """
+        from services.published_write_guard import (
+            assert_no_published_mutation,
+        )
         set_payload: dict[str, Any] = {}
         for f in PUBLISHED_FIELDS:
             set_payload[f] = snap_doc.get(f)
@@ -413,12 +426,42 @@ class PredictionPublicationService:
         set_payload["snapshot_version"] = snap_doc.get("snapshot_version")
         set_payload["payload_hash"] = snap_doc.get("payload_hash")
         set_payload["idempotency_key"] = snap_doc.get("idempotency_key")
+        # Phase 1b — also sync the legacy aliases so endpoints that
+        # still read `pick.lock_score` (before their per-endpoint
+        # migration lands) return the published value.  After the
+        # hydrate() pass fully rolls out, these aliases are strictly
+        # a courtesy for backward compatibility.
+        set_payload["lock_score"] = snap_doc.get("published_lock_score")
+        set_payload["win_probability"] = snap_doc.get(
+            "published_probability")
+        set_payload["edge_percent"] = snap_doc.get("published_edge")
+        set_payload["grade"] = snap_doc.get("published_grade")
+        set_payload["confidence"] = snap_doc.get("published_confidence")
+        set_payload["book_odds"] = snap_doc.get("published_odds")
+        set_payload["line"] = snap_doc.get("published_line")
+        set_payload["reasoning"] = snap_doc.get("published_reasoning")
+
         try:
-            # Existing pick doc may not yet exist in picks (e.g. very
-            # first publication before insert_many).  Use upsert=False
-            # so we NEVER accidentally create a bare picks row from a
-            # pure publication — the pipeline is responsible for the
-            # picks row itself.
+            # Publication-owned write — explicitly allowed.
+            assert_no_published_mutation(
+                {"$set": set_payload},
+                allow_publication_write=True,
+                caller="prediction_publication_service._dual_write",
+            )
+            # Phase 1b: capture the picks doc BEFORE the dual-write
+            # so we can compare its legacy fields against the fresh
+            # snapshot values.  If a non-publication writer had
+            # previously drifted a legacy field, that drift is
+            # what we report.
+            pre_state = await self.db.picks.find_one(
+                {"id": payload.prediction_id},
+                projection={
+                    "lock_score": 1, "win_probability": 1,
+                    "edge_percent": 1, "grade": 1,
+                    "confidence": 1, "book_odds": 1,
+                    "line": 1, "_id": 0,
+                },
+            )
             res = await self.db.picks.update_one(
                 {"id": payload.prediction_id},
                 {"$set": set_payload},
@@ -429,28 +472,20 @@ class PredictionPublicationService:
             logger.warning("dual-write update_one err: %s", e)
             return False, False
 
-        # Compare legacy fields vs published_*.  Log any material drift.
+        # Compare the PRE-write legacy fields vs the snapshot.  If any
+        # writer had drifted from the previous publication, we log
+        # it here so operators can trace who did it.
         mismatch_logged = False
-        if applied:
-            pick = await self.db.picks.find_one(
-                {"id": payload.prediction_id},
-                projection={
-                    "lock_score": 1, "win_probability": 1,
-                    "edge_percent": 1, "grade": 1,
-                    "confidence": 1, "book_odds": 1,
-                    "line": 1, "_id": 0,
-                },
-            )
-            if pick:
-                drifts = _compute_drifts(pick, snap_doc)
-                if drifts:
-                    await self.db[MISMATCH_COLLECTION].insert_one({
-                        "prediction_id": payload.prediction_id,
-                        "board_version": payload.board_version,
-                        "logged_at": datetime.now(timezone.utc).isoformat(),
-                        "drifts": drifts,
-                    })
-                    mismatch_logged = True
+        if applied and pre_state:
+            drifts = _compute_drifts(pre_state, snap_doc)
+            if drifts:
+                await self.db[MISMATCH_COLLECTION].insert_one({
+                    "prediction_id": payload.prediction_id,
+                    "board_version": payload.board_version,
+                    "logged_at": datetime.now(timezone.utc).isoformat(),
+                    "drifts": drifts,
+                })
+                mismatch_logged = True
         return applied, mismatch_logged
 
 
@@ -504,6 +539,10 @@ def _compute_drifts(pick: dict, snap: dict) -> list[dict]:
     for legacy, pub in LEGACY_ALIAS_MAP.items():
         lv = pick.get(legacy)
         pv = snap.get(pub)
+        # Phase 1b — normalize win_probability comparison to fractions
+        # on both sides so we don't spuriously flag percent-vs-fraction.
+        if legacy == "win_probability":
+            lv = _normalize_probability_at_publish(lv)
         if lv is None and pv is None:
             continue
         try:
@@ -515,6 +554,25 @@ def _compute_drifts(pick: dict, snap: dict) -> list[dict]:
         except Exception:
             pass
     return out
+
+
+def _normalize_probability_at_publish(value) -> float:
+    """Coerce probability to canonical `[0, 1]` fraction at publish
+    time.  Kept as a local helper (not imported from the reader) so
+    that this module has no circular deps."""
+    if value is None:
+        return 0.0
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if v < 0:
+        return 0.0
+    if v <= 1.0:
+        return v
+    if v <= 100.0:
+        return v / 100.0
+    return 1.0
 
 
 __all__ = [

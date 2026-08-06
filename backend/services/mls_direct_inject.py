@@ -514,6 +514,35 @@ async def run_once() -> dict:
             await db.picks.bulk_write(ops, ordered=False)
         except Exception as e:
             logger.warning("MLS direct upsert error (best-effort): %s", e)
+
+    # ── Phase 1b — route side-injector through publication service ──
+    # Every prediction that becomes user-visible must have an
+    # immutable snapshot.  MLS direct-inject writes directly to
+    # `picks` (bypassing the canonical `_refresh_picks` tail), so we
+    # publish here at the tail of this injector's write path.
+    try:
+        from services.prediction_publication_service import (
+            PredictionPublicationService,
+        )
+        publisher = PredictionPublicationService(db)
+        try:
+            await publisher.ensure_indices()
+        except Exception:
+            pass
+        pub_summary = await publisher.publish_batch(
+            all_picks, publication_source="mls_direct_inject",
+            dual_write=True,
+        )
+        logger.info("MLS direct-inject publication: new=%d existing=%d "
+                    "errors=%d mismatches=%d",
+                    pub_summary.get("new_snapshots", 0),
+                    pub_summary.get("existing_snapshots", 0),
+                    len(pub_summary.get("errors", []) or []),
+                    pub_summary.get("mismatches_logged", 0))
+    except Exception as e:
+        logger.warning("MLS direct-inject publication step failed "
+                        "(non-fatal): %s", e)
+
     logger.info(
         "MLS direct-inject: wrote %d picks across %d events (pick_date=%s)",
         len(all_picks), len(events), today_str,
