@@ -4499,6 +4499,28 @@ async def on_startup():
     # without redeploying (defaults to 8 — safe across all envs).
     DEFER_BASE = float(os.environ.get("STARTUP_DEFER_SECONDS", "8"))
 
+    # ── Phase 3B — shared Mongo lifecycle (2026-08) ────────────────
+    # Ensure the shared client owned by services/database.py is up
+    # and reachable before we launch background loops.  This is
+    # idempotent — deps.py's module-level import already called
+    # initialize_database(); this call verifies the destination and
+    # pings the cluster so a misconfigured deploy fails loudly at
+    # startup instead of on the first user request.
+    try:
+        from services.database import (
+            initialize_database as _init_db,
+            ping_database as _ping_db,
+            safe_database_diagnostics as _db_diag,
+        )
+        _init_db()  # idempotent
+        _ok = await _ping_db(timeout_ms=5000)
+        logger.info(
+            "Phase 3B Mongo ready: ping=%s diagnostics=%s",
+            _ok, _db_diag(),
+        )
+    except Exception as _e:
+        logger.warning("Phase 3B Mongo readiness check raised: %s", _e)
+
     def _deferred_task(coro_factory, delay: float):
         """Schedule `coro_factory()` to run after a `delay` second sleep.
         `coro_factory` is a callable returning a fresh coroutine (we
@@ -5637,4 +5659,9 @@ async def on_shutdown():
             logger.info("Phase 2δ shutdown summary: %s", summary)
     except Exception as e:
         logger.warning("Phase 2δ shutdown error: %s", e)
-    client.close()
+    # Phase 3B — close the shared client owner exactly once.
+    try:
+        from services.database import close_database as _close_db
+        await _close_db()
+    except Exception as _e:
+        logger.warning("Phase 3B shared db close raised: %s", _e)

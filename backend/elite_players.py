@@ -228,11 +228,10 @@ def _refresh_starter_cache() -> None:
     """
     global _STARTER_CACHE_TS
     try:
-        from pymongo import MongoClient
+        # Phase 3B — shared sync pymongo client owner.
+        from services.database import get_sync_database
         from datetime import date, timedelta
-        import os
-        client = MongoClient(os.getenv("MONGO_URL"), serverSelectionTimeoutMS=2000)
-        db = client[os.environ.get("DB_NAME") or "perkslocks_production"]
+        db = get_sync_database()
         cutoff = (date.today() - timedelta(days=45)).isoformat()
         pipeline = [
             {"$match": {

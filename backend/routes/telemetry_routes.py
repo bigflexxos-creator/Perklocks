@@ -18,20 +18,10 @@ from datetime import datetime, timezone
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, Request, Header
-from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
-import os
 
 from auth import get_current_user_from_db, UserPublic
-
-# Local Mongo handle — the shared `db` instance lives in server.py as
-# a module-level global, but importing it here would create a circular
-# import. Instead we re-create the client here using the same env
-# variables. The overhead is negligible (motor pools connections).
-_MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
-_DB_NAME   = os.getenv("DB_NAME", "lockscore_db")
-_client    = AsyncIOMotorClient(_MONGO_URL)
-db         = _client[_DB_NAME]
+from deps import db  # Phase 3B — shared Mongo client owner (services/database.py)
 
 router = APIRouter(prefix="/api", tags=["telemetry"])
 

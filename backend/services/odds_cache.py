@@ -247,33 +247,67 @@ async def _time_aware_ttls(
 # ═════════════════════════════════════════════════════════════════════
 # Mongo helpers (lazy, so tests can inject a fake db)
 # ═════════════════════════════════════════════════════════════════════
-_DB_CACHE: dict[str, Any] = {"client": None, "db": None, "inited": False}
+# Phase 3B — under normal FastAPI runtime we route through the shared
+# owner (services.database.get_database()).  Motor clients are bound
+# to the event loop on which they were created; when a unit test
+# creates a fresh asyncio loop we detect the loop mismatch and build
+# a per-loop client so the tests keep working.  This preserves the
+# existing per-loop cache semantics WITHOUT creating a new runtime
+# client per FastAPI request.
+_DB_CACHE: dict[str, Any] = {"client": None, "db": None, "inited": False, "loop": None}
 
 
 def _reset_db_cache() -> None:
-    """Test helper — force the next `_get_db()` call to build a fresh
-    Motor client bound to the CURRENT running event loop."""
+    """Test helper — force the next `_get_db()` call to rebind against
+    the CURRENT running event loop."""
     _DB_CACHE["client"] = None
     _DB_CACHE["db"] = None
     _DB_CACHE["inited"] = False
+    _DB_CACHE["loop"] = None
 
 
 def _get_db():
-    """Lazy MongoDB client bound to the CURRENT running event loop.
+    """Lazy MongoDB db handle.
 
-    Motor's AsyncIOMotorClient is tied to the loop it was created on,
-    so `asyncio.run()`-based unit tests (each run in a fresh loop)
-    fail with "attached to a different loop" errors unless we rebuild
-    the client on every loop change. We check the running loop's id
-    against the cached loop id and rebuild if it changed.
+    Under FastAPI runtime the running loop matches the shared client's
+    loop, so we return the shared owner's database handle (no new
+    connections).  Under asyncio.run()-based unit tests each test
+    spawns a fresh loop; Motor clients are loop-bound, so we detect
+    the loop change and build a per-loop client on demand.  This
+    preserves the original per-loop test semantics without creating
+    additional runtime clients in production.
     """
     try:
         current_loop = asyncio.get_running_loop()
     except RuntimeError:
         current_loop = None
+
+    # Fast path — shared runtime handle if we haven't been forced to
+    # rebind for a different loop.
+    if _DB_CACHE.get("db") is None:
+        try:
+            from services.database import get_database, get_client
+            shared_db = get_database()
+            shared_client_loop = getattr(
+                get_client(), "get_io_loop", lambda: None,
+            )()
+            # If we're on the same loop as the shared client (normal
+            # FastAPI runtime), use it directly.
+            if current_loop is None or current_loop is shared_client_loop:
+                _DB_CACHE["client"] = None
+                _DB_CACHE["db"]     = shared_db
+                _DB_CACHE["loop"]   = shared_client_loop
+                _DB_CACHE["inited"] = False
+                return shared_db
+        except Exception:
+            pass
+
+    # If the cached handle is bound to a different loop, rebuild for
+    # this loop (unit tests).
     cached_loop = _DB_CACHE.get("loop")
     if _DB_CACHE.get("db") is not None and current_loop is cached_loop:
         return _DB_CACHE["db"]
+
     mongo_url = os.getenv("MONGO_URL")
     if not mongo_url:
         return None

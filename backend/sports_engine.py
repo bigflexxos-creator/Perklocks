@@ -4509,10 +4509,9 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                 if sport == "NFL":
                     try:
                         from services.nfl_feature_engine import build_nfl_game_context
-                        from motor.motor_asyncio import AsyncIOMotorClient
-                        _nfl_db = AsyncIOMotorClient(os.getenv("MONGO_URL"))[
-                            os.getenv("DB_NAME") or "perkslocks_production"
-                        ]
+                        # Phase 3B — shared Mongo owner.
+                        from services.database import get_database
+                        _nfl_db = get_database()
                         # Extract the prop candidates from the bookmaker
                         # payload (player, market, line, side, book_implied)
                         _candidates = _extract_nfl_prop_candidates(payload)

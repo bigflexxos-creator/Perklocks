@@ -16,7 +16,6 @@ from typing import Annotated, Optional
 
 from dotenv import load_dotenv
 from fastapi import Depends
-from motor.motor_asyncio import AsyncIOMotorClient
 
 # ── env loading ───────────────────────────────────────────────────────
 # Load .env BEFORE we read MONGO_URL. Mirrors the call in server.py;
@@ -35,47 +34,34 @@ logging.basicConfig(
 logger = logging.getLogger("lockscore")
 
 # ── Mongo ─────────────────────────────────────────────────────────────
-# Production-safe env loading with sane fallbacks so deployment doesn't
-# crash if env vars aren't set on the production environment.
-_mongo_url = os.environ.get("MONGO_URL") or "mongodb://localhost:27017"
-
-# ── CONNECTION POOL HARDENING (2026-06-28) ────────────────────────────
-# Emergent support flagged that the deployed MONGO_URL had
-# `?maxPoolSize=5` appended, while this backend runs 20+ concurrent
-# sports engines (MLB Intel, Soccer pipeline, Player Intelligence,
-# Settlement loop, Validator, Brain, etc.). With a 5-connection ceiling
-# they starve each other → operations queue → /api/picks/today times
-# out on Cloudflare → user sees "picks fail to load/save".
-#
-# We pass explicit pool + timeout kwargs to the Motor client. PyMongo
-# rule: KWARGS take precedence over URI query params, so even if the
-# secret still has `maxPoolSize=5`, the values below win.
-#
-# Tuning rationale:
-#   • maxPoolSize=20  — one connection per concurrent engine, +headroom
-#   • minPoolSize=2   — keep at least 2 warm so the first request after
-#                       idle doesn't pay full TCP+TLS handshake latency
-#   • serverSelectionTimeoutMS=10000 — bail in 10s instead of the 30s
-#                       default; matches our outer 85s middleware budget
-#   • connectTimeoutMS=10000         — same as above for new sockets
-#   • socketTimeoutMS=60000          — heavy aggregations (632-pick
-#                       validator) take 20-40s; 60s gives margin
-#   • waitQueueTimeoutMS=15000       — if all 20 sockets are busy,
-#                       FAIL FAST instead of holding the request open
-#                       indefinitely (the silent-timeout symptom)
-#   • retryWrites=True               — auto-retry one transient write
-client = AsyncIOMotorClient(
-    _mongo_url,
-    maxPoolSize=int(os.environ.get("MONGO_MAX_POOL_SIZE", "20")),
-    minPoolSize=int(os.environ.get("MONGO_MIN_POOL_SIZE", "2")),
-    serverSelectionTimeoutMS=int(os.environ.get("MONGO_SERVER_SEL_TIMEOUT_MS", "10000")),
-    connectTimeoutMS=int(os.environ.get("MONGO_CONNECT_TIMEOUT_MS", "10000")),
-    socketTimeoutMS=int(os.environ.get("MONGO_SOCKET_TIMEOUT_MS", "60000")),
-    waitQueueTimeoutMS=int(os.environ.get("MONGO_WAIT_QUEUE_TIMEOUT_MS", "15000")),
-    retryWrites=True,
-    appname="perklocks-api",
+# Phase 3B (2026-08): the shared Mongo client + database now live in
+# services/database.py.  This module keeps `client` and `db` as
+# compatibility re-exports so the ~30+ existing `from deps import db`
+# and `from deps import client, db` callsites continue to work
+# unchanged.  Pool configuration and env resolution moved to
+# services/database.py.
+from services.database import (  # noqa: E402
+    initialize_database,
+    get_client,
+    get_database,
 )
-db = client[os.environ.get("DB_NAME") or "perkslocks_production"]
+
+# Eagerly initialise on first import so legacy module-level uses of
+# `deps.db` and `deps.client` see a live handle.  The FastAPI lifespan
+# ALSO calls initialize_database() at startup — that call is idempotent.
+initialize_database()
+
+
+def __getattr__(name):
+    """Module-level lookup so ``deps.db`` and ``deps.client`` ALWAYS
+    resolve to the shared owner's current instances.  This survives
+    ``close_database()`` + ``initialize_database()`` cycles used in
+    tests and re-entrant startup scenarios."""
+    if name == "db":
+        return get_database()
+    if name == "client":
+        return get_client()
+    raise AttributeError(f"module 'deps' has no attribute {name!r}")
 
 # ── auth dependency ───────────────────────────────────────────────────
 # Imported here (rather than in server.py) so route modules don't have
@@ -91,7 +77,7 @@ from auth import (  # noqa: E402
 async def current_user(
     token: Annotated[Optional[str], Depends(oauth2_scheme)],
 ) -> UserPublic:
-    return await get_current_user_from_db(db, token)
+    return await get_current_user_from_db(get_database(), token)
 
 
 async def current_admin(
@@ -100,7 +86,7 @@ async def current_admin(
     """RBAC gate — 403s on non-admin. Use for every /api/admin/* route
     that mutates state, triggers paid third-party calls, or exposes
     operator-only data (SEC-003, fixed 2026-06-25)."""
-    return await require_admin_user(db, token)
+    return await require_admin_user(get_database(), token)
 
 
 # ── small shared utilities ────────────────────────────────────────────

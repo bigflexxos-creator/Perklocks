@@ -32,27 +32,20 @@ from typing import Any
 logger = logging.getLogger("lockscore.game_context")
 
 
-# 2026-07-22 — lazy Mongo handle for Statcast lookups. Avoids threading
-# a `db` argument through the entire ctx-builder call chain (which
-# would require touching every caller in sports_engine.py).
-_MOTOR_CLIENT = None
-_MOTOR_DB = None
-
-
+# Phase 3B (2026-08) — all Mongo access in this module routes through
+# the shared client owner in ``services.database``.  We keep a
+# module-local ``_get_db`` helper for backward compatibility with
+# existing callsites in this file, but it now delegates to the shared
+# owner instead of building its own AsyncIOMotorClient.
 def _get_db():
-    """Return the Mongo db handle, initialising a lazy motor client
-    on first call. Same DB name resolution as backend.deps."""
-    global _MOTOR_CLIENT, _MOTOR_DB
-    if _MOTOR_DB is not None:
-        return _MOTOR_DB
+    """Return the shared runtime Mongo database handle.  Returns None
+    only if the shared owner refuses to initialise (missing env)."""
     try:
-        from motor.motor_asyncio import AsyncIOMotorClient
-        _MOTOR_CLIENT = AsyncIOMotorClient(os.getenv("MONGO_URL"))
-        _MOTOR_DB = _MOTOR_CLIENT[os.getenv("DB_NAME") or "perkslocks_production"]
+        from services.database import get_database
+        return get_database()
     except Exception as e:
-        logger.debug("Lazy Mongo init failed: %s", e)
-        _MOTOR_DB = None
-    return _MOTOR_DB
+        logger.debug("shared db handle unavailable: %s", e)
+        return None
 
 
 async def build_mlb_game_context(game: dict) -> dict[str, Any]:
@@ -533,10 +526,10 @@ async def build_soccer_game_context(game: dict) -> dict[str, Any]:
 
     # 1) Team form via sportdb_client (working cache in DB)
     try:
-        from motor.motor_asyncio import AsyncIOMotorClient
-        import os
-        client = AsyncIOMotorClient(os.environ.get("MONGO_URL","mongodb://localhost:27017"))
-        db = client["lockscore_db"]
+        # Phase 3B — use shared owner via _get_db().
+        db = _get_db()
+        if db is None:
+            raise RuntimeError("shared db handle unavailable")
         from sportdb_client import lookup_team_form
         hf = await lookup_team_form(db, home_team)
         af = await lookup_team_form(db, away_team)
@@ -548,10 +541,9 @@ async def build_soccer_game_context(game: dict) -> dict[str, Any]:
     # 2) Rolling xG from dedicated collection with form fallback
     try:
         from services.enrichment.soccer_rolling_xg import _lookup
-        from motor.motor_asyncio import AsyncIOMotorClient
-        import os
-        client = AsyncIOMotorClient(os.environ.get("MONGO_URL","mongodb://localhost:27017"))
-        db = client["lockscore_db"]
+        db = _get_db()
+        if db is None:
+            raise RuntimeError("shared db handle unavailable")
         h_doc = await _lookup(db, home_team)
         a_doc = await _lookup(db, away_team)
         if h_doc: ctx["home_xg_rolling"] = h_doc
@@ -667,10 +659,9 @@ async def build_tennis_match_context(game: dict) -> dict[str, Any]:
 
     # 1) Sackmann career stats via services.tennis.fallback (real cache)
     try:
-        from motor.motor_asyncio import AsyncIOMotorClient
-        import os
-        client = AsyncIOMotorClient(os.environ.get("MONGO_URL","mongodb://localhost:27017"))
-        db = client["lockscore_db"]
+        db = _get_db()
+        if db is None:
+            raise RuntimeError("shared db handle unavailable")
         from services.tennis.fallback import get_player_stats, get_h2h
         surface = (game.get("surface") or "").strip() or "All"
         surface_key = surface.title() if surface.lower() in ("hard","clay","grass","all") else "All"
@@ -739,8 +730,9 @@ async def build_tennis_match_context(game: dict) -> dict[str, Any]:
     try:
         from datetime import datetime, timedelta, timezone
         cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-        client = AsyncIOMotorClient(os.environ.get("MONGO_URL","mongodb://localhost:27017"))
-        db = client["lockscore_db"]
+        db = _get_db()
+        if db is None:
+            raise RuntimeError("shared db handle unavailable")
         for suffix, player in (("a", home), ("b", away)):
             cnt = await db.tennis_matches.count_documents({
                 "$or": [{"winner_name": player}, {"loser_name": player}],

@@ -56,30 +56,26 @@ def _market_targets(market: str) -> dict[str, bool]:
 
 
 def _lookup_player_sync(sport: str, name: str) -> dict | None:
-    """Synchronous adapter into the player_db. We avoid creating a new
-    asyncio loop (which races motor's main-loop binding) by using a
-    short-lived pymongo client. Cheap, no connection-pool concerns.
-    Adapter calls happen on the same request thread once per pick."""
-    from pymongo import MongoClient
-    import os
+    """Synchronous adapter into the player_db.  Phase 3B — uses the
+    shared pymongo client owned by services.database.  Cheap: the
+    shared client is pooled, and each call executes against it
+    without re-establishing a connection."""
     target = _canonical(name)
     if not target:
         return None
     try:
-        mongo_url = os.environ.get("MONGO_URL")
-        db_name = os.environ.get("DB_NAME") or "lockscore_db"
-        with MongoClient(mongo_url, serverSelectionTimeoutMS=2000) as client:
-            sdb = client.get_database(db_name)
-            player = sdb.players.find_one(
-                {"sport": sport, "canonical_name": target}, {"_id": 0},
-            )
-            stats = sdb.player_stats.find_one(
-                {"sport": sport, "canonical_name": target}, {"_id": 0},
-                sort=[("season", -1)],
-            )
-            injury = sdb.injuries.find_one(
-                {"sport": sport, "canonical_name": target}, {"_id": 0},
-            )
+        from services.database import get_sync_database
+        sdb = get_sync_database()
+        player = sdb.players.find_one(
+            {"sport": sport, "canonical_name": target}, {"_id": 0},
+        )
+        stats = sdb.player_stats.find_one(
+            {"sport": sport, "canonical_name": target}, {"_id": 0},
+            sort=[("season", -1)],
+        )
+        injury = sdb.injuries.find_one(
+            {"sport": sport, "canonical_name": target}, {"_id": 0},
+        )
         return {"player": player, "stats": stats, "injury": injury}
     except Exception as e:
         logger.debug("player_db sync lookup failed for %s/%s: %s", sport, name, e)
