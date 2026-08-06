@@ -306,17 +306,21 @@ _SERVER_SRC = pathlib.Path("/app/backend/server.py").read_text()
 
 
 def test_server_wires_enrich_picks_bulk_before_insert_many():
-    """The bulk enrichment call must exist in `_refresh_picks`, be
-    guarded by a try/except, and sit BEFORE `db.picks.insert_many`."""
-    src = _SERVER_SRC
+    """The bulk enrichment call must exist in the pick-refresh
+    pipeline (post Phase 3F-1: services/pick_refresh_orchestrator.py),
+    be guarded by a try/except, and sit BEFORE
+    ``db.picks.insert_many``."""
+    orch_src = pathlib.Path(
+        "/app/backend/services/pick_refresh_orchestrator.py").read_text()
+    src = orch_src if "enrich_picks_bulk" in orch_src else _SERVER_SRC
     # Import call
     assert re.search(
         r"from services\.pick_fusion_decorator import enrich_picks_bulk",
         src,
-    ), "enrich_picks_bulk import missing from server.py"
+    ), "enrich_picks_bulk import missing from refresh pipeline"
     # Direct call
     m = re.search(r"await enrich_picks_bulk\(\s*db\s*,", src)
-    assert m is not None, "enrich_picks_bulk not called in server.py"
+    assert m is not None, "enrich_picks_bulk not called in refresh pipeline"
     call_pos = m.start()
     # `db.picks.insert_many` for safe_picks must appear AFTER our call
     ins_positions = [i.start() for i in re.finditer(
