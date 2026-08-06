@@ -664,6 +664,27 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as e:
         logger.warning("Learning v2 apply skipped: %s", e)
 
+    # ── Phase 4E.3 — Magic Tier post-processing policy cap.
+    # WRAP the existing tier (Apex/Elite/Strong/Lock/Playable) with a
+    # data-quality / sample-size / stale-odds / lineup-certainty /
+    # simulator-validity / calibration-gap-aware cap.  This module
+    # NEVER upgrades a tier — it can only downgrade.  When it caps a
+    # pick, ``pick["grade"]`` is rewritten to the capped label and the
+    # rationale is stashed under ``pick["magic_tier"]`` (internal
+    # field; FE reads ``grade`` as before).
+    try:
+        from services.magic_tier_policy import apply_magic_tier
+        _mt_capped = 0
+        for _p in picks:
+            _d = apply_magic_tier(_p, sport=_p.get("sport"))
+            if _d.capped:
+                _mt_capped += 1
+        if _mt_capped:
+            logger.info("Magic Tier policy: %d/%d picks capped",
+                        _mt_capped, len(picks))
+    except Exception as e:
+        logger.warning("Magic Tier policy skipped: %s", e)
+
     # ── Deep Dive Mode: attach edge/confidence/risk scores, top-3 reasons,
     # and NO-BET flag for low-confidence picks. Internal only; UI unchanged.
     try:

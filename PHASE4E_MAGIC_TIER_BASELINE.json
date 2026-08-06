@@ -1,0 +1,70 @@
+{
+  "generated_at": "2026-08-06T21:38:05.300512+00:00",
+  "requested_window_days": 180,
+  "min_sample_target": 50,
+  "min_sample_reportable": 15,
+  "sports": {
+    "MLB": {
+      "window_days_used": 540,
+      "since": "2025-02-12T21:38:05.306045+00:00",
+      "total_settled": 0,
+      "season_boundaries_note": [
+        "03-15",
+        "10-31"
+      ],
+      "buckets": {}
+    },
+    "NBA": {
+      "window_days_used": 540,
+      "since": "2025-02-12T21:38:05.307991+00:00",
+      "total_settled": 0,
+      "season_boundaries_note": [
+        "10-15",
+        "06-30"
+      ],
+      "buckets": {}
+    },
+    "NFL": {
+      "window_days_used": 540,
+      "since": "2025-02-12T21:38:05.309676+00:00",
+      "total_settled": 0,
+      "season_boundaries_note": [
+        "09-01",
+        "02-15"
+      ],
+      "buckets": {}
+    },
+    "CFB": {
+      "window_days_used": 540,
+      "since": "2025-02-12T21:38:05.311331+00:00",
+      "total_settled": 0,
+      "season_boundaries_note": [
+        "08-25",
+        "01-15"
+      ],
+      "buckets": {}
+    },
+    "Tennis": {
+      "window_days_used": 540,
+      "since": "2025-02-12T21:38:05.312947+00:00",
+      "total_settled": 0,
+      "season_boundaries_note": null,
+      "buckets": {}
+    },
+    "Soccer": {
+      "window_days_used": 540,
+      "since": "2025-02-12T21:38:05.314600+00:00",
+      "total_settled": 0,
+      "season_boundaries_note": null,
+      "buckets": {}
+    }
+  },
+  "notes": [
+    "MLB: 0 settled picks in window (window_days=540) \u2014 empty DB / fresh env.",
+    "NBA: 0 settled picks in window (window_days=540) \u2014 empty DB / fresh env.",
+    "NFL: 0 settled picks in window (window_days=540) \u2014 empty DB / fresh env.",
+    "CFB: 0 settled picks in window (window_days=540) \u2014 empty DB / fresh env.",
+    "Tennis: 0 settled picks in window (window_days=540) \u2014 empty DB / fresh env.",
+    "Soccer: 0 settled picks in window (window_days=540) \u2014 empty DB / fresh env."
+  ]
+}
