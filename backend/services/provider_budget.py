@@ -484,12 +484,110 @@ class ProviderBudget:
             "estimated_credits": est,
         }
 
+    async def top_up(self, intent_id: str, *, extra: int,
+                       emergency_requested: bool = False,
+                       reason: str = "actual_over_estimate") -> dict:
+        """Atomically extend an existing reservation by ``extra``
+        credits.  Concurrency-safe — the same ``$expr`` filter used
+        by ``reserve`` guards daily/monthly caps.
+
+        Returns::
+
+            {"ok": True,  "outcome": "allowed", "extra": N}
+            {"ok": False, "outcome": "blocked_daily_limit"  ...}
+            {"ok": False, "outcome": "blocked_monthly_limit" ...}
+            {"ok": False, "outcome": "intent_not_reserved"}
+        """
+        extra = int(extra or 0)
+        if extra <= 0:
+            return {"ok": True, "outcome": "no_op", "extra": 0}
+        intent = await self.db[INTENTS_COLL].find_one(
+            {"intent_id": intent_id}, {"_id": 0})
+        if not intent or intent.get("status") != INTENT_RESERVED:
+            return {"ok": False, "outcome": "intent_not_reserved"}
+        dk = intent["day_key"]
+        mk = intent["month_key"]
+        emergency = bool(emergency_requested) or bool(
+            intent.get("emergency_granted"))
+        dlim = _daily_limit()
+        mlim = _monthly_limit()
+        er   = _emergency_reserve()
+        month_cap = mlim if emergency else max(0, mlim - er)
+        day_used_path      = f"days.{dk}.used"
+        day_reserved_path  = f"days.{dk}.reserved"
+        expr = {
+            "$and": [
+                {"$lte": [
+                    {"$add": [
+                        {"$ifNull": [f"${day_used_path}", 0]},
+                        {"$ifNull": [f"${day_reserved_path}", 0]},
+                        extra,
+                    ]}, dlim,
+                ]},
+                {"$lte": [
+                    {"$add": [
+                        {"$ifNull": ["$month.used", 0]},
+                        {"$ifNull": ["$month.reserved", 0]},
+                        extra,
+                    ]}, month_cap,
+                ]},
+            ],
+        }
+        now = _now()
+        res = await self.db[BUDGET_STATE_COLL].find_one_and_update(
+            {"provider": self.provider, "month_key": mk, "$expr": expr},
+            {"$inc": {day_reserved_path: extra,
+                       "month.reserved": extra},
+             "$set": {"updated_at": now}},
+            return_document=True,
+        )
+        if res is None:
+            # Determine which limit blocked.
+            state = await self._state_doc(mk)
+            rem = self._remaining(state, dk, emergency)
+            if extra > rem["day_remaining"]:
+                outcome = OUT_BLOCKED_DAILY
+            else:
+                outcome = OUT_BLOCKED_MONTHLY
+            await self._audit_denied(
+                outcome, caller="top_up",
+                job_name=intent.get("job_name"),
+                estimated_credits=extra, reason=reason,
+                emergency=emergency, intent_id=intent_id,
+            )
+            return {"ok": False, "outcome": outcome, "extra": extra}
+        # Update the intent record so subsequent commit uses the new
+        # reserved total.
+        await self.db[INTENTS_COLL].update_one(
+            {"intent_id": intent_id, "status": INTENT_RESERVED},
+            {"$inc": {"estimated_credits": extra},
+             "$push": {"top_ups": {
+                 "extra": extra, "reason": reason, "at": now,
+             }}},
+        )
+        await self._audit(
+            "budget_top_up", caller="top_up",
+            intent_id=intent_id, extra=extra,
+            job_name=intent.get("job_name"), reason=reason,
+        )
+        return {"ok": True, "outcome": OUT_ALLOWED, "extra": extra}
+
     async def commit(self, intent_id: str, *,
                       actual_credits: Optional[int] = None,
                       response_metadata: Optional[dict] = None) -> dict:
         """Convert a reservation to committed usage.  Idempotent:
         second commit returns the existing final state without
-        double-counting."""
+        double-counting.
+
+        If ``actual_credits > estimated_credits`` the caller SHOULD
+        first invoke ``top_up(intent_id, extra=actual-estimated)`` so
+        the extra capacity is reserved atomically before commit.  If
+        the top-up fails there is not enough budget for the actual
+        cost — the caller should log the overage and stop follow-up
+        fan-out.  ``commit`` itself is safe to call with a larger
+        actual than reserved but no atomicity guarantee is provided
+        for the delta in that path.
+        """
         now = _now()
         intent = await self.db[INTENTS_COLL].find_one(
             {"intent_id": intent_id}, {"_id": 0},

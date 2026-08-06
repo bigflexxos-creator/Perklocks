@@ -3930,7 +3930,66 @@ async def _daily_refresh_loop():
             _daily_refresh_loop.tick_count = getattr(_daily_refresh_loop, "tick_count", 0) + 1
             if _daily_refresh_loop.tick_count >= 12:
                 _daily_refresh_loop.tick_count = 0
-                await _refresh_picks(current_date)
+                # ── Phase 2γ Global Refresh Mode gate ─────────────
+                # In `snapshot` mode (default), the hourly global
+                # refresh is disabled — the 3×/day scheduled snapshots
+                # (12/18/23 UTC) plus admin recovery cover freshness.
+                # `legacy_hourly` mode preserves the old cadence for
+                # emergency rollback and STILL goes through the
+                # gateway + budget + coordinator.
+                try:
+                    from services.odds_api_gateway import _global_refresh_mode
+                    _mode = _global_refresh_mode()
+                except Exception:
+                    _mode = "snapshot"
+                if _mode == "legacy_hourly":
+                    # Route through coordinator + budget so even the
+                    # emergency-rollback path is single-flighted.
+                    try:
+                        from services.job_coordinator import JobCoordinator as _JC_g
+                        from services.provider_budget import ProviderBudget as _PB_g
+                        coord = _JC_g(db)
+                        budget = _PB_g(db)
+                        lease = await coord.acquire(
+                            "picks_refresh_today",
+                            lease_seconds=900,
+                            min_interval_seconds=1800,
+                            caller="daily_refresh_loop",
+                            reason="legacy_hourly_refresh",
+                        )
+                        if lease:
+                            token = lease.lease_token
+                            r = await budget.reserve(
+                                estimated_credits=800,
+                                endpoint_type="picks_refresh",
+                                caller="daily_refresh_loop",
+                                job_name="picks_refresh_today",
+                                reason="legacy_hourly_refresh",
+                                request_key=f"legacy_hourly:{token}",
+                                ttl_seconds=960,
+                            )
+                            if r.get("allowed"):
+                                try:
+                                    await _refresh_picks(current_date)
+                                    await budget.commit(r["intent_id"])
+                                    await coord.complete("picks_refresh_today", token)
+                                except Exception as e:
+                                    await budget.release(r["intent_id"], reason=f"err:{e}")
+                                    await coord.fail("picks_refresh_today", token,
+                                                      error=str(e), retry_after_seconds=300)
+                            else:
+                                await coord.fail("picks_refresh_today", token,
+                                                  error=f"budget_denied:{r.get('outcome')}",
+                                                  retry_after_seconds=300)
+                    except Exception as _e:
+                        logger.warning("legacy_hourly refresh err: %s", _e)
+                else:
+                    # snapshot mode — do nothing.  Scheduled snapshots
+                    # (alt_lines_feed, mls_direct_inject, soccer_prop_inject,
+                    # MLB pregame lease-gated loop) cover freshness.
+                    logger.debug(
+                        "daily_refresh_loop: snapshot mode — no hourly refresh"
+                    )
                 last_refresh_date = current_date
         except asyncio.CancelledError:
             break
@@ -4599,13 +4658,24 @@ async def on_startup():
         _boot_hour = datetime.now(timezone.utc).hour
         if _boot_hour >= 23 or _boot_hour < _MLB_WINDOW_END_UTC_HOUR:
             async def _mlb_late_night_boot_refresh():
+                # Phase 2γ closeout: was an uncoordinated boot burst.
+                # Now goes through cold_start freshness check + lease
+                # + budget.  Multiple restarts within the window
+                # produce at most ONE coordinated recovery job.
                 try:
+                    from services.cold_start import maybe_recover_on_cold_start
                     logger.info(
-                        "MLB late-night boot refresh firing (UTC hour=%02d, "
-                        "inside 23:00–%02d:00 window)",
-                        _boot_hour, _MLB_WINDOW_END_UTC_HOUR,
+                        "MLB late-night boot: freshness check (UTC hour=%02d)",
+                        _boot_hour,
                     )
-                    await _refresh_picks(_today_str(), sport_filter="MLB")
+                    async def _runner():
+                        return await _refresh_picks(_today_str(), sport_filter="MLB")
+                    await maybe_recover_on_cold_start(
+                        db,
+                        job_name="mlb_pregame_refresh_today",
+                        runner=_runner,
+                        caller="mlb_late_night_boot",
+                    )
                 except Exception as _bn_err:
                     logger.warning(
                         "MLB late-night boot refresh failed: %s", _bn_err,

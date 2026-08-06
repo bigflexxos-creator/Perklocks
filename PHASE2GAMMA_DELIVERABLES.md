@@ -118,7 +118,7 @@
 | `mls_direct_inject` | 3×/day + boot burst | 3×/day, cold-start only if stale | 4×100 → 3×100 = **400 → 300** |
 | `soccer_prop_inject` | 3×/day + boot burst | 3×/day, cold-start only if stale | 4×200 → 3×200 = **800 → 600** |
 | `mlb_pregame_refresh_today` | 5-min during window (both today AND tomorrow) | 5-min (unchanged), coordinator-gated | ~144×60 = **8,640** → 144×60 = 8,640 (same, but single-flight avoids ~30% dup burn ≈ –2,600) |
-| `mlb_pregame_refresh_tomorrow` | 5-min during window | **30-min** during window | ~144×40 = 5,760 → 24×40 = **960** — savings ≈ **4,800/day** |
+| `mlb_pregame_refresh_tomorrow` | 5-min (legacy) | **30-min** during window | Ticks/day 144 → 24 (120 fewer executions). **Realistic measured savings: ~200–300 credits/day** (pending 24-h window). **Theoretical worst-case upper bound**: 4,800/day (only if every tick issued full upstream fan-out — cache + single-flight prevent this). See PHASE2GAMMA_CLOSEOUT.md §5 for full arithmetic. |
 | `picks_refresh_today` (`/picks/refresh` normal-user) | Fires `_refresh_picks` per user (unbounded) | **DB-only** — 0 credits/user | −∞ (was uncapped) |
 | Admin `/api/admin/picks/force-refresh` | Uncoordinated, 800 cred each | Lease + budget + 15-min min-interval | Capped by budget |
 | Global full-board refresh mode | Hourly | **snapshot** (3×/day) default; feature-flag rollback via `ODDS_GLOBAL_REFRESH_MODE=legacy_hourly` | 24×800 → 3×800 = **19,200 → 2,400** (if enabled) |
