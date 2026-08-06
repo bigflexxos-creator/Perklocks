@@ -253,16 +253,41 @@ _IN_PLAY_GRACE_DEFAULT = int(3.5 * 3600)
 
 
 def _canonicalize_lock_score(pick: dict) -> dict:
-    """Promote V2 → primary lock_score at READ time so every endpoint
-    returns the same number the user sees in the UI.
+    """Phase 1b — hydrate from the published snapshot; fall back to the
+    legacy repair path only for pre-Phase-1c legacy rows.
 
-    Background: pick docs carry both `lock_score` (legacy V1, written at
-    creation) and `lock_score_v2` (recomputed by the V2 engine). The
-    learning loop promotes V2 → V1 periodically, but between passes the
-    two can drift apart — the home feed would carry stale V1 (e.g. 85)
-    while /picks/{id} re-derived V2 (e.g. 94). Calling this on every
-    serialized pick guarantees parity across the API surface and lets
-    the frontend treat `lock_score` as the canonical value once again.
+    Before Phase 1b this function was the single biggest read-time
+    mutation in the codebase.  It performed a `max(v1, v2, raw, peak)`
+    promotion + always-starter floor + coherence-cap clamp on every
+    pick on every read.  The publication contract makes that repair
+    unnecessary — the snapshot is now the single source of truth.
+
+    Rules:
+      • If the pick carries `published_lock_score` (i.e. the
+        publication service already stamped it), we hydrate all
+        contract fields from the snapshot and return.  Zero
+        recomputation.
+      • Otherwise (legacy row without a snapshot yet), we fall back
+        to the historical repair logic for backwards compatibility.
+        These rows will be v0-backfilled in Phase 1c, after which
+        the legacy branch can be removed entirely.
+    """
+    # Phase 1b fast-path — snapshot exists ⇒ trust it.
+    if pick.get("published_lock_score") is not None:
+        from services.published_prediction_reader import hydrate
+        return hydrate(pick)
+
+    # ── Legacy path (Phase 1c will remove this) ────────────────────
+    # Kept intact so any pick without a snapshot still renders
+    # coherently until the v0 backfill lands.
+    return _legacy_canonicalize_lock_score(pick)
+
+
+def _legacy_canonicalize_lock_score(pick: dict) -> dict:
+    """Original pre-Phase-1b canonicalizer.  DO NOT call directly from
+    new code — call `_canonicalize_lock_score` which routes to the
+    snapshot fast-path first.  See PHASE1_AUDIT.md §3 for why this
+    function exists.
 
     Rules:
       • lock_score = max(lock_score, lock_score_v2), clamped to [0, 99].

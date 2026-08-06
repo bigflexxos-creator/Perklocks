@@ -392,6 +392,34 @@ async def _upsert_pick(
     }
     await db.picks.update_one({"_id": pick_id}, {"$set": doc}, upsert=True)
 
+    # ── Phase 1b — publication service side-injector wiring ───────
+    # NRFI/YRFI picks are user-visible so they need an immutable
+    # snapshot before any endpoint reads them.
+    try:
+        from services.prediction_publication_service import (
+            PredictionPublicationService,
+        )
+        publisher = PredictionPublicationService(db)
+        try:
+            await publisher.ensure_indices()
+        except Exception:
+            pass
+        # NRFI stores win_probability as a *percentage* (`prob * 100`);
+        # the publication service normalizes fractions vs percentages.
+        await publisher.publish(
+            doc, publication_source="nrfi_engine",
+            dual_write=True,
+        )
+    except Exception as e:
+        # Never let publication break NRFI pick creation.
+        logger = _get_logger()
+        logger.warning("NRFI publication step failed (non-fatal): %s", e)
+
+
+def _get_logger():
+    import logging
+    return logging.getLogger("brain.nrfi_engine")
+
 
 async def generate_nrfi_yrfi_picks(db: AsyncIOMotorDatabase) -> dict:
     """Main entry point — build NRFI/YRFI picks for every MLB game

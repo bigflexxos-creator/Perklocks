@@ -445,6 +445,38 @@ async def run_once() -> dict:
                 await db.picks.bulk_write(ops, ordered=False)
             except Exception as e:
                 logger.warning("Soccer prop upsert error (%s): %s", sport_key, e)
+
+            # ── Phase 1b — publication service side-injector wiring ──
+            # Route this soccer-prop batch through the publication
+            # service so an immutable snapshot exists for each pick
+            # BEFORE it becomes user-visible on the board.
+            try:
+                from services.prediction_publication_service import (
+                    PredictionPublicationService,
+                )
+                publisher = PredictionPublicationService(db)
+                try:
+                    await publisher.ensure_indices()
+                except Exception:
+                    pass
+                pub_summary = await publisher.publish_batch(
+                    all_picks,
+                    publication_source="soccer_prop_inject",
+                    dual_write=True,
+                )
+                logger.info(
+                    "Soccer Prop Inject %s publication: new=%d existing=%d "
+                    "errors=%d mismatches=%d",
+                    sport_key,
+                    pub_summary.get("new_snapshots", 0),
+                    pub_summary.get("existing_snapshots", 0),
+                    len(pub_summary.get("errors", []) or []),
+                    pub_summary.get("mismatches_logged", 0),
+                )
+            except Exception as e:
+                logger.warning("Soccer Prop Inject publication step "
+                                "failed (non-fatal): %s", e)
+
             logger.info(
                 "Soccer Prop Inject %s: %d picks across %d events",
                 sport_key, len(all_picks), len(events),
