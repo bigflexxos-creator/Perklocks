@@ -49,28 +49,80 @@ def _player_stats_from_pick(pick: dict) -> dict:
 
 
 def simulate_pick(pick: dict) -> Optional[dict]:
-    """Route a pick to its sport's simulator. Returns sim output dict or None."""
+    """Route a pick to its sport's simulator. Returns sim output dict or None.
+
+    Phase 4B additions:
+      • Deterministic per-pick seed injected into ``random.seed`` before
+        each simulator runs.  Sequential execution inside
+        :func:`apply_simulations` guarantees no cross-pick contamination.
+      • Stamps the returned dict with the truthful ``simulator_type``,
+        ``simulator_name``, ``simulator_version``, ``seed``,
+        ``independent_evidence=True``, ``valid=True`` so the symmetric
+        anchor can trust it.
+    """
+    import random as _random
     sport = pick.get("sport") or ""
     if sport not in _SPORTS_WITH_SIM:
         return None
     try:
+        from services.simulation_seed import build_seed, SeedError
+        sim_name = f"{sport.lower()}_simulator"
+        sim_version = _SIM_VERSIONS.get(sport, "1.0.0")
+        try:
+            seed = build_seed(pick, sim_name, sim_version,
+                                allow_name_only_fallback=True)
+        except SeedError:
+            seed = 0
+        # Seed the GLOBAL random for the duration of THIS pick's sim.
+        # apply_simulations() runs picks sequentially so there is no
+        # cross-pick contamination.  See simulator_seed_thread_safety
+        # in the Phase 4B docs.
+        _random.seed(seed)
+
         if sport == "MLB":
             from brain.sim_mlb import simulate_mlb_pick
             stats = _player_stats_from_pick(pick)
-            return simulate_mlb_pick(pick, stats)
-        if sport == "Soccer":
+            out = simulate_mlb_pick(pick, stats)
+            sim_type = "distribution_monte_carlo"
+        elif sport == "Soccer":
             from brain.sim_soccer import simulate_soccer_pick
-            return simulate_soccer_pick(pick)
-        if sport == "NBA":
+            out = simulate_soccer_pick(pick)
+            sim_type = "distribution_monte_carlo"
+        elif sport == "NBA":
             from brain.sim_nba import simulate_nba_pick
-            return simulate_nba_pick(pick)
-        if sport == "Tennis":
+            out = simulate_nba_pick(pick)
+            sim_type = "distribution_monte_carlo"
+        elif sport == "Tennis":
             from brain.sim_tennis import simulate_tennis_pick
-            return simulate_tennis_pick(pick)
+            out = simulate_tennis_pick(pick)
+            sim_type = "event_simulation"
+        else:
+            return None
+
+        if out is None:
+            return None
+        # Stamp truthful metadata so the symmetric anchor and the
+        # guardrail tests can trust the result.
+        out.setdefault("simulator_name",       sim_name)
+        out.setdefault("simulator_version",    sim_version)
+        out.setdefault("simulator_type",       sim_type)
+        out.setdefault("seed",                 seed)
+        out.setdefault("independent_evidence", True)
+        out.setdefault("valid",                True)
+        return out
     except Exception as e:
         logger.warning("Simulator failed for pick %s (sport=%s): %s",
                        (pick.get("id") or "?")[:8], sport, e)
     return None
+
+
+# Simulator versions (bump when logic changes so seed cache invalidates).
+_SIM_VERSIONS = {
+    "MLB":    "1.1.0",   # Phase 4B seeded
+    "NBA":    "1.1.0",
+    "Soccer": "1.1.0",
+    "Tennis": "1.1.0",
+}
 
 
 # Minimum sim runs required to trust the simulator as the dominant signal.
@@ -136,120 +188,126 @@ def sim_wp_to_lock_baseline(sim_wp_pct: float) -> float:
     return 99.0
 
 
-def _anchor_pick_to_sim(pick: dict, sim_wp: float) -> Optional[dict]:
-    """Rewrite lock_score / lock_score_raw / lock_score_v2 / evidence
-    breakdown so the simulator's win probability becomes a confidence
-    FLOOR for the lock score. Re-derives grade + confidence.
+def _anchor_pick_to_sim(pick: dict, sim_wp: float,
+                         sim_meta: Optional[dict] = None) -> Optional[dict]:
+    """Symmetric bounded-residual anchor (Phase 4B).
 
-    Philosophy (per user 2026-06-26): "99 lock doesn't mean 99% win.
-    Lock reflects EVIDENCE strength — history + tier + matchup + sim
-    consensus combined. Salah scoring/assisting should be 99 lock even
-    if sim WP is 55% because his career history is overwhelming."
+    The simulator baseline (:func:`sim_wp_to_lock_baseline`) is mapped
+    to a **candidate lock score**.  We then apply a SYMMETRIC bounded
+    residual so the sim can move the prior lock UP or DOWN by at most
+    ``SIM_RESIDUAL_MAX`` (default 3.0 pp).
 
-    Rule applied: SIM ANCHOR IS A FLOOR.
-      • If sim baseline > prior lock → sim LIFTS lock UP to the baseline.
-        (Catches engine misses where the 20K-run consensus says a pick
-         is stronger than the engine scored it — fixes "73.2% Sim WP
-         only got Lock 75" complaint.)
-      • If sim baseline <= prior lock → KEEP prior lock untouched.
-        (Elite players, strong-evidence picks, and high-edge plays are
-         not dragged down by sim WP because lock_score isn't a 1:1 map
-         to win probability.)
-
-    Returns audit dict.
+    Guardrails (Phase 4B):
+      • Only INDEPENDENT simulators are honoured — posterior samplers
+        (``independent_evidence=False``) return with zero adjustment.
+      • Invalid simulator results (``valid=False``) return with zero
+        adjustment.
+      • Adjustment is bounded ``±SIM_RESIDUAL_MAX`` pp regardless of
+        how far the sim baseline diverges.
+      • Every adjustment is recorded via ``sim_lock_anchor``,
+        ``sim_lock_prior``, ``sim_lock_residual``,
+        ``sim_lock_applied_delta``.
+      • Elite floor (95+ lock) is preserved — the sim cannot demote
+        an elite-flagged pick below 95.
     """
+    # ── Independence check ─────────────────────────────────────────
+    if sim_meta is not None:
+        if sim_meta.get("independent_evidence") is False:
+            pick["sim_lock_anchor"]         = None
+            pick["sim_lock_prior"]          = pick.get("lock_score")
+            pick["sim_lock_residual"]       = 0.0
+            pick["sim_lock_applied_delta"]  = 0.0
+            pick["lock_anchored_to_sim"]    = False
+            pick["sim_anchor_skip_reason"]  = "posterior_uncertainty_not_independent"
+            return {"prior_lock": pick.get("lock_score"), "baseline": None,
+                     "anchored": False, "new_lock": pick.get("lock_score"),
+                     "reason": "not_independent"}
+        if sim_meta.get("valid") is False:
+            pick["sim_lock_anchor"]         = None
+            pick["sim_lock_prior"]          = pick.get("lock_score")
+            pick["sim_lock_residual"]       = 0.0
+            pick["sim_lock_applied_delta"]  = 0.0
+            pick["lock_anchored_to_sim"]    = False
+            pick["sim_anchor_skip_reason"]  = "sim_invalid"
+            return {"prior_lock": pick.get("lock_score"), "baseline": None,
+                     "anchored": False, "new_lock": pick.get("lock_score"),
+                     "reason": "invalid"}
+
     baseline = sim_wp_to_lock_baseline(sim_wp)
     try:
         prior_lock = float(pick.get("lock_score") or 0.0)
     except (TypeError, ValueError):
         prior_lock = 0.0
 
-    # ── Sim acts as a FLOOR. Never drag elite/high-evidence picks down. ──
-    if baseline > prior_lock:
-        # Sim is more bullish than current engine — lift up to the sim
-        # consensus. This is the "73.2% Sim WP should be green" case.
-        new_lock = round(max(0.0, min(99.0, baseline)), 1)
-        anchored = True
-    else:
-        # Sim agrees or is less bullish — keep the prior lock score.
-        # The Monte-Carlo simulator alone cannot demote a pick whose
-        # evidence (elite player history, sharp edge, model alignment)
-        # already justifies a higher lock.
-        new_lock = round(prior_lock, 1)
-        anchored = False
+    # Symmetric bounded residual.
+    residual = baseline - prior_lock
+    applied_delta = max(-SIM_RESIDUAL_MAX, min(SIM_RESIDUAL_MAX, residual))
 
-    if not anchored:
-        # No mutation needed — just attach the audit fields so the UI
-        # can show the user the sim baseline was considered.
-        pick["sim_lock_anchor"] = round(baseline, 1)
-        pick["sim_lock_residual"] = 0.0
-        pick["lock_anchored_to_sim"] = False
-        return {
-            "prior_lock": round(prior_lock, 1),
-            "baseline":   round(baseline, 1),
-            "anchored":   False,
-            "new_lock":   new_lock,
-        }
+    # Elite floor: if the pick has an elite flag or a locked-in
+    # 95+ historical evidence tier, do NOT demote it below 95.
+    is_elite = bool(pick.get("elite_player")) or prior_lock >= 95.0
+    new_lock = prior_lock + applied_delta
+    if is_elite and new_lock < 95.0:
+        new_lock = max(95.0, prior_lock)
+        applied_delta = new_lock - prior_lock
 
-    # ── Sim is lifting the lock. Anchor every shadow lock field so the
-    # read-time canonicalization (max of v1, v2) won't roll back to an
-    # older governed value, and the raw × multiplier ≈ lock audit
-    # invariant still holds (multiplier becomes 1.0).
-    pick["lock_score"]         = new_lock
-    pick["lock_score_raw"]     = new_lock
-    pick["lock_score_v2"]      = new_lock
-    pick["lock_score_v2_raw"]  = new_lock
+    new_lock = round(max(0.0, min(99.0, new_lock)), 1)
+    anchored = abs(applied_delta) >= 0.1        # meaningful adjustment
 
-    # Peak is monotonically increasing — re-evaluate the pinned flag.
-    try:
-        prev_peak = float(pick.get("lock_score_peak") or 0.0)
-    except (TypeError, ValueError):
-        prev_peak = 0.0
-    pick["lock_score_peak"] = round(max(new_lock, prev_peak), 1)
-    if pick["lock_score_peak"] >= 95.0:
-        pick["pinned"] = True
+    if anchored:
+        pick["lock_score"]         = new_lock
+        pick["lock_score_raw"]     = new_lock
+        pick["lock_score_v2"]      = new_lock
+        pick["lock_score_v2_raw"]  = new_lock
+        try:
+            prev_peak = float(pick.get("lock_score_peak") or 0.0)
+        except (TypeError, ValueError):
+            prev_peak = 0.0
+        pick["lock_score_peak"] = round(max(new_lock, prev_peak), 1)
+        if pick["lock_score_peak"] >= 95.0:
+            pick["pinned"] = True
+        eb = pick.get("evidence_breakdown")
+        if isinstance(eb, dict):
+            eb["multiplier"]    = 1.0
+            eb["lock_raw"]      = new_lock
+            eb["lock_governed"] = new_lock
+            eb["sim_anchored"]  = True
+        try:
+            from sports_engine import _grade, _confidence
+            pick["grade"]      = _grade(new_lock)
+            pick["confidence"] = _confidence(new_lock)
+        except Exception:
+            pass
 
-    # Update evidence_breakdown so the Evidence Inspector audit math
-    # reconciles (raw × multiplier ≈ lock) post-anchoring.
-    eb = pick.get("evidence_breakdown")
-    if isinstance(eb, dict):
-        eb["multiplier"]    = 1.0
-        eb["lock_raw"]      = new_lock
-        eb["lock_governed"] = new_lock
-        eb["sim_anchored"]  = True
-
-    # Re-derive grade + confidence against the new lock.
-    try:
-        from sports_engine import _grade, _confidence
-        pick["grade"]      = _grade(new_lock)
-        pick["confidence"] = _confidence(new_lock)
-    except Exception:
-        pass
-
-    # Audit fields so the UI / inspector can show the sim lifted this pick.
-    pick["sim_lock_anchor"]      = round(baseline, 1)
-    pick["sim_lock_residual"]    = round(new_lock - baseline, 2)
-    pick["lock_anchored_to_sim"] = True
+    # Audit fields — populated whether or not we mutated.
+    pick["sim_lock_anchor"]         = round(baseline, 1)
+    pick["sim_lock_prior"]          = round(prior_lock, 1)
+    pick["sim_lock_residual"]       = round(residual, 2)
+    pick["sim_lock_applied_delta"]  = round(applied_delta, 2)
+    pick["lock_anchored_to_sim"]    = anchored
 
     return {
         "prior_lock": round(prior_lock, 1),
         "baseline":   round(baseline, 1),
-        "anchored":   True,
+        "residual":   round(residual, 2),
+        "applied_delta": round(applied_delta, 2),
+        "anchored":   anchored,
         "new_lock":   new_lock,
     }
 
 
 def apply_simulations(picks: list[dict]) -> dict:
-    """Run simulators across the slate. Mutates each pick in-place with
-    sim_* fields AND anchors lock_score to sim_win_probability when the
-    simulator has run ≥MIN_RUNS_FOR_ANCHOR iterations.
+    """Run sport-specific simulators across the slate.  Mutates each
+    pick in-place with sim_* fields AND (Phase 4B) applies a SYMMETRIC
+    bounded residual anchor when the simulator is INDEPENDENT and VALID.
 
     Returns counts: {applied, stronger, weaker, neutral, anchored,
-    lifted_up, lifted_down}.
+    lifted_up, lifted_down, skipped_not_independent, skipped_invalid}.
     """
     counts = {
         "applied": 0, "stronger": 0, "weaker": 0, "neutral": 0,
         "anchored": 0, "lifted_up": 0, "lifted_down": 0,
+        "skipped_not_independent": 0, "skipped_invalid": 0,
     }
     for p in picks:
         sim = simulate_pick(p)
@@ -260,7 +318,7 @@ def apply_simulations(picks: list[dict]) -> dict:
         sig = sim.get("sim_signal", "neutral")
         counts[sig] = counts.get(sig, 0) + 1
 
-        # ── Anchor lock_score to sim_win_probability ──────────────────
+        # ── Anchor lock_score to sim_win_probability (symmetric) ───────
         sim_wp = sim.get("sim_win_probability")
         try:
             sim_runs = int(sim.get("sim_runs") or 0)
@@ -270,14 +328,32 @@ def apply_simulations(picks: list[dict]) -> dict:
         if sim_wp is None or sim_runs < MIN_RUNS_FOR_ANCHOR:
             continue
 
+        # Extract simulator metadata (independent_evidence / valid).
+        # sport-specific sims (sim_mlb/nba/tennis/soccer/soccer_scorer)
+        # are ALL true independent simulators — they never seed off μ.
+        # If a caller writes an untyped result we default to
+        # independent=True + valid=True for backward compatibility.
+        sim_meta = {
+            "independent_evidence": sim.get("independent_evidence", True),
+            "valid":                sim.get("valid", True),
+            "simulator_type":       sim.get("simulator_type",
+                                            "distribution_monte_carlo"),
+        }
         prior = float(p.get("lock_score") or 0.0)
-        audit = _anchor_pick_to_sim(p, float(sim_wp))
+        audit = _anchor_pick_to_sim(p, float(sim_wp), sim_meta=sim_meta)
         if audit is None:
             continue
-        counts["anchored"] += 1
-        if audit["new_lock"] > prior + 0.5:
-            counts["lifted_up"] += 1
-        elif audit["new_lock"] < prior - 0.5:
-            counts["lifted_down"] += 1
+        if audit.get("reason") == "not_independent":
+            counts["skipped_not_independent"] += 1
+            continue
+        if audit.get("reason") == "invalid":
+            counts["skipped_invalid"] += 1
+            continue
+        if audit["anchored"]:
+            counts["anchored"] += 1
+            if audit["new_lock"] > prior + 0.5:
+                counts["lifted_up"] += 1
+            elif audit["new_lock"] < prior - 0.5:
+                counts["lifted_down"] += 1
 
     return counts

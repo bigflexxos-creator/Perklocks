@@ -62,12 +62,31 @@ def decision_filter(picks: list[dict], memory: BrainMemory) -> dict:
         # 1) Hard edge gate
         if (p.get("edge_percent") or 0.0) < MIN_EDGE_PCT:
             reasons.append("edge<0.5%")
-        # 2) Simulator EV (top-K only)
+        # 2) Posterior-uncertainty fragility gate (Phase 4B rewrite).
+        #    The brain.simulator dict is now a posterior sampler seeded
+        #    from the pick's OWN model probability — it is NOT
+        #    independent evidence.  Post-Phase-4B semantics:
+        #      • ``uncertainty_width`` may CAP confidence (wide band =
+        #        flag as fragile).  It can no longer set ``no_bet``.
+        #      • ``expected_value`` / ``variance`` gates are DROPPED —
+        #        they were both monotonic functions of the same input
+        #        μ, so gating on them double-counted the same signal.
+        #      • ``agreement_score`` = factor-variance fragility signal
+        #        (unchanged; not independent, but useful as a soft cap).
         if brain.get("top_k") and sim:
-            if sim.get("expected_value", 0) < MIN_EV:
-                reasons.append("sim_ev<0")
-            if sim.get("variance", 0) > MAX_VARIANCE:
-                reasons.append("sim_var_high")
+            # Guardrail: refuse to gate on a posterior sampler as if
+            # it were independent evidence.
+            is_independent = bool(sim.get("independent_evidence", False))
+            width = sim.get("uncertainty_width")
+            if width is not None and width > 0.35:
+                reasons.append("posterior_uncertainty_wide")
+            if is_independent:
+                # This branch is reachable only if a TRUE independent
+                # simulator writes to brain.simulator (future work).
+                if sim.get("expected_value", 0) < MIN_EV:
+                    reasons.append("sim_ev<0")
+                if sim.get("variance", 0) > MAX_VARIANCE:
+                    reasons.append("sim_var_high")
             if sim.get("agreement_score", 1) < MIN_AGREEMENT:
                 reasons.append("factor_disagreement")
         # 3) Data completeness
