@@ -2441,6 +2441,95 @@ def _extract_nfl_prop_candidates(payload: dict) -> list[dict]:
     return list(cands.values())
 
 
+# ─── Phase 4D finalization — NBA / CFB candidate extractors ───────
+_NBA_MARKET_KEYS = frozenset({
+    "player_points", "player_rebounds", "player_assists",
+    "player_threes", "player_steals", "player_blocks",
+    "player_points_rebounds_assists",
+    "player_points_rebounds", "player_points_assists",
+    "player_rebounds_assists",
+    "player_points_alternate", "player_rebounds_alternate",
+    "player_assists_alternate", "player_threes_alternate",
+    "player_points_rebounds_assists_alternate",
+})
+
+
+def _extract_nba_prop_candidates(
+    payload: dict,
+) -> tuple[set[str], set[str], dict]:
+    """Return ``(players, markets, lines_by_(player_lower, market))``
+    from the bookmaker payload — one entry per unique candidate.
+    Feeds :func:`services.nba_feature_engine.precompute_nba_prop_factors`.
+    """
+    players: set[str] = set()
+    markets: set[str] = set()
+    lines_bp: dict[tuple[str, str], list[tuple[float, str]]] = {}
+    for bm in (payload.get("bookmakers") or []):
+        for m in (bm.get("markets") or []):
+            mkey = m.get("key")
+            if mkey not in _NBA_MARKET_KEYS:
+                continue
+            for o in (m.get("outcomes") or []):
+                player = _clean_player_name(o.get("description") or o.get("name"))
+                if not player:
+                    continue
+                players.add(player)
+                markets.add(mkey)
+                point = o.get("point")
+                side  = str(o.get("name") or "Over")
+                if isinstance(point, (int, float)):
+                    key = (player.strip().lower(), mkey)
+                    entry = (float(point), side)
+                    lines_bp.setdefault(key, [])
+                    if entry not in lines_bp[key]:
+                        lines_bp[key].append(entry)
+    return players, markets, lines_bp
+
+
+def _extract_cfb_prop_candidates(payload: dict) -> list[dict]:
+    """Return the CFB prop candidate list feeding
+    :func:`services.cfb_precompute.precompute_cfb_factors`.  Uses the
+    same market keys as NFL (CFB shares the NFL market list)."""
+    cands: dict[tuple, dict] = {}
+    home = payload.get("home_team") or ""
+    away = payload.get("away_team") or ""
+    for bm in (payload.get("bookmakers") or []):
+        for m in (bm.get("markets") or []):
+            mkey = m.get("key")
+            if mkey not in _NFL_MARKET_TO_STAT:
+                continue
+            for o in (m.get("outcomes") or []):
+                player = _clean_player_name(o.get("description") or o.get("name"))
+                if not player:
+                    continue
+                side = str(o.get("name") or "over").lower()
+                point = o.get("point")
+                price = o.get("price")
+                try:
+                    implied = _implied_prob(int(price))
+                except (TypeError, ValueError):
+                    implied = None
+                key = (player.strip().lower(), mkey, side,
+                        float(point) if isinstance(point, (int, float)) else None)
+                if key in cands:
+                    continue
+                # CFB precompute takes an OPPONENT for the feature engine;
+                # we don't know the player's team from the bookmaker
+                # payload so we pass BOTH and let the engine skip when
+                # neither match — safer than an empty string default.
+                cands[key] = {
+                    "player": player,
+                    "market": mkey,
+                    "side": side,
+                    "line": float(point) if isinstance(point, (int, float)) else 0.0,
+                    "book_implied": implied,
+                    "player_team": home,       # best-effort — engine can fall through
+                    "opponent":    away,
+                    "position":    _infer_nfl_position_from_market(mkey),
+                }
+    return list(cands.values())
+
+
 async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) -> dict:
     markets = PLAYER_PROP_MARKETS.get(sport)
     if not markets:
@@ -4513,6 +4602,63 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                         )
                     except Exception as _ctx_err:
                         logger.debug("NFL props ctx build failed: %s", _ctx_err)
+                # ── Phase 4D finalization (2026-08-06) — NBA + CFB
+                # per-event precompute. Mirrors the NFL pattern:
+                # walk the bookmaker payload once per event, hand off
+                # a per-(player, market, line, side) candidate list to
+                # the async precompute helper, stash the resulting
+                # dict under _ctx["nba_precomputed"] / _ctx["cfb_precomputed"]
+                # so the sync _props_picks_from_event branch can look
+                # it up without re-entering the event loop.  ONE
+                # precompute call per event, never per prop.  One
+                # sport failing must not block others.
+                if sport == "NBA":
+                    try:
+                        from services.nba_feature_engine import (
+                            precompute_nba_prop_factors as _nba_pre,
+                        )
+                        from services.database import get_database
+                        _nba_db = get_database()
+                        _players, _markets, _lines_bp = _extract_nba_prop_candidates(payload)
+                        if _players:
+                            _nba_ctx = await _nba_pre(
+                                _nba_db, players=list(_players),
+                                market_keys=list(_markets),
+                                lines_by_player_market=_lines_bp,
+                            )
+                            payload.setdefault("_ctx", {}).update(_nba_ctx)
+                            payload["_ctx"]["nba_precompute_status"] = (
+                                "ok" if _nba_ctx.get("nba_precomputed") else "empty"
+                            )
+                        else:
+                            payload.setdefault("_ctx", {})[
+                                "nba_precompute_status"] = "no_candidates"
+                    except Exception as _ctx_err:
+                        logger.warning("NBA props ctx build failed: %s", _ctx_err)
+                        payload.setdefault("_ctx", {})[
+                            "nba_precompute_status"] = f"error:{type(_ctx_err).__name__}"
+                if sport == "CFB":
+                    try:
+                        from services.cfb_precompute import (
+                            precompute_cfb_factors as _cfb_pre,
+                        )
+                        from services.database import get_database
+                        _cfb_db = get_database()
+                        _cfb_cands = _extract_cfb_prop_candidates(payload)
+                        if _cfb_cands:
+                            _cfb_ctx: dict = {}
+                            await _cfb_pre(_cfb_db, _cfb_ctx, _cfb_cands)
+                            payload.setdefault("_ctx", {}).update(_cfb_ctx)
+                            payload["_ctx"]["cfb_precompute_status"] = (
+                                "ok" if _cfb_ctx.get("cfb_precomputed") else "empty"
+                            )
+                        else:
+                            payload.setdefault("_ctx", {})[
+                                "cfb_precompute_status"] = "no_candidates"
+                    except Exception as _ctx_err:
+                        logger.warning("CFB props ctx build failed: %s", _ctx_err)
+                        payload.setdefault("_ctx", {})[
+                            "cfb_precompute_status"] = f"error:{type(_ctx_err).__name__}"
                 # 2026-07-22 — MLS matchup-history preloader. Loads the
                 # per-opponent scoring history for every player that
                 # will surface in the props pipeline, and stuffs it in
