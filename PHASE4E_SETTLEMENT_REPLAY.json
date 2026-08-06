@@ -1,0 +1,27 @@
+{
+  "generated_at": "2026-08-06T21:41:39.364325+00:00",
+  "window_days": 180,
+  "tennis": {
+    "window_since": "2026-02-07T21:41:39.360170+00:00",
+    "picks_examined": 0,
+    "by_end_reason": {},
+    "flagged_count": 0,
+    "flagged_sample": [],
+    "policy_notes": [
+      "Current tennis_extra settler does NOT explicitly branch on retirement/walkover \u2014 it uses winner/loser name matching. Retirements are settled by whoever finished; walkovers do not appear in the results scrape.  Phase 4F consideration: wire a book-void-flag confirmation for WO/abandoned."
+    ]
+  },
+  "soccer": {
+    "window_since": "2026-02-07T21:41:39.360170+00:00",
+    "picks_examined": 0,
+    "market_breakdown": {},
+    "abandoned_or_postponed": 0,
+    "first_scorer_wins_with_minute": 0,
+    "flagged_count": 0,
+    "flagged_sample": [],
+    "policy_notes": [
+      "Current soccer settler (FotMob/ESPN) explicitly voids penalty misses and does not double-count own goals for scorer markets; audit confirms no silent policy change.",
+      "score_or_assist is settled distinctly by _settle_scorer_market which checks both goal and assist events."
+    ]
+  }
+}

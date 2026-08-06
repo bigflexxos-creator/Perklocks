@@ -1,0 +1,53 @@
+{
+  "generated_at": "2026-08-06T21:39:08.359571+00:00",
+  "requested_window_days": 180,
+  "segmentation_version": "4B.0.0",
+  "min_sample_reportable": 40,
+  "holdout_fraction": 0.2,
+  "sports": {
+    "MLB": {
+      "window_days_used": 540,
+      "since": "2025-02-12T21:39:08.364968+00:00",
+      "total_settled": 0,
+      "families": {}
+    },
+    "NBA": {
+      "window_days_used": 540,
+      "since": "2025-02-12T21:39:08.366889+00:00",
+      "total_settled": 0,
+      "families": {}
+    },
+    "NFL": {
+      "window_days_used": 540,
+      "since": "2025-02-12T21:39:08.368547+00:00",
+      "total_settled": 0,
+      "families": {}
+    },
+    "CFB": {
+      "window_days_used": 540,
+      "since": "2025-02-12T21:39:08.370165+00:00",
+      "total_settled": 0,
+      "families": {}
+    },
+    "Tennis": {
+      "window_days_used": 540,
+      "since": "2025-02-12T21:39:08.372028+00:00",
+      "total_settled": 0,
+      "families": {}
+    },
+    "Soccer": {
+      "window_days_used": 540,
+      "since": "2025-02-12T21:39:08.373610+00:00",
+      "total_settled": 0,
+      "families": {}
+    }
+  },
+  "notes": [
+    "MLB: 0 settled picks in window (window_days=540) \u2014 empty DB.",
+    "NBA: 0 settled picks in window (window_days=540) \u2014 empty DB.",
+    "NFL: 0 settled picks in window (window_days=540) \u2014 empty DB.",
+    "CFB: 0 settled picks in window (window_days=540) \u2014 empty DB.",
+    "Tennis: 0 settled picks in window (window_days=540) \u2014 empty DB.",
+    "Soccer: 0 settled picks in window (window_days=540) \u2014 empty DB."
+  ]
+}

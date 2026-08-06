@@ -185,6 +185,16 @@ class TennisComponents:
     is_99_lock_eligible: bool = False
     surface_name: str = "Hard"
     tier: int = 2
+    # Phase 4E.1 — identity + data-quality reporting.  Populated by
+    # ``compute_components`` when the pick has enrichment attached.
+    # These are ADVISORY fields; they do NOT alter the composite score
+    # here.  The Magic Tier policy (Phase 4E.3) reads them to cap the
+    # tier when identity is a name-fallback or coverage is thin.
+    identity_source: str = "unknown"        # "sackmann_id" | "name_fallback" | "empty" | "unknown"
+    stable_identity: bool = False
+    data_quality: str = "unknown"           # "full" | "partial" | "sparse" | "empty" | "unknown"
+    data_quality_signal_count: int = 0
+    data_quality_max_tier: str = "Apex Lock"   # advisory cap
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -194,9 +204,17 @@ class TennisComponents:
 
 
 def _player_hash(name: str) -> float:
-    """Deterministic 0-1 number per player — used as identity baseline so the
-    same player scores consistently across refreshes. Real stats will replace
-    this when wired in."""
+    """Deterministic 0-1 number per player.
+
+    **Phase 4E.1 note:** this function is *no longer* the tennis
+    identity baseline.  It survives only as a bounded ±0.05
+    micro-noise term inside the surface / form / serve / matchup
+    heuristics (its influence on the composite is capped at ~±5
+    points).  The primary identity now comes from
+    :mod:`services.tennis_identity.resolve_tennis_identity` which
+    prefers a stable Sackmann ``player_id`` and explicitly marks
+    name-fallback identities.
+    """
     if not name:
         return 0.5
     h = hashlib.md5(name.lower().strip().encode("utf-8")).hexdigest()
@@ -468,6 +486,49 @@ def compute_components(
     )
     comp.confidence = _composite_confidence(comp)
 
+    # ── Phase 4E.1 — stamp identity + data-quality on the components
+    # without changing the composite.  This is purely reporting so the
+    # Magic Tier policy can apply data-quality-aware caps downstream.
+    try:
+        from services.tennis_data_quality import assess_tennis_data_quality
+        # Identity resolution here is BEST-EFFORT / SYNC: we don't
+        # await the DB (this function is a pure sync compute path).
+        # If the caller has already run ``resolve_tennis_identity``
+        # async and stashed the result on the pick under
+        # ``pick["tennis_identity"]`` we use it.  Otherwise we derive
+        # a name-fallback identity from the raw event string so the
+        # downstream cap still fires.
+        ident = pick.get("tennis_identity") or None
+        if ident is None:
+            # No async resolver has been run — build a name-fallback
+            # identity synchronously so we still stamp SOMETHING.
+            from services.tennis_identity import (
+                normalize_name,
+                IDENTITY_SOURCE_NAME_FALLBACK,
+                IDENTITY_SOURCE_EMPTY,
+            )
+            nk = normalize_name(player)
+            ident = {
+                "player_id": None,
+                "name_key": nk,
+                "name_raw": player,
+                "identity_source": (
+                    IDENTITY_SOURCE_NAME_FALLBACK if nk else IDENTITY_SOURCE_EMPTY
+                ),
+                "stable_identity": False,
+                "notes": ["sync_path_no_resolver"],
+            }
+        dq = assess_tennis_data_quality(pick, identity=ident)
+        comp.identity_source = ident.get("identity_source", "unknown")
+        comp.stable_identity = bool(ident.get("stable_identity"))
+        comp.data_quality = dq.get("quality", "unknown")
+        comp.data_quality_signal_count = int(dq.get("signal_count", 0))
+        comp.data_quality_max_tier = dq.get("max_tier", "Apex Lock")
+    except Exception:
+        # Purely advisory — never let identity/quality stamping break
+        # the score path.
+        pass
+
     # 99-LOCK gating eligibility — additional bar on top of confidence.
     comp.is_99_lock_eligible = (
         comp.surface      >= LOCK99["surface_min"] and
@@ -598,6 +659,30 @@ async def apply_tennis_engine(db, picks: list[dict]) -> list[dict]:
                 cal_sr = await get_calibrated_serve_return(db, _player, _surface)
         except Exception as _cal_err:
             logger.debug("tennis calibrated lookup failed: %s", _cal_err)
+
+        # ── Phase 4E.1 — resolve stable tennis identity per player and
+        # stash it on the pick so ``compute_components`` (sync) can
+        # stamp identity_source + data_quality_max_tier onto the
+        # TennisComponents.  Best-effort; never raises.
+        try:
+            from services.tennis_identity import resolve_tennis_identity
+            _players_for_id = _parse_players(p.get("event") or "")
+            _market_l = (p.get("market") or "").lower()
+            _sel = (p.get("selection") or "").strip()
+            _pl = _selection_player(_market_l, _sel, _players_for_id)
+            if not _pl and _players_for_id:
+                _pl = _players_for_id[0]
+            _tour_hint = (
+                "ATP" if (p.get("league") or "").upper().startswith("ATP")
+                else "WTA" if (p.get("league") or "").upper().startswith("WTA")
+                else None
+            )
+            if _pl:
+                p["tennis_identity"] = await resolve_tennis_identity(
+                    db, _pl, tour=_tour_hint,
+                )
+        except Exception as _id_err:
+            logger.debug("tennis identity resolution failed: %s", _id_err)
 
         comp = compute_components(
             p,
