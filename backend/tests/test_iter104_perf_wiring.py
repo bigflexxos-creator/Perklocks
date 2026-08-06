@@ -175,18 +175,24 @@ except Exception:
 # D. No accidental server.py refactor (audit constraint)
 # ═════════════════════════════════════════════════════════════════════
 def test_server_py_still_intact():
-    """The user explicitly asked NOT to refactor server.py or
-    sports_engine.py yet. Enforce a rough size floor so an accidental
-    aggressive edit gets caught by tests."""
+    """server.py and sports_engine.py must NOT accidentally lose their
+    orchestration.  Phase 3F-1 (2026-08) formally extracted the
+    ~1,700-line pick-refresh orchestrator into
+    ``services/pick_refresh_orchestrator.py``, so we now enforce a
+    joint size floor across the pair (server.py + orchestrator) and
+    an independent floor for sports_engine.py."""
     server_lines = SERVER_SRC.count("\n")
     engine_lines = pathlib.Path(
         "/app/backend/sports_engine.py").read_text().count("\n")
-    # Both files were ~5,200-5,500 lines pre-audit. Any edit that
-    # slashes them by >20% is almost certainly a refactor we didn't
-    # sign up for in this task.
-    assert server_lines > 4500, (
-        f"server.py has shrunk to {server_lines} lines — accidental "
-        "refactor?")
+    orchestrator_path = pathlib.Path(
+        "/app/backend/services/pick_refresh_orchestrator.py")
+    orch_lines = orchestrator_path.read_text().count("\n") if orchestrator_path.exists() else 0
+    combined = server_lines + orch_lines
+    # Post-Phase-3F-1 baseline: server.py ≈ 3,900 lines, orchestrator
+    # ≈ 1,900 lines, sum ≈ 5,800.  Original pre-extraction was ~5,600.
+    assert combined > 4500, (
+        f"server.py ({server_lines}) + orchestrator ({orch_lines}) = "
+        f"{combined} lines — accidental refactor?")
     assert engine_lines > 5000, (
         f"sports_engine.py has shrunk to {engine_lines} lines — "
         "accidental refactor?")

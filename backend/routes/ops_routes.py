@@ -350,4 +350,48 @@ async def ops_index_conflicts(
     return await report_conflicts(db)
 
 
+# ═════════════════════════════════════════════════════════════════════
+# Phase 3D — Identity contracts observability (dry-run only)
+# ═════════════════════════════════════════════════════════════════════
+@router.get("/identity/dry-run")
+async def ops_identity_dry_run(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    collections: Optional[str] = None,
+):
+    """Phase 3D — scan live collections and propose canonical
+    identities WITHOUT writing anything.  Reports quality counts,
+    collisions, and ambiguities per collection."""
+    from services.identity_resolver import dry_run_scan_all
+    cols = [c.strip() for c in collections.split(",")] if collections else None
+    return await dry_run_scan_all(db, cols)
+
+
+@router.get("/identity/coverage")
+async def ops_identity_coverage(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Phase 3D — provider-ID coverage per critical collection.
+    Reports what % of live rows carry a stable provider identifier
+    versus how many would fall back to name-normalised identity.
+    Uses the read-only collection list defined in the identity
+    resolver (avoids referencing the immutable snapshot store
+    directly here — Phase 2β guardrail)."""
+    from services.identity_resolver import (
+        dry_run_scan_collection,
+        DRY_RUN_CRITICAL_COLLECTIONS,
+    )
+    out = {}
+    for c in DRY_RUN_CRITICAL_COLLECTIONS:
+        try:
+            r = await dry_run_scan_collection(db, c, sample_size=500)
+            out[c] = {
+                "sampled":        r["sampled"],
+                "quality_counts": r["quality_counts"],
+                "collisions":     len(r.get("collisions") or {}),
+            }
+        except Exception as e:
+            out[c] = {"error": str(e)}
+    return {"critical_collections": out}
+
+
 __all__ = ["router"]

@@ -78,6 +78,7 @@ GUARDRAIL_ALLOWLIST = {
     "services/soccer_prop_inject.py",  # uses cached_httpx_get
     "routes/admin_routes.py",          # documentation of the env var
     "server.py",                       # docstring only
+    "services/pick_refresh_orchestrator.py",  # Phase 3F-1 — moved from server.py; comment references only
 }
 
 # Tests and scripts are excluded from the guardrail.
