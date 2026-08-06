@@ -61,7 +61,13 @@ GUARDRAIL_ALLOWLIST = {
     # gateway).  A follow-up test asserts they issue no direct httpx
     # AsyncClient call against api.the-odds-api.com.
     "services/odds_provider.py",       # probes only
-    "sports_engine.py",                # circuit-breaker probe
+    # sports_engine no longer opens a direct provider httpx call.
+    # The remaining ODDS_KEY/ODDS_BASE references are constants passed
+    # to cached_odds_get (which routes through the gateway) and to
+    # the new _gateway_fallback_get helper (Phase 2γ closeout).  The
+    # module retains httpx imports for its statsapi.mlb.com calls
+    # (free MLB Stats API), which are NOT Odds API traffic.
+    "sports_engine.py",
     "alt_lines_feed.py",               # discovery — uses cached_httpx_get
     "closing_line_snapshotter.py",     # uses cached_httpx_get
     "brain/nrfi_engine.py",            # uses cached_httpx_get
@@ -356,6 +362,20 @@ def test_fetch_event_odds_individual_is_removed():
         "_fetch_event_odds_individual is still defined — must be "
         "hard-removed per Phase 2γ spec."
     )
+
+
+def test_sports_engine_real_upstream_get_is_removed():
+    """Phase 2γ closeout gate: the direct httpx fallback
+    `_real_upstream_get` must be gone — cache-layer failures now go
+    through the gateway with emergency policy."""
+    text = Path("/app/backend/sports_engine.py").read_text()
+    # Function definition must be gone.
+    assert "async def _real_upstream_get" not in text, (
+        "_real_upstream_get is still defined — Phase 2γ closeout "
+        "requires removal (gateway-only transport)."
+    )
+    # And no lingering references.
+    assert "_real_upstream_get(" not in text
 
 
 # ═════════════════════════════════════════════════════════════════════

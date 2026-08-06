@@ -220,7 +220,16 @@ async def _get(url: str, params: dict, *,
     markets_tag = (params or {}).get("markets") or ""
 
     async def _upstream_fetch():
-        return await _real_upstream_get(url, params)
+        # Phase 2γ closeout: cache MISS/STALE path also goes through
+        # the gateway.  The gateway owns httpx, budget, single-flight,
+        # request logging, and CB-state callback.
+        return await _gateway_fallback_get(
+            url=url, params=(params or {}),
+            caller=caller or "sports_engine._get",
+            sport_key=sport_key,
+            markets_tag=markets_tag,
+            reason="cache_miss",
+        )
 
     try:
         from services.odds_cache import cached_odds_get
@@ -235,103 +244,135 @@ async def _get(url: str, params: dict, *,
             skip_completed=skip_completed,
         )
     except Exception as e:
-        # Cache infrastructure failure MUST NOT block a real fetch.
-        logger.warning("odds_cache path failed (%s) — falling through to direct fetch",
-                        e)
-        return await _real_upstream_get(url, params)
+        # Phase 2γ closeout: cache-layer failure MUST NOT open a
+        # direct httpx path.  Go through the gateway with the
+        # ``board_missing`` emergency reason so ProviderBudget policy
+        # + JobCoordinator + request logging remain enforced.
+        logger.warning(
+            "odds_cache path failed (%s) — falling through to gateway "
+            "with emergency=board_missing", e,
+        )
+        return await _gateway_fallback_get(
+            url=url, params=params,
+            caller=caller or "sports_engine._get",
+            sport_key=sport_key,
+            markets_tag=markets_tag,
+            reason="cache_infrastructure_failure",
+        )
 
 
-async def _real_upstream_get(url: str, params: dict) -> list | dict | None:
-    """Actual HTTP call — the code that used to live inline in `_get`.
-
-    Keeps all the circuit-breaker / 401 / 429 / retry logic exactly as
-    it was; `_get` above is now a thin cache-wrapper around this."""
+# ═════════════════════════════════════════════════════════════════════
+# Public CB-state ingestion (Phase 2γ closeout).  The gateway calls
+# this after every upstream response so the sports_engine circuit
+# breaker state stays consistent even though the transport moved.
+# ═════════════════════════════════════════════════════════════════════
+def record_odds_call_result(*, status_code: int | None, body: str = "",
+                              ok: bool = False,
+                              exception: str | None = None) -> None:
     global _API_DISABLED, _API_DISABLED_REASON
-    global _API_401_STREAK, _API_FAIL_STREAK, _API_TOTAL_OK, _API_TOTAL_FAIL, _API_LAST_ERR
-    if not ODDS_KEY or _API_DISABLED:
-        return None
-    params = {**params, "apiKey": ODDS_KEY}
-    async with _API_SEM:
-        try:
-            # Shorter timeout (8s) so a stalled endpoint doesn't pin the
-            # entire refresh loop. With the failure streak breaker tripping
-            # at 8 consecutive errors, the worst-case stall is ~64s — but
-            # in practice it trips after 16-32s once it sees the pattern.
-            async with httpx.AsyncClient(timeout=8) as cx:
-                r = await cx.get(url, params=params)
-                if r.status_code == 401:
-                    body = r.text[:200]
-                    _API_401_STREAK += 1
-                    _API_FAIL_STREAK += 1
-                    _API_TOTAL_FAIL += 1
-                    _API_LAST_ERR = f"401: {body}"
-                    # ── iter-93: notify odds_provider fallback layer ──
-                    try:
-                        from services.odds_provider import report_failure as _op_fail
-                        _op_fail(401, body[:60])
-                    except Exception:
-                        pass
-                    # ANY repeat 401 is auth failure — trip the breaker so
-                    # we stop burning 8s per endpoint × 50 endpoints (the
-                    # exact production hang the operator hit). Previously
-                    # we only tripped on specific error strings, which the
-                    # Odds API sometimes phrases differently across regions
-                    # (e.g. "Unknown API key" vs "INVALID_API_KEY").
-                    if _API_401_STREAK >= _API_401_TRIP:
-                        _API_DISABLED = True
-                        _API_DISABLED_REASON = f"401 streak ({_API_401_STREAK}): {body[:120]}"
-                        logger.error("Odds API circuit OPEN — auth failure: %s", _API_DISABLED_REASON)
-                    else:
-                        logger.warning("OddsAPI %s -> 401 (streak=%d) %s", url, _API_401_STREAK, body)
-                    return None
-                if r.status_code == 429:
-                    _API_FAIL_STREAK += 1
-                    _API_TOTAL_FAIL += 1
-                    _API_LAST_ERR = "429: rate limited"
-                    try:
-                        from services.odds_provider import report_failure as _op_fail
-                        _op_fail(429, "rate_limited")
-                    except Exception:
-                        pass
-                    # Brief backoff so the next call in the burst doesn't also trip.
-                    await asyncio.sleep(1.2)
-                    logger.warning("OddsAPI %s -> 429 (rate limited)", url)
-                    return None
-                if r.status_code != 200:
-                    _API_FAIL_STREAK += 1
-                    _API_TOTAL_FAIL += 1
-                    _API_LAST_ERR = f"{r.status_code}: {r.text[:160]}"
-                    try:
-                        from services.odds_provider import report_failure as _op_fail
-                        _op_fail(r.status_code, "non_200")
-                    except Exception:
-                        pass
-                    logger.warning("OddsAPI %s -> %s %s", url, r.status_code, r.text[:160])
-                    if _API_FAIL_STREAK >= _API_FAIL_TRIP:
-                        _API_DISABLED = True
-                        _API_DISABLED_REASON = f"fail streak ({_API_FAIL_STREAK}): {_API_LAST_ERR[:120]}"
-                        logger.error("Odds API circuit OPEN — outage: %s", _API_DISABLED_REASON)
-                    return None
-                # Success — reset streaks but keep the totals for diagnostics.
-                _API_401_STREAK = 0
-                _API_FAIL_STREAK = 0
-                _API_TOTAL_OK += 1
-                try:
-                    from services.odds_provider import report_success as _op_ok
-                    _op_ok()
-                except Exception:
-                    pass
-                return r.json()
-        except Exception as e:
+    global _API_401_STREAK, _API_FAIL_STREAK
+    global _API_TOTAL_OK, _API_TOTAL_FAIL, _API_LAST_ERR
+    try:
+        if ok and not exception:
+            _API_401_STREAK = 0
+            _API_FAIL_STREAK = 0
+            _API_TOTAL_OK += 1
+            try:
+                from services.odds_provider import report_success as _op_ok
+                _op_ok()
+            except Exception:
+                pass
+            return
+        # Failure branches.
+        if status_code == 401:
+            _API_401_STREAK += 1
             _API_FAIL_STREAK += 1
             _API_TOTAL_FAIL += 1
-            _API_LAST_ERR = f"exc: {e}"
-            logger.warning("OddsAPI error %s: %s", url, e)
+            _API_LAST_ERR = f"401: {body[:200]}"
+            try:
+                from services.odds_provider import report_failure as _op_fail
+                _op_fail(401, (body or "")[:60])
+            except Exception:
+                pass
+            if _API_401_STREAK >= _API_401_TRIP:
+                _API_DISABLED = True
+                _API_DISABLED_REASON = (
+                    f"401 streak ({_API_401_STREAK}): {(body or '')[:120]}")
+        elif status_code == 429:
+            _API_FAIL_STREAK += 1
+            _API_TOTAL_FAIL += 1
+            _API_LAST_ERR = "429: rate limited"
+            try:
+                from services.odds_provider import report_failure as _op_fail
+                _op_fail(429, "rate_limited")
+            except Exception:
+                pass
+        elif exception:
+            _API_FAIL_STREAK += 1
+            _API_TOTAL_FAIL += 1
+            _API_LAST_ERR = f"exc: {exception}"
             if _API_FAIL_STREAK >= _API_FAIL_TRIP:
                 _API_DISABLED = True
-                _API_DISABLED_REASON = f"exception streak: {str(e)[:120]}"
-                logger.error("Odds API circuit OPEN — network errors: %s", _API_DISABLED_REASON)
-            return None
+                _API_DISABLED_REASON = (
+                    f"exception streak: {str(exception)[:120]}")
+        else:
+            _API_FAIL_STREAK += 1
+            _API_TOTAL_FAIL += 1
+            _API_LAST_ERR = f"{status_code}: {(body or '')[:160]}"
+            try:
+                from services.odds_provider import report_failure as _op_fail
+                _op_fail(int(status_code or 0), "non_200")
+            except Exception:
+                pass
+            if _API_FAIL_STREAK >= _API_FAIL_TRIP:
+                _API_DISABLED = True
+                _API_DISABLED_REASON = (
+                    f"fail streak ({_API_FAIL_STREAK}): {_API_LAST_ERR[:120]}")
+    except Exception:  # pragma: no cover
+        pass
+
+
+async def _gateway_fallback_get(*, url: str, params: dict,
+                                  caller: str,
+                                  sport_key: str | None,
+                                  markets_tag: str | None,
+                                  reason: str) -> list | dict | None:
+    """Phase 2γ closeout replacement for the removed direct httpx
+    transport.  Goes through OddsApiGateway with an
+    emergency reason so ProviderBudget policy governs whether the
+    call is allowed.  Never opens a direct httpx connection."""
+    if not ODDS_KEY or _API_DISABLED:
+        return None
+    try:
+        from services.odds_api_gateway import OddsApiGateway
+        from server import db as _server_db
+        gw = OddsApiGateway(_server_db)
+        result = await gw.fetch(
+            url,
+            params={k: v for k, v in (params or {}).items()
+                     if k.lower() not in ("apikey", "api_key")},
+            caller=caller,
+            reason=f"sports_engine_fallback:{reason}",
+            job_name="sports_engine_cache_failure_fallback",
+            sport_key=sport_key,
+            markets=markets_tag,
+            emergency_requested=True,
+        )
+        if result and result.data is not None:
+            record_odds_call_result(
+                status_code=result.get("http_status") or 200,
+                ok=True,
+            )
+            return result.data
+        record_odds_call_result(
+            status_code=result.get("http_status") if result else None,
+            body=result.get("reason", "") if result else "",
+            ok=False,
+        )
+        return None
+    except Exception as e:
+        record_odds_call_result(status_code=None, exception=str(e))
+        return None
 
 
 async def _load_active_sports() -> None:
