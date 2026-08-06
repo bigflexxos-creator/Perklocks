@@ -194,50 +194,16 @@ class JobCoordinator:
     # Bootstrap
     # ─────────────────────────────────────────────────────────
     async def ensure_indices(self) -> None:
+        """Phase 3C — delegate to the central index registry.  Kept as
+        a compatibility wrapper so existing callers (server startup)
+        continue to work unchanged."""
         try:
-            await self.db[COLLECTION].create_index(
-                "job_name", name="job_name_uniq", unique=True)
-            await self.db[COLLECTION].create_index(
-                "lease_until", name="lease_until_idx")
-            await self.db[COLLECTION].create_index(
-                "status", name="status_idx")
-            await self.db[COLLECTION].create_index(
-                "next_eligible_at", name="next_eligible_at_idx")
-            await self.db[COLLECTION].create_index(
-                "updated_at", name="updated_at_idx")
-        except Exception as e:  # pragma: no cover — index create is
-            logger.debug("scheduled_jobs index create: %s", e)
-        # Append-only execution log — TTL 30 days on completed_at for
-        # ordinary successful/failed runs.
-        try:
-            await self.db[EXECUTION_LOG].create_index(
-                "started_at", name="started_at_idx")
-            await self.db[EXECUTION_LOG].create_index(
-                "job_name", name="job_name_idx")
-            # TTL on ``ttl_at`` — we set that field only for runs that
-            # are safe to expire (see _log_execution).  Long-lived
-            # forensic entries never carry ttl_at, so the index leaves
-            # them alone.
-            await self.db[EXECUTION_LOG].create_index(
-                "ttl_at",
-                name="execution_ttl_idx",
-                expireAfterSeconds=0,
-            )
+            from services import index_registry as _ir
+            await _ir.ensure_collection(self.db, COLLECTION)
+            await _ir.ensure_collection(self.db, EXECUTION_LOG)
+            await _ir.ensure_collection(self.db, AUDIT_LOG)
         except Exception as e:  # pragma: no cover
-            logger.debug("job_execution_log index create: %s", e)
-        # Security-relevant audit log — 180-day TTL for compliance.
-        try:
-            await self.db[AUDIT_LOG].create_index(
-                "created_at", name="created_at_idx")
-            await self.db[AUDIT_LOG].create_index(
-                "event_type", name="event_type_idx")
-            await self.db[AUDIT_LOG].create_index(
-                "ttl_at",
-                name="audit_ttl_idx",
-                expireAfterSeconds=0,
-            )
-        except Exception as e:  # pragma: no cover
-            logger.debug("job_audit_log index create: %s", e)
+            logger.debug("job_coordinator ensure_indices via registry: %s", e)
 
     # ─────────────────────────────────────────────────────────
     # Lease API

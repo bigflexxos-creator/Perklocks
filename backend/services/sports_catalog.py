@@ -44,13 +44,12 @@ def current_run_id() -> str:
 
 
 async def ensure_indices(db: AsyncIOMotorDatabase) -> None:
+    """Phase 3C — delegate to central registry."""
     try:
-        await db[COLLECTION].create_index(
-            "run_id", name="run_id_uniq", unique=True)
-        await db[COLLECTION].create_index(
-            "ttl_at", name="catalog_ttl_idx", expireAfterSeconds=0)
+        from services import index_registry as _ir
+        await _ir.ensure_collection(db, COLLECTION)
     except Exception as e:  # pragma: no cover
-        logger.debug("sports_catalog index create: %s", e)
+        logger.debug("sports_catalog ensure_indices via registry: %s", e)
 
 
 async def get_catalog(

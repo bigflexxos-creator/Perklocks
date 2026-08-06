@@ -308,4 +308,46 @@ async def ops_health(
     }
 
 
+# ═════════════════════════════════════════════════════════════════════
+# Phase 3C — Index registry admin observability
+# ═════════════════════════════════════════════════════════════════════
+@router.get("/indexes")
+async def ops_index_summary(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Phase 3C — high-level registry state (safe, no secrets).
+
+    Returns:
+      * total declared specs / critical / TTL / unique counts
+      * per-collection totals
+      * critical index health (True/False)
+      * last verification timestamp
+    """
+    from services.index_registry import (
+        safe_index_diagnostics, verify_all_indexes,
+    )
+    diag = safe_index_diagnostics()
+    verified = await verify_all_indexes(db)
+    critical_ok = all(r.critical_ok for r in verified.values())
+    return {
+        "diagnostics":      diag,
+        "critical_ok":      critical_ok,
+        "verified_at":      datetime.now(timezone.utc).isoformat(),
+        "collection_status": {
+            c: r.summary() for c, r in verified.items()
+        },
+    }
+
+
+@router.get("/indexes/conflicts")
+async def ops_index_conflicts(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Phase 3C — reports same-name conflicts + equivalent duplicates
+    with enough context to plan a migration.  Never returns document
+    data or connection strings."""
+    from services.index_registry import report_conflicts
+    return await report_conflicts(db)
+
+
 __all__ = ["router"]

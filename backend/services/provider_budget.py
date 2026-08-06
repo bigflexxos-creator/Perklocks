@@ -133,31 +133,13 @@ class ProviderBudget:
     # Bootstrap
     # ─────────────────────────────────────────────────────────
     async def ensure_indices(self) -> None:
+        """Phase 3C — delegate to the central index registry."""
         try:
-            await self.db[BUDGET_STATE_COLL].create_index(
-                [("provider", 1), ("month_key", 1)],
-                name="provider_month_uniq",
-                unique=True,
-            )
+            from services import index_registry as _ir
+            await _ir.ensure_collection(self.db, BUDGET_STATE_COLL)
+            await _ir.ensure_collection(self.db, INTENTS_COLL)
         except Exception as e:  # pragma: no cover
-            logger.debug("budget_state index: %s", e)
-        try:
-            await self.db[INTENTS_COLL].create_index(
-                "intent_id", name="intent_id_uniq", unique=True)
-            await self.db[INTENTS_COLL].create_index(
-                "request_key", name="request_key_idx",
-                partialFilterExpression={
-                    "request_key": {"$exists": True, "$ne": None}
-                },
-            )
-            await self.db[INTENTS_COLL].create_index(
-                [("provider", 1), ("status", 1)], name="prov_status_idx")
-            await self.db[INTENTS_COLL].create_index(
-                "expires_at", name="expires_at_idx")
-            await self.db[INTENTS_COLL].create_index(
-                "created_at", name="created_at_idx")
-        except Exception as e:  # pragma: no cover
-            logger.debug("intents index: %s", e)
+            logger.debug("provider_budget ensure_indices via registry: %s", e)
 
     # ─────────────────────────────────────────────────────────
     # Snapshot helpers

@@ -188,28 +188,15 @@ class PredictionPublicationService:
 
     # ── Index management ────────────────────────────────────────
     async def ensure_indices(self) -> None:
-        coll = self.db[SNAPSHOT_COLLECTION]
-        # A prediction has at most ONE snapshot per version.
-        await coll.create_index(
-            [("prediction_id", 1), ("snapshot_version", 1)],
-            name="prediction_snapshot_version_uniq", unique=True,
-        )
-        # A retry with the same key must not create a duplicate.
-        await coll.create_index(
-            [("prediction_id", 1), ("idempotency_key", 1)],
-            name="prediction_idempotency_uniq", unique=True,
-        )
-        await coll.create_index("board_version", name="board_version_idx")
-        await coll.create_index("published_at", name="published_at_idx")
-        await coll.create_index("model_version", name="model_version_idx")
-        await coll.create_index("is_active", name="is_active_idx")
-        # Mismatch report — for dual-write drift analysis.
-        mc = self.db[MISMATCH_COLLECTION]
-        await mc.create_index(
-            [("prediction_id", 1), ("board_version", 1)],
-            name="mismatch_prediction_board_idx",
-        )
-        await mc.create_index("logged_at", name="mismatch_logged_at_idx")
+        """Phase 3C — delegate to central registry."""
+        try:
+            from services import index_registry as _ir
+            await _ir.ensure_collection(self.db, SNAPSHOT_COLLECTION)
+            await _ir.ensure_collection(self.db, MISMATCH_COLLECTION)
+        except Exception as e:  # pragma: no cover
+            import logging
+            logging.getLogger("lockscore.publication").debug(
+                "prediction_publication ensure_indices via registry: %s", e)
 
     # ── Public API ──────────────────────────────────────────────
     async def publish(self, candidate: dict, *,

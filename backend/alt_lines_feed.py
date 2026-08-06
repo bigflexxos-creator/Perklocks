@@ -556,18 +556,16 @@ def _flatten_odds(odds: dict, cfg_key: str, sport_key: str,
 
 
 async def ensure_indices(db: AsyncIOMotorDatabase) -> None:
-    """TTL on last_seen (30 min) + lookup indices."""
-    await db.live_alt_lines.create_index("market_id", unique=True)
-    await db.live_alt_lines.create_index(
-        [("sport", 1), ("event_name", 1), ("market_key", 1)]
-    )
-    await db.live_alt_lines.create_index(
-        [("sport", 1), ("selection_norm", 1), ("market_key", 1)]
-    )
-    # TTL: any row not refreshed in 30 minutes auto-deletes.
-    await db.live_alt_lines.create_index(
-        "last_seen", expireAfterSeconds=1800
-    )
+    """Phase 3C — delegate to central registry (live_alt_lines
+    indexes including the 30-minute TTL on last_seen)."""
+    try:
+        from services import index_registry as _ir
+        await _ir.ensure_collection(db, "live_alt_lines")
+    except Exception as e:  # pragma: no cover
+        # Match old behaviour: preserve legacy log tone.
+        import logging
+        logging.getLogger("lockscore.alt_lines_feed").debug(
+            "alt_lines_feed ensure_indices via registry: %s", e)
 
 
 async def lookup_alt_line(
