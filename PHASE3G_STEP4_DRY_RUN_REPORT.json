@@ -1,0 +1,202 @@
+{
+  "started_at": "2026-08-06T18:11:56.566821+00:00",
+  "finished_at": "2026-08-06T18:11:56.594616+00:00",
+  "filter_user_id_present": false,
+  "resume_from": null,
+  "limit": null,
+  "batch_size": 200,
+  "include_manual_review_in_output": true,
+  "total_parlay_history": 194,
+  "excluded_plearn": 190,
+  "eligible_p_star": 4,
+  "counts_by_classification": {
+    "migration_ready": 4,
+    "duplicate_existing": 0,
+    "manual_review": 0,
+    "unsafe": 0,
+    "excluded_learning": 190,
+    "excluded_missing_user": 0,
+    "excluded_invalid_structure": 0
+  },
+  "classifications": [
+    {
+      "legacy_id": "p_4b0c7225f2fe81",
+      "user_id_present": true,
+      "original_status": "won",
+      "canonical_status": "won",
+      "leg_count": 3,
+      "stake_coverage": true,
+      "combined_odds_coverage": true,
+      "payout_coverage": true,
+      "profit_loss_coverage": true,
+      "prediction_id_leg_cov": "3/3",
+      "snapshot_id_leg_cov": "0/3",
+      "market_contract_leg_cov": "0/3",
+      "exact_line_leg_cov": "0/3",
+      "original_odds_leg_cov": "3/3",
+      "proposed_user_bet_id": "67252b52-5a16-43ee-89de-e8eaaf38525a",
+      "migration_source_id": "p_4b0c7225f2fe81",
+      "duplicate_match": null,
+      "classification": "migration_ready",
+      "reasons": [],
+      "warnings": []
+    },
+    {
+      "legacy_id": "p_e1af69205d77aa",
+      "user_id_present": true,
+      "original_status": "lost",
+      "canonical_status": "lost",
+      "leg_count": 7,
+      "stake_coverage": true,
+      "combined_odds_coverage": true,
+      "payout_coverage": true,
+      "profit_loss_coverage": true,
+      "prediction_id_leg_cov": "7/7",
+      "snapshot_id_leg_cov": "0/7",
+      "market_contract_leg_cov": "0/7",
+      "exact_line_leg_cov": "0/7",
+      "original_odds_leg_cov": "7/7",
+      "proposed_user_bet_id": "48890cc7-c507-4949-87db-da4784e76c95",
+      "migration_source_id": "p_e1af69205d77aa",
+      "duplicate_match": null,
+      "classification": "migration_ready",
+      "reasons": [],
+      "warnings": []
+    },
+    {
+      "legacy_id": "p_e7a0f677d0298d",
+      "user_id_present": true,
+      "original_status": "lost",
+      "canonical_status": "lost",
+      "leg_count": 7,
+      "stake_coverage": true,
+      "combined_odds_coverage": true,
+      "payout_coverage": true,
+      "profit_loss_coverage": true,
+      "prediction_id_leg_cov": "7/7",
+      "snapshot_id_leg_cov": "0/7",
+      "market_contract_leg_cov": "0/7",
+      "exact_line_leg_cov": "0/7",
+      "original_odds_leg_cov": "7/7",
+      "proposed_user_bet_id": "efbbb79b-2f6e-460c-8172-200739028827",
+      "migration_source_id": "p_e7a0f677d0298d",
+      "duplicate_match": null,
+      "classification": "migration_ready",
+      "reasons": [],
+      "warnings": []
+    },
+    {
+      "legacy_id": "p_fbd8fdb05daf5b",
+      "user_id_present": true,
+      "original_status": "lost",
+      "canonical_status": "lost",
+      "leg_count": 2,
+      "stake_coverage": true,
+      "combined_odds_coverage": true,
+      "payout_coverage": true,
+      "profit_loss_coverage": true,
+      "prediction_id_leg_cov": "2/2",
+      "snapshot_id_leg_cov": "0/2",
+      "market_contract_leg_cov": "0/2",
+      "exact_line_leg_cov": "0/2",
+      "original_odds_leg_cov": "2/2",
+      "proposed_user_bet_id": "2ac0f522-9c14-4e52-bba3-6a963c5d3b3f",
+      "migration_source_id": "p_fbd8fdb05daf5b",
+      "duplicate_match": null,
+      "classification": "migration_ready",
+      "reasons": [],
+      "warnings": []
+    }
+  ],
+  "status_mapping_breakdown": {
+    "legacy:won": 1,
+    "canonical:won": 1,
+    "legacy:lost": 3,
+    "canonical:lost": 3
+  },
+  "payout_gaps": {
+    "won_missing_payout": 0,
+    "lost_missing_stake": 0
+  },
+  "leg_identity_coverage": {
+    "prediction_id": "19/19",
+    "snapshot_id": "0/19",
+    "market_contract_id": "0/19",
+    "exact_line": "0/19",
+    "original_odds": "19/19"
+  },
+  "prediction_id_leg_ratio": "19/19",
+  "snapshot_id_leg_ratio": "0/19",
+  "index_preflight": {
+    "ok": true,
+    "name": "migration_source_1_migration_source_id_1_uniq_partial",
+    "present": true,
+    "keys_match": true,
+    "unique": true,
+    "partial_filter_present": true,
+    "conflict_note": null,
+    "registry_spec_summary": {
+      "name": "migration_source_1_migration_source_id_1_uniq_partial",
+      "keys": [
+        [
+          "migration_source",
+          1
+        ],
+        [
+          "migration_source_id",
+          1
+        ]
+      ],
+      "unique": true,
+      "partial_filter": {
+        "migration_source": {
+          "$exists": true,
+          "$type": "string"
+        },
+        "migration_source_id": {
+          "$exists": true,
+          "$type": "string"
+        }
+      }
+    },
+    "live_index_summary": {
+      "keys": [
+        [
+          "migration_source",
+          1
+        ],
+        [
+          "migration_source_id",
+          1
+        ]
+      ],
+      "unique": true,
+      "partial_filter_present": true
+    }
+  },
+  "ledger_preflight": {
+    "ok": true,
+    "checked_at": "2026-08-06T18:11:56.573422+00:00",
+    "total_user_bets": 2,
+    "duplicate_user_bet_id": 0,
+    "duplicate_client_bet_id_per_user": 0,
+    "duplicate_idempotency_key_per_user": 0,
+    "duplicate_migration_source_id": 0,
+    "conflicts": []
+  },
+  "collection_counts_before": {
+    "user_bets": 2,
+    "parlay_history": 194,
+    "prediction_snapshots": 14710,
+    "settlement_events": 0
+  },
+  "collection_counts_after": {
+    "user_bets": 2,
+    "parlay_history": 194,
+    "prediction_snapshots": 14710,
+    "settlement_events": 0
+  },
+  "zero_write_verified": true,
+  "forbidden_mutations": [],
+  "production_execute_blocked": true
+}
