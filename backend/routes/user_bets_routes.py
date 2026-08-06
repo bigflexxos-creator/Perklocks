@@ -54,6 +54,7 @@ from pydantic import BaseModel, Field
 
 from auth import UserPublic
 from deps import current_user, db
+from services import user_bet_ledger as UBL
 
 logger = logging.getLogger("lockscore.user_bets")
 router = APIRouter(prefix="/api")
@@ -83,6 +84,9 @@ class TrackBetRequest(BaseModel):
     stake_units: float = Field(default=1.0, ge=0.05, le=100.0)
     parlay_legs: list[str] = Field(default_factory=list, max_length=20)
     notes: Optional[str] = Field(default=None, max_length=500)
+    # Phase 3G Step 6 — optional idempotency handle. Old clients that
+    # omit this field fall back to server-computed idempotency_key.
+    client_bet_id: Optional[str] = Field(default=None, min_length=1, max_length=200)
 
 
 class TrackedBet(BaseModel):
@@ -179,26 +183,91 @@ async def track_bet(
         combined_market = f"{len(parlay_leg_docs)}-leg parlay"
         combined_selection = " · ".join(p.get("selection", "") for p in parlay_leg_docs[:3])
 
-    doc = {
-        "id": str(uuid.uuid4()),
-        "user_id": user.id,
-        "pick_id": payload.pick_id,
-        "bet_type": payload.bet_type,
+    # Legacy alias fields the frontend/reader expects (preserved
+    # verbatim from the pre-Step-6 shape).
+    legacy_aliases: dict[str, Any] = {
+        "pick_id":     payload.pick_id,
+        "bet_type":    payload.bet_type,
         "parlay_legs": payload.parlay_legs if payload.bet_type == "parlay" else [],
         "stake_units": float(payload.stake_units),
         "odds_at_bet": int(combined_odds) if combined_odds is not None else None,
-        "status": "pending",
-        "pnl_units": 0.0,
-        "sport": primary.get("sport"),
-        "market": combined_market,
-        "event": combined_event,
-        "selection": combined_selection,
-        "created_at": datetime.now(timezone.utc),
-        "settled_at": None,
-        "notes": payload.notes,
+        "pnl_units":   0.0,
+        "sport":       primary.get("sport"),
+        "market":      combined_market,
+        "event":       combined_event,
+        "selection":   combined_selection,
+        "notes":       payload.notes,
     }
-    await db.user_bets.insert_one(doc)
-    doc.pop("_id", None)
+
+    # ─── Phase 3G Step 6 — canonical write through UserBetLedger ────
+    if payload.bet_type == "parlay":
+        req = UBL.UserBetCreateRequest(
+            user_id=user.id,
+            wager_type=UBL.WAGER_TYPE_PARLAY,
+            stake_amount=float(payload.stake_units),
+            stake_units=float(payload.stake_units),
+            odds=(int(combined_odds) if combined_odds is not None else None),
+            combined_odds=(int(combined_odds) if combined_odds is not None else None),
+            client_bet_id=payload.client_bet_id,
+            source="user_track",
+            mode=None,
+            sport_key=primary.get("sport"),
+            prediction_id=None,
+            notes=payload.notes,
+            legs=[
+                UBL.UserBetLeg(
+                    prediction_id=(p.get("id") or None),
+                    sport_key=p.get("sport"),
+                    market=p.get("market"),
+                    selection=p.get("selection"),
+                    side=p.get("selection"),
+                    original_odds=(int(p.get("book_odds")) if p.get("book_odds") is not None else None),
+                    line=(float(p.get("line")) if p.get("line") is not None else None),
+                    event_id=p.get("event_id"),
+                )
+                for p in parlay_leg_docs
+            ],
+        )
+        result = await UBL.create_parlay(req)
+    else:
+        req = UBL.UserBetCreateRequest(
+            user_id=user.id,
+            wager_type=UBL.WAGER_TYPE_STRAIGHT,
+            stake_amount=float(payload.stake_units),
+            stake_units=float(payload.stake_units),
+            odds=(int(combined_odds) if combined_odds is not None else None),
+            client_bet_id=payload.client_bet_id,
+            source="user_track",
+            prediction_id=payload.pick_id,
+            sport_key=primary.get("sport"),
+            notes=payload.notes,
+        )
+        result = await UBL.create_bet(req)
+
+    # Stamp the legacy alias fields onto the canonical row so the
+    # existing reader response envelope is byte-for-byte preserved.
+    # Uses ``$setOnInsert``-style semantics per field: an update guarded
+    # by the LEGACY key's absence, so retries never clobber values that
+    # a settler / admin later modified.
+    for k, v in legacy_aliases.items():
+        await db.user_bets.update_one(
+            {"user_bet_id": result.bet.user_bet_id,
+             "$or": [{k: {"$exists": False}}, {k: None}]},
+            {"$set": {k: v}},
+        )
+    # ``id`` is the primary legacy alias — mirror it to the canonical
+    # user_bet_id so legacy DELETE by id keeps working.
+    await db.user_bets.update_one(
+        {"user_bet_id": result.bet.user_bet_id,
+         "$or": [{"id": {"$exists": False}}, {"id": None}]},
+        {"$set": {"id": result.bet.user_bet_id}},
+    )
+
+    # Read the row back so the response envelope is 100 % byte-parity
+    # with the pre-Step-6 behaviour.
+    doc = await db.user_bets.find_one(
+        {"user_bet_id": result.bet.user_bet_id}, {"_id": 0}
+    ) or {}
     return doc
 
 

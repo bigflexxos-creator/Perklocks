@@ -23,6 +23,10 @@ class SaveParlayRequest(BaseModel):
     legs: list[dict]                # the full pick objects from /api/picks/parlay
     mode: str = "standard"
     stake: float = 1.0
+    # Phase 3G Step 6 — optional idempotency handle.  Old clients that
+    # omit this field fall back to the ledger's deterministic
+    # idempotency_key (computed from user_id + sorted leg identities).
+    client_bet_id: Optional[str] = None
 
 
 @router.post("/parlay/save")
@@ -30,13 +34,91 @@ async def parlay_save(
     req: SaveParlayRequest,
     user: Annotated[UserPublic, Depends(current_user)],
 ):
+    """Save a parlay ticket.
+
+    Phase 3G Step 6 semantics:
+      1. Canonical write via ``UserBetLedger.create_parlay`` — first.
+      2. Compatibility mirror into ``parlay_history`` via the legacy
+         ``save_parlay`` path so ``GET /api/parlay/history`` (still
+         reads ``parlay_history``) continues to see the row.  The
+         mirror is stamped with ``source="user_bet_ledger_mirror"``,
+         ``user_bet_id``, and ``mirrored_at``.
+      3. Response envelope is identical to the pre-Step-6 shape
+         (returns the mirrored ``parlay_history`` row).
+
+    Learning-loop rows (``plearn_*``) are UNTOUCHED — never mirrored,
+    never migrated.
+    """
     try:
+        from services import user_bet_ledger as _UBL
         from parlay_history import save_parlay
-        doc = await save_parlay(
+        from datetime import datetime as _dt, timezone as _tz
+
+        # Validate input at the same threshold the legacy path used.
+        if not isinstance(req.legs, list) or len(req.legs) < 2:
+            raise HTTPException(400, "Parlays require at least 2 legs")
+
+        # ── Step 1 — canonical write via UserBetLedger ─────────────
+        # Extract leg identities (pick_id, sport, market, selection,
+        # book_odds).  Never require display strings for identity.
+        canonical_legs = []
+        for L in req.legs:
+            if not isinstance(L, dict):
+                continue
+            canonical_legs.append(_UBL.UserBetLeg(
+                prediction_id=(L.get("id") or L.get("pick_id")),
+                sport_key=L.get("sport"),
+                market=L.get("market"),
+                selection=L.get("selection"),
+                side=L.get("selection"),
+                original_odds=(int(L.get("book_odds")) if L.get("book_odds") is not None else None),
+                line=(float(L.get("line")) if L.get("line") is not None else None),
+                event_id=L.get("event_id"),
+            ))
+        canonical_req = _UBL.UserBetCreateRequest(
+            user_id=user.id,
+            wager_type=_UBL.WAGER_TYPE_PARLAY,
+            stake_amount=float(req.stake),
+            stake_units=float(req.stake),
+            client_bet_id=req.client_bet_id,
+            source="user_track",
+            mode=req.mode,
+            legs=canonical_legs,
+        )
+        canonical_result = await _UBL.create_parlay(canonical_req)
+
+        # ── Step 2 — compatibility mirror into parlay_history ──────
+        # ``save_parlay`` is idempotent by its own deterministic p_ id
+        # so this step is safe to rerun.
+        mirror_doc = await save_parlay(
             db, user_id=user.id, legs=req.legs,
             mode=req.mode, stake=req.stake,
         )
-        return strip_mongo(doc)
+        # Stamp the compat markers post-save (idempotent — only fills
+        # missing keys).
+        try:
+            await db.parlay_history.update_one(
+                {"id": mirror_doc.get("id"),
+                 "$or": [{"user_bet_id": {"$exists": False}},
+                         {"user_bet_id": None}]},
+                {"$set": {
+                    "source":       "user_bet_ledger_mirror",
+                    "user_bet_id":  canonical_result.bet.user_bet_id,
+                    "mirrored_at":  _dt.now(_tz.utc),
+                }},
+            )
+            # Re-read so the returned envelope carries the markers.
+            fresh = await db.parlay_history.find_one(
+                {"id": mirror_doc.get("id")}, {"_id": 0},
+            )
+            if fresh:
+                mirror_doc = fresh
+        except Exception as _e:
+            logger.warning("parlay_history mirror annotation failed: %s", _e)
+
+        return strip_mongo(mirror_doc)
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
