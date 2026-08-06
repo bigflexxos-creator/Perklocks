@@ -2569,6 +2569,17 @@ async def _settlement_loop():
                 await resolve_saved_parlays(db)
             except Exception as e:
                 logger.warning("Parlay history resolver error: %s", e)
+            # ── Canonical Parlay Resolver (Phase 3G Step 7) ─────────
+            # Walks canonical user_bets parlays whose picks have
+            # settled since the last pass and rolls up their ticket
+            # status.  Runs alongside the legacy resolver above so
+            # both pre-Step-7 mirror rows (in parlay_history) and
+            # post-Step-7 canonical-only rows are covered.
+            try:
+                from services.user_bet_ledger import resolve_pending_parlays_canonical
+                await resolve_pending_parlays_canonical(db)
+            except Exception as e:
+                logger.warning("Canonical parlay resolver error: %s", e)
             # ── Auto-Recalibrate Lock Score Curve ───────────────────
             # Every RECALIBRATE_EVERY (100) newly-settled picks the
             # isotonic-regression curve is refit so the displayed

@@ -1401,8 +1401,213 @@ async def safe_ledger_diagnostics(
 
 
 # ═════════════════════════════════════════════════════════════════════
-# Public re-exports
+# Legacy-compatible serializer (Step 7 reader cutover)
 # ═════════════════════════════════════════════════════════════════════
+def serialize_parlay_history_row(bet: "UserBet") -> dict[str, Any]:
+    """Convert a canonical :class:`UserBet` parlay into the exact
+    legacy ``parlay_history`` response shape used by
+    ``GET /api/parlay/history``.  Byte-parity with the pre-Step-7
+    envelope."""
+    legs_out = []
+    legs_won = legs_lost = legs_pending = 0
+    for L in (bet.legs or []):
+        st = (L.status or STATUS_PENDING).lower()
+        if st == STATUS_WON: legs_won += 1
+        elif st == STATUS_LOST: legs_lost += 1
+        else: legs_pending += 1
+        legs_out.append({
+            "pick_id":   L.prediction_id,
+            "sport":     L.sport_key,
+            "event":     None,
+            "market":    L.market,
+            "selection": L.selection,
+            "book_odds": L.original_odds,
+            "status":    L.status or STATUS_PENDING,
+        })
+    return {
+        "id":              bet.migration_source_id or bet.user_bet_id,
+        "user_id":         bet.user_id,
+        "created_at":      (bet.created_at.isoformat() if bet.created_at else None),
+        "mode":            bet.mode,
+        "leg_ids":         [L.prediction_id for L in (bet.legs or [])],
+        "legs":            legs_out,
+        "combined_odds":   bet.combined_odds,
+        "stake":           bet.stake_amount,
+        # Map canonical → legacy status vocabulary for the response.
+        "status": ("live" if bet.status == STATUS_PENDING
+                   else ("push" if bet.status == STATUS_PUSHED
+                         else bet.status)),
+        "legs_won":        legs_won,
+        "legs_lost":       legs_lost,
+        "legs_pending":    legs_pending,
+        "settled_at":      (bet.settled_at.isoformat() if bet.settled_at else None),
+        "payout":          bet.actual_payout,
+        "cashout_estimate": None,
+        "user_bet_id":     bet.user_bet_id,
+    }
+
+
+async def list_parlays_history_shape(
+    db: Optional[AsyncIOMotorDatabase],
+    *,
+    user_id: str,
+    status_filter: Optional[str] = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Canonical read for ``GET /api/parlay/history``.
+    Returns legacy-shape rows scoped to the given user, excluding any
+    ``plearn_*`` rows by construction (we only ever read
+    ``user_bets``).  Preserves the pre-Step-7 sort (created_at desc)
+    and status filter semantics (``won|live|lost|all``)."""
+    coll = _resolve_db(db)[COLLECTION]
+    q: dict[str, Any] = {"user_id": user_id, "wager_type": WAGER_TYPE_PARLAY}
+    if status_filter and status_filter != "all":
+        legacy_to_canonical = {"live": STATUS_PENDING, "won": STATUS_WON,
+                                "lost": STATUS_LOST, "push": STATUS_PUSHED}
+        q["status"] = legacy_to_canonical.get(status_filter, status_filter)
+    limit = max(1, min(int(limit), 500))
+    cursor = coll.find(q).sort("placed_at", -1).limit(limit)
+    docs = await cursor.to_list(limit)
+    return [serialize_parlay_history_row(UserBet.from_document(d)) for d in docs]
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Step 7 — Canonical settlement resolver
+# ═════════════════════════════════════════════════════════════════════
+async def resolve_pending_parlays_canonical(
+    db: Optional[AsyncIOMotorDatabase] = None,
+) -> dict[str, int]:
+    """Walk canonical ``user_bets`` parlays with ``status='pending'`` and
+    roll up each ticket based on the current settled state of its legs
+    (as reflected in the ``picks`` collection).
+
+    Rules (identical to :func:`parlay_history.resolve_saved_parlays`
+    but operating on the canonical ledger):
+      • Any leg ``lost``/``void``     → parlay ``lost``
+      • All legs ``won``              → parlay ``won`` (payout computed
+                                        from ``combined_odds`` × stake)
+      • One or more ``push`` + rest ``won`` → parlay ``won``
+        (parlay treats push as neutral, standard book convention)
+      • Otherwise                     → still pending
+      • Rows missing ``combined_odds`` or ``legs`` are skipped.
+      • ``is_legacy=True`` migrated rows already terminal are skipped
+        by the ``status='pending'`` filter.
+
+    Uses :func:`settle_bet` so every change appends a
+    ``settlement_events`` audit entry.  Returns aggregate counts.
+    """
+    d = _resolve_db(db)
+    ub = d[COLLECTION]
+    picks = d["picks"]
+
+    updated = won = lost = 0
+    cursor = ub.find({
+        "wager_type": WAGER_TYPE_PARLAY,
+        "status":     STATUS_PENDING,
+    })
+    async for pdoc in cursor:
+        legs = pdoc.get("legs") or []
+        pred_ids = [L.get("prediction_id") for L in legs
+                     if isinstance(L, dict) and L.get("prediction_id")]
+        if len(pred_ids) < 2:
+            continue
+        pick_docs = await picks.find(
+            {"id": {"$in": pred_ids}}, {"id": 1, "status": 1, "_id": 0},
+        ).to_list(length=len(pred_ids))
+        status_by_id = {p["id"]: p.get("status") for p in pick_docs}
+        leg_statuses: list[str] = []
+        for pid in pred_ids:
+            s = status_by_id.get(pid)
+            if s in ("won", "lost", "void", "push"):
+                leg_statuses.append(s)
+            else:
+                leg_statuses.append("pending")
+        n_pending = sum(1 for s in leg_statuses if s == "pending")
+        n_lost    = sum(1 for s in leg_statuses if s in ("lost", "void"))
+        n_won     = sum(1 for s in leg_statuses if s == "won")
+        n_push    = sum(1 for s in leg_statuses if s == "push")
+
+        target: Optional[str] = None
+        if n_lost > 0:
+            target = STATUS_LOST
+        elif n_pending == 0 and n_won + n_push == len(pred_ids):
+            # Parlay wins if all legs won-or-push (push = no-action).
+            target = STATUS_WON if n_won > 0 else STATUS_PUSHED
+        else:
+            continue
+
+        combined = pdoc.get("combined_odds")
+        stake    = pdoc.get("stake_amount") if pdoc.get("stake_amount") is not None else pdoc.get("stake_units")
+        try:
+            stake_f = float(stake) if stake is not None else None
+        except (TypeError, ValueError):
+            stake_f = None
+        if target == STATUS_WON and combined is not None and stake_f is not None:
+            profit = _american_profit_per_unit(int(combined), stake_f)
+            payout = round(profit, 3)
+            pnl    = round(profit, 3)
+        elif target == STATUS_LOST and stake_f is not None:
+            payout = 0.0
+            pnl    = -stake_f
+        else:
+            payout = 0.0
+            pnl    = 0.0
+
+        # Update canonical fields via settle_bet (adds settlement event).
+        user_bet_id = pdoc.get("user_bet_id") or pdoc.get("id")
+        if not user_bet_id:
+            continue
+        # Also mirror the roll-up into the legacy alias fields we stamp
+        # on saves so /api/user/analytics/* stays byte-parity even for
+        # rows that were saved via ``parlay_save``.
+        try:
+            await settle_bet(
+                user_bet_id,
+                status=target,
+                profit_loss=pnl,
+                actual_payout=payout,
+                actor="parlay_resolver_canonical",
+                reason="all_legs_settled",
+                db=d,
+            )
+            # Update legacy per-leg statuses (only where they exist) so
+            # the parlay's legs render with settled statuses in reads.
+            await ub.update_one(
+                {"user_bet_id": user_bet_id},
+                {"$set": {
+                    # Legacy alias fields (may or may not exist).
+                    "pnl_units":  round(pnl, 3),
+                    # settled_at stamped by settle_bet already.
+                }},
+            )
+            # Per-leg canonical status stamping.
+            for i, s in enumerate(leg_statuses):
+                canon_leg_status = ({"won": STATUS_WON,
+                                     "lost": STATUS_LOST,
+                                     "void": STATUS_VOID,
+                                     "push": STATUS_PUSHED,
+                                     "pending": STATUS_PENDING}).get(s, STATUS_PENDING)
+                await ub.update_one(
+                    {"user_bet_id": user_bet_id},
+                    {"$set": {f"legs.{i}.status":          canon_leg_status,
+                              f"legs.{i}.original_status": s}},
+                )
+            updated += 1
+            if target == STATUS_WON:  won += 1
+            if target == STATUS_LOST: lost += 1
+        except UserBetLedgerError as e:
+            logger.warning("canonical parlay resolver: %s", e)
+            continue
+
+    if updated:
+        logger.info(
+            "Canonical parlay resolver: %d updated, %d won, %d lost",
+            updated, won, lost,
+        )
+    return {"updated": updated, "won": won, "lost": lost}
+
+
+
 __all__ = [
     # constants
     "COLLECTION",
@@ -1430,4 +1635,6 @@ __all__ = [
     # ops
     "IndexPreflightReport", "preflight_unique_indexes",
     "safe_ledger_diagnostics",
+    "serialize_parlay_history_row", "list_parlays_history_shape",
+    "resolve_pending_parlays_canonical",
 ]

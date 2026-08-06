@@ -310,6 +310,77 @@ async def delete_user_bet(
     return {"ok": True, "deleted_id": bet_id}
 
 
+# ── Analytics field-value helpers ────────────────────────────────────
+# Rows in `user_bets` may exist in three flavours:
+#   1. Legacy-alias only  — rows inserted by pre-Step-6 track_bet.
+#   2. Canonical-only     — migrated p_* rows (from Step 5) with
+#                            canonical fields (``stake_amount``,
+#                            ``profit_loss``, ``sport_key``,
+#                            ``wager_type``) and no legacy aliases.
+#   3. Dual-stamped       — canonical rows inserted post-Step-6 that
+#                            also carry legacy alias fields for
+#                            byte-parity with these analytics readers.
+# The helpers below source values from the strongest available field,
+# preserving the pre-Step-7 response schema verbatim.
+
+def _bet_stake(b: dict[str, Any]) -> float:
+    v = b.get("stake_units")
+    if v is None:
+        v = b.get("stake_amount")
+    try:
+        return float(v) if v is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _bet_pnl(b: dict[str, Any]) -> float:
+    v = b.get("pnl_units")
+    if v is None:
+        v = b.get("profit_loss")
+    try:
+        return float(v) if v is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+# Canonical status → legacy status vocab used by the analytics filters
+# (``pending|won|lost|push``).  Preserved so /user/analytics/* keeps its
+# original response schema.
+_CANON_TO_LEGACY_STATUS = {
+    "pending":            "pending",
+    "won":                "won",
+    "lost":               "lost",
+    "pushed":             "push",
+    "push":               "push",
+    "void":               "push",   # kept identical to pre-Step-7 behaviour
+    "partially_settled":  "pending",
+    "cancelled":          "pending",
+}
+
+
+def _bet_legacy_status(b: dict[str, Any]) -> str:
+    s = b.get("status") or "pending"
+    return _CANON_TO_LEGACY_STATUS.get(s, s)
+
+
+def _bet_sport(b: dict[str, Any]) -> Optional[str]:
+    return b.get("sport") or b.get("sport_key")
+
+
+def _bet_market(b: dict[str, Any]) -> Optional[str]:
+    # For canonical-only parlays we synthesize the same
+    # ``<n>-leg parlay`` string the pre-Step-7 track_bet aliaser
+    # produced so per-market analytics rows stay stable.
+    m = b.get("market")
+    if m:
+        return m
+    if (b.get("wager_type") or b.get("bet_type")) == "parlay":
+        legs = b.get("legs") or b.get("parlay_legs") or []
+        return f"{len(legs)}-leg parlay"
+    return None
+
+
+
 @router.get("/user/analytics/summary")
 async def user_analytics_summary(
     user: Annotated[UserPublic, Depends(current_user)],
@@ -325,9 +396,9 @@ async def user_analytics_summary(
     units_risked = 0.0
     pnl = 0.0
     for b in bets:
-        st = b.get("status")
-        stake = float(b.get("stake_units") or 0.0)
-        p = float(b.get("pnl_units") or 0.0)
+        st = _bet_legacy_status(b)
+        stake = _bet_stake(b)
+        p = _bet_pnl(b)
         if st == "won":
             won += 1
             units_risked += stake
@@ -364,10 +435,15 @@ def _breakdown(bets: list[dict], key: str) -> list[dict]:
         lambda: {"n": 0, "won": 0, "lost": 0, "push": 0, "pending": 0, "units_risked": 0.0, "pnl": 0.0}
     )
     for b in bets:
-        k = b.get(key) or "Unknown"
-        st = b.get("status") or "pending"
-        stake = float(b.get("stake_units") or 0.0)
-        p = float(b.get("pnl_units") or 0.0)
+        if key == "sport":
+            k = _bet_sport(b) or "Unknown"
+        elif key == "market":
+            k = _bet_market(b) or "Unknown"
+        else:
+            k = b.get(key) or "Unknown"
+        st = _bet_legacy_status(b)
+        stake = _bet_stake(b)
+        p = _bet_pnl(b)
         buckets[k]["n"] += 1
         buckets[k][st] = buckets[k].get(st, 0) + 1
         if st in ("won", "lost"):
@@ -419,7 +495,13 @@ async def user_analytics_history(
     """Chronological betting history — settled bets first, most recent."""
     q: dict[str, Any] = {"user_id": user.id}
     if status_filter in ("pending", "won", "lost", "push"):
-        q["status"] = status_filter
+        # Include the canonical status variants so migrated rows show up.
+        if status_filter == "push":
+            q["status"] = {"$in": ["push", "pushed", "void"]}
+        elif status_filter == "pending":
+            q["status"] = {"$in": ["pending", "partially_settled", "cancelled"]}
+        else:
+            q["status"] = status_filter
     limit = max(1, min(limit, 500))
     cursor = db.user_bets.find(q, {"_id": 0}).sort("created_at", -1).limit(limit)
     bets = await cursor.to_list(limit)
@@ -517,6 +599,95 @@ async def propagate_pick_settlement(pick_id: str, pick_status: str,
                 "settled_at": now,
             }},
         )
+        updated += 1
+
+    # ── Canonical-shape parlays (Phase 3G Step 7 settlement cutover) ─
+    # Parlays written via the canonical UserBetLedger (POST /api/parlay/save
+    # after Step 7) use ``wager_type='parlay'`` and store legs as
+    # ``legs[].prediction_id`` rather than a flat ``parlay_legs`` list.
+    # Match those here so the settlement engine sees them without needing
+    # legacy alias fields.  Rows that ALSO carry legacy aliases were
+    # already handled above; we deduplicate by ``user_bet_id`` /
+    # ``id`` to be safe.
+    seen_ids: set[str] = set()
+    canon_cursor = db.user_bets.find({
+        "wager_type":         "parlay",
+        "legs.prediction_id": pick_id,
+        "status":             "pending",
+    })
+    async for pbet in canon_cursor:
+        uid = pbet.get("user_bet_id") or pbet.get("id")
+        if not uid or uid in seen_ids:
+            continue
+        seen_ids.add(uid)
+        pred_ids = [L.get("prediction_id") for L in (pbet.get("legs") or [])
+                    if isinstance(L, dict) and L.get("prediction_id")]
+        if len(pred_ids) < 2:
+            continue
+        leg_status = await db.picks.find(
+            {"id": {"$in": pred_ids}}, {"id": 1, "status": 1, "_id": 0}
+        ).to_list(length=len(pred_ids))
+        status_map = {p["id"]: p.get("status") for p in leg_status}
+        # Skip if any leg still pending.
+        if any(status_map.get(pid) in (None, "pending") for pid in pred_ids):
+            continue
+        stake = pbet.get("stake_amount")
+        if stake is None:
+            stake = pbet.get("stake_units")
+        try:
+            stake_f = float(stake) if stake is not None else 0.0
+        except (TypeError, ValueError):
+            stake_f = 0.0
+        odds = pbet.get("combined_odds") or pbet.get("odds") or pbet.get("odds_at_bet")
+        results = [status_map.get(pid) for pid in pred_ids]
+        if "lost" in results:
+            new_status, pnl = "lost", -stake_f
+        elif "push" in results and "lost" not in results:
+            if all(s in ("won", "push") for s in results):
+                new_status = "won"
+                pnl = _american_to_profit(odds, stake_f)
+            else:
+                new_status, pnl = "push", 0.0
+        elif all(s == "won" for s in results):
+            new_status, pnl = "won", _american_to_profit(odds, stake_f)
+        else:
+            new_status, pnl = "push", 0.0
+
+        # Map to canonical status vocabulary for the canonical field
+        # (legacy alias `status` stays legacy for reader byte-parity).
+        canon_status = {
+            "won":  UBL.STATUS_WON,
+            "lost": UBL.STATUS_LOST,
+            "push": UBL.STATUS_PUSHED,
+        }.get(new_status, new_status)
+
+        await db.user_bets.update_one(
+            {"user_bet_id": uid},
+            {"$set": {
+                "status":       canon_status,
+                "settled_at":   now,
+                "updated_at":   now,
+                "profit_loss":  round(pnl, 3),
+                "actual_payout": round(pnl if new_status == "won" else 0.0, 3),
+                # Legacy alias so /user/analytics/* keeps counting this row.
+                "pnl_units":    round(pnl, 3),
+            }},
+        )
+        # Per-leg status stamp so the leg display keeps parity with
+        # the legacy resolver behaviour.
+        legs_view = pbet.get("legs") or []
+        for i, pid in enumerate(pred_ids):
+            if i >= len(legs_view):
+                break
+            leg_st = status_map.get(pid) or "pending"
+            canon_leg = {"won": UBL.STATUS_WON, "lost": UBL.STATUS_LOST,
+                          "void": UBL.STATUS_VOID, "push": UBL.STATUS_PUSHED,
+                          "pending": UBL.STATUS_PENDING}.get(leg_st, UBL.STATUS_PENDING)
+            await db.user_bets.update_one(
+                {"user_bet_id": uid},
+                {"$set": {f"legs.{i}.status":          canon_leg,
+                          f"legs.{i}.original_status": leg_st}},
+            )
         updated += 1
 
     if updated:

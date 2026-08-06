@@ -37,7 +37,11 @@ def test_parlay_save_route_imports_user_bet_ledger():
     src = Path("/app/backend/routes/parlay_history_routes.py").read_text(encoding="utf-8")
     assert "user_bet_ledger" in src
     assert "_UBL.create_parlay" in src
-    assert "user_bet_ledger_mirror" in src
+    # Phase 3G Step 7 sunset the parlay_history mirror — the source
+    # must no longer reference the mirror ``source`` marker.  See
+    # ``test_iter136_reader_settlement_cutover.py::test_parlay_save_mirror_is_sunset``
+    # for the canonical Step 7 invariant.
+    assert "user_bet_ledger_mirror" not in src
 
 
 def test_no_direct_user_bets_inserts_in_user_routes():
@@ -251,8 +255,13 @@ def test_track_bet_response_shape_stable():
     _run(body)
 
 
-# ── 17. Compatibility mirror is idempotent ───────────────────────────
+# ── 17. Compatibility mirror was sunset in Step 7 ────────────────────
 def test_parlay_save_mirror_is_idempotent():
+    """Phase 3G Step 7 sunset the parlay_history mirror.  Prior
+    (Step 6) semantics required the second call to insert exactly one
+    mirror row; the current (Step 7) invariant is that **zero** mirror
+    rows are ever inserted, and the canonical ledger row remains
+    idempotent by ``client_bet_id``."""
     async def body(db):
         from routes import parlay_history_routes as PHR
         user = _fake_user()
@@ -268,13 +277,14 @@ def test_parlay_save_mirror_is_idempotent():
         r2 = await PHR.parlay_save(req, user)
         for k in ("id","user_id","legs","leg_ids","combined_odds","stake","status"):
             assert k in r1
+        # Canonical ledger idempotency preserved.
         assert await db.user_bets.count_documents({"user_id": user.id}) == 1
+        # Mirror sunset — NO parlay_history rows for this user.
         n_mirror = await db.parlay_history.count_documents(
             {"user_id": user.id, "source": "user_bet_ledger_mirror"})
-        assert n_mirror == 1
-        row = await db.parlay_history.find_one(
-            {"user_id": user.id, "source": "user_bet_ledger_mirror"}, {"_id": 0})
-        assert row.get("user_bet_id")
+        assert n_mirror == 0
+        n_any_ph = await db.parlay_history.count_documents({"user_id": user.id})
+        assert n_any_ph == 0
     _run(body)
 
 
