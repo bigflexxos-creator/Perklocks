@@ -461,6 +461,19 @@ class OddsApiGateway:
             upstream_error = f"exc:{type(e).__name__}:{e}"
         duration_ms = int((time.monotonic() - t0) * 1000)
 
+        # ── Sports-engine CB state sync (Phase 2γ closeout) ─────────
+        try:
+            from sports_engine import record_odds_call_result
+            record_odds_call_result(
+                status_code=http_status,
+                body=str(upstream_error or "")[:200],
+                ok=(response_data is not None and http_status == 200),
+                exception=upstream_error
+                    if (upstream_error and upstream_error.startswith("exc:")) else None,
+            )
+        except Exception:  # pragma: no cover
+            pass
+
         # ── Signal → tournament registry (events discovery) ─────────
         if endpoint_type == ENDPOINT_EVENTS_LIST and s_key:
             if isinstance(response_data, list):
