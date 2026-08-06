@@ -1,9 +1,27 @@
 # Phase 3G — Migration Plan (Companion to Wager Ledger Audit)
 
-**Status:** DRAFT · plan-only · **NOT AUTHORIZED TO EXECUTE**
+**Status:** DRAFT · plan-only · **STEP 2 COMPLETE — STEPS 3-9 NOT AUTHORIZED**
 **Companion of:** `PHASE3G_WAGER_LEDGER_AUDIT.md`, `PHASE3G_PARITY_REPORT.md`
 **Purpose:** Staged cutover plan with rollback design. Every step below is a
-recommendation for the user's review. Nothing in this file has been shipped.
+recommendation for the user's review. Nothing in this file has been shipped
+beyond Step 2 (the typed canonical UserBetLedger service and its test suite).
+
+## STEP 2 STATUS: COMPLETE (2026-06, this session)
+
+Delivered:
+- `backend/services/user_bet_ledger.py` — typed contracts + service API +
+  pure legacy mapper + preflight + safe diagnostics.
+- `backend/tests/test_iter131_user_bet_ledger.py` — 42 passing tests
+  covering all 22 invariants from the Step 2 prompt.
+- `backend/services/index_registry.py` — new declarative IndexSpec entries
+  for `user_bets` (partial-unique on `user_bet_id`, `client_bet_id`,
+  `idempotency_key`, `migration_source + migration_source_id`, plus
+  supporting non-unique indexes). Every uniqueness constraint gated by
+  a `partial_filter` so existing rows without the field cannot cause an
+  ensure to fail.
+
+NOT delivered (per guardrail): route flips, dual-write shim, backfill
+execution, unique-index promotion to `critical=True`. See §Step 3+ below.
 
 Guardrails (from user prompt):
 - No production writes during the audit phase.

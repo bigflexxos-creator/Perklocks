@@ -605,6 +605,57 @@ experience during the read-cutover phase.
 These questions gate Step 2 (`services/user_bet_ledger.py` design). No answer
 is required to accept this audit.
 
+## 14a. STEP 2 DECISIONS (approved by user; supersede §14 questions above)
+
+The following decisions are the SOURCE OF TRUTH going forward. The Step 2
+implementation in `services/user_bet_ledger.py` reflects them exactly.
+
+1. **Idempotency (Q1)** — Client-generated `client_bet_id` is the primary
+   handle. Server-side deterministic `idempotency_key` (SHA-256 over stable
+   normalized fields) is the fallback. Never dedupe on display text alone.
+2. **`void` vs `push` (Q2)** — Kept **analytically and operationally
+   distinct**. `void` (invalidated/cancelled game) NEVER maps to `pushed`
+   (graded on the exact line). Canonical vocabulary now includes both:
+   `pending, won, lost, pushed, void, partially_settled, cancelled`.
+3. **Admin delete cascade (Q3)** — Deferred to Step 7 (route cutover). Not
+   part of Step 2. Step 2 does NOT modify `admin_delete_user`.
+4. **CLV snapshot (Q4)** — CLV/opening/closing-line fields are declared as
+   NULLABLE canonical fields. Never invented from unrelated data. When
+   closing information is not captured, `clv_status="unavailable"` and
+   `clv_value=null`. Populating from future frozen bet-time records belongs
+   to a later implementation phase.
+5. **`mode` (Q5)** — First-class field on the canonical wager (nullable),
+   applicable to both straight and parlay wagers.
+
+## 14b. STEP 2 CANONICAL FIELDS (finalized)
+
+Canonical wager fields (`UserBet` dataclass in `services/user_bet_ledger.py`):
+- Identity: `user_bet_id`, `client_bet_id`, `idempotency_key`, `user_id`.
+- Type + status: `wager_type` (straight|parlay), `status`, `original_status`.
+- Money: `stake_amount`, `stake_units`, `odds`, `odds_format`, `combined_odds`,
+  `potential_payout`, `actual_payout`, `profit_loss`.
+- Book: `sportsbook`.
+- Time: `placed_at`, `settled_at`, `created_at`, `updated_at`.
+- Provenance: `source`, `migration_version`, `migration_source`,
+  `migration_source_id`, `is_legacy`.
+- Discretionary: `mode`, `tags`, `risk_tier`, `correlation_warning`, `notes`.
+- Reference: `prediction_id`, `snapshot_id`, `market_contract_id`,
+  `board_version`, `event_id`, `sport_key`.
+- Nullable future-line fields: `opening_line`, `opening_odds`, `closing_line`,
+  `closing_odds`, `clv_value`, `clv_status`.
+- `legs: list[UserBetLeg]` — parlay legs.
+- `settlement_events: list[UserBetSettlementEvent]` — immutable audit trail.
+
+Canonical parlay leg fields (`UserBetLeg`):
+- `leg_id`, `prediction_id`, `snapshot_id`, `market_contract_id`, `event_id`,
+  `sport_key`, `participant_id`, `market`, `selection`, `side`, `line`,
+  `original_odds`, `sportsbook`, `status`, `original_status`, `actual_result`,
+  `settled_at`.
+
+Lines and odds are captured at wager creation and MUST NOT be rewritten later
+with current market data (enforced by test #16 in
+`tests/test_iter131_user_bet_ledger.py`).
+
 ---
 
 ## 15. What this audit did NOT do (per guardrail)
