@@ -2194,9 +2194,17 @@ PLAYER_PROP_MARKETS = {
         "pitcher_outs",
     ],
     "NBA": [
+        # Core props
         "player_points", "player_rebounds", "player_assists",
         "player_points_alternate", "player_rebounds_alternate",
         "player_assists_alternate",
+        # Phase 4D — combined + shooting props (2026-08-06).
+        "player_points_rebounds_assists",
+        "player_points_rebounds_assists_alternate",
+        "player_points_rebounds", "player_points_assists",
+        "player_rebounds_assists",
+        "player_threes", "player_threes_alternate",
+        "player_steals", "player_blocks",
     ],
     "WNBA": [
         "player_points", "player_rebounds", "player_assists",
@@ -3964,27 +3972,44 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             # wires The Odds API `americanfootball_ncaaf` polling —
             # target date ≤ Aug 15 (Week 0 = Aug 23).
             #
-            # For now (July, no live CFB games), the emission path
-            # falls through to book-follow — same behavior as before
-            # this feature engine was created. When Aug 15 lands, the
-            # single-line change here is:
-            #     factors = (payload.get("_ctx") or {}).get("cfb_precomputed", {}).get(player.lower(), {}).get(mk, {}).get("factors") or {"Book Implied Probability": mp}
-            factors = {"Book Implied Probability": mp}
-            _mlb_features_used = ["book_implied_calibrated", "cfb_engine_pending_precompute"]
+            # Phase 4D (2026-08-06) — CFB feature engine now wired.
+            # Consumes `ctx["cfb_precomputed"]` populated by the async
+            # pre-loader in `fetch_cfb_picks()`.  Falls to book-follow
+            # if the precompute is empty (e.g. pre-season).
+            _cfb_pc = ((_game_ctx.get("cfb_precomputed") or {})
+                        .get(player.strip().lower()) or {}).get(mk) or {}
+            if _cfb_pc.get("factors"):
+                factors = _cfb_pc["factors"]
+                _mlb_features_used = _cfb_pc.get("sources") or ["cfb_feature_engine"]
+            else:
+                factors = {"Book Implied Probability": mp}
+                _mlb_features_used = ["book_implied_calibrated",
+                                       "cfb_engine_no_precompute"]
         elif is_pitcher_prop:
             # Non-MLB pitcher props (KBO etc.) — Phase 1 real engine
-            # only covers MLB. Rather than fake RNG factors, emit a
-            # single CALIBRATED book-follow factor. This produces an
-            # honest lock score anchored on real market signal +
-            # bucket ROI + volatility. When Phase 3 lands a real
-            # feature engine for this sport, this branch will migrate.
+            # only covers MLB.  Book-follow calibration retained.
             factors = {"Book Implied Probability": mp}
             _mlb_features_used = ["book_implied_calibrated"]
+        elif sport == "NBA" and mk and mk.startswith("player_"):
+            # ── Phase 4D — NBA feature engine (2026-08-06) ──────────
+            # Consumes `ctx["nba_precomputed"][player_lower][mk]`
+            # populated by the async pre-loader in
+            # `services.nba_feature_engine.precompute_nba_prop_factors`.
+            # Falls to book-follow if precompute is empty (e.g. no
+            # gamelog rows for the player).  See engine module for
+            # min-factor gate (:func:`has_enough_real_data_nba`).
+            _nba_pc = ((_game_ctx.get("nba_precomputed") or {})
+                        .get(player.strip().lower()) or {}).get(mk) or {}
+            if _nba_pc.get("factors"):
+                factors = _nba_pc["factors"]
+                _mlb_features_used = _nba_pc.get("sources") or ["nba_feature_engine"]
+            else:
+                factors = {"Book Implied Probability": mp}
+                _mlb_features_used = ["book_implied_calibrated",
+                                       "nba_engine_no_precompute"]
         else:
-            # Non-MLB batter / skater / scorer props (NBA / WNBA / UFC /
-            # soccer non-scorer). Same book-follow calibration as above.
-            # Phase 3 feature engines will replace this with real usage
-            # / matchup / pace factors.
+            # Non-MLB / non-NBA / non-CFB batter / skater / scorer props
+            # (WNBA / UFC / soccer non-scorer).  Book-follow.
             factors = {"Book Implied Probability": mp}
             _mlb_features_used = ["book_implied_calibrated"]
 
