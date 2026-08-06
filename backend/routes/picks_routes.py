@@ -2022,6 +2022,44 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     if lite:
         canonical = [_strip_for_lite(p) for p in canonical]
 
+    # ── Phase 4E follow-up (2026-08-06) — final eligibility filter ─────
+    # The DB-level `grade != "Pass"` filter runs BEFORE the response
+    # pipeline applies:
+    #   • espn_signal_engine.apply_signals (mutates lock_score)
+    #   • learning_system_v2.apply_v2_to_picks (RE-DERIVES grade from
+    #     the freshly-mutated lock_score at line 632)
+    #   • services.magic_tier_policy.apply_magic_tier (Phase 4E.3 cap)
+    #   • services.odds_provider.decorate_pick (soft-docks lock_score
+    #     when the primary is degraded)
+    # Any of these can DEMOTE a pick to "Pass" (or to `off_board`) AFTER
+    # the DB gate. Without a post-processing filter, Pass/off_board
+    # picks reach the visible Locks board — user report 2026-08-06:
+    # "I personally observed Lock 40 and Lock 46 picks displayed on
+    # the Locks board".
+    #
+    # This filter runs on the FULLY DECORATED payload and enforces the
+    # same eligibility contract the DB query aims for — it never
+    # changes lock scores, grades, or tiers; it only drops picks that
+    # post-processing has already flagged as non-eligible.
+    _pre_final = len(canonical)
+    canonical = [
+        p for p in canonical
+        if (p.get("grade") or "").strip() != "Pass"
+        and not p.get("off_board")
+        and not p.get("hide_from_main_board")
+        and not p.get("no_bet")
+    ]
+    _dropped_final = _pre_final - len(canonical)
+    if _dropped_final:
+        try:
+            logger.info(
+                "picks_today final-eligibility filter dropped %d/%d picks "
+                "(Pass/off_board/hide/no_bet demotions applied by "
+                "post-processing).", _dropped_final, _pre_final,
+            )
+        except Exception:
+            pass
+
     # ── Alt-line availability diagnostic (2026-07-13) ─────────────────
     # When the client asks for `line_type=alt` and gets zero (or very
     # few) tennis picks back, the reason is almost always that The Odds
