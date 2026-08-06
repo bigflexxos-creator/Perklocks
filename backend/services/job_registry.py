@@ -63,9 +63,9 @@ JOB_REGISTRY: dict[str, dict[str, Any]] = {
         "timeout_seconds":       300,
         "retry_policy":          {"mode": "linear", "base": 600, "max": 3},
         "emergency_eligible":    False,
-        "migration_status":      MIGRATION_SHADOW,
-        "notes": "Picks-scope-only alt-line snapshot. Shadow-mode "
-                 "instrumented Phase 2β.",
+        "migration_status":      MIGRATION_FULL,
+        "notes": "Picks-scope-only alt-line snapshot. Phase 2γ: lease + "
+                 "budget gated, no startup burst.",
     },
     "mls_direct_inject": {
         "entrypoint":            "services.mls_direct_inject:run_once",
@@ -79,8 +79,8 @@ JOB_REGISTRY: dict[str, dict[str, Any]] = {
         "timeout_seconds":       300,
         "retry_policy":          {"mode": "linear", "base": 600, "max": 3},
         "emergency_eligible":    False,
-        "migration_status":      MIGRATION_SHADOW,
-        "notes": "MLS scorer direct-inject bypass — Phase 2β shadow.",
+        "migration_status":      MIGRATION_FULL,
+        "notes": "MLS scorer direct-inject bypass — Phase 2γ full lease + budget.",
     },
     "soccer_prop_inject": {
         "entrypoint":            "services.soccer_prop_inject:run_once",
@@ -94,13 +94,13 @@ JOB_REGISTRY: dict[str, dict[str, Any]] = {
         "timeout_seconds":       300,
         "retry_policy":          {"mode": "linear", "base": 600, "max": 3},
         "emergency_eligible":    False,
-        "migration_status":      MIGRATION_SHADOW,
-        "notes": "Big-5 + UCL prop-injects — Phase 2β shadow.",
+        "migration_status":      MIGRATION_FULL,
+        "notes": "Big-5 + UCL prop-injects — Phase 2γ full lease + budget.",
     },
     "picks_refresh_today": {
         "entrypoint":            "server:_refresh_picks",
         "current_cadence":       "on-demand (admin, cron, cold-start)",
-        "intended_cadence":      "1× hourly baseline + admin push",
+        "intended_cadence":      "3× per UTC day + admin push (Phase 2γ snapshot mode)",
         "paid_providers":        [PROV_ODDS_API],
         "free_providers":        [PROV_ESPN, PROV_SPORTDB],
         "estimated_max_credits": 800,
@@ -109,10 +109,45 @@ JOB_REGISTRY: dict[str, dict[str, Any]] = {
         "timeout_seconds":       600,
         "retry_policy":          {"mode": "expo", "base": 60, "max": 3},
         "emergency_eligible":    True,
-        "migration_status":      MIGRATION_SHADOW,
-        "notes": "Admin force-refresh route now goes through JobCoordinator + "
-                 "ProviderBudget (Phase 2β).  Normal-user /picks/refresh "
-                 "no longer triggers paid work.",
+        "migration_status":      MIGRATION_LEASED,
+        "notes": "Admin force-refresh route goes through JobCoordinator + "
+                 "ProviderBudget.  Normal-user /picks/refresh no longer "
+                 "triggers paid work.  Phase 2γ: ODDS_GLOBAL_REFRESH_MODE "
+                 "controls snapshot vs legacy_hourly cadence.",
+    },
+    "mlb_pregame_refresh_today": {
+        "entrypoint":            "server:_mlb_pregame_loop (today branch)",
+        "current_cadence":       "every 5 min during 15:00-03:00 UTC",
+        "intended_cadence":      "every 5 min during window (lease-gated)",
+        "paid_providers":        [PROV_ODDS_API],
+        "free_providers":        [PROV_ESPN, PROV_SPORTDB],
+        "estimated_max_credits": 60,
+        "min_interval_seconds":  180,
+        "lease_seconds":         180,
+        "timeout_seconds":       120,
+        "retry_policy":          {"mode": "linear", "base": 120, "max": 2},
+        "emergency_eligible":    False,
+        "migration_status":      MIGRATION_LEASED,
+        "notes": "Phase 2γ: preserved 5-min cadence for near-start games "
+                 "(user-visible value) but now coordinator-gated so "
+                 "duplicate workers don't fan out.",
+    },
+    "mlb_pregame_refresh_tomorrow": {
+        "entrypoint":            "server:_mlb_pregame_loop (tomorrow branch)",
+        "current_cadence":       "every 5 min (legacy)",
+        "intended_cadence":      "every 30 min (Phase 2γ)",
+        "paid_providers":        [PROV_ODDS_API],
+        "free_providers":        [PROV_ESPN, PROV_SPORTDB],
+        "estimated_max_credits": 40,
+        "min_interval_seconds":  1800,
+        "lease_seconds":         180,
+        "timeout_seconds":       120,
+        "retry_policy":          {"mode": "linear", "base": 300, "max": 2},
+        "emergency_eligible":    False,
+        "migration_status":      MIGRATION_LEASED,
+        "notes": "Phase 2γ: tomorrow was previously refreshed every 5 min "
+                 "alongside today.  Reduced to 30-min cadence — books post "
+                 "next-day props hours in advance so tight polling is waste.",
     },
 
     # ── Free-provider recurring jobs (registered for observability) ─

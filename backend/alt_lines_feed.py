@@ -176,42 +176,6 @@ async def _fetch_event_odds(cx: httpx.AsyncClient, sport_key: str,
     return data
 
 
-async def _fetch_event_odds_individual(cx: httpx.AsyncClient, sport_key: str,
-                                        event_id: str, markets: list[str]) -> Optional[dict]:
-    """Try each market individually so unsupported ones don't kill the batch."""
-    from services.odds_cache import cached_httpx_get
-    merged_bookmakers: dict[str, dict] = {}
-    combined_meta: Optional[dict] = None
-    for mkt in markets:
-        obj = await cached_httpx_get(
-            f"{ODDS_API_BASE}/sports/{sport_key}/events/{event_id}/odds",
-            {"regions": "us", "bookmakers": BOOKMAKERS,
-              "markets": mkt, "oddsFormat": "american"},
-            api_key=ODDS_API_KEY,
-            endpoint_type="event_alt_lines",
-            caller="alt_lines_feed._fetch_event_odds_individual",
-            sport_key=sport_key,
-            markets=mkt,
-        )
-        if not obj:
-            continue
-        if combined_meta is None:
-            combined_meta = {k: obj.get(k) for k in
-                             ("id", "sport_key", "sport_title",
-                              "commence_time", "home_team", "away_team")}
-        for bm in obj.get("bookmakers") or []:
-            key = bm.get("key")
-            if not key:
-                continue
-            merged_bookmakers.setdefault(key, {"key": key, "title": bm.get("title"),
-                                               "markets": []})
-            merged_bookmakers[key]["markets"].extend(bm.get("markets") or [])
-    if combined_meta is None:
-        return None
-    combined_meta["bookmakers"] = list(merged_bookmakers.values())
-    return combined_meta
-
-
 async def _discover_active_tennis_tournaments(cx: httpx.AsyncClient) -> list[tuple[str, str]]:
     """Query The Odds API `/v4/sports` catalog and return every tennis
     tournament (both ATP and WTA) that either is currently `active` OR
