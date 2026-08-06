@@ -284,310 +284,34 @@ def _canonicalize_lock_score(pick: dict) -> dict:
 
 
 def _legacy_canonicalize_lock_score(pick: dict) -> dict:
-    """Original pre-Phase-1b canonicalizer.  DO NOT call directly from
-    new code — call `_canonicalize_lock_score` which routes to the
-    snapshot fast-path first.  See PHASE1_AUDIT.md §3 for why this
-    function exists.
+    """Phase 1c — REMOVED.
 
-    Rules:
-      • lock_score = max(lock_score, lock_score_v2), clamped to [0, 99].
-      • lock_score_v2 left intact for analytics / shadow visibility.
-      • grade + confidence re-derived when we promote, so the badge,
-        progress bar, and label always agree with the headline number.
+    Every pick now carries a `published_lock_score` field via the v0
+    backfill or a v1+ canonical publication.  `_canonicalize_lock_score`
+    (above) is the only public entrypoint and it delegates to the
+    snapshot-first `hydrate()` for every pick.
+
+    This function is retained ONLY as an anti-regression shim: any code
+    path that still calls it (which should be none after Phase 1c) is
+    detected here and logged.  The 306-line legacy repair logic
+    (max-of-shadow-fields promotion, always-starter floor, coherence-cap
+    clamp, read-time grade+confidence re-derive) is gone.
     """
-    # ── Tennis global lock authority (2026-07-16) ────────────────────
-    # For ANY tennis pick, `lock_score` is the authoritative value.
-    # Skip the MAX-of-shadow-fields promotion regardless of the
-    # tennis_calibrated flag — that flag can be stripped by a stale
-    # ingestion writer, leaving the shadow fields (v2/raw/peak) with
-    # pre-calibration values that MAX would then promote back up. User
-    # report 2026-07-16: "How is this possible?" — a pick with DB
-    # lock_score=86.2 was displaying as LOCK 92 because lock_score_v2
-    # still held 91.9 from evidence_engine before tennis calibration ran.
-    if (pick.get("sport") or "").lower() == "tennis":
-        try:
-            from sports_engine import _grade as _tc_grade, _confidence as _tc_conf
-            final_lock = float(pick.get("lock_score") or 0)
-            if final_lock > 0:
-                pick["grade"]      = _tc_grade(final_lock)
-                pick["confidence"] = _tc_conf(final_lock)
-        except Exception:
-            pass
-        try:
-            from probability_engine import unified_probability_report
-            pick["probability"] = unified_probability_report(pick)
-        except Exception as e:
-            logger.debug("probability_engine attach skipped (tennis): %s", e)
-        return pick
-
-    # ── Tennis-calibrated fast-path (2026-07-16) ────────────────────
-    # Retained for parity with the above but the tennis check runs
-    # first now — everything falls through this block.
-    if pick.get("tennis_calibrated"):
-        try:
-            from sports_engine import _grade as _tc_grade, _confidence as _tc_conf
-            final_lock = float(pick.get("lock_score") or 0)
-            if final_lock > 0:
-                pick["grade"]      = _tc_grade(final_lock)
-                pick["confidence"] = _tc_conf(final_lock)
-        except Exception:
-            pass
-        # Attach probability engine breakdown (same as standard path).
-        try:
-            from probability_engine import unified_probability_report
-            pick["probability"] = unified_probability_report(pick)
-        except Exception as e:
-            logger.debug("probability_engine attach skipped (tennis): %s", e)
-        return pick
-
     try:
-        v1 = float(pick.get("lock_score") or 0)
-    except Exception:
-        v1 = 0.0
-    try:
-        v2 = float(pick.get("lock_score_v2") or 0)
-    except Exception:
-        v2 = 0.0
-    try:
-        raw = float(pick.get("lock_score_raw") or 0)
-    except Exception:
-        raw = 0.0
-    try:
-        peak = float(pick.get("lock_score_peak") or 0)
-    except Exception:
-        peak = 0.0
-    # ── Canonical lock_score = MAX of all shadow fields ────────────────
-    # Multiple writers across the codebase (evidence_engine, validator,
-    # learning_v2, govern_pick, lazy governance, bandit, player_form) all
-    # touch lock_score independently. ANY of them can transiently lower
-    # the displayed v1 — but v2 / raw / peak hold the "true" computed
-    # anchors. Taking the MAX is the single read-time source of truth
-    # that recovers from every demotion path without us having to add a
-    # carve-out to all 30+ writers. (2026-06-26: user fix for recurring
-    # CSL/elite lock demotion bug.)
-    canonical = max(v1, v2, raw, peak)
-    # ── Always-Starter Read-Time Floor (2026-07-18) ────────────────────
-    # User feedback: "Harry Kane should always make the board — he's
-    # one of the best scorers in the world". The pipeline is a Rube-
-    # Goldberg of writers (apply_learning → apply_elite_boost →
-    # govern_pick → pick_validator → learning_v2 → bandit → …) and
-    # any of them can silently reset an always-starter's lock_score
-    # to its pre-boost value between refreshes. Instead of chasing
-    # every one of those writers, guarantee the floor here at
-    # SERIALIZATION time — the read-time canonicalizer is the single
-    # last line of defense before a pick hits the wire.
-    #
-    # Floor the canonical lock at 85 for hand-curated world-class
-    # scorers (Kane / Mbappe / Haaland / etc.) so they always land
-    # on the Home board with at least Playable grade. Preserves the
-    # ordering of the rest of the slate.
-    try:
-        sport = (pick.get("sport") or "").lower()
-        if sport == "soccer":
-            from elite_players import is_always_starter_soccer
-            player_name = (
-                pick.get("player_name")
-                or pick.get("elite_player_name")
-                or pick.get("always_starter_name")
-                or ""
-            )
-            if not player_name:
-                market = pick.get("market") or ""
-                for suffix in (" Anytime Goal Scorer", " To Score or Assist",
-                               " Anytime Scorer", " To Score",
-                               " Score or Assist"):
-                    if market.endswith(suffix):
-                        player_name = market[: -len(suffix)].strip()
-                        break
-            if is_always_starter_soccer(player_name):
-                _ALWAYS_STARTER_READ_FLOOR = 85.0
-                if canonical < _ALWAYS_STARTER_READ_FLOOR:
-                    canonical = _ALWAYS_STARTER_READ_FLOOR
-                    pick["always_starter_read_floor_applied"] = True
-    except Exception:
-        # Never let the always-starter floor break the read path;
-        # any exception here just falls back to the unadjusted
-        # canonical value from the MAX-of-shadows above.
-        pass
-    # ── Coherence cap ceiling (2026-06-30, code-review HIGH) ───────────
-    # `quality_gate._apply_lockscore_coherence` and `_apply_display_cap`
-    # set `coherence_cap_ceiling` when they DELIBERATELY lower a pick's
-    # lock_score (e.g. negative-edge Mbappé → cap at 60, anytime-scorer
-    # display cap → 75). Without this clamp the `max()` above silently
-    # promotes the uncapped lock_score_raw / peak back above the cap,
-    # so a −EV pick still displays "Lock 99 / Elite" — exactly the
-    # Mbappé bug the gate is supposed to prevent.
-    try:
-        ceiling = pick.get("coherence_cap_ceiling")
-        if isinstance(ceiling, (int, float)) and ceiling > 0:
-            canonical = min(canonical, float(ceiling))
+        pid = pick.get("id") or pick.get("prediction_id") or "?"
+        logger.warning(
+            "_legacy_canonicalize_lock_score called after Phase 1c "
+            "removal — pick=%s has_snapshot=%s. This should never "
+            "happen; check the writer.",
+            pid, "published_lock_score" in pick,
+        )
     except Exception:
         pass
-    if canonical > v1 + 0.05:
-        try:
-            from sports_engine import _grade, _confidence
-            pick["lock_score"] = round(min(99.0, canonical), 1)
-            pick["grade"] = _grade(pick["lock_score"])
-            pick["confidence"] = _confidence(pick["lock_score"])
-            pick["v2_promoted_at_read"] = True
-            pick["_grade_refreshed_at_read"] = True
-            # Keep lock_score_raw in lockstep so the Evidence Inspector
-            # math reconciles (raw × multiplier = lock). If we promote
-            # to V2's value, promote the raw accordingly. Falls back to
-            # the governed V2 itself when v2_raw isn't stored (legacy).
-            v2_raw = pick.get("lock_score_v2_raw")
-            if v2_raw is None:
-                # Multiplier of 1.0 implies raw == governed; this is a
-                # safe fallback that still makes lock_score_raw ≥
-                # lock_score so the iter-49 canary stays green.
-                v2_raw = pick["lock_score"]
-            pick["lock_score_raw"] = round(min(99.0, float(v2_raw)), 1)
-            # Re-align evidence_breakdown.multiplier with the NEW
-            # (lock / raw) ratio so the admin inspector math reconciles
-            # post-promotion (iter-50 finding #3). Without this, V1's
-            # multiplier sticks around while lock/raw report V2's pair.
-            try:
-                eb = pick.get("evidence_breakdown")
-                if isinstance(eb, dict) and pick["lock_score_raw"] > 0:
-                    new_mult = pick["lock_score"] / pick["lock_score_raw"]
-                    eb["multiplier"]    = round(new_mult, 3)
-                    eb["lock_raw"]      = pick["lock_score_raw"]
-                    eb["lock_governed"] = pick["lock_score"]
-            except Exception:
-                pass
-        except Exception:
-            # Safe fallback — at minimum, surface the higher number even if
-            # we can't re-grade. Prevents the card-vs-detail mismatch.
-            pick["lock_score"] = round(min(99.0, v2), 1)
-            pick["lock_score_raw"] = pick["lock_score"]
-    # NOTE: calibration overlay was wired here in iter33 (blended a 5-component
-    # calibrated display score that crushed chalk-locks like Bieber from raw
-    # 92.7 down to display 67). User requested reverting on 2026-06-23
-    # ("Bieber should still be a 90+ at this line don't want to change app
-    # idea") — raw model score is the canonical display. Calibration
-    # infrastructure stays in /app/backend/lock_calibration.py (curve fit,
-    # analytics endpoint, auto-recalibrate) so the Confidence Calibration
-    # analytics view still surfaces Expected vs Actual deltas for tuning.
-    #
-    # ── Unified Probability Engine attachment (iter37, 2026-06-23) ─────
-    # User: "Primary probability engine + optional transparency layer
-    # (same source of truth) — keeps Bieber-style 93+ locks consistent
-    # instead of splitting logic."
-    # We attach the engine's full breakdown to EVERY pick payload at
-    # serialisation time. The block under `pick["probability"]` is the
-    # canonical source for v1/v2/sim probabilities, p_final, p_calibrated,
-    # edge, and LOCK_99/PREMIUM/CHALK classification. Existing
-    # `lock_score` field is left untouched so Bieber still displays 93+
-    # — the engine merely sits underneath as the authoritative truth any
-    # consumer (frontend pick detail, parlay, analytics) can read without
-    # divergence. Same engine call drives /api/picks/{id}/probability
-    # and the inline block here, so they can never disagree.
-    try:
-        from probability_engine import unified_probability_report
-        pick["probability"] = unified_probability_report(pick)
-    except Exception as e:
-        logger.debug("probability_engine attach skipped: %s", e)
-    # ── ALWAYS re-derive grade/confidence from the FINAL lock_score ──
-    # Previously only re-derived when V2 > V1. But picks whose `lock_score`
-    # was bumped post-creation by lazy evidence governance (or by the
-    # validator self-heal pass) kept their PRE-bump grade string in the
-    # DB — so the badge said "PASS" even when lock_score = 95+. User
-    # report 2026-06-25: "App tripping again still showing locks as pass."
-    # Idempotent: if grade is already correct, this rewrites it to the
-    # same string. The DB is left untouched (this is a read-time fix).
-    try:
-        from sports_engine import _grade as _re_grade, _confidence as _re_conf
-        final_lock = float(pick.get("lock_score") or 0)
-        if final_lock > 0:
-            pick["grade"]      = _re_grade(final_lock)
-            pick["confidence"] = _re_conf(final_lock)
-    except Exception as _re_err:
-        logger.debug("grade re-derive skipped: %s", _re_err)
-    # ── ELITE PLAYER FLOOR — final read-time guard ────────────────────
-    # Belt-and-suspenders enforcement: any pick flagged `elite_player=True`
-    # (Salah, Mbappé, Haaland, Messi, Kane, Ronaldo, Judge, Sinner, etc.)
-    # is ALWAYS surfaced at the 95+ Strong Lock floor regardless of what
-    # the underlying lock_score / lock_score_v2 fields hold. This survives
-    # validator drift, learning-loop demotions, and stale governed values
-    # — the user repeatedly asked for elites to appear under every market
-    # tab at lock 95+ "because lock score reflects reputation/history,
-    # not raw win probability" (2026-06-26).
-    #
-    # IMPORTANT (2026-06-30, code-review HIGH): the quality-gate
-    # coherence cap (e.g. negative-edge Mbappé → 60) is a DELIBERATE
-    # demotion that must win over the elite floor — otherwise a −EV
-    # superstar pick still shows "Lock 95+ Elite". When
-    # `coherence_cap_ceiling` is set BELOW 95, we skip the floor lift
-    # entirely. The cap value remains the displayed lock_score from the
-    # canonicalize step above.
-    try:
-        if pick.get("elite_player"):
-            cur_lock = float(pick.get("lock_score") or 0)
-            try:
-                cap_ceiling = float(pick.get("coherence_cap_ceiling") or 0)
-            except Exception:
-                cap_ceiling = 0.0
-            if cur_lock < 95.0 and not (cap_ceiling > 0 and cap_ceiling < 95.0):
-                from sports_engine import _grade as _eg, _confidence as _ec
-                # Lift to max(95, peak) so a pick that previously hit 99
-                # stays at 99 — never demote below an earlier peak.
-                try:
-                    peak = float(pick.get("lock_score_peak") or 0)
-                except Exception:
-                    peak = 0
-                # Even when no cap is set, never lift past a cap ceiling
-                # of 95+ (defensive: cap=95 should still be honoured).
-                target = max(95.0, peak)
-                if cap_ceiling > 0:
-                    target = min(target, cap_ceiling)
-                new_lock = round(min(99.0, target), 1)
-                pick["lock_score"]      = new_lock
-                pick["lock_score_raw"]  = new_lock
-                pick["lock_score_v2"]   = max(pick.get("lock_score_v2") or 0, new_lock)
-                pick["grade"]           = _eg(new_lock)
-                pick["confidence"]      = _ec(new_lock)
-                pick["pinned"]          = True
-                pick["elite_floor_applied_at_read"] = True
-    except Exception as _ef_err:
-        logger.debug("elite floor enforcement skipped: %s", _ef_err)
-    # ── Win-probability sign-flip guard (2026-06-26) ───────────────────
-    # Bug surfaced in deployed app: ALT LOCK strikeout picks showed
-    # Lock 99 + Win 19.8% + Implied 83.3% (the WIN field was carrying the
-    # *complement* of the true probability — i.e. the "fade" side's
-    # probability for an Over alt). The Lock model correctly graded these
-    # as Elite Locks but win_probability was 1 − p.
-    #
-    # Defensive read-time fix: if lock_score is ≥ 80 AND implied_prob is
-    # also ≥ 70%, the model agrees this is a chalk lock. In that scenario
-    # a sub-50 win_probability is INTERNALLY INCONSISTENT and almost
-    # certainly a sign-flipped survivor from an older alt-line writer.
-    # We flip it back to (100 − win_prob) so the card stops showing
-    # 19.8% next to a 99 Lock badge. The original (flipped) value is
-    # preserved on `win_probability_pre_flip` for forensics.
-    try:
-        # Skip the flip-guard entirely for v3 goal-scorer picks. They
-        # store `edge_percent=None` deliberately (strict edge gate) and
-        # any recompute below would fabricate a non-zero edge that the
-        # engine explicitly refuses to publish.
-        if (pick.get("source") == "goal_scorer_v3"
-                or pick.get("odds_source") == "model_derived"):
-            return pick
-        ls_for_chk = float(pick.get("lock_score") or 0)
-        wp_for_chk = float(pick.get("win_probability") or 0)
-        imp_for_chk = float(pick.get("implied_probability") or pick.get("book_implied_prob") or 0)
-        if ls_for_chk >= 80.0 and imp_for_chk >= 70.0 and 0 < wp_for_chk < 50.0:
-            pick["win_probability_pre_flip"] = wp_for_chk
-            pick["win_probability"] = round(max(0.0, min(99.9, 100.0 - wp_for_chk)), 2)
-            # Edge needs to re-derive against the corrected win_prob, else
-            # the card still shows a huge negative edge.
-            try:
-                pick["edge_percent"] = round(pick["win_probability"] - imp_for_chk, 2)
-            except Exception:
-                pass
-            pick["_win_prob_sign_flipped_at_read"] = True
-    except Exception as _wp_err:
-        logger.debug("win-probability flip guard skipped: %s", _wp_err)
+    # Last-resort behaviour — the fast-path above already handles
+    # snapshot-backed picks, so if we're here the pick has no
+    # snapshot AND no fast-path exit.  Return it untouched.
     return pick
+
 
 
 def _canonicalize_picks(picks: list[dict]) -> list[dict]:
