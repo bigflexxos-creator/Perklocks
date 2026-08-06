@@ -590,36 +590,153 @@ async def odds_circuit_reset(
 @router.post("/admin/picks/force-refresh")
 async def admin_force_refresh(
     user: Annotated[UserPublic, Depends(current_admin)] = None,
+    emergency: bool = False,
+    reason: str = "admin_force_refresh",
 ):
-    """Admin-only emergency refresh.
+    """Admin-only emergency refresh — Phase 2β hardened.
 
-    Bypasses the per-user 1-hour cooldown enforced by `/api/picks/refresh`
-    AND auto-resets the Odds API circuit breaker first. Use this as the
-    one-shot fix after rotating `THE_ODDS_API_KEY` in production secrets:
+    Now goes through the shared JobCoordinator + ProviderBudget:
+      1. Acquires a distributed lease on ``picks_refresh_today`` so
+         two admin taps (or two containers) can't fan out duplicate
+         Odds API calls.
+      2. Reserves the estimated credit budget.  If the daily/monthly
+         limit is exhausted the caller receives a structured 429.
+      3. Only after both gates pass does it call
+         ``_refresh_picks`` in the background.
+      4. On completion the reservation is committed so the shared
+         budget is decremented for every worker in the fleet.
 
-        1. Push new key to production env vars
-        2. Restart backend (or wait for the new pod to come up)
-        3. POST /api/admin/picks/force-refresh   ← this endpoint
-        4. Wait ~45s, then GET /api/admin/odds-diagnostic to verify
-           `total_ok > 0` and `picks_today_total > 0`
-
-    Returns immediately; the refresh runs in the background.
+    Emergency-reserve capacity may be requested via ``?emergency=1&
+    reason=board_missing`` or ``reason=board_critically_stale`` — see
+    ``services.provider_budget.EMERGENCY_REASONS``.
     """
     import asyncio
     from sports_engine import reset_odds_api_circuit
-    # Re-arm the breaker first — pointless to refresh if it's still open.
+    from services.job_coordinator import JobCoordinator
+    from services.provider_budget import ProviderBudget
+    from services.job_registry import get_job
+
+    coord   = JobCoordinator(db)
+    budget  = ProviderBudget(db)
+    reg     = get_job("picks_refresh_today") or {}
+    est     = int(reg.get("estimated_max_credits") or 800)
+    lease_s = int(reg.get("lease_seconds") or 900)
+    min_iv  = int(reg.get("min_interval_seconds") or 900)
+
+    # ── 1. Distributed lease ────────────────────────────────────────
+    lease = await coord.acquire(
+        "picks_refresh_today",
+        lease_seconds=lease_s,
+        min_interval_seconds=min_iv,
+        caller=f"admin:{getattr(user, 'id', 'unknown')}",
+        reason=reason,
+        metadata={"triggered_by": "admin_force_refresh",
+                   "emergency_requested": bool(emergency)},
+    )
+    if not lease:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "picks_refresh_locked",
+                "reason": lease.get("reason"),
+                "current_owner": lease.get("current_owner"),
+                "next_eligible_at": (
+                    lease.get("next_eligible_at").isoformat()
+                    if lease.get("next_eligible_at") else None
+                ),
+                "lease_until": (
+                    lease.get("lease_until").isoformat()
+                    if lease.get("lease_until") else None
+                ),
+                "message": "Refresh already in flight or blocked by "
+                           "minimum-interval policy.",
+            },
+        )
+    lease_token = lease.lease_token
+    request_key = f"admin_force_refresh:{lease_token}"
+
+    # ── 2. Budget reservation ───────────────────────────────────────
+    reservation = await budget.reserve(
+        estimated_credits=est,
+        endpoint_type="picks_refresh",
+        caller=f"admin:{getattr(user, 'id', 'unknown')}",
+        job_name="picks_refresh_today",
+        emergency_requested=bool(emergency),
+        reason=reason,
+        request_key=request_key,
+        ttl_seconds=lease_s + 300,
+        metadata={"lease_token_hash": lease_token[:12] + "…"},
+    )
+    if not reservation.get("allowed"):
+        # Release the lease so the next admin tap can retry.
+        await coord.fail(
+            "picks_refresh_today", lease_token,
+            error=f"budget_denied:{reservation.get('outcome')}",
+            retry_after_seconds=300,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "budget_denied",
+                "outcome": reservation.get("outcome"),
+                "budget_status": await budget.get_budget_status(),
+                "message": "Paid-credit budget denied this refresh. "
+                           "Wait for the daily window to reset, or "
+                           "invoke with emergency=1 and a valid "
+                           "recovery reason.",
+            },
+        )
+    intent_id = reservation.get("intent_id")
+
+    # ── 3. Reset breaker and queue refresh under lease ──────────────
     pre_state = reset_odds_api_circuit()
-    # Lazy import to avoid circular dep at module load.
     from server import _refresh_picks, _today_str
-    asyncio.create_task(_refresh_picks(_today_str()))
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today_str = _today_str()
+
+    async def _run_and_settle():
+        try:
+            await _refresh_picks(today_str)
+            await budget.commit(intent_id)
+            await coord.complete(
+                "picks_refresh_today", lease_token,
+                result_metadata={
+                    "date": today_str,
+                    "intent_id": intent_id,
+                    "budget_committed": True,
+                },
+                next_eligible_at=(
+                    datetime.now(timezone.utc)
+                    + timedelta(seconds=min_iv)
+                ),
+            )
+        except Exception as e:
+            # Release capacity so a legitimate follow-up retry isn't
+            # blocked by a phantom reservation.
+            await budget.release(intent_id, reason=f"refresh_failed:{e}")
+            await coord.fail(
+                "picks_refresh_today", lease_token,
+                error=str(e), retry_after_seconds=300,
+            )
+
+    asyncio.create_task(_run_and_settle())
     existing = await db.picks.count_documents({"pick_date": today_str})
     return {
         "queued": True,
         "date": today_str,
         "existing_count": existing,
         "circuit_state_after_reset": pre_state,
-        "message": "Refresh queued. Poll /api/admin/odds-diagnostic in ~45s.",
+        "lease": {
+            "owner_instance":     lease.get("owner_instance"),
+            "lease_until":        lease.get("lease_until").isoformat()
+                                    if lease.get("lease_until") else None,
+            "execution_id":       lease.get("execution_id"),
+        },
+        "budget": {
+            "intent_id":          intent_id,
+            "estimated_credits":  est,
+            "emergency_granted":  reservation.get("emergency", False),
+        },
+        "message": "Refresh queued under JobCoordinator + ProviderBudget.",
     }
 
 
