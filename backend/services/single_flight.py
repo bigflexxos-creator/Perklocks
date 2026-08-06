@@ -108,19 +108,12 @@ class SingleFlight:
         self.db = db
 
     async def ensure_indices(self) -> None:
+        """Phase 3C — delegate to central registry."""
         try:
-            await self.db[FLIGHT_COLL].create_index(
-                "request_key", name="request_key_uniq", unique=True)
-            await self.db[FLIGHT_COLL].create_index(
-                "expires_at", name="expires_at_idx")
-            # Auto-delete completed rows after 5 min so the collection
-            # doesn't grow.  ttl_at is stamped by complete() / fail().
-            await self.db[FLIGHT_COLL].create_index(
-                "ttl_at", name="flight_ttl_idx",
-                expireAfterSeconds=0,
-            )
+            from services import index_registry as _ir
+            await _ir.ensure_collection(self.db, FLIGHT_COLL)
         except Exception as e:  # pragma: no cover
-            logger.debug("flight index create: %s", e)
+            logger.debug("single_flight ensure_indices via registry: %s", e)
 
     async def acquire(
         self, request_key: str, *,

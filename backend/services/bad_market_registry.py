@@ -26,19 +26,14 @@ DEFAULT_TTL_HOURS = 24
 
 
 async def ensure_indices(db) -> None:
+    """Phase 3C — delegate to central registry."""
     if db is None:
         return
     try:
-        await db[COLLECTION].create_index(
-            [("sport_key", 1), ("market", 1)],
-            name="sport_market_uniq",
-            unique=True,
-        )
-        await db[COLLECTION].create_index(
-            "expires_at", name="expires_at_ttl", expireAfterSeconds=0,
-        )
+        from services import index_registry as _ir
+        await _ir.ensure_collection(db, COLLECTION)
     except Exception as e:
-        logger.warning("bad_market_registry index create failed: %s", e)
+        logger.warning("bad_market_registry ensure_indices via registry: %s", e)
 
 
 async def mark_bad(

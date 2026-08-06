@@ -4537,20 +4537,29 @@ async def on_startup():
                 logger.warning("Deferred startup task failed (delay=%.1fs): %s", delay, e)
         return asyncio.create_task(_runner())
 
-    await db.users.create_index("email", unique=True)
-    await db.picks.create_index([("pick_date", 1), ("sport", 1)])
-    await db.picks.create_index([("pick_date", 1), ("lock_score", -1)])
-    await db.picks.create_index([("status", 1), ("settled_at", -1)])
-    await db.picks.create_index("id", unique=True)
-    # ── Signal-rank index (2026-07-18) ────────────────────────────
-    # `signal_score` is queried in the `min_signal` filter on every
-    # /picks/today request. Without a supporting index it fell back
-    # to a full-collection scan on days with >500 picks, contributing
-    # to the 12+s p99 that Expo Go users experienced as "connection
-    # hiccup". Compound with `pick_date` because the filter is
-    # always scoped to today's slate.
-    await db.picks.create_index([("pick_date", 1), ("signal_score", -1)])
+    # ── Phase 3C — Central Index Registry (2026-08) ───────────────────
+    # One idempotent call replaces the fragmented `create_index` calls
+    # that used to live directly under startup.  The registry declares
+    # every critical index; missing ones are created here, matching
+    # ones are re-used, and same-name conflicts are reported (never
+    # dropped).  See services/index_registry.py.
+    try:
+        from services.index_registry import (
+            ensure_all_indexes as _ensure_all_indexes,
+            safe_index_diagnostics as _idx_diag,
+        )
+        _idx_summary = await _ensure_all_indexes(db)
+        logger.info(
+            "Phase 3C indexes ensured — diagnostics=%s summary=%s",
+            _idx_diag(), _idx_summary,
+        )
+    except Exception as _idx_err:
+        logger.warning("Phase 3C index registry ensure failed: %s", _idx_err)
 
+    # Retain the legacy ad-hoc calls for AUXILIARY (non-critical)
+    # collections that are not yet in the registry (soccer, players,
+    # nflverse, ESPN meta, historical, etc.).  They will migrate in
+    # subsequent Phase 3 sessions.
     # ── 2026-07-29 Fusion Predictions indexes ────────────────────────
     # Grading loop scans by (actual_value=None, pick_id set, created_at)
     # every 15 min. UI lazy-fetch reads by prediction_id.
@@ -4589,32 +4598,24 @@ async def on_startup():
         logger.warning("learning_log index skipped: %s", _lli_err)
 
     # ── 2026-07-29 Learning snapshots index ──────────────────────────
-    # The daily job upserts one row per UTC day; the analytics endpoint
-    # fetches the latest by `generated_at` DESC. Also index by
-    # `snapshot_date` for the once-per-day gate in `_settlement_loop`.
-    try:
-        await db.learning_snapshots.create_index(
-            [("generated_at", -1)], name="learning_generated_idx",
-        )
-        await db.learning_snapshots.create_index(
-            "snapshot_date", unique=True, name="learning_date_idx",
-        )
-    except Exception as _lsi_err:
-        logger.warning("learning_snapshots index skipped: %s", _lsi_err)
+    # (Migrated to Phase 3C registry — this block is now a no-op kept
+    # for reference.  learning_snapshots.learning_generated_idx and
+    # learning_date_idx are declared in services/index_registry.py.)
 
     # ── Phase 2β — JobCoordinator + ProviderBudget bootstrap ─────────
-    # Foundational infrastructure for the Phase 2γ cutover: distributed
-    # leases + shared paid-credit budget.  Creates the required Mongo
-    # indices for `scheduled_jobs`, `job_execution_log`, `job_audit_log`,
-    # `provider_budget_state`, `provider_request_intents`.  Idempotent.
+    # (Also migrated to Phase 3C registry — the ensure_all_indexes()
+    # call above covers scheduled_jobs, job_execution_log,
+    # job_audit_log, provider_budget_state, provider_request_intents.
+    # We keep the wrapper calls below only to emit the legacy log
+    # line for observability parity.)
     try:
         from services.job_coordinator import JobCoordinator
         from services.provider_budget import ProviderBudget
-        await JobCoordinator(db).ensure_indices()
-        await ProviderBudget(db).ensure_indices()
+        await JobCoordinator(db).ensure_indices()   # now delegates to registry
+        await ProviderBudget(db).ensure_indices()   # now delegates to registry
         logger.info(
             "Phase 2β infra armed — JobCoordinator + ProviderBudget "
-            "indices created (shadow-mode)."
+            "indices verified via Phase 3C registry."
         )
     except Exception as _p2_err:
         logger.warning("Phase 2β infra bootstrap failed: %s", _p2_err)

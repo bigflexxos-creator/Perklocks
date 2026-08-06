@@ -45,17 +45,12 @@ class TournamentRegistry:
         self.db = db
 
     async def ensure_indices(self) -> None:
+        """Phase 3C — delegate to central registry."""
         try:
-            await self.db[TOURNAMENT_COLL].create_index(
-                "sport_key", name="sport_key_uniq", unique=True)
-            await self.db[TOURNAMENT_COLL].create_index(
-                "suppress_until", name="suppress_until_idx")
-            await self.db[TOURNAMENT_COLL].create_index(
-                "sport_group", name="sport_group_idx")
-            await self.db[TOURNAMENT_COLL].create_index(
-                "updated_at", name="updated_at_idx")
+            from services import index_registry as _ir
+            await _ir.ensure_collection(self.db, TOURNAMENT_COLL)
         except Exception as e:  # pragma: no cover
-            logger.debug("tournament_registry index create: %s", e)
+            logger.debug("tournament_registry ensure_indices via registry: %s", e)
 
     # ── Read helpers ────────────────────────────────────────────────
     async def is_eligible(self, sport_key: str, *,

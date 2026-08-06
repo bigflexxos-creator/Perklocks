@@ -71,24 +71,12 @@ class EnrichmentService:
         self.db = db
 
     async def ensure_indices(self) -> None:
+        """Phase 3C — delegate to central registry."""
         try:
-            await self.db[COLLECTION].create_index(
-                [("prediction_id", 1), ("enrichment_type", 1),
-                 ("is_active", 1)],
-                name="pred_type_active_idx",
-            )
-            await self.db[COLLECTION].create_index(
-                [("prediction_id", 1), ("updated_at", -1)],
-                name="pred_updated_idx",
-            )
-            await self.db[COLLECTION].create_index(
-                "enrichment_type", name="type_idx",
-            )
-            await self.db[COLLECTION].create_index(
-                "source", name="source_idx",
-            )
+            from services import index_registry as _ir
+            await _ir.ensure_collection(self.db, COLLECTION)
         except Exception as e:
-            logger.debug("pick_enrichment index create: %s", e)
+            logger.debug("enrichment_service ensure_indices via registry: %s", e)
 
     async def record(
         self, *,

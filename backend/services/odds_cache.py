@@ -321,19 +321,19 @@ def _get_db():
 
 
 async def _ensure_indexes(db) -> None:
+    """Phase 3C — delegate to central registry.  The per-loop
+    _DB_CACHE flag is kept only so unit tests (running in fresh
+    loops) still skip repeated calls; the registry's own idempotency
+    ensures we never create duplicates in production."""
     if _DB_CACHE["inited"]:
         return
     try:
-        await db.odds_api_cache.create_index("cache_key", unique=True,
-                                              name="uniq_cache_key")
-        await db.odds_api_cache.create_index("refreshed_at",
-                                              name="refreshed_at")
-        await db.odds_api_request_log.create_index("ts", name="ts")
-        await db.odds_api_request_log.create_index(
-            [("sport_key", 1), ("ts", -1)], name="sport_ts")
+        from services import index_registry as _ir
+        await _ir.ensure_collection(db, "odds_api_cache")
+        await _ir.ensure_collection(db, "odds_api_request_log")
         _DB_CACHE["inited"] = True
     except Exception as e:
-        logger.warning("odds_cache index init failed: %s", e)
+        logger.warning("odds_cache ensure_indices via registry: %s", e)
 
 
 # ═════════════════════════════════════════════════════════════════════

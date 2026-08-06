@@ -55,23 +55,12 @@ class SettlementService:
         self.db = db
 
     async def ensure_indices(self) -> None:
+        """Phase 3C — delegate to central registry."""
         try:
-            await self.db[COLLECTION].create_index(
-                [("prediction_id", 1), ("settled_at", -1)],
-                name="prediction_settled_at_idx",
-            )
-            await self.db[COLLECTION].create_index(
-                [("prediction_id", 1), ("is_active", 1)],
-                name="prediction_active_idx",
-            )
-            await self.db[COLLECTION].create_index(
-                "source", name="source_idx",
-            )
-            await self.db[COLLECTION].create_index(
-                "settled_at", name="settled_at_idx",
-            )
+            from services import index_registry as _ir
+            await _ir.ensure_collection(self.db, COLLECTION)
         except Exception as e:
-            logger.debug("settlement_events index create: %s", e)
+            logger.debug("settlement_service ensure_indices via registry: %s", e)
 
     async def record(
         self, *,
