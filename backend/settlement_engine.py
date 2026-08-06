@@ -473,6 +473,36 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
             units_profit = round(raw_profit * w, 4)
             units_risked = w if outcome != "push" else 0.0
             clv = clv_units(pick.get("odds_at_pick"), pick.get("closing_odds") or pick.get("book_odds"))
+            # Phase 1c: record settlement in the immutable event log
+            # BEFORE the compatibility mirror write on picks.
+            try:
+                from services.settlement_service import SettlementService
+                _settle_svc = SettlementService(db)
+                await _settle_svc.ensure_indices()
+                await _settle_svc.record(
+                    prediction_id=pick["id"],
+                    result=outcome,
+                    source="settlement_engine",
+                    actual_result={
+                        "final_score": scores_dict,
+                        "units_risked": units_risked,
+                        "units_profit": units_profit,
+                        "clv_value": clv,
+                    },
+                    # SettlementService performs its own compat mirror;
+                    # to avoid double-writing status here, set
+                    # compat_write_to_picks=False and let the settle
+                    # service own the mirror.
+                    compat_write_to_picks=False,
+                )
+            except Exception as _s_err:
+                logger.warning(
+                    "settlement_service.record failed for %s: %s",
+                    pick.get("id"), _s_err)
+            # TRANSITIONAL compat write to `picks` — mirror settlement
+            # onto the mutable pick doc so any code path that still
+            # reads `pick.status` keeps working.  Marked with
+            # `_compat_settlement=True` for future cleanup search.
             await db.picks.update_one(
                 {"id": pick["id"]},
                 {"$set": {
@@ -485,6 +515,7 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
                     "unit_weight": w,
                     "clv_value": clv,
                     "confidence_bucket": confidence_bucket(pick.get("lock_score")),
+                    "_compat_settlement": True,
                 }},
             )
             # ── Propagate to user_bets (2026-07-21) ─────────────────
