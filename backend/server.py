@@ -2508,6 +2508,47 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
                 n_inserted, len(dup_errors),
             )
     logger.info("Stored %d picks for %s", len(safe_picks), date_str)
+
+    # ─── Phase 1a WRITE BARRIER — Prediction Publication Service ───
+    # Dual-write mode (2026-08-06).  We emit an immutable snapshot for
+    # every candidate that just landed in `picks`, and copy the
+    # published_* fields back onto the pick doc.  Endpoints are NOT yet
+    # cut over — they continue to read the legacy fields.  Any drift
+    # between the legacy fields and the snapshot is recorded to the
+    # `publication_mismatch_report` collection for later analysis
+    # before Phase 1b flips endpoints over to the snapshot.
+    #
+    # See: /app/PUBLICATION_CONTRACT.md
+    #      /app/backend/services/prediction_publication_service.py
+    try:
+        from services.prediction_publication_service import (
+            PredictionPublicationService,
+        )
+        publisher = PredictionPublicationService(db)
+        try:
+            await publisher.ensure_indices()
+        except Exception as _idx_err:
+            logger.debug("publication indices ensure failed: %s", _idx_err)
+        summary = await publisher.publish_batch(
+            safe_picks, publication_source="canonical_pipeline",
+            dual_write=True,
+        )
+        logger.info(
+            "Publication: new=%d existing=%d mismatches=%d errors=%d "
+            "board=%s",
+            summary.get("new_snapshots", 0),
+            summary.get("existing_snapshots", 0),
+            summary.get("mismatches_logged", 0),
+            len(summary.get("errors", []) or []),
+            summary.get("board_version"),
+        )
+    except Exception as pub_err:
+        # Never let publication instability break the refresh.  In
+        # Phase 1a everything is dual-write and endpoints still read
+        # the legacy fields, so a broken publication is degraded
+        # visibility, not degraded UX.
+        logger.warning("Publication step failed (non-fatal): %s", pub_err)
+
     # 2026-07-22 MLS ESPN post-insert diagnostic. Should reveal whether
     # picks were persisted to Mongo or silently dropped.
     try:
