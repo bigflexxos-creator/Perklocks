@@ -394,4 +394,36 @@ async def ops_identity_coverage(
     return {"critical_collections": out}
 
 
+# ═════════════════════════════════════════════════════════════════════
+# Phase 3F-2 — lifecycle & task-registry observability
+# ═════════════════════════════════════════════════════════════════════
+@router.get("/lifecycle/readiness")
+async def ops_lifecycle_readiness(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Phase 3F-2 — structured application readiness.  Safe: never
+    exposes secrets or internal task state that would create a
+    security risk."""
+    from services.application_lifecycle import get_lifecycle
+    lc = get_lifecycle()
+    return lc.readiness()
+
+
+@router.get("/lifecycle/tasks")
+async def ops_lifecycle_tasks(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Phase 3F-2 — list every registered runtime task with its
+    current status.  Handy during a restart to confirm the expected
+    task count is up."""
+    from services.runtime_task_registry import get_registry
+    r = get_registry()
+    return {
+        "total":   len(r),
+        "running": r.running_count(),
+        "critical_all_running": r.critical_all_running(),
+        "tasks":   r.list_statuses(),
+    }
+
+
 __all__ = ["router"]
