@@ -1315,7 +1315,16 @@ async def _ensure_today_picks() -> None:
     # picks_today handler will return whatever's in the DB right now
     # (possibly empty this first cold-start tick) and the next call
     # will land a full slate ~60s later.
-    asyncio.create_task(_background_refresh())
+    # Phase 3F-2: register even the internal admin-refresh task
+    try:
+        from services.runtime_task_registry import get_registry
+        get_registry().register_and_start(
+            f'background_refresh:{uuid.uuid4().hex[:8]}',
+            _background_refresh,
+            task_type='one_shot', critical=False,
+        )
+    except ValueError:
+        asyncio.create_task(_background_refresh())
 
 
 # Module-level guard: prevents overlapping refresh stampedes when
@@ -2785,6 +2794,33 @@ async def _historical_props_loop():
 
 @app.on_event("startup")
 async def on_startup():
+    # Phase 3F-2 — every startup-created asyncio task goes
+    # through the runtime task registry so shutdown can
+    # signal + await each one.
+    from services.runtime_task_registry import get_registry
+    from services.application_lifecycle import get_lifecycle
+    _TASK_REGISTRY = get_registry()
+    _LIFECYCLE     = get_lifecycle()
+    app.state.lifecycle = _LIFECYCLE
+    app.state.task_registry = _TASK_REGISTRY
+
+    # Run the lifecycle preflight (settings + DB + ping + indexes +
+    # lease recovery).  All steps are idempotent — the existing
+    # inline blocks below run again for observability but no work is
+    # duplicated because each idempotent call short-circuits.
+    try:
+        _preflight_result = await _LIFECYCLE.preflight()
+        logger.info(
+            "Phase 3F-2 preflight: ok=%s db=%s idx=%s recov=%s duration_ms=%s",
+            _preflight_result.success,
+            _preflight_result.database_ready,
+            _preflight_result.indexes_ready,
+            _preflight_result.recovery_complete,
+            _preflight_result.duration_ms,
+        )
+    except Exception as _e:
+        logger.warning("Phase 3F-2 preflight raised: %s", _e)
+
     # ── DEFERRED STARTUP (2026-06-28) ─────────────────────────────────
     # In production (emergent.host), all 20+ background loops fired at
     # T+0 and ran concurrently in a single worker, blocking HTTP
@@ -2822,12 +2858,17 @@ async def on_startup():
     except Exception as _e:
         logger.warning("Phase 3B Mongo readiness check raised: %s", _e)
 
-    def _deferred_task(coro_factory, delay: float):
+    def _deferred_task(coro_factory, delay: float, name: str = None):
         """Schedule `coro_factory()` to run after a `delay` second sleep.
         `coro_factory` is a callable returning a fresh coroutine (we
         accept a callable rather than the coroutine itself so it isn't
         instantiated until we're ready to execute it — avoids the
-        'coroutine was never awaited' warning on shutdown)."""
+        'coroutine was never awaited' warning on shutdown).
+
+        Phase 3F-2: registered with runtime_task_registry so shutdown
+        can signal + await this deferred task.  Name defaults to the
+        coroutine factory's __name__ (falls back to a uuid suffix on
+        collision)."""
         async def _runner():
             try:
                 await asyncio.sleep(delay)
@@ -2836,7 +2877,23 @@ async def on_startup():
                 pass
             except Exception as e:
                 logger.warning("Deferred startup task failed (delay=%.1fs): %s", delay, e)
-        return asyncio.create_task(_runner())
+        tname = name or getattr(coro_factory, "__name__", None) or f"deferred_{uuid.uuid4().hex[:8]}"
+        try:
+            return _TASK_REGISTRY.register_and_start(
+                tname, _runner,
+                task_type="deferred_startup", critical=False,
+                cadence=f"one-shot after {delay:.1f}s",
+                startup_behavior="eager", restart_policy="none",
+            )
+        except ValueError:
+            # Duplicate name — fall back to a uuid-suffixed registration
+            # so shutdown still tracks it.
+            uid = f"{tname}:{uuid.uuid4().hex[:6]}"
+            return _TASK_REGISTRY.register_and_start(
+                uid, _runner,
+                task_type="deferred_startup", critical=False,
+                cadence=f"one-shot after {delay:.1f}s",
+            )
 
     # ── Phase 3C — Central Index Registry (2026-08) ───────────────────
     # One idempotent call replaces the fragmented `create_index` calls
@@ -3029,8 +3086,14 @@ async def on_startup():
     #   T+48 — Player DB refreshers
     #   T+56 — Services loop, tennis player DB
     #   T+64 — Line observer / closing snapshotter (line shopping)
-    asyncio.create_task(_historical_props_loop())
-    asyncio.create_task(_daily_refresh_loop())
+    _TASK_REGISTRY.register_and_start(
+        'historical_props_loop', lambda: _historical_props_loop(),
+        task_type='recurring_loop', critical=False,
+    )
+    _TASK_REGISTRY.register_and_start(
+        'daily_refresh_loop', lambda: _daily_refresh_loop(),
+        task_type='recurring_loop', critical=True,
+    )
     # ── ESPN Soccer Fixture Fallback (iter-97) ─────────────────────
     # Pulls upcoming fixtures + moneyline picks for the 4 lower-tier
     # soccer leagues (CSL, Sweden, Norway, Finland) from ESPN's public
@@ -3214,7 +3277,10 @@ async def on_startup():
                 except Exception as e:
                     logger.warning("MLB player_db refresh failed: %s", e)
                 await asyncio.sleep(24 * 60 * 60)
-        asyncio.create_task(_mlb_player_db_loop())
+        _TASK_REGISTRY.register_and_start(
+            'mlb_player_db_loop', lambda: _mlb_player_db_loop(),
+            task_type='recurring_loop', critical=False,
+        )
         logger.info("MLB player_db (free MLB Stats API) armed — daily roster + stats refresh")
     except Exception as e:
         logger.warning("MLB player_db loop failed to start: %s", e)
@@ -3242,7 +3308,10 @@ async def on_startup():
                     # Stagger leagues by 5s so we don't double-tax ESPN.
                     await asyncio.sleep(5)
                 await asyncio.sleep(24 * 60 * 60)
-        asyncio.create_task(_espn_player_db_loop())
+        _TASK_REGISTRY.register_and_start(
+            'espn_player_db_loop', lambda: _espn_player_db_loop(),
+            task_type='recurring_loop', critical=False,
+        )
         logger.info("NBA + NFL + CFB player_db (free ESPN public) armed — daily roster + stats + injuries refresh")
     except Exception as e:
         logger.warning("NBA/NFL/CFB player_db loop failed to start: %s", e)
@@ -3271,7 +3340,10 @@ async def on_startup():
                 except Exception as e:
                     logger.warning("ESPN MLS stats refresh failed: %s", e)
                 await asyncio.sleep(12 * 60 * 60)   # 12h
-        asyncio.create_task(_mls_stats_loop())
+        _TASK_REGISTRY.register_and_start(
+            'mls_stats_loop', lambda: _mls_stats_loop(),
+            task_type='recurring_loop', critical=False,
+        )
         logger.info("ESPN MLS scorer stats armed — 12h refresh loop")
     except Exception as e:
         logger.warning("ESPN MLS stats loop failed to start: %s", e)
@@ -3295,7 +3367,10 @@ async def on_startup():
                 except Exception as e:
                     logger.warning("MLS matchup history refresh failed: %s", e)
                 await asyncio.sleep(7 * 24 * 60 * 60)   # weekly
-        asyncio.create_task(_mls_matchup_loop())
+        _TASK_REGISTRY.register_and_start(
+            'mls_matchup_loop', lambda: _mls_matchup_loop(),
+            task_type='recurring_loop', critical=False,
+        )
         logger.info("MLS matchup history armed — weekly refresh loop")
     except Exception as e:
         logger.warning("MLS matchup history loop failed to start: %s", e)
@@ -3393,7 +3468,10 @@ async def on_startup():
                     reason="scheduled_snapshot",
                 )
 
-        asyncio.create_task(_mls_direct_snapshot_loop())
+        _TASK_REGISTRY.register_and_start(
+            'mls_direct_snapshot_loop', lambda: _mls_direct_snapshot_loop(),
+            task_type='recurring_loop', critical=False,
+        )
         logger.info("MLS Direct-Inject snapshot armed — 3×/day (12/18/23 UTC), lease-gated")
     except Exception as e:
         logger.warning("MLS Direct-Inject worker failed to start: %s", e)
@@ -3428,7 +3506,10 @@ async def on_startup():
                     reason="scheduled_snapshot",
                 )
 
-        asyncio.create_task(_soccer_prop_snapshot_loop())
+        _TASK_REGISTRY.register_and_start(
+            'soccer_prop_snapshot_loop', lambda: _soccer_prop_snapshot_loop(),
+            task_type='recurring_loop', critical=False,
+        )
         logger.info("Soccer Prop Inject snapshot armed — 3×/day (12/18/23 UTC), lease-gated")
     except Exception as e:
         logger.warning("Soccer Prop Inject worker failed to start: %s", e)
@@ -3468,7 +3549,10 @@ async def on_startup():
                 soccer_ingest.loop(db),
                 cfb_ingest.loop(db),
             )
-        asyncio.create_task(_services_loop())
+        _TASK_REGISTRY.register_and_start(
+            'services_loop', lambda: _services_loop(),
+            task_type='recurring_loop', critical=False,
+        )
         logger.info(
             "services/ multi-source ingestion armed — NBA (ESPN+BBR+nba.com) + "
             "NFL (ESPN+nfl.com) + Soccer (Understat + ESPN 18 leagues) + "
@@ -3499,7 +3583,10 @@ async def on_startup():
                 except Exception as e:
                     logger.warning("Tennis WTA player_db refresh failed: %s", e)
                 await asyncio.sleep(7 * 24 * 60 * 60)
-        asyncio.create_task(_tennis_player_db_loop())
+        _TASK_REGISTRY.register_and_start(
+            'tennis_player_db_loop', lambda: _tennis_player_db_loop(),
+            task_type='recurring_loop', critical=False,
+        )
         logger.info("Tennis ATP + WTA player_db armed — weekly refresh (Sackmann + ESPN)")
     except Exception as e:
         logger.warning("Tennis player_db loop failed to start: %s", e)
@@ -3951,19 +4038,24 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    # Phase 2δ: gracefully cancel every background task and release
-    # any leases owned by this process so the next instance's
-    # startup recovery has less to clean up.
+    """Phase 3F-2 — full delegation to ApplicationLifecycle.shutdown().
+
+    The lifecycle service owns:
+      * task signalling + cancellation via runtime_task_registry
+      * lease + reservation release
+      * shared HTTP client close
+      * MongoDB close (exactly once)
+    """
     try:
-        lc = getattr(app.state, "lifecycle", None)
-        if lc is not None:
-            summary = await lc.on_shutdown(timeout=10.0)
-            logger.info("Phase 2δ shutdown summary: %s", summary)
+        from services.application_lifecycle import get_lifecycle
+        lc = get_lifecycle()
+        result = await lc.shutdown(timeout=10.0)
+        logger.info("Phase 3F-2 shutdown: %s", result.as_dict())
     except Exception as e:
-        logger.warning("Phase 2δ shutdown error: %s", e)
-    # Phase 3B — close the shared client owner exactly once.
-    try:
-        from services.database import close_database as _close_db
-        await _close_db()
-    except Exception as _e:
-        logger.warning("Phase 3B shared db close raised: %s", _e)
+        logger.warning("Phase 3F-2 shutdown error: %s", e)
+        # Fallback close so we never leak a Mongo client.
+        try:
+            from services.database import close_database as _close_db
+            await _close_db()
+        except Exception as _e:
+            logger.warning("fallback db close raised: %s", _e)
