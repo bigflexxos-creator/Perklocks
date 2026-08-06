@@ -78,24 +78,138 @@ def _simulate_hrs(batter_hr_rate: float, expected_abs: int, runs: int = RUNS) ->
 def _simulate_hrr(
     batter_ba: float, batter_hr_rate: float, batter_rbi_rate: float,
     expected_abs: int, runs: int = RUNS,
+    *,
+    lineup_slot: int = 4,
+    team_runs_projection: float = 4.5,
+    obp: float | None = None,
 ) -> list[int]:
-    """Hits + Runs + RBIs composite. Run scored proxied via on-base × team scoring."""
+    """Correlated Hits + Runs + RBIs simulator (Phase 4C).
+
+    **Design (Phase 4C — 2026-08-06):**
+
+    Prior versions used three INDEPENDENT Bernoulli draws per AB plus
+    a partial extra HR bump on top of ``ba``:
+        if random.random() < ba:      total += 1  # hit
+        if random.random() < run_p:   total += 1  # run  (run_p = ba*0.45)
+        if random.random() < hr*0.4:  total += 1  # extra HR bump  ← double count
+    That structure (a) partially double-counted HRs (HRs already contribute
+    to ``ba``) and (b) had no lineup / team-context awareness.
+
+    The corrected model is a **per-PA event decomposition**:
+
+      For each plate appearance:
+        1. Draw outcome ∈ {HR, non-HR hit, non-hit-on-base (BB/HBP),
+                            in-play out, K}.
+           Using ``hr`` (HR/AB), ``ba - hr`` (non-HR hits/AB), an OBP
+           excess (BB+HBP), and the residual outs.
+        2. If outcome == HR:
+             total += 1 hit + 1 run + 1 RBI (the batter scores + earns
+             an RBI for themselves).  No further RBI draw.  This is
+             LEGITIMATE double-attribution (a solo HR contributes 1H,
+             1R, 1RBI = 3 to the H+R+RBI stat) — NOT an artificial bump.
+             Additional RBIs from teammates on base are drawn via
+             ``rbi_extra_p`` conditional on lineup-slot on-base env.
+        3. If outcome == non-HR hit:
+             total += 1 hit.
+             With probability ``run_p_hit`` (conditional on lineup slot
+             + team_runs_projection) → the batter later scores → +1 run.
+             With probability ``rbi_p_nonhr_hit`` → +1 RBI (drove in a
+             runner).
+        4. If outcome == non-hit-on-base (walk / HBP):
+             No hit. With reduced ``run_p_bb`` → +1 run.  No RBI draw
+             from a walk unless bases loaded (small ``rbi_p_bb``).
+        5. If outcome == in-play out / K:
+             No hits, no runs (unless very rare productive out).
+             Small ``rbi_p_out`` if lineup slot suggests RBI groundouts
+             / sac flies from team_runs_projection.
+
+    **HR double-count elimination:** ``hr`` is drawn EXPLICITLY from the
+    outcome tree (mutually exclusive with the non-HR hit / non-hit-on-
+    base / out branches).  The old ``if random.random() < hr*0.4``
+    extra-bump is REMOVED.  Total H+R+RBI contribution of a solo HR is
+    exactly 3 (1H+1R+1RBI), of a 2-run HR is exactly 4 (1H+1R+2RBI),
+    etc. — matching real-world scoring.
+
+    **Lineup awareness:** ``lineup_slot`` (1-9) and ``team_runs_projection``
+    modulate ``run_p_hit``, ``rbi_extra_p``, and ``rbi_p_nonhr_hit``.
+    Slots 1-2 have higher run conversion (leadoff + 2-hole score more
+    often); slots 3-5 have higher RBI conversion (middle-order sees more
+    runners); slots 7-9 penalise both.
+
+    Returns a list of H+R+RBI totals per iteration.
+    """
     ba = max(0.05, min(0.55, batter_ba))
-    hr = max(0.001, min(0.15, batter_hr_rate))
-    rbi_p = max(0.02, min(0.30, batter_rbi_rate))   # P(RBI per AB)
-    # Run-scored prob per AB ≈ OBP × 0.30 (rough league avg conversion)
-    run_p = max(0.04, ba * 0.45)
+    hr_pa = max(0.001, min(0.15, batter_hr_rate))         # HR/AB ≈ HR/PA close enough
+    non_hr_hit_pa = max(0.02, ba - hr_pa)                 # remaining hits
+    obp_ = max(ba + 0.03, min(0.55, obp or (ba + 0.055))) # OBP - BA ≈ walk / HBP band
+    walk_hbp_pa = max(0.02, obp_ - ba)
+    out_pa = max(0.05, 1.0 - hr_pa - non_hr_hit_pa - walk_hbp_pa)
+    total_p = hr_pa + non_hr_hit_pa + walk_hbp_pa + out_pa
+    hr_pa       /= total_p
+    non_hr_hit_pa /= total_p
+    walk_hbp_pa /= total_p
+    out_pa      /= total_p
+
+    # ── Lineup-slot / team-context conversion coefficients ──────────
+    # Empirical ranges (2019-2024 MLB averages):
+    #   Slots 1-2  : ~40% of hit → later run;  ~7% of hit → RBI
+    #   Slots 3-5  : ~32% of hit → later run;  ~20% of hit → RBI
+    #   Slots 6-7  : ~28% of hit → later run;  ~14% of hit → RBI
+    #   Slots 8-9  : ~22% of hit → later run;  ~9% of hit → RBI
+    slot = max(1, min(9, int(lineup_slot)))
+    if slot <= 2:
+        run_p_hit_base, rbi_p_hit_base = 0.40, 0.07
+    elif slot <= 5:
+        run_p_hit_base, rbi_p_hit_base = 0.32, 0.20
+    elif slot <= 7:
+        run_p_hit_base, rbi_p_hit_base = 0.28, 0.14
+    else:
+        run_p_hit_base, rbi_p_hit_base = 0.22, 0.09
+    # Team offensive environment multiplier ─ 4.5 = league avg 2024.
+    env_mult = max(0.7, min(1.35, team_runs_projection / 4.5))
+    run_p_hit  = min(0.75, run_p_hit_base  * env_mult)
+    rbi_p_hit  = min(0.60, rbi_p_hit_base  * env_mult)
+    run_p_bb   = min(0.55, 0.55 * run_p_hit)          # walks convert ~55% as often
+    rbi_p_bb   = min(0.05, 0.05 * env_mult)           # bases-loaded walk RBI (rare)
+    # Non-hr-hit → extra RBIs (HR path gets its own solo/multi RBIs).
+    # HR path: 1 solo-run RBI is guaranteed; add small chance of extra
+    # RBIs from runners on base (2-run / 3-run / grand slam).
+    hr_extra_rbi_p = min(0.65, 0.35 * env_mult)       # per-HR extra runner-on-base RBI
+
     out = []
     for _ in range(runs):
         total = 0
         for _ in range(expected_abs):
-            r = random.random()
-            if r < ba: total += 1                    # hit
-            if random.random() < run_p: total += 1   # run
-            if random.random() < rbi_p: total += 1   # rbi
-            # HR is a hit + run + RBI compound but already counted via ba/run/rbi
-            # so we add a small extra for HR-only events not captured
-            if random.random() < hr * 0.4: total += 1
+            u = random.random()
+            if u < hr_pa:
+                # HR: 1 hit + 1 run + 1 self-RBI = 3, plus expected
+                # extra RBIs from runners on base.
+                total += 3
+                # Draw 0, 1, 2 extra RBIs (2-run, 3-run, grand slam).
+                v = random.random()
+                if v < hr_extra_rbi_p:
+                    total += 1
+                    if random.random() < 0.30 * env_mult:
+                        total += 1
+                        if random.random() < 0.10 * env_mult:
+                            total += 1
+            elif u < hr_pa + non_hr_hit_pa:
+                # Non-HR hit.
+                total += 1
+                if random.random() < run_p_hit:
+                    total += 1
+                if random.random() < rbi_p_hit:
+                    total += 1
+            elif u < hr_pa + non_hr_hit_pa + walk_hbp_pa:
+                # Walk / HBP — no hit, small run/RBI contribution.
+                if random.random() < run_p_bb:
+                    total += 1
+                if random.random() < rbi_p_bb:
+                    total += 1
+            else:
+                # In-play out / K — very small productive-out RBI chance.
+                if random.random() < 0.03 * env_mult:
+                    total += 1        # sac fly / RBI groundout
         out.append(total)
     return out
 
@@ -159,6 +273,12 @@ def simulate_mlb_pick(pick: dict, player_stats: dict | None = None) -> Optional[
             stats.get("hr_per_ab", LEAGUE_HR_PER_AB),
             stats.get("rbi_per_ab", 0.12),
             int(EXPECTED_ABS_HITTER),
+            lineup_slot=int(stats.get("lineup_slot") or
+                             pick.get("lineup_slot") or
+                             ((pick.get("player_intel") or {}).get("lineup_slot")) or 4),
+            team_runs_projection=float(stats.get("team_runs_projection") or
+                                         pick.get("team_runs_projection") or 4.5),
+            obp=stats.get("obp"),
         )
     elif "home runs" in ml or "home run" in ml:
         distribution = _simulate_hrs(

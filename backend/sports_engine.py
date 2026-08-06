@@ -2597,111 +2597,27 @@ def _prob_to_american(p: float) -> int:
     return int(round(100 * (1 - p) / p))
 
 
-def _synthesize_chalk_alt_totals(api_outcomes: list[dict]) -> list[dict]:
-    """Extrapolate the chalk ladder BELOW the API's lowest Over point and
-    ABOVE the API's highest Under point.
+def _synthesize_chalk_alt_totals(*_a, **_kw) -> list[dict]:
+    """REMOVED — Phase 4C (2026-08-06).
 
-    Why: The Odds API for tennis exposes a narrow alt-total ladder
-    (typically 4-6 points around the main line). Real sportsbooks
-    offer chalkier safer lines further out — user reported
-    "for eala you had over alt 21.5, sportsbook give you option to
-    get over 19.5 at -275". We fit a linear slope to the implied
-    probabilities the API does expose, then extrapolate 4 steps in
-    the chalk direction (Over → lower points, Under → higher points)
-    capped at 97% implied (no -7000+ junk juice).
+    This function historically extrapolated tennis alt-total lines
+    beyond the sportsbook's exposed ladder ("synthetic chalk lines").
+    It was disabled on 2026-06-30 and formally removed in Phase 4C
+    because no code path called it any longer.
 
-    Returned synthetic outcomes mirror the real API shape so
-    `_pick_sweet_spot_alts` consumes them unchanged. Each carries
-    `_synthesized=True` so the pick layer can label them
-    ("model-extrapolated from market ladder").
+    A guardrail test (``test_no_synthetic_mlb_alt_lines``) now
+    protects against any future MLB alt-line synthesis returning.
 
-    ── PHYSICAL-MIN GUARDRAIL (2026-06-28) ──
-    A tennis match has a HARD mathematical floor for total games:
-      • Best-of-3 set (ATP/WTA Tour): min 12 games (6-0, 6-0)
-      • Best-of-5 set (Grand Slam men): min 18 games (6-0, 6-0, 6-0)
-    And a soft ceiling (a 5-set marathon tops out around 70-80 games;
-    anything past 50 is so rare the chalk line is meaningless).
-
-    Without bounds the extrapolator was emitting "Over 7.5 Games (Alt)"
-    at 99 lock score — a bet you literally cannot lose on a Wimbledon
-    match (Mochizuki @ Basing 2026-06-29). User report: "a tennis
-    game is at least 12 games". We clamp synthesized totals to:
-      • Over:  never below 14.5 (1 game below worst-case 6-0 bagel for
-               best-of-3; still leaves room for retirement edge cases)
-      • Under: never above 45.5 (5-set Wimbledon median total is ~38,
-               above 45 the chalk is meaningless)
-    Real bookmaker outcomes above/below these bounds are still passed
-    through unchanged — only SYNTHESIZED rows are dropped.
+    Any attempt to use this function now returns an empty list and
+    raises a warning so callers can be updated.
     """
-    if not api_outcomes:
-        return []
-
-    # Hard min/max for synthesized lines — see PHYSICAL-MIN GUARDRAIL.
-    SYNTH_OVER_FLOOR  = 14.5
-    SYNTH_UNDER_CEIL  = 45.5
-
-    # Slope fit per side: rows sorted by point ascending; compute the
-    # average local slope in implied-probability space.
-    def _slope(rows: list[tuple[float, float]]) -> float:
-        # rows = [(point, implied_prob), ...]
-        if len(rows) < 2:
-            return 0.072  # fallback: 7.2 % implied prob per +1 game
-        slopes = []
-        for i in range(1, len(rows)):
-            dp = rows[i][0] - rows[i - 1][0]
-            if dp == 0:
-                continue
-            slopes.append((rows[i - 1][1] - rows[i][1]) / dp)
-        return sum(slopes) / len(slopes) if slopes else 0.072
-
-    synth: list[dict] = []
-    for side_name, direction in (("Over", -1), ("Under", +1)):
-        # Build (point, implied) ascending-by-point.
-        rows: list[tuple[float, float]] = []
-        for o in api_outcomes:
-            if o.get("name") != side_name:
-                continue
-            pt = o.get("point")
-            pr = o.get("price")
-            if not isinstance(pt, (int, float)) or not isinstance(pr, (int, float)):
-                continue
-            rows.append((float(pt), _implied_prob(int(pr))))
-        if not rows:
-            continue
-        rows.sort(key=lambda t: t[0])
-        slope = _slope(rows)
-        # For Over: extrapolate DOWN from the lowest point (chalkier).
-        # For Under: extrapolate UP from the highest point (chalkier).
-        if direction < 0:
-            base_pt, base_imp = rows[0]
-        else:
-            base_pt, base_imp = rows[-1]
-        # 4 synthetic steps of 1.0 game each (matches sportsbook grid).
-        for step in (1.0, 2.0, 3.0, 4.0):
-            new_pt = base_pt + direction * step
-            # Stay on .5 grid (real sportsbook convention).
-            if abs((new_pt * 2) - round(new_pt * 2)) > 0.01:
-                continue
-            # PHYSICAL-MIN GUARDRAIL — drop synthesized lines outside the
-            # achievable range for any tennis match.
-            if side_name == "Over" and new_pt < SYNTH_OVER_FLOOR:
-                break  # all further steps go even lower → skip them all
-            if side_name == "Under" and new_pt > SYNTH_UNDER_CEIL:
-                break
-            # Probability moves UP in the chalk direction.
-            new_imp = base_imp + slope * step
-            # Cap at 97 % (anything chalkier is junk juice).
-            if new_imp > 0.97:
-                break
-            if new_imp < 0.55:
-                continue   # below our band — pointless to synth a "soft" alt
-            synth.append({
-                "name": side_name,
-                "point": new_pt,
-                "price": _prob_to_american(new_imp),
-                "_synthesized": True,
-            })
-    return synth
+    import logging as _logging
+    _logging.getLogger("lockscore.sports_engine").warning(
+        "_synthesize_chalk_alt_totals is removed (Phase 4C) — "
+        "returning empty list. Real-line policy: synthetic sportsbook "
+        "lines must never be published."
+    )
+    return []
 
 
 def _build_tennis_alt_picks(
