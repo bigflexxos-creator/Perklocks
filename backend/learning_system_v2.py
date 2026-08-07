@@ -373,8 +373,23 @@ def apply_lock99_gates(pick: dict, factors: dict, lock_score: float,
         reasons.append("edge<8%")
 
     # 2. Signal agreement gate
+    # Boundary coercion (2026-08-07): some picks (e.g. hot-scorer
+    # bypass emitted via ``soccer_hot_scorers_v1``) populate
+    # ``factors`` with NARRATIVE STRINGS ("Wikipedia top-scorer
+    # table…") instead of numeric factor scores.  Compare only
+    # numeric values against ``signal_threshold``; treat non-numeric
+    # entries as zero (they do NOT contribute to signal agreement).
+    # This preserves the exact ``signal_threshold`` and does not
+    # change any grade, lock score, or tier logic.
+    def _as_float(v):
+        if isinstance(v, (int, float)):
+            return float(v)
+        try:
+            return float(v) if v is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
     signals_agree = sum(1 for v in (factors or {}).values()
-                        if v >= LOCK99_GATES["signal_threshold"])
+                        if _as_float(v) >= LOCK99_GATES["signal_threshold"])
     if signals_agree < LOCK99_GATES["min_signals"]:
         reasons.append(f"only {signals_agree}/{LOCK99_GATES['min_signals']} signals agree")
 
