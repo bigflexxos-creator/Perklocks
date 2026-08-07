@@ -245,12 +245,15 @@ async def _get(url: str, params: dict, *,
         )
     except Exception as e:
         # Phase 2γ closeout: cache-layer failure MUST NOT open a
-        # direct httpx path.  Go through the gateway with the
-        # ``board_missing`` emergency reason so ProviderBudget policy
-        # + JobCoordinator + request logging remain enforced.
+        # direct httpx path.  Go through the gateway with normal
+        # budget policy — 2026-08-06 fix: no longer requests
+        # emergency capacity (that would be
+        # ``blocked_emergency_policy`` under the current whitelist).
+        # Cache-infra failures are rare and are handled by the same
+        # daily budget as any other cache miss.
         logger.warning(
             "odds_cache path failed (%s) — falling through to gateway "
-            "with emergency=board_missing", e,
+            "with normal budget policy", e,
         )
         return await _gateway_fallback_get(
             url=url, params=params,
@@ -336,11 +339,24 @@ async def _gateway_fallback_get(*, url: str, params: dict,
                                   caller: str,
                                   sport_key: str | None,
                                   markets_tag: str | None,
-                                  reason: str) -> list | dict | None:
+                                  reason: str,
+                                  emergency_requested: bool = False) -> list | dict | None:
     """Phase 2γ closeout replacement for the removed direct httpx
     transport.  Goes through OddsApiGateway with an
     emergency reason so ProviderBudget policy governs whether the
-    call is allowed.  Never opens a direct httpx connection."""
+    call is allowed.  Never opens a direct httpx connection.
+
+    2026-08-06 fix — emergency reserve is now OFF by default.  Normal
+    cache-miss fetches (which this helper serves 99 %+ of the time)
+    must NOT request emergency capacity — ``ProviderBudget``'s
+    ``can_use_emergency_reserve`` only whitelists the reasons
+    ``board_missing`` and ``board_critically_stale``, so passing
+    ``emergency_requested=True`` for a cache_miss reason was silently
+    turning every fetch into a ``blocked_emergency_policy`` refusal.
+    True board-recovery callers (e.g. cache_infrastructure_failure)
+    still opt-in explicitly by setting ``emergency_requested=True``
+    AND passing a whitelisted ``reason``.
+    """
     if not ODDS_KEY or _API_DISABLED:
         return None
     try:
@@ -356,7 +372,7 @@ async def _gateway_fallback_get(*, url: str, params: dict,
             job_name="sports_engine_cache_failure_fallback",
             sport_key=sport_key,
             markets=markets_tag,
-            emergency_requested=True,
+            emergency_requested=emergency_requested,
         )
         if result and result.data is not None:
             record_odds_call_result(
