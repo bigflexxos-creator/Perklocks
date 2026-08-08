@@ -1536,6 +1536,55 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         "status": {"$in": ["pending", "open", None]},
         "$or": [standard_q, elite_q, model_only_q, tennis_ml_q, tennis_alt_q, tennis_extra_q, mlb_k_q, mlb_hitter_q, soccer_scorer_q, high_lock_bypass_q],
     }
+    # ── P0-1 CANONICAL PUBLICATION GATE (2026-08-08) ────────────────────
+    # Enforce the publication contract at the board read layer.  Per
+    # PUBLICATION_CONTRACT.md, a prediction is user-board eligible only
+    # after `PredictionPublicationService` has emitted an immutable
+    # snapshot AND dual-written `published_*` fields onto `db.picks`.
+    #
+    # Historically `/picks/today` had NO filter on `publication_source`,
+    # so ingest paths that write directly to `db.picks` (e.g.
+    # soccer_hot_scorers, ufc_espn_ingest, espn_soccer_fixtures) or
+    # any legacy row that pre-dates the publication service could leak
+    # onto the board without ever passing the canonical write barrier.
+    #
+    # The gate is a single-key Mongo filter merged into the base query
+    # (existence of `publication_source`).  It does NOT change ranking,
+    # lock scores, Magic Tier, or any downstream logic — only which
+    # rows are eligible to appear.  Presentation / enrichment fields
+    # remain sourced from the same `db.picks` document (its `id` is
+    # the stable identity that also lives as `prediction_id` on
+    # `prediction_snapshots`).
+    #
+    # Emergency bypass: set the env var
+    # `LOCKSCORE_REQUIRE_CANONICAL_PUBLICATION=false` (see
+    # `services/canonical_board_source.py`).  Default is ON.
+    try:
+        from services.canonical_board_source import (
+            canonical_publication_filter,
+            is_canonical_publication_required,
+        )
+        _canon_filter = canonical_publication_filter()
+        if _canon_filter:
+            # Merge as a top-level required condition.  This coexists
+            # with the existing `$or` of sub-queries above because
+            # Mongo AND-s all top-level keys implicitly.
+            q.update(_canon_filter)
+        if is_canonical_publication_required():
+            logger.debug("canonical publication gate: ENFORCED on /picks/today")
+        else:
+            logger.warning(
+                "canonical publication gate: BYPASSED via %s env var — "
+                "non-canonical picks may appear on the board.",
+                "LOCKSCORE_REQUIRE_CANONICAL_PUBLICATION",
+            )
+    except Exception as _canon_err:
+        # Never break the board because the gate module itself
+        # errored — degraded visibility is preferable to a hard 500.
+        logger.warning(
+            "canonical publication gate skipped due to error: %s",
+            _canon_err,
+        )
     # ── User-supplied min_lock floor (global enforcement) ────────────
     # Each sub-query above uses its own lock floor (70 for tennis ML,
     # 85 for soccer scorers, 80 for elite anchors, etc.) tuned to its
