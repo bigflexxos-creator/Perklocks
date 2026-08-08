@@ -692,6 +692,7 @@ async def sync_uefa_espn_picks(db, days_ahead: int = 7) -> dict:
     # once The Odds API turns on).
     upserts = 0
     skipped_existing = 0
+    upserted_picks: list[dict] = []
     for doc in all_new:
         existing = await db.picks.find_one({
             "sport": "Soccer",
@@ -708,6 +709,23 @@ async def sync_uefa_espn_picks(db, days_ahead: int = 7) -> dict:
             upsert=True,
         )
         upserts += 1
+        upserted_picks.append(doc)
+
+    # ── P0-2 canonical publication ─────────────────────────────────
+    # UEFA ESPN picks (Champions League, Europa League, Conference
+    # League) are legitimate user-facing predictions.  Route each
+    # upserted doc through the publication service so an immutable
+    # snapshot exists BEFORE the canonical board eligibility gate.
+    if upserted_picks:
+        try:
+            from services.publication_helpers import publish_upserted_picks
+            await publish_upserted_picks(
+                db, upserted_picks,
+                publication_source=_UEFA_SOURCE_TAG,
+                caller_label="UEFA ESPN sync",
+            )
+        except Exception as _pub_err:
+            logger.warning("UEFA publication step failed: %s", _pub_err)
 
     finished = datetime.now(timezone.utc)
     summary = {

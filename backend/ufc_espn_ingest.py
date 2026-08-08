@@ -157,6 +157,7 @@ async def sync_ufc_espn_picks(db, days_ahead: int = 21) -> dict:
 
     upserts = 0
     skipped_existing = 0
+    upserted_picks: list[dict] = []
     for doc in picks:
         existing = await db.picks.find_one({
             "sport": "UFC",
@@ -173,6 +174,23 @@ async def sync_ufc_espn_picks(db, days_ahead: int = 21) -> dict:
             upsert=True,
         )
         upserts += 1
+        upserted_picks.append(doc)
+
+    # ── P0-2 canonical publication ─────────────────────────────────
+    # Route every UFC pick that was just upserted through the
+    # publication service so an immutable snapshot exists BEFORE the
+    # canonical board eligibility gate runs.  publish_batch is
+    # idempotent — safe to call every refresh cycle.
+    if upserted_picks:
+        try:
+            from services.publication_helpers import publish_upserted_picks
+            await publish_upserted_picks(
+                db, upserted_picks,
+                publication_source=_SOURCE_TAG,
+                caller_label="UFC ESPN sync",
+            )
+        except Exception as _pub_err:
+            logger.warning("UFC publication step failed: %s", _pub_err)
 
     finished = datetime.now(timezone.utc)
     summary = {

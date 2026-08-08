@@ -216,6 +216,34 @@ async def run_prediction_pipeline(db) -> dict:
             upsert=True,
         )
 
+    # ── P0-2 canonical publication ─────────────────────────────────
+    # Soccer v1 (moneyline) and v1_synth (Total Goals Over 1.5) picks
+    # were previously written direct-to-db.picks and skipped the
+    # publication service, so they never received a canonical
+    # snapshot.  Emit snapshots now — publication is idempotent so
+    # calling it every 15-min refresh is safe.  ``upserts_pick``
+    # carries both ``source="soccer_v1"`` and
+    # ``source="soccer_v1_synth"`` rows; separate them by source
+    # tag so the snapshot's ``publication_source`` reflects the
+    # actual ingest lane.
+    if upserts_pick:
+        try:
+            from services.publication_helpers import publish_upserted_picks
+            _by_source: dict[str, list[dict]] = {}
+            for _p in upserts_pick:
+                _tag = _p.get("source") or "soccer_v1"
+                _by_source.setdefault(_tag, []).append(_p)
+            for _tag, _batch in _by_source.items():
+                await publish_upserted_picks(
+                    db, _batch,
+                    publication_source=_tag,
+                    caller_label=f"Soccer pipeline ({_tag})",
+                )
+        except Exception as _pub_err:
+            logger.warning(
+                "Soccer pipeline publication step failed: %s", _pub_err,
+            )
+
     finished = datetime.now(timezone.utc)
     summary["finished_at"] = finished.isoformat()
     summary["elapsed_ms"] = int((finished - started).total_seconds() * 1000)
