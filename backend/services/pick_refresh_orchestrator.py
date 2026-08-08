@@ -1584,7 +1584,10 @@ async def _reconcile_player_prop_contradictions(safe_picks: list, date_str: str)
              "selection": 1, "book_odds": 1, "book": 1, "side": 1,
              "key_insights": 1, "k_prop_data": 1, "sport": 1,
              "event": 1, "grade": 1, "confidence": 1,
-             "probability": 1},
+             "probability": 1,
+             # P0-5 (2026-08-08): required so the immutability
+             # guard can detect prior-refresh canonical publication.
+             "publication_source": 1},
         ).to_list(length=200)
         # Group by (family, line) with side. Same family + same line
         # is required for a genuine contradiction — different lines
@@ -1671,6 +1674,80 @@ async def _reconcile_player_prop_contradictions(safe_picks: list, date_str: str)
 
             if older_losers and winner_pd:
                 keeper = min(older_losers, key=lambda r: r.get("pick_date") or "")
+                # ── P0-5 IMMUTABILITY GUARD (2026-08-08) ──────────────
+                # Cross-refresh K-math reconciliation would previously
+                # mutate the older keeper row IN PLACE, copying the
+                # winner's canonical fields (`market`, `selection`,
+                # `side`, `book_odds`, `edge_percent`, `lock_score`,
+                # `grade`, `confidence`, `probability`, `pick_date`)
+                # onto it — even when the keeper had ALREADY been
+                # canonically published in an earlier refresh.  That
+                # created two divergent truths: the immutable snapshot
+                # said one thing and the mutable `picks` row said
+                # another.
+                #
+                # New behaviour: if the keeper carries
+                # `publication_source`, treat its published state as
+                # immutable per PUBLICATION_CONTRACT §3.  Fall back
+                # to the safe path — atomically tag the keeper
+                # `no_bet=True` (a lifecycle flag, NOT a canonical
+                # field) so /picks/today filters it out, and leave
+                # the current-refresh winner in place so the
+                # rehydrated `safe_picks` still publishes it as a
+                # brand-new snapshot with the correct side.
+                #
+                # This preserves K-math correction (the correct side
+                # is still selected and still lands on the board) but
+                # forces the correction to arrive via the normal
+                # generation → publication pipeline rather than via a
+                # silent post-publication rewrite of historical truth.
+                if keeper.get("publication_source"):
+                    try:
+                        modified = await _atomic_mark_no_bet(
+                            {"id": keeper["id"]},
+                            (
+                                f"cross-refresh K-math flipped side to "
+                                f"{winner_side} {family} {line} for "
+                                f"{player}; prior published keeper "
+                                f"retained immutably (P0-5)"
+                            ),
+                        )
+                        # Also neutralise the sibling losers on the
+                        # earlier pick_date that were NOT the keeper
+                        # so they don't linger on the board.
+                        sibling_ids = [
+                            r["id"] for r in same_side_losers
+                            if r["id"] != keeper["id"]
+                        ]
+                        if sibling_ids:
+                            modified += await _atomic_mark_no_bet(
+                                {"id": {"$in": sibling_ids}},
+                                (
+                                    f"cross-refresh K-math flipped side "
+                                    f"to {winner_side} {family} {line} "
+                                    f"for {player} (sibling loser)"
+                                ),
+                            )
+                        removed_total += modified
+                        logger.warning(
+                            "P0-5 keeper immutability: keeper=%s is "
+                            "canonically published — SKIPPED in-place "
+                            "K-math mutation; tagged no_bet + kept "
+                            "current-refresh winner=%s alive for "
+                            "publication",
+                            keeper["id"], winner_id,
+                        )
+                    except Exception as _guard_err:
+                        logger.warning(
+                            "P0-5 immutability guard write failed "
+                            "(keeper=%s): %s",
+                            keeper.get("id"), _guard_err,
+                        )
+                    # Deliberately DO NOT delete the winner (P2) here —
+                    # it must survive so `publish_batch` snapshots it
+                    # after `safe_picks` is re-hydrated.
+                    continue
+
                 # Copy the winner's payload into the keeper row. We
                 # intentionally do NOT copy `id`, `created_at`, or
                 # `event` — the audit trail preserves the original
@@ -1694,8 +1771,15 @@ async def _reconcile_player_prop_contradictions(safe_picks: list, date_str: str)
                 update_payload["no_bet"] = False
                 update_payload["no_bet_reason"] = ""
                 try:
+                    # ── P0-5 defence-in-depth (2026-08-08) ────────────
+                    # Even though we guarded the branch above, add a
+                    # Mongo-side filter here so a concurrent
+                    # publication landing between the read and the
+                    # write cannot slip through — the write matches
+                    # zero documents if `publication_source` is set.
                     await db.picks.update_one(
-                        {"id": keeper["id"]},
+                        {"id": keeper["id"],
+                         "publication_source": {"$exists": False}},
                         {"$set": update_payload},
                     )
                     # Delete the newer winner row (redundant now that
