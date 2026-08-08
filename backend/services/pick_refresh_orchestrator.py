@@ -1293,6 +1293,54 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
             )
     logger.info("Stored %d picks for %s", len(safe_picks), date_str)
 
+    # ── P0-4 K-MATH BEFORE PUBLICATION (2026-08-08) ────────────────
+    # The Over/Under K-math reconciler was previously running AFTER
+    # `publish_batch()`, which meant any pick corrected by the
+    # reconciler had a canonical snapshot reflecting the PRE-
+    # correction values.  Move the reconciler UP so the correction
+    # happens BEFORE we snapshot, then re-hydrate `safe_picks` from
+    # DB so `publish_batch` sees the final K-math-corrected state
+    # for every pick this refresh emits.
+    #
+    # This is purely an orchestration change: the K-math formulas,
+    # dedupe criteria, and correction logic inside
+    # `_reconcile_player_prop_contradictions` are unchanged.
+    try:
+        await _reconcile_player_prop_contradictions(safe_picks, date_str)
+    except Exception as e:
+        logger.warning("Prop contradiction reconciliation skipped: %s", e)
+
+    # Re-hydrate `safe_picks` from DB now that K-math has run.
+    # Reconciler may have (a) mutated canonical fields on the just-
+    # inserted picks, or (b) deleted "losing" picks entirely.
+    # Publication needs the final state for both cases.  We look
+    # up by stable `id` (already the join key across picks and
+    # prediction_snapshots).
+    if safe_picks:
+        try:
+            _sp_ids = [p["id"] for p in safe_picks if p.get("id")]
+            _fresh: dict[str, dict] = {}
+            async for _p in db.picks.find(
+                {"id": {"$in": _sp_ids}}, {"_id": 0}
+            ):
+                _fresh[_p["id"]] = _p
+            # Preserve original order; drop picks the reconciler
+            # deleted (they no longer exist in db.picks).
+            safe_picks = [_fresh[p["id"]] for p in safe_picks
+                          if p.get("id") in _fresh]
+            _dropped = len(_sp_ids) - len(safe_picks)
+            if _dropped:
+                logger.info(
+                    "K-math reconciler removed %d picks before "
+                    "publication (losers)", _dropped,
+                )
+        except Exception as _rh_err:
+            logger.warning(
+                "safe_picks re-hydration after K-math failed "
+                "(publication will use pre-reconciler values): %s",
+                _rh_err,
+            )
+
     # ─── Phase 1a WRITE BARRIER — Prediction Publication Service ───
     # Dual-write mode (2026-08-06).  We emit an immutable snapshot for
     # every candidate that just landed in `picks`, and copy the
@@ -1350,22 +1398,13 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         )
     except Exception as _e:
         logger.warning("MLS ESPN diagnostic failed: %s", _e)
-    # ── Cross-run contradiction reconciliation (2026-07-22) ───────────
-    # User bug: "Gerrit Cole Over 6.5 K AND Under 6.5 K both showing as
-    # 99 Elite Lock". Root cause: sticky-pin logic (lock_score_peak ≥ 95)
-    # protects a pick from `_apply_atomic_delete`. When a NEW refresh
-    # generates the OPPOSITE side of a pinned pick (e.g. Under 6.5 K
-    # after an earlier Over 6.5 K was pinned), both survive and the
-    # in-run dedupe never fires because they're in different batches.
-    # Fix: after every insert, sweep the just-inserted player-prop picks
-    # and any contradicting DB picks for the SAME event + player +
-    # market family — keep the higher-edge one and remove the loser
-    # (regardless of sticky-pin, because contradictions are always
-    # user-facing garbage).
-    try:
-        await _reconcile_player_prop_contradictions(safe_picks, date_str)
-    except Exception as e:
-        logger.warning("Prop contradiction reconciliation skipped: %s", e)
+    # ── Cross-run contradiction reconciliation ────────────────────
+    # P0-4 (2026-08-08): moved UP to run BEFORE publish_batch so the
+    # canonical snapshot for this refresh reflects K-math-corrected
+    # values.  This block used to live here (post-publication) and
+    # was flagged in the P0-3 audit as a post-publication canonical
+    # mutation.  Retained comment for historical context only —
+    # the actual call is executed earlier in this function.
     # ── CSL Guaranteed Elite Injection ──
     # The standard refresh pipeline (learning + bandit + brain + evidence
     # governor + dedupe trims) systematically drops CSL synth picks even

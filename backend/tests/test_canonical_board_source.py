@@ -61,14 +61,16 @@ def _reload_gate():
 
 
 class TestGateEnvFlag:
-    def test_default_is_enabled(self, monkeypatch):
+    def test_default_is_disabled(self, monkeypatch):
+        # P0-4 (2026-08-08): default flipped to OFF — the gate is
+        # an explicit-opt-in migration flag, so an absent env var
+        # cannot unexpectedly enforce canonical eligibility during
+        # a rolling deployment.
         monkeypatch.delenv("LOCKSCORE_REQUIRE_CANONICAL_PUBLICATION",
                             raising=False)
         m = _reload_gate()
-        assert m.is_canonical_publication_required() is True
-        assert m.canonical_publication_filter() == {
-            "publication_source": {"$exists": True, "$ne": None}
-        }
+        assert m.is_canonical_publication_required() is False
+        assert m.canonical_publication_filter() == {}
 
     @pytest.mark.parametrize("val", ["false", "FALSE", "0", "no", "off", ""])
     def test_disabled_variants(self, monkeypatch, val):
@@ -85,6 +87,15 @@ class TestGateEnvFlag:
         assert m.canonical_publication_filter() == {
             "publication_source": {"$exists": True, "$ne": None}
         }
+
+    @pytest.mark.parametrize("val", ["truthy-garbage", "maybe", "ON!", "yesno"])
+    def test_unknown_values_do_not_enable(self, monkeypatch, val):
+        # Anything that isn't in the explicit ON set stays OFF.
+        # This prevents typos ("ture" / "yess") from silently
+        # activating the gate.
+        monkeypatch.setenv("LOCKSCORE_REQUIRE_CANONICAL_PUBLICATION", val)
+        m = _reload_gate()
+        assert m.is_canonical_publication_required() is False
 
     def test_filter_is_pure(self, monkeypatch):
         # Same env => same output; no hidden state.
