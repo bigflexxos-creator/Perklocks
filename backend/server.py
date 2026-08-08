@@ -2733,9 +2733,28 @@ async def _weekly_model_tuning_loop():
         try:
             from learning_engine import recompute_learned_weights, apply_learning
             weights = await recompute_learned_weights(db)
-            # Re-apply to all open picks for the next 7 days.
+            # ── P0-3 IMMUTABILITY FIX (2026-08-08) ──────────────────
+            # Weekly tuner previously re-applied learned weights to
+            # EVERY open pick, including canonically-published ones,
+            # rewriting `lock_score`, `win_probability`, `edge_percent`,
+            # `grade`, `confidence` on already-published rows.  That
+            # directly violated PUBLICATION_CONTRACT §3
+            # (immutability of the legacy-alias projection of
+            # published fields).
+            #
+            # Fix: constrain the reapply loop to picks WITHOUT
+            # `publication_source` — legacy pre-2026-08-06 rows that
+            # never received a snapshot are still eligible for
+            # in-place adjustment (they'll be v0-backfilled in
+            # Phase 1c).  Published picks are left alone; learning
+            # continues to flow into `recompute_learned_weights`
+            # (updates the shared `learning_weights` collection) so
+            # the NEXT `_refresh_picks` cycle consumes the fresh
+            # weights via `apply_learning` at pick-generation time
+            # (see `services/pick_refresh_orchestrator.py:480`).
             cursor = db.picks.find(
-                {"status": {"$in": [None, "pending"]}},
+                {"status": {"$in": [None, "pending"]},
+                 "publication_source": {"$exists": False}},
                 {"_id": 0},
             )
             adjusted = 0
@@ -2767,8 +2786,16 @@ async def _weekly_model_tuning_loop():
                         p["confidence"] = _confidence(new_lock)
                     except Exception:
                         pass
+                    # Safety net: even with the cursor filter above,
+                    # double-check the pick isn't published before
+                    # writing.  If a concurrent publication landed
+                    # between our read and this write, skip the
+                    # mutation.
+                    if p.get("publication_source"):
+                        continue
                     await db.picks.update_one(
-                        {"id": p["id"]},
+                        {"id": p["id"],
+                         "publication_source": {"$exists": False}},
                         {"$set": {"win_probability": p["win_probability"],
                                    "lock_score": p.get("lock_score"),
                                    "edge_percent": p.get("edge_percent"),
@@ -2778,8 +2805,14 @@ async def _weekly_model_tuning_loop():
                                    "learning": p.get("learning")}},
                     )
             active = sum(1 for b in weights.get("buckets", []) if b.get("active"))
-            logger.info("Weekly model tuning: %d active buckets, %d picks re-weighted",
-                        active, adjusted)
+            logger.info(
+                "Weekly model tuning: %d active buckets, %d "
+                "unpublished picks re-weighted (published picks are "
+                "immutable per PUBLICATION_CONTRACT §3 — future picks "
+                "will consume the fresh weights on the next "
+                "_refresh_picks cycle)",
+                active, adjusted,
+            )
         except asyncio.CancelledError:
             break
         except Exception as e:
