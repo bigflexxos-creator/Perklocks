@@ -292,6 +292,7 @@ async def refresh_once() -> dict:
             counts["events"] = len(events)
 
             ops = []
+            picks_for_publication: list[dict] = []
             now_iso = started.isoformat().replace("+00:00", "Z")
             for raw in events:
                 ev = _parse_event(raw)
@@ -318,10 +319,31 @@ async def refresh_once() -> dict:
                 pick["created_at"] = started
                 pick["updated_at"] = started
                 ops.append(ReplaceOne({"id": pick["id"]}, pick, upsert=True))
+                picks_for_publication.append(pick)
 
             if ops:
                 r = await db.picks.bulk_write(ops, ordered=False)
                 counts["picks"] = (r.upserted_count or 0) + (r.modified_count or 0)
+                # ── P0-2 canonical publication ─────────────────────
+                # ESPN scoreboard fallback picks (Odds API 401) are
+                # legitimate user-facing predictions; they must pass
+                # through the publication service so the canonical
+                # board eligibility gate accepts them.
+                try:
+                    from services.publication_helpers import (
+                        publish_upserted_picks,
+                    )
+                    if picks_for_publication:
+                        await publish_upserted_picks(
+                            db, picks_for_publication,
+                            publication_source=_SOURCE_TAG,
+                            caller_label=f"espn_soccer_fixtures[{slug}]",
+                        )
+                except Exception as _pub_err:
+                    logger.warning(
+                        "espn_soccer_fixtures[%s] publication step "
+                        "failed: %s", slug, _pub_err,
+                    )
             result[slug] = counts
             logger.info("espn_soccer_fixtures[%s] %s", slug, counts)
 

@@ -128,6 +128,7 @@ async def sync_hot_scorers(db, days_ahead: int = 4) -> dict:
 
     generated = 0
     dedup_skipped = 0
+    upserted_picks: list[dict] = []
     for fx in fixtures.values():
         lg = fx["league"]
         scorers = scorers_by_league.get(lg) or []
@@ -286,6 +287,24 @@ async def sync_hot_scorers(db, days_ahead: int = 4) -> dict:
                 upsert=True,
             )
             generated += 1
+            upserted_picks.append(doc)
+
+    # ── P0-2 canonical publication ─────────────────────────────────
+    # Route every hot-scorer pick that was just upserted through the
+    # publication service so an immutable snapshot exists BEFORE the
+    # canonical board eligibility gate runs.  Idempotent per contract.
+    if upserted_picks:
+        try:
+            from services.publication_helpers import publish_upserted_picks
+            await publish_upserted_picks(
+                db, upserted_picks,
+                publication_source=_SOURCE_TAG,
+                caller_label="Soccer hot scorers",
+            )
+        except Exception as _pub_err:
+            logger.warning(
+                "Soccer hot scorers publication step failed: %s", _pub_err,
+            )
 
     finished = datetime.now(timezone.utc)
     return {

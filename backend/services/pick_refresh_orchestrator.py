@@ -1806,6 +1806,26 @@ async def _ensure_csl_elite_picks(date_str: str) -> None:
         try:
             await db.picks.insert_many(missing, ordered=False)
             injected += len(missing)
+            # ── P0-2 canonical publication ─────────────────────────
+            # Force-injected CSL elite goalscorer picks are
+            # legitimate user-facing predictions but bypassed the
+            # main orchestrator publication step above.  Publish
+            # them now so an immutable snapshot exists BEFORE the
+            # canonical board eligibility gate examines them.
+            try:
+                from services.publication_helpers import (
+                    publish_upserted_picks,
+                )
+                await publish_upserted_picks(
+                    db, missing,
+                    publication_source="csl_elite_scorer_inject",
+                    caller_label=f"CSL elite scorer inject ({ev['event']})",
+                )
+            except Exception as _pub_err:
+                logger.warning(
+                    "CSL elite-inject publication step failed: %s",
+                    _pub_err,
+                )
         except Exception as bulk_err:
             details = getattr(bulk_err, "details", None) or {}
             n_inserted = int(details.get("nInserted", 0) or 0)
