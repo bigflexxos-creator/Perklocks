@@ -554,22 +554,45 @@ async def analytics_buckets_rollback(
 @router.post("/analytics/learn")
 async def learn_now(user: Annotated[UserPublic, Depends(current_admin)]):
     """Force a recompute of learned weights and re-apply to today's
-    pending picks."""
+    pending picks.
+
+    P0-3 IMMUTABILITY FIX (2026-08-08): only picks WITHOUT
+    ``publication_source`` are re-weighted in place.  Canonically
+    published picks are immutable per PUBLICATION_CONTRACT §3 —
+    their canonical fields (`lock_score`, `win_probability`,
+    `edge_percent`, `grade`, `confidence`) must not be rewritten
+    post-publication.  The `recompute_learned_weights(db)` call
+    below still updates the shared learning-state collection, so
+    the next `_refresh_picks` cycle will emit fresh predictions
+    that consume the new weights via `apply_learning` at
+    generation time (see
+    `services/pick_refresh_orchestrator.py:480`).
+    """
     from learning_engine import recompute_learned_weights, apply_learning
     weights = await recompute_learned_weights(db)
-    # Apply to all picks generated for today that haven't been settled.
+    # Apply to all UNPUBLISHED picks generated for today that
+    # haven't been settled — published picks are frozen.
     cursor = db.picks.find(
-        {"pick_date": today_str(), "status": {"$in": [None, "pending"]}},
+        {"pick_date": today_str(),
+         "status": {"$in": [None, "pending"]},
+         "publication_source": {"$exists": False}},
         {"_id": 0},
     )
     adjusted = 0
+    skipped_published = 0
     async for p in cursor:
         before = p.get("win_probability")
         await apply_learning(db, p)
         if p.get("learning") and p.get("win_probability") != before:
+            # Concurrent-publication safety: if a publication landed
+            # between our read and this write, do NOT touch the pick.
+            if p.get("publication_source"):
+                skipped_published += 1
+                continue
             adjusted += 1
             await db.picks.update_one(
-                {"id": p["id"]},
+                {"id": p["id"],
+                 "publication_source": {"$exists": False}},
                 {"$set": {
                     "win_probability": p["win_probability"],
                     "lock_score": p.get("lock_score"),
@@ -581,7 +604,12 @@ async def learn_now(user: Annotated[UserPublic, Depends(current_admin)]):
     return {
         "active_buckets": sum(1 for b in weights.get("buckets", []) if b.get("active")),
         "picks_adjusted": adjusted,
+        "skipped_published": skipped_published,
         "sample_size": weights.get("sample_size", 0),
+        "note": (
+            "Published picks are immutable per PUBLICATION_CONTRACT §3. "
+            "Fresh weights will feed the next _refresh_picks cycle."
+        ),
     }
 
 
