@@ -70,9 +70,26 @@ from typing import Any
 # Env var name — canonical source of the on/off switch.
 ENV_VAR = "LOCKSCORE_REQUIRE_CANONICAL_PUBLICATION"
 
-# Default: ON.  The publication contract has been in effect since
-# 2026-08-06; the flag exists purely as an emergency bypass.
-_DEFAULT_ENABLED = True
+# Default: OFF — explicit opt-in only.
+#
+# P0-4 (2026-08-08): the gate is a migration feature-flag, not a
+# permanent security guard.  Deploying the P0-1 through P0-3 code
+# base with the gate defaulting ON would immediately hide any
+# non-canonical row on the first production request, before we've
+# had a chance to run a canonical-verification refresh cycle.
+#
+# Safe deployment sequence:
+#   1. push code (default OFF — no user-facing change)
+#   2. wait for / trigger one scheduled refresh so every active
+#      writer publishes its picks canonically
+#   3. verify canonical coverage on the live board
+#   4. explicitly set `LOCKSCORE_REQUIRE_CANONICAL_PUBLICATION=true`
+#      in the production environment (e.g. via /app/backend/.env)
+#   5. restart backend
+#
+# Anything set explicitly (`true` / `1` / `yes` / `on`) enables the
+# gate; any other value or an empty string leaves it OFF.
+_DEFAULT_ENABLED = False
 
 
 def is_canonical_publication_required() -> bool:
@@ -80,11 +97,15 @@ def is_canonical_publication_required() -> bool:
 
     Reads the env var each call so operators can flip it live via
     supervisor restart without touching code.
+
+    Default (env absent): **OFF**.  This is an explicit-opt-in
+    migration flag; see the `_DEFAULT_ENABLED` comment above and
+    PUBLICATION_CONTRACT.md.
     """
     raw = os.environ.get(ENV_VAR)
     if raw is None:
         return _DEFAULT_ENABLED
-    return raw.strip().lower() not in {"false", "0", "no", "off", ""}
+    return raw.strip().lower() in {"true", "1", "yes", "on"}
 
 
 def canonical_publication_filter() -> dict[str, Any]:
