@@ -1609,22 +1609,51 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             "canonical publication gate skipped due to error: %s",
             _canon_err,
         )
-    # ── User-supplied min_lock floor (global enforcement) ────────────
-    # Each sub-query above uses its own lock floor (70 for tennis ML,
-    # 85 for soccer scorers, 80 for elite anchors, etc.) tuned to its
-    # carve-out's chalk-pricing reality. But when the user EXPLICITLY
-    # slides the Min Lock filter to e.g. 95, those carve-out floors
-    # would silently leak 70-94 picks back into the feed. To honour
-    # the user's slider, we AND a global `lock_score >= min_lock`
-    # condition over every sub-query. Check both `lock_score` and
-    # `lock_score_v2` (same OR-of-both pattern used by every
-    # sub-query) so picks where V2 has caught up but V1 hasn't yet
-    # don't get filtered out wrongly. Default `floor` was already
-    # applied per-sub-query, so this is purely about the user's
-    # explicit override.
-    if min_lock is not None and float(min_lock) > 0:
+    # ── P0-2 GLOBAL LOCKS THRESHOLD ENFORCEMENT (2026-08-11) ──────────
+    # Every sub-query above (elite_q, model_only_q, tennis_ml_q,
+    # tennis_alt_q, tennis_extra_q, mlb_k_q, mlb_hitter_q,
+    # soccer_scorer_q, high_lock_bypass_q, standard_q with its
+    # chalk_verified / espn_fallback bypasses) declares its own lock
+    # floor tuned to the historical chalk-pricing of that market
+    # slice.  Several of those internal floors are below 85 (75, 70,
+    # etc.) — they were originally intended to surface chalk-priced
+    # sharps that the strict >85 board would otherwise hide.
+    #
+    # The main Locks board must NEVER fall below `>85`.  We AND a
+    # global canonical predicate over the union so that regardless of
+    # which sub-query a pick matches, its FINAL Lock Score must clear
+    # the `>85` contract.  Filtered / bypass-carve-out surfaces don't
+    # get to lower the threshold; they only refine WHICH high-lock
+    # picks appear.
+    #
+    # ``main_board_lock_score_query`` prefers ``published_lock_score``
+    # over legacy shadow fields (Phase 1 Final Closure canonical-
+    # source guarantee) and clamps ``min_lock`` values ≤ 85 up to
+    # the base ``>85`` contract.  A user-supplied ``min_lock > 85``
+    # narrows further via ``$gte``.
+    _global_lock_gate = main_board_lock_score_query(
+        min_lock=(float(min_lock) if min_lock is not None
+                  and float(min_lock) > MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE
+                  else None)
+    )
+    q["$and"] = (q.get("$and") or []) + [_global_lock_gate]
+
+    # ── User-supplied min_lock floor — NARROW ONLY ─────────────────
+    # The global gate above already applies ``>85`` (or ``>=min_lock``
+    # when user asked for a strictly higher floor).  This block is
+    # therefore a **NO-OP for values ≤ 85** — the user cannot lower
+    # the board below the base contract.  We keep it here only to
+    # preserve any legacy call-site that expects an explicit
+    # min_lock clause in the query trace.
+    #
+    # P0-2 bug fix (2026-08-11): the previous ``q["$and"] = [...]``
+    # assignment OVERWROTE the existing ``$and`` (date + 72h horizon
+    # window), silently dropping the horizon guard.  Now APPEND
+    # via ``(q.get("$and") or []) + [...]`` so every previously
+    # merged clause survives.
+    if min_lock is not None and float(min_lock) > MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE:
         user_floor = float(min_lock)
-        q["$and"] = [{"$or": [
+        q["$and"] = (q.get("$and") or []) + [{"$or": [
             {"lock_score":     {"$gte": user_floor}},
             {"lock_score_v2":  {"$gte": user_floor}},
         ]}]
