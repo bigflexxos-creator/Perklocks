@@ -114,8 +114,154 @@ async def why_missing(db, candidate_key: str) -> list[dict]:
         return []
 
 
+# ── Central boundary hook (Phase 1 Final Closure) ───────────────────
+# One tiny helper called from ``pick_refresh_orchestrator`` right after
+# ``publish_batch()``.  Emits the full lifecycle trail for the batch
+# without scattering ``record_disposition`` calls across sport-specific
+# writers.  Best-effort: never raises.
+async def record_batch_dispositions(
+    db,
+    picks: list[dict],
+    *,
+    publication_summary: Optional[dict] = None,
+) -> dict:
+    """Emit ``evaluated``/``accepted``/``rejected``/``published``/
+    ``board_eligible`` for every pick in ``picks`` — using the pick's
+    own tags to determine which trail to write.
+
+    Rules:
+      * Every pick that reached this point gets ``evaluated``.
+      * ``no_bet=True``          ⇒ ``rejected`` (reason=no_bet).
+      * ``off_board=True``       ⇒ ``rejected`` (reason inferred from
+                                    ``off_board_reasons`` — falls back
+                                    to ``lock_score_below_board_threshold``).
+      * Otherwise                ⇒ ``accepted``.
+      * If the pick's ``id`` appears as a *successful* publish result
+        in ``publication_summary``                              ⇒ ``published``.
+        (When ``publication_summary`` is omitted we still emit
+        ``published`` for every accepted pick since ``publish_batch``
+        was called on the same list — the summary is used only to
+        skip picks that publication genuinely rejected.)
+      * If ``services.main_board_eligibility.is_main_board_eligible``
+        returns True                                            ⇒ ``board_eligible``.
+
+    Returns a summary dict for logging: counts per stage.
+    """
+    from services.main_board_eligibility import is_main_board_eligible  # local
+
+    errored_ids: set = set()
+    if publication_summary and isinstance(publication_summary, dict):
+        for err in publication_summary.get("errors") or []:
+            pid = err.get("prediction_id")
+            if pid:
+                errored_ids.add(str(pid))
+
+    stats = {
+        "evaluated": 0, "accepted": 0, "rejected": 0,
+        "published": 0, "board_eligible": 0, "errors": 0,
+    }
+    for p in picks or []:
+        try:
+            pid = str(p.get("id") or p.get("prediction_id") or "")
+            if not pid:
+                continue
+            sport = p.get("sport")
+            market = p.get("market") or (
+                (p.get("selection_v2") or {}).get("market", {}).get("family")
+                if isinstance(p.get("selection_v2"), dict) else None
+            )
+            try:
+                ls = float(p.get("lock_score") or 0.0)
+            except (TypeError, ValueError):
+                ls = 0.0
+
+            # 1. evaluated — every candidate that reached the batch.
+            await record_disposition(
+                db, candidate_key=pid, stage=STAGE_EVALUATED,
+                sport=sport, market=market, lock_score=ls,
+            )
+            stats["evaluated"] += 1
+
+            # 2. rejected vs accepted (based on final pick tags).
+            is_rejected = False
+            reason = None
+            detail = None
+            if p.get("no_bet") is True:
+                is_rejected = True
+                reason = REASON_NO_BET
+                detail = p.get("no_bet_reason")
+            elif p.get("off_board") is True:
+                is_rejected = True
+                # Try to map an off_board_reason to a canonical enum;
+                # otherwise fall back to the lock-floor code because
+                # off_board almost always means "below the >85 board".
+                reasons_list = p.get("off_board_reasons") or []
+                first = (reasons_list[0] if reasons_list else "").lower()
+                if first.startswith("lock<"):
+                    reason = REASON_LOCK_SCORE_BELOW_FLOOR
+                elif first == "no_bet":
+                    reason = REASON_NO_BET
+                elif first == "validation_block":
+                    reason = REASON_MODEL_REJECTED
+                elif first in {"chalk_trap", "longshot_trap"}:
+                    reason = REASON_MODEL_REJECTED
+                else:
+                    reason = REASON_LOCK_SCORE_BELOW_FLOOR
+                detail = ",".join(str(r) for r in reasons_list)[:200] or None
+            elif p.get("validation_block") is True:
+                is_rejected = True
+                reason = REASON_MODEL_REJECTED
+                detail = "validation_block"
+
+            if is_rejected:
+                await record_disposition(
+                    db, candidate_key=pid, stage=STAGE_REJECTED,
+                    sport=sport, market=market, lock_score=ls,
+                    reason=reason, detail=detail,
+                )
+                stats["rejected"] += 1
+                # Rejected candidates do not get published/board_eligible.
+                continue
+
+            # 3. accepted — cleared all in-batch gates.
+            await record_disposition(
+                db, candidate_key=pid, stage=STAGE_ACCEPTED,
+                sport=sport, market=market, lock_score=ls,
+            )
+            stats["accepted"] += 1
+
+            # 4. published — publish_batch attempted; skip if summary
+            #    explicitly reports this candidate errored.
+            if pid in errored_ids:
+                await record_disposition(
+                    db, candidate_key=pid, stage=STAGE_REJECTED,
+                    sport=sport, market=market, lock_score=ls,
+                    reason=REASON_PUBLICATION_FAILED,
+                )
+                stats["rejected"] += 1
+                continue
+
+            await record_disposition(
+                db, candidate_key=pid, stage=STAGE_PUBLISHED,
+                sport=sport, market=market, lock_score=ls,
+            )
+            stats["published"] += 1
+
+            # 5. board_eligible — cleared the ``>85`` Locks contract.
+            if is_main_board_eligible(p):
+                await record_disposition(
+                    db, candidate_key=pid, stage=STAGE_BOARD_ELIGIBLE,
+                    sport=sport, market=market, lock_score=ls,
+                )
+                stats["board_eligible"] += 1
+        except Exception:
+            stats["errors"] += 1
+            continue
+    return stats
+
+
 __all__ = [
-    "record_disposition", "why_missing",
+    "record_disposition", "why_missing", "record_batch_dispositions",
     "STAGE_DISCOVERED", "STAGE_INGESTED", "STAGE_NORMALIZED",
     "STAGE_EVALUATED", "STAGE_ACCEPTED", "STAGE_REJECTED",
     "STAGE_PUBLISHED", "STAGE_BOARD_ELIGIBLE",

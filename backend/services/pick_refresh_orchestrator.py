@@ -1380,6 +1380,41 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         # the legacy fields, so a broken publication is degraded
         # visibility, not degraded UX.
         logger.warning("Publication step failed (non-fatal): %s", pub_err)
+        summary = {}
+
+    # ─── Phase 1 Final Closure (2026-08-11) ───────────────────────
+    # Emit the full candidate-disposition lifecycle trail for every
+    # pick in this refresh cycle.  One central hook — no scattered
+    # writes across sport-specific files.  Best-effort: any failure
+    # here degrades observability, not the board.
+    #
+    # Trails written per candidate:
+    #   evaluated → (accepted → published → board_eligible)
+    #   evaluated → rejected(reason)
+    #
+    # Reasons come from the pick's own final tags (no_bet /
+    # off_board_reasons / validation_block) so the trail matches the
+    # actual pipeline decision that hid the pick.
+    try:
+        from services.candidate_disposition import (
+            record_batch_dispositions,
+        )
+        _disp_stats = await record_batch_dispositions(
+            db, safe_picks, publication_summary=summary,
+        )
+        logger.info(
+            "Candidate dispositions: eval=%d acc=%d rej=%d pub=%d elig=%d",
+            _disp_stats.get("evaluated", 0),
+            _disp_stats.get("accepted", 0),
+            _disp_stats.get("rejected", 0),
+            _disp_stats.get("published", 0),
+            _disp_stats.get("board_eligible", 0),
+        )
+    except Exception as _disp_err:
+        logger.warning(
+            "Candidate disposition recording failed (non-fatal): %s",
+            _disp_err,
+        )
 
     # 2026-07-22 MLS ESPN post-insert diagnostic. Should reveal whether
     # picks were persisted to Mongo or silently dropped.
