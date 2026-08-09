@@ -333,15 +333,75 @@ def test_hydrate_preserves_edge_none_when_snapshot_edge_none():
     assert abs(out["win_probability"] - 85.0) < 1e-6
 
 
-def test_hydrate_defends_against_leaked_fraction_on_legacy_row():
-    """Legacy row (no `published_lock_score`) that was mutated by
-    the OLD buggy dual-write and now has `win_probability=0.682` —
-    hydrate must recognise the fractional leak and normalise it back
-    to the frontend-visible 68.2 percentage."""
+def test_hydrate_leaves_legacy_row_win_probability_untouched():
+    """P0-1 review fix (2026-08-11): a legacy row (no
+    `published_lock_score`) has an AUTHORITATIVE `win_probability` in
+    the frontend-visible 0-100 unit.  Even fractional-looking values
+    (0.2, 0.5, 1.0) represent legitimate low probabilities and must
+    NOT be silently rescaled."""
     from services.published_prediction_reader import hydrate
-    p = {"id": "x3", "win_probability": 0.682}  # no published_* → legacy path
+    for wp_in in (0.2, 0.5, 1.0, 5.0, 68.2, 99.9):
+        p = {"id": f"legacy_{wp_in}", "win_probability": wp_in}
+        out = hydrate(p)
+        assert out["win_probability"] == wp_in, (
+            f"legacy win_probability {wp_in} must survive verbatim, "
+            f"got {out['win_probability']!r}"
+        )
+        # Provenance marker must reflect the legacy path.
+        assert out["_prediction_source"] == "legacy_unpublished"
+
+
+# ── P0-1 review-fix boundaries — sub-1% legitimacy ──────────────────
+def test_legacy_0_2_percent_stays_0_2_percent():
+    """0.2% is a legitimate low probability (huge underdog) — MUST
+    NOT be promoted to 20%."""
+    from services.published_prediction_reader import hydrate
+    p = {"id": "sub1_02", "win_probability": 0.2}
+    assert hydrate(p)["win_probability"] == 0.2
+
+
+def test_legacy_0_5_percent_stays_0_5_percent():
+    from services.published_prediction_reader import hydrate
+    p = {"id": "sub1_05", "win_probability": 0.5}
+    assert hydrate(p)["win_probability"] == 0.5
+
+
+def test_legacy_1_0_percent_stays_1_0_percent():
+    from services.published_prediction_reader import hydrate
+    p = {"id": "sub1_10", "win_probability": 1.0}
+    assert hydrate(p)["win_probability"] == 1.0
+
+
+def test_legacy_68_2_percent_stays_68_2_percent():
+    """Common mid-range probability — sanity check that the removed
+    blanket rescale did not silently regress the common case."""
+    from services.published_prediction_reader import hydrate
+    p = {"id": "mid_682", "win_probability": 68.2}
+    assert hydrate(p)["win_probability"] == 68.2
+
+
+def test_canonical_snapshot_0_682_hydrates_to_68_2_percent():
+    """The ACTUAL bug-scenario repair path: a snapshot-backed pick
+    with `published_probability=0.682` (canonical fraction) must
+    hydrate to legacy `win_probability=68.2` (percentage).  This is
+    handled in the ``has_snapshot`` branch — the fix does NOT depend
+    on the removed blanket rescale."""
+    from services.published_prediction_reader import hydrate
+    p = {
+        "id": "canonical_682",
+        "published_lock_score": 88.0,           # <-- marks has_snapshot
+        "published_probability": 0.682,         # canonical fraction
+        "published_edge": 3.5,
+        "published_grade": "Strong Lock",
+        "published_confidence": "Very High",
+        # A stale legacy win_probability could be anything — the
+        # canonical path IGNORES it and recomputes from the snapshot.
+        "win_probability": 0.682,               # leaked stale value
+    }
     out = hydrate(p)
     assert abs(out["win_probability"] - 68.2) < 1e-6
+    # Provenance reflects snapshot-backed.
+    assert out["_prediction_source"] == "snapshot"
 
 
 # ── 7. Consumers using legacy units documented ──────────────────────
