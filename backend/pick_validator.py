@@ -163,6 +163,11 @@ async def validate_and_heal(db) -> dict:
                 p["edge_percent"] = None
                 counts["fixed_edge"] += 1
         elif is_book_anchored and wp is not None and ip is not None:
+            # Book-anchored picks by definition have edge≈0 (model
+            # probability equals book implied probability).  Preserve
+            # the small numeric edge instead of using None here so
+            # ranking / analytics that read the field still see a
+            # concrete value.
             stored_edge = p.get("edge_percent")
             if stored_edge is None or abs(stored_edge - 0.0) > 0.05:
                 updates["edge_percent"] = 0.0
@@ -199,22 +204,35 @@ async def validate_and_heal(db) -> dict:
                 or p.get("is_synthetic_scorer")
                 or (p.get("source") or "").startswith("sportdb_scorer")
             )
-            # For model-only / sim-anchored / elite picks: their edge_percent
-            # is meaningless (no real bookmaker line to compute against).
-            # The validator's edge re-computation drives those values to
-            # ~-8% which then trips the `edge_percent >= 0` gate on the
-            # home feed and silently hides Silva Felipe / Guy Mbenza / Wei
-            # Shihao etc. Pin those to 0 instead of letting the validator
-            # write a meaningless negative number.
+            # For model-only / sim-anchored / elite picks: their
+            # edge_percent is meaningless (no real bookmaker line to
+            # compute against).  The validator's edge re-computation
+            # would drive those values to ~-8% which then tripped the
+            # `edge_percent >= 0` gate on the home feed and hid
+            # Silva Felipe / Guy Mbenza / Wei Shihao etc.
+            #
+            # P0-4 (2026-08-11) real-line integrity: previously we
+            # pinned to 0.0 here, which the frontend then renders as
+            # "0% edge" — a false statement that a real bookmaker line
+            # existed and matched the model.  Now we surface the
+            # honest "unknown" (None) instead.  The home board gate
+            # was independently repaired in P0-2 so a null edge no
+            # longer hides these picks.
             if _is_model_only:
+                stored_edge = p.get("edge_percent")
                 try:
-                    _edge_now = float(p.get("edge_percent") or 0)
+                    _edge_now = float(stored_edge) if stored_edge is not None else None
                 except (TypeError, ValueError):
-                    _edge_now = 0.0
-                if _edge_now < 0:
-                    p["edge_percent"] = 0.0
-                    p["edge_zeroed_reason"] = "model_only_no_real_book"
-                    counts["fixed_edge"] += 1
+                    _edge_now = None
+                # Wipe an existing 0.0 OR a negative validator artefact
+                # to the honest "no book line" value.  Real positive
+                # edges (e.g. picks that DID have a book line early in
+                # their lifecycle) are left alone.
+                if _edge_now is None or _edge_now <= 0.0:
+                    if stored_edge != None:  # noqa: E711 — explicit
+                        p["edge_percent"] = None
+                        p["edge_null_reason"] = "model_only_no_real_book"
+                        counts["fixed_edge"] += 1
             # ── ANCHOR CARVE-OUTS ─────────────────────────────────────────
             # Two pick categories whose lock_score is intentionally NOT a
             # direct function of factors+win_prob — re-running the generic

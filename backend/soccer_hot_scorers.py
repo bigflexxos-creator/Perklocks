@@ -209,9 +209,19 @@ async def sync_hot_scorers(db, days_ahead: int = 4) -> dict:
                 "market":          f"{player} - Anytime Goal Scorer",
                 "selection":       f"{player} to Score",
                 "win_probability": conf,
-                "implied_probability": conf,
-                "book_odds":       fair_odds,
-                "edge_percent":    0.0,
+                # P0-4 (2026-08-11) real-line integrity: model-only pick
+                # with no US sportsbook line — do NOT surface the
+                # fair-odds probability as a bookmaker implied_probability
+                # or the fair American price as book_odds/edge.  Real
+                # signal (win_probability + lock_score + grade) is
+                # preserved; model_fair_odds carries the pricing for
+                # reference.
+                "implied_probability": None,
+                "book_odds":       None,
+                "edge_percent":    None,
+                "no_real_book_line": True,
+                "model_only":      True,
+                "model_fair_odds": fair_odds,
                 "lock_score":      lock,
                 "lock_score_v2":   lock,
                 # Set peak equal to lock so the 95+ sticky-pin filter in

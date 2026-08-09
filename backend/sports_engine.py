@@ -5012,9 +5012,14 @@ async def _espn_csl_scorer_picks(sport_key: str, ev: dict) -> list[dict]:
                 fair = int(round(-100.0 * rate / (1.0 - rate)))
             else:
                 fair = int(round(100.0 * (1.0 - rate) / rate))
-            # Books juice by ~10-15% on CSL AGS — build in a small
-            # vig cushion so our synthetic price is realistic.
-            book_odds = int(fair * 0.92) if fair > 0 else int(fair * 1.08)
+            # Books juice by ~10-15% on CSL AGS — this used to write a
+            # synthetic "book_odds" here.  P0-4 (2026-08-11): no US
+            # sportsbook line exists for CSL Chinese Super League
+            # goalscorer props, so we must not surface synthetic odds
+            # as book odds.  Keep the synthetic price under
+            # ``model_fair_odds`` for reference.
+            _synth_book = int(fair * 0.92) if fair > 0 else int(fair * 1.08)
+            book_odds = None
             # Lock score: 90 baseline for scorer rate ≥ 0.4, else 85.
             # Elite anchors (rate ≥ 0.6) get 95.
             if rate >= 0.6:
@@ -5034,10 +5039,14 @@ async def _espn_csl_scorer_picks(sport_key: str, ev: dict) -> list[dict]:
                 "pick_side": name,
                 "model_win_prob": rate,
                 "book_odds": book_odds,
+                "model_fair_odds": _synth_book,
+                "implied_probability": None,
                 "lock_score": lock,
                 "lock_score_v2": lock,
                 "lock_score_v2_raw": lock,
-                "edge_percent": 0.0,
+                "edge_percent": None,
+                "no_real_book_line": True,
+                "model_only": True,
                 "elite_player": True,           # anchor exemption
                 "is_synthetic_scorer": True,    # MODEL badge
                 "synthetic": True,
