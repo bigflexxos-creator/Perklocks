@@ -104,9 +104,15 @@ def _build_ufc_pick(pe) -> Optional[dict]:
         "market":           f"{sel} Moneyline",
         "selection":        sel,
         "win_probability":  conf,
-        "implied_probability": conf,
-        "book_odds":        fair_odds,
-        "edge_percent":     0.0,
+        # P0-4 (2026-08-11) real-line integrity: ESPN pre-market UFC
+        # picks have no US sportsbook line yet — do NOT masquerade the
+        # model fair odds as sportsbook data.  Real signal survives.
+        "implied_probability": None,
+        "book_odds":        None,
+        "edge_percent":     None,
+        "no_real_book_line": True,
+        "model_only":       True,
+        "model_fair_odds":  fair_odds,
         "lock_score":       conf,
         "lock_score_v2":    conf,
         "grade":            grade_from_conf(conf),

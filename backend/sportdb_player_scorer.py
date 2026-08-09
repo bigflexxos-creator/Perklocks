@@ -959,16 +959,21 @@ async def _picks_for_side(
             "player_team": team_name,
             "player_side": side,
             "event_time": kickoff_iso,
-            "book_odds": implied_odds,
+            # P0-4 (2026-08-11) real-line integrity: model-only SportDB
+            # synthetic scorer — no US sportsbook line.  Do not surface
+            # the model fair odds as `book_odds` / `implied_probability`
+            # / `edge_percent`.  Real signal (win_probability +
+            # lock_score + grade) is preserved.
+            "book_odds": None,
             "book_implied_prob": prob,
-            # `implied_probability` is the field name the dedupe step 5
-            # market-favourite check reads — surface it explicitly so the
-            # downstream guard recognises high-confidence synth picks.
-            "implied_probability": round(prob * 100, 1),
+            "implied_probability": None,
             "win_probability": round(prob * 100, 1),
             "win_probability_raw": round(prob * 100, 1),
             "sim_win_probability": round(prob * 100, 1),
-            "edge_percent": 0.0,           # model-only — no market to gauge edge
+            "edge_percent": None,
+            "no_real_book_line": True,
+            "model_only": True,
+            "model_fair_odds": implied_odds,
             "lock_score": _prob_to_lock(prob, rate),
             "lock_score_v2": _prob_to_lock(prob, rate),
             "grade": _prob_to_grade(prob),

@@ -19,7 +19,7 @@ import hashlib
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 from .normalize import normalize_match, normalize_standing_row  # noqa: F401
 
@@ -242,19 +242,37 @@ def to_picks_collection_doc(pred: dict, real_odds: dict | None = None) -> dict:
         book_odds         = int(real_odds["book_odds"])
         book_implied_pct  = float(real_odds["implied_probability"])
         bookmaker_label   = str(real_odds.get("bookmaker") or "Sportsbook")
-        edge_pct          = round(conf - book_implied_pct, 2)
+        edge_pct: Optional[float] = round(conf - book_implied_pct, 2)
         is_extra_flag     = False
         fair_only_flag    = False
+        no_real_book_line = False
         # Sample multi-book quote dict for the sportsbook_mapper.
         all_books         = real_odds.get("all_books") or {}
+        # Retain fair-odds separately for reference.
+        model_fair_odds   = int(fair_odds)
     else:
-        book_odds         = int(fair_odds)
-        book_implied_pct  = round(conf, 1)  # At fair odds, implied == model
-        bookmaker_label   = "Fair Odds (Model)"
-        edge_pct          = 0.0
+        # ── P0-4 (2026-08-11) real-line integrity ────────────────────
+        # No verified US sportsbook line for this fixture.  Model-only
+        # signal survives (win_probability / lock_score / grade all
+        # remain), but nothing is presented as if it were a bookmaker
+        # value:
+        #   * book_odds          → None
+        #   * implied_probability → None
+        #   * edge_percent       → None (NOT 0.0)
+        #   * no_real_book_line  → True
+        #   * model_only         → True
+        # The model's own fair odds are retained in `model_fair_odds`
+        # for reference.  Frontend can display "no sportsbook line"
+        # instead of a fake bookmaker number.
+        book_odds         = None
+        book_implied_pct  = None
+        bookmaker_label   = "Model (no book line)"
+        edge_pct          = None
         is_extra_flag     = True
         fair_only_flag    = True
+        no_real_book_line = True
         all_books         = {}
+        model_fair_odds   = int(fair_odds)
 
     doc = {
         "id":               pred["id"],
@@ -285,12 +303,17 @@ def to_picks_collection_doc(pred: dict, real_odds: dict | None = None) -> dict:
         # pick flows into the regular Locks board like any other.
         "is_extra":         is_extra_flag,
         "fair_odds_model":  fair_only_flag,
+        # P0-4: explicit contract flags — preserved through publication.
+        "no_real_book_line": no_real_book_line,
+        "model_only":        not using_real,
+        "model_fair_odds":   model_fair_odds,
         "bookmaker":        bookmaker_label,
         "factors": {
             "Coverage Source": (
                 f"Real book odds via {bookmaker_label}"
                 if using_real else
-                "Soccer model fair-odds (The Odds API doesn't carry this fixture). "
+                "Soccer model — no US sportsbook line available for this "
+                "fixture; odds/edge intentionally shown as unavailable. "
                 "Confirm the line at your sportsbook before placing."
             ),
             "Model Confidence": f"Model puts {sel} at {round(conf)}% to win.",
@@ -370,6 +393,9 @@ def make_over_1_5_pick(prediction: dict) -> dict | None:
     sig = f"{prediction.get('fixture_id')}|{MODEL_VERSION}|over_1_5"
     pred_id = str(uuid.UUID(hashlib.md5(sig.encode()).hexdigest()))
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # ── P0-4 (2026-08-11) real-line integrity ───────────────────────
+    # This is a MODEL-ONLY Over 1.5 synth — no real bookmaker line.
+    # Do NOT masquerade the model's fair odds as sportsbook odds.
     return {
         "id":                pred_id,
         "sport":             "Soccer",
@@ -379,12 +405,15 @@ def make_over_1_5_pick(prediction: dict) -> dict | None:
         "market":            "Total Goals Over 1.5",
         "selection":         "Over",
         "win_probability":   win_pct,
-        "implied_probability": 50.0,
-        "book_odds":         fair_odds,
-        "edge_percent":      round((win_pct - 50.0) / 5.0, 2),
+        "implied_probability": None,
+        "book_odds":         None,
+        "edge_percent":      None,
         "lock_score":        win_pct,
         "grade":             _grade_from_conf(win_pct),
         "pick_date":         today,
+        "no_real_book_line": True,
+        "model_only":        True,
+        "model_fair_odds":   fair_odds,
         "is_under_lock":     False,
         "no_bet":            win_pct < 80.0,
         "elite_player":      False,

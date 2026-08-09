@@ -489,9 +489,17 @@ def _build_double_chance_pick(fx: dict) -> Optional[dict]:
         "market":           sel,
         "selection":        sel,
         "win_probability":  conf,
-        "implied_probability": conf,   # fair-derived
-        "book_odds":        fair_odds,
-        "edge_percent":     0.0,
+        # P0-4 (2026-08-11): ESPN pregame double-chance is derived from
+        # ESPN 1X2 pricing — that is NOT a US sportsbook line, so we
+        # do not masquerade it as book_odds / implied_probability /
+        # edge_percent.  Model signal (win_probability / lock_score /
+        # grade) is preserved.
+        "implied_probability": None,
+        "book_odds":        None,
+        "edge_percent":     None,
+        "no_real_book_line": True,
+        "model_only":       True,
+        "model_fair_odds":  fair_odds,
         "lock_score":       conf,
         "lock_score_v2":    conf,
         "grade":            _grade_from_conf(conf),
@@ -502,7 +510,7 @@ def _build_double_chance_pick(fx: dict) -> Optional[dict]:
         "deep_dive":        False,
         "source":           _UEFA_SOURCE_TAG,
         "model_version":    "uefa.espn.v1",
-        "bookmaker":        "Fair Odds (Model)",
+        "bookmaker":        "Model (no book line)",
         "created_at":       datetime.now(timezone.utc).isoformat(),
         "is_extra":         True,   # DC derived, mark as extended coverage
         "fair_odds_model":  True,
@@ -600,9 +608,14 @@ def _synthetic_ml_from_form(fx: dict) -> Optional[dict]:
         "market":           market_label,
         "selection":        sel,
         "win_probability":  conf,
-        "implied_probability": conf,
-        "book_odds":        fair_odds,
-        "edge_percent":     0.0,
+        # P0-4 (2026-08-11) real-line integrity — see form-derived
+        # counterpart above.  ESPN recent-form is NOT a book line.
+        "implied_probability": None,
+        "book_odds":        None,
+        "edge_percent":     None,
+        "no_real_book_line": True,
+        "model_only":       True,
+        "model_fair_odds":  fair_odds,
         "lock_score":       conf,
         "lock_score_v2":    conf,
         "grade":            _grade_from_conf(conf),
@@ -613,7 +626,7 @@ def _synthetic_ml_from_form(fx: dict) -> Optional[dict]:
         "deep_dive":        False,
         "source":           _UEFA_SOURCE_TAG,
         "model_version":    "uefa.espn.v1.form",
-        "bookmaker":        "Fair Odds (Model)",
+        "bookmaker":        "Model (no book line)",
         "created_at":       datetime.now(timezone.utc).isoformat(),
         "is_extra":         True,
         "fair_odds_model":  True,

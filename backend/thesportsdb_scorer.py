@@ -751,8 +751,13 @@ async def compute_anytime_scorer_picks(
                 "player_id": p["idPlayer"],
                 "player_name": p["strPlayer"],
                 "win_probability": round(prob * 100, 2),
-                "implied_probability": round(prob * 100, 2),
-                "edge_percent": 0.0,           # synthetic — no book line to compare
+                # P0-4 (2026-08-11) real-line integrity — TheSportsDB
+                # synthetic scorer has NO real bookmaker line to
+                # compare against.  Do not fake sportsbook data.
+                "implied_probability": None,
+                "edge_percent": None,
+                "no_real_book_line": True,
+                "model_only": True,
                 "lock_score":    lock_score,
                 "lock_score_v2": lock_score,
                 "raw_lock_score": lock_score,
@@ -768,8 +773,11 @@ async def compute_anytime_scorer_picks(
                 "elite_protect": elite_player_flag,   # marker for downstream protect
                 "grade": "A" if lock_score >= 88 else ("B" if lock_score >= 80 else "C"),
                 "confidence": "A" if lock_score >= 88 else ("B" if lock_score >= 80 else "C"),
-                "book_odds": int(round(-100 * prob / (1 - prob))) if prob < 0.5
-                              else int(round(100 * (1 - prob) / prob)),
+                "book_odds": None,
+                "model_fair_odds": (
+                    int(round(-100 * prob / (1 - prob))) if prob < 0.5
+                    else int(round(100 * (1 - prob) / prob))
+                ),
                 "no_bet": False,
                 "synthetic": True,
                 "synthetic_source": "thesportsdb",
