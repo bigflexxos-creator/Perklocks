@@ -148,24 +148,25 @@ def hydrate(pick: dict, *, sport_defaults: bool = True) -> dict:
         p["_model_version"] = p.get("model_version")
         p["_published_at"] = p.get("published_at")
     else:
-        # Legacy row — pass through, normalize probability if present.
-        # `win_probability` on a legacy pick doc is already in the
-        # frontend-visible unit (0-100 percentage) so we do NOT
-        # convert here — only guard against unexpected fractional
-        # values written by older writers by promoting fractions
-        # (≤ 1.0) up to their percentage form.
-        if sport_defaults and "win_probability" in p:
-            wp = p.get("win_probability")
-            if wp is not None:
-                try:
-                    wp_f = float(wp)
-                    # Legacy row promoting a fraction that leaked
-                    # through pre-fix.  Convert defensively.
-                    if 0.0 < wp_f <= 1.0:
-                        wp_f = wp_f * 100.0
-                    p["win_probability"] = round(max(0.0, min(100.0, wp_f)), 2)
-                except (TypeError, ValueError):
-                    pass
+        # Legacy row — the pick was never canonically published (no
+        # `published_lock_score` on the doc), so every legacy value is
+        # authoritative.  In particular, `win_probability` on legacy
+        # rows is already in the frontend-visible 0-100 percentage
+        # unit (every writer in the codebase emits it that way).
+        #
+        # P0-1 review fix (2026-08-11): we intentionally do NOT
+        # "repair" small legacy `win_probability` values by promoting
+        # anything in (0, 1] to (0, 100].  A legitimate 0.2% / 0.5% /
+        # 1.0% probability would be corrupted by that blanket rule.
+        #
+        # The only scenario the old canonical dual-write could leak a
+        # fractional value onto a picks doc is when `published_*`
+        # fields were also written; that scenario is handled above in
+        # the ``has_snapshot`` branch by recomputing the legacy alias
+        # from ``published_probability`` (which IS canonically a
+        # fraction).  If a caller mutates the doc post-publication
+        # by scrubbing only the `published_*` fields, they own that
+        # ambiguity — we do not silently rescale here.
         p["_prediction_source"] = "legacy_unpublished"
         p["_snapshot_version"] = None
         p["_model_version"] = None
