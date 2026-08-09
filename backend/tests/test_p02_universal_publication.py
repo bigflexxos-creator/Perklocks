@@ -95,7 +95,12 @@ def _shape_pick(source_tag: str, *, sport: str, market: str,
         "lock_score": lock,
         "lock_score_v2": lock,
         "grade": grade,
-        "confidence": lock,
+        # P0-1 (2026-08-11): `confidence` is a LABEL string, matching
+        # what `sports_engine._confidence(lock_score)` actually emits
+        # in production ("Very High", "High", …).  The previous
+        # numeric-in-confidence fixture masked the bug where a
+        # numeric was silently coerced to 0.0 through publication.
+        "confidence": "Very High",
         "line": 1.5,
         "pick_date": _TEST_DATE,
         "no_bet": False,
@@ -215,13 +220,20 @@ def test_publication_is_pass_through_for_lock_and_probability():
                 market="Alpha - Anytime Goal Scorer",
                 lock=87.4, grade="Strong Lock",
             )
-            # Freeze the "pre-publication" values.  Note: publication
-            # performs ONE documented canonical transformation —
-            # `win_probability` is normalised from 0-100 to 0-1 at
-            # publish time (see prediction_publication_service.py
-            # `_normalize_probability_at_publish`).  This is expected
-            # behaviour per PUBLICATION_CONTRACT.md, not a mutation.
-            # Everything else must round-trip untouched.
+            # Freeze the "pre-publication" values.
+            #
+            # P0-1 (2026-08-11) contract:
+            #   • Snapshot stores probability as 0-1 fraction
+            #     (canonical).
+            #   • Legacy `win_probability` on the picks doc is
+            #     ALWAYS 0-100 percentage (frontend-visible unit).
+            #   • `edge_percent` preserves None.
+            #   • `confidence` label passes through verbatim.
+            #
+            # So a well-formed pick with win_probability=62.0
+            # should still read 62.0 AFTER publication — the two
+            # units are converted at the boundary and NEVER mix on
+            # the wire.
             original = {
                 "lock_score":       pick["lock_score"],
                 "edge_percent":     pick["edge_percent"],
@@ -230,6 +242,7 @@ def test_publication_is_pass_through_for_lock_and_probability():
                 "line":             pick["line"],
                 "book_odds":        pick["book_odds"],
                 "reasoning":        pick["reasoning"],
+                "win_probability":  pick["win_probability"],  # 62.0
             }
             original_prob_pct = pick["win_probability"]
             await db.picks.insert_one(pick)
@@ -242,19 +255,15 @@ def test_publication_is_pass_through_for_lock_and_probability():
                 assert after[k] == v, (
                     f"publication mutated {k!r}: before={v!r} after={after[k]!r}"
                 )
-            # Verify the ONE documented transformation is applied and
-            # symmetric: 62.0 pct → 0.62 fraction on the doc, and the
-            # read-path hydrate() maps it back to 62.0 for the UI.
-            assert abs(after["win_probability"]
-                        - (original_prob_pct / 100.0)) < 1e-6
-            # Also verify snapshot carries exactly what we started with.
+            # Snapshot carries the CANONICAL FRACTION (0.62).
             snap = await db.prediction_snapshots.find_one(
                 {"prediction_id": pick["id"]}, {"_id": 0})
             assert snap["published_lock_score"] == original["lock_score"]
             assert snap["published_edge"] == original["edge_percent"]
             assert snap["published_grade"] == original["grade"]
-            assert snap["published_confidence"] == original["confidence"]
-            # Probability is fraction-normalised at publish; 62.0 → 0.62
+            # Confidence LABEL preserved as string.
+            assert snap["published_confidence"] == "Very High"
+            # Probability is fraction-normalised at publish; 62.0 → 0.62.
             assert abs(snap["published_probability"] - 0.62) < 1e-6
         finally:
             await _wipe(db)

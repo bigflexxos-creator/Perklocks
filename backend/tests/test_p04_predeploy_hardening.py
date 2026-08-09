@@ -268,7 +268,10 @@ def test_functional_kmath_corrected_pick_snapshot_matches_final_state():
             assert abs(snap["published_probability"] - 0.66) < 1e-6
             assert snap["published_edge"] == 5.5
             assert snap["published_grade"] == "Elite Lock"
-            assert snap["published_confidence"] == 92.0
+            # P0-1 (2026-08-11): confidence is a label string post-
+            # publication.  A numeric fixture (92.0) stringifies to
+            # "92.0" through the payload builder.
+            assert snap["published_confidence"] == "92.0"
 
             # dual-write projection on picks also matches.
             after = await db.picks.find_one({"id": pid}, {"_id": 0})

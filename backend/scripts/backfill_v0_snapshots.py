@@ -51,7 +51,7 @@ async def main(*, live: bool, i_understand: bool, limit: int | None) -> None:
     from services.prediction_publication_service import (
         PredictionPublicationService, SNAPSHOT_COLLECTION,
         PublishedPayload, _compute_idempotency_key, _sha256_canonical,
-        LEGACY_UNKNOWN,
+        LEGACY_UNKNOWN, _normalize_probability_at_publish,
     )
 
     if live and not i_understand:
@@ -96,17 +96,30 @@ async def main(*, live: bool, i_understand: bool, limit: int | None) -> None:
             n_already_have_v0 += 1
             continue
 
+        # ── P0-1 (2026-08-11) canonical unit alignment ──────────────
+        # Backfill emits the same units as the live publish path:
+        #   • probability → 0-1 fraction (canonical)
+        #   • edge        → Optional[float]  (None preserved)
+        #   • confidence  → label string (never 0.0)
+        _bf_prob = _normalize_probability_at_publish(
+            _maybe_float(pick.get("win_probability")))
+        _bf_edge = _maybe_float(pick.get("edge_percent"))
+        _bf_conf_raw = pick.get("confidence")
+        _bf_conf = (str(_bf_conf_raw)
+                    if _bf_conf_raw not in (None, "") else LEGACY_UNKNOWN)
+
         # Build a legacy payload.
         payload = PublishedPayload(
             prediction_id=pid,
             pick_id=pid,
             snapshot_version=0,
             board_version=_default_board_version(),
-            published_probability=_float(pick.get("win_probability")),
-            published_edge=_float(pick.get("edge_percent")),
+            published_probability=_bf_prob,
+            published_edge=_bf_edge,
             published_lock_score=round(_float(pick.get("lock_score")), 2),
             published_grade=str(pick.get("grade") or "Pass"),
-            published_confidence=_float(pick.get("confidence")),
+            published_confidence=_bf_conf,
+            published_confidence_score=None,
             published_reasoning=(pick.get("reasoning")
                                   or pick.get("pick_rationale") or {}),
             published_line=_maybe_float(pick.get("line")),

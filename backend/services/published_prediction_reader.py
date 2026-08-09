@@ -102,6 +102,15 @@ def hydrate(pick: dict, *, sport_defaults: bool = True) -> dict:
     If the pick lacks `published_*` fields (legacy row pre-backfill),
     passes the legacy values through and tags `_prediction_source =
     'legacy_unpublished'`.
+
+    ── P0-1 (2026-08-11) canonical → legacy unit conversion ────────
+    The snapshot stores probability as a 0-1 fraction; the legacy
+    ``win_probability`` alias is a 0-100 percentage (frontend renders
+    ``${wp}%``).  We convert at this boundary and clamp defensively.
+    ``published_edge`` may be None (no book line) — that state MUST
+    survive as None on the legacy ``edge_percent`` alias.
+    ``published_confidence`` is a label string ("Very High", …) —
+    passthrough as-is.
     """
     if not isinstance(pick, dict):
         return pick
@@ -114,7 +123,18 @@ def hydrate(pick: dict, *, sport_defaults: bool = True) -> dict:
             if pub_key in p:
                 v = p[pub_key]
                 if legacy_key == "win_probability":
-                    v = normalize_probability(v)
+                    # Canonical fraction ⇒ legacy percentage.
+                    if v is None:
+                        v = None
+                    else:
+                        pf = normalize_probability(v)   # returns [0, 1]
+                        v = round(pf * 100.0, 2)
+                elif legacy_key == "edge_percent":
+                    # Preserve None ⇒ "no line".  Any other value
+                    # passes through as a percentage-point delta.
+                    if v is None:
+                        v = None
+                # `confidence` label passes through verbatim.
                 p[legacy_key] = v
         # Keep odds aliases in sync.
         odds = p.get("book_odds")
@@ -129,9 +149,23 @@ def hydrate(pick: dict, *, sport_defaults: bool = True) -> dict:
         p["_published_at"] = p.get("published_at")
     else:
         # Legacy row — pass through, normalize probability if present.
+        # `win_probability` on a legacy pick doc is already in the
+        # frontend-visible unit (0-100 percentage) so we do NOT
+        # convert here — only guard against unexpected fractional
+        # values written by older writers by promoting fractions
+        # (≤ 1.0) up to their percentage form.
         if sport_defaults and "win_probability" in p:
-            p["win_probability"] = normalize_probability(
-                p.get("win_probability"))
+            wp = p.get("win_probability")
+            if wp is not None:
+                try:
+                    wp_f = float(wp)
+                    # Legacy row promoting a fraction that leaked
+                    # through pre-fix.  Convert defensively.
+                    if 0.0 < wp_f <= 1.0:
+                        wp_f = wp_f * 100.0
+                    p["win_probability"] = round(max(0.0, min(100.0, wp_f)), 2)
+                except (TypeError, ValueError):
+                    pass
         p["_prediction_source"] = "legacy_unpublished"
         p["_snapshot_version"] = None
         p["_model_version"] = None
