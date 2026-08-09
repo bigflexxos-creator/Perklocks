@@ -99,20 +99,81 @@ LEGACY_ALIAS_MAP: dict[str, str] = {
 
 
 # ─────────────────────────────────────────────────────────────────
+# Canonical prediction units (P0-1, 2026-08-11)
+# ─────────────────────────────────────────────────────────────────
+# The publication CONTRACT owns exactly one representation of each
+# scoring dimension:
+#
+#   Snapshot field                Internal unit          Notes
+#   ────────────────────────────  ─────────────────────  ─────────────
+#   published_probability         float in [0.0, 1.0]    canonical
+#                                                        fraction; 0.682
+#                                                        means 68.2%.
+#   published_edge                Optional[float]        percentage-point
+#                                                        delta (0-100
+#                                                        scale) OR None
+#                                                        when no book
+#                                                        line exists.
+#   published_lock_score          float in [0.0, 100.0]  Lock tier (not a
+#                                                        probability).
+#   published_confidence          str  label             ("Very High",
+#                                                        "High", "Medium",
+#                                                        "Low", "Very Low",
+#                                                        or "Pass").
+#   published_confidence_score    Optional[float]        Reserved for a
+#                                                        future numeric
+#                                                        [0, 100] confidence
+#                                                        score.  Currently
+#                                                        None on every
+#                                                        snapshot.
+#
+# Legacy pick-doc aliases WRITTEN BY dual-write use the units the
+# existing frontend consumes:
+#
+#   Legacy field                  Legacy unit            Notes
+#   ────────────────────────────  ─────────────────────  ─────────────
+#   win_probability               float in [0.0, 100.0]  0-100 percentage
+#                                                        (frontend renders
+#                                                        `${wp}%`).
+#   edge_percent                  Optional[float]        percentage-point
+#                                                        delta OR None.
+#   confidence                    str  label             label string.
+#
+# Conversions happen at exactly TWO boundaries:
+#   1. `_dual_write` — snapshot → legacy alias (fraction ⇒ percentage,
+#      None preserved).
+#   2. `published_prediction_reader.hydrate` — snapshot → legacy alias
+#      at read time for any pick doc that predates the dual-write.
+#
+# ─────────────────────────────────────────────────────────────────
 # Data class — the payload we compute and freeze.
 # ─────────────────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class PublishedPayload:
-    """Immutable payload as it will appear on a snapshot document."""
+    """Immutable payload as it will appear on a snapshot document.
+
+    Units — see the CANONICAL UNITS block above.
+    """
     prediction_id: str
     pick_id: str
     snapshot_version: int
     board_version: str
+    # 0.0–1.0 fraction (canonical).
     published_probability: float
-    published_edge: float
+    # Percentage-point delta OR None when no book line is available.
+    published_edge: Optional[float]
     published_lock_score: float
     published_grade: str
-    published_confidence: float
+    # Label string ("Very High", "High", "Medium", "Low", "Very Low",
+    # "Pass").  A previous version of this contract typed the field
+    # as `float`, which caused `float("Very High")` to fall through
+    # to a default of 0.0 and destroy the label on every canonical
+    # publication.  Now typed as `str` and coerced explicitly.
+    published_confidence: str
+    # Optional numeric confidence in [0.0, 100.0].  Reserved for a
+    # future dedicated numeric confidence score.  None on every
+    # snapshot for now — the label is authoritative.
+    published_confidence_score: Optional[float]
     published_reasoning: Any
     published_line: Optional[float]
     published_odds: Optional[int]
@@ -140,6 +201,7 @@ class PublishedPayload:
             "published_lock_score": self.published_lock_score,
             "published_grade": self.published_grade,
             "published_confidence": self.published_confidence,
+            "published_confidence_score": self.published_confidence_score,
             "published_reasoning": self.published_reasoning,
             "published_line": self.published_line,
             "published_odds": self.published_odds,
@@ -355,6 +417,32 @@ class PredictionPublicationService:
             v = candidate.get(key)
             return str(v) if v not in (None, "") else default
 
+        # ── P0-1 (2026-08-11): confidence is a LABEL, not a float ──
+        # `sports_engine._confidence(lock_score)` returns strings like
+        # "Very High", "High", "Medium", "Low", "Very Low", or "Pass".
+        # A previous version of this builder ran `float("Very High")`
+        # through a numeric coercion helper, silently defaulting to
+        # 0.0 and then propagating 0.0 into every legacy alias via
+        # dual-write.  We now preserve the label verbatim.
+        _conf_raw = candidate.get("confidence")
+        if _conf_raw is None or _conf_raw == "":
+            _conf_label = LEGACY_UNKNOWN
+        else:
+            _conf_label = str(_conf_raw)
+        # Reserved for a future numeric confidence score.  Currently
+        # emitted as None on every snapshot — do NOT synthesize a
+        # value from `lock_score` here (that would leak the Lock
+        # tier into a probability-shaped field and confuse callers).
+        _conf_score: Optional[float] = None
+
+        # ── P0-1: edge is Optional and MUST preserve None ──────────
+        # `edge_percent` is the model-vs-book edge in
+        # percentage-points.  A pick without a book line has NO
+        # meaningful edge — that state must round-trip as `None`, not
+        # as `0.0`.  Only real numeric edges (positive or negative)
+        # are stored.
+        _edge: Optional[float] = _f_or_none("edge_percent")
+
         published_reasoning = (
             candidate.get("reasoning")
             or candidate.get("pick_rationale")
@@ -366,16 +454,16 @@ class PredictionPublicationService:
             pick_id=pid,
             snapshot_version=1,   # Phase 1a always writes v1
             board_version=self._board_version,
-            # Phase 1b (2026-08): probability is canonicalized to a
-            # [0, 1] fraction at publication time.  Both fraction and
-            # percentage inputs are accepted — see
-            # services/published_prediction_reader.normalize_probability
+            # Canonical unit: 0-1 fraction.  Percentage inputs (e.g.
+            # 68.2) are converted here; fraction inputs (0.682) pass
+            # through unchanged.  See `_normalize_probability_at_publish`.
             published_probability=_normalize_probability_at_publish(
                 _f_or_none("win_probability")),
-            published_edge=_f("edge_percent"),
+            published_edge=_edge,
             published_lock_score=round(_f("lock_score"), 2),
             published_grade=_s("grade", default="Pass"),
-            published_confidence=_f("confidence"),
+            published_confidence=_conf_label,
+            published_confidence_score=_conf_score,
             published_reasoning=published_reasoning,
             published_line=_f_or_none("line"),
             published_odds=_i_or_none("book_odds"),
@@ -418,12 +506,34 @@ class PredictionPublicationService:
         # migration lands) return the published value.  After the
         # hydrate() pass fully rolls out, these aliases are strictly
         # a courtesy for backward compatibility.
+        #
+        # ── P0-1 (2026-08-11) legacy-unit conversion ────────────────
+        # The snapshot stores probability as a 0-1 fraction (canonical),
+        # but the frontend `LockPickCard` renders `${pick.win_probability}%`
+        # — i.e. it expects 0-100 percentage.  Convert at THIS boundary
+        # so the two units never mix on the wire.
+        _snap_prob = snap_doc.get("published_probability")
+        if _snap_prob is None:
+            _legacy_wp: Optional[float] = None
+        else:
+            try:
+                _pf = float(_snap_prob)
+            except (TypeError, ValueError):
+                _pf = 0.0
+            # Canonical value is a fraction in [0, 1]; convert to
+            # percentage for the legacy field.  Clamp defensively.
+            _legacy_wp = round(max(0.0, min(1.0, _pf)) * 100.0, 2)
+        # `published_edge` may be None (no book line); preserve that
+        # state through the legacy alias so consumers can distinguish
+        # "no line" from "0% edge".
+        _snap_edge = snap_doc.get("published_edge")
+        # `published_confidence` is now a label string.  Preserve it.
+        _snap_conf = snap_doc.get("published_confidence")
         set_payload["lock_score"] = snap_doc.get("published_lock_score")
-        set_payload["win_probability"] = snap_doc.get(
-            "published_probability")
-        set_payload["edge_percent"] = snap_doc.get("published_edge")
+        set_payload["win_probability"] = _legacy_wp
+        set_payload["edge_percent"] = _snap_edge
         set_payload["grade"] = snap_doc.get("published_grade")
-        set_payload["confidence"] = snap_doc.get("published_confidence")
+        set_payload["confidence"] = _snap_conf
         set_payload["book_odds"] = snap_doc.get("published_odds")
         set_payload["line"] = snap_doc.get("published_line")
         set_payload["reasoning"] = snap_doc.get("published_reasoning")
@@ -501,12 +611,13 @@ def _sha256_canonical(payload: dict) -> str:
 def _compute_idempotency_key(p: PublishedPayload) -> str:
     line_str = "none" if p.published_line is None else f"{p.published_line:.4f}"
     odds_str = "none" if p.published_odds is None else str(p.published_odds)
+    edge_str = "none" if p.published_edge is None else f"{p.published_edge:.3f}"
     raw = "|".join([
         p.prediction_id,
         p.board_version,
         f"{p.published_probability:.6f}",
         f"{p.published_lock_score:.2f}",
-        f"{p.published_edge:.3f}",
+        edge_str,
         line_str,
         odds_str,
     ])
