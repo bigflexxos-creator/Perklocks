@@ -1382,18 +1382,38 @@ _MARKET_REGEX = {
     # the Hits filter pill.
     "batter_hits_runs_rbis": r"hits \+ runs \+ rbis|h\+r\+rbi",
     "batter_hits":          r"\bhits\b(?!\s*allowed)(?!\s*\+)",
+    # Total Bases + RBIs added 2026-08-08 Phase-1 market surfacing.
+    # Anchored on the stat phrase; `batter_hits` above already
+    # excludes "hits + …" via lookahead so no cross-token bleed.
+    "batter_total_bases":   r"\btotal bases\b",
+    "batter_rbis":          r"\brbis?\b(?!\s*allowed)",
     # Pitcher strikeouts — added 2026-06-18 with the pitcher Ks props
     "pitcher_strikeouts":   r"\bstrikeouts\b",
     # Pitcher outs recorded — added 2026-06-19. Main line only (no alt).
     "pitcher_outs":         r"\bouts recorded\b|\bpitcher outs\b",
-    "player_points":        r"\bpoints\b(?!\s*total)",
-    "player_rebounds":      r"\brebounds\b",
-    "player_assists":       r"\bassists\b",
+    "player_points":        r"\bpoints\b(?!\s*total)(?!\s*\+)",
+    "player_rebounds":      r"\brebounds\b(?!\s*\+)",
+    "player_assists":       r"\bassists\b(?!\s*\+)",
+    # NBA combo + shooters — added 2026-08-08 Phase-1 market surfacing.
+    "player_points_rebounds_assists": r"points\s*\+\s*rebounds\s*\+\s*assists|\bpra\b|p\+r\+a",
+    "player_threes":        r"\bthrees\b|3[- ]pointers made|three[- ]point(?:er)?s? made",
 
     # ── NFL props ─────────────────────────────────────────────────────────
     "passing_yards":   r"passing yards",
     "rushing_yards":   r"rushing yards",
     "receiving_yards": r"receiving yards",
+    # Additional NFL/CFB categories added 2026-08-08 Phase-1 market
+    # surfacing.  Backend already ingests these via propline_feed /
+    # nfl_feature_engine / cfb_precompute; picks arrive with market
+    # strings like "Player Passing TDs Over 1.5" etc.
+    "player_1st_td":         r"\b1st td\b|\bfirst td\b|first touchdown scorer",
+    "player_pass_tds":       r"passing tds?|pass tds?",
+    "player_pass_attempts":  r"passing attempts?|pass attempts?",
+    "player_pass_completions": r"passing completions?|pass completions?",
+    "player_rush_attempts":  r"rushing attempts?|rush attempts?|\bcarries\b",
+    "player_rush_tds":       r"rushing tds?|rush tds?",
+    "player_receptions":     r"\breceptions?\b(?!\s*yards)(?!\s*tds?)",
+    "player_reception_tds":  r"receiving tds?|reception tds?",
 
     # ── Tennis ────────────────────────────────────────────────────────────
     "match_winner":  r"\bmoneyline\b|match winner|to win match",
@@ -1427,6 +1447,7 @@ def _market_regex(token: str) -> str | None:
 SPORT_MARKETS = {
     "Soccer": [
         {"token": "1x2",               "label": "1X2"},
+        {"token": "spread",            "label": "Handicap"},
         {"token": "totals",            "label": "Over/Under"},
         {"token": "btts",              "label": "BTTS"},
         {"token": "anytime_scorer",    "label": "Anytime Scorer"},
@@ -1441,6 +1462,8 @@ SPORT_MARKETS = {
         {"token": "player_points",   "label": "Points"},
         {"token": "player_rebounds", "label": "Rebounds"},
         {"token": "player_assists",  "label": "Assists"},
+        {"token": "player_points_rebounds_assists", "label": "PRA"},
+        {"token": "player_threes",   "label": "3-Pointers"},
     ],
     "NFL": [
         {"token": "moneyline",   "label": "Moneyline"},
@@ -1449,6 +1472,14 @@ SPORT_MARKETS = {
         {"token": "passing_yards",   "label": "Passing Yds"},
         {"token": "rushing_yards",   "label": "Rushing Yds"},
         {"token": "receiving_yards", "label": "Receiving Yds"},
+        {"token": "player_1st_td",         "label": "1st TD"},
+        {"token": "player_pass_tds",       "label": "Pass TDs"},
+        {"token": "player_pass_attempts",  "label": "Pass Att"},
+        {"token": "player_pass_completions","label": "Pass Comp"},
+        {"token": "player_rush_attempts",  "label": "Rush Att"},
+        {"token": "player_rush_tds",       "label": "Rush TDs"},
+        {"token": "player_receptions",     "label": "Receptions"},
+        {"token": "player_reception_tds",  "label": "Rec TDs"},
     ],
     # CFB added 2026-07-27 in prep for Week 0 (Aug 23). Mirrors NFL market
     # tokens — the Odds API `americanfootball_ncaaf` feed uses identical
@@ -1461,6 +1492,14 @@ SPORT_MARKETS = {
         {"token": "passing_yards",   "label": "Passing Yds"},
         {"token": "rushing_yards",   "label": "Rushing Yds"},
         {"token": "receiving_yards", "label": "Receiving Yds"},
+        {"token": "player_1st_td",         "label": "1st TD"},
+        {"token": "player_pass_tds",       "label": "Pass TDs"},
+        {"token": "player_pass_attempts",  "label": "Pass Att"},
+        {"token": "player_pass_completions","label": "Pass Comp"},
+        {"token": "player_rush_attempts",  "label": "Rush Att"},
+        {"token": "player_rush_tds",       "label": "Rush TDs"},
+        {"token": "player_receptions",     "label": "Receptions"},
+        {"token": "player_reception_tds",  "label": "Rec TDs"},
     ],
     "MLB": [
         {"token": "moneyline",   "label": "Moneyline"},
@@ -1468,6 +1507,8 @@ SPORT_MARKETS = {
         {"token": "totals",      "label": "Totals"},
         {"token": "team_total",  "label": "Team Total"},
         {"token": "batter_hits",            "label": "Hits"},
+        {"token": "batter_total_bases",     "label": "Total Bases"},
+        {"token": "batter_rbis",            "label": "RBIs"},
         # H+R+RBI chip restored 2026-07-21 per user — the market ban
         # in quality_gate.py has been lifted now that mlb_feature_engine
         # gates emission on ≥3 real factors (L10 hit rate, platoon,
@@ -1475,9 +1516,12 @@ SPORT_MARKETS = {
         {"token": "batter_hits_runs_rbis",  "label": "H+R+RBI"},
         {"token": "pitcher_strikeouts",     "label": "Strikeouts"},
         {"token": "pitcher_outs",           "label": "Outs Recorded"},
+        # Home Run stays on its dedicated HR experience (not a chip).
+        # NRFI/YRFI retired from active Locks per Phase 1 — no chip.
     ],
     "Tennis": [
         {"token": "match_winner",    "label": "Moneyline"},
+        {"token": "spread",          "label": "Spread"},
         {"token": "tennis_game_alt", "label": "Game Alt Line"},
         {"token": "sets",            "label": "Sets"},
         {"token": "tennis_totals",   "label": "Totals"},
