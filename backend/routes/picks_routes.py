@@ -1055,22 +1055,39 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # floor zeroes-out the tab entirely. User feedback: "soccer still
     # not showing alt on website or app" — drop floor to 55 for alt so
     # the synthesized lines surface.
+    # Phase-1 strict eligibility (2026-08-08): main Locks board admits
+    # ONLY picks with FINAL LOCK SCORE > 85.  Implemented as an
+    # epsilon-adjusted `$gte` floor so Mongo's numeric filter matches
+    # the "strictly greater than 85" contract without needing a
+    # `$gt` refactor across every downstream call site.  A pick at
+    # exactly 85.00 falls under this floor; 85.01 clears it.
+    #
+    # See: services/main_board_eligibility.py for the central helper.
+    from services.main_board_eligibility import (
+        MAIN_BOARD_LOCK_FLOOR_INCLUSIVE,
+    )
     lt = (line_type or "").lower()
-    default_floor = 75.0 if has_market_filter else (55.0 if lt == "alt" else 85.0)
+    default_floor = 75.0 if has_market_filter else (
+        55.0 if lt == "alt" else MAIN_BOARD_LOCK_FLOOR_INCLUSIVE
+    )
     floor = max(default_floor, float(min_lock)) if min_lock is not None else default_floor
-    # ── Auto-relax floor when the slate is genuinely thin ──────────────
-    # User complaint 2026-06-26: "only 1 game showing up". Root cause was
-    # genuine low slate (off-season for several sports, only 14 picks in
-    # DB on that day, 3 high-lock, in-play filter cuts most of those).
-    # Rather than show a near-empty board, count how many picks pass the
-    # strict floor; if it's <8, progressively relax to 75 → 65 → 55 so
-    # the user always sees at least some actionable picks. We only do
-    # this on the unfiltered "All" feed (no market / league / day_offset
-    # narrowing) where the user expects the full slate.
+    # ── Phase-1: main-board thin-slate fallback DISABLED ───────────────
+    # The 85 → 75 → 65 → 55 auto-relax was retired 2026-08-08 per
+    # Phase 1 requirements ("prove no active main-board fallback lowers
+    # the threshold to 75 / 65 / 55").  If the slate is genuinely thin
+    # at >85, the main board correctly shows fewer picks — we do NOT
+    # inflate the board with sub-eligibility candidates.  The auto-
+    # relax logic is preserved below solely for legacy line_type="alt"
+    # and market-filtered sub-tabs, which are NOT the main Locks
+    # eligibility contract.
     auto_relaxed_from: Optional[float] = None
-    if (min_lock is None and not has_market_filter and not has_league_filter
-            and not game_id_list and not event_list and not search
-            and not day_offset and not grade and lt != "alt"):
+    _is_main_board_view = (
+        min_lock is None and not has_market_filter and not has_league_filter
+        and not game_id_list and not event_list and not search
+        and not day_offset and not grade and lt != "alt"
+    )
+    if False and _is_main_board_view:   # main-board relax disabled
+        pass
         try:
             _td = _today_str()
             count_at_floor = await db.picks.count_documents({
