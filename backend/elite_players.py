@@ -708,9 +708,15 @@ def apply_elite_boost(picks: list[dict]) -> list[dict]:
         # Books price stars sharply (sometimes negative edge by our model),
         # but Mbappé / Haaland / Messi / Kane / Judge / Sinner etc. are still
         # the safest hit candidates by reputation. We lock them in.
+        # Phase 2 (2026-08-11): the reputation-only boost is now
+        # provisional — a downstream evidence gate
+        # (`services/elite_evidence_gate.py`) may restore the pre-boost
+        # Lock Score if multi-source evidence disagrees.  We stamp
+        # `pre_elite_lock_score` here so the gate can revert cleanly.
         p["elite_player"] = True
         p["elite_player_name"] = canonical
         raw_lock = float(p.get("lock_score") or 0)
+        p["pre_elite_lock_score"] = round(raw_lock, 1)
         new_lock = max(ELITE_LOCK_FLOOR, min(99.0, raw_lock + ELITE_BOOST_PCT))
         p["lock_score"] = round(new_lock, 1)
         # Make sure no_bet flag isn't set on elite picks.

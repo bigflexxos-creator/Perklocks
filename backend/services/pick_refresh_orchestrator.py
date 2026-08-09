@@ -1260,6 +1260,46 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as _fu_err:
         logger.warning("Fusion Enrichment skipped: %s", _fu_err)
 
+    # ── Elite Evidence Gate (Phase 2, 2026-08-11) ─────────────────────
+    # Reputation-anchored elite boosts (applied way earlier by
+    # `apply_elite_boost`) are re-evaluated NOW against the enrichment
+    # signals that arrived after the boost (form / sim / fusion /
+    # bandit / factors / learning).  Elite picks whose evidence does
+    # not agree multi-source have their pre-boost lock_score
+    # restored — no more famous-⇒-99 without supporting evidence.
+    #
+    # PRESERVES the elite concept: a passing evidence gate keeps the
+    # full elite lock.  Demoted picks are NOT forced off-board — the
+    # normal ``>85`` contract still governs eligibility on the
+    # restored score.
+    #
+    # Runs LAST among score-affecting steps so board_visibility (re-
+    # tagged below) captures the final state.
+    try:
+        from services.elite_evidence_gate import apply_elite_evidence_gate
+        _eg_stats = apply_elite_evidence_gate(safe_picks)
+        if _eg_stats.get("total_elite", 0) > 0:
+            logger.info(
+                "Elite Evidence Gate: elite=%d passed=%d demoted=%d skipped=%d",
+                _eg_stats.get("total_elite", 0),
+                _eg_stats.get("passed", 0),
+                _eg_stats.get("demoted", 0),
+                _eg_stats.get("skipped", 0),
+            )
+        # Re-tag board visibility so any elite demotion that dropped
+        # lock_score under 85 is reflected in the off_board tag before
+        # ``insert_many`` persists the batch.
+        try:
+            from services.board_visibility import tag_board_visibility
+            tag_board_visibility(safe_picks)
+        except Exception as _bv_err:
+            logger.warning(
+                "Board Visibility re-tag after elite gate skipped: %s",
+                _bv_err,
+            )
+    except Exception as _eg_err:
+        logger.warning("Elite Evidence Gate skipped: %s", _eg_err)
+
     if safe_picks:
         # ATOMIC-SWAP: do the wipe NOW, immediately before the insert.
         # The enrichment passes above ran on in-memory `safe_picks` —
