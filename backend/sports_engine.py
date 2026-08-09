@@ -149,6 +149,102 @@ _API_FAIL_TRIP = 8
 # per-second rate limit (429 EXCEEDED_FREQ_LIMIT) on bulk refresh.
 _API_SEM = asyncio.Semaphore(4)
 
+# ── Cross-pod circuit-breaker sync (2026-08-09 fix, ticket #222563) ────
+# This app runs on 2 replicas (standard for the plan tier). The counters
+# above are per-process, so the 2 pods can diverge: one trips the
+# breaker while the other stays healthy, and admin's "reset" only
+# cleared whichever pod happened to handle that request — the exact
+# symptom reported (CIRCUIT OPEN reappearing, inconsistent total_fail
+# across admin screenshots taken seconds apart). Fix: mirror trip/reset
+# events into one shared Mongo doc; a periodic background loop
+# (registered in server.py) pulls it so every pod converges on the
+# same breaker state within one poll interval. The module globals
+# above stay the fast, no-DB-hit path the hot request loop reads on
+# every call — this only adds periodic reconciliation, not a DB
+# round-trip per request.
+_CB_COLLECTION = "circuit_breaker_state"
+_CB_DOC_ID = "odds_api"
+_CB_LAST_SYNCED_AT: Optional[datetime] = None
+# Serializes the fire-and-forget pushes below so two pushes fired
+# back-to-back (e.g. the 2 calls that make up a 401-streak trip) land
+# in Mongo in the same order they were captured locally — without this,
+# two independent asyncio tasks can complete out of order and let an
+# EARLIER (e.g. pre-trip, disabled=False) snapshot overwrite a LATER
+# one, silently losing the trip.
+_CB_PUSH_LOCK: Optional[asyncio.Lock] = None
+
+
+def _cb_push_lock() -> asyncio.Lock:
+    global _CB_PUSH_LOCK
+    if _CB_PUSH_LOCK is None:
+        _CB_PUSH_LOCK = asyncio.Lock()
+    return _CB_PUSH_LOCK
+
+
+def _snapshot_cb_state() -> dict:
+    return {
+        "disabled": _API_DISABLED,
+        "disabled_reason": _API_DISABLED_REASON,
+        "consecutive_401s": _API_401_STREAK,
+        "consecutive_failures": _API_FAIL_STREAK,
+        "total_ok": _API_TOTAL_OK,
+        "total_fail": _API_TOTAL_FAIL,
+        "last_error": _API_LAST_ERR,
+        "updated_at": datetime.now(timezone.utc),
+    }
+
+
+def _push_cb_state_async() -> None:
+    """Fire-and-forget mirror of local breaker state into the shared
+    doc. Safe to call from sync code — schedules onto the running
+    event loop rather than blocking the caller. The snapshot is taken
+    NOW (synchronously) so it reflects this exact call's state; the
+    lock only orders the DB writes, not the reads of the globals."""
+    snapshot = _snapshot_cb_state()
+    try:
+        from server import db as _db
+
+        async def _do_push(_snap=snapshot, _dbref=_db):
+            async with _cb_push_lock():
+                await _dbref[_CB_COLLECTION].update_one(
+                    {"_id": _CB_DOC_ID},
+                    {"$set": _snap},
+                    upsert=True,
+                )
+
+        asyncio.get_event_loop().create_task(_do_push())
+    except Exception as e:
+        logger.debug("circuit breaker state push skipped: %s", e)
+
+
+async def sync_circuit_breaker_from_db() -> None:
+    """Pull the shared doc and adopt it locally if it is newer than
+    the last sync we applied. Called on a periodic background loop so
+    all pods converge on one circuit-breaker state (both trips AND
+    admin resets propagate fleet-wide, not just to whichever pod
+    handled that one request)."""
+    global _API_DISABLED, _API_DISABLED_REASON
+    global _API_401_STREAK, _API_FAIL_STREAK
+    global _API_TOTAL_OK, _API_TOTAL_FAIL, _API_LAST_ERR, _CB_LAST_SYNCED_AT
+    try:
+        from server import db as _db
+        doc = await _db[_CB_COLLECTION].find_one({"_id": _CB_DOC_ID})
+        if not doc:
+            return
+        updated_at = doc.get("updated_at")
+        if _CB_LAST_SYNCED_AT and updated_at and updated_at <= _CB_LAST_SYNCED_AT:
+            return
+        _CB_LAST_SYNCED_AT = updated_at
+        _API_DISABLED = doc.get("disabled", _API_DISABLED)
+        _API_DISABLED_REASON = doc.get("disabled_reason", _API_DISABLED_REASON)
+        _API_401_STREAK = doc.get("consecutive_401s", _API_401_STREAK)
+        _API_FAIL_STREAK = doc.get("consecutive_failures", _API_FAIL_STREAK)
+        _API_TOTAL_OK = doc.get("total_ok", _API_TOTAL_OK)
+        _API_TOTAL_FAIL = doc.get("total_fail", _API_TOTAL_FAIL)
+        _API_LAST_ERR = doc.get("last_error", _API_LAST_ERR)
+    except Exception as e:
+        logger.debug("circuit breaker state pull skipped: %s", e)
+
 
 def get_odds_api_status() -> dict:
     """Diagnostic snapshot for the admin endpoint. Helps the operator
@@ -181,6 +277,7 @@ def reset_odds_api_circuit() -> dict:
     _API_FAIL_STREAK = 0
     _API_LAST_ERR = ""
     logger.info("Odds API circuit breaker re-armed by admin request")
+    _push_cb_state_async()
     return get_odds_api_status()
 
 
@@ -285,6 +382,7 @@ def record_odds_call_result(*, status_code: int | None, body: str = "",
                 _op_ok()
             except Exception:
                 pass
+            _push_cb_state_async()
             return
         # Failure branches.
         if status_code == 401:
@@ -331,6 +429,7 @@ def record_odds_call_result(*, status_code: int | None, body: str = "",
                 _API_DISABLED = True
                 _API_DISABLED_REASON = (
                     f"fail streak ({_API_FAIL_STREAK}): {_API_LAST_ERR[:120]}")
+        _push_cb_state_async()
     except Exception:  # pragma: no cover
         pass
 

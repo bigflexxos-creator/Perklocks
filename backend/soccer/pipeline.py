@@ -252,11 +252,37 @@ async def run_prediction_pipeline(db) -> dict:
 
 
 async def soccer_pipeline_loop(db) -> None:
-    """Pregame scheduler — runs the pipeline every 15 minutes."""
+    """Pregame scheduler — runs the pipeline every 15 minutes.
+
+    Guarded by JobCoordinator so that when the app runs multiple
+    replicas (standard for this deploy tier), only one pod executes
+    a given 15-min tick — matches the pattern already used by
+    cold_start.py / background_lifecycle.py elsewhere in this app.
+    """
     await asyncio.sleep(20)  # let the rest of the app start
+    from services.job_coordinator import JobCoordinator
+    coordinator = JobCoordinator(db)
     while True:
         try:
-            await run_prediction_pipeline(db)
+            lease = await coordinator.acquire(
+                "soccer_pipeline_loop",
+                lease_seconds=600,
+                min_interval_seconds=13 * 60,
+                caller="soccer_pipeline_loop",
+                reason="15-min pregame soccer pipeline tick",
+            )
+            if lease:
+                try:
+                    await run_prediction_pipeline(db)
+                except Exception as e:
+                    await coordinator.fail(
+                        "soccer_pipeline_loop", lease.lease_token,
+                        error=str(e),
+                    )
+                    raise
+                await coordinator.complete(
+                    "soccer_pipeline_loop", lease.lease_token,
+                )
         except asyncio.CancelledError:
             break
         except Exception as e:
