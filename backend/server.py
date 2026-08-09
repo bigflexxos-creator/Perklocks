@@ -2588,10 +2588,26 @@ async def _settlement_loop():
         the data anymore.
     """
     await asyncio.sleep(60)  # let startup settle
+    from services.job_coordinator import JobCoordinator
+    coordinator = JobCoordinator(db)
     FULL_INTERVAL_TICKS = 15   # full settlement every 15th tick = 15 min
     tick = 0
     while True:
         try:
+            # Guard against duplicate execution when the app runs multiple
+            # replicas (standard for this deploy tier) — only one pod should
+            # run a given 60s settlement tick. Same JobCoordinator pattern
+            # already used by cold_start.py / background_lifecycle.py.
+            lease = await coordinator.acquire(
+                "settlement_loop",
+                lease_seconds=180,
+                min_interval_seconds=50,
+                caller="settlement_loop",
+                reason="60s settlement/grading tick",
+            )
+            if not lease:
+                await asyncio.sleep(60)
+                continue
             tick += 1
             is_full = (tick % FULL_INTERVAL_TICKS == 0)
             if is_full:
@@ -2758,6 +2774,7 @@ async def _settlement_loop():
                         )
             except Exception as e:
                 logger.warning("Daily learning job error: %s", e)
+            await coordinator.complete("settlement_loop", lease.lease_token)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -3609,6 +3626,30 @@ async def on_startup():
         logger.info("Soccer Prop Inject snapshot armed — 3×/day (12/18/23 UTC), lease-gated")
     except Exception as e:
         logger.warning("Soccer Prop Inject worker failed to start: %s", e)
+
+    # ── Circuit-Breaker Cross-Pod Sync (2026-08-09, ticket #222563) ───
+    # Odds API circuit-breaker state (sports_engine._API_DISABLED etc.)
+    # is per-process. With 2 replicas the pods diverge and an admin
+    # reset only cleared whichever pod handled that request. This loop
+    # pulls the shared Mongo doc every 20s so both pods converge.
+    try:
+        from sports_engine import sync_circuit_breaker_from_db
+
+        async def _circuit_breaker_sync_loop():
+            while True:
+                try:
+                    await sync_circuit_breaker_from_db()
+                except Exception as e:
+                    logger.warning("circuit breaker sync error: %s", e)
+                await asyncio.sleep(20)
+
+        _TASK_REGISTRY.register_and_start(
+            'circuit_breaker_sync_loop', lambda: _circuit_breaker_sync_loop(),
+            task_type='recurring_loop', critical=False,
+        )
+        logger.info("Circuit-breaker cross-pod sync armed — 20s poll")
+    except Exception as e:
+        logger.warning("Circuit-breaker sync loop failed to start: %s", e)
 
     # ── CSL ESPN Live (retired-player filter, user-requested 2026-06-27) ─
     # ESPN's free public soccer endpoints provide the authoritative ACTIVE
