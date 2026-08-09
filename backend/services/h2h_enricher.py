@@ -382,11 +382,24 @@ async def _mlb_player_h2h(pick: dict) -> Optional[dict]:
         return None
 
     # ── Pitcher branch ────────────────────────────────────────────
-    if any(k in market for k in (
-        "strikeout", "strikeouts", "outs recorded", "pitching outs",
-        "walks", "walks recorded", "walks allowed",
-        "earned runs", "hits allowed",
+    # Phase 2 (2026-08-11): the `mlb_pitcher_h2h` endpoint returns
+    # ONLY strikeout-family metrics (avg_k, per-start K counts).  We
+    # therefore accept ONLY strikeout-family markets here.  Outs /
+    # walks / earned runs / hits-allowed markets would show K-shaped
+    # numbers if we passed them through this branch — that's the
+    # exact "pitcher Ks reused as pitcher outs history" mistake the
+    # closure spec calls out.  Non-K pitcher markets fall through to
+    # `None` (no misleading H2H card rendered).
+    _pitcher_market_family: Optional[str] = None
+    if "strikeout" in market or "strikeouts" in market:
+        _pitcher_market_family = "k"
+    elif any(k in market for k in (
+        "outs recorded", "pitching outs", "walks", "walks recorded",
+        "walks allowed", "earned runs", "hits allowed",
     )):
+        _pitcher_market_family = "non_k_pitcher"
+
+    if _pitcher_market_family == "k":
         try:
             from mlb_pitcher_h2h import fetch_pitcher_h2h
         except Exception:
@@ -411,10 +424,30 @@ async def _mlb_player_h2h(pick: dict) -> Optional[dict]:
                 f"{avg_k:.1f} K / start vs {opp}" if starts
                 else "No prior starts"
             ),
+            "market_family": "k",
+            "market_specific": True,
             "season_avg_k": data.get("season_avg_k"),
             "season_starts": data.get("season_starts"),
             "recent": data.get("vs_team_recent") or [],
             "l5": data.get("last5"),
+        }
+    if _pitcher_market_family == "non_k_pitcher":
+        # No market-specific H2H split available in the current
+        # `mlb_pitcher_h2h` module.  Surface an honest "insufficient
+        # data" verdict rather than reusing K numbers.
+        return {
+            "player": name,
+            "vs_opponent": opp,
+            "sample_size": 0,
+            "sample_unit": "starts",
+            "primary_stat": None,
+            "primary_value": None,
+            "primary_value_display": (
+                f"No {market_raw!r}-specific H2H split available vs {opp}"
+            )[:180],
+            "market_family": "non_k_pitcher",
+            "market_specific": False,
+            "recent": [],
         }
 
     # ── Batter branch ─────────────────────────────────────────────
@@ -436,24 +469,91 @@ async def _mlb_player_h2h(pick: dict) -> Optional[dict]:
             return None
         vs_ab = int(data.get("vs_team_ab") or 0)
         vs_h = int(data.get("vs_team_hits") or 0)
+        vs_hr = int(data.get("vs_team_hr") or 0)
+        vs_rbi = int(data.get("vs_team_rbi") or 0)
         vs_avg = float(data.get("vs_team_avg") or 0.0)
         vs_games = int(data.get("vs_team_games") or 0)
         season_avg = float(data.get("season_avg") or 0.0)
-        if vs_ab == 0:
-            display = f"No prior at-bats vs {opp}"
-        else:
-            pct = int(round(vs_avg * 100))
-            display = f"{vs_h}-for-{vs_ab} vs {opp} ({vs_avg:.3f} avg, {pct}%)"
 
-        # ── H2H signal → "Why this pick" bullet ────────────────────
+        # ── Phase 2 (2026-08-11): market-specific H2H display ──────
+        # The vsTeam MLB Stats API split gives us AB/H/HR/RBI/games.
+        # Hits history MUST NOT be reused as Total Bases / Singles /
+        # Doubles / Triples history — those splits are not available
+        # from the same endpoint.  We therefore choose a display
+        # string that matches the pick's market family, and mark
+        # non-mappable markets as "insufficient market-specific data".
+        def _market_family(mkt: str) -> str:
+            m = (mkt or "").lower()
+            if "home run" in m or "homer" in m:
+                return "hr"
+            if "rbi" in m:
+                return "rbi"
+            if "hits" in m and "singles" not in m:
+                return "hits"
+            if "runs scored" in m or "runs allowed" not in m and " runs " in m:
+                # narrow "runs scored" family; do NOT match team totals
+                return "runs"
+            if "singles" in m or "doubles" in m or "triples" in m:
+                return "specific_hit_type"
+            if "total bases" in m:
+                return "total_bases"
+            if "stolen base" in m:
+                return "steals"
+            if "at bats" in m:
+                return "atbats"
+            return "other"
+
+        fam = _market_family(market)
+
+        primary_stat: str
+        primary_value: float
+        display: str
+        market_specific: bool = True
+
+        if vs_ab == 0 and vs_games == 0:
+            # No prior history — never render fake `0-for-N`.
+            primary_stat = "vs_team_games"
+            primary_value = 0.0
+            display = f"No prior at-bats vs {opp}"
+            market_specific = False
+        elif fam == "hits":
+            primary_stat = "vs_team_avg"
+            primary_value = vs_avg
+            pct = int(round(vs_avg * 100))
+            display = (f"{vs_h}-for-{vs_ab} vs {opp} "
+                       f"({vs_avg:.3f} avg, {pct}%)")
+        elif fam == "hr":
+            primary_stat = "vs_team_hr"
+            primary_value = float(vs_hr)
+            display = f"{vs_hr} HR in {vs_games} career games vs {opp}"
+        elif fam == "rbi":
+            primary_stat = "vs_team_rbi"
+            primary_value = float(vs_rbi)
+            display = f"{vs_rbi} RBI in {vs_games} career games vs {opp}"
+        else:
+            # total_bases / singles / doubles / triples / steals / at_bats
+            # / runs — the vsTeam split does not carry these stats.  We
+            # report the sample size honestly and tag the entry as
+            # NOT market-specific so downstream consumers can flag or
+            # hide it from cards where a market-specific number is
+            # required.
+            primary_stat = "vs_team_games"
+            primary_value = float(vs_games)
+            display = (
+                f"{vs_games} career games vs {opp} — no {fam}-specific "
+                f"split available"
+            )
+            market_specific = False
+
+        # ── H2H signal → "Why this pick" bullet (Hits family only) ─
         # Compare the batter's CAREER vs-opp average to their current-
         # season average. A meaningful gap (± ~30 pts of BA) becomes a
-        # tailwind/headwind bullet that the pick card renders in the
-        # "Why this pick?" section. This is the user's requested
-        # linkage between H2H data and the actual pick reasoning.
+        # tailwind/headwind bullet — but ONLY when the pick market is
+        # hits-family, so we never claim Hits-derived context on TB /
+        # HR / RBI cards.
         h2h_insight: Optional[str] = None
         h2h_edge_bp: int = 0   # signed basis-points of BA diff
-        if vs_ab >= 15 and season_avg > 0:
+        if fam == "hits" and vs_ab >= 15 and season_avg > 0:
             delta = vs_avg - season_avg
             h2h_edge_bp = int(round(delta * 1000))
             if delta >= 0.030:
@@ -473,16 +573,18 @@ async def _mlb_player_h2h(pick: dict) -> Optional[dict]:
             "vs_opponent": opp,
             "sample_size": vs_ab,           # <-- at-bats, NOT team meetings
             "sample_unit": "AB",
-            "primary_stat": "vs_team_avg",
-            "primary_value": vs_avg,
+            "primary_stat": primary_stat,
+            "primary_value": primary_value,
             "primary_value_display": display,
+            "market_family": fam,
+            "market_specific": market_specific,
             "season_avg": data.get("season_avg"),
             "season_ab": data.get("season_ab"),
             "season_hits": data.get("season_hits"),
             "season_games": data.get("season_games"),
             "vs_team_games": vs_games,
-            "vs_team_hr": data.get("vs_team_hr"),
-            "vs_team_rbi": data.get("vs_team_rbi"),
+            "vs_team_hr": vs_hr,
+            "vs_team_rbi": vs_rbi,
             "recent": data.get("vs_team_recent") or [],
             "h2h_insight": h2h_insight,
             "h2h_edge_bp": h2h_edge_bp,

@@ -303,6 +303,38 @@ async def enrich_pick_with_fusion(
         "created_at":        result.created_at,
     }
 
+    # ── Phase 2 (2026-08-11): expose fusion agreement as SUPPORTING
+    # EVIDENCE metadata on the pick top-level.  This is bounded read-
+    # side data used by the elite evidence gate and any future
+    # ranker/quality-gate consumer.  It does NOT replace or overwrite
+    # `lock_score`, `win_probability`, or `edge_percent` — those
+    # remain the canonical model outputs (Phase 1 contract).
+    try:
+        wp = pick.get("win_probability")
+        if wp is not None:
+            wp_f = float(wp)
+            if wp_f > 1.0:
+                wp_f = wp_f / 100.0
+            fp = float(result.final_probability or 0.0)
+            if fp > 1.0:
+                fp = fp / 100.0
+            delta = fp - wp_f
+            if delta >= 0.03:
+                fa_dir = "agree_higher"
+            elif delta <= -0.05:
+                fa_dir = "disagree_lower"
+            else:
+                fa_dir = "neutral"
+            pick["fusion_agreement"] = {
+                "direction": fa_dir,
+                "delta_probability": round(delta, 4),
+                "fusion_probability": round(fp, 4),
+                "model_probability": round(wp_f, 4),
+            }
+    except Exception as _fa_err:
+        logger.debug("fusion_agreement calc failed for pick %s: %s",
+                     pick.get("id"), _fa_err)
+
     # Persist telemetry linked to the pick (extended schema from Step 5:
     # add `pick_id`, `market`, `event`, `pick_date`, `league` for filters).
     if persist:
