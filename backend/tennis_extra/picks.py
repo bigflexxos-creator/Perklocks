@@ -69,7 +69,7 @@ def _lock_score_from_implied(
     tier: str,
     tournament: str = "",
     event_label: str = "",
-    edge_percent: float = 0.0,
+    edge_percent: Optional[float] = 0.0,
     using_real_odds: bool = False,
 ) -> float:
     """Translate book implied probability + evidence → SEED lock score.
@@ -292,23 +292,44 @@ async def fetch_extra_tennis_picks(
             bookmaker_final     = str(real_odds["bookmaker"])
             # Edge = our (no-vig) model probability vs the book's
             # vig-included implied probability. Genuine value signal.
-            edge_pct            = round(fav_implied * 100.0 - implied_final, 2)
+            edge_pct: Optional[float] = round(
+                fav_implied * 100.0 - implied_final, 2)
             is_extra_flag       = False
             fair_only_flag      = False
             source_label        = "tennis_real_odds"
             no_edge_model_flag  = False
+            no_real_book_line   = False
             coverage_note       = f"Real book odds via {bookmaker_final}."
             all_books           = real_odds.get("all_books") or {}
         else:
-            book_odds_final     = int(fav_odds)
+            # ── P0-3 (2026-08-11) — do NOT manufacture sportsbook data
+            # when the fallback has no real book line.
+            #
+            # Prior behaviour set ``book_odds = <scraped-fair-value
+            # number>`` and ``edge_percent = 0.0``, which mis-
+            # represented the scraped TennisExplorer fair-value model
+            # as a real bookmaker line and silently converted "no line
+            # available" into "0% edge".  Both are gone now:
+            #   * ``book_odds`` is None.
+            #   * ``edge_percent`` is None (unknown, not zero).
+            #   * ``no_real_book_line`` tags the pick so the UI can
+            #     render "no sportsbook line" instead of a fake 0% edge.
+            # ``implied_probability`` is retained because it IS a real
+            # signal (comes from the scrape's fair-value model), just
+            # not from a sportsbook.
+            book_odds_final     = None
             implied_final       = round(fav_implied * 100.0, 2)
-            bookmaker_final     = "Sportsbook"
-            edge_pct            = 0.0
+            bookmaker_final     = "TennisExplorer (no book line)"
+            edge_pct            = None
             is_extra_flag       = True
             fair_only_flag      = is_model_pick
-            source_label        = "tennis_extra_model" if is_model_pick else "tennis_extra"
+            source_label        = ("tennis_extra_model"
+                                    if is_model_pick else "tennis_extra")
             no_edge_model_flag  = not is_model_pick
-            coverage_note       = "TennisExplorer scrape (Odds API doesn't carry this tournament)."
+            no_real_book_line   = True
+            coverage_note       = (
+                "TennisExplorer scrape — no US sportsbook line available "
+                "for this tournament, edge/odds intentionally left as null.")
             all_books           = {}
 
         # ── Lock score (multi-factor, spreads picks 55-90) ──────────
@@ -357,6 +378,7 @@ async def fetch_extra_tennis_picks(
             "pick_date": date_str,
             "status": "pending",
             "no_edge_model": no_edge_model_flag,
+            "no_real_book_line": no_real_book_line,
             "bookmaker": bookmaker_final,
             # ── Alt-line availability metadata (2026-07-13) ──
             # The Odds API catalog only covers Grand Slams, Masters
@@ -435,7 +457,14 @@ async def fetch_extra_tennis_picks(
                 pick_doc["data_driven_contribs"] = dd["contributions"]
                 pick_doc["win_probability"] = round(dd["mp"] * 100, 2)
                 pick_doc["model_win_probability"] = round(dd["mp"] * 100, 2)
-                pick_doc["edge_percent"] = round((dd["mp"] - fav_implied) * 100, 2)
+                # P0-3 (2026-08-11): only surface an edge when we have
+                # a REAL sportsbook line to compare against.  Without a
+                # real book line the "edge" would be model-vs-scrape,
+                # which the frontend must NOT display as a bookmaker
+                # value signal.
+                if using_real:
+                    pick_doc["edge_percent"] = round(
+                        (dd["mp"] - fav_implied) * 100, 2)
 
                 # ── Populate pick_rationale (2026-07-21) ─────────────
                 # User: "why this picks should be back on card". Tennis

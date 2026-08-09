@@ -366,6 +366,12 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as _odds_st_err:
         logger.debug("Could not read Odds API status: %s", _odds_st_err)
     picks = await generate_all_picks(date_str, sport_filter=sport_filter)
+    # P0-3 (2026-08-11): normalise defensively so the Tennis Extra
+    # fallback below can safely append even when the primary path
+    # returned ``None`` (recoverable provider failure) rather than an
+    # empty list.
+    if picks is None:
+        picks = []
     # 2026-07-22 diagnostic — count MLS ESPN picks right off the pipeline.
     _mls_espn_from_engine = sum(
         1 for p in (picks or []) if isinstance(p, dict)
@@ -385,6 +391,54 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         )
     except Exception:
         pass
+
+    # ── P0-3 (2026-08-11) Tennis Extra fallback — RUNS UNCONDITIONALLY ──
+    # Historically this block was placed AFTER the `if not picks: return 0`
+    # early-return below, so a primary Odds-API refresh that produced
+    # zero Tennis picks (401, provider outage, empty slate) killed the
+    # entire Tennis experience even though the free TennisExplorer
+    # scrape fallback could have covered every ATP/WTA/Challenger
+    # tournament.  We now execute the fallback ALWAYS when the refresh
+    # scope covers Tennis (unfiltered refresh, or ``sport_filter ==
+    # "Tennis"``), regardless of the primary path's outcome.
+    #
+    # Dedupe rule: skip any fallback pick whose ``id`` already appears
+    # in ``picks`` (primary + fallback both succeeded case).  Both
+    # generators use uuid5-based deterministic ids so duplicates are
+    # deterministic collisions across refreshes.
+    #
+    # ATP / WTA / Challenger / ITF coverage stays intact — the fallback
+    # honours the same tier + league taxonomy the primary emits.
+    _run_tennis_fallback = (
+        sport_filter is None
+        or (sport_filter or "").lower() == "tennis"
+    )
+    if _run_tennis_fallback:
+        try:
+            from tennis_extra import fetch_extra_tennis_picks
+            # days_ahead=3 gives today + 3 days of visibility so tournaments
+            # starting Monday–Wednesday appear in the feed on Sunday night
+            # (user report 2026-07-12: Umag/Bastad/Gstaad/Athens/Iasi ATP
+            # matches on TU 14.07 weren't being picked up). TennisExplorer
+            # supports future-date URLs natively so this is 3 extra HTTP
+            # calls per refresh (still under the 30-min in-process cache).
+            extra = await fetch_extra_tennis_picks(
+                date_str=date_str, days_ahead=3)
+            if extra:
+                existing_ids = {p.get("id") for p in (picks or [])}
+                added = 0
+                for ep in extra:
+                    if ep.get("id") in existing_ids:
+                        continue        # dedupe just in case
+                    picks.append(ep)
+                    added += 1
+                logger.info(
+                    "Tennis Extra: added %d scraped picks (primary had %d)",
+                    added, len(picks) - added,
+                )
+        except Exception as e:
+            logger.warning("Tennis Extra scrape skipped: %s", e)
+
     if not picks:
         if sport_filter:
             logger.info(
@@ -397,28 +451,6 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
                 "instead of wiping the board.", date_str,
             )
         return 0
-    # ── Tennis Extra — scraped picks for tournaments The Odds API doesn't ──
-    # carry (Mallorca, Bad Homburg, Eastbourne, Challengers, etc.).
-    # User complaint addressed: "Why we not getting these tennis games."
-    # Free fallback uses TennisExplorer.com — scrape is cached 30 min.
-    try:
-        from tennis_extra import fetch_extra_tennis_picks
-        # days_ahead=3 gives today + 3 days of visibility so tournaments
-        # starting Monday–Wednesday appear in the feed on Sunday night
-        # (user report 2026-07-12: Umag/Bastad/Gstaad/Athens/Iasi ATP
-        # matches on TU 14.07 weren't being picked up). TennisExplorer
-        # supports future-date URLs natively so this is 3 extra HTTP
-        # calls per refresh (still under the 30-min in-process cache).
-        extra = await fetch_extra_tennis_picks(date_str=date_str, days_ahead=3)
-        if extra:
-            existing_ids = {p.get("id") for p in picks}
-            for ep in extra:
-                if ep.get("id") in existing_ids:
-                    continue  # dedupe just in case
-                picks.append(ep)
-            logger.info("Tennis Extra: added %d scraped picks", len(extra))
-    except Exception as e:
-        logger.warning("Tennis Extra scrape skipped: %s", e)
     # ── MLB Batter-vs-Pitcher enrichment ──
     # User spec: "make sure you got batter vs pitcher when making hit
     # prediction". Pulls career BvP splits from MLB Stats API (free,
