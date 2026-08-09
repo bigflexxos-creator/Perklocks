@@ -79,23 +79,36 @@ def test_eligibility_helper_rejects_bad_input():
     assert is_main_board_eligible({}) is False
 
 
-def test_query_helper_uses_gte_85_01():
+def test_query_helper_uses_strict_gt_85():
     from services.main_board_eligibility import (
-        MAIN_BOARD_LOCK_FLOOR_INCLUSIVE, main_board_lock_score_query,
+        MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE, main_board_lock_score_query,
     )
-    assert MAIN_BOARD_LOCK_FLOOR_INCLUSIVE == 85.01
+    assert MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE == 85.0
     q = main_board_lock_score_query()
-    assert q == {"$or": [
-        {"lock_score":    {"$gte": 85.01}},
-        {"lock_score_v2": {"$gte": 85.01}},
-    ]}
+    # Predicate must express strict `> 85` (not `>= 85.01`) and
+    # prefer canonical ``published_lock_score`` over legacy fields.
+    assert "$or" in q
+    branches = q["$or"]
+    # First branch: canonical
+    assert branches[0] == {"published_lock_score": {"$gt": 85.0}}
+    # Second branch: legacy fallback gated by `published_lock_score`
+    # not existing on the pick.
+    legacy = branches[1]
+    assert "$and" in legacy
+    assert {"published_lock_score": {"$exists": False}} in legacy["$and"]
+    inner = [c for c in legacy["$and"] if "$or" in c][0]["$or"]
+    assert {"lock_score":    {"$gt": 85.0}} in inner
+    assert {"lock_score_v2": {"$gt": 85.0}} in inner
 
 
 # ── 4. Central eligibility service wired into /picks/today ──────────
 def test_picks_routes_imports_central_eligibility_module():
     src = (_BACKEND_ROOT / "routes" / "picks_routes.py").read_text()
     assert "from services.main_board_eligibility import" in src
-    assert "MAIN_BOARD_LOCK_FLOOR_INCLUSIVE" in src
+    # Post-closure the file imports the true-`>85` exclusive floor +
+    # the canonical query helper.
+    assert "MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE" in src
+    assert "main_board_lock_score_query" in src
 
 
 def test_no_active_thin_slate_fallback_to_75_65_55_on_main_feed():
@@ -107,11 +120,15 @@ def test_no_active_thin_slate_fallback_to_75_65_55_on_main_feed():
     assert "if False and _is_main_board_view:" in src, (
         "main-board thin-slate fallback must be explicitly disabled"
     )
-    # And the new default_floor uses the strict constant, not 85.0.
+    # Post-closure: no per-view default_floor lowering (75.0 for
+    # market-filtered, 55.0 for alt).  The default is the strict
+    # `MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE` for every Locks view.
     idx = src.find("default_floor =")
     assert idx > 0
     window = src[idx:idx + 400]
-    assert "MAIN_BOARD_LOCK_FLOOR_INCLUSIVE" in window
+    assert "MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE" in window
+    assert "75.0 if has_market_filter" not in window
+    assert "55.0 if lt ==" not in window
 
 
 # ── 5-6. Candidate disposition ──────────────────────────────────────
@@ -197,6 +214,34 @@ def test_published_pick_above_85_reaches_board():
     from services.main_board_eligibility import is_main_board_eligible
     pub = {"lock_score": 85.05, "publication_source": "canonical_pipeline"}
     assert is_main_board_eligible(pub) is True
+
+
+# ── Canonical lock source: stale legacy MUST NOT override ──────────
+def test_canonical_published_wins_over_stale_legacy_high():
+    """A canonically-published pick with a stale HIGH ``lock_score_v2``
+    that drifted above 85 must NOT be board-eligible when the
+    authoritative ``published_lock_score`` is ≤ 85.  This is the
+    Phase 1 Final Closure canonical-source guarantee."""
+    from services.main_board_eligibility import is_main_board_eligible
+    pick = {
+        "published_lock_score": 60.0,   # canonical (authoritative)
+        "lock_score": 60.0,              # dual-write mirror
+        "lock_score_v2": 98.0,           # STALE — must be ignored
+    }
+    assert is_main_board_eligible(pick) is False
+
+
+def test_canonical_published_over_85_wins_even_if_legacy_low():
+    """Inverse: a canonically-published >85 pick with a stale LOW
+    legacy ``lock_score`` (e.g. pick_validator drift) must remain
+    eligible — canonical is authoritative in BOTH directions."""
+    from services.main_board_eligibility import is_main_board_eligible
+    pick = {
+        "published_lock_score": 92.0,   # canonical
+        "lock_score": 64.0,              # stale legacy drift
+        "lock_score_v2": 50.0,
+    }
+    assert is_main_board_eligible(pick) is True
 
 
 # ── 9. Market-surfacing chips unchanged (protection) ────────────────

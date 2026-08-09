@@ -1045,32 +1045,34 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # multi-select array is populated. This drives the default-floor relax.
     has_market_filter = bool(market_list)
     has_league_filter = bool(league_list)
-    # When the user explicitly filters by a single market, relax the default
-    # 85+ lock floor — they're narrowing the pool themselves and want to see
-    # everything that matches their selection.
+    # Phase 1 Final Closure (2026-08-11): the Locks contract is TRUE
+    # `> 85` and governs EVERY Locks view — main board, market-filtered,
+    # and alt-line — without exception.  Filters narrow the qualifying
+    # >85 pool; filters must NEVER lower the Locks threshold.
     #
-    # Also relax for the ALT line-type tab — alt lines like soccer
-    # Over 1.5 / Under 3.5 are intentionally lower-confidence chalkier
-    # OR longer-shot variations of the main consensus, so a strict 85
-    # floor zeroes-out the tab entirely. User feedback: "soccer still
-    # not showing alt on website or app" — drop floor to 55 for alt so
-    # the synthesized lines surface.
-    # Phase-1 strict eligibility (2026-08-08): main Locks board admits
-    # ONLY picks with FINAL LOCK SCORE > 85.  Implemented as an
-    # epsilon-adjusted `$gte` floor so Mongo's numeric filter matches
-    # the "strictly greater than 85" contract without needing a
-    # `$gt` refactor across every downstream call site.  A pick at
-    # exactly 85.00 falls under this floor; 85.01 clears it.
+    # The previous per-view lowerings (75 for market-filtered, 55 for
+    # alt) have been retired.  User-supplied ``min_lock`` above 85 still
+    # narrows further; ``min_lock`` below or equal to 85 is clamped up
+    # to the base contract.
     #
     # See: services/main_board_eligibility.py for the central helper.
     from services.main_board_eligibility import (
-        MAIN_BOARD_LOCK_FLOOR_INCLUSIVE,
+        MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE,
+        main_board_lock_score_query,
     )
     lt = (line_type or "").lower()
-    default_floor = 75.0 if has_market_filter else (
-        55.0 if lt == "alt" else MAIN_BOARD_LOCK_FLOOR_INCLUSIVE
-    )
-    floor = max(default_floor, float(min_lock)) if min_lock is not None else default_floor
+    default_floor = MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE  # 85.0 (strict >)
+    # User-supplied min_lock only takes effect when it *narrows* the pool
+    # (> 85).  A min_lock ≤ 85 falls through to the base >85 contract so
+    # a stale client filter cannot re-open the board.
+    if min_lock is not None:
+        try:
+            _ml = float(min_lock)
+        except (TypeError, ValueError):
+            _ml = default_floor
+        floor = max(default_floor, _ml)
+    else:
+        floor = default_floor
     # ── Phase-1: main-board thin-slate fallback DISABLED ───────────────
     # The 85 → 75 → 65 → 55 auto-relax was retired 2026-08-08 per
     # Phase 1 requirements ("prove no active main-board fallback lowers
@@ -1152,23 +1154,28 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # correct high score — without this OR, the home feed hides those picks
     # silently. The serializer (`_canonicalize_lock_score`) then promotes
     # whichever is higher before returning, so the user sees the right number.
+    # Phase 1 Final Closure (2026-08-11): the primary Locks predicate is
+    # now delegated to the central helper.  The helper prefers
+    # ``published_lock_score`` (canonical) and only falls back to
+    # ``lock_score`` / ``lock_score_v2`` for pre-Phase-1c rows that have
+    # not been snapshot-published yet.  This closes the stale-legacy
+    # override loophole: a canonically de-locked pick with a lingering
+    # high ``lock_score_v2`` can no longer sneak back onto the board.
+    #
+    # ``lock_score_raw`` and ``lock_score_peak`` were pre-canonical
+    # shadow fields; they are intentionally NOT consulted here — the
+    # canonical published value is authoritative.
+    _primary_lock_predicate = main_board_lock_score_query(
+        min_lock=floor if floor > MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE else None,
+    )
     standard_q = {
         "no_bet": {"$ne": True},
         # NOTE: Two $or clauses combined via $and (Python dict can't hold
         # two "$or" keys — the second overwrites the first).
         "$and": [
             {"$or": [
-                # Filter compares against ALL canonical lock fields so the
-                # min_lock = 99 user filter doesn't hide Neymar/Memphis/etc.
-                # whose DB lock_score has drifted down to 64 while v2/peak
-                # still hold 99. User report 2026-06-26: "when I select 99
-                # nothing populate but 99 are on board". This OR mirrors the
-                # `_canonicalize_lock_score` max() at read time so what the
-                # UI sees and what the filter matches are consistent.
-                {"lock_score": {"$gte": floor}},
-                {"lock_score_v2": {"$gte": floor}},
-                {"lock_score_raw": {"$gte": floor}},
-                {"lock_score_peak": {"$gte": floor}},
+                # Canonical Locks predicate (published_lock_score first).
+                _primary_lock_predicate,
                 # ── Chalk Trap picks (2026-07-21) ─────────────────────
                 # User: "I still want the 200 picks for options" —
                 # chalk-trapped picks have lock=72 (below floor) BUT must
