@@ -2942,6 +2942,11 @@ async def on_startup():
     # P0-A (2026-08-11) — ensure the unique index required for
     # race-safe upserts is present BEFORE we hydrate or any ingest
     # loop attempts to write.
+    #
+    # P0-C (2026-08-11) — extend identity coverage to Big-5 European
+    # leagues (from `soccer_player_form`) and seed the curated
+    # national-team affiliation stream (independent freshness).  All
+    # writes route through the P0-A race-safe persist_identity layer.
     try:
         from services.player_identity import (
             hydrate_registry_from_mongo, ensure_identity_indexes,
@@ -2950,6 +2955,34 @@ async def on_startup():
         n = await hydrate_registry_from_mongo(db)
         logger.info(
             "Phase 2 Final: hydrated %d player identities from Mongo", n)
+        # P0-C — refresh Big-5 + national-team affiliations.  Fire
+        # and forget on startup so the HTTP server can serve
+        # /api/version / /api/auth/login immediately; the identity
+        # ingest is not on any critical request path.
+        try:
+            from services.soccer_identity_ingest import (
+                refresh_soccer_identity_registry,
+            )
+            async def _p0c_seed():
+                try:
+                    summary = await refresh_soccer_identity_registry(db)
+                    logger.info(
+                        "P0-C identity ingest: big5=%s national_teams=%s",
+                        summary.get("big5", {}).get("upserts"),
+                        summary.get("national_teams", {}).get("bootstrap_players"),
+                    )
+                    # Re-hydrate so downstream loops see the new
+                    # identities in-memory too.
+                    m = await hydrate_registry_from_mongo(db)
+                    logger.info(
+                        "P0-C: post-seed hydrate loaded %d identities", m)
+                except Exception as _p0c_err:
+                    logger.warning(
+                        "P0-C identity seed failed (non-fatal): %s", _p0c_err)
+            asyncio.create_task(_p0c_seed())
+        except Exception as _wire_err:
+            logger.warning(
+                "P0-C identity seed wiring failed (non-fatal): %s", _wire_err)
     except Exception as _ident_err:
         logger.warning(
             "player_identity hydrate skipped (non-fatal): %s", _ident_err)
