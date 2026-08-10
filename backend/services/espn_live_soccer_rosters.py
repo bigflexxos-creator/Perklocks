@@ -63,6 +63,38 @@ LEAGUE_SLUGS: dict[str, str] = {
     "por.1": "Primeira Liga",
     "chi.1": "Primera Chile",
     "esp.2": "La Liga 2",
+    # Phase 5.2.1 (2026-08-11) — added to close the World Cup props
+    # coverage gap.  Every league here contains players actively
+    # showing up in Perklocks NT props but missing from the P0-E
+    # baseline ingest.
+    "sco.1": "Scottish Premiership",
+    "eng.2": "English Championship",
+    "eng.3": "English League One",
+    "bel.1": "Belgian Pro League",
+    "aut.1": "Austrian Bundesliga",
+    "sui.1": "Swiss Super League",
+    "gre.1": "Greek Super League",
+    "tur.1": "Turkish Süper Lig",
+    "arg.1": "Argentine Primera División",
+    "col.1": "Colombian Primera A",
+    "uru.1": "Uruguayan Primera",
+    "jpn.1": "J1 League",
+    "kor.1": "K League 1",
+    "aus.1": "Australian A-League",
+    "irl.1": "League of Ireland Premier",
+    "por.2": "Liga Portugal 2",
+    "fra.2": "Ligue 2",
+    "ger.2": "2. Bundesliga",
+    "ita.2": "Serie B",
+    "den.1": "Danish Superliga",
+    "ecu.1": "Ecuador Serie A",
+    "par.1": "Paraguay Primera División",
+    "cro.1": "Croatian HNL",
+    "cze.1": "Czech First League",
+    "pol.1": "Ekstraklasa",
+    "rus.1": "Russian Premier League",
+    "ser.1": "Serbian SuperLiga",
+    "rom.1": "Romanian Liga I",
 }
 
 

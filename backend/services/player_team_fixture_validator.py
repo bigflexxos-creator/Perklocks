@@ -282,11 +282,33 @@ def _extract_player_name(pick: dict[str, Any]) -> Optional[str]:
       * No loose parsing that could split "Julian Alvarez" mid-name.
     """
     # 1. Structured fields take priority.
+    # Phase 5.2.1 (2026-08-11) — "Yes" / "No" / "Over" / "Under" /
+    # "Team A" / "Team B" are BETTING SELECTIONS not player names.
+    # When a structured field carries one of these, fall through to
+    # the market-string parser instead of returning the selection.
+    _NON_NAME_SELECTIONS = frozenset({
+        "yes", "no", "over", "under", "team a", "team b",
+        "home", "away", "draw", "1", "2", "x",
+    })
+
+    def _dedupe_repeated_name(v: str) -> str:
+        """Odds API's Brasileirão feed sometimes emits single-name
+        players ("Carlao", "Bidu", "Robson") as "Carlao Carlao".
+        Collapse identical adjacent tokens.  Only touches EXACT
+        duplicates — a name like "Jean Jean-Claude" is left alone."""
+        parts = v.strip().split()
+        if len(parts) >= 2 and len(set(parts)) == 1:
+            return parts[0]
+        return v
+
     for k in ("player_name", "player", "selection", "pick_side"):
         v = pick.get(k)
         if isinstance(v, str) and v.strip():
-            cleaned = _SELECTION_ACTION_RE.sub("", v.strip()).strip()
-            if cleaned:
+            if v.strip().lower() in _NON_NAME_SELECTIONS:
+                continue
+            v_dedup = _dedupe_repeated_name(v.strip())
+            cleaned = _SELECTION_ACTION_RE.sub("", v_dedup).strip()
+            if cleaned and cleaned.lower() not in _NON_NAME_SELECTIONS:
                 return cleaned
 
     # 2. Market-string fallback.
@@ -375,6 +397,32 @@ _TEAM_ALIAS_GROUPS: list[set[str]] = [
     {"ireland", "republic of ireland"},
     {"bosnia", "bosnia and herzegovina"},
     {"cape verde", "cabo verde"},
+    # Phase 5.2.1 — additional country aliases surfaced by the
+    # 2026-08-11 audit.  Each was verified against actual unresolved
+    # / confirmed_mismatch picks — never speculative.
+    {"congo dr", "dr congo", "democratic republic of the congo",
+     "democratic republic of congo"},
+    {"congo", "republic of the congo", "congo republic"},
+    {"iran", "iran ir"},
+    {"russia", "russian federation"},
+    {"north macedonia", "macedonia", "fyr macedonia"},
+    {"vietnam", "viet nam"},
+    {"myanmar", "burma"},
+    {"east timor", "timor leste", "timor-leste"},
+    {"guinea bissau", "guinea-bissau"},
+    {"sao tome and principe", "sao tome e principe"},
+    {"eswatini", "swaziland"},
+    {"kyrgyzstan", "kyrgyz republic"},
+    {"laos", "lao pdr", "lao people's democratic republic"},
+    {"palestine", "palestinian territories"},
+    {"trinidad and tobago", "trinidad & tobago"},
+    {"st vincent and the grenadines",
+     "st. vincent and the grenadines",
+     "saint vincent and the grenadines"},
+    {"st kitts and nevis", "st. kitts and nevis",
+     "saint kitts and nevis"},
+    {"st lucia", "st. lucia", "saint lucia"},
+    {"antigua and barbuda", "antigua & barbuda"},
     # Chinese Super League — club rename / variant
     {"beijing fc", "beijing guoan"},
     {"shanghai fc", "shanghai port", "shanghai shenhua"},
