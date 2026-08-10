@@ -334,13 +334,79 @@ class PredictionPublicationService:
         dual_write: bool = True,
     ) -> dict:
         """Publish many candidates.  Never raises for a bad candidate —
-        each failure is captured in `errors` so the batch continues."""
+        each failure is captured in `errors` so the batch continues.
+
+        Phase 2 Follow-up (2026-08-11) — the player↔team↔fixture
+        integrity gate lives INSIDE this barrier.  Any Soccer
+        player-based prop whose player's CURRENT team is not on the
+        fixture (or whose roster observation is stale/missing) is
+        REJECTED here — never publishes, never receives
+        ``publication_source``.  Direct callers of ``publish_batch``
+        can no longer bypass the check by skipping the
+        ``publication_helpers``/orchestrator wrappers.
+        """
+        candidates_list = list(candidates)
+
+        # ── Layer-B integrity gate (definitive barrier) ─────────────
+        rejected_integrity: list[dict] = []
+        try:
+            from services.player_team_fixture_validator import (
+                validate_player_fixture_pick, tag_pick_with_verdict, _norm,
+            )
+            roster_lookup: dict[str, str] = {}
+            fresh_names: set[str] = set()
+            try:
+                from services import mls_scorer_gate as _mls
+                snap = getattr(_mls, "_espn_by_name", None) or {}
+                for name, entry in snap.items():
+                    t = entry.get("team") if isinstance(entry, dict) else None
+                    if t:
+                        k = _norm(name)
+                        roster_lookup[k] = t
+                        fresh_names.add(k)
+            except Exception:
+                pass
+            for p in candidates_list:
+                pn = p.get("player_name") or p.get("player")
+                pct = p.get("player_current_team")
+                if isinstance(pn, str) and isinstance(pct, str):
+                    k = _norm(pn)
+                    roster_lookup[k] = pct
+                    fresh_names.add(k)
+            gated: list[dict] = []
+            for p in candidates_list:
+                if p.get("sport") != "Soccer":
+                    gated.append(p)
+                    continue
+                verdict = validate_player_fixture_pick(
+                    p, roster_lookup,
+                    fresh_roster_names=(fresh_names or None),
+                )
+                if verdict.get("verified"):
+                    gated.append(p)
+                    continue
+                tag_pick_with_verdict(p, verdict)
+                p["off_board"] = True
+                rejected_integrity.append({
+                    "prediction_id": p.get("id") or p.get("prediction_id"),
+                    "reason": verdict.get("reason"),
+                    "player": verdict.get("player"),
+                    "player_team": verdict.get("player_team"),
+                    "fixture_teams": verdict.get("fixture_teams"),
+                })
+            candidates_list = gated
+        except Exception as _pt_err:
+            logger.warning(
+                "publish_batch integrity gate skipped (non-fatal): %s",
+                _pt_err,
+            )
+
         results: list[PublicationResult] = []
         errors: list[dict] = []
         n_new = 0
         n_existing = 0
         n_mismatches = 0
-        for cand in candidates:
+        for cand in candidates_list:
             try:
                 r = await self.publish(
                     cand, publication_source=publication_source,
@@ -362,6 +428,10 @@ class PredictionPublicationService:
             "existing_snapshots": n_existing,
             "errors": errors,
             "mismatches_logged": n_mismatches,
+            # Phase 2 Follow-up: expose integrity rejections so callers
+            # can log/report them.  Rejected picks are NOT published.
+            "integrity_rejected": len(rejected_integrity),
+            "integrity_rejections": rejected_integrity,
         }
 
     # ── Query helpers ───────────────────────────────────────────
