@@ -3443,7 +3443,11 @@ async def on_startup():
             await asyncio.sleep(15)   # let boot settle
             while True:
                 try:
-                    summary = await refresh_mls_leaders(season=2025)
+                    # Phase 2 (2026-08-11) dynamic season resolution —
+                    # MLS runs Feb → Nov, calendar-year league.
+                    _now = datetime.now(timezone.utc)
+                    _mls_season = _now.year
+                    summary = await refresh_mls_leaders(season=_mls_season)
                     logger.info("ESPN MLS stats refresh: %s", summary)
                     by, names = await load_gate_snapshot()
                     apply_espn_snapshot(by, names)

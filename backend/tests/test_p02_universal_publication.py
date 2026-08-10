@@ -110,6 +110,14 @@ def _shape_pick(source_tag: str, *, sport: str, market: str,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "reasoning": "test reasoning",
         "factors": {"form": 0.7},
+        # Phase 2 (2026-08-11): writers of Soccer player-based markets
+        # are required by the player↔team integrity gate to stamp the
+        # player's CURRENT team.  The test fixture mirrors that
+        # contract so the layer-B gate passes it through as a valid
+        # player↔fixture triple.  Alpha is the home team on the
+        # synthetic "Alpha vs Bravo" event so this is a valid pick.
+        "player_name": "Alpha",
+        "player_current_team": "Alpha",
     }
 
 

@@ -1433,8 +1433,71 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
             await publisher.ensure_indices()
         except Exception as _idx_err:
             logger.debug("publication indices ensure failed: %s", _idx_err)
+
+        # ── Phase 2 (2026-08-11) Layer-B player↔team gate ────────────
+        # Filter out Soccer player-props whose player's CURRENT team
+        # is not on the fixture (or whose roster observation is not
+        # fresh).  Invalid picks are marked off_board and NEVER given
+        # a publication_source.  Non-Soccer picks pass through.
+        try:
+            from services.player_team_fixture_validator import (
+                validate_player_fixture_pick, tag_pick_with_verdict, _norm,
+            )
+            roster_lookup: dict[str, str] = {}
+            fresh_names: set[str] = set()
+            try:
+                from services import mls_scorer_gate as _mls
+                snap = getattr(_mls, "_espn_by_name", None) or {}
+                for name, entry in snap.items():
+                    t = entry.get("team") if isinstance(entry, dict) else None
+                    if t:
+                        key = _norm(name)
+                        roster_lookup[key] = t
+                        fresh_names.add(key)
+            except Exception:
+                pass
+            for p in safe_picks:
+                pn = p.get("player_name") or p.get("player")
+                pct = p.get("player_current_team")
+                if isinstance(pn, str) and isinstance(pct, str):
+                    key = _norm(pn)
+                    roster_lookup[key] = pct
+                    fresh_names.add(key)
+            _publish_batch = []
+            _quarantined = 0
+            for p in safe_picks:
+                if p.get("sport") != "Soccer":
+                    _publish_batch.append(p)
+                    continue
+                verdict = validate_player_fixture_pick(
+                    p, roster_lookup,
+                    fresh_roster_names=(fresh_names or None),
+                )
+                if verdict.get("verified"):
+                    _publish_batch.append(p)
+                    continue
+                tag_pick_with_verdict(p, verdict)
+                p["off_board"] = True
+                _existing = list(p.get("off_board_reasons") or [])
+                for tag in ("player_team_invalid",
+                             verdict.get("reason") or "unknown"):
+                    if tag not in _existing:
+                        _existing.append(tag)
+                p["off_board_reasons"] = _existing
+                _quarantined += 1
+            if _quarantined:
+                logger.info(
+                    "Player↔team gate: %d Soccer player-props quarantined",
+                    _quarantined,
+                )
+        except Exception as _pt_err:
+            logger.warning(
+                "Player↔team gate skipped (non-fatal): %s", _pt_err,
+            )
+            _publish_batch = safe_picks
+
         summary = await publisher.publish_batch(
-            safe_picks, publication_source="canonical_pipeline",
+            _publish_batch, publication_source="canonical_pipeline",
             dual_write=True,
         )
         logger.info(

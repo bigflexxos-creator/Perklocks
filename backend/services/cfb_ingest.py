@@ -66,10 +66,29 @@ import httpx
 logger = logging.getLogger("lockscore.cfb.ingest")
 
 CFBD_BASE = "https://api.collegefootballdata.com"
-CURRENT_YEAR = 2025          # 2026 season's pre-game data lives under year=2025
-                             # until the season opens. CFBD only publishes
-                             # /player/returning + /ratings/sp for completed
-                             # seasons; we'll bump this on Aug 1 each year.
+
+
+def _current_cfb_year() -> int:
+    """Phase 2 (2026-08-11) — dynamic season resolution.
+
+    CFB seasons run August → January.  CFBD publishes upcoming-season
+    pre-game data under the *previous* calendar year until the new
+    season kicks off.  We resolve the current data year at call time
+    so the pipeline doesn't stall on a hardcoded value every August.
+
+    Rule of thumb:
+      * Aug 1 or later → use current calendar year
+      * Jan 1–Jul 31   → use previous calendar year (bowl/off-season)
+    """
+    now = datetime.now(timezone.utc)
+    return now.year if now.month >= 8 else now.year - 1
+
+
+# Backwards-compat: keep the CURRENT_YEAR symbol resolved dynamically
+# at import time.  Any long-running process that survives a season
+# rollover should also call `_current_cfb_year()` at fetch time to
+# stay accurate.
+CURRENT_YEAR = _current_cfb_year()
 
 
 def _headers() -> dict[str, str]:
