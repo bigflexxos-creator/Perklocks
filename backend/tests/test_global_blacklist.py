@@ -5,7 +5,9 @@ from dotenv import load_dotenv
 load_dotenv("/app/backend/.env")
 from quality_gate import _block_reason
 
-tests = [
+
+def test_global_blacklist():
+    tests = [
     # Should be BLOCKED (return a reason)
     ({"sport":"MLB","market":"Aaron Judge Hits + Runs + RBI Over 1.5","lock_score":95,"book_odds":-150}, True, "H+R+RBI banned"),
     ({"sport":"MLB","market":"NRFI Yes","lock_score":90,"book_odds":-160}, True, "NRFI banned"),
@@ -21,16 +23,16 @@ tests = [
     ({"sport":"MLB","market":"Cole Over 6.5 Strikeouts","lock_score":95,"book_odds":-180}, False, "Strikeouts pass"),
     ({"sport":"Soccer","market":"Total Goals Over 2.5","lock_score":89,"book_odds":-160}, False, "Total Goals pass"),
     ({"sport":"Tennis","market":"Alcaraz Moneyline","lock_score":94,"book_odds":-250}, False, "Tennis ML pass"),
-]
-print(f"{'':<3}{'Got':<7} {'Want':<7} {'Reason':<50}  Test")
-print('-'*100)
-fails = 0
-for p, should_block, name in tests:
-    reason = _block_reason(p)
-    got = 'BLOCK' if reason else 'PASS'
-    want = 'BLOCK' if should_block else 'PASS'
-    ok = '✓' if (bool(reason) == should_block) else '✗'
-    if ok == '✗': fails += 1
-    print(f"{ok:<3}{got:<7} {want:<7} {str(reason)[:48]:<50}  {name}")
-print(f'\n{fails} failures')
-sys.exit(1 if fails else 0)
+    ]
+    print(f"{'':<3}{'Got':<7} {'Want':<7} {'Reason':<50}  Test")
+    print('-'*100)
+    fails = 0
+    for p, should_block, name in tests:
+        reason = _block_reason(p)
+        got = 'BLOCK' if reason else 'PASS'
+        want = 'BLOCK' if should_block else 'PASS'
+        ok = '✓' if (bool(reason) == should_block) else '✗'
+        if ok == '✗': fails += 1
+        print(f"{ok:<3}{got:<7} {want:<7} {str(reason)[:48]:<50}  {name}")
+    print(f'\n{fails} failures')
+    assert fails == 0, f"{fails} global-blacklist assertions failed"
