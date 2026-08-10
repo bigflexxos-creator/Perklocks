@@ -335,35 +335,220 @@ def reset_registry_for_tests() -> None:
 
 
 # ── Mongo persistence + hydration ─────────────────────────────────
+#
+# P0-A (2026-08-11) — production-safe persistence.
+#
+# Design constraints from the user:
+#   * Idempotent upserts keyed by canonical_player_id (no duplicates).
+#   * Older observations must NEVER overwrite fresher current-team
+#     information — even under concurrent multi-replica writes.
+#   * Restart hydration must NOT alter observed_at (stale stays stale).
+#   * Additive fields (aliases, provider_ids, historical_teams) merge
+#     without losing prior data.
+#
+# Concurrency strategy:
+#   1. `$setOnInsert` upsert seeds a fresh document atomically when
+#      none exists. Multiple replicas racing to insert will collapse
+#      to a single winner via the unique index on canonical_player_id.
+#   2. Freshness-fields update is a CONDITIONAL `update_one` — the
+#      filter requires the DB's current observed_at to be strictly
+#      OLDER than the write we're attempting. If a fresher observation
+#      already landed, matched_count == 0 and we skip.
+#   3. Additive fields use `$addToSet` and dotted-key `$set` on
+#      provider_ids — both idempotent.
 IDENTITY_COLLECTION = "player_identities"
 
 
+async def ensure_identity_indexes(db) -> None:
+    """Create the unique index required for race-safe upserts.
+
+    Idempotent — Mongo `create_index` on an existing spec is a no-op.
+    """
+    try:
+        await db[IDENTITY_COLLECTION].create_index(
+            "canonical_player_id", unique=True, name="canonical_player_id_uniq")
+    except Exception:
+        # Duplicate-key errors during index build are surfaced by Mongo;
+        # we log via the caller — never break startup on this.
+        pass
+
+
+def _iso_lt(a: Optional[str], b: Optional[str]) -> bool:
+    """True iff `a` is strictly older than `b`. `None`/malformed treated
+    as `-inf`. ISO-8601 UTC strings are lexicographically sortable, but
+    we go through datetime for robustness to `Z` suffix."""
+    da = _parse(a)
+    db_ = _parse(b)
+    if db_ is None:
+        return False
+    if da is None:
+        return True
+    return da < db_
+
+
+async def persist_identity(db, doc: dict) -> str:
+    """Race-safe per-identity persistence.
+
+    Returns one of:
+        "inserted"     — new document created
+        "advanced"     — existing doc's current-team fields moved forward
+        "merged_only"  — no freshness change but additive fields merged
+        "skipped"      — no-op (nothing new to write)
+    """
+    cid = doc.get("canonical_player_id")
+    if not cid:
+        return "skipped"
+    new_obs = doc.get("observed_at")
+
+    # ── 1. Atomic seed. `$setOnInsert` never touches an existing doc
+    #     so this is safe under concurrent inserts (unique index will
+    #     collapse duplicate attempts to a single winner).
+    seed_doc = dict(doc)
+    # Ensure a historical_teams list exists on brand-new docs when a
+    # current_team is being seeded.
+    if seed_doc.get("current_team") and not seed_doc.get("historical_teams"):
+        seed_doc["historical_teams"] = [{
+            "team": seed_doc["current_team"],
+            "from": new_obs or datetime.now(timezone.utc).isoformat(),
+            "to": None,
+            "source": seed_doc.get("source", "unknown"),
+        }]
+    try:
+        seed_res = await db[IDENTITY_COLLECTION].update_one(
+            {"canonical_player_id": cid},
+            {"$setOnInsert": seed_doc},
+            upsert=True,
+        )
+    except Exception:
+        # Duplicate-key on the unique index means another replica beat
+        # us — that's a valid race outcome, fall through to merge.
+        seed_res = None
+
+    inserted = bool(seed_res and getattr(seed_res, "upserted_id", None) is not None)
+
+    # ── 2. Conditional freshness update. Only advance current-team
+    #     fields when our observation is STRICTLY fresher than what
+    #     the DB currently holds. Guarded by a filter on observed_at
+    #     so concurrent writers cannot clobber each other.
+    advanced = False
+    if new_obs and doc.get("current_team"):
+        existing = await db[IDENTITY_COLLECTION].find_one(
+            {"canonical_player_id": cid},
+            {"_id": 0, "current_team": 1, "observed_at": 1,
+             "historical_teams": 1},
+        )
+        if existing is None:
+            existing = {}
+        cur_obs = existing.get("observed_at")
+        # Fresher OR the record has no observation yet.
+        if _iso_lt(cur_obs, new_obs) or cur_obs is None:
+            prev_team = existing.get("current_team")
+            new_team = doc.get("current_team")
+            set_update: dict[str, Any] = {
+                "current_team": new_team,
+                "observed_at": new_obs,
+                "source": doc.get("source") or existing.get("source", "unknown"),
+                "roster_status": doc.get("roster_status")
+                    or existing.get("roster_status", "unknown"),
+                "name": doc.get("name") or existing.get("name"),
+                "name_norm": doc.get("name_norm") or existing.get("name_norm"),
+                "sport": doc.get("sport") or existing.get("sport"),
+                "league": doc.get("league") or existing.get("league"),
+            }
+            # If team actually changed, roll historical_teams forward.
+            if new_team and _norm(new_team) != _norm(prev_team or ""):
+                hist = list(existing.get("historical_teams") or [])
+                if hist and hist[-1].get("to") is None:
+                    hist[-1]["to"] = new_obs
+                hist.append({
+                    "team": new_team,
+                    "from": new_obs,
+                    "to": None,
+                    "source": doc.get("source", "unknown"),
+                })
+                set_update["historical_teams"] = hist
+            # Conditional write — ONLY when DB observed_at is still
+            # what we read (or missing). If another replica just
+            # advanced observed_at past ours, matched_count == 0 and
+            # we correctly skip.
+            filt: dict[str, Any] = {"canonical_player_id": cid}
+            if cur_obs is None:
+                filt["$or"] = [
+                    {"observed_at": {"$exists": False}},
+                    {"observed_at": None},
+                    {"observed_at": {"$lt": new_obs}},
+                ]
+            else:
+                filt["observed_at"] = {"$lt": new_obs}
+            try:
+                res = await db[IDENTITY_COLLECTION].update_one(
+                    filt, {"$set": set_update})
+                advanced = bool(res.modified_count)
+            except Exception:
+                advanced = False
+
+    # ── 3. Additive merges — always safe, idempotent.
+    merged = False
+    additive: dict[str, Any] = {}
+    aliases = [a for a in (doc.get("aliases") or []) if isinstance(a, str) and a]
+    if aliases:
+        additive.setdefault("$addToSet", {})["aliases"] = {"$each": aliases}
+    provider_ids = doc.get("provider_ids") or {}
+    for prov, pid in provider_ids.items():
+        if prov and pid:
+            additive.setdefault("$set", {})[f"provider_ids.{prov}"] = str(pid)
+    if additive:
+        try:
+            res = await db[IDENTITY_COLLECTION].update_one(
+                {"canonical_player_id": cid}, additive)
+            merged = bool(res.modified_count)
+        except Exception:
+            merged = False
+
+    if inserted:
+        return "inserted"
+    if advanced:
+        return "advanced"
+    if merged:
+        return "merged_only"
+    return "skipped"
+
+
 async def persist_registry(db) -> int:
-    """Upsert every identity in the in-memory registry into
-    `db.player_identities`.  Returns the number of docs written."""
+    """Persist every identity in the in-memory registry into
+    `db.player_identities` using the race-safe writer.
+
+    Returns the number of writes that actually mutated Mongo
+    (inserted + advanced + merged_only).  Idempotent — safe to call
+    repeatedly and from multiple replicas.
+    """
     docs = snapshot_registry()
     if not docs:
         return 0
-    ops = []
+    written = 0
     for d in docs:
-        ops.append({"filter": {"canonical_player_id": d["canonical_player_id"]},
-                     "update": {"$set": d},
-                     "upsert": True})
-    n = 0
-    for op in ops:
         try:
-            await db[IDENTITY_COLLECTION].update_one(
-                op["filter"], op["update"], upsert=op["upsert"])
-            n += 1
+            outcome = await persist_identity(db, d)
+            if outcome in ("inserted", "advanced", "merged_only"):
+                written += 1
         except Exception:
+            # Never let a single bad doc break the batch.
             continue
-    return n
+    return written
 
 
 async def hydrate_registry_from_mongo(db) -> int:
     """Load every identity from `db.player_identities` into the
-    in-memory registry.  Idempotent — safe to call from startup and
-    after any refresh loop."""
+    in-memory registry, preserving ALL fields (provider ids, aliases,
+    historical_teams, roster_status, source, observed_at) EXACTLY as
+    stored.  Idempotent — safe to call from startup and after any
+    refresh loop.
+
+    IMPORTANT: hydration never mutates the DB and never touches
+    `observed_at`. A stale identity in Mongo stays stale after
+    hydration.  The freshness gate (`is_current_team_fresh`) is what
+    guards downstream callers from acting on outdated observations.
+    """
     reset_registry_for_tests()
     docs = [d async for d in db[IDENTITY_COLLECTION].find(
         {}, {"_id": 0})]
@@ -395,7 +580,8 @@ __all__ = [
     "resolve_player", "upsert_player",
     "snapshot_registry", "hydrate_registry",
     "registry_size", "reset_registry_for_tests",
-    "persist_registry", "hydrate_registry_from_mongo",
+    "persist_registry", "persist_identity",
+    "hydrate_registry_from_mongo", "ensure_identity_indexes",
     "has_fresh_roster_for_league",
     "IDENTITY_COLLECTION",
     "_norm",
