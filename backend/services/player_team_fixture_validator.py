@@ -354,16 +354,114 @@ def _is_player_based_market(market: Optional[str]) -> bool:
     return any(t in m for t in tokens)
 
 
+# ── Team / nation aliases (small, hand-curated) ───────────────────
+#
+# FINAL CLEANUP (2026-08-11) — resolve the small number of false
+# `team_mismatch` verdicts caused by ESPN naming variants.  Each
+# alias group is a set of NORMALISED (via ``_norm``) strings that
+# are considered equivalent by ``_teams_match``.  Keep this list
+# short and only add pairs actually seen in db.picks — never add
+# broad clusters that could cause silent mis-matches.
+_TEAM_ALIAS_GROUPS: list[set[str]] = [
+    # National-team spelling variants
+    {"usa", "united states", "us", "united states of america"},
+    {"uk", "great britain"},
+    {"south korea", "korea republic", "korea south"},
+    {"north korea", "korea dpr", "korea north"},
+    {"china", "china pr", "peoples republic of china"},
+    {"turkey", "turkiye"},
+    {"czech republic", "czechia"},
+    {"ivory coast", "cote divoire"},
+    {"ireland", "republic of ireland"},
+    {"bosnia", "bosnia and herzegovina"},
+    {"cape verde", "cabo verde"},
+    # Chinese Super League — club rename / variant
+    {"beijing fc", "beijing guoan"},
+    {"shanghai fc", "shanghai port", "shanghai shenhua"},
+    {"shandong luneng taishan fc", "shandong taishan", "shandong luneng"},
+    {"guangzhou fc", "guangzhou evergrande"},
+    {"tianjin fc", "tianjin jinmen tiger", "tianjin teda"},
+    {"dalian yingbo", "dalian professional"},
+    {"chengdu rongcheng fc", "chengdu rongcheng"},
+    {"shenzhen peng city fc", "shenzhen peng city"},
+    {"wuhan three towns", "wuhan three towns fc"},
+    {"henan songshan longmen", "henan fc"},
+]
+
+
+# ── Known national-team corrections (small hand-curated) ─────────
+#
+# FINAL CLEANUP (2026-08-11) — ESPN's public roster APIs sometimes
+# carry stale or outright wrong national-team affiliations for a
+# handful of prominent players.  When this happens BOTH the
+# authoritative NT roster stream AND the citizenship stream can agree
+# on the wrong nation, defeating our `roster_conflict` heuristic.
+#
+# This override map is consulted BEFORE `national_team_lookup` for
+# international fixtures.  Entries are keyed by normalised player
+# name (`_norm(...)`) and MUST be a documented, verifiable ESPN data
+# error.  Keep the list small.
+_KNOWN_NT_CORRECTIONS: dict[str, str] = {
+    # Endrick Felipe Moreira de Sousa is a Brazilian international.
+    # ESPN currently misfiles him on the Portugal fifa.friendly
+    # squad (2026-08-11); his verifiable NT is Brazil.
+    "endrick": "Brazil",
+    "endrick felipe": "Brazil",
+    "endrick felipe moreira de sousa": "Brazil",
+}
+
+
+def _lookup_with_alias(name_norm: str,
+                        lookup: dict[str, str]) -> Optional[str]:
+    """Resolve ``name_norm`` against ``lookup`` with progressive
+    fallbacks:
+      * exact hit
+      * unique last-name suffix match
+      * exact head-of-name match (first ``n`` tokens)
+    """
+    if not lookup:
+        return None
+    if name_norm in lookup:
+        return lookup[name_norm]
+    parts = name_norm.split()
+    if len(parts) < 2:
+        return None
+    # Full last name unique suffix.
+    last = parts[-1]
+    candidates = [(k, v) for k, v in lookup.items()
+                   if _norm(k).endswith(last)]
+    if len(candidates) == 1:
+        return candidates[0][1]
+    # Progressive head-of-name prefix match — helpful for
+    # "Nicolas Gonzalez" ↔ "Nicolas Gonzalez Iglesias".
+    if len(parts) >= 2:
+        head2 = " ".join(parts[:2])
+        head_candidates = [(k, v) for k, v in lookup.items()
+                             if _norm(k).startswith(head2)]
+        if len(head_candidates) == 1:
+            return head_candidates[0][1]
+    return None
+    """True if `a` and `b` fall in the same hand-curated alias group.
+
+    Both inputs must already be `_norm`-normalised."""
+    if not a or not b or a == b:
+        return a == b
+    for g in _TEAM_ALIAS_GROUPS:
+        if a in g and b in g:
+            return True
+    return False
+
+
 def _teams_match(player_team: str,
                   fixture_teams: tuple[str, str]) -> bool:
     """Compare a player's current team to the two fixture teams.
 
-    Uses normalised equality with an additional "alias contains"
-    check — the fixture side ``"Manchester City"`` matches a
-    roster team of ``"Manchester City FC"`` etc.  Only accepted
-    when the shorter side is fully contained in the longer AND
-    the shorter is at least 4 chars (guards against 2-3 letter
-    false matches).
+    Uses normalised equality, a small hand-curated alias table for
+    known naming variants, and an additional "alias contains" check
+    — the fixture side ``"Manchester City"`` matches a roster team
+    of ``"Manchester City FC"`` etc.  Only accepted when the shorter
+    side is fully contained in the longer AND the shorter is at
+    least 4 chars (guards against 2-3 letter false matches).
     """
     p = _norm(player_team)
     if not p:
@@ -374,11 +472,12 @@ def _teams_match(player_team: str,
             continue
         if p == fn:
             return True
+        # Alias-group equivalence (USA ↔ United States, etc.).
+        if _alias_equivalent(p, fn):
+            return True
         # Word-boundary containment guard against "Sam" vs "Sami"
         # (used only for team, not player, where 4+ chars is safe).
         if len(p) >= 4 and (p in fn or fn in p):
-            # Additional guard: shared prefix of the club stem must
-            # exceed 4 chars so "United" and "Uniao" don't collapse.
             shorter, longer = sorted([p, fn], key=len)
             if longer.startswith(shorter):
                 return True
