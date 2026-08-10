@@ -5352,7 +5352,15 @@ async def generate_all_picks(
 
     # Phase 2: fetch event-level player props sequentially with small delays
     # to avoid The Odds API rate limit (1 req/sec on free tier).
-    prop_sports = [s for s in ("MLB", "NBA", "Soccer") if _want(s)]
+    #
+    # Phase 1 (2026-08-11): NFL was defined in PLAYER_PROP_MARKETS but
+    # omitted from this loop, so its props never fetched.  Added here
+    # so the NFL wiring is genuinely end-to-end.  CFB player-prop
+    # coverage stays intentionally OFF (The Odds API's CFB market
+    # catalogue is thin — CFB game-level markets already flow via
+    # Phase 1 above).  UFC has no prop markets (see PLAYER_PROP_MARKETS
+    # comment) and NHL is not yet supported.
+    prop_sports = [s for s in ("MLB", "NBA", "NFL", "Soccer") if _want(s)]
     for sport in prop_sports:
         try:
             props = await _fetch_player_props_for_sport(sport)

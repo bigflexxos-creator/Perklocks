@@ -259,17 +259,18 @@ def _build_pick(sport_key: str, league: str, ev: dict, sel: dict,
             "engine_version": "espn_soccer_fixtures.v1",
             "summary": (
                 f"{sel['team']} moneyline · fair value ~{prob*100:.0f}% · "
-                f"ESPN scoreboard fallback (Odds API 401)"
+                f"ESPN scoreboard coverage"
             ),
             "evidence": [
                 f"📊 ESPN scoreboard: {ev['home_form'] or '?'} home form vs "
                 f"{ev['away_form'] or '?'} away form",
-                f"🏷 Fallback source ({sel['book_odds_source']}) — no primary book",
+                f"🏷 Fallback coverage ({sel['book_odds_source']}) — "
+                f"no primary sportsbook line",
             ],
             "concerns": [
-                "Odds API subscription is currently unavailable — this "
-                "pick is derived from ESPN's public scoreboard and does "
-                "NOT have a live sportsbook line to measure edge against.",
+                "This tournament is not carried by our primary US "
+                "sportsbook feed — pick is derived from ESPN's public "
+                "scoreboard.  No live sportsbook line, no edge measure.",
             ],
         },
     }

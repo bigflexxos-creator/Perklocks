@@ -33,7 +33,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS } from "@/src/theme";
-import { api } from "@/src/lib/api";
+import { api, getBackendUrl } from "@/src/lib/api";
 import { PickEventRow } from "@/src/components/PickEventRow";
 
 // ── Module type ──────────────────────────────────────────────────────
@@ -1319,7 +1319,17 @@ function CorrelationModule() {
 
   const load = useCallback(() => {
     setLoading(true);
-    fetch(`${(process.env.EXPO_PUBLIC_BACKEND_URL || "")}/api/lab/correlations-v2?limit_per_section=10${sport ? `&sport=${sport}` : ""}`)
+    // Phase 1 (2026-08-11): route through the centralized backend URL
+    // resolver so lab.tsx obeys the same production/native fail-loud
+    // contract as every other consumer.
+    let base: string;
+    try { base = getBackendUrl(); }
+    catch (e) {
+      setData({ sections: {}, error: String((e as Error)?.message || e) });
+      setLoading(false);
+      return;
+    }
+    fetch(`${base}/api/lab/correlations-v2?limit_per_section=10${sport ? `&sport=${sport}` : ""}`)
       .then((r) => r.json())
       .then(setData)
       .catch(() => setData({ sections: {} }))
