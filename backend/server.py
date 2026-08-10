@@ -2938,8 +2938,15 @@ async def on_startup():
     # registry from Mongo so freshness timestamps survive restarts
     # and replicas.  Every startup snapshots the persisted registry
     # into memory before the first refresh loop touches it.
+    #
+    # P0-A (2026-08-11) — ensure the unique index required for
+    # race-safe upserts is present BEFORE we hydrate or any ingest
+    # loop attempts to write.
     try:
-        from services.player_identity import hydrate_registry_from_mongo
+        from services.player_identity import (
+            hydrate_registry_from_mongo, ensure_identity_indexes,
+        )
+        await ensure_identity_indexes(db)
         n = await hydrate_registry_from_mongo(db)
         logger.info(
             "Phase 2 Final: hydrated %d player identities from Mongo", n)
@@ -3452,6 +3459,7 @@ async def on_startup():
     try:
         from services.espn_mls_stats import refresh_mls_leaders, load_gate_snapshot
         from services.mls_scorer_gate import apply_espn_snapshot
+        from services.player_identity import persist_registry as _persist_ident
         async def _mls_stats_loop() -> None:
             await asyncio.sleep(15)   # let boot settle
             while True:
@@ -3467,6 +3475,20 @@ async def on_startup():
                     logger.info(
                         "MLS scorer gate hydrated: %d players from ESPN", len(names),
                     )
+                    # P0-A (2026-08-11) — persist the canonical
+                    # player_identity registry to Mongo so replicas
+                    # and restarts see the freshest current-team
+                    # observations.  Race-safe: older observations
+                    # cannot overwrite fresher ones.
+                    try:
+                        n_written = await _persist_ident(db)
+                        logger.info(
+                            "player_identity persisted: %d writes to Mongo",
+                            n_written,
+                        )
+                    except Exception as _pe:
+                        logger.warning(
+                            "player_identity persistence failed: %s", _pe)
                 except Exception as e:
                     logger.warning("ESPN MLS stats refresh failed: %s", e)
                 await asyncio.sleep(12 * 60 * 60)   # 12h
