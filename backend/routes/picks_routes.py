@@ -147,23 +147,28 @@ async def markets_for_sport(
     drops games that have already started.
     """
     from server import SPORT_MARKETS, _today_str, _filter_in_play_window  # lazy
+    from services.main_board_eligibility import is_main_board_eligible  # lazy
     markets = SPORT_MARKETS.get(sport, [])
     raw = await db.picks.find(
         {"sport": sport, "pick_date": _today_str()},
         {"_id": 0, "league": 1, "event_time": 1, "lock_score": 1,
-         "is_under_lock": 1, "no_bet": 1, "edge_percent": 1,
-         "elite_player": 1},
+         "lock_score_v2": 1, "published_lock_score": 1,
+         "is_under_lock": 1, "no_bet": 1, "off_board": 1,
+         "edge_percent": 1, "elite_player": 1},
     ).to_list(length=1000)
 
+    # Phase 1 (2026-08-11): league counts must reflect the SAME
+    # eligibility rule as the main Locks board — strict `>85` on the
+    # authoritative published Lock Score, no elite bypass, no
+    # `edge >= 0` gate (real-line integrity: edge=None ≠ 0).  Uses the
+    # central `is_main_board_eligible` helper so this endpoint can
+    # never drift out of sync with `/picks/today`.
     def _qualifies(p: dict) -> bool:
         if p.get("no_bet") is True:
             return False
-        elite = bool(p.get("elite_player"))
-        lock = float(p.get("lock_score") or 0)
-        edge = float(p.get("edge_percent") or 0)
-        if elite:
-            return True
-        return lock >= 85 and edge >= 0
+        if p.get("off_board") is True:
+            return False
+        return is_main_board_eligible(p)
 
     raw = [p for p in raw if _qualifies(p)]
     raw = _filter_in_play_window(raw)

@@ -1,0 +1,213 @@
+"""Authoritative Sport Capability Registry — Phase 1 (2026-08-11).
+
+Single source of truth for what markets / features each sport
+supports end-to-end.  Every board/filter/endpoint must consult this
+module rather than maintaining its own scattered list.
+
+Contract for each sport entry:
+
+    enabled            : bool
+        False disables the sport at every ingest/board layer.  WNBA
+        and KBO are intentionally disabled — do not re-enable without
+        a full product decision.
+
+    game_markets       : list[str]
+        Bulk /odds catalog markets that pass through the primary path.
+
+    prop_markets       : list[str]
+        Event-level player-prop markets that the Odds API supports and
+        we've wired end-to-end (feature engine → scoring → publication).
+
+    fallback_sources   : list[str]
+        Secondary/free sources that can populate picks when the
+        primary path returns nothing.  All fallbacks feed the SAME
+        canonical publication pipeline (no isolated board paths).
+
+    supports_alt_lines : bool
+    supports_locks     : bool  # eligible for the strict >85 Locks board
+    notes              : str   # human-readable summary
+
+The registry does NOT drive scoring formulas or Lock Score behaviour
+— it strictly describes wiring/capabilities.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+
+SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
+    "MLB": {
+        "enabled": True,
+        "game_markets": ["h2h", "spreads", "totals"],
+        "prop_markets": [
+            "batter_hits", "batter_hits_alternate",
+            "batter_hits_runs_rbis", "batter_hits_runs_rbis_alternate",
+            "batter_home_runs", "batter_home_runs_alternate",
+            "batter_rbis", "batter_rbis_alternate",
+            "batter_total_bases", "batter_total_bases_alternate",
+            "pitcher_strikeouts", "pitcher_strikeouts_alternate",
+            "pitcher_outs",
+        ],
+        "fallback_sources": [],
+        "supports_alt_lines": True,
+        "supports_locks": True,
+        "notes": ("Full end-to-end — Odds API + Stats API H2H + BvP "
+                  "enrichment + Statcast."),
+    },
+    "NBA": {
+        "enabled": True,
+        "game_markets": ["h2h", "spreads", "totals"],
+        "prop_markets": [
+            "player_points", "player_rebounds", "player_assists",
+            "player_points_alternate", "player_rebounds_alternate",
+            "player_assists_alternate",
+            "player_points_rebounds_assists",
+            "player_points_rebounds_assists_alternate",
+            "player_points_rebounds", "player_points_assists",
+            "player_rebounds_assists",
+            "player_threes", "player_threes_alternate",
+            "player_steals", "player_blocks",
+        ],
+        "fallback_sources": [],
+        "supports_alt_lines": True,
+        "supports_locks": True,
+        "notes": "Full end-to-end.",
+    },
+    "NFL": {
+        "enabled": True,
+        "game_markets": ["h2h", "spreads", "totals"],
+        "prop_markets": [
+            "player_pass_yds", "player_pass_yds_alternate",
+            "player_pass_tds", "player_pass_attempts",
+            "player_pass_completions",
+            "player_rush_yds", "player_rush_yds_alternate",
+            "player_rush_attempts", "player_rush_tds",
+            "player_receptions", "player_receptions_alternate",
+            "player_reception_yds", "player_reception_yds_alternate",
+            "player_reception_tds",
+            "player_anytime_td", "player_1st_td",
+        ],
+        "fallback_sources": [],
+        "supports_alt_lines": True,
+        "supports_locks": True,
+        "notes": ("Phase-1 (2026-08-11) added NFL to the prop-fetch loop. "
+                  "nflverse feature engine wired end-to-end."),
+    },
+    "CFB": {
+        "enabled": True,
+        "game_markets": ["h2h", "spreads", "totals"],
+        "prop_markets": [],   # thin CFB player-prop catalogue on Odds API
+        "fallback_sources": [],
+        "supports_alt_lines": True,
+        "supports_locks": True,
+        "notes": ("Game-level markets only.  Player props NOT wired — "
+                  "The Odds API's CFB prop catalogue is sparse and "
+                  "unreliable; keep OFF until we validate coverage."),
+    },
+    "Soccer": {
+        "enabled": True,
+        "game_markets": ["h2h", "spreads", "totals", "btts", "double_chance"],
+        "prop_markets": [
+            "player_goal_scorer_anytime",
+            "player_to_score_or_assist",
+            "player_first_goal_scorer",
+        ],
+        "fallback_sources": [
+            "soccer_hot_scorers",     # top-scorer AGS anchor
+            "espn_soccer_fixtures",   # ESPN scoreboard fallback
+            "uefa_espn_ingest",       # UEFA/CFB double-chance + form-derived ML
+            "sportdb_scorer_v1",      # SportDB player scorer synth
+            "csl_espn_leaderboard",   # Chinese Super League ESPN feed
+        ],
+        "supports_alt_lines": True,
+        "supports_locks": True,
+        "notes": ("Full end-to-end.  Fallbacks feed canonical "
+                  "publication via `publish_upserted_picks`."),
+    },
+    "Tennis": {
+        "enabled": True,
+        "game_markets": ["h2h", "spreads", "totals"],
+        "prop_markets": [],   # tennis props not exposed by Odds API
+        "fallback_sources": ["tennis_extra"],  # TennisExplorer scrape
+        "supports_alt_lines": True,
+        "supports_locks": True,
+        "notes": ("Full end-to-end.  Tennis Extra fallback (P0-3) "
+                  "publishes canonically and covers ATP/WTA/Challenger."),
+    },
+    "UFC": {
+        "enabled": True,
+        "game_markets": ["h2h", "totals"],   # rounds totals + ML only
+        "prop_markets": [],  # confirmed no MMA props on Odds API
+        "fallback_sources": ["ufc_espn_ingest"],
+        "supports_alt_lines": False,
+        "supports_locks": True,
+        "notes": ("Moneyline + rounds totals only.  Method-of-victory / "
+                  "round-betting are NOT exposed by The Odds API."),
+    },
+    "NHL": {
+        "enabled": True,
+        "game_markets": ["h2h", "spreads", "totals"],
+        "prop_markets": [],   # not yet wired
+        "fallback_sources": [],
+        "supports_alt_lines": False,
+        "supports_locks": True,
+        "notes": ("Game-level markets only.  Player-prop feature "
+                  "engine not yet built — enable prop_markets when "
+                  "the engine lands."),
+    },
+    # ── Intentionally disabled ─────────────────────────────────────
+    "WNBA": {
+        "enabled": False,
+        "game_markets": [], "prop_markets": [], "fallback_sources": [],
+        "supports_alt_lines": False,
+        "supports_locks": False,
+        "notes": "Disabled — see product decision from 2026-06-18.",
+    },
+    "KBO": {
+        "enabled": False,
+        "game_markets": [], "prop_markets": [], "fallback_sources": [],
+        "supports_alt_lines": False,
+        "supports_locks": False,
+        "notes": "Disabled — removed 2026-06-18.",
+    },
+}
+
+
+def is_enabled(sport: str) -> bool:
+    entry = SPORT_CAPABILITIES.get(sport) or {}
+    return bool(entry.get("enabled"))
+
+
+def prop_markets_for(sport: str) -> list[str]:
+    entry = SPORT_CAPABILITIES.get(sport) or {}
+    return list(entry.get("prop_markets") or [])
+
+
+def game_markets_for(sport: str) -> list[str]:
+    entry = SPORT_CAPABILITIES.get(sport) or {}
+    return list(entry.get("game_markets") or [])
+
+
+def enabled_sports() -> list[str]:
+    return [s for s, e in SPORT_CAPABILITIES.items() if e.get("enabled")]
+
+
+def supports_locks(sport: str) -> bool:
+    entry = SPORT_CAPABILITIES.get(sport) or {}
+    return bool(entry.get("supports_locks"))
+
+
+def capability_matrix() -> dict[str, dict[str, Any]]:
+    """Return a shallow copy of the registry for read-only consumers."""
+    return {k: dict(v) for k, v in SPORT_CAPABILITIES.items()}
+
+
+__all__ = [
+    "SPORT_CAPABILITIES",
+    "is_enabled",
+    "prop_markets_for",
+    "game_markets_for",
+    "enabled_sports",
+    "supports_locks",
+    "capability_matrix",
+]

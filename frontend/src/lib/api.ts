@@ -1,22 +1,28 @@
 import { storage } from "@/src/utils/storage";
 import { Platform } from "react-native";
 
-// Backend URL resolution:
-//   1. Prefer EXPO_PUBLIC_BACKEND_URL if set at build time (dev preview / native builds)
-//   2. Fall back to the app's own origin in the browser so the published web app
-//      automatically uses its own production domain (Emergent serves /api/* from
-//      the same origin)
-//   3. Empty string as last resort (relative URL)
+// ═══════════════════════════════════════════════════════════════════
+// Backend URL resolution — Phase 1 (2026-08-11):
+// ───────────────────────────────────────────────────────────────────
+// One authoritative resolver.  Every frontend consumer routes through
+// this module — direct reads of `process.env.EXPO_PUBLIC_BACKEND_URL`
+// are DEPRECATED (lab.tsx migrated).
 //
-// ── PUBLISHED-APP PIN OVERRIDE (2026-06-29) ──
-// Earlier today the production deployed backend at emergent.host was
-// 29x slower than the dev preview and returning Cloudflare 520s, so we
-// temporarily shipped the published bundle pinned to the healthy
-// preview URL. Emergent support fixed the production backend
-// (maxPoolSize → 20, Grow resource tier, SPORTDB_API_KEY corrected,
-// deferred startup deployed). Production now responds in <500ms.
-// FORCE_PREVIEW_BACKEND is back to FALSE so the published app routes
-// to its proper production backend.
+// Native (Expo Go / production build):
+//   * EXPO_PUBLIC_BACKEND_URL is REQUIRED.
+//   * When it is missing on a production build we FAIL LOUDLY —
+//     `resolveBaseUrl()` returns "" and every API call throws a
+//     descriptive error via `getBackendUrl()`.  No silent fall-through
+//     to the preview URL.
+//   * Dev builds may enable `FORCE_PREVIEW_BACKEND` for QA on the
+//     preview backend (opt-in only).
+//
+// Web:
+//   * Prefer EXPO_PUBLIC_BACKEND_URL (dev / preview / native builds)
+//   * Fall back to the app's own origin in the browser so the
+//     published web app automatically uses its own production domain
+//   * Empty string as last resort (relative URL)
+// ═══════════════════════════════════════════════════════════════════
 const FORCE_PREVIEW_BACKEND = false;
 const PINNED_PREVIEW_URL = "https://player-intel-engine.preview.emergentagent.com";
 
@@ -24,15 +30,21 @@ function resolveBaseUrl(): string {
   if (FORCE_PREVIEW_BACKEND) return PINNED_PREVIEW_URL;
   const envUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
 
-  // ── Native (Expo Go / built app): always use EXPO_PUBLIC_BACKEND_URL. ──
-  // On native, `window.location.origin` is polyfilled by RN to the Metro
-  // dev-server URL (e.g. "http://192.168.x.x:8081"), which DOES NOT serve
-  // `/api/*`. The web-only previewMismatch branch below would incorrectly
-  // return that Metro URL and every request would 404 — verified in Expo
-  // Go 2026-07-15 when picks showed skeleton loaders and "GAME · 0".
-  // Platform.OS is imported synchronously so it's safe to gate on here.
+  // ── Native (Expo Go / built app) — EXPO_PUBLIC_BACKEND_URL required ──
+  // Phase-1 fix (2026-08-11): previously we silently fell back to
+  // ``PINNED_PREVIEW_URL`` if the env var was missing.  That let a
+  // misconfigured production build route silently against the preview
+  // backend.  Now we return "" and let getBackendUrl() throw a clear
+  // error at first API call so the misconfig is visible immediately.
   if (Platform.OS !== "web") {
-    return (envUrl && envUrl.trim().length > 0) ? envUrl : PINNED_PREVIEW_URL;
+    if (envUrl && envUrl.trim().length > 0) return envUrl;
+    if (__DEV__) return PINNED_PREVIEW_URL;   // dev-only fallback
+    // eslint-disable-next-line no-console
+    console.error(
+      "[api] EXPO_PUBLIC_BACKEND_URL is missing on native production build — " +
+      "API calls will fail loudly instead of silently using the preview backend."
+    );
+    return "";
   }
 
   // ── Web: keep the existing dev/prod-origin swap logic ──────────────
@@ -55,6 +67,22 @@ function resolveBaseUrl(): string {
   return "";
 }
 const BASE_URL = resolveBaseUrl();
+
+/**
+ * Centralized backend URL accessor.  Throws a clear error when the
+ * base URL is unavailable (production native build missing
+ * EXPO_PUBLIC_BACKEND_URL).  Every consumer OUTSIDE this file that
+ * needs to build a request URL MUST go through this function.
+ */
+export function getBackendUrl(): string {
+  if (!BASE_URL) {
+    throw new Error(
+      "Backend URL is not configured. Set EXPO_PUBLIC_BACKEND_URL " +
+      "in the production build environment."
+    );
+  }
+  return BASE_URL;
+}
 
 export type Pick = {
   id: string;
