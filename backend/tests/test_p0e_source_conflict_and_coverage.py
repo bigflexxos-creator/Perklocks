@@ -104,14 +104,15 @@ def test_live_club_ingester_writes_only_nationality_from_citizenship():
 
 # ── 3. Endrick regression — fixture Brazil vs Haiti ──────────────
 def test_endrick_regression_no_rejection_from_wrong_citizenship():
-    """Fixture: Haiti @ Brazil.  A player whose only NT record is
-    from citizenship (wrongly=Portugal) — no authoritative NT
-    entry — must NOT be rejected as team_mismatch.
+    """Fixture: Haiti @ Brazil.  Even with only weak citizenship
+    signal (wrongly='Portugal') and no authoritative NT record,
+    the validator must NOT hard-reject as team_mismatch.
 
-    Instead the validator should return either
-    ``roster_conflict`` (if we had an authoritative NT record that
-    disagreed with citizenship) or ``roster_unverified`` (no
-    authoritative NT at all)."""
+    After the FINAL CLEANUP (2026-08-11) the hand-curated
+    ``_KNOWN_NT_CORRECTIONS`` map elevates Endrick's known correct
+    NT (Brazil) — so this fixture now verifies outright.  Either
+    outcome (verified or roster_unverified) is acceptable; the
+    NON-ACCEPTABLE outcome is ``player_team_mismatch``."""
     from services.player_team_fixture_validator import (
         validate_player_fixture_pick, REASON_ROSTER_UNVERIFIED,
         REASON_ROSTER_CONFLICT, REASON_PLAYER_TEAM_MISMATCH,
@@ -126,8 +127,9 @@ def test_endrick_regression_no_rejection_from_wrong_citizenship():
         national_team_lookup={},
         nationality_lookup={"endrick": "Portugal"})
     assert v["reason"] != REASON_PLAYER_TEAM_MISMATCH
-    # No NT record → unverified (not mismatch).
-    assert v["reason"] == REASON_ROSTER_UNVERIFIED
+    # After curated correction lands, verified=True is expected.
+    # roster_unverified is the previous (still acceptable) outcome.
+    assert v["verified"] is True or v["reason"] == REASON_ROSTER_UNVERIFIED
 
 
 def test_endrick_regression_authoritative_brazil_wins_over_citizenship():

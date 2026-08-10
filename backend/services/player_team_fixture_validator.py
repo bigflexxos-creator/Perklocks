@@ -383,9 +383,14 @@ _TEAM_ALIAS_GROUPS: list[set[str]] = [
     {"tianjin fc", "tianjin jinmen tiger", "tianjin teda"},
     {"dalian yingbo", "dalian professional"},
     {"chengdu rongcheng fc", "chengdu rongcheng"},
-    {"shenzhen peng city fc", "shenzhen peng city"},
+    {"shenzhen peng city fc", "shenzhen peng city", "shenzhen xinpengcheng"},
     {"wuhan three towns", "wuhan three towns fc"},
     {"henan songshan longmen", "henan fc"},
+    # Norwegian club — the ø / o variant is not covered by NFKD
+    # because ø is a base letter, not a combining diacritic.
+    {"bodo/glimt", "bodø/glimt", "bodo glimt", "bodø glimt"},
+    {"tromso", "tromsø"},
+    {"molde", "molde fk"},
 ]
 
 
@@ -441,6 +446,9 @@ def _lookup_with_alias(name_norm: str,
         if len(head_candidates) == 1:
             return head_candidates[0][1]
     return None
+
+
+def _alias_equivalent(a: str, b: str) -> bool:
     """True if `a` and `b` fall in the same hand-curated alias group.
 
     Both inputs must already be `_norm`-normalised."""
@@ -547,30 +555,47 @@ def validate_player_fixture_pick(
     fixture_type = "international" if intl else "club"
 
     if intl:
-        # ── International fixture path (P0-C + P0-E) ──
+        # ── International fixture path (P0-C + P0-E + FINAL CLEANUP) ──
         nt_lookup = national_team_lookup or {}
         nt_fresh = fresh_national_team_names
         nat_lookup = nationality_lookup or {}
 
-        team = nt_lookup.get(player_norm)
-        if team is None:
-            parts = player_norm.split()
-            if len(parts) >= 2:
-                last = parts[-1]
-                candidates = [(k, v) for k, v in nt_lookup.items()
-                              if _norm(k).endswith(last)]
-                if len(candidates) == 1:
-                    team = candidates[0][1]
+        # FINAL CLEANUP — hand-curated NT overrides beat everything
+        # (small verified-error list; see _KNOWN_NT_CORRECTIONS).
+        override_team = _KNOWN_NT_CORRECTIONS.get(player_norm)
+        if override_team is None:
+            # Also try last-name and head-of-name fallback on the
+            # override map — Endrick vs "Endrick Felipe Moreira …".
+            override_team = _lookup_with_alias(
+                player_norm, _KNOWN_NT_CORRECTIONS)
 
-        citizenship = nat_lookup.get(player_norm)
-        if citizenship is None:
-            parts = player_norm.split()
-            if len(parts) >= 2:
-                last = parts[-1]
-                cnd = [(k, v) for k, v in nat_lookup.items()
-                        if _norm(k).endswith(last)]
-                if len(cnd) == 1:
-                    citizenship = cnd[0][1]
+        if override_team is not None:
+            if _teams_match(override_team, fixture):
+                return {
+                    "verified": True,
+                    "reason": None,
+                    "player": player_raw,
+                    "player_team": override_team,
+                    "fixture_teams": fixture,
+                    "fixture_type": fixture_type,
+                    "evidence": "known_nt_correction",
+                }
+            # Even when the override doesn't match the fixture, we
+            # do NOT hard-reject as team_mismatch — a stale ESPN NT
+            # record must not be able to overrule a documented
+            # correction.  Fall through to unverified.
+            return {
+                "verified": False,
+                "reason": REASON_ROSTER_UNVERIFIED,
+                "player": player_raw,
+                "player_team": override_team,
+                "fixture_teams": fixture,
+                "fixture_type": fixture_type,
+                "evidence": "known_nt_correction",
+            }
+
+        team = _lookup_with_alias(player_norm, nt_lookup)
+        citizenship = _lookup_with_alias(player_norm, nat_lookup)
 
         if team is not None:
             # We have an authoritative NT record.  Freshness gate.
@@ -645,15 +670,7 @@ def validate_player_fixture_pick(
         }
 
     # ── Club fixture path ─────────────────────────────────────
-    team = roster_lookup.get(player_norm)
-    if team is None:
-        parts = player_norm.split()
-        if len(parts) >= 2:
-            last = parts[-1]
-            candidates = [(k, v) for k, v in roster_lookup.items()
-                          if _norm(k).endswith(last)]
-            if len(candidates) == 1:
-                team = candidates[0][1]
+    team = _lookup_with_alias(player_norm, roster_lookup)
 
     if team is None:
         return {
