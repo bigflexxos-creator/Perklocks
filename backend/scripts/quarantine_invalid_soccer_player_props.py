@@ -34,10 +34,13 @@ async def run(db, *, apply: bool = False) -> dict[str, Any]:
     # P0-C — separate national-team lookup for international fixtures.
     national_team_lookup: dict[str, str] = {}
     fresh_nt_names: set[str] = set()
+    # P0-E — weak citizenship signal for source-conflict detection.
+    nationality_lookup: dict[str, str] = {}
     async for doc in db["player_identities"].find(
         {"sport": "Soccer"},
         {"_id": 0, "name_norm": 1, "current_team": 1, "observed_at": 1,
-         "current_national_team": 1, "national_team_observed_at": 1},
+         "current_national_team": 1, "national_team_observed_at": 1,
+         "nationality": 1},
     ):
         n = doc.get("name_norm")
         t = doc.get("current_team")
@@ -48,6 +51,9 @@ async def run(db, *, apply: bool = False) -> dict[str, Any]:
         if n and nt:
             national_team_lookup[n] = nt
             fresh_nt_names.add(n)
+        nat = doc.get("nationality")
+        if n and nat and n not in nationality_lookup:
+            nationality_lookup[n] = nat
 
     # Also merge legacy in-memory ESPN snapshot if present.
     try:
@@ -67,11 +73,13 @@ async def run(db, *, apply: bool = False) -> dict[str, Any]:
     stats = {
         "scanned": 0, "valid": 0,
         "team_mismatch": 0, "roster_unverified": 0,
+        "roster_conflict": 0,
         "fixture_teams_unknown": 0, "player_name_missing": 0,
         "non_player_market": 0, "quarantined_writes": 0,
         "over_85_ineligible": 0,
         "roster_lookup_size": len(roster_lookup),
         "national_team_lookup_size": len(national_team_lookup),
+        "nationality_lookup_size": len(nationality_lookup),
     }
     query = {
         "sport": "Soccer",
@@ -103,6 +111,7 @@ async def run(db, *, apply: bool = False) -> dict[str, Any]:
             fresh_roster_names=(local_fresh or None),
             national_team_lookup=local_nt,
             fresh_national_team_names=(local_nt_fresh or None),
+            nationality_lookup=nationality_lookup,
         )
         reason = v.get("reason") or ""
         if v.get("verified"):
@@ -112,6 +121,7 @@ async def run(db, *, apply: bool = False) -> dict[str, Any]:
                 stats["valid"] += 1
             continue
         key = reason if reason in {"roster_unverified",
+                                    "roster_conflict",
                                     "fixture_teams_unknown",
                                     "player_name_missing"} \
               else "team_mismatch"

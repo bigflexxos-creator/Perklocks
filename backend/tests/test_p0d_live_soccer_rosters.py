@@ -324,16 +324,21 @@ def test_refresh_live_rosters_mocked_end_to_end():
         assert stats["teams_scanned"] == 1
         assert stats["athletes_scanned"] == 2
         assert stats["club_writes"] >= 2
-        assert stats["national_team_writes"] >= 2
+        # P0-E: the nationality is captured on the club-write seed
+        # itself, so the follow-up nationality-only persist call is
+        # a no-op ("skipped").  Verified below on the stored doc.
+        assert stats["national_team_writes"] >= 0
 
         # Verify Mongo records.
         p1 = await db[IDENTITY_COLLECTION].find_one(
             {"name_norm": "live star player one"}, {"_id": 0})
         assert p1 is not None
         assert p1["current_team"] == "Fake Live FC"
-        assert p1["current_national_team"] == "Wonderland"
+        # P0-E: citizenship writes ONLY to `nationality`, never to
+        # `current_national_team` (dedicated NT ingester is authoritative).
+        assert p1.get("nationality") == "Wonderland"
+        assert p1.get("current_national_team") in (None, "",)
         assert p1["source"] == "espn_live_roster"
-        assert p1["national_team_source"] == "espn_live_roster"
         assert p1["provider_ids"].get("espn") == "8443001"
 
         await db[IDENTITY_COLLECTION].delete_many(
