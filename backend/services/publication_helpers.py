@@ -71,6 +71,101 @@ async def publish_upserted_picks(
     picks_list = list(picks)
     if not picks_list:
         return {}
+
+    # ── Phase 2 (2026-08-11) Layer-B integrity gate ─────────────────
+    # Immediately before canonical publication we drop any player-based
+    # Soccer pick whose player's CURRENT team is not on the fixture.
+    # Invalid picks NEVER receive `publication_source` — they are
+    # excluded from the publish batch and re-marked `off_board=True`
+    # with a structured `player_team_invalid_reason` on the picks doc.
+    #
+    # Fresh roster observation comes from `services.mls_scorer_gate`
+    # (ESPN MLS stats + any additional roster snapshots).  When the
+    # gate is empty we DO NOT auto-approve — we require an observation
+    # per player (rejection reason `roster_unverified`).
+    try:
+        from services.player_team_fixture_validator import (
+            validate_player_fixture_pick, tag_pick_with_verdict, _norm,
+        )
+        # Build the roster lookup from any snapshot the caller
+        # already hydrated onto the pick as `player_current_team`,
+        # OR from the MLS scorer gate module-global (best-effort).
+        roster_lookup: dict[str, str] = {}
+        fresh_names: set[str] = set()
+        try:
+            from services import mls_scorer_gate as _mls
+            snap = getattr(_mls, "_espn_by_name", None) or {}
+            for name, entry in snap.items():
+                t = entry.get("team") if isinstance(entry, dict) else None
+                if t:
+                    key = _norm(name)
+                    roster_lookup[key] = t
+                    fresh_names.add(key)
+        except Exception:
+            pass
+        # Also merge any per-pick `player_current_team` fields the
+        # writer may have stamped upstream.
+        for p in picks_list:
+            pn = p.get("player_name") or p.get("player")
+            pct = p.get("player_current_team")
+            if isinstance(pn, str) and isinstance(pct, str):
+                key = _norm(pn)
+                roster_lookup[key] = pct
+                # Consider caller-supplied team as fresh evidence.
+                fresh_names.add(key)
+
+        valid_picks: list[dict] = []
+        rejected = 0
+        for p in picks_list:
+            if p.get("sport") != "Soccer":
+                valid_picks.append(p)
+                continue
+            verdict = validate_player_fixture_pick(
+                p, roster_lookup,
+                fresh_roster_names=(fresh_names or None),
+            )
+            if verdict.get("verified"):
+                valid_picks.append(p)
+                continue
+            # Player-market mismatch OR roster unverified — quarantine.
+            tag_pick_with_verdict(p, verdict)
+            rejected += 1
+            try:
+                await db.picks.update_one(
+                    {"id": p.get("id")},
+                    {"$set": {
+                        "off_board": True,
+                        "off_board_reasons": [
+                            "player_team_invalid",
+                            verdict.get("reason") or "unknown",
+                        ],
+                        "player_team_invalid": True,
+                        "player_team_invalid_reason": verdict.get("reason"),
+                    }}
+                )
+            except Exception as _upd_err:
+                logger.debug(
+                    "player_team invalidate mark failed for %s: %s",
+                    p.get("id"), _upd_err,
+                )
+        if rejected:
+            logger.info(
+                "%s player↔team gate: %d Soccer player-props quarantined "
+                "(will NOT be published)",
+                caller_label, rejected,
+            )
+        picks_list = valid_picks
+        if not picks_list:
+            return {"new_snapshots": 0, "existing_snapshots": 0,
+                    "errors": [], "player_team_rejected": rejected}
+    except Exception as _pt_err:
+        # Validator failure must not block publication — log and
+        # continue with the original batch.
+        logger.warning(
+            "%s player↔team gate skipped (non-fatal): %s",
+            caller_label, _pt_err,
+        )
+
     try:
         from services.prediction_publication_service import (
             PredictionPublicationService,

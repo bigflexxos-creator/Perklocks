@@ -86,6 +86,12 @@ def _make_pick(*, published: bool, lock: float = 88.0, wp: float = 62.0,
         "factors": {"form": 0.75, "matchup": 0.80},
         "source": "unit_test",
         "model_version": "test.v1",
+        # Phase 2 (2026-08-11): stamp the writer-provided current team
+        # so the player↔team integrity gate treats fixtures with
+        # player-based markets ("Anytime Goal Scorer") as valid.
+        # "Alpha" is the home team on the synthetic "Alpha vs Bravo".
+        "player_name": "Alpha",
+        "player_current_team": "Alpha",
     }
     if published:
         doc.update({
