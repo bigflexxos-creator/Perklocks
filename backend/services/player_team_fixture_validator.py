@@ -84,28 +84,96 @@ def _norm(s: str) -> str:
     return cleaned
 
 
+# ── Market suffix / selection action regexes ─────────────────────
+#
+# P0-B (2026-08-11) — case-insensitive, accent-preserving, ordered by
+# specificity so longer patterns match BEFORE shorter subsumed ones
+# (e.g. "to score or assist" is tried before "to score").
+#
+# Every alternative starts with `\s+` to prevent mid-name false
+# matches ("Anytime" in the middle of a name is not stripped) and
+# ends at `\s*$` so we only strip TRAILING market/action suffixes.
+_MARKET_SUFFIX_RE = re.compile(
+    r"\s+(?:"
+    r"anytime\s+goal\s+scorer"
+    r"|first\s+goal\s+scorer"
+    r"|last\s+goal\s+scorer"
+    r"|to\s+score\s+or\s+assist"
+    r"|score\s+or\s+assist"
+    r"|to\s+score"
+    r"|to\s+assist"
+    r"|goal\s+scorer"
+    r"|first\s+goal"
+    r"|last\s+goal"
+    r")\s*$",
+    re.IGNORECASE,
+)
+
+# Selection field may carry over/under lines and other action verbs.
+_SELECTION_ACTION_RE = re.compile(
+    r"\s+(?:"
+    r"anytime\s+goal\s+scorer"
+    r"|first\s+goal\s+scorer"
+    r"|last\s+goal\s+scorer"
+    r"|to\s+score\s+or\s+assist"
+    r"|score\s+or\s+assist"
+    r"|to\s+score"
+    r"|to\s+assist"
+    r"|to\s+record(?:\s+.*)?"
+    r"|goal\s+scorer"
+    r"|first\s+goal"
+    r"|last\s+goal"
+    r"|over\s+[\d.]+.*"
+    r"|under\s+[\d.]+.*"
+    r")\s*$",
+    re.IGNORECASE,
+)
+
+
 def _extract_player_name(pick: dict[str, Any]) -> Optional[str]:
-    """Try several standard keys, then parse from the market string."""
+    """Extract the player name from a pick with strict, accent-safe rules.
+
+    Priority (P0-B, 2026-08-11):
+      1. STRUCTURED FIELDS FIRST — ``player_name`` → ``player`` →
+         ``selection`` → ``pick_side``. If a structured field is
+         present and non-empty, we ONLY apply light action-verb
+         stripping (over/under lines, "to record N shots" etc.) —
+         we never fall through to parsing the market string when a
+         structured field yielded a usable name.
+      2. FALLBACK — parse the ``market`` field.
+         a. If a `` - `` separator is present, take the left side
+            (matches Odds API canonical "<Name> - <Market>" pattern).
+         b. Otherwise, strip a KNOWN, case-insensitive market suffix
+            ("Anytime Goal Scorer", "To Score or Assist", etc.) —
+            never a wildcard strip that could truncate names.
+
+    Guarantees:
+      * Accents preserved (regex is Unicode-aware; no ``.lower()``
+        on the returned value).
+      * Case-insensitive parsing of ALL supported market suffixes.
+      * No loose parsing that could split "Julian Alvarez" mid-name.
+    """
+    # 1. Structured fields take priority.
     for k in ("player_name", "player", "selection", "pick_side"):
         v = pick.get(k)
         if isinstance(v, str) and v.strip():
-            # Selections often carry action verbs — strip them.
-            cleaned = re.sub(
-                r"\s+(?:to score|to score or assist|first goal|anytime.*|"
-                r"assist|goal scorer|over|under|to record.*)$", "",
-                v.strip(), flags=re.IGNORECASE,
-            )
+            cleaned = _SELECTION_ACTION_RE.sub("", v.strip()).strip()
             if cleaned:
                 return cleaned
-    # As a last resort scan the market string for a leading proper name.
+
+    # 2. Market-string fallback.
     m = pick.get("market")
-    if isinstance(m, str):
-        # Common pattern: "<Name> - Anytime Goal Scorer" or "<Name> to Score"
-        for sep in (" - ", " Anytime", " to Score", " First Goal"):
-            if sep in m:
-                head = m.split(sep, 1)[0].strip()
-                if head:
-                    return head
+    if isinstance(m, str) and m.strip():
+        raw = m.strip()
+        # 2a. "<Name> - <Market>" canonical Odds API shape.
+        if " - " in raw:
+            head = raw.split(" - ", 1)[0].strip()
+            if head:
+                return head
+        # 2b. Strip a known market suffix, case-insensitively.
+        stripped = _MARKET_SUFFIX_RE.sub("", raw).strip()
+        if stripped and stripped != raw:
+            return stripped
     return None
 
 
