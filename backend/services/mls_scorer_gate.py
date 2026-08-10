@@ -53,10 +53,48 @@ _espn_names: set[str] = set()
 
 def apply_espn_snapshot(by_name_norm: dict[str, dict],
                         names: set[str]) -> None:
-    """Called by refresher after every ESPN scrape."""
-    global _espn_index, _espn_names
+    """Called by refresher after every ESPN scrape.
+
+    Phase 2 Final (2026-08-11): also expose the snapshot under
+    `_espn_by_name` (the name callers use) and PROPAGATE every
+    observation into the canonical `player_identity` registry so the
+    publication barrier's freshness gate has real, current data.
+    """
+    global _espn_index, _espn_names, _espn_by_name
     _espn_index = by_name_norm
     _espn_names = names
+    _espn_by_name = by_name_norm    # alias for downstream consumers
+
+    # Propagate to canonical player_identity registry.
+    try:
+        from datetime import datetime, timezone
+        from services.player_identity import upsert_player
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for norm_name, entry in (by_name_norm or {}).items():
+            if not isinstance(entry, dict):
+                continue
+            display = entry.get("display_name") or entry.get("name") or norm_name
+            team = entry.get("team")
+            if not team:
+                continue
+            upsert_player(
+                name=display, sport="Soccer", league="MLS",
+                provider="espn",
+                provider_id=str(entry.get("espn_id") or f"norm:{norm_name}"),
+                current_team=team,
+                position=entry.get("position"),
+                role=entry.get("role"),
+                roster_status="active",
+                source="espn_mls_leaders",
+                observed_at=now_iso,
+            )
+    except Exception:
+        # Never let identity propagation break the gate itself.
+        pass
+
+
+# Late-bound alias for callers that read `_espn_by_name` directly.
+_espn_by_name: dict[str, dict] = {}
 
 
 def _norm(name: str) -> str:

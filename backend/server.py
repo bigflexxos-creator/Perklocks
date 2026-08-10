@@ -2934,6 +2934,19 @@ async def on_startup():
     except Exception as _e:
         logger.warning("Phase 3F-2 preflight raised: %s", _e)
 
+    # ── Phase 2 Final (2026-08-11) — hydrate canonical player_identity
+    # registry from Mongo so freshness timestamps survive restarts
+    # and replicas.  Every startup snapshots the persisted registry
+    # into memory before the first refresh loop touches it.
+    try:
+        from services.player_identity import hydrate_registry_from_mongo
+        n = await hydrate_registry_from_mongo(db)
+        logger.info(
+            "Phase 2 Final: hydrated %d player identities from Mongo", n)
+    except Exception as _ident_err:
+        logger.warning(
+            "player_identity hydrate skipped (non-fatal): %s", _ident_err)
+
     # ── DEFERRED STARTUP (2026-06-28) ─────────────────────────────────
     # In production (emergent.host), all 20+ background loops fired at
     # T+0 and ran concurrently in a single worker, blocking HTTP

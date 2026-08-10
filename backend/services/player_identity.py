@@ -334,10 +334,69 @@ def reset_registry_for_tests() -> None:
     _REGISTRY = _IdentityRegistry()
 
 
+# ── Mongo persistence + hydration ─────────────────────────────────
+IDENTITY_COLLECTION = "player_identities"
+
+
+async def persist_registry(db) -> int:
+    """Upsert every identity in the in-memory registry into
+    `db.player_identities`.  Returns the number of docs written."""
+    docs = snapshot_registry()
+    if not docs:
+        return 0
+    ops = []
+    for d in docs:
+        ops.append({"filter": {"canonical_player_id": d["canonical_player_id"]},
+                     "update": {"$set": d},
+                     "upsert": True})
+    n = 0
+    for op in ops:
+        try:
+            await db[IDENTITY_COLLECTION].update_one(
+                op["filter"], op["update"], upsert=op["upsert"])
+            n += 1
+        except Exception:
+            continue
+    return n
+
+
+async def hydrate_registry_from_mongo(db) -> int:
+    """Load every identity from `db.player_identities` into the
+    in-memory registry.  Idempotent — safe to call from startup and
+    after any refresh loop."""
+    reset_registry_for_tests()
+    docs = [d async for d in db[IDENTITY_COLLECTION].find(
+        {}, {"_id": 0})]
+    hydrate_registry(docs)
+    return len(docs)
+
+
+async def has_fresh_roster_for_league(
+    db, league: str, staleness_days: int = _STALENESS_DAYS,
+) -> bool:
+    """True iff `db.player_identities` contains AT LEAST ONE identity
+    for the given league whose `observed_at` is within the staleness
+    window.  Callers use this to fail safely when the roster feed
+    hasn't landed yet (avoids mass roster_unverified rejections)."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=staleness_days)
+    cutoff_iso = cutoff.isoformat()
+    try:
+        doc = await db[IDENTITY_COLLECTION].find_one({
+            "league": league,
+            "observed_at": {"$gte": cutoff_iso},
+        }, {"_id": 0, "canonical_player_id": 1})
+        return doc is not None
+    except Exception:
+        return False
+
+
 __all__ = [
     "PlayerIdentity",
     "resolve_player", "upsert_player",
     "snapshot_registry", "hydrate_registry",
     "registry_size", "reset_registry_for_tests",
+    "persist_registry", "hydrate_registry_from_mongo",
+    "has_fresh_roster_for_league",
+    "IDENTITY_COLLECTION",
     "_norm",
 ]
