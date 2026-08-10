@@ -2967,18 +2967,24 @@ async def on_startup():
                 try:
                     summary = await refresh_soccer_identity_registry(db)
                     logger.info(
-                        "P0-C identity ingest: big5=%s national_teams=%s",
+                        "P0-C/P0-D identity ingest: big5=%s national_teams=%s "
+                        "live_teams=%s live_athletes=%s live_club_writes=%s "
+                        "live_nt_writes=%s",
                         summary.get("big5", {}).get("upserts"),
                         summary.get("national_teams", {}).get("bootstrap_players"),
+                        summary.get("live_rosters", {}).get("teams_scanned"),
+                        summary.get("live_rosters", {}).get("athletes_scanned"),
+                        summary.get("live_rosters", {}).get("club_writes"),
+                        summary.get("live_rosters", {}).get("national_team_writes"),
                     )
                     # Re-hydrate so downstream loops see the new
                     # identities in-memory too.
                     m = await hydrate_registry_from_mongo(db)
                     logger.info(
-                        "P0-C: post-seed hydrate loaded %d identities", m)
+                        "P0-C/P0-D: post-seed hydrate loaded %d identities", m)
                 except Exception as _p0c_err:
                     logger.warning(
-                        "P0-C identity seed failed (non-fatal): %s", _p0c_err)
+                        "P0-C/P0-D identity seed failed (non-fatal): %s", _p0c_err)
             asyncio.create_task(_p0c_seed())
         except Exception as _wire_err:
             logger.warning(
