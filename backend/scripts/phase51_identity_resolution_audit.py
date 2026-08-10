@@ -86,6 +86,21 @@ async def audit_sport(db, sport: str) -> dict[str, Any]:
     (lookup, fresh, total, fresh_ct, stale, with_pid,
      same_name_groups) = await _load_lookup(db, sport)
 
+    # ── Phase 5.2 (2026-08-11) — Soccer needs 3 additional lookups
+    #    (national team, nationality + freshness).  Non-Soccer sports
+    #    stay on the club-only path.
+    soccer_extras: dict[str, Any] = {}
+    if sport == "Soccer":
+        from services.universal_soccer_lookup import build_soccer_lookups
+        L = await build_soccer_lookups(db, staleness_days=STALENESS_DAYS)
+        lookup = L["roster_lookup"]
+        fresh = L["fresh_roster_names"]
+        soccer_extras = {
+            "national_team_lookup": L["national_team_lookup"],
+            "fresh_national_team_names": L["fresh_national_team_names"],
+            "nationality_lookup": L["nationality_lookup"],
+        }
+
     picks_scanned = 0
     picks_resolved = 0
     picks_unresolved = 0
@@ -104,7 +119,8 @@ async def audit_sport(db, sport: str) -> dict[str, Any]:
          "lock_score": 1, "published_lock_score": 1}):
         picks_scanned += 1
         v = validate_universal(
-            p, roster_lookup=lookup, fresh_roster_names=fresh)
+            p, roster_lookup=lookup, fresh_roster_names=fresh,
+            **soccer_extras)
         s = v.get("status")
         if s == "verified":
             picks_resolved += 1

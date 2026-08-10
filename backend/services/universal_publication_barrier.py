@@ -351,7 +351,14 @@ def validate_universal(
             nationality_lookup=nationality_lookup,
         )
         r["sport_class"] = "team"
-        r["status"] = _map_reason_to_status(r.get("reason"))
+        # Phase 5.2 (2026-08-11) — verified=True MUST map to
+        # ``verified`` regardless of the reason enum.  The old mapper
+        # was ambiguous for ``market_not_player_based`` where
+        # ``verified=True`` yet ``reason != None``.
+        if r.get("verified") is True:
+            r["status"] = STATUS_VERIFIED
+        else:
+            r["status"] = _map_reason_to_status(r.get("reason"))
         return r
 
     if sport in _TEAM_SPORTS:
