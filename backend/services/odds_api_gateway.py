@@ -204,6 +204,7 @@ class OddsApiGateway:
         cache_policy: str = "normal",
         allow_stale_seconds: int = 300,
         timeout_seconds: float = 15.0,
+        priority: Optional[int] = None,
     ) -> GatewayResult:
         """Perform a paid Odds API call.
 
@@ -216,9 +217,43 @@ class OddsApiGateway:
         emergency_requested : bool
             If True and the ProviderBudget policy permits, the request
             may draw from the emergency reserve.
+        priority : int | None
+            Phase 4 (2026-08-11) — P1..P5 tier from
+            ``services.provider_budget_priority``.  When provided the
+            gateway consults the shared budget-priority helper BEFORE
+            reserving credits.  Low-priority requests (P5/P4) are
+            rejected first when the daily budget headroom is tight
+            so P1/P2 current-board pipelines cannot be starved.  When
+            omitted, defaults to P3 (neutral middle tier).
         """
         if not caller or not reason:
             raise ValueError("OddsApiGateway.fetch requires caller AND reason")
+
+        # ── Phase 4 priority gate (additive; never bypasses budget) ──
+        try:
+            from services import provider_budget_priority as _pbp
+            _pri = priority if priority is not None else _pbp.P3_ALT_STRONG
+            if _pri not in _pbp.VALID_PRIORITIES:
+                raise ValueError(f"invalid priority {_pri}")
+            # Consult live budget state via the ProviderBudget layer.
+            used = int(getattr(self.budget, "_last_used_daily", 0) or 0)
+            limit = int(getattr(self.budget, "_last_limit_daily", 0) or 0)
+            _dec = _pbp.decide(_pri, used, limit)
+            if not _dec.allowed:
+                logger.info(
+                    "gateway: priority-shed p%d caller=%s reason=%s "
+                    "headroom=%.1f%% threshold=p%d",
+                    _pri, caller, reason, _dec.headroom_pct, _dec.threshold,
+                )
+                return GatewayResult(
+                    ok=False, status="priority_shed",
+                    reason=_dec.reason, data=None,
+                    used_cache=False, from_stale=False,
+                    endpoint=url, sport_key=None,
+                    event_id=None,
+                )
+        except ImportError:
+            pass   # priority helper not present in a legacy deploy
 
         params = dict(params or {})
         endpoint_type = _classify_endpoint(url)

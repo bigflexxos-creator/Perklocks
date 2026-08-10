@@ -576,46 +576,23 @@ def _block_reason(pick: dict) -> str | None:
     if sport in ("mlb", "soccer") and _LOCK_DEAD_ZONE_LO <= ls < _LOCK_DEAD_ZONE_HI:
         return f"lock_dead_zone_{_LOCK_DEAD_ZONE_LO}_{_LOCK_DEAD_ZONE_HI-1}_47pct"
 
-    # 2c. Odds DEAD ZONE -140 to -110 (2026-07-01 audit). Hits at 48.2%
-    #     over 139 picks — "barely favourite" trap. Same MLB/Soccer
-    #     scope caveat as 2b; Tennis moneylines at these odds actually
-    #     hit 62.5% historically, so we exempt Tennis + NBA + NFL.
-    #     Fair-odds MODEL picks are exempt too (2026-07-12): their
-    #     "odds" are synthesized from our own probability, not book-
-    #     priced — the historical dead-zone stat doesn't apply and it
-    #     was silently killing Nordic hot-scorer picks (Kasper Høgh).
-    #     PLAYER PROPS EXEMPT too (2026-07-16 user report: "I thought
-    #     we updated mlb props bets why is none on board" — the -140
-    #     dead-zone was silently killing Aaron Nola Over 16.5 Outs at
-    #     LOCK 99 with edge 5.6%). Prop markets like Over/Under Outs
-    #     Recorded, Strikeouts, Hits, Total Bases, etc. price these
-    #     odds as normal book lines, not coin-flip favourites.
+    # 2c. Odds DEAD ZONE -140 to -110 — REMOVED 2026-08-11 (Phase 4).
+    #     Per user directive: "Do NOT restore or enforce legacy rules
+    #     that automatically block odds at -130. These are NOT
+    #     universally bad bets."  A market or price should only be
+    #     rejected for a real documented quality reason — real-line
+    #     verification, model probability, simulation, historical
+    #     performance, edge/value, matchup, and contradiction checks
+    #     — not a broad price-band ban.  The historical -140/-110
+    #     regression is now handled downstream by simulation +
+    #     Magic/quality evidence layers, not a hard-coded block here.
+    #     (Kept the constants + comment for historical context.)
     _PLAYER_PROP_MARKET_KEYWORDS = (
         "outs recorded", "strikeouts", "total bases", "hits allowed",
         "earned runs", "over 0.5 hits", "over 1.5 hits", "walks",
         "player prop", "batter prop", "pitcher prop",
-    )
-    _is_player_prop = any(
-        kw in market.lower() for kw in _PLAYER_PROP_MARKET_KEYWORDS
-    )
-    odds = pick.get("book_odds")
-    # ESPN-fallback picks (iter-97) are exempt from the odds dead zone
-    # rule too — their `book_odds` is synthesized by inverting our
-    # probability estimate, not a real bookmaker line, so the -140/-110
-    # dead-zone stat (measured on real books) doesn't apply. This was
-    # silently killing all China Super League moneylines while Norway
-    # and Sweden also fell into the band on some games. User report
-    # 2026-07-26: "why isn't China / Norway / Sweden showing".
-    _is_espn_fallback = (
-        (pick.get("source") or "") == "espn_fallback"
-        or (pick.get("odds_source") or "") == "espn_fallback"
-    )
-    if (isinstance(odds, (int, float)) and sport in ("mlb", "soccer")
-            and not pick.get("fair_odds_model")
-            and not _is_player_prop
-            and not _is_espn_fallback):
-        if _ODDS_DEAD_ZONE_LO <= float(odds) < _ODDS_DEAD_ZONE_HI:
-            return f"odds_dead_zone_{_ODDS_DEAD_ZONE_LO}_{_ODDS_DEAD_ZONE_HI}_48pct"
+    )   # retained for other callers that grep this constant
+    # Odds dead-zone check disabled — see block comment above.
 
     # 3. Sub-50% MLB markets (Moneyline, NRFI/YRFI). All decided
     #    by single-event variance:
