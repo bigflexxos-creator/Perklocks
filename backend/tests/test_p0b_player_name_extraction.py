@@ -192,12 +192,14 @@ def test_unrecognisable_market_returns_none():
 
 
 # ── 10. End-to-end validator: reproduces P0-A dry-run failures ──
-_ROSTER = {
+_ROSTER = {}   # club-only lookup (empty — these are international fixtures)
+_FRESH = set()
+_NT_LOOKUP = {
     "federico vinas": "Uruguay",
     "lionel messi":   "Argentina",
     "julian alvarez": "Argentina",
 }
-_FRESH = set(_ROSTER.keys())
+_NT_FRESH = set(_NT_LOOKUP.keys())
 
 
 def test_end_to_end_federico_vinas_to_score_or_assist_now_verifies():
@@ -205,10 +207,10 @@ def test_end_to_end_federico_vinas_to_score_or_assist_now_verifies():
             "market": "Federico Vinas To Score or Assist",
             "event": "Uruguay @ Saudi Arabia"}
     v = validate_player_fixture_pick(
-        pick, _ROSTER, fresh_roster_names=_FRESH)
-    # No longer player_name_missing (that was the P0-A bug).
+        pick, _ROSTER, fresh_roster_names=_FRESH or None,
+        national_team_lookup=_NT_LOOKUP,
+        fresh_national_team_names=_NT_FRESH)
     assert v["reason"] != REASON_PLAYER_NAME_MISSING
-    # With the roster + fixture set correctly for Uruguay, verifies.
     assert v["verified"] is True
     assert v["player_team"] == "Uruguay"
 
@@ -218,7 +220,9 @@ def test_end_to_end_messi_to_score_or_assist_now_parses_player_name():
             "market": "Lionel Messi To Score or Assist",
             "event": "Algeria @ Argentina"}
     v = validate_player_fixture_pick(
-        pick, _ROSTER, fresh_roster_names=_FRESH)
+        pick, _ROSTER, fresh_roster_names=_FRESH or None,
+        national_team_lookup=_NT_LOOKUP,
+        fresh_national_team_names=_NT_FRESH)
     assert v["reason"] != REASON_PLAYER_NAME_MISSING
     assert v["player"] == "Lionel Messi"
 
@@ -228,7 +232,9 @@ def test_end_to_end_alvarez_to_score_or_assist_now_parses_player_name():
             "market": "Julian Alvarez To Score or Assist",
             "event": "Algeria @ Argentina"}
     v = validate_player_fixture_pick(
-        pick, _ROSTER, fresh_roster_names=_FRESH)
+        pick, _ROSTER, fresh_roster_names=_FRESH or None,
+        national_team_lookup=_NT_LOOKUP,
+        fresh_national_team_names=_NT_FRESH)
     assert v["reason"] != REASON_PLAYER_NAME_MISSING
     assert v["player"] == "Julian Alvarez"
 

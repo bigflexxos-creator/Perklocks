@@ -81,12 +81,25 @@ class PlayerIdentity:
     aliases: list[str] = field(default_factory=list)
     position: Optional[str] = None
     role: Optional[str] = None
+    # ── Club affiliation (BC field names preserved) ──
     current_team: Optional[str] = None
     historical_teams: list[dict] = field(default_factory=list)
     roster_status: str = "unknown"
     source: str = "unknown"
     observed_at: Optional[str] = None
+    # ── National-team affiliation (P0-C, 2026-08-11) ──
+    # Independent freshness stream — a stale national-team
+    # observation must NEVER be blocked by fresh club data and
+    # vice versa.  `nationality` is the player's country of
+    # eligibility (may differ from active call-up team, though rare).
+    nationality: Optional[str] = None
+    current_national_team: Optional[str] = None
+    historical_national_teams: list[dict] = field(default_factory=list)
+    national_team_status: str = "unknown"
+    national_team_source: str = "unknown"
+    national_team_observed_at: Optional[str] = None
 
+    # ── Club freshness ──
     def is_current_team_fresh(self, staleness_days: int = _STALENESS_DAYS) -> bool:
         if not self.current_team or not self.observed_at:
             return False
@@ -95,6 +108,29 @@ class PlayerIdentity:
         except Exception:
             return False
         return (datetime.now(timezone.utc) - ts) <= timedelta(days=staleness_days)
+
+    # ── National-team freshness (P0-C) ──
+    def is_current_national_team_fresh(
+        self, staleness_days: int = _STALENESS_DAYS,
+    ) -> bool:
+        if not self.current_national_team or not self.national_team_observed_at:
+            return False
+        try:
+            ts = datetime.fromisoformat(
+                self.national_team_observed_at.replace("Z", "+00:00"))
+        except Exception:
+            return False
+        return (datetime.now(timezone.utc) - ts) <= timedelta(days=staleness_days)
+
+    @property
+    def current_club(self) -> Optional[str]:
+        """P0-C alias — semantic name for `current_team`."""
+        return self.current_team
+
+    @property
+    def historical_clubs(self) -> list[dict]:
+        """P0-C alias — semantic name for `historical_teams`."""
+        return self.historical_teams
 
     def to_dict(self) -> dict:
         return {
@@ -107,11 +143,19 @@ class PlayerIdentity:
             "league": self.league,
             "position": self.position,
             "role": self.role,
+            # Club
             "current_team": self.current_team,
             "historical_teams": list(self.historical_teams),
             "roster_status": self.roster_status,
             "source": self.source,
             "observed_at": self.observed_at,
+            # National team (P0-C)
+            "nationality": self.nationality,
+            "current_national_team": self.current_national_team,
+            "historical_national_teams": list(self.historical_national_teams),
+            "national_team_status": self.national_team_status,
+            "national_team_source": self.national_team_source,
+            "national_team_observed_at": self.national_team_observed_at,
         }
 
 
@@ -152,39 +196,70 @@ class _IdentityRegistry:
                 source: str = "unknown",
                 observed_at: Optional[str] = None,
                 dob: Optional[str] = None,
+                affiliation_type: str = "club",
+                nationality: Optional[str] = None,
                 ) -> PlayerIdentity:
+        """Upsert a player identity.
+
+        Parameters
+        ----------
+        affiliation_type
+            ``"club"`` (default) — ``current_team`` is written to
+            ``PlayerIdentity.current_team`` (club affiliation).
+            ``"national_team"`` — ``current_team`` is written to
+            ``PlayerIdentity.current_national_team`` (independent
+            freshness stream, independent history).
+
+        National-team writes NEVER touch club fields, and vice versa —
+        each affiliation has its own observation timestamp, source and
+        transfer history so a stale club observation cannot invalidate
+        a fresh national-team observation.
+        """
         existing = self.resolve(name=name, sport=sport, league=league,
                                  provider=provider, provider_id=provider_id)
         if existing:
             # Anti-collision: if a DIFFERENT provider id was supplied
             # and this identity already has one for that provider that
-            # doesn't match, mint a NEW canonical id (don't silently
-            # overwrite).  Similar names ≠ same player.
-            if provider and provider_id:
+            # doesn't match, mint a NEW canonical id.  Similar names
+            # ≠ same player.  Only enforce when the incoming write is
+            # for the same affiliation type (national-team providers
+            # commonly differ from club providers for the same
+            # canonical player).
+            if provider and provider_id and affiliation_type == "club":
                 cur = existing.provider_ids.get(provider)
                 if cur and cur != str(provider_id):
-                    # Different provider id → different player.
                     return self._mint(name=name, sport=sport, league=league,
                                        provider=provider, provider_id=provider_id,
                                        current_team=current_team,
                                        position=position, role=role,
                                        roster_status=roster_status,
                                        source=source, observed_at=observed_at,
-                                       dob=dob)
-            # Merge — provider id newly supplied.
+                                       dob=dob,
+                                       affiliation_type=affiliation_type,
+                                       nationality=nationality)
+            # Merge provider id.
             if provider and provider_id:
                 existing.provider_ids[provider] = str(provider_id)
                 self._by_provider[(provider, str(provider_id))] = (
                     existing.canonical_player_id)
-            # Current team update — only when observation is fresher.
+            if nationality and not existing.nationality:
+                existing.nationality = nationality
             if current_team:
-                self._maybe_transfer(existing, current_team,
-                                      source=source, observed_at=observed_at)
+                if affiliation_type == "national_team":
+                    self._maybe_transfer_national(
+                        existing, current_team,
+                        source=source, observed_at=observed_at,
+                        status=roster_status)
+                else:
+                    self._maybe_transfer(existing, current_team,
+                                          source=source,
+                                          observed_at=observed_at)
             if position and not existing.position:
                 existing.position = position
             if role and not existing.role:
                 existing.role = role
-            if roster_status and roster_status != "unknown":
+            if roster_status and roster_status != "unknown" \
+                    and affiliation_type == "club":
                 existing.roster_status = roster_status
             return existing
         return self._mint(name=name, sport=sport, league=league,
@@ -193,14 +268,15 @@ class _IdentityRegistry:
                           position=position, role=role,
                           roster_status=roster_status,
                           source=source, observed_at=observed_at,
-                          dob=dob)
+                          dob=dob,
+                          affiliation_type=affiliation_type,
+                          nationality=nationality)
 
     def _mint(self, *, name: str, sport: str, league: str, dob: Optional[str],
+               affiliation_type: str = "club",
+               nationality: Optional[str] = None,
                **kw) -> PlayerIdentity:
         name_norm = _norm(name)
-        # Deterministic canonical id — hash covers sport, league,
-        # normalised name AND (provider_id or dob) to prevent
-        # collisions between same-named players.
         seed = "|".join([
             sport, league, name_norm,
             str(kw.get("provider_id") or "") or str(dob or ""),
@@ -214,55 +290,103 @@ class _IdentityRegistry:
                            if kw.get("provider") and kw.get("provider_id") else {}),
             position=kw.get("position"),
             role=kw.get("role"),
-            current_team=kw.get("current_team"),
-            roster_status=kw.get("roster_status") or "unknown",
-            source=kw.get("source") or "unknown",
-            observed_at=kw.get("observed_at"),
+            nationality=nationality,
         )
+        if affiliation_type == "national_team":
+            ident.current_national_team = kw.get("current_team")
+            ident.national_team_status = kw.get("roster_status") or "unknown"
+            ident.national_team_source = kw.get("source") or "unknown"
+            ident.national_team_observed_at = kw.get("observed_at")
+            if ident.current_national_team:
+                ident.historical_national_teams.append({
+                    "team": ident.current_national_team,
+                    "from": ident.national_team_observed_at
+                            or datetime.now(timezone.utc).isoformat(),
+                    "to": None,
+                    "source": ident.national_team_source,
+                })
+        else:
+            ident.current_team = kw.get("current_team")
+            ident.roster_status = kw.get("roster_status") or "unknown"
+            ident.source = kw.get("source") or "unknown"
+            ident.observed_at = kw.get("observed_at")
+            if ident.current_team:
+                ident.historical_teams.append({
+                    "team": ident.current_team,
+                    "from": ident.observed_at
+                            or datetime.now(timezone.utc).isoformat(),
+                    "to": None,
+                    "source": ident.source,
+                })
         self._by_id[cid] = ident
         self._by_name_league[(sport, league, name_norm)] = cid
         if kw.get("provider") and kw.get("provider_id"):
             self._by_provider[(kw["provider"], str(kw["provider_id"]))] = cid
-        if ident.current_team:
-            ident.historical_teams.append({
-                "team": ident.current_team,
-                "from": ident.observed_at
-                        or datetime.now(timezone.utc).isoformat(),
-                "to": None,
-                "source": ident.source,
-            })
         return ident
 
     def _maybe_transfer(self, ident: PlayerIdentity, new_team: str,
                          *, source: str, observed_at: Optional[str]) -> None:
-        """Update current_team only when the observation is fresher
-        than the existing one AND the team actually changed."""
+        """Club transfer — update ``current_team`` only when the
+        observation is fresher and the team actually changed."""
         if not new_team:
             return
         ts_new = _parse(observed_at) or datetime.now(timezone.utc)
         ts_cur = _parse(ident.observed_at) or datetime.min.replace(
             tzinfo=timezone.utc)
         if ts_new < ts_cur:
-            return   # older observation → ignore
+            return
         if _norm(new_team) == _norm(ident.current_team or ""):
-            # Same team — just refresh timestamp/source.
             ident.observed_at = observed_at or ident.observed_at
             ident.source = source or ident.source
             return
-        # Genuine transfer — close the previous historical entry.
         if ident.historical_teams:
             last = ident.historical_teams[-1]
             if last.get("to") is None:
                 last["to"] = ts_new.isoformat()
         ident.historical_teams.append({
-            "team": new_team,
-            "from": ts_new.isoformat(),
-            "to": None,
-            "source": source,
+            "team": new_team, "from": ts_new.isoformat(),
+            "to": None, "source": source,
         })
         ident.current_team = new_team
         ident.observed_at = ts_new.isoformat()
         ident.source = source or ident.source
+
+    def _maybe_transfer_national(self, ident: PlayerIdentity, new_team: str,
+                                  *, source: str, observed_at: Optional[str],
+                                  status: str = "unknown") -> None:
+        """National-team transfer — independent stream from club.
+
+        A player's national-team status changes rarely (naturalization,
+        FIFA switch), but when it does it must be recorded WITHOUT
+        touching the club affiliation.
+        """
+        if not new_team:
+            return
+        ts_new = _parse(observed_at) or datetime.now(timezone.utc)
+        ts_cur = _parse(ident.national_team_observed_at) or datetime.min.replace(
+            tzinfo=timezone.utc)
+        if ts_new < ts_cur:
+            return
+        if _norm(new_team) == _norm(ident.current_national_team or ""):
+            ident.national_team_observed_at = observed_at \
+                or ident.national_team_observed_at
+            ident.national_team_source = source or ident.national_team_source
+            if status and status != "unknown":
+                ident.national_team_status = status
+            return
+        if ident.historical_national_teams:
+            last = ident.historical_national_teams[-1]
+            if last.get("to") is None:
+                last["to"] = ts_new.isoformat()
+        ident.historical_national_teams.append({
+            "team": new_team, "from": ts_new.isoformat(),
+            "to": None, "source": source,
+        })
+        ident.current_national_team = new_team
+        ident.national_team_observed_at = ts_new.isoformat()
+        ident.national_team_source = source or ident.national_team_source
+        if status and status != "unknown":
+            ident.national_team_status = status
 
     def snapshot_to_dicts(self) -> list[dict]:
         return [i.to_dict() for i in self._by_id.values()]
@@ -284,6 +408,13 @@ class _IdentityRegistry:
                 roster_status=d.get("roster_status") or "unknown",
                 source=d.get("source") or "unknown",
                 observed_at=d.get("observed_at"),
+                nationality=d.get("nationality"),
+                current_national_team=d.get("current_national_team"),
+                historical_national_teams=list(
+                    d.get("historical_national_teams") or []),
+                national_team_status=d.get("national_team_status") or "unknown",
+                national_team_source=d.get("national_team_source") or "unknown",
+                national_team_observed_at=d.get("national_team_observed_at"),
             )
             self._by_id[ident.canonical_player_id] = ident
             self._by_name_league[
@@ -487,6 +618,59 @@ async def persist_identity(db, doc: dict) -> str:
             except Exception:
                 advanced = False
 
+    # ── 2b. Conditional freshness update — NATIONAL TEAM (P0-C).
+    #     Independent freshness gate from club above.  A stale club
+    #     write cannot advance national-team fields, and vice versa.
+    nat_advanced = False
+    new_nat_obs = doc.get("national_team_observed_at")
+    if new_nat_obs and doc.get("current_national_team"):
+        existing_nat = await db[IDENTITY_COLLECTION].find_one(
+            {"canonical_player_id": cid},
+            {"_id": 0, "current_national_team": 1,
+             "national_team_observed_at": 1,
+             "historical_national_teams": 1},
+        )
+        if existing_nat is None:
+            existing_nat = {}
+        cur_nat_obs = existing_nat.get("national_team_observed_at")
+        if _iso_lt(cur_nat_obs, new_nat_obs) or cur_nat_obs is None:
+            prev_nt = existing_nat.get("current_national_team")
+            new_nt = doc.get("current_national_team")
+            set_nat: dict[str, Any] = {
+                "current_national_team": new_nt,
+                "national_team_observed_at": new_nat_obs,
+                "national_team_source": doc.get("national_team_source")
+                    or existing_nat.get("national_team_source", "unknown"),
+                "national_team_status": doc.get("national_team_status")
+                    or existing_nat.get("national_team_status", "unknown"),
+            }
+            if new_nt and _norm(new_nt) != _norm(prev_nt or ""):
+                nhist = list(existing_nat.get("historical_national_teams") or [])
+                if nhist and nhist[-1].get("to") is None:
+                    nhist[-1]["to"] = new_nat_obs
+                nhist.append({
+                    "team": new_nt,
+                    "from": new_nat_obs,
+                    "to": None,
+                    "source": doc.get("national_team_source", "unknown"),
+                })
+                set_nat["historical_national_teams"] = nhist
+            filt_nat: dict[str, Any] = {"canonical_player_id": cid}
+            if cur_nat_obs is None:
+                filt_nat["$or"] = [
+                    {"national_team_observed_at": {"$exists": False}},
+                    {"national_team_observed_at": None},
+                    {"national_team_observed_at": {"$lt": new_nat_obs}},
+                ]
+            else:
+                filt_nat["national_team_observed_at"] = {"$lt": new_nat_obs}
+            try:
+                res = await db[IDENTITY_COLLECTION].update_one(
+                    filt_nat, {"$set": set_nat})
+                nat_advanced = bool(res.modified_count)
+            except Exception:
+                nat_advanced = False
+
     # ── 3. Additive merges — always safe, idempotent.
     merged = False
     additive: dict[str, Any] = {}
@@ -497,6 +681,16 @@ async def persist_identity(db, doc: dict) -> str:
     for prov, pid in provider_ids.items():
         if prov and pid:
             additive.setdefault("$set", {})[f"provider_ids.{prov}"] = str(pid)
+    # `nationality` is a stable player attribute (rarely changes) —
+    # merge on first-write only via $setOnInsert semantics: use $set
+    # only when the DB does not already have a value.
+    if doc.get("nationality"):
+        existing_nat_doc = await db[IDENTITY_COLLECTION].find_one(
+            {"canonical_player_id": cid},
+            {"_id": 0, "nationality": 1},
+        )
+        if existing_nat_doc is None or not existing_nat_doc.get("nationality"):
+            additive.setdefault("$set", {})["nationality"] = doc["nationality"]
     if additive:
         try:
             res = await db[IDENTITY_COLLECTION].update_one(
@@ -507,7 +701,7 @@ async def persist_identity(db, doc: dict) -> str:
 
     if inserted:
         return "inserted"
-    if advanced:
+    if advanced or nat_advanced:
         return "advanced"
     if merged:
         return "merged_only"
@@ -575,6 +769,24 @@ async def has_fresh_roster_for_league(
         return False
 
 
+async def has_fresh_national_team_membership(
+    db, name_norm: str, staleness_days: int = _STALENESS_DAYS,
+) -> bool:
+    """P0-C — True iff we have a fresh national-team observation for
+    a player."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=staleness_days)
+    cutoff_iso = cutoff.isoformat()
+    try:
+        doc = await db[IDENTITY_COLLECTION].find_one({
+            "name_norm": name_norm,
+            "current_national_team": {"$nin": [None, ""]},
+            "national_team_observed_at": {"$gte": cutoff_iso},
+        }, {"_id": 0, "current_national_team": 1})
+        return doc is not None
+    except Exception:
+        return False
+
+
 __all__ = [
     "PlayerIdentity",
     "resolve_player", "upsert_player",
@@ -583,6 +795,7 @@ __all__ = [
     "persist_registry", "persist_identity",
     "hydrate_registry_from_mongo", "ensure_identity_indexes",
     "has_fresh_roster_for_league",
+    "has_fresh_national_team_membership",
     "IDENTITY_COLLECTION",
     "_norm",
 ]

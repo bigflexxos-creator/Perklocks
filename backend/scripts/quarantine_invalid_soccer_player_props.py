@@ -31,15 +31,23 @@ async def run(db, *, apply: bool = False) -> dict[str, Any]:
     # (populated by mls_scorer_gate.apply_espn_snapshot).
     roster_lookup: dict[str, str] = {}
     fresh_names: set[str] = set()
+    # P0-C — separate national-team lookup for international fixtures.
+    national_team_lookup: dict[str, str] = {}
+    fresh_nt_names: set[str] = set()
     async for doc in db["player_identities"].find(
         {"sport": "Soccer"},
-        {"_id": 0, "name_norm": 1, "current_team": 1, "observed_at": 1},
+        {"_id": 0, "name_norm": 1, "current_team": 1, "observed_at": 1,
+         "current_national_team": 1, "national_team_observed_at": 1},
     ):
         n = doc.get("name_norm")
         t = doc.get("current_team")
         if n and t:
             roster_lookup[n] = t
             fresh_names.add(n)
+        nt = doc.get("current_national_team")
+        if n and nt:
+            national_team_lookup[n] = nt
+            fresh_nt_names.add(n)
 
     # Also merge legacy in-memory ESPN snapshot if present.
     try:
@@ -61,7 +69,9 @@ async def run(db, *, apply: bool = False) -> dict[str, Any]:
         "team_mismatch": 0, "roster_unverified": 0,
         "fixture_teams_unknown": 0, "player_name_missing": 0,
         "non_player_market": 0, "quarantined_writes": 0,
-        "over_85_ineligible": 0, "roster_lookup_size": len(roster_lookup),
+        "over_85_ineligible": 0,
+        "roster_lookup_size": len(roster_lookup),
+        "national_team_lookup_size": len(national_team_lookup),
     }
     query = {
         "sport": "Soccer",
@@ -75,10 +85,13 @@ async def run(db, *, apply: bool = False) -> dict[str, Any]:
                                    "off_board": 1, "lock_score": 1,
                                    "published_lock_score": 1,
                                    "publication_source": 1,
-                                   "settled": 1}):
+                                   "settled": 1, "league": 1,
+                                   "competition": 1}):
         stats["scanned"] += 1
         local_roster = dict(roster_lookup)
         local_fresh = set(fresh_names)
+        local_nt = dict(national_team_lookup)
+        local_nt_fresh = set(fresh_nt_names)
         pn = p.get("player_name") or p.get("player")
         pct = p.get("player_current_team")
         if isinstance(pn, str) and isinstance(pct, str):
@@ -88,6 +101,8 @@ async def run(db, *, apply: bool = False) -> dict[str, Any]:
         v = validate_player_fixture_pick(
             p, local_roster,
             fresh_roster_names=(local_fresh or None),
+            national_team_lookup=local_nt,
+            fresh_national_team_names=(local_nt_fresh or None),
         )
         reason = v.get("reason") or ""
         if v.get("verified"):
