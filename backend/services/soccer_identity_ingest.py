@@ -105,6 +105,9 @@ async def hydrate_big5_from_soccer_player_form(
         league = _canon_league(raw_league) or "Soccer"
         upd = d.get("updated_at")
         if hasattr(upd, "isoformat"):
+            # Naive datetimes → normalise to UTC before serialising.
+            if getattr(upd, "tzinfo", None) is None:
+                upd = upd.replace(tzinfo=timezone.utc)
             observed_iso = upd.isoformat()
         elif isinstance(upd, str):
             observed_iso = upd
@@ -436,11 +439,27 @@ async def bootstrap_national_team_identities(
 # Combined runner — used by server startup + refresh loop.
 # ─────────────────────────────────────────────────────────────────
 async def refresh_soccer_identity_registry(db) -> dict[str, Any]:
-    """Convenience — one call that hydrates Big-5 clubs + national-team
-    curated bootstrap, then persists everything to Mongo."""
+    """Convenience — one call that:
+
+      1. Hydrates Big-5 clubs from `soccer_player_form` (fallback).
+      2. Runs the P0-C curated national-team bootstrap (fallback).
+      3. Runs the P0-D LIVE ESPN roster ingest — CURRENT source of
+         truth.  Fresher observations override the fallback data via
+         the race-safe freshness gates in ``persist_identity``.
+
+    Order matters ONLY for logging (writes commute — the freshness
+    gate guarantees the freshest observation wins regardless of order).
+    """
     big5 = await hydrate_big5_from_soccer_player_form(db)
     nt = await bootstrap_national_team_identities(db)
-    return {"big5": big5, "national_teams": nt}
+    live: dict[str, Any] = {}
+    try:
+        from services.espn_live_soccer_rosters import refresh_live_rosters
+        live = await refresh_live_rosters(db)
+    except Exception as _live_err:
+        logger.warning("Live ESPN roster ingest failed: %s", _live_err)
+        live = {"error": str(_live_err)}
+    return {"big5": big5, "national_teams": nt, "live_rosters": live}
 
 
 __all__ = [

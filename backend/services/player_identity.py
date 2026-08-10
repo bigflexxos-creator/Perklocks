@@ -430,9 +430,15 @@ def _parse(iso: Optional[str]) -> Optional[datetime]:
     if not iso:
         return None
     try:
-        return datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
     except Exception:
         return None
+    # Naive timestamps are treated as UTC — this prevents
+    # "can't compare offset-naive and offset-aware" errors when
+    # historical data was ingested without a timezone marker.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 # ── Module-level singleton (in-memory) ─────────────────────────────
