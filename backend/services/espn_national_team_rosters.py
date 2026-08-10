@@ -148,6 +148,13 @@ async def refresh_national_team_rosters(
     }
 
     seen_countries: set[str] = set()
+    # Phase 5.2.1 (2026-08-11) — the earlier "skip once seen" logic
+    # excluded fifa.friendly players who weren't in the WCQ squad
+    # (e.g. Lawrence Shankland was called up in a friendly but not
+    # UEFA WCQ).  We now MERGE across confederations so friendly
+    # players are added on top of WCQ players — persist_identity
+    # is idempotent so duplicate writes are safe.
+    merge_across_confederations = True
     sem = asyncio.Semaphore(max_concurrency)
 
     async with httpx.AsyncClient(timeout=request_timeout) as cx:
@@ -161,10 +168,12 @@ async def refresh_national_team_rosters(
 
             async def _proc(tid_country):
                 tid, country = tid_country
-                # Skip if a stronger source (earlier confederation)
-                # already covered this nation in this run — later
-                # confederations act as fallback.
-                if country.lower() in seen_countries:
+                # Phase 5.2.1 — MERGE across confederations.  Earlier
+                # slug (WCQ) writes are the strongest signal but a
+                # later slug (fifa.friendly) may include players not
+                # in the WCQ squad — those must be added, not skipped.
+                if not merge_across_confederations \
+                        and country.lower() in seen_countries:
                     return {"players": 0, "writes": 0}
                 async with sem:
                     roster = await _fetch_nt_roster(cx, slug, tid)
