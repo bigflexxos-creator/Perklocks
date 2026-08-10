@@ -443,9 +443,12 @@ async def refresh_soccer_identity_registry(db) -> dict[str, Any]:
 
       1. Hydrates Big-5 clubs from `soccer_player_form` (fallback).
       2. Runs the P0-C curated national-team bootstrap (fallback).
-      3. Runs the P0-D LIVE ESPN roster ingest — CURRENT source of
-         truth.  Fresher observations override the fallback data via
-         the race-safe freshness gates in ``persist_identity``.
+      3. Runs the P0-D LIVE ESPN club roster ingest across ALL
+         configured competitions (Big-5 + MLS + P0-E competitions).
+      4. Runs the P0-E LIVE ESPN dedicated national-team roster ingest.
+         This is the authoritative source for
+         ``current_national_team`` — citizenship from live club
+         rosters is treated as WEAK evidence only.
 
     Order matters ONLY for logging (writes commute — the freshness
     gate guarantees the freshest observation wins regardless of order).
@@ -453,13 +456,24 @@ async def refresh_soccer_identity_registry(db) -> dict[str, Any]:
     big5 = await hydrate_big5_from_soccer_player_form(db)
     nt = await bootstrap_national_team_identities(db)
     live: dict[str, Any] = {}
+    nt_live: dict[str, Any] = {}
     try:
         from services.espn_live_soccer_rosters import refresh_live_rosters
         live = await refresh_live_rosters(db)
     except Exception as _live_err:
-        logger.warning("Live ESPN roster ingest failed: %s", _live_err)
+        logger.warning("Live ESPN club roster ingest failed: %s", _live_err)
         live = {"error": str(_live_err)}
-    return {"big5": big5, "national_teams": nt, "live_rosters": live}
+    try:
+        from services.espn_national_team_rosters import (
+            refresh_national_team_rosters,
+        )
+        nt_live = await refresh_national_team_rosters(db)
+    except Exception as _nt_err:
+        logger.warning("Live ESPN NT roster ingest failed: %s", _nt_err)
+        nt_live = {"error": str(_nt_err)}
+    return {"big5": big5, "national_teams": nt,
+             "live_rosters": live,
+             "live_national_teams": nt_live}
 
 
 __all__ = [

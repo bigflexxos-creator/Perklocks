@@ -43,12 +43,26 @@ logger = logging.getLogger("lockscore.espn_live_soccer_rosters")
 
 
 LEAGUE_SLUGS: dict[str, str] = {
+    # Big-5 European + MLS (P0-D baseline).
     "eng.1": "EPL",
     "esp.1": "La Liga",
     "ita.1": "Serie A",
     "ger.1": "Bundesliga",
     "fra.1": "Ligue 1",
     "usa.1": "MLS",
+    # P0-E — competitions currently producing Perklocks picks
+    # (verified via db.picks league distribution 2026-08-11).
+    "ksa.1": "Saudi Pro League",
+    "ned.1": "Eredivisie",
+    "mex.1": "Liga MX",
+    "bra.1": "Campeonato Brasileiro Série A",
+    "bra.2": "Brasileirão Série B",
+    "chn.1": "China Super League",
+    "swe.1": "Allsvenskan",
+    "nor.1": "Eliteserien",
+    "por.1": "Primeira Liga",
+    "chi.1": "Primera Chile",
+    "esp.2": "La Liga 2",
 }
 
 
@@ -154,19 +168,23 @@ async def _upsert_athlete_identity(
 
     nt_persisted = False
     if citizenship:
-        nt_ident = upsert_player(
-            name=cid_seed_name, sport="Soccer",
-            league=canonical_league,  # same canonical id as the club record
-            provider="espn",
-            provider_id=(str(espn_id) if espn_id else f"live:{_pnorm(display)}"),
-            current_team=citizenship,
-            affiliation_type="national_team",
-            source=_LIVE_SOURCE,
-            observed_at=now_iso,
-            roster_status="active",
-            nationality=citizenship,
-        )
-        nt_outcome = await persist_identity(db, nt_ident.to_dict())
+        # P0-E (2026-08-11): DO NOT auto-populate `current_national_team`
+        # from ESPN's `citizenship` field.  Citizenship reflects passport,
+        # NOT current national-team squad membership — ESPN sometimes
+        # misreports (Endrick shows citizenship="Portugal" while he
+        # plays for Brazil).  Instead we write ONLY the `nationality`
+        # field (via the additive-merge path in persist_identity), which
+        # the validator treats as WEAK evidence.  Authoritative
+        # ``current_national_team`` writes come solely from the dedicated
+        # national-team roster ingester.
+        nt_ident_doc = {
+            "canonical_player_id": club_ident.canonical_player_id,
+            "name": club_ident.name,
+            "name_norm": club_ident.name_norm,
+            "sport": "Soccer", "league": canonical_league,
+            "nationality": citizenship,
+        }
+        nt_outcome = await persist_identity(db, nt_ident_doc)
         nt_persisted = nt_outcome in ("inserted", "advanced", "merged_only")
 
     club_persisted = club_outcome in ("inserted", "advanced", "merged_only")

@@ -81,6 +81,12 @@ REASON_ROSTER_UNVERIFIED      = "roster_unverified"
 REASON_FIXTURE_TEAMS_UNKNOWN  = "fixture_teams_unknown"
 REASON_PLAYER_NAME_MISSING    = "player_name_missing"
 REASON_MARKET_NOT_PLAYER      = "market_not_player_based"
+# P0-E (2026-08-11) — used when authoritative national-team roster and
+# a weaker citizenship signal disagree for the same player.  The
+# fixture pick is not confidently rejectable — the caller should treat
+# it as "unverified due to conflicting evidence" rather than
+# hard-rejecting as team_mismatch.
+REASON_ROSTER_CONFLICT        = "roster_conflict"
 
 
 # ── International-fixture detection (P0-C) ────────────────────────
@@ -386,29 +392,21 @@ def validate_player_fixture_pick(
     fresh_roster_names: Optional[set[str]] = None,
     national_team_lookup: Optional[dict[str, str]] = None,
     fresh_national_team_names: Optional[set[str]] = None,
+    nationality_lookup: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """See module docstring.
 
+    P0-E (2026-08-11) — extended signature:
+
     Parameters
     ----------
-    pick
-        The pick doc.
-    roster_lookup
-        ``{normalised_player_name: current_club_name}`` — the freshest
-        trusted CLUB observation the caller has.  Used for club
-        fixtures only.
-    fresh_roster_names
-        Optional set of normalised player names present in the MOST
-        RECENT (fresh) CLUB observation.  A player only present via
-        stale evidence is REJECTED as ``roster_unverified``.
-    national_team_lookup
-        P0-C — ``{normalised_player_name: current_national_team}`` for
-        international fixtures.  When ``None``, ANY international
-        fixture returns ``roster_unverified`` (never
-        ``team_mismatch``).
-    fresh_national_team_names
-        Optional freshness set for the national-team lookup, mirroring
-        ``fresh_roster_names`` semantics.
+    nationality_lookup
+        ``{normalised_player_name: citizenship_country}`` — the WEAK
+        citizenship signal (from live ESPN roster ``citizenship``
+        field).  Never causes a hard ``team_mismatch``.  Used only as
+        supporting evidence when no authoritative ``national_team``
+        record is present, and to detect ``roster_conflict`` when it
+        DISAGREES with an authoritative NT record.
     """
     market = pick.get("market") or ""
 
@@ -446,15 +444,15 @@ def validate_player_fixture_pick(
             "fixture_type": None,
         }
 
-    # P0-C — route to the appropriate lookup based on fixture type.
     intl = _is_international_fixture(pick, fixture)
     fixture_type = "international" if intl else "club"
 
     if intl:
-        # Use national-team lookup ONLY.  Club data must never cause
-        # an international-fixture rejection.
+        # ── International fixture path (P0-C + P0-E) ──
         nt_lookup = national_team_lookup or {}
         nt_fresh = fresh_national_team_names
+        nat_lookup = nationality_lookup or {}
+
         team = nt_lookup.get(player_norm)
         if team is None:
             parts = player_norm.split()
@@ -464,44 +462,85 @@ def validate_player_fixture_pick(
                               if _norm(k).endswith(last)]
                 if len(candidates) == 1:
                     team = candidates[0][1]
-        if team is None:
-            # National-team membership unknown → roster_unverified,
-            # NEVER team_mismatch (per P0-C spec).
+
+        citizenship = nat_lookup.get(player_norm)
+        if citizenship is None:
+            parts = player_norm.split()
+            if len(parts) >= 2:
+                last = parts[-1]
+                cnd = [(k, v) for k, v in nat_lookup.items()
+                        if _norm(k).endswith(last)]
+                if len(cnd) == 1:
+                    citizenship = cnd[0][1]
+
+        if team is not None:
+            # We have an authoritative NT record.  Freshness gate.
+            if nt_fresh is not None:
+                if player_norm not in nt_fresh:
+                    parts = player_norm.split()
+                    last = parts[-1] if parts else ""
+                    if not any(n.endswith(last) for n in nt_fresh if last):
+                        return {
+                            "verified": False,
+                            "reason": REASON_ROSTER_UNVERIFIED,
+                            "player": player_raw,
+                            "player_team": team,
+                            "fixture_teams": fixture,
+                            "fixture_type": fixture_type,
+                        }
+            if _teams_match(team, fixture):
+                return {
+                    "verified": True,
+                    "reason": None,
+                    "player": player_raw,
+                    "player_team": team,
+                    "fixture_teams": fixture,
+                    "fixture_type": fixture_type,
+                }
+            # NT does not match the fixture.  Two subcases (P0-E):
+            #   (a) citizenship signal DISAGREES with the NT record →
+            #       trusted sources conflict → roster_conflict.
+            #   (b) citizenship AGREES with NT → confident mismatch.
+            if citizenship and _norm(citizenship) != _norm(team):
+                return {
+                    "verified": False,
+                    "reason": REASON_ROSTER_CONFLICT,
+                    "player": player_raw,
+                    "player_team": team,   # authoritative NT record
+                    "fixture_teams": fixture,
+                    "fixture_type": fixture_type,
+                }
             return {
                 "verified": False,
-                "reason": REASON_ROSTER_UNVERIFIED,
-                "player": player_raw,
-                "player_team": None,
-                "fixture_teams": fixture,
-                "fixture_type": fixture_type,
-            }
-        if nt_fresh is not None:
-            if player_norm not in nt_fresh:
-                parts = player_norm.split()
-                last = parts[-1] if parts else ""
-                if not any(n.endswith(last) for n in nt_fresh if last):
-                    return {
-                        "verified": False,
-                        "reason": REASON_ROSTER_UNVERIFIED,
-                        "player": player_raw,
-                        "player_team": team,
-                        "fixture_teams": fixture,
-                        "fixture_type": fixture_type,
-                    }
-        if _teams_match(team, fixture):
-            return {
-                "verified": True,
-                "reason": None,
+                "reason": REASON_PLAYER_TEAM_MISMATCH,
                 "player": player_raw,
                 "player_team": team,
                 "fixture_teams": fixture,
                 "fixture_type": fixture_type,
             }
+
+        # No authoritative NT record — fall back to WEAK citizenship
+        # signal (P0-E: never causes hard team_mismatch on its own).
+        if citizenship and _teams_match(citizenship, fixture):
+            # Citizenship matches the fixture side — accept with a
+            # weak-evidence tag so downstream can differentiate.
+            return {
+                "verified": True,
+                "reason": None,
+                "player": player_raw,
+                "player_team": citizenship,
+                "fixture_teams": fixture,
+                "fixture_type": fixture_type,
+                "evidence": "citizenship_weak",
+            }
+        # Either citizenship is missing OR doesn't match fixture — we
+        # cannot confidently reject without an authoritative roster
+        # observation, so classify as unverified.
         return {
             "verified": False,
-            "reason": REASON_PLAYER_TEAM_MISMATCH,
+            "reason": REASON_ROSTER_UNVERIFIED,
             "player": player_raw,
-            "player_team": team,
+            "player_team": citizenship,
             "fixture_teams": fixture,
             "fixture_type": fixture_type,
         }
@@ -527,8 +566,6 @@ def validate_player_fixture_pick(
             "fixture_type": fixture_type,
         }
 
-    # Freshness gate — reject when caller supplied a fresh set AND
-    # the player isn't in it (i.e. we only have stale evidence).
     if fresh_roster_names is not None:
         if player_norm not in fresh_roster_names:
             parts = player_norm.split()
@@ -585,8 +622,10 @@ __all__ = [
     "tag_pick_with_verdict",
     "REASON_PLAYER_TEAM_MISMATCH",
     "REASON_ROSTER_UNVERIFIED",
+    "REASON_ROSTER_CONFLICT",
     "REASON_FIXTURE_TEAMS_UNKNOWN",
     "REASON_PLAYER_NAME_MISSING",
     "REASON_MARKET_NOT_PLAYER",
     "_norm",
+    "_is_international_fixture",
 ]
