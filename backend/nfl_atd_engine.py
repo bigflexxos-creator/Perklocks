@@ -192,18 +192,35 @@ async def _league_means(db) -> dict:
 # ───────────────── Per-player prediction ─────────────────
 
 async def _player_profile(db, player_id: str) -> Optional[dict]:
-    """Aggregate a player's NFL touch + TD distribution."""
+    """Aggregate a player's NFL touch + TD distribution.
+
+    Block 2D (2026-08) — data-model adapter.  NFL data lives primarily
+    in ``nfl_player_weekly`` (populated by ``services.nfl_data_ingest``).
+    The legacy ``player_game_logs`` shape (``sport="nfl"``,
+    ``stat_block=rushing|receiving``, ``nfl_td``/``nfl_car``/``nfl_tgts``)
+    is still supported when present, but when that collection is empty
+    for NFL we fall back to ``nfl_player_weekly`` so the engine can
+    actually consume the NFL data that exists in the database.
+
+    Falls through cleanly to ``None`` on missing data — no invention.
+    """
+    # Primary path: legacy player_game_logs.
     cursor = db.player_game_logs.find(
         {"player_id": player_id, "sport": "nfl",
          "stat_block": {"$in": ["rushing", "receiving"]}},
         {"_id": 0},
     ).sort("date", -1).limit(40)  # most recent 40 logs across rush+rec
     rows = [d async for d in cursor]
-    if not rows:
-        return None
+    if rows:
+        return _profile_from_player_game_logs(player_id, rows)
 
-    # Collapse per game_id (a player can have BOTH rushing + receiving
-    # rows for the same game — one "appearance" per game).
+    # Fallback path: nfl_player_weekly (the real NFL data collection).
+    return await _player_profile_from_weekly(db, player_id)
+
+
+def _profile_from_player_game_logs(player_id: str,
+                                     rows: list[dict]) -> Optional[dict]:
+    """Legacy profile builder — kept intact for back-compat."""
     by_game: dict[str, dict] = {}
     for r in rows:
         gid = r.get("game_id")
@@ -238,6 +255,102 @@ async def _player_profile(db, player_id: str) -> Optional[dict]:
         "team": games[0].get("team"),
         "games": games,
     }
+
+
+async def _player_profile_from_weekly(db, player_id: str) -> Optional[dict]:
+    """Fallback profile builder that reads the modern
+    ``nfl_player_weekly`` collection.  Field mapping:
+
+        rushing_tds + receiving_tds  → td
+        carries                      → car
+        targets                      → tgts
+        rushing_yards, receiving_yards → rush_yd, rec_yd
+        game_id, team                → passthrough
+        season, week                 → composite date "YYYY-WW"
+    """
+    cursor = db.nfl_player_weekly.find(
+        {"player_id": player_id},
+        {"_id": 0},
+    ).sort([("season", -1), ("week", -1)]).limit(40)
+    rows = [d async for d in cursor]
+    if not rows:
+        return None
+    games: list[dict] = []
+    for r in rows:
+        car = _to_int(r.get("carries")) or 0
+        tgts = _to_int(r.get("targets")) or 0
+        rush_td = _to_int(r.get("rushing_tds")) or 0
+        rec_td = _to_int(r.get("receiving_tds")) or 0
+        td = rush_td + rec_td
+        rush_yd = _to_int(r.get("rushing_yards")) or 0
+        rec_yd = _to_int(r.get("receiving_yards")) or 0
+        # Composite date for chronological sort.  YYYYWW so lexical =
+        # numeric.
+        season = r.get("season") or 0
+        week = r.get("week") or 0
+        composite_date = f"{int(season):04d}-{int(week):02d}"
+        games.append({
+            "game_id":  r.get("game_id") or f"{season}_{week}",
+            "date":     composite_date,
+            "team":     r.get("team"),
+            "name":     r.get("player_display_name") or r.get("player_name"),
+            "car":      car, "tgts": tgts, "td": td,
+            "rush_yd":  rush_yd, "rec_yd": rec_yd,
+        })
+    if not games:
+        return None
+    return {
+        "player_id": player_id,
+        "name":      games[0].get("name"),
+        "team":      games[0].get("team"),
+        "games":     games,
+    }
+
+
+async def resolve_player_id_from_name(
+    db, *, name: str, team: Optional[str] = None,
+) -> Optional[str]:
+    """Block 2D (2026-08) — bookmaker-name → nflverse GSIS resolver.
+
+    Preferred resolution hierarchy (per user directive):
+      1. Exact match on ``nfl_player_weekly.player_display_name``
+         (nflverse's canonical display form).
+      2. Exact match on ``player_name``.
+      3. Exact match narrowed by current ``team`` when provided.
+
+    Returns ``None`` when the resolution is ambiguous (multiple GSIS
+    IDs match the same name) or when no match exists.  **Never** guesses.
+    """
+    if not name:
+        return None
+    norm = name.strip()
+    # Try player_display_name first (nflverse canonical form).
+    for field in ("player_display_name", "player_name"):
+        q: dict = {field: norm}
+        # Consider only recent seasons to avoid retired-namesake matches.
+        cursor = db.nfl_player_weekly.find(
+            q, {"_id": 0, "player_id": 1, "team": 1, "season": 1}
+        ).sort("season", -1).limit(20)
+        rows = [d async for d in cursor]
+        if not rows:
+            continue
+        ids = {r.get("player_id") for r in rows if r.get("player_id")}
+        if len(ids) == 1:
+            return next(iter(ids))
+        if team and len(ids) > 1:
+            # Narrow by current team.  If exactly one GSIS in the
+            # requested team, that's a safe resolution.
+            team_upper = team.upper()
+            ids_for_team = {
+                r["player_id"] for r in rows
+                if r.get("team", "").upper() == team_upper
+                and r.get("player_id")
+            }
+            if len(ids_for_team) == 1:
+                return next(iter(ids_for_team))
+        # Ambiguous → refuse to guess.
+        return None
+    return None
 
 
 def _td_outlier_check(games: list[dict]) -> Optional[str]:

@@ -98,6 +98,27 @@ class ReasonCode(str, enum.Enum):
     # ── stage: settlement ─────────────────────────────────────
     SETTLEMENT_ENGINE_MISSING  = "SETTLEMENT_ENGINE_MISSING"
     SETTLEMENT_SOURCE_UNKNOWN  = "SETTLEMENT_SOURCE_UNKNOWN"
+    # ── Block 2D (2026-08) specialized-engine wiring signals ──
+    ATD_ENGINE_USED            = "ATD_ENGINE_USED"
+    ATD_ENGINE_MISSING         = "ATD_ENGINE_MISSING"
+    ATD_ENGINE_UNRESOLVED_PLAYER = "ATD_ENGINE_UNRESOLVED_PLAYER"
+    ATD_ENGINE_REJECT_INSUFFICIENT_HISTORY = "ATD_ENGINE_REJECT_INSUFFICIENT_HISTORY"
+    ATD_ENGINE_REJECT_VOLUME_TOO_LOW = "ATD_ENGINE_REJECT_VOLUME_TOO_LOW"
+    ATD_ENGINE_REJECT_NO_RECENT_RED_ZONE_PATH = "ATD_ENGINE_REJECT_NO_RECENT_RED_ZONE_PATH"
+    ATD_ENGINE_REJECT_CONVERSION_EFF_LOW = "ATD_ENGINE_REJECT_CONVERSION_EFF_LOW"
+    ATD_ENGINE_REJECT_TD_OUTLIER = "ATD_ENGINE_REJECT_TD_OUTLIER"
+    HR_INTEL_USED              = "HR_INTEL_USED"
+    HR_INTEL_MISSING           = "HR_INTEL_MISSING"
+    HR_INTEL_INSUFFICIENT_DATA = "HR_INTEL_INSUFFICIENT_DATA"
+    FUSION_PRE_SCORE           = "FUSION_PRE_SCORE"
+    FUSION_POST_SCORE_ONLY     = "FUSION_POST_SCORE_ONLY"
+    BTTS_LINE_FOUND            = "BTTS_LINE_FOUND"
+    BTTS_LINE_MISSING          = "BTTS_LINE_MISSING"
+    BTTS_CANDIDATE_CREATED     = "BTTS_CANDIDATE_CREATED"
+    BTTS_INSUFFICIENT_MODEL_DATA = "BTTS_INSUFFICIENT_MODEL_DATA"
+    DOUBLE_CHANCE_SYNTHETIC_LINE_BLOCKED = "DOUBLE_CHANCE_SYNTHETIC_LINE_BLOCKED"
+    DOUBLE_CHANCE_REAL_LINE_USED = "DOUBLE_CHANCE_REAL_LINE_USED"
+    DOUBLE_CHANCE_INSUFFICIENT_MODEL_DATA = "DOUBLE_CHANCE_INSUFFICIENT_MODEL_DATA"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -729,4 +750,68 @@ __all__ = [
     "Evidence",
     "build_wiring_matrix",
     "get_wiring_evidence",
+    "log_reason",
 ]
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Block 2D — Lightweight per-event reason logger (spec §23)
+# ═══════════════════════════════════════════════════════════════════
+# Fire-and-forget helper so specialized engines can broadcast their
+# wiring signals (ATD_ENGINE_USED, HR_INTEL_USED, BTTS_LINE_FOUND …)
+# without paying for a full PipelineTrace round-trip.  Kept in-process
+# so unit tests can inspect the emitted reason codes.
+
+_LAST_REASONS: list[dict] = []
+_LAST_REASONS_CAP = 512
+
+
+def log_reason(*,
+    sport: Optional[str] = None,
+    market: Optional[str] = None,
+    player: Optional[str] = None,
+    reason: str,
+    event: Optional[str] = None,
+    meta: Optional[dict] = None,
+) -> None:
+    """Broadcast a Block-2D reason code.  Idempotent, cheap, in-memory.
+
+    Persisted-log integration is intentionally deferred — Block 2E
+    will pipe these into the settlement-time telemetry stream if the
+    volume/value warrants it.  For now this powers deterministic
+    tests that assert engines emitted the expected wiring signals.
+    """
+    rec = {
+        "ts":     datetime.now(timezone.utc).isoformat(),
+        "sport":  sport,
+        "market": market,
+        "player": player,
+        "event":  event,
+        "reason": reason,
+    }
+    if meta:
+        rec["meta"] = meta
+    _LAST_REASONS.append(rec)
+    if len(_LAST_REASONS) > _LAST_REASONS_CAP:
+        # Ring-buffer semantics.  Older entries drop off.
+        del _LAST_REASONS[: len(_LAST_REASONS) - _LAST_REASONS_CAP]
+
+
+def recent_reasons(*, reason: Optional[str] = None,
+                    sport: Optional[str] = None,
+                    since_iso: Optional[str] = None,
+                    limit: int = 200) -> list[dict]:
+    """Test/observability helper — return recent reason emissions."""
+    out = list(_LAST_REASONS)
+    if reason:
+        out = [r for r in out if r.get("reason") == reason]
+    if sport:
+        out = [r for r in out if r.get("sport") == sport]
+    if since_iso:
+        out = [r for r in out if (r.get("ts") or "") >= since_iso]
+    return out[-limit:]
+
+
+def clear_reasons() -> None:
+    """Test helper — reset the in-memory buffer."""
+    _LAST_REASONS.clear()

@@ -320,7 +320,20 @@ async def build_nfl_game_context(
         if not stat:
             continue
 
-        position = cand.get("position") or _infer_position(market)
+        # Block 2D Closure §2 (2026-08) — resolve the ACTUAL player
+        # position from the canonical NFL registry, not from the market
+        # name.  Prevents QB rushing → RB, RB receiving → WR, TE
+        # receiving → WR misattribution.  Falls back to market-key
+        # inference only when the player cannot be resolved (rookie
+        # not yet in the weekly data, etc.).
+        canonical_pos = None
+        try:
+            from sports_engine import resolve_nfl_position_for_player
+            canonical_pos = await resolve_nfl_position_for_player(
+                db, name=player, team=cand.get("team") or None)
+        except Exception:
+            canonical_pos = None
+        position = canonical_pos or cand.get("position") or _infer_position(market)
         try:
             factors, sources = await build_nfl_prop_factors(
                 db,
@@ -336,10 +349,72 @@ async def build_nfl_game_context(
             out.setdefault(key_l, {})[market] = {
                 "factors": factors,
                 "sources": sources,
+                "position_used": position,
+                "position_source": ("canonical_registry"
+                                     if canonical_pos else "market_inference"),
             }
         except Exception as e:
             logger.debug("nfl precompute failed for %s/%s: %s", player, market, e)
 
+    # ── Block 2D A1 (2026-08) — NFL ATD specialized-engine precompute ──
+    # For any anytime_td / 1st_td candidate on this game, resolve the
+    # player identity and call the specialized nfl_atd_engine.  Result
+    # stored in ctx["nfl_atd_precomputed"][player_lower] so the sync
+    # emission loop can consume it without doing an await.
+    #
+    # Missing history / low sample / unresolved identity all fall
+    # through to a ``reject`` marker — the sync emitter drops the
+    # pick.  MISSING DATA never becomes a manufactured probability.
+    atd_out: dict[str, dict] = {}
+    atd_candidates = [
+        c for c in prop_candidates
+        if (c.get("market") or "") in ("player_anytime_td", "player_1st_td")
+    ]
+    if atd_candidates:
+        from nfl_atd_engine import (
+            predict_player_atd, resolve_player_id_from_name,
+        )
+        for cand in atd_candidates:
+            player = (cand.get("player") or "").strip()
+            if not player:
+                continue
+            key_l = player.lower()
+            if key_l in atd_out:
+                continue  # dedupe (Yes market often appears in multiple bookmakers)
+            player_team = cand.get("team") or ""
+            # Resolve to nflverse GSIS.  Refuses to guess on ambiguity.
+            try:
+                pid = await resolve_player_id_from_name(
+                    db, name=player, team=player_team or None)
+            except Exception as e:
+                logger.debug("nfl_atd resolve err %s: %s", player, e)
+                pid = None
+            if not pid:
+                atd_out[key_l] = {
+                    "reject": "unresolved_player_identity",
+                    "player_name": player,
+                }
+                continue
+            # Determine opponent + spread (spread unavailable at this
+            # layer — kept None to skip game-script factor).
+            opp_full = away_team if is_home else home_team
+            opp_abbrev = _abbrev(opp_full)
+            try:
+                result = await predict_player_atd(
+                    db, player_id=pid,
+                    opponent=opp_abbrev or None,
+                    spread=None,
+                )
+            except Exception as e:
+                logger.debug("nfl_atd predict err %s: %s", player, e)
+                atd_out[key_l] = {
+                    "reject": "engine_error",
+                    "engine_error": str(e)[:120],
+                }
+                continue
+            atd_out[key_l] = result or {"reject": "engine_returned_none"}
+    if atd_out:
+        return {"nfl_precomputed": out, "nfl_atd_precomputed": atd_out}
     return {"nfl_precomputed": out}
 
 

@@ -147,8 +147,20 @@ def mlb_total_prob(
             used.append("pitching")
 
     # ── Team offense (runs per game) vs the line ──────────────────────────────────
+    # Block 2D Closure §1 (2026-08) — the previous code read
+    # ctx.team_runs_avg_home/away which was NEVER populated by the
+    # MLB game-context enricher.  Real data lives at
+    # ctx.team_runs[team_lower].  Try the legacy shape first for
+    # backward compatibility, then fall back to the modern shape.
     tr_h = ctx.get("team_runs_avg_home")
     tr_a = ctx.get("team_runs_avg_away")
+    if not (isinstance(tr_h, (int, float)) and isinstance(tr_a, (int, float))):
+        _tr = ctx.get("team_runs") or {}
+        _home = (ctx.get("home_team") or "").strip().lower()
+        _away = (ctx.get("away_team") or "").strip().lower()
+        if _home and _away:
+            tr_h = _tr.get(_home)
+            tr_a = _tr.get(_away)
     if isinstance(tr_h, (int, float)) and isinstance(tr_a, (int, float)):
         proj = float(tr_h) + float(tr_a)
         # If projection is well above line → Over. Below line → Under.

@@ -499,8 +499,19 @@ async def run_once() -> dict:
         return {"ok": True, "generated": 0}
 
     # Direct upsert bypassing all pipeline filters.
+    # ── Block 2D C1 (2026-08) — publication-bypass observability ──
+    # This writer historically wrote user-visible picks directly to
+    # db.picks.  Per Block 2D directive, every bypass is now tagged
+    # so downstream telemetry / dashboards can distinguish canonical
+    # vs bypass writes.  Fixing the bypass itself (routing through
+    # canonical publication) is deferred to Block 2E because it
+    # requires the direct-inject picks to survive the canonical
+    # publication_barrier + strict>85 gate — potentially reducing
+    # coverage until each MLS direct-inject pick is re-modelled with
+    # feature-engine evidence.
     from pymongo import ReplaceOne
     from services.soccer_prop_inject import _derive_pick_date
+    from services.canonical_publication_barrier import apply_canonical_barrier
     ops = []
     for p in all_picks:
         p["created_at"] = now
@@ -508,10 +519,31 @@ async def run_once() -> dict:
         # they don't crowd today's board (2026-07-26 user report).
         p["pick_date"] = _derive_pick_date(p.get("event_time"), today_str)
         p["updated_at"] = now
+        # Block 2D C1 — explicit bypass marker.
+        p["bypasses_canonical_publication"] = True
+        p["publication_route"] = "mls_espn_direct"
+        # Block 2D Closure §5 (2026-08) — route through the canonical
+        # publication barrier.  Picks that fail (missing real odds /
+        # Lock < 85 / etc.) are STORED (shadow) but marked
+        # off_board=True + no_bet=True so they cannot surface on
+        # user-visible boards without meeting the same gate as
+        # canonically-generated picks.
+        apply_canonical_barrier(p)
         ops.append(ReplaceOne({"id": p["id"]}, p, upsert=True))
     if ops:
         try:
             await db.picks.bulk_write(ops, ordered=False)
+            try:
+                from services.pipeline_diagnostic import log_reason as _plog
+                from services.pipeline_diagnostic import ReasonCode as _RC
+                _plog(
+                    sport="Soccer", market="scorer_direct_inject",
+                    reason=_RC.NON_CANONICAL_WRITE.value,
+                    meta={"writer": "mls_direct_inject",
+                          "count": len(ops)},
+                )
+            except Exception:
+                pass
         except Exception as e:
             logger.warning("MLS direct upsert error (best-effort): %s", e)
 
