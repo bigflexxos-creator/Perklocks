@@ -75,6 +75,12 @@ from .enforcement import (
     recent_violations,
     clear_violations,
 )
+from .publication_observer import (
+    observe_publication,
+    read_observation,
+    ensure_observation_indexes,
+    OBSERVATIONS_COLLECTION,
+)
 
 __all__ = [
     # vocabulary
@@ -112,4 +118,9 @@ __all__ = [
     "record_violation",
     "recent_violations",
     "clear_violations",
+    # publication observer
+    "observe_publication",
+    "read_observation",
+    "ensure_observation_indexes",
+    "OBSERVATIONS_COLLECTION",
 ]

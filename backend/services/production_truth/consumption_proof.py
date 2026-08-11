@@ -37,6 +37,10 @@ from .settlement_linkage import (
     classify_measurability,
     MeasurabilityState,
 )
+from .publication_observer import (
+    OBSERVATIONS_COLLECTION,
+    read_observation,
+)
 
 
 PICKS_COLLECTION = "picks"
@@ -136,6 +140,11 @@ async def build_consumption_proof(db, pick_id: str) -> dict:
     snapshot   = await _find_snapshot(db, pick)
     settlement = await _find_settlement(db, pick)
     analytics  = await _find_analytics(db, pick)
+    observation = await read_observation(
+        db,
+        canonical_prediction_id=pick.get("canonical_prediction_id"),
+        pick_id=pick.get("id") or pick.get("external_id"),
+    )
 
     # Analytics linkage is boolean-ish for reachability.
     analytics_linked: Optional[bool] = None
@@ -155,7 +164,35 @@ async def build_consumption_proof(db, pick_id: str) -> dict:
         analytics_linked=analytics_linked,
     )
     custody = build_custody_record(pick)
+    # If we have a recorded observation, upgrade the custody
+    # PRODUCTION_CONSUMER origin using the recorded publication_source.
+    if observation and observation.get("origin"):
+        try:
+            from .chain_of_custody import CustodyStage, VALID_ORIGINS
+            if observation["origin"] in VALID_ORIGINS:
+                custody.note(CustodyStage.PRODUCTION_CONSUMER,
+                              origin=observation["origin"],
+                              proof=f"observed@{observation.get('ts')}",
+                              detail=observation.get("publication_source"))
+                # Producer origin — publications from real canonical
+                # sources count as DATA; direct-inject remains marked
+                # as such.  Never fake real when observation says
+                # otherwise.
+                custody.note(CustodyStage.PRODUCER,
+                              origin=observation["origin"],
+                              proof=observation.get("publication_source"))
+        except Exception:                        # pragma: no cover
+            pass
     verdict = distinguish_code_exists_from_real_path(custody)
+    # Refine verdict to match the required §7 vocabulary — a
+    # PARTIALLY_PROVEN custody + a real observed publication maps to
+    # PARTIAL_PRODUCTION_PATH.
+    verdict_map = {
+        "REAL_PRODUCTION_PATH_PROVEN": "REAL_PRODUCTION_PATH_PROVEN",
+        "PARTIALLY_PROVEN":            "PARTIAL_PRODUCTION_PATH",
+        "CODE_EXISTS_ONLY":            "CODE_EXISTS_ONLY",
+    }
+    path_verdict = verdict_map.get(verdict, verdict)
     measurability = classify_measurability(
         pick,
         pregame_snapshot=snapshot,
@@ -165,7 +202,10 @@ async def build_consumption_proof(db, pick_id: str) -> dict:
 
     proof["reachability"] = reachability.to_dict()
     proof["custody"] = custody.to_dict()
-    proof["path_verdict"] = verdict
+    proof["path_verdict"] = path_verdict
+    proof["observation"] = observation      # None when the pick
+                                              # predates the observer,
+                                              # never fabricated
     proof["pregame_snapshot"] = {
         "present":     snapshot is not None,
         "hash_valid":  verify_snapshot_hash(snapshot) if snapshot else False,
