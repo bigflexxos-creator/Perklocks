@@ -65,9 +65,61 @@ async def get_player_history(
             opponent=opponent,
             home_away=home_away,
         )
-    # Deferred sports return an honest UNAVAILABLE.
+    if sport_u == "NFL":
+        from .nfl import populate_nfl_evidence
+        return await populate_nfl_evidence(
+            db, ev,
+            player_id=player_id,
+            canonical_player_id=canonical_player_id,
+            player_name=player_name,
+            opponent=opponent,
+            home_away=home_away,
+        )
+    if sport_u == "NBA":
+        from .nba import populate_nba_evidence
+        return await populate_nba_evidence(
+            db, ev,
+            player_id=player_id,
+            canonical_player_id=canonical_player_id,
+            player_name=player_name,
+            opponent=opponent,
+            home_away=home_away,
+        )
+    if sport_u == "SOCCER":
+        from .soccer import populate_soccer_evidence
+        return await populate_soccer_evidence(
+            db, ev,
+            player_id=player_id,
+            canonical_player_id=canonical_player_id,
+            player_name=player_name,
+            opponent=opponent,
+            home_away=home_away,
+        )
+    if sport_u == "TENNIS":
+        from .tennis import populate_tennis_evidence
+        return await populate_tennis_evidence(
+            db, ev,
+            player_id=player_id,
+            canonical_player_id=canonical_player_id,
+            player_name=player_name,
+            opponent=opponent,
+            home_away=home_away,
+        )
+    if sport_u == "UFC":
+        from .ufc import populate_ufc_evidence
+        return await populate_ufc_evidence(
+            db, ev,
+            player_id=player_id,
+            canonical_player_id=canonical_player_id,
+            player_name=player_name,
+            opponent=opponent,
+            home_away=home_away,
+        )
+    # Sports that legitimately do not participate in Stage 2 (CFB /
+    # NHL — no player-prop coverage per capability registry) return
+    # an honest UNAVAILABLE — never a fake PASS (§14).
     ev.data_quality = DataQuality.UNAVAILABLE.value
-    ev.source = "PENDING_STAGE_2"
+    ev.source = "SPORT_NOT_SUPPORTED"
     return ev
 
 

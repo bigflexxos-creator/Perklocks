@@ -23,6 +23,7 @@ becomes 0.
 """
 from __future__ import annotations
 
+from statistics import median as _stats_median
 from typing import Iterable, Optional
 
 from .models import ThresholdResult
@@ -32,6 +33,47 @@ from .models import ThresholdResult
 # by every mainstream US sportsbook.  We use a small epsilon to
 # tolerate floating-point noise on int-valued lines like 2.0.
 PUSH_TOLERANCE = 1e-6
+
+# Minimum sample size before we compute quantiles.  Below this the
+# quantile fields remain None (Phase 5.3 §12 sample-size truth).
+QUANTILE_MIN_SAMPLE = 3
+
+
+def _linear_quantile(sorted_vals: list[float], q: float) -> Optional[float]:
+    """Standard linear interpolation quantile.  Returns ``None`` when
+    the sample is empty."""
+    n = len(sorted_vals)
+    if n == 0:
+        return None
+    if n == 1:
+        return sorted_vals[0]
+    pos = (n - 1) * q
+    lo = int(pos)
+    hi = min(lo + 1, n - 1)
+    frac = pos - lo
+    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * frac
+
+
+def _variance(vals: list[float]) -> Optional[float]:
+    n = len(vals)
+    if n < 2:
+        return None
+    mean = sum(vals) / n
+    return sum((v - mean) ** 2 for v in vals) / (n - 1)
+
+
+def _attach_distribution(result: ThresholdResult) -> None:
+    """Populate q25/median/q75/variance from ``result.actual_values``
+    when the sample is large enough (>= QUANTILE_MIN_SAMPLE).  Never
+    fabricates a value when the sample is too small — the fields
+    remain ``None``."""
+    if len(result.actual_values) < QUANTILE_MIN_SAMPLE:
+        return
+    sorted_vals = sorted(result.actual_values)
+    result.q25 = _linear_quantile(sorted_vals, 0.25)
+    result.median = _stats_median(sorted_vals)
+    result.q75 = _linear_quantile(sorted_vals, 0.75)
+    result.variance = _variance(sorted_vals)
 
 
 def _is_push(actual: float, threshold: float) -> bool:
@@ -46,9 +88,15 @@ def evaluate_threshold(
     actuals: Iterable[Optional[float]],
     threshold: float,
     direction: str = "over",
+    *,
+    quantiles: bool = True,
 ) -> ThresholdResult:
     """Evaluate an iterable of raw per-game actuals against a single
     threshold.  ``None`` values are EXCLUDED — never treated as 0.
+
+    When ``quantiles=True`` (default) the result also carries
+    q25/median/q75/variance derived from the raw actuals — never
+    fabricated when the sample is too small.
 
     Returns a fresh ThresholdResult.
     """
@@ -87,6 +135,8 @@ def evaluate_threshold(
                         if valid_actuals else None,
         actual_values=valid_actuals,
     )
+    if quantiles:
+        _attach_distribution(result)
     return result
 
 
@@ -94,6 +144,8 @@ def evaluate_milestone(
     actuals: Iterable[Optional[float]],
     threshold: float,
     semantics: str = "gte",
+    *,
+    quantiles: bool = True,
 ) -> ThresholdResult:
     """Milestone evaluation (Anytime TD, 1+ Hit, 25+ yards).
 
@@ -125,7 +177,7 @@ def evaluate_milestone(
         else:
             losses += 1
     decisions = wins + losses
-    return ThresholdResult(
+    result = ThresholdResult(
         wins=wins, losses=losses, pushes=0,
         decisions=decisions,
         sample_size=len(valid_actuals),
@@ -134,6 +186,10 @@ def evaluate_milestone(
                         if valid_actuals else None,
         actual_values=valid_actuals,
     )
+    if quantiles:
+        _attach_distribution(result)
+    return result
 
 
-__all__ = ["evaluate_threshold", "evaluate_milestone", "PUSH_TOLERANCE"]
+__all__ = ["evaluate_threshold", "evaluate_milestone",
+             "PUSH_TOLERANCE", "QUANTILE_MIN_SAMPLE"]
