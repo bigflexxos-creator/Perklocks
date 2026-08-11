@@ -4631,7 +4631,43 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
         # each tier, sort by chronological order.
         upcoming.sort(key=lambda x: (_event_priority(x[1], sport), x[0]))
         cap = _PROPS_PER_KEY_CAP.get(key, _DEFAULT_PROPS_PER_KEY)
-        selected = upcoming[:cap]
+        # ─── Block 2B (2026-08) — fair-slate scheduling ────────────
+        # BEFORE:  selected = upcoming[:cap]
+        # DEFECT:  When `upcoming` exceeded `cap`, chronological
+        # ascending order caused late West Coast MLB games (and any
+        # sport's late-slate games) to fall off the tail — even
+        # though they were in-scope.  Operator report:
+        # "late-night MLB games appear on the app but batter/pitcher
+        # props do not populate".
+        # FIX:  Guarantee coverage of TODAY'S betting slate BEFORE
+        # allocating the remainder to preload/tomorrow.  When the
+        # current slate alone exceeds `cap`, keep every current-
+        # slate event and let the cap grow (log an over-cap warning
+        # rather than starve legitimate current games).
+        from services.perklocks_day import (
+            is_in_current_slate, current_slate_day,
+        )
+        _now_utc = datetime.now(timezone.utc)
+        current_slate = [(dt, ev) for (dt, ev) in upcoming
+                          if is_in_current_slate(dt, _now_utc)]
+        rest = [(dt, ev) for (dt, ev) in upcoming
+                 if not is_in_current_slate(dt, _now_utc)]
+
+        if len(current_slate) >= cap:
+            # Current-slate coverage takes precedence over cap: never
+            # drop a legitimate today's game (fair-slate contract).
+            selected = current_slate
+            if len(current_slate) > cap:
+                logger.warning(
+                    "Props fetch %s/%s: current slate has %d events "
+                    "(>%d cap). Extending to fair-slate coverage; "
+                    "no today's game will be starved.",
+                    sport, key, len(current_slate), cap)
+        else:
+            # All of today's games first, then top of the remainder
+            # in the existing priority/chronological order.
+            remainder = cap - len(current_slate)
+            selected = current_slate + rest[:remainder]
         anchor_count = sum(1 for _, ev in selected if _event_priority(ev, sport) == 0)
         elite_count = sum(1 for _, ev in selected if _event_priority(ev, sport) <= 1)
         logger.info(
