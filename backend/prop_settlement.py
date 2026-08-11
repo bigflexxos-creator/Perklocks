@@ -100,20 +100,19 @@ def _names_match(query: str, candidate: str) -> bool:
     return False
 
 
-def _grade(actual: float, line: float, side: str) -> str:
-    """Over/Under grader with push handling on whole-number lines."""
-    if side == "over":
-        if actual > line:
-            return "won"
-        if actual == line:
-            return "push"
-        return "lost"
-    # under
-    if actual < line:
-        return "won"
-    if actual == line:
-        return "push"
-    return "lost"
+def _grade(actual, line: float, side: str) -> str:
+    """Over/Under grader — P0.1 (2026-08-11) delegates to the
+    Universal Settlement Contract so missing/None actuals produce
+    ``unresolved`` (never ``lost``).  Returns the string outcome
+    the settler's write path expects."""
+    from services.universal_settlement_contract import (
+        grade_over_under, RESULT_UNRESOLVED,
+    )
+    r = grade_over_under(actual=actual, line=line, side=side)
+    if r["result"] == RESULT_UNRESOLVED:
+        # Signal to the caller to SKIP the write rather than settle.
+        return "unresolved"
+    return r["result"]
 
 
 _LINE_RE = re.compile(r"(?:Over|Under)\s+(-?\d+(?:\.\d+)?)", re.IGNORECASE)
@@ -949,10 +948,18 @@ async def _settle_group(cx, db, sport: str, date_str: str, batch: list[dict], co
                 h = _mlb_stat_for_player(box, player, "mlb.hits")
                 r_ = _mlb_stat_for_player(box, player, "mlb.runs")
                 b = _mlb_stat_for_player(box, player, "mlb.rbi")
-                if h is None and r_ is None and b is None:
+                # P0.1 (2026-08-11) — the pre-migration path
+                # computed ``(h or 0) + (r_ or 0) + (b or 0)`` which
+                # silently treated missing components as 0.  Under
+                # the Universal Settlement Contract a missing
+                # component becomes ``None`` → skip / unresolved.
+                from services.universal_settlement_contract import (
+                    grade_derived,
+                )
+                value = grade_derived({"hits": h, "runs": r_, "rbi": b})
+                if value is None:
                     counts["skipped"] += 1
                     continue
-                value = (h or 0) + (r_ or 0) + (b or 0)
                 stat_label = "hits+runs+rbi"
             else:
                 value = _mlb_stat_for_player(box, player, stat_key)
@@ -961,6 +968,9 @@ async def _settle_group(cx, db, sport: str, date_str: str, batch: list[dict], co
                 counts["skipped"] += 1
                 continue
             outcome = _grade(value, line[0], line[1])
+            if outcome == "unresolved":
+                counts["skipped"] += 1
+                continue
             await _record(db, p, outcome, {"player": player, "stat": stat_label, "value": value, "line": line[0]}, counts)
         return
 
@@ -1231,6 +1241,9 @@ async def _settle_group(cx, db, sport: str, date_str: str, batch: list[dict], co
             counts["skipped"] += 1
             continue
         outcome = _grade(value, line[0], line[1])
+        if outcome == "unresolved":
+            counts["skipped"] += 1
+            continue
         await _record(db, p, outcome, {"player": player, "stat": stat_key.split(".")[-1], "value": value, "line": line[0]}, counts)
 
 
@@ -1280,6 +1293,33 @@ def _player_from_market(market: str) -> str:
 
 
 async def _record(db, pick: dict, outcome: str, detail: dict, counts: dict):
+    # ── P0.1 (2026-08-11) — Universal Settlement Contract HARD GATE.
+    # Refuse to settle a pick to 'lost' when the authoritative stat
+    # value is missing / zero without positive box-score evidence.
+    # The Seymour failure class (actual=0.0 stored for a pitcher who
+    # DID play) is now IMPOSSIBLE via this gate: value=0 requires
+    # the caller to have PROVEN the participant played and recorded
+    # zero.  Callers that can't prove that must pass value=None →
+    # the gate coerces to 'unresolved'.
+    _value = (detail or {}).get("value")
+    _line = (detail or {}).get("line")
+    if outcome in ("won", "lost") and _value is None:
+        counts.setdefault("unresolved_gated", 0)
+        counts["unresolved_gated"] += 1
+        return  # never write a lost/won without an actual
+    if outcome == "lost" and _value == 0 and _line is not None:
+        # A '0' actual is ONLY acceptable when the authoritative
+        # source explicitly confirmed the participant recorded zero
+        # for THIS market family.  We treat a bare zero from
+        # settlement_detail as suspicious and require an explicit
+        # ``authoritative_zero=True`` flag on the detail row.  Since
+        # no current caller sets that flag, this converts the
+        # Seymour failure class to 'unresolved' automatically.
+        if not (detail or {}).get("authoritative_zero"):
+            counts.setdefault("unresolved_gated_zero", 0)
+            counts["unresolved_gated_zero"] += 1
+            return
+
     # ── Authoritative MLB cross-check (2026-07-13 user mandate: "I want
     # all picks on board to grade correctly across all sports"). Some
     # code paths in `settle_player_props` silently return stat_value=0.0
