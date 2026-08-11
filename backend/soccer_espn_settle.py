@@ -849,6 +849,25 @@ async def settle_soccer_picks_via_espn(db, *, days_back: int = 14,
             summary["no_match" if outcome is None else "skipped"] += 1
             continue
 
+        # P0.2 (2026-08-11) — Universal Settlement Contract hard gate.
+        # For scorer/score-or-assist markets we require a summary to
+        # have been fetched; for game-line markets we require the
+        # match to be full-time (already gated above).  Refuse to
+        # write W/L when the underlying evidence is empty.
+        from services.settler_write_gate import guard_final_write
+        _ev: dict = {}
+        if ("goal scorer" in market_l or "to score or assist" in market_l
+                or "score & assist" in market_l):
+            skey = (slug_matched, str(ev.get("id")))
+            _summ = summary_cache.get(skey)
+            _ev = {"ref": _summ or {}}
+        else:
+            _ev = {"ref": ev}
+        if not guard_final_write(p, outcome, _ev):
+            summary.setdefault("gated_unresolved", 0)
+            summary["gated_unresolved"] += 1
+            continue
+
         units_risked = float(p.get("units_risked") or 1.0)
         odds = int(p.get("odds_at_pick") or p.get("book_odds") or -110)
         if outcome == "won":

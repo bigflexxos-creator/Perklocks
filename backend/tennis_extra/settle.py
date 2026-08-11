@@ -202,6 +202,17 @@ async def settle_tennis_extra(db, *, days_back: int = 3) -> dict:
                 & set(match["winner_norm"].split())
             )
             status = "won" if won_match else "lost"
+            # P0.2 (2026-08-11) — Universal Settlement Contract hard gate.
+            # Tennis retirement / walkover / withdrawal / mid-match
+            # abandonment must not become 'lost' from missing outcome
+            # data.  The match['winner_norm'] presence is our positive
+            # winner signal; if absent, refuse the write.
+            from services.settler_write_gate import guard_final_write
+            if not guard_final_write(
+                p, status,
+                {"winner_signal_present": bool(match.get("winner_norm"))}):
+                unmatched += 1
+                continue
             await db.picks.update_one(
                 {"id": p["id"]},
                 {"$set": {

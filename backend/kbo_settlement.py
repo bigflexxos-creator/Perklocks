@@ -270,6 +270,16 @@ async def settle_kbo_picks(db) -> dict:
         clv = clv_units(pick.get("odds_at_pick"),
                         pick.get("closing_odds") or pick.get("book_odds"))
 
+        # P0.2 (2026-08-11) — Universal Settlement Contract hard gate.
+        # scores_dict must be non-empty for a game-line settle to be
+        # a positive final result — missing scores must not become a
+        # loss from silent zeros.
+        from services.settler_write_gate import guard_final_write
+        if not guard_final_write(pick, outcome, {"ref": scores_dict}):
+            counts.setdefault("gated_unresolved", 0)
+            counts["gated_unresolved"] += 1
+            continue
+
         await db.picks.update_one(
             {"id": pick["id"]},
             {"$set": {
