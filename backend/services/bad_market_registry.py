@@ -42,9 +42,37 @@ async def mark_bad(
     markets: Iterable[str],
     ttl_hours: int = DEFAULT_TTL_HOURS,
     reason: str = "422_unsupported",
+    event_id: Optional[str] = None,
+    scope: str = "event",
 ) -> None:
-    """Persist all (sport_key, market) tuples as bad for `ttl_hours`."""
+    """Persist bad-market records.
+
+    Block 2C (2026-08) — event-specific keying (XCUT-2 fix).
+
+    A single event-level 422 must NEVER suppress an unrelated event's
+    prop family.  ``scope`` controls the write:
+
+      "event"  (default): key = (sport_key, event_id, market)
+                          — used for per-event prop bundle 422s.
+      "global":           key = (sport_key, None,     market)
+                          — used only when the market is proven
+                          unsupported by the sport globally
+                          (e.g. NHL player props).  Do NOT emit
+                          "global" from a single event 422.
+
+    Backwards compatibility: existing rows without ``event_id`` remain
+    valid GLOBAL markers.  Filter reads honor both scopes.
+    """
     if db is None or not sport_key:
+        return
+    if scope not in ("event", "global"):
+        raise ValueError(f"invalid bad-market scope: {scope!r}")
+    if scope == "event" and not event_id:
+        # Never widen an event-level failure into a global marker.
+        logger.warning(
+            "bad_market_registry mark_bad(scope=event) called without "
+            "event_id — refusing to write a global marker for %s %s",
+            sport_key, list(markets))
         return
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(hours=ttl_hours)
@@ -52,19 +80,25 @@ async def mark_bad(
         if not m:
             continue
         try:
+            key_filter = {"sport_key": sport_key, "market": m,
+                           "event_id": event_id if scope == "event" else None}
             await db[COLLECTION].update_one(
-                {"sport_key": sport_key, "market": m},
+                key_filter,
                 {"$set": {
-                    "sport_key": sport_key,
-                    "market": m,
-                    "marked_at": now,
+                    "sport_key":  sport_key,
+                    "market":     m,
+                    "event_id":   event_id if scope == "event" else None,
+                    "scope":      scope,
+                    "marked_at":  now,
                     "expires_at": expires_at,
-                    "reason": reason,
+                    "reason":     reason,
                 }},
                 upsert=True,
             )
-            logger.info("bad_market registered: sport=%s market=%s (%s)",
-                        sport_key, m, reason)
+            logger.info(
+                "bad_market registered: sport=%s market=%s scope=%s "
+                "event=%s (%s)",
+                sport_key, m, scope, event_id, reason)
         except Exception as e:
             logger.warning("bad_market_registry write failed: %s", e)
 
@@ -73,21 +107,55 @@ async def filter_markets(
     db, *,
     sport_key: str,
     markets: Iterable[str],
+    event_id: Optional[str] = None,
 ) -> list[str]:
-    """Return `markets` with any registered-bad ones removed."""
+    """Return `markets` with any registered-bad ones removed.
+
+    Block 2C — event-aware filtering.
+
+    Filters out a market when EITHER:
+      * a GLOBAL marker exists for (sport_key, market), OR
+      * an EVENT marker exists for (sport_key, event_id, market)
+        (only when ``event_id`` is provided by the caller).
+
+    Callers doing a bundled per-event prop fetch MUST pass
+    ``event_id`` so unrelated events are not suppressed.  Callers
+    that don't have an event yet (e.g. slate-level probes) omit
+    ``event_id`` and only receive GLOBAL suppressions.
+    """
     if db is None or not sport_key:
         return list(markets)
     try:
-        bad = set()
+        bad_global: set[str] = set()
+        bad_event:  set[str] = set()
         now = datetime.now(timezone.utc)
+        # GLOBAL bad markets (scope="global" OR legacy rows without
+        # event_id).
         cursor = db[COLLECTION].find(
-            {"sport_key": sport_key, "expires_at": {"$gt": now}},
+            {"sport_key": sport_key,
+              "expires_at": {"$gt": now},
+              "$or": [{"scope": "global"},
+                      {"scope": {"$exists": False}}]},
             {"market": 1, "_id": 0},
         )
         async for doc in cursor:
             m = doc.get("market")
             if m:
-                bad.add(m)
+                bad_global.add(m)
+        # EVENT-scoped bad markets (only if caller supplied event_id).
+        if event_id:
+            cursor = db[COLLECTION].find(
+                {"sport_key": sport_key,
+                  "scope":     "event",
+                  "event_id":  event_id,
+                  "expires_at": {"$gt": now}},
+                {"market": 1, "_id": 0},
+            )
+            async for doc in cursor:
+                m = doc.get("market")
+                if m:
+                    bad_event.add(m)
+        bad = bad_global | bad_event
         if not bad:
             return list(markets)
         return [m for m in markets if m not in bad]
