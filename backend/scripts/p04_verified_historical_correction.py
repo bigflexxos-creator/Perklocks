@@ -207,20 +207,40 @@ class _MLBSource:
                              away_team_id: Optional[int],
                              home_name: Optional[str],
                              away_name: Optional[str]) -> tuple[Optional[int], float]:
+        """Find MLB gamePk.  For doubleheaders / split games, ALWAYS
+        pick the game whose ``gameDate`` is closest to the pick's
+        ``event_time``.  Never take the first match blindly — a
+        double-header on the same day would silently pull the wrong
+        boxscore (spec §7 event identity violation)."""
         dt = _parse_iso(event_time_iso) or datetime.now(timezone.utc)
+        candidates: list[tuple[int, datetime, float]] = []
         for d in _candidate_yyyy_mm_dd(dt):
             games = await self._schedule(client, d)
             for g in games:
                 h = g["teams"]["home"]["team"]
                 a = g["teams"]["away"]["team"]
+                conf = 0.0
                 if home_team_id and away_team_id:
                     if h.get("id") == home_team_id and a.get("id") == away_team_id:
-                        return g.get("gamePk"), 1.0
-                if home_name and away_name:
+                        conf = 1.0
+                if conf == 0.0 and home_name and away_name:
                     if (_names_match(h.get("name"), home_name)
                             and _names_match(a.get("name"), away_name)):
-                        return g.get("gamePk"), 0.9
-        return None, 0.0
+                        conf = 0.9
+                if conf == 0.0:
+                    continue
+                gd = _parse_iso(g.get("gameDate"))
+                if gd is None:
+                    # Cannot temporally disambiguate; keep but with
+                    # a far-away timestamp so it's least-preferred.
+                    gd = datetime.max.replace(tzinfo=timezone.utc)
+                candidates.append((g.get("gamePk"), gd, conf))
+        if not candidates:
+            return None, 0.0
+        # Pick the candidate whose gameDate is closest to event_time.
+        candidates.sort(key=lambda t: abs((t[1] - dt).total_seconds()))
+        best = candidates[0]
+        return best[0], best[2]
 
     async def boxscore(self, client: httpx.AsyncClient, game_pk: int) -> Optional[dict]:
         key = str(game_pk)
@@ -776,18 +796,30 @@ async def _reconcile_mlb(client: httpx.AsyncClient, mlb: _MLBSource,
                 proposed_status = "unresolved"
                 settlement_verified = False
                 reason = "source_conflict_mlb_vs_espn"
+                unresolved_bucket = "source_conflict"
             elif authoritative_actual is None:
                 proposed_result = "unresolved"
                 proposed_status = "unresolved"
                 settlement_verified = False
-                reason = ("primary_source_returned_no_actual"
-                           if game_pk else "event_not_resolved")
+                if not game_pk:
+                    reason = "event_not_resolved"
+                    unresolved_bucket = "event_not_resolvable"
+                elif primary_final is False:
+                    reason = "event_not_final"
+                    unresolved_bucket = "event_not_final"
+                elif primary_conf == 0.0 and fallback_conf == 0.0:
+                    reason = "player_not_found_in_boxscore"
+                    unresolved_bucket = "player_not_in_boxscore"
+                else:
+                    reason = "player_found_component_missing"
+                    unresolved_bucket = "player_found_component_missing"
             else:
                 r, s = _grade_from_actual(authoritative_actual, th, side)
                 proposed_result = r
                 proposed_status = s
                 settlement_verified = (r != RESULT_UNRESOLVED)
                 reason = "graded_from_authoritative_actual"
+                unresolved_bucket = None
 
             proposals.append({
                 "sport": "MLB",
@@ -812,6 +844,7 @@ async def _reconcile_mlb(client: httpx.AsyncClient, mlb: _MLBSource,
                 "authoritative_source": authoritative_source,
                 "source_conflict": source_conflict,
                 "correction_reason": reason,
+                "unresolved_bucket": unresolved_bucket,
                 "published_lock_score": (p.get("published_lock_score")
                                           or p.get("lock_score")),
                 "downstream_dependencies": _downstream_flags(p),
@@ -881,9 +914,18 @@ async def _reconcile_soccer(client: httpx.AsyncClient, fm: _FotMobSource,
                 proposed_result = "unresolved"
                 proposed_status = "unresolved"
                 settlement_verified = False
-                reason = ("fotmob_player_not_in_lineup"
-                           if match else "fotmob_event_not_found")
-                authoritative_source = ("fotmob" if match else "none")
+                if not match:
+                    reason = "fotmob_event_not_found"
+                    unresolved_bucket = "event_not_resolvable"
+                    authoritative_source = "none"
+                elif primary_name is None:
+                    reason = "fotmob_player_not_in_lineup"
+                    unresolved_bucket = "player_not_in_lineup"
+                    authoritative_source = "fotmob"
+                else:
+                    reason = "fotmob_component_missing"
+                    unresolved_bucket = "player_found_component_missing"
+                    authoritative_source = "fotmob"
             else:
                 r, s = _grade_from_actual(actual_val, th, side)
                 proposed_result = r
@@ -891,6 +933,7 @@ async def _reconcile_soccer(client: httpx.AsyncClient, fm: _FotMobSource,
                 settlement_verified = (r != RESULT_UNRESOLVED)
                 reason = "graded_from_authoritative_actual"
                 authoritative_source = "fotmob"
+                unresolved_bucket = None
 
             proposals.append({
                 "sport": "Soccer",
@@ -915,6 +958,7 @@ async def _reconcile_soccer(client: httpx.AsyncClient, fm: _FotMobSource,
                 "authoritative_source": authoritative_source,
                 "source_conflict": source_conflict,
                 "correction_reason": reason,
+                "unresolved_bucket": unresolved_bucket,
                 "published_lock_score": (p.get("published_lock_score")
                                           or p.get("lock_score")),
                 "downstream_dependencies": _downstream_flags(p),
@@ -978,7 +1022,15 @@ async def _reconcile_nba(client: httpx.AsyncClient, espn: _ESPNSource,
             proposed_result = "unresolved"
             proposed_status = "unresolved"
             settlement_verified = False
-            reason = "espn_actual_not_found"
+            if not espn_id:
+                reason = "espn_event_not_resolved"
+                unresolved_bucket = "event_not_resolvable"
+            elif player_conf == 0.0:
+                reason = "espn_player_not_in_boxscore"
+                unresolved_bucket = "player_not_in_boxscore"
+            else:
+                reason = "espn_component_missing"
+                unresolved_bucket = "player_found_component_missing"
             src = "espn" if espn_id else "none"
         else:
             r, s = _grade_from_actual(actual_val, th, side)
@@ -987,6 +1039,7 @@ async def _reconcile_nba(client: httpx.AsyncClient, espn: _ESPNSource,
             settlement_verified = (r != RESULT_UNRESOLVED)
             reason = "graded_from_authoritative_actual"
             src = "espn"
+            unresolved_bucket = None
 
         proposals.append({
             "sport": "NBA",
@@ -1011,6 +1064,7 @@ async def _reconcile_nba(client: httpx.AsyncClient, espn: _ESPNSource,
             "authoritative_source": src,
             "source_conflict": False,
             "correction_reason": reason,
+            "unresolved_bucket": unresolved_bucket,
             "published_lock_score": (p.get("published_lock_score")
                                       or p.get("lock_score")),
             "downstream_dependencies": _downstream_flags(p),
@@ -1041,19 +1095,29 @@ def _aggregate(proposals: list[dict]) -> dict:
     high_conf = defaultdict(lambda: defaultdict(Counter))
     for pr in proposals:
         sport = pr["sport"] or "unknown"
-        # Market bucket — coarse
+        # Market bucket — coarse.  IMPORTANT: check derived markets
+        # BEFORE simple substrings so "Hits + Runs + RBIs" is classified
+        # as its own family and NOT accidentally lumped into "hits".
         m = (pr.get("market") or "").lower()
-        if "hits+runs+rbi" in m or "h+r+rbi" in m:
+        m_norm = re.sub(r"\s+", "", m)
+        if ("hits+runs+rbi" in m_norm or "h+r+rbi" in m_norm):
             mb = "hits+runs+rbi"
-        elif "hits" in m: mb = "hits"
-        elif "rbi" in m:  mb = "rbi"
-        elif "strikeout" in m or "strikeouts" in m: mb = "strikeouts"
-        elif "outs" in m: mb = "outs"
-        elif "goal scorer" in m or "anytime" in m: mb = "anytime_scorer"
-        elif "assist" in m: mb = "assists"
-        elif "point" in m:  mb = "points"
-        elif "rebound" in m: mb = "rebounds"
-        else: mb = "other"
+        elif "total bases" in m:                        mb = "total_bases"
+        elif "home run" in m or " hr " in f" {m} ":     mb = "home_runs"
+        elif "strikeout" in m:                          mb = "strikeouts"
+        elif "pitcher outs" in m or "outs recorded" in m or " outs" in m:
+            mb = "pitcher_outs"
+        elif "rbi" in m and "runs" not in m:            mb = "rbi"
+        elif "runs" in m and "rbi" not in m and "runs+rbi" not in m_norm:
+            mb = "runs"
+        elif "hits" in m:                               mb = "hits"
+        elif "goal scorer" in m or "anytime" in m:      mb = "anytime_scorer"
+        elif "score or assist" in m or "score & assist" in m or "score and assist" in m:
+            mb = "score_or_assist"
+        elif "assist" in m:                             mb = "assists"
+        elif "point" in m:                              mb = "points"
+        elif "rebound" in m:                            mb = "rebounds"
+        else:                                            mb = "other"
 
         by[sport][mb]["scanned"] += 1
 
