@@ -1989,3 +1989,40 @@ async def alt_lines_board(sport: str, limit: int = 20):
             out.append({"pick_id": pick.get("id"),
                           "bundle": bundle.to_dict()})
     return {"sport": sport, "n": len(out), "boards": out}
+
+
+# ═════════════════════════════════════════════════════════════════════
+# PERKLOCKS — Universal Production-Truth Contract (foundation gate)
+# ═════════════════════════════════════════════════════════════════════
+@router.get("/admin/production-truth/proof/{pick_id}")
+async def admin_production_truth_proof(
+    pick_id: str,
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Read-only Consumption Proof for a real pick (Contract §7).
+
+    Returns a proof document showing which applicable production
+    stages actually occurred and which did not.  Never fabricates
+    PASS from module existence — stages that cannot be proven
+    surface as UNKNOWN or FAIL with an explicit drop-reason.
+    """
+    from services.production_truth.consumption_proof import (
+        build_consumption_proof,
+    )
+    return await build_consumption_proof(db, pick_id)
+
+
+@router.get("/admin/production-truth/mode")
+async def admin_production_truth_mode(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Report the current enforcement mode (OBSERVE / ENFORCE) and
+    recent contract violations recorded in-process."""
+    from services.production_truth.enforcement import (
+        current_mode,
+        recent_violations,
+    )
+    return {
+        "mode":               current_mode().value,
+        "recent_violations":  recent_violations(limit=50),
+    }
