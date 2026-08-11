@@ -5057,6 +5057,19 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         # ATD Engine Confidence anchor.
         if new_pick is not None and _atd_evidence_block is not None:
             new_pick["atd_evidence"] = _atd_evidence_block
+        # Block 2D Final Closure §4 (2026-08) — First-TD DORMANT.
+        # ``player_1st_td`` currently reuses the anytime-TD engine,
+        # but positional order-of-scoring is a separate research
+        # problem (P(first-scorer | scored-at-all)).  Until a
+        # scoring-order model exists, First-TD picks are STORED in
+        # shadow (for observability/telemetry) but must not become
+        # user-visible on the Locks board.  Flag them off_board so
+        # the visibility filter suppresses them everywhere.
+        if new_pick is not None and mk == "player_1st_td":
+            new_pick["off_board"] = True
+            new_pick["no_bet"] = True
+            new_pick["publication_gate"] = "first_td_dormant_no_scoring_order_model"
+            new_pick["capability_state"] = "PARTIAL_DORMANT"
         # Block 2D A3 — attach HR intel evidence block for downstream
         # consumers when the payload accumulated one for this player.
         if new_pick is not None and mk in (
