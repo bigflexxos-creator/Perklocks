@@ -102,17 +102,87 @@ except Exception as _lab_mount_err:
 DATA_VERSION = "2026.08.08-canonical-board-cache-v46"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
+# ── Block 2C-cont Issue-6 (2026-08): real deploy-identifier surfacing ─
+# server_started_at is PROCESS-START time and advances on any restart
+# (crash, pod restart, supervisor restart, config reload) — not just
+# real deployments.  If the runtime environment provides an actual
+# deployment identifier (deploy id / build id / git sha / explicit
+# deploy timestamp), we expose it verbatim so the client can reason
+# about real drift.  When no such identifier exists we DO NOT invent
+# one — the frontend banner must not claim "deploy is X days behind"
+# in that case (Block 2C-cont directive).
+def _deploy_metadata_from_env() -> dict:
+    keys = (
+        "DEPLOYMENT_ID", "BUILD_ID",
+        "GIT_COMMIT_SHA", "GIT_SHA", "COMMIT_SHA",
+        "BACKEND_RELEASE_ID", "FRONTEND_RELEASE_ID",
+        "DEPLOY_TIMESTAMP", "DEPLOY_TIME",
+        "RENDER_GIT_COMMIT", "VERCEL_GIT_COMMIT_SHA",
+    )
+    md: dict = {}
+    for k in keys:
+        v = os.environ.get(k)
+        if v:
+            md[k.lower()] = v
+    # Canonicalize the most useful identifiers.
+    canonical = {
+        "deploy_id":
+            md.get("deployment_id") or md.get("build_id"),
+        "git_commit_sha":
+            md.get("git_commit_sha") or md.get("git_sha")
+            or md.get("commit_sha") or md.get("render_git_commit")
+            or md.get("vercel_git_commit_sha"),
+        "backend_release_id":  md.get("backend_release_id"),
+        "frontend_release_id": md.get("frontend_release_id"),
+        "deploy_timestamp":
+            md.get("deploy_timestamp") or md.get("deploy_time"),
+    }
+    canonical = {k: v for k, v in canonical.items() if v}
+    return canonical
+
 
 @api.get("/version")
 async def get_version():
     """Public endpoint — no auth required. Phones poll this on launch and on
     tab focus to detect when the server has shipped new data they should
-    rehydrate."""
-    return {
+    rehydrate.
+
+    Field semantics (Block 2C-cont Issue-6):
+
+      data_version         SOURCE-CODE constant bumped on real backend
+                           releases → RELIABLE deploy signal for the
+                           StaleBuildBanner mismatch check.
+
+      server_started_at    Process-start time.  RUNTIME marker only —
+                           advances on any crash / pod / supervisor
+                           restart, so MUST NOT be treated as deploy
+                           age.  Retained for back-compat.
+
+      runtime_started_at   Explicit alias of server_started_at with
+                           truthful naming.  Prefer this on new
+                           consumers.
+
+      deploy_metadata      Present ONLY when the runtime exposes a
+                           real deploy identifier
+                           (deploy_id / git_commit_sha /
+                           deploy_timestamp / release id).  Absent
+                           when the environment provides nothing.
+    """
+    payload = {
         "data_version": DATA_VERSION,
         "server_time": datetime.now(timezone.utc).isoformat(),
+        # Legacy field — advances on any process restart, NOT only
+        # deploys.  Kept for backwards compatibility with older
+        # frontend bundles; new consumers should use the fields
+        # below.
         "server_started_at": SERVER_STARTED_AT.isoformat(),
+        # Truthfully-named alias.
+        "runtime_started_at": SERVER_STARTED_AT.isoformat(),
     }
+    md = _deploy_metadata_from_env()
+    if md:
+        payload["deploy_metadata"] = md
+    return payload
 
 
 @api.get("/health")

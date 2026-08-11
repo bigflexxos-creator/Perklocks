@@ -210,13 +210,19 @@ def test_budget_blocked_never_masquerades_as_no_market():
 # §19 — StaleBuildBanner deploy-drift fix
 # ═══════════════════════════════════════════════════════════════
 def test_stale_build_banner_uses_server_started_at_not_wall_clock():
-    """The banner must NOT compare bundle age against server wall-clock
-    time.  It must use server_started_at (a deploy-proxy)."""
+    """The banner must not derive 'days behind' from wall-clock time
+    OR from server_started_at.  Block 2C-cont Issue-6 (2026-08):
+    the banner must ONLY cite an age when real deploy metadata
+    (deploy_timestamp / deploy_id / git_commit_sha) is available;
+    otherwise it may only note that a new backend build exists."""
     src = open("/app/frontend/src/components/StaleBuildBanner.tsx").read()
-    assert "server_started_at" in src
-    # And the deploy-drift comment must be present so future readers
-    # know why the change was made.
+    # Deploy-drift fix rationale must be preserved.
     assert "deploy-drift fix" in src.lower() or "deploy drift" in src.lower()
+    # The banner must NOT derive age from server_started_at anymore.
+    # We tolerate the string appearing in the docstring/backwards-compat
+    # comment, but the trigger logic must be data_version-based.
+    assert "data_version" in src
+    assert "deploy_metadata" in src
 
 
 def test_backend_version_endpoint_exposes_server_started_at():
