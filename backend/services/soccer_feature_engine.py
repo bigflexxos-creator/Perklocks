@@ -170,7 +170,18 @@ def build_soccer_ml_factors(ctx: dict, pick_team: str) -> tuple[dict, list[str]]
 
 
 def build_soccer_total_factors(ctx: dict, side: str) -> tuple[dict, list[str]]:
-    """Soccer total factors — combined xG + combined goals form."""
+    """Soccer total factors — combined xG + combined goals + combined
+    goals conceded.
+
+    Block 2D Closure §4 (2026-08) — ``Combined Goals Conceded`` is
+    now wired from the SAME ``factor_goals_conceded`` helper used by
+    the ML path (was hardcoded None).  H2H BTTS trend / Manager
+    Styles / Injuries remain None until upstream data lands —
+    MISSING DATA stays MISSING, never invented.
+
+    Falls to ``PARTIAL`` classification when only 2 of 6 factors fire
+    (below MIN_FACTORS_SOCCER_TOTAL=3) — caller drops the pick.
+    """
     home_team = ctx.get("home_team") or ""
     away_team = ctx.get("away_team") or ""
     hx = factor_xg_diff(ctx, home_team) or 0.60
@@ -183,13 +194,18 @@ def build_soccer_total_factors(ctx: dict, side: str) -> tuple[dict, list[str]]:
     af = factor_goals_scored(ctx, away_team)
     combined_goals = round((hf + af) / 2.0, 3) if (hf is not None and af is not None) else None
 
+    # Combined goals conceded — SAME helper as the ML path.
+    hc = factor_goals_conceded(ctx, home_team)
+    ac = factor_goals_conceded(ctx, away_team)
+    combined_conceded = round((hc + ac) / 2.0, 3) if (hc is not None and ac is not None) else None
+
     factors: dict[str, Optional[float]] = {
-        "Combined xG":            combined_xg,
-        "Combined Goals Scored":  combined_goals,
-        "Combined Goals Conceded": None,  # roadmap
-        "H2H BTTS trend":         None,   # roadmap
-        "Manager Styles":         None,   # from ctx.home_manager_style — future feature
-        "Injuries (both teams)":  None,
+        "Combined xG":              combined_xg,
+        "Combined Goals Scored":    combined_goals,
+        "Combined Goals Conceded":  combined_conceded,
+        "H2H BTTS trend":           None,   # roadmap (data ingest pending)
+        "Manager Styles":           None,   # roadmap
+        "Injuries (both teams)":    None,   # roadmap
     }
     sources = [k for k, v in factors.items() if v is not None]
     return factors, sources

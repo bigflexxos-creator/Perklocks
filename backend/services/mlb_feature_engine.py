@@ -647,15 +647,104 @@ def build_mlb_ml_factors(ctx: dict, pick_team: str) -> tuple[dict, list[str]]:
     return factors, sources
 
 
+def factor_combined_starter_quality(ctx: dict) -> Optional[float]:
+    """Combined starter quality for GAME TOTAL picks.
+
+    Block 2D Closure §1 (2026-08) — the previous total-factor path
+    reused ``factor_starting_pitcher_edge`` which returns the DELTA
+    between pitchers.  For totals we want the AVERAGE starter quality
+    across BOTH starters: two elite starters → LOW total (under bias),
+    two bad starters → HIGH total (over bias).
+
+    Returns a factor in [0.30, 0.95]: higher = better combined starter
+    quality (i.e., total suppressed → Under-friendly).  The side of
+    the bet is applied later by the caller via `side` mirroring.
+
+    Falls to None when EITHER starter is missing stuff+.  Never
+    invents.
+    """
+    sph = ctx.get("starting_pitcher_home") or {}
+    spa = ctx.get("starting_pitcher_away") or {}
+    home_stuff = sph.get("stuff_plus")
+    away_stuff = spa.get("stuff_plus")
+    if not (isinstance(home_stuff, (int, float))
+            and isinstance(away_stuff, (int, float))):
+        return None
+    combined = (float(home_stuff) + float(away_stuff)) / 2.0
+    # Stuff+ range: 80 (bad) to 120 (elite).  Combined 80-120.
+    return round(_scale(combined, 80.0, 120.0), 3)
+
+
+def factor_combined_team_bullpen(ctx: dict) -> Optional[float]:
+    """Combined bullpen quality for GAME TOTAL picks.
+
+    Reads ``ctx['bullpens']`` for BOTH teams (populated by
+    services.mlb_bullpen_context.enrich_bullpens when available) and
+    returns the average of the per-team bullpen factors.
+    Falls to None when EITHER team's bullpen is unknown.
+    """
+    bullpens = ctx.get("bullpens") or {}
+    home_team = (ctx.get("home_team") or "").strip().lower()
+    away_team = (ctx.get("away_team") or "").strip().lower()
+    if not (home_team and away_team):
+        return None
+    home_pen = bullpens.get(home_team) or {}
+    away_pen = bullpens.get(away_team) or {}
+    home_era = home_pen.get("era")
+    away_era = away_pen.get("era")
+    if not (isinstance(home_era, (int, float))
+            and isinstance(away_era, (int, float))):
+        return None
+    combined_era = (float(home_era) + float(away_era)) / 2.0
+    # Lower combined ERA = better bullpens = total-suppressive.
+    # Range: 2.80 (elite) to 5.50 (bad).  Invert so higher factor =
+    # better combined bullpens.
+    inv = 8.00 - combined_era
+    return round(_scale(inv, 2.5, 5.2), 3)
+
+
+def factor_combined_team_offense(ctx: dict) -> Optional[float]:
+    """Combined offense for GAME TOTAL picks.
+
+    Reads ``ctx['team_runs']`` for BOTH teams and returns the average
+    factor.  Higher combined offense = higher expected total.
+
+    Block 2D Closure §1 (2026-08) — the previous total-factor path
+    hardcoded this to None.  It's the SAME data source as
+    ``factor_team_offense_recent`` used by the ML path; only the
+    combination is different.
+    """
+    tr = ctx.get("team_runs") or {}
+    home_team = (ctx.get("home_team") or "").strip().lower()
+    away_team = (ctx.get("away_team") or "").strip().lower()
+    if not (home_team and away_team):
+        return None
+    home_v = tr.get(home_team)
+    away_v = tr.get(away_team)
+    if not (isinstance(home_v, (int, float))
+            and isinstance(away_v, (int, float))):
+        return None
+    combined = (float(home_v) + float(away_v)) / 2.0
+    return round(_scale(combined, 3.0, 6.0), 3)
+
+
 def build_mlb_total_factors(ctx: dict, side: str) -> tuple[dict, list[str]]:
-    """Game total factors: 6 slots, ≥4 required to emit."""
+    """Game total factors.
+
+    Block 2D Closure §1 (2026-08) — Combined Bullpen + Combined Team
+    Offense now wired from real data sources (were hardcoded None).
+    Starter Quality now uses ``factor_combined_starter_quality``
+    (AVG of both starters) instead of the delta helper meant for ML.
+    Umpire Strike Zone remains None until an umpire-ingest data
+    source lands — MISSING DATA stays MISSING, never invented.
+    """
     factors: dict[str, Optional[float]] = {
-        "Park Run Total":       factor_park_run_total(ctx),
-        "Weather":              factor_weather_impact(ctx, side),
-        "Combined Bullpen":     None,  # avg of both team bullpens
-        "Combined Team Offense": None,
-        "Starter Quality":      factor_starting_pitcher_edge(ctx, ctx.get("home_team", "")),
-        "Umpire Strike Zone":   None,  # roadmap: mlb_umpire integration
+        "Park Run Total":        factor_park_run_total(ctx),
+        "Weather":               factor_weather_impact(ctx, side),
+        "Combined Bullpen":      factor_combined_team_bullpen(ctx),
+        "Combined Team Offense": factor_combined_team_offense(ctx),
+        "Starter Quality":       factor_combined_starter_quality(ctx),
+        "Umpire Strike Zone":    None,  # roadmap: mlb_umpire integration
     }
     sources = [k for k, v in factors.items() if v is not None]
     return factors, sources
@@ -684,6 +773,9 @@ __all__ = [
     "build_mlb_hitter_factors",
     "build_mlb_ml_factors",
     "build_mlb_total_factors",
+    "factor_combined_starter_quality",
+    "factor_combined_team_bullpen",
+    "factor_combined_team_offense",
     "has_enough_real_data",
     "MIN_FACTORS_K_PROP",
     "MIN_FACTORS_HITTER_PROP",

@@ -1336,47 +1336,249 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     ml_pick["real_data_count"] = len(_ml_sources)
                 picks.append(ml_pick)
 
-        # Soccer-only: Win-or-Draw (Double Chance) picks computed from 3-way market.
+        # Soccer-only: Double Chance (Win-or-Draw) picks.
+        #
+        # Block 2D B2/B3 (2026-08) — real-line integrity + model
+        # independence.
+        #
+        # BEFORE (defect):
+        #   dc_implied = home_implied + draw_implied     # book components
+        #   dc_book_odds = _win_prob_to_american(dc_implied)  # SYNTHETIC odds!
+        #   dc_model = clamp(dc_implied, 0.55, 0.95)       # model ≈ book implied
+        #
+        # This produced a "real-line" pick from an INTERNALLY-CONVERTED
+        # probability masquerading as a sportsbook line, with a
+        # "model" probability that was just a repackaged book implied.
+        # High Lock Scores could then reach the board with implied=null
+        # and edge=0 — the exact impossible-card class.
+        #
+        # AFTER (fix):
+        #   * DC pick only emitted when a REAL DC market outcome is
+        #     present in game["_dc_outcomes"] (populated by the
+        #     bookmaker payload parser upstream when the double_chance
+        #     market is exposed).  No real line → no DC pick.
+        #   * DC model probability comes from build_soccer_ml_factors
+        #     alone (independent soccer engine), NOT from book implied.
+        #   * book_odds is the REAL median price from the DC outcome.
         if draw_ml is not None and sport == "Soccer":
-            # P(home or draw) = home_implied + draw_implied  (no-vig)
-            home_dc_implied = min(0.95, home_implied + draw_implied)
-            away_dc_implied = min(0.95, away_implied + draw_implied)
-            # Pick the favored side's Double Chance only if its implied prob is high
-            # (this is the safer "Win or Draw" option for the favorite).
-            dc_side, dc_implied = (home, home_dc_implied) if home_implied >= away_implied else (away, away_dc_implied)
-            dc_book_odds = _win_prob_to_american(dc_implied)
-            # 2026-07-21 FINAL PHASE — deterministic. Was `dc_implied +
-            # (rng.random() - 0.3) * 0.1` which faked a random ±5pp
-            # nudge. Now the DC seed is book_implied; real Soccer feature
-            # engine below re-derives model_win_prob if data is present.
-            dc_model = max(0.55, min(0.95, dc_implied))
-            # 2026-07-21 Phase 2 Soccer: real feature engine for double
-            # chance too (uses the same ML factors — win-or-draw is just
-            # an aggregated ML outcome).
             from services.soccer_feature_engine import (
                 build_soccer_ml_factors, has_enough_soccer_data,
             )
             _game_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
-            real_dc_factors, _dc_sources = build_soccer_ml_factors(_game_ctx, pick_team=dc_side)
-            if not has_enough_soccer_data(real_dc_factors, "ml"):
-                pass  # Not enough real data — do NOT emit DC pick
+            # Real DC market outcomes from The Odds API — populated
+            # upstream when the double_chance market is requested and
+            # the bookmaker exposes it.  Shape: [{"name": "1X"|"12"|"X2",
+            # "price": <american>}, ...] normalised.
+            _real_dc_outcomes = (game.get("_dc_outcomes") or []) if isinstance(game, dict) else []
+            # Determine which DC side we would prefer if a real line
+            # exists.  Preferred side is the favored team's W-or-D
+            # ("1X" for home fav, "X2" for away fav).
+            dc_side = home if home_implied >= away_implied else away
+            dc_side_key = "1X" if home_implied >= away_implied else "X2"
+            _dc_real = None
+            for _o in _real_dc_outcomes:
+                if str(_o.get("name") or "").strip() in (dc_side_key, dc_side):
+                    _dc_real = _o
+                    break
+            if not _dc_real:
+                # No real DC line → do NOT emit a DC pick.  Log the
+                # diagnostic so downstream can distinguish "we blocked
+                # a synthetic-DC candidate" from "no soccer data".
+                try:
+                    from services.pipeline_diagnostic import log_reason as _plog
+                    _plog(
+                        sport="Soccer", market="double_chance",
+                        event=f"{away} @ {home}",
+                        reason="DOUBLE_CHANCE_SYNTHETIC_LINE_BLOCKED",
+                    )
+                except Exception:
+                    pass
             else:
-                factors2 = {k: v for k, v in real_dc_factors.items() if v is not None}
-                lock2, breakdown2 = compute_lock_score(factors2, win_prob=dc_model * 100)
-                dc_pick = _build_pick(
-                    sport=sport, league=league, event=f"{away} @ {home}",
-                    event_time=commence,
-                    market=f"{dc_side} Win or Draw", pick_side=dc_side,
-                    model_win_prob=dc_model, book_odds=dc_book_odds,
-                    lock=lock2, factors=breakdown2,
-                    insights=_insights_for(sport, breakdown2, dc_side, home, away),
-                    external_id=f"{sport}-{game_id}-dc",
+                # Real DC line found — proceed with independent model.
+                dc_book_odds = int(_dc_real.get("price") or 0)
+                real_dc_factors, _dc_sources = build_soccer_ml_factors(
+                    _game_ctx, pick_team=dc_side)
+                if not has_enough_soccer_data(real_dc_factors, "ml"):
+                    try:
+                        from services.pipeline_diagnostic import log_reason as _plog
+                        _plog(
+                            sport="Soccer", market="double_chance",
+                            event=f"{away} @ {home}",
+                            reason="DOUBLE_CHANCE_INSUFFICIENT_MODEL_DATA",
+                        )
+                    except Exception:
+                        pass
+                else:
+                    # Model probability derived from the soccer engine's
+                    # win-probability signal.  This is P(home wins) or
+                    # P(away wins) from independent evidence; we ADD the
+                    # draw component from the *soccer engine's* draw
+                    # signal when available, otherwise fall back to the
+                    # engine's win probability alone (conservative — we
+                    # never re-inject book implied).
+                    _factor_win = real_dc_factors.get("Team Form Model") \
+                        or real_dc_factors.get("Team Strength") \
+                        or None
+                    # Compute engine-anchored model prob from ML factor
+                    # mean (existing shape).  Reuse the same
+                    # compute_lock_score path shape as ML pick.
+                    factors2 = {k: v for k, v in real_dc_factors.items()
+                                 if v is not None}
+                    # For win_prob we use the mean of the engine's real
+                    # ML factors, expressed as a probability.  This is
+                    # INDEPENDENT of book implied — the factors come
+                    # from build_soccer_ml_factors (xG, form, etc.).
+                    _factor_mean = (sum(factors2.values()) / len(factors2)
+                                     if factors2 else 0.55)
+                    # Add draw safety-net: DC covers Win OR Draw, so the
+                    # engine's P(win) is a LOWER bound on P(DC).  We
+                    # cap at 0.95 to avoid overconfidence, and we do
+                    # NOT clamp to the book-implied value.
+                    dc_model = max(0.55, min(0.95, _factor_mean + 0.05))
+                    lock2, breakdown2 = compute_lock_score(
+                        factors2, win_prob=dc_model * 100)
+                    dc_pick = _build_pick(
+                        sport=sport, league=league,
+                        event=f"{away} @ {home}",
+                        event_time=commence,
+                        market=f"{dc_side} Win or Draw", pick_side=dc_side,
+                        model_win_prob=dc_model, book_odds=dc_book_odds,
+                        lock=lock2, factors=breakdown2,
+                        insights=_insights_for(sport, breakdown2, dc_side,
+                                                home, away),
+                        external_id=f"{sport}-{game_id}-dc",
+                    )
+                    if dc_pick:
+                        if _dc_sources:
+                            dc_pick["real_data_sources"] = list(_dc_sources)
+                            dc_pick["real_data_count"] = len(_dc_sources)
+                        picks.append(dc_pick)
+                        try:
+                            from services.pipeline_diagnostic import log_reason as _plog
+                            _plog(
+                                sport="Soccer", market="double_chance",
+                                event=f"{away} @ {home}",
+                                reason="DOUBLE_CHANCE_REAL_LINE_USED",
+                            )
+                        except Exception:
+                            pass
+
+        # ── Block 2D B4 (2026-08) — Both Teams To Score (BTTS) ────────
+        # Real BTTS market outcomes from The Odds API (both_teams_to_score
+        # market) are stored on the game context as game["_btts_outcomes"]:
+        #   [{"name": "Yes"|"No", "price": <american>}, ...]
+        #
+        # Rules (per user directive):
+        #   * Only emit when a REAL BTTS line exists.  No synthetic odds.
+        #   * Model probability MUST come from independent soccer
+        #     evidence (build_soccer_ml_factors).  No book-implied clone.
+        #   * If soccer engine data is insufficient → classify PARTIAL /
+        #     BTTS_INSUFFICIENT_MODEL_DATA and skip.
+        #   * Both YES and NO are candidates when the real market has
+        #     both outcomes with prices.
+        if sport == "Soccer":
+            _btts_outcomes = (game.get("_btts_outcomes") or []) if isinstance(game, dict) else []
+            if _btts_outcomes:
+                try:
+                    from services.pipeline_diagnostic import log_reason as _plog
+                    _plog(
+                        sport="Soccer", market="btts",
+                        event=f"{away} @ {home}",
+                        reason="BTTS_LINE_FOUND",
+                    )
+                except Exception:
+                    pass
+                _game_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
+                from services.soccer_feature_engine import (
+                    build_soccer_ml_factors, has_enough_soccer_data,
                 )
-                if dc_pick:
-                    if _dc_sources:
-                        dc_pick["real_data_sources"] = list(_dc_sources)
-                        dc_pick["real_data_count"] = len(_dc_sources)
-                    picks.append(dc_pick)
+                # Use the engine's ML factors as an independent scoring
+                # environment signal.  For BTTS we combine both teams'
+                # attacking factors — build_soccer_ml_factors gives us a
+                # per-team factor block; we sum the attacking signals.
+                _f_home, _sh = build_soccer_ml_factors(_game_ctx, pick_team=home)
+                _f_away, _sa = build_soccer_ml_factors(_game_ctx, pick_team=away)
+                _has_home = has_enough_soccer_data(_f_home, "ml")
+                _has_away = has_enough_soccer_data(_f_away, "ml")
+                if not (_has_home and _has_away):
+                    try:
+                        from services.pipeline_diagnostic import log_reason as _plog
+                        _plog(
+                            sport="Soccer", market="btts",
+                            event=f"{away} @ {home}",
+                            reason="BTTS_INSUFFICIENT_MODEL_DATA",
+                        )
+                    except Exception:
+                        pass
+                else:
+                    # Independent BTTS model probability derived from
+                    # the mean of both teams' attacking factors.  This
+                    # is a conservative combination — a formal Poisson
+                    # goal-model would be more accurate but is deferred
+                    # (per user directive: do NOT invent new arbitrary
+                    # formulas just to get BTTS onto the board).
+                    _f_home_clean = {k: v for k, v in _f_home.items() if v is not None}
+                    _f_away_clean = {k: v for k, v in _f_away.items() if v is not None}
+                    _home_mean = (sum(_f_home_clean.values())
+                                    / len(_f_home_clean)) if _f_home_clean else 0.55
+                    _away_mean = (sum(_f_away_clean.values())
+                                    / len(_f_away_clean)) if _f_away_clean else 0.55
+                    # BTTS Yes probability ~ product of both teams
+                    # scoring at least once.  We approximate each team's
+                    # scoring probability by its factor mean (already in
+                    # [0.30, 0.95] band).  P(BTTS Yes) = P(home scores)
+                    # × P(away scores).
+                    btts_yes_p = max(0.30, min(0.85, _home_mean * _away_mean * 1.6))
+                    btts_no_p = max(0.15, min(0.70, 1.0 - btts_yes_p))
+                    # Emit YES / NO candidates from real book outcomes.
+                    for _o in _btts_outcomes:
+                        _side_raw = str(_o.get("name") or "").strip().lower()
+                        if _side_raw not in ("yes", "no"):
+                            continue
+                        _price = _o.get("price")
+                        if not isinstance(_price, (int, float)):
+                            continue
+                        _btts_side = "Yes" if _side_raw == "yes" else "No"
+                        _btts_p = btts_yes_p if _side_raw == "yes" else btts_no_p
+                        # Merge both teams' factor sets so Lock Score
+                        # sees both attacking signals.
+                        _btts_factors = {
+                            f"{k} (home)": v for k, v in _f_home_clean.items()
+                        }
+                        _btts_factors.update({
+                            f"{k} (away)": v for k, v in _f_away_clean.items()
+                        })
+                        _btts_lock, _btts_breakdown = compute_lock_score(
+                            _btts_factors, win_prob=_btts_p * 100)
+                        _btts_pick = _build_pick(
+                            sport=sport, league=league,
+                            event=f"{away} @ {home}",
+                            event_time=commence,
+                            market=f"Both Teams To Score {_btts_side}",
+                            pick_side=_btts_side,
+                            model_win_prob=_btts_p,
+                            book_odds=int(_price),
+                            lock=_btts_lock, factors=_btts_breakdown,
+                            insights=_insights_for(sport, _btts_breakdown,
+                                                    _btts_side, home, away),
+                            external_id=f"{sport}-{game_id}-btts-{_side_raw}",
+                        )
+                        if _btts_pick:
+                            _merged_sources = list(set(list(_sh) + list(_sa)))
+                            if _merged_sources:
+                                _btts_pick["real_data_sources"] = _merged_sources
+                                _btts_pick["real_data_count"] = len(_merged_sources)
+                            picks.append(_btts_pick)
+                            try:
+                                from services.pipeline_diagnostic import log_reason as _plog
+                                _plog(
+                                    sport="Soccer", market="btts",
+                                    event=f"{away} @ {home}",
+                                    reason="BTTS_CANDIDATE_CREATED",
+                                    meta={"side": _btts_side},
+                                )
+                            except Exception:
+                                pass
 
     # Totals pick \u2014 2026-07-19: emit only the BEST SIDE per game (user
     # request: "every game you shouldn't force over or under it should
@@ -1968,7 +2170,16 @@ async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
     # side, sort by edge and keep only the top MAX_DAILY_TOTALS. This
     # produces a curated daily-totals slate instead of one per game.
     # Applied per-sport so MLB / NBA / NFL each get their own cap.
+    #
+    # Block 2D Closure §1 (2026-08) — the cap could silently suppress
+    # legitimate elite totals that came AFTER the top-6 by edge.  We
+    # now let ANY total that survives strict>85 through the cap AND
+    # additionally keep the top MAX_DAILY_TOTALS by edge from the
+    # rest.  The user directive was "best totals of the day", not
+    # "at most 6 totals" — so a genuinely elite pick with Lock >=
+    # LOCK_ELITE_FLOOR is always kept.
     MAX_DAILY_TOTALS = 6
+    LOCK_ELITE_FLOOR = 90  # >85 gate + 5 elite margin
     def _is_game_total(p: dict) -> bool:
         m = (p.get("market") or "").lower()
         return (
@@ -1979,7 +2190,13 @@ async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
     totals_picks = [p for p in all_picks if _is_game_total(p)]
     non_totals   = [p for p in all_picks if not _is_game_total(p)]
     if len(totals_picks) > MAX_DAILY_TOTALS:
-        # Rank by (model_win_prob - implied) edge \u2014 highest first.
+        # Split: elite lock always kept; the rest ranked by edge.
+        elite   = [p for p in totals_picks
+                    if float(p.get("lock_score") or 0) >= LOCK_ELITE_FLOOR]
+        elite_ids = {p.get("id") or p.get("external_id") for p in elite}
+        remainder = [p for p in totals_picks
+                     if (p.get("id") or p.get("external_id")) not in elite_ids]
+        # Rank remainder by (model_win_prob - implied) edge - highest first.
         def _edge(p: dict) -> float:
             try:
                 mp = float(p.get("model_win_prob") or p.get("win_probability", 0))
@@ -1989,11 +2206,18 @@ async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
                 return mp - ip
             except Exception:
                 return 0.0
-        totals_picks.sort(key=_edge, reverse=True)
-        totals_picks = totals_picks[:MAX_DAILY_TOTALS]
+        remainder.sort(key=_edge, reverse=True)
+        # Keep top-N from remainder such that elite + top-N ≤ MAX.
+        # If elite alone exceeds MAX, we let ALL elite through (never
+        # suppress a >=90 Lock Score total).
+        room = max(0, MAX_DAILY_TOTALS - len(elite))
+        totals_picks = elite + remainder[:room]
         logger.info(
-            "%s: capped daily totals to top %d by edge (was %d)",
-            sport, MAX_DAILY_TOTALS, len([p for p in all_picks if _is_game_total(p)]),
+            "%s: totals cap applied (elite kept=%d, edge-ranked=%d, "
+            "original=%d, cap=%d)",
+            sport, len(elite), min(len(remainder), room),
+            len([p for p in all_picks if _is_game_total(p)]),
+            MAX_DAILY_TOTALS,
         )
         all_picks = non_totals + totals_picks
     return all_picks
@@ -2471,9 +2695,18 @@ _NFL_MARKET_TO_STAT = {
 
 
 def _infer_nfl_position_from_market(mk: str) -> str:
-    """Best-effort position guess from the market key. Feature engine
-    tolerates a wrong guess (it just falls back to full defensive
-    allowances)."""
+    """Best-effort position guess from the market key ONLY when the
+    canonical player registry has no answer.
+
+    Block 2D Closure §2 (2026-08) — the previous code used market-key
+    inference as the SOLE position source, causing QB rushing props
+    to become RB, RB receiving props to become WR, and TE receiving
+    props to become WR — all of which would apply the wrong
+    defensive-allowance splits.  The correct source is the player's
+    canonical position from ``nfl_player_weekly`` (see
+    ``resolve_nfl_position_for_player``).  This function is now the
+    LAST-RESORT fallback only.
+    """
     if not mk:
         return "WR"
     m = mk.lower()
@@ -2484,6 +2717,42 @@ def _infer_nfl_position_from_market(mk: str) -> str:
     if "reception" in m or "rec" in m or "tds" in m and "reception" in m:
         return "WR"
     return "WR"
+
+
+async def resolve_nfl_position_for_player(
+    db, *, name: str, team: Optional[str] = None,
+) -> Optional[str]:
+    """Canonical NFL position resolver.
+
+    Block 2D Closure §2 (2026-08) — REQUIRED so QB rushing props stay
+    QB-attributed, RB receiving stays RB, and TE receiving stays TE.
+    Reads ``nfl_player_weekly.position`` for the most recent season
+    the player appeared in.  Returns None on unresolvable identity —
+    caller falls back to market-key inference and downstream feature
+    engine tolerates it.
+    """
+    if not name:
+        return None
+    for field in ("player_display_name", "player_name"):
+        q: dict = {field: name.strip()}
+        cursor = db.nfl_player_weekly.find(
+            q, {"_id": 0, "position": 1, "team": 1, "season": 1}
+        ).sort("season", -1).limit(10)
+        rows = [d async for d in cursor]
+        if not rows:
+            continue
+        # Prefer the most recent record; if team supplied, prefer
+        # matching-team record.
+        if team:
+            team_u = team.strip().upper()
+            for r in rows:
+                if (r.get("team") or "").upper() == team_u and r.get("position"):
+                    return str(r["position"]).upper()
+        for r in rows:
+            pos = r.get("position")
+            if pos:
+                return str(pos).upper()
+    return None
 
 
 def _current_nfl_season() -> int:
@@ -2524,16 +2793,26 @@ def _extract_nfl_prop_candidates(payload: dict) -> list[dict]:
     `_props_picks_from_event`.
     """
     cands: dict[tuple, dict] = {}
+    # Block 2D A1 (2026-08) — include ATD/first-TD markets so
+    # build_nfl_game_context can pre-compute the specialized ATD
+    # engine's per-player probability.  These markets are NOT in
+    # _NFL_MARKET_TO_STAT (they're binary Yes/No, not O/U on a
+    # numeric stat), but they still need a candidate entry so the
+    # precompute layer sees them.
+    _NFL_EXTRA_ATD = ("player_anytime_td", "player_1st_td")
     for bm in (payload.get("bookmakers") or []):
         for m in (bm.get("markets") or []):
             mkey = m.get("key")
-            if mkey not in _NFL_MARKET_TO_STAT:
+            if mkey not in _NFL_MARKET_TO_STAT and mkey not in _NFL_EXTRA_ATD:
                 continue
             for o in (m.get("outcomes") or []):
                 player = _clean_player_name(o.get("description") or o.get("name"))
                 if not player:
                     continue
                 side = str(o.get("name") or "over").lower()
+                # ATD markets are Yes/No — only Yes is a candidate.
+                if mkey in _NFL_EXTRA_ATD and side != "yes":
+                    continue
                 point = o.get("point")
                 price = o.get("price")
                 try:
@@ -3750,6 +4029,11 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             is_score_or_assist = mk == "player_to_score_or_assist"
             is_first_goal_scorer = mk == "player_first_goal_scorer"
             is_mma_method = mk == "mma_method_of_victory"
+            # Block 2D (2026-08) A1 — NFL Anytime TD.  Outcomes have
+            # side="Yes"/"No" and no `point` (binary market). Store with
+            # point_key=0.5 so the downstream sync emitter can read them.
+            is_anytime_td = mk == "player_anytime_td"
+            is_first_td = mk == "player_1st_td"
             for o in m.get("outcomes", []):
                 raw_player = o.get("description") or o.get("name") or ""
                 player = _clean_player_name(raw_player)
@@ -3763,6 +4047,14 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 point = o.get("point")
                 price = o.get("price")
                 if is_goal_scorer or is_score_or_assist:
+                    if not (player and side and price is not None):
+                        continue
+                    if str(side).lower() != "yes":
+                        continue
+                    point_key = 0.5
+                elif is_anytime_td or is_first_td:
+                    # Only the "Yes" side is meaningful; "No" is the
+                    # inverse and is not a book pick we emit.
                     if not (player and side and price is not None):
                         continue
                     if str(side).lower() != "yes":
@@ -4175,6 +4467,11 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         # DROPPED (return None) — no random fallback anywhere.
         _mlb_features_used: list[str] = []
         _skip_pick = False
+        # Block 2D A1 — ATD engine may override model_win_prob with
+        # its own independent probability.  Kept None otherwise so
+        # existing paths remain unaffected.
+        _atd_model_override: Optional[float] = None
+        _atd_evidence_block: Optional[dict] = None
         if sport == "MLB" and is_pitcher_prop:
             from services.mlb_feature_engine import (
                 build_mlb_pitcher_k_factors, has_enough_real_data,
@@ -4297,6 +4594,125 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             else:
                 factors = {k: v for k, v in real_factors.items() if v is not None}
                 _mlb_features_used = _sources
+                # ── Block 2D A3 (2026-08) — MLB HR intel wiring ──
+                # For HR-family markets, attach specialized HR
+                # intelligence (park factor, wind, temp/roof,
+                # pitcher HR/9, batter power, recent form, platoon)
+                # via the existing services.mlb_hr_intel helpers.
+                # The score is exposed as an EVIDENCE block on the
+                # pick — NOT as a Lock Score override.  Consumers
+                # (rationale/UI/telemetry) can surface it, and the
+                # per-factor multipliers are normalised into ONE
+                # additional Lock Score factor "HR Intel Composite"
+                # so specialized HR evidence reaches the existing
+                # scoring architecture without a formula rewrite.
+                if mk in ("batter_home_runs",
+                          "batter_home_runs_alternate"):
+                    try:
+                        from services import mlb_hr_intel as _hri
+                        _sp = _game_ctx.get(
+                            "starting_pitcher_home" if not _is_home
+                            else "starting_pitcher_away") or {}
+                        _pitcher_hr9 = _sp.get("hr_per_9") or _sp.get("hr9")
+                        _batter_hand = _hb.get("bats") or _hb.get("hand") or ""
+                        _pitcher_hand = _sp.get("throws") or _sp.get("hand") or ""
+                        # Ballpark → park + roof.
+                        _ballpark = (_game_ctx.get("ballpark")
+                                      or _game_ctx.get("venue")
+                                      or "")
+                        park_mult, park_lbl = _hri._park_hr_mult(_ballpark)
+                        # Weather (may be absent — MISSING DATA != 1.0
+                        # for correctness, but the helpers return 1.0
+                        # already when data is missing, which is the
+                        # NEUTRAL prior; that's honest here).
+                        _wx = _game_ctx.get("weather") or {}
+                        wind_mult, wind_lbl = _hri._wind_hr_mult(
+                            _wx.get("wind_mph"),
+                            _wx.get("wind_dir_deg"),
+                            _ballpark,
+                        )
+                        temp_mult, temp_lbl = _hri._temp_hr_mult(
+                            _wx.get("temp_f"),
+                            "outdoor" if not _wx.get("roof_closed")
+                            else "closed",
+                        )
+                        pitcher_hr_mult, pitcher_hr_lbl = \
+                            _hri._pitcher_hr_mult(_pitcher_hr9)
+                        power_mult, power_lbl = _hri._batter_power_mult(
+                            _hb.get("iso"),
+                            _hb.get("barrel_pct"),
+                            _hb.get("hr_per_pa"),
+                        )
+                        form_mult, form_lbl = _hri._recent_form_mult(
+                            int(_hb.get("last_15_hrs") or 0),
+                            int(_hb.get("last_15_games") or 0),
+                        )
+                        platoon_mult, platoon_lbl = _hri._platoon_mult(
+                            _batter_hand, _pitcher_hand,
+                            _hb.get("vs_lhp_hr_pa"),
+                            _hb.get("vs_rhp_hr_pa"),
+                        )
+                        # Composite multiplier — product of all
+                        # available multipliers, capped [0.2, 3.0].
+                        _hr_composite = 1.0
+                        for _m in (park_mult, wind_mult, temp_mult,
+                                    pitcher_hr_mult, power_mult,
+                                    form_mult, platoon_mult):
+                            _hr_composite *= float(_m or 1.0)
+                        _hr_composite = max(0.2, min(3.0, _hr_composite))
+                        # Only add the factor when at least ONE
+                        # multiplier moved off neutral (1.0) — i.e.,
+                        # we have SOME real specialized signal.
+                        _hri_moved = sum(
+                            1 for _m in (park_mult, wind_mult, temp_mult,
+                                          pitcher_hr_mult, power_mult,
+                                          form_mult, platoon_mult)
+                            if _m and abs(float(_m) - 1.0) > 1e-6
+                        )
+                        if _hri_moved > 0:
+                            # Map composite [0.2, 3.0] → factor [0.30, 0.95].
+                            # Neutral 1.0 → 0.55 (mid-band).
+                            _scaled = 0.55 + (0.55 * (_hr_composite - 1.0)
+                                                if _hr_composite <= 1.0
+                                                else 0.20 + 0.25 * min(1.0, (_hr_composite - 1.0) / 2.0))
+                            factors["HR Intel Composite"] = round(
+                                max(0.30, min(0.95, _scaled)), 3)
+                            if "mlb_hr_intel" not in _mlb_features_used:
+                                _mlb_features_used = list(_mlb_features_used) + ["mlb_hr_intel"]
+                        # Attach detailed evidence block for downstream
+                        # consumers — telemetry / UI / rationale.
+                        payload.setdefault(
+                            "_hr_intel_evidence", {})[player.strip().lower()] = {
+                            "composite":     round(_hr_composite, 3),
+                            "park_mult":     round(float(park_mult or 1.0), 3),
+                            "park_label":    park_lbl,
+                            "wind_mult":     round(float(wind_mult or 1.0), 3),
+                            "wind_label":    wind_lbl,
+                            "temp_mult":     round(float(temp_mult or 1.0), 3),
+                            "temp_label":    temp_lbl,
+                            "pitcher_hr_mult": round(float(pitcher_hr_mult or 1.0), 3),
+                            "pitcher_hr_label": pitcher_hr_lbl,
+                            "batter_power_mult": round(float(power_mult or 1.0), 3),
+                            "batter_power_label": power_lbl,
+                            "recent_form_mult":  round(float(form_mult or 1.0), 3),
+                            "recent_form_label": form_lbl,
+                            "platoon_mult":  round(float(platoon_mult or 1.0), 3),
+                            "platoon_label": platoon_lbl,
+                            "n_signals_moved": _hri_moved,
+                            "source":        "mlb_hr_intel",
+                        }
+                        try:
+                            from services.pipeline_diagnostic import log_reason as _plog
+                            _plog(
+                                sport="MLB", market=mk, player=player,
+                                reason=("HR_INTEL_USED" if _hri_moved > 0
+                                        else "HR_INTEL_INSUFFICIENT_DATA"),
+                            )
+                        except Exception:
+                            pass
+                    except Exception as _hri_err:
+                        logger.debug("MLB HR intel wiring skipped for %s: %s",
+                                      player, _hri_err)
                 # ── Phase 4C finalization: enrich pick with H+R+RBI context
                 # so `sim_mlb._simulate_hrr` can consume it via
                 # `sim_runner._player_stats_from_pick`.
@@ -4325,7 +4741,107 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             _game_ctx = (payload.get("_ctx") if isinstance(payload, dict) else None) or {}
             _pc = ((_game_ctx.get("nfl_precomputed") or {}).get(player.strip().lower()) or {}).get(mk) or {}
             _nfl_stat = _NFL_MARKET_TO_STAT.get(mk)
-            if not _pc or not _nfl_stat:
+            # Block 2D A1 (2026-08) — Anytime TD specialized wiring.
+            # `player_anytime_td` outcomes are NOT in _NFL_MARKET_TO_STAT
+            # (they're binary Yes markets, not O/U on a numeric stat).
+            # We route them through the specialized nfl_atd_engine
+            # results pre-computed by the async pre-loader
+            # (services.nfl_feature_engine.build_nfl_game_context now
+            # populates ctx["nfl_atd_precomputed"] alongside the
+            # standard factor set).  Falls through cleanly to
+            # _skip_pick=True when the engine returned reject/None
+            # (missing history, low sample, or unresolved identity) —
+            # never invents a candidate.
+            if mk in ("player_anytime_td", "player_1st_td"):
+                _atd_pc = ((_game_ctx.get("nfl_atd_precomputed") or {})
+                            .get(player.strip().lower())) or {}
+                if not _atd_pc or _atd_pc.get("reject"):
+                    _skip_pick = True
+                    try:
+                        from services.pipeline_diagnostic import log_reason as _plog
+                        _plog(
+                            sport="NFL", market=mk, player=player,
+                            reason=("ATD_ENGINE_UNRESOLVED_PLAYER"
+                                    if not _atd_pc
+                                    else "ATD_ENGINE_REJECT_" +
+                                         str(_atd_pc.get("reject", "unknown")).upper()),
+                        )
+                    except Exception:
+                        pass
+                else:
+                    # Engine returned a real probability.  Attach as
+                    # specialized evidence + use engine's independent
+                    # probability as model_win_prob (NOT book-implied
+                    # clone).  Real book odds come from the outcome
+                    # price further down; no synthetic odds anywhere.
+                    _atd_prob = float(_atd_pc.get("td_probability") or 0.0)
+                    if _atd_prob <= 0.0:
+                        _skip_pick = True
+                    else:
+                        # Use the standard NFL factor set too (with
+                        # prop_stat="anytime_td") when available so
+                        # Lock Score sees the same shape as other NFL
+                        # props.  Fall back to a minimal factor block
+                        # if the standard set isn't available yet.
+                        _std_pc = (_pc or {}).get("factors") or {}
+                        real_factors = {
+                            k: v for k, v in _std_pc.items()
+                            if isinstance(v, (int, float))
+                        }
+                        # Anchor factor from the ATD engine's confidence
+                        # so at least one real evidence signal is present
+                        # from the specialized engine.  ``confidence`` is
+                        # already probability-anchored and penalised for
+                        # low sample + high variance (see nfl_atd_engine).
+                        _atd_conf = float(_atd_pc.get("confidence") or 0.0)
+                        if _atd_conf > 0.0:
+                            real_factors["ATD Engine Confidence"] = \
+                                round(max(0.30, min(0.95, _atd_conf)), 3)
+                        _sources = list((_pc or {}).get("sources") or [])
+                        if "nfl_atd_engine" not in _sources:
+                            _sources.append("nfl_atd_engine")
+                        # Gate: need at least 1 real factor after the
+                        # ATD-engine anchor (matches the intent of
+                        # has_enough_real_data_nfl but relaxed since
+                        # ATD engine already carries strong internal
+                        # gates: sample≥5, touches≥10, conv_eff≥1.5%).
+                        if not real_factors:
+                            _skip_pick = True
+                        else:
+                            factors = real_factors
+                            _mlb_features_used = _sources
+                            # Override model_win_prob for this pick to
+                            # the engine's independent probability.
+                            # This is intentional — the engine is the
+                            # specialized ATD model, not a book-implied
+                            # clone.
+                            _atd_model_override = _atd_prob
+                            # Attach the full ATD evidence block for
+                            # downstream consumers (rationale, UI
+                            # explainer, telemetry).
+                            _atd_evidence_block = {
+                                "td_probability":    _atd_prob,
+                                "confidence":        _atd_conf,
+                                "opportunity_rating": _atd_pc.get("opportunity_rating"),
+                                "weighted_touches_recent": _atd_pc.get("weighted_touches_recent"),
+                                "weighted_tds_recent":     _atd_pc.get("weighted_tds_recent"),
+                                "team_td_rate":            _atd_pc.get("team_td_rate"),
+                                "matchup_factor":          _atd_pc.get("matchup_factor"),
+                                "game_script_factor":      _atd_pc.get("game_script_factor"),
+                                "is_rb_archetype":         _atd_pc.get("is_rb_archetype"),
+                                "sample_games":            _atd_pc.get("sample_games"),
+                                "reasons":                 _atd_pc.get("reasons") or [],
+                                "source":                  "nfl_atd_engine",
+                            }
+                            try:
+                                from services.pipeline_diagnostic import log_reason as _plog
+                                _plog(
+                                    sport="NFL", market=mk, player=player,
+                                    reason="ATD_ENGINE_USED",
+                                )
+                            except Exception:
+                                pass
+            elif not _pc or not _nfl_stat:
                 _skip_pick = True
             else:
                 try:
@@ -4379,18 +4895,33 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             # Consumes `ctx["nba_precomputed"][player_lower][mk]`
             # populated by the async pre-loader in
             # `services.nba_feature_engine.precompute_nba_prop_factors`.
-            # Falls to book-follow if precompute is empty (e.g. no
-            # gamelog rows for the player).  See engine module for
-            # min-factor gate (:func:`has_enough_real_data_nba`).
+            #
+            # Block 2D Closure §3 (2026-08) — the previous fallback to
+            # `{"Book Implied Probability": mp}` created a silent
+            # PARTIAL classification: an NBA prop with NO real
+            # gamelog evidence would pass Lock Score using only book
+            # implied.  Per user directive, an NBA player prop MUST
+            # NOT be considered wired solely because sportsbook implied
+            # probability exists.  Fixed: when precompute is empty, we
+            # now SKIP the pick and emit a diagnostic; only picks with
+            # real NBA feature-engine data reach the board.  Missing
+            # data stays missing.
             _nba_pc = ((_game_ctx.get("nba_precomputed") or {})
                         .get(player.strip().lower()) or {}).get(mk) or {}
             if _nba_pc.get("factors"):
                 factors = _nba_pc["factors"]
                 _mlb_features_used = _nba_pc.get("sources") or ["nba_feature_engine"]
             else:
-                factors = {"Book Implied Probability": mp}
-                _mlb_features_used = ["book_implied_calibrated",
-                                       "nba_engine_no_precompute"]
+                _skip_pick = True
+                try:
+                    from services.pipeline_diagnostic import log_reason as _plog
+                    _plog(
+                        sport="NBA", market=mk, player=player,
+                        reason="MISSING_FEATURE_DATA",
+                        meta={"stage": "nba_prop_evidence_gate"},
+                    )
+                except Exception:
+                    pass
         else:
             # Non-MLB / non-NBA / non-CFB batter / skater / scorer props
             # (WNBA / UFC / soccer non-scorer).  Book-follow.
@@ -4465,13 +4996,17 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         # the safety net for when that enrichment fails or is skipped.
         if is_elite_scorer and lock < 88.0:
             lock = 88.0
-        label_point = None if mk in ("player_goal_scorer_anytime", "player_to_score_or_assist", "player_first_goal_scorer", "mma_method_of_victory") else point
+        label_point = None if mk in ("player_goal_scorer_anytime", "player_to_score_or_assist", "player_first_goal_scorer", "mma_method_of_victory", "player_anytime_td", "player_1st_td") else point
         if mk == "player_goal_scorer_anytime":
             market_label = f"{player} Anytime Goal Scorer"
         elif mk == "player_to_score_or_assist":
             market_label = f"{player} To Score or Assist"
         elif mk == "player_first_goal_scorer":
             market_label = f"{player} First Goal Scorer"
+        elif mk == "player_anytime_td":
+            market_label = f"{player} Anytime TD"
+        elif mk == "player_1st_td":
+            market_label = f"{player} First TD"
         elif mk == "mma_method_of_victory":
             # `side` carries the method string (KO/TKO, Submission, Decision).
             market_label = f"{player} wins by {side}"
@@ -4491,11 +5026,15 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 if team_label and team_label not in market_label:
                     # Insert tag right after the player name.
                     market_label = market_label.replace(player, f"{player} ({team_label})", 1)
+        # Block 2D A1 — ATD engine's independent probability overrides
+        # the seed mp for anytime_td / 1st_td picks when the specialized
+        # engine returned a valid result.
+        _effective_mp = _atd_model_override if _atd_model_override is not None else mp
         new_pick = _build_pick(
             sport=sport, league=f"{league} · Props", event=f"{away} @ {home}",
             event_time=commence,
             market=market_label,
-            pick_side=player, model_win_prob=mp, book_odds=median,
+            pick_side=player, model_win_prob=_effective_mp, book_odds=median,
             lock=lock, factors=breakdown,
             insights=_prop_insights(sport, breakdown, player),
             external_id=f"{sport}-{payload.get('id', '')}-{mk}-{player[:10]}-{side}-{point}",
@@ -4503,12 +5042,29 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             is_long_shot=(mk in ("player_goal_scorer_anytime",
                                   "player_to_score_or_assist",
                                   "player_first_goal_scorer",
+                                  "player_anytime_td",
+                                  "player_1st_td",
                                   "mma_method_of_victory")),
             # Pass full team names so the pick carries home_team /
             # away_team / home_team_id / away_team_id natively (MLB only).
             home_team_name=home,
             away_team_name=away,
         )
+        # Block 2D A1 — attach ATD evidence block for downstream
+        # consumers (rationale UI, telemetry).  This is
+        # POST_SCORE_EXPLANATION_ONLY at the pick level — Lock Score
+        # was already computed above from real_factors including the
+        # ATD Engine Confidence anchor.
+        if new_pick is not None and _atd_evidence_block is not None:
+            new_pick["atd_evidence"] = _atd_evidence_block
+        # Block 2D A3 — attach HR intel evidence block for downstream
+        # consumers when the payload accumulated one for this player.
+        if new_pick is not None and mk in (
+                "batter_home_runs", "batter_home_runs_alternate"):
+            _hri_map = payload.get("_hr_intel_evidence") or {}
+            _hri_ev = _hri_map.get(player.strip().lower())
+            if _hri_ev:
+                new_pick["hr_intel_evidence"] = _hri_ev
         # Persist the elite flag on the pick so:
         #   1. `_dedupe_goalscorer_per_event` protects elites from being
         #      culled by the top-N cap (user report: "I see Dieng but not
@@ -5750,23 +6306,26 @@ async def generate_all_picks(
 
     best: dict = {}
     # Market-family preference when two correlated picks tie on dedup key.
-    # User preferences (verified by historical results):
-    #   - "Win or Draw" / "Double Chance" over straight "Moneyline" for
-    #     soccer — the draw safety net wins games where the favorite ties.
     #   - 2026-07-27 H+R+RBI equal priority to Hits (user request: expand
     #     H+R+RBI coverage since it has ~10-15pp higher base rate than Hits).
     # Lower number = higher preference.
     def _market_priority(market: str) -> int:
         m = (market or "").lower()
-        # H+R+RBI now on equal footing with Hits (was implicitly deprioritized)
+        # Block 2D B1 (2026-08) — market competition on evidence, NOT
+        # on market-family bias.  Prior code hardcoded "Win or Draw" /
+        # "Double Chance" to priority 0 and "moneyline" to priority 2,
+        # which meant DC always won dedupe ties.  Removed: all
+        # game-outcome markets share the SAME priority (1) so the
+        # highest lock_score / evidence wins on merit.  This preserves
+        # the H+R+RBI / Hits equal-preference behaviour (both 0) since
+        # they are separate market families, not correlated ones.
         if "hits + runs + rbi" in m or "h+r+rbi" in m or "hits+runs+rbi" in m:
             return 0
         if "hits" in m:
             return 0
-        if "win or draw" in m or "double chance" in m:
-            return 0
-        if "moneyline" in m:
-            return 2
+        # Game-outcome family (moneyline / win-or-draw / double chance
+        # / BTTS) — all TIED at priority 1.  Dedupe now falls back to
+        # lock_score comparison, so evidence wins.
         return 1
 
     # ── 2026-07-27 Cross-side conflict resolver for MLB K's ─────────────

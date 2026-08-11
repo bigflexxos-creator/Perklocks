@@ -440,9 +440,45 @@ async def run_once() -> dict:
                 # today's pick_date, bloating the /picks/today board.
                 p["pick_date"] = _derive_pick_date(p.get("event_time"), today_str)
                 p["updated_at"] = now
+                # Block 2D C1 (2026-08) — explicit bypass marker.
+                # Fixing the underlying bypass (routing through
+                # canonical publication + strict>85 gate) is deferred
+                # to Block 2E because each direct-inject pick would
+                # need soccer feature-engine evidence attached first.
+                p["bypasses_canonical_publication"] = True
+                p["publication_route"] = "soccer_prop_direct_inject"
+                # Block 2D Closure §5 (2026-08) — enforce the canonical
+                # publication barrier: real book_odds + Lock>=85 +
+                # implied_probability derivable.  Failures survive as
+                # shadow rows (off_board=True + no_bet=True) so they
+                # never surface on user-visible boards without meeting
+                # the same gate as canonically-generated picks.
+                try:
+                    from services.canonical_publication_barrier import (
+                        apply_canonical_barrier,
+                    )
+                    apply_canonical_barrier(p)
+                except Exception:
+                    # Barrier must never break the writer — if it errs,
+                    # default to off_board=True (conservative).
+                    p["off_board"] = True
+                    p["no_bet"] = True
+                    p["publication_gate"] = "canonical_barrier_error"
                 ops.append(ReplaceOne({"id": p["id"]}, p, upsert=True))
             try:
                 await db.picks.bulk_write(ops, ordered=False)
+                try:
+                    from services.pipeline_diagnostic import log_reason as _plog
+                    from services.pipeline_diagnostic import ReasonCode as _RC
+                    _plog(
+                        sport="Soccer", market="prop_direct_inject",
+                        reason=_RC.NON_CANONICAL_WRITE.value,
+                        meta={"writer": "soccer_prop_inject",
+                              "sport_key": sport_key,
+                              "count": len(ops)},
+                    )
+                except Exception:
+                    pass
             except Exception as e:
                 logger.warning("Soccer prop upsert error (%s): %s", sport_key, e)
 
