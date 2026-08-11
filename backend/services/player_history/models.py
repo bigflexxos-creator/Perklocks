@@ -37,6 +37,12 @@ class ThresholdResult:
 
     ``pushes`` are EXCLUDED from ``decisions`` (never counted as win
     or loss).  ``hit_rate = wins / decisions`` when decisions > 0.
+
+    Quantiles / variance are optional and only populated when the
+    caller requests them via ``evaluate_threshold(..., quantiles=True)``.
+    They are computed from the RAW ``actual_values`` only — never from
+    zero-filled or padded values.  When the sample is too small for a
+    reliable quantile (< 3), the fields remain ``None``.
     """
     wins:            int                = 0
     losses:          int                = 0
@@ -46,6 +52,10 @@ class ThresholdResult:
     hit_rate:        Optional[float]    = None
     average_actual:  Optional[float]    = None
     actual_values:   list[float]        = field(default_factory=list)
+    q25:             Optional[float]    = None
+    median:          Optional[float]    = None
+    q75:             Optional[float]    = None
+    variance:        Optional[float]    = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -104,6 +114,8 @@ class PlayerHistoryEvidence:
     vs_opponent:        Optional[dict] = None
     vs_opponent_recent: Optional[dict] = None
     exact_threshold:    Optional[dict] = None   # season hit-rate at requested threshold
+    by_surface:         Optional[dict] = None   # Tennis — {"hard": {...}, "clay": {...}, "grass": {...}}
+    by_competition:     Optional[dict] = None   # Soccer — {"league": {...}, "cup": {...}}
 
     # Summary numbers ───────────────────────────────────────────
     recent_average:     Optional[float] = None    # L5 avg
