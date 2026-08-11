@@ -203,63 +203,78 @@ async def analytics_v2(user: Annotated[UserPublic, Depends(current_admin)]):
         "ts", -1,
     ).to_list(length=30)
     state["changes_log"] = log
-    # Sport-level profit summary.
+
+    # ─── P0.5 (2026-08) — Canonical Published-Results Truth ────────
+    # Analytics MUST use the SAME canonical population as /picks/
+    # history so hit-rate / units / ROI never diverge from what the
+    # user sees in History (spec §7).  Explicit unresolved/void
+    # (§8), no fabricated CLV (§13), publication-time frozen values
+    # (§4/§17).
+    from services.published_results_truth import (
+        PublishedResultsTruthService,
+    )
+    _truth = PublishedResultsTruthService(db)
+    _pub = await _truth.load(days=90,
+                              exclude_ambiguous_legacy=True,
+                              include_pending=True)
+
+    # Sport-level profit summary from CANONICAL POPULATION.
     sport_rows: dict[str, dict] = {}
-    async for p in db.picks.aggregate([
-        {"$match": {"status": {"$in": ["won", "lost", "push"]}}},
-        {"$group": {
-            "_id": "$sport",
-            "n": {"$sum": 1},
-            "won": {"$sum": {"$cond": [{"$eq": ["$status", "won"]}, 1, 0]}},
-            "lost": {"$sum": {"$cond": [{"$eq": ["$status", "lost"]}, 1, 0]}},
-            "units_risked": {"$sum": {"$ifNull": ["$units_risked", 0]}},
-            "units_profit": {"$sum": {"$ifNull": ["$units_profit", 0]}},
-            "clv_avg": {"$avg": "$clv_value"},
-        }},
-    ]):
-        s = p["_id"]
-        risked = p.get("units_risked") or 0
-        profit = p.get("units_profit") or 0
+    from collections import defaultdict
+    _by_sport = defaultdict(list)
+    for p in _pub:
+        _by_sport[p.get("sport") or "unknown"].append(p)
+    for s, rows in _by_sport.items():
+        summ = _truth.summarise(rows)
+        # CLV: only compute avg over rows with an authoritative
+        # closing line — missing CLV MUST NOT be counted as 0.
+        clv_values = [p.get("clv_value") for p in rows
+                       if p.get("closing_odds") is not None
+                       and p.get("clv_value") is not None]
+        clv_avg = (round(sum(clv_values) / len(clv_values), 2)
+                    if clv_values else None)
         sport_rows[s] = {
             "sport": s,
-            "n": p["n"], "won": p["won"], "lost": p["lost"],
-            "units_risked": round(risked, 2),
-            "units_profit": round(profit, 2),
-            "roi_pct": round((profit / risked * 100.0) if risked else 0, 2),
-            "hit_rate_pct": round((p["won"] / (p["won"] + p["lost"]) * 100.0)
-                                  if (p["won"] + p["lost"]) else 0, 2),
-            "clv_avg": round(p.get("clv_avg") or 0, 2),
+            "n":                  summ["published_total"],
+            "won":                summ["won"],
+            "lost":               summ["lost"],
+            "push":               summ["push"],
+            "void":               summ["void"],
+            "unresolved":         summ["unresolved"],
+            "verified_decisions": summ["verified_decisions"],
+            "units_risked":       summ["units_risked"],
+            "units_profit":       summ["units_profit"],
+            "roi_pct":            summ["roi_pct"] or 0,
+            "hit_rate_pct":       summ["hit_rate_pct"] or 0,
+            "clv_avg":            clv_avg,   # None when unverified
+            "clv_sample_size":    len(clv_values),
         }
     state["profit_by_sport"] = list(sport_rows.values())
 
-    # Bet-Type breakdown — STRAIGHT (1.0u) / REDUCED (0.5u) / PARLAY
-    # (0.25u). ROI is weighted per spec so heavy chalk doesn't distort
-    # the metric.
+    # Bet-Type breakdown from CANONICAL POPULATION.
     bt_rows: dict[str, dict] = {}
-    async for p in db.picks.aggregate([
-        {"$match": {"status": {"$in": ["won", "lost", "push"]}}},
-        {"$group": {
-            "_id": {"$ifNull": ["$bet_type", "STRAIGHT"]},
-            "n": {"$sum": 1},
-            "won": {"$sum": {"$cond": [{"$eq": ["$status", "won"]}, 1, 0]}},
-            "lost": {"$sum": {"$cond": [{"$eq": ["$status", "lost"]}, 1, 0]}},
-            "units_risked": {"$sum": {"$ifNull": ["$units_risked", 0]}},
-            "units_profit": {"$sum": {"$ifNull": ["$units_profit", 0]}},
-        }},
-    ]):
-        bt = p["_id"]
-        risked = p.get("units_risked") or 0
-        profit = p.get("units_profit") or 0
+    _by_bt = defaultdict(list)
+    for p in _pub:
+        _by_bt[p.get("bet_type") or "STRAIGHT"].append(p)
+    for bt, rows in _by_bt.items():
+        summ = _truth.summarise(rows)
         bt_rows[bt] = {
-            "bet_type": bt,
-            "n": p["n"], "won": p["won"], "lost": p["lost"],
-            "units_risked": round(risked, 2),
-            "units_profit": round(profit, 2),
-            "roi_pct": round((profit / risked * 100.0) if risked else 0, 2),
-            "hit_rate_pct": round((p["won"] / (p["won"] + p["lost"]) * 100.0)
-                                  if (p["won"] + p["lost"]) else 0, 2),
+            "bet_type":           bt,
+            "n":                  summ["published_total"],
+            "won":                summ["won"],
+            "lost":               summ["lost"],
+            "push":               summ["push"],
+            "void":               summ["void"],
+            "unresolved":         summ["unresolved"],
+            "verified_decisions": summ["verified_decisions"],
+            "units_risked":       summ["units_risked"],
+            "units_profit":       summ["units_profit"],
+            "roi_pct":            summ["roi_pct"] or 0,
+            "hit_rate_pct":       summ["hit_rate_pct"] or 0,
         }
     state["profit_by_bet_type"] = list(bt_rows.values())
+    # Overall canonical summary for parity with /picks/history stats.
+    state["canonical_published_summary"] = _truth.summarise(_pub)
     return state
 
 

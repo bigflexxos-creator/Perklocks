@@ -660,158 +660,42 @@ async def picks_history(
     one logical bet.
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    # Board-visibility deployment fence (2026-07-13). Picks whose
-    # pick_date is ON OR AFTER this date MUST have proof they were
-    # actually surfaced to the user — either main-board visibility
-    # (`on_main_board_at`), rollover slate (`on_rollover_at`), or
-    # one of the other feature-specific surface timestamps. This is
-    # the permanent fix for "history showing picks that were never
-    # on the board" (user report 2026-07-13). Older picks fall
-    # through the pre-stamper lock-score gates.
-    _BOARD_STAMP_FENCE = "2026-07-13"
-    q: dict = {
-        "settled_at": {"$gte": cutoff},
-        # Hide voided picks (legacy soccer goalscorer payloads etc.)
-        # Voided picks are kept in the DB for the learning engine but
-        # never shown in the user-facing History tab or counted toward
-        # W/L stats.
-        "status": {"$nin": ["void"]},
-        "excluded_from_history": {"$ne": True},
-        # Two board-invisibility flags — set by the generation pipeline
-        # to mark picks that were suppressed BEFORE they reached the
-        # user's screen (2026-07-13 sharpening: user report "history
-        # showing picks that were never on the board"). Excluding both
-        # cleans up the legacy long-tail without touching pre-fence
-        # picks that DID surface.
-        "hide_from_main_board": {"$ne": True},
-        "no_bet": {"$ne": True},
-        # ── Board-floor gate (2026-07-01 update). Picks for many markets
-        # that the LIVE feed filters out for low lock scores settle and
-        # then leak into PICK HISTORY even though the user never saw them.
-        # Result: a Lost record that pollutes the hit-rate.
-        #
-        # Fix (per user 2026-07-01 "89 lowers shouldn't be graded because
-        # it's never on board"): only show in history picks that ACTUALLY
-        # crossed the surfacing floor (lock_score ≥ 89 for standard picks;
-        # alt-line carve-outs at ≥85). AND exclude off-scope markets:
-        #   • First / Last Goal Scorer — retired from product
-        #   • KBO / Korean baseball — out of scope
-        #   • Anytime Goal Scorer < 85 — never surfaced to top-3
-        "$and": [
-            {"market": {"$not": {"$regex":
-                r"First Goal Scorer|Last Goal Scorer", "$options": "i"}}},
-            {"league": {"$not": {"$regex": r"KBO|Korean", "$options": "i"}}},
-            {"$or": [
-                {"market": {"$not": {"$regex": r"Anytime Goal Scorer|To Score or Assist",
-                                      "$options": "i"}}},
-                {"lock_score": {"$gte": 85}},
-            ]},
-            {"$or": [
-                {"lock_score": {"$gte": 89}},
-                {"raw_lock_score": {"$gte": 89}},
-                # Carve-out: elite-pitcher override picks were intentionally
-                # surfaced even at lower lock with strong edge — preserve them.
-                {"elite_pitcher_override": True},
-                {"is_alt": True, "lock_score": {"$gte": 85}},
-                # 2026-07-04 user: goalscorer analytics/history never populated
-                # after top-3 rule shipped. Soccer AGS + SoA surface at the
-                # 85 floor (see quality_gate.top_3_scorers branch), so allow
-                # them in History at that same floor.
-                {"sport": "Soccer",
-                 "market": {"$regex": r"Anytime Goal Scorer|To Score or Assist",
-                             "$options": "i"},
-                 "lock_score": {"$gte": 85}},
-            ]},
-            # ── Board-visibility gate (2026-07-13 permanent fix) ─────
-            # Picks generated on or after the stamper deployment date
-            # MUST have proof of surfacing to the user. Legacy picks
-            # (pick_date < fence) fall through unchanged so we don't
-            # nuke 30 days of existing history retroactively.
-            {"$or": [
-                {"pick_date": {"$lt": _BOARD_STAMP_FENCE}},
-                {"on_main_board_at": {"$exists": True}},
-                {"on_rollover_at":   {"$exists": True}},
-                {"on_under_at":      {"$exists": True}},
-                {"on_hr_board_at":   {"$exists": True}},
-                {"on_atd_board_at":  {"$exists": True}},
-                {"on_parlay_at":     {"$exists": True}},
-                # Feature-specific carve-out: elite-pitcher override
-                # picks are intentionally surfaced by name at generation
-                # time so they don't need main-board provenance.
-                {"elite_pitcher_override": True},
-            ]},
-        ],
-    }
-    cursor = db.picks.find(q, {"_id": 0}).sort("event_time", -1).limit(2000)
-    picks = await cursor.to_list(length=2000)
+    # ─── P0.5 (2026-08) Canonical Published-Results Truth ─────────────
+    # History MUST derive from the same canonical published population
+    # as Analytics.  Outcome (won/lost) NEVER participates in dedupe,
+    # current off_board/lock_score can NEVER erase historical
+    # publication, unresolved/void are first-class visible states.
+    #
+    # The heavy lifting (provenance gate, outcome-neutral dedupe,
+    # publication_snapshot join) lives in the truth service.
+    from services.published_results_truth import (
+        PublishedResultsTruthService,
+    )
+    _truth = PublishedResultsTruthService(db)
+    picks = await _truth.load(days=days,
+                                exclude_ambiguous_legacy=True,
+                                include_pending=True)
+    # Backward-compatibility: return the previously-expected shape but
+    # with the P0.5 truth applied.  Outcome-neutral dedupe was already
+    # applied inside load().  We no longer apply the legacy
+    # `_STATUS_RANK`-based win-biased collapse.
+    picks = sorted(picks, key=lambda p: p.get("event_time") or "",
+                    reverse=True)[:2000]
 
-    # ─── Dedupe correlated historical picks ───
-    # Same logic as sports_engine.generate_all_picks. Group by
-    # (sport, event, selection, line_threshold) and keep the preferred one:
-    #   1) Market family — Hits > anything > Total Bases
-    #   2) Settled status outcome consistency (prefer won > lost > push > pending)
-    #   3) Higher lock_score, then better odds.
-    def _key(p: dict) -> tuple:
-        market = p.get("market") or ""
-        m = re.search(r"(-?\d+\.\d+)", market)
-        return (
-            p.get("sport"), p.get("event"), p.get("selection") or "",
-            m.group(1) if m else "",
-        )
-
-    def _market_priority(market: str) -> int:
-        m = (market or "").lower()
-        if "hits" in m:
-            return 0
-        if "win or draw" in m or "double chance" in m:
-            return 0
-        if "moneyline" in m:
-            return 2
-        if "total bases" in m:
-            return 2
-        return 1
-
-    _STATUS_RANK = {"won": 0, "lost": 1, "push": 2, "pending": 3}
-
-    best: dict = {}
-    for p in picks:
-        k = _key(p)
-        ex = best.get(k)
-        if ex is None:
-            best[k] = p
-            continue
-        new_pri = _market_priority(p.get("market"))
-        old_pri = _market_priority(ex.get("market"))
-        if new_pri != old_pri:
-            if new_pri < old_pri:
-                best[k] = p
-            continue
-        new_stat = _STATUS_RANK.get(p.get("status") or "pending", 4)
-        old_stat = _STATUS_RANK.get(ex.get("status") or "pending", 4)
-        if new_stat != old_stat:
-            if new_stat < old_stat:
-                best[k] = p
-            continue
-        if (p.get("lock_score") or 0) > (ex.get("lock_score") or 0):
-            best[k] = p
-        elif (p.get("lock_score") or 0) == (ex.get("lock_score") or 0):
-            if (p.get("book_odds") or -9999) > (ex.get("book_odds") or -9999):
-                best[k] = p
-    # 2026-07-13: sort by event_time (when game was played) not
-    # settled_at (when we graded it). Mass re-grades push old games
-    # to the top of the settled_at sort — but the user thinks of
-    # history in game-date order. Chronological event_time desc =
-    # what they see on FanDuel/DraftKings too.
-    picks = sorted(best.values(),
-                   key=lambda p: p.get("event_time") or "",
-                   reverse=True)
-
-    settled = [p for p in picks if p.get("status") in ("won", "lost", "push")]
-    won = sum(1 for p in settled if p.get("status") == "won")
-    lost = sum(1 for p in settled if p.get("status") == "lost")
-    push = sum(1 for p in settled if p.get("status") == "push")
-    decided = won + lost
-    hit_rate = round(won / decided * 100, 1) if decided else 0.0
+    # ─── §8 explicit canonical-state visibility ────────────────────
+    _summary = _truth.summarise(picks)
+    settled = [p for p in picks
+                if p.get("status") in ("won", "lost", "push", "void",
+                                        "unresolved")]
+    won         = _summary["won"]
+    lost        = _summary["lost"]
+    push        = _summary["push"]
+    void_ct     = _summary["void"]
+    unresolved  = _summary["unresolved"]
+    decided     = won + lost
+    hit_rate    = _summary["hit_rate_pct"] or 0.0
+    # ─── §9 sweep-validity check available to callers ──────────────
+    _sweep = _truth.verify_sweep(picks)
     # Rollover V4 (2026-07-08): Rollover history filters STRICTLY on
     # the `on_rollover_at` publish-time tag now stamped by
     # `rollover_history_tagger` at settlement time.  The tag is
@@ -835,6 +719,9 @@ async def picks_history(
     if rollover_only:
         # Stats must reflect the SAME scope as the returned picks list.
         settled = rollover_picks
+        # ─── P0.5 §8 canonical states applied to rollover scope ────
+        _ro_summary = _truth.summarise(rollover_picks)
+        _ro_sweep   = _truth.verify_sweep(rollover_picks)
         return {
             "picks": settled,
             "stats": {
@@ -842,9 +729,14 @@ async def picks_history(
                 "won": ro_won,
                 "lost": ro_lost,
                 "push": ro_push,
+                "void": _ro_summary["void"],
+                "unresolved": _ro_summary["unresolved"],
+                "verified_decisions": ro_won + ro_lost + ro_push,
                 "hit_rate": ro_hit_rate,
                 "rollover_hit_rate": ro_hit_rate,
                 "rollover_decided": ro_decided,
+                "sweep_valid": _ro_sweep["is_valid_sweep"],
+                "sweep_reasons": _ro_sweep["reasons"],
             },
         }
     return {
@@ -854,9 +746,16 @@ async def picks_history(
             "won": won,
             "lost": lost,
             "push": push,
+            # ─── P0.5 §8 explicit canonical states ─────────────────
+            "void": void_ct,
+            "unresolved": unresolved,
+            "verified_decisions": won + lost + push,
             "hit_rate": hit_rate,
             "rollover_hit_rate": ro_hit_rate,
             "rollover_decided": ro_decided,
+            # ─── P0.5 §9 sweep validity (never claim false sweep) ─
+            "sweep_valid": _sweep["is_valid_sweep"],
+            "sweep_reasons": _sweep["reasons"],
         },
     }
 
