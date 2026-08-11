@@ -43,18 +43,24 @@ def test_audit_detects_suspicious_actual_zero_losses():
 
 @pytest.mark.integration
 def test_seymour_pick_is_in_the_suspicious_bucket():
-    """The exact Seymour pick id must be flagged."""
+    """Pre-P0.3 this test proved the Seymour pick was classified as
+    suspicious.  After the P0.3 correction (2026-08-11), Seymour's
+    pick now has status='won' and actual=7 — it should NO LONGER be
+    in the suspicious bucket.  This test now asserts the correction
+    is in place."""
     from scripts.p0_settlement_audit import _classify
     async def go():
         db = _db()
         p = await db.picks.find_one(
             {"id": "6f163552-16fa-5c04-aa73-ebc2bb08ee73"},
             {"_id": 0})
-        assert p is not None, "Seymour pick must exist"
+        assert p is not None
         bucket, diag = _classify(p)
-        assert bucket == "suspicious_actual_zero_loss", (bucket, diag)
-        assert diag["actual"] == 0.0
-        assert diag["status"] == "lost"
+        # After the P0.3 reconciliation, Seymour is no longer
+        # suspicious — status='won' and actual=7.
+        assert bucket == "ok", (bucket, diag)
+        assert diag["actual"] == 7
+        assert diag["status"] == "won"
     _run(go())
 
 

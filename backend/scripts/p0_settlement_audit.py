@@ -144,7 +144,10 @@ def _classify(pick: dict) -> tuple[str, dict]:
 async def run(db) -> dict[str, Any]:
     counts_by_sport: dict[str, Counter] = defaultdict(Counter)
     samples: dict[str, list[dict]] = defaultdict(list)
-    high_conf_affected: dict[str, int] = defaultdict(int)
+    # Phase P0.3 (2026-08-11) — fix the reporting bug: >85 counts
+    # MUST be tracked per (sport, bucket) not globally.
+    high_conf_affected: dict[str, dict[str, int]] = defaultdict(
+        lambda: defaultdict(int))
     total = 0
 
     async for p in db.picks.find(
@@ -166,7 +169,7 @@ async def run(db) -> dict[str, Any]:
             ls = p.get("published_lock_score") or p.get("lock_score") or 0
             try:
                 if float(ls) > 85:
-                    high_conf_affected[bucket] += 1
+                    high_conf_affected[sport][bucket] += 1
             except Exception:
                 pass
 
@@ -175,7 +178,8 @@ async def run(db) -> dict[str, Any]:
         "read_only": True,
         "total_settled_scanned": total,
         "counts_by_sport": {s: dict(c) for s, c in counts_by_sport.items()},
-        "high_conf_gt_85_affected_by_bucket": dict(high_conf_affected),
+        "high_conf_gt_85_by_sport_and_bucket": {
+            s: dict(b) for s, b in high_conf_affected.items()},
         "representative_samples": dict(samples),
     }
 
@@ -198,7 +202,8 @@ async def _main():
         for b, c in sorted(counts.items(), key=lambda kv: -kv[1]):
             if b in ("ok", "not_settled"):
                 continue
-            hc = report["high_conf_gt_85_affected_by_bucket"].get(b, 0)
+            hc = report["high_conf_gt_85_by_sport_and_bucket"].get(
+                sport, {}).get(b, 0)
             print(f"    {c:6d}  {b}   (>85: {hc})")
         print()
     print(f"[report written] {path}")
