@@ -36,6 +36,7 @@ export const SPORT_ICONS: Record<string, string> = {
   NBA: "basketball",
   NFL: "football",
   CFB: "american-football",
+  NHL: "snow",
   Soccer: "soccer",
   Tennis: "tennis",
   UFC: "barbell",
@@ -44,9 +45,11 @@ export const SPORT_ICONS: Record<string, string> = {
 
 // SPORTS is the master ordered list of sport chips rendered in the Home /
 // Rollover / Under / Parlay screens. CFB added 2026-07-27 in prep for the
-// Week-0 kickoff (Aug 23). Ordered by peak season overlap: NFL / CFB
-// grouped together, Tennis last because it's a specialty tab.
-export const SPORTS = ["All", "MLB", "NBA", "NFL", "CFB", "Soccer", "Tennis", "UFC"] as const;
+// Week-0 kickoff (Aug 23). NHL added 2026-08-11 (Block 2E §15) — game
+// markets FULLY_WIRED backend-side; the tab exposes moneyline / puck line
+// / total game markets only (no player props). Ordered by peak season
+// overlap: NFL / CFB grouped, NHL alongside them (winter sport).
+export const SPORTS = ["All", "MLB", "NBA", "NFL", "CFB", "NHL", "Soccer", "Tennis", "UFC"] as const;
 
 export const SHADOW = {
   shadowColor: "#000",
