@@ -666,6 +666,27 @@ async def settle_player_props_via_espn(db) -> dict:
 
 async def _record_settlement(db, pick: dict, outcome: str, ref: dict, source: str) -> None:
     """Write the settled status, units profit, CLV to MongoDB."""
+    # ── P0.1 (2026-08-11) — Universal Settlement Contract hard gate.
+    # Refuse to settle 'lost' when the authoritative outcome/ref is
+    # empty (missing scoreboard payload).  Tennis retirement /
+    # walkover / UFC no_contest MUST be handled explicitly by the
+    # caller — never fall through to 'lost' from missing data.
+    if outcome in ("won", "lost") and not ref:
+        from services.universal_settlement_contract import (
+            envelope_provider_error,
+        )
+        return  # skip write — will be retried next settle cycle
+    if outcome == "lost":
+        # Individual-sport 'lost' requires a positive winner signal
+        # on the reference payload.  If `ref` has no `competitors`
+        # (or all competitors have `winner is None`) we cannot
+        # settle a loss.
+        comps = ref.get("competitors", []) if isinstance(ref, dict) else []
+        has_positive_result = any(
+            (c.get("winner") is True or c.get("winner") is False)
+            for c in comps)
+        if comps and not has_positive_result:
+            return  # unresolved — retry next cycle
     from analytics import (american_profit_per_unit, clv_units,
                             confidence_bucket)
     from bet_type import classify_bet_type, unit_weight
