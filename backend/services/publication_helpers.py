@@ -191,6 +191,25 @@ async def publish_upserted_picks(
             summary.get("mismatches_logged", 0),
             summary.get("board_version"),
         )
+        # ── Production-Truth OBSERVE hook (2026-06) ─────────────
+        # Read-only observation of the just-published batch.
+        # NEVER blocks or mutates publication.  Freezes an immutable
+        # pregame snapshot for newly-published qualifying picks
+        # and records reachability violations in OBSERVE mode.
+        try:
+            from services.production_truth.publication_observer import (
+                observe_publication,
+            )
+            await observe_publication(
+                db, picks_list,
+                publication_source=publication_source,
+                caller_label=caller_label,
+            )
+        except Exception as _obs_err:            # pragma: no cover
+            logger.debug(
+                "%s production_truth observer failed (non-fatal): %s",
+                caller_label, _obs_err,
+            )
         return summary
     except Exception as e:
         # Never let publication failure break the ingest loop.

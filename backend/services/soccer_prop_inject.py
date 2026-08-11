@@ -509,6 +509,21 @@ async def run_once() -> dict:
                     len(pub_summary.get("errors", []) or []),
                     pub_summary.get("mismatches_logged", 0),
                 )
+                # ── Production-Truth OBSERVE hook ────────────────
+                try:
+                    from services.production_truth.publication_observer import (
+                        observe_publication,
+                    )
+                    await observe_publication(
+                        db, all_picks,
+                        publication_source="soccer_prop_inject",
+                        caller_label=f"soccer_prop_inject/{sport_key}",
+                    )
+                except Exception as _obs_err:    # pragma: no cover
+                    logger.debug(
+                        "Soccer Prop Inject production_truth observer "
+                        "failed (non-fatal): %s", _obs_err,
+                    )
             except Exception as e:
                 logger.warning("Soccer Prop Inject publication step "
                                 "failed (non-fatal): %s", e)

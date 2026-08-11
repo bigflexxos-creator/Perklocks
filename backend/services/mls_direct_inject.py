@@ -571,6 +571,21 @@ async def run_once() -> dict:
                     pub_summary.get("existing_snapshots", 0),
                     len(pub_summary.get("errors", []) or []),
                     pub_summary.get("mismatches_logged", 0))
+        # ── Production-Truth OBSERVE hook (direct-inject origin) ──
+        try:
+            from services.production_truth.publication_observer import (
+                observe_publication,
+            )
+            await observe_publication(
+                db, all_picks,
+                publication_source="mls_direct_inject",
+                caller_label="mls_direct_inject",
+            )
+        except Exception as _obs_err:            # pragma: no cover
+            logger.debug(
+                "MLS direct-inject production_truth observer failed "
+                "(non-fatal): %s", _obs_err,
+            )
     except Exception as e:
         logger.warning("MLS direct-inject publication step failed "
                         "(non-fatal): %s", e)
