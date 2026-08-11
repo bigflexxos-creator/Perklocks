@@ -2657,31 +2657,211 @@ async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) 
     # MISSING from US-only fetches. Use uk,eu for soccer; us for everything
     # else (MLB / NBA / NFL where US books are the canonical source).
     regions = "uk,eu" if sport == "Soccer" else "us"
+
+    # ── Block 2C-cont (2026-08): live 422 bundle isolation wiring ───
+    # Bad-market filter is honored inside the gateway with event scope
+    # (see services.odds_api_gateway.fetch pre-flight step), so an
+    # event-scoped 422 marker on Event A does NOT suppress the same
+    # market on Event B. Global markers still apply to every event.
+    #
+    # Path:
+    #   1. Bulk fetch full market bundle (single API call, normal case).
+    #   2. On 422 or empty payload, invoke
+    #      services.provider_cache_state.isolate_bad_markets() to
+    #      bisect within bounded credits/retries and identify WHICH
+    #      market(s) caused the 422.  Every recursive sub-call goes
+    #      through _get → gateway → confirmed-bad markers are written
+    #      with event_id + scope="event".
+    #   3. Merge the successful sub-bundle payloads so callers still
+    #      see all supported markets for this event, even though the
+    #      bulk call failed as a bundle.
+    #
+    # Result: Event A's 422 on player_home_runs isolates only that
+    # market for Event A; sibling markets (batter_hits, batter_rbis)
+    # are still returned for Event A, and Event B — same sport, same
+    # market bundle — is NOT suppressed.
     data = await _get(
         f"{BASE}/sports/{sport_key}/events/{event_id}/odds",
         {"regions": regions, "markets": ",".join(markets), "oddsFormat": "american"},
     )
-    # ── 2026-07-28 Data-availability diagnostics ───────────────────────
-    # Log per-market outcome counts (esp. H+R+RBI) so we can distinguish
-    # provider data gaps from downstream gate drops.
-    if isinstance(data, dict) and sport == "MLB":
-        counts: dict[str, int] = {}
-        for b in data.get("bookmakers", []) or []:
-            for m in b.get("markets", []) or []:
-                mk = m.get("key") or ""
-                counts[mk] = counts.get(mk, 0) + len(m.get("outcomes", []) or [])
-        hrr = counts.get("batter_hits_runs_rbis", 0) + counts.get("batter_hits_runs_rbis_alternate", 0)
-        if hrr == 0:
-            logger.warning(
-                "MLB H+R+RBI data-gap: event=%s no batter_hits_runs_rbis outcomes returned by provider",
-                event_id,
-            )
-        else:
-            logger.info(
-                "MLB H+R+RBI availability: event=%s outcomes=%d",
-                event_id, hrr,
-            )
-    return data if isinstance(data, dict) else {}
+
+    # Bulk fetch succeeded → done.  We consider "succeeded" to be
+    # "returned a dict at all" — including a dict with empty
+    # bookmakers[] which is a legitimate VALID_EMPTY_PROVIDER_ZERO
+    # state (event scheduled but no book has posted lines yet).
+    if isinstance(data, dict):
+        # ── 2026-07-28 Data-availability diagnostics ───────────────
+        # Log per-market outcome counts (esp. H+R+RBI) so we can
+        # distinguish provider data gaps from downstream gate drops.
+        if sport == "MLB":
+            counts: dict[str, int] = {}
+            for b in data.get("bookmakers", []) or []:
+                for m in b.get("markets", []) or []:
+                    mk = m.get("key") or ""
+                    counts[mk] = counts.get(mk, 0) + len(m.get("outcomes", []) or [])
+            hrr = counts.get("batter_hits_runs_rbis", 0) + counts.get("batter_hits_runs_rbis_alternate", 0)
+            if hrr == 0:
+                logger.warning(
+                    "MLB H+R+RBI data-gap: event=%s no batter_hits_runs_rbis outcomes returned by provider",
+                    event_id,
+                )
+            else:
+                logger.info(
+                    "MLB H+R+RBI availability: event=%s outcomes=%d",
+                    event_id, hrr,
+                )
+        return data
+
+    # Bulk fetch returned None — this is the failure path.  It can
+    # mean 422 (bad market in the bundle), transient error, budget
+    # denial, or circuit-open.  Only 422 warrants isolation; the
+    # others are not fixed by fanning out.  We attempt isolation
+    # anyway because the isolator's HARD credit/request caps
+    # (MAX_422_RETRY_REQUESTS=8, MAX_422_RETRY_CREDITS=8) make the
+    # cost bounded even in the pathological case, and the gateway's
+    # circuit-breaker / budget guards short-circuit inside each
+    # sub-call so unnecessary retries stop cheaply.
+    merged = await _isolate_and_merge_event_props(
+        sport=sport, sport_key=sport_key, event_id=event_id,
+        regions=regions, bundle_markets=list(markets),
+    )
+    return merged or {}
+
+
+async def _isolate_and_merge_event_props(
+    *, sport: str, sport_key: str, event_id: str,
+    regions: str, bundle_markets: list[str],
+) -> dict:
+    """Block 2C-cont bundle-isolation orchestrator.
+
+    Delegates the actual bisection to
+    ``services.provider_cache_state.isolate_bad_markets`` (which owns
+    the hard credit / retry caps) and merges every successful subset
+    payload into a single event payload so callers see all supported
+    markets for the event.
+
+    Cross-event isolation guarantee: the gateway's pre-flight bad-market
+    filter is event-scoped, so a 422 marker written here for Event A
+    on market X can NEVER suppress the same market X on Event B.  The
+    proof-test lives in ``tests/test_block2c_cont_live_wiring.py``.
+    """
+    from services.provider_cache_state import (
+        isolate_bad_markets, CacheState,
+    )
+    url = f"{BASE}/sports/{sport_key}/events/{event_id}/odds"
+
+    # Cheap short-circuit: if the entire bundle has been suppressed
+    # by the registry, filter_markets returned an empty list upstream
+    # and _get returned None WITHOUT hitting the network.  Redo the
+    # filter here so we don't spin the bisector on a fully-empty
+    # bundle.
+    try:
+        from server import db as _db
+        from services import bad_market_registry as _bmr
+        remaining = await _bmr.filter_markets(
+            _db, sport_key=sport_key,
+            markets=bundle_markets, event_id=event_id)
+    except Exception:
+        remaining = list(bundle_markets)
+    if not remaining:
+        logger.info(
+            "props-isolation: skipped — every market for sport=%s "
+            "event=%s already registered bad (bundle-fully-suppressed)",
+            sport_key, event_id,
+        )
+        return {}
+
+    # Closure state: collect each successful subset's raw payload so
+    # we can merge them at the end without re-requesting.
+    successful_payloads: list[dict] = []
+
+    async def _probe(subset: list[str]):
+        """Called by isolate_bad_markets.  Return dict of
+        {market: True} for markets present in the response, or None
+        to signal the whole subset 422'd (or otherwise errored)."""
+        if not subset:
+            return None
+        params = {
+            "regions": regions,
+            "markets": ",".join(subset),
+            "oddsFormat": "american",
+        }
+        sub_data = await _get(url, params)
+        if not isinstance(sub_data, dict):
+            return None
+        # Extract which markets actually came back with outcomes.
+        got: set[str] = set()
+        for bk in sub_data.get("bookmakers", []) or []:
+            for m in bk.get("markets", []) or []:
+                key = m.get("key")
+                if key and key in subset:
+                    got.add(key)
+        if not got:
+            # Provider returned an event shell with zero market data.
+            # Semantically this is VALID_EMPTY_PROVIDER_ZERO for the
+            # subset — mark all as supported (books just haven't
+            # posted lines yet) but keep the shell for merging.
+            successful_payloads.append(sub_data)
+            return {m: True for m in subset}
+        successful_payloads.append(sub_data)
+        return {m: True for m in got}
+
+    result = await isolate_bad_markets(remaining, _probe)
+
+    logger.info(
+        "props-isolation: sport=%s ev=%s bundle=%d supported=%d "
+        "bad=%d unresolved=%d retries=%d credits=%d state=%s",
+        sport_key, event_id, len(remaining),
+        len(result.supported_markets), len(result.bad_markets),
+        len(result.unresolved_markets), result.retries_used,
+        result.credits_used, result.state.value,
+    )
+
+    if not successful_payloads:
+        return {}
+
+    return _merge_event_odds_payloads(successful_payloads)
+
+
+def _merge_event_odds_payloads(payloads: list[dict]) -> dict:
+    """Merge multiple per-event odds payloads that came from
+    disjoint market subsets into a single payload.
+
+    Each payload shares the same event metadata (id, home_team,
+    away_team, commence_time) but has bookmakers with DIFFERENT
+    market subsets.  Merge by:
+      * Keeping the first payload's event metadata verbatim.
+      * For each bookmaker, unioning its markets across payloads,
+        deduped by market.key (first-write-wins).
+
+    This is safe because the isolation sub-calls always target
+    disjoint market subsets — the same market key never appears in
+    two sub-payloads for the same event.
+    """
+    if not payloads:
+        return {}
+    base = dict(payloads[0])
+    book_index: dict[str, dict] = {}
+    for p in payloads:
+        for bk in p.get("bookmakers", []) or []:
+            key = bk.get("key")
+            if not key:
+                continue
+            if key not in book_index:
+                # Deep-ish copy: bookmaker dict + its markets list.
+                book_index[key] = {
+                    **bk,
+                    "markets": list(bk.get("markets", []) or []),
+                }
+                continue
+            existing = book_index[key]
+            seen_market_keys = {m.get("key") for m in existing["markets"]}
+            for m in bk.get("markets", []) or []:
+                if m.get("key") and m["key"] not in seen_market_keys:
+                    existing["markets"].append(m)
+                    seen_market_keys.add(m["key"])
+    base["bookmakers"] = list(book_index.values())
+    return base
 
 
 # ─── Tennis alt-line markets ───────────────────────────────────────────

@@ -261,11 +261,15 @@ class OddsApiGateway:
         event_id = _event_id_from_url(url)
 
         # ── Bad-market filter (pre-flight) ──────────────────────────
+        # Block 2C-cont (2026-08): event_id passed so event-scoped 422
+        # markers on Event A do NOT suppress the same market on Event B.
+        # Global markers still apply to every event of the sport.
         if markets and s_key:
             try:
                 good = await self._bad_mkt.filter_markets(
                     self.db, sport_key=s_key,
-                    markets=markets.split(","))
+                    markets=markets.split(","),
+                    event_id=event_id)
                 markets_effective = ",".join(good) if good else ""
                 if not markets_effective:
                     logger.info(
@@ -474,17 +478,36 @@ class OddsApiGateway:
                         upstream_error = f"json_decode:{jerr}"
                         response_data = None
                 elif http_status == 422 and endpoint_type in APPROVED_422_ENDPOINTS:
-                    # Mark the (sport, market) pair(s) bad. The retry
-                    # decision itself is left to the caller — this
-                    # gateway only reports the 422 outcome.
+                    # Block 2C-cont (2026-08): only mark bad from a
+                    # SINGLE-market probe.  Multi-market bundles that
+                    # 422 need bundle bisection to isolate WHICH
+                    # specific market caused the failure — marking the
+                    # entire bundle would falsely suppress good sibling
+                    # markets forever.  The bisection lives in the
+                    # caller (sports_engine._fetch_event_props_payload
+                    # + services.provider_cache_state.isolate_bad_markets).
+                    #
+                    # Every recursive bisection step ultimately arrives
+                    # at len(m_list)==1 and reaches this branch, so we
+                    # still capture the confirmed offending markets
+                    # while never over-suppressing.
+                    #
+                    # Scope rules:
+                    #   * event_odds  → scope="event" (needs event_id)
+                    #   * alt_lines   → scope="event" (needs event_id)
+                    #   * everything else — do not write (never widen
+                    #     an event failure to global).
                     try:
                         m_list = [m.strip()
                                     for m in (markets or "").split(",")
                                     if m.strip()]
-                        if m_list and s_key:
+                        if (len(m_list) == 1 and s_key and event_id
+                                and endpoint_type in APPROVED_422_ENDPOINTS):
                             await self._bad_mkt.mark_bad(
                                 self.db, sport_key=s_key,
                                 markets=m_list,
+                                event_id=event_id,
+                                scope="event",
                                 reason="422_unsupported_market",
                             )
                     except Exception:  # pragma: no cover

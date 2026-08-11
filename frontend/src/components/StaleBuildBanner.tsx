@@ -1,11 +1,24 @@
 /**
  * StaleBuildBanner — proactive deploy-drift warning.
  *
- * Compares the bundled `APP_DATA_VERSION` (set at build time in
- * src/lib/cachebust.ts) against the backend's `/api/version`
- * `data_version` + `server_time`. If the bundled build date is more
- * than 1 day older than the server's UTC day, we render a yellow
- * banner on the home tab.
+ * Trigger logic (Block 2C-cont Issue-6, 2026-08 — deploy-drift-fix v3):
+ *   The banner surfaces ONLY when a truthful deploy identifier
+ *   confirms drift.  Two independent signals are consulted:
+ *
+ *   1. `data_version` mismatch — bundled `APP_DATA_VERSION` differs
+ *      from the backend's `data_version`.  Both are SOURCE-CODE
+ *      constants that only change when someone explicitly bumps
+ *      them on a release, so a mismatch is a genuine deploy-drift
+ *      signal (never a runtime restart).
+ *
+ *   2. `deploy_metadata` — when the runtime exposes a real deploy
+ *      identifier (deploy_id / git_commit_sha / deploy_timestamp),
+ *      the banner may cite an age based on it.  When absent, we DO
+ *      NOT invent an age from `server_started_at` (that is
+ *      process-start time — advances on crash / pod / supervisor
+ *      restart, and lying about it as "deploy age" is what caused
+ *      the 2026-08-06 user report "why do it do that if it's
+ *      deployed").
  *
  * The user can dismiss the banner — dismissal is persisted in
  * AsyncStorage keyed by the build's date, so a NEW stale build the
@@ -62,8 +75,13 @@ function daysBetween(a: Date, b: Date): number {
   return Math.floor((b.getTime() - a.getTime()) / MS);
 }
 
+type DriftSignal =
+  | { kind: "none" }
+  | { kind: "data_version_mismatch"; bundle: string; server: string }
+  | { kind: "deploy_metadata"; ageDays: number; identifier: string };
+
 export function StaleBuildBanner() {
-  const [staleDays, setStaleDays] = useState<number>(0);
+  const [signal, setSignal] = useState<DriftSignal>({ kind: "none" });
   const [dismissed, setDismissed] = useState<boolean>(true);
 
   useEffect(() => {
@@ -89,46 +107,77 @@ export function StaleBuildBanner() {
       try {
         const ver = await api.version();
         if (cancelled) return;
-        // ─── Block 2C (2026-08) — deploy-drift fix ──────────────────
-        // BEFORE: compared bundle buildTime against server_time
-        //         (backend wall clock).  Since the wall clock advances
-        //         every day regardless of deploys, this labelled
-        //         BUNDLE AGE as DEPLOY AGE.  A frontend published
-        //         3 days ago against a backend deployed 3 days ago
-        //         (perfectly in-sync) incorrectly showed "3 days
-        //         behind".
-        // AFTER:  compare against server_started_at.  The backend
-        //         only advances that timestamp when it actually
-        //         redeploys.  A stale-banner will now surface ONLY
-        //         when the backend has restarted AFTER the current
-        //         frontend bundle was built — i.e. real deploy drift.
-        //         data_version is used as a secondary trigger.
-        const serverIso =
-          (ver as any)?.server_started_at || (ver as any)?.server_time;
-        const serverDate = serverIso ? new Date(serverIso) : new Date();
+        // ─── Block 2C-cont (2026-08) — deploy-drift fix v3 ──────────
+        // Truthful trigger hierarchy:
+        //   (a) `deploy_metadata` from the backend (real deploy
+        //       identifier) → age is defensible; cite it.
+        //   (b) `data_version` mismatch (both are explicit source
+        //       constants) → real deploy signal WITHOUT an age (we
+        //       don't know the age without (a)).
+        //   (c) Anything else — do nothing.  In particular, DO NOT
+        //       compute an age from `server_started_at` — that is
+        //       process-start time and advances on crash / pod /
+        //       supervisor restart.
+        const deployMd = (ver as any)?.deploy_metadata;
+        const deployTs = deployMd?.deploy_timestamp;
         const buildDate = resolveBuildDate();
-        if (!buildDate) return;
-        // Real deploy drift = backend was deployed AFTER the current
-        // frontend bundle.  If serverDate <= buildDate the frontend
-        // is at least as fresh as the backend → nothing stale.
-        if (serverDate.getTime() <= buildDate.getTime()) {
-          setStaleDays(0);
+
+        // (a) — real deploy timestamp available.
+        if (deployTs && buildDate) {
+          const dt = new Date(deployTs);
+          if (
+            !Number.isNaN(dt.getTime()) &&
+            dt.getTime() > buildDate.getTime()
+          ) {
+            const diff = daysBetween(buildDate, dt);
+            if (diff >= 1) {
+              const dismissKey = DISMISS_KEY_PREFIX + APP_DATA_VERSION;
+              const wasDismissed = await AsyncStorage.getItem(dismissKey);
+              if (wasDismissed === "1") {
+                setDismissed(true);
+                return;
+              }
+              const idParts = [
+                deployMd.deploy_id,
+                deployMd.git_commit_sha,
+                deployMd.backend_release_id,
+              ].filter(Boolean);
+              setSignal({
+                kind: "deploy_metadata",
+                ageDays: diff,
+                identifier: (idParts[0] || "backend").toString().slice(0, 12),
+              });
+              setDismissed(false);
+              return;
+            }
+          }
+        }
+
+        // (b) — data_version mismatch fallback.
+        const serverDataVer = (ver as any)?.data_version;
+        if (
+          serverDataVer &&
+          typeof serverDataVer === "string" &&
+          serverDataVer !== APP_DATA_VERSION
+        ) {
+          const dismissKey = DISMISS_KEY_PREFIX + APP_DATA_VERSION;
+          const wasDismissed = await AsyncStorage.getItem(dismissKey);
+          if (wasDismissed === "1") {
+            setDismissed(true);
+            return;
+          }
+          setSignal({
+            kind: "data_version_mismatch",
+            bundle: APP_DATA_VERSION,
+            server: serverDataVer,
+          });
+          setDismissed(false);
           return;
         }
-        const diff = daysBetween(buildDate, serverDate);
-        if (diff <= 1) {
-          setStaleDays(0);
-          return;
-        }
-        // Check if user already dismissed THIS build's banner.
-        const dismissKey = DISMISS_KEY_PREFIX + APP_DATA_VERSION;
-        const wasDismissed = await AsyncStorage.getItem(dismissKey);
-        if (wasDismissed === "1") {
-          setDismissed(true);
-          return;
-        }
-        setStaleDays(diff);
-        setDismissed(false);
+
+        // (c) — no truthful drift signal.  Do NOT infer from
+        // server_started_at.
+        setSignal({ kind: "none" });
       } catch {
         // Quiet failure — banner just doesn't show. Don't break the home tab.
       }
@@ -137,7 +186,7 @@ export function StaleBuildBanner() {
     return () => { cancelled = true; };
   }, []);
 
-  if (staleDays <= 1 || dismissed) return null;
+  if (signal.kind === "none" || dismissed) return null;
 
   const onDismiss = async () => {
     try {
@@ -148,18 +197,30 @@ export function StaleBuildBanner() {
     setDismissed(true);
   };
 
+  // ── Truthful copy per signal kind ────────────────────────────────
+  //   data_version_mismatch: we KNOW builds differ but don't know
+  //     the age; do NOT cite days.
+  //   deploy_metadata: real deploy identifier proves the age; cite
+  //     days truthfully.
+  const title =
+    signal.kind === "deploy_metadata"
+      ? `Backend deployed ${signal.ageDays} ${
+          signal.ageDays === 1 ? "day" : "days"
+        } after this build`
+      : "New backend build available";
+  const sub =
+    signal.kind === "deploy_metadata"
+      ? `Deploy ${signal.identifier} is newer than your current bundle. Tap Deploy → Update Deployment in Emergent to push the frontend.`
+      : "Your bundled data_version differs from the backend. Tap Deploy → Update Deployment in Emergent to refresh.";
+
   return (
     <View style={styles.wrap}>
       <View style={styles.left}>
         <Text style={styles.icon}>🟡</Text>
         <View style={styles.textBlock}>
-          <Text style={styles.title}>
-            This deploy is {staleDays} {staleDays === 1 ? "day" : "days"} behind
-          </Text>
-          <Text style={styles.sub} numberOfLines={2}>
-            New picks &amp; features are live in your editor. Tap{" "}
-            <Text style={styles.kbd}>Deploy → Update Deployment</Text> in
-            Emergent to push them.
+          <Text style={styles.title}>{title}</Text>
+          <Text style={styles.sub} numberOfLines={3}>
+            {sub}
           </Text>
         </View>
       </View>
