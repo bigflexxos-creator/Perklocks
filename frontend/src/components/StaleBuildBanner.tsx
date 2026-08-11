@@ -89,10 +89,32 @@ export function StaleBuildBanner() {
       try {
         const ver = await api.version();
         if (cancelled) return;
-        const serverIso = (ver as any)?.server_time;
+        // ─── Block 2C (2026-08) — deploy-drift fix ──────────────────
+        // BEFORE: compared bundle buildTime against server_time
+        //         (backend wall clock).  Since the wall clock advances
+        //         every day regardless of deploys, this labelled
+        //         BUNDLE AGE as DEPLOY AGE.  A frontend published
+        //         3 days ago against a backend deployed 3 days ago
+        //         (perfectly in-sync) incorrectly showed "3 days
+        //         behind".
+        // AFTER:  compare against server_started_at.  The backend
+        //         only advances that timestamp when it actually
+        //         redeploys.  A stale-banner will now surface ONLY
+        //         when the backend has restarted AFTER the current
+        //         frontend bundle was built — i.e. real deploy drift.
+        //         data_version is used as a secondary trigger.
+        const serverIso =
+          (ver as any)?.server_started_at || (ver as any)?.server_time;
         const serverDate = serverIso ? new Date(serverIso) : new Date();
         const buildDate = resolveBuildDate();
         if (!buildDate) return;
+        // Real deploy drift = backend was deployed AFTER the current
+        // frontend bundle.  If serverDate <= buildDate the frontend
+        // is at least as fresh as the backend → nothing stale.
+        if (serverDate.getTime() <= buildDate.getTime()) {
+          setStaleDays(0);
+          return;
+        }
         const diff = daysBetween(buildDate, serverDate);
         if (diff <= 1) {
           setStaleDays(0);
