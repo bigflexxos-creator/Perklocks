@@ -72,6 +72,111 @@ async def publish_upserted_picks(
     if not picks_list:
         return {}
 
+    # ═══════════════════════════════════════════════════════════════
+    # Pre-Magic Remediation (2026-06) — Canonical Pick Identity +
+    # Model Evidence attachment.
+    #
+    # These two enrichers run at the CENTRAL publication choke point
+    # so every producer that flows through this helper gets identity
+    # and model-evidence attached without producer-specific changes
+    # (§1 — no producer bypass).
+    #
+    # * Enrichers are pure (no DB reads), deterministic (§4), and
+    #   idempotent — safe on republication.
+    # * They NEVER alter scoring, model probability values, publication
+    #   eligibility, or off_board flags.
+    # * A pick that already carries a canonical_*_id is authoritative
+    #   — the enricher only fills in the fields that were missing (§3).
+    # * A failure in either enricher is swallowed — the ingest loop
+    #   must never break because identity resolution encountered an
+    #   edge case.
+    # ═══════════════════════════════════════════════════════════════
+    try:
+        from services.pick_identity_enricher import enrich_pick_identity_async
+        from services.pick_model_evidence import extract_model_evidence
+        _enriched_count = 0
+        _model_evidence_count = 0
+        for p in picks_list:
+            try:
+                ident = await enrich_pick_identity_async(db, p)
+            except Exception as _e_id:
+                logger.debug("identity enricher raised on pick %s: %s",
+                              p.get("id"), _e_id)
+                ident = {}
+            try:
+                model = extract_model_evidence(p)
+            except Exception as _e_me:
+                logger.debug("model evidence extractor raised on pick %s: %s",
+                              p.get("id"), _e_me)
+                model = {}
+            # Compute update_fields FIRST against the original (pre-
+            # merge) pick, so we know which values we actually need
+            # to persist.  Producer-supplied canonical values are
+            # authoritative (§3) — we only fill missing/empty keys.
+            # A provisional ``fallback:*`` id IS considered upgradable
+            # when the enricher returns a non-fallback (authoritative)
+            # id — real producer IDs > deterministic hashes.
+            update_fields: dict = {}
+            _CANON_ID_KEYS = ("canonical_team_id", "canonical_player_id",
+                                "canonical_opponent_id",
+                                "canonical_event_id")
+            for k, v in {**ident, **model}.items():
+                if v is None:
+                    continue
+                cur = p.get(k)
+                if cur in (None, "", []):
+                    update_fields[k] = v
+                    continue
+                # Upgrade fallback ids to authoritative ones when
+                # the new value is NOT a fallback (§3).
+                if k in _CANON_ID_KEYS and isinstance(cur, str) and \
+                        cur.startswith("fallback:") and \
+                        isinstance(v, str) and not v.startswith("fallback:") \
+                        and not v.startswith("unresolved:"):
+                    update_fields[k] = v
+                    continue
+                # Refresh identity_quality when upgrading.
+                if k == "identity_quality" and cur == "fallback" and \
+                        v == "authoritative":
+                    update_fields[k] = v
+            # Merge onto the in-memory pick dict so downstream calls
+            # in this batch (publish_batch, observer) see the new
+            # fields immediately.
+            for k, v in update_fields.items():
+                p[k] = v
+            # Persist to the ALREADY-UPSERTED pick document so future
+            # queries (Pre-Magic cert, Magic 2.0 when eventually
+            # wired, history joins) see canonical identity.
+            if update_fields and p.get("id"):
+                try:
+                    await db.picks.update_one(
+                        {"id": p["id"]},
+                        {"$set": update_fields},
+                    )
+                    if "canonical_team_id" in update_fields or \
+                       "canonical_player_id" in update_fields or \
+                       "canonical_event_id" in update_fields:
+                        _enriched_count += 1
+                    if "model_probability" in update_fields:
+                        _model_evidence_count += 1
+                except Exception as _upd_err:
+                    logger.debug(
+                        "identity/model persist failed for %s: %s",
+                        p.get("id"), _upd_err,
+                    )
+        if _enriched_count or _model_evidence_count:
+            logger.info(
+                "%s canonical identity/model enrichment: "
+                "identity_added=%d model_probability_added=%d",
+                caller_label, _enriched_count, _model_evidence_count,
+            )
+    except Exception as _enrich_err:
+        # Never let enrichment break the publication loop.
+        logger.warning(
+            "%s canonical enrichment step skipped (non-fatal): %s",
+            caller_label, _enrich_err,
+        )
+
     # ── Phase 2 (2026-08-11) Layer-B integrity gate ─────────────────
     # Immediately before canonical publication we drop any player-based
     # Soccer pick whose player's CURRENT team is not on the fixture.
