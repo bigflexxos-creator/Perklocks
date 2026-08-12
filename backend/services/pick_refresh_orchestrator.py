@@ -624,13 +624,22 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
             from services.magic.sim_cal_store import (
                 persist_simulator_output,
             )
-            _sim_persisted = 0
+            from services.magic.sim_eligibility import (
+                SimPersistenceCounters, classify_sim_eligibility,
+            )
+            _counters = SimPersistenceCounters()
             for _p in picks:
+                _counters.attempted += 1
                 if _p.get("sim_win_probability") is None:
+                    # Bucket by cause so the summary is actionable.
+                    elig = classify_sim_eligibility(
+                        _p.get("sport") or "", _p.get("market") or "",
+                    )
+                    if elig == "SUPPORTED":
+                        _counters.skipped_no_sim_result += 1
+                    else:
+                        _counters.skipped_unsupported_market += 1
                     continue
-                # apply_simulations mutated the pick with sim_* fields —
-                # rebuild the sim dict from those root fields for
-                # persistence (no recomputation).
                 _sim_dict = {
                     "sim_win_probability":   _p.get("sim_win_probability"),
                     "sim_runs":              _p.get("sim_runs"),
@@ -652,16 +661,23 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
                     "sim_std":               _p.get("sim_std"),
                 }
                 try:
+                    runs = int(_sim_dict.get("sim_runs") or 0)
+                except (TypeError, ValueError):
+                    runs = 0
+                if runs < 1000:
+                    _counters.rejected_low_runs += 1
+                    continue
+                if not _sim_dict.get("simulator_name"):
+                    _counters.rejected_no_provenance += 1
+                    continue
+                try:
                     fp = await persist_simulator_output(db, _p, _sim_dict)
                     if fp:
-                        _sim_persisted += 1
+                        _counters.persisted += 1
                 except Exception:                       # pragma: no cover
+                    _counters.failed_persistence += 1
                     continue
-            if _sim_persisted:
-                logger.info(
-                    "MAGIC 3B: persisted %d simulator outputs.",
-                    _sim_persisted,
-                )
+            _counters.log_summary(logger, sport_filter=sport_filter)
         except Exception as _persist_err:              # pragma: no cover
             logger.debug(
                 "MAGIC 3B sim-output persistence skipped: %s",
