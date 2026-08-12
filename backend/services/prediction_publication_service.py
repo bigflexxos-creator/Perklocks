@@ -281,6 +281,14 @@ class PredictionPublicationService:
         )
         # Attempt idempotent insert.
         was_new = True
+        # Session A (2026-06): When drift is detected we still write
+        # the FRESH producer payload to db.picks via dual_write.  The
+        # historical snapshot is preserved (immutability contract),
+        # but the picks doc MUST reflect the current producer output
+        # — otherwise a stale synthetic-odds snapshot could reintroduce
+        # the exact contradiction Session A purges (e.g. old book_odds
+        # on a pick now marked no_real_book_line=True).
+        dual_write_doc = snap_doc
         try:
             await self.db[SNAPSHOT_COLLECTION].insert_one(snap_doc)
         except DuplicateKeyError:
@@ -298,7 +306,11 @@ class PredictionPublicationService:
                     {"prediction_id": payload.prediction_id},
                     sort=[("snapshot_version", -1)], projection={"_id": 0},
                 )
-            if existing and existing.get("payload_hash") != payload_hash:
+            drift = bool(
+                existing and
+                existing.get("payload_hash") != payload_hash
+            )
+            if drift:
                 logger.warning(
                     "publication drift: prediction_id=%s existing_hash=%s "
                     "new_hash=%s (idempotency_key match)",
@@ -306,13 +318,25 @@ class PredictionPublicationService:
                     existing.get("payload_hash"), payload_hash,
                 )
             snap_doc = existing or snap_doc
+            # If drift, write the FRESH values to db.picks so producer
+            # output wins over stale snapshot on the read side.  The
+            # immutable snapshot row is unchanged.
+            if drift:
+                dual_write_doc = payload.to_snapshot_dict(
+                    payload_hash=payload_hash,
+                    idempotency_key=idempotency_key,
+                    published_at=now,
+                    is_active=True,
+                )
+            else:
+                dual_write_doc = snap_doc
 
         # Dual-write to `picks` — best effort, mismatches logged.
         dual_write_applied = False
         mismatch_logged = False
         if dual_write:
             dual_write_applied, mismatch_logged = await self._dual_write(
-                payload, snap_doc,
+                payload, dual_write_doc,
             )
 
         return PublicationResult(
@@ -401,11 +425,119 @@ class PredictionPublicationService:
                 _pt_err,
             )
 
+        # ── Session A (2026-06) Canonical Publication Boundary ─────
+        # EVERY active producer MUST cross this contract before a
+        # snapshot is written.  This is the LOWEST COMMON ANCESTOR
+        # of every writer (direct-inject, canonical pipeline, and
+        # ``publish_upserted_picks``) — so enforcing here is the ONE
+        # canonical boundary the P0 directive requires.
+        #
+        # A pick that fails the contract:
+        #   * publication_state = REJECTED
+        #   * publication_rejection_reasons = [...]
+        #   * off_board = True + no_bet = True
+        #   * NEVER produces a snapshot (fails CLOSED against
+        #     noncanonical publication).
+        from services.canonical_publication_boundary import (
+            evaluate_publication, PublicationState, RejectionReason,
+        )
+        from services import producer_health as _ph
+
+        # ── Enrichment step (identity + model evidence) ────────────
+        # Direct callers of publish_batch (e.g., mls_direct_inject,
+        # soccer_prop_inject) do NOT flow through publication_helpers
+        # so the enrichers must run here too.  Publication_helpers
+        # still runs them first for the picks it processes — a second
+        # call is idempotent (enrichers only fill missing/empty
+        # fields) and safe.
+        try:
+            from services.pick_identity_enricher import (
+                enrich_pick_identity_async,
+            )
+            from services.pick_model_evidence import extract_model_evidence
+            for p in candidates_list:
+                try:
+                    ident = await enrich_pick_identity_async(self.db, p)
+                except Exception:
+                    ident = {}
+                try:
+                    model = extract_model_evidence(p)
+                except Exception:
+                    model = {}
+                for k, v in {**ident, **model}.items():
+                    if v is None:
+                        continue
+                    cur = p.get(k)
+                    if cur in (None, "", []):
+                        p[k] = v
+                    elif k == "identity_class" and (
+                        cur not in (
+                            "AUTHORITATIVE", "MAPPED",
+                            "PROVISIONAL", "UNRESOLVED",
+                        )
+                    ):
+                        p[k] = v
+        except Exception as _enrich_err:              # pragma: no cover
+            logger.debug("publish_batch enrichment skipped: %s",
+                         _enrich_err)
+
+        rejected_boundary: list[dict] = []
+        rejection_reasons_counter: dict[str, int] = {}
+        publishable: list[dict] = []
+        for cand in candidates_list:
+            try:
+                v = evaluate_publication(cand)
+            except Exception as _bnd_err:            # pragma: no cover
+                v = None
+                errors_meta = {"exception":
+                                f"{_bnd_err.__class__.__name__}: {_bnd_err}"}
+                # Fail closed on unexpected boundary internal errors.
+                rejected_boundary.append({
+                    "prediction_id": cand.get("id") or cand.get("prediction_id"),
+                    "reasons": [RejectionReason.BOUNDARY_INTERNAL_ERROR.value],
+                    "meta": errors_meta,
+                })
+                await self._mark_pick_lifecycle(
+                    cand, PublicationState.REJECTED,
+                    rejection_reasons=[
+                        RejectionReason.BOUNDARY_INTERNAL_ERROR.value],
+                    publication_source=publication_source,
+                )
+                rejection_reasons_counter[
+                    RejectionReason.BOUNDARY_INTERNAL_ERROR.value] = (
+                    rejection_reasons_counter.get(
+                        RejectionReason.BOUNDARY_INTERNAL_ERROR.value, 0) + 1
+                )
+                continue
+            if v.accepted:
+                await self._mark_pick_lifecycle(
+                    cand, PublicationState.PUBLICATION_PENDING,
+                    publication_source=publication_source,
+                )
+                publishable.append(cand)
+            else:
+                # Permanent policy failure — do NOT retry.
+                for r in v.reasons:
+                    rejection_reasons_counter[r] = (
+                        rejection_reasons_counter.get(r, 0) + 1)
+                rejected_boundary.append({
+                    "prediction_id": cand.get("id") or cand.get("prediction_id"),
+                    "reasons": list(v.reasons),
+                    "meta":    dict(v.meta),
+                })
+                await self._mark_pick_lifecycle(
+                    cand, PublicationState.REJECTED,
+                    rejection_reasons=v.reasons,
+                    publication_source=publication_source,
+                )
+        candidates_list = publishable
+
         results: list[PublicationResult] = []
         errors: list[dict] = []
         n_new = 0
         n_existing = 0
         n_mismatches = 0
+        n_failed_transient = 0
         for cand in candidates_list:
             try:
                 r = await self.publish(
@@ -416,14 +548,41 @@ class PredictionPublicationService:
                 if r.was_new: n_new += 1
                 else:         n_existing += 1
                 if r.mismatch_logged: n_mismatches += 1
+                await self._mark_pick_lifecycle(
+                    cand, PublicationState.PUBLISHED,
+                    publication_source=publication_source,
+                )
             except Exception as e:
                 errors.append({
                     "prediction_id": cand.get("id") or cand.get("prediction_id"),
                     "error": f"{e.__class__.__name__}: {e}",
                 })
+                n_failed_transient += 1
+                await self._mark_pick_lifecycle(
+                    cand, PublicationState.FAILED,
+                    error=f"{e.__class__.__name__}: {e}",
+                    publication_source=publication_source,
+                )
+
+        # ── Producer health telemetry (best-effort) ────────────────
+        try:
+            await _ph.record_batch(
+                self.db,
+                publication_source=publication_source,
+                attempted=len(candidates_list) + len(rejected_boundary)
+                          + len(rejected_integrity),
+                published=n_new + n_existing,
+                rejected=len(rejected_boundary) + len(rejected_integrity),
+                failed=n_failed_transient,
+                rejection_reasons=rejection_reasons_counter,
+                error_message=(errors[-1]["error"] if errors else None),
+            )
+        except Exception as _hp_err:                # pragma: no cover
+            logger.debug("producer_health record failed: %s", _hp_err)
+
         return {
             "board_version": self._board_version,
-            "attempted": n_new + n_existing + len(errors),
+            "attempted": n_new + n_existing + n_failed_transient,
             "new_snapshots": n_new,
             "existing_snapshots": n_existing,
             "errors": errors,
@@ -432,7 +591,83 @@ class PredictionPublicationService:
             # can log/report them.  Rejected picks are NOT published.
             "integrity_rejected": len(rejected_integrity),
             "integrity_rejections": rejected_integrity,
+            # Session A: canonical boundary rejections.
+            "boundary_rejected":   len(rejected_boundary),
+            "boundary_rejections": rejected_boundary,
+            "boundary_rejection_reason_counts": rejection_reasons_counter,
+            "publication_failed":  n_failed_transient,
         }
+
+    # ── Session A lifecycle mark (2026-06) ───────────────────────
+    async def _mark_pick_lifecycle(
+        self, pick: dict, state,
+        *, rejection_reasons: Optional[list[str]] = None,
+        error: Optional[str] = None,
+        publication_source: str = "canonical_pipeline",
+    ) -> None:
+        """Idempotent lifecycle mark on the picks doc.
+
+        NEVER raises — a lifecycle marking failure must not break
+        publication.  Sets ``publication_state`` + timestamps and
+        (on REJECTED) also sets ``off_board`` / ``no_bet`` so the
+        board cannot surface a rejected pick.
+        """
+        from services.canonical_publication_boundary import PublicationState
+        try:
+            pid = pick.get("id") or pick.get("prediction_id")
+            if not pid:
+                return
+            now_iso = datetime.now(timezone.utc).isoformat().replace(
+                "+00:00", "Z",
+            )
+            set_fields: dict[str, Any] = {
+                "publication_state":      state.value
+                                          if hasattr(state, "value")
+                                          else str(state),
+                "publication_source":     publication_source,
+                "publication_last_state_at": now_iso,
+            }
+            inc_fields: dict[str, int] = {}
+            state_val = (state.value if hasattr(state, "value")
+                         else str(state))
+            if state_val == PublicationState.PUBLICATION_PENDING.value:
+                set_fields.setdefault("publication_pending_at", now_iso)
+                inc_fields["publication_attempts"] = 1
+                # Clear any previous rejection reason on retry.
+                # (Fresh attempt after a transient FAILED.)
+            elif state_val == PublicationState.PUBLISHED.value:
+                set_fields["publication_published_at"] = now_iso
+                set_fields["publication_rejection_reasons"] = None
+                set_fields["publication_last_error"] = None
+            elif state_val == PublicationState.REJECTED.value:
+                set_fields["publication_rejected_at"] = now_iso
+                set_fields["publication_rejection_reasons"] = list(
+                    rejection_reasons or [])
+                # Fail CLOSED — Main Locks / user-visible boards must
+                # not surface a REJECTED pick.
+                set_fields["off_board"] = True
+                set_fields["no_bet"] = True
+                # Mutate in-memory pick so downstream callers see it.
+                pick["off_board"] = True
+                pick["no_bet"] = True
+                pick["publication_state"] = state_val
+                pick["publication_rejection_reasons"] = list(
+                    rejection_reasons or [])
+            elif state_val == PublicationState.FAILED.value:
+                set_fields["publication_failed_at"] = now_iso
+                if error:
+                    set_fields["publication_last_error"] = str(error)[:1000]
+            # Mirror on the in-memory pick for downstream visibility.
+            pick["publication_state"] = state_val
+            update_doc: dict[str, Any] = {"$set": set_fields}
+            if inc_fields:
+                update_doc["$inc"] = inc_fields
+            await self.db.picks.update_one(
+                {"id": pid}, update_doc, upsert=False,
+            )
+        except Exception as e:                      # pragma: no cover
+            logger.debug("lifecycle mark failed for %s: %s",
+                         pick.get("id"), e)
 
     # ── Query helpers ───────────────────────────────────────────
     async def get_active_snapshot(self, prediction_id: str) -> Optional[dict]:

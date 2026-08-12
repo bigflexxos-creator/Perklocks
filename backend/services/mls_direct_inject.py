@@ -149,19 +149,19 @@ def _team_match(a: str, b: str) -> bool:
 
 
 def _american(r: float) -> int:
-    """Rate → juiced American odds, clamped to valid range."""
-    r = max(0.05, min(0.95, r))   # clamp to safe range (avoids div-by-zero)
-    if r >= 0.5:
-        fair = int(round(-100.0 * r / (1.0 - r)))
-        juiced = int(fair * 0.92)
-        if -100 < juiced <= 0:
-            juiced = -105
-        return max(min(juiced, -100), -800)
-    fair = int(round(100.0 * (1.0 - r) / r))
-    juiced = int(fair * 1.08)
-    if 0 <= juiced < 100:
-        juiced = 105
-    return min(max(juiced, 100), 1500)
+    """DEPRECATED — Session A (2026-06) synthetic-odds purge.
+
+    Used to synthesize sportsbook American odds from a model
+    probability (rate).  Retained ONLY as a stub that raises so any
+    accidental re-use is caught in CI.  A pick without a real
+    sportsbook line MUST publish with book_odds=None +
+    no_real_book_line=True + odds_source='MODEL_ONLY'.
+    """
+    raise NotImplementedError(
+        "_american is purged by Session A — do not synthesize sportsbook "
+        "American odds from model probability.  Emit book_odds=None + "
+        "no_real_book_line=True + odds_source='MODEL_ONLY' instead.",
+    )
 
 
 async def _fetch_mls_events(cx: httpx.AsyncClient) -> list[dict]:
@@ -314,7 +314,12 @@ async def _generate_for_event(ev: dict, all_scorers: list[dict],
             if route.confidence == "LOW" and route.market_fit < 60:
                 continue
             p = route.probability
-            book_odds = _american(p)
+            # Session A (2026-06) synthetic-odds purge — the MLS
+            # direct-inject path has NO real sportsbook player-prop
+            # line source in this pod.  We MUST NOT convert model
+            # probability back into an American book_odds price.
+            # Emit book_odds=None + no_real_book_line=True instead.
+            book_odds = None
 
             if p >= 0.55: lock = 95.0
             elif p >= 0.40: lock = 91.0
@@ -335,8 +340,11 @@ async def _generate_for_event(ev: dict, all_scorers: list[dict],
             # No real sportsbook player-prop line → no true edge to
             # measure. Model-derived book_odds are fair-value + juice
             # only; reporting a fabricated edge would be circular.
-            is_v3 = (route.market == "anytime_goal_scorer")
-            edge_val = None if is_v3 else 4.0
+            # Session A (2026-06): edge_percent stays None for EVERY
+            # market emitted from this path — the pipeline had no real
+            # sportsbook player-prop lines regardless of market.  Do
+            # NOT report a fabricated 4.0% edge for the non-v3 markets.
+            edge_val = None
 
             pick = {
                 "id": f"mls-direct-{route.market}-{event_id}-{name.replace(' ', '_').lower()}",
@@ -350,17 +358,19 @@ async def _generate_for_event(ev: dict, all_scorers: list[dict],
                 "selection": name,
                 "pick_side": name,
                 "model_win_prob": p,
+                "model_probability": p,
                 "win_probability": round(p * 100, 2),
                 "book_odds": book_odds,
-                "book_implied_prob": round(p / 1.08, 4),
+                "no_real_book_line": True,
+                "book_implied_prob": None,
                 "lock_score": lock,
                 "lock_score_v2": lock,
                 "lock_score_v2_raw": lock,
                 "lock_score_peak": lock,
                 "edge_percent": edge_val,
-                "odds_source": "model_derived",
+                "odds_source": "MODEL_ONLY",
                 "odds_status": "no_book_line",
-                "confidence_penalty": -5 if is_v3 else 0,
+                "confidence_penalty": -5 if (route.market == "anytime_goal_scorer") else 0,
                 "grade": grade,
                 "confidence": grade,
                 "status": "pending",

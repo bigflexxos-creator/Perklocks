@@ -96,18 +96,17 @@ def _team_match(a: str, b: str) -> bool:
 
 
 def _american(r: float) -> int:
-    r = max(0.05, min(0.95, r))
-    if r >= 0.5:
-        fair = int(round(-100.0 * r / (1.0 - r)))
-        juiced = int(fair * 0.92)
-        if -100 < juiced <= 0:
-            juiced = -105
-        return max(min(juiced, -100), -800)
-    fair = int(round(100.0 * (1.0 - r) / r))
-    juiced = int(fair * 1.08)
-    if 0 <= juiced < 100:
-        juiced = 105
-    return min(max(juiced, 100), 1500)
+    """DEPRECATED — Session A (2026-06) synthetic-odds purge.
+
+    Retained ONLY as a stub that raises so any accidental re-use is
+    caught in CI.  A pick without a real sportsbook line MUST publish
+    with book_odds=None + no_real_book_line=True + odds_source='MODEL_ONLY'.
+    """
+    raise NotImplementedError(
+        "_american is purged by Session A — do not synthesize sportsbook "
+        "American odds from model probability.  Emit book_odds=None + "
+        "no_real_book_line=True + odds_source='MODEL_ONLY' instead.",
+    )
 
 
 async def _fetch_events(cx: httpx.AsyncClient, sport_key: str) -> list[dict]:
@@ -246,7 +245,10 @@ async def _generate_for_event(ev: dict, sport_key: str,
             if route.confidence == "LOW" and route.market_fit < 60:
                 continue
             p = route.probability
-            book_odds = _american(p)
+            # Session A (2026-06) synthetic-odds purge — no real
+            # sportsbook player-prop line source for Big-5 leagues in
+            # this pod.  book_odds MUST NOT be computed from p.
+            book_odds = None
 
             if p >= 0.55: lock = 95.0
             elif p >= 0.40: lock = 91.0
@@ -265,14 +267,12 @@ async def _generate_for_event(ev: dict, sport_key: str,
                       ("Lock" if lock >= 90 else "Playable"))
 
             # ── Strict Edge Gate (v3) ──────────────────────────────
-            # We DO NOT calculate a "true betting edge" for goal-scorer
-            # v3 picks because we don't have real sportsbook player-prop
-            # lines to measure against. The `book_odds` we display is a
-            # model-derived fair price + juice; edge would be circular.
-            # This directive is per user (2026-07-22).
-            is_v3 = (route.market == "anytime_goal_scorer")
-            edge_val = None if is_v3 else 4.0
-            odds_source_val = "model_derived" if is_v3 else "model_derived"
+            # We DO NOT calculate a "true betting edge" because we have
+            # no real sportsbook player-prop lines for Big-5 soccer in
+            # this pod.  Session A (2026-06): apply the same rule to
+            # EVERY market — no synthetic 4.0% edges anywhere.
+            edge_val = None
+            odds_source_val = "MODEL_ONLY"
 
             pick = {
                 "id": f"soccer-prop-{route.market}-{event_id}-{name.replace(' ', '_').lower()}",
@@ -286,9 +286,11 @@ async def _generate_for_event(ev: dict, sport_key: str,
                 "selection": name,
                 "pick_side": name,
                 "model_win_prob": p,
+                "model_probability": p,
                 "win_probability": round(p * 100, 2),
                 "book_odds": book_odds,
-                "book_implied_prob": round(p / 1.08, 4),
+                "no_real_book_line": True,
+                "book_implied_prob": None,
                 "lock_score": lock,
                 "lock_score_v2": lock,
                 "lock_score_v2_raw": lock,
@@ -296,7 +298,7 @@ async def _generate_for_event(ev: dict, sport_key: str,
                 "edge_percent": edge_val,
                 "odds_source": odds_source_val,
                 "odds_status": "no_book_line",
-                "confidence_penalty": -5 if is_v3 else 0,
+                "confidence_penalty": -5 if (route.market == "anytime_goal_scorer") else 0,
                 "grade": grade,
                 "confidence": grade,
                 "status": "pending",

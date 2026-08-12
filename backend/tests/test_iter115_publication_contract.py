@@ -325,7 +325,12 @@ def test_I_batch_publish_error_isolation():
             [good1, bad, good2], dual_write=False)
         assert summary["new_snapshots"] == 2
         assert summary["existing_snapshots"] == 0
-        assert len(summary["errors"]) == 1
+        # Session A: a candidate with no id is now caught by the
+        # canonical boundary as MISSING_PICK_ID rather than raised
+        # inside publish().  Either channel (errors or
+        # boundary_rejected) proves batch continued past a bad row.
+        assert (len(summary["errors"]) +
+                summary.get("boundary_rejected", 0)) == 1
         await _wipe(db)
     _run(run())
 
