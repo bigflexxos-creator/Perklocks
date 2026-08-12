@@ -123,11 +123,12 @@ async def build_mlb_batter_matchup(db, pick: dict) -> GoldEvidence:
         event_id=pick.get("canonical_event_id"),
     )
     pname = (pick.get("player_name") or pick.get("selection") or "").strip()
-    if not pname:
+    if not pname and not pick.get("canonical_player_id"):
         ev.notes = "no player name"
         return ev
-    # Statcast — real xwOBA / barrel / xslg
-    sc = await db.mlb_statcast_players.find_one({"name": pname})
+    # Statcast — real xwOBA / barrel / xslg (MLB 3D.1 identity join).
+    from services.magic.identity_join import mlb_source_row_for_pick
+    sc = await mlb_source_row_for_pick(db, pick, "mlb_statcast_players")
     if sc and _is_fresh(sc.get("updated_at"), max_age_days=30):
         ev.availability = Availability.AVAILABLE
         ev.value        = float(sc.get("xslg") or 0.0)
@@ -149,7 +150,7 @@ async def build_mlb_batter_matchup(db, pick: dict) -> GoldEvidence:
     else:
         # Fallback: hitter intel cache (matchup-level).
         intel = await db.mlb_hitter_intel_cache.find_one(
-            {"matchup.player": pname})
+            {"matchup.player": pname}) if pname else None
         if intel:
             ev.availability = Availability.PARTIAL
             ev.source = "mlb_hitter_intel_cache"
@@ -174,10 +175,11 @@ async def build_mlb_pitcher_stuff(db, pick: dict) -> GoldEvidence:
         event_id=pick.get("canonical_event_id"),
     )
     pname = (pick.get("player_name") or pick.get("selection") or "").strip()
-    if not pname:
+    if not pname and not pick.get("canonical_player_id"):
         ev.notes = "no player name"
         return ev
-    st = await db.mlb_stuff_plus_players.find_one({"name": pname})
+    from services.magic.identity_join import mlb_source_row_for_pick
+    st = await mlb_source_row_for_pick(db, pick, "mlb_stuff_plus_players")
     if not st:
         ev.availability = Availability.UNAVAILABLE
         ev.notes = "no stuff+ record"
@@ -363,14 +365,12 @@ async def build_tennis_serve(db, pick: dict) -> GoldEvidence:
         canonical_player_id=pick.get("canonical_player_id"),
     )
     pname = (pick.get("player_name") or pick.get("selection") or "").strip()
-    surface = pick.get("surface") or "hard"
-    stats = await db.tennis_player_stats.find_one(
-        {"name": pname, "surface": surface})
-    if not stats:
-        stats = await db.tennis_player_stats.find_one({"name": pname})
-        if stats:
-            ev.availability = Availability.PARTIAL
-            ev.notes = f"no {surface}-specific stats; showing career"
+    surface = pick.get("surface") or "Hard"
+    from services.magic.identity_join import tennis_stats_row_for_pick
+    stats = await tennis_stats_row_for_pick(db, pick, surface=surface)
+    if stats and stats.get("surface") != surface:
+        ev.availability = Availability.PARTIAL
+        ev.notes = f"no {surface}-specific stats; using {stats.get('surface')} data"
     if not stats:
         ev.availability = Availability.UNAVAILABLE
         ev.notes = "no tennis_player_stats record"
@@ -429,16 +429,26 @@ async def build_tennis_workload(db, pick: dict) -> GoldEvidence:
         canonical_player_id=pick.get("canonical_player_id"),
     )
     pname = (pick.get("player_name") or pick.get("selection") or "").strip()
-    if not pname:
+    cpid = pick.get("canonical_player_id")
+    if not pname and not cpid:
         ev.availability = Availability.UNAVAILABLE
         return ev
+    # Build candidate query names — deterministic only.
+    from services.magic.identity_join import strip_tennis_prefix
+    candidates: list[str] = []
+    if cpid and str(cpid).lower().startswith("tp:"):
+        title = strip_tennis_prefix(cpid).title()
+        candidates.append(title)
+    if pname:
+        candidates.append(pname)
     # Count matches in last 14 days for the player from
     # tennis_matches_history — genuine backing.
     cutoff_14 = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
     cutoff_7 = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-    q7 = {"$or": [{"player1_name": pname}, {"player2_name": pname}],
+    q_names = {"$in": candidates} if candidates else pname
+    q7 = {"$or": [{"player1_name": q_names}, {"player2_name": q_names}],
           "match_date": {"$gte": cutoff_7}}
-    q14 = {"$or": [{"player1_name": pname}, {"player2_name": pname}],
+    q14 = {"$or": [{"player1_name": q_names}, {"player2_name": q_names}],
            "match_date": {"$gte": cutoff_14}}
     try:
         n7 = await db.tennis_matches_history.count_documents(q7)
