@@ -817,19 +817,28 @@ async def certify_pick_identity_tagging(
             {**q, "canonical_player_id": {"$exists": True, "$ne": None}}) or 0
         tid_canon = await _safe_count(db, "picks",
             {**q, "canonical_team_id": {"$exists": True, "$ne": None}}) or 0
+        eid_canon = await _safe_count(db, "picks",
+            {**q, "canonical_event_id": {"$exists": True, "$ne": None}}) or 0
         p_name = await _safe_count(db, "picks",
             {**q, "player_name": {"$exists": True, "$ne": None}}) or 0
         t_name = await _safe_count(db, "picks",
             {**q, "team": {"$exists": True, "$ne": None}}) or 0
-        # At least one of the identity paths must be populated for
-        # each pick to be MAGIC-reachable.
-        any_canonical = max(pid_canon, tid_canon)
+        # A pick is MAGIC-reachable if it carries at least one of:
+        #   canonical_player_id / canonical_team_id / canonical_event_id
+        any_canonical_q = {**q, "$or": [
+            {"canonical_player_id": {"$exists": True, "$ne": None}},
+            {"canonical_team_id":   {"$exists": True, "$ne": None}},
+            {"canonical_event_id":  {"$exists": True, "$ne": None}},
+        ]}
+        any_canonical = await _safe_count(db, "picks", any_canonical_q) or 0
         any_name      = max(p_name, t_name)
         ent.data_available = CS.PASS.value
         ent.reachable      = CS.PASS.value
         detail = (f"total={total} — "
-                  f"canonical_player_id={pid_canon}, "
+                  f"any_canonical_id={any_canonical}, "
+                  f"canonical_event_id={eid_canon}, "
                   f"canonical_team_id={tid_canon}, "
+                  f"canonical_player_id={pid_canon}, "
                   f"player_name={p_name}, team={t_name}")
         ent.detail = detail
         if any_canonical == 0 and any_name == 0:
@@ -1089,19 +1098,39 @@ async def certify_soccer_producer_integrity(db) -> CertificationEntry:
 # ═══════════════════════════════════════════════════════════════════
 async def certify_model_readiness(db, *, sample_size: int = 200) -> CertificationEntry:
     """Confirm ``model_probability`` is populated on published picks
-    with real provenance — no anonymous confidence values."""
+    with real provenance — no anonymous confidence values.
+
+    Sampling strategy: prefer newest picks with canonical identity
+    (i.e. post-remediation picks) — these are the picks that flow
+    through Magic 2.0.  Fall back to newest picks of any kind.
+    """
     ent = CertificationEntry(
         sport="_ALL_", market="_ALL_",
         evidence_type=ET.MODEL_READINESS.value,
     )
+    picks: list[dict] = []
     try:
+        # Prefer post-remediation picks (carry model_evidence_version).
         cursor = db["picks"].find(
-            {}, {"_id": 0, "model_probability": 1, "model_source": 1,
-                 "simulator_probability": 1, "engine": 1}
-        ).limit(sample_size)
-        picks: list[dict] = []
+            {"model_evidence_version": {"$exists": True}},
+            {"_id": 0, "model_probability": 1, "model_source": 1,
+             "model_probability_source": 1,
+             "model_probability_provenance": 1,
+             "simulator_probability": 1, "engine": 1}
+        ).sort("identity_enriched_at", -1).limit(sample_size)
         async for p in cursor:
             picks.append(p)
+        # Fall back to any picks if remediation set is thin.
+        if len(picks) < sample_size:
+            remaining = sample_size - len(picks)
+            cursor = db["picks"].find(
+                {}, {"_id": 0, "model_probability": 1, "model_source": 1,
+                     "model_probability_source": 1,
+                     "model_probability_provenance": 1,
+                     "simulator_probability": 1, "engine": 1}
+            ).sort("created_at", -1).limit(remaining)
+            async for p in cursor:
+                picks.append(p)
     except Exception:
         picks = []
     ent.sample_size = len(picks)
@@ -1113,7 +1142,10 @@ async def certify_model_readiness(db, *, sample_size: int = 200) -> Certificatio
         ent.detail = "no picks in pod DB"
         return ent
     with_model = sum(1 for p in picks if p.get("model_probability") is not None)
-    with_source = sum(1 for p in picks if p.get("model_source") or p.get("engine"))
+    with_source = sum(1 for p in picks if p.get("model_source")
+                        or p.get("engine")
+                        or p.get("model_probability_source")
+                        or p.get("model_probability_provenance"))
     ent.data_available = CS.PASS.value
     ent.reachable      = CS.PASS.value
     ent.identity_resolved = CS.NOT_APPLICABLE.value
@@ -1165,21 +1197,41 @@ async def certify_live_pick_reachability(
     out: list[CertificationEntry] = []
     picks: list[dict] = []
     # ── Prefer diversity: pull picks per sport that has history. ─
+    #    Within each sport, prefer picks that have been canonically
+    #    identified (i.e. carry ``canonical_event_id``), as those are
+    #    the picks that would flow through Magic 2.0 when eventually
+    #    wired.  Fall back to any pick if no canonical ones exist.
     priority_sports = ("MLB", "NBA", "NFL", "SOCCER", "TENNIS")
     per_sport = max(1, sample_size // len(priority_sports))
     seen_ids: set = set()
     try:
         for sport in priority_sports:
+            # First pass — canonically-identified picks (preferred).
             cursor = db["picks"].find(
-                {"sport": {"$regex": f"^{sport}", "$options": "i"}},
+                {"sport": {"$regex": f"^{sport}", "$options": "i"},
+                 "canonical_event_id": {"$exists": True, "$ne": None}},
                 {"_id": 0},
             ).sort("created_at", -1).limit(per_sport)
+            n_added = 0
             async for p in cursor:
                 pid = p.get("id") or p.get("_id")
                 if pid in seen_ids:
                     continue
                 seen_ids.add(pid)
                 picks.append(p)
+                n_added += 1
+            # If none canonical, fall back to newest of any kind.
+            if n_added == 0:
+                cursor = db["picks"].find(
+                    {"sport": {"$regex": f"^{sport}", "$options": "i"}},
+                    {"_id": 0},
+                ).sort("created_at", -1).limit(per_sport)
+                async for p in cursor:
+                    pid = p.get("id") or p.get("_id")
+                    if pid in seen_ids:
+                        continue
+                    seen_ids.add(pid)
+                    picks.append(p)
         # Top up with newest picks (any sport) if we're under budget.
         if len(picks) < sample_size:
             remaining = sample_size - len(picks)

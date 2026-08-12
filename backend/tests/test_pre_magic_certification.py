@@ -77,6 +77,14 @@ def _get_nested(doc, key):
 
 def _matches(doc, query):
     for k, v in query.items():
+        if k == "$or":
+            if not any(_matches(doc, sub) for sub in v):
+                return False
+            continue
+        if k == "$and":
+            if not all(_matches(doc, sub) for sub in v):
+                return False
+            continue
         cur = _get_nested(doc, k)
         if isinstance(v, dict):
             if "$lt" in v and not (cur is not None and cur < v["$lt"]):
