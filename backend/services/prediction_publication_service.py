@@ -70,6 +70,9 @@ PUBLISHED_FIELDS: tuple[str, ...] = (
     "published_reasoning",
     "published_line",
     "published_odds",
+    # MAGIC 3A.1 — first-class line preservation.
+    "published_side",
+    "published_line_source",
 )
 
 VERSION_FIELDS: tuple[str, ...] = (
@@ -95,6 +98,9 @@ LEGACY_ALIAS_MAP: dict[str, str] = {
     "confidence":       "published_confidence",
     "book_odds":        "published_odds",
     "line":             "published_line",
+    # MAGIC 3A.1 — first-class line preservation aliases.
+    "side":             "published_side",
+    "line_source":      "published_line_source",
 }
 
 
@@ -186,6 +192,16 @@ class PublishedPayload:
     feature_snapshot_version: str
     publication_source: str
     is_legacy: bool = False
+    # MAGIC 3A.1 — first-class line preservation (default None so
+    # older test fixtures/consumers don't need updates).
+    # `published_side` is the deterministically-parsed side
+    # ("over" / "under" / "positive_spread" / "negative_spread") —
+    # NEVER inferred from model direction or bet outcome.
+    # `published_line_source` is the provenance of the numeric line:
+    # "sportsbook_structured" | "selection_parse_fallback" |
+    # "historical_selection_parse" | None.
+    published_side: Optional[str] = None
+    published_line_source: Optional[str] = None
 
     def to_snapshot_dict(self, *, payload_hash: str,
                           idempotency_key: str,
@@ -205,6 +221,8 @@ class PublishedPayload:
             "published_reasoning": self.published_reasoning,
             "published_line": self.published_line,
             "published_odds": self.published_odds,
+            "published_side": self.published_side,
+            "published_line_source": self.published_line_source,
             "model_version": self.model_version,
             "fusion_version": self.fusion_version,
             "scoring_version": self.scoring_version,
@@ -480,6 +498,26 @@ class PredictionPublicationService:
         except Exception as _enrich_err:              # pragma: no cover
             logger.debug("publish_batch enrichment skipped: %s",
                          _enrich_err)
+
+        # ── MAGIC 3A.1 — first-class line/side/line_source attach ──
+        # Every candidate reaching the canonical boundary MUST carry
+        # line + side + line_source at the root.  Structured lines
+        # from producers are preserved untouched; missing lines are
+        # deterministically parsed from market/selection; unrecoverable
+        # rows stay None/None.  Never inferred from model or odds.
+        try:
+            from services.magic.line_wire import attach_line_fields
+            for _c in candidates_list:
+                try:
+                    attach_line_fields(_c)
+                except Exception as _line_err:        # pragma: no cover
+                    logger.debug(
+                        "publish_batch line attach skipped for %s: %s",
+                        _c.get("id"), _line_err,
+                    )
+        except Exception as _line_wire_err:            # pragma: no cover
+            logger.debug("publish_batch line wire skipped: %s",
+                         _line_wire_err)
 
         rejected_boundary: list[dict] = []
         rejection_reasons_counter: dict[str, int] = {}
@@ -772,6 +810,15 @@ class PredictionPublicationService:
             published_reasoning=published_reasoning,
             published_line=_f_or_none("line"),
             published_odds=_i_or_none("book_odds"),
+            # MAGIC 3A.1 — carry side + line_source from candidate.
+            published_side=(
+                str(candidate.get("side"))
+                if candidate.get("side") not in (None, "") else None
+            ),
+            published_line_source=(
+                str(candidate.get("line_source"))
+                if candidate.get("line_source") not in (None, "") else None
+            ),
             model_version=_s("model_version"),
             fusion_version=_s("fusion_version"),
             scoring_version=_s("scoring_version"),
@@ -841,6 +888,9 @@ class PredictionPublicationService:
         set_payload["confidence"] = _snap_conf
         set_payload["book_odds"] = snap_doc.get("published_odds")
         set_payload["line"] = snap_doc.get("published_line")
+        # MAGIC 3A.1 — dual-write side + line_source legacy aliases.
+        set_payload["side"] = snap_doc.get("published_side")
+        set_payload["line_source"] = snap_doc.get("published_line_source")
         set_payload["reasoning"] = snap_doc.get("published_reasoning")
 
         try:
