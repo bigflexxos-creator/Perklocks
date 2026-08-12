@@ -64,6 +64,10 @@ class _DB:
         if name not in self.c:
             self.c[name] = _Coll()
         return self.c[name]
+    def __getitem__(self, name):
+        if name not in self.c:
+            self.c[name] = _Coll()
+        return self.c[name]
 
 
 def _base_pick(sport="MLB", **kw):
