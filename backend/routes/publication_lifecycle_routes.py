@@ -152,6 +152,24 @@ async def publication_lifecycle(
         if src:
             last_success_by_producer[src] = row.get("last_success_at")
 
+    # Session B — reconciler scheduler status (safe, in-memory only).
+    try:
+        from services.publication_reconciler_scheduler import (
+            status as _reconciler_status,
+        )
+        reconciler_status = _reconciler_status()
+    except Exception:
+        reconciler_status = {"state": "unavailable"}
+
+    # Session B — Soccer capability registry summary (read-only, no
+    # secrets).  Full matrix available at
+    # /api/admin/publication/soccer-capabilities (see below).
+    try:
+        from services.soccer_capability_registry import summary as _soccer_summary
+        soccer_capability_summary = _soccer_summary()
+    except Exception:
+        soccer_capability_summary = {}
+
     return {
         "ok": True,
         "now": datetime.now(timezone.utc).isoformat().replace(
@@ -172,4 +190,31 @@ async def publication_lifecycle(
         "rejection_reason_counts": reason_counts,
         "producer_health":        producers,
         "last_success_by_producer": last_success_by_producer,
+        "reconciler":             reconciler_status,
+        "soccer_capability_summary": soccer_capability_summary,
+    }
+
+
+@router.get("/soccer-capabilities")
+async def soccer_capability_matrix(
+    user: Annotated[UserPublic, Depends(current_admin)],
+):
+    """Session B — full Soccer × Market capability matrix.
+
+    Read-only.  No secrets.  Each league entry includes per-market
+    capability status (REAL_VERIFIED / NO_CURRENT_EVENTS /
+    UNAVAILABLE / CURRENT_PROVIDER_UNAVAILABLE / UNVERIFIED),
+    the-odds-api sport-key (or null when the provider does not
+    carry the league), fixture support, identity source, roster
+    source, scorer/form source, player history, team history,
+    sportsbook provider tag, verification timestamp, and free-form
+    notes.  This is what operators consult before shipping a
+    new soccer market or debugging why a producer isn't
+    surfacing a league.
+    """
+    from services.soccer_capability_registry import matrix, MARKET_KEYS
+    return {
+        "ok":          True,
+        "market_keys": list(MARKET_KEYS),
+        "leagues":     matrix(),
     }
