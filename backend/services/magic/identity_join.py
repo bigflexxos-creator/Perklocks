@@ -67,16 +67,25 @@ async def mlb_source_row_for_pick(db, pick: dict, collection: str) -> Optional[d
         row = await db[collection].find_one({"player_id": str(cpid)})
         if row:
             return row
-    pname = normalize_name(
-        pick.get("player_name") or pick.get("selection") or "")
-    if not pname:
+    raw_pname = (pick.get("player_name")
+                  or pick.get("selection") or "")
+    pname_norm = normalize_name(raw_pname)
+    if not pname_norm:
         return None
+    # Exact-normalized match against ALL rows (source names are
+    # already lowercase for MLB collections).
     rows: list[dict] = []
-    async for r in db[collection].find({"name": pname}):
-        rows.append(r)
-        if len(rows) > 1:
-            return None       # ambiguous → refuse
-    return rows[0] if len(rows) == 1 else None
+    async for r in db[collection].find({}, {"player_id": 1,
+                                              "name": 1}):
+        if normalize_name(r.get("name") or "") == pname_norm:
+            rows.append(r)
+            if len(rows) > 1:
+                return None       # ambiguous → refuse
+    if len(rows) != 1:
+        return None
+    # Re-fetch full row for the resolved player_id.
+    return await db[collection].find_one(
+        {"player_id": rows[0].get("player_id")})
 
 
 # ── Tennis: canonical ID (tp:*) → tennis_player_stats.name join ────
