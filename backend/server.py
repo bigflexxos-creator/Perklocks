@@ -3359,6 +3359,25 @@ async def on_startup():
         'daily_refresh_loop', lambda: _daily_refresh_loop(),
         task_type='recurring_loop', critical=True,
     )
+    # ── Session B (2026-06) — Publication Reconciler ───────────────
+    # Periodically retries picks stuck in PUBLICATION_PENDING / FAILED
+    # via the Session-A canonical boundary.  Conservative 60s cadence
+    # + 5-minute age gate + single-run lease + idempotent publish
+    # (unique index on prediction_snapshots) means zero duplicate
+    # canonical publications.  Registered here so the existing
+    # `runtime_task_registry` owns the handle (shutdown-safe, no
+    # uncoordinated background loop).
+    try:
+        from services.publication_reconciler_scheduler import (
+            register_with_task_registry as _reg_reconciler,
+        )
+        _reg_reconciler(db, registry=_TASK_REGISTRY)
+        logger.info(
+            "publication reconciler loop registered "
+            "(interval=60s, age_gate=5min, lease-guarded)")
+    except Exception as _e_rec:
+        logger.warning(
+            "Failed to register publication reconciler loop: %s", _e_rec)
     # ── ESPN Soccer Fixture Fallback (iter-97) ─────────────────────
     # Pulls upcoming fixtures + moneyline picks for the 4 lower-tier
     # soccer leagues (CSL, Sweden, Norway, Finland) from ESPN's public
