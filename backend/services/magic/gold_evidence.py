@@ -420,7 +420,87 @@ async def build_tennis_return(db, pick: dict) -> GoldEvidence:
     return ev
 
 
+def _pregame_cutoff_from_pick(pick: dict) -> tuple[str, str]:
+    """Return ``(cutoff_iso, cutoff_date_yyyy_mm_dd)`` — the safest
+    pre-game cutoff timestamp available on the pick.
+
+    MAGIC 3D.3 timestamp precedence (user directive):
+
+      1. ``published_at``            — canonical publication timestamp
+      2. ``event_time`` / ``commence_time``  — event start
+      3. ``created_at``              — pick creation
+      4. ``datetime.now(UTC)``       — last-resort fallback
+
+    Historical matches may contribute only when
+    ``match_date < cutoff_date``.  We deliberately compare on the
+    calendar day (``YYYY-MM-DD``) because ``tennis_matches_history``
+    persists only a date (no HH:MM), so same-day-later leakage cannot
+    be ruled out.  Same-day → excluded.
+
+    A future-dated cutoff (event scheduled in the future) still yields
+    a valid cutoff — history uses matches strictly BEFORE that day.
+    But ``date > today`` matches in history are impossible and would
+    be filtered by the same ``< cutoff`` clause anyway.
+    """
+    for key in ("published_at", "event_time", "commence_time",
+                "kickoff", "start_time", "created_at"):
+        raw = pick.get(key)
+        if not raw:
+            continue
+        try:
+            s = str(raw).replace("Z", "+00:00")
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.isoformat(), dt.date().isoformat()
+        except Exception:
+            # Bare YYYY-MM-DD?
+            try:
+                s = str(raw)[:10]
+                dt = datetime.fromisoformat(s + "T00:00:00+00:00")
+                return dt.isoformat(), dt.date().isoformat()
+            except Exception:
+                continue
+    now = datetime.now(timezone.utc)
+    return now.isoformat(), now.date().isoformat()
+
+
+async def _count_tennis_matches(db, names: list[str],
+                                  cutoff_date: str,
+                                  window_days: int) -> int:
+    """Count pre-cutoff matches for any of the candidate names in the
+    given window.  Deterministic — exact name match only."""
+    if not names:
+        return 0
+    try:
+        window_start = (datetime.fromisoformat(cutoff_date + "T00:00:00+00:00")
+                        - timedelta(days=window_days)).date().isoformat()
+    except Exception:
+        return 0
+    q = {"$or": [{"winner_name": {"$in": names}},
+                  {"loser_name":  {"$in": names}}],
+         "date": {"$gte": window_start, "$lt": cutoff_date}}
+    try:
+        return int(await db.tennis_matches_history.count_documents(q))
+    except Exception:
+        return 0
+
+
 async def build_tennis_workload(db, pick: dict) -> GoldEvidence:
+    """MAGIC 3D.3 — Tennis workload evidence from `tennis_matches_history`.
+
+    Real persisted schema (audit 2026-08):
+      ``date`` = YYYY-MM-DD, ``winner_name`` / ``loser_name`` = human
+      title-case, ``surface`` (Hard/Clay/Grass), ``tourney_name``.
+
+    Rules:
+      * Player and opponent are resolved INDEPENDENTLY.
+      * Pregame cutoff = published_at → event_time → created_at.
+      * ``match_date < cutoff_date`` (same-day + future EXCLUDED).
+      * Deterministic name matching only — no fuzzy.
+      * Missing player match → PARTIAL (honest — dataset is ATP-only).
+      * NEVER fabricate a value.
+    """
     ev = GoldEvidence(
         evidence_type=GoldEvidenceType.TENNIS_WORKLOAD,
         sport="Tennis",
@@ -428,45 +508,106 @@ async def build_tennis_workload(db, pick: dict) -> GoldEvidence:
         side=pick.get("side"),
         canonical_player_id=pick.get("canonical_player_id"),
     )
+    from services.magic.identity_join import (
+        strip_tennis_prefix, normalize_name,
+    )
+
+    def _candidates(name: str | None, cpid: str | None) -> list[str]:
+        cands: list[str] = []
+        if cpid and str(cpid).lower().startswith("tp:"):
+            cands.append(strip_tennis_prefix(cpid).title())
+        if name:
+            n = str(name).strip()
+            if n:
+                cands.append(n)
+                # Strip trailing team parenthetical "Player (XYZ)"
+                if "(" in n:
+                    n2 = n.split("(", 1)[0].strip()
+                    if n2 and n2 != n:
+                        cands.append(n2)
+        # Deduplicate preserving order
+        seen: set[str] = set()
+        out: list[str] = []
+        for c in cands:
+            if c and c not in seen:
+                out.append(c); seen.add(c)
+        return out
+
     pname = (pick.get("player_name") or pick.get("selection") or "").strip()
-    cpid = pick.get("canonical_player_id")
-    if not pname and not cpid:
+    cpid  = pick.get("canonical_player_id")
+    p_cands = _candidates(pname, cpid)
+    if not p_cands:
         ev.availability = Availability.UNAVAILABLE
+        ev.notes = "no player name / canonical_id on pick"
         return ev
-    # Build candidate query names — deterministic only.
-    from services.magic.identity_join import strip_tennis_prefix
-    candidates: list[str] = []
-    if cpid and str(cpid).lower().startswith("tp:"):
-        title = strip_tennis_prefix(cpid).title()
-        candidates.append(title)
-    if pname:
-        candidates.append(pname)
-    # Count matches in last 14 days for the player from
-    # tennis_matches_history — genuine backing.
-    cutoff_14 = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
-    cutoff_7 = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-    q_names = {"$in": candidates} if candidates else pname
-    q7 = {"$or": [{"player1_name": q_names}, {"player2_name": q_names}],
-          "match_date": {"$gte": cutoff_7}}
-    q14 = {"$or": [{"player1_name": q_names}, {"player2_name": q_names}],
-           "match_date": {"$gte": cutoff_14}}
-    try:
-        n7 = await db.tennis_matches_history.count_documents(q7)
-        n14 = await db.tennis_matches_history.count_documents(q14)
-    except Exception:
-        n7 = n14 = 0
-    if n14 == 0:
+
+    # Pregame cutoff — user directive: use the safest available
+    # timestamp on the pick.  Same-day (and future) matches EXCLUDED.
+    cutoff_iso, cutoff_day = _pregame_cutoff_from_pick(pick)
+
+    # Player workload counts.
+    n7  = await _count_tennis_matches(db, p_cands, cutoff_day, 7)
+    n14 = await _count_tennis_matches(db, p_cands, cutoff_day, 14)
+    n30 = await _count_tennis_matches(db, p_cands, cutoff_day, 30)
+
+    # Opponent workload — independent resolution.
+    opp_name = (pick.get("opponent_player_name")
+                or pick.get("opponent_team")
+                or pick.get("opponent_name") or "").strip()
+    opp_cpid = pick.get("canonical_opponent_id")
+    opp_cands = _candidates(opp_name, opp_cpid)
+    o7  = await _count_tennis_matches(db, opp_cands, cutoff_day, 7)  if opp_cands else 0
+    o14 = await _count_tennis_matches(db, opp_cands, cutoff_day, 14) if opp_cands else 0
+    o30 = await _count_tennis_matches(db, opp_cands, cutoff_day, 30) if opp_cands else 0
+
+    # Availability policy — honest with dataset scope (ATP-only).
+    ev.source = "tennis_matches_history"
+    ev.timestamp = cutoff_iso
+    ev.provenance = {
+        "cutoff":         cutoff_iso,
+        "cutoff_date":    cutoff_day,
+        "player_candidates":  p_cands,
+        "opponent_candidates": opp_cands,
+        "player_matches_7d":   n7,
+        "player_matches_14d":  n14,
+        "player_matches_30d":  n30,
+        "opponent_matches_7d": o7,
+        "opponent_matches_14d": o14,
+        "opponent_matches_30d": o30,
+        "source": "tennis_matches_history",
+        "cutoff_source":
+            "published_at" if pick.get("published_at") else
+            "event_time"    if pick.get("event_time")    else
+            "created_at"    if pick.get("created_at")    else
+            "now_utc",
+        "temporal_rule": "match_date < cutoff_date (same-day+future excluded)",
+    }
+    if n30 == 0 and o30 == 0:
         ev.availability = Availability.PARTIAL
-        ev.notes = "no recent matches in tennis_matches_history"
+        ev.notes = ("no history matches within 30d for player or "
+                    "opponent (WTA/junior/rookie players not in "
+                    "tennis_matches_history feed)")
+        return ev
+    if n30 == 0 and o30 > 0:
+        # Player workload absent; opponent workload present → PARTIAL.
+        ev.availability = Availability.PARTIAL
+        ev.value = float(o14)
+        ev.matchup_feature = "opponent_matches_in_last_14d"
+        ev.sample_size = o30
+        ev.notes = "player workload unobserved; using opponent workload"
+        return ev
+    if n14 == 0 and n30 > 0:
+        # Rare-play player — value degraded to 30d workload.
+        ev.availability = Availability.AVAILABLE
+        ev.value = float(n30)
+        ev.matchup_feature = "matches_in_last_30d"
+        ev.sample_size = n30
+        ev.direction = ("negative" if n30 >= 15 else "neutral")
         return ev
     ev.availability = Availability.AVAILABLE
     ev.value = float(n14)
     ev.matchup_feature = "matches_in_last_14d"
-    ev.source = "tennis_matches_history"
-    ev.provenance = {
-        "matches_7d":  n7, "matches_14d": n14,
-        "source": "tennis_matches_history",
-    }
+    ev.sample_size = n30
     ev.direction = ("negative" if n14 >= 8 else "neutral")
     return ev
 
@@ -579,4 +720,5 @@ __all__ = [
     "build_tennis_serve", "build_tennis_return", "build_tennis_workload",
     "build_nba_matchup", "build_nfl_usage",
     "build_lineup_injury", "build_set_piece_role",
+    "_pregame_cutoff_from_pick",
 ]
