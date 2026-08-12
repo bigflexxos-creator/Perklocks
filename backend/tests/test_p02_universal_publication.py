@@ -314,7 +314,12 @@ def test_helper_swallows_publication_failure():
         # `new_snapshots` is 0 and errors list is non-empty.
         assert out.get("new_snapshots", 0) == 0
         assert out.get("errors") is not None
-        assert len(out["errors"]) == 1
+        # Session A: missing-id candidates are now caught by the
+        # canonical boundary before publish() runs, so they land in
+        # ``boundary_rejected`` instead of ``errors``.  Either channel
+        # proves the ingest loop was NOT crashed by the bad pick.
+        assert (len(out["errors"]) +
+                out.get("boundary_rejected", 0)) == 1
     _run(run())
 
 

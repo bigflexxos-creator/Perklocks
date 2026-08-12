@@ -88,10 +88,20 @@ def _american_to_prob(ml: Optional[float]) -> Optional[float]:
 
 
 def _prob_to_american(p: float) -> int:
-    p = max(0.02, min(0.95, p))
-    if p >= 0.5:
-        return -int(round(p / (1 - p) * 100))
-    return int(round((1 - p) / p * 100))
+    """DEPRECATED — Session A (2026-06) purge.
+
+    This function used to synthesize sportsbook American odds from a
+    model probability.  Doing so was the exact "model prob → book
+    odds" pipe the P0 Session A directive removes.  It is retained
+    only as a stub that RAISES so any accidental re-use is caught
+    loudly in tests / CI instead of leaking synthetic prices.
+    """
+    raise NotImplementedError(
+        "_prob_to_american is purged by Session A — do not synthesize "
+        "sportsbook American odds from model probability.  If no real "
+        "sportsbook line exists, set book_odds=None + "
+        "no_real_book_line=True + odds_source='MODEL_ONLY'.",
+    )
 
 
 async def _fetch_scoreboard(cx: httpx.AsyncClient, slug: str) -> list[dict]:
@@ -219,10 +229,50 @@ def _select_side(ev: dict) -> Optional[dict]:
 
 def _build_pick(sport_key: str, league: str, ev: dict, sel: dict,
                 today_str: str) -> dict:
-    """Turn one parsed event + side selection into a pick document."""
+    """Turn one parsed event + side selection into a pick document.
+
+    Session A (2026-06) — synthetic-odds purge.  Historically this
+    fallback computed `book_odds = _prob_to_american(prob)` when ESPN
+    did not carry a real moneyline for the event.  That price was
+    NOT a sportsbook line — it was the model probability rendered
+    back as American odds, which the P0 Session A directive forbids.
+
+    Post-purge behaviour:
+
+    * When ESPN provides a REAL moneyline for the chosen side
+      (``sel['book_odds_source'] == 'espn'``) we take THAT American
+      price verbatim and mark ``odds_source='espn'`` so the boundary
+      accepts it as REAL.
+    * When there is no ESPN moneyline (form / hfa_baseline branches)
+      we mark ``book_odds=None`` + ``no_real_book_line=True`` +
+      ``odds_source='MODEL_ONLY'``.  ``edge_percent`` is None (never 0).
+      Model provenance is preserved as ``model_probability``.
+    """
     event_str = f"{ev['away']} @ {ev['home']}"
     prob   = float(sel["probability"])
-    book_odds = _prob_to_american(prob)
+    src    = sel.get("book_odds_source") or "hfa_baseline"
+
+    # ── Real ESPN sportsbook moneyline branch ────────────────────
+    real_book_odds: Optional[int] = None
+    no_real_line = False
+    odds_source_val = "MODEL_ONLY"
+    if src == "espn":
+        # sel came from Case 1 or Case 2 in _select_side, where we
+        # trusted an ESPN-published moneyline.  Convert THAT value
+        # (already an American int) to book_odds verbatim.
+        raw_ml = (
+            ev.get("home_ml") if sel.get("side") == "home"
+            else ev.get("away_ml")
+        )
+        try:
+            real_book_odds = int(round(float(raw_ml)))
+            odds_source_val = "espn"
+        except (TypeError, ValueError):
+            real_book_odds = None
+    if real_book_odds is None:
+        no_real_line = True
+        odds_source_val = "MODEL_ONLY"
+
     pick_id = _pick_id(sport_key, ev["event_id"], sel["side"])
     return {
         "id":                   pick_id,
@@ -237,15 +287,23 @@ def _build_pick(sport_key: str, league: str, ev: dict, sel: dict,
         "market_type":          "moneyline",
         "selection":            sel["team"],
         "selected_team":        sel["team"],
+        # Model probability is authoritative — publication boundary
+        # requires it (rule 3: model provenance).
+        "model_probability":    round(prob, 4),
+        "model_win_prob":       round(prob, 4),
         "win_probability":      round(prob * 100, 2),
-        "book_odds":            book_odds,
+        "book_odds":            real_book_odds,
         "implied_probability":  round(prob * 100, 2),
         "confidence":           "MEDIUM",
         "lock_score":           round(50 + (prob - 0.5) * 80, 1),   # 50..90
-        # Strict edge gate — no real sportsbook = no edge.
+        # Strict edge gate — no real sportsbook = no edge.  Preserved
+        # as `None` (missing/UNKNOWN), never coerced to 0.
         "edge_percent":         None,
-        "odds_source":          _SOURCE_TAG,
-        "odds_status":          "backup",
+        "odds_source":          odds_source_val,
+        "odds_status":          ("real" if real_book_odds is not None
+                                  else "no_book_line"),
+        "no_real_book_line":    no_real_line,
+        "no_model_probability_reason": None,
         "confidence_penalty":   -8,
         "source":               _SOURCE_TAG,
         "grade":                "Playable",
@@ -256,22 +314,30 @@ def _build_pick(sport_key: str, league: str, ev: dict, sel: dict,
         "external_id":          f"espn-{ev['event_id']}",
         "pick_rationale": {
             "engine":  _SOURCE_TAG,
-            "engine_version": "espn_soccer_fixtures.v1",
+            "engine_version": "espn_soccer_fixtures.v2_no_synth_odds",
             "summary": (
-                f"{sel['team']} moneyline · fair value ~{prob*100:.0f}% · "
-                f"ESPN scoreboard coverage"
+                f"{sel['team']} moneyline · model p ~{prob*100:.0f}% · "
+                + ("ESPN sportsbook moneyline"
+                    if real_book_odds is not None
+                    else "no real book line (MODEL_ONLY)")
             ),
             "evidence": [
                 f"📊 ESPN scoreboard: {ev['home_form'] or '?'} home form vs "
                 f"{ev['away_form'] or '?'} away form",
-                f"🏷 Fallback coverage ({sel['book_odds_source']}) — "
-                f"no primary sportsbook line",
+                (f"💵 Real ESPN moneyline: {real_book_odds:+d}"
+                    if real_book_odds is not None
+                    else f"🏷 MODEL_ONLY coverage ({src}) — no real "
+                          f"sportsbook line, book_odds omitted"),
             ],
-            "concerns": [
-                "This tournament is not carried by our primary US "
-                "sportsbook feed — pick is derived from ESPN's public "
-                "scoreboard.  No live sportsbook line, no edge measure.",
-            ],
+            "concerns": (
+                []
+                if real_book_odds is not None
+                else [
+                    "This tournament is not carried by our primary US "
+                    "sportsbook feed and ESPN has no moneyline for this "
+                    "event — pick is model-only.  No book line, no edge.",
+                ]
+            ),
         },
     }
 

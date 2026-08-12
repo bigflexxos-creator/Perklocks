@@ -2152,6 +2152,17 @@ try:
             "Pre-Magic Certification mounted at /api/admin/certification/*")
     except Exception as _e_cert:
         logger.warning("Pre-Magic Certification failed to mount: %s", _e_cert)
+    # ── Session A (2026-06) — Publication Lifecycle observability ──
+    # Read-only admin endpoint for diagnosing stuck picks / silent
+    # producer failures.  See routes/publication_lifecycle_routes.py.
+    try:
+        from routes import publication_lifecycle_routes
+        app.include_router(publication_lifecycle_routes.router)
+        logger.info(
+            "Publication Lifecycle mounted at /api/admin/publication/*")
+    except Exception as _e_pl:
+        logger.warning(
+            "Publication Lifecycle failed to mount: %s", _e_pl)
 except Exception as _routes_mount_err:
     logger.exception("Extracted route modules failed to mount: %s", _routes_mount_err)
 
