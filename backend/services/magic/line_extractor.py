@@ -82,18 +82,29 @@ def extract_line_with_provenance(
     """Return {'line', 'side', 'line_source'} — structured wins over
     parse; parse wins over None; None is returned when neither
     source produces a value."""
+    # Side is deterministically parseable from either the market OR
+    # the selection string — combine both so patterns like
+    # ("market='Mikal Bridges Over 1.5 Assists', selection='Mikal
+    # Bridges'") still yield side='over'.  Prefer selection when it
+    # ALREADY carries a proven side token (e.g., 'Over'/'Under'), but
+    # fall through to the market string when selection is just a
+    # team/player name.
+    _side_from_selection = extract_side(selection)
+    _side_from_market    = extract_side(market)
+    _side = _side_from_selection or _side_from_market
+
     if structured_line is not None:
         try:
             v = float(structured_line)
-            return {"line": v, "side": extract_side(selection or market),
+            return {"line": v, "side": _side,
                      "line_source": "sportsbook_structured"}
         except (TypeError, ValueError):
             pass
     v = extract_line(market, selection)
     if v is None:
-        return {"line": None, "side": extract_side(selection or market),
+        return {"line": None, "side": _side,
                  "line_source": None}
-    return {"line": v, "side": extract_side(selection or market),
+    return {"line": v, "side": _side,
              "line_source": "selection_parse_fallback"}
 
 
