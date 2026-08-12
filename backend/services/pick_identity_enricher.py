@@ -385,8 +385,18 @@ def enrich_pick_identity(pick: dict) -> dict:
 
     # ── 6. Final metadata ───────────────────────────────────────
     out["identity_quality"] = identity_quality
+    # §1 (Final Closure): explicit identity_class.  Sync enricher only
+    # sees provider/fallback/unresolved from identity_resolver — map
+    # those to the four-state vocabulary.  Async enricher may upgrade
+    # this to AUTHORITATIVE/MAPPED after DB verification.
+    _CLASS_MAP = {
+        "provider":     "AUTHORITATIVE",
+        "fallback":     "PROVISIONAL",
+        "unresolved":   "UNRESOLVED",
+    }
+    out["identity_class"] = _CLASS_MAP.get(identity_quality, "UNRESOLVED")
     out["identity_resolution"] = resolution
-    out["pick_identity_version"] = 1
+    out["pick_identity_version"] = 2
     out["identity_enriched_at"] = datetime.now(timezone.utc).isoformat()
     return out
 
@@ -428,36 +438,51 @@ async def enrich_pick_identity_async(db, pick: dict) -> dict:
     """DB-aware enrichment.  Returns the same shape as
     :func:`enrich_pick_identity`, but with canonical ids upgraded
     from ``fallback:*`` to the AUTHORITATIVE ids used by history
-    collections whenever a match is found."""
+    collections whenever a match is found.
+
+    §1 (Final Closure): stamps an explicit ``identity_class`` field
+    with one of ``AUTHORITATIVE`` / ``MAPPED`` / ``PROVISIONAL`` /
+    ``UNRESOLVED``.  Only AUTHORITATIVE / MAPPED satisfy Pre-Magic
+    canonical identity certification.  A ``fallback:<sha1>`` id
+    (deterministic hash) stays PROVISIONAL — never AUTHORITATIVE.
+    """
     from services.pick_identity_authority import (
         resolve_team_authoritative,
         resolve_player_authoritative,
+        CLASS_AUTHORITATIVE, CLASS_MAPPED,
+        CLASS_PROVISIONAL, CLASS_UNRESOLVED,
     )
     out = enrich_pick_identity(pick)
     sport = _sport_l(pick.get("sport"))
 
-    # Team upgrade — for team markets AND totals (which carry
-    # home/away names).
+    # Track class per (team / opponent / player).
+    team_class = None
+    opp_class = None
+    player_class = None
+
+    # Team upgrade (§3).
     if out.get("team"):
-        auth = await resolve_team_authoritative(
+        auth_id, cls = await resolve_team_authoritative(
             db, sport=sport, name=out["team"])
-        if auth:
-            out["canonical_team_id"] = auth
-            out["identity_quality"] = "authoritative"
+        if auth_id:
+            out["canonical_team_id"] = auth_id
+            team_class = cls
             out["identity_resolution"]["sources"].append(
-                "authoritative_team_lookup")
+                f"authoritative_team_lookup:{cls}")
     if out.get("opponent_team"):
-        auth = await resolve_team_authoritative(
+        auth_id, cls = await resolve_team_authoritative(
             db, sport=sport, name=out["opponent_team"])
-        if auth:
-            out["canonical_opponent_id"] = auth
+        if auth_id:
+            out["canonical_opponent_id"] = auth_id
+            opp_class = cls
             out["identity_resolution"]["sources"].append(
-                "authoritative_opponent_lookup")
+                f"authoritative_opponent_lookup:{cls}")
+
+    # Event id upgrade — only when BOTH teams resolved authoritatively.
     if out.get("home_team_name") and sport in _TEAM_SPORTS:
-        # Also upgrade event_id if home+away resolved authoritatively.
-        home_auth = await resolve_team_authoritative(
+        home_auth, hcls = await resolve_team_authoritative(
             db, sport=sport, name=out["home_team_name"])
-        away_auth = await resolve_team_authoritative(
+        away_auth, acls = await resolve_team_authoritative(
             db, sport=sport, name=out.get("away_team_name"))
         if home_auth and away_auth and pick.get("event_time"):
             from services.identity_resolver import resolve_event
@@ -468,30 +493,67 @@ async def enrich_pick_identity_async(db, pick: dict) -> dict:
                 away_team_id=away_auth,
             )
             out["canonical_event_id"] = ev.canonical_event_id
-            out["event_identity_quality"] = ev.identity_quality
+            # Event id class depends on BOTH team classes.
+            if hcls == CLASS_AUTHORITATIVE and acls == CLASS_AUTHORITATIVE:
+                out["event_identity_class"] = CLASS_AUTHORITATIVE
+            else:
+                out["event_identity_class"] = CLASS_MAPPED
 
-    # Player upgrade — team markets never have a player; player and
-    # individual markets do.
+    # Player upgrade.
     if out.get("player_name"):
         team_hint = out.get("team") or pick.get("team")
-        auth = await resolve_player_authoritative(
+        pid, cls = await resolve_player_authoritative(
             db, sport=sport, name=out["player_name"],
             team_hint=team_hint,
         )
-        if auth:
-            out["canonical_player_id"] = auth
-            out["identity_quality"] = "authoritative"
+        if pid:
+            out["canonical_player_id"] = pid
+            player_class = cls
             out["identity_resolution"]["sources"].append(
-                "authoritative_player_lookup")
-        # Also upgrade individual-sport opponent (they are players).
+                f"authoritative_player_lookup:{cls}")
+        # Individual-sport opponent (player).
         if sport in _INDIVIDUAL_SPORTS and out.get("opponent_team"):
-            opp_auth = await resolve_player_authoritative(
+            opp_pid, opp_cls = await resolve_player_authoritative(
                 db, sport=sport, name=out["opponent_team"])
-            if opp_auth:
-                out["canonical_opponent_id"] = opp_auth
+            if opp_pid:
+                out["canonical_opponent_id"] = opp_pid
+                opp_class = opp_cls
                 out["identity_resolution"]["sources"].append(
-                    "authoritative_opponent_player_lookup")
+                    f"authoritative_opponent_player_lookup:{opp_cls}")
 
+    # ── Final identity_class rollup ─────────────────────────────
+    # Pick-level identity_class reflects the "primary" identity for
+    # the pick: player for player/individual markets, team for team
+    # markets, otherwise the event.
+    mcls = out["identity_resolution"]["market_class"]
+    primary_cls = None
+    if mcls in ("PLAYER", "INDIVIDUAL"):
+        primary_cls = player_class
+    elif mcls == "TEAM":
+        primary_cls = team_class
+    elif mcls == "TOTAL":
+        primary_cls = out.get("event_identity_class")
+    if primary_cls is None:
+        # Check if a fallback (provisional) id is present.
+        for k in ("canonical_player_id", "canonical_team_id",
+                    "canonical_event_id"):
+            v = out.get(k)
+            if isinstance(v, str) and (v.startswith("fallback:") or
+                                          v.startswith("unresolved:")):
+                primary_cls = CLASS_PROVISIONAL
+                break
+        if primary_cls is None:
+            primary_cls = CLASS_UNRESOLVED
+    out["identity_class"] = primary_cls
+    # Legacy identity_quality — retained for backward compatibility.
+    # Map the new class to the old vocabulary.
+    quality_map = {
+        CLASS_AUTHORITATIVE: "authoritative",
+        CLASS_MAPPED: "authoritative",   # both count for the old field
+        CLASS_PROVISIONAL: "fallback",
+        CLASS_UNRESOLVED: "unresolved",
+    }
+    out["identity_quality"] = quality_map.get(primary_cls, "unresolved")
     return out
 
 

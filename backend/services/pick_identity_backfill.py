@@ -56,11 +56,17 @@ async def enrich_pick(db, pick: dict, *, dry_run: bool) -> Optional[dict]:
     update_fields: dict = {}
     _CANON_ID_KEYS = ("canonical_team_id", "canonical_player_id",
                         "canonical_opponent_id", "canonical_event_id")
+    _ALWAYS_REFRESH = ("identity_class", "identity_quality",
+                         "identity_resolution", "pick_identity_version",
+                         "identity_enriched_at", "event_identity_class")
     for k, v in {**ident, **model}.items():
         if v is None:
             continue
         cur = pick.get(k)
         if cur in (None, "", []):
+            update_fields[k] = v
+            continue
+        if k in _ALWAYS_REFRESH:
             update_fields[k] = v
             continue
         # Upgrade fallback ids to authoritative ones (§3).
@@ -70,9 +76,6 @@ async def enrich_pick(db, pick: dict, *, dry_run: bool) -> Optional[dict]:
                 and not v.startswith("unresolved:"):
             update_fields[k] = v
             continue
-        if k == "identity_quality" and cur == "fallback" and \
-                v == "authoritative":
-            update_fields[k] = v
     if not update_fields:
         return None
     if not dry_run:
