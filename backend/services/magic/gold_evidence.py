@@ -260,9 +260,19 @@ async def build_soccer_shot_quality(db, pick: dict) -> GoldEvidence:
 
 
 async def build_soccer_creation(db, pick: dict) -> GoldEvidence:
-    """Creator (xA / key_passes) pathway.  `xA` is NOT persisted;
-    `key_passes` acts as a PARTIAL proxy.  Assist markets should
-    consume THIS, never `shot_quality` alone."""
+    """Creator pathway — AUTHORITATIVE xA when persisted, key-pass
+    proxy otherwise.
+
+    MAGIC 3E.b (2026-06): the Phase-1 audit proved
+    ``soccer_player_form.xa`` is fully populated (2,774/2,774 rows) via
+    the Understat ingest.  Prior 3D behavior of always marking this
+    PARTIAL was a wiring bug — real xA now emits AVAILABLE with
+    ``matchup_feature='xa_per_90'``.  Key-pass proxy is retained as
+    a PARTIAL fallback for leagues Understat doesn't cover.
+
+    Never labels a key-pass proxy as xA.  ``matchup_feature``
+    disambiguates the two paths.
+    """
     ev = GoldEvidence(
         evidence_type=GoldEvidenceType.SOCCER_CREATION,
         sport="Soccer",
@@ -280,23 +290,56 @@ async def build_soccer_creation(db, pick: dict) -> GoldEvidence:
         ev.availability = Availability.UNAVAILABLE
         ev.notes = "no soccer_player_form record"
         return ev
+    xa = frm.get("xa")
     kp = frm.get("key_passes")
     minutes = frm.get("minutes") or 0
     assists = frm.get("assists")
+    games = int(frm.get("games") or 0)
+    # ── AUTHORITATIVE xA path (Understat) ────────────────────────
+    if xa is not None and minutes >= 90:
+        try:
+            xa_f = float(xa)
+        except (TypeError, ValueError):
+            xa_f = None
+        if xa_f is not None:
+            ev.availability = Availability.AVAILABLE
+            ev.value = xa_f / max(minutes / 90.0, 1.0)
+            ev.matchup_feature = "xa_per_90"
+            ev.sample_size = games
+            ev.source = "soccer_player_form.xa"
+            ev.timeframe = str(frm.get("season") or "")
+            ev.provenance = {
+                "xa":            xa_f,
+                "xa_per_90":     ev.value,
+                "assists":       assists,
+                "key_passes":    kp,
+                "key_passes_per_90":
+                    (float(kp) / max(minutes / 90.0, 1.0)) if kp else None,
+                "minutes":       minutes,
+                "games":         games,
+                "position":      frm.get("position"),
+                "team":          frm.get("team"),
+                "league":        frm.get("league"),
+                "season":        frm.get("season"),
+                "source":        "soccer_player_form.xa",
+                "note":          "authoritative Understat xA",
+            }
+            ev.direction = ("positive" if ev.value >= 0.15
+                            else "neutral")
+            return ev
+    # ── PARTIAL key-pass proxy path (small league / xA missing) ──
     if kp is None or minutes < 90:
         ev.availability = Availability.PARTIAL
-        ev.notes = "no xA persisted — key_passes proxy insufficient"
+        ev.notes = "no xA and key_passes proxy insufficient (< 90min)"
         ev.provenance = {"source": "soccer_player_form",
-                          "note": "xA field missing; only assists+key_passes proxy",
+                          "note": "xa missing AND key_passes proxy insufficient",
                           "assists": assists, "key_passes": kp,
                           "minutes": minutes}
         return ev
-    # PARTIAL because true xA is not persisted — key_passes is a rate
-    # proxy only, weaker than xA.
     ev.availability = Availability.PARTIAL
     ev.value = float(kp) / max(minutes / 90.0, 1.0)  # KP per 90
     ev.matchup_feature = "key_passes_per_90"
-    ev.sample_size = int(frm.get("games") or 0)
+    ev.sample_size = games
     ev.source = "soccer_player_form (key_passes proxy)"
     ev.provenance = {
         "assists":     assists, "key_passes": kp,
