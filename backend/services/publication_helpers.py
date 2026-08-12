@@ -176,6 +176,39 @@ async def publish_upserted_picks(
                         "identity/model persist failed for %s: %s",
                         p.get("id"), _upd_err,
                     )
+            # ── MAGIC 3D.3 — MLB producer-side canonical stamp ─────
+            # After the generic identity enricher runs, MLB player-
+            # market picks may still lack a canonical_player_id that
+            # joins to mlb_statcast_players / mlb_stuff_plus_players.
+            # Stamp the MLB Stats API id at the PRODUCER boundary so
+            # every new MLB pick reaches Magic Gold evidence with an
+            # authoritative id — no backfill script required.
+            # * Existing AUTHORITATIVE id wins — never overwrite.
+            # * Ambiguous / unresolved → leave as-is.
+            try:
+                from services.mlb_producer_identity_stamp import (
+                    stamp_mlb_producer_identity,
+                )
+                mlb_stamp = await stamp_mlb_producer_identity(db, p)
+                if mlb_stamp and p.get("id"):
+                    for k, v in mlb_stamp.items():
+                        p[k] = v
+                    try:
+                        await db.picks.update_one(
+                            {"id": p["id"]},
+                            {"$set": mlb_stamp},
+                        )
+                        _enriched_count += 1
+                    except Exception as _mlb_upd_err:
+                        logger.debug(
+                            "mlb producer stamp persist failed for %s: %s",
+                            p.get("id"), _mlb_upd_err,
+                        )
+            except Exception as _mlb_err:
+                logger.debug(
+                    "mlb producer stamp raised on pick %s: %s",
+                    p.get("id"), _mlb_err,
+                )
         if _enriched_count or _model_evidence_count:
             logger.info(
                 "%s canonical identity/model enrichment: "
