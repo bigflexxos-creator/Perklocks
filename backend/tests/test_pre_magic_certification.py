@@ -541,6 +541,7 @@ def test_pick_identity_tagging_pass_when_canonical():
             "id": f"nfl-{i}", "sport": "NFL",
             "canonical_player_id": f"nfl-{i}",
             "player_name": "Player X",
+            "identity_class": "AUTHORITATIVE",   # §1 Final Closure
         })
     out = _run(checks.certify_pick_identity_tagging(db))
     nfl = next(e for e in out if e.sport == "NFL")
@@ -692,13 +693,14 @@ def test_live_pick_reachability_end_to_end():
             "hits": 1 + (i % 2),
             "total_bases": 2,
         })
-    # Seed a real live pick.
+    # Seed a real live pick — with AUTHORITATIVE identity class.
     db["picks"].docs.append({
         "id": "pick-1",
         "sport": "MLB",
         "market": "player_hits",
         "player_name": "Aaron Judge",
         "canonical_player_id": "mlb-p1",
+        "identity_class": "AUTHORITATIVE",
         "line": 1.5,
         "direction": "over",
         "commence_time": "2026-06-15T20:00:00Z",

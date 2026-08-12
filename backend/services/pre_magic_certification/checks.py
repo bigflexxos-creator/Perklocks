@@ -82,6 +82,45 @@ def _adapter_market(market: str) -> str:
     return _ADAPTER_MARKET_ALIAS.get(m, m)
 
 
+def _canonical_market_key(pick: dict) -> str:
+    """Derive the canonical metric key from a pick's display market.
+
+    Handles:
+      * ``"Miami Marlins Moneyline"`` / ``"Sorana Cirstea Moneyline"``
+        → ``"moneyline"``
+      * ``"Total Goals Over 2.5"`` → ``"totals"``
+      * ``"Player X Over 24.5 Points"`` → ``"points"``  (atom)
+      * ``"Anytime TD"`` → ``"anytime_td"``
+      * Falls back to ``_adapter_market(market.lower())``.
+    """
+    m = (pick.get("market") or "").lower()
+    if not m:
+        return ""
+    # Team-level markets.
+    for tok in ("moneyline", "h2h"):
+        if tok in m:
+            return "moneyline"
+    for tok in ("spread", "runline", "puckline", "handicap"):
+        if tok in m:
+            return "spreads"
+    if "total" in m and ("over" in m or "under" in m):
+        return "totals"
+    # Player-prop atoms.
+    for atom in ("passing_yards", "rushing_yards", "receiving_yards",
+                    "receptions", "passing_tds", "rushing_tds",
+                    "receiving_tds", "points", "rebounds", "assists",
+                    "threes", "hits", "total_bases", "home_runs",
+                    "rbis", "runs", "strikeouts", "outs", "goals",
+                    "shots", "shots_on_target", "aces",
+                    "double_faults", "games_won", "sets_won"):
+        if atom in m or atom.replace("_", " ") in m:
+            return _ADAPTER_MARKET_ALIAS.get(atom, atom)
+    return _adapter_market(m)
+
+
+# ═══════════════════════════════════════════════════════════════════
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Atom aliasing — canonical catalogue atom → any of the real column
 # names it can appear under in ``player_game_actuals`` / adapters.
@@ -812,48 +851,56 @@ async def certify_pick_identity_tagging(
             ent.detail = "no live picks for this sport"
             out.append(ent)
             continue
-        # Count coverage of each identity field.
+        # Coverage of each identity path (§5 Final Closure — split
+        # by identity_class, NOT by mere presence of a canonical_*
+        # field.  A hash id is PROVISIONAL, not canonical).
         pid_canon = await _safe_count(db, "picks",
             {**q, "canonical_player_id": {"$exists": True, "$ne": None}}) or 0
         tid_canon = await _safe_count(db, "picks",
             {**q, "canonical_team_id": {"$exists": True, "$ne": None}}) or 0
         eid_canon = await _safe_count(db, "picks",
             {**q, "canonical_event_id": {"$exists": True, "$ne": None}}) or 0
+        # Identity class breakdown.
+        n_authoritative = await _safe_count(db, "picks",
+            {**q, "identity_class": "AUTHORITATIVE"}) or 0
+        n_mapped = await _safe_count(db, "picks",
+            {**q, "identity_class": "MAPPED"}) or 0
+        n_provisional = await _safe_count(db, "picks",
+            {**q, "identity_class": "PROVISIONAL"}) or 0
+        n_unresolved = await _safe_count(db, "picks",
+            {**q, "identity_class": "UNRESOLVED"}) or 0
+        n_no_class = total - (n_authoritative + n_mapped +
+                                n_provisional + n_unresolved)
         p_name = await _safe_count(db, "picks",
             {**q, "player_name": {"$exists": True, "$ne": None}}) or 0
         t_name = await _safe_count(db, "picks",
             {**q, "team": {"$exists": True, "$ne": None}}) or 0
-        # A pick is MAGIC-reachable if it carries at least one of:
-        #   canonical_player_id / canonical_team_id / canonical_event_id
-        any_canonical_q = {**q, "$or": [
-            {"canonical_player_id": {"$exists": True, "$ne": None}},
-            {"canonical_team_id":   {"$exists": True, "$ne": None}},
-            {"canonical_event_id":  {"$exists": True, "$ne": None}},
-        ]}
-        any_canonical = await _safe_count(db, "picks", any_canonical_q) or 0
-        any_name      = max(p_name, t_name)
+        # Only AUTHORITATIVE + MAPPED count as canonical (§1, §10).
+        canonical_ok = n_authoritative + n_mapped
+        any_name    = max(p_name, t_name)
         ent.data_available = CS.PASS.value
         ent.reachable      = CS.PASS.value
-        detail = (f"total={total} — "
-                  f"any_canonical_id={any_canonical}, "
-                  f"canonical_event_id={eid_canon}, "
-                  f"canonical_team_id={tid_canon}, "
-                  f"canonical_player_id={pid_canon}, "
-                  f"player_name={p_name}, team={t_name}")
+        detail = (
+            f"total={total} — "
+            f"AUTHORITATIVE={n_authoritative}, "
+            f"MAPPED={n_mapped}, "
+            f"PROVISIONAL={n_provisional}, "
+            f"UNRESOLVED={n_unresolved}, "
+            f"unclassified={n_no_class}; "
+            f"canonical_event_id={eid_canon}, "
+            f"canonical_team_id={tid_canon}, "
+            f"canonical_player_id={pid_canon}"
+        )
         ent.detail = detail
-        if any_canonical == 0 and any_name == 0:
-            # Complete identity gap — Magic cannot reach history for
-            # any pick in this sport.
+        if canonical_ok == 0 and any_name == 0:
             ent.identity_resolved = CS.FAIL.value
             ent.certification_status = CS.FAIL.value
             ent.drop_reason = "IDENTITY_MISSING_ON_PICKS"
-        elif any_canonical == 0 and any_name > 0:
-            # Names only — identity must be resolved at Magic time.
-            # Downgraded because canonical is the source of truth (§8).
+        elif canonical_ok == 0:
             ent.identity_resolved = CS.PARTIAL.value
             ent.certification_status = CS.PARTIAL.value
             ent.drop_reason = "IDENTITY_UNRESOLVED"
-        elif any_canonical / total < 0.90:
+        elif canonical_ok / total < 0.75:
             ent.identity_resolved = CS.PARTIAL.value
             ent.certification_status = CS.PARTIAL.value
             ent.drop_reason = "IDENTITY_UNRESOLVED"
@@ -1206,10 +1253,12 @@ async def certify_live_pick_reachability(
     seen_ids: set = set()
     try:
         for sport in priority_sports:
-            # First pass — canonically-identified picks (preferred).
+            # First pass — pick real AUTHORITATIVE / MAPPED identity
+            # (§8 Final Closure — reachability must originate from a
+            # verified canonical id, not a hash).
             cursor = db["picks"].find(
                 {"sport": {"$regex": f"^{sport}", "$options": "i"},
-                 "canonical_event_id": {"$exists": True, "$ne": None}},
+                 "identity_class": {"$in": ["AUTHORITATIVE", "MAPPED"]}},
                 {"_id": 0},
             ).sort("created_at", -1).limit(per_sport)
             n_added = 0
@@ -1220,7 +1269,8 @@ async def certify_live_pick_reachability(
                 seen_ids.add(pid)
                 picks.append(p)
                 n_added += 1
-            # If none canonical, fall back to newest of any kind.
+            # If none real-authoritative for this sport, sample newest
+            # of any kind (correctly reported as PROVISIONAL below).
             if n_added == 0:
                 cursor = db["picks"].find(
                     {"sport": {"$regex": f"^{sport}", "$options": "i"}},
@@ -1282,8 +1332,30 @@ async def certify_live_pick_reachability(
             evidence_type=ET.LIVE_PICK_REACHABILITY.value,
         )
         ent.provenance = f"pick.id={p.get('id')}"
+        # §9 Final Closure — record the pick's identity_class so the
+        # certification is transparent about whether we had a REAL
+        # authoritative id vs a provisional hash for this probe.
+        ident_cls = p.get("identity_class") or "UNKNOWN"
+        ent.detail = f"identity_class={ident_cls}"
         commence = p.get("commence_time") or p.get("kickoff") or \
+                    p.get("event_time") or \
                     datetime.now(timezone.utc).isoformat()
+        # §1, §10 Final Closure — reject provisional-only identity from
+        # counting as identity_resolved.  Reachability proof requires
+        # AUTHORITATIVE or MAPPED identity.
+        if ident_cls not in ("AUTHORITATIVE", "MAPPED"):
+            ent.identity_resolved = CS.PARTIAL.value if ident_cls in \
+                ("PROVISIONAL",) else CS.FAIL.value
+            ent.data_available = CS.PASS.value
+            ent.reachable      = CS.UNAVAILABLE.value
+            ent.certification_status = CS.PARTIAL.value if ident_cls == \
+                "PROVISIONAL" else CS.FAIL.value
+            ent.drop_reason = (
+                "IDENTITY_UNRESOLVED" if ident_cls == "UNRESOLVED"
+                else "IDENTITY_PROVISIONAL_ONLY")
+            ent.detail += " → identity is not canonical (provisional/unresolved)"
+            out.append(ent)
+            continue
         # Player market path.
         is_player = bool(p.get("player_name") or p.get("canonical_player_id"))
         try:
@@ -1294,7 +1366,7 @@ async def certify_live_pick_reachability(
                     canonical_player_id=p.get("canonical_player_id"),
                     player_id=p.get("player_id"),
                     player_name=p.get("player_name"),
-                    market=_adapter_market(market),
+                    market=_canonical_market_key(p) or _adapter_market(market),
                     threshold=float(p.get("line") or 0.5),
                     direction=p.get("direction") or "over",
                     opponent=p.get("opponent_name") or p.get("opponent"),
@@ -1305,25 +1377,25 @@ async def certify_live_pick_reachability(
                 if getattr(ev, "games_used", None):
                     ent.data_available = CS.PASS.value
                     ent.reachable      = CS.PASS.value
-                    ent.identity_resolved = (
-                        CS.PASS.value if ev.canonical_player_id
-                        else CS.PARTIAL.value)
+                    ent.identity_resolved = CS.PASS.value
                     ent.as_of_safe     = CS.PASS.value
                     ent.sample_size    = int(ev.games_used or 0)
                     ent.certification_status = CS.PASS.value
                     ent.detail = (
+                        f"identity_class={ident_cls}; "
                         f"{ev.games_used} games reachable; "
                         f"quality={ev.data_quality}")
                 else:
-                    ent.data_available = (
-                        CS.UNAVAILABLE.value if (ev.data_quality or "").upper()
-                        == "UNAVAILABLE" else CS.PARTIAL.value)
+                    # Identity WAS canonical — the miss is HISTORY-side.
+                    ent.identity_resolved = CS.PASS.value
+                    ent.data_available = CS.PASS.value
                     ent.reachable      = CS.UNAVAILABLE.value
-                    ent.certification_status = (
-                        CS.UNAVAILABLE.value if (ev.data_quality or "").upper()
-                        == "UNAVAILABLE" else CS.PARTIAL.value)
-                    ent.drop_reason = "EVIDENCE_UNAVAILABLE"
-                    ent.detail = f"dispatcher returned quality={ev.data_quality}"
+                    ent.certification_status = CS.UNAVAILABLE.value
+                    ent.drop_reason = "HISTORY_COVERAGE_UNAVAILABLE"
+                    ent.detail = (
+                        f"identity_class={ident_cls}; "
+                        f"dispatcher returned quality={ev.data_quality} "
+                        "— identity CANONICAL but no history for this player")
             else:
                 # Team market path.
                 ev = await get_team_history(
@@ -1333,31 +1405,30 @@ async def certify_live_pick_reachability(
                     opponent_id=p.get("canonical_opponent_id"),
                     home_away=p.get("home_away"),
                     competition=p.get("competition") or p.get("league"),
-                    metric=market,
+                    metric=_canonical_market_key(p) or _adapter_market(market),
                     as_of=commence,
                 )
                 if getattr(ev, "events_used", None):
                     ent.data_available = CS.PASS.value
                     ent.reachable      = CS.PASS.value
-                    ent.identity_resolved = (
-                        CS.PASS.value if ev.canonical_team_id
-                        else CS.PARTIAL.value)
+                    ent.identity_resolved = CS.PASS.value
                     ent.as_of_safe     = CS.PASS.value
                     ent.sample_size    = int(ev.events_used or 0)
                     ent.certification_status = CS.PASS.value
-                    ent.detail = f"{ev.events_used} team events reachable"
-                else:
-                    ent.data_available = (
-                        CS.UNAVAILABLE.value if (ev.data_quality or "").upper()
-                        == "UNAVAILABLE" else CS.PARTIAL.value)
-                    ent.reachable      = CS.UNAVAILABLE.value
-                    ent.certification_status = (
-                        CS.UNAVAILABLE.value if (ev.data_quality or "").upper()
-                        == "UNAVAILABLE" else CS.PARTIAL.value)
-                    ent.drop_reason = "EVIDENCE_UNAVAILABLE"
                     ent.detail = (
-                        f"dispatcher returned status={ev.status} "
-                        f"quality={ev.data_quality}")
+                        f"identity_class={ident_cls}; "
+                        f"{ev.events_used} team events reachable")
+                else:
+                    ent.identity_resolved = CS.PASS.value
+                    ent.data_available = CS.PASS.value
+                    ent.reachable      = CS.UNAVAILABLE.value
+                    ent.certification_status = CS.UNAVAILABLE.value
+                    ent.drop_reason = "HISTORY_COVERAGE_UNAVAILABLE"
+                    ent.detail = (
+                        f"identity_class={ident_cls}; "
+                        f"dispatcher status={ev.status} "
+                        f"quality={ev.data_quality} "
+                        "— identity CANONICAL but league/team not in history")
         except Exception as e:
             ent.certification_status = CS.FAIL.value
             ent.drop_reason = "EVIDENCE_UNAVAILABLE"

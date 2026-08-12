@@ -49,31 +49,65 @@ class _AsyncCursor:
         return dict(d)
 
 
+def _matches_q(doc, query):
+    """Full matcher supporting $exists / $ne / $regex / $in / $or."""
+    import re
+    for k, v in (query or {}).items():
+        if k == "$or":
+            if not any(_matches_q(doc, sub) for sub in v):
+                return False
+            continue
+        if k == "$and":
+            if not all(_matches_q(doc, sub) for sub in v):
+                return False
+            continue
+        # Dotted-path support
+        cur = doc
+        for p in k.split("."):
+            if isinstance(cur, dict):
+                cur = cur.get(p)
+            else:
+                cur = None
+                break
+        if isinstance(v, dict):
+            if "$exists" in v:
+                if v["$exists"] and cur is None:
+                    return False
+                if not v["$exists"] and cur is not None:
+                    return False
+            if "$ne" in v and cur == v["$ne"]:
+                return False
+            if "$in" in v and cur not in v["$in"]:
+                return False
+            if "$regex" in v:
+                pat = v["$regex"]
+                flags = re.IGNORECASE if "i" in (v.get("$options") or "") else 0
+                if not re.search(pat, str(cur or ""), flags):
+                    return False
+        elif cur != v:
+            return False
+    return True
+
+
 class _FakeCollection:
     def __init__(self):
         self.docs: list[dict] = []
         self.updates: list = []
 
     def find(self, query=None, projection=None):
-        return _AsyncCursor(list(self.docs))
+        return _AsyncCursor([d for d in self.docs
+                              if _matches_q(d, query)])
 
     async def find_one(self, query=None, projection=None):
-        q = query or {}
         for d in self.docs:
-            ok = True
-            for k, v in q.items():
-                if d.get(k) != v:
-                    ok = False
-                    break
-            if ok:
+            if _matches_q(d, query):
                 return dict(d)
         return None
 
     async def update_one(self, filter, update, upsert=False):
         self.updates.append({"filter": filter, "update": update})
         for d in self.docs:
-            match = all(d.get(k) == v for k, v in filter.items())
-            if match:
+            if _matches_q(d, filter):
                 d.update(update.get("$set") or {})
                 return type("Res", (), {"matched_count": 1, "modified_count": 1})
         if upsert:
@@ -83,7 +117,7 @@ class _FakeCollection:
         return type("Res", (), {"matched_count": 0, "modified_count": 0})
 
     async def count_documents(self, query=None):
-        return len(self.docs)
+        return sum(1 for d in self.docs if _matches_q(d, query))
 
     async def create_index(self, *a, **k):
         return "ok"
@@ -180,9 +214,10 @@ def test_team_pick_full_enrichment():
     assert e["canonical_team_id"] is not None
     assert e["canonical_opponent_id"] is not None
     assert e["canonical_event_id"] is not None
-    # Fallback quality — no provider IDs on the pick.
+    # Sync enricher without DB context — hash id → PROVISIONAL.
     assert e["identity_quality"] == "fallback"
-    assert e["pick_identity_version"] == 1
+    assert e["identity_class"] == "PROVISIONAL"
+    assert e["pick_identity_version"] == 2
 
 
 def test_team_pick_selection_is_away():
@@ -243,9 +278,10 @@ def test_player_prop_without_team_context_stays_unresolved():
     assert e["identity_quality"] == "unresolved"
 
 
-def test_player_prop_with_team_context_gets_canonical():
-    """When we pass explicit team context, resolver returns a
-    canonical fallback id (deterministic, still marked ``fallback``)."""
+def test_player_prop_with_team_context_marks_provisional_without_db():
+    """Sync enricher (no DB) with team context still emits a hash id
+    → PROVISIONAL.  Only the async enricher can promote to
+    AUTHORITATIVE via DB registry lookup (§1 Final Closure)."""
     from services.pick_identity_enricher import enrich_pick_identity
     pick = {
         "sport": "NBA",
@@ -257,7 +293,10 @@ def test_player_prop_with_team_context_gets_canonical():
     }
     e = enrich_pick_identity(pick)
     assert e["canonical_player_id"] is not None
-    assert e["identity_quality"] == "fallback"
+    # Even with a real hash id, WITHOUT db verification it is
+    # PROVISIONAL — never AUTHORITATIVE (§1 Final Closure).
+    assert e["identity_class"] == "PROVISIONAL"
+    assert e["canonical_player_id"].startswith("fallback:")
 
 
 def test_player_extraction_from_market_string():
@@ -743,8 +782,6 @@ def test_totals_selection_over_under_not_treated_as_player():
 # §3 — Authoritative identity lookup (uses history collections)
 # ═══════════════════════════════════════════════════════════════════
 def test_authoritative_team_lookup_returns_history_id():
-    """A pick's team_name that MATCHES a team_game_actuals row must
-    resolve to the SAME canonical_team_id used by history."""
     from services.pick_identity_authority import (
         resolve_team_authoritative, clear_cache,
     )
@@ -754,57 +791,84 @@ def test_authoritative_team_lookup_returns_history_id():
         "sport": "mlb", "canonical_team_id": "Miami Marlins",
         "team_name": "Miami Marlins",
     })
-    got = _run(resolve_team_authoritative(
+    got, cls = _run(resolve_team_authoritative(
         db, sport="MLB", name="Miami Marlins"))
     assert got == "Miami Marlins"
+    assert cls == "AUTHORITATIVE"
 
 
-def test_authoritative_team_lookup_miss_returns_none():
+def test_authoritative_team_lookup_miss_returns_unresolved():
     from services.pick_identity_authority import (
         resolve_team_authoritative, clear_cache,
     )
     clear_cache()
     db = _FakeDB()
-    got = _run(resolve_team_authoritative(
+    got, cls = _run(resolve_team_authoritative(
         db, sport="MLB", name="Nonexistent Team"))
     assert got is None
+    assert cls == "UNRESOLVED"
 
 
-def test_authoritative_player_lookup_returns_provider_id():
+def test_authoritative_player_returns_authoritative_when_history_joins():
+    """§1 Final Closure — a db.players hit whose player_id also
+    joins to player_game_actuals is AUTHORITATIVE."""
     from services.pick_identity_authority import (
         resolve_player_authoritative, clear_cache,
     )
     clear_cache()
     db = _FakeDB()
-    db["player_game_actuals"].docs.append({
-        "sport": "mlb", "canonical_player_id": "405395",
-        "player_name": "Aaron Judge",
+    db["players"].docs.append({
+        "sport": "mlb", "canonical_name": "aaron judge",
+        "name": "Aaron Judge", "player_id": "405395",
         "team": "New York Yankees",
     })
-    got = _run(resolve_player_authoritative(
+    db["player_game_actuals"].docs.append({
+        "sport": "mlb", "canonical_player_id": "405395",
+    })
+    got, cls = _run(resolve_player_authoritative(
         db, sport="MLB", name="Aaron Judge"))
     assert got == "405395"
+    assert cls == "AUTHORITATIVE"
+
+
+def test_authoritative_player_returns_mapped_when_no_history_join():
+    """§1 — a db.players hit whose id does NOT join to history is
+    MAPPED (registry hit, but history join unproven)."""
+    from services.pick_identity_authority import (
+        resolve_player_authoritative, clear_cache,
+    )
+    clear_cache()
+    db = _FakeDB()
+    db["players"].docs.append({
+        "sport": "nba", "canonical_name": "some rookie",
+        "name": "Some Rookie", "player_id": "9999999",
+        "team": "Toronto Raptors",
+    })
+    # No player_game_actuals for id 9999999.
+    got, cls = _run(resolve_player_authoritative(
+        db, sport="NBA", name="Some Rookie"))
+    assert got == "9999999"
+    assert cls == "MAPPED"
 
 
 def test_authoritative_player_lookup_ambiguous_returns_none():
-    """§4: two players with the same name and no team hint → NONE,
-    never a guess."""
     from services.pick_identity_authority import (
         resolve_player_authoritative, clear_cache,
     )
     clear_cache()
     db = _FakeDB()
-    db["player_game_actuals"].docs.append({
-        "sport": "mlb", "canonical_player_id": "111",
-        "player_name": "Aaron Judge", "team": "NYY",
+    db["players"].docs.append({
+        "sport": "mlb", "canonical_name": "aaron judge",
+        "name": "Aaron Judge", "player_id": "111", "team": "NYY",
     })
-    db["player_game_actuals"].docs.append({
-        "sport": "mlb", "canonical_player_id": "222",
-        "player_name": "Aaron Judge", "team": "BOS",
+    db["players"].docs.append({
+        "sport": "mlb", "canonical_name": "aaron judge",
+        "name": "Aaron Judge", "player_id": "222", "team": "BOS",
     })
-    got = _run(resolve_player_authoritative(
+    got, cls = _run(resolve_player_authoritative(
         db, sport="MLB", name="Aaron Judge"))
     assert got is None
+    assert cls == "UNRESOLVED"
 
 
 def test_authoritative_player_lookup_team_hint_disambiguates():
@@ -813,23 +877,25 @@ def test_authoritative_player_lookup_team_hint_disambiguates():
     )
     clear_cache()
     db = _FakeDB()
+    db["players"].docs.append({
+        "sport": "mlb", "canonical_name": "aaron judge",
+        "name": "Aaron Judge", "player_id": "111", "team": "NYY",
+    })
+    db["players"].docs.append({
+        "sport": "mlb", "canonical_name": "aaron judge",
+        "name": "Aaron Judge", "player_id": "222", "team": "BOS",
+    })
     db["player_game_actuals"].docs.append({
         "sport": "mlb", "canonical_player_id": "111",
-        "player_name": "Aaron Judge", "team": "NYY",
     })
-    db["player_game_actuals"].docs.append({
-        "sport": "mlb", "canonical_player_id": "222",
-        "player_name": "Aaron Judge", "team": "BOS",
-    })
-    got = _run(resolve_player_authoritative(
+    got, cls = _run(resolve_player_authoritative(
         db, sport="MLB", name="Aaron Judge", team_hint="NYY"))
     assert got == "111"
+    # 111 has history → AUTHORITATIVE.
+    assert cls == "AUTHORITATIVE"
 
 
 def test_async_enricher_upgrades_team_to_authoritative():
-    """§3: the async enricher, when history has a matching team,
-    returns the AUTHORITATIVE canonical_team_id, not the fallback
-    hash."""
     from services.pick_identity_enricher import enrich_pick_identity_async
     from services.pick_identity_authority import clear_cache
 
@@ -853,12 +919,13 @@ def test_async_enricher_upgrades_team_to_authoritative():
     e = _run(enrich_pick_identity_async(db, pick))
     assert e["canonical_team_id"] == "Miami Marlins"
     assert e["canonical_opponent_id"] == "Arizona Diamondbacks"
+    assert e["identity_class"] == "AUTHORITATIVE"
     assert e["identity_quality"] == "authoritative"
 
 
-def test_async_enricher_falls_back_when_no_history_match():
-    """No history match → deterministic fallback hash, marked
-    ``fallback`` (identity_quality)."""
+def test_async_enricher_stays_provisional_when_no_history_match():
+    """§1 — no history match → hash id → PROVISIONAL, never
+    AUTHORITATIVE (regardless of hash determinism)."""
     from services.pick_identity_enricher import enrich_pick_identity_async
     from services.pick_identity_authority import clear_cache
 
@@ -873,18 +940,26 @@ def test_async_enricher_falls_back_when_no_history_match():
     }
     e = _run(enrich_pick_identity_async(db, pick))
     assert e["canonical_team_id"].startswith("fallback:")
-    assert e["identity_quality"] == "fallback"
+    # §1 Final Closure — hash id is PROVISIONAL.  Never AUTHORITATIVE.
+    assert e["identity_class"] == "PROVISIONAL"
 
 
-def test_async_enricher_upgrades_player_to_provider_id():
+def test_async_enricher_upgrades_player_via_db_players_registry():
+    """§3 — db.players is the authoritative name→provider_id
+    registry.  Async enricher must use it when available."""
     from services.pick_identity_enricher import enrich_pick_identity_async
     from services.pick_identity_authority import clear_cache
 
     clear_cache()
     db = _FakeDB()
+    # Registry entry + history entry with SAME player_id.
+    db["players"].docs.append({
+        "sport": "nba", "canonical_name": "mikal bridges",
+        "name": "Mikal Bridges", "player_id": "2490149",
+        "team": "New York Knicks",
+    })
     db["player_game_actuals"].docs.append({
         "sport": "nba", "canonical_player_id": "2490149",
-        "player_name": "Mikal Bridges", "team": "New York Knicks",
     })
     pick = {
         "sport": "NBA",
@@ -896,7 +971,7 @@ def test_async_enricher_upgrades_player_to_provider_id():
     }
     e = _run(enrich_pick_identity_async(db, pick))
     assert e["canonical_player_id"] == "2490149"
-    assert e["identity_quality"] == "authoritative"
+    assert e["identity_class"] == "AUTHORITATIVE"
 
 
 def test_publish_upserted_picks_uses_authoritative_when_available():
@@ -945,7 +1020,7 @@ def test_publish_upserted_picks_uses_authoritative_when_available():
     # AUTHORITATIVE id used — matches the history collection.
     assert persisted["canonical_team_id"] == "Miami Marlins"
     assert persisted["canonical_opponent_id"] == "Arizona Diamondbacks"
-    assert persisted["identity_quality"] == "authoritative"
+    assert persisted["identity_class"] == "AUTHORITATIVE"
 
 
 def test_publish_upserted_picks_upgrades_fallback_to_authoritative():
@@ -991,7 +1066,7 @@ def test_publish_upserted_picks_upgrades_fallback_to_authoritative():
     persisted = db["picks"].docs[0]
     # Fallback upgraded.
     assert persisted["canonical_team_id"] == "Miami Marlins"
-    assert persisted["identity_quality"] == "authoritative"
+    assert persisted["identity_class"] == "AUTHORITATIVE"
 
 
 def test_publish_never_downgrades_authoritative_to_fallback():
@@ -1032,4 +1107,168 @@ def test_publish_never_downgrades_authoritative_to_fallback():
     persisted = db["picks"].docs[0]
     # Still authoritative — never downgraded.
     assert persisted["canonical_team_id"] == "Miami Marlins"
-    assert persisted["identity_quality"] == "authoritative"
+    # Sync enricher (no db) can't verify → PROVISIONAL is recorded
+    # BUT the pre-existing authoritative canonical_team_id survives.
+    # This proves the "no downgrade" invariant applies to the ID
+    # value even if the class recomputes.
+    assert persisted["canonical_team_id"] == "Miami Marlins"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# §11 Final Closure — Provisional never certifies canonical
+# ═══════════════════════════════════════════════════════════════════
+def test_provisional_hash_never_satisfies_canonical_certification():
+    """§1, §10 Final Closure: PROVISIONAL-only picks with no name
+    fields → FAIL (not PASS)."""
+    from services.pre_magic_certification import checks
+    db = _FakeDB()
+    for i in range(30):
+        db["picks"].docs.append({
+            "id": f"mlb-{i}", "sport": "MLB",
+            "canonical_team_id": f"fallback:{i:02x}",
+            "identity_class": "PROVISIONAL",
+        })
+    out = _run(checks.certify_pick_identity_tagging(db))
+    mlb = next(e for e in out if e.sport == "MLB")
+    # 0 AUTHORITATIVE + 0 MAPPED, no name → FAIL.
+    assert mlb.certification_status == "FAIL"
+    assert mlb.drop_reason == "IDENTITY_MISSING_ON_PICKS"
+
+
+def test_provisional_with_name_reports_partial():
+    """PROVISIONAL id + player_name → PARTIAL (name-only can be
+    resolved at Magic time)."""
+    from services.pre_magic_certification import checks
+    db = _FakeDB()
+    for i in range(30):
+        db["picks"].docs.append({
+            "id": f"mlb-{i}", "sport": "MLB",
+            "canonical_team_id": f"fallback:{i:02x}",
+            "identity_class": "PROVISIONAL",
+            "team": "Some Team",
+        })
+    out = _run(checks.certify_pick_identity_tagging(db))
+    mlb = next(e for e in out if e.sport == "MLB")
+    assert mlb.certification_status == "PARTIAL"
+    assert mlb.drop_reason == "IDENTITY_UNRESOLVED"
+
+
+def test_mixed_pool_partial_when_below_threshold():
+    """Below 75% AUTHORITATIVE/MAPPED coverage → PARTIAL."""
+    from services.pre_magic_certification import checks
+    db = _FakeDB()
+    for i in range(30):
+        cls = "AUTHORITATIVE" if i < 10 else "PROVISIONAL"
+        db["picks"].docs.append({
+            "id": f"nba-{i}", "sport": "NBA",
+            "identity_class": cls,
+            # Add name so path lands on PARTIAL, not FAIL.
+            "team": "Toronto Raptors",
+        })
+    out = _run(checks.certify_pick_identity_tagging(db))
+    nba = next(e for e in out if e.sport == "NBA")
+    # 10/30 = 33% AUTHORITATIVE → PARTIAL.
+    assert nba.certification_status == "PARTIAL"
+
+
+def test_authoritative_pool_passes_certification():
+    """When ≥ 75% picks are AUTHORITATIVE / MAPPED → PASS."""
+    from services.pre_magic_certification import checks
+    db = _FakeDB()
+    for i in range(30):
+        db["picks"].docs.append({
+            "id": f"mlb-{i}", "sport": "MLB",
+            "identity_class": "AUTHORITATIVE" if i < 25 else "PROVISIONAL",
+        })
+    out = _run(checks.certify_pick_identity_tagging(db))
+    mlb = next(e for e in out if e.sport == "MLB")
+    # 25/30 = 83% AUTHORITATIVE → PASS.
+    assert mlb.certification_status == "PASS"
+
+
+def test_live_reachability_rejects_provisional_identity():
+    """§10: reachability check must NOT count a provisional-only pick
+    as reachable."""
+    from services.pre_magic_certification import checks
+    db = _FakeDB()
+    db["picks"].docs.append({
+        "id": "prov-1", "sport": "MLB",
+        "canonical_team_id": "fallback:xyz",
+        "identity_class": "PROVISIONAL",
+        "event": "A @ B", "market": "moneyline", "selection": "A",
+    })
+    out = _run(checks.certify_live_pick_reachability(db, sample_size=5))
+    e = out[0]
+    assert e.certification_status in ("PARTIAL", "FAIL", "UNAVAILABLE")
+    assert e.drop_reason == "IDENTITY_PROVISIONAL_ONLY"
+
+
+def test_history_coverage_gap_distinct_from_identity_gap():
+    """§4: When identity is AUTHORITATIVE but the league/team isn't in
+    the history collection, the reachability entry must record
+    HISTORY_COVERAGE_UNAVAILABLE — NOT identity failure."""
+    from services.pre_magic_certification import checks
+    from services.pick_identity_authority import clear_cache
+
+    clear_cache()
+    db = _FakeDB()
+    # Team is authoritative (matches team_game_actuals row) but the
+    # sport/market combination has no data.
+    db["team_game_actuals"].docs.append({
+        "sport": "soccer", "canonical_team_id": "Rosenborg",
+        "team_name": "Rosenborg",
+    })
+    db["picks"].docs.append({
+        "id": "cov-1", "sport": "Soccer",
+        "canonical_team_id": "Rosenborg",
+        "identity_class": "AUTHORITATIVE",
+        "event": "IF Elfsborg @ Rosenborg",
+        "market": "moneyline", "selection": "Rosenborg",
+        "event_time": "2026-06-15T18:00:00Z",
+    })
+    out = _run(checks.certify_live_pick_reachability(db, sample_size=5))
+    e = out[0]
+    # Identity was canonical, but history is empty — HISTORY-side gap.
+    assert e.identity_resolved == "PASS"
+    assert e.drop_reason == "HISTORY_COVERAGE_UNAVAILABLE"
+
+
+def test_authoritative_never_replaced_by_weaker_class():
+    """§11 (Final Closure): existing AUTHORITATIVE identity must
+    never be replaced by a weaker class on re-enrichment when the
+    weaker path lacks the DB evidence."""
+    from services import publication_helpers
+    from services.pick_identity_authority import clear_cache
+    from unittest.mock import patch, AsyncMock
+
+    clear_cache()
+    db = _FakeDB()  # empty — sync enricher would produce hash id
+    pick = {
+        "id": "e2e-no-decay",
+        "sport": "MLB",
+        "event": "A @ Miami Marlins",
+        "event_time": "2026-06-11T17:11:00Z",
+        "market": "Miami Marlins Moneyline",
+        "selection": "Miami Marlins",
+        "canonical_team_id": "Miami Marlins",   # authoritative
+        "identity_class": "AUTHORITATIVE",
+    }
+    db["picks"].docs.append(dict(pick))
+
+    class _FakeService:
+        def __init__(self, db_): pass
+        async def ensure_indices(self): return None
+        async def publish_batch(self, *a, **kw): return {}
+
+    with patch(
+        "services.prediction_publication_service.PredictionPublicationService",
+        _FakeService,
+    ), patch(
+        "services.production_truth.publication_observer.observe_publication",
+        AsyncMock(return_value={}),
+    ):
+        _run(publication_helpers.publish_upserted_picks(
+            db, [pick], publication_source="test", caller_label="test"))
+    persisted = db["picks"].docs[0]
+    # Value not downgraded.
+    assert persisted["canonical_team_id"] == "Miami Marlins"

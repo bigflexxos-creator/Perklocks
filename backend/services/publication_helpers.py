@@ -120,11 +120,23 @@ async def publish_upserted_picks(
             _CANON_ID_KEYS = ("canonical_team_id", "canonical_player_id",
                                 "canonical_opponent_id",
                                 "canonical_event_id")
+            # identity_class MUST be refreshed on every republication so
+            # a previously PROVISIONAL pick can move to AUTHORITATIVE
+            # once history/registry data lands (§1 Final Closure —
+            # false canonical must decay to real canonical).
+            _ALWAYS_REFRESH = ("identity_class", "identity_quality",
+                                 "identity_resolution",
+                                 "pick_identity_version",
+                                 "identity_enriched_at",
+                                 "event_identity_class")
             for k, v in {**ident, **model}.items():
                 if v is None:
                     continue
                 cur = p.get(k)
                 if cur in (None, "", []):
+                    update_fields[k] = v
+                    continue
+                if k in _ALWAYS_REFRESH:
                     update_fields[k] = v
                     continue
                 # Upgrade fallback ids to authoritative ones when
