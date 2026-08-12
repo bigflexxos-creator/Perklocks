@@ -615,6 +615,58 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
                 sim_counts.get("weaker", 0),
                 sim_counts.get("neutral", 0),
             )
+        # ── MAGIC 3B — Durable simulator-output persistence ─────────
+        # Additive plumbing: writes real simulator outputs (never
+        # fabricated) to db.simulator_outputs with input fingerprints.
+        # This does NOT change any existing consumer — root-level
+        # sim_* fields are still preserved.  Failure isolates.
+        try:
+            from services.magic.sim_cal_store import (
+                persist_simulator_output,
+            )
+            _sim_persisted = 0
+            for _p in picks:
+                if _p.get("sim_win_probability") is None:
+                    continue
+                # apply_simulations mutated the pick with sim_* fields —
+                # rebuild the sim dict from those root fields for
+                # persistence (no recomputation).
+                _sim_dict = {
+                    "sim_win_probability":   _p.get("sim_win_probability"),
+                    "sim_runs":              _p.get("sim_runs"),
+                    "sim_signal":            _p.get("sim_signal"),
+                    "simulator_name":        _p.get("simulator_name"),
+                    "simulator_version":     _p.get("simulator_version"),
+                    "simulator_type":        _p.get("simulator_type"),
+                    "seed":                  _p.get("seed"),
+                    "independent_evidence":  _p.get("independent_evidence"),
+                    "valid":                 _p.get("valid"),
+                    "sim_ci_lower":          _p.get("sim_ci_lower"),
+                    "sim_ci_upper":          _p.get("sim_ci_upper"),
+                    "sim_mean":              _p.get("sim_mean"),
+                    "sim_median":            _p.get("sim_median"),
+                    "sim_q10":               _p.get("sim_q10"),
+                    "sim_q25":               _p.get("sim_q25"),
+                    "sim_q75":               _p.get("sim_q75"),
+                    "sim_q90":               _p.get("sim_q90"),
+                    "sim_std":               _p.get("sim_std"),
+                }
+                try:
+                    fp = await persist_simulator_output(db, _p, _sim_dict)
+                    if fp:
+                        _sim_persisted += 1
+                except Exception:                       # pragma: no cover
+                    continue
+            if _sim_persisted:
+                logger.info(
+                    "MAGIC 3B: persisted %d simulator outputs.",
+                    _sim_persisted,
+                )
+        except Exception as _persist_err:              # pragma: no cover
+            logger.debug(
+                "MAGIC 3B sim-output persistence skipped: %s",
+                _persist_err,
+            )
     except Exception as e:
         logger.warning("MLB Simulator skipped: %s", e)
 
@@ -748,6 +800,34 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
                     brain_summary.get("version"),
                     brain_summary.get("elapsed_ms"),
                     brain_summary.get("steps", {}).get("filter"))
+        # ── MAGIC 3B — Durable calibrated-probability persistence ──
+        # Additive plumbing: writes real calibration outputs to
+        # db.calibrated_probabilities with input fingerprint.  No
+        # existing behavior changes — brain.confidence_calibrated
+        # remains on the pick.
+        try:
+            from services.magic.sim_cal_store import persist_calibration
+            _cal_persisted = 0
+            for _p in picks:
+                b = _p.get("brain") or {}
+                if b.get("confidence_calibrated") is None:
+                    continue
+                try:
+                    fp = await persist_calibration(db, _p)
+                    if fp:
+                        _cal_persisted += 1
+                except Exception:                       # pragma: no cover
+                    continue
+            if _cal_persisted:
+                logger.info(
+                    "MAGIC 3B: persisted %d calibrated probabilities.",
+                    _cal_persisted,
+                )
+        except Exception as _persist_err:              # pragma: no cover
+            logger.debug(
+                "MAGIC 3B calibration persistence skipped: %s",
+                _persist_err,
+            )
     except Exception as e:
         logger.warning("Brain pipeline skipped: %s", e)
 
