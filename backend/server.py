@@ -2140,6 +2140,18 @@ try:
     from routes import me_performance_routes
     app.include_router(me_performance_routes.router)
     logger.info("User Performance + CLV dashboard mounted at /api/me/*")
+    # ── Pre-Magic Certification (2026-06 P1) ─────────────────────────
+    # Read-only certification harness proving Magic 2.0 evidence
+    # foundation is real / canonical / reachable / as-of safe /
+    # threshold-aware / provenance-aware.  NEVER wires Magic — the
+    # matrix always reports magic_consumption=NOT_WIRED (§15).
+    try:
+        from routes import certification_routes
+        app.include_router(certification_routes.router)
+        logger.info(
+            "Pre-Magic Certification mounted at /api/admin/certification/*")
+    except Exception as _e_cert:
+        logger.warning("Pre-Magic Certification failed to mount: %s", _e_cert)
 except Exception as _routes_mount_err:
     logger.exception("Extracted route modules failed to mount: %s", _routes_mount_err)
 
