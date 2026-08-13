@@ -397,6 +397,67 @@ def enforce_board_quality(picks: list[dict]) -> tuple[list[dict], dict]:
     return survivors, stats
 
 
+# ─────────────────────── §8 Real-line integrity ───────────────────────
+# Emergent Support durable fix (2026-06): picks without a real
+# sportsbook line MUST NOT populate the main Locks board and MUST NOT
+# be treated as if edge were 0.  Model-only picks are ANNOTATED (not
+# dropped) so Extended Coverage endpoints can still serve them.
+
+def enforce_real_market_line(picks: list[dict]) -> tuple[list[dict], dict]:
+    """Route model-only / no-real-book-line picks off the main board.
+
+    A pick is considered model-only when ANY of the following holds:
+      * ``no_real_book_line == True``
+      * ``model_only == True``
+      * ``book_odds`` is None / missing / non-numeric
+      * ``implied_probability`` is None / missing / non-numeric
+
+    These picks are ANNOTATED with:
+      * ``hide_from_main_board = True``
+      * ``is_extra = True``
+      * ``main_board_reclassified_reason = "no_real_book_line"``
+
+    They are NOT dropped — Extended Coverage may still surface them.
+    Missing edge is preserved as ``None`` (never coerced to 0).
+    """
+    stats = {"scanned": len(picks), "annotated": 0, "reasons": {}}
+    for p in picks:
+        reason = None
+        if p.get("no_real_book_line") is True:
+            reason = "no_real_book_line_flag"
+        elif p.get("model_only") is True:
+            reason = "model_only_flag"
+        else:
+            bo = p.get("book_odds")
+            ip = p.get("implied_probability")
+            if bo is None:
+                reason = "book_odds_null"
+            elif ip is None:
+                reason = "implied_probability_null"
+            else:
+                try:
+                    int(bo); float(ip)
+                except (TypeError, ValueError):
+                    reason = "book_odds_or_implied_prob_non_numeric"
+        if reason is None:
+            continue
+        # Never coerce missing edge to 0 — leave as-is (typically None).
+        if p.get("edge_percent") == 0:
+            # Defensive: if edge got silently set to 0 despite no real
+            # line, restore it to None so downstream filters can't
+            # mistake it for a real 0% edge.
+            p["edge_percent"] = None
+        p["hide_from_main_board"] = True
+        p["is_extra"] = True
+        p["model_only"] = True
+        p.setdefault("main_board_reclassified_reason", reason)
+        p.setdefault("main_board_reclassified_at",
+                     datetime.now(timezone.utc).isoformat())
+        stats["annotated"] += 1
+        stats["reasons"][reason] = stats["reasons"].get(reason, 0) + 1
+    return picks, stats
+
+
 # ─────────────────────── §3 Immutable snapshot ────────────────────────
 
 def apply_immutable_snapshot(picks: list[dict]) -> tuple[list[dict], dict]:
@@ -645,22 +706,28 @@ def evidence_threshold(picks: list[dict]) -> tuple[list[dict], dict]:
 # ─────────────────────── Top-level orchestrator ───────────────────────
 
 def validate_and_finalize(picks: list[dict]) -> tuple[list[dict], dict]:
-    """Full 10-stage validation pipeline (§5 spec). Order matters —
+    """Full validation pipeline (§5 spec). Order matters —
     cheap deterministic checks first, evidence + snapshot last.
 
-      1. contradictions       (§1)
-      2. batter_pitcher       (§2)
-      3. integrity_check      (§10 — required fields, odds sanity, dedupe)
-      4. board_quality        (§6)
-      5. evidence_threshold   (§7 — min 3-of-6 independent signals)
-      6. snapshot             (§3 — lock immutable payload)
-      7. rollover             (§4 — pin to rollover board when qualifying)
+      1. contradictions           (§1)
+      2. batter_pitcher           (§2)
+      3. real_market_line         (§8 — Support 2026-06 durable fix:
+                                        route model-only picks to
+                                        Extended Coverage; annotate,
+                                        never fabricate market data)
+      4. integrity_check          (§10 — required fields, odds sanity, dedupe)
+      5. board_quality            (§6)
+      6. evidence_threshold       (§7 — min 3-of-6 independent signals)
+      7. snapshot                 (§3 — lock immutable payload)
+      8. rollover                 (§4 — pin to rollover board when qualifying)
     """
     report: dict = {"input_count": len(picks)}
     picks, r1 = remove_contradictions(picks)
     report["contradictions"] = r1
     picks, r2 = validate_batter_pitcher(picks)
     report["batter_pitcher"] = r2
+    picks, r_real = enforce_real_market_line(picks)
+    report["real_market_line"] = r_real
     picks, r3 = integrity_check(picks)
     report["integrity"] = r3
     picks, r4 = enforce_board_quality(picks)

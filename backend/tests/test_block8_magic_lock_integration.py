@@ -341,7 +341,11 @@ class TestNonApexHardCap:
 class TestApexPositiveReachability:
     def _pick(self, sport="MLB", market="batter_hits", base=98.0) -> dict:
         return {"id": "apex-pos", "sport": sport, "market": market,
-                 "lock_score": base}
+                 "lock_score": base,
+                 # Real-market-line integrity (Support 2026-06 durable fix):
+                 # APEX gate rejects picks without a real sportsbook line.
+                 "book_odds": -180, "implied_probability": 64.3,
+                 "edge_percent": 2.5}
 
     def _mo(self, sport="MLB", market="batter_hits") -> MagicOutput:
         return _mo(sport=sport, market=market,
@@ -385,7 +389,12 @@ class TestApexPositiveReachability:
 class TestApexFalsePositives:
     def _pick(self, **overrides):
         pick = {"id": "apex-neg", "sport": "MLB", "market": "batter_hits",
-                 "lock_score": 98.0}
+                 "lock_score": 98.0,
+                 # Real-line integrity fields — false-positive tests
+                 # need these so we can prove the SPECIFIC block reason
+                 # (not the generic real_line gate).
+                 "book_odds": -180, "implied_probability": 64.3,
+                 "edge_percent": 2.5}
         pick.update(overrides)
         return pick
 
@@ -495,7 +504,9 @@ class TestApexFalsePositives:
         # Sanity: an APEX pick's magic_score can be any positive value.
         # The APEX assignment is orthogonal to any "p_win = 1.0" claim.
         pick = {"id": "apex-not-1p", "sport": "MLB", "market": "batter_hits",
-                 "lock_score": 97.5}
+                 "lock_score": 97.5,
+                 "book_odds": -180, "implied_probability": 64.3,
+                 "edge_percent": 2.5}
         mo = _mo(tier=MagicTier.ALIGNED_STRONG,
                   score=80.0,  # 80/100, NOT 100%
                   evidence=_all_six_positive_evidence())
@@ -581,6 +592,9 @@ class TestSoccerAnytimeGoalStrictGate:
             "expected_minutes": 85,
             "sim_win_probability": 0.62,
             "simulator_type": "distribution_monte_carlo",
+            # Real book line required by APEX gate (Support 2026-06 fix)
+            "book_odds": 180, "implied_probability": 35.7,
+            "edge_percent": 3.0,
         }
         pick.update(overrides)
         return pick
@@ -661,6 +675,9 @@ class TestNflAnytimeTdStrictGate:
             "lock_score": 97.5,
             "sim_win_probability": 0.55,
             "simulator_type": "distribution_monte_carlo",
+            # Real book line required by APEX gate (Support 2026-06 fix)
+            "book_odds": 150, "implied_probability": 40.0,
+            "edge_percent": 3.5,
         }
         pick.update(overrides)
         return pick
@@ -863,7 +880,10 @@ class TestBlock8Invariants:
         n = 5
         for i in range(n):
             pick = {"id": f"multi-{i}", "sport": "MLB",
-                     "market": "batter_hits", "lock_score": 98.0}
+                     "market": "batter_hits", "lock_score": 98.0,
+                     # Real-line integrity for APEX gate
+                     "book_odds": -180, "implied_probability": 64.3,
+                     "edge_percent": 2.5}
             mo = _mo(tier=MagicTier.ALIGNED_STRONG, score=95.0,
                       evidence=_all_six_positive_evidence())
             apply_magic_and_apex(pick, mo)

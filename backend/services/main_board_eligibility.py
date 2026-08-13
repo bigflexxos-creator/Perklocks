@@ -70,8 +70,39 @@ def _f(v) -> Optional[float]:
         return None
 
 
+# ── Real-line integrity (Emergent Support durable fix, 2026-06) ──────
+# A pick may ONLY appear on the main Locks board when it is backed by
+# a REAL sportsbook line.  Model-only picks (no book_odds, no implied
+# probability, or explicitly ``no_real_book_line=True``) are routed
+# to Extended Coverage — they are NOT eligible for main-board display
+# regardless of Lock Score.  A missing market line is never permission
+# to fabricate market evidence.
+def _has_real_market_line(pick: dict) -> bool:
+    """Return True iff the pick has a real sportsbook line attached."""
+    if not isinstance(pick, dict):
+        return False
+    # Explicit tag from ingestion path — highest authority.
+    if pick.get("no_real_book_line") is True:
+        return False
+    if pick.get("model_only") is True:
+        return False
+    # Field checks — the ingestion path MUST provide both a numeric
+    # book_odds AND a numeric implied_probability for the pick to
+    # count as book-backed.  ``None``/missing/non-numeric → not real.
+    bo = pick.get("book_odds")
+    ip = pick.get("implied_probability")
+    if bo is None or ip is None:
+        return False
+    try:
+        int(bo); float(ip)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def is_main_board_eligible(pick: dict) -> bool:
-    """Return True iff `pick` clears the ``> 85`` Locks contract.
+    """Return True iff `pick` clears the ``> 85`` Locks contract
+    **and** carries a real sportsbook line.
 
     Canonical source preference:
       1. ``published_lock_score`` (authoritative snapshot value) when set.
@@ -80,9 +111,24 @@ def is_main_board_eligible(pick: dict) -> bool:
     For canonically-published picks we deliberately IGNORE
     ``lock_score`` / ``lock_score_v2`` / raw / peak so a stale legacy
     field cannot override the authoritative published Lock Score.
+
+    Real-line integrity (Emergent Support 2026-06 durable fix):
+    model-only picks (``no_real_book_line=True``, ``model_only=True``,
+    or ``book_odds`` / ``implied_probability`` missing) are NEVER
+    eligible for the main Locks board even when their Lock Score
+    would otherwise qualify.  They remain available in Extended
+    Coverage via `is_extra`.
     """
     if not isinstance(pick, dict):
         return False
+
+    # ── Real-line integrity gate ─────────────────────────────────
+    if not _has_real_market_line(pick):
+        return False
+    # Defensive: `hide_from_main_board` set by any earlier stage.
+    if pick.get("hide_from_main_board") is True:
+        return False
+
     pls = _f(pick.get("published_lock_score"))
     if pls is not None:
         return pls > MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE
@@ -92,11 +138,39 @@ def is_main_board_eligible(pick: dict) -> bool:
     return max(ls, ls_v2) > MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE
 
 
+def _real_line_mongo_predicate() -> dict:
+    """Mongo AND-clause enforcing real-line integrity.
+
+    Excludes picks that:
+      * carry ``no_real_book_line=True`` or ``model_only=True``,
+      * have ``hide_from_main_board=True``,
+      * have ``book_odds`` or ``implied_probability`` missing/null.
+    """
+    return {
+        "$and": [
+            {"no_real_book_line": {"$ne": True}},
+            {"model_only":        {"$ne": True}},
+            {"hide_from_main_board": {"$ne": True}},
+            {"book_odds":         {"$nin": [None]}},
+            {"book_odds":         {"$exists": True}},
+            {"implied_probability": {"$nin": [None]}},
+            {"implied_probability": {"$exists": True}},
+        ]
+    }
+
+
 def main_board_lock_score_query(min_lock: Optional[float] = None) -> dict:
     """Return the Mongo predicate that enforces the Locks contract.
 
-    * If ``min_lock`` is None or ≤ 85 → strict base contract ``> 85``.
-    * If ``min_lock`` > 85            → user-narrowed floor ``>= min_lock``.
+    Two dimensions are enforced together:
+
+      A) Real-line integrity (Support 2026-06):
+         ``no_real_book_line != True`` AND ``model_only != True`` AND
+         ``book_odds`` present AND ``implied_probability`` present.
+
+      B) Lock Score gate:
+         * ``min_lock`` None or ≤ 85 → strict base contract ``> 85``.
+         * ``min_lock`` > 85         → user-narrowed floor ``>= min_lock``.
 
     Callers merge the returned dict into their outer query.  The predicate
     always prefers ``published_lock_score`` (canonical) and only falls
@@ -104,9 +178,10 @@ def main_board_lock_score_query(min_lock: Optional[float] = None) -> dict:
     yet (i.e. ``published_lock_score`` does not exist on the doc).
     """
     ml = _f(min_lock)
+    real_line_predicate = _real_line_mongo_predicate()
     if ml is None or ml <= MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE:
         # Base contract — strict >85 via $gt.
-        return {
+        lock_predicate = {
             "$or": [
                 {"published_lock_score": {"$gt": MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE}},
                 {
@@ -120,21 +195,23 @@ def main_board_lock_score_query(min_lock: Optional[float] = None) -> dict:
                 },
             ]
         }
-    # User narrowing (min_lock > 85) — inclusive $gte on the narrower band.
-    return {
-        "$or": [
-            {"published_lock_score": {"$gte": ml}},
-            {
-                "$and": [
-                    {"published_lock_score": {"$exists": False}},
-                    {"$or": [
-                        {"lock_score":    {"$gte": ml}},
-                        {"lock_score_v2": {"$gte": ml}},
-                    ]},
-                ]
-            },
-        ]
-    }
+    else:
+        # User narrowing (min_lock > 85) — inclusive $gte on the narrower band.
+        lock_predicate = {
+            "$or": [
+                {"published_lock_score": {"$gte": ml}},
+                {
+                    "$and": [
+                        {"published_lock_score": {"$exists": False}},
+                        {"$or": [
+                            {"lock_score":    {"$gte": ml}},
+                            {"lock_score_v2": {"$gte": ml}},
+                        ]},
+                    ]
+                },
+            ]
+        }
+    return {"$and": [real_line_predicate, lock_predicate]}
 
 
 __all__ = [
@@ -142,4 +219,5 @@ __all__ = [
     "MAIN_BOARD_LOCK_FLOOR_INCLUSIVE",   # deprecated alias, kept for compat
     "is_main_board_eligible",
     "main_board_lock_score_query",
+    "_has_real_market_line",
 ]
