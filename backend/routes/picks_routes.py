@@ -675,6 +675,26 @@ async def picks_history(
     picks = await _truth.load(days=days,
                                 exclude_ambiguous_legacy=True,
                                 include_pending=True)
+    # ─── P0.2c (2026-08-13) Canonical History Projection ──────────
+    # History is now a deterministic projection of canonical settlement
+    # truth (`settlement_events`) + frozen prediction snapshots.  The
+    # projection service enriches each pick with settlement lineage,
+    # preserves frozen pregame values, and refuses to project WON/LOST
+    # for picks that lack an active canonical settlement event.
+    #
+    # Read-only: this join does NOT mutate `db.picks` or the ledger.
+    try:
+        from services.history_projection_service import (
+            HistoryProjectionService,
+        )
+        _proj = HistoryProjectionService(db)
+        picks = await _proj.project_many(picks)
+    except Exception as _pe:
+        # Non-fatal: fall back to the pre-P0.2c mirror-only view.
+        # A rogue-writer test still catches direct mutations.
+        import logging as _lg
+        _lg.getLogger("lockscore.history").warning(
+            "history projection fallback: %s", _pe)
     # Backward-compatibility: return the previously-expected shape but
     # with the P0.5 truth applied.  Outcome-neutral dedupe was already
     # applied inside load().  We no longer apply the legacy
