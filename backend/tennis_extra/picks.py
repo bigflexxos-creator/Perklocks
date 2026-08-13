@@ -357,7 +357,15 @@ async def fetch_extra_tennis_picks(
             "selection": fav_clean,
             "pick_side": fav_clean,
             "book_odds": book_odds_final,
-            "implied_probability": implied_final,
+            # ── P0.1 (2026-06) — real-line integrity ────────────────
+            # Follow the same Support 2026-06 durable rule already
+            # applied to Soccer: when no real sportsbook line exists
+            # we do NOT masquerade the fair-value model as an
+            # implied probability.  ``implied_probability`` reflects
+            # the BOOK's price when the book quoted the match;
+            # otherwise it is None.
+            "implied_probability": (implied_final
+                                     if not no_real_book_line else None),
             "win_probability": round(fav_implied * 100.0, 2),
             "model_win_probability": round(fav_implied * 100.0, 2),
             "edge_percent": edge_pct,
@@ -371,6 +379,13 @@ async def fetch_extra_tennis_picks(
             },
             "is_alt": False,
             "is_extra": is_extra_flag,
+            # ── P0.1 (2026-06) — Extended Coverage routing ─────────
+            # Model-only Tennis picks are Extended Coverage — hide
+            # from main board (already caught by the canonical
+            # `is_main_board_eligible` real-line gate but pin the
+            # explicit tag here so future audits succeed).
+            "hide_from_main_board": bool(no_real_book_line),
+            "model_only":           bool(no_real_book_line),
             "source": source_label,
             "fair_odds_model": fair_only_flag,
             "model_components": model_components if is_model_pick else None,
@@ -380,6 +395,11 @@ async def fetch_extra_tennis_picks(
             "no_edge_model": no_edge_model_flag,
             "no_real_book_line": no_real_book_line,
             "bookmaker": bookmaker_final,
+            # ── P0.1 (2026-06) — mandatory timestamp contract ──────
+            "created_at":        datetime.now(timezone.utc).isoformat(),
+            "updated_at":        datetime.now(timezone.utc).isoformat(),
+            "published_at":      datetime.now(timezone.utc).isoformat(),
+            "publication_source": "tennis_extra_v1",
             # ── Alt-line availability metadata (2026-07-13) ──
             # The Odds API catalog only covers Grand Slams, Masters
             # 1000s, WTA 1000s, and select 500s. Every match generated

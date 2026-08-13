@@ -348,6 +348,29 @@ async def _upsert_pick(
     market_label = "NRFI (No Run in 1st Inning)" if side == "NRFI" else "YRFI (Yes Run in 1st Inning)"
     edge_pct = round((true_edge or model_out["edge_signal"]) * 100, 2)
     pick_id = f"nrfi-{base['game_pk']}-{side.lower()}"
+    # ── P0.1 (2026-06) — event identity fail-closed ────────────────
+    # If canonical event identity cannot resolve (missing home OR
+    # away team), do NOT persist the candidate.  Record it as
+    # IDENTITY_REJECTED via the reachability counter and skip the
+    # upsert entirely.  A row without a resolvable event name is
+    # useless downstream and previously appeared as ``event=None``
+    # on API responses.
+    home_team = (base.get("home_team") or "").strip()
+    away_team = (base.get("away_team") or "").strip()
+    if not home_team or not away_team:
+        try:
+            from services.pipeline_reachability import ReachabilityCounters
+            _rc = ReachabilityCounters(sport="MLB")
+            _rc.record("IDENTITY_REJECTED",
+                        reason=f"nrfi_missing_team:game_pk={base.get('game_pk')}")
+            _get_logger().warning(
+                "NRFI IDENTITY_REJECTED — game_pk=%s home=%r away=%r; "
+                "candidate not persisted.",
+                base.get("game_pk"), home_team, away_team)
+        except Exception:
+            pass
+        return
+    event_label = f"{away_team} @ {home_team}"
     doc = {
         "_id": pick_id,
         "id": pick_id,
@@ -368,11 +391,14 @@ async def _upsert_pick(
         "edge_percent": edge_pct,
         "edge_source": "sportsbook_consensus" if sportsbook else "fair_50_50",
         "sportsbook_consensus": sportsbook,  # null if no book offered NRFI
-        "home_team": base["home_team"],
-        "away_team": base["away_team"],
+        "home_team": home_team,
+        "away_team": away_team,
+        # ``event`` populated so downstream audit / display never
+        # sees ``event=None`` (P0.1, 2026-06 identity closure).
+        "event": event_label,
         "event_time": base["event_time"],
         "pick_date": _today_str(),
-        "match": f"{base['away_team']} @ {base['home_team']}",
+        "match": event_label,
         "key_insights": [
             f"λ₁ (expected runs in 1st) = {model_out['expected_runs_1st_inning']}",
             f"Pitchers: {base.get('home_pitcher') or '?'} vs {base.get('away_pitcher') or '?'}",
