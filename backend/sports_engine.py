@@ -4119,14 +4119,27 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                             and not is_k_main_under
                             and str(side).lower() == "under"):
                         continue
-                    # Drop Total Bases at the 0.5 line entirely — it's the
-                    # same outcome as Hits 0.5 (any base = at least 1 hit) and
-                    # clutters the board. (Total Bases markets removed
-                    # entirely 2026-06-19; this branch is now a no-op safety
-                    # net in case a stray TB pick slips through historical
-                    # data and gets re-priced.)
-                    if mk in ("batter_total_bases", "batter_total_bases_alternate"):
-                        continue
+                    # Block 2A.5.2 (2026-06 restoration): Total Bases is
+                    # a real hitter market and MUST reach the board.
+                    # Previously ALL TB was dropped here as a stale
+                    # defensive filter (from a 2026-06-19 removal that
+                    # was reverted 2026-06-24 when TB was re-added to
+                    # PLAYER_PROP_MARKETS but this drop was left in
+                    # place).  The ONLY duplicate-with-Hits case is
+                    # `Total Bases 0.5` (equivalent to Hits 0.5, i.e.
+                    # "at least one hit"); every other TB line
+                    # (1.5, 2.5, 3.5, ...) is a genuine distinct
+                    # market and must survive.  Also drop
+                    # `batter_hits_runs_rbis` at 0.5 for the same
+                    # reason (Any hit-or-run-or-RBI ≈ Hits 0.5).
+                    if mk in ("batter_total_bases",
+                                "batter_total_bases_alternate"):
+                        try:
+                            if float(point) == 0.5:
+                                continue
+                        except (TypeError, ValueError):
+                            # Non-numeric point on TB → skip defensively.
+                            continue
                     point_key = point
                 bucket.setdefault((mk, player, point_key, side), []).append(int(price))
     # ── 2026-07-28 DEFECT #1 FIX: emission-time symmetric-pair defense ──
@@ -4599,13 +4612,63 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             _hb = _hitters.get(player.strip().lower()) or {}
             _is_home = bool(_hb.get("is_home"))
             _opp_sp = _hb.get("opp_pitcher_name")
-            real_factors, _sources = build_mlb_hitter_factors(
-                _game_ctx, player=player, is_home=_is_home,
-                opp_pitcher_name=_opp_sp,
-                market_type=mk,
-                line=point if isinstance(point, (int, float)) else None,
-            )
-            if not has_enough_real_data(real_factors, "hitter_prop"):
+            # Block 2A.5.2 (2026-08) — explicit lineup-status gate
+            # BEFORE feature engine.  When there is no lineup evidence
+            # for this player (empty ctx.hitters row) fail CLOSED at
+            # emission — that means either the confirmed lineup hasn't
+            # been posted yet, or this player isn't in it.  Either way
+            # the pick must not reach the board.  ``classify_lineup_status``
+            # is the canonical helper from services.mlb_gates that
+            # reduces raw ingest flags to ``LINEUP_STATES``.
+            try:
+                from services.mlb_gates import (
+                    classify_lineup_status as _classify_lu,
+                    should_publish            as _lu_should_publish,
+                    data_quality_cap_for_status as _lu_cap,
+                    record_rejection          as _mlb_reject,
+                )
+                _lu_status = _classify_lu(
+                    lineup_confirmed=_hb.get("lineup_confirmed"),
+                    is_starter=_hb.get("is_starter"),
+                    scratched=_hb.get("scratched"),
+                    on_bench=_hb.get("on_bench"),
+                    lineup_slot=_hb.get("lineup_slot"),
+                )
+            except Exception:
+                _lu_status = "unknown"
+                _lu_should_publish = lambda _s: True   # pragma: no cover
+                _lu_cap = lambda _s: 99.0              # pragma: no cover
+                def _mlb_reject(*_a, **_k): pass       # pragma: no cover
+            if not _lu_should_publish(_lu_status):
+                # bench / scratched → hard drop (never publish).
+                _skip_pick = True
+                try:
+                    _mlb_reject(
+                        "lineup_scratched" if _lu_status == "scratched"
+                        else "lineup_bench",
+                        market_key=mk,
+                    )
+                except Exception:
+                    pass
+            # Stash provenance so `_build_pick` result can be stamped.
+            payload.setdefault("_mlb_lineup_status", {})[
+                player.strip().lower()] = {
+                "status":     _lu_status,
+                "lineup_pos": _hb.get("lineup_slot"),
+                "source":     _hb.get("lineup_source"),
+                "cap":        _lu_cap(_lu_status),
+            }
+            if _skip_pick:
+                real_factors = {}
+                _sources = []
+            else:
+                real_factors, _sources = build_mlb_hitter_factors(
+                    _game_ctx, player=player, is_home=_is_home,
+                    opp_pitcher_name=_opp_sp,
+                    market_type=mk,
+                    line=point if isinstance(point, (int, float)) else None,
+                )
+            if not _skip_pick and not has_enough_real_data(real_factors, "hitter_prop"):
                 _skip_pick = True
                 try:
                     from services.mlb_gates import record_rejection as _mlb_reject
@@ -5078,6 +5141,40 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         # ATD Engine Confidence anchor.
         if new_pick is not None and _atd_evidence_block is not None:
             new_pick["atd_evidence"] = _atd_evidence_block
+        # ── Block 2A.5.2 (2026-08) — MLB hitter lineup provenance ─────
+        # Attach the explicit lineup-status block computed above so
+        # BoardProjection / Magic / rationale / telemetry can inspect
+        # provenance without re-fetching.  Also apply the data-quality
+        # cap for the lineup status (e.g. projected_starter caps at 92
+        # so it never reaches the 95+ Elite tier without confirmation,
+        # unknown caps at 79 which sits below the >85 board floor —
+        # a defense-in-depth against enrichment failures).  Confirmed
+        # starters (99 cap) are unconstrained by this gate.
+        if (new_pick is not None
+                and sport == "MLB"
+                and not is_pitcher_prop
+                and isinstance(payload, dict)):
+            _lu_map = payload.get("_mlb_lineup_status") or {}
+            _lu_blk = _lu_map.get(player.strip().lower()) or {}
+            if _lu_blk:
+                new_pick["lineup_status"] = {
+                    "status":     _lu_blk.get("status") or "unknown",
+                    "lineup_pos": _lu_blk.get("lineup_pos"),
+                    "source":     _lu_blk.get("source")
+                                    or "statsapi_feed_live_batting_order",
+                }
+                _cap = _lu_blk.get("cap")
+                if isinstance(_cap, (int, float)):
+                    _cur_lock = float(new_pick.get("lock_score") or 0.0)
+                    if _cur_lock > float(_cap):
+                        new_pick["lock_score_uncapped"] = _cur_lock
+                        new_pick["lock_score"] = float(_cap)
+                        new_pick.setdefault(
+                            "caps_applied", []).append({
+                                "cap": float(_cap),
+                                "reason": ("mlb_lineup_status_"
+                                            + str(_lu_blk.get("status") or "unknown")),
+                            })
         # Block 2D Final Closure §4 (2026-08) — First-TD DORMANT.
         # ``player_1st_td`` currently reuses the anytime-TD engine,
         # but positional order-of-scoring is a separate research
