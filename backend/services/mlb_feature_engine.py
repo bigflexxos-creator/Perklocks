@@ -729,7 +729,7 @@ def factor_combined_team_offense(ctx: dict) -> Optional[float]:
 
 
 def build_mlb_total_factors(ctx: dict, side: str) -> tuple[dict, list[str]]:
-    """Game total factors.
+    """Game total factors, side-normalized.
 
     Block 2D Closure §1 (2026-08) — Combined Bullpen + Combined Team
     Offense now wired from real data sources (were hardcoded None).
@@ -737,8 +737,22 @@ def build_mlb_total_factors(ctx: dict, side: str) -> tuple[dict, list[str]]:
     (AVG of both starters) instead of the delta helper meant for ML.
     Umpire Strike Zone remains None until an umpire-ingest data
     source lands — MISSING DATA stays MISSING, never invented.
+
+    Block 2A.5.1 (2026-08-13) — side neutrality:
+        Every factor is now side-normalized before returning.  The
+        raw factor helpers all use the *Over-favourable* convention
+        (higher raw value → more scoring expected).  For Under picks
+        we invert each factor so "higher normalized value = stronger
+        evidence FOR THE SELECTED SIDE".  This eliminates the
+        directional-mismatch bug where an Under pick's Lock Score
+        averaged raw offensive/park/weather signals as if higher was
+        always better — silently biasing Under picks toward Over.
+
+        Invariant:
+            higher factors[k] value
+                == stronger evidence FOR side (Over OR Under)
     """
-    factors: dict[str, Optional[float]] = {
+    raw = {
         "Park Run Total":        factor_park_run_total(ctx),
         "Weather":               factor_weather_impact(ctx, side),
         "Combined Bullpen":      factor_combined_team_bullpen(ctx),
@@ -746,6 +760,30 @@ def build_mlb_total_factors(ctx: dict, side: str) -> tuple[dict, list[str]]:
         "Starter Quality":       factor_combined_starter_quality(ctx),
         "Umpire Strike Zone":    None,  # roadmap: mlb_umpire integration
     }
+    is_under = (side or "").strip().lower() == "under"
+    # Side-normalization: for Under picks, invert every Over-favourable
+    # factor.  `Weather` is already side-aware (accepts `side` param
+    # and returns Under-oriented value directly), so leave it alone.
+    # `Starter Quality` is inherently side-neutral (both teams' rotation
+    # quality contributes to whether the total lands high/low) — it also
+    # needs side flip: strong starters → fewer runs → favours Under.
+    OVER_FAVOURABLE = {
+        "Park Run Total",
+        "Combined Bullpen",       # weak bullpens = more runs → Over
+        "Combined Team Offense",  # strong offense = more runs → Over
+        "Starter Quality",        # weak starters = more runs → Over
+    }
+    factors: dict[str, Optional[float]] = {}
+    for k, v in raw.items():
+        if v is None:
+            factors[k] = None
+            continue
+        if is_under and k in OVER_FAVOURABLE:
+            # Mirror around 0.5 to invert direction while keeping the
+            # [0, 1] range that downstream aggregators expect.
+            factors[k] = round(1.0 - float(v), 3)
+        else:
+            factors[k] = v
     sources = [k for k, v in factors.items() if v is not None]
     return factors, sources
 
