@@ -219,8 +219,15 @@ def _extract_lineup_certainty(pick: dict) -> str:
     scorer = pick.get("scorer_eligibility") or {}
     if scorer.get("lineup_status"):
         return scorer["lineup_status"]
-    # Generic lineup marker.
-    return (pick.get("lineup_status") or "unknown").lower()
+    # Generic lineup marker.  ``lineup_status`` may be either a bare
+    # string (legacy) OR a structured dict (as stamped by
+    # ``services.enrichment.lineups.enrich_pick_with_lineup`` and
+    # by Block 2A.5.2 hitter-emission wiring).  Support both without
+    # crashing so Magic remains reachable end-to-end.
+    ls = pick.get("lineup_status")
+    if isinstance(ls, dict):
+        return str(ls.get("status") or "unknown").lower()
+    return (ls or "unknown").lower()
 
 
 # ── Decision core ────────────────────────────────────────────────────

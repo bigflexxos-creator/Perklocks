@@ -440,7 +440,9 @@ async def build_mlb_game_context(game: dict) -> dict[str, Any]:
                     # Away team faces home SP; home team faces away SP.
                     opp_hand = (sph_hand if not is_home_side else spa_hand) or None
                     opp_pid = sph_id if not is_home_side else spa_id
-                    for pid in (batting_order[:9] if batting_order else []):
+                    for _slot_idx, pid in enumerate(
+                            (batting_order[:9] if batting_order else []),
+                            start=1):
                         pdata = players.get(f"ID{pid}") or {}
                         pname = ((pdata.get("person") or {}).get("fullName") or "").strip()
                         if not pname or not pid:
@@ -456,6 +458,22 @@ async def build_mlb_game_context(game: dict) -> dict[str, Any]:
                                 (ctx.get("starting_pitcher_away") if is_home_side
                                  else ctx.get("starting_pitcher_home")) or {}
                             ).get("name"),
+                            # Block 2A.5.2 (2026-08) — lineup provenance.
+                            # `battingOrder` from statsapi feed/live only
+                            # populates when the CONFIRMED starting
+                            # lineup has been posted (~1h pre-first-pitch)
+                            # — so any name in this list IS a confirmed
+                            # starter with a known batting-order slot.
+                            # Downstream `classify_lineup_status` uses
+                            # these flags to attach explicit provenance
+                            # to the emitted pick.  When the lineup has
+                            # not yet posted, `battingOrder` is empty →
+                            # no hitter rows exist → all hitter picks
+                            # fail closed (via has_enough_real_data).
+                            "lineup_confirmed": True,
+                            "is_starter":       True,
+                            "lineup_slot":      _slot_idx,
+                            "lineup_source":    "statsapi_feed_live_batting_order",
                         }
                         if bs.last10_avg is not None:
                             hitter_row["l10_hit_rate"] = bs.last10_avg
