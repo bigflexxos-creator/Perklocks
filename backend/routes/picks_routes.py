@@ -107,13 +107,31 @@ async def picks_all(
     user: Annotated[UserPublic, Depends(current_user)],
     sport: Optional[str] = None,
 ):
-    from server import _ensure_today_picks, _today_str, _canonicalize_picks  # lazy
+    """P0.2d — canonical Locks board projection.
+
+    Consumes ``BoardProjectionService`` which applies the same
+    canonical eligibility contract (``is_main_board_eligible``),
+    canonical dedupe, deterministic sort, and lifecycle window as
+    ``/picks/today``.  Previously this endpoint returned an unfiltered
+    ``db.picks.find(pick_date=today)`` result which meant sport tabs
+    and the `all` view could disagree with the main board on
+    membership — that divergence is now closed.
+    """
+    from server import (
+        _ensure_today_picks, _today_str, _filter_in_play_window,
+        _canonicalize_picks,
+    )
+    from services.board_projection_service import BoardProjectionService
     await _ensure_today_picks()
-    q: dict = {"pick_date": _today_str()}
-    if sport and sport.lower() != "all":
-        q["sport"] = sport
-    cursor = db.picks.find(q, {"_id": 0}).sort("lock_score", -1).limit(200)
-    return {"picks": _canonicalize_picks(await cursor.to_list(length=200))}
+    raw = await db.picks.find(
+        {"pick_date": _today_str()}, {"_id": 0},
+    ).to_list(length=1000)
+    svc = BoardProjectionService()
+    projected = svc.project(
+        raw, sport=sport,
+        lifecycle_filter=_filter_in_play_window,
+    )
+    return {"picks": _canonicalize_picks(projected[:200])}
 
 
 @router.get("/nrfi-yrfi")
