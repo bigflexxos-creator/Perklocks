@@ -76,12 +76,64 @@ const BASE_URL = resolveBaseUrl();
  */
 export function getBackendUrl(): string {
   if (!BASE_URL) {
-    throw new Error(
-      "Backend URL is not configured. Set EXPO_PUBLIC_BACKEND_URL " +
-      "in the production build environment."
-    );
+    // Web same-origin is legitimate — the browser has an origin even
+    // when EXPO_PUBLIC_BACKEND_URL is unset (relative /api routing
+    // via same-origin ingress).  Native production is NOT — there is
+    // no implicit origin, so throw a loud, explainable error at the
+    // first API call so the misconfig is visible immediately.
+    if (Platform.OS !== "web") {
+      throw new Error(
+        "Backend URL is not configured. Set EXPO_PUBLIC_BACKEND_URL " +
+        "in the production build environment."
+      );
+    }
   }
   return BASE_URL;
+}
+
+
+// ═════════════════════════════════════════════════════════════════════
+// buildApiUrl — the ONE authoritative endpoint constructor.
+// Every request MUST go through this to prevent app/web/preview
+// divergence.  Guarantees:
+//   * Native production without EXPO_PUBLIC_BACKEND_URL → throws
+//     (fail-loud, no silent relative /api/... on installed apps).
+//   * Web same-origin (BASE_URL === "") → returns "/api${path}"
+//     (legitimate same-origin ingress routing).
+//   * Preview / dev / configured native → returns "${base}/api${path}".
+//   * Slash normalization: no "//", no "/api/api", missing "/api"
+//     added automatically, trailing slashes on base are stripped.
+// ═════════════════════════════════════════════════════════════════════
+export function buildApiUrl(path: string): string {
+  // Normalize path — always begins with a single "/".
+  let p = (path || "").trim();
+  if (!p) p = "/";
+  if (!p.startsWith("/")) p = "/" + p;
+  // Collapse any accidental doubles.
+  while (p.startsWith("//")) p = p.slice(1);
+  // If caller already prefixed "/api", strip it — we always add it.
+  if (p === "/api") p = "/";
+  else if (p.startsWith("/api/")) p = p.slice(4);
+  const cleanPath = "/api" + p;
+
+  // Resolve base.  getBackendUrl() throws on native production if
+  // EXPO_PUBLIC_BACKEND_URL is missing.  On web with empty base we
+  // fall through to same-origin relative routing.
+  let base = "";
+  try {
+    base = getBackendUrl();
+  } catch (e) {
+    // Non-web without config → propagate the loud error.
+    if (Platform.OS !== "web") throw e;
+    base = "";
+  }
+  // Web same-origin relative routing.
+  if (!base) {
+    return cleanPath;
+  }
+  // Strip any trailing slashes from base so we never build "//api".
+  const cleanBase = base.replace(/\/+$/, "");
+  return `${cleanBase}${cleanPath}`;
 }
 
 export type Pick = {
@@ -530,7 +582,10 @@ async function request<T>(
   opts: { method?: string; body?: any; auth?: boolean; timeoutMs?: number } = {},
 ): Promise<T> {
   const method = (opts.method || "GET").toUpperCase();
-  const url = `${BASE_URL}/api${path}`;
+  // REMEDIATION.1 — every request goes through the ONE authoritative
+  // endpoint constructor.  Prevents native-production silent /api/...
+  // fallback and unifies slash normalization across app/web/preview.
+  const url = buildApiUrl(path);
 
   // In-flight dedupe — GETs only (mutations must NEVER be deduped).
   const dedupeKey = method === "GET" ? `${method}:${url}` : null;
