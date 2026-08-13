@@ -1,5 +1,29 @@
 """Tennis Feature Engine — real data replacement for `_factors_random`.
 
+BLOCK 2A CLASSIFICATION (2026-08-13): **UNREACHABLE_MODERN_ENGINE**
+
+This module is NOT wired into the authoritative Tennis production
+runtime.  The canonical entry point is
+``tennis_engine.apply_tennis_engine`` via
+``services/pick_refresh_orchestrator.py``; that path does not currently
+consume ``build_tennis_ml_factors``.  The only references in the
+codebase are:
+
+    tests/test_phase4e.py            (unit test)
+    services/pipeline_diagnostic.py  (evidence probe, read-only)
+
+Do NOT reintroduce this module into the runtime candidate path without
+an explicit consolidation edit that documents which canonical evidence
+slot it fills, why the existing helper set
+(``tennis_identity`` + ``tennis_calibration`` + ``tennis_data_quality``
++ ``tennis_math_engine`` + ``tennis_elite_players`` + ``sim_tennis``)
+cannot serve the same purpose, and a corresponding update to the
+Block 2A tennis-consolidation report.
+
+The Block 2A duplicate-runtime static guard treats this file as an
+UNREACHABLE_MODERN_ENGINE.  Any future runtime caller MUST also update
+the guard's approved-owners list.
+
 USER MANDATE (2026-07-21): "Never substitute randomness for missing data."
 
 Real-data sources for Tennis Moneyline factors:
