@@ -5289,6 +5289,106 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     new_pick["lock_score"] = min(
                         99.0, float(new_pick.get("lock_score") or 0) + 3.0,
                     )
+        # ── Block 2B.1B (2026-08) — Platinum NFL Challenger wiring ──
+        # For any real NFL candidate that has been ``_build_pick``-ed
+        # AND survived every upstream gate, run the Platinum causal
+        # simulator and attach the Champion/Challenger frozen row.
+        # This is the SINGLE production wiring hook — the only place
+        # in the entire runtime where Platinum is called for board
+        # candidates.  ``model_probability`` is preserved (Champion);
+        # Platinum output is stored separately (Challenger) under
+        # ``pick["platinum_challenger"]``.
+        #
+        # Safety (§34):
+        #     * One bad NFL candidate MUST NOT kill the batch.
+        #     * Failure fingerprint per §32 — never fake agreement.
+        if (new_pick is not None and sport == "NFL"):
+            try:
+                from services.platinum_nfl import (
+                    simulate as _platinum_simulate,
+                    attach_challenger_output as _platinum_attach,
+                    classify_season_type as _platinum_classify_season,
+                    QBOpportunity as _QBOpp,
+                    RBOpportunity as _RBOpp,
+                    WROpportunity as _WROpp,
+                )
+                # Assemble the minimum production context from the
+                # already-computed NFL factors + event metadata.
+                _nfl_ctx: dict = {}
+                _sport_key = ev.get("sport_key") if isinstance(ev, dict) else None
+                if _sport_key:
+                    new_pick.setdefault("sport_key", _sport_key)
+                _st = _platinum_classify_season(new_pick)
+                _nfl_ctx["season_type"] = _st
+                # Attach expected game context when the model
+                # provided it (moneyline/spread/total path).
+                _model_ctx = (payload.get("_ctx") if isinstance(payload, dict) else None) or {}
+                _nfl_ctx["expected_margin_home"] = _model_ctx.get("expected_margin_home")
+                _nfl_ctx["total_line"] = _model_ctx.get("total_line") or new_pick.get("line")
+                _nfl_ctx["team_plays"] = _model_ctx.get("team_plays")
+                _nfl_ctx["game_pass_rate"] = _model_ctx.get("game_pass_rate")
+                # Position hint from the NFL feature engine.
+                try:
+                    from sports_engine import _infer_nfl_position_from_market
+                    _pos = _infer_nfl_position_from_market(mk)
+                except Exception:
+                    _pos = None
+                if _pos:
+                    _nfl_ctx["position"] = _pos
+                # Build the minimum opportunity object from the
+                # precomputed NFL factor dict for this player+market.
+                _pc = ((_model_ctx.get("nfl_precomputed") or {})
+                        .get(player.strip().lower()) or {}).get(mk) or {}
+                _fac = _pc.get("factors") or {}
+                if _pos == "QB":
+                    _nfl_ctx["qb_opportunity"] = _QBOpp(
+                        att_mean=float(_fac.get("expected_attempts") or 32.0),
+                        ypa_mean=float(_fac.get("expected_ypa") or 7.2),
+                        role_certainty=float(_fac.get("role_certainty") or 0.85),
+                    )
+                elif _pos == "RB":
+                    _nfl_ctx["rb_opportunity"] = _RBOpp(
+                        carry_share_mean=float(_fac.get("carry_share") or 0.55),
+                        ypc_mean=float(_fac.get("expected_ypc") or 4.35),
+                        role_certainty=float(_fac.get("role_certainty") or 0.75),
+                    )
+                elif _pos in ("WR", "TE"):
+                    _nfl_ctx["wr_opportunity"] = _WROpp(
+                        target_share_mean=float(_fac.get("target_share") or 0.20),
+                        catch_rate_mean=float(_fac.get("catch_rate") or 0.635),
+                        ypt_mean=float(_fac.get("expected_ypt") or 8.2),
+                        role_certainty=float(_fac.get("role_certainty") or 0.75),
+                    )
+                # Derive a stable seed from the canonical pick id +
+                # event id (§33 determinism).
+                _seed = int(abs(hash(
+                    str(new_pick.get("id") or new_pick.get("event_id") or "") +
+                    str(mk) + str(new_pick.get("line")))) % 0x7FFFFFFF)
+                _sim_output = _platinum_simulate(
+                    new_pick, ctx=_nfl_ctx, seed=_seed, n_sims=2000,
+                )
+                _platinum_attach(new_pick, _sim_output)
+                # Stamp season type on the pick for the funnel diagnostics.
+                new_pick["season_type"] = getattr(_st, "value", str(_st))
+            except Exception as _plat_err:
+                # Per §34: one bad NFL candidate cannot kill the batch.
+                # Stamp the failure fingerprint (§32) and continue.
+                try:
+                    new_pick["platinum_challenger"] = {
+                        "ran": False,
+                        "reason": "SIMULATOR_FAILED",
+                        "sim_probability": None,
+                        "error_class": type(_plat_err).__name__,
+                    }
+                except Exception:
+                    pass
+                try:
+                    from services.pipeline_diagnostic import log_reason as _plog
+                    _plog(sport="NFL", market=mk, player=player,
+                          reason="PLATINUM_WIRING_EXCEPTION_"
+                                  + type(_plat_err).__name__.upper())
+                except Exception:
+                    pass
         picks.append(new_pick)
     # Tag every Under pick so the main Locks feed can exclude them and the
     # dedicated "Under of the Day" tab can surface them. Anything where the

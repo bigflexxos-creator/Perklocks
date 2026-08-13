@@ -85,6 +85,11 @@ from services.platinum_nfl.rogue_guard import (
     APPROVED_NFL_RUNTIMES,
     APPROVED_NFL_PUBLISHERS,
 )
+from services.platinum_nfl.rejection_funnel import (
+    NFLRejectionStage,
+    record_nfl_rejection,
+    classify_from_sim_output,
+)
 
 __all__ = [
     # season
@@ -105,4 +110,7 @@ __all__ = [
     # guard
     "verify_no_rogue_nfl_runtime",
     "APPROVED_NFL_RUNTIMES", "APPROVED_NFL_PUBLISHERS",
+    # funnel
+    "NFLRejectionStage", "record_nfl_rejection",
+    "classify_from_sim_output",
 ]
