@@ -847,6 +847,38 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as e:
         logger.warning("Brain pipeline skipped: %s", e)
 
+    # ── BLOCK 8 — Controlled Magic → Lock Score Integration ───────────
+    # Single, controlled entry point that:
+    #   1. Builds Magic evidence per pick (identity + form + role +
+    #      matchup + sim/model/cal + market intel).
+    #   2. Applies a bounded, base-aware asymmetric delta on top of
+    #      the finalised base lock score (non-APEX HARD CAP = 99).
+    #   3. Evaluates the explicit APEX 100 gate — sport, market,
+    #      independent-category count, contradictions, risk flags,
+    #      base >= 97, extra-strict per-market gates.
+    # Failure-tolerant: any exception is logged and the batch continues.
+    try:
+        from services.magic.lock_score_integrator import (
+            apply_block8_magic_to_picks,
+        )
+        b8_summary = await apply_block8_magic_to_picks(db, picks)
+        logger.info(
+            "Block 8 Magic integration: %d considered / %d applied · "
+            "delta ↑%d ↓%d 0=%d · APEX assigned=%d blocked=%d · "
+            "insufficient=%d errors=%d",
+            b8_summary.get("considered", 0),
+            b8_summary.get("delta_applied", 0),
+            b8_summary.get("positive_delta", 0),
+            b8_summary.get("negative_delta", 0),
+            b8_summary.get("zero_delta", 0),
+            b8_summary.get("apex_assigned", 0),
+            b8_summary.get("apex_blocked", 0),
+            b8_summary.get("insufficient_evidence", 0),
+            b8_summary.get("errors", 0),
+        )
+    except Exception as e:
+        logger.warning("Block 8 Magic integration skipped: %s", e)
+
     # Deduplicate picks within this batch by `id` — UUID5 hashes can collide
     # if two markets produce identical external_ids (saw this with Anytime
     # Goal Scorer picks generated twice in the same refresh). Keep the first.

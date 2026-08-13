@@ -311,18 +311,26 @@ def test_atd_stat_never_conflated_with_yardage():
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 10. Magic → Lock Score wiring MUST NOT exist yet (Phase 22)
+# 10. Magic → Lock Score wiring: only the SANCTIONED Block 8 integrator
+#     may write ``lock_score`` (per Block 8 Closure, 2026-06).
 # ═══════════════════════════════════════════════════════════════════
 
 def test_no_magic_to_lock_score_writes_from_magic_package():
-    """Scan services/magic/*.py for any actual write to
-    `lock_score`/`display_lock_score`.  Only docstring mentions
-    allowed."""
+    """Scan ``services/magic/*.py`` for writes to ``pick["lock_score"]``.
+
+    Block 8 (2026-06) introduced ONE sanctioned integrator —
+    ``services/magic/lock_score_integrator.py`` — that applies the
+    bounded Magic delta and the explicit APEX gate.  Every other file
+    in the Magic package MUST remain read-only w.r.t. ``lock_score``.
+    """
     import re
     from pathlib import Path
     root = Path(__file__).resolve().parent.parent / "services" / "magic"
+    SANCTIONED = {"lock_score_integrator.py"}
     problems = []
     for p in root.rglob("*.py"):
+        if p.name in SANCTIONED:
+            continue
         src = p.read_text()
         # Strip docstrings/comments
         src = re.sub(r'""".*?"""', '', src, flags=re.S)
@@ -334,7 +342,8 @@ def test_no_magic_to_lock_score_writes_from_magic_package():
             r'(pick|p|candidate)\[["\']lock_score["\']?\s*[:\]]?\s*=', src):
             problems.append(f"{p.name}: {m.group()!r}")
     assert not problems, \
-        f"Magic package must not write lock_score: {problems}"
+        f"Magic package must not write lock_score (outside the " \
+        f"sanctioned Block 8 integrator): {problems}"
 
 
 def test_magic_bridge_never_calls_lock_score_anchor():

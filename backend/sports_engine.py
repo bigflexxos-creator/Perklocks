@@ -557,6 +557,17 @@ def _grade(score: float) -> str:
     # User-defined band labels — match the bet-quality floor tiers in
     # compute_lock_score() exactly so the badge on every card always
     # reflects which earned tier the pick landed in.
+    #
+    # Block 8 (2026-06 — MAGIC → LOCK SCORE INTEGRATION) — the new
+    # ``APEX Lock`` band is reserved for score == 100 AND explicitly
+    # gated by ``services.magic.apex_gate.evaluate_apex``.  Because
+    # ``_grade`` cannot see the ``apex_lock`` flag directly, we treat
+    # score >= 100 as APEX; the defensive downgrade in
+    # ``services.magic.lock_score_integrator.defensive_downgrade_if_needed``
+    # guarantees any accidental 100 without ``apex_lock=True`` is
+    # forced back to 99 BEFORE this function runs.
+    if score >= 100:
+        return "APEX Lock"
     if score >= 98:
         return "Elite Lock"
     if score >= 95:
