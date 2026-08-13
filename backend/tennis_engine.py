@@ -1,5 +1,41 @@
 """Tennis Edge Engine v2 — PerksLocks tennis-specific scoring & gating layer.
 
+Block 2A (2026-08-13):
+    This module is the SINGLE AUTHORITATIVE TENNIS RUNTIME.
+    Wiring: server._refresh_picks →
+            services/pick_refresh_orchestrator.py::apply_tennis_engine →
+            THIS module → canonical candidate publication.
+
+    Approved companion helpers (authoritative):
+        services/tennis_identity.py         canonical identity
+        services/tennis_calibration.py      calibration
+        services/tennis_data_quality.py     data-quality gates
+        services/tennis_math_engine.py      shared math primitives
+        services/tennis_elite_players.py    elite-tier evidence
+        services/tennis/                    data fallbacks / sources
+        services/pick_identity_remediation_soccer_tennis.py
+        brain/sim_tennis.py                 simulator (reachable via
+                                            brain/sim_runner.py)
+        historical/tennis.py                historical backfill
+
+    Specialized (separate product surface, not primary Locks):
+        tennis_extra/*                      TennisExplorer scraper for
+                                            lower-tier tour picks
+                                            (odds_engine, picks,
+                                            real_odds, scraper, settle)
+
+    Unreachable modern engine (NOT wired to runtime — do not
+    reintroduce without an explicit consolidation edit):
+        services/tennis_feature_engine.py   build_tennis_ml_factors is
+                                            currently only used by a
+                                            test + a pipeline_diagnostic
+                                            probe.  See
+                                            docs/BLOCK2A_TENNIS_INVENTORY.md
+                                            for the disposition record.
+
+    Static duplicate-runtime guard (P0.2f + Block 2A) enforces that no
+    other module independently publishes canonical Tennis candidates.
+
 Goal: increase tennis ROI by skipping low-confidence matches and only
 surfacing edges that pass every component check.
 
