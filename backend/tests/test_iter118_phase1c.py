@@ -76,15 +76,22 @@ def test_A_settlement_service_writes_event():
         pid = f"settle_a1_{uuid.uuid4().hex[:8]}"
         try:
             await _seed_snapshot(db, pid)
-            from services.settlement_service import SettlementService, COLLECTION
+            from services.settlement_service import (
+                SettlementService, COLLECTION, NEW_SETTLEMENT,
+            )
             svc = SettlementService(db)
             await svc.ensure_indices()
-            ev = await svc.record(
+            # P0.2a — record() now returns {"status": ..., "event": {...}}
+            # and requires authoritative_event_final=True for outcomes.
+            out = await svc.record(
                 prediction_id=pid, result="won",
                 source="test_A_settlement",
                 actual_result={"final_score": "5-3"},
+                authoritative_event_final=True,
                 compat_write_to_picks=True,
             )
+            assert out["status"] == NEW_SETTLEMENT
+            ev = out["event"]
             assert ev["result"] == "won"
             assert ev["is_active"] is True
             assert ev["snapshot_version"] == 1
@@ -110,20 +117,32 @@ def test_B_settlement_invalid_and_deactivates_prior():
         pid = f"settle_b1_{uuid.uuid4().hex[:8]}"
         try:
             await _seed_snapshot(db, pid)
-            from services.settlement_service import SettlementService, COLLECTION
+            from services.settlement_service import (
+                SettlementService, COLLECTION, REFUSAL_INVALID_RESULT,
+            )
             svc = SettlementService(db)
             await svc.ensure_indices()
-            with pytest.raises(ValueError):
-                await svc.record(
-                    prediction_id=pid, result="banana",
-                    source="test_B",
-                )
+            # P0.2a — invalid results now return a REFUSAL status
+            # (no ValueError) so callers can react without exceptions.
+            bad = await svc.record(
+                prediction_id=pid, result="banana",
+                source="test_B",
+                authoritative_event_final=True,
+                actual_result={"final_score": "0-0"},
+            )
+            assert bad["status"] == REFUSAL_INVALID_RESULT
             # First event
             await svc.record(prediction_id=pid, result="lost",
-                              source="test_B", compat_write_to_picks=False)
+                              source="test_B",
+                              authoritative_event_final=True,
+                              actual_result={"final_score": "0-1"},
+                              compat_write_to_picks=False)
             # Second event supersedes the first
             await svc.record(prediction_id=pid, result="void",
-                              source="test_B", compat_write_to_picks=False)
+                              source="test_B",
+                              authoritative_event_final=True,
+                              actual_result={"reason": "postponed"},
+                              compat_write_to_picks=False)
             actives = await db[COLLECTION].find(
                 {"prediction_id": pid, "is_active": True}).to_list(10)
             assert len(actives) == 1
@@ -145,10 +164,12 @@ def test_C_settlement_captures_snapshot_version():
             from services.settlement_service import SettlementService
             svc = SettlementService(db)
             await svc.ensure_indices()
-            ev = await svc.record(
+            out = await svc.record(
                 prediction_id=pid, result="won", source="test_C",
+                authoritative_event_final=True,
+                actual_result={"final_score": "5-3"},
                 compat_write_to_picks=False)
-            assert ev["snapshot_version"] == 1
+            assert out["event"]["snapshot_version"] == 1
         finally:
             await _cleanup(db, pid)
     _run(run())
