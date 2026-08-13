@@ -1673,17 +1673,27 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             # have negative edge the downstream `_build_pick` filter
             # will drop it (edge_floor = -1.0), which is what we want.
             #
-            # 2026-07-19 (user request): "not one per game I just want
-            # the best ones for day over or under". Require a real
-            # +2% edge before we surface ANY total pick — otherwise
-            # the model can't confidently prefer that side and the
-            # emit is noise. Combined with the deterministic-per-game
-            # random seed this reduces the daily total slate to ~4-8
-            # of the strongest edges rather than one per game.
+            # Block 2A.5.1 (2026-08-13) — side-neutrality:
+            #   Previously `max(candidates, key=lambda c: c["edge"])`
+            #   returned the FIRST element on exact tie, and `Over` was
+            #   always inserted before `Under` in the candidates list.
+            #   That deterministically biased ties toward Over.  We now
+            #   detect exact-tie ambiguity and skip the pick entirely
+            #   (both sides genuinely indistinguishable → no-bet).
+            #   Non-tie cases select the strictly greater edge as before.
             if candidates:
-                best = max(candidates, key=lambda c: c["edge"])
+                _sorted = sorted(candidates, key=lambda c: c["edge"],
+                                  reverse=True)
+                best = _sorted[0]
+                if (len(_sorted) > 1
+                        and abs(_sorted[0]["edge"] - _sorted[1]["edge"])
+                            < 1e-9):
+                    # Exact tie — both sides equally supported by the
+                    # book-anchored fallback model.  Refuse to default
+                    # to Over.  Neither side is graded.
+                    best = None
                 MIN_TOTALS_EDGE = 0.02   # 2 percentage points of positive edge
-                if best["edge"] >= MIN_TOTALS_EDGE:
+                if best is not None and best["edge"] >= MIN_TOTALS_EDGE:
                     # 2026-07-21 Phase 1 MLB + Phase 2 Soccer: real total
                     # factors, skip if not enough coverage.
                     _skip_total = False
