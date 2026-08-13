@@ -87,17 +87,33 @@ def _atd_from_row(actuals: dict) -> int:
 
 def _stat_from_row(row: dict, stat: str) -> Optional[float]:
     """Pull the stat off a `player_game_actuals.actuals` OR a
-    `nfl_player_weekly` row.  ATD is derived."""
+    `nfl_player_weekly` row.  Handles both naming conventions
+    (`passing_yards` and `pass_yds`).  ATD is derived."""
     actuals = row.get("actuals") or row
     if stat == "atd":
-        return float(_atd_from_row(actuals))
-    v = actuals.get(stat)
-    if v is None:
-        return None
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return None
+        rt = (actuals.get("rushing_tds")
+              if actuals.get("rushing_tds") is not None
+              else actuals.get("rush_tds", 0))
+        wt = (actuals.get("receiving_tds")
+              if actuals.get("receiving_tds") is not None
+              else actuals.get("rec_tds", 0))
+        return float(bool((rt or 0) or (wt or 0)))
+    aliases = {
+        "passing_yards":   ("passing_yards",  "pass_yds"),
+        "passing_tds":     ("passing_tds",    "pass_tds"),
+        "passing_ints":    ("passing_ints",   "interceptions"),
+        "rushing_yards":   ("rushing_yards",  "rush_yds"),
+        "rushing_tds":     ("rushing_tds",    "rush_tds"),
+        "carries":         ("carries",        "rush_attempts"),
+        "receiving_yards": ("receiving_yards","rec_yds"),
+        "receiving_tds":   ("receiving_tds",  "rec_tds"),
+    }
+    for key in aliases.get(stat, (stat,)):
+        v = actuals.get(key)
+        if v is not None:
+            try: return float(v)
+            except (TypeError, ValueError): pass
+    return None
 
 
 # ═══════════════════════════════════════════════════════════════════
