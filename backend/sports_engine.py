@@ -4657,6 +4657,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 "lineup_pos": _hb.get("lineup_slot"),
                 "source":     _hb.get("lineup_source"),
                 "cap":        _lu_cap(_lu_status),
+                "updated_at": _hb.get("lineup_updated_at"),
             }
             if _skip_pick:
                 real_factors = {}
@@ -5157,11 +5158,23 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             _lu_map = payload.get("_mlb_lineup_status") or {}
             _lu_blk = _lu_map.get(player.strip().lower()) or {}
             if _lu_blk:
+                # Block 2A.5.3 (§3) — normalize the emitted status to
+                # the public contract: CONFIRMED / PROJECTED / UNKNOWN
+                # (bench/scratched paths already dropped the pick
+                # upstream via should_publish=False).
+                _raw = str(_lu_blk.get("status") or "unknown").lower()
+                if _raw == "confirmed_starter":
+                    _public_status = "CONFIRMED"
+                elif _raw == "projected_starter":
+                    _public_status = "PROJECTED"
+                else:
+                    _public_status = "UNKNOWN"
                 new_pick["lineup_status"] = {
-                    "status":     _lu_blk.get("status") or "unknown",
+                    "status":     _public_status,
                     "lineup_pos": _lu_blk.get("lineup_pos"),
                     "source":     _lu_blk.get("source")
                                     or "statsapi_feed_live_batting_order",
+                    "updated_at": _lu_blk.get("updated_at"),
                 }
                 _cap = _lu_blk.get("cap")
                 if isinstance(_cap, (int, float)):
@@ -5172,8 +5185,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                         new_pick.setdefault(
                             "caps_applied", []).append({
                                 "cap": float(_cap),
-                                "reason": ("mlb_lineup_status_"
-                                            + str(_lu_blk.get("status") or "unknown")),
+                                "reason": ("mlb_lineup_status_" + _raw),
                             })
         # Block 2D Final Closure §4 (2026-08) — First-TD DORMANT.
         # ``player_1st_td`` currently reuses the anytime-TD engine,
