@@ -269,6 +269,20 @@ def evaluate_apex(*,
         return dec
     dec.requirements_met.append("sport_market_eligible")
 
+    # 1b. Real-market-line integrity — a pick without a real sportsbook
+    # line can never qualify for APEX regardless of anything else.
+    # This mirrors the Emergent Support 2026-06 durable fix: model-only
+    # picks belong in Extended Coverage, not on the main board or APEX.
+    if (pick.get("no_real_book_line") is True
+            or pick.get("model_only") is True
+            or pick.get("hide_from_main_board") is True
+            or pick.get("book_odds") is None
+            or pick.get("implied_probability") is None):
+        dec.block_reason = "no_real_market_line"
+        dec.requirements_failed.append(dec.block_reason)
+        return dec
+    dec.requirements_met.append("real_market_line_present")
+
     # 2. Magic tier gate
     if mo.magic_tier != MagicTier.ALIGNED_STRONG:
         dec.block_reason = f"magic_tier_not_aligned_strong:{mo.magic_tier.value}"

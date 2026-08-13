@@ -274,6 +274,17 @@ def _build_pick(sport_key: str, league: str, ev: dict, sel: dict,
         odds_source_val = "MODEL_ONLY"
 
     pick_id = _pick_id(sport_key, ev["event_id"], sel["side"])
+    # ── Real-line integrity (Emergent Support 2026-06 durable fix) ───
+    # When there is NO real sportsbook line, DO NOT masquerade the
+    # model probability as an implied probability, DO NOT synthesise
+    # book odds, and DO NOT represent missing edge as 0.  Route the
+    # pick to Extended Coverage (is_extra=True) and keep it OFF the
+    # main Locks board (hide_from_main_board=True).  A missing
+    # sportsbook line is NOT permission to fabricate market evidence.
+    implied_prob_val = round(prob * 100, 2) if real_book_odds is not None else None
+    is_extra_flag       = no_real_line
+    hide_from_main_flag = no_real_line
+    model_only_flag     = no_real_line
     return {
         "id":                   pick_id,
         "sport":                "Soccer",
@@ -293,7 +304,9 @@ def _build_pick(sport_key: str, league: str, ev: dict, sel: dict,
         "model_win_prob":       round(prob, 4),
         "win_probability":      round(prob * 100, 2),
         "book_odds":            real_book_odds,
-        "implied_probability":  round(prob * 100, 2),
+        # Implied probability comes from the BOOK, not the model.
+        # None when there is no real book line — never fabricate.
+        "implied_probability":  implied_prob_val,
         "confidence":           "MEDIUM",
         "lock_score":           round(50 + (prob - 0.5) * 80, 1),   # 50..90
         # Strict edge gate — no real sportsbook = no edge.  Preserved
@@ -303,6 +316,12 @@ def _build_pick(sport_key: str, league: str, ev: dict, sel: dict,
         "odds_status":          ("real" if real_book_odds is not None
                                   else "no_book_line"),
         "no_real_book_line":    no_real_line,
+        # Extended Coverage routing — model-only picks must never
+        # populate the main Locks board.  Real-book picks pass
+        # through unchanged.
+        "is_extra":             is_extra_flag,
+        "model_only":           model_only_flag,
+        "hide_from_main_board": hide_from_main_flag,
         "no_model_probability_reason": None,
         "confidence_penalty":   -8,
         "source":               _SOURCE_TAG,

@@ -44,33 +44,37 @@ def _fresh_db():
 
 
 # ── 1-3. Strict >85 boundary ────────────────────────────────────────
+_REAL_LINE = {"book_odds": -180, "implied_probability": 64.3}
+
+
 def test_eligibility_helper_boundary_84_99_off():
     from services.main_board_eligibility import is_main_board_eligible
-    assert is_main_board_eligible({"lock_score": 84.99}) is False
+    assert is_main_board_eligible({"lock_score": 84.99, **_REAL_LINE}) is False
 
 
 def test_eligibility_helper_boundary_85_00_off():
     from services.main_board_eligibility import is_main_board_eligible
-    assert is_main_board_eligible({"lock_score": 85.00}) is False
-    assert is_main_board_eligible({"lock_score_v2": 85.00}) is False
+    assert is_main_board_eligible({"lock_score": 85.00, **_REAL_LINE}) is False
+    assert is_main_board_eligible({"lock_score_v2": 85.00, **_REAL_LINE}) is False
 
 
 def test_eligibility_helper_boundary_85_01_on():
     from services.main_board_eligibility import is_main_board_eligible
-    assert is_main_board_eligible({"lock_score": 85.01}) is True
-    assert is_main_board_eligible({"lock_score_v2": 85.01}) is True
+    assert is_main_board_eligible({"lock_score": 85.01, **_REAL_LINE}) is True
+    assert is_main_board_eligible({"lock_score_v2": 85.01, **_REAL_LINE}) is True
 
 
 def test_eligibility_helper_86_00_on():
     from services.main_board_eligibility import is_main_board_eligible
-    assert is_main_board_eligible({"lock_score": 86.00}) is True
+    assert is_main_board_eligible({"lock_score": 86.00, **_REAL_LINE}) is True
 
 
 def test_eligibility_helper_max_of_two_aliases():
     from services.main_board_eligibility import is_main_board_eligible
     # Either alias clearing 85.01 is sufficient.
     assert is_main_board_eligible({"lock_score": 80.0,
-                                     "lock_score_v2": 90.0}) is True
+                                     "lock_score_v2": 90.0,
+                                     **_REAL_LINE}) is True
 
 
 def test_eligibility_helper_rejects_bad_input():
@@ -85,10 +89,11 @@ def test_query_helper_uses_strict_gt_85():
     )
     assert MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE == 85.0
     q = main_board_lock_score_query()
-    # Predicate must express strict `> 85` (not `>= 85.01`) and
-    # prefer canonical ``published_lock_score`` over legacy fields.
-    assert "$or" in q
-    branches = q["$or"]
+    # 2026-06: predicate is now $and([real_line_gate, lock_gate]).
+    # Extract the lock gate (last clause) for the boundary asserts.
+    assert "$and" in q
+    lock_gate = q["$and"][-1]
+    branches = lock_gate["$or"]
     # First branch: canonical
     assert branches[0] == {"published_lock_score": {"$gt": 85.0}}
     # Second branch: legacy fallback gated by `published_lock_score`
@@ -212,7 +217,8 @@ def test_published_pick_at_exactly_85_is_off_board():
 
 def test_published_pick_above_85_reaches_board():
     from services.main_board_eligibility import is_main_board_eligible
-    pub = {"lock_score": 85.05, "publication_source": "canonical_pipeline"}
+    pub = {"lock_score": 85.05, "publication_source": "canonical_pipeline",
+            **_REAL_LINE}
     assert is_main_board_eligible(pub) is True
 
 
@@ -240,6 +246,7 @@ def test_canonical_published_over_85_wins_even_if_legacy_low():
         "published_lock_score": 92.0,   # canonical
         "lock_score": 64.0,              # stale legacy drift
         "lock_score_v2": 50.0,
+        **_REAL_LINE,
     }
     assert is_main_board_eligible(pick) is True
 

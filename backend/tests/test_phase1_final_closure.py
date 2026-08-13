@@ -44,38 +44,51 @@ def _run(coro):
 
 
 # ── A. True `>85` boundary tests (Python helper) ────────────────────
+# 2026-06 (Support Soccer fix): `is_main_board_eligible` now also
+# requires a REAL sportsbook line.  Every fixture in this file that
+# expects `True` MUST carry ``book_odds`` + ``implied_probability`` —
+# these tests still assert the `>85` boundary; the added fields keep
+# them complete real-line picks so the boundary is the only thing
+# being exercised.  The strict `≤ 85` cases can stay bare.
+_REAL_LINE = {"book_odds": -180, "implied_probability": 64.3}
+
+
 def test_boundary_84_99_off():
     from services.main_board_eligibility import is_main_board_eligible
-    assert is_main_board_eligible({"lock_score": 84.99}) is False
+    assert is_main_board_eligible({"lock_score": 84.99, **_REAL_LINE}) is False
 
 
 def test_boundary_85_00_off_exactly():
     from services.main_board_eligibility import is_main_board_eligible
-    assert is_main_board_eligible({"lock_score": 85.0}) is False
+    assert is_main_board_eligible({"lock_score": 85.0, **_REAL_LINE}) is False
 
 
 def test_boundary_85_001_on():
     from services.main_board_eligibility import is_main_board_eligible
     # 85.001 is technically > 85 and MUST qualify per contract.
-    assert is_main_board_eligible({"lock_score": 85.001}) is True
+    assert is_main_board_eligible({"lock_score": 85.001, **_REAL_LINE}) is True
 
 
 def test_boundary_85_01_on():
     from services.main_board_eligibility import is_main_board_eligible
-    assert is_main_board_eligible({"lock_score": 85.01}) is True
+    assert is_main_board_eligible({"lock_score": 85.01, **_REAL_LINE}) is True
 
 
 def test_boundary_86_00_on():
     from services.main_board_eligibility import is_main_board_eligible
-    assert is_main_board_eligible({"lock_score": 86.0}) is True
+    assert is_main_board_eligible({"lock_score": 86.0, **_REAL_LINE}) is True
 
 
 # ── A. Same boundary via the Mongo predicate builder ────────────────
 def test_mongo_predicate_uses_gt_not_gte_epsilon():
     from services.main_board_eligibility import main_board_lock_score_query
     q = main_board_lock_score_query()
-    # Canonical branch must be strict $gt: 85 (NOT $gte: 85.01).
-    branches = q["$or"]
+    # 2026-06 — the predicate is now $and([real_line, lock_gate]).
+    # Extract the lock-gate branch (last $and clause) and verify
+    # strict $gt: 85 (NOT $gte: 85.01).
+    assert "$and" in q
+    lock_gate = q["$and"][-1]
+    branches = lock_gate["$or"]
     assert branches[0] == {"published_lock_score": {"$gt": 85.0}}
     inner_or = [c for c in branches[1]["$and"] if "$or" in c][0]["$or"]
     assert {"lock_score":    {"$gt": 85.0}} in inner_or
@@ -87,10 +100,12 @@ def test_mongo_predicate_min_lock_narrows_but_never_lowers():
     # min_lock=99 → narrower band; must use $gte: 99 on the canonical
     # branch (not $gt: 85).
     q99 = main_board_lock_score_query(min_lock=99)
-    assert q99["$or"][0] == {"published_lock_score": {"$gte": 99.0}}
+    lock_gate_99 = q99["$and"][-1]
+    assert lock_gate_99["$or"][0] == {"published_lock_score": {"$gte": 99.0}}
     # min_lock=70 (< 85) is clamped up to the base `>85` contract.
     q70 = main_board_lock_score_query(min_lock=70)
-    assert q70["$or"][0] == {"published_lock_score": {"$gt": 85.0}}
+    lock_gate_70 = q70["$and"][-1]
+    assert lock_gate_70["$or"][0] == {"published_lock_score": {"$gt": 85.0}}
 
 
 # ── B. Locks views: filter/alt sub-tabs must NOT lower the floor ────
@@ -178,6 +193,8 @@ def test_candidate_B_full_lifecycle_to_board_eligible():
                 "sport": "NBA",
                 "market": "player_points",
                 "lock_score": 92.0,
+                # Real-line integrity (Support 2026-06 durable fix)
+                "book_odds": -180, "implied_probability": 64.3,
                 # No no_bet, no off_board — this pick clears every gate.
             }
             stats = await record_batch_dispositions(
@@ -248,6 +265,7 @@ def test_canonical_over_85_survives_stale_legacy_low():
         "published_lock_score": 92.0,
         "lock_score": 64.0,      # stale legacy drift
         "lock_score_v2": 50.0,
+        **_REAL_LINE,
     }
     assert is_main_board_eligible(pick) is True
 
@@ -259,7 +277,9 @@ def test_canonical_predicate_gates_legacy_branch_by_exists_false():
     through the DB filter."""
     from services.main_board_eligibility import main_board_lock_score_query
     q = main_board_lock_score_query()
-    legacy = q["$or"][1]
+    # Extract lock-gate branch (last $and clause; first is real-line).
+    lock_gate = q["$and"][-1]
+    legacy = lock_gate["$or"][1]
     assert "$and" in legacy
     assert {"published_lock_score": {"$exists": False}} in legacy["$and"]
 
