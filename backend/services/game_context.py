@@ -522,10 +522,156 @@ async def build_mlb_game_context(game: dict) -> dict[str, Any]:
                         except Exception:
                             pass
                         ctx["hitters"][pname.strip().lower()] = hitter_row
+
+            # ── Block 2A.5.3 (2026-08) — PROJECTED-LINEUP FALLBACK ──
+            # Any side of this game where the CONFIRMED batting order
+            # has NOT yet been posted (empty ``battingOrder``) falls
+            # back to the authoritative MLB StatsAPI projected lineup
+            # from ``/schedule?hydrate=lineups``.  Each row is
+            # explicitly stamped ``lineup_confirmed=False`` with
+            # ``lineup_source=statsapi_schedule_hydrate_lineups`` so
+            # downstream ``classify_lineup_status`` reduces the row
+            # to ``projected_starter`` (cap = 92, published under
+            # PROJECTED provenance) instead of ``unknown``.
+            #
+            # Precedence (§4): CONFIRMED > PROJECTED — the loop above
+            # populated confirmed rows first; we NEVER overwrite them.
+            #
+            # No new provider is added — MLB StatsAPI is the same
+            # base we already call for probablePitcher enrichment.
+            try:
+                _confirmed_home_present = any(
+                    (h.get("lineup_source") == "statsapi_feed_live_batting_order"
+                     and h.get("is_home") is True)
+                    for h in ctx["hitters"].values())
+                _confirmed_away_present = any(
+                    (h.get("lineup_source") == "statsapi_feed_live_batting_order"
+                     and h.get("is_home") is False)
+                    for h in ctx["hitters"].values())
+                _need_home_projection = not _confirmed_home_present
+                _need_away_projection = not _confirmed_away_present
+                if _need_home_projection or _need_away_projection:
+                    from services.enrichment.mlb_projected_lineup import (
+                        fetch_mlb_lineup_bundle, build_hitter_rows,
+                    )
+                    bundle = await fetch_mlb_lineup_bundle(
+                        home_team=home_team, away_team=away_team,
+                        commence_time_iso=commence,
+                        game_pk=game_pk,
+                    )
+                    proj_rows = build_hitter_rows(bundle)
+                    async with httpx.AsyncClient(timeout=8.0) as pc:
+                        for pname_lower, prow in proj_rows.items():
+                            # §4 precedence — never override confirmed.
+                            if pname_lower in ctx["hitters"]:
+                                existing = ctx["hitters"][pname_lower]
+                                if existing.get(
+                                        "lineup_source") == "statsapi_feed_live_batting_order":
+                                    continue
+                            # Only fill the SIDE that needs projection.
+                            is_home_p = bool(prow.get("is_home"))
+                            if is_home_p and not _need_home_projection:
+                                continue
+                            if (not is_home_p) and not _need_away_projection:
+                                continue
+                            # Only accept the PROJECTED slot when the
+                            # bundle says so — never fabricate a slot.
+                            if not (isinstance(prow.get("lineup_slot"), int)
+                                    and 1 <= prow["lineup_slot"] <= 9):
+                                continue
+                            pid = prow.get("mlb_player_id")
+                            # Populate the same enrichment shape as the
+                            # confirmed path — real stats + Statcast +
+                            # BvP.  Missing pieces fall through to the
+                            # ≥3-real-factors gate downstream (fail-safe).
+                            opp_hand = spa_hand if is_home_p else sph_hand
+                            opp_hand = opp_hand or None
+                            opp_pid = spa_id if is_home_p else sph_id
+                            hitter_row = {
+                                "is_home":        is_home_p,
+                                "opp_pitcher_hand": (opp_hand
+                                                      if opp_hand in ("L", "R")
+                                                      else None),
+                                "opp_pitcher_name": (
+                                    (ctx.get("starting_pitcher_away") if is_home_p
+                                     else ctx.get("starting_pitcher_home")) or {}
+                                ).get("name"),
+                                # ── PROJECTED provenance ──
+                                "lineup_confirmed": False,
+                                "is_starter":       True,
+                                "lineup_slot":      prow["lineup_slot"],
+                                "lineup_source":    "statsapi_schedule_hydrate_lineups",
+                                "lineup_updated_at": prow.get("lineup_updated_at"),
+                                "mlb_player_id":    pid,
+                            }
+                            if pid:
+                                try:
+                                    bs = await fetch_batter_splits(
+                                        pc, int(pid), season)
+                                    if bs.last10_avg is not None:
+                                        hitter_row["l10_hit_rate"] = bs.last10_avg
+                                    if bs.ops_vs_l is not None:
+                                        hitter_row["vs_l_ops"] = bs.ops_vs_l
+                                    if bs.ops_vs_r is not None:
+                                        hitter_row["vs_r_ops"] = bs.ops_vs_r
+                                    if bs.season_ops is not None:
+                                        hitter_row[
+                                            "home_ops" if is_home_p
+                                            else "away_ops"] = bs.season_ops
+                                except Exception:
+                                    pass
+                                if opp_pid:
+                                    try:
+                                        from mlb_bvp import fetch_bvp
+                                        bvp_row = await fetch_bvp(
+                                            int(pid), int(opp_pid))
+                                        if bvp_row and bvp_row.get("pa"):
+                                            hitter_row["bvp"] = {
+                                                "pa":   bvp_row.get("pa"),
+                                                "ops":  bvp_row.get("ops"),
+                                                "hits": bvp_row.get("hits"),
+                                                "ab":   bvp_row.get("ab"),
+                                            }
+                                    except Exception:
+                                        pass
+                            # Statcast attachment (name-keyed cache).
+                            try:
+                                from services.mlb_statcast import get_batter_statcast
+                                sc = await get_batter_statcast(
+                                    _get_db(),
+                                    (prow.get("mlb_player_id") and
+                                     _reverse_name_from_row(proj_rows, pname_lower)) or pname_lower)
+                                if sc:
+                                    hitter_row["statcast"] = {
+                                        "xba":        sc.get("xba"),
+                                        "xslg":       sc.get("xslg"),
+                                        "xwoba":      sc.get("xwoba"),
+                                        "xba_diff":   sc.get("xba_diff"),
+                                        "barrel_pct": sc.get("barrel_pct"),
+                                        "hard_hit":   sc.get("hard_hit"),
+                                        "avg_ev":     sc.get("avg_ev"),
+                                        "launch_angle": sc.get("launch_angle"),
+                                        "sweet_spot": sc.get("sweet_spot"),
+                                    }
+                            except Exception:
+                                pass
+                            ctx["hitters"][pname_lower] = hitter_row
+            except Exception as e:
+                logger.debug("projected-lineup fallback failed: %s", e)
     except Exception as e:
         logger.debug("hitter enrichment failed: %s", e)
 
     return ctx
+
+
+def _reverse_name_from_row(rows: dict, key_lower: str) -> Optional[str]:
+    """Best-effort recovery of the original casing of a name from the
+    ``build_hitter_rows`` output.  Used ONLY as a Statcast cache key
+    lookup — no identity implication."""
+    for k in rows.keys():
+        if k == key_lower:
+            return k
+    return key_lower
 
 
 # ── SOCCER GAME CONTEXT ─────────────────────────────────────────────
