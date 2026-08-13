@@ -1,20 +1,24 @@
 """Central authoritative eligibility contract for the main Locks board.
 
-Phase-1 Final Closure (2026-08-11) contract — TRUE `> 85`:
+Perklocks Main Locks Board rule (2026-08 Strictness Fix, INCLUSIVE):
 
-    FINAL LOCK SCORE > 85   ⇒ eligible for the Locks board
-    FINAL LOCK SCORE ≤ 85   ⇒ NOT eligible
+    FINAL LOCK SCORE >= 85   ⇒ eligible for the Locks board
+    FINAL LOCK SCORE  < 85   ⇒ NOT eligible
 
-Boundary examples (verified by ``tests/test_phase1_final_closure.py``):
+    85–100 INCLUSIVE are score-eligible.  An 85.00 must NOT be rejected
+    merely because it is 85.
+
+Boundary examples (verified by ``tests/test_main_board_strictness_85_inclusive.py``):
 
     84.99   → OFF
-    85.00   → OFF
-    85.001  → ON
+    85.00   → ON
     85.01   → ON
     86.00   → ON
+    99.00   → ON
+    100.00  → ON
 
 The contract is expressed **directly** — no epsilon approximation.
-Mongo queries use ``{"$gt": 85}``; Python comparisons use ``> 85.0``.
+Mongo queries use ``{"$gte": 85}``; Python comparisons use ``>= 85.0``.
 
 This central rule governs **every** Locks-experience view:
 
@@ -22,7 +26,7 @@ This central rule governs **every** Locks-experience view:
     * Market-filtered Locks (Hits, Home Runs, Player Points, etc.)
     * Alt-line Locks (Over 1.5, Under 3.5, etc.)
 
-Filters narrow the qualifying ``>85`` pool.  Filters must **never** lower
+Filters narrow the qualifying ``>=85`` pool.  Filters must **never** lower
 the Locks threshold.  Per-view lowerings (75, 55, etc.) that existed
 before this closure have been retired at every call site.
 
@@ -36,7 +40,7 @@ can drift up **or** down between refreshes; for published picks they are
 irrelevant to eligibility.
 
 For pre-Phase-1c legacy rows without ``published_lock_score`` we still
-fall back to ``max(lock_score, lock_score_v2) > 85`` so nothing goes
+fall back to ``max(lock_score, lock_score_v2) >= 85`` so nothing goes
 dark until the v0 backfill lands.
 
 DO NOT change the underlying Lock Score formula from this module —
@@ -48,17 +52,18 @@ from typing import Optional
 
 
 # ── The contract, expressed directly ─────────────────────────────────
-# Strict exclusive floor: a score of exactly 85.0 is NOT on the board.
-# Anything > 85.0 (e.g. 85.001, 85.01, 90, 99) IS on the board.
-MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE: float = 85.0
+# INCLUSIVE floor: a score of exactly 85.0 IS on the board.
+# 85.00, 85.001, 90, 99, 100 all IN.  84.99 OUT.
+MAIN_BOARD_LOCK_FLOOR: float = 85.0
 
-# Backwards-compat alias for any external caller (tests, ops scripts)
-# still importing the pre-closure name.  Its numeric value is
-# irrelevant now — callers should compare via ``is_main_board_eligible``
-# or ``main_board_lock_score_query`` rather than the constant directly.
-# Left at the historical 85.01 so downstream `>= 85.01` comparisons
-# continue to behave identically to the true ``> 85`` contract.
-MAIN_BOARD_LOCK_FLOOR_INCLUSIVE: float = 85.01
+# Backwards-compat aliases.  Both now point at the SAME inclusive
+# floor value (85.0) — external callers should compare via
+# ``is_main_board_eligible`` or ``main_board_lock_score_query`` rather
+# than the constant directly.  The historical "EXCLUSIVE" name is
+# retained for existing imports; its semantic behavior has been
+# corrected — it now represents the inclusive minimum (85.0).
+MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE: float = MAIN_BOARD_LOCK_FLOOR
+MAIN_BOARD_LOCK_FLOOR_INCLUSIVE: float = MAIN_BOARD_LOCK_FLOOR
 
 
 def _f(v) -> Optional[float]:
@@ -101,7 +106,7 @@ def _has_real_market_line(pick: dict) -> bool:
 
 
 def is_main_board_eligible(pick: dict) -> bool:
-    """Return True iff `pick` clears the ``> 85`` Locks contract
+    """Return True iff `pick` clears the ``>= 85`` Locks contract
     **and** carries a real sportsbook line.
 
     Canonical source preference:
@@ -131,11 +136,11 @@ def is_main_board_eligible(pick: dict) -> bool:
 
     pls = _f(pick.get("published_lock_score"))
     if pls is not None:
-        return pls > MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE
+        return pls >= MAIN_BOARD_LOCK_FLOOR
 
     ls = _f(pick.get("lock_score")) or 0.0
     ls_v2 = _f(pick.get("lock_score_v2")) or 0.0
-    return max(ls, ls_v2) > MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE
+    return max(ls, ls_v2) >= MAIN_BOARD_LOCK_FLOOR
 
 
 def _real_line_mongo_predicate() -> dict:
@@ -168,9 +173,9 @@ def main_board_lock_score_query(min_lock: Optional[float] = None) -> dict:
          ``no_real_book_line != True`` AND ``model_only != True`` AND
          ``book_odds`` present AND ``implied_probability`` present.
 
-      B) Lock Score gate:
-         * ``min_lock`` None or ≤ 85 → strict base contract ``> 85``.
-         * ``min_lock`` > 85         → user-narrowed floor ``>= min_lock``.
+      B) Lock Score gate (INCLUSIVE >= 85):
+         * ``min_lock`` None or <= 85 → base contract ``>= 85``.
+         * ``min_lock`` > 85           → user-narrowed floor ``>= min_lock``.
 
     Callers merge the returned dict into their outer query.  The predicate
     always prefers ``published_lock_score`` (canonical) and only falls
@@ -179,17 +184,17 @@ def main_board_lock_score_query(min_lock: Optional[float] = None) -> dict:
     """
     ml = _f(min_lock)
     real_line_predicate = _real_line_mongo_predicate()
-    if ml is None or ml <= MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE:
-        # Base contract — strict >85 via $gt.
+    if ml is None or ml <= MAIN_BOARD_LOCK_FLOOR:
+        # Base contract — inclusive >=85 via $gte.
         lock_predicate = {
             "$or": [
-                {"published_lock_score": {"$gt": MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE}},
+                {"published_lock_score": {"$gte": MAIN_BOARD_LOCK_FLOOR}},
                 {
                     "$and": [
                         {"published_lock_score": {"$exists": False}},
                         {"$or": [
-                            {"lock_score":    {"$gt": MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE}},
-                            {"lock_score_v2": {"$gt": MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE}},
+                            {"lock_score":    {"$gte": MAIN_BOARD_LOCK_FLOOR}},
+                            {"lock_score_v2": {"$gte": MAIN_BOARD_LOCK_FLOOR}},
                         ]},
                     ]
                 },
@@ -215,8 +220,9 @@ def main_board_lock_score_query(min_lock: Optional[float] = None) -> dict:
 
 
 __all__ = [
-    "MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE",
-    "MAIN_BOARD_LOCK_FLOOR_INCLUSIVE",   # deprecated alias, kept for compat
+    "MAIN_BOARD_LOCK_FLOOR",
+    "MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE",   # backwards-compat alias (== INCLUSIVE)
+    "MAIN_BOARD_LOCK_FLOOR_INCLUSIVE",   # backwards-compat alias
     "is_main_board_eligible",
     "main_board_lock_score_query",
     "_has_real_market_line",

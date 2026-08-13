@@ -58,14 +58,15 @@ def test_boundary_84_99_off():
     assert is_main_board_eligible({"lock_score": 84.99, **_REAL_LINE}) is False
 
 
-def test_boundary_85_00_off_exactly():
+def test_boundary_85_00_ON_inclusive():
+    """2026-08 Perklocks Strictness Fix: 85.00 is ON board (INCLUSIVE)."""
     from services.main_board_eligibility import is_main_board_eligible
-    assert is_main_board_eligible({"lock_score": 85.0, **_REAL_LINE}) is False
+    assert is_main_board_eligible({"lock_score": 85.0, **_REAL_LINE}) is True
 
 
 def test_boundary_85_001_on():
     from services.main_board_eligibility import is_main_board_eligible
-    # 85.001 is technically > 85 and MUST qualify per contract.
+    # 85.001 is >= 85 and MUST qualify per INCLUSIVE contract.
     assert is_main_board_eligible({"lock_score": 85.001, **_REAL_LINE}) is True
 
 
@@ -80,42 +81,39 @@ def test_boundary_86_00_on():
 
 
 # ── A. Same boundary via the Mongo predicate builder ────────────────
-def test_mongo_predicate_uses_gt_not_gte_epsilon():
+def test_mongo_predicate_uses_gte_85_inclusive():
     from services.main_board_eligibility import main_board_lock_score_query
     q = main_board_lock_score_query()
-    # 2026-06 — the predicate is now $and([real_line, lock_gate]).
-    # Extract the lock-gate branch (last $and clause) and verify
-    # strict $gt: 85 (NOT $gte: 85.01).
+    # 2026-08 Perklocks Strictness Fix — predicate uses $gte:85.
     assert "$and" in q
     lock_gate = q["$and"][-1]
     branches = lock_gate["$or"]
-    assert branches[0] == {"published_lock_score": {"$gt": 85.0}}
+    assert branches[0] == {"published_lock_score": {"$gte": 85.0}}
     inner_or = [c for c in branches[1]["$and"] if "$or" in c][0]["$or"]
-    assert {"lock_score":    {"$gt": 85.0}} in inner_or
-    assert {"lock_score_v2": {"$gt": 85.0}} in inner_or
+    assert {"lock_score":    {"$gte": 85.0}} in inner_or
+    assert {"lock_score_v2": {"$gte": 85.0}} in inner_or
 
 
 def test_mongo_predicate_min_lock_narrows_but_never_lowers():
     from services.main_board_eligibility import main_board_lock_score_query
-    # min_lock=99 → narrower band; must use $gte: 99 on the canonical
-    # branch (not $gt: 85).
+    # min_lock=99 → narrower band; uses $gte: 99 on the canonical branch.
     q99 = main_board_lock_score_query(min_lock=99)
     lock_gate_99 = q99["$and"][-1]
     assert lock_gate_99["$or"][0] == {"published_lock_score": {"$gte": 99.0}}
-    # min_lock=70 (< 85) is clamped up to the base `>85` contract.
+    # min_lock=70 (< 85) is clamped up to the base `>= 85` contract.
     q70 = main_board_lock_score_query(min_lock=70)
     lock_gate_70 = q70["$and"][-1]
-    assert lock_gate_70["$or"][0] == {"published_lock_score": {"$gt": 85.0}}
+    assert lock_gate_70["$or"][0] == {"published_lock_score": {"$gte": 85.0}}
 
 
 # ── B. Locks views: filter/alt sub-tabs must NOT lower the floor ────
-def test_picks_routes_default_floor_uses_exclusive_constant():
+def test_picks_routes_default_floor_uses_shared_constant():
     src = (_BACKEND_ROOT / "routes" / "picks_routes.py").read_text()
     idx = src.find("default_floor =")
     assert idx > 0
     window = src[idx:idx + 400]
-    # The default_floor line must reference the strict-`>85` constant.
-    assert "MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE" in window
+    # The default_floor line must reference a MAIN_BOARD_LOCK_FLOOR constant.
+    assert "MAIN_BOARD_LOCK_FLOOR" in window
     # And must not smuggle in the retired per-view lowerings.
     assert "75.0 if has_market_filter" not in window
     assert "55.0 if lt ==" not in window
@@ -125,7 +123,7 @@ def test_picks_routes_uses_canonical_predicate_builder():
     src = (_BACKEND_ROOT / "routes" / "picks_routes.py").read_text()
     # The main Locks query must delegate to the central helper —
     # this is what carries the canonical-source preference
-    # (published_lock_score > 85) into the DB filter.
+    # (published_lock_score >= 85) into the DB filter.
     assert "main_board_lock_score_query(" in src
 
 
