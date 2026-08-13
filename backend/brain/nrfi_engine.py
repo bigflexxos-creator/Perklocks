@@ -636,16 +636,40 @@ async def settle_nrfi_yrfi(db: AsyncIOMotorDatabase) -> dict:
                 (runs == 0 and side == "NRFI")
                 or (runs >= 1 and side == "YRFI")
             )
-            await db.picks.update_one(
-                {"_id": pid},
-                {"$set": {
-                    "status":   "won" if won_this else "lost",
-                    "outcome":  "won" if won_this else "lost",
-                    "runs_in_1st": runs,
-                    "settled_at": datetime.now(timezone.utc).isoformat(),
-                    "settle_source": "mlb_stats_api_linescore",
-                }},
-            )
+            _outcome = "won" if won_this else "lost"
+            # P0.2b — canonical routing via SettlementService.  NRFI
+            # engine is an INPUT RESOLVER: it fetches the linescore and
+            # decides won/lost, then hands the write to SettlementService.
+            try:
+                from services.settlement_service import SettlementService
+                _svc = SettlementService(db)
+                await _svc.ensure_indices()
+                # NRFI picks use `_id` as the id; wire it into the
+                # canonical `id` field for the SettlementService call.
+                _adapter_pick = {
+                    "id":         pid,
+                    "event_id":   f"mlb_game_pk_{game_pk}",
+                    "market":     "1st_inning_runs",
+                    "side":       side,
+                    "line":       0.5,
+                }
+                await _svc.settle_from_pick(
+                    _adapter_pick,
+                    result                    = _outcome,
+                    source                    = "mlb_stats_api_linescore",
+                    actual_result             = {
+                        "runs_in_1st": runs,
+                        "game_pk":     game_pk,
+                    },
+                    authoritative_event_final = True,   # currentInning >= 2 or Final
+                    analytics_mirror          = {
+                        "outcome":       _outcome,
+                        "runs_in_1st":   runs,
+                        "settle_source": "mlb_stats_api_linescore",
+                    },
+                )
+            except Exception as _e:
+                logger.warning("nrfi SettlementService err %s: %s", pid, _e)
             n_settled += 1
             won += int(won_this)
             lost += int(not won_this)

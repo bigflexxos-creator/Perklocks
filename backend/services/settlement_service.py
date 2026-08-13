@@ -130,6 +130,11 @@ class SettlementService:
         correction_reason: Optional[str] = None,
         # Backward-compat mirror toggle:
         compat_write_to_picks: bool = True,
+        # P0.2b — additional analytics fields to include in the compat
+        # mirror ONLY (not part of canonical truth).  Keeps the picks
+        # doc rich enough for the legacy UI / analytics dashboard while
+        # SettlementService remains the sole writer of `picks.status`.
+        analytics_mirror: Optional[dict] = None,
     ) -> dict:
         """Record a settlement decision.
 
@@ -254,18 +259,35 @@ class SettlementService:
         # missing (defensive; keeps PUSH/VOID/WON/LOST atomically visible).
         if compat_write_to_picks:
             try:
+                _set = {
+                    "id":                  prediction_id,
+                    "status":              _pick_status_from_result(result),
+                    "result":              result,
+                    "settled_at":          now,
+                    "settlement_result":   result,
+                    "settlement_source":   source,
+                    "settlement_version":  new_version,
+                    "_compat_settlement":  True,
+                }
+                # P0.2b — merge adapter-supplied analytics fields
+                # (units_profit / final_score / clv_value / etc.).  These
+                # do NOT belong to canonical truth and are stripped from
+                # the immutable ledger — they exist only so the legacy
+                # UI / analytics dashboard keeps rendering.  Sensitive
+                # canonical fields ('status', 'result', 'settled_at',
+                # 'settlement_*') cannot be overridden here.
+                if analytics_mirror:
+                    _RESERVED = {
+                        "status", "result", "settled_at", "id",
+                        "settlement_result", "settlement_source",
+                        "settlement_version", "_compat_settlement",
+                    }
+                    for k, v in analytics_mirror.items():
+                        if k not in _RESERVED:
+                            _set[k] = v
                 await self.db.picks.update_one(
                     {"id": prediction_id},
-                    {"$set": {
-                        "id":                  prediction_id,
-                        "status":              _pick_status_from_result(result),
-                        "result":              result,
-                        "settled_at":          now,
-                        "settlement_result":   result,
-                        "settlement_source":   source,
-                        "settlement_version":  new_version,
-                        "_compat_settlement":  True,
-                    }},
+                    {"$set": _set},
                     upsert=True,
                 )
             except Exception as e:
@@ -280,6 +302,67 @@ class SettlementService:
         return await self.db[COLLECTION].find_one(
             {"prediction_id": prediction_id, "is_active": True},
             {"_id": 0},
+        )
+
+    async def settle_from_pick(
+        self, pick: dict, *,
+        result: str,
+        source: str,
+        actual_result: Optional[dict] = None,
+        authoritative_event_final: bool = True,
+        analytics_mirror: Optional[dict] = None,
+        correction_reason: Optional[str] = None,
+    ) -> dict:
+        """P0.2b adapter helper.
+
+        Extracts canonical identity fields from a `picks` document and
+        forwards to `record()` with the full P0.2a contract.  Adapters
+        MUST resolve `authoritative_event_final=True` before calling
+        this for outcome results (WON/LOST/PUSH) — VOID and CANCELLED
+        may pass `authoritative_event_final=False` because the FINAL
+        barrier only applies to outcomes.
+
+        Identity fields extracted from the pick document (all wired
+        into the wrong-identity fail-closed check):
+            canonical_event_id ← pick.fanduel_event_id | event_id | event
+            market             ← pick.market
+            side               ← pick.side | (parsed from market)
+            line               ← pick.line
+        """
+        pid = pick.get("id") or pick.get("_id")
+        if not pid:
+            return {"status": REFUSAL_IDENTITY_MISMATCH,
+                     "field": "pick_id", "expected": "non-empty", "got": pid}
+        canonical_event_id = (
+            pick.get("fanduel_event_id")
+            or pick.get("event_id")
+            or pick.get("event")
+            or ""
+        )
+        market = pick.get("market") or ""
+        side   = pick.get("side") or pick.get("selection") or ""
+        line   = pick.get("line")
+        return await self.record(
+            prediction_id             = pid,
+            result                    = result,
+            source                    = source,
+            actual_result             = actual_result,
+            authoritative_event_final = authoritative_event_final,
+            canonical_event_id        = canonical_event_id,
+            market                    = market,
+            side                      = side,
+            line                      = line,
+            # Wrong-identity fail-closed: the adapter has just resolved
+            # these values from the pick doc; they MUST equal what we
+            # pass into record().  If a downstream layer tampered with
+            # the pick between reads, this will refuse settlement.
+            expected_pick_id          = pid,
+            expected_event_id         = canonical_event_id,
+            expected_market           = market,
+            expected_side             = side,
+            expected_line             = line,
+            correction_reason         = correction_reason,
+            analytics_mirror          = analytics_mirror,
         )
 
 
