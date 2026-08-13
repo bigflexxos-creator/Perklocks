@@ -66,30 +66,42 @@ def test_elite_gate_restores_pre_boost_lock_exactly():
 
 
 def test_elite_gate_demoted_pick_above_85_remains_on_board():
-    """3. Pre-boost > 85 can remain on Locks after demotion."""
+    """3. Pre-boost >= 85 (inclusive) can remain on Locks after demotion."""
     from services.elite_evidence_gate import apply_elite_evidence_gate
     from services.main_board_eligibility import is_main_board_eligible
     pick = {
         "elite_player": True,
         "pre_elite_lock_score": 87.0,
         "lock_score": 99.0,
+        "book_odds": -110,
+        "implied_probability": 0.524,
     }
     apply_elite_evidence_gate([pick])
     assert pick["lock_score"] == 87.0
     assert is_main_board_eligible(pick) is True
 
 
-def test_elite_gate_demoted_pick_at_or_below_85_falls_off():
-    """4. Pre-boost ≤ 85 stays off Locks after demotion."""
+def test_elite_gate_demoted_pick_below_85_falls_off():
+    """4. Pre-boost < 85 (STRICT under) stays off Locks after demotion.
+    Perklocks strictness rule: 85–100 INCLUSIVE are eligible.  So 85.0
+    demoted stays ON.  Only < 85 (84.9, 70.0, ...) is demoted off."""
     from services.elite_evidence_gate import apply_elite_evidence_gate
     from services.main_board_eligibility import is_main_board_eligible
-    for pre in (85.0, 84.9, 70.0):
+    for pre in (84.9, 70.0):
         p = {"elite_player": True, "pre_elite_lock_score": pre,
-             "lock_score": 99.0}
+             "lock_score": 99.0,
+             "book_odds": -110, "implied_probability": 0.524}
         apply_elite_evidence_gate([p])
         assert is_main_board_eligible(p) is False, (
             f"pre-boost {pre} must NOT be board-eligible after demotion"
         )
+    # 85.0 demoted MUST remain ON (INCLUSIVE contract).
+    p85 = {"elite_player": True, "pre_elite_lock_score": 85.0,
+           "lock_score": 99.0,
+           "book_odds": -110, "implied_probability": 0.524}
+    apply_elite_evidence_gate([p85])
+    assert is_main_board_eligible(p85) is True, (
+        "pre-boost 85.0 demoted MUST remain on the board — INCLUSIVE rule")
 
 
 def test_elite_gate_keeps_elite_with_strong_multi_source_evidence():
@@ -375,12 +387,13 @@ def test_elite_gate_consumes_fusion_agreement():
 
 
 # ── D. Phase 1 / P0 invariants remain intact ────────────────────────
-def test_locks_contract_still_strictly_gt_85():
-    """11a. `>85` contract must not have shifted."""
+def test_locks_contract_is_inclusive_gte_85():
+    """11a. INCLUSIVE `>= 85` contract (2026-08 Perklocks Strictness Fix)."""
     from services.main_board_eligibility import is_main_board_eligible
-    assert is_main_board_eligible({"lock_score": 85.0}) is False
-    assert is_main_board_eligible({"lock_score": 85.001}) is True
-    assert is_main_board_eligible({"lock_score": 84.99}) is False
+    real = {"book_odds": -110, "implied_probability": 0.524}
+    assert is_main_board_eligible({**real, "lock_score": 85.0}) is True
+    assert is_main_board_eligible({**real, "lock_score": 85.001}) is True
+    assert is_main_board_eligible({**real, "lock_score": 84.99}) is False
 
 
 def test_canonical_wins_over_stale_legacy():

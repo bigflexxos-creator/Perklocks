@@ -52,10 +52,11 @@ def test_eligibility_helper_boundary_84_99_off():
     assert is_main_board_eligible({"lock_score": 84.99, **_REAL_LINE}) is False
 
 
-def test_eligibility_helper_boundary_85_00_off():
+def test_eligibility_helper_boundary_85_00_ON_inclusive():
+    """2026-08 Perklocks Strictness Fix: 85.00 is ON (INCLUSIVE >=)."""
     from services.main_board_eligibility import is_main_board_eligible
-    assert is_main_board_eligible({"lock_score": 85.00, **_REAL_LINE}) is False
-    assert is_main_board_eligible({"lock_score_v2": 85.00, **_REAL_LINE}) is False
+    assert is_main_board_eligible({"lock_score": 85.00, **_REAL_LINE}) is True
+    assert is_main_board_eligible({"lock_score_v2": 85.00, **_REAL_LINE}) is True
 
 
 def test_eligibility_helper_boundary_85_01_on():
@@ -71,7 +72,7 @@ def test_eligibility_helper_86_00_on():
 
 def test_eligibility_helper_max_of_two_aliases():
     from services.main_board_eligibility import is_main_board_eligible
-    # Either alias clearing 85.01 is sufficient.
+    # Either alias clearing >=85 is sufficient.
     assert is_main_board_eligible({"lock_score": 80.0,
                                      "lock_score_v2": 90.0,
                                      **_REAL_LINE}) is True
@@ -83,27 +84,27 @@ def test_eligibility_helper_rejects_bad_input():
     assert is_main_board_eligible({}) is False
 
 
-def test_query_helper_uses_strict_gt_85():
+def test_query_helper_uses_inclusive_gte_85():
+    """Mongo predicate uses $gte:85 (INCLUSIVE)."""
     from services.main_board_eligibility import (
         MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE, main_board_lock_score_query,
     )
+    # Constant retained as backwards-compat alias; value == 85.0.
     assert MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE == 85.0
     q = main_board_lock_score_query()
-    # 2026-06: predicate is now $and([real_line_gate, lock_gate]).
-    # Extract the lock gate (last clause) for the boundary asserts.
+    # 2026-08 Perklocks Strictness Fix: $and([real_line_gate, lock_gate]).
     assert "$and" in q
     lock_gate = q["$and"][-1]
     branches = lock_gate["$or"]
-    # First branch: canonical
-    assert branches[0] == {"published_lock_score": {"$gt": 85.0}}
-    # Second branch: legacy fallback gated by `published_lock_score`
-    # not existing on the pick.
+    # First branch: canonical published_lock_score >= 85.
+    assert branches[0] == {"published_lock_score": {"$gte": 85.0}}
+    # Second branch: legacy fallback (published_lock_score does not exist).
     legacy = branches[1]
     assert "$and" in legacy
     assert {"published_lock_score": {"$exists": False}} in legacy["$and"]
     inner = [c for c in legacy["$and"] if "$or" in c][0]["$or"]
-    assert {"lock_score":    {"$gt": 85.0}} in inner
-    assert {"lock_score_v2": {"$gt": 85.0}} in inner
+    assert {"lock_score":    {"$gte": 85.0}} in inner
+    assert {"lock_score_v2": {"$gte": 85.0}} in inner
 
 
 # ── 4. Central eligibility service wired into /picks/today ──────────

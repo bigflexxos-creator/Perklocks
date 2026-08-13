@@ -1003,7 +1003,7 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         main_board_lock_score_query,
     )
     lt = (line_type or "").lower()
-    default_floor = MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE  # 85.0 (strict >)
+    default_floor = MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE  # 85.0 (INCLUSIVE >=)
     # User-supplied min_lock only takes effect when it *narrows* the pool
     # (> 85).  A min_lock ≤ 85 falls through to the base >85 contract so
     # a stale client filter cannot re-open the board.
