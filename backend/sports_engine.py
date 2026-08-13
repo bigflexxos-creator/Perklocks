@@ -5413,21 +5413,43 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
         rest = [(dt, ev) for (dt, ev) in upcoming
                  if not is_in_current_slate(dt, _now_utc)]
 
-        if len(current_slate) >= cap:
-            # Current-slate coverage takes precedence over cap: never
-            # drop a legitimate today's game (fair-slate contract).
-            selected = current_slate
-            if len(current_slate) > cap:
+        # ── P0.1 (2026-06) — extended fair-slate contract ──────────
+        # Split `rest` into NEXT-DAY vs FAR-FUTURE.  When the refresh
+        # cycle runs BEFORE the Perklocks day roll (e.g. 04:03 UTC
+        # Aug 13 = 12:03 AM ET → still Aug 12's Perklocks day), the
+        # "tomorrow" slate is the ACTIVE user-facing slate.
+        # Previously it was truncated by ``rest[:remainder]``,
+        # starving late (evening) games of hitter-prop coverage.
+        # Fair-slate now guarantees:
+        #   1. every current-slate event (as before), and
+        #   2. every event in the immediately-next Perklocks day
+        #      (chronologically preserved so late-evening games
+        #      cannot be dropped in favour of far-future preload).
+        from datetime import timedelta as _td
+        _next_day_now = _now_utc + _td(hours=24)
+        next_slate  = [(dt, ev) for (dt, ev) in rest
+                        if is_in_current_slate(dt, _next_day_now)]
+        far_future  = [(dt, ev) for (dt, ev) in rest
+                        if not is_in_current_slate(dt, _next_day_now)]
+        must_have = current_slate + next_slate
+
+        if len(must_have) >= cap:
+            # Fair-slate contract takes precedence over cap.  Every
+            # current & next-day event survives; log an over-cap
+            # warning rather than starve later games (the observed
+            # MLB late-game hitter-prop dropoff, 2026-08).
+            selected = must_have
+            if len(must_have) > cap:
                 logger.warning(
-                    "Props fetch %s/%s: current slate has %d events "
-                    "(>%d cap). Extending to fair-slate coverage; "
-                    "no today's game will be starved.",
-                    sport, key, len(current_slate), cap)
+                    "Props fetch %s/%s: fair-slate has %d events "
+                    "(current=%d + next=%d) > %d cap. Extending; "
+                    "no legitimate slate game will be starved.",
+                    sport, key,
+                    len(must_have), len(current_slate),
+                    len(next_slate), cap)
         else:
-            # All of today's games first, then top of the remainder
-            # in the existing priority/chronological order.
-            remainder = cap - len(current_slate)
-            selected = current_slate + rest[:remainder]
+            remainder = cap - len(must_have)
+            selected = must_have + far_future[:remainder]
         anchor_count = sum(1 for _, ev in selected if _event_priority(ev, sport) == 0)
         elite_count = sum(1 for _, ev in selected if _event_priority(ev, sport) <= 1)
         logger.info(
