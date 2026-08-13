@@ -2202,6 +2202,30 @@ async def _ensure_csl_elite_picks(date_str: str) -> None:
             # them now so an immutable snapshot exists BEFORE the
             # canonical board eligibility gate examines them.
             try:
+                # ── MAGIC 3I.1 — safe simulator reachability ─────
+                try:
+                    from services.magic.direct_inject_simulator_bridge import (
+                        simulate_direct_inject_picks,
+                    )
+                    _sim_stats = await simulate_direct_inject_picks(
+                        db, missing)
+                    logger.info(
+                        "SOCCER_DIRECT_SIM producer=csl_elite_scorer_inject "
+                        "eligible=%d persisted=%d already=%d "
+                        "unsupported=%d id_blocked=%d fail=%d "
+                        "lock_drifts=%d",
+                        _sim_stats.get("eligible", 0),
+                        _sim_stats.get("persisted", 0),
+                        _sim_stats.get("already_persisted", 0),
+                        _sim_stats.get("unsupported", 0),
+                        _sim_stats.get("identity_blocked", 0),
+                        _sim_stats.get("simulation_failed", 0)
+                        + _sim_stats.get("persistence_failed", 0),
+                        _sim_stats.get("lock_score_drifts", 0),
+                    )
+                except Exception as _sim_err:   # pragma: no cover
+                    logger.debug("Magic 3I.1 bridge non-fatal: %s",
+                                 _sim_err)
                 from services.publication_helpers import (
                     publish_upserted_picks,
                 )

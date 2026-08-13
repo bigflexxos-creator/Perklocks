@@ -497,6 +497,34 @@ async def run_once() -> dict:
                     await publisher.ensure_indices()
                 except Exception:
                     pass
+                # ── MAGIC 3I.1 — safe simulator reachability ─────
+                # Producer adoption of the Magic 3I bridge.  Reads
+                # / persists simulator output for supported markets
+                # WITHOUT touching Lock Score.  Never blocks
+                # publication (see hard rule #10 in 3I.1).
+                try:
+                    from services.magic.direct_inject_simulator_bridge import (
+                        simulate_direct_inject_picks,
+                    )
+                    _sim_stats = await simulate_direct_inject_picks(
+                        db, all_picks)
+                    logger.info(
+                        "SOCCER_DIRECT_SIM producer=soccer_prop_inject "
+                        "eligible=%d persisted=%d already=%d "
+                        "unsupported=%d id_blocked=%d fail=%d "
+                        "lock_drifts=%d",
+                        _sim_stats.get("eligible", 0),
+                        _sim_stats.get("persisted", 0),
+                        _sim_stats.get("already_persisted", 0),
+                        _sim_stats.get("unsupported", 0),
+                        _sim_stats.get("identity_blocked", 0),
+                        _sim_stats.get("simulation_failed", 0)
+                        + _sim_stats.get("persistence_failed", 0),
+                        _sim_stats.get("lock_score_drifts", 0),
+                    )
+                except Exception as _sim_err:   # pragma: no cover
+                    logger.debug("Magic 3I.1 bridge non-fatal: %s",
+                                 _sim_err)
                 pub_summary = await publisher.publish_batch(
                     all_picks,
                     publication_source="soccer_prop_inject",
