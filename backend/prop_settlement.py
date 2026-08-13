@@ -1383,24 +1383,44 @@ async def _record(db, pick: dict, outcome: str, detail: dict, counts: dict):
     except Exception:
         pass
 
-    await db.picks.update_one(
-        {"id": pick["id"]},
-        {"$set": {
-            "status": outcome,
-            # Also mirror to `result` for legacy UI compat (History /
-            # ledger reads `result`; older records had it stale after
-            # a re-grade).
-            "result": outcome,
-            "settled_at": datetime.now(timezone.utc).isoformat(),
-            "settlement_detail": detail,
-            "settled_via": "prop_engine",
-            "units_risked": 1.0 if outcome != "push" else 0.0,
-            "units_profit": units_profit,
-            "clv_value": clv,
-            **({"final_score": final_score_payload} if final_score_payload else {}),
-            **({"confidence_bucket": conf} if conf else {}),
-        }},
-    )
+    # ── P0.2b canonical routing ────────────────────────────────────
+    # `prop_settlement` is now an INPUT RESOLVER: it fetches the
+    # authoritative player stat, decides won/lost/push, then hands the
+    # canonical write to SettlementService.  We do NOT write to
+    # `db.picks.status` directly.
+    _actual = {
+        "player": (detail or {}).get("player"),
+        "stat":   (detail or {}).get("stat"),
+        "value":  (detail or {}).get("value"),
+        "line":   (detail or {}).get("line"),
+        "final_score": final_score_payload,
+    }
+    _analytics = {
+        "settlement_detail": detail,
+        "settled_via":       "prop_engine",
+        "units_risked":      1.0 if outcome != "push" else 0.0,
+        "units_profit":      units_profit,
+        "clv_value":         clv,
+    }
+    if final_score_payload:
+        _analytics["final_score"] = final_score_payload
+    if conf:
+        _analytics["confidence_bucket"] = conf
+    try:
+        from services.settlement_service import SettlementService
+        _svc = SettlementService(db)
+        await _svc.ensure_indices()
+        await _svc.settle_from_pick(
+            pick,
+            result                    = outcome,
+            source                    = "prop_settlement",
+            actual_result             = _actual,
+            authoritative_event_final = True,   # completed==True proved by caller
+            analytics_mirror          = _analytics,
+        )
+    except Exception as _e:
+        logger.warning("prop_settlement SettlementService.record err %s: %s",
+                       pick.get("id"), _e)
     # ── Propagate to user_bets (2026-07-21) — see routes/user_bets_routes.py
     try:
         from routes.user_bets_routes import propagate_pick_settlement

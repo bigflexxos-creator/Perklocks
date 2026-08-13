@@ -708,21 +708,33 @@ async def _record_settlement(db, pick: dict, outcome: str, ref: dict, source: st
             final_score[name] = games
         elif name and c.get("winner") is not None:
             final_score[name] = "W" if c.get("winner") else "L"
-    await db.picks.update_one(
-        {"id": pick["id"]},
-        {"$set": {
-            "status": outcome,
-            "settled_at": datetime.now(timezone.utc).isoformat(),
-            "final_score": final_score,
-            "units_risked": units_risked,
-            "units_profit": units_profit,
-            "bet_type": bet_type,
-            "unit_weight": w,
-            "clv_value": clv,
-            "confidence_bucket": confidence_bucket(pick.get("lock_score")),
-            "settlement_source": source,
-        }},
-    )
+    # P0.2b — canonical write via SettlementService.  ``espn_settlement``
+    # is now an INPUT RESOLVER; the canonical write + compat mirror is
+    # owned solely by SettlementService.
+    try:
+        from services.settlement_service import SettlementService
+        _svc = SettlementService(db)
+        await _svc.ensure_indices()
+        await _svc.settle_from_pick(
+            pick,
+            result                    = outcome,
+            source                    = source or "espn_settlement",
+            actual_result             = {"final_score": final_score, "ref": ref},
+            authoritative_event_final = True,   # `_record_settlement` is only invoked on final refs
+            analytics_mirror          = {
+                "final_score":       final_score,
+                "units_risked":      units_risked,
+                "units_profit":      units_profit,
+                "bet_type":          bet_type,
+                "unit_weight":       w,
+                "clv_value":         clv,
+                "confidence_bucket": confidence_bucket(pick.get("lock_score")),
+                "settlement_source": source,
+            },
+        )
+    except Exception as _e:
+        logger.warning("espn_settlement SettlementService err %s: %s",
+                       pick.get("id"), _e)
     # ── Propagate to user_bets (2026-07-21) ─────────────────────────
     try:
         from routes.user_bets_routes import propagate_pick_settlement

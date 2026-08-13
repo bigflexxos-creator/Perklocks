@@ -213,15 +213,30 @@ async def settle_tennis_extra(db, *, days_back: int = 3) -> dict:
                 {"winner_signal_present": bool(match.get("winner_norm"))}):
                 unmatched += 1
                 continue
-            await db.picks.update_one(
-                {"id": p["id"]},
-                {"$set": {
-                    "status": status,
-                    "settled_at": datetime.now(timezone.utc).isoformat(),
-                    "settle_source": "tennis_extra_settler",
-                    "settle_winner": match["winner_norm"],
-                }},
-            )
+            # P0.2b — canonical write via SettlementService.  tennis_extra
+            # is now an INPUT RESOLVER: it scrapes TennisExplorer for the
+            # winner and hands the decision to the canonical service.
+            try:
+                from services.settlement_service import SettlementService
+                _svc = SettlementService(db)
+                await _svc.ensure_indices()
+                await _svc.settle_from_pick(
+                    p,
+                    result                    = status,
+                    source                    = "tennis_extra_settler",
+                    actual_result             = {
+                        "winner": match["winner_norm"],
+                        "loser":  match["loser_norm"],
+                    },
+                    authoritative_event_final = True,   # match_start + 2h < now (proved above)
+                    analytics_mirror          = {
+                        "settle_source": "tennis_extra_settler",
+                        "settle_winner": match["winner_norm"],
+                    },
+                )
+            except Exception as _e:
+                logger.warning("tennis_extra SettlementService err %s: %s",
+                               p.get("id"), _e)
             # ── Propagate to user_bets (2026-07-21) ─────────────────
             try:
                 from routes.user_bets_routes import propagate_pick_settlement

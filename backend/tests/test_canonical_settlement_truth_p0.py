@@ -118,44 +118,30 @@ class TestLiveNotGradedMatrix:
 # ═════════════════════════════════════════════════════════════════════════
 
 class TestNoRogueSettlementWriters:
-    """Any writer of ``picks.status in {'won', 'lost', 'push', 'void'}``
-    outside the approved SettlementService or the transitional adapter
-    files must be flagged.
+    """P0.2b (2026-08-13) — Post-migration static guard.
 
-    Whitelist (2026-06):
+    The transitional allowlist has been removed.  ALL canonical
+    ``picks.status ∈ {won, lost, push, void}`` writes must originate
+    from ``services/settlement_service.py`` (the compat mirror inside
+    ``SettlementService.record``).  Adapter files are now INPUT
+    RESOLVERS: they must call ``SettlementService.settle_from_pick``
+    or ``SettlementService.record`` and never mutate ``pick.status``
+    directly.
+
+    Whitelist (canonical, immovable):
         services/settlement_service.py     — canonical writer
-        settlement_engine.py               — transitional adapter
-        espn_settlement.py                 — transitional adapter
-        prop_settlement.py                 — transitional adapter
-        kbo_settlement.py                  — transitional adapter
-        soccer_espn_settle.py              — transitional adapter
-        soccer_fotmob_settle.py            — transitional adapter
-        parlay_leg_settle.py               — transitional adapter
-        tennis_extra/settle.py             — transitional adapter
-        stuck_pick_reaper.py               — timeout void writer
-        scripts/*                          — one-off maintenance
-        brain/nrfi_engine.py               — NRFI adapter
-        tests/*                            — test fixtures
+        tests/                             — test fixtures (skipped)
+        scripts/                           — one-off maintenance (skipped)
+
+    grading_validator.py is a read-only cross-checker (asserts a
+    prior grade against MLB Stats API) — it MAY carry the pattern in
+    comments/log strings but does not perform a direct settlement
+    write.  If a future edit adds a real write there, this test
+    should flag it.
     """
 
     ALLOWED_FILES = {
         "services/settlement_service.py",
-        "settlement_engine.py",
-        "espn_settlement.py",
-        "prop_settlement.py",
-        "kbo_settlement.py",
-        "soccer_espn_settle.py",
-        "soccer_fotmob_settle.py",
-        "parlay_leg_settle.py",
-        "tennis_extra/settle.py",
-        "stuck_pick_reaper.py",
-        "brain/nrfi_engine.py",
-        "grading_validator.py",   # analytics-only, no direct write
-        # Transitional — voids picks when batter is scratched.  Should
-        # route through SettlementService in the next canonical-truth
-        # closure.  Whitelisted to keep the guard test green today
-        # while the architectural rollout continues.
-        "mlb_lineup.py",
     }
 
     def _rel(self, p: Path) -> str:

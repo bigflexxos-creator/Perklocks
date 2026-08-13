@@ -344,15 +344,38 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
         except Exception:
             pass
     if stale_ids:
-        res = await db.picks.update_many(
-            {"id": {"$in": stale_ids}, "status": {"$in": [None, "pending"]}},
-            {"$set": {
-                "status": "void",
-                "void_reason": "auto_void_stale_14d",
-                "settled_at": now_utc_for_void.isoformat(),
-            }},
-        )
-        counts["auto_voided"] = res.modified_count
+        # P0.2b — route auto-void through SettlementService instead of
+        # a bulk db.picks.update_many.  VOID is not an outcome result
+        # so the FINAL barrier is bypassed; identity/versioning still
+        # applies.  This keeps the compatibility mirror as the SOLE
+        # write path for pick status.
+        try:
+            from services.settlement_service import SettlementService
+            _svc_void = SettlementService(db)
+            await _svc_void.ensure_indices()
+            voided_n = 0
+            for _sid in stale_ids:
+                try:
+                    _stale_pick = next(
+                        (pp for pp in picks if pp.get("id") == _sid), {})
+                    _res = await _svc_void.settle_from_pick(
+                        _stale_pick or {"id": _sid},
+                        result="void",
+                        source="settlement_engine:auto_void_stale_14d",
+                        authoritative_event_final=False,
+                        analytics_mirror={
+                            "void_reason": "auto_void_stale_14d",
+                        },
+                    )
+                    if _res.get("status") in ("NEW_SETTLEMENT",
+                                              "CORRECTION_APPLIED"):
+                        voided_n += 1
+                except Exception as _ve:
+                    logger.debug("auto-void via svc failed for %s: %s",
+                                 _sid, _ve)
+            counts["auto_voided"] = voided_n
+        except Exception as _sve:
+            logger.warning("SettlementService auto-void err: %s", _sve)
         # Remove voided picks from in-memory processing list
         voided_set = set(stale_ids)
         picks = [p for p in picks if p.get("id") not in voided_set]
@@ -493,51 +516,42 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
             units_profit = round(raw_profit * w, 4)
             units_risked = w if outcome != "push" else 0.0
             clv = clv_units(pick.get("odds_at_pick"), pick.get("closing_odds") or pick.get("book_odds"))
-            # Phase 1c: record settlement in the immutable event log
-            # BEFORE the compatibility mirror write on picks.
+            # ── P0.2b Canonical routing ───────────────────────────
+            # Adapter's job (this file): resolve the authoritative
+            # FINAL state + actual result.  SettlementService owns
+            # the canonical write AND the compat mirror; no direct
+            # `db.picks.update_one` for status here.
+            _actual = {
+                "final_score":  scores_dict,
+                "units_risked": units_risked,
+                "units_profit": units_profit,
+                "clv_value":    clv,
+            }
+            _analytics = {
+                "final_score":       scores_dict,
+                "units_risked":      units_risked,
+                "units_profit":      units_profit,
+                "bet_type":          bet_type,
+                "unit_weight":       w,
+                "clv_value":         clv,
+                "confidence_bucket": confidence_bucket(pick.get("lock_score")),
+            }
             try:
                 from services.settlement_service import SettlementService
                 _settle_svc = SettlementService(db)
                 await _settle_svc.ensure_indices()
-                await _settle_svc.record(
-                    prediction_id=pick["id"],
-                    result=outcome,
-                    source="settlement_engine",
-                    actual_result={
-                        "final_score": scores_dict,
-                        "units_risked": units_risked,
-                        "units_profit": units_profit,
-                        "clv_value": clv,
-                    },
-                    # SettlementService performs its own compat mirror;
-                    # to avoid double-writing status here, set
-                    # compat_write_to_picks=False and let the settle
-                    # service own the mirror.
-                    compat_write_to_picks=False,
+                await _settle_svc.settle_from_pick(
+                    pick,
+                    result                    = outcome,
+                    source                    = "settlement_engine",
+                    actual_result             = _actual,
+                    authoritative_event_final = True,   # score_payload["completed"] proved above
+                    analytics_mirror          = _analytics,
                 )
             except Exception as _s_err:
                 logger.warning(
                     "settlement_service.record failed for %s: %s",
                     pick.get("id"), _s_err)
-            # TRANSITIONAL compat write to `picks` — mirror settlement
-            # onto the mutable pick doc so any code path that still
-            # reads `pick.status` keeps working.  Marked with
-            # `_compat_settlement=True` for future cleanup search.
-            await db.picks.update_one(
-                {"id": pick["id"]},
-                {"$set": {
-                    "status": outcome,
-                    "settled_at": datetime.now(timezone.utc).isoformat(),
-                    "final_score": scores_dict,
-                    "units_risked": units_risked,
-                    "units_profit": units_profit,
-                    "bet_type": bet_type,
-                    "unit_weight": w,
-                    "clv_value": clv,
-                    "confidence_bucket": confidence_bucket(pick.get("lock_score")),
-                    "_compat_settlement": True,
-                }},
-            )
             # ── Propagate to user_bets (2026-07-21) ─────────────────
             # If any user has tracked this pick via /user/bets/track,
             # their personal bet gets settled with the same outcome.

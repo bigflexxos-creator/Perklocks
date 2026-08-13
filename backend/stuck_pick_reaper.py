@@ -79,31 +79,60 @@ async def reap_stuck_picks(db, *, hours: int = _STUCK_HOURS) -> dict:
          "event_time": 1, "status": 1},
     ).limit(5).to_list(length=5)
 
-    now_iso = now.isoformat()
-    res = await db.picks.update_many(
+    # P0.2b — canonical routing via SettlementService.  The reaper
+    # does NOT invent WON/LOST — it only VOIDS picks that have exceeded
+    # the settlement window with no authoritative outcome available.
+    # VOID skips the FINAL barrier inside SettlementService, but still
+    # gets a settlement_events row + compat-mirror write.  Iterating
+    # per-pick (instead of a bulk update_many) keeps the immutable
+    # ledger honest — one row per void event.
+    from services.settlement_service import SettlementService
+    _svc = SettlementService(db)
+    await _svc.ensure_indices()
+
+    to_reap = await db.picks.find(
         q,
-        {"$set": {
-            "status":            "void",
-            "settled_at":        now_iso,
-            "void_reason":       "auto_void_stuck_pick_reaper",
-            "settle_source":     "stuck_pick_reaper",
-            "learning_excluded": True,
-        }},
-    )
+        {"id": 1, "event": 1, "market": 1, "side": 1, "line": 1,
+         "fanduel_event_id": 1, "event_id": 1, "sport": 1, "league": 1,
+         "source": 1, "event_time": 1, "status": 1},
+    ).to_list(length=None)
+
+    voided_n = 0
+    for _r in to_reap:
+        _pid = _r.get("id")
+        if not _pid:
+            continue
+        try:
+            _res = await _svc.settle_from_pick(
+                _r,
+                result                    = "void",
+                source                    = "stuck_pick_reaper",
+                authoritative_event_final = False,
+                analytics_mirror          = {
+                    "void_reason":       "auto_void_stuck_pick_reaper",
+                    "settle_source":     "stuck_pick_reaper",
+                    "learning_excluded": True,
+                },
+            )
+            if _res.get("status") in ("NEW_SETTLEMENT",
+                                      "CORRECTION_APPLIED"):
+                voided_n += 1
+        except Exception as _e:
+            logger.debug("reaper svc err for %s: %s", _pid, _e)
 
     summary = {
-        "reaped":       res.modified_count,
+        "reaped":       voided_n,
         "cutoff_hours": hours,
         "cutoff_iso":   cutoff_iso,
         "sample":       [
-            f"{s.get('sport')}/{s.get('league')}/{s.get('market','?')[:40]} "
-            f"(src={s.get('source')}, evt={s.get('event_time','?')[:19]})"
+            f"{s.get('sport')}/{s.get('league')}/{(s.get('market') or '?')[:40]} "
+            f"(src={s.get('source')}, evt={(s.get('event_time') or '?')[:19]})"
             for s in sample
         ],
     }
-    if res.modified_count:
+    if voided_n:
         logger.info("Stuck-pick reaper voided %d picks (>%dh past event_time). Sample: %s",
-                    res.modified_count, hours, summary["sample"])
+                    voided_n, hours, summary["sample"])
     return summary
 
 

@@ -153,15 +153,29 @@ async def verify_today_lineups(db, date_str: str) -> dict:
         if pitch < now or (pitch - now).total_seconds() > 30 * 60:
             continue
         # Within 30 min of first pitch and player is not listed → SCRATCHED.
-        await db.picks.update_one(
-            {"id": p["id"]},
-            {"$set": {
-                "status": "void",
-                "void_reason": "Player not in starting lineup (scratched)",
-                "voided_at": now.isoformat(),
-                "auto_voided_by": "mlb_lineup_verifier",
-            }},
-        )
+        # P0.2b — canonical routing via SettlementService.
+        try:
+            from services.settlement_service import SettlementService
+            _svc = SettlementService(db)
+            await _svc.ensure_indices()
+            await _svc.settle_from_pick(
+                p,
+                result                    = "void",
+                source                    = "mlb_lineup_verifier",
+                authoritative_event_final = False,
+                actual_result             = {
+                    "void_reason": "Player not in starting lineup (scratched)",
+                    "player":       player,
+                },
+                analytics_mirror          = {
+                    "void_reason":     "Player not in starting lineup (scratched)",
+                    "voided_at":       now.isoformat(),
+                    "auto_voided_by":  "mlb_lineup_verifier",
+                },
+            )
+        except Exception as _e:
+            logger.warning("mlb_lineup SettlementService err %s: %s",
+                           p.get("id"), _e)
         summary["voided"] += 1
         logger.info("Voided pick %s — %s not in lineup", p.get("id"), player)
     return summary

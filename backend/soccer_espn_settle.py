@@ -876,16 +876,37 @@ async def settle_soccer_picks_via_espn(db, *, days_back: int = 14,
             profit = -units_risked
         else:
             profit = 0.0
-        await db.picks.update_one(
-            {"_id": p["_id"]},
-            {"$set": {
-                "status": outcome,
-                "result": outcome,
-                "units_profit": profit,
-                "settled_at": now.isoformat(),
-                "settled_by": "soccer_espn_batch_v1",
-            }},
-        )
+        # P0.2b — canonical write via SettlementService.  This module is
+        # now an INPUT RESOLVER: it derives the final soccer outcome
+        # from ESPN scoreboard/summary, then hands the decision to the
+        # canonical service.  No direct db.picks.status write.
+        try:
+            from services.settlement_service import SettlementService
+            _svc = SettlementService(db)
+            await _svc.ensure_indices()
+            # ``p`` may lack the canonical ``id`` field on some legacy
+            # rows (only ``_id`` populated).  Fall back defensively.
+            _adapter_pick = dict(p)
+            _adapter_pick.setdefault("id", p.get("_id"))
+            await _svc.settle_from_pick(
+                _adapter_pick,
+                result                    = outcome,
+                source                    = "soccer_espn_batch_v1",
+                actual_result             = {
+                    "home_goals": home_goals,
+                    "away_goals": away_goals,
+                    "home_team":  home_team,
+                    "away_team":  away_team,
+                },
+                authoritative_event_final = True,   # FT-gated upstream
+                analytics_mirror          = {
+                    "units_profit": profit,
+                    "settled_by":   "soccer_espn_batch_v1",
+                },
+            )
+        except Exception as _e:
+            logger.warning("soccer_espn SettlementService err %s: %s",
+                           p.get("id") or p.get("_id"), _e)
         # ── Propagate to user_bets (2026-07-21) ─────────────────────
         try:
             from routes.user_bets_routes import propagate_pick_settlement

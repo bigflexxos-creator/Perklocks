@@ -111,36 +111,69 @@ def test_record_refuses_lost_with_zero_actual_without_authoritative_flag():
 def test_record_allows_lost_when_authoritative_zero_flag_set():
     """When the caller has PROVEN a real zero (e.g. authoritative
     box-score confirmed 0 strikeouts for a pitcher who fully played),
-    the gate permits the write."""
+    the gate permits the write.
+
+    P0.2b (2026-08-13): the write now flows through
+    ``SettlementService.settle_from_pick`` (invoked inside
+    ``prop_settlement._record``).  We therefore inspect the
+    ``settlement_events`` collection AND the compat mirror on
+    ``picks`` — the canonical write and mirror both must land.
+    """
     from prop_settlement import _record
+    from collections import defaultdict
 
     class FakeCol:
-        def __init__(self): self.updates = []
-        async def update_one(self, q, u):
+        def __init__(self): self.rows = []; self.updates = []
+        async def find_one(self, q, proj=None):
+            for r in self.rows:
+                if all(r.get(k) == v for k, v in q.items()):
+                    return dict(r)
+            return None
+        async def insert_one(self, doc): self.rows.append(dict(doc))
+        async def update_many(self, q, u):
+            n = 0
+            for r in self.rows:
+                if all(r.get(k) == v for k, v in q.items()):
+                    r.update(u.get("$set", {})); n += 1
+            return n
+        async def update_one(self, q, u, upsert=False):
             self.updates.append((q, u))
+            for r in self.rows:
+                if all(r.get(k) == v for k, v in q.items()):
+                    r.update(u.get("$set", {}))
+                    return
+            if upsert:
+                row = dict(q); row.update(u.get("$set", {}))
+                self.rows.append(row)
 
     class FakeDB:
-        picks = FakeCol()
+        def __init__(self):
+            self._colls = defaultdict(FakeCol)
+        def __getitem__(self, k): return self._colls[k]
+        def __getattr__(self, k): return self._colls[k]
 
     async def go():
         db = FakeDB()
         counts = {}
-        # Give the pick a non-MLB sport to bypass the MLB StatsAPI
-        # cross-check (unrelated to this gate).
         try:
-            await _record(db, {"id": "test_pick", "sport": "NBA"},
+            await _record(db, {"id": "test_pick", "sport": "NBA",
+                                "market": "Threes Over 1.5",
+                                "side": "Over", "line": 1.5},
                           "lost",
                           {"player": "Some Player", "stat": "threes",
                            "value": 0, "line": 1.5,
                            "authoritative_zero": True}, counts)
-        except (KeyError, ImportError, Exception):
-            # `_record` calls downstream propagators that expect a
-            # real Mongo client; the important assertion is that the
-            # DB write DID happen before the propagator raised.
+        except Exception:
+            # Downstream propagators may raise on the fake DB — what
+            # matters is the settlement write.
             pass
-        assert len(db.picks.updates) == 1
-        set_op = db.picks.updates[0][1]["$set"]
-        assert set_op["status"] == "lost"
+        # Canonical row landed in settlement_events.
+        assert len(db._colls["settlement_events"].rows) == 1
+        assert db._colls["settlement_events"].rows[0]["result"] == "lost"
+        # Compat mirror landed on picks.
+        mirror = await db.picks.find_one({"id": "test_pick"})
+        assert mirror is not None
+        assert mirror["status"] == "lost"
     asyncio.run(go())
 
 
@@ -199,15 +232,42 @@ def test_espn_record_refuses_lost_when_no_winner_signal():
 
 @pytest.mark.unit
 def test_espn_record_allows_lost_when_positive_winner_signal():
+    """P0.2b (2026-08-13): the write flows through
+    ``SettlementService.settle_from_pick`` inside
+    ``_record_settlement``.  We assert the canonical row + compat
+    mirror both land when a positive winner signal is present."""
     from espn_settlement import _record_settlement
+    from collections import defaultdict
 
     class FakeCol:
-        def __init__(self): self.updates = []
-        async def update_one(self, q, u):
+        def __init__(self): self.rows = []; self.updates = []
+        async def find_one(self, q, proj=None):
+            for r in self.rows:
+                if all(r.get(k) == v for k, v in q.items()):
+                    return dict(r)
+            return None
+        async def insert_one(self, doc): self.rows.append(dict(doc))
+        async def update_many(self, q, u):
+            n = 0
+            for r in self.rows:
+                if all(r.get(k) == v for k, v in q.items()):
+                    r.update(u.get("$set", {})); n += 1
+            return n
+        async def update_one(self, q, u, upsert=False):
             self.updates.append((q, u))
+            for r in self.rows:
+                if all(r.get(k) == v for k, v in q.items()):
+                    r.update(u.get("$set", {}))
+                    return
+            if upsert:
+                row = dict(q); row.update(u.get("$set", {}))
+                self.rows.append(row)
 
     class FakeDB:
-        picks = FakeCol()
+        def __init__(self):
+            self._colls = defaultdict(FakeCol)
+        def __getitem__(self, k): return self._colls[k]
+        def __getattr__(self, k): return self._colls[k]
 
     async def go():
         db = FakeDB()
@@ -218,9 +278,16 @@ def test_espn_record_allows_lost_when_positive_winner_signal():
              "linescores": [{"value": 3}, {"value": 6}, {"value": 3}]},
         ]}
         await _record_settlement(
-            db, {"id": "t3", "sport": "Tennis"},
+            db, {"id": "t3", "sport": "Tennis", "market": "Match Winner",
+                  "side": "Sinner", "line": None},
             outcome="lost", ref=ref, source="espn_tennis")
-        assert len(db.picks.updates) == 1
+        # Canonical row landed.
+        assert len(db._colls["settlement_events"].rows) == 1
+        assert db._colls["settlement_events"].rows[0]["result"] == "lost"
+        # Compat mirror landed.
+        mirror = await db.picks.find_one({"id": "t3"})
+        assert mirror is not None
+        assert mirror["status"] == "lost"
     asyncio.run(go())
 
 
