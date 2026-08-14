@@ -569,6 +569,18 @@ def integrity_check(picks: list[dict]) -> tuple[list[dict], dict]:
             stats["dropped"] += 1
             r = f"missing_{missing[0]}"
             stats["reasons"][r] = stats["reasons"].get(r, 0) + 1
+            # Phase 1C §8 — funnel-attributable integrity drop.
+            try:
+                from services import funnel_telemetry as _funnel
+                _funnel.record(
+                    sport=p.get("sport") or "unknown",
+                    market=p.get("market") or "*",
+                    stage="board_validator",
+                    reason="INTEGRITY_CHECK_FAILED",
+                    event=p.get("event"), detail=r,
+                )
+            except Exception:
+                pass
             continue
         # Odds sanity — American odds must be ≥ +100 or ≤ -100 (no 0/±99).
         try:
@@ -698,6 +710,21 @@ def evidence_threshold(picks: list[dict]) -> tuple[list[dict], dict]:
             stats["dropped"] += 1
             r = f"only_{evidence}_of_{threshold}_signals"
             stats["reasons"][r] = stats["reasons"].get(r, 0) + 1
+            # Phase 1C §8 — this was a SILENT drop (evidence drops were
+            # excluded from the orchestrator's board-validator log line).
+            # Every rejection must be funnel-attributable.
+            try:
+                from services import funnel_telemetry as _funnel
+                _funnel.record(
+                    sport=p.get("sport") or "unknown",
+                    market=p.get("market") or "*",
+                    stage="board_validator",
+                    reason="EVIDENCE_THRESHOLD",
+                    event=p.get("event"),
+                    detail=r,
+                )
+            except Exception:
+                pass
             continue
         survivors.append(p)
     return survivors, stats

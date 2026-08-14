@@ -70,7 +70,7 @@ export default function RootLayout() {
     const prev = html.style.cssText;
     html.style.backgroundImage = `url("${bgUri}")`;
     html.style.backgroundSize = "cover";
-    html.style.backgroundPosition = "center top";
+    html.style.backgroundPosition = "center center";
     html.style.backgroundRepeat = "no-repeat";
     html.style.backgroundColor = "#08090f";
     // Keep body fully transparent so the html paint shows through.
@@ -187,7 +187,7 @@ export default function RootLayout() {
   if ((!loaded && !error) || !cacheBustDone) return null;
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#08090f" }}>
       <ErrorBoundary boundary="RootLayout">
         <SafeAreaProvider style={{ backgroundColor: "transparent" }}>
           {/* ── Global branded backdrop ──
@@ -230,14 +230,12 @@ const styles = StyleSheet.create({
   bgImage: {
     position: "absolute",
     top: 0, left: 0, right: 0, bottom: 0,
-    width: "100%",
-    height: "100%",
     zIndex: 0,
     opacity: 1,
   },
   brandScrim: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.30)",
+    backgroundColor: "rgba(0,0,0,0.62)",
     zIndex: 1,
   },
 });

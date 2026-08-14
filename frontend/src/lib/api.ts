@@ -24,7 +24,7 @@ import { Platform } from "react-native";
 //   * Empty string as last resort (relative URL)
 // ═══════════════════════════════════════════════════════════════════
 const FORCE_PREVIEW_BACKEND = false;
-const PINNED_PREVIEW_URL = "https://player-intel-engine.preview.emergentagent.com";
+const PINNED_PREVIEW_URL = "https://canonical-parity.preview.emergentagent.com";
 
 function resolveBaseUrl(): string {
   if (FORCE_PREVIEW_BACKEND) return PINNED_PREVIEW_URL;

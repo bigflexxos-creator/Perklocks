@@ -1,0 +1,52 @@
+{
+  "summary": "PERKLOCKS Phase 1C production foundation review — ALL PASS. 53/53 regression tests (test_phase1b_runtime_wiring.py + test_phase1c_foundation.py) pass. 14/14 review-scope tests in new tests/test_iter98_phase1c_review.py pass. Verified: (1) BUG FIX 1 — circuit breaker records 12 consecutive 422s with disabled=False, consecutive_failures=0; a real 500 streak still opens the breaker and reset_odds_api_circuit() re-arms it. Live breaker left CLOSED (verified via get_odds_api_status + admin endpoint). (2) BUG FIX 2 — PickRefreshOrchestrator(database=<motor db>) constructs without NotImplementedError; orch._db is bound to the injected db. (3) GET /api/admin/provider-foundation returns sanitized payload with fingerprint_sha256_8='21ce2472', length=32, had_whitespace_corruption=false; NO raw 32-char key anywhere in the JSON (regex-checked); database.read_write_ok=true; circuit_breaker + budget_governor (UTC day/month keys, day_used/reserved/remaining) + provider_truth.last_quota_headers ({x-requests-remaining:'51902', x-requests-used:'48098'}) + funnel_telemetry.by_reason all present. 401 without auth confirmed. (4) db.funnel_telemetry has 1335 documents including MODEL_UNAVAILABLE records; funnel_telemetry module exposes required constants PROVIDER_AUTH_FAILURE, BUDGET_GOVERNOR_BLOCKED, CIRCUIT_BREAKER_OPEN, PROVIDER_RATE_LIMITED, PROVIDER_REQUEST_FAILED, REFRESH_RUNTIME_FAILURE, MODEL_UNAVAILABLE, SYNTHETIC_SCORER_RESEARCH_ONLY. Note: EVIDENCE_THRESHOLD is used as a string literal in board_validator.evidence_threshold (not exported as a module-level constant) — reason strings still land in db.funnel_telemetry correctly. (5) Contract flag A — sports_engine._fetch_player_props_for_sport contains SYNTHETIC_ODDS_RESEARCH_ONLY, no `all_picks.extend(espn_mls_picks)`; 0 publishable synthetic mls_espn_leaderboard picks with pick_date>=2026-08-14 in db.picks. (6) Contract flag B — ufc_espn_ingest._build_ufc_pick returns book_odds=None, no_real_book_line=True, model_only=True; is_main_board_eligible returns False for such a pick even at lock_score=99. (7) Contract flag C — services.pick_refresh_orchestrator._ensure_csl_elite_picks has NO db.picks.insert_many and NO publish_upserted_picks; writes only to model_research_evidence. (8) Board-filling regression — fabricated NBA game emits 0 picks and records MODEL_UNAVAILABLE via services.funnel_telemetry.peek(sport='NBA'). (9) GET /api/picks/today returns 200 with admin auth. Backend logs are free of tracebacks post-tests; live circuit breaker verified CLOSED at completion.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "sports_engine.reset_odds_api_circuit()",
+        "issue": "Emits unawaited-coroutine RuntimeWarning ('Task was destroyed but it is pending: _push_cb_state_async._do_push') when called from synchronous test context. The DB push is fire-and-forget via asyncio.ensure_future which pytest's implicit loop cleanup then GCs. Harmless for tests but shows up in logs. Consider wrapping the push in try/schedule-on-running-loop-only or providing a sync variant for test use."
+      },
+      {
+        "endpoint": "services.funnel_telemetry",
+        "issue": "EVIDENCE_THRESHOLD is used as a string literal in board_validator.evidence_threshold() (records reason='EVIDENCE_THRESHOLD') but is NOT declared as a module-level constant in services/funnel_telemetry.py. Reason strings still persist correctly to db.funnel_telemetry. If E1 wants EVIDENCE_THRESHOLD to be an exported constant for import safety, add: `EVIDENCE_THRESHOLD = 'EVIDENCE_THRESHOLD'` alongside the other infra reason constants."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter98_phase1c_review.py",
+    "/app/test_reports/pytest/iter98_review.xml",
+    "/app/test_reports/pytest/iter98_phase1c.xml"
+  ],
+  "action_items": [
+    "OPTIONAL/LOW: expose EVIDENCE_THRESHOLD as a module constant in services/funnel_telemetry.py for import-time safety (currently a string literal in board_validator.py). No functional impact on DB records.",
+    "OPTIONAL/LOW: swallow or defer the DB push in sports_engine.reset_odds_api_circuit() when no running asyncio loop is present, to eliminate the 'Task was destroyed but it is pending' RuntimeWarning during synchronous test/script invocations."
+  ],
+  "critical_code_review_comments": [
+    "sports_engine.record_odds_call_result correctly excludes 422 from _API_FAIL_STREAK: verified by simulating 12x status_code=422 -> consecutive_failures=0, disabled=False.",
+    "sports_engine.record_odds_call_result still trips on real fail codes: verified by simulating 8x status_code=500 -> disabled=True; reset_odds_api_circuit() then returns disabled=False, consecutive_failures=0.",
+    "services.pick_refresh_orchestrator.PickRefreshOrchestrator.__init__ correctly avoids `database or db` bool-check on Motor Database (fixed in the reviewed iter); orch._db is preserved and orch.refresh flushes funnel_telemetry (verified by inspect.getsource).",
+    "routes.admin_routes.provider_foundation builds key_report with sha256[:8] fingerprint, strips key_tail via `cb.pop('key_tail', None)`, and never places the raw key into the response — confirmed both by source inspection and live payload regex check (no 32-char hex tokens present).",
+    "services.pick_refresh_orchestrator._ensure_csl_elite_picks writes only to model_research_evidence — verified absence of db.picks.insert_many and publish_upserted_picks in source.",
+    "services.main_board_eligibility.is_main_board_eligible correctly rejects a UFC pick with book_odds=None + no_real_book_line=True + model_only=True even when lock_score=99 — matches Phase 1C 'no synthetic pick on main board' contract.",
+    "sports_engine._picks_from_game for NBA/CFB/NHL/UFC records MODEL_UNAVAILABLE and returns [] — no sportsbook-follow pseudo-picks (Phase 1B regression protection holds)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter98_phase1c_review.py (new — 14 tests: 5 classes covering circuit breaker, orchestrator, admin endpoint, funnel telemetry, contract flags A/B/C, board-filling regression, API health)"
+  ],
+  "success_rate": {
+    "backend": "67/67 (100%) — 53 regression + 14 review-scope tests",
+    "frontend": "not tested (backend-only scope per review request)"
+  },
+  "seed_data_creation": "None — read-only queries against live perkslocks_production/lockscore_db. No POST /api/admin/picks/force-refresh calls. No key rotation. Circuit breaker state saved/restored around each simulation and explicitly reset to CLOSED at test-end. Verified live breaker state at end: disabled=false, consecutive_failures=0, total_ok=95, total_fail=13.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase 1C foundation is production-ready. If EVIDENCE_THRESHOLD becomes an exported constant, re-add it to REQUIRED_CONSTANTS in TestFunnelTelemetryFoundation. The 422 breaker-immunity fix is in sports_engine.record_odds_call_result; the Motor bool crash fix is in services/pick_refresh_orchestrator.py PickRefreshOrchestrator.__init__. All three contract flags (A: MLS synthetic ODDS research-only, B: UFC ESPN no-real-line, C: CSL elite retired) have both source-level and runtime/DB assertions. Live circuit breaker is CLOSED; total_ok=95, total_fail=13, quota remaining=51902.",
+  "rca_of_issue": "N/A — no bugs to RCA. All Phase 1C bug fixes (422 breaker false-trip, orchestrator Motor bool crash) are verified fixed. All three contract flags verified. All infra funnel telemetry reasons persist correctly. Provider-foundation admin endpoint returns sanitized diagnostics with no secret exposure."
+}

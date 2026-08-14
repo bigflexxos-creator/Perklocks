@@ -49,6 +49,11 @@ SPORT_KEYS: dict[str, list[str]] = {
     "CFB": ["americanfootball_ncaaf"],
     # UFC / MMA — The Odds API uses one combined MMA key (covers UFC events).
     "UFC": ["mma_mixed_martial_arts"],
+    # Phase 1B (2026-06) — NHL wired per R2a. Real sportsbook events /
+    # markets reach the runtime; picks only emit when an authoritative
+    # NHL model is available (currently MODEL_UNAVAILABLE — telemetried,
+    # never substituted with sportsbook-follow probability).
+    "NHL": ["icehockey_nhl"],
     # KBO disabled per user request 2026-06-18 — no new picks generated;
     # historical KBO picks were purged from DB at the same time.
     # "KBO": ["baseball_kbo"],
@@ -212,7 +217,11 @@ def _push_cb_state_async() -> None:
                     upsert=True,
                 )
 
-        asyncio.get_event_loop().create_task(_do_push())
+        # Only schedule when a loop is actually running — sync callers
+        # (tests, CLI) would otherwise leave "Task was destroyed but it
+        # is pending" warnings behind (Phase 1C cleanup).
+        loop = asyncio.get_running_loop()
+        loop.create_task(_do_push())
     except Exception as e:
         logger.debug("circuit breaker state push skipped: %s", e)
 
@@ -417,6 +426,20 @@ def record_odds_call_result(*, status_code: int | None, body: str = "",
                 _API_DISABLED_REASON = (
                     f"exception streak: {str(exception)[:120]}")
         else:
+            # Phase 1C (§5) — 422 is a MARKET-SHAPE response, not a
+            # provider-health failure.  The gateway's bundle-bisection
+            # design intentionally probes markets that can 422
+            # (unsupported market / event); those probes previously
+            # incremented the fail streak and, after 8 consecutive
+            # probes, tripped the breaker and disabled the entire
+            # provider ("fail streak (8): 422" — observed live
+            # 2026-08-14, Cincinnati Open alt-line probes).  Count 422s
+            # in totals for observability but never toward the streak.
+            if status_code == 422:
+                _API_TOTAL_FAIL += 1
+                _API_LAST_ERR = f"422: {(body or '')[:160]}"
+                _push_cb_state_async()
+                return
             _API_FAIL_STREAK += 1
             _API_TOTAL_FAIL += 1
             _API_LAST_ERR = f"{status_code}: {(body or '')[:160]}"
@@ -520,10 +543,16 @@ async def _fetch_odds_for(sport_key: str, regions: str = "us", sport: str | None
     endpoint via `_fetch_tennis_event_alts` / `_fetch_mlb_event_alts`
     exactly as before — no credit cost change.
     """
-    # 1v1 sports: h2h is the only bulk market. Requesting more just
-    # confuses the API into returning empty bookmakers.
-    if sport in ("Tennis", "UFC"):
+    # 1v1 sports: Tennis exposes only h2h on the bulk endpoint (alt
+    # spreads/totals flow via the per-event endpoint).  UFC: Phase 1C
+    # (T3b) — The Odds API DOES expose MMA rounds totals in bulk, so
+    # request h2h+totals; the defensive 422/empty retry below falls
+    # back to h2h-only if a specific card lacks totals.  Registry and
+    # runtime must agree (registry advertises UFC h2h + totals).
+    if sport == "Tennis":
         markets_param = "h2h"
+    elif sport == "UFC":
+        markets_param = "h2h,totals"
     else:
         markets_param = "h2h,spreads,totals"
 
@@ -1143,13 +1172,14 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
     away = game.get("away_team")
     if not home or not away:
         return []
-    # ── UFC policy: MONEYLINE ONLY ────────────────────────────────────
-    # Per user spec ("only ufc money lines from now"), suppress all UFC
-    # non-moneyline markets (totals = round-totals, spreads = method-of-
-    # victory variants, etc.). UFC is fundamentally a 1v1 sport — the
-    # totals/method markets are high-variance and have been losing
-    # money. We still let the moneyline path below run normally.
-    _ufc_ml_only = (sport == "UFC")
+    # ── UFC market policy (Phase 1B, T3b) ─────────────────────────────
+    # The legacy `_ufc_ml_only` suppression (2026-07 "only ufc money
+    # lines") has been RETIRED per Phase 1 directive: real sportsbook
+    # UFC totals must reach the authoritative evaluation path.  With no
+    # independent UFC model wired yet, UFC markets record
+    # MODEL_UNAVAILABLE funnel telemetry instead of being silently
+    # suppressed OR book-followed.  Historical totals performance now
+    # belongs in calibration, not capability suppression.
     commence = game.get("commence_time")
     # Per-sport scheduling window. UFC fight cards run weekly, KBO has 5
     # games/day all week, Tennis tournaments span 7-10 days — these sparse
@@ -1212,6 +1242,8 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
         # context.
         game_ctx = (game.get("_ctx") or {}) if isinstance(game, dict) else {}
         dd_ml_result = None
+        _nfl_plat_ml = None            # Phase 1B — Platinum NFL game sim
+        _ml_model_unavailable: str | None = None
         if sport == "Soccer" and game_ctx:
             try:
                 from services.data_driven_model import soccer_ml_prob
@@ -1279,13 +1311,45 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             except Exception as e:
                 logger.debug("tennis DD ml failed: %s", e)
                 dd_ml_result = None
-        if dd_ml_result is None:
-            # 2026-07-21 FINAL PHASE — no RNG lift when the data-driven
-            # model is unavailable. Fall back to pure book-implied and
-            # let the sport's feature engine (MLB/Soccer/Tennis) recompute
-            # `mp` from real factors downstream. If no engine fires, the
-            # pick lands as an honest book-follow — never fake data.
+        elif sport == "NFL":
+            # ── Phase 1B (R1) — Platinum NFL game-market wiring ──────
+            # NFL regular-season AND preseason moneylines are evaluated
+            # by the Platinum causal simulator (exact-line model
+            # probabilities from team-strength expected margin).  The
+            # sim inherently scores BOTH sides (p_home + p_away).
+            # When the model context is unavailable (ratings missing),
+            # the market records MODEL_UNAVAILABLE — never book-follow.
+            try:
+                from services.platinum_nfl.game_runtime import (
+                    platinum_game_side_probability,
+                )
+                _book_total_line = next(
+                    (o.get("point") for o in totals_outs
+                     if o.get("name") == "Over"), None)
+                _plat = platinum_game_side_probability(
+                    game=game, ctx=game_ctx, market="Moneyline",
+                    side=home, line=None, is_home_side=True,
+                    book_total_line=_book_total_line,
+                )
+                if _plat.get("available"):
+                    home_model = _plat["prob"]
+                    _nfl_plat_ml = _plat
+                else:
+                    _ml_model_unavailable = _plat.get("reason") or "MODEL_UNAVAILABLE"
+            except Exception as e:
+                logger.warning("NFL platinum ML wiring failed: %s", e)
+                _ml_model_unavailable = f"SIM_EXCEPTION:{type(e).__name__}"
+        if dd_ml_result is None and _nfl_plat_ml is None:
+            # Phase 1B — the sportsbook-follow fallback is now permitted
+            # ONLY for MLB/Soccer, whose feature engines gate emission on
+            # real-data coverage downstream (has_enough_real_data /
+            # has_enough_soccer_data).  Every other sport without an
+            # authoritative model records MODEL_UNAVAILABLE and emits
+            # nothing — a sportsbook price is never presented as an
+            # independent model probability.
             home_model = home_implied
+            if sport not in ("MLB", "Soccer") and _ml_model_unavailable is None:
+                _ml_model_unavailable = "MODEL_UNAVAILABLE"
         if home_model >= 0.5:
             side, side_ml, mp = home, home_ml, home_model
         else:
@@ -1317,14 +1381,25 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             else:
                 factors = {k: v for k, v in real_ml_factors.items() if v is not None}
         else:
-            # 2026-07-21 Phase 2/3: Tennis / NBA / NFL / KBO
-            # For Tennis: real Elo/H2H/first-set data isn't attached at
-            # THIS build stage (it's added by tennis enrichment AFTER
-            # pick construction). Rather than dice-roll factors, use
-            # book-anchored model probability alone. The tennis_deep
-            # signal engine component contributes real data post-enrich.
-            # For NBA/NFL: real team metrics await Phase 3.
+            # Phase 1B — non-engine sports reach this branch only when an
+            # authoritative model produced the probability:
+            #   • NFL   → Platinum game sim (_nfl_plat_ml)
+            #   • Tennis→ tennis math / data-driven engine (dd_ml_result)
+            # Anything else (NBA / CFB / UFC / NHL / model-less Tennis)
+            # is MODEL_UNAVAILABLE: telemetried, not emitted.
             factors = {}
+            if _ml_model_unavailable is not None:
+                _skip_ml = True
+                try:
+                    from services import funnel_telemetry as _funnel
+                    _funnel.record(
+                        sport=sport, market="moneyline", stage="model",
+                        reason=_ml_model_unavailable,
+                        event=f"{away} @ {home}",
+                        detail="no authoritative independent model wired",
+                    )
+                except Exception:
+                    pass
 
         if not _skip_ml:
             lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
@@ -1339,6 +1414,12 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             if ml_pick and dd_ml_result:
                 ml_pick["data_driven_used"] = True
                 ml_pick["data_driven_contribs"] = dd_ml_result.get("contributions") or {}
+            if ml_pick and _nfl_plat_ml:
+                # Phase 1B — authoritative Platinum provenance
+                from services.platinum_nfl.game_runtime import (
+                    attach_game_sim_provenance,
+                )
+                attach_game_sim_provenance(ml_pick, _nfl_plat_ml)
             if ml_pick:
                 # 2026-07-21 Phase 1 MLB + Phase 2 Tennis/Soccer:
                 # attach real-data attribution
@@ -1596,8 +1677,10 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
     # just be the best ones for that day"). Compute model win prob for
     # both sides, pick whichever has the larger positive edge, and skip
     # totally when neither side crosses the edge / implied floors.
-    # UFC: skip \u2014 moneyline-only policy.
-    if totals_outs and not _ufc_ml_only:
+    # Phase 1B: UFC totals now REACH evaluation (legacy suppression
+    # retired) — they resolve to MODEL_UNAVAILABLE until a UFC model
+    # is wired.
+    if totals_outs:
         over = next((o for o in totals_outs if o.get("name") == "Over"), None)
         under = next((o for o in totals_outs if o.get("name") == "Under"), None)
         if over and under and over.get("point") == under.get("point"):
@@ -1624,29 +1707,81 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         from services.data_driven_model import soccer_total_prob as _dd_fn
                 except Exception:
                     _use_dd = False
-            if o_price is not None:
+            # ── Phase 1B — per-sport totals model availability ────────
+            #   MLB / Soccer → data-driven engines (existing, gated).
+            #   NFL          → Platinum game sim, BOTH sides evaluated.
+            #   NBA/CFB/UFC/NHL/Tennis → MODEL_UNAVAILABLE (telemetried,
+            #   never sportsbook-follow).
+            _totals_model_ok = sport in ("MLB", "Soccer")
+            _nfl_tot_sims: dict[str, dict] = {}
+            if sport == "NFL":
+                try:
+                    from services.platinum_nfl.game_runtime import (
+                        platinum_game_side_probability,
+                    )
+                    for _t_side in ("Over", "Under"):
+                        _nfl_tot_sims[_t_side] = platinum_game_side_probability(
+                            game=game, ctx=game_ctx, market="Total",
+                            side=_t_side, line=float(line),
+                            book_total_line=float(line),
+                        )
+                    _totals_model_ok = any(
+                        r.get("available") for r in _nfl_tot_sims.values())
+                    if not _totals_model_ok:
+                        _r = next(iter(_nfl_tot_sims.values()), {})
+                        from services import funnel_telemetry as _funnel
+                        _funnel.record(
+                            sport=sport, market="total", stage="model",
+                            reason=_r.get("reason") or "MODEL_UNAVAILABLE",
+                            event=f"{away} @ {home}",
+                        )
+                except Exception as _pe:
+                    logger.warning("NFL platinum totals wiring failed: %s", _pe)
+                    _totals_model_ok = False
+            elif not _totals_model_ok:
+                try:
+                    from services import funnel_telemetry as _funnel
+                    _funnel.record(
+                        sport=sport, market="total", stage="model",
+                        reason="MODEL_UNAVAILABLE",
+                        event=f"{away} @ {home}",
+                        detail="no authoritative independent totals model wired",
+                    )
+                except Exception:
+                    pass
+            if o_price is not None and _totals_model_ok:
                 implied_o = _implied_prob(o_price)
                 if _use_dd and _dd_fn:
                     dd = _dd_fn("Over", float(line), implied_o, game_ctx)
                     mp_o = dd["mp"]
                     contribs_o = dd["contributions"]
+                elif sport == "NFL":
+                    # Phase 1B — Platinum exact-line Over probability.
+                    _sim_o = _nfl_tot_sims.get("Over") or {}
+                    if not _sim_o.get("available"):
+                        mp_o = None
+                    else:
+                        mp_o = _sim_o["prob"]
+                    contribs_o = None
                 else:
                     # 2026-07-21 FINAL PHASE — deterministic book-anchored
                     # seed. Was `implied_o + 0.05 + rng.random() * 0.08`
                     # which faked a random +5-13pp lift. Now uses a small
                     # deterministic +2pp (book edge is genuinely tilted
-                    # toward Overs after juice removal).
+                    # toward Overs after juice removal).  Phase 1B: only
+                    # MLB/Soccer reach here (engine-gated downstream).
                     mp_o = max(0.35, min(0.78, implied_o + 0.02))
                     contribs_o = None
-                candidates.append({
-                    "side":     "Over",
-                    "price":    o_price,
-                    "implied":  implied_o,
-                    "mp":       mp_o,
-                    "edge":     mp_o - implied_o,
-                    "contribs": contribs_o,
-                })
-            if u_price is not None:
+                if mp_o is not None:
+                    candidates.append({
+                        "side":     "Over",
+                        "price":    o_price,
+                        "implied":  implied_o,
+                        "mp":       mp_o,
+                        "edge":     mp_o - implied_o,
+                        "contribs": contribs_o,
+                    })
+            if u_price is not None and _totals_model_ok:
                 implied_u = _implied_prob(u_price)
                 # Reject truly lopsided dog-Unders (below 38% implied)
                 # \u2014 there the Over is the only side worth grading.
@@ -1655,19 +1790,29 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         dd = _dd_fn("Under", float(line), implied_u, game_ctx)
                         mp_u = dd["mp"]
                         contribs_u = dd["contributions"]
+                    elif sport == "NFL":
+                        # Phase 1B — Platinum exact-line Under probability.
+                        _sim_u = _nfl_tot_sims.get("Under") or {}
+                        if not _sim_u.get("available"):
+                            mp_u = None
+                        else:
+                            mp_u = _sim_u["prob"]
+                        contribs_u = None
                     else:
                         # 2026-07-21 FINAL PHASE — deterministic. Was
                         # `implied_u + 0.04 + rng.random() * 0.07`.
+                        # Phase 1B: only MLB/Soccer reach here.
                         mp_u = max(0.35, min(0.78, implied_u + 0.02))
                         contribs_u = None
-                    candidates.append({
-                        "side":     "Under",
-                        "price":    u_price,
-                        "implied":  implied_u,
-                        "mp":       mp_u,
-                        "edge":     mp_u - implied_u,
-                        "contribs": contribs_u,
-                    })
+                    if mp_u is not None:
+                        candidates.append({
+                            "side":     "Under",
+                            "price":    u_price,
+                            "implied":  implied_u,
+                            "mp":       mp_u,
+                            "edge":     mp_u - implied_u,
+                            "contribs": contribs_u,
+                        })
 
             # Pick the side with the largest positive edge. If both
             # have negative edge the downstream `_build_pick` filter
@@ -1723,11 +1868,10 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         else:
                             factors = {k: v for k, v in real_tot_factors.items() if v is not None}
                     else:
-                        # 2026-07-21: NBA/NFL/Tennis totals — Phase 3
-                        # replaces these with real data. For now, use
-                        # book-anchored win_prob with NO random factor
-                        # dice-roll (empty factors dict → lock derived
-                        # purely from model probability, no noise).
+                        # Phase 1B — only NFL reaches this branch, and
+                        # only when the Platinum game sim produced the
+                        # probability (empty factors dict → lock derived
+                        # purely from the authoritative model probability).
                         factors = {}
 
                     if not _skip_total:
@@ -1760,6 +1904,15 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                             if sport in ("MLB", "Soccer") and _t_src:
                                 total_pick["real_data_sources"] = list(_t_src)
                                 total_pick["real_data_count"] = len(_t_src)
+                            # Phase 1B — Platinum provenance on NFL totals
+                            if sport == "NFL":
+                                _sim_best = _nfl_tot_sims.get(best["side"]) or {}
+                                if _sim_best.get("available"):
+                                    from services.platinum_nfl.game_runtime import (
+                                        attach_game_sim_provenance,
+                                    )
+                                    attach_game_sim_provenance(
+                                        total_pick, _sim_best)
                             picks.append(total_pick)
 
             # ── Soccer Poisson-synthesized alt totals (Over 1.5, Over 3.5) ──
@@ -1885,7 +2038,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
     # instead of tossing a coin at generation time. `_build_pick` returns
     # None for the side that doesn't clear the floors, so we never over-
     # surface a garbage pick — we just stop losing the good one to chance.
-    if spreads_outs and sport in ("MLB", "NBA", "NFL", "KBO", "Tennis"):
+    if spreads_outs and sport in ("MLB", "NBA", "NFL", "KBO", "Tennis", "NHL"):
         home_sp = next((o for o in spreads_outs if o.get("name") == home), None)
         away_sp = next((o for o in spreads_outs if o.get("name") == away), None)
         if home_sp and away_sp:
@@ -1900,8 +2053,9 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 # +4pp deterministic; MLB/Soccer feature engine gates
                 # emission below and can recompute mp from real factors.
                 mp = max(0.4, min(0.78, implied + 0.04))
+                _nfl_plat_sp = None    # Phase 1B — Platinum provenance
                 # 2026-07-21 Phase 1 MLB: real spread factors, gated on
-                # coverage. Non-MLB sports still use random pool.
+                # coverage.
                 if sport == "MLB":
                     from services.mlb_feature_engine import (
                         build_mlb_ml_factors, has_enough_real_data,
@@ -1920,17 +2074,61 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     if not has_enough_soccer_data(real_sp_factors, "ml"):
                         continue
                     factors = {k: v for k, v in real_sp_factors.items() if v is not None}
-                else:
-                    # 2026-07-21: NBA/NFL/Tennis spreads — Phase 3 replaces.
-                    # For now use book-anchored win_prob only (no random noise).
+                elif sport == "NFL":
+                    # Phase 1B (R1) — Platinum spread sim per side.
+                    try:
+                        from services.platinum_nfl.game_runtime import (
+                            platinum_game_side_probability,
+                        )
+                        _sp_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
+                        _book_total_line_sp = next(
+                            (o.get("point") for o in totals_outs
+                             if o.get("name") == "Over"), None)
+                        _nfl_plat_sp = platinum_game_side_probability(
+                            game=game, ctx=_sp_ctx, market="Spread",
+                            side=side, line=line,
+                            is_home_side=(side == home),
+                            book_total_line=_book_total_line_sp,
+                        )
+                    except Exception as _spe:
+                        logger.warning("NFL platinum spread wiring failed: %s", _spe)
+                        _nfl_plat_sp = {"available": False,
+                                        "reason": f"SIM_EXCEPTION:{type(_spe).__name__}"}
+                    if not (_nfl_plat_sp or {}).get("available"):
+                        try:
+                            from services import funnel_telemetry as _funnel
+                            _funnel.record(
+                                sport=sport, market="spread", stage="model",
+                                reason=(_nfl_plat_sp or {}).get("reason") or "MODEL_UNAVAILABLE",
+                                event=f"{away} @ {home}", side=str(side),
+                            )
+                        except Exception:
+                            pass
+                        continue
+                    mp = _nfl_plat_sp["prob"]
                     factors = {}
+                else:
+                    # Phase 1B — NBA / Tennis / NHL / KBO spreads have no
+                    # authoritative independent model. MODEL_UNAVAILABLE,
+                    # never sportsbook-follow.
+                    try:
+                        from services import funnel_telemetry as _funnel
+                        _funnel.record(
+                            sport=sport, market="spread", stage="model",
+                            reason="MODEL_UNAVAILABLE",
+                            event=f"{away} @ {home}", side=str(side),
+                            detail="no authoritative independent spread model wired",
+                        )
+                    except Exception:
+                        pass
+                    continue
                 lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
                 sign = "+" if (line or 0) > 0 else ""
                 # Deterministic per-side external id so re-runs don't
                 # collide between the home / away spread picks in the
                 # picks collection (pick_id derives from external_id).
                 side_slug = "home" if side == home else "away"
-                picks.append(_build_pick(
+                _sp_pick = _build_pick(
                     sport=sport, league=league, event=f"{away} @ {home}",
                     event_time=commence,
                     market=f"{side} {sign}{line} Spread", pick_side=side,
@@ -1938,14 +2136,20 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     lock=lock, factors=breakdown,
                     insights=_insights_for(sport, breakdown, side, home, away),
                     external_id=f"{sport}-{game_id}-spread-{side_slug}",
-                ))
+                )
+                if _sp_pick and _nfl_plat_sp and _nfl_plat_sp.get("available"):
+                    from services.platinum_nfl.game_runtime import (
+                        attach_game_sim_provenance,
+                    )
+                    attach_game_sim_provenance(_sp_pick, _nfl_plat_sp)
+                picks.append(_sp_pick)
     return [p for p in picks if p is not None]
 
 
 def _unit(sport: str) -> str:
     return {"MLB": "Runs", "NBA": "Points", "NFL": "Points", "CFB": "Points",
             "Soccer": "Goals", "Tennis": "Games",
-            "UFC": "Rounds", "KBO": "Runs",
+            "UFC": "Rounds", "KBO": "Runs", "NHL": "Goals",
             "WNBA": "Points"}.get(sport, "Points")
 
 
@@ -2028,6 +2232,7 @@ LEAGUE_LABELS: dict[str, str] = {
     "basketball_wnba": "WNBA",
     "americanfootball_nfl": "NFL",
     "americanfootball_nfl_preseason": "NFL Preseason",
+    "icehockey_nhl": "NHL",
     "americanfootball_ncaaf": "CFB",
     # UFC / MMA
     "mma_mixed_martial_arts": "UFC / MMA",
@@ -2141,6 +2346,14 @@ async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
                 elif sport == "Tennis":
                     from services.game_context import build_tennis_match_context
                     g["_ctx"] = await build_tennis_match_context(g)
+                elif sport == "NFL":
+                    # Phase 1B — Platinum game-sim model context
+                    # (team-strength expected margin + expected total).
+                    from services.platinum_nfl.game_runtime import (
+                        build_nfl_game_model_context,
+                    )
+                    g.setdefault("sport_key", key)
+                    g["_ctx"] = await build_nfl_game_model_context(g)
             except Exception as e:
                 logger.debug("%s context prefetch failed for %s: %s",
                              sport, g.get("id"), e)
@@ -2434,12 +2647,31 @@ async def _backfill_tennis_moneylines(picks: list[dict], date_str: str) -> list[
                     model_wp = math_wp_fav
                 dd_contribs = dict(math_signal.get("contributions") or {})
                 dd_contribs["math_engine_used"] = True
+                _math_signal_ok = True
                 logger.debug(
                     "tennis math backfill: %s vs %s → chose %s (model_wp=%.3f, book_implied=%.3f)",
                     fav_side, dog_side, chosen_side, model_wp, chosen_implied,
                 )
         except Exception as _mx:
             logger.debug("tennis math engine failed on %s: %s", event_name, _mx)
+
+        # ── Phase 1B — authoritative-model gate ─────────────────────
+        # If the tennis math engine produced no real signal, this
+        # backfill would previously emit a book-follow pick (model_wp =
+        # fav_implied) with a hard-coded lock ladder. That is retired:
+        # MODEL_UNAVAILABLE is telemetried and nothing is emitted.
+        if not _math_signal_ok:
+            try:
+                from services import funnel_telemetry as _funnel
+                _funnel.record(
+                    sport="Tennis", market="moneyline",
+                    stage="model", reason="MODEL_UNAVAILABLE",
+                    event=event_name,
+                    detail="ml backfill: no real tennis math signal",
+                )
+            except Exception:
+                pass
+            continue
 
         # Final win_prob / edge / lock — computed from chosen side
         implied = chosen_implied  # legacy variable name kept for below
@@ -2515,6 +2747,15 @@ async def fetch_wnba_picks(date_str: str) -> list[dict]:
 
 async def fetch_ufc_picks(date_str: str) -> list[dict]:
     return await _fetch_picks_for_sport("UFC", date_str)
+
+
+async def fetch_nhl_picks(date_str: str) -> list[dict]:
+    """Phase 1B (R2a) — NHL production generation. Real icehockey_nhl
+    events + h2h/spreads/totals markets reach the authoritative
+    evaluation path. Without an independent NHL model, every market
+    records MODEL_UNAVAILABLE funnel telemetry instead of emitting
+    sportsbook-follow pseudo-picks."""
+    return await _fetch_picks_for_sport("NHL", date_str)
 
 
 async def fetch_kbo_picks(date_str: str) -> list[dict]:
@@ -4676,6 +4917,17 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     _mlb_reject("missing_feature_data", market_key=mk)
                 except Exception:
                     pass
+                # Phase 1B — persistent funnel record (hitter-prop
+                # reachability proof: drops are never silent).
+                try:
+                    from services import funnel_telemetry as _funnel
+                    _funnel.record(
+                        sport="MLB", market=mk, stage="model",
+                        reason="MISSING_FEATURE_DATA",
+                        event=player,
+                    )
+                except Exception:
+                    pass
             else:
                 factors = {k: v for k, v in real_factors.items() if v is not None}
                 _mlb_features_used = _sources
@@ -5878,14 +6130,43 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                         key, ev,
                     )
                     if synth_picks:
+                        # ── Phase 1B — synthetic scorer picks are
+                        # RESEARCH/MODEL EVIDENCE ONLY.  They carry
+                        # model-derived prices with no real sportsbook
+                        # line, so they must NOT satisfy the real-line
+                        # canonical publication contract.  Persist to
+                        # `model_research_evidence` + funnel-record;
+                        # never emit into the pick stream.
+                        try:
+                            from services import funnel_telemetry as _funnel
+                            for _sp in synth_picks:
+                                _sp["research_only"] = True
+                                _funnel.record(
+                                    sport="Soccer",
+                                    market=_sp.get("market") or "anytime_goal_scorer",
+                                    stage="publication_contract",
+                                    reason=_funnel.SYNTHETIC_SCORER_RESEARCH_ONLY,
+                                    event=_sp.get("event"),
+                                    detail="model-priced synthetic scorer — no real sportsbook line",
+                                )
+                            from server import db as _rdb
+                            for _sp in synth_picks:
+                                await _rdb.model_research_evidence.update_one(
+                                    {"id": _sp.get("id") or _sp.get("external_id")},
+                                    {"$set": _sp},
+                                    upsert=True,
+                                )
+                        except Exception as _res_err:
+                            logger.debug("research-evidence store failed: %s",
+                                         _res_err)
                         logger.info(
                             "Synthetic scorer picks for %s/%s evt %s: %d "
-                            "(book_had_player_markets=%s, always_synth=%s)",
+                            "→ research-only (NOT published; "
+                            "book_had_player_markets=%s, always_synth=%s)",
                             sport, key, ev.get("id"), len(synth_picks),
                             book_had_player_markets,
                             key in _ALWAYS_SYNTH_SOCCER_KEYS,
                         )
-                        all_picks.extend(synth_picks)
                 except Exception as _synth_err:
                     logger.warning("Synthetic scorer for %s failed: %s",
                                    ev.get("id"), _synth_err)
@@ -5921,11 +6202,39 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                 try:
                     espn_mls_picks = await _espn_mls_scorer_picks(key, ev)
                     if espn_mls_picks:
+                        # ── Phase 1C (§11A) — MLS leaderboard picks
+                        # carry SYNTHETIC American odds converted from
+                        # scoring rate (_rate_to_american).  Synthetic
+                        # odds must never masquerade as real sportsbook
+                        # odds — route to research/model evidence only.
+                        try:
+                            from services import funnel_telemetry as _funnel
+                            from server import db as _rdb
+                            for _mp in espn_mls_picks:
+                                _mp["research_only"] = True
+                                _mp["no_real_book_line"] = True
+                                _funnel.record(
+                                    sport="Soccer",
+                                    market=_mp.get("market") or "anytime_goal_scorer",
+                                    stage="publication_contract",
+                                    reason=_funnel.SYNTHETIC_ODDS_RESEARCH_ONLY,
+                                    event=_mp.get("event"),
+                                    detail="MLS ESPN leaderboard pick priced "
+                                           "via rate→American conversion",
+                                )
+                                await _rdb.model_research_evidence.update_one(
+                                    {"id": _mp.get("id") or _mp.get("external_id")},
+                                    {"$set": _mp},
+                                    upsert=True,
+                                )
+                        except Exception as _res_err:
+                            logger.debug("MLS research-evidence store failed: %s",
+                                         _res_err)
                         logger.info(
-                            "ESPN-leaderboard MLS scorer picks evt %s: %d",
+                            "ESPN-leaderboard MLS scorer picks evt %s: %d "
+                            "→ research-only (synthetic odds; NOT published)",
                             ev.get("id"), len(espn_mls_picks),
                         )
-                        all_picks.extend(espn_mls_picks)
                 except Exception as _espn_err:
                     logger.warning(
                         "ESPN MLS leaderboard scorer for %s failed: %s",
@@ -6379,13 +6688,32 @@ async def generate_all_picks(
     if _want("Soccer"): fetch_jobs.append(fetch_soccer_picks(date_str))
     if _want("Tennis"): fetch_jobs.append(fetch_tennis_picks(date_str))
     if _want("UFC"): fetch_jobs.append(fetch_ufc_picks(date_str))
+    if _want("NHL"): fetch_jobs.append(fetch_nhl_picks(date_str))
     # KBO removed 2026-07-04 per user request. Function `fetch_kbo_picks`
     # kept in module for historical reference but never invoked.
     game_results = await asyncio.gather(*fetch_jobs, return_exceptions=True) if fetch_jobs else []
     all_picks: list[dict] = []
-    for r in game_results:
+    _sport_order = [s for s in ("MLB", "NBA", "NFL", "CFB", "Soccer",
+                                "Tennis", "UFC", "NHL") if _want(s)]
+    for _idx, r in enumerate(game_results):
         if isinstance(r, list):
             all_picks.extend(r)
+        elif isinstance(r, BaseException):
+            # Phase 1C — a sport fetcher crash must never silently
+            # produce "0 picks with no reason".
+            _failed_sport = (_sport_order[_idx]
+                             if _idx < len(_sport_order) else "unknown")
+            logger.error("Sport fetcher failed for %s: %s",
+                         _failed_sport, r)
+            try:
+                from services import funnel_telemetry as _funnel
+                _funnel.record(
+                    sport=_failed_sport, market="*", stage="fetch",
+                    reason=_funnel.REFRESH_RUNTIME_FAILURE,
+                    detail=f"{type(r).__name__}: {r}"[:160],
+                )
+            except Exception:
+                pass
 
     # Phase 2: fetch event-level player props sequentially with small delays
     # to avoid The Odds API rate limit (1 req/sec on free tier).

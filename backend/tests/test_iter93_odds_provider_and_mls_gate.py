@@ -24,7 +24,7 @@ try:
 except Exception:
     pass
 
-BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://player-intel-engine.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://canonical-parity.preview.emergentagent.com").rstrip("/")
 
 
 # ── shared auth fixture ─────────────────────────────────────────────

@@ -10,7 +10,7 @@ import requests
 
 BASE_URL = os.environ.get(
     "EXPO_PUBLIC_BACKEND_URL",
-    "https://player-intel-engine.preview.emergentagent.com",
+    "https://canonical-parity.preview.emergentagent.com",
 ).rstrip("/")
 
 DEMO_EMAIL = "demo@lockscore.ai"

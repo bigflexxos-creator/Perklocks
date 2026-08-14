@@ -71,7 +71,11 @@ SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
         "fallback_sources": [],
         "supports_alt_lines": True,
         "supports_locks": True,
-        "notes": "Full end-to-end.",
+        "notes": ("Props: full end-to-end (feature engine wired). Game "
+                  "markets: reachability only — Phase 1B retired the "
+                  "sportsbook-follow pseudo-model; game markets record "
+                  "MODEL_UNAVAILABLE until an authoritative NBA game "
+                  "model is wired."),
     },
     "NFL": {
         "enabled": True,
@@ -90,8 +94,13 @@ SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
         "fallback_sources": [],
         "supports_alt_lines": True,
         "supports_locks": True,
-        "notes": ("Phase-1 (2026-08-11) added NFL to the prop-fetch loop. "
-                  "nflverse feature engine wired end-to-end."),
+        "notes": ("Phase 1B (2026-06): game markets (ML/Spread/Total, "
+                  "regular + preseason) evaluated by the Platinum game "
+                  "simulator (team-strength expected margin/total → "
+                  "exact-line probabilities). Props: nflverse feature "
+                  "engine + Platinum challenger. When team ratings are "
+                  "missing the market records MODEL_UNAVAILABLE — no "
+                  "sportsbook-follow."),
     },
     "CFB": {
         "enabled": True,
@@ -100,9 +109,12 @@ SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
         "fallback_sources": [],
         "supports_alt_lines": True,
         "supports_locks": True,
-        "notes": ("Game-level markets only.  Player props NOT wired — "
-                  "The Odds API's CFB prop catalogue is sparse and "
-                  "unreliable; keep OFF until we validate coverage."),
+        "notes": ("Market reachability only. Phase 1B: no authoritative "
+                  "independent CFB game-market model is wired — markets "
+                  "record MODEL_UNAVAILABLE funnel telemetry (legacy "
+                  "sportsbook-follow pseudo-modeling retired). Player "
+                  "props NOT wired — The Odds API's CFB prop catalogue "
+                  "is sparse and unreliable."),
     },
     "Soccer": {
         "enabled": True,
@@ -116,13 +128,16 @@ SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
             "soccer_hot_scorers",     # top-scorer AGS anchor
             "espn_soccer_fixtures",   # ESPN scoreboard fallback
             "uefa_espn_ingest",       # UEFA/CFB double-chance + form-derived ML
-            "sportdb_scorer_v1",      # SportDB player scorer synth
             "csl_espn_leaderboard",   # Chinese Super League ESPN feed
         ],
         "supports_alt_lines": True,
         "supports_locks": True,
-        "notes": ("Full end-to-end.  Fallbacks feed canonical "
-                  "publication via `publish_upserted_picks`."),
+        "notes": ("Full end-to-end via the canonical path. Phase 1B "
+                  "(T1): soccer/pipeline.py duplicate pick emission "
+                  "RETIRED (soccer_predictions cache preserved). "
+                  "sportdb synthetic scorer picks are research/model "
+                  "evidence only — never published as sportsbook-backed "
+                  "picks."),
     },
     "Tennis": {
         "enabled": True,
@@ -131,18 +146,24 @@ SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
         "fallback_sources": ["tennis_extra"],  # TennisExplorer scrape
         "supports_alt_lines": True,
         "supports_locks": True,
-        "notes": ("Full end-to-end.  Tennis Extra fallback (P0-3) "
-                  "publishes canonically and covers ATP/WTA/Challenger."),
+        "notes": ("Phase 1B (R4): primary Odds-API + tennis math engine "
+                  "runtime is the sole production authority. "
+                  "tennis_extra is a controlled gap-filler ONLY for "
+                  "events missing from primary, and gap-fill picks "
+                  "must carry a real sportsbook line."),
     },
     "UFC": {
         "enabled": True,
-        "game_markets": ["h2h", "totals"],   # rounds totals + ML only
+        "game_markets": ["h2h", "totals"],   # rounds totals + ML
         "prop_markets": [],  # confirmed no MMA props on Odds API
         "fallback_sources": ["ufc_espn_ingest"],
         "supports_alt_lines": False,
         "supports_locks": True,
-        "notes": ("Moneyline + rounds totals only.  Method-of-victory / "
-                  "round-betting are NOT exposed by The Odds API."),
+        "notes": ("Phase 1B (T3b): legacy _ufc_ml_only suppression "
+                  "retired — ML + real totals both REACH evaluation. "
+                  "No authoritative independent UFC model is wired yet, "
+                  "so both markets currently record MODEL_UNAVAILABLE "
+                  "(never sportsbook-follow)."),
     },
     "NHL": {
         "enabled": True,
@@ -151,9 +172,12 @@ SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
         "fallback_sources": [],
         "supports_alt_lines": False,
         "supports_locks": True,
-        "notes": ("Game-level markets only.  Player-prop feature "
-                  "engine not yet built — enable prop_markets when "
-                  "the engine lands."),
+        "notes": ("Phase 1B (R2a): icehockey_nhl WIRED into production "
+                  "generation (fetch_nhl_picks → canonical path). Real "
+                  "ML / puck-line / total markets reach evaluation; no "
+                  "authoritative independent NHL model exists yet, so "
+                  "markets record MODEL_UNAVAILABLE funnel telemetry — "
+                  "probability/edge are never fabricated."),
     },
     # ── Intentionally disabled ─────────────────────────────────────
     "WNBA": {

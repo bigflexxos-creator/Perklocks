@@ -12,7 +12,7 @@ import requests
 BASE_URL = (
     os.environ.get("EXPO_PUBLIC_BACKEND_URL")
     or os.environ.get("EXPO_BACKEND_URL")
-    or "https://player-intel-engine.preview.emergentagent.com"
+    or "https://canonical-parity.preview.emergentagent.com"
 ).rstrip("/")
 
 

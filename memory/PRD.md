@@ -626,3 +626,67 @@ Every Soccer + Tennis pick that reaches the board now carries
 
 **Zero RNG anywhere in this pipeline.** Every value is either real data, book_implied, or a learned adjustment from historical settle data.
 
+
+---
+
+## PERKLOCKS PHASE 1B — PER-SPORT AUTHORITATIVE RUNTIME WIRING (2026-06, checkpoint PHASE1B_AUTHORITATIVE_RUNTIME_WIRING_READY)
+
+Approved decisions: R1 (NFL Platinum game markets), R2a (wire NHL), R3-modified (NBA/CFB → MODEL_UNAVAILABLE, no book-follow), R4 (tennis_extra = gap-filler), T1 (retire soccer/pipeline.py pick emission), T3b (UFC totals reach evaluation), synthetic scorer = research-only.
+
+### Changes
+- NEW `services/funnel_telemetry.py` — persistent Mongo funnel (`funnel_telemetry` collection), sync `record()` + per-cycle `flush()` in `PickRefreshOrchestrator.refresh` finally-block. Mirrors legacy `pipeline_diagnostic.log_reason`.
+- NEW `services/platinum_nfl/game_runtime.py` — `build_nfl_game_model_context` (team ratings from `nfl_game_engine._team_ratings` → expected margin/total) + `platinum_game_side_probability` (deterministic seed via `simulation_seed.build_seed`, 5000 sims) + `attach_game_sim_provenance`.
+- `sports_engine.py`:
+  - NHL wired: `SPORT_KEYS["NHL"]`, `LEAGUE_LABELS["icehockey_nhl"]`, `fetch_nhl_picks`, `_unit`, NHL in spreads branch, `_want("NHL")` in `generate_all_picks`.
+  - NFL ML/Total/Spread (regular + preseason) evaluated by Platinum sim; picks stamped `model_source=platinum_nfl_game_sim`, `season_type`, `platinum_game_sim`.
+  - Book-follow ML fallback restricted to MLB/Soccer (engine-gated); NBA/CFB/UFC/NHL/model-less-Tennis/model-less-NFL → `MODEL_UNAVAILABLE` funnel record, no pick.
+  - Totals: `_ufc_ml_only` suppression RETIRED; non-modeled sports funnel-recorded; NFL uses Platinum both-sides probabilities.
+  - Spreads: NFL Platinum per-side; NBA/Tennis/NHL → MODEL_UNAVAILABLE.
+  - `_backfill_tennis_moneylines`: emits ONLY with real tennis math signal (`has_real_tennis_signal`); book-follow + hardcoded lock ladder retired.
+  - `_synthetic_soccer_scorer_picks` output → `model_research_evidence` collection + funnel `SYNTHETIC_SCORER_RESEARCH_ONLY`; never enters pick stream.
+  - MLB hitter-prop feature-gate drop now funnel-recorded (`MISSING_FEATURE_DATA`).
+- `services/pick_refresh_orchestrator.py`: `_tennis_gap_fill_filter` — tennis_extra keeps only events missing from primary AND with a real book line (`GAP_FILL_EVENT_COVERED_BY_PRIMARY` / `GAP_FILL_NO_REAL_BOOK_LINE`); funnel flush added.
+- `soccer/pipeline.py`: `LEGACY_PICK_EMIT_ENABLED` (default OFF, env `SOCCER_LEGACY_PIPELINE_EMIT=1` to re-enable) — db.picks dual-write retired, `soccer_predictions` cache preserved.
+- `services/sport_capability_registry.py`: notes now truthful for NFL/NBA/CFB/Tennis/UFC/NHL/Soccer.
+- NEW `tests/test_phase1b_runtime_wiring.py` — 29 tests incl. offline production-path integration (generate_all_picks with provider mocked at boundary) + determinism proofs. All pass.
+
+### Remaining MODEL_UNAVAILABLE markets (truthful)
+NBA game markets, CFB game markets, UFC ML + totals, NHL ML/puck-line/total, Tennis events without math-engine signal.
+
+### Flagged for next sub-blocks (not yet changed)
+- `_espn_mls_scorer_picks` uses `_rate_to_american()` synthetic odds (user-requested MLS feature — needs decision).
+- `ufc_espn_ingest` publishes picks with `book_odds=None` (record/win-rate model, no real line).
+- `_ensure_csl_elite_picks` post-pipeline injection bypass.
+- Gate reconstruction (G1-G7): implied floors, model-prob floors, lock booster, per-sport lock floors, de-vig flag, both-sides, cap telemetry — NOT yet executed (next sub-block).
+
+---
+
+## PERKLOCKS PHASE 1C — PRODUCTION FOUNDATION INTEGRITY (2026-06, checkpoint PHASE1C_PRODUCTION_FOUNDATION_INTEGRITY_READY)
+
+### Root causes found & fixed
+1. **Circuit breaker 422 false-trip (CRITICAL)**: benign 422 market probes (bundle-bisection design) counted toward the fail streak; 8 consecutive Cincinnati-Open alt-line probes tripped the breaker and disabled the ENTIRE provider live ("fail streak (8): 422"). Fixed in `sports_engine.record_odds_call_result` — 422 counts in totals, never toward the streak. Stale OPEN breaker reset via /api/admin/odds-circuit/reset.
+2. **Orchestrator Motor bool crash**: `PickRefreshOrchestrator.__init__` used `database or db` → NotImplementedError for every explicit-db caller. Fixed with `is not None`.
+3. **Silent 7→0 board-validator wipe**: `evidence_threshold` (§7 min-3-of-6 signals) dropped ALL NFL Platinum game picks invisibly (log line omitted evidence/integrity counters). Now funnel-recorded (`EVIDENCE_THRESHOLD`, `INTEGRITY_CHECK_FAILED`) + logged. Gate semantics UNCHANGED (Phase 1D scope).
+4. **UFC totals fetch restriction**: `_fetch_odds_for` limited UFC to h2h at the provider request level; now `h2h,totals` with 422/empty retry (registry/runtime agreement).
+
+### Provider foundation evidence (sanitized)
+- Key: env `THE_ODDS_API_KEY`, fingerprint sha256[:8]=21ce2472, len 32, no whitespace corruption, no hardcoded fallback (SEC-002). Import-time copy matches env.
+- Live probe (FREE /v4/sports through gateway): HTTP 200, 0 credits, 80 active sports (incl. icehockey_nhl + americanfootball_nfl_preseason), breaker CLOSED.
+- Provider truth vs governor: provider x-requests-used≈48k / remaining≈52k (month plan 100k) vs internal month_used 25,554 → the KEY is consumed beyond this environment's accounting (consistent with Production sharing the same key; per-env governors keep separate Mongo state by design). Daily 3000-credit self-limit (not the provider) caused the earlier force-refresh block — governor working as designed.
+- NEW `GET /api/admin/provider-foundation` (admin): sanitized cross-env comparison payload (key fingerprint, DB fingerprint, breaker, budget, provider headers, funnel breakdown). Hit on Preview AND Production to prove key identity (SAME iff fingerprints match).
+
+### NFL live-proof closure (§10)
+Live preseason slate (10 events, 11 books): fetch → build_nfl_game_model_context (32 rated teams) → simulate_game_market → 7 picks with `model_source=platinum_nfl_game_sim`, `season_type=PRESEASON` → gating rejection recorded as EVIDENCE_THRESHOLD (7) in persistent funnel. Runtime arrow PROVEN; picks legitimately failed the existing evidence gate (Phase 1D item: evidence gate doesn't count Platinum sim as a signal).
+
+### Contract flags (§11)
+- A. MLS ESPN leaderboard picks (synthetic rate→American odds) → research-only (`model_research_evidence` + `SYNTHETIC_ODDS_RESEARCH_ONLY`), never published.
+- B. UFC ESPN picks: already compliant (book_odds=None, no_real_book_line, model_only, Extended-Coverage only) — regression tests added.
+- C. `_ensure_csl_elite_picks` force-injection into db.picks RETIRED → research-only routing.
+
+### Infra telemetry (§9)
+Gateway budget denials → BUDGET_GOVERNOR_BLOCKED; breaker blocks → CIRCUIT_BREAKER_OPEN; 401/403 → PROVIDER_AUTH_FAILURE; 429 → PROVIDER_RATE_LIMITED; other → PROVIDER_REQUEST_FAILED; fetcher/orchestrator crashes → REFRESH_RUNTIME_FAILURE (generate_all_picks gather exceptions no longer silent).
+
+### Tests
+- NEW tests/test_phase1c_foundation.py (24) + testing-agent tests/test_iter98_phase1c_review.py (14). 53/53 phase suites + 67/67 review PASS. Pre-existing unrelated failures: test_p04_real_line_integrity (old contract), test_universal_reachability boundary, test_mlb_grading_fix_iter71.
+
+### NEXT (approved queue): PHASE 1D — GATE RECONSTRUCTION (G1-G7) — NOT started.

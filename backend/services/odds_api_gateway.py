@@ -394,6 +394,20 @@ class OddsApiGateway:
             # different budget context can try.
             await self.flight.fail(rk, owner_token or "",
                                     error=f"budget_denied:{reservation.get('outcome')}")
+            # Phase 1C — budget blocks must be funnel-visible.
+            try:
+                from services import funnel_telemetry as _funnel
+                _funnel.record(
+                    sport=s_key or "unknown", market=markets or "*",
+                    stage="provider",
+                    reason=_funnel.BUDGET_GOVERNOR_BLOCKED,
+                    detail=str(reservation.get("outcome") or "")[:120],
+                    extra={"endpoint_type": endpoint_type,
+                           "estimated_credits": est_credits,
+                           "caller": caller},
+                )
+            except Exception:
+                pass
             await self._log_paid_request(
                 endpoint_type=endpoint_type,
                 url=url, params=param_view,
@@ -425,6 +439,18 @@ class OddsApiGateway:
                                             reason="circuit_open")
                 await self.flight.fail(rk, owner_token or "",
                                         error="circuit_open")
+                # Phase 1C — breaker blocks must be funnel-visible.
+                try:
+                    from services import funnel_telemetry as _funnel
+                    _funnel.record(
+                        sport=s_key or "unknown", market=markets or "*",
+                        stage="provider",
+                        reason=_funnel.CIRCUIT_BREAKER_OPEN,
+                        detail=str(st.get("disabled_reason") or "")[:120],
+                        extra={"endpoint_type": endpoint_type},
+                    )
+                except Exception:
+                    pass
                 await self._log_paid_request(
                     endpoint_type=endpoint_type, url=url, params=param_view,
                     caller=caller, reason=reason, job_name=job_name,
@@ -518,6 +544,26 @@ class OddsApiGateway:
         except Exception as e:
             upstream_error = f"exc:{type(e).__name__}:{e}"
         duration_ms = int((time.monotonic() - t0) * 1000)
+
+        # ── Phase 1C — provider failures must be funnel-visible ─────
+        if upstream_error:
+            try:
+                from services import funnel_telemetry as _funnel
+                if http_status in (401, 403):
+                    _reason = _funnel.PROVIDER_AUTH_FAILURE
+                elif http_status == 429:
+                    _reason = _funnel.PROVIDER_RATE_LIMITED
+                else:
+                    _reason = _funnel.PROVIDER_REQUEST_FAILED
+                _funnel.record(
+                    sport=s_key or "unknown", market=markets or "*",
+                    stage="provider", reason=_reason,
+                    detail=str(upstream_error)[:160],
+                    extra={"endpoint_type": endpoint_type,
+                           "http_status": http_status},
+                )
+            except Exception:
+                pass
 
         # ── Sports-engine CB state sync (Phase 2γ closeout) ─────────
         try:
