@@ -34,7 +34,7 @@ load_dotenv("/app/backend/.env")
 
 BASE_URL = os.environ.get(
     "EXPO_PUBLIC_BACKEND_URL",
-    os.environ.get("EXPO_BACKEND_URL", "https://player-intel-engine.preview.emergentagent.com"),
+    os.environ.get("EXPO_BACKEND_URL", "https://canonical-parity.preview.emergentagent.com"),
 ).rstrip("/")
 DEMO_EMAIL = "demo@lockscore.ai"
 DEMO_PASS = "demo123"

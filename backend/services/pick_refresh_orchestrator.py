@@ -319,6 +319,80 @@ def _cap_tennis_totals(picks: list[dict], max_per_side: int = 2) -> list[dict]:
 
 
 # ── Moved from server.py lines 1308-2365 (Phase 3F-1) ──
+def _tennis_player_pair(event: str) -> frozenset | None:
+    """Normalize a tennis event label ("A @ B" / "A vs B") into a
+    frozenset of lowercase player names for cross-source matching."""
+    if not event:
+        return None
+    ev = str(event)
+    for sep in (" @ ", " vs ", " vs. ", " v "):
+        if sep in ev:
+            a, b = ev.split(sep, 1)
+            a = a.strip().lower()
+            b = b.strip().lower()
+            if a and b:
+                return frozenset((a, b))
+    return None
+
+
+def _tennis_gap_fill_filter(primary_picks: list[dict],
+                            extra_picks: list[dict]) -> tuple[list[dict], dict]:
+    """Phase 1B (R4) — Tennis fallback consolidation.
+
+    The primary Odds-API + tennis-math runtime is the production
+    authority.  ``tennis_extra`` operates ONLY as a controlled
+    gap-filler:
+
+      1. Events already covered by the primary source are rejected
+         (GAP_FILL_EVENT_COVERED_BY_PRIMARY).
+      2. Gap-fill picks MUST carry a real sportsbook line — scrape
+         fair-value picks with ``no_real_book_line`` / null book_odds
+         are rejected (GAP_FILL_NO_REAL_BOOK_LINE).
+
+    Returns (kept_picks, stats).
+    """
+    from services import funnel_telemetry as _funnel
+    primary_pairs: set[frozenset] = set()
+    primary_ids: set = set()
+    for p in primary_picks or []:
+        if (p.get("sport") or "") != "Tennis":
+            continue
+        primary_ids.add(p.get("id"))
+        pair = _tennis_player_pair(p.get("event") or "")
+        if pair:
+            primary_pairs.add(pair)
+    kept: list[dict] = []
+    stats = {"considered": 0, "kept": 0,
+             "rejected_covered": 0, "rejected_no_real_line": 0,
+             "rejected_dup_id": 0}
+    for ep in extra_picks or []:
+        stats["considered"] += 1
+        if ep.get("id") in primary_ids:
+            stats["rejected_dup_id"] += 1
+            continue
+        pair = _tennis_player_pair(ep.get("event") or "")
+        if pair and pair in primary_pairs:
+            stats["rejected_covered"] += 1
+            _funnel.record(
+                sport="Tennis", market=ep.get("market") or "moneyline",
+                stage="gap_fill", event=ep.get("event"),
+                reason=_funnel.GAP_FILL_EVENT_COVERED_BY_PRIMARY,
+            )
+            continue
+        if ep.get("no_real_book_line") or ep.get("book_odds") is None:
+            stats["rejected_no_real_line"] += 1
+            _funnel.record(
+                sport="Tennis", market=ep.get("market") or "moneyline",
+                stage="gap_fill", event=ep.get("event"),
+                reason=_funnel.GAP_FILL_NO_REAL_BOOK_LINE,
+                detail="fallback pick lacks a real sportsbook line",
+            )
+            continue
+        kept.append(ep)
+        stats["kept"] += 1
+    return kept, stats
+
+
 async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> int:
     """Generate today's picks, replace any existing rows for that date.
 
@@ -417,24 +491,29 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         try:
             from tennis_extra import fetch_extra_tennis_picks
             # days_ahead=3 gives today + 3 days of visibility so tournaments
-            # starting Monday–Wednesday appear in the feed on Sunday night
-            # (user report 2026-07-12: Umag/Bastad/Gstaad/Athens/Iasi ATP
-            # matches on TU 14.07 weren't being picked up). TennisExplorer
-            # supports future-date URLs natively so this is 3 extra HTTP
-            # calls per refresh (still under the 30-min in-process cache).
+            # starting Monday–Wednesday appear in the feed on Sunday night.
+            # TennisExplorer supports future-date URLs natively so this is
+            # 3 extra HTTP calls per refresh (still under the 30-min
+            # in-process cache).
             extra = await fetch_extra_tennis_picks(
                 date_str=date_str, days_ahead=3)
             if extra:
-                existing_ids = {p.get("id") for p in (picks or [])}
-                added = 0
-                for ep in extra:
-                    if ep.get("id") in existing_ids:
-                        continue        # dedupe just in case
-                    picks.append(ep)
-                    added += 1
+                # ── Phase 1B (R4) — controlled gap-filler ────────────
+                # tennis_extra no longer competes with the primary
+                # runtime.  Only events genuinely MISSING from the
+                # primary source pass, and every gap-fill pick must
+                # carry a REAL sportsbook line.  Rejections are funnel-
+                # telemetried (GAP_FILL_EVENT_COVERED_BY_PRIMARY /
+                # GAP_FILL_NO_REAL_BOOK_LINE).
+                kept, gap_stats = _tennis_gap_fill_filter(picks, extra)
+                picks.extend(kept)
                 logger.info(
-                    "Tennis Extra: added %d scraped picks (primary had %d)",
-                    added, len(picks) - added,
+                    "Tennis Extra gap-fill: %d/%d fallback picks kept "
+                    "(covered_by_primary=%d, no_real_line=%d, dup_id=%d)",
+                    gap_stats["kept"], gap_stats["considered"],
+                    gap_stats["rejected_covered"],
+                    gap_stats["rejected_no_real_line"],
+                    gap_stats["rejected_dup_id"],
                 )
         except Exception as e:
             logger.warning("Tennis Extra scrape skipped: %s", e)
@@ -1286,8 +1365,11 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         )
         # Log detailed reasons at INFO when anything was dropped so we
         # can debug board-quality regressions from a single log line.
-        if any(val_report[k].get("dropped", 0) for k in
-               ("contradictions", "batter_pitcher", "board_quality")):
+        # Phase 1C: include integrity + evidence drops — they were the
+        # silent 7→0 NFL wipe (evidence_threshold) invisible in logs.
+        if any(val_report.get(k, {}).get("dropped", 0) for k in
+               ("contradictions", "batter_pitcher", "board_quality",
+                "integrity", "evidence")):
             logger.info("Board validator reasons: %s", val_report)
     except Exception as _bv_err:
         logger.warning("Board validator failed (continuing): %s", _bv_err)
@@ -2220,63 +2302,45 @@ async def _ensure_csl_elite_picks(date_str: str) -> None:
         missing = [p for p in elites if (p.get("player_name") or "").lower() not in existing_names]
         if not missing:
             continue
-        # Stamp pick_date + insert
+        # ── Phase 1C (§11C) — INJECTION RETIRED ────────────────────
+        # These re-synthesized picks are model-priced (thesportsdb
+        # synthesizer, synthetic odds + lock floors) and were force-
+        # inserted into db.picks AFTER the pipeline explicitly so
+        # upstream gates "can't trim/demote them" — a publication /
+        # gating bypass that manufactures board population.  They are
+        # now routed to research/model evidence only, matching the
+        # Phase 1B synthetic-scorer contract.  Real CSL scorer lines
+        # from the odds provider still flow through the normal path.
         for p in missing:
             p["pick_date"] = date_str
-            p["force_injected"] = True   # diagnostic — these bypass the pipeline
+            p["research_only"] = True
+            p["no_real_book_line"] = True
         try:
-            await db.picks.insert_many(missing, ordered=False)
+            from services import funnel_telemetry as _funnel
+            for p in missing:
+                _funnel.record(
+                    sport="Soccer",
+                    market=p.get("market") or "anytime_goal_scorer",
+                    stage="publication_contract",
+                    reason=_funnel.SYNTHETIC_SCORER_RESEARCH_ONLY,
+                    event=p.get("event"),
+                    detail="csl_elite_scorer_inject retired — synthetic "
+                           "pricing cannot bypass authoritative publication",
+                )
+                await db.model_research_evidence.update_one(
+                    {"id": p.get("id") or p.get("external_id")},
+                    {"$set": p},
+                    upsert=True,
+                )
             injected += len(missing)
-            # ── P0-2 canonical publication ─────────────────────────
-            # Force-injected CSL elite goalscorer picks are
-            # legitimate user-facing predictions but bypassed the
-            # main orchestrator publication step above.  Publish
-            # them now so an immutable snapshot exists BEFORE the
-            # canonical board eligibility gate examines them.
-            try:
-                # ── MAGIC 3I.1 — safe simulator reachability ─────
-                try:
-                    from services.magic.direct_inject_simulator_bridge import (
-                        simulate_direct_inject_picks,
-                    )
-                    _sim_stats = await simulate_direct_inject_picks(
-                        db, missing)
-                    logger.info(
-                        "SOCCER_DIRECT_SIM producer=csl_elite_scorer_inject "
-                        "eligible=%d persisted=%d already=%d "
-                        "unsupported=%d id_blocked=%d fail=%d "
-                        "lock_drifts=%d",
-                        _sim_stats.get("eligible", 0),
-                        _sim_stats.get("persisted", 0),
-                        _sim_stats.get("already_persisted", 0),
-                        _sim_stats.get("unsupported", 0),
-                        _sim_stats.get("identity_blocked", 0),
-                        _sim_stats.get("simulation_failed", 0)
-                        + _sim_stats.get("persistence_failed", 0),
-                        _sim_stats.get("lock_score_drifts", 0),
-                    )
-                except Exception as _sim_err:   # pragma: no cover
-                    logger.debug("Magic 3I.1 bridge non-fatal: %s",
-                                 _sim_err)
-                from services.publication_helpers import (
-                    publish_upserted_picks,
-                )
-                await publish_upserted_picks(
-                    db, missing,
-                    publication_source="csl_elite_scorer_inject",
-                    caller_label=f"CSL elite scorer inject ({ev['event']})",
-                )
-            except Exception as _pub_err:
-                logger.warning(
-                    "CSL elite-inject publication step failed: %s",
-                    _pub_err,
-                )
-        except Exception as bulk_err:
-            details = getattr(bulk_err, "details", None) or {}
-            n_inserted = int(details.get("nInserted", 0) or 0)
-            injected += n_inserted
+        except Exception as _res_err:
+            logger.debug("CSL research-evidence store failed: %s", _res_err)
     if injected:
-        logger.info("CSL elite-inject: %d picks force-injected post-pipeline", injected)
+        logger.info(
+            "CSL elite-inject: %d synthesized picks routed to "
+            "model_research_evidence (force-injection retired, Phase 1C)",
+            injected,
+        )
 
 
 async def _shadow_capture_gs_v2(picks: list[dict]) -> None:
@@ -2398,8 +2462,10 @@ class PickRefreshOrchestrator:
 
     def __init__(self, database: Optional[AsyncIOMotorDatabase] = None):
         # Accept an explicit database for tests; default to the shared
-        # owner from Phase 3B.
-        self._db = database or db
+        # owner from Phase 3B.  (Phase 1C fix: Motor Database objects
+        # forbid truth-value testing — `database or db` raised
+        # NotImplementedError for every explicit-db caller.)
+        self._db = database if database is not None else db
 
     async def refresh(self, request: PickRefreshRequest) -> PickRefreshResult:
         """Public entry point.  Preserves the behaviour of the old
@@ -2423,9 +2489,28 @@ class PickRefreshOrchestrator:
                 request.caller, request.reason, request.slate_date,
                 request.sport_filter, e,
             )
+            # Phase 1C — a refresh crash must be funnel-attributable.
+            try:
+                from services import funnel_telemetry as _funnel
+                _funnel.record(
+                    sport=request.sport_filter or "*", market="*",
+                    stage="refresh",
+                    reason=_funnel.REFRESH_RUNTIME_FAILURE,
+                    detail=f"{type(e).__name__}: {e}"[:160],
+                    extra={"caller": request.caller,
+                           "reason": request.reason},
+                )
+            except Exception:
+                pass
             raise
         finally:
             result.duration_ms = int((time.perf_counter() - started) * 1000)
+            # ── Phase 1B — persist funnel telemetry for this cycle ──
+            try:
+                from services import funnel_telemetry as _funnel
+                await _funnel.flush(self._db, cycle_id=request.slate_date)
+            except Exception as _ft_err:
+                logger.debug("funnel telemetry flush skipped: %s", _ft_err)
         return result
 
 
@@ -2452,4 +2537,6 @@ __all__ = [
     "_reconcile_player_prop_contradictions",
     "_ensure_csl_elite_picks",
     "_shadow_capture_gs_v2",
+    "_tennis_gap_fill_filter",
+    "_tennis_player_pair",
 ]

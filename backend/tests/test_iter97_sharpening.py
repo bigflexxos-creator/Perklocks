@@ -25,7 +25,7 @@ import requests
 # Import path for backend modules
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://player-intel-engine.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://canonical-parity.preview.emergentagent.com").rstrip("/")
 API = f"{BASE_URL}/api"
 
 DEMO_EMAIL = "demo@lockscore.ai"

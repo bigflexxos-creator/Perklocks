@@ -14,7 +14,7 @@ import requests
 
 BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "").rstrip("/")
 if not BASE_URL:
-    BASE_URL = "https://player-intel-engine.preview.emergentagent.com"
+    BASE_URL = "https://canonical-parity.preview.emergentagent.com"
 
 DEMO_EMAIL = "demo@lockscore.ai"
 DEMO_PASSWORD = "demo123"

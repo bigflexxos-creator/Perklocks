@@ -37,7 +37,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 BASE_URL = os.environ.get(
     "EXPO_BACKEND_URL",
-    "https://player-intel-engine.preview.emergentagent.com",
+    "https://canonical-parity.preview.emergentagent.com",
 ).rstrip("/")
 
 

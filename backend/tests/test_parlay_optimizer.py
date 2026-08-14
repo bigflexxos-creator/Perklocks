@@ -13,7 +13,7 @@ import os
 import pytest
 import requests
 
-BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://player-intel-engine.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://canonical-parity.preview.emergentagent.com").rstrip("/")
 EMAIL = "demo@lockscore.ai"
 PASSWORD = "demo123"
 

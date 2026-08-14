@@ -12,7 +12,7 @@ import os
 import pytest
 import requests
 
-BASE = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://player-intel-engine.preview.emergentagent.com").rstrip("/")
+BASE = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "https://canonical-parity.preview.emergentagent.com").rstrip("/")
 HOME = "Seattle Seahawks"
 AWAY = "Houston Texans"
 

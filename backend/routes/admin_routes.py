@@ -520,6 +520,133 @@ async def gs_engine_v2_residual(
 
 
 # ────────────────────── Odds API circuit / diagnostics ──────────────────────
+@router.get("/admin/provider-foundation")
+async def provider_foundation(
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+):
+    """Phase 1C — sanitized cross-environment foundation report.
+
+    Purpose: Preview and Production run in separate environments with
+    separate databases.  Hitting this endpoint on BOTH environments and
+    comparing the output establishes (without exposing any secret):
+
+      • Odds-API key identity  → sha256 fingerprint (first 8 hex chars)
+      • key hygiene            → length + whitespace-corruption check
+      • database identity      → db name + sanitized host fingerprint
+      • circuit-breaker state  → open/closed + counters
+      • budget governor state  → internal counters vs provider headers
+      • provider quota truth   → last x-requests-* headers seen live
+      • funnel telemetry       → persistence + reason breakdown
+
+    NO full secret is ever returned or logged.
+    """
+    import hashlib
+    import os as _os
+
+    # ── Key identity (sanitized) ────────────────────────────────────
+    raw_env = _os.environ.get("THE_ODDS_API_KEY")
+    key = (raw_env or "").strip()
+    key_report = {
+        "env_var": "THE_ODDS_API_KEY",
+        "present": bool(key),
+        "fingerprint_sha256_8": (
+            hashlib.sha256(key.encode()).hexdigest()[:8] if key else None),
+        "length": len(key),
+        "had_whitespace_corruption": bool(raw_env is not None
+                                          and raw_env != key),
+        # legacy import-time copy in sports_engine — detects stale
+        # module state after a key rotation without restart
+        "sports_engine_import_copy_matches": None,
+    }
+    try:
+        import sports_engine as _se
+        key_report["sports_engine_import_copy_matches"] = (
+            (_se.ODDS_KEY or "").strip() == key)
+    except Exception:
+        pass
+
+    # ── Database identity (sanitized) ───────────────────────────────
+    mongo_url = _os.environ.get("MONGO_URL") or ""
+    db_name = _os.environ.get("DB_NAME") or ""
+    db_report = {
+        "db_name": db_name,
+        "mongo_host_fingerprint_sha256_8": (
+            hashlib.sha256(mongo_url.encode()).hexdigest()[:8]
+            if mongo_url else None),
+        "read_write_ok": False,
+        "collections": {},
+    }
+    try:
+        ping_id = f"foundation-probe"
+        await db.foundation_probe.update_one(
+            {"_id": ping_id},
+            {"$set": {"ts": datetime.now(timezone.utc)}}, upsert=True)
+        got = await db.foundation_probe.find_one({"_id": ping_id})
+        db_report["read_write_ok"] = bool(got)
+        for coll in ("picks", "funnel_telemetry", "circuit_breaker_state",
+                     "provider_budget_state", "odds_api_request_log",
+                     "odds_api_quota_state", "model_research_evidence"):
+            db_report["collections"][coll] = (
+                await db[coll].estimated_document_count())
+    except Exception as e:
+        db_report["error"] = str(e)[:160]
+
+    # ── Circuit breaker ─────────────────────────────────────────────
+    from sports_engine import get_odds_api_status
+    cb = get_odds_api_status()
+    cb.pop("key_tail", None)   # avoid partial-secret exposure
+
+    # ── Budget governor vs provider truth ───────────────────────────
+    budget_report: dict = {}
+    provider_truth: dict = {}
+    try:
+        from services.provider_budget import ProviderBudget
+        budget_report = await ProviderBudget(db).get_budget_status()
+    except Exception as e:
+        budget_report = {"error": str(e)[:160]}
+    try:
+        qs = await db.odds_api_quota_state.find_one({"_id": "odds_api"})
+        if qs:
+            provider_truth["last_provider_used"] = qs.get("last_used")
+            provider_truth["updated_at"] = str(qs.get("updated_at"))
+        last_log = await db.odds_api_request_log.find_one(
+            {"quota_headers": {"$exists": True, "$ne": {}}},
+            {"_id": 0, "ts": 1, "quota_headers": 1, "http_status": 1},
+            sort=[("ts", -1)])
+        if last_log:
+            provider_truth["last_quota_headers"] = last_log.get("quota_headers")
+            provider_truth["last_http_status"] = last_log.get("http_status")
+            provider_truth["as_of"] = last_log.get("ts")
+    except Exception as e:
+        provider_truth["error"] = str(e)[:160]
+
+    # ── Funnel telemetry health ─────────────────────────────────────
+    funnel_report: dict = {}
+    try:
+        pipeline = [
+            {"$group": {"_id": "$reason", "n": {"$sum": 1}}},
+            {"$sort": {"n": -1}}, {"$limit": 15},
+        ]
+        funnel_report["by_reason"] = {
+            d["_id"]: d["n"]
+            async for d in db.funnel_telemetry.aggregate(pipeline)
+        }
+        funnel_report["total"] = (
+            await db.funnel_telemetry.estimated_document_count())
+    except Exception as e:
+        funnel_report = {"error": str(e)[:160]}
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "odds_api_key": key_report,
+        "database": db_report,
+        "circuit_breaker": cb,
+        "budget_governor": budget_report,
+        "provider_truth": provider_truth,
+        "funnel_telemetry": funnel_report,
+    }
+
+
 @router.get("/admin/odds-diagnostic")
 async def odds_diagnostic(
     user: Annotated[UserPublic, Depends(current_admin)] = None,

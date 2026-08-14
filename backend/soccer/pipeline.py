@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -41,6 +42,20 @@ logger = logging.getLogger("lockscore.soccer.pipeline")
 # Hard cap on distinct competitions per pipeline run.
 # Free-tier rate limit is 10 req/min → keep it well under.
 _MAX_COMPETITIONS = 8
+
+# ── Phase 1B (T1) — LEGACY PICK EMISSION RETIRED ─────────────────────
+# This module historically dual-wrote predictions into `db.picks`
+# (source=soccer_v1 / soccer_v1_synth), creating a SECOND soccer pick
+# publication runtime competing with the canonical
+# sports_engine → PickRefreshOrchestrator → PredictionPublicationService
+# path (duplicate/opposite-side risk documented in picks_routes.py).
+# Per Perklocks Phase 1 there is ONE authoritative Soccer publication
+# path.  The `soccer_predictions` cache writes are PRESERVED (settlement
+# + parlay leg settle read them).  Pick emission is disabled unless the
+# operator explicitly re-enables it via env flag.
+LEGACY_PICK_EMIT_ENABLED = (
+    os.environ.get("SOCCER_LEGACY_PIPELINE_EMIT", "0") == "1"
+)
 
 
 async def run_prediction_pipeline(db) -> dict:
@@ -201,6 +216,29 @@ async def run_prediction_pipeline(db) -> dict:
                            pred.get("event"), _ov_err)
 
     summary["predictions_made"]  = len(upserts_pred)
+
+    # ── Phase 1B (T1) — retire duplicate pick emission ──────────────
+    if upserts_pick and not LEGACY_PICK_EMIT_ENABLED:
+        summary["retired_pick_emission"] = len(upserts_pick)
+        try:
+            from services import funnel_telemetry as _funnel
+            for _p in upserts_pick:
+                _funnel.record(
+                    sport="Soccer",
+                    market=_p.get("market") or "moneyline",
+                    stage="publication",
+                    reason=_funnel.LEGACY_PIPELINE_RETIRED,
+                    event=_p.get("event"),
+                    detail="soccer/pipeline.py pick emission retired — "
+                           "canonical path owns Soccer publication",
+                )
+        except Exception:
+            pass
+        logger.info(
+            "Soccer pipeline: %d candidate picks NOT emitted "
+            "(legacy dual-write retired, Phase 1B T1)", len(upserts_pick),
+        )
+        upserts_pick = []
     summary["merged_into_picks"] = len(upserts_pick)
 
     for d in upserts_pred:

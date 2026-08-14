@@ -265,7 +265,7 @@ function BreakdownRow({ label, n, won, lost, hit, pnl, roi }: {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: "#0a0a0a" },
+  screen: { flex: 1, backgroundColor: "transparent" },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
   scroll: { paddingBottom: 32 },
   header: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 16 },
