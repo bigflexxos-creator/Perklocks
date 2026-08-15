@@ -955,3 +955,118 @@ metadata:
   last_iteration: 100
   last_iteration_topic: "Phase 2A — NFL calibration + preseason uncertainty + de-vig promotion"
   last_iteration_result: "74/74 GREEN · PHASE2A_NFL_CALIBRATION_DEVIG_READY"
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  ITER 103 (2026-09): SOCCER_UNIVERSAL_RUNTIME_FLOW_RESTORED
+# ═══════════════════════════════════════════════════════════════════
+backend:
+  - task: "MLS team context — native adapter via existing stores"
+    implemented: true
+    working: true
+    file: "backend/services/soccer_game_model.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Extended `build_soccer_team_ctx` with an MLS adapter that
+            derives per-team GF/GA from data already present in
+            production stores:
+              • GF from `espn_mls_stats` top-scorer aggregation
+                (team goals / max games).
+              • GA from `player_game_actuals` opponent-view
+                (goals conceded per match, grouped by date × opp).
+            No new provider call.  No separate MLS engine.  Same
+            `build_soccer_team_ctx(...)` contract; existing engine
+            evaluates 1X2 / totals / spreads / BTTS natively.
+            ESPN identity remains ENRICHMENT ONLY — provider event
+            id + team names preserved on the pick doc.
+            Live result: MLS on-board picks jumped from 0 → 265
+            (2,238 candidates written; canonical dedupe collapses
+            multi-book rows).  API `/picks/today?sport=Soccer`
+            returns MLS + Big-5 game markets.
+
+  - task: "Goalscorer TTL blackout guard — 90-min TTL + 15-min guarded refresh"
+    implemented: true
+    working: true
+    file: "backend/services/index_registry.py, backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            `live_alt_lines` TTL raised 1800 s → 5400 s (90 min).
+            Server startup patches the on-disk TTL via `collMod` so
+            replicas already at the old TTL adopt the new safety
+            margin.  Added `soccer_scorer_freshness_check` task —
+            15-min guarded cadence that ONLY calls the provider
+            when the scorer cache has zero fresh (<25-min) rows.
+            Routes through the same JobCoordinator lease +
+            ProviderBudget as `alt_lines_feed`, so overlapping
+            fetches / duplicate requests are impossible.  Startup
+            performs one guarded check after 30-s settle — no
+            unconditional API burn.  Freshness-triggered refresh
+            immediately re-runs `real_line_scorer_ingest` so newly
+            cached rows reach the board without waiting for the
+            next 15-min ingest tick.
+
+  - task: "Canonical wager identity + precise rejection telemetry"
+    implemented: true
+    working: true
+    file: "backend/services/real_line_scorer_ingest.py, backend/services/soccer_rejection_taxonomy.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Every game-market + player-prop pick doc now carries a
+            `canonical_wager_id` = event_id + market_family +
+            market_key + normalised selection + normalised line.
+            Provider identity is preserved as `provider_event_id`,
+            `provider_market_key`, `provider_selection`,
+            `provider_line`.  Consumers (Locks / Rollover / Parlay /
+            Pick Breakdown) all resolve to the same canonical wager;
+            same bet across different books collapses to one wager
+            (bookmaker key intentionally OMITTED from the identity).
+            Taxonomy extended with NO_TEAM_CONTEXT, NO_PLAYER_CONTEXT,
+            NO_RECENT_FORM, NO_PLAYER_HISTORY, EVIDENCE_INSUFFICIENT,
+            DUPLICATE_CANONICAL_WAGER, BOARD_INELIGIBLE, STALE_EVENT,
+            IDENTITY_FAILURE, NO_REAL_LINE, NO_REAL_MARKET.
+            The game-market ingester now distinguishes
+            NO_TEAM_CONTEXT (both sides had no form-source resolved)
+            from NO_MODEL_PROBABILITY (engine ran but returned None).
+            Live counts: NO_TEAM_CONTEXT=5561, LOW_LOCK_SCORE=4556,
+            NO_POSITIVE_EDGE=299 — every reject reason is now
+            explicit; no MISSING_FEATURE_DATA black-hole.
+
+metadata:
+  last_iteration: 103
+  last_iteration_topic: "SOCCER_UNIVERSAL_RUNTIME_FLOW_RESTORED — MLS team ctx + Scorer TTL + Canonical identity + Rejection telemetry"
+  last_iteration_result: "184/184 GREEN (16 live-runtime + 9 canonical + 159 regression) · SOCCER_UNIVERSAL_RUNTIME_FLOW_RESTORED_CERTIFIED"
+
+agent_communication:
+    - agent: "main"
+      message: |
+        SOCCER_UNIVERSAL_RUNTIME_FLOW_RESTORED_CERTIFIED — all 6
+        review categories verified end-to-end on the live backend.
+        16/16 live-runtime tests + 9/9 canonical + 159/159 prior
+        regression = 184 total green.
+        Zero external provider calls were required during the closure
+        (all evidence sourced from existing production stores).
+    - agent: "testing"
+      message: |
+        iteration_103.json written. verdict:
+        SOCCER_UNIVERSAL_RUNTIME_FLOW_RESTORED_CERTIFIED.
+        Live metrics: MLS 0→265 on-board (2408 candidates), total
+        soccer 6→891 on-board, 11 leagues covered on the board,
+        canonical wager identity + provider identity preserved on
+        every real_line_soccer_v2 pick.  live_alt_lines TTL confirmed
+        5400s; guarded freshness task registered and observed at
+        startup.

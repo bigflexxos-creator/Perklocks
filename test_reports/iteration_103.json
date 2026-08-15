@@ -1,0 +1,55 @@
+{
+  "iteration": 103,
+  "topic": "SOCCER_UNIVERSAL_RUNTIME_FLOW_RESTORED_CERTIFIED",
+  "verdict": "SOCCER_UNIVERSAL_RUNTIME_FLOW_RESTORED_CERTIFIED",
+  "summary": "All 16 live-runtime tests + 9 in-process canonical tests + 159 phase2a5/soccer_regression tests = 184/184 GREEN. Six review categories verified end-to-end against the live backend: (1) MLS reachability + native team context via existing stores (0→265 MLS on-board picks, 891 total on-board vs prior 6); (2) live_alt_lines TTL raised 1800s→5400s with startup collMod + guarded 15-min freshness check task; (3) canonical_wager_id + preserved provider_event_id on every pick; (4) precise rejection taxonomy (NO_TEAM_CONTEXT / NO_POSITIVE_EDGE / LOW_LOCK_SCORE — zero silent drops); (5) Big-5 leagues still use primary form chain (regression-safe); (6) H2H + market-rank + cross-book dedupe + commence_time_utc all preserved.",
+  "success_rate": {
+    "backend_live_runtime": "16/16",
+    "backend_canonical_unit": "9/9",
+    "regression_suites": "159/159",
+    "total": "184/184"
+  },
+  "categories_verified": {
+    "1_mls_reachability_and_native_team_context": "PASS",
+    "2_scorer_ttl_blackout_guard": "PASS",
+    "3_canonical_wager_identity_across_consumers": "PASS",
+    "4_precise_rejection_taxonomy_no_silent_drops": "PASS",
+    "5_big5_leagues_regression_safe": "PASS",
+    "6_prior_regressions_preserved": "PASS"
+  },
+  "live_metrics": {
+    "mls_on_board": 265,
+    "mls_candidates_total": 2408,
+    "total_soccer_on_board": 891,
+    "leagues_covered_on_board": [
+      "MLS", "La Liga", "EPL", "Serie A", "Ligue 1", "Bundesliga",
+      "La Liga 2", "DFB Pokal", "Allsvenskan", "Eliteserien",
+      "Champions League Qualifiers"
+    ],
+    "rejection_reason_distribution": {
+      "NO_TEAM_CONTEXT": 5561,
+      "LOW_LOCK_SCORE": 4556,
+      "NO_POSITIVE_EDGE": 299
+    },
+    "provider_calls_this_closure": 0,
+    "provider_calls_note": "Zero external provider calls made during closure — all evidence sourced from existing production stores (odds_api_cache.bulk_odds, live_alt_lines, player_game_actuals, espn_mls_stats). Startup freshness check correctly declined the API call because ProviderBudget was at daily-limit — safeguard functioning as designed."
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_soccer_universal_runtime_iter103.py",
+    "/app/backend/tests/test_soccer_universal_runtime_flow_iter103.py",
+    "/app/test_reports/pytest/iter103_flow_live.xml"
+  ],
+  "updated_files": [
+    "/app/backend/services/soccer_game_model.py (MLS adapter via player_game_actuals + espn_mls_stats; new _mls_form_adapter)",
+    "/app/backend/services/real_line_scorer_ingest.py (canonical_wager_id, provider identity fields, NO_TEAM_CONTEXT rejection precision)",
+    "/app/backend/services/soccer_rejection_taxonomy.py (NO_TEAM_CONTEXT, NO_PLAYER_CONTEXT, NO_RECENT_FORM, NO_PLAYER_HISTORY, NO_REAL_LINE, NO_REAL_MARKET, DUPLICATE_CANONICAL_WAGER, BOARD_INELIGIBLE, STALE_EVENT, IDENTITY_FAILURE, EVIDENCE_INSUFFICIENT)",
+    "/app/backend/services/index_registry.py (live_alt_lines TTL 1800s -> 5400s)",
+    "/app/backend/server.py (startup TTL collMod patch + 15-min guarded soccer_scorer_freshness_check loop)",
+    "/app/backend/tests/test_soccer_universal_runtime_iter103.py (new — 9 canonical tests)",
+    "/app/backend/tests/test_soccer_universal_runtime_flow_iter103.py (new — 16 live-runtime tests)"
+  ],
+  "action_items": [],
+  "retest_needed": false,
+  "should_call_test_agent_after_fix": false,
+  "provider_call_report": "Zero provider (Odds API) calls initiated by this closure. The MLS team-context adapter reads only from existing stores (player_game_actuals, espn_mls_stats). The guarded 15-min freshness check ran once on startup and correctly SKIPPED the provider call because ProviderBudget returned blocked_daily_limit — proving the guard behaves correctly under budget pressure."
+}

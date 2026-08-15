@@ -289,16 +289,22 @@ async def _ingest_player_scorer_row(
     pick_id, external_id = _deterministic_id(
         "real_line_alt_scorer_v1", event_id, mk, player, bookmaker=book,
     )
+    # ── Canonical wager identity (player-prop) ─────────────────
+    _norm_player = (player or "").strip().lower()
+    canonical_wager_id = f"{event_id}|player_prop|{mk.lower()}|{_norm_player}|"
     doc = {
         "id": pick_id,
         "external_id": external_id,
+        "canonical_wager_id":  canonical_wager_id,
+        "provider_event_id":   event_id,
+        "provider_market_key": mk,
+        "provider_selection":  player,
         "sport": "Soccer",
         "league": league,
         "sport_key": sport_key,
         "pick_date": today,
         "event": f"{away} @ {home}" if home and away else (home or away),
         "event_id": event_id,
-        "provider_event_id": event_id,
         "market": f"{player} {_MARKET_LABEL.get(mk, mk)}",
         "market_key": mk,
         "market_family": "player_prop",
@@ -408,8 +414,22 @@ async def _ingest_game_market_row(
     # when available; falls back to league-average priors otherwise.
     model_prob: Optional[float] = None
     model_source = "soccer_game_model"
+    ctx_dbg: dict[str, Any] = {}
     try:
-        from services.soccer_game_model import compute_game_market_prob
+        from services.soccer_game_model import (
+            compute_game_market_prob, build_soccer_team_ctx,
+        )
+        # ── Materialise the ctx first so we can distinguish
+        #    NO_TEAM_CONTEXT from a generic NO_MODEL_PROBABILITY.
+        ctx = await build_soccer_team_ctx(
+            db, home_team=home, away_team=away, league=league,
+        )
+        ctx_dbg = {
+            "home_form_source": (ctx.get("home_form") or {}).get("source"),
+            "away_form_source": (ctx.get("away_form") or {}).get("source"),
+            "home_matches":     (ctx.get("home_form") or {}).get("n_matches"),
+            "away_matches":     (ctx.get("away_form") or {}).get("n_matches"),
+        }
         model_prob = await compute_game_market_prob(
             db, home_team=home, away_team=away, league=league,
             market_key=mk.lower(), selection=sel, line=line,
@@ -429,7 +449,11 @@ async def _ingest_game_market_row(
         model_source = "error"
 
     if model_prob is None:
-        rej = SoccerRejection.NO_MODEL_PROBABILITY.value
+        # ── Precise rejection classification ─────────────────────
+        if not (ctx_dbg.get("home_form_source") or ctx_dbg.get("away_form_source")):
+            rej = SoccerRejection.NO_TEAM_CONTEXT.value
+        else:
+            rej = SoccerRejection.NO_MODEL_PROBABILITY.value
         model_prob = book_impl  # temp: anchor at implied for LS math
         factors = {"Book Implied Probability": book_impl}
         lock, _ = compute_lock_score(factors, win_prob=book_impl*100)
@@ -477,16 +501,32 @@ async def _ingest_game_market_row(
     pick_id, external_id = _deterministic_id(
         "real_line_soccer_v2", event_id, mk, sel, line, bookmaker=book,
     )
+    # ── Canonical wager identity — SOCCER_UNIVERSAL_RUNTIME ─────
+    # Provider event id + market_family + normalised selection +
+    # normalised line.  Consumers (Locks / Rollover / Parlay / Pick
+    # Breakdown) MUST resolve to the same canonical wager for
+    # duplicate detection and cross-surface parity.  The raw
+    # bookmaker key is retained in the pick doc for per-book audit
+    # but is intentionally OMITTED from this identity so the same
+    # bet across different books collapses to one canonical wager.
+    _norm_sel = (sel or "").strip().lower()
+    _norm_line = "" if line is None else f"{float(line):g}"
+    canonical_wager_id = f"{event_id}|game_market|{mk.lower()}|{_norm_sel}|{_norm_line}"
     doc = {
         "id": pick_id,
         "external_id": external_id,
+        # Provider identity — ESPN enrichment MUST NOT overwrite.
+        "canonical_wager_id":  canonical_wager_id,
+        "provider_event_id":   event_id,
+        "provider_market_key": mk,
+        "provider_selection":  sel,
+        "provider_line":       line,
         "sport": "Soccer",
         "league": league,
         "sport_key": sport_key,
         "pick_date": today,
         "event": f"{away} @ {home}",
         "event_id": event_id,
-        "provider_event_id": event_id,
         "market": _game_market_selection_label(mk, sel, line),
         "market_key": mk,
         "market_family": "game_market",

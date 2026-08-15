@@ -3477,6 +3477,194 @@ async def on_startup():
             _p2a5e_reg_err,
         )
 
+    # ── SOCCER_UNIVERSAL_RUNTIME (2026-09) — TTL patch + guarded refresh ──
+    # The `live_alt_lines` TTL was raised in `services.index_registry`
+    # from 1800 s (30 min) to 5400 s (90 min).  MongoDB persists TTL on
+    # the index; when the process re-boots against a DB that already
+    # has the old TTL, `create_missing_indexes` will report a
+    # same-name conflict but never mutate it.  We `collMod` here at
+    # startup to reconcile, so the elevated safety margin is applied
+    # everywhere.
+    async def _patch_live_alt_lines_ttl():
+        try:
+            info = await db.command(
+                {"listIndexes": "live_alt_lines"},
+            )
+            cur = info.get("cursor", {}).get("firstBatch", []) or []
+            last_seen = next(
+                (ix for ix in cur if ix.get("name") == "last_seen_1"),
+                None,
+            )
+            if not last_seen:
+                return
+            current_ttl = int(last_seen.get("expireAfterSeconds", 0) or 0)
+            if current_ttl != 5400:
+                await db.command({
+                    "collMod": "live_alt_lines",
+                    "index": {"name": "last_seen_1",
+                              "expireAfterSeconds": 5400},
+                })
+                logger.info(
+                    "live_alt_lines TTL patched %ds -> 5400s (90min safety margin)",
+                    current_ttl,
+                )
+        except Exception as _ttl_err:
+            logger.debug(
+                "live_alt_lines TTL patch skipped: %s", _ttl_err,
+            )
+    try:
+        asyncio.create_task(_patch_live_alt_lines_ttl())
+    except Exception as _ttl_task_err:
+        logger.debug(
+            "live_alt_lines TTL task launch failed: %s", _ttl_task_err,
+        )
+
+    # ── Guarded 15-min soccer scorer freshness check ─────────────
+    # Per SOCCER_UNIVERSAL_RUNTIME directive point 2 (2026-09):
+    #   Every 15 min: inspect cache freshness first; if data remains
+    #   fresh, do NOT call the provider unnecessarily.  Refresh
+    #   stale/missing required markets under a coordinator lease so
+    #   only ONE process actually calls the API.  Preserve existing
+    #   valid cache until replacement data is written.
+    #
+    # This complements — does NOT replace — the 3×/day scheduled
+    # `alt_lines_feed` snapshots.  It only fires the on-demand
+    # `refresh_alt_lines` runner when:
+    #   • ZERO soccer scorer rows in the last 25 min
+    #   • AND today's picks board actually has upcoming soccer
+    #     fixtures (`picks_scope=True` inside refresh_alt_lines)
+    #   • AND the JobCoordinator lease is available (no overlap)
+    #   • AND the ProviderBudget still permits alt-line fetches
+    #
+    # Runs a startup pass (after 30-s settle) and then every 15 min.
+    async def _soccer_scorer_freshness_check(*, reason: str) -> dict:
+        """Return {'action': 'skip'|'refreshed'|'failed', 'why': str}."""
+        from datetime import datetime, timedelta, timezone
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=25)
+        n_fresh = await db.live_alt_lines.count_documents({
+            "sport":      {"$in": ["soccer", "Soccer"]},
+            "market_key": {"$in": [
+                "player_goal_scorer_anytime",
+                "player_first_goal_scorer",
+                "player_to_score_or_assist",
+            ]},
+            "last_seen":  {"$gte": cutoff},
+        })
+        if n_fresh > 0:
+            return {"action": "skip", "why": "fresh_rows_present",
+                    "fresh_rows": n_fresh}
+        # ── Route through the SAME lease-guarded runner alt_lines_feed
+        #    uses so we cannot ever double-fetch.
+        try:
+            from alt_lines_feed import refresh_alt_lines
+            from services.job_coordinator import JobCoordinator
+            from services.provider_budget import ProviderBudget
+            from services.job_registry import get_job as _get_job
+            coord = JobCoordinator(db)
+            budget = ProviderBudget(db)
+            reg = _get_job("alt_lines_feed") or {}
+            lease_s = int(reg.get("lease_seconds") or 600)
+            # Minimum interval: use the smaller of the registered
+            # value and 12 min so the 15-min freshness cadence
+            # can actually refresh when needed.
+            min_iv = min(int(reg.get("min_interval_seconds") or 1800), 12 * 60)
+            est = int(reg.get("estimated_max_credits") or 400)
+            lease = await coord.acquire(
+                "alt_lines_feed",
+                lease_seconds=lease_s,
+                min_interval_seconds=min_iv,
+                caller=f"soccer_freshness:{reason}",
+                reason=f"soccer_ttl_blackout_guard:{reason}",
+                metadata={"trigger": "freshness_check"},
+            )
+            if not lease:
+                return {"action": "skip", "why": "lease_denied"}
+            token = lease.lease_token
+            reservation = await budget.reserve(
+                estimated_credits=est,
+                endpoint_type="alt_lines_snapshot",
+                caller="soccer_freshness_check",
+                job_name="alt_lines_feed",
+                emergency_requested=False,
+                reason="ttl_blackout_recovery",
+                request_key=f"freshness:alt_lines_feed:{token}",
+                ttl_seconds=lease_s + 60,
+            )
+            if not reservation.get("allowed"):
+                await coord.fail(
+                    "alt_lines_feed", token,
+                    error=f"budget_denied:{reservation.get('outcome')}",
+                    retry_after_seconds=300,
+                )
+                return {"action": "skip", "why": "budget_denied",
+                        "outcome": reservation.get("outcome")}
+            intent_id = reservation.get("intent_id")
+            try:
+                summary = await refresh_alt_lines(
+                    db, picks_scope=True, event_window_hours=36,
+                )
+                await budget.commit(intent_id)
+                await coord.complete(
+                    "alt_lines_feed", token,
+                    result_metadata={"trigger": "freshness_check",
+                                     "summary": str(summary)[:400]},
+                )
+                # Also re-run the real-line ingest so the new rows
+                # actually reach the board immediately (rather than
+                # waiting for the next 15-min recurring ingest).
+                try:
+                    from services.real_line_scorer_ingest import (
+                        ingest_real_line_soccer_scorers as _ingest,
+                    )
+                    await _ingest(db, today=_today_str())
+                except Exception as _ing_err:
+                    logger.debug(
+                        "freshness-triggered ingest skipped: %s", _ing_err,
+                    )
+                return {"action": "refreshed", "summary": summary}
+            except Exception as e:
+                await budget.release(intent_id, reason=f"error:{e}")
+                await coord.fail("alt_lines_feed", token, error=str(e),
+                                  retry_after_seconds=300)
+                return {"action": "failed", "why": str(e)}
+        except Exception as e:
+            return {"action": "failed", "why": f"guard_exception:{e}"}
+
+    async def _soccer_scorer_freshness_loop():
+        # Startup guarded check (after 30-s settle).
+        await asyncio.sleep(30)
+        try:
+            _boot = await _soccer_scorer_freshness_check(reason="startup")
+            logger.info("Soccer scorer freshness (startup): %s", _boot)
+        except Exception as e:
+            logger.warning("Soccer scorer freshness startup err: %s", e)
+        while True:
+            try:
+                await asyncio.sleep(15 * 60)   # 15-min guarded cadence
+                _tick = await _soccer_scorer_freshness_check(
+                    reason="periodic",
+                )
+                logger.info("Soccer scorer freshness (periodic): %s", _tick)
+            except asyncio.CancelledError:
+                raise
+            except Exception as _e:
+                logger.warning(
+                    "Soccer scorer freshness cycle failed: %s", _e,
+                )
+
+    try:
+        _TASK_REGISTRY.register_and_start(
+            "soccer_scorer_freshness_check",
+            _soccer_scorer_freshness_loop,
+            task_type="recurring_loop",
+            critical=False,
+            cadence="15min",
+        )
+    except Exception as _fresh_reg_err:
+        logger.warning(
+            "Soccer scorer freshness registration skipped: %s", _fresh_reg_err,
+        )
+
     # ── Warm the signal-rank cache at boot (2026-07-18) ───────────
     # Every backend restart previously left `_LAST_RUN` empty, so the
     # very first /picks/today request paid a 3-5s sync ranking cost.

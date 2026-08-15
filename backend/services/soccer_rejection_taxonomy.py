@@ -15,13 +15,22 @@ import enum
 class SoccerRejection(str, enum.Enum):
     # Provider-side
     NO_PROVIDER_MARKET                = "NO_PROVIDER_MARKET"
+    NO_REAL_LINE                      = "NO_REAL_LINE"
+    NO_REAL_MARKET                    = "NO_REAL_MARKET"
+    STALE_EVENT                       = "STALE_EVENT"
     EVENT_IDENTITY_FAILURE            = "EVENT_IDENTITY_FAILURE"
     PLAYER_IDENTITY_FAILURE           = "PLAYER_IDENTITY_FAILURE"
+    IDENTITY_FAILURE                  = "IDENTITY_FAILURE"
     MARKET_NORMALIZATION_FAILURE      = "MARKET_NORMALIZATION_FAILURE"
     REAL_LINE_NOT_PRESERVED           = "REAL_LINE_NOT_PRESERVED"
-    # Candidate side
+    # Candidate / feature side
     CANDIDATE_NOT_CREATED             = "CANDIDATE_NOT_CREATED"
     MISSING_FEATURE_DATA              = "MISSING_FEATURE_DATA"
+    NO_TEAM_CONTEXT                   = "NO_TEAM_CONTEXT"
+    NO_PLAYER_CONTEXT                 = "NO_PLAYER_CONTEXT"
+    NO_RECENT_FORM                    = "NO_RECENT_FORM"
+    NO_PLAYER_HISTORY                 = "NO_PLAYER_HISTORY"
+    EVIDENCE_INSUFFICIENT             = "EVIDENCE_INSUFFICIENT"
     MODEL_NOT_INVOKED                 = "MODEL_NOT_INVOKED"
     NO_MODEL_PROBABILITY              = "NO_MODEL_PROBABILITY"
     NO_IMPLIED_PROBABILITY            = "NO_IMPLIED_PROBABILITY"
@@ -33,6 +42,8 @@ class SoccerRejection(str, enum.Enum):
     TEAMMATE_DOMINATED                = "TEAMMATE_DOMINATED"
     CANONICAL_PUBLICATION_REJECTED    = "CANONICAL_PUBLICATION_REJECTED"
     DUPLICATE_CANONICAL_MARKET        = "DUPLICATE_CANONICAL_MARKET"
+    DUPLICATE_CANONICAL_WAGER         = "DUPLICATE_CANONICAL_WAGER"
+    BOARD_INELIGIBLE                  = "BOARD_INELIGIBLE"
     # Contract violations (fail-closed)
     MODEL_ONLY_NO_REAL_BOOK           = "MODEL_ONLY_NO_REAL_BOOK"
     SYNTHETIC_BOOK_ODDS               = "SYNTHETIC_BOOK_ODDS"
