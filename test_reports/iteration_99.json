@@ -1,0 +1,40 @@
+{
+  "summary": "PERKLOCKS Phase 1D — Gate Reconstruction (G1-G7) review — ALL PASS. Regression suites 99/99 green (test_phase1d_gates=26, test_phase1b_runtime_wiring=29, test_phase1c_foundation=24, test_iter98_phase1c_review=14, test_lock_score_chalk_neutral=6) — exit code 0 in ~6s with a single unrelated starlette PendingDeprecationWarning. Verified item-by-item: (1) NFL EVIDENCE gate — Platinum candidate with sim_probability=0.64, expected_margin_home=6.5, expected_total=47.0, edge_percent>=1.5 is KEPT by board_validator.evidence_threshold; same pick at edge_percent=0.5 is dropped (platinum contributes exactly 2 categories, never 3); a factors={} book-price-only pick is dropped and services.funnel_telemetry.peek(reason='EVIDENCE_THRESHOLD') returns a record. (2) G1/G2 in sports_engine._build_pick via test_phase1d_gates.TestG1ImpliedFloors + TestG2ModelFloors: +150 dog @ model 0.55 emits with edge>10; -400 fav @ model 0.70 → None + funnel EDGE_THRESHOLD; -600 chalk @ model 0.92 lock=70 emits with lock_score=70.0 exactly (no chalk cap, no booster); model 0.45 @ +200 emits (0.58 floor retired); MLB model 0.55 @ -105 emits (0.62 MLB floor retired); model 0.40 @ -110 → None (negative edge still rejected). (3) G3 source-level: inspect.getsource(sports_engine.compute_lock_score) contains NONE of 'floor = 98.0/95.0/90.0/85.0'; inspect.getsource(sports_engine._build_pick) contains NO '_floor = 85.0' booster, NO 'SPORT_IMPLIED_FLOOR.get', NO 'book_implied < 0.42'. (4) G4 boundary — services.main_board_eligibility.is_main_board_eligible: score=84.99→False, 85.00→True, 85.01→True; main_board_lock_score_query() returns a $gte 85 expression. (5) G5 de-vig — 2-way NFL [-110]/[-110] gives raw_implied_probability=52.4, devig_market_probability=50.0, devig_method='2_way_normalization', devig_edge_percent=10.0, book_odds preserved at -110; 3-way soccer [230,260] gives '3_way_normalization'; empty opposing → OPPOSING_SIDE_UNAVAILABLE funnel record and no devig field. (6) G6 neutrality — _picks_from_game('NFL','NFL', _game('americanfootball_nfl'), '2026-06-15') with ctx {expected_margin_home:-9.0} emits AWAY plus-money ML side; with +9.0 emits HOME side (model decides, never odds sign). (7) No board-filling regression — fabricated NBA/CFB/UFC/NHL games emit 0 picks with MODEL_UNAVAILABLE funnel records (covered in test_phase1b_runtime_wiring). (8) Live board sanity — POST /api/auth/login → 200, GET /api/picks/today → 200 with 24 picks; MongoDB db.picks query for {sport:'NFL', pick_date:'2026-08-14'} returns 19 docs, ALL with model_source='platinum_nfl_game_sim', season_type='PRESEASON', raw_implied_probability + devig_market_probability + published_lock_score fields populated (sample values verified: e.g. Broncos @ Falcons Moneyline -200 → raw_imp=66.7, devig=64.3, published_lock=95.0). Login was done once and token reused (no lockout). No force-refresh triggered; no Odds-API traffic; circuit breaker not touched.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase1d_gates.py",
+    "/app/backend/tests/test_phase1b_runtime_wiring.py",
+    "/app/backend/tests/test_phase1c_foundation.py",
+    "/app/backend/tests/test_iter98_phase1c_review.py",
+    "/app/backend/tests/test_lock_score_chalk_neutral.py",
+    "/app/test_reports/pytest/iter99_phase1d.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "sports_engine._build_pick has no residue of the legacy hidden gates: no SPORT_IMPLIED_FLOOR lookup, no book_implied<0.42 short-circuit, no _floor=85.0 booster — the lock score returned in the emitted pick equals the caller-supplied lock (verified with -600 chalk & lock=70 returning lock_score=70.0 exactly, and lock=64 with strong edge returning 64.0).",
+    "sports_engine.compute_lock_score has no residue of the 85/90/95/98 ladder (four explicit string checks all False).",
+    "board_validator.evidence_threshold treats platinum_nfl_game_sim + expected_margin_home + expected_total as at most 2 evidence categories — verified via edge=0.5 rejection and edge=3.0 acceptance in test_phase1d_gates.TestNFLEvidenceGate; funnel reason 'EVIDENCE_THRESHOLD' correctly recorded for weak book-price-only picks.",
+    "services.main_board_eligibility strictness verified inclusive at 85.00 (single authoritative $gte 85 rule).",
+    "sports_engine._attach_devig preserves raw book_odds while populating raw_implied_probability, devig_market_probability, devig_edge_percent and correctly branches on 2-way vs 3-way; missing-opposing-side path records OPPOSING_SIDE_UNAVAILABLE and does NOT stamp devig_market_probability.",
+    "_picks_from_game('NFL',...) is model-directed (uses expected_margin_home sign) rather than odds-sign-directed — plus-money underdog can win when the model warrants it and vice versa."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "99/99 (100%) — 26+29+24+14+6 across the five suites in the review scope",
+    "frontend": "not tested (backend-only scope per review request)"
+  },
+  "seed_data_creation": "None. Read-only checks against the live lockscore_db. No admin refresh calls, no Odds API traffic, no circuit-breaker mutation. Auth login performed once; token reused for /api/picks/today only.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase 1D gate reconstruction is complete and stable. All five in-scope pytest suites are green (99 passed, 0 failed). The known pre-existing failures listed in the agent-to-agent context (test_board_floor_iter32, calibration_shrinkage_iter33, probability_canonical_iter37, revert_calibration_iter34, test_evidence_engine_iter49, test_lock_score_raw_fix_iter50, test_p03/p04 model-only-null-odds boards, test_mlb_grading_fix_iter71, admin_dashboard api-usage counter) were NOT run and remain excluded from the success rate. UFC picks with source=ufc_espn_v1 and book_odds=None dated today are the ALLOWED extended-coverage ingest, not a regression. Live circuit breaker was not touched; no reset_odds_api_circuit() needed. If a re-run is required: `cd /app/backend && EXPO_PUBLIC_BACKEND_URL=http://localhost:8001 python -m pytest -q tests/test_phase1d_gates.py tests/test_phase1b_runtime_wiring.py tests/test_phase1c_foundation.py tests/test_iter98_phase1c_review.py tests/test_lock_score_chalk_neutral.py`.",
+  "rca_of_issue": "N/A — the primary bug (legitimate NFL Platinum candidates being rejected by the legacy EVIDENCE_THRESHOLD gate) is FIXED and verified end-to-end: (a) board_validator.evidence_threshold now keeps a Platinum candidate whose only signals are model_source='platinum_nfl_game_sim' + platinum_game_sim{sim_probability, expected_margin_home, expected_total} + edge_percent>=1.5; (b) the same shape at edge_percent=0.5 is still dropped (Platinum contributes at most 2 categories, so it must ride together with a real edge or another evidence category to clear the 3-of-6 bar); (c) the end-to-end test_nfl_platinum_reaches_scoring_and_gate_end_to_end asserts that model-produced Platinum candidates emitted by _picks_from_game reach and survive evidence_threshold. All legacy hidden gates (implied floors, model-prob floors, chalk cap, per-sport lock floor, generation-time 85 booster, 85/90/95/98 ladder in compute_lock_score) are source-level confirmed removed."
+}
