@@ -1848,29 +1848,21 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 or _p.get("is_model_only")
                 or _p.get("is_synthetic_scorer")
                 or (_p.get("source") or "").startswith("sportdb_scorer")
-                # ── Phase 2A.5 UNIVERSAL (2026-08-15) ────────────────
-                # Real-line ingest sources are ALREADY authoritative:
-                # * `real_line_alt_scorer_v1` — universal Soccer
-                #   player-scorer ingester (real sportsbook odds +
-                #   `soccer_scorer_bridge` empirical-Bayes model)
-                # * `real_line_soccer_v2` — universal Soccer
-                #   game-market ingester (real sportsbook odds +
-                #   `soccer_game_model` Poisson/Dixon-Coles core)
-                # Both compute lock_score from the canonical scorer
-                # bridge / game model, whose factors ARE the evidence.
-                # Running `govern_pick` again on top would double-
-                # penalise real-line picks: the bridge's shrinkage
-                # already accounts for small samples, so a second
-                # evidence-multiplier demotes even Elite Lock 89+
-                # picks to grade=Pass and hides them from the board.
-                # These picks are already tagged
-                # `odds_source=real_book_line`, so the governor is
-                # unnecessary — treat them the same way we treat
-                # sportdb_scorer synth picks (already exempt).
-                or _p.get("source") in (
+                # ── SOCCER_UNIVERSAL_RUNTIME (2026-08-15) ────────────
+                # Real-line ingest sources ship their own
+                # `evidence_score` derived from the actual bridge/
+                # game-model factor stack (see
+                # services/real_line_scorer_ingest.py).  We ONLY skip
+                # the governor when the pick already carries an
+                # explicit `evidence_score` — the governor then
+                # trusts the ingester's assessment rather than
+                # re-deriving it from a stale feature snapshot.
+                # If a real-line pick ever lands WITHOUT
+                # `evidence_score`, the governor runs normally.
+                or (_p.get("source") in (
                     "real_line_alt_scorer_v1",
                     "real_line_soccer_v2",
-                )
+                ) and _p.get("evidence_score") is not None)
             ):
                 continue
             try:

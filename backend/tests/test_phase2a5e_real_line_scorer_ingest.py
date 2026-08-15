@@ -68,6 +68,13 @@ class _FakeDB:
         self.live_alt_lines = _FakeCollection(alt_rows)
         self.soccer_player_form = _FakeCollection([])
         self.soccer_player_game_logs = _FakeCollection([])
+        self.player_game_actuals = _FakeCollection([])
+        self.mls_player_matchup_history = _FakeCollection([])
+        self.soccer_team_form = _FakeCollection([])
+        self.team_form = _FakeCollection([])
+        self.soccer_team_xg_rolling = _FakeCollection([])
+        self.soccer_matches = _FakeCollection([])
+        self.odds_api_cache = _FakeCollection([])
         self.picks = _FakeCollection([])
 
 
@@ -116,7 +123,16 @@ def test_real_line_ingest_preserves_book_odds_and_writes_pick():
     assert doc["no_real_book_line"] is False
     # Missing form data → off_board attribution, not silent drop.
     assert doc["off_board"] is True
-    assert "MISSING_FEATURE_DATA" in (doc.get("off_board_reasons") or [])
+    reasons = doc.get("off_board_reasons") or []
+    # SOCCER_UNIVERSAL_RUNTIME (2026-08-15): the ingester now emits
+    # a precise per-stage code from soccer_feature_resolver
+    # (`PLAYER_IDENTITY_FAILURE` / `NO_PLAYER_HISTORY` /
+    # `NO_RECENT_FORM`) instead of the generic MISSING_FEATURE_DATA
+    # bucket.  Any of these are legitimate — accept the whole set.
+    assert any(r in reasons for r in (
+        "MISSING_FEATURE_DATA", "PLAYER_IDENTITY_FAILURE",
+        "NO_PLAYER_HISTORY", "NO_RECENT_FORM",
+    )), reasons
     # Deterministic pick id.
     uuid.UUID(doc["id"])  # raises if not a valid UUID
     assert doc["external_id"].startswith("real_line_alt_scorer_v1|")
