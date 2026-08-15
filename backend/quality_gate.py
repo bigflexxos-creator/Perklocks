@@ -1332,10 +1332,15 @@ def apply_quality_gate(
     for p in picks:
         reason = _block_reason(p)
         if reason is None:
-            # ELITE ANCHOR FIRST — if this is a Mbappé / Haaland / Kane
-            # / Messi / Salah etc. goalscorer pick, override win_prob
-            # with the real per-match scoring rate and recompute edge.
-            _apply_elite_scorer_anchor(p)
+            # ── Phase 2A.5 DEFECT #4 (2026-08) ─────────────────────
+            # `_apply_elite_scorer_anchor` RETIRED as a finalizer step.
+            # No player receives an artificial Lock Score / win_probability
+            # override because of their name.  Elite classification is
+            # a downstream evidence-derived label from
+            # `services.soccer_scorer_bridge.quality_profile` and does
+            # not directly assign Lock Score.  (Function retained as a
+            # no-op-safe helper for backwards-compat imports.)
+            # _apply_elite_scorer_anchor(p)   # retired 2026-08 Phase 2A.5
             # Display caps RETIRED — was demoting Anytime scorers based
             # on calibration; lock score now comes from engine only.
             _apply_display_cap(p)

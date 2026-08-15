@@ -2900,11 +2900,15 @@ _HIGH_PROB_MIN_IMPLIED = 0.62
 # Alt lines must be true locks — at least 80% implied (-400 or steeper).
 _ALT_PROP_MIN_IMPLIED = 0.80
 _ALT_PROP_MAX_IMPLIED = 0.95  # cap absurd chalk like -2000 (95% implied)
-# Lower threshold for soccer anytime-goal-scorer markets — top forwards in
-# strong matches sit around 40-55% implied, mid-tier playmakers 22-35%. We
-# accept down to 22% so picks always show; weaker (<22%) are real lottery
-# tickets that don't qualify as "intelligence" picks.
-_SOCCER_PROP_MIN_IMPLIED = 0.22
+# ── Phase 2A.5 DEFECT #3 FIX (2026-08) ───────────────────────────────
+# Legacy 22% implied-probability floor RETIRED.  Per Phase 1D + 2A the
+# eligibility of a scorer pick is decided by:
+#   model probability vs de-vig book probability + evidence + uncertainty
+# NOT by a fixed implied-probability threshold.  A +money longshot
+# scorer with genuine model edge must not be rejected merely because the
+# book prices them at 15%.  Keep only a hard sanity floor (2%) to drop
+# obviously-broken +5000-and-worse outcomes.
+_SOCCER_PROP_MIN_IMPLIED = 0.02
 
 
 # ── 2026-07-28 DEFECT #2 — module-level prop-family map ─────────────
@@ -4341,7 +4345,14 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 side = o.get("name")
                 point = o.get("point")
                 price = o.get("price")
-                if is_goal_scorer or is_score_or_assist:
+                if is_goal_scorer or is_score_or_assist or is_first_goal_scorer:
+                    # ── Phase 2A.5 DEFECT #5 FIX (2026-08) ─────────────
+                    # First Goalscorer outcomes are Yes-style and do NOT
+                    # carry a numeric Over/Under point.  Prior code
+                    # routed FGS through the numeric-point branch below,
+                    # dropping every candidate silently.  Anytime, SoA,
+                    # and First Goalscorer share the same Yes-style
+                    # contract.
                     if not (player and side and price is not None):
                         continue
                     if str(side).lower() != "yes":
@@ -4554,20 +4565,21 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         elif mk == "player_goal_scorer_anytime":
             if implied < _SOCCER_PROP_MIN_IMPLIED:
                 continue
-            # ── MLS scorer hard-gate (2026-07-22 user report) ─────────
-            # Block reserves like Malachi Jones, Chase Adams, Seymour
-            # Reid from surfacing as "Elite Locks" over real starters
-            # (Messi, Mercau, Alonso Martinez, Rossi, etc.). See
-            # services/mls_scorer_gate.py for the rules.
-            if league.upper() in ("MLS", "MAJOR LEAGUE SOCCER"):
-                try:
-                    from services.mls_scorer_gate import is_mls_scorer_pick_ok
-                    ok, reason = is_mls_scorer_pick_ok(player, implied)
-                    if not ok:
-                        logger.debug("MLS scorer gate reject: %s (%s)", player, reason)
-                        continue
-                except Exception:
-                    pass
+            # ── Phase 2A.5 DEFECT #2 (2026-08) ─────────────────────────
+            # Stale MLS 2025 hardcoded scorer/starter whitelist RETIRED
+            # as a production eligibility gate.  Historical information
+            # is retained downstream as *model evidence* but cannot
+            # decide whether a player is allowed to enter the model.
+            # (Previous behavior: `continue` on gate miss dropped every
+            # non-whitelist MLS candidate.  Runtime market availability
+            # + real evidence now decides eligibility.)
+        elif mk == "player_first_goal_scorer":
+            # Phase 2A.5 — FGS routed through the same sanity floor;
+            # historically FGS was implicitly dropped by the numeric-
+            # point requirement (Defect #5).  Now that it is Yes-style,
+            # apply the sanity floor only.
+            if implied < _SOCCER_PROP_MIN_IMPLIED:
+                continue
         elif mk == "player_to_score_or_assist":
             # SoA is a SUPERSET of Anytime Goal Scorer (either action wins),
             # so its implied probability is ALWAYS ≥ Anytime's. Using a
@@ -4578,16 +4590,8 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             # thresholds — if Anytime passes, SoA must also pass.
             if implied < _SOCCER_PROP_MIN_IMPLIED:
                 continue
-            # Same MLS scorer gate applies to SoA picks.
-            if league.upper() in ("MLS", "MAJOR LEAGUE SOCCER"):
-                try:
-                    from services.mls_scorer_gate import is_mls_scorer_pick_ok
-                    ok, reason = is_mls_scorer_pick_ok(player, implied)
-                    if not ok:
-                        logger.debug("MLS SoA gate reject: %s (%s)", player, reason)
-                        continue
-                except Exception:
-                    pass
+            # ── Phase 2A.5 DEFECT #2 (2026-08) ─────────────────────────
+            # MLS 2025 whitelist RETIRED as a hard gate.  See note above.
         elif mk == "mma_method_of_victory":
             # Method of victory is inherently a low-implied market (each
             # outcome carves the win pie into 3 methods). Accept 18%+ which
@@ -5293,10 +5297,57 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 except Exception:
                     pass
         else:
-            # Non-MLB / non-NBA / non-CFB batter / skater / scorer props
-            # (WNBA / UFC / soccer non-scorer).  Book-follow.
-            factors = {"Book Implied Probability": mp}
-            _mlb_features_used = ["book_implied_calibrated"]
+            # Non-MLB / non-NBA / non-CFB batter / skater / scorer props.
+            # ── Phase 2A.5 DEFECT #1 FIX (2026-08) ─────────────────────
+            # Real-line Soccer scorer markets (Anytime / First / SoA)
+            # MUST use the authoritative scorer intelligence — NOT a
+            # book-implied clone.  A real sportsbook line is not an
+            # independent predictive model.  Route through
+            # `services.soccer_scorer_bridge` which delegates to the
+            # v2 Poisson engine with sample-size-aware finishing
+            # shrinkage.  Missing form data → MISSING_FEATURE_DATA
+            # diagnostic + fall through to book-implied (research-only
+            # style) rather than silent book-following.
+            _scorer_bridge_used = False
+            if (sport == "Soccer" and mk in (
+                    "player_goal_scorer_anytime",
+                    "player_first_goal_scorer",
+                    "player_to_score_or_assist")):
+                try:
+                    _soccer_pre = ((_game_ctx.get("soccer_scorer_precomputed") or {})
+                                   .get(player.strip().lower()) or {}).get(mk)
+                except Exception:
+                    _soccer_pre = None
+                if _soccer_pre and _soccer_pre.get("factors"):
+                    factors = _soccer_pre["factors"]
+                    _mlb_features_used = _soccer_pre.get("sources") or [
+                        "soccer_scorer_bridge_v1"]
+                    _scorer_bridge_used = True
+                    # Override `mp` with independent model probability
+                    # from the scorer bridge; this becomes the canonical
+                    # model_win_prob for the pick (used against the de-
+                    # vig book probability for the Phase 2A edge).
+                    _sm = _soccer_pre.get("model_prob")
+                    if isinstance(_sm, (int, float)) and _sm > 0:
+                        mp = float(_sm)
+                else:
+                    try:
+                        from services.pipeline_diagnostic import log_reason as _plog
+                        _plog(
+                            sport="Soccer", market=mk, player=player,
+                            reason="MISSING_FEATURE_DATA",
+                            meta={"stage": "soccer_scorer_bridge",
+                                  "league": league},
+                        )
+                    except Exception:
+                        pass
+                    factors = {"Book Implied Probability": mp}
+                    _mlb_features_used = ["book_implied_calibrated",
+                                          "soccer_scorer_bridge_no_form"]
+            else:
+                # WNBA / UFC / soccer non-scorer.  Book-follow.
+                factors = {"Book Implied Probability": mp}
+                _mlb_features_used = ["book_implied_calibrated"]
 
         # 2026-07-21 — DROP the pick if we couldn't build a real-data
         # factor set (Phase 1 MLB gate). Skips the rest of this iteration.
@@ -5333,39 +5384,17 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     mp = max(0.35, min(0.82, _cal_mp))
                 else:
                     mp = max(0.45, min(0.97, _cal_mp))
-        # ── Elite-player boost for long-shot scorer markets ──
-        # If this player is in our hand-curated elite list, give every
-        # factor a +10 % boost AND force a 78 minimum lock score. This
-        # is necessary because the legacy compute_lock_score formula
-        # anchors hard on win_prob — long-shot scorers (mp ≈ 30-40 %)
-        # cap at lock ≈ 60-65 even when their factor profile is strong,
-        # which means elite scorers like Gyökeres / Mbappé got dropped
-        # below the long-shot min_lock=65 floor by random luck.
-        # Lifting to 78 puts them safely in Playable tier.
+        # ── Phase 2A.5 DEFECT #4 (2026-08) ─────────────────────────────
+        # Elite-scorer factor manipulation (+10 %) and forced Lock Score
+        # floor (88.0) RETIRED.  No player receives an artificial Lock
+        # Score because of their name or reputation.  Elite status
+        # (`ELITE_SCORER_PROFILE`) is a downstream classification derived
+        # from evidence — see `services.soccer_scorer_bridge`.  It does
+        # NOT boost factors, does NOT alter Lock Score, and does NOT
+        # override the composite.  Phase 1D/2A composite math is the
+        # only authority for Lock Score.
         is_elite_scorer = False
-        if mk in ("player_goal_scorer_anytime", "player_first_goal_scorer", "player_to_score_or_assist"):
-            try:
-                from elite_players import ELITE_PLAYERS
-                elite_set = ELITE_PLAYERS.get("Soccer", set())
-                p_low = player.lower().strip()
-                if any(e.lower().strip() == p_low for e in elite_set):
-                    factors = {k: min(0.98, v + 0.10) for k, v in factors.items()}
-                    is_elite_scorer = True
-            except Exception:
-                pass
         lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
-        # ── Elite floor: 88 (was 78) ──
-        # User report 2026-06-26: "Haaland, Kane, Mbappé, Messi not under every
-        # tab — only score-or-assist tab — then you put randoms under anytime
-        # goal". Root cause: previous floor of 78 sat BELOW the home board's
-        # default 85 min_lock, so stars were being filtered out at display
-        # time. The 88 floor guarantees every ELITE_PLAYERS hit clears the
-        # board cutoff regardless of which market they're priced for. Multi-
-        # source career enrichment can still push them HIGHER (Mbappé → 98)
-        # via the post-build pass in generate_all_picks; this floor is just
-        # the safety net for when that enrichment fails or is skipped.
-        if is_elite_scorer and lock < 88.0:
-            lock = 88.0
         label_point = None if mk in ("player_goal_scorer_anytime", "player_to_score_or_assist", "player_first_goal_scorer", "mma_method_of_victory", "player_anytime_td", "player_1st_td") else point
         if mk == "player_goal_scorer_anytime":
             market_label = f"{player} Anytime Goal Scorer"
@@ -6136,6 +6165,80 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                             payload["_mls_matchup"] = _lookup
                     except Exception as _ctx_err:
                         logger.debug("MLS matchup preload failed: %s", _ctx_err)
+
+                # ── Phase 2A.5 (2026-08) — Universal Soccer scorer
+                # preloader. For every Soccer event with real scorer
+                # markets (Anytime / SoA / FGS) — regardless of league
+                # — batch-load `soccer_player_form` rows and pre-compute
+                # authoritative scorer factors via the
+                # `soccer_scorer_bridge` (delegates to `goal_scorer_engine_v2`
+                # with sample-size-aware finishing shrinkage).  Stash
+                # under `payload["_ctx"]["soccer_scorer_precomputed"]`
+                # so the sync `_props_picks_from_event` branch reads it
+                # without re-entering the event loop.  ONE precompute
+                # call per event, never per prop.  Missing form data
+                # becomes MISSING_FEATURE_DATA downstream, not silent
+                # book-following.
+                if sport == "Soccer":
+                    try:
+                        from services.database import get_database as _get_db
+                        from services.soccer_scorer_bridge import (
+                            compute_soccer_scorer_factors_sync as _soc_bridge,
+                        )
+                        _players_by_mk: dict[str, set[str]] = {}
+                        for _bm in payload.get("bookmakers", []) or []:
+                            for _m in _bm.get("markets", []) or []:
+                                _mkk = _m.get("key")
+                                if _mkk not in (
+                                        "player_goal_scorer_anytime",
+                                        "player_to_score_or_assist",
+                                        "player_first_goal_scorer"):
+                                    continue
+                                for _o in _m.get("outcomes", []) or []:
+                                    _nm = _o.get("description") or _o.get("name") or ""
+                                    if not _nm:
+                                        continue
+                                    _players_by_mk.setdefault(_mkk, set()).add(
+                                        _nm.strip())
+                        _all_players = {p for s in _players_by_mk.values() for p in s}
+                        _pre: dict[str, dict[str, dict]] = {}
+                        if _all_players:
+                            _soc_db = _get_db()
+                            _cursor = _soc_db.soccer_player_form.find({
+                                "name_canonical": {
+                                    "$in": [n.lower() for n in _all_players]}
+                            })
+                            _form_by_name: dict[str, dict] = {}
+                            async for _row in _cursor:
+                                _key = str(_row.get("name_canonical") or "").lower()
+                                if _key:
+                                    _form_by_name[_key] = _row
+                            _league_label = LEAGUE_LABELS.get(key, sport)
+                            for _mkk, _plist in _players_by_mk.items():
+                                for _pname in _plist:
+                                    _p_low = _pname.lower().strip()
+                                    _form_row = _form_by_name.get(_p_low)
+                                    _bp = _soc_bridge(
+                                        player=_pname,
+                                        market_key=_mkk,
+                                        book_implied=0.30,
+                                        form_row=_form_row,
+                                        league=_league_label,
+                                    )
+                                    if _bp:
+                                        _pre.setdefault(_p_low, {})[_mkk] = _bp
+                        payload.setdefault("_ctx", {})[
+                            "soccer_scorer_precomputed"] = _pre
+                        payload["_ctx"]["soccer_scorer_precompute_status"] = (
+                            "ok" if _pre else "empty"
+                        )
+                    except Exception as _ctx_err:
+                        logger.debug(
+                            "Soccer scorer preload failed: %s", _ctx_err)
+                        payload.setdefault("_ctx", {})[
+                            "soccer_scorer_precompute_status"] = (
+                            f"error:{type(_ctx_err).__name__}"
+                        )
                 rng = random.Random(abs(hash(ev["id"])) % 10000)
                 all_picks.extend(_props_picks_from_event(
                     sport, LEAGUE_LABELS.get(key, sport), payload,
