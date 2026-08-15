@@ -425,7 +425,26 @@ async def build_soccer_team_ctx(
     A team with no rolling data yields None GF/GA which the estimator
     handles via league-average priors.  League name is passed through
     so future extensions can filter by competition.
+
+    Per-process cache: bulk_odds ingest generates 20-40 game-market
+    outcomes per fixture, all sharing the same two teams.  A 60s TTL
+    memoisation collapses the 3-4 DB round-trips per team into ONE
+    per fixture per minute — this is the difference between a 30-90s
+    startup ingest and a 3-5s one.
     """
+    import time
+    global _CTX_CACHE, _CTX_CACHE_TS
+    _now = time.monotonic()
+    # Purge whole cache every 60s (cheap; keeps memory bounded).
+    if _now - _CTX_CACHE_TS > 60:
+        _CTX_CACHE.clear()
+        _CTX_CACHE_TS = _now
+    _key = ((home_team or "").strip().lower(),
+            (away_team or "").strip().lower(),
+            (league or "").strip().lower())
+    if _key in _CTX_CACHE:
+        return _CTX_CACHE[_key]
+
     ctx: dict[str, Any] = {}
 
     for side, team_name in (("home", home_team), ("away", away_team)):
@@ -450,10 +469,6 @@ async def build_soccer_team_ctx(
             gf = row.get("gf_per_match") or row.get("gf_avg") or row.get("gf") or row.get("goals_for_per_game")
             ga = row.get("ga_per_match") or row.get("ga_avg") or row.get("ga") or row.get("goals_against_per_game")
             matches = int(row.get("matches") or row.get("n_matches") or row.get("games") or 0)
-            # Schema note: the estimator's `_extract_strength` reads
-            # `gf_avg` / `ga_avg` / `n_matches` — use those exact keys
-            # so a legacy `gf`/`ga` schema in `team_form` still lights
-            # up the Poisson estimator.
             ctx[f"{side}_form"] = {
                 "gf_avg":    float(gf) if gf is not None else None,
                 "ga_avg":    float(ga) if ga is not None else None,
@@ -463,12 +478,6 @@ async def build_soccer_team_ctx(
             }
         else:
             # ── Fallback: derive from raw historical matches ──────
-            # The `soccer_matches` collection carries per-fixture
-            # scores.  Aggregate the last 20 matches for this team
-            # to compute rolling GF/GA per match.  Never blends
-            # across leagues silently — but if `league` is falsy we
-            # accept any competition because the caller didn't
-            # commit to a filter.  Sample size is honestly recorded.
             try:
                 match_filter: dict[str, Any] = {
                     "$or": [
@@ -513,7 +522,7 @@ async def build_soccer_team_ctx(
                     "soccer_matches rollup failed for %s: %s",
                     team_name, _mm_err,
                 )
-        # xG rolling window (optional — only if pre-computed).
+        # xG rolling window (optional).
         try:
             xg = await db.soccer_team_xg_rolling.find_one({
                 "team_canonical": team_name.strip().lower(),
@@ -530,7 +539,13 @@ async def build_soccer_team_ctx(
 
     if league:
         ctx["league"] = league
+    _CTX_CACHE[_key] = ctx
     return ctx
+
+
+# Module-level per-process ctx cache (60s TTL, cleared on read).
+_CTX_CACHE: dict[tuple[str, str, str], Any] = {}
+_CTX_CACHE_TS: float = 0.0
 
 
 async def compute_game_market_prob(

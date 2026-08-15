@@ -3327,28 +3327,34 @@ async def on_startup():
     # ── Phase 2A.5E — Real-line MLS/Soccer scorer ingest healer ──
     # Wires the cached `live_alt_lines` / `odds_api_cache` real
     # sportsbook player-scorer markets into the authoritative picks
-    # pipeline.  Runs once at startup so restarts immediately pick
-    # up any props already fetched by the alt-lines feed but not yet
-    # promoted to Perklocks candidates (previously stuck as
-    # NO_PROVIDER_PLAYER_MARKET for Messi, Evander, etc).  Writes
-    # picks with `source = "real_line_alt_scorer_v1"` — that source
-    # is out-of-band from the main atomic-delete filter so these
-    # rows survive subsequent refresh cycles.  Idempotent upsert
-    # keyed on (event_id, market_key, selection, pick_date).
+    # pipeline.  SOCCER_UNIVERSAL_RUNTIME (2026-08-15): also flattens
+    # `odds_api_cache.bulk_odds` (h2h / spreads / totals) so 1X2 /
+    # Home / Draw / Away picks reach the board.  Deferred via a
+    # background task so on_startup does not block uvicorn from
+    # binding — the initial ingest can take 30-90s across 200+
+    # provider events.  Idempotent upsert keyed on (event, market,
+    # selection, line, source).
+    async def _p2a5e_initial_ingest():
+        try:
+            from services.real_line_scorer_ingest import (
+                ingest_real_line_soccer_scorers,
+            )
+            _p2a5e_today = _today_str()
+            _p2a5e_stats = await ingest_real_line_soccer_scorers(
+                db, today=_p2a5e_today,
+            )
+            logger.info(
+                "Phase 2A.5E real-line scorer ingest: %s", _p2a5e_stats,
+            )
+        except Exception as _p2a5e_err:
+            logger.warning(
+                "Phase 2A.5E real-line scorer ingest skipped: %s", _p2a5e_err,
+            )
     try:
-        from services.real_line_scorer_ingest import (
-            ingest_real_line_soccer_scorers,
-        )
-        _p2a5e_today = _today_str()
-        _p2a5e_stats = await ingest_real_line_soccer_scorers(
-            db, today=_p2a5e_today,
-        )
-        logger.info(
-            "Phase 2A.5E real-line scorer ingest: %s", _p2a5e_stats,
-        )
-    except Exception as _p2a5e_err:
+        asyncio.create_task(_p2a5e_initial_ingest())
+    except Exception as _p2a5e_task_err:
         logger.warning(
-            "Phase 2A.5E real-line scorer ingest skipped: %s", _p2a5e_err,
+            "Phase 2A.5E ingest task launch failed: %s", _p2a5e_task_err,
         )
 
     # Recurring deferred task — re-run the real-line ingest every
