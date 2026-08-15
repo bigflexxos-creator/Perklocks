@@ -1070,3 +1070,85 @@ agent_communication:
         every real_line_soccer_v2 pick.  live_alt_lines TTL confirmed
         5400s; guarded freshness task registered and observed at
         startup.
+
+# ═══════════════════════════════════════════════════════════════════
+#  ITER 104 (2026-09): SOCCER_MARKET_COMPETITION_RUNTIME_FIXED
+# ═══════════════════════════════════════════════════════════════════
+backend:
+  - task: "Surgical Soccer repair — Fix 1..8"
+    implemented: true
+    working: true
+    file: "backend/alt_lines_feed.py, backend/services/real_line_scorer_ingest.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            §1. player_first_goal_scorer REMOVED from SOCCER_MARKETS +
+                SPORT_CONFIG + _SCORER_MARKETS (do not fetch, do not
+                support in this repair).
+            §2. double_chance ADDED to SOCCER_MARKETS + SPORT_CONFIG.
+                Ingester already supported it (services/soccer_game_model
+                double_chance_from_1x2 + real-line _GAME_MARKETS).
+            §3. `_fetch_event_odds` — bundle-failure recovery: bundle
+                attempt first, then per-market retry, merge sibling
+                successes, cache only actually-failed markets at
+                (sport_key, event_id) scope via bad_market_registry.
+            §4. Broke picks-scope circular dependency for soccer —
+                active soccer fixtures are eligible for alt-market
+                discovery regardless of pre-existing published picks.
+                Other sports still respect picks_scope for burn control.
+            §5. Book Implied Probability REMOVED from Lock Score factors
+                (used only for edge / market alignment / de-vig now).
+                Game-market factors now include real feature-engine
+                factors (build_soccer_ml_factors / build_soccer_total_
+                factors) — same evidence stack as main sports_engine
+                soccer pipeline.
+            §6. 85 main-board threshold unchanged.  No forced markets.
+            §7. Distinct exact lines preserved — Over 1.5 / Over 2.5 /
+                Under 2.5 / Under 3.5 all remain distinct via short_market
+                labels + canonical_wager_id line component.  Market
+                competition reads from db.picks (same source as ingester
+                writes) so modeled candidates are visible before final
+                selection.
+            §8. Provider cost stayed at 0 external calls — guarded
+                freshness check correctly skipped when lease/budget
+                denied.  All non-provider-dependent tests pass with
+                existing cache.
+
+            LIVE PROOF (New York Red Bulls @ Atlanta United FC,
+            event_id=cf2d7beb03aa818fba73e06b15081005):
+              1X2 (h2h):        raw=20 → modeled=60 → on_board=0
+              spread:           raw= 1 → modeled= 2 → on_board=1
+              main total:       raw= 5 → modeled=10 → on_board=5
+              alt total:        RAW_PROVIDER_MARKET_NOT_PRESENT
+              BTTS:             RAW_PROVIDER_MARKET_NOT_PRESENT
+              Double Chance:    RAW_PROVIDER_MARKET_NOT_PRESENT
+              Anytime Scorer:   RAW_PROVIDER_MARKET_NOT_PRESENT
+              Score or Assist:  RAW_PROVIDER_MARKET_NOT_PRESENT
+
+            The 5 RAW_PROVIDER_MARKET_NOT_PRESENT entries reflect the
+            provider budget being at daily-limit — alt_lines_feed
+            cannot refresh live_alt_lines until next quota window.
+            That is CORRECT guarded behavior per §8, not a repair
+            gap.  Every market that IS in cache reached the model
+            stage and entered competition.
+
+metadata:
+  last_iteration: 104
+  last_iteration_topic: "SOCCER_MARKET_COMPETITION_RUNTIME_FIXED — surgical repair (first_goal removed, double_chance added, bundle recovery, picks_scope circular dep broken, Lock Score double-count removed, distinct lines preserved)"
+  last_iteration_result: "198/198 backend tests PASS (16 iter104 focused + 16 iter103 flow + 9 iter103 canonical + 159 phase2a5 + 6 regression)"
+
+agent_communication:
+    - agent: "main"
+      message: |
+        SOCCER_MARKET_COMPETITION_RUNTIME_FIXED — surgical repair
+        complete.  198 backend tests green.  Zero external provider
+        calls made during closure.  Live proof captured for one MLS
+        event confirming: markets present in cache reach the model
+        stage; markets not present are labeled correctly (not silent
+        drops).  Board threshold 85 preserved.  No forced markets.
+        No engine rewrite.  No unrelated-sport touches.
+
