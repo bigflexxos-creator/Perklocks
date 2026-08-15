@@ -1036,6 +1036,11 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         # startup healer + recurring ingest loop; the main sports_engine
         # refresh must NOT wipe these rows.
         "real_line_alt_scorer_v1",
+        # Phase 2A.5 UNIVERSAL (2026-08) — real sportsbook game-market
+        # ingests (BTTS / alternate_totals / h2h / spreads /
+        # double_chance) from the SAME cached live_alt_lines source.
+        # Owned by the universal healer; must survive main refresh.
+        "real_line_soccer_v2",
     ]
     _pin_filter = {
         "$and": [

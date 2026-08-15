@@ -75,17 +75,17 @@ SPORT_CONFIG: dict[str, tuple[str, list[str]]] = {
     "soccer_world_cup": (
         "soccer_fifa_world_cup",
         ["player_goal_scorer_anytime", "player_first_goal_scorer",
-         "player_to_score_or_assist", "alternate_totals"],
+         "player_to_score_or_assist", "alternate_totals", "btts"],
     ),
     "soccer_epl": (
         "soccer_epl",
         ["player_goal_scorer_anytime", "player_first_goal_scorer",
-         "player_to_score_or_assist", "alternate_totals"],
+         "player_to_score_or_assist", "alternate_totals", "btts"],
     ),
     "soccer_uefa_champs": (
         "soccer_uefa_champs_league",
         ["player_goal_scorer_anytime", "player_first_goal_scorer",
-         "player_to_score_or_assist", "alternate_totals"],
+         "player_to_score_or_assist", "alternate_totals", "btts"],
     ),
     "mlb": (
         "baseball_mlb",
@@ -316,9 +316,20 @@ async def _discover_active_sports_by_prefix(cx: httpx.AsyncClient, prefix: str) 
 # WC/EPL/UCL entries. Anytime GS is the marquee; To-Score-or-Assist
 # doubles the coverage; alternate_totals gives us the O/U 2.5 goals.
 SOCCER_MARKETS = [
+    # Player-scorer markets (2A.5 universal — already available in
+    # live_alt_lines for MLS + La Liga + other auto-discovered active
+    # soccer leagues).
     "player_goal_scorer_anytime",
+    "player_first_goal_scorer",
     "player_to_score_or_assist",
+    # Game markets.  `alternate_totals` provides the multi-line
+    # Over/Under surface (1.5 / 2.0 / 2.5 / 3.0 / ...).  `btts` is the
+    # Both Teams to Score market — added Phase 2A.5 UNIVERSAL so BTTS
+    # candidates can traverse the pipeline.  `bad_market_registry`
+    # gracefully catches per-league 422s (a league without BTTS support
+    # is skipped for 24 h so we do not burn credits).
     "alternate_totals",
+    "btts",
 ]
 
 

@@ -403,11 +403,192 @@ def double_chance_from_1x2(p_home: float, p_draw: float,
     }
 
 
+# ------------------------------------------------------------------ #
+# Universal DB-backed entry point — Phase 2A.5 UNIVERSAL
+# ------------------------------------------------------------------ #
+async def build_soccer_team_ctx(
+    db, *, home_team: str, away_team: str, league: str = "",
+) -> dict[str, Any]:
+    """Assemble the ``ctx`` dict expected by
+    :func:`estimate_soccer_game_probabilities` from the existing
+    Perklocks collections (``team_form``, ``soccer_matches``,
+    ``soccer_team_form``).
+
+    Never fabricates numbers — a team with no rolling data yields
+    ``None`` GF/GA which the estimator handles via league-average
+    priors.  League name is passed through so future extensions can
+    filter by competition.
+    """
+    ctx: dict[str, Any] = {}
+
+    # Universal form lookup — prefer `soccer_team_form` if present
+    # (populated by sportdb_client / Understat pipelines).  Fall
+    # back to generic `team_form` (multi-sport).
+    for side, team_name in (("home", home_team), ("away", away_team)):
+        if not team_name:
+            continue
+        row = None
+        try:
+            row = await db.soccer_team_form.find_one({
+                "team_canonical": team_name.strip().lower(),
+            })
+        except Exception:
+            row = None
+        if not row:
+            try:
+                row = await db.team_form.find_one({
+                    "sport": "Soccer",
+                    "team": {"$regex": f"^{team_name.strip()}$", "$options": "i"},
+                })
+            except Exception:
+                row = None
+        if row:
+            gf = row.get("gf_per_match") or row.get("gf") or row.get("goals_for_per_game")
+            ga = row.get("ga_per_match") or row.get("ga") or row.get("goals_against_per_game")
+            matches = int(row.get("matches") or row.get("games") or 0)
+            ctx[f"{side}_form"] = {
+                "gf": float(gf) if gf is not None else None,
+                "ga": float(ga) if ga is not None else None,
+                "matches": matches,
+                "source": row.get("source") or "team_form",
+            }
+        # xG rolling window (optional — only if pre-computed).
+        try:
+            xg = await db.soccer_team_xg_rolling.find_one({
+                "team_canonical": team_name.strip().lower(),
+            })
+            if xg:
+                ctx[f"{side}_xg_rolling"] = {
+                    "xg_for":     float(xg.get("xg_for") or 0),
+                    "xg_against": float(xg.get("xg_against") or 0),
+                    "matches":    int(xg.get("matches") or 0),
+                    "source":     xg.get("source") or "xg_rolling",
+                }
+        except Exception:
+            pass
+
+    if league:
+        ctx["league"] = league
+    return ctx
+
+
+async def compute_game_market_prob(
+    db, *,
+    home_team: str,
+    away_team: str,
+    league: str,
+    market_key: str,
+    selection: str,
+    line: Optional[float] = None,
+) -> Optional[float]:
+    """Universal per-market probability entry point used by the
+    real-line Soccer ingester.
+
+    Returns the model probability the given (market, selection, line)
+    hits — never the sportsbook implied.  Returns None when the
+    model has insufficient inputs (caller tags NO_MODEL_PROBABILITY).
+    """
+    if not (home_team and away_team):
+        return None
+    ctx = await build_soccer_team_ctx(
+        db, home_team=home_team, away_team=away_team, league=league,
+    )
+    out = estimate_soccer_game_probabilities(ctx, home_team, away_team)
+    if not out.available or not out.score_matrix:
+        return None
+
+    mk = (market_key or "").lower()
+    sel = (selection or "").strip().lower()
+
+    # ── 1X2 / Match Winner ────────────────────────────────────────
+    if mk == "h2h":
+        if sel in ("draw", "tie", "x"):
+            return out.p_draw
+        # Match against team names — best effort.
+        if home_team and sel == home_team.strip().lower():
+            return out.p_home
+        if away_team and sel == away_team.strip().lower():
+            return out.p_away
+        # Bookmaker may return "1"/"2" or side labels.
+        if sel in ("home", "1"):
+            return out.p_home
+        if sel in ("away", "2"):
+            return out.p_away
+        return None
+
+    # ── Double Chance ──────────────────────────────────────────────
+    if mk == "double_chance":
+        dc = double_chance_from_1x2(out.p_home, out.p_draw, out.p_away)
+        # Sportsbooks label them "Home/Draw" ("1X"), "Draw/Away" ("X2"),
+        # "Home/Away" ("12").
+        aliases = {
+            "1x": "1X", "home/draw": "1X", "home or draw": "1X",
+            "x2": "X2", "draw/away": "X2", "draw or away": "X2",
+            "12": "12", "home/away": "12", "home or away": "12",
+        }
+        key = aliases.get(sel)
+        if key:
+            return dc[key]
+        return None
+
+    # ── Totals (Over / Under) ─────────────────────────────────────
+    if mk in ("totals", "alternate_totals"):
+        if line is None:
+            return None
+        p_over, p_under = totals_from_matrix(out.score_matrix, float(line))
+        if sel.startswith("over") or sel == "o":
+            return p_over
+        if sel.startswith("under") or sel == "u":
+            return p_under
+        return None
+
+    # ── BTTS ──────────────────────────────────────────────────────
+    if mk in ("btts", "both_teams_to_score"):
+        p_yes, p_no = btts_from_matrix(out.score_matrix)
+        if sel in ("yes", "y"):
+            return p_yes
+        if sel in ("no", "n"):
+            return p_no
+        return None
+
+    # ── Spread / Asian Handicap ────────────────────────────────────
+    if mk in ("spreads", "alternate_spreads"):
+        if line is None:
+            return None
+        # Handicap applies to the *selection* side.  Positive handicap
+        # → selection can lose by |line| goals; negative → must win
+        # by more than |line|.
+        # Determine which team the selection references.
+        sel_is_home = (home_team and sel == home_team.strip().lower())
+        sel_is_away = (away_team and sel == away_team.strip().lower())
+        if not (sel_is_home or sel_is_away):
+            return None
+        mat = out.score_matrix
+        p = 0.0
+        for x in range(len(mat)):
+            for y in range(len(mat[x])):
+                cell = mat[x][y]
+                if sel_is_home:
+                    diff = (x + line) - y  # home + handicap - away
+                else:
+                    diff = (y + line) - x
+                if diff > 0:
+                    p += cell
+                elif diff == 0:
+                    p += cell * 0.5   # push credit for asian half
+        return round(max(0.0, min(1.0, p)), 4)
+
+    return None
+
+
+
 __all__ = [
     "estimate_soccer_game_probabilities",
     "totals_from_matrix",
     "btts_from_matrix",
     "double_chance_from_1x2",
+    "compute_game_market_prob",
+    "build_soccer_team_ctx",
     "SoccerGameOutputs",
     "EV_TEAM_STRENGTH",
     "EV_EXPECTED_GOALS",
