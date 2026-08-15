@@ -284,6 +284,15 @@ async def lookup_team_form(db, team_name: str) -> Optional[dict]:
     nq = _norm(team_name)
     if not nq:
         return None
+    # ── Phase 2A.5B RC1 CLOSURE (2026-08) ────────────────────────────
+    # Canonical alias resolution BEFORE the DB sweep — this makes
+    # provider ↔ DB naming differences resolvable without unsafe
+    # broad fuzzy substring matching.
+    try:
+        from services.soccer_team_identity import canonical_team_key
+        nq_canon = canonical_team_key(team_name) or nq
+    except Exception:
+        nq_canon = nq
     # Sweep the cache; this is a single DB query.
     cursor = db.sportdb_cache.find({"_id": {"$regex": "^standings:"}})
     async for doc in cursor:
@@ -295,13 +304,37 @@ async def lookup_team_form(db, team_name: str) -> Optional[dict]:
             if not tn:
                 continue
             n_team = _norm(tn)
-            if n_team == nq or (nq in n_team) or (n_team and n_team in nq):
+            # Canonical alias-resolved team name for equality.
+            try:
+                from services.soccer_team_identity import canonical_team_key as _canon
+                n_team_canon = _canon(tn) or n_team
+            except Exception:
+                n_team_canon = n_team
+            # PRIMARY: canonical equality (safe).
+            if n_team_canon and (n_team_canon == nq_canon or n_team == nq):
                 parsed = _parse_team_form(row)
-                # Pull league name from doc id
                 _id = doc.get("_id", "")
                 parts = _id.split(":")
                 comp = parts[3] if len(parts) >= 4 else _id
                 parsed["competition"] = comp
+                parsed["identity_match"] = "canonical"
+                return parsed
+            # SECONDARY: constrained substring — allow ONLY when the
+            # shorter side is ≥ 4 characters AND ≥ 55 % of the longer's
+            # length.  This blocks the historic "Madrid" ↔ "Real Madrid"
+            # / "Real Madrid Castilla" collision class while still
+            # tolerating "Vancouver Whitecaps" ↔ "Vancouver Whitecaps FC"
+            # after the FC/CF/SC noise strip.
+            short, long_ = (nq, n_team) if len(nq) <= len(n_team) else (n_team, nq)
+            if (len(short) >= 4
+                    and len(short) / max(1, len(long_)) >= 0.55
+                    and (short in long_)):
+                parsed = _parse_team_form(row)
+                _id = doc.get("_id", "")
+                parts = _id.split(":")
+                comp = parts[3] if len(parts) >= 4 else _id
+                parsed["competition"] = comp
+                parsed["identity_match"] = "safe_substring"
                 return parsed
     return None
 

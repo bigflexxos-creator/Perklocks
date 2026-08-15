@@ -1333,6 +1333,48 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             # nothing — a sportsbook price is never presented as an
             # independent model probability.
             home_model = home_implied
+            # ── Phase 2A.5B (2026-08) — RC4 CLOSURE ──────────────────
+            # Soccer game probability MUST come from the independent
+            # Soccer game model, NOT the sportsbook implied probability.
+            # `estimate_soccer_game_probabilities` derives λ_home /
+            # λ_away from attack/defense strengths (real xG when
+            # available, form-derived GF/GA otherwise) with sample-size
+            # shrinkage and Dixon-Coles low-score correction.  Never
+            # reads sportsbook odds.
+            if sport == "Soccer":
+                try:
+                    from services.soccer_game_model import (
+                        estimate_soccer_game_probabilities,
+                    )
+                    _game_ctx = ((game.get("_ctx") if isinstance(game, dict) else None)
+                                 or {})
+                    _soc_game = estimate_soccer_game_probabilities(
+                        _game_ctx, home, away)
+                    if _soc_game.available:
+                        home_model = float(_soc_game.p_home)
+                        # Stash for downstream markets (Totals / BTTS /
+                        # Double Chance) to reuse the SAME distribution.
+                        if isinstance(game, dict):
+                            game.setdefault("_ctx", {})[
+                                "_soccer_game_model"] = _soc_game.as_dict()
+                            game["_ctx"]["_soccer_score_matrix"] = _soc_game.score_matrix
+                        _ml_sources = list(_soc_game.sources)
+                    else:
+                        _ml_model_unavailable = (
+                            _soc_game.reason or "MODEL_UNAVAILABLE")
+                        try:
+                            from services import funnel_telemetry as _funnel
+                            _funnel.record(
+                                sport="Soccer", market="moneyline",
+                                stage="model",
+                                reason=_ml_model_unavailable,
+                                event=f"{away} @ {home}",
+                                detail=f"soccer_game_model tier={_soc_game.tier}",
+                            )
+                        except Exception:
+                            pass
+                except Exception as _sgm_err:
+                    logger.debug("soccer_game_model wiring failed: %s", _sgm_err)
             if sport not in ("MLB", "Soccer") and _ml_model_unavailable is None:
                 _ml_model_unavailable = "MODEL_UNAVAILABLE"
         if home_model >= 0.5:
@@ -1361,10 +1403,44 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             )
             _game_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
             real_ml_factors, _ml_sources = build_soccer_ml_factors(_game_ctx, pick_team=side)
-            if not has_enough_soccer_data(real_ml_factors, "ml"):
+            # ── Phase 2A.5B (2026-08) — RC5 CLOSURE ──────────────────
+            # Pre-score starvation: legitimate Soccer matches with only
+            # 2 legacy correlated factors (Form PPG, Goals Scored, etc.
+            # all sourced from the SAME soccer_form doc) were dropped
+            # before probability evaluation even though the independent
+            # Soccer game model had a valid tier-B/C answer.  New rule:
+            # if the game model is available, its ``SCORE_MODEL`` +
+            # ``TEAM_STRENGTH`` counts as legitimate independent
+            # evidence.  Only true MODEL_UNAVAILABLE causes _skip_ml.
+            _has_game_model = bool(_game_ctx.get("_soccer_game_model"))
+            if not has_enough_soccer_data(real_ml_factors, "ml") and not _has_game_model:
                 _skip_ml = True
+                # RC6 CLOSURE — funnel-attribute the silent death.
+                try:
+                    from services import funnel_telemetry as _funnel
+                    _real_n = sum(1 for _v in real_ml_factors.values()
+                                  if _v is not None)
+                    _funnel.record(
+                        sport="Soccer", market="moneyline", stage="evidence",
+                        reason="EVIDENCE_THRESHOLD",
+                        event=f"{away} @ {home}",
+                        detail=f"real_factors={_real_n}/7 game_model=missing",
+                    )
+                except Exception:
+                    pass
             else:
                 factors = {k: v for k, v in real_ml_factors.items() if v is not None}
+                # If the independent game model succeeded, add its
+                # SCORE_MODEL evidence AS A DISTINCT CATEGORY so
+                # downstream Magic/Fusion cannot double-count the
+                # correlated form-derived factors.  This resolves RC3.
+                if _has_game_model:
+                    _sgm = _game_ctx["_soccer_game_model"]
+                    factors["Score Model Probability"] = round(
+                        float(_sgm.get("p_home") or 0.5) if side == home
+                        else 1.0 - float(_sgm.get("p_home") or 0.5), 4)
+                    _ml_sources = list(dict.fromkeys(
+                        list(_ml_sources) + list(_sgm.get("sources") or [])))
         else:
             # Phase 1B — non-engine sports reach this branch only when an
             # authoritative model produced the probability:
