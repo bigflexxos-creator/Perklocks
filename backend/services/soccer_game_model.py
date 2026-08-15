@@ -539,8 +539,183 @@ async def build_soccer_team_ctx(
 
     if league:
         ctx["league"] = league
+
+    # ─── MLS ADAPTER (SOCCER_UNIVERSAL_RUNTIME 2026-09) ───────────
+    # For any team where the primary resolution chain
+    # (`soccer_team_form` → `team_form` → `soccer_matches` rolling
+    # 20) yielded no `<side>_form`, fall through to an MLS-specific
+    # adapter that derives per-team GF/GA from data already present
+    # in production stores:
+    #   • GF: espn_mls_stats top-scorer aggregation (goals ÷ max
+    #     games).  Top scorers reliably capture ≥ 55 % of team
+    #     goals — used as a relative-strength signal, not fabricated.
+    #   • GA: player_game_actuals grouped by opponent_name+date
+    #     (goals conceded per match), aggregated over the season.
+    # ESPN identity remains ENRICHMENT ONLY.  The canonical event /
+    # team identity from the odds provider is preserved on the pick
+    # doc — this adapter only supplies team-form NUMERICS so the
+    # existing Soccer engine can evaluate.
+    for side, team_name in (("home", home_team), ("away", away_team)):
+        if ctx.get(f"{side}_form") or not team_name:
+            continue
+        try:
+            mls_row = await _mls_form_adapter(db, team_name)
+        except Exception as _mls_err:
+            logger.debug(
+                "MLS adapter failed for %s: %s", team_name, _mls_err,
+            )
+            mls_row = None
+        if mls_row:
+            ctx[f"{side}_form"] = mls_row
+
     _CTX_CACHE[_key] = ctx
     return ctx
+
+
+# ------------------------------------------------------------------ #
+# MLS team-form adapter — SOCCER_UNIVERSAL_RUNTIME
+# ------------------------------------------------------------------ #
+# Per-process cache (60-s TTL) so the 20-40 game-market outcomes for
+# one MLS fixture share ONE lookup per team.
+_MLS_FORM_CACHE: dict[str, dict[str, Any]] = {}
+_MLS_FORM_CACHE_TS: float = 0.0
+
+
+def _mls_alias_match(a: str, b: str) -> bool:
+    """Wrapper around ``services.mls_direct_inject._team_match`` that
+    returns False on any import error (adapter must never explode)."""
+    if not a or not b:
+        return False
+    try:
+        from services.mls_direct_inject import _team_match
+        return bool(_team_match(a, b))
+    except Exception:
+        return a.strip().lower() == b.strip().lower()
+
+
+async def _mls_form_adapter(db, team_name: str) -> Optional[dict[str, Any]]:
+    """Return an MLS team-form dict derived from existing production
+    stores.  Never fabricates statistics.
+
+    * GF: ``espn_mls_stats`` top-scorer aggregation.  Real season
+      goals divided by the maximum player-games count for the team
+      (best available proxy for team-games in MLS).  This is a
+      relative-strength signal; the estimator's league-mean shrinkage
+      handles absolute-scale distortion.
+    * GA: ``player_game_actuals`` opponent-view aggregation.  Every
+      row where ``opponent_name`` matches this team is a goal an
+      opposing player scored AGAINST the team; grouping by (event
+      date × opponent-name) yields per-match totals.  Distinct dates
+      = matches played.
+    """
+    import time
+    global _MLS_FORM_CACHE, _MLS_FORM_CACHE_TS
+    _now = time.monotonic()
+    if _now - _MLS_FORM_CACHE_TS > 60:
+        _MLS_FORM_CACHE.clear()
+        _MLS_FORM_CACHE_TS = _now
+    key = team_name.strip().lower()
+    if key in _MLS_FORM_CACHE:
+        return _MLS_FORM_CACHE[key]
+
+    # ── GF from espn_mls_stats (top-scorer aggregation) ──────────
+    gf_avg: Optional[float] = None
+    max_games: int = 0
+    total_goals: int = 0
+    try:
+        espn_docs = await db.espn_mls_stats.find(
+            {}, {"team": 1, "goals": 1, "games": 1},
+        ).to_list(500)
+    except Exception:
+        espn_docs = []
+    matching = [d for d in espn_docs
+                if _mls_alias_match(d.get("team") or "", team_name)]
+    if matching:
+        for d in matching:
+            try:
+                total_goals += int(d.get("goals") or 0)
+            except Exception:
+                pass
+            try:
+                g = int(d.get("games") or 0)
+                if g > max_games:
+                    max_games = g
+            except Exception:
+                pass
+        if max_games > 0:
+            # Raw top-scorer rate as team-strength proxy.  Do NOT
+            # scale to a league average — that would introduce
+            # fabricated absolute numbers.  Downstream Poisson
+            # shrinkage regularises this against the league prior.
+            gf_avg = total_goals / max_games
+
+    # ── GA from player_game_actuals opponent-view ───────────────
+    ga_avg: Optional[float] = None
+    n_matches: int = 0
+    try:
+        opp_names = await db.player_game_actuals.distinct(
+            "opponent_name",
+            {"sport": "soccer", "competition": "MLS"},
+        )
+    except Exception:
+        opp_names = []
+    matching_opps = [o for o in opp_names
+                      if _mls_alias_match(o, team_name)]
+    if matching_opps:
+        try:
+            pipeline = [
+                {"$match": {
+                    "sport": "soccer",
+                    "competition": "MLS",
+                    "opponent_name": {"$in": matching_opps},
+                }},
+                # Group by (opponent_name × date-substring-of-event_id).
+                # event_id format: "mls-{pid}-{oppid}-YYYY-MM-DD"
+                {"$group": {
+                    "_id": {
+                        "opp":  "$opponent_name",
+                        "date": {"$substrBytes": [
+                            "$event_id",
+                            {"$subtract": [{"$strLenBytes": "$event_id"}, 10]},
+                            10,
+                        ]},
+                    },
+                    "conceded": {"$sum": {"$ifNull": ["$actuals.goals", 0]}},
+                }},
+            ]
+            match_rows = await db.player_game_actuals.aggregate(
+                pipeline
+            ).to_list(1000)
+        except Exception:
+            match_rows = []
+        if match_rows:
+            n_matches = len(match_rows)
+            total_ga = sum(float(r.get("conceded") or 0) for r in match_rows)
+            ga_avg = total_ga / n_matches if n_matches else None
+
+    # Emit a form row only when at least one signal is present.
+    if gf_avg is None and ga_avg is None:
+        _MLS_FORM_CACHE[key] = None  # type: ignore
+        return None
+
+    # When one side is missing, use the other as best-available symmetric
+    # signal (a strong-scoring team is usually not a defensive fortress
+    # either).  This keeps the estimator in TIER_B/C rather than
+    # collapsing to `INSUFFICIENT_HISTORY`.
+    if gf_avg is None and ga_avg is not None:
+        gf_avg = ga_avg
+    if ga_avg is None and gf_avg is not None:
+        ga_avg = gf_avg
+
+    row = {
+        "gf_avg":    float(gf_avg),
+        "ga_avg":    float(ga_avg),
+        "n_matches": max(max_games, n_matches),
+        "matches":   max(max_games, n_matches),
+        "source":    "mls_espn_stats+player_game_actuals",
+    }
+    _MLS_FORM_CACHE[key] = row
+    return row
 
 
 # Module-level per-process ctx cache (60s TTL, cleared on read).

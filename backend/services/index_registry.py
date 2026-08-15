@@ -392,10 +392,10 @@ _INDEX_SPECS: list[IndexSpec] = [
               critical=False,
               owner_service="alt_lines_feed"),
     IndexSpec("live_alt_lines", "last_seen_1",
-              keys=(("last_seen", 1),), expire_after_seconds=1800,
+              keys=(("last_seen", 1),), expire_after_seconds=5400,
               critical=False,
               owner_service="alt_lines_feed",
-              purpose="30-minute TTL on last_seen BSON date"),
+              purpose="90-minute TTL on last_seen (safety margin >= 4× 15-min guarded refresh cadence)"),
 
     # ── learning_snapshots (owner: server_startup) ───────────────────
     IndexSpec("learning_snapshots", "learning_generated_idx",
