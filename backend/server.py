@@ -3324,6 +3324,68 @@ async def on_startup():
             "Phase 2A.5D startup board healer skipped: %s", _bv_boot_err,
         )
 
+    # ── Phase 2A.5E — Real-line MLS/Soccer scorer ingest healer ──
+    # Wires the cached `live_alt_lines` / `odds_api_cache` real
+    # sportsbook player-scorer markets into the authoritative picks
+    # pipeline.  Runs once at startup so restarts immediately pick
+    # up any props already fetched by the alt-lines feed but not yet
+    # promoted to Perklocks candidates (previously stuck as
+    # NO_PROVIDER_PLAYER_MARKET for Messi, Evander, etc).  Writes
+    # picks with `source = "real_line_alt_scorer_v1"` — that source
+    # is out-of-band from the main atomic-delete filter so these
+    # rows survive subsequent refresh cycles.  Idempotent upsert
+    # keyed on (event_id, market_key, selection, pick_date).
+    try:
+        from services.real_line_scorer_ingest import (
+            ingest_real_line_soccer_scorers,
+        )
+        _p2a5e_today = _today_str()
+        _p2a5e_stats = await ingest_real_line_soccer_scorers(
+            db, today=_p2a5e_today,
+        )
+        logger.info(
+            "Phase 2A.5E real-line scorer ingest: %s", _p2a5e_stats,
+        )
+    except Exception as _p2a5e_err:
+        logger.warning(
+            "Phase 2A.5E real-line scorer ingest skipped: %s", _p2a5e_err,
+        )
+
+    # Recurring deferred task — re-run the real-line ingest every
+    # 15 minutes so newly-cached alt lines land on the board
+    # between full refresh cycles (Odds API alt-lines fetcher runs
+    # on its own cadence, independent of the main pipeline).
+    async def _p2a5e_recurring_ingest():
+        while True:
+            try:
+                await asyncio.sleep(15 * 60)
+                from services.real_line_scorer_ingest import (
+                    ingest_real_line_soccer_scorers as _ingest,
+                )
+                _stats = await _ingest(db, today=_today_str())
+                logger.info(
+                    "Phase 2A.5E recurring real-line ingest: %s", _stats,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as _rec_err:
+                logger.warning(
+                    "Phase 2A.5E recurring ingest cycle failed: %s", _rec_err,
+                )
+    try:
+        _TASK_REGISTRY.register_and_start(
+            "phase_2a5e_real_line_scorer_ingest",
+            _p2a5e_recurring_ingest,
+            task_type="recurring_loop",
+            critical=False,
+            cadence="15min",
+        )
+    except Exception as _p2a5e_reg_err:
+        logger.warning(
+            "Phase 2A.5E recurring ingest registration skipped: %s",
+            _p2a5e_reg_err,
+        )
+
     # ── Warm the signal-rank cache at boot (2026-07-18) ───────────
     # Every backend restart previously left `_LAST_RUN` empty, so the
     # very first /picks/today request paid a 3-5s sync ranking cost.
