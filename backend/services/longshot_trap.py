@@ -83,28 +83,13 @@ def _is_elite_anchor(pick: dict) -> bool:
         return True
     if (pick.get("player_tags") or {}).get("elite"):
         return True
-    # ── MLS elite check (2026-07-22) ──────────────────────────────────
-    # User report: Surridge (-145), Bouanga (-115), Mukhtar (-195),
-    # Talles Magno (+185), Hannes Wolf, Chris Mueller — all real MLS
-    # starters and season-leaders were being TRAPPED as "longshots"
-    # because is_elite=True wasn't set on the synth-scorer path. Query
-    # the MLS scorer gate directly: any ESPN-leaderboard player or
-    # curated MLS starter escapes the trap.
-    league = str(pick.get("league") or "").upper()
-    if league in ("MLS", "MAJOR LEAGUE SOCCER"):
-        player = (pick.get("selection")
-                  or pick.get("player")
-                  or "").strip()
-        if player:
-            try:
-                from services.mls_scorer_gate import is_mls_scorer_pick_ok
-                # implied=1.0 -> gate falls back to "in ESPN/starter list"
-                # check only, ignoring the market-favorite escape hatch.
-                ok, reason = is_mls_scorer_pick_ok(player, 0.0)
-                if ok:
-                    return True
-            except Exception:
-                pass
+    # ── Phase 2A.5 (2026-08) — MLS 2025 hardcoded scorer/starter
+    # whitelist RETIRED as an eligibility gate.  Historical
+    # scorer/starter information is downstream *evidence only* and
+    # cannot decide whether a player escapes a longshot trap.
+    # (Previous behavior: an MLS player was granted an "elite escape"
+    # if they appeared in the stale 2025 whitelist — that reintroduces
+    # reputation-based Lock Score decisions Phase 2A.5 retired.)
     return False
 
 
