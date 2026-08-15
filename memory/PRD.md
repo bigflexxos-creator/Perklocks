@@ -718,3 +718,43 @@ NEW tests/test_phase1d_gates.py (26). testing_agent verified 99/99 (1D+1B+1C+ite
 - Composite calibration: empty-factor Platinum picks score 92-98 (composite driven by win_prob) — belongs to Magic/score-contract phase, plus preseason-uncertainty cap design.
 - Old-contract test files to reconcile in their own phase: board_floor_iter32, calibration_shrinkage_iter33, probability_canonical_iter37, revert_calibration_iter34, p03/p04 null-odds board tests.
 - De-vig promotion decision (devig_edge → authoritative) after side-by-side evidence.
+
+---
+
+## PERKLOCKS PHASE 2 — MODEL/MAGIC/INTELLIGENCE CLOSURE (2026-06) — STATUS: PARTIAL
+
+### Closed this session (with runtime proofs — tests/test_phase2_intelligence.py, 11 tests)
+- **B. MLB pitcher-K (support finding): FIXED/VERIFIED.** Authoritative model = `services/mlb_k_probability.evaluate_k_pick` (Poisson over expected-K λ from L5 form + season K% + opponent K% + expected IP), executed for BOTH sides in the production side-selector inside `_props_picks_from_event`. Runtime execution proven (P(over)+P(under)=1, expected_k computed); rejections carry machine reasons (`no_pitcher_data`, `insufficient_signals`). **Key-mismatch regression guard added**: cross-module assertion that `game_context` writes and `mlb_k_probability` reads the SAME `starting_pitcher_home/away` keys; wrong-key ctx fails loudly.
+- **K. Fusion (support finding): FIXED/VERIFIED.** Orchestrator invokes `pick_fusion_decorator.enrich_picks_bulk` on on-board picks, persists to `fusion_predictions` (pick_id linkage for grading), stamps `pick["fusion"]`; DOWNSTREAM consumption proven: `elite_evidence_gate._classify_fusion` scores fusion agreement (±3pp) as an evidence signal (functional test: agreement > disagreement).
+- **L. Adaptive learning (support finding): FIXED/VERIFIED.** `learning_engine.recompute_learned_weights` learns from SETTLED picks only (time-decay half-life 30d, persisted `learned_weights` singleton); `learning_system_v2` volume-gated (MIN_TOTAL_PICKS≥100) per-(sport,market) weights; both applied to PREGAME picks in the orchestrator (`apply_learning`, `apply_v2_to_picks`); no-leakage guard test (apply path never reads the pick's own result).
+- Phase 1D protections re-asserted under Phase 2 (no floors/ladders/booster; devig fields).
+
+### PART A/T — RUNTIME COVERAGE MATRIX (truthful, post-1D)
+| Sport | Market | Feed | Model | Sim | Magic/Fusion | Publishable | Status |
+|---|---|---|---|---|---|---|---|
+| MLB | ML/spread/total/team-total/alt-RL | Odds API | mlb_feature_engine (real-data gated) | brain/sim_mlb | yes | yes | AUTHORITATIVE_RUNTIME |
+| MLB | pitcher K / outs | Odds API | mlb_k_probability (Poisson) + feature engine | sim_mlb K distribution | yes | yes | AUTHORITATIVE_RUNTIME |
+| MLB | hits/TB/HR/RBI/H+R+RBI | Odds API | mlb_feature_engine 0/5-gate + BvP/statcast | sim_mlb | yes | yes | AUTHORITATIVE_RUNTIME (reachability funnel-proven 1B) |
+| NFL | ML/spread/total (REG+PRE) | Odds API | platinum game sim (ratings→margin/total) | causal sim, seeded | challenger+magic | yes | AUTHORITATIVE_RUNTIME |
+| NFL | player props | Odds API | nflverse feature engine + Platinum challenger | platinum player sim (shadow) | yes | yes | AUTHORITATIVE_RUNTIME (challenger not promoted) |
+| Tennis | ML | Odds API (+gap-fill w/ real line) | tennis_math_engine/dd model | — | tennis_engine gates | yes | AUTHORITATIVE_RUNTIME |
+| Tennis | alt spreads/totals | Odds API per-event | ladder-derived + math engine | — | yes | yes | MODEL_PARTIAL (ladder-cumulative probs; audit deferred) |
+| Soccer | 1X2/DC/BTTS/totals/spreads | Odds API | soccer_feature_engine (real-DC-line guard) | — | yes | yes | AUTHORITATIVE_RUNTIME |
+| Soccer | scorer props | Odds API real lines | scorer/creator engines + xG enrich | goal_scorer sim v2/v3 | yes | yes (real line only) | AUTHORITATIVE_RUNTIME; synth/MLS/CSL = RESEARCH_ONLY |
+| NBA | ML/spread/total | Odds API | none | none | n/a | no | MODEL_UNAVAILABLE (no game model in repo — needs build) |
+| NBA | player props | Odds API | nba_feature_engine | — | yes | yes | AUTHORITATIVE_RUNTIME |
+| CFB | ML/spread/total | Odds API | none (cfb_feature_engine is prop/precompute only) | none | n/a | no | MODEL_UNAVAILABLE (needs build/wire) |
+| NHL | ML/puck/total | Odds API (wired 1B) | none | none | n/a | no | MODEL_UNAVAILABLE (needs build) |
+| UFC | ML/totals | Odds API (totals fetch restored 1C) | none (ufc_espn = research-only) | none | n/a | no | MODEL_UNAVAILABLE; ufc_espn_v1 = RESEARCH_ONLY/extended |
+
+### PART P — De-vig decision (evidence-based)
+Canonical TARGET policy: `model_probability − devig_market_probability` (vig is not market belief; raw one-sided implied systematically understates value by the juice share). Both fields already computed+persisted in production. **Promotion NOT executed yet** because the generation edge gate runs inside `_build_pick` BEFORE devig attachment; flipping requires reordering the gate and a slate-level side-by-side ranking comparison (deterministic proof) — queued as the first Phase-2 continuation item. Raw odds and both probabilities preserved regardless.
+
+### REMAINING TRUTHFUL GAPS / UNRESOLVED PHASE-2 ARROWS (PARTIAL)
+1. Parts F/G/H: NBA, CFB, NHL, UFC game models do not exist in the repo — must be legitimately built (team strength/efficiency/xG/fighter-profile evidence) then wired both-sides. (Largest work item.)
+2. Part D/R: NFL Platinum composite calibration audit (92-98 with sparse factors) + Part E preseason uncertainty modeling — not yet executed.
+3. Part I: Tennis MODEL_UNAVAILABLE events audit + alt-ladder model classification.
+4. Part M/N/O: Magic status truth (MAGIC_APPLIED vs INSUFFICIENT), simulator classification matrix, calibration bidirectionality proof — not yet executed.
+5. Part P: de-vig scoring promotion implementation + G5 slate comparison.
+6. Part Q: Why-This-Pick provenance contract audit.
+7. Full-suite before/after classification vs 233f/30e baseline for Phase-2 changes (this session's changes are test-only + no production code changes, so baseline unchanged by construction).
