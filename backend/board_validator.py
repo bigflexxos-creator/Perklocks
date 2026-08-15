@@ -706,6 +706,24 @@ def evidence_threshold(picks: list[dict]) -> tuple[list[dict], dict]:
             MIN_EVIDENCE_COUNT_SCRAPE if src_lc in _LOW_EVIDENCE_SOURCES
             else MIN_EVIDENCE_COUNT
         )
+        # ── PHASE 1D — NFL Platinum authoritative-model evidence ─────
+        # The gate previously only recognized rationale/bucket/factors/
+        # edge/EV signals, so live Platinum game candidates (empty
+        # factor dict by design) died at EVIDENCE_THRESHOLD despite a
+        # full authoritative path.  Recognize TWO genuinely independent
+        # categories — never multi-counting one simulation's derived
+        # fields:
+        #   1. exact-line causal simulation probability (the model)
+        #   2. team-rating/expected-margin context (the model's INPUT
+        #      evidence from real stored game results)
+        _plat = p.get("platinum_game_sim") or {}
+        if (p.get("model_source") == "platinum_nfl_game_sim"
+                and _plat.get("sim_probability") is not None):
+            evidence += 1
+            if (_plat.get("expected_margin_home") is not None
+                    or _plat.get("expected_total") is not None):
+                evidence += 1
+
         if evidence < threshold:
             stats["dropped"] += 1
             r = f"only_{evidence}_of_{threshold}_signals"

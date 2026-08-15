@@ -690,3 +690,31 @@ Gateway budget denials → BUDGET_GOVERNOR_BLOCKED; breaker blocks → CIRCUIT_B
 - NEW tests/test_phase1c_foundation.py (24) + testing-agent tests/test_iter98_phase1c_review.py (14). 53/53 phase suites + 67/67 review PASS. Pre-existing unrelated failures: test_p04_real_line_integrity (old contract), test_universal_reachability boundary, test_mlb_grading_fix_iter71.
 
 ### NEXT (approved queue): PHASE 1D — GATE RECONSTRUCTION (G1-G7) — NOT started.
+
+---
+
+## PERKLOCKS PHASE 1D — GATE RECONSTRUCTION G1-G7 (2026-06, token PHASE1D_GATE_RECONSTRUCTION_READY)
+
+### Gates retired (sports_engine._build_pick + compute_lock_score)
+- G1: chalk odds caps (-450 std / -750 alt / -400 long-shot), SPORT_IMPLIED_FLOOR (0.48-0.56) + 0.42 juice sanity — implied prob is market info only now.
+- G2: universal model-prob floors (0.58 / 0.62 MLB / 0.55 juice+K+alt / 0.25 long-shot) + MLB juice/K carve-outs.
+- G3: generation-time lock BOOSTER (wp>=65 & edge>=1 → floor 85-105) AND the 98/95/90/85 evidence-floor LADDER inside compute_lock_score. Lock Score is now earned from the 6-component composite only.
+- G4: per-sport generation lock floors (72-88) retired as kill-switches; the single authoritative rule is read-time `is_main_board_eligible` (canonical/real-line valid AND published_lock_score >= 85, $gte). Boundary proven: 84.99 F / 85.00 T / 85.01 T.
+- Retained: ONE uniform edge gate (edge < -1.0% → reject, funnel `EDGE_THRESHOLD`); board_validator integrity/contradiction/real-line/evidence gates (telemetried).
+
+### New capabilities
+- G5: `_attach_devig(pick, opp_prices)` — raw_implied_probability + devig_market_probability + devig_method (n-way normalization, 3-way soccer) + devig_edge_percent, wired at ML/totals/spreads emission; book_odds never overwritten; `OPPOSING_SIDE_UNAVAILABLE` telemetry. current edge untouched (promotion decision later per user Q5-b).
+- G6: ML side chosen by MODEL probability (Platinum margin sign for NFL), never odds sign — neutrality proven both directions.
+- G7: rejections funnel-attributable: EDGE_THRESHOLD, EVIDENCE_THRESHOLD, INTEGRITY_CHECK_FAILED, MODEL_UNAVAILABLE, OPPOSING_SIDE_UNAVAILABLE, etc.
+- NFL evidence gate: `board_validator.evidence_threshold` now recognizes Platinum provenance as exactly TWO independent categories (exact-line sim probability + team-rating input context) — never multi-counting derived fields. Weak book-price-only candidates still fail.
+
+### Live proof
+NFL-filtered orchestrator refresh (2026-08-14): 19 preseason picks stored, all `platinum_nfl_game_sim` + `season_type=PRESEASON` + raw/devig probs + published_lock_score, board-eligible; rejections attributed (EDGE_THRESHOLD 8).
+
+### Tests
+NEW tests/test_phase1d_gates.py (26). testing_agent verified 99/99 (1D+1B+1C+iter98+chalk_neutral) — /app/test_reports/iteration_99.json. Updated tests/test_lock_score_chalk_neutral.py (ladder assertion → neutrality assertion). Full suite 233f/30e vs pre-1D 238f/60e — all deltas classified pre-existing (old-contract history-floor tests on weeks-old sub-80 data; time-of-day live-board evidence tests; p03/p04 old null-odds contract).
+
+### Known follow-ups (NOT started per stop order)
+- Composite calibration: empty-factor Platinum picks score 92-98 (composite driven by win_prob) — belongs to Magic/score-contract phase, plus preseason-uncertainty cap design.
+- Old-contract test files to reconcile in their own phase: board_floor_iter32, calibration_shrinkage_iter33, probability_canonical_iter37, revert_calibration_iter34, p03/p04 null-odds board tests.
+- De-vig promotion decision (devig_edge → authoritative) after side-by-side evidence.

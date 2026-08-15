@@ -29,19 +29,33 @@ def _factors_split():
 
 
 def test_plus150_dog_with_strong_evidence_can_reach_strong_lock():
-    """+150 (dec 2.50) at 45% wp, 12% edge, EV = 0.45*1.5 - 0.55 = +0.125u
-    should reach at least Strong Lock (95) with strong bucket hit and
-    agreement — proving chalk-neutrality (favors doesn't rule the tier)."""
-    pick = {
+    """PHASE 1D (G3/G6) UPDATE — the 90/95/98 evidence-floor LADDER
+    this test originally asserted was retired as a score-inflation
+    path.  The chalk-NEUTRALITY intent is preserved: a +150 dog with
+    strong evidence must score at least as high as a -300 chalk
+    favorite with weaker edge and identical factor/bucket evidence.
+    No hardcoded tier floor is asserted anymore."""
+    dog_pick = {
         "book_odds": 150,
         "edge_percent": 12.0,
         "win_probability": 45.0,
     }
+    chalk_pick = {
+        "book_odds": -300,
+        "edge_percent": 3.0,
+        "win_probability": 78.0,
+    }
     bucket = {"n": 40, "wins": 22, "losses": 18, "roi": 8.0}
-    lock, _ = compute_lock_score(_factors_agreeing(), win_prob=45.0,
-                                   pick=pick, bucket_row=bucket,
-                                   edge_percent=12.0)
-    assert lock >= 95.0, f"+150 dog with 12% edge + 55% bucket hit should reach ≥95, got {lock}"
+    dog_lock, _ = compute_lock_score(_factors_agreeing(), win_prob=45.0,
+                                     pick=dog_pick, bucket_row=bucket,
+                                     edge_percent=12.0)
+    chalk_lock, _ = compute_lock_score(_factors_agreeing(), win_prob=45.0,
+                                       pick=chalk_pick, bucket_row=bucket,
+                                       edge_percent=3.0)
+    assert dog_lock >= chalk_lock, (
+        f"dog with 4x the edge must not score below equivalent-evidence "
+        f"chalk: dog={dog_lock} chalk={chalk_lock}")
+    assert dog_lock > 0
 
 
 def test_minus300_chalk_with_low_edge_capped_below_strong_lock():

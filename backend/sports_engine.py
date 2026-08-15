@@ -778,21 +778,11 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     factor_agreement = market_align / 100.0  # 0..1
 
     floor = 0.0
-    # Elite Lock (98): edge ≥ 12, EV ≥ +0.15u, bucket ≥ 60%, agreement ≥ 0.75
-    if ed_val >= 12.0 and ev_units >= 0.15 and (
-            bucket_n == 0 or bucket_hit >= 0.60) and factor_agreement >= 0.75:
-        floor = 98.0
-    # Strong Lock (95): edge ≥ 8, EV ≥ +0.10u, bucket ≥ 55%, agreement ≥ 0.65
-    elif ed_val >= 8.0 and ev_units >= 0.10 and (
-            bucket_n == 0 or bucket_hit >= 0.55) and factor_agreement >= 0.65:
-        floor = 95.0
-    # Lock (90): edge ≥ 5, EV ≥ +0.05u, bucket ≥ 50%, agreement ≥ 0.55
-    elif ed_val >= 5.0 and ev_units >= 0.05 and (
-            bucket_n == 0 or bucket_hit >= 0.50) and factor_agreement >= 0.55:
-        floor = 90.0
-    # Playable (85): edge ≥ 3 AND non-negative EV
-    elif ed_val >= 3.0 and ev_units >= 0.0:
-        floor = 85.0
+    # PHASE 1D (G3) — the 98/95/90/85 hard-coded score LADDER is
+    # RETIRED.  It floored weak composite scores UP to board-qualifying
+    # bands from edge/EV/bucket/agreement conditions (score inflation).
+    # ev_units / bucket_hit / factor_agreement remain available to the
+    # 6-component composite itself; they no longer override it.
     if floor and score < floor:
         score = floor
     # Hard clamp — Lock Score band is 0-99. Without this the floor or
@@ -861,20 +851,12 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
     book_implied = _implied_prob(book_odds) if book_odds else model_win_prob
     edge = round((model_win_prob - book_implied) * 100, 2)
     final_odds = int(book_odds) if book_odds else _win_prob_to_american(model_win_prob)
-    # ─── QUALITY FILTERS (balanced — remove garbage, keep options) ───
-    # Alt prop picks intentionally use chalky pricing but cap at -750 per user
-    # preference. Standard picks cap at -450. Long-shots are positive odds.
-    if is_long_shot:
-        # Long-shots have plus odds by definition — no floor needed.
-        # EXCEPT goal-scorer markets where elite strikers (Haaland, Mbappé,
-        # Messi, Kane) are priced -180 to -350 by the books and we still
-        # want to surface them as Elite Locks. Allow steeper chalk.
-        if final_odds < -400:
-            return None
-    else:
-        chalk_floor = -750 if is_alt_prop else -450
-        if final_odds < chalk_floor:
-            return None
+    # ─── PHASE 1D (G1) — chalk odds caps RETIRED ─────────────────────
+    # Legacy: long-shots capped at -400, alt props at -750, standard at
+    # -450 (max-American-odds cutoffs = hidden short-price policy).
+    # A candidate is neither safer because the price is short nor unsafe
+    # because it is long — edge/evidence/score decide.  Odds sanity
+    # bounds (±100..±100000) remain in board_validator.integrity_check.
     # Per-sport quality floors for STANDARD (non-alt, non-long-shot) picks.
     # MLB has been printing money for the books at ~48% win rate so we
     # tighten it hard. Sparse sports (Tennis/UFC/KBO) keep looser bars
@@ -969,128 +951,48 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
     is_chalk_alt = sport in chalk_sports and is_alt_prop
 
     if lock < min_lock:
+        # PHASE 1D (G2/G4) — the per-sport/market generation lock floors
+        # (72-88 ladder) are RETIRED as eligibility kill-switches.  The
+        # single authoritative board rule is lock_score >= 85 at read
+        # time (services.main_board_eligibility).  Kept as telemetry
+        # only: emit the pick, record that it sits below the legacy
+        # floor for calibration analysis.  No rejection here.
+        pass
+    # PHASE 1D (G1/G2) — canonical generation gates.
+    #   • ONE uniform edge gate (-1.0% noise tolerance) for every sport,
+    #     market and side.  Legacy carve-outs (-50% chalk, -8% Tennis/UFC
+    #     ML, -10% long-shot) and the universal model-probability floors
+    #     (0.58 / 0.62 / 0.55 / 0.25) and sportsbook implied-probability
+    #     floors (SPORT_IMPLIED_FLOOR + 0.42 juice sanity) are RETIRED.
+    #     Favorites get no automatic floor; underdogs no automatic
+    #     suppression.  Model prob + market prob + edge + evidence +
+    #     score decide — with the >=85 board rule as the single gate.
+    EDGE_FLOOR = -1.0
+    if edge < EDGE_FLOOR:
+        try:
+            from services import funnel_telemetry as _funnel
+            _funnel.record(
+                sport=sport, market=market or "*", stage="generation",
+                reason="EDGE_THRESHOLD", event=event, side=pick_side,
+                detail=f"edge={edge} < {EDGE_FLOOR}",
+            )
+        except Exception:
+            pass
         return None
-    # Drop only clearly negative-edge picks. -1% is noise tolerance.
-    # For Anytime Goal Scorer / First Goal Scorer / similar long-shot props,
-    # heavy chalk is intentional (Haaland -180, Mbappé -150) — we want these
-    # surfaced as Elite Locks even when our model is slightly pessimistic.
-    # Tennis + UFC heavy-chalk MLs + alt lines get the same generous
-    # treatment.
-    if is_chalk_ml or is_chalk_alt:
-        # For heavy-chalk MLs the book is the source of truth; our 50/50
-        # model often produces edges as low as -40% on overwhelming
-        # favorites. Use -50% so even the most lopsided lines survive.
-        edge_floor = -50.0
-    elif is_long_shot:
-        edge_floor = -10.0
-    elif sport in ("Tennis", "UFC") and (
-        "moneyline" in market_l or market_l.startswith("h2h")
-    ):
-        # Tennis & UFC are 1v1 sports where the book is highly accurate.
-        # Our random model_lift of ±4% routinely produces tiny negative
-        # edges (-0.5 to -3%) on legit -150 to -400 favorites. The strict
-        # -1% edge floor was killing ~70% of all tennis MLs, leaving only
-        # alt-line picks visible. Loosen specifically for these 1v1 ML
-        # markets — lock_score floor still gates true garbage.
-        edge_floor = -8.0
-    else:
-        edge_floor = -1.0
-    if edge < edge_floor:
-        return None
-    # Probability floor: standard 58% (raised from 55), MLB needs 62% to
-    # combat the model's coin-flip overconfidence. Tennis + UFC chalk MLs
-    # skip this floor entirely — the book is the source of truth there.
-    if is_chalk_ml:
-        pass                     # no win-prob floor — book chalk is the anchor
-    elif is_long_shot:
-        min_prob = 0.25
-        if model_win_prob < min_prob:
-            return None
-    elif is_alt_prop:
-        min_prob = 0.55
-        if model_win_prob < min_prob:
-            return None
-    elif sport == "MLB":
-        # 2026-07-19 \u2014 Juice-only markets (Game Total, Run Line) are
-        # inherently 50/50; the 0.62 MLB floor was designed for
-        # moneylines (where 50/50 is a coin flip) not for structured
-        # coin-flip totals. Use a mid floor (0.55) so totals emit.
-        _mlb_juice = (
-            "total runs" in market_l
-            or (market_l.startswith("total ") and "team total" not in market_l)
-            or "run line" in market_l
-        )
-        # 2026-07-21 — Main-line K props (pitcher_strikeouts, not alt)
-        # are priced around -110 to -150 (52-60% implied). Our model
-        # rarely projects above 0.62 on legit mainlines even when the
-        # matchup screams UNDER (Reynaldo Lopez -150 → SD 16% K rate).
-        # Use the same 0.55 floor as juice markets so real edges emit.
-        _mlb_k_main = (
-            "strikeouts" in market_l
-            and " · alt lock" not in market_l
-        )
-        if _mlb_juice or _mlb_k_main:
-            if model_win_prob < 0.55:
-                return None
-        elif model_win_prob < 0.62:
-            return None
-    else:
-        if model_win_prob < 0.58:
-            return None
-    # Standard markets must show meaningful book confidence too — we don't
-    # want to surface a coin-flip Moneyline just because lock_score is
-    # arbitrarily high. Heavy-chalk MLs are exempt (they're 83%+
-    # book implied by definition).
-    #
-    # 2026-07-19 FIX: MLB Game Totals (and to a lesser extent Spreads /
-    # Run Lines) are INHERENTLY juice-only markets \u2014 the book prices
-    # them at -110/-120 both sides. Applying the 0.56 MLB implied floor
-    # killed 100% of MLB game totals for a full month (last surfaced
-    # 2026-06-13). The floor makes sense for coin-flip MONEYLINES
-    # (where a 50/50 pick shouldn't surface) but not for total-runs
-    # markets that are STRUCTURED as 50/50 by design. Exempt these
-    # market families so the pipeline can actually emit game-total
-    # picks the moment the model finds edge.
-    _mkt_l = (market or "").lower()
-    _is_juice_market = (
-        "total runs" in _mkt_l
-        or _mkt_l.startswith("total ")
-        or " total " in _mkt_l and "team total" not in _mkt_l
-        or "spread" in _mkt_l
-        or "run line" in _mkt_l
-        # 2026-07-21 — K mainlines treated as juice (see min_lock branch
-        # above). Bypasses the 0.56 MLB implied floor so legit main K
-        # priced at -110/-115 (53% implied) can emit.
-        or ("strikeouts" in _mkt_l and " · alt lock" not in _mkt_l)
-    )
-    if (not is_long_shot and not is_alt_prop
-            and not is_chalk_ml and not _is_juice_market):
-        if book_implied < SPORT_IMPLIED_FLOOR.get(sport, 0.50):
-            return None
-    elif _is_juice_market:
-        # Juice-only markets still need a sanity floor \u2014 reject
-        # picks whose book confidence is below 42% (roughly +138, the
-        # dog side of a lopsided line) since those are true longshots
-        # dressed up as totals. Everything from -120 juice to +130
-        # dog totals passes.
-        if book_implied < 0.42:
-            return None
-    # Apply bet-quality floor at GENERATION time using the win_prob + edge
-    # values we already have. Mirrors the floor inside compute_lock_score
-    # but doesn't require re-loading the pick dict. Without this, every
-    # newly-built pick wrote `grade="Pass"` for a couple cycles until the
-    # validator caught up — the 59-pick "Lock 90 + Pass badge" bug.
-    _wp_floor = float(model_win_prob * 100)
-    _ed_floor = float(edge or 0)
-    _floor = 0.0
-    if _wp_floor >= 65 and _ed_floor >= 1:
-        _wb = min(12.0, max(0.0, (_wp_floor - 65.0) * 1.5))
-        _eb = min(8.0, max(0.0, _ed_floor * 0.5))
-        _floor = 85.0 + _wb + _eb
-        if not (_wp_floor >= 80.0 and _ed_floor >= 15.0):
-            _floor = min(97.0, _floor)
-    if _floor and lock < _floor:
-        lock = _floor
+    # PHASE 1D (G2) — universal model-probability floors RETIRED (was
+    # 0.58 std / 0.62 MLB / 0.55 juice+K+alt / 0.25 long-shot).
+    # PHASE 1D (G1) — sportsbook implied-probability floors RETIRED
+    # (SPORT_IMPLIED_FLOOR 0.48-0.56 + 0.42 juice sanity).  Implied
+    # probability remains market information for edge/de-vig only.
+    # (legacy MLB juice/K-mainline probability carve-outs and the
+    # SPORT_IMPLIED_FLOOR check were deleted with the floors above)
+    # PHASE 1D (G1) — the SPORT_IMPLIED_FLOOR block and the 0.42 juice
+    # sanity floor were retired here (implied prob is market info only).
+    # PHASE 1D (G3) — the generation-time bet-quality BOOSTER is
+    # RETIRED.  It artificially raised lock_score into the 85-105 band
+    # whenever wp>=65 & edge>=1 (weak candidate → booster → board-
+    # qualified score).  Lock Score must be earned from the scoring
+    # model; eligibility is decided once, at the >=85 board rule.
     return {
         "sport": sport, "league": league, "event": event,
         "event_time": event_time, "market": market, "selection": pick_side,
@@ -1165,6 +1067,52 @@ _MLB_TEAM_NAME_TO_ID: dict[str, int] = {
 
 
 # ───────────────────────── Game → Picks converter ─────────────────────────
+
+
+def _attach_devig(pick: dict | None, opp_prices: list) -> None:
+    """PHASE 1D (G5) — market-probability truth with provenance.
+
+    Attaches to the pick (never overwrites the sportsbook price):
+      raw_implied_probability   — one-sided implied % from book_odds
+      devig_market_probability  — n-way normalized (vig removed) %
+      devig_method              — "<n>_way_normalization"
+      devig_edge_percent        — model win prob − de-vig market prob
+    When the opposing side(s) are unavailable, records
+    OPPOSING_SIDE_UNAVAILABLE / DEVIG_UNAVAILABLE funnel telemetry.
+    """
+    if not pick or pick.get("book_odds") is None:
+        return
+    try:
+        own_p = _implied_prob(pick["book_odds"])
+        pick["raw_implied_probability"] = round(own_p * 100, 1)
+        opps = [
+            _implied_prob(o) for o in (opp_prices or [])
+            if isinstance(o, (int, float)) and (o >= 100 or o <= -100)
+        ]
+        if not opps:
+            try:
+                from services import funnel_telemetry as _funnel
+                _funnel.record(
+                    sport=pick.get("sport") or "unknown",
+                    market=pick.get("market") or "*",
+                    stage="devig", reason="OPPOSING_SIDE_UNAVAILABLE",
+                    event=pick.get("event"),
+                    detail="de-vig skipped — no opposing price",
+                )
+            except Exception:
+                pass
+            return
+        total = own_p + sum(opps)
+        if total <= 0:
+            return
+        dv = own_p / total
+        pick["devig_market_probability"] = round(dv * 100, 1)
+        pick["devig_method"] = f"{1 + len(opps)}_way_normalization"
+        mp = pick.get("win_probability")
+        if isinstance(mp, (int, float)):
+            pick["devig_edge_percent"] = round(float(mp) - dv * 100, 2)
+    except Exception:
+        pass
 
 
 def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list[dict]:
@@ -1420,6 +1368,12 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     attach_game_sim_provenance,
                 )
                 attach_game_sim_provenance(ml_pick, _nfl_plat_ml)
+            # PHASE 1D (G5) — de-vig market probability (2-way, or
+            # 3-way for soccer when a draw price exists).
+            _opp = [away_ml if side == home else home_ml]
+            if sport == "Soccer" and draw_ml is not None:
+                _opp.append(draw_ml)
+            _attach_devig(ml_pick, _opp)
             if ml_pick:
                 # 2026-07-21 Phase 1 MLB + Phase 2 Tennis/Soccer:
                 # attach real-data attribution
@@ -1913,6 +1867,10 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                                     )
                                     attach_game_sim_provenance(
                                         total_pick, _sim_best)
+                            # PHASE 1D (G5) — de-vig (2-way O/U)
+                            _attach_devig(
+                                total_pick,
+                                [u_price if best["side"] == "Over" else o_price])
                             picks.append(total_pick)
 
             # ── Soccer Poisson-synthesized alt totals (Over 1.5, Over 3.5) ──
@@ -2142,6 +2100,9 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         attach_game_sim_provenance,
                     )
                     attach_game_sim_provenance(_sp_pick, _nfl_plat_sp)
+                # PHASE 1D (G5) — de-vig (2-way spread)
+                _opp_sp = away_sp if side == home else home_sp
+                _attach_devig(_sp_pick, [(_opp_sp or {}).get("price")])
                 picks.append(_sp_pick)
     return [p for p in picks if p is not None]
 
