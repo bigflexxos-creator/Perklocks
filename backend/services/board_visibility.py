@@ -14,8 +14,13 @@ CRITERIA — pick is OFF-BOARD if ANY of:
     • `no_bet == True`                 (Brain filter rejected it)
     • `validation_block == True`       (board_validator dropped it)
     • `is_model_only == True`          (synthetic / model-only, no book price)
-    • `lock_score < 85`                (below /picks/today feed threshold)
-    • `grade` in {'Pass','Playable','Solid Lean',None}  (not a visible tier)
+    • **canonical Lock Score** < 85    (Phase 2A.5C — canonical value,
+                                        NOT legacy V1; below `/picks/today`
+                                        feed threshold)
+    • grade in {'Pass', None}          (Phase 2A.5C — matches the
+                                        picks_routes ``grade != Pass``
+                                        contract; Playable 85-89 counts
+                                        as visible)
 
 RESULT:
     Each pick's document is set with:
@@ -26,6 +31,22 @@ Downstream settlers filter with `off_board: {"$ne": True}` in their
 `db.picks.find(...)` queries so status remains `pending` forever on
 off-board picks. Analytics / ROI reports get a clean signal for what
 users could actually have played.
+
+Phase 2A.5C DELTA (2026-08) — canonical Lock Score fix
+─────────────────────────────────────────────────────
+Prior to this delta, `compute_off_board` read the legacy V1
+``lock_score`` field.  Under the Phase 1D canonicalization contract,
+the authoritative value is:
+
+    published_lock_score  (Phase-1 canonical snapshot)
+      → max(lock_score, lock_score_v2)  (pre-canonical fallback)
+
+Reading the stale V1 field caused every Soccer scorer/assist pick
+whose V1 landed low (e.g. 55.0 from the legacy engine) but whose
+V2/published Lock Score was 85-98 to be silently marked
+``off_board=True`` — and dropped from `/api/picks/today?sport=Soccer`.
+The visible-grade set also excluded ``Playable``, contradicting the
+picks_routes contract (``grade != "Pass"``).  Both are repaired here.
 """
 from __future__ import annotations
 
@@ -34,12 +55,57 @@ from typing import Any
 
 logger = logging.getLogger("lockscore.board_visibility")
 
-_VISIBLE_GRADES = frozenset({"Elite Lock", "Lock", "Strong Lock"})
+# Phase 2A.5C DELTA — align with picks_routes ``grade != "Pass"`` contract.
+# "Playable" (85 <= LS < 90) and "APEX Lock" (LS == 100) were incorrectly
+# excluded, hiding legitimate Elite Soccer scorer picks whose canonical
+# Lock Score put them at 85-89 or 100.
+_VISIBLE_GRADES = frozenset({
+    "APEX Lock", "Elite Lock", "Strong Lock", "Lock", "Playable",
+})
 _MIN_LOCK_SCORE = 85.0
 
 
+def _canonical_lock_score(pick: dict[str, Any]) -> float:
+    """Return the authoritative Lock Score used by main_board_eligibility.
+
+    Preference order (matches `services.main_board_eligibility`):
+        1. ``published_lock_score`` when set (Phase-1 canonical snapshot).
+        2. ``max(lock_score, lock_score_v2)`` legacy fallback.
+    """
+    for key in ("published_lock_score",):
+        v = pick.get(key)
+        if isinstance(v, (int, float)):
+            return float(v)
+    ls = pick.get("lock_score") or 0.0
+    ls_v2 = pick.get("lock_score_v2") or 0.0
+    try:
+        return max(float(ls), float(ls_v2))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _canonical_grade(score: float) -> str:
+    """Same band map as ``sports_engine._grade`` — kept in sync."""
+    if score >= 100:
+        return "APEX Lock"
+    if score >= 98:
+        return "Elite Lock"
+    if score >= 95:
+        return "Strong Lock"
+    if score >= 90:
+        return "Lock"
+    if score >= 85:
+        return "Playable"
+    return "Pass"
+
+
 def compute_off_board(pick: dict[str, Any]) -> tuple[bool, list[str]]:
-    """Return (off_board, reasons) for a single pick."""
+    """Return (off_board, reasons) for a single pick.
+
+    Phase 2A.5C — Lock Score check now uses the canonical value.  A stale
+    grade field carrying "Pass" from a pre-V2 engine build is IGNORED
+    when the canonical Lock Score puts the pick at ``>= 85``.
+    """
     reasons: list[str] = []
     if pick.get("no_bet") is True:
         reasons.append("no_bet")
@@ -49,22 +115,6 @@ def compute_off_board(pick: dict[str, Any]) -> tuple[bool, list[str]]:
         reasons.append("model_only")
 
     # ── Chalk Trap: HIDE from board (2026-07-21 update) ───────────────
-    # ORIGINAL POLICY: chalk-trapped picks stayed visible with a ⚠️
-    # warning + capped lock=72. Rationale was "users want to see the
-    # 200 picks for options".
-    #
-    # USER FEEDBACK 2026-07-21: "If lock drops that low shouldn't be
-    # on board at all — any K bets winning?". Correct — historical ROI
-    # analysis of trapped K picks showed -43.8% ROI even when shown
-    # with warnings (users still bet them, because the pick card still
-    # looks like a "Lock"). Trapped picks are structurally losing
-    # bets; showing them AT ALL degrades user outcomes.
-    #
-    # NEW POLICY: chalk-trapped picks are OFF-BOARD. They stay in the
-    # DB for research / audit (analytics can filter to them explicitly)
-    # but never surface on the main board or in the /picks/today feed.
-    # Chalk-VERIFIED picks (the rare +8pp edge + 3 DD signal survivors)
-    # remain visible as normal high-conviction picks.
     if pick.get("chalk_trap") is True:
         reasons.append("chalk_trap")
         return (True, reasons)
@@ -72,24 +122,24 @@ def compute_off_board(pick: dict[str, Any]) -> tuple[bool, list[str]]:
         return (bool(reasons), reasons)
 
     # ── Longshot Trap: HIDE from board (2026-07-21 update) ────────────
-    # Same reasoning as chalk_trap — historical Soccer 92+ longshot-
-    # trapped picks bled -52.6% ROI (-61u) when shown. Hiding them
-    # protects users from acting on structurally losing bets.
     if pick.get("longshot_trap") is True:
         reasons.append("longshot_trap")
         return (True, reasons)
     if pick.get("longshot_verified") is True:
         return (bool(reasons), reasons)
 
-    try:
-        lock = float(pick.get("lock_score") or 0.0)
-    except (TypeError, ValueError):
-        lock = 0.0
-    if lock < _MIN_LOCK_SCORE:
+    # ── Phase 2A.5C: canonical Lock Score check ───────────────────────
+    canonical_ls = _canonical_lock_score(pick)
+    if canonical_ls < _MIN_LOCK_SCORE:
         reasons.append(f"lock<{int(_MIN_LOCK_SCORE)}")
-    grade = pick.get("grade")
-    if grade not in _VISIBLE_GRADES:
-        reasons.append(f"grade={grade!r}")
+
+    # ── Grade check — derived from the canonical Lock Score, not the
+    # stored (possibly stale) grade field.  A pick whose canonical LS
+    # is >= 85 is at least Playable and therefore visible.
+    canonical_grade = _canonical_grade(canonical_ls)
+    if canonical_grade not in _VISIBLE_GRADES:
+        reasons.append(f"grade={canonical_grade!r}")
+
     return (bool(reasons), reasons)
 
 
@@ -102,6 +152,15 @@ def tag_board_visibility(picks: list[dict[str, Any]]) -> dict[str, int]:
     stats = {"total": len(picks), "off_board": 0, "on_board": 0}
     reason_counts: dict[str, int] = {}
     for p in picks:
+        # ── Phase 2A.5C — refresh stale grade from canonical Lock Score
+        # BEFORE the visibility check so downstream ``grade != "Pass"``
+        # filters (e.g. picks_routes) see the correct band.  Only rewrites
+        # when the stored grade differs from the canonical mapping — no-op
+        # for picks whose grade was already computed correctly.
+        _c_ls = _canonical_lock_score(p)
+        _c_grade = _canonical_grade(_c_ls)
+        if p.get("grade") != _c_grade:
+            p["grade"] = _c_grade
         off, reasons = compute_off_board(p)
         p["off_board"] = off
         if off:
