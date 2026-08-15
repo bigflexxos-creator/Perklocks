@@ -154,24 +154,60 @@ async def _rank_markets_for_event(db, event: str, sport: str, exclude_id: str = 
     Without this, the panel was showing e.g. "Sweden Moneyline" as a
     sibling of "Netherlands Win or Draw" — two opposite-side bets that
     cannot both be the best play in the same match.
+
+    SOCCER_REGRESSION_RUNTIME §8 — cross-book duplicates of the CURRENT
+    wager must be filtered out.  When the same Over 2.5 @ 2.5 line
+    exists at 5 sportsbooks, the ID-only exclusion left 4 duplicates
+    behind — the panel then showed "Over 2.5 scores 54 vs your pick
+    at 97" as a self-comparison.  We now also compare on the canonical
+    wager key (short_market + selection + line) to catch same-wager
+    cross-book duplicates that were not deduped upstream.
     """
-    # Look up current pick's side so we can filter side-contradictory
-    # candidates. Side-neutral markets (totals, BTTS) are always shown.
     current_side = ""
+    current_short = ""
+    current_sel_norm = ""
+    current_line_norm = ""
     if exclude_id:
         cur = await db.picks.find_one(
             {"id": exclude_id},
-            {"_id": 0, "selection": 1, "market": 1},
+            {"_id": 0, "selection": 1, "market": 1, "line": 1},
         )
         if cur:
             current_side = _pick_side(cur)
+            current_short = _short_market(cur.get("market") or "")
+            current_sel_norm = (cur.get("selection") or "").strip().lower()
+            line = cur.get("line")
+            try:
+                current_line_norm = "" if line is None else f"{float(line):g}"
+            except Exception:
+                current_line_norm = str(line)
+
+    def _is_same_canonical_wager(p: dict) -> bool:
+        """Return True when `p` is a cross-book duplicate of the
+        current selection (same short_market + selection + line)."""
+        if not exclude_id:
+            return False
+        if p.get("id") == exclude_id:
+            return True   # literal self
+        p_short = _short_market(p.get("market") or "")
+        if p_short != current_short:
+            return False
+        p_sel = (p.get("selection") or "").strip().lower()
+        if p_sel != current_sel_norm:
+            return False
+        p_line = p.get("line")
+        try:
+            p_line_norm = "" if p_line is None else f"{float(p_line):g}"
+        except Exception:
+            p_line_norm = str(p_line)
+        return p_line_norm == current_line_norm
 
     cursor = db.picks.find(
         {"event": event, "sport": sport},
         {
             "_id": 0, "id": 1, "sport": 1, "market": 1, "selection": 1,
             "win_probability": 1, "edge_percent": 1, "book_odds": 1,
-            "lock_score": 1, "grade": 1,
+            "lock_score": 1, "grade": 1, "line": 1,
             "lock_score_v2": 1, "tier_v2": 1, "is_apex": 1,
             "counter_score": 1, "survival_score": 1, "variance_score": 1,
             "event_time": 1, "is_alt": 1, "no_bet": 1,
@@ -184,15 +220,13 @@ async def _rank_markets_for_event(db, event: str, sport: str, exclude_id: str = 
             continue
         if p.get("no_bet"):
             continue
-        # ── Side-alignment filter ──
-        # Always include the current pick itself (so the UI can show
-        # "CURRENT" indicator). For everything else, the candidate
-        # must be on the SAME side as the current pick OR be a
-        # side-neutral market (Over/Under/BTTS).
-        if p.get("id") != exclude_id and not _sides_compatible(current_side, p):
+        # Skip literal self AND cross-book duplicates of the current wager.
+        if _is_same_canonical_wager(p):
+            continue
+        # Side-alignment filter (same as before).
+        if not _sides_compatible(current_side, p):
             continue
         short = _short_market(p.get("market") or "")
-        # Dedupe by short market label (only top of each market type)
         if short in seen_short_markets and short != "Unknown":
             continue
         seen_short_markets.add(short)
@@ -214,7 +248,7 @@ async def _rank_markets_for_event(db, event: str, sport: str, exclude_id: str = 
             "variance_score":   p.get("variance_score"),
             "grade":            p.get("grade"),
             "market_score":     round(score, 2),
-            "is_current":       (p.get("id") == exclude_id) if exclude_id else False,
+            "is_current":       False,
         })
     candidates.sort(key=lambda x: x["market_score"], reverse=True)
     return candidates

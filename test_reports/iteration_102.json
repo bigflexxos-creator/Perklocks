@@ -1,0 +1,45 @@
+{
+  "summary": "SOCCER_REGRESSION_RUNTIME closure verification against live backend. 4 of 8 targeted regressions VERIFIED PASSING on the runtime (§4 cross-book dedupe, §6 event date/time, §7 H2H truthful status + alias, §8 breakdown self-comparison). The 5th verification (>=20 soccer picks) FAILS — only 6 soccer picks are on the board (backend logs confirm 'Soccer: 6' at picks_today per-sport cap). Login endpoint OK. All 142 pytest unit tests in the 8 phase2a5* files pass.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "/api/picks/today?sport=Soccer",
+        "issue": "Runtime slate contains only 6 soccer picks (expected >=20, ~100 after last session's fix). Backend log per-sport cap output confirms Soccer=6 pre-cap. All 6 are Spanish 2nd/3rd tier (Albacete, Levante, Villarreal, Tenerife); no MLS/EPL/Bundesliga/Serie A picks surfacing. Likely tied to unresolved regressions §2 (MLS deep trace) and §3 (scorer TTL/refresh) that the note explicitly says were NOT closed this session.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_soccer_regression_runtime.py",
+    "/app/test_reports/pytest/iter102_soccer_regression_runtime.xml",
+    "/app/test_reports/pytest/iter102_phase2a5_142.xml"
+  ],
+  "action_items": [
+    "Investigate why only 6 soccer picks reach /api/picks/today (per-sport cap log confirms Soccer=6). The 4 fixed regressions look correct, but §2/§3/§5 (unclosed per the review note) are almost certainly the cause of the shortfall — the review target of ~100 will not be met until those are addressed.",
+    "Consider whether the REGRESSION >=20 threshold should be evaluated against the same live cache/ingest state, or if a seeded fixture is required for regression proof.",
+    "Session §7 alias fix confirmed working live: Albacete@Las Palmas → H2H_AVAILABLE (team_h2h populated), Villarreal@Real Racing Club de Santander → H2H_AVAILABLE (team_h2h populated). Other 4 picks returned H2H_SOURCE_UNAVAILABLE (also a valid truthful status)."
+  ],
+  "critical_code_review_comments": [
+    "test_soccer_regression_runtime.py §8 test was broadened to check self-exclusion across every reachable soccer pick because the runtime slate had no 'Total Goals Over' picks — the canonical wager key filter still verifiable on the general population (all 6 picks: 0 self-in-alternatives).",
+    "Cross-book dedupe (§4) is visibly effective — several picks (Draw, Team ML on H2H) carry bookmaker_quotes arrays with 13-19 books collapsed. No (event, market_key, selection, line) group has size >1."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_soccer_regression_runtime.py (new)"
+  ],
+  "success_rate": {
+    "backend": "94% (7/8 runtime tests + 142/142 unit tests = 149/150)",
+    "frontend": "N/A (backend-only)"
+  },
+  "seed_data_creation": "None — used live backend cache as instructed.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Runtime confirmed §4/§6/§7/§8 regressions closed. The >=20 soccer pick threshold fails at 6 picks; per-sport cap log Soccer=6 confirms this is an ingest/pipeline shortfall, not a dedupe over-collapse. Re-check after §2 (MLS deep trace) and §3 (scorer TTL/refresh) are closed. All 142 phase2a5 unit tests pass. H2H alias fix verifiable via Villarreal/Racing Santander & Albacete/Las Palmas returning H2H_AVAILABLE with team_h2h populated. Market-rank self-exclusion verifiable via 'Villarreal @ Real Racing Club de Santander | Draw' pick — alternatives now contain only Under 2.5 (self Draw properly filtered).",
+  "rca_of_issue": "Soccer pick count shortfall (6 vs >=20): Not a bug in the 4 closed regressions. The main agent explicitly noted that regressions §2 (MLS deep trace) and §3 (scorer TTL/refresh) — which upstream feed the soccer candidate pool — were NOT closed in this session. Consequently, the runtime slate is starved of MLS/scorer picks. The 4 closed regressions each verified against the 6 picks that DO reach the board: cross-book dedupe collapses correctly, commence_time_utc is populated on every pick, H2H returns valid status codes with alias-tolerant team resolution, and breakdown alternatives exclude self via canonical wager key. Recommend main agent close §2/§3 to restore the ~100-pick target, then re-run this test file."
+}
