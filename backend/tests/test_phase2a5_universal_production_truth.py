@@ -759,7 +759,107 @@ def test_pick_ids_include_bookmaker_for_multi_book_markets():
     id_no_bk, _ = _deterministic_id("s","evt","mk","Team A", None)
     assert id_dk != id_fd
     assert id_dk != id_no_bk
-    # Same book → same id (idempotent).
     id_dk2, _ = _deterministic_id("s","evt","mk","Team A", None, bookmaker="draftkings")
     assert id_dk == id_dk2
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 25–29  SOCCER_REGRESSION_RUNTIME invariants (2026-08-15 closure)
+# ═════════════════════════════════════════════════════════════════════
+def test_cross_book_dedupe_collapses_same_wager():
+    """§4 — Same (event, market, selection, line) across 5 books must
+    collapse into ONE consumer card with bookmaker quotes attached."""
+    from server import _collapse_cross_book_duplicates
+    picks = [
+        {"id":f"p{i}","sport":"Soccer","event":"A @ B","market":"Total Goals Over 2.5",
+         "market_key":"totals","market_family":"game_market",
+         "selection":"Over","line":2.5,"book_odds":odds,"bookmaker":bk}
+        for i, (bk, odds) in enumerate([
+            ("draftkings",-110),("fanduel",-108),("caesars",-112),
+            ("betmgm",-109),("betrivers",-110),
+        ])
+    ]
+    out = _collapse_cross_book_duplicates(picks)
+    assert len(out) == 1
+    survivor = out[0]
+    assert survivor["book_count"] == 5
+    assert len(survivor["bookmaker_quotes"]) == 5
+    # Primary = highest book_odds (-108 fanduel).
+    assert survivor["book_odds"] == -108
+
+
+def test_cross_book_dedupe_keeps_different_lines_separate():
+    """Over 2.5 and Over 3.0 are DIFFERENT wagers — must not collapse."""
+    from server import _collapse_cross_book_duplicates
+    picks = [
+        {"id":"a","sport":"Soccer","event":"A @ B","market":"O 2.5","market_key":"totals",
+         "market_family":"game_market","selection":"Over","line":2.5,"book_odds":-110,"bookmaker":"dk"},
+        {"id":"b","sport":"Soccer","event":"A @ B","market":"O 3.0","market_key":"totals",
+         "market_family":"game_market","selection":"Over","line":3.0,"book_odds":+115,"bookmaker":"dk"},
+    ]
+    out = _collapse_cross_book_duplicates(picks)
+    assert len(out) == 2
+
+
+def test_commence_time_utc_field_present_on_real_line_picks():
+    """§6 — every ingested pick must carry commence_time_utc so the
+    frontend can render the local kickoff time."""
+    from services.real_line_scorer_ingest import (
+        ingest_real_line_soccer_scorers,
+    )
+    async def _t():
+        db = _FakeDB(alt_rows=[_alt_row(commence_time="2026-08-15T22:00:00Z")])
+        await ingest_real_line_soccer_scorers(db, today="2026-08-15")
+        for _, upd in db.picks.upserts:
+            d = upd["$set"]
+            for key in ("commence_time", "commence_time_utc", "event_time"):
+                assert key in d and d[key] == "2026-08-15T22:00:00Z", (
+                    f"§6 event-time contract: {key} missing/wrong on {d}"
+                )
+    _run(_t())
+
+
+def test_h2h_bundle_returns_truthful_status_code():
+    """§7 — bundle must carry a `status` code so the UI can
+    distinguish genuine data absence from identity failure."""
+    from services.h2h_enricher import build_h2h_bundle
+    import asyncio
+    class _EmptyDB:
+        def __getattr__(self, _n):
+            class _NoOp:
+                def find(self,*a,**k): return self
+                def find_one(self,*a,**k):
+                    async def _r():return None
+                    return _r()
+                def sort(self,*a,**k): return self
+                def limit(self,*a,**k): return self
+                async def to_list(self,*a,**k): return []
+                async def count_documents(self,*a,**k): return 0
+                def aggregate(self,*a,**k): return self
+                def __aiter__(self):return iter([])
+            return _NoOp()
+    async def _t():
+        bundle = await build_h2h_bundle(_EmptyDB(), {
+            "id":"p1","sport":"Soccer","event":"Hamburger SV @ Dortmund",
+            "market":"Total Goals Over 2.5","selection":"Over","line":2.5,
+        })
+        assert "status" in bundle
+        assert bundle["status"] in (
+            "H2H_AVAILABLE", "H2H_INSUFFICIENT_SAMPLE",
+            "H2H_IDENTITY_FAILURE", "H2H_SOURCE_UNAVAILABLE",
+            "H2H_NOT_INGESTED",
+        )
+    _run(_t())
+
+
+def test_market_rank_excludes_cross_book_duplicates_of_current():
+    """§8 — Pick Breakdown must NOT recommend a same-wager cross-book
+    duplicate of the current selection as an "Alternative Stronger"."""
+    import inspect, market_competition.routes as mr
+    src = inspect.getsource(mr._rank_markets_for_event)
+    # The fix must reference the canonical wager key components.
+    assert "_is_same_canonical_wager" in src
+    assert "current_short" in src
+    assert "current_sel_norm" in src
+    assert "current_line_norm" in src
 

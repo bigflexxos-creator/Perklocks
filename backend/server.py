@@ -676,6 +676,91 @@ def _filter_in_play_window(picks: list[dict]) -> list[dict]:
     return out
 
 
+def _collapse_cross_book_duplicates(picks: list[dict]) -> list[dict]:
+    """Collapse same-wager cross-book duplicates into one consumer card.
+
+    A Perklocks consumer wager is uniquely identified by:
+        (sport, canonical_event_id_or_event, market_key/family,
+         normalized_selection, normalized_line)
+
+    Sportsbook-specific quotes (DraftKings, FanDuel, Caesars, BetMGM,
+    Betfair, etc.) are attached as ``bookmaker_quotes`` metadata on the
+    surviving card.  The primary quote is the highest-EV real-line
+    entry (max book_odds when Over/positive; min |odds| when
+    negative) — mirroring the existing "best line" selection policy.
+
+    This fixes SOCCER_REGRESSION_RUNTIME item §4 where the same
+    Total Goals Over 2.5 wager appeared 5x on the board because five
+    sportsbooks each carried the market.
+    """
+    def _norm_sel(p: dict) -> str:
+        return (p.get("selection") or "").strip().lower()
+
+    def _norm_line(p: dict) -> str:
+        line = p.get("line")
+        if line is None:
+            return ""
+        try:
+            return f"{float(line):g}"
+        except Exception:
+            return str(line)
+
+    def _norm_family(p: dict) -> str:
+        # Prefer explicit market_family; fall back to market_key.
+        fam = (p.get("market_family") or "").strip().lower()
+        if fam:
+            return fam
+        return (p.get("market_key") or "").strip().lower()
+
+    def _wager_key(p: dict) -> tuple:
+        return (
+            (p.get("sport") or "").strip().lower(),
+            (p.get("event") or p.get("event_id") or "").strip().lower(),
+            _norm_family(p),
+            _norm_sel(p),
+            _norm_line(p),
+        )
+
+    def _price_score(p: dict) -> float:
+        # Prefer higher American odds (better payout at same probability).
+        try:
+            return float(p.get("book_odds") or 0)
+        except Exception:
+            return 0.0
+
+    groups: dict[tuple, list[dict]] = {}
+    passthrough: list[dict] = []
+    for p in picks:
+        if not p.get("event") or not (p.get("market_key") or p.get("market_family")):
+            passthrough.append(p)
+            continue
+        groups.setdefault(_wager_key(p), []).append(p)
+
+    out: list[dict] = list(passthrough)
+    for key, dupes in groups.items():
+        if len(dupes) == 1:
+            out.append(dupes[0])
+            continue
+        # Choose the primary quote (best price).
+        primary = max(dupes, key=_price_score)
+        # Attach quote fan-out as metadata for downstream UI.
+        quotes = [
+            {
+                "bookmaker":   d.get("bookmaker"),
+                "book_odds":   d.get("book_odds"),
+                "line":        d.get("line"),
+                "odds_source": d.get("odds_source"),
+                "pick_id":     d.get("id"),
+            }
+            for d in dupes
+        ]
+        primary = dict(primary)   # shallow copy so we don't mutate DB row
+        primary["bookmaker_quotes"] = quotes
+        primary["book_count"] = len(quotes)
+        out.append(primary)
+    return out
+
+
 def _dedupe_game_outcome_picks(picks: list[dict]) -> list[dict]:
     """Collapse mutually-exclusive game-outcome picks for the same match.
 

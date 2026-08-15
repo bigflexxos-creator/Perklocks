@@ -331,7 +331,16 @@ async def _ingest_player_scorer_row(
         "evidence_source": evidence_source or "none",
         "evidence_score": evidence_score,
         "matchup_events": (matchup or {}).get("events", 0),
-        "commence_time": row.get("commence_time"),
+        # SOCCER_REGRESSION_RUNTIME §6 — event time preservation:
+        # Emit `commence_time` (raw ISO from provider) AND canonical
+        # `commence_time_utc` + `event_time` fields.  Downstream API
+        # sort logic keys on `event_time`; the frontend LockPickCard
+        # renders localized game time from `commence_time_utc`.  All
+        # three names cover the current consumer contract without
+        # forcing another migration.
+        "commence_time":     row.get("commence_time"),
+        "commence_time_utc": row.get("commence_time"),
+        "event_time":        row.get("commence_time"),
         "updated_at": now_iso,
     }
     return doc, (rej if off_board else None)
@@ -510,7 +519,10 @@ async def _ingest_game_market_row(
         "source": "real_line_soccer_v2",
         "publication_source": "real_line_soccer_v2",
         "evidence_score": evidence_score,
-        "commence_time": row.get("commence_time"),
+        # §6 event-time contract — see player_prop path for details.
+        "commence_time":     row.get("commence_time"),
+        "commence_time_utc": row.get("commence_time"),
+        "event_time":        row.get("commence_time"),
         "updated_at": now_iso,
     }
     return doc, (rej if off_board else None)

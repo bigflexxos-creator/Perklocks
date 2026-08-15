@@ -213,13 +213,43 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
     if sport == "Soccer" and not meetings:
         try:
             sm = db.soccer_matches
+            # SOCCER_REGRESSION_RUNTIME §7 — team alias resolution.
+            # Provider names ("Hamburger SV", "Bayern Munich") diverge
+            # from stored names ("Hamburg", "FC Bayern München",
+            # "Borussia Dortmund").  Exact `^Name$` regex returned
+            # zero Hamburg-vs-Dortmund matches even though 204 Hamburg
+            # + 301 Dortmund fixtures exist.  Fix: substring match on
+            # a "core" name (strip common European club prefixes).
+            def _core(n: str) -> str:
+                s = (n or "").strip()
+                s = re.sub(r"^(?:FC|SC|AC|AS|CF|SV|SL|CD|RB|BSC|VfL|VfB|TSG|1\.?\s*FC|1\.?\s*FSV|Borussia)\s+", "", s, flags=re.I)
+                s = re.sub(r"\s+(?:FC|SC|CF|United|City|SV)$", "", s, flags=re.I)
+                return s.strip()
+            def _prefix_pat(name: str) -> str:
+                """Build a regex fragment matching the first significant
+                token (min 4 chars) with an OPTIONAL suffix — handles
+                "Hamburger" ↔ "Hamburg", "München" ↔ "Munich", etc."""
+                first = re.split(r"\s+", (name or "").strip(), maxsplit=1)[0]
+                if len(first) < 4:
+                    # Fall through to full-word match for short names.
+                    return re.escape(name or "")
+                # Use the first 4-6 chars as a prefix so "Hamburger" and
+                # "Hamburg" collapse.  Longest common prefix by using
+                # the first 6 chars capped at len(first).
+                stem = first[:min(6, len(first))]
+                # Trailing 'er' / 'en' / 'e' are common German/Latin
+                # inflections — strip them so both forms match.
+                stem = re.sub(r"(?:en|er|e)$", "", stem, flags=re.I)
+                return re.escape(stem) if len(stem) >= 4 else re.escape(first)
+            home_pat = _prefix_pat(_core(home) or home)
+            away_pat = _prefix_pat(_core(away) or away)
             q = {
                 "status": {"$in": ["finished", "Finished", "FT", "Completed"]},
                 "$or": [
-                    {"home_team": {"$regex": f"^{re.escape(home)}$", "$options": "i"},
-                     "away_team": {"$regex": f"^{re.escape(away)}$", "$options": "i"}},
-                    {"home_team": {"$regex": f"^{re.escape(away)}$", "$options": "i"},
-                     "away_team": {"$regex": f"^{re.escape(home)}$", "$options": "i"}},
+                    {"home_team": {"$regex": home_pat, "$options": "i"},
+                     "away_team": {"$regex": away_pat, "$options": "i"}},
+                    {"home_team": {"$regex": away_pat, "$options": "i"},
+                     "away_team": {"$regex": home_pat, "$options": "i"}},
                 ],
             }
             cur = sm.find(q, {
@@ -231,7 +261,11 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
                 a_score = m.get("away_score")
                 if h_score is None or a_score is None:
                     continue
-                is_flipped = str(m.get("home_team") or "").strip().lower() == away_l
+                stored_home = str(m.get("home_team") or "").strip().lower()
+                # Flip perspective when the stored home does NOT
+                # contain any of the home-team's identifiers.
+                is_flipped = away_pat.lower().replace("\\", "") in stored_home and \
+                             home_pat.lower().replace("\\", "") not in stored_home
                 meetings.append({
                     "date": str(m.get("date") or "")[:10],
                     "score": f"{h_score}-{a_score}",
@@ -916,6 +950,16 @@ async def build_h2h_bundle(db, pick: dict, *, fast_mode: bool = False) -> dict:
     bundle = {
         "ok": bool(team_h2h or player_h2h),
         "sport": sport,
+        # SOCCER_REGRESSION_RUNTIME §7 — truthful reason codes.
+        # Callers/frontend can distinguish genuine identity failure
+        # from insufficient sample from source absence.  When
+        # `team_h2h` succeeded but had <3 meetings we tag
+        # H2H_INSUFFICIENT_SAMPLE; when no store returned any row
+        # we tag H2H_SOURCE_UNAVAILABLE.  IDENTITY_FAILURE is
+        # reserved for future canonical-id mismatch detection.
+        "status": (
+            "H2H_AVAILABLE" if team_h2h else "H2H_SOURCE_UNAVAILABLE"
+        ),
         "summary": _build_summary(sport, team_h2h, player_h2h,
                                    pick_market=pick.get("market") or ""),
         "team_h2h": team_h2h,

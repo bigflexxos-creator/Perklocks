@@ -919,6 +919,7 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         _ensure_today_picks, _today_str, _filter_in_play_window,
         _canonicalize_picks, _market_regex,
         _dedupe_game_outcome_picks, _dedupe_goalscorer_per_event,
+        _collapse_cross_book_duplicates,
         _decorate_with_player_form, _decorate_with_understat_form,
         _decorate_with_espn_meta,
         _strip_for_lite,
@@ -1779,6 +1780,12 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # both makes the app look broken. Collapse to the single highest-
     # confidence side per game, preferring Win-or-Draw / Double Chance
     # over straight Moneyline (draw safety net = lower variance).
+    # ── SOCCER_REGRESSION_RUNTIME §4 — cross-book consumer dedupe ──
+    # Collapse same (event, market, selection, line) across multiple
+    # sportsbooks into a single consumer card BEFORE we deduplicate
+    # mutually-exclusive game outcomes.  This ensures the board
+    # represents unique betting opportunities, not sportsbook copies.
+    picks = _collapse_cross_book_duplicates(picks)
     picks = _dedupe_game_outcome_picks(picks)
     # Goalscorer pick cap — per match, surface at most the TOP 1 unique
     # player per (team × market_family). Was top_n=4 — but the backtest
