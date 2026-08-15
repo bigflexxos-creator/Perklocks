@@ -715,12 +715,21 @@ async def build_soccer_game_context(game: dict) -> dict[str, Any]:
         # Form-proxy fallback
         if not h_doc and ctx.get("home_form", {}).get("n_matches", 0) >= 5:
             hf = ctx["home_form"]
+            # ── Phase 2A.5B RC2 CLOSURE (2026-08) ─────────────────────
+            # GF / GA are NOT xG.  When only form data is available we
+            # populate a TEAM STRENGTH proxy — flagged explicitly with
+            # xg_available=False + gf_avg/ga_avg alias keys.  Downstream
+            # consumers that need genuine expected-goals data MUST check
+            # `xg_available` and prefer the raw gf_avg/ga_avg semantics.
             ctx["home_xg_rolling"] = {
                 "xg_avg":  float(hf.get("gf_avg", 0)),
                 "xga_avg": float(hf.get("ga_avg", 0)),
                 "xg_diff": float(hf.get("gf_avg", 0)) - float(hf.get("ga_avg", 0)),
+                "gf_avg":  float(hf.get("gf_avg", 0)),   # true semantics
+                "ga_avg":  float(hf.get("ga_avg", 0)),   # true semantics
                 "matches": int(hf.get("n_matches", 0)),
                 "source":  "form_proxy",
+                "xg_available": False,
             }
         if not a_doc and ctx.get("away_form", {}).get("n_matches", 0) >= 5:
             af = ctx["away_form"]
@@ -728,8 +737,11 @@ async def build_soccer_game_context(game: dict) -> dict[str, Any]:
                 "xg_avg":  float(af.get("gf_avg", 0)),
                 "xga_avg": float(af.get("ga_avg", 0)),
                 "xg_diff": float(af.get("gf_avg", 0)) - float(af.get("ga_avg", 0)),
+                "gf_avg":  float(af.get("gf_avg", 0)),
+                "ga_avg":  float(af.get("ga_avg", 0)),
                 "matches": int(af.get("n_matches", 0)),
                 "source":  "form_proxy",
+                "xg_available": False,
             }
     except Exception as e:
         logger.debug("soccer xg ctx failed: %s", e)
