@@ -1030,6 +1030,12 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         "tennis_real_odds",
         "mlb_hot_hitters",
         "mlb_hot_hitters_v1",
+        # Phase 2A.5E (2026-08) — real sportsbook player-scorer props
+        # ingested from cached `live_alt_lines` by
+        # services/real_line_scorer_ingest.py.  Owned by its own
+        # startup healer + recurring ingest loop; the main sports_engine
+        # refresh must NOT wipe these rows.
+        "real_line_alt_scorer_v1",
     ]
     _pin_filter = {
         "$and": [
