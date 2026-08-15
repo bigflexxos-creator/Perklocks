@@ -6290,18 +6290,73 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                                 if _key:
                                     _form_by_name[_key] = _row
                             _league_label = LEAGUE_LABELS.get(key, sport)
+                            # ── Phase 2A.5D CLOSURE (2026-08) ─────────────
+                            # Multi-season activation: pre-load prior-
+                            # season form rows from `soccer_player_game_logs`
+                            # using the competition-specific season
+                            # resolver.  Also pre-load Player H2H from
+                            # the existing `mls_player_matchup_history`
+                            # store.  Both are optional — missing data
+                            # falls back to current-season-only Phase
+                            # 2A.5 behaviour.
+                            _prior_by_name: dict[str, dict] = {}
+                            _h2h_by_name: dict[str, dict] = {}
+                            try:
+                                from services.soccer_historical_stats import (
+                                    aggregate_player_season, load_player_h2h,
+                                )
+                                from services.soccer_season_resolver import (
+                                    resolve_prior_season,
+                                )
+                                _prior_season = resolve_prior_season(
+                                    _league_label)
+                                for _pname in _all_players:
+                                    _p_low = _pname.lower().strip()
+                                    try:
+                                        _prow = await aggregate_player_season(
+                                            _soc_db,
+                                            player_name_canonical=_p_low,
+                                            season=_prior_season)
+                                        if _prow:
+                                            _prior_by_name[_p_low] = _prow
+                                    except Exception:
+                                        pass
+                                    try:
+                                        _hrow = await load_player_h2h(
+                                            _soc_db,
+                                            player_name=_pname,
+                                            opponent_team_name=(
+                                                ev.get("away_team")
+                                                if _pname else None),
+                                        )
+                                        if _hrow:
+                                            _h2h_by_name[_p_low] = _hrow
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+
                             for _mkk, _plist in _players_by_mk.items():
                                 for _pname in _plist:
                                     _p_low = _pname.lower().strip()
                                     _form_row = _form_by_name.get(_p_low)
+                                    _prior_row = _prior_by_name.get(_p_low)
                                     _bp = _soc_bridge(
                                         player=_pname,
                                         market_key=_mkk,
                                         book_implied=0.30,
                                         form_row=_form_row,
+                                        prior_form_row=_prior_row,
                                         league=_league_label,
                                     )
                                     if _bp:
+                                        _h2h = _h2h_by_name.get(_p_low)
+                                        if _h2h:
+                                            _bp.setdefault("evidence", {})[
+                                                "player_h2h"] = _h2h
+                                            _bp.setdefault(
+                                                "sources", []).append(
+                                                "player_h2h_v1")
                                         _pre.setdefault(_p_low, {})[_mkk] = _bp
                         payload.setdefault("_ctx", {})[
                             "soccer_scorer_precomputed"] = _pre
