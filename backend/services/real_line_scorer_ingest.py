@@ -53,8 +53,9 @@ _UUID_NS = uuid.UUID("00000000-0000-0000-0000-000000000001")
 # ─────────────────────────────────────────────────────────────────────
 _SCORER_MARKETS = (
     "player_goal_scorer_anytime",
-    "player_first_goal_scorer",
-    "player_last_goal_scorer",
+    # SOCCER_MARKET_COMPETITION_RUNTIME (2026-09) §1 — first- and
+    # last-goal-scorer markets are neither fetched nor processed in
+    # this repair.  Do not re-enable without an explicit directive.
     "player_to_score_or_assist",
     # Assist / shots variants — real provider keys.  When they appear
     # in live_alt_lines the ingester will process them; when absent
@@ -243,13 +244,21 @@ async def _ingest_player_scorer_row(
         except Exception:
             rej = SoccerRejection.MISSING_FEATURE_DATA.value
         model_prob = book_impl
-        factors = {"Book Implied Probability": book_impl}
+        # SOCCER_MARKET_COMPETITION_RUNTIME (2026-09) §5 — Book Implied
+        # Probability is used for edge / market-alignment / de-vig
+        # only, NEVER as a Lock Score factor.
+        factors = {}
         off_board = True
         lock, _ = compute_lock_score(factors, win_prob=book_impl*100)
         evidence_score = 20   # minimal — only book implied is known
     else:
         model_prob = float(bridge.get("model_prob") or book_impl)
         factors = bridge.get("factors") or {}
+        # SOCCER_MARKET_COMPETITION_RUNTIME (2026-09) §5 — strip any
+        # legacy "Book Implied Probability" factor so implied cannot
+        # double-count as a Lock Score booster.
+        factors = {k: v for k, v in factors.items()
+                   if k != "Book Implied Probability"}
         # Attach matchup evidence as an ADDITIVE bridge factor when
         # available.  Never overrides form; simply modulates final LS
         # via the standard `compute_lock_score` weighting.
@@ -424,6 +433,9 @@ async def _ingest_game_market_row(
         ctx = await build_soccer_team_ctx(
             db, home_team=home, away_team=away, league=league,
         )
+        # Feature-engine expects home_team/away_team on the ctx.
+        ctx["home_team"] = home
+        ctx["away_team"] = away
         ctx_dbg = {
             "home_form_source": (ctx.get("home_form") or {}).get("source"),
             "away_form_source": (ctx.get("away_form") or {}).get("source"),
@@ -455,23 +467,47 @@ async def _ingest_game_market_row(
         else:
             rej = SoccerRejection.NO_MODEL_PROBABILITY.value
         model_prob = book_impl  # temp: anchor at implied for LS math
-        factors = {"Book Implied Probability": book_impl}
+        # SOCCER_MARKET_COMPETITION_RUNTIME (2026-09) §5 — Book Implied
+        # Probability is used for edge / market-alignment / de-vig
+        # only, NEVER as a Lock Score factor.  Passing an empty factors
+        # dict keeps the score anchored on win_prob alone (the current
+        # production Soccer contract in sports_engine._build_pick).
+        factors = {}
         lock, _ = compute_lock_score(factors, win_prob=book_impl*100)
         off_board = True
         evidence_score = 20
     else:
         model_prob = max(0.001, min(0.999, float(model_prob)))
         alignment = 1.0 - min(1.0, abs(model_prob - book_impl))
-        # Lock Score composition — MODEL is dominant; book_impl is a
-        # secondary signal.  Deliberately omit `Book Implied
-        # Probability` as a top-tier factor so the score cannot
-        # inflate merely because the sportsbook is heavily favored.
-        # Otherwise a -900 chalk lands at LS 90+ regardless of
-        # whether our model thinks the price is fair.
+        # SOCCER_MARKET_COMPETITION_RUNTIME (2026-09) §5 — same
+        # scoring contract as sports_engine._build_pick for Soccer
+        # game markets (LEGACY win-prob band + factor peak/avg boost).
+        # factors deliberately EXCLUDE "Book Implied Probability".
+        # We enrich with the SAME feature-engine factors the main
+        # Soccer pipeline uses so scoring is consistent across
+        # ingesters.
         factors = {
             "Model Probability":  model_prob,
             "Market Alignment":   alignment,
         }
+        try:
+            from services.soccer_feature_engine import (
+                build_soccer_ml_factors, build_soccer_total_factors,
+            )
+            mk_lc = (mk or "").lower()
+            _real: dict[str, Any] = {}
+            _pick_side_team = home if (sel or "").strip().lower() == (home or "").strip().lower() else (
+                away if (sel or "").strip().lower() == (away or "").strip().lower() else home
+            )
+            if mk_lc in ("h2h", "double_chance", "spreads", "alternate_spreads"):
+                _real, _ = build_soccer_ml_factors(ctx, _pick_side_team)
+            elif mk_lc in ("totals", "alternate_totals", "btts", "both_teams_to_score"):
+                _real, _ = build_soccer_total_factors(ctx, sel or "")
+            for k, v in (_real or {}).items():
+                if isinstance(v, (int, float)):
+                    factors[k] = float(v)
+        except Exception as _fe_err:
+            logger.debug("feature-engine factor enrichment skipped: %s", _fe_err)
         lock, _ = compute_lock_score(factors, win_prob=model_prob*100)
         edge_pct_prelim = (model_prob - book_impl) * 100
         off_board = lock < 85.0

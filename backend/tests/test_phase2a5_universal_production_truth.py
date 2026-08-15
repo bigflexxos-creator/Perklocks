@@ -441,7 +441,12 @@ def test_alt_lines_feed_requests_universal_soccer_market_set():
         "alt_lines_feed.SOCCER_MARKETS must request BTTS so BTTS "
         "reaches live_alt_lines universally across every active league"
     )
-    assert "player_first_goal_scorer" in alf.SOCCER_MARKETS
+    # SOCCER_MARKET_COMPETITION_RUNTIME (2026-09) §1 —
+    # player_first_goal_scorer intentionally REMOVED from acquisition.
+    assert "player_first_goal_scorer" not in alf.SOCCER_MARKETS
+    # SOCCER_MARKET_COMPETITION_RUNTIME (2026-09) §2 — Double Chance
+    # is now a first-class acquisition target.
+    assert "double_chance" in alf.SOCCER_MARKETS
     assert "alternate_totals" in alf.SOCCER_MARKETS
     assert "player_goal_scorer_anytime" in alf.SOCCER_MARKETS
 

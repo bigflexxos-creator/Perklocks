@@ -74,18 +74,21 @@ BOOKMAKERS = "draftkings,fanduel"
 SPORT_CONFIG: dict[str, tuple[str, list[str]]] = {
     "soccer_world_cup": (
         "soccer_fifa_world_cup",
-        ["player_goal_scorer_anytime", "player_first_goal_scorer",
-         "player_to_score_or_assist", "alternate_totals", "btts"],
+        ["player_goal_scorer_anytime",
+         "player_to_score_or_assist", "alternate_totals", "btts",
+         "double_chance"],
     ),
     "soccer_epl": (
         "soccer_epl",
-        ["player_goal_scorer_anytime", "player_first_goal_scorer",
-         "player_to_score_or_assist", "alternate_totals", "btts"],
+        ["player_goal_scorer_anytime",
+         "player_to_score_or_assist", "alternate_totals", "btts",
+         "double_chance"],
     ),
     "soccer_uefa_champs": (
         "soccer_uefa_champs_league",
-        ["player_goal_scorer_anytime", "player_first_goal_scorer",
-         "player_to_score_or_assist", "alternate_totals", "btts"],
+        ["player_goal_scorer_anytime",
+         "player_to_score_or_assist", "alternate_totals", "btts",
+         "double_chance"],
     ),
     "mlb": (
         "baseball_mlb",
@@ -171,41 +174,103 @@ async def _fetch_event_odds(cx: httpx.AsyncClient, sport_key: str,
                              ) -> Optional[dict]:
     """Fetch alt-line markets for one event.
 
-    Phase A (2026-08) — burn-reduction changes:
-      1. Consult the bad-market registry before fetching.  Any (sport,
-         market) tuple that returned 422 in the last 24 h is skipped.
-      2. If the batch returns None (422 / upstream error) we mark the
-         *entire* market set as bad — no more per-market fallback that
-         used to double our call volume.
+    SOCCER_MARKET_COMPETITION_RUNTIME (2026-09) — bundle-failure
+    recovery.  Previously a single unsupported market in the batch
+    (e.g. `player_to_score_or_assist` on a league that doesn't carry
+    it) marked ALL requested markets as bad, so valid siblings like
+    BTTS / alternate_totals / anytime_scorer disappeared with it.
+
+    New behavior:
+      1. Consult the bad-market registry at (sport_key, event_id)
+         scope BEFORE fetching — event-specific failures already
+         cached are honored so we don't retry the same broken market
+         on this event.
+      2. Attempt the bundled request once.  If it succeeds, use it.
+      3. If the bundle fails (422 / upstream error), retry each
+         market family individually.  Preserve successful sibling
+         responses; only the failing family is cached at
+         (sport_key, event_id) scope.
+      4. If EVERY family individually fails for this event, cache
+         the union under the event-scoped registry so the next
+         refresh does not repeat the fan-out.
     """
     from services.odds_cache import cached_httpx_get
     from services.bad_market_registry import filter_markets, mark_bad
 
-    # (1) Drop any markets we already know are unsupported for this sport.
+    # (1) Drop any markets we already know are unsupported for this
+    #     (sport_key, event_id) or globally for this sport.
     if db is not None:
         markets = await filter_markets(
-            db, sport_key=sport_key, markets=markets)
+            db, sport_key=sport_key, markets=markets, event_id=event_id)
     if not markets:
         return None
 
-    data = await cached_httpx_get(
-        f"{ODDS_API_BASE}/sports/{sport_key}/events/{event_id}/odds",
-        {"regions": "us", "bookmakers": BOOKMAKERS,
-          "markets": ",".join(markets), "oddsFormat": "american"},
-        api_key=ODDS_API_KEY,
-        endpoint_type="event_alt_lines",
-        caller="alt_lines_feed._fetch_event_odds",
-        sport_key=sport_key,
-        markets=",".join(markets),
-    )
-    # (2) Bulk failed → mark the whole set as bad so future cycles skip
-    # them.  We do NOT retry per-market anymore; that was burning 4k+
-    # credits/day.  If a market later becomes valid the 24 h TTL will
-    # let us rediscover it on the next day's snapshot.
-    if data is None and db is not None:
-        await mark_bad(db, sport_key=sport_key, markets=markets,
-                        reason="batch_422_or_error")
-    return data
+    async def _fetch_bundle(mkts: list[str]) -> Optional[dict]:
+        return await cached_httpx_get(
+            f"{ODDS_API_BASE}/sports/{sport_key}/events/{event_id}/odds",
+            {"regions": "us", "bookmakers": BOOKMAKERS,
+              "markets": ",".join(mkts), "oddsFormat": "american"},
+            api_key=ODDS_API_KEY,
+            endpoint_type="event_alt_lines",
+            caller="alt_lines_feed._fetch_event_odds",
+            sport_key=sport_key,
+            markets=",".join(mkts),
+        )
+
+    # (2) Bundle attempt.
+    data = await _fetch_bundle(markets)
+    if data is not None:
+        return data
+
+    # (3) Bundle failed — retry each market individually so one bad
+    #     market doesn't kill the entire event.  Merge successes.
+    #     Cost cap: only fan out when there are 2+ markets AND we
+    #     have a DB to persist the per-event bad marker; otherwise
+    #     accept the single failure.
+    if db is None or len(markets) <= 1:
+        # Single-market failure or no DB: nothing to salvage.
+        if db is not None:
+            await mark_bad(db, sport_key=sport_key, markets=markets,
+                            event_id=event_id, scope="event",
+                            reason="single_market_422_or_error")
+        return None
+
+    merged: Optional[dict] = None
+    failed_markets: list[str] = []
+    for m in markets:
+        one = await _fetch_bundle([m])
+        if one is None:
+            failed_markets.append(m)
+            continue
+        if merged is None:
+            # First success — seed with event metadata + this market's
+            # bookmakers.
+            merged = {k: v for k, v in one.items() if k != "bookmakers"}
+            merged["bookmakers"] = one.get("bookmakers") or []
+        else:
+            # Merge additional market rows into the same bookmaker
+            # entries (Odds API returns one bookmaker block per
+            # bookmaker with a `markets` list inside — we append the
+            # new markets to matching bookmakers).
+            existing_bm = {b.get("key"): b for b in merged["bookmakers"]}
+            for new_bm in one.get("bookmakers") or []:
+                bk = new_bm.get("key")
+                if bk in existing_bm:
+                    existing_bm[bk].setdefault("markets", []).extend(
+                        new_bm.get("markets") or []
+                    )
+                else:
+                    merged["bookmakers"].append(new_bm)
+
+    # (4) Cache the actually-failed markets at event scope so we
+    #     don't retry them next cycle.  If EVERYTHING failed, still
+    #     mark them; if we salvaged even one, only mark the losers.
+    if failed_markets:
+        await mark_bad(db, sport_key=sport_key, markets=failed_markets,
+                        event_id=event_id, scope="event",
+                        reason="individual_market_422_or_error")
+
+    return merged
 
 
 async def _discover_active_tennis_tournaments(cx: httpx.AsyncClient) -> list[tuple[str, str]]:
@@ -318,18 +383,22 @@ async def _discover_active_sports_by_prefix(cx: httpx.AsyncClient, prefix: str) 
 SOCCER_MARKETS = [
     # Player-scorer markets (2A.5 universal — already available in
     # live_alt_lines for MLS + La Liga + other auto-discovered active
-    # soccer leagues).
+    # soccer leagues).  SOCCER_MARKET_COMPETITION_RUNTIME (2026-09):
+    # `player_first_goal_scorer` REMOVED — do not waste provider
+    # budget on first-goalscorer markets in this repair.
     "player_goal_scorer_anytime",
-    "player_first_goal_scorer",
     "player_to_score_or_assist",
     # Game markets.  `alternate_totals` provides the multi-line
     # Over/Under surface (1.5 / 2.0 / 2.5 / 3.0 / ...).  `btts` is the
-    # Both Teams to Score market — added Phase 2A.5 UNIVERSAL so BTTS
-    # candidates can traverse the pipeline.  `bad_market_registry`
-    # gracefully catches per-league 422s (a league without BTTS support
-    # is skipped for 24 h so we do not burn credits).
+    # Both Teams to Score market.  `double_chance` is the real
+    # sportsbook Home-or-Draw / Draw-or-Away / Home-or-Away market —
+    # supported downstream but previously missing from acquisition
+    # (SOCCER_MARKET_COMPETITION_RUNTIME 2026-09 fix §2).  Per-market
+    # 422s are cached at (sport_key, event_id) scope so an unsupported
+    # market on one event never suppresses valid siblings.
     "alternate_totals",
     "btts",
+    "double_chance",
 ]
 
 
@@ -461,15 +530,22 @@ async def refresh_alt_lines(
         # picks today OR are in the static safety-net list.  This is
         # the key change that stops us polling Argentina Primera / J-
         # League / Superettan / etc. when we don't have picks in them.
+        #
+        # SOCCER_MARKET_COMPETITION_RUNTIME (2026-09) §4 — the strict
+        # picks_scope gate created a CIRCULAR DEPENDENCY: an event
+        # needed a published pick before we would fetch its alt
+        # markets, but the pick was often waiting on alt markets to
+        # be modeled.  We now include any league that either (a) has
+        # picks today OR (b) has upcoming events in the standard
+        # window as returned by ``_fetch_events``.  Cost stays low
+        # because ``max_events_per_sport=30`` and per-event alt
+        # requests are already bounded.
         discovered_soccer = 0
         for cfg_key, sport_key in await _discover_active_soccer_leagues(cx):
             already_covered = any(
                 sk == sport_key for _, (sk, _) in effective_config.items()
             )
             if already_covered:
-                continue
-            # picks-scope filter: only add if we have picks in this sport
-            if picks_scope and sport_key not in scope["sport_keys"]:
                 continue
             effective_config[cfg_key] = (sport_key, SOCCER_MARKETS)
             discovered_soccer += 1
@@ -490,8 +566,17 @@ async def refresh_alt_lines(
                 stats["events"] += 1
 
                 # picks-scope filter: skip events where neither team
-                # pair appears in today's picks
-                if picks_scope and scoped_pairs:
+                # pair appears in today's picks.
+                #
+                # SOCCER_MARKET_COMPETITION_RUNTIME (2026-09) §4 —
+                # soccer is EXEMPT from this gate.  An active soccer
+                # fixture is eligible for alt-market discovery even
+                # when we have not yet published a pick for it —
+                # otherwise we cannot bootstrap BTTS / Double Chance
+                # / anytime scorer markets for new fixtures.  Other
+                # sports still respect picks_scope to control burn.
+                is_soccer = cfg_key.startswith("soccer") or sport_key.startswith("soccer")
+                if picks_scope and scoped_pairs and not is_soccer:
                     # Phase 4E follow-up — canonicalise via alias map
                     # so CSL etc. resolve across name variants.
                     home_n = _team_key(sport_key, ev.get("home_team") or "")
