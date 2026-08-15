@@ -758,3 +758,28 @@ Canonical TARGET policy: `model_probability − devig_market_probability` (vig i
 5. Part P: de-vig scoring promotion implementation + G5 slate comparison.
 6. Part Q: Why-This-Pick provenance contract audit.
 7. Full-suite before/after classification vs 233f/30e baseline for Phase-2 changes (this session's changes are test-only + no production code changes, so baseline unchanged by construction).
+
+---
+
+## PHASE 2A — NFL CALIBRATION + PRESEASON UNCERTAINTY + DE-VIG PROMOTION (2026-06) — STATUS: COMPLETE (token: PHASE2A_NFL_CALIBRATION_DEVIG_READY, awaiting user approval before 2B)
+
+### Delivered
+- **Part 3 — Sparse-evidence calibration**: NFL Platinum game picks (ML/spread/total) now scored through the v3 six-component composite (edge/alignment/ROI/data-quality/volatility/CLV) inside `sports_engine.py` instead of the legacy win-prob band map. High scores must be EARNED; no arbitrary ceilings introduced (mathematical justification, not suppression).
+- **Part 4/5 — Preseason uncertainty**: `services/platinum_nfl/game_runtime.py` applies a bounded, deterministic confidence shrink to the SIMULATED probability for PRESEASON only: p' = 0.5 + (p−0.5)·0.85 (≈ +18% margin sigma). Metadata persisted on pick as `preseason_uncertainty {confidence_shrink, raw_sim_probability, adjusted_probability, basis}` (raw/adjusted refer to the simulated home side; symmetric around 0.5 so side-neutral). Regular season untouched. Flows probability→edge→score, never a raw score subtraction.
+- **Part 7/8 — De-vig PROMOTED to canonical edge**: inside `_build_pick` (sports_engine.py ~853-880): `edge_percent = model_prob − devig_market_probability` when exact opposing price(s) of the SAME market/line exist (edge_method=DEVIG, n-way normalization incl. 3-way soccer); otherwise raw one-sided implied fallback + `DEVIG_UNAVAILABLE` funnel telemetry. The −1.0 uniform EDGE_FLOOR gate now evaluates the CANONICAL (devig) edge. Fields always preserved: book_odds (never rewritten), raw_implied_probability, raw_edge_percent, devig_market_probability, devig_edge_percent, edge_method. Post-build `_attach_devig` retired for game markets (computed at build).
+- **Clobber fixes (found via live-slate audit this session)**: two post-build recomputes were overwriting the canonical devig edge with the raw edge on every cycle:
+  1. `pick_validator.py` §3 edge re-derivation — now uses devig_market_probability when edge_method=DEVIG (+ keeps devig_edge_percent mirror in sync).
+  2. `evidence_engine.py govern_pick` post-shrinkage edge re-derivation (~line 598) — same devig-aware fix; also maintains raw_edge_percent as the raw mirror.
+
+### Live proof (NFL-filtered orchestrator refresh 2026-08-15 07:56 UTC)
+14 fresh preseason picks stored: all edge_method=DEVIG, 14/14 satisfy edge_percent == wp − devig_market_prob, all carry preseason_uncertainty (k=0.85 verified), slate includes favorites (−155/−118/−134) AND underdogs (+100/+148/+112) — neutrality live-proven. Telemetry: DEVIG_UNAVAILABLE 1,901 (MLB/Soccer/Tennis prop paths lacking opposing prices), EDGE_THRESHOLD 295 (46 NFL this cycle, canonical-edge rejections). 6 stale pre-2A NFL picks remain (games rotated off slate; graded by settlement). Other sports' slates pick up devig fields at their next scheduled refresh (paths already wired through _build_pick).
+
+### Tests
+- `tests/test_phase2a_calibration_devig.py` (20: sparse calibration, preseason shrink bounded/deterministic/REG-untouched, quantile ordering, 2-way + 3-way devig, RAW fallback, gate-on-canonical-edge, unit checks, mismatched-line refusal, neutrality incl. dog-outranks-fav and 85-boundary).
+- `tests/test_phase2a_db_invariants_iter100.py` (12, written by testing_agent: DB invariants, telemetry, govern_pick synthetic clobber-regression, API smoke).
+- testing_agent verdict: 74/74 GREEN — /app/test_reports/iteration_100.json.
+- Full suite: 236f/4193p/18e vs 233f/30e baseline. Errors improved (30→18). The 7 non-baseline failures classified: 2× known deferred MLB Machado grading (Phase 3), 429 rate-limit flake, refresh-lease conflict from concurrent manual NFL refresh, 5.37s latency flake (ceiling 5.0), live-roster pitcher_not_found, rollover slate-state. Zero new production-path regressions; 4 baseline failures now PASS.
+
+### Next (blocked on user approval)
+- Phase 2B — NHL + NBA + CFB + UFC game models (do not begin until 2A approved).
+- Phase 2C — Tennis/Magic final closure. Phase 3 — Consumer/History/Settlement (incl. Machado grading).

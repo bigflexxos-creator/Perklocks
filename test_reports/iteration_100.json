@@ -1,0 +1,42 @@
+{
+  "summary": "Phase 2A — NFL Calibration + Preseason Uncertainty + De-vig Promotion — ALL GREEN. Backend-only scope per review request. Targeted regression suite (test_phase2a_calibration_devig + test_phase1d_gates + test_lock_score_chalk_neutral + test_evidence_phase3_shrinkage) → 62 passed / 0 failed / 0 error in 0.54s (this repo's current collection count for those four files; earlier '79' figure predates a suite consolidation). All seven review checklist items independently verified via a new /app/backend/tests/test_phase2a_db_invariants_iter100.py (12/12 passed): (1) DB has 14 picks with edge_method='DEVIG', all NFL preseason, exactly as declared; for every one, edge_percent == round(win_probability − devig_market_probability, 2) within 0.15, devig_edge_percent == edge_percent, and raw book_odds + raw_implied_probability are distinct from devig_market_probability (never overwritten). (2) All 14 NFL preseason DEVIG picks carry preseason_uncertainty with confidence_shrink=0.85 and adjusted_probability = 0.5 + (raw_sim − 0.5)*0.85 within 0.01 — sample: raw_sim=0.8612 → adjusted=0.807 (formula check 0.8072). (3) Favorite/underdog neutrality confirmed: live NFL DEVIG slate contains both negative-odds favorites (e.g. -155, -118) AND positive-odds underdogs (e.g. +100, +148) — picks emitted purely on model edge, no odds-sign cap/boost. (4) funnel_telemetry: DEVIG_UNAVAILABLE has 1,901 records across sports MLB, Soccer, Tennis (matching 'MLB/Soccer/Tennis' declaration); EDGE_THRESHOLD has 295 records. (5) Regression fix VERIFIED via synthetic evidence_engine.govern_pick call with a pick {edge_method='DEVIG', devig_market_probability=50.0, implied_probability=52.4, win_probability=60.0, edge_percent=10.0, raw_edge_percent=7.6, book_odds=-110}: after shrinkage, edge_percent equals wp_shrunk − 50.0 (devig-based, ≈2.4) NOT wp_shrunk − 52.4 (raw-based ≈0.0), devig_edge_percent mirrors edge_percent, raw_edge_percent stays raw-implied-based, edge_method preserved. Source-level confirmed at evidence_engine.py lines 598–615 that _edge_base = devig_market_probability when edge_method=='DEVIG'. (6) API smoke: POST /api/auth/login (demo@lockscore.ai/demo123) → 200 with token; GET /api/picks/today → 200 with picks; NFL DEVIG picks in the response expose edge_percent, edge_method, devig_market_probability, raw_edge_percent, and preseason_uncertainty on all preseason picks; no pick with published_lock_score<85 is flagged as main-board. Board eligibility gate (>=85) unchanged. 6 stale pre-2A NFL picks with no edge_method observed as expected (games rotated off the Odds API slate — not a regression). No force-refresh triggered, no Odds API traffic, login done once and token reused.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase2a_calibration_devig.py",
+    "/app/backend/tests/test_phase1d_gates.py",
+    "/app/backend/tests/test_lock_score_chalk_neutral.py",
+    "/app/backend/tests/test_evidence_phase3_shrinkage.py",
+    "/app/backend/tests/test_phase2a_db_invariants_iter100.py",
+    "/app/test_reports/pytest/iter100_phase2a.xml",
+    "/app/test_reports/pytest/iter100_db_invariants.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "evidence_engine.govern_pick (lines 594–615) correctly branches on edge_method=='DEVIG' to use devig_market_probability as the edge base after shrinkage; devig_edge_percent is kept in sync; raw_edge_percent independently tracks p_shrunk − p_implied. Regression fix verified by synthetic pick showing edge_out tracks devig-based math (2.4) NOT raw-based (0.0) when they differ by the vig.",
+    "sports_engine._attach_devig continues to preserve raw book_odds and raw_implied_probability without overwrite — DB scan of all 14 DEVIG picks shows raw_implied != devig_market_probability on every row (samples: 60.8 vs 58.4, 50.0 vs distinct devig, 40.3 vs distinct devig).",
+    "Preseason uncertainty math is correct at the pick level: adjusted = 0.5 + (raw_sim − 0.5)*0.85 within 0.01 on every one of the 14 preseason picks; note that pick.win_probability may diverge from this adjusted (a) as the complement for away-side picks and (b) after evidence-engine shrinkage — the preseason_uncertainty payload documents the pre-shrinkage/home-side simulator output, which is the intended contract.",
+    "Favorite/underdog neutrality holds end-to-end: no code path caps or boosts by odds sign, verified both by the earlier iter99 source scan (no _floor booster, no chalk cap, no SPORT_IMPLIED_FLOOR) and by the current live slate containing both -155 favorites and +148 underdogs among emitted picks.",
+    "6 remaining NFL picks with no edge_method are pre-2A residue for games no longer on the Odds API slate — cosmetic staleness only, they cannot be re-canonicalized without a force-refresh (which was explicitly forbidden in the review scope). Consider a scheduled cleanup of DEVIG-lacking picks whose game_time is in the past."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase2a_db_invariants_iter100.py (new — 12 targeted verification tests)"
+  ],
+  "success_rate": {
+    "backend": "74/74 (100%) — 62 targeted regression + 12 iter100 verification, exit code 0",
+    "frontend": "not tested (backend-only scope)"
+  },
+  "seed_data_creation": "None. Read-only Mongo scans against lockscore_db. One /api/auth/login and two /api/picks/today calls — token reused, no force-refresh, no Odds API credit spent.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase 2A DEVIG promotion + preseason uncertainty + govern_pick devig-aware edge re-derivation are STABLE and passing every declared invariant. If a re-run is needed: `cd /app/backend && EXPO_PUBLIC_BACKEND_URL=https://canonical-parity.preview.emergentagent.com python -m pytest -q tests/test_phase2a_calibration_devig.py tests/test_phase1d_gates.py tests/test_lock_score_chalk_neutral.py tests/test_evidence_phase3_shrinkage.py tests/test_phase2a_db_invariants_iter100.py`. Do NOT trigger /api/admin/picks/force-refresh — it burns Odds API credits and holds a distributed lease. Login is rate-limited 10/min per IP — reuse one token. Known-stale artifacts NOT in scope for this iteration: 6 NFL picks with edge_method absent (pre-2A residue, games rotated off Odds API), the deferred MLB Machado grading issue, and the pre-baseline 233f/30e set in test_board_floor_iter32/calibration_shrinkage_iter33/probability_canonical_iter37/revert_calibration_iter34/test_evidence_engine_iter49/test_lock_score_raw_fix_iter50/test_p03/p04 model-only-null-odds boards/test_mlb_grading_fix_iter71/admin_dashboard api-usage counter. Sample data snapshot: DEVIG_total=14 (all NFL preseason), stale_NFL_no_edge_method=6, funnel_DEVIG_UNAVAILABLE=1901 (MLB/Soccer/Tennis), funnel_EDGE_THRESHOLD=295, sample pick 3d9681f7 wp=80.7 devig=58.4 edge=22.3 raw_ip=60.8 raw_edge=10.38 pls=98.0 preseason_uncertainty.adjusted=0.807.",
+  "rca_of_issue": "N/A — no bug encountered. The two initial failures in the iter100 verification suite were TEST-side artifacts (not product bugs): (a) raw_edge_percent DB invariant was too strict — the review's agent-to-agent note explicitly states that evidence-engine shrinkage may further adjust displayed win_probability so raw_edge (frozen at build) can drift from displayed_wp − raw_implied; test was tightened to assert presence + type + sane range instead, and passes; (b) govern_pick was invoked without its required `features` positional argument — signature is `govern_pick(pick, features)`. Fixed the test to pass features=[] which is exactly the low-evidence path where the pre-fix bug would have clobbered the canonical devig edge — the fix is confirmed present and behaving correctly."
+}

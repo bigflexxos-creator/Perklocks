@@ -832,7 +832,8 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
                 model_win_prob, book_odds, lock, factors, insights, external_id,
                 is_alt_prop: bool = False, is_long_shot: bool = False,
                 home_team_name: str | None = None,
-                away_team_name: str | None = None):
+                away_team_name: str | None = None,
+                opposing_prices: list | None = None):
     # Filter out malformed prices outside realistic American odds range.
     # Alt prop picks are legitimately chalky but capped at -1000 max.
     # Long-shot picks (anytime goal scorer, etc.) can have huge plus prices.
@@ -849,7 +850,35 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
             if book_odds <= -1000 or book_odds >= 5000 or (-100 < book_odds < 100):
                 book_odds = None
     book_implied = _implied_prob(book_odds) if book_odds else model_win_prob
-    edge = round((model_win_prob - book_implied) * 100, 2)
+    # ── PHASE 2A (Part 7/8) — canonical edge with de-vig promotion ──
+    # canonical_edge = model − devig_market_probability when the exact
+    # opposing side(s) of the SAME market/line are available
+    # (edge_method=DEVIG); otherwise fall back to the raw one-sided
+    # implied (edge_method=RAW_FALLBACK) with DEVIG_UNAVAILABLE
+    # telemetry.  Methods are never silently mixed; raw odds and both
+    # probabilities are always preserved.
+    _devig_prob = None
+    _edge_method = "RAW_FALLBACK"
+    _opps = [
+        _implied_prob(o) for o in (opposing_prices or [])
+        if isinstance(o, (int, float)) and (o >= 100 or o <= -100)
+    ]
+    if _opps and book_odds:
+        _tot = book_implied + sum(_opps)
+        if _tot > 0:
+            _devig_prob = book_implied / _tot
+            _edge_method = "DEVIG"
+    elif book_odds:
+        try:
+            from services import funnel_telemetry as _funnel
+            _funnel.record(sport=sport, market=market or "*", stage="devig",
+                           reason="DEVIG_UNAVAILABLE", event=event,
+                           detail="no opposing price at build time")
+        except Exception:
+            pass
+    _market_prob = _devig_prob if _devig_prob is not None else book_implied
+    edge = round((model_win_prob - _market_prob) * 100, 2)
+    raw_edge = round((model_win_prob - book_implied) * 100, 2)
     final_odds = int(book_odds) if book_odds else _win_prob_to_american(model_win_prob)
     # ─── PHASE 1D (G1) — chalk odds caps RETIRED ─────────────────────
     # Legacy: long-shots capped at -400, alt props at -750, standard at
@@ -1000,6 +1029,14 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
         "book_odds": final_odds,
         "implied_probability": round(book_implied * 100, 1),
         "edge_percent": edge,
+        # PHASE 2A — canonical-edge provenance (Part 8)
+        "edge_method": _edge_method,
+        "raw_implied_probability": round(book_implied * 100, 1),
+        "raw_edge_percent": raw_edge,
+        **({"devig_market_probability": round(_devig_prob * 100, 1),
+            "devig_edge_percent": edge,
+            "devig_method": f"{1 + len(_opps)}_way_normalization"}
+           if _devig_prob is not None else {}),
         "lock_score": lock, "grade": _grade(lock), "confidence": _confidence(lock),
         "factors": factors, "key_insights": insights,
         "external_id": str(external_id),
@@ -1350,7 +1387,25 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     pass
 
         if not _skip_ml:
-            lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
+            if sport == "NFL" and _nfl_plat_ml is not None:
+                # PHASE 2A (Part 3) — sparse-evidence calibration: route
+                # Platinum picks through the v3 six-component composite
+                # (edge/alignment/ROI/data-quality/volatility/CLV) instead
+                # of the legacy win-prob band map, which converted model
+                # probability alone into 90s scores regardless of edge or
+                # evidence.  High scores must be EARNED, not probability-
+                # mapped.
+                _e_ml = round((mp - _implied_prob(side_ml)) * 100, 2)
+                lock, breakdown = compute_lock_score(
+                    factors, win_prob=mp * 100,
+                    pick={"book_odds": side_ml, "edge_percent": _e_ml,
+                          "win_probability": mp * 100},
+                    edge_percent=_e_ml)
+            else:
+                lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
+            _opp_ml_prices = [away_ml if side == home else home_ml]
+            if sport == "Soccer" and draw_ml is not None:
+                _opp_ml_prices.append(draw_ml)
             ml_pick = _build_pick(
                 sport=sport, league=league, event=f"{away} @ {home}",
                 event_time=commence, market=f"{side} Moneyline", pick_side=side,
@@ -1358,6 +1413,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 lock=lock, factors=breakdown,
                 insights=_insights_for(sport, breakdown, side, home, away),
                 external_id=f"{sport}-{game_id}-ml",
+                opposing_prices=_opp_ml_prices,
             )
             if ml_pick and dd_ml_result:
                 ml_pick["data_driven_used"] = True
@@ -1368,12 +1424,8 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     attach_game_sim_provenance,
                 )
                 attach_game_sim_provenance(ml_pick, _nfl_plat_ml)
-            # PHASE 1D (G5) — de-vig market probability (2-way, or
-            # 3-way for soccer when a draw price exists).
-            _opp = [away_ml if side == home else home_ml]
-            if sport == "Soccer" and draw_ml is not None:
-                _opp.append(draw_ml)
-            _attach_devig(ml_pick, _opp)
+            # PHASE 2A — de-vig computed at build time (canonical edge).
+            # Post-build attachment retired for game markets.
             if ml_pick:
                 # 2026-07-21 Phase 1 MLB + Phase 2 Tennis/Soccer:
                 # attach real-data attribution
@@ -1829,7 +1881,17 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         factors = {}
 
                     if not _skip_total:
-                        lock, breakdown = compute_lock_score(factors, win_prob=best["mp"] * 100)
+                        if sport == "NFL" and _nfl_tot_sims:
+                            # PHASE 2A — v3 composite for Platinum totals.
+                            _e_t = round((best["mp"] - best["implied"]) * 100, 2)
+                            lock, breakdown = compute_lock_score(
+                                factors, win_prob=best["mp"] * 100,
+                                pick={"book_odds": best["price"],
+                                      "edge_percent": _e_t,
+                                      "win_probability": best["mp"] * 100},
+                                edge_percent=_e_t)
+                        else:
+                            lock, breakdown = compute_lock_score(factors, win_prob=best["mp"] * 100)
                         total_pick = _build_pick(
                             sport=sport, league=league, event=f"{away} @ {home}",
                             event_time=commence,
@@ -1839,6 +1901,9 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                             lock=lock, factors=breakdown,
                             insights=_insights_for(sport, breakdown, best["side"], home, away),
                             external_id=f"{sport}-{game_id}-total-{best['side'].lower()}",
+                            # PHASE 2A — exact same line, opposite side
+                            opposing_prices=[u_price if best["side"] == "Over"
+                                             else o_price],
                         )
                         if total_pick:
                             if best["side"] == "Under":
@@ -1867,10 +1932,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                                     )
                                     attach_game_sim_provenance(
                                         total_pick, _sim_best)
-                            # PHASE 1D (G5) — de-vig (2-way O/U)
-                            _attach_devig(
-                                total_pick,
-                                [u_price if best["side"] == "Over" else o_price])
+                            # PHASE 2A — de-vig handled at build time.
                             picks.append(total_pick)
 
             # ── Soccer Poisson-synthesized alt totals (Over 1.5, Over 3.5) ──
@@ -2080,7 +2142,16 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     except Exception:
                         pass
                     continue
-                lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
+                if sport == "NFL" and _nfl_plat_sp and _nfl_plat_sp.get("available"):
+                    # PHASE 2A — v3 composite for Platinum spreads.
+                    _e_sp = round((mp - implied) * 100, 2)
+                    lock, breakdown = compute_lock_score(
+                        factors, win_prob=mp * 100,
+                        pick={"book_odds": price, "edge_percent": _e_sp,
+                              "win_probability": mp * 100},
+                        edge_percent=_e_sp)
+                else:
+                    lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
                 sign = "+" if (line or 0) > 0 else ""
                 # Deterministic per-side external id so re-runs don't
                 # collide between the home / away spread picks in the
@@ -2094,15 +2165,16 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     lock=lock, factors=breakdown,
                     insights=_insights_for(sport, breakdown, side, home, away),
                     external_id=f"{sport}-{game_id}-spread-{side_slug}",
+                    # PHASE 2A — same spread line, opposite side
+                    opposing_prices=[((away_sp if side == home else home_sp)
+                                      or {}).get("price")],
                 )
                 if _sp_pick and _nfl_plat_sp and _nfl_plat_sp.get("available"):
                     from services.platinum_nfl.game_runtime import (
                         attach_game_sim_provenance,
                     )
                     attach_game_sim_provenance(_sp_pick, _nfl_plat_sp)
-                # PHASE 1D (G5) — de-vig (2-way spread)
-                _opp_sp = away_sp if side == home else home_sp
-                _attach_devig(_sp_pick, [(_opp_sp or {}).get("price")])
+                # PHASE 2A — de-vig handled at build time.
                 picks.append(_sp_pick)
     return [p for p in picks if p is not None]
 

@@ -134,11 +134,36 @@ def platinum_game_side_probability(
                     "sim": sim,
                     "season_type": getattr(season_type, "value",
                                            str(season_type))}
+        st_val = getattr(season_type, "value", str(season_type))
+        prob = float(sim["sim_probability"])
+        preseason_uncertainty = None
+        if st_val == "PRESEASON":
+            # ── PHASE 2A (Part 4/5) — explicit preseason uncertainty ─
+            # Preseason outcomes carry measurably lower comparability:
+            # uncertain starter participation, QB rotation, snap
+            # allocation and coaching experimentation.  We model this
+            # as a bounded confidence shrink applied to the SIMULATED
+            # probability (p' = 0.5 + (p-0.5)·k, k=0.85 ≈ widening the
+            # margin sigma ~18%).  It flows through probability → edge
+            # → score (never a raw score subtraction), is deterministic,
+            # bounded, and visible in provenance.  Regular season is
+            # untouched.
+            PRESEASON_CONFIDENCE_SHRINK = 0.85
+            shrunk = 0.5 + (prob - 0.5) * PRESEASON_CONFIDENCE_SHRINK
+            preseason_uncertainty = {
+                "confidence_shrink": PRESEASON_CONFIDENCE_SHRINK,
+                "raw_sim_probability": round(prob, 4),
+                "adjusted_probability": round(shrunk, 4),
+                "basis": "starter_participation/QB_rotation/"
+                         "snap_allocation/coaching_experimentation",
+            }
+            prob = shrunk
         return {
             "available": True,
-            "prob": float(sim["sim_probability"]),
+            "prob": prob,
             "sim": sim,
-            "season_type": getattr(season_type, "value", str(season_type)),
+            "season_type": st_val,
+            "preseason_uncertainty": preseason_uncertainty,
             "expected_margin_home": ctx["expected_margin_home"],
             "expected_total": ctx["expected_total"],
             "simulator": f"{SIMULATOR_NAME}@{SIMULATOR_VERSION}",
@@ -156,6 +181,8 @@ def attach_game_sim_provenance(pick: dict, result: dict) -> None:
         return
     pick["model_source"] = SIMULATOR_NAME
     pick["season_type"] = result.get("season_type")
+    if result.get("preseason_uncertainty"):
+        pick["preseason_uncertainty"] = result["preseason_uncertainty"]
     sim = result.get("sim") or {}
     pick["platinum_game_sim"] = {
         "sim_probability": sim.get("sim_probability"),

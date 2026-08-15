@@ -140,6 +140,14 @@ async def validate_and_heal(db) -> dict:
         # book-anchored pick is 0.
         wp = p.get("win_probability")
         ip = p.get("implied_probability")
+        # PHASE 2A — canonical edge is DEVIG-based when the pick was built
+        # with an opposing price (edge_method=DEVIG).  The validator must
+        # re-derive against devig_market_probability, NOT the raw one-sided
+        # implied, otherwise every validation cycle clobbers the canonical
+        # devig edge back to the raw edge.
+        if (p.get("edge_method") == "DEVIG"
+                and p.get("devig_market_probability") is not None):
+            ip = p.get("devig_market_probability")
 
         # ── Strict edge gate for v3 goal-scorer / model-derived picks ──
         # These picks have `edge_percent=None` by design because no
@@ -179,6 +187,10 @@ async def validate_and_heal(db) -> dict:
             if stored_edge is None or abs(stored_edge - expected_edge) > 0.05:
                 updates["edge_percent"] = expected_edge
                 p["edge_percent"] = expected_edge
+                # keep the devig mirror field in sync (PHASE 2A)
+                if p.get("edge_method") == "DEVIG":
+                    updates["devig_edge_percent"] = expected_edge
+                    p["devig_edge_percent"] = expected_edge
                 counts["fixed_edge"] += 1
 
         # 4) Lock-score anchor — re-derive from current factors + WP.
