@@ -174,6 +174,7 @@ def compute_soccer_scorer_factors_sync(
     market_key: str,
     book_implied: float,
     form_row: Optional[dict] = None,
+    prior_form_row: Optional[dict] = None,   # Phase 2A.5D AMENDMENT
     league: str = "",
     team_ctx: Optional[dict] = None,
 ) -> Optional[dict]:
@@ -223,6 +224,56 @@ def compute_soccer_scorer_factors_sync(
     shots_per_90 = _shrink_rate(shots_per_90_raw, games, LEAGUE_AVG_SHOTS_PER_90)
     sot_per_90 = _shrink_rate(sot_per_90_raw, games, LEAGUE_AVG_SOT_PER_90)
     finishing = _shrink_finishing(goals, xg)
+
+    # ── Phase 2A.5D AMENDMENT — multi-season posterior override ──────
+    # When a prior_form_row is supplied AND has meaningful minutes,
+    # blend prior-season attacking rates into the per-90 estimates via
+    # empirical-Bayes weighting.  Small current-season sample → prior
+    # dominates.  Large sample → current dominates.  No hard cutoff.
+    # Falls back to current-season-only behaviour when no prior data.
+    multi_season_profile: Optional[str] = None
+    if (prior_form_row and isinstance(prior_form_row, dict)
+            and int(prior_form_row.get("minutes") or 0) >= 400):
+        try:
+            from services.soccer_scorer_multi_season import (
+                SeasonSample, compute_multi_season_posterior,
+            )
+            _cur = SeasonSample(
+                minutes=float(minutes or 0), games=games, starts=starts,
+                goals=goals, xg=xg, xa=xa,
+                shots=float(form_row.get("shots") or 0),
+                sot=float(form_row.get("sot") or 0),
+                team=str(form_row.get("team") or ""), league=league,
+            )
+            _pri = SeasonSample(
+                minutes=float(prior_form_row.get("minutes") or 0),
+                games=int(prior_form_row.get("games") or 0),
+                starts=int(prior_form_row.get("starts")
+                           or prior_form_row.get("games_started") or 0),
+                goals=float(prior_form_row.get("goals") or 0),
+                xg=float(prior_form_row.get("xg") or 0),
+                xa=float(prior_form_row.get("xa") or 0),
+                shots=float(prior_form_row.get("shots") or 0),
+                sot=float(prior_form_row.get("sot") or 0),
+                team=str(prior_form_row.get("team") or ""),
+                league=str(prior_form_row.get("league") or ""),
+            )
+            _post = compute_multi_season_posterior(
+                current=_cur, prior=_pri,
+                availability="active",
+                current_team=(team_ctx or {}).get("team")
+                            if isinstance(team_ctx, dict) else None,
+                current_league=league,
+            )
+            # Override per-90 estimates with the posterior blend.  These
+            # remain shrunk (via posterior weight math) so tiny current-
+            # season hot streaks cannot override strong priors.
+            xg_per_90    = float(_post.xg_per_90)
+            shots_per_90 = float(_post.shots_per_90) or shots_per_90
+            sot_per_90   = float(_post.sot_per_90) or sot_per_90
+            multi_season_profile = _post.quality_profile
+        except Exception as _ms_err:
+            logger.debug("multi-season posterior skipped: %s", _ms_err)
 
     # ── Team / opponent context ──────────────────────────────────────
     team_ctx = team_ctx or {}
@@ -333,8 +384,13 @@ def compute_soccer_scorer_factors_sync(
         "factors":          factors,
         "sources":          sources,
         "quality_profile":  quality_profile,
+        # Phase 2A.5D AMENDMENT — multi-season attacking profile, when
+        # a prior_form_row was supplied.  Descriptive only; never sets
+        # Lock Score.
+        "multi_season_profile": multi_season_profile,
         "uncertainty":      round(min(0.60, unc), 3),
-        "engine_version":   "phase2a5_scorer_bridge_v1",
+        "engine_version":   "phase2a5_scorer_bridge_v1" + (
+            "+multi_season" if multi_season_profile else ""),
     }
 
 
