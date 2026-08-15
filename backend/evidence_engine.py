@@ -591,14 +591,28 @@ def govern_pick(
                 # Re-derive edge against shrunk probability so the
                 # displayed alpha matches the displayed prob. Capture
                 # the pre-shrinkage edge in *_raw for the audit trail.
-                if p_implied is not None and pick.get("edge_percent") is not None:
+                # PHASE 2A — canonical edge is measured against the
+                # de-vig market probability when the pick was built with
+                # an opposing price (edge_method=DEVIG); otherwise the
+                # raw one-sided implied.  Never silently mix methods.
+                _edge_base = p_implied
+                if (pick.get("edge_method") == "DEVIG"
+                        and pick.get("devig_market_probability") is not None):
+                    _edge_base = pick["devig_market_probability"]
+                if _edge_base is not None and pick.get("edge_percent") is not None:
                     try:
                         prev_edge = float(pick["edge_percent"])
                         if "edge_percent_raw" not in pick:
                             pick["edge_percent_raw"] = round(prev_edge, 2)
                     except (TypeError, ValueError):
                         pass
-                    pick["edge_percent"] = round(p_shrunk - float(p_implied), 2)
+                    pick["edge_percent"] = round(p_shrunk - float(_edge_base), 2)
+                    if pick.get("edge_method") == "DEVIG":
+                        pick["devig_edge_percent"] = pick["edge_percent"]
+                    # raw-edge mirror stays raw-implied-based
+                    if p_implied is not None:
+                        pick["raw_edge_percent"] = round(
+                            p_shrunk - float(p_implied), 2)
             except (TypeError, ValueError):
                 pass
 

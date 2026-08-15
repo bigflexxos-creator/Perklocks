@@ -924,3 +924,34 @@ metadata:
   last_iteration: 96
   last_iteration_topic: "GoalScorer Engine v3 (layered probability model for all soccer leagues)"
   last_iteration_result: "13/13 backend tests PASS · 167 v3 picks live across MLS+Big-5"
+
+  - task: "Phase 2A — NFL calibration + preseason uncertainty + de-vig promotion"
+    implemented: true
+    working: true
+    file: "backend/sports_engine.py, backend/services/platinum_nfl/game_runtime.py, backend/pick_validator.py, backend/evidence_engine.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            De-vig promoted to canonical edge in _build_pick (edge_method
+            DEVIG/RAW_FALLBACK + DEVIG_UNAVAILABLE telemetry); preseason
+            shrink k=0.85 in Platinum runtime; NFL Platinum scores via v3
+            composite. Fixed two post-build clobberers (pick_validator §3,
+            evidence_engine.govern_pick) that rewrote canonical devig edge
+            back to raw edge each cycle.
+        - working: true
+          agent: "testing"
+          comment: |
+            74/74 GREEN. 62 targeted regression tests + 12 new DB-invariant
+            tests (tests/test_phase2a_db_invariants_iter100.py). Live slate:
+            14/14 NFL DEVIG picks satisfy edge==wp-devig; preseason_uncertainty
+            verified; fav/dog neutrality live; telemetry present; govern_pick
+            synthetic clobber-regression passes. /app/test_reports/iteration_100.json
+
+metadata:
+  last_iteration: 100
+  last_iteration_topic: "Phase 2A — NFL calibration + preseason uncertainty + de-vig promotion"
+  last_iteration_result: "74/74 GREEN · PHASE2A_NFL_CALIBRATION_DEVIG_READY"
