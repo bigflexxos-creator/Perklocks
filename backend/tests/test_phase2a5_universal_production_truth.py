@@ -455,3 +455,90 @@ def test_universal_diagnostic_public_api_returns_matrix():
         assert "leagues_scanned" in rep
         assert "pick_date" in rep
     _run(_t())
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 15. LIVE-BOARD closure invariants — Phase 2A.5 UNIVERSAL LIVE-BOARD
+# ═════════════════════════════════════════════════════════════════════
+def test_real_line_sources_bypass_evidence_governor():
+    """`evidence_engine.govern_pick` re-derives grade from evidence_score
+    and would demote real-line picks (grade=Playable → Pass) at
+    /api/picks/today read time, hiding them from the live Locks board.
+    The route MUST skip `real_line_alt_scorer_v1` and
+    `real_line_soccer_v2` in the governor loop (they are already
+    authoritative — the scorer bridge / game model IS the evidence)."""
+    import routes.picks_routes as pr, inspect
+    src = inspect.getsource(pr.picks_today)
+    assert "real_line_alt_scorer_v1" in src, (
+        "real_line_alt_scorer_v1 must be in the evidence-governor "
+        "skip list in routes/picks_routes.picks_today — otherwise "
+        "grade=Pass demotion hides ALL real-line goalscorer picks."
+    )
+    assert "real_line_soccer_v2" in src, (
+        "real_line_soccer_v2 must be in the evidence-governor skip "
+        "list — otherwise grade=Pass demotion hides real-line BTTS / "
+        "totals / h2h picks."
+    )
+
+
+def test_team_ctx_fallback_uses_soccer_matches_when_form_absent():
+    """When neither `soccer_team_form` nor `team_form` returns a row,
+    `build_soccer_team_ctx` must fall back to aggregating the last 20
+    matches from `soccer_matches` (the historical fixture collection
+    populated by sportdb_client — 25k+ real fixtures across every
+    Big-5 + European league).  Without this, game-market picks are
+    permanently NO_MODEL_PROBABILITY across all leagues."""
+    from services.soccer_game_model import build_soccer_team_ctx
+    async def _t():
+        class _MatchColl(_FakeCollection):
+            def find(self, q=None, projection=None):
+                return _FakeCursor([
+                    {"home_team":"Real Madrid","away_team":"Barcelona",
+                     "home_score":2,"away_score":1,"date":"2025-01-01"},
+                    {"home_team":"Girona","away_team":"Real Madrid",
+                     "home_score":0,"away_score":3,"date":"2024-12-15"},
+                ] if q and any(k in str(q) for k in ("Real Madrid",)) else [])
+            async def to_list(self, *a, **k):
+                return []
+        class _Curs:
+            def __init__(self, rows):
+                self.rows = rows
+            def sort(self, *a, **k): return self
+            def limit(self, *a, **k): return self
+            async def to_list(self, *a, **k): return self.rows
+        class _SM:
+            def find(self, q=None):
+                return _Curs([
+                    {"home_team":"Real Madrid","away_team":"Barcelona",
+                     "home_score":2,"away_score":1,"date":"2025-01-01"},
+                    {"home_team":"Girona","away_team":"Real Madrid",
+                     "home_score":0,"away_score":3,"date":"2024-12-15"},
+                ])
+        db = _FakeDB()
+        db.soccer_matches = _SM()
+        ctx = await build_soccer_team_ctx(
+            db, home_team="Real Madrid", away_team="Barcelona",
+            league="La Liga",
+        )
+        # Home team fallback must populate form via soccer_matches.
+        home = ctx.get("home_form") or {}
+        assert home.get("source") == "soccer_matches_rolling20", ctx
+        assert "gf_avg" in home and home["gf_avg"] > 0
+        assert "ga_avg" in home
+        assert home["n_matches"] == 2
+    _run(_t())
+
+
+def test_alt_lines_feed_static_config_includes_btts_across_leagues():
+    """The static SPORT_CONFIG for World Cup / EPL / UCL must also
+    request BTTS so the top-priority leagues never miss the market."""
+    import alt_lines_feed as alf
+    for cfg_key, (_sk, markets) in alf.SPORT_CONFIG.items():
+        if not cfg_key.startswith("soccer"):
+            continue
+        assert "btts" in markets, (
+            f"{cfg_key} SPORT_CONFIG must request btts (Both Teams "
+            f"to Score) — currently: {markets}"
+        )
+        assert "player_goal_scorer_anytime" in markets, cfg_key
+

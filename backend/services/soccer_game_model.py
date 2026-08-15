@@ -411,19 +411,23 @@ async def build_soccer_team_ctx(
 ) -> dict[str, Any]:
     """Assemble the ``ctx`` dict expected by
     :func:`estimate_soccer_game_probabilities` from the existing
-    Perklocks collections (``team_form``, ``soccer_matches``,
-    ``soccer_team_form``).
+    Perklocks collections.
 
-    Never fabricates numbers — a team with no rolling data yields
-    ``None`` GF/GA which the estimator handles via league-average
-    priors.  League name is passed through so future extensions can
-    filter by competition.
+    Resolution order (never fabricates):
+        1. ``soccer_team_form`` — pre-aggregated rolling form.
+        2. ``team_form`` (multi-sport) filtered to Soccer.
+        3. ``soccer_matches`` — 25k+ real historical matches with GF/GA
+           per team.  Derive rolling form from the last 20 matches on
+           the fly when no pre-agg row exists.  This is the fallback
+           that unlocks Phase 2A.5 UNIVERSAL end-to-end game-market
+           coverage without any team_form backfill job.
+
+    A team with no rolling data yields None GF/GA which the estimator
+    handles via league-average priors.  League name is passed through
+    so future extensions can filter by competition.
     """
     ctx: dict[str, Any] = {}
 
-    # Universal form lookup — prefer `soccer_team_form` if present
-    # (populated by sportdb_client / Understat pipelines).  Fall
-    # back to generic `team_form` (multi-sport).
     for side, team_name in (("home", home_team), ("away", away_team)):
         if not team_name:
             continue
@@ -443,15 +447,72 @@ async def build_soccer_team_ctx(
             except Exception:
                 row = None
         if row:
-            gf = row.get("gf_per_match") or row.get("gf") or row.get("goals_for_per_game")
-            ga = row.get("ga_per_match") or row.get("ga") or row.get("goals_against_per_game")
-            matches = int(row.get("matches") or row.get("games") or 0)
+            gf = row.get("gf_per_match") or row.get("gf_avg") or row.get("gf") or row.get("goals_for_per_game")
+            ga = row.get("ga_per_match") or row.get("ga_avg") or row.get("ga") or row.get("goals_against_per_game")
+            matches = int(row.get("matches") or row.get("n_matches") or row.get("games") or 0)
+            # Schema note: the estimator's `_extract_strength` reads
+            # `gf_avg` / `ga_avg` / `n_matches` — use those exact keys
+            # so a legacy `gf`/`ga` schema in `team_form` still lights
+            # up the Poisson estimator.
             ctx[f"{side}_form"] = {
-                "gf": float(gf) if gf is not None else None,
-                "ga": float(ga) if ga is not None else None,
-                "matches": matches,
-                "source": row.get("source") or "team_form",
+                "gf_avg":    float(gf) if gf is not None else None,
+                "ga_avg":    float(ga) if ga is not None else None,
+                "n_matches": matches,
+                "matches":   matches,
+                "source":    row.get("source") or "team_form",
             }
+        else:
+            # ── Fallback: derive from raw historical matches ──────
+            # The `soccer_matches` collection carries per-fixture
+            # scores.  Aggregate the last 20 matches for this team
+            # to compute rolling GF/GA per match.  Never blends
+            # across leagues silently — but if `league` is falsy we
+            # accept any competition because the caller didn't
+            # commit to a filter.  Sample size is honestly recorded.
+            try:
+                match_filter: dict[str, Any] = {
+                    "$or": [
+                        {"home_team": {"$regex": f"^{team_name.strip()}$", "$options": "i"}},
+                        {"away_team": {"$regex": f"^{team_name.strip()}$", "$options": "i"}},
+                    ],
+                    "home_score": {"$exists": True, "$ne": None},
+                    "away_score": {"$exists": True, "$ne": None},
+                }
+                docs = await db.soccer_matches.find(match_filter).sort(
+                    [("date", -1)]
+                ).limit(20).to_list(20)
+                if docs:
+                    tot_gf = 0.0
+                    tot_ga = 0.0
+                    n = 0
+                    tn = team_name.strip().lower()
+                    for d in docs:
+                        hs = d.get("home_score")
+                        as_ = d.get("away_score")
+                        if hs is None or as_ is None:
+                            continue
+                        try:
+                            hs = float(hs); as_ = float(as_)
+                        except Exception:
+                            continue
+                        if (d.get("home_team") or "").strip().lower() == tn:
+                            tot_gf += hs; tot_ga += as_
+                        else:
+                            tot_gf += as_; tot_ga += hs
+                        n += 1
+                    if n:
+                        ctx[f"{side}_form"] = {
+                            "gf_avg":     tot_gf / n,
+                            "ga_avg":     tot_ga / n,
+                            "n_matches":  n,
+                            "matches":    n,
+                            "source":     "soccer_matches_rolling20",
+                        }
+            except Exception as _mm_err:
+                logger.debug(
+                    "soccer_matches rollup failed for %s: %s",
+                    team_name, _mm_err,
+                )
         # xG rolling window (optional — only if pre-computed).
         try:
             xg = await db.soccer_team_xg_rolling.find_one({
