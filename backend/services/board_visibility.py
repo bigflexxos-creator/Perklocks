@@ -114,6 +114,21 @@ def compute_off_board(pick: dict[str, Any]) -> tuple[bool, list[str]]:
     if pick.get("is_model_only") is True:
         reasons.append("model_only")
 
+    # ── Phase 2A.5D MLS PROOF (2026-08) — research-only barrier ────
+    # A pick whose odds were synthesized from the model (no real
+    # sportsbook line) violates the Phase 2A.5 research-only contract
+    # and must NOT appear on the main board.  Detect via any of:
+    #   * `odds_source == 'model_derived'`
+    #   * `odds_status == 'no_book_line'`
+    #   * `no_real_book_line == True`
+    _odds_source = str(pick.get("odds_source") or "").lower()
+    _odds_status = str(pick.get("odds_status") or "").lower()
+    if (_odds_source in ("model_derived", "model_only",
+                          "synthetic", "fair_value")
+            or _odds_status == "no_book_line"
+            or pick.get("no_real_book_line") is True):
+        reasons.append("model_only_no_real_book")
+
     # ── Chalk Trap: HIDE from board (2026-07-21 update) ───────────────
     if pick.get("chalk_trap") is True:
         reasons.append("chalk_trap")
@@ -153,26 +168,35 @@ def tag_board_visibility(picks: list[dict[str, Any]]) -> dict[str, int]:
     reason_counts: dict[str, int] = {}
     for p in picks:
         # ── Phase 2A.5C — refresh stale grade from canonical Lock Score
-        # BEFORE the visibility check so downstream ``grade != "Pass"``
-        # filters (e.g. picks_routes) see the correct band.  Only rewrites
-        # when the stored grade differs from the canonical mapping — no-op
-        # for picks whose grade was already computed correctly.
+        # BEFORE the visibility check.
         _c_ls = _canonical_lock_score(p)
         _c_grade = _canonical_grade(_c_ls)
         if p.get("grade") != _c_grade:
             p["grade"] = _c_grade
+        # ── Phase 2A.5D FINAL — respect upstream selection decisions ──
+        # `apply_soccer_selection` may have already set `off_board=True`
+        # with reasons like RELATED_MARKET_DOMINATED / SCORER_TEAM_RANK.
+        # Preserve those instead of overriding with the compute_off_board
+        # result (which would clear them because the canonical Lock
+        # Score alone is ≥ 85).
+        _upstream_reasons = list(p.get("off_board_reasons") or [])
+        _upstream_off = p.get("off_board") is True
         off, reasons = compute_off_board(p)
+        # Union upstream reasons with local compute_off_board reasons.
+        if _upstream_off:
+            off = True
+            for r in _upstream_reasons:
+                if r not in reasons:
+                    reasons.append(r)
         p["off_board"] = off
         if off:
             p["off_board_reasons"] = reasons
             stats["off_board"] += 1
             for r in reasons:
-                # Normalize lock<85 as one bucket regardless of number
                 key = r if not r.startswith("lock<") else "low_lock_score"
                 key = key if not key.startswith("grade=") else "hidden_grade"
                 reason_counts[key] = reason_counts.get(key, 0) + 1
         else:
-            # Explicitly clear any stale reasons on a re-tagged pick.
             p.pop("off_board_reasons", None)
             stats["on_board"] += 1
     stats["reasons"] = reason_counts  # type: ignore

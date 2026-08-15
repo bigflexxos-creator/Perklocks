@@ -3274,6 +3274,56 @@ async def on_startup():
             _inv_err,
         )
 
+    # ── Phase 2A.5D FINAL — startup board-visibility healer (2026-08) ─
+    # After a backend restart the picks collection may still carry
+    # `off_board=True` / `grade="Pass"` flags computed by the pre-
+    # Phase-2A.5C tagger.  This healer runs `tag_board_visibility`
+    # on today's picks so the /api/picks/today feed reflects the
+    # current canonical Lock Score + grade WITHOUT waiting for the
+    # next scheduled refresh cycle.  Idempotent and cheap (~200
+    # picks/day per sport).
+    try:
+        from datetime import datetime, timezone
+        from services.board_visibility import tag_board_visibility
+        from services.soccer_team_ranker import apply_soccer_selection
+        _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        _todays = [p async for p in db.picks.find({"pick_date": _today})]
+        if _todays:
+            # Apply Soccer teammate + related-market selection first,
+            # then board visibility so demoted picks get off_board=True
+            # + the correct reason list in the same pass.
+            _sel_stats = apply_soccer_selection(_todays)
+            _stats = tag_board_visibility(_todays)
+            # Persist re-tagged off_board + grade to keep the feed
+            # correct on subsequent HTTP reads.
+            _upd_count = 0
+            for _p in _todays:
+                _id = _p.get("_id")
+                if _id is None:
+                    continue
+                _upd = {
+                    "off_board": _p.get("off_board", False),
+                    "grade": _p.get("grade"),
+                }
+                _unset = {}
+                if _p.get("off_board_reasons") is not None:
+                    _upd["off_board_reasons"] = _p["off_board_reasons"]
+                else:
+                    _unset["off_board_reasons"] = ""
+                await db.picks.update_one(
+                    {"_id": _id},
+                    {"$set": _upd, **({"$unset": _unset} if _unset else {})},
+                )
+                _upd_count += 1
+            logger.info(
+                "Phase 2A.5D startup board healer: %d picks re-tagged (%s)",
+                _upd_count, _stats,
+            )
+    except Exception as _bv_boot_err:
+        logger.warning(
+            "Phase 2A.5D startup board healer skipped: %s", _bv_boot_err,
+        )
+
     # ── Warm the signal-rank cache at boot (2026-07-18) ───────────
     # Every backend restart previously left `_LAST_RUN` empty, so the
     # very first /picks/today request paid a 3-5s sync ranking cost.

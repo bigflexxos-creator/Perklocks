@@ -1441,6 +1441,25 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     # low-tier grade, or model_only). Settlement modules filter with
     # `off_board: {"$ne": True}` so status stays `pending` on hidden
     # picks — analytics / ROI / bandit / learning ignore them.
+    # ── Phase 2A.5D FINAL DELTA — Soccer teammate + related-market
+    # selection (2026-08).  Runs POST-canonicalization, BEFORE
+    # `tag_board_visibility` so demoted picks get their off_board tag
+    # in the same cycle.  Underlying rows preserved; only main-board
+    # selection is affected.
+    try:
+        from services.soccer_team_ranker import apply_soccer_selection
+        _sel_stats = apply_soccer_selection(safe_picks)
+        if _sel_stats.get("teammate_demoted", 0) or _sel_stats.get(
+                "related_market_demoted", 0):
+            logger.info(
+                "Soccer Selection: teammate=%d related=%d teams=%d players=%d",
+                _sel_stats["teammate_demoted"],
+                _sel_stats["related_market_demoted"],
+                _sel_stats["teams_touched"], _sel_stats["players_touched"],
+            )
+    except Exception as _sel_err:
+        logger.warning("Soccer selection skipped: %s", _sel_err)
+
     # Runs LAST so it captures every state change made above.
     try:
         from services.board_visibility import tag_board_visibility
