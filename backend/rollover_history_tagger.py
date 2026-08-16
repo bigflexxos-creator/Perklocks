@@ -194,6 +194,25 @@ async def stamp_rollover_history_tags(db, dates: list[str] | None = None) -> dic
     dates_processed = 0
 
     for date in dates:
+        # ── PHASE 3 (2026-06) — Frozen Rollover Membership guard ────
+        # If the date already has picks tagged with a live-source
+        # frozen membership (`rollover_frozen_source ==
+        # "picks_route_live"`), we DO NOT reconstruct — the live user
+        # board is the authoritative source of truth for what the
+        # user saw on Rollover.  This closes the "History showed
+        # different picks than the live Rollover" defect.
+        try:
+            _frozen_count = await db.picks.count_documents({
+                "pick_date": date,
+                "rollover_frozen_source": "picks_route_live",
+            })
+        except Exception:
+            _frozen_count = 0
+        if _frozen_count >= 3:
+            # Board was frozen live — skip reconstruction entirely.
+            dates_processed += 1
+            continue
+
         # Pull the *entire* slate for that date — same query surface
         # /picks/rollover uses at generation time.
         slate = await db.picks.find({
@@ -204,10 +223,14 @@ async def stamp_rollover_history_tags(db, dates: list[str] | None = None) -> dic
         if len(slate) < 5:
             continue
         top_ids = {p["id"] for p in _top_three_for_slate(slate) if p.get("id")}
-        # Clear tags on picks that AREN'T in the top-3.
+        # PHASE 3 (2026-06): NEVER clear tags on picks whose membership
+        # was frozen live.  The old behaviour (blanket unset) was the
+        # root cause of the "History → Rollover shows different picks
+        # than the live Rollover" defect.
         clear = await db.picks.update_many(
             {"pick_date": date, "id": {"$nin": list(top_ids)},
-             "on_rollover_at": {"$exists": True}},
+             "on_rollover_at": {"$exists": True},
+             "rollover_frozen_source": {"$ne": "picks_route_live"}},
             {"$unset": {"on_rollover_at": ""}},
         )
         untagged += clear.modified_count
@@ -216,7 +239,8 @@ async def stamp_rollover_history_tags(db, dates: list[str] | None = None) -> dic
             set_res = await db.picks.update_many(
                 {"pick_date": date, "id": {"$in": list(top_ids)},
                  "on_rollover_at": {"$exists": False}},
-                {"$set": {"on_rollover_at": now}},
+                {"$set": {"on_rollover_at": now,
+                          "rollover_frozen_source": "settlement_tagger_backfill"}},
             )
             tagged += set_res.modified_count
         dates_processed += 1
