@@ -92,12 +92,17 @@ def test_soccer_game_market_family_completeness():
 
 def test_soccer_scorer_family_completeness():
     props = set(prop_markets_for("Soccer"))
+    # PHASE 5 FIX 1 (2026-06) — first/last goal scorer are
+    # INTENTIONALLY_UNSUPPORTED per product requirement.  Only Anytime
+    # Goal Scorer + Score or Assist remain SUPPORTED.
     for required in (
         "player_goal_scorer_anytime",
         "player_to_score_or_assist",
-        "player_first_goal_scorer",
     ):
         assert required in props
+    # Explicitly assert first/last are NOT in the supported catalogue.
+    assert "player_first_goal_scorer" not in props
+    assert "player_last_goal_scorer" not in props
 
 
 # ─────────────────────────────────────────────────────────────────────

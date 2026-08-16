@@ -598,6 +598,65 @@ Phase 6 (Magic 2.0 + Apex + Why This Pick) NOT STARTED per user directive.
 - NHL, CFB, UFC — `INTENTIONALLY_DEFERRED` per current scope update.
 
 ### Reports for Later Phases (do NOT act now per §4O)
+
+## ITERATION 115 — PHASE 5 CONDITIONAL CORRECTIONS (2026-06)
+
+### Certification: PHASE5_REAL_MARKET_COVERAGE_CERTIFIED (fully — corrections applied)
+
+### Files Changed
+- `services/sport_capability_registry.py`:
+  - **FIX 1**: `player_first_goal_scorer` removed from Soccer `prop_markets` (was previously listed as SUPPORTED). Added `unsupported_markets: {player_first_goal_scorer: INTENTIONALLY_UNSUPPORTED, player_last_goal_scorer: INTENTIONALLY_UNSUPPORTED}`. `market_production_status()` now consults `unsupported_markets` FIRST so an intentionally-unsupported prop cannot inherit the sport-level SUPPORTED status.
+- `services/funnel_terminal_states.py` — **NEW** (FIX 2): Single-source-of-truth taxonomy for terminal states. Introduces the missing `BELOW_SCORE_THRESHOLD` label + `classify_terminal_state()` helper that enforces the invariant `provider_row_present is False ⇒ PROVIDER_UNAVAILABLE` (and only then).
+- `tests/test_phase5_corrections.py` — **NEW** 10 focused regressions covering all three fixes.
+- `tests/test_phase5_market_coverage.py` — updated one assertion to reflect FIX 1 (first-goal-scorer not in supported catalogue).
+
+### FIX 1 — First / Last Goal Scorer Contract Restored
+- `prop_markets_for("Soccer")` = `["player_goal_scorer_anytime", "player_to_score_or_assist"]` — **only** these two are SUPPORTED.
+- `market_production_status("Soccer", "player_first_goal_scorer") == "INTENTIONALLY_UNSUPPORTED"` (proven by test).
+- `market_production_status("Soccer", "player_last_goal_scorer") == "INTENTIONALLY_UNSUPPORTED"` (proven by test).
+- Acquisition list `alt_lines_feed.SOCCER_MARKETS` verified to exclude both markets (test asserts absence).
+- Legacy references in `soccer_scorer_bridge.py` / `soccer_player_form.py` / `quality_gate.py` are no-op fallback paths — they cannot re-advertise the market as production-ready because the capability registry now denies it upstream.
+
+### FIX 2 — Provider vs Threshold Taxonomy
+- `PROVIDER_UNAVAILABLE` is now strictly reserved for the provider-axis: the sportsbook offered ZERO usable real market rows.
+- Below-threshold candidates (provider row exists, LS < 85) are labelled `BELOW_SCORE_THRESHOLD`.
+- `classify_terminal_state(provider_row_present=True, lock_score=78.5)` returns `BELOW_SCORE_THRESHOLD` (proven by regression), NOT `PROVIDER_UNAVAILABLE`.
+- `classify_terminal_state(provider_row_present=False)` is the ONLY input that yields `PROVIDER_UNAVAILABLE`.
+- Ordered evaluation axis: `PROVIDER → IDENTITY → HISTORY → INPUT_QUALITY → MODEL → EDGE → SCORE_THRESHOLD → CANONICAL → DISPLAY → VISIBLE`.
+- **Retraction** from prior Phase 5 report: my BTTS + MLB Total Bases traces should have been labelled `BELOW_SCORE_THRESHOLD` (sub-threshold candidates existed in `live_alt_lines` / `db.picks`), not `PROVIDER_UNAVAILABLE`. The Fix 2 taxonomy prevents that confusion going forward.
+
+### FIX 3 — NBA Capability Honesty Verified
+- Overall: `production_status("NBA") == "SUPPORTED"` (props travel end-to-end).
+- Game markets: `market_production_status("NBA", "h2h" | "spreads" | "totals") == "MODEL_UNAVAILABLE"` — proven by regression.
+- Props: `market_production_status("NBA", "player_points" | "player_rebounds" | "player_assists" | "player_points_rebounds_assists" | "*_alternate") == "SUPPORTED"` — proven for all 8 markets.
+- **No NBA game model built** per directive.
+
+### Final Corrected Capability Matrix
+
+| Sport   | Production Status         | Game Markets                                     | Player Props |
+|---------|---------------------------|--------------------------------------------------|--------------|
+| MLB     | SUPPORTED                 | h2h ✓ / spreads ✓ / totals ✓                      | K / outs / hits / HR / RBI / TB (+ alts) ✓ |
+| NFL     | SUPPORTED                 | h2h ✓ / spreads ✓ / totals ✓ (Platinum)           | Pass / Rush / Rec (+ alts) + ATD ✓ |
+| NBA     | SUPPORTED (props only)    | h2h / spreads / totals → **MODEL_UNAVAILABLE**    | Pts / Reb / Ast / PRA (+ alts) ✓ |
+| Soccer  | SUPPORTED                 | h2h ✓ / spreads ✓ / totals ✓ / btts ✓ / dblc ✓    | AGS ✓ / Score-or-Assist ✓ / **First=UNSUPPORTED** / **Last=UNSUPPORTED** |
+| Tennis  | SUPPORTED                 | h2h ✓ / spreads ✓ / totals ✓                      | (none — provider limits) |
+| NHL     | INTENTIONALLY_DEFERRED    | MODEL_UNAVAILABLE                                | — |
+| CFB     | INTENTIONALLY_DEFERRED    | MODEL_UNAVAILABLE                                | — |
+| UFC     | INTENTIONALLY_DEFERRED    | MODEL_UNAVAILABLE                                | — |
+
+### Focused Regression: 22/22 PASS
+- `tests/test_phase5_corrections.py` (10 NEW): First/last unsupported, acquisition list clean, AGS+ScoreOrAssist supported, provider vs threshold ordering (4 tests), NBA props supported, NBA game MODEL_UNAVAILABLE.
+- `tests/test_phase5_market_coverage.py` (12): all Phase 5 baseline tests still PASS with updated first-scorer assertion.
+
+### Provider Calls
+**ZERO** — corrections are pure registry + taxonomy work.
+
+### Certification Token
+    PHASE5_REAL_MARKET_COVERAGE_CERTIFIED
+
+### STOP
+Phase 6 (Magic 2.0 + Apex + Why This Pick) NOT STARTED per directive.
+
 - **Phase 5 (Real Market + Prop Coverage)**: Soccer void rate 4136/6658 (62%) needs investigation — likely settlement source gaps on Draw / BTTS / Double Chance markets.
 - **Phase 6 (Magic 2.0 / Apex / Why This Pick)**: Lock tier 96-98 ROI regression + 90%+ over-confidence + 50-59% under-performance are calibration challengers.
 - **Phase 7 (Rollover 2.0)**: Baseline HR=75.9% / ROI=+11.09% is the number to beat. Live-freeze wiring landed in Phase 3 will populate frozen_source="picks_route_live" prospectively.
