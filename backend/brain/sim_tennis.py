@@ -351,4 +351,28 @@ def simulate_tennis_pick(pick: dict) -> Optional[dict]:
     if cat == "game_spread":
         payload["sim_spread_line"] = spread_line
         payload["sim_avg_games_margin"] = round(sum(games_margin_dist) / max(1, n), 2)
+
+    # PHASE 2 (2026-06) — Universal Simulator Provenance Envelope.
+    # This sim CALIBRATES p_serve / o_serve to match the model's WP
+    # (see _calibrate_serve_gap / _calibrate_serve_gap_for_spread).
+    # That's a back-solve from the model's own probability — the
+    # resulting sim_win_probability agreeing with model_wp is a
+    # tautology.  Classify as MODEL_CONDITIONED so downstream Magic /
+    # Bet Quality / Apex do not count it as independent evidence.
+    # The distribution IS still useful for total-games quantiles,
+    # alt-line sensitivity, and adjacent-spread monotonicity.
+    try:
+        from services.simulator_provenance import stamp_sim_output
+        # A future upgrade path (real Elo / serve / return / surface
+        # inputs) will emit EMPIRICAL_INDEPENDENT here — for now the
+        # sim is a calibrated posterior.
+        stamp_sim_output(
+            payload,
+            provenance="MODEL_CONDITIONED",
+            input_quality="PARTIAL",
+            sim_prob=(sim_wp_pct / 100.0),
+            model_prob=float(model_wp),
+        )
+    except Exception:
+        pass
     return payload

@@ -227,7 +227,7 @@ def simulate_soccer_pick(pick: dict) -> Optional[dict]:
             over_hits = sum(1 for g in total_goals_dist if g > alt)
             alt_lines[str(alt)] = round(over_hits / n * 100, 1)
 
-    return {
+    out = {
         "sim_win_probability": sim_wp_pct,
         "sim_ci_lower": round(ci_lo * 100, 1),
         "sim_ci_upper": round(ci_hi * 100, 1),
@@ -241,3 +241,41 @@ def simulate_soccer_pick(pick: dict) -> Optional[dict]:
         "sim_disagreement_with_model": disagreement,
         "sim_signal": signal,
     }
+    # PHASE 2 (2026-06) — Universal Simulator Provenance Envelope.
+    # This sim derives λ from the calling model's own factor summary
+    # (``xG Combined`` / ``xG Difference`` / ``Defensive Form``) —
+    # NOT from raw independent xG rows.  Its distribution is useful
+    # for Over/Under tails / BTTS symmetry / adjacent-line
+    # monotonicity BUT its agreement with model_wp cannot count as
+    # INDEPENDENT confirmation (the factors were built by the same
+    # model that produced win_probability).
+    #
+    # Downstream: services.soccer_game_model provides the authoritative
+    # EMPIRICAL_INDEPENDENT distribution from real team-form rows.
+    try:
+        from services.simulator_provenance import stamp_sim_output
+        # Count present factors as a proxy for input quality.
+        f = pick.get("factors") or {}
+        signals = sum(
+            1 for k in ("xG Combined", "xG Difference", "Defensive Form",
+                        "Home Advantage")
+            if isinstance(f.get(k), (int, float))
+        )
+        if signals >= 4:
+            input_quality = "STRONG"
+        elif signals >= 2:
+            input_quality = "PARTIAL"
+        elif signals >= 1:
+            input_quality = "PRIOR_ONLY"
+        else:
+            input_quality = "INVALID"
+        stamp_sim_output(
+            out,
+            provenance="MODEL_CONDITIONED",
+            input_quality=input_quality,
+            sim_prob=(sim_wp_pct / 100.0),
+            model_prob=(blended_wp / 100.0) if blended_wp else None,
+        )
+    except Exception:
+        pass
+    return out
