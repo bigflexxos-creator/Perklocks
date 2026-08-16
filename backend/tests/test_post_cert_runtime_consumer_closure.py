@@ -45,7 +45,7 @@ def test_defect1_model_conditioned_forces_independent_evidence_false():
     import brain.sim_soccer as sim_soccer
     real_fn = sim_soccer.simulate_soccer_pick
 
-    def _fake(pick):
+    def _fake(pick, **_):
         return {
             "probability": 0.55,
             "simulator_provenance": "MODEL_CONDITIONED",
@@ -74,7 +74,7 @@ def test_defect1_prior_only_no_boost():
     import brain.sim_nba as sim_nba
     real_fn = sim_nba.simulate_nba_pick
 
-    def _fake(pick):
+    def _fake(pick, **_):
         return {
             "probability": 0.60,
             "simulator_provenance": "PRIOR_ONLY",
@@ -97,7 +97,7 @@ def test_defect1_invalid_provenance_zeroes_valid():
     import brain.sim_tennis as sim_tennis
     real_fn = sim_tennis.simulate_tennis_pick
 
-    def _fake(pick):
+    def _fake(pick, **_):
         return {
             "probability": 0.55,
             "simulator_provenance": "INVALID",
@@ -120,7 +120,7 @@ def test_defect1_decision_valid_false_forces_both_false():
     import brain.sim_mlb as sim_mlb
     real_fn = sim_mlb.simulate_mlb_pick
 
-    def _fake(pick, stats):
+    def _fake(pick, stats=None, **_):
         return {
             "probability": 0.60,
             "simulator_provenance": "CAUSAL_INDEPENDENT",
@@ -146,7 +146,7 @@ def test_defect1_independent_full_confidence_allowed():
     import brain.sim_mlb as sim_mlb
     real_fn = sim_mlb.simulate_mlb_pick
 
-    def _fake(pick, stats):
+    def _fake(pick, stats=None, **_):
         return {
             "probability": 0.65,
             "simulator_provenance": "CAUSAL_INDEPENDENT",
