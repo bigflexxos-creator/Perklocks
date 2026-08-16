@@ -1,0 +1,40 @@
+{
+  "summary": "PHASE 7 ROLLOVER 2.0 — CERTIFICATION PASSED. All 6 Phase 7 tests in /app/backend/tests/test_phase7_rollover_closure.py PASS: (1) tagger clear-query protects rollover_frozen_source='picks_route_live' rows, (2) event-uniqueness enforced (one leg per game), (3) selector returns fewer than 3 when eligible pool short (does NOT force 3), (4) /picks/rollover stamps rollover_selection_rank + rollover_selector_version + on_rollover_at + picks_route_live at generation time (freeze contract), (5) _composite_score uses multi-field composite (wp/sim/edge/alt_bonus + market bonus, not solely lock_score), (6) published_results_truth filters analytics by frozen on_rollover_at tag. Regression sweep across Phase 2-6 test files + rollover history tagger + lock-score inclusive gates: 159 tests passed / 6 pre-existing failures unrelated to Phase 7 (see below). Lock Score >=85 inclusive threshold preserved (33 tests in test_main_board_strictness_85_inclusive.py + test_lock_score_parity_iter21.py all green). No line synthesis code detected in simulator_provenance.py or picks_routes.py.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "services/main_board_eligibility.is_main_board_eligible", "issue": "test_phase5_universal_identity::test_strict_gt_85_unchanged_after_phase5 fails because bare {'lock_score': 85.001} lacks a real market line. The Real-Line Integrity gate (_has_real_market_line, Emergent Support 2026-06) rejects picks missing book_odds/implied_probability BEFORE the lock-score check. This is a PRE-Phase-7 constraint (not a Phase 7 regression) and the >=85 semantic is preserved (MAIN_BOARD_LOCK_FLOOR=85.0, inclusive). Test is stale — should be updated to include a book_odds field."},
+      {"endpoint": "test_midnight_rollover_fix.py (5 failures)", "issue": "data_version bumped from '2026.06.23-midnight-rollover-fix' → '2026.08.08-canonical-board-cache-v46'; today picks count / tennis / soccer picks depend on live seeded data that isn't present in this preview environment. Environment/staleness — NOT a Phase 7 regression."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/pytest/iter109_phase7.xml",
+    "/app/test_reports/pytest/iter109_regression.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Refresh test_phase5_universal_identity::test_strict_gt_85_unchanged_after_phase5 to pass book_odds so it exercises the Lock-Score branch (not the Real-Line gate). Cosmetic — semantic contract is intact.",
+    "OPTIONAL: Refresh test_midnight_rollover_fix.py expected data_version string and re-seed live picks for Tennis/Soccer in preview DB — unrelated to Phase 7.",
+    "Phase 7 is CERTIFIED. Main agent may proceed to authorize Phase 8."
+  ],
+  "critical_code_review_comments": [
+    "rollover_history_tagger._composite_score correctly blends win_probability (55%), simulation_win_rate (20%), edge_norm (15%), alt_bonus (10%) with market multiplier — composite, not lock-score-only. ✓",
+    "rollover_history_tagger._top_three_for_slate enforces one-leg-per-event via seen_events set and returns min(3, eligible_pool). ✓",
+    "rollover_history_tagger.stamp_rollover_history_tags clear-query includes {'rollover_frozen_source': {'$ne': 'picks_route_live'}} — live-frozen membership immutable. ✓",
+    "routes/picks_routes.py::pick_rollover (lines 662-683) stamps on_rollover_at + rollover_frozen_source='picks_route_live' + rollover_selection_rank (1..N) + rollover_selector_version='rollover2.picks_route.v1' at generation time, only where on_rollover_at does not already exist (idempotent). ✓",
+    "No sportsbook line synthesis code found in simulator_provenance.py or picks_routes.py. ✓",
+    "MAIN_BOARD_LOCK_FLOOR = 85.0 inclusive threshold preserved (main_board_eligibility.py). ✓"
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "96% (Phase 7: 6/6 = 100%; broader regression: 159/165 = 96%; 6 failures are pre-existing environmental/stale-test issues unrelated to Phase 7)", "frontend": "N/A (backend-only per request)"},
+  "seed_data_creation": "None. Certification-only run per user directive; no external API calls, no DB mutations.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase 7 Rollover 2.0 CERTIFIED. Pre-existing stale tests in test_phase5_universal_identity (real-line gate now blocks synthetic {lock_score: 85.001} test payload) and test_midnight_rollover_fix (data_version + live data expectations) are unrelated to Phase 7 and can be refreshed opportunistically. Do NOT touch the Lock Score >=85 threshold, do NOT introduce line synthesis, and do NOT rebuild rollover selector when starting Phase 8.",
+  "rca_of_issue": "N/A — no Phase 7 bugs identified. RCA for stale test failures: (a) test_strict_gt_85_unchanged_after_phase5 constructs a pick with only 'lock_score' field; is_main_board_eligible now requires a real market line via _has_real_market_line() BEFORE evaluating lock score. The Lock-Score >=85 branch (line 143: max(ls, ls_v2) >= MAIN_BOARD_LOCK_FLOOR) is intact and inclusive. (b) test_midnight_rollover_fix hardcodes a data_version string that has since been bumped multiple times; also expects live seeded tennis/soccer picks not present in preview DB."
+}
