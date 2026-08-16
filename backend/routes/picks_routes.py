@@ -1747,9 +1747,16 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # Filtering them at the read layer is the cheap "stop the bleeding"
     # patch; the underlying generation models will be recalibrated in a
     # later pass. Logged counts surface in `quality_gate_blocked`.
+    # UNIVERSAL_RUNTIME_AUTHORITY_CONSOLIDATION (2026-09) — the
+    # quality gate at READ TIME is ENRICHMENT_ONLY.  Picks that
+    # WOULD have been blocked receive `quality_gate_block_reason`
+    # + `consumer_disposition="DISPLAY_HIDDEN_BY_QUALITY_GATE"` but
+    # remain in the response.  Canonical eligibility was already
+    # decided pre-publication by the ingester / BoardProjection.
+    # Read endpoints project that truth; they do not re-model.
     try:
         from quality_gate import apply_quality_gate, validate_against_live_alt_lines
-        picks, qg_blocked = apply_quality_gate(picks)
+        picks, qg_blocked = apply_quality_gate(picks, enforce=False)
         if qg_blocked:
             import logging
             logging.getLogger("lockscore").info(
@@ -1808,10 +1815,29 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # reported (Gyökeres/Isak/Toney appearing for fixtures they aren't
     # in). Elite-protected picks (curated CSL synth seeds, etc.) bypass
     # the drop guard via the `elite_protect` flag.
+    # UNIVERSAL_RUNTIME_AUTHORITY_CONSOLIDATION (2026-09) — matchup
+    # is ENRICHMENT_ONLY at read time.  The annotator still runs so
+    # every pick receives matchup_score / matchup_grade / why_this_
+    # pick / starter_probability fields, but it MUST NOT silently
+    # veto canonically-eligible picks.  The old `apply_drop=True`
+    # was the primary read-time canonical-eligibility mutator — it
+    # made 3 upstream-qualified anytime-scorer picks disappear from
+    # /api/picks/today with no visible reason.  A single canonical
+    # eligibility decision now lives pre-publication (real-line
+    # ingester + BoardProjectionService); read endpoints project
+    # that truth, they do not re-decide it.
+    #
+    # Picks whose matchup engine still recommends drop are tagged
+    # with `matchup_recommends_drop=True` + `consumer_disposition`
+    # so an explicit product-specific selection layer (opt-in) can
+    # act on it — but the default consumer response no longer
+    # silently removes them.
     try:
         from goalscorer_matchup import annotate_picks_async
         from deps import db as _matchup_db  # async motor handle
-        picks = await annotate_picks_async(picks, _matchup_db, apply_drop=True)
+        picks = await annotate_picks_async(
+            picks, _matchup_db, apply_drop=False,
+        )
     except Exception as me:
         import logging
         logging.getLogger("lockscore").warning(
