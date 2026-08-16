@@ -97,6 +97,8 @@ class RejectionReason(str, enum.Enum):
     MISSING_IDENTITY_CLASS      = "MISSING_IDENTITY_CLASS"
     MISSING_PICK_ID             = "MISSING_PICK_ID"
     BOUNDARY_INTERNAL_ERROR     = "BOUNDARY_INTERNAL_ERROR"
+    # Phase 9B/9F — player→event identity mismatch rejection.
+    PLAYER_EVENT_IDENTITY_MISMATCH = "PLAYER_EVENT_IDENTITY_MISMATCH"
 
 
 # Verified real-sportsbook odds sources.  ANY producer that intends to
@@ -292,6 +294,23 @@ def evaluate_publication(pick: dict) -> BoundaryVerdict:
         ic = pick.get("identity_class")
         if not (isinstance(ic, str) and ic in _VALID_IDENTITY_CLASSES):
             reasons.append(RejectionReason.MISSING_IDENTITY_CLASS.value)
+
+        # ── Rule 6 (Phase 9B/9F) — player→event identity gate ──
+        # Fail-closed for provable player↔event mismatches.
+        try:
+            from services.player_event_identity_gate import (
+                evaluate_identity, IdentityVerdict,
+            )
+            id_verdict = evaluate_identity(pick)
+            if id_verdict == IdentityVerdict.PLAYER_EVENT_IDENTITY_MISMATCH:
+                reasons.append(
+                    RejectionReason.PLAYER_EVENT_IDENTITY_MISMATCH.value
+                )
+        except Exception:
+            # Never let the gate crash the boundary — fail-open on gate
+            # failure since identity check is defense-in-depth, not the
+            # primary quality contract.
+            pass
 
         if reasons:
             return BoundaryVerdict(

@@ -159,6 +159,10 @@ def is_canonical_eligible(pick: dict) -> bool:
       * Does NOT enforce the >= 85 Locks floor — Parlay 2.0 uses
         its own leg-quality gate; Rollover 2.0 uses calibrated
         survival probability.
+      * PHASE 9L (2026-07) — Player→event identity mismatch is
+        fail-closed here too. Identity integrity outranks scoring:
+        a mismatched candidate cannot enter Parlay/Rollover
+        selection regardless of Lock Score / Magic / Apex / edge.
 
     Callers requiring the STRICT main-board contract should use
     :func:`is_main_board_eligible` instead.
@@ -171,6 +175,17 @@ def is_canonical_eligible(pick: dict) -> bool:
         return False
     if not _has_real_market_line(pick):
         return False
+    # Phase 9L — identity gate defense-in-depth.
+    try:
+        from services.player_event_identity_gate import (
+            evaluate_identity, IdentityVerdict,
+        )
+        if evaluate_identity(pick) == \
+                IdentityVerdict.PLAYER_EVENT_IDENTITY_MISMATCH:
+            return False
+    except Exception:
+        # Never let the gate crash canonical eligibility.
+        pass
     return True
 
 
