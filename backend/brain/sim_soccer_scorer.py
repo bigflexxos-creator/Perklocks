@@ -124,8 +124,16 @@ def _classify_scorer_market(market: str) -> Optional[str]:
 
 
 # ─── Player λ estimation ────────────────────────────────────────────────
-def _estimate_player_lambda(pick: dict, priors: dict) -> float:
+def _estimate_player_lambda(pick: dict, priors: dict) -> tuple[float, str, int]:
     """Estimate player's expected goals for THIS match.
+
+    PHASE 2 (2026-06) — returns ``(lambda, provenance, signals)`` so
+    downstream consumers can classify the simulator output:
+
+      * Approach 1 (calibrate to model_wp) → MODEL_CONDITIONED (never
+        counts as independent agreement — it's a back-solve).
+      * Approach 2 (real xG / opp / minutes priors) → EMPIRICAL_INDEPENDENT.
+      * Approach 3 (factor heuristic only) → PRIOR_ONLY.
 
     Order of preference:
       1. Calibrate to model_wp (the matchup-aware ground truth)
@@ -154,21 +162,34 @@ def _estimate_player_lambda(pick: dict, priors: dict) -> float:
             lam = -math.log(1.0 - min(0.95, model_wp * 2.5))
         else:
             lam = -math.log(1.0 - model_wp)
-        return max(0.05, min(2.5, lam))
+        # MODEL_CONDITIONED: 1 signal (the model's own WP).  Cannot
+        # act as independent evidence downstream.
+        return max(0.05, min(2.5, lam)), "MODEL_CONDITIONED", 1
 
-    # Approach 2: Direct from key_insights
+    # Approach 2: Direct from key_insights (real player-xG / opp / minutes)
     if "player_xg_per_game" in priors:
         base = priors["player_xg_per_game"]
         # Opponent strength adjustment
         opp_factor = 1.0
+        signals = 1
         if "opp_concedes_per_match" in priors:
             opp_factor = priors["opp_concedes_per_match"] / LEAGUE_AVG_TEAM_XG_PER_GAME
             opp_factor = max(0.5, min(1.8, opp_factor))
+            signals += 1
         # Minutes scaling (assume nominal 78 min)
         minutes_pct = DEFAULT_EXPECTED_MINUTES / 90.0
-        return max(0.05, min(2.0, base * opp_factor * minutes_pct))
+        if "shots_per_game" in priors:
+            signals += 1
+        if "recent_goal_rate" in priors:
+            signals += 1
+        return (
+            max(0.05, min(2.0, base * opp_factor * minutes_pct)),
+            "EMPIRICAL_INDEPENDENT",
+            signals,
+        )
 
-    # Approach 3: Factor-based fallback
+    # Approach 3: Factor-based fallback — priors-only, DO NOT count as
+    # independent evidence and DO NOT flag severe disagreement.
     f = pick.get("factors") or {}
     try:
         vol = float(f.get("Recent Volume / Usage", 50.0))
@@ -182,7 +203,7 @@ def _estimate_player_lambda(pick: dict, priors: dict) -> float:
     mult *= 0.6 + (vol / 100.0) * 0.8
     mult *= 0.7 + (matchup / 100.0) * 0.6
     mult *= 0.7 + (form / 100.0) * 0.6
-    return max(0.05, min(2.0, base * mult))
+    return max(0.05, min(2.0, base * mult)), "PRIOR_ONLY", 0
 
 
 def _bisect_lambda_for_atleast_k(k: int, target_p: float) -> float:
@@ -242,7 +263,7 @@ def simulate_soccer_scorer_pick(pick: dict) -> Optional[dict]:
         return None
 
     priors = _parse_player_priors(pick)
-    lam = _estimate_player_lambda(pick, priors)
+    lam, provenance, sim_signals = _estimate_player_lambda(pick, priors)
 
     # Parameter uncertainty: sample λ from Gamma(α, β) where α is set by the
     # number of recent observations (default 10 games), centred on lam.
@@ -334,4 +355,28 @@ def simulate_soccer_scorer_pick(pick: dict) -> Optional[dict]:
         out["sim_opp_concedes"] = priors["opp_concedes_per_match"]
     if "player_xg_per_game" in priors:
         out["sim_player_xg_per_game"] = round(priors["player_xg_per_game"], 3)
+
+    # PHASE 2 (2026-06) — Universal Simulator Provenance Envelope.
+    # A MODEL_CONDITIONED λ (Approach 1) is a back-solve from the
+    # calling model's own WP — its "agreement" is tautological and
+    # MUST NOT count as independent evidence for Magic / Bet
+    # Quality / Apex.  A PRIOR_ONLY λ (Approach 3) is a generic
+    # factor heuristic — it cannot punish the model either.  Only
+    # EMPIRICAL_INDEPENDENT (Approach 2 with real xG / opp / minutes
+    # / shots / recent-goal-rate) may raise SIM_MODEL_SEVERE_
+    # DISAGREEMENT or count as agreement.
+    try:
+        from services.simulator_provenance import (
+            classify_input_quality, stamp_sim_output,
+        )
+        stamp_sim_output(
+            out,
+            provenance=provenance,
+            input_quality=classify_input_quality(sim_signals),
+            sim_prob=(sim_wp_pct / 100.0),
+            model_prob=(blended_wp / 100.0) if blended_wp else None,
+        )
+    except Exception:
+        # Defensive — never break the sim if the contract module errors.
+        pass
     return out

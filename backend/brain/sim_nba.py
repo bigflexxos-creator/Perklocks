@@ -188,7 +188,7 @@ def simulate_nba_pick(pick: dict) -> Optional[dict]:
         sim_wp_pct = round(p_win * 100, 1)
         disagreement = round(sim_wp_pct - model_wp * 100, 2)
         signal = _signal(disagreement)
-        return {
+        return _stamp_nba_sim({
             "sim_win_probability": sim_wp_pct,
             "sim_ci_lower": round(ci_lo * 100, 1),
             "sim_ci_upper": round(ci_hi * 100, 1),
@@ -197,7 +197,7 @@ def simulate_nba_pick(pick: dict) -> Optional[dict]:
             "sim_market_category": cat,
             "sim_disagreement_with_model": disagreement,
             "sim_signal": signal,
-        }
+        }, sim_prob=p_win, model_prob=model_wp)
 
     elif cat == "team_total":
         sigma = max(10.0, math.sqrt(threshold) * 1.6)
@@ -214,7 +214,7 @@ def simulate_nba_pick(pick: dict) -> Optional[dict]:
         ci_lo, ci_hi = _wilson_ci(p_win, RUNS)
         sim_wp_pct = round(p_win * 100, 1)
         disagreement = round(sim_wp_pct - model_wp * 100, 2)
-        return {
+        return _stamp_nba_sim({
             "sim_win_probability": sim_wp_pct,
             "sim_ci_lower": round(ci_lo * 100, 1),
             "sim_ci_upper": round(ci_hi * 100, 1),
@@ -225,7 +225,7 @@ def simulate_nba_pick(pick: dict) -> Optional[dict]:
             "sim_signal": _signal(disagreement),
             "sim_threshold": threshold,
             "sim_is_under": is_under,
-        }
+        }, sim_prob=p_win, model_prob=model_wp)
 
     # Player counting props
     if cat in ("points", "pra"):
@@ -264,7 +264,7 @@ def simulate_nba_pick(pick: dict) -> Optional[dict]:
 
     expected_stat = sum(distribution) / max(1, len(distribution))
 
-    return {
+    return _stamp_nba_sim({
         "sim_win_probability": sim_wp_pct,
         "sim_ci_lower": round(ci_lo * 100, 1),
         "sim_ci_upper": round(ci_hi * 100, 1),
@@ -280,7 +280,29 @@ def simulate_nba_pick(pick: dict) -> Optional[dict]:
         # Risk Meter — P10/P25/P50/P75/P90 of the projected stat
         # distribution plus where the line sits within it.
         **compute_percentiles(distribution, threshold=threshold),
-    }
+    }, sim_prob=p_win, model_prob=model_wp)
+
+
+def _stamp_nba_sim(payload: dict, sim_prob: float, model_prob: float) -> dict:
+    """PHASE 2 (2026-06) provenance stamper for NBA sim outputs.
+    Every branch of simulate_nba_pick calibrates its distribution
+    parameters to model_wp before sampling, so its agreement with
+    model_wp is by construction — MODEL_CONDITIONED. Downstream
+    Magic / Bet Quality / Apex MUST NOT count it as independent
+    evidence.  The distribution IS still useful for percentile /
+    alt-line / risk-meter surfaces.
+    """
+    try:
+        from services.simulator_provenance import stamp_sim_output
+        stamp_sim_output(
+            payload, provenance="MODEL_CONDITIONED",
+            input_quality="PARTIAL",
+            sim_prob=sim_prob, model_prob=model_prob,
+        )
+    except Exception:
+        pass
+    return payload
+
 
 
 def _signal(disagreement: float) -> str:

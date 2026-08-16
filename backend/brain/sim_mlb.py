@@ -335,7 +335,7 @@ def simulate_mlb_pick(pick: dict, player_stats: dict | None = None) -> Optional[
         alt_lines[str(alt)] = round(over_hits / n * 100, 1)
     expected_stat = sum(distribution) / max(1, n)
 
-    return {
+    return _stamp_mlb_sim_out({
         "sim_win_probability": sim_wp_pct,
         "sim_ci_lower": round(ci_lo * 100, 1),
         "sim_ci_upper": round(ci_hi * 100, 1),
@@ -350,4 +350,43 @@ def simulate_mlb_pick(pick: dict, player_stats: dict | None = None) -> Optional[
         # distribution so the UI can render a P10–P90 spread with the
         # line marker positioned at sim_pctl_line_quantile_pct.
         **compute_percentiles(distribution, threshold=threshold),
-    }
+    }, player_stats=stats, sim_prob=p_win, model_prob=(blended_wp / 100.0) if blended_wp else None)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# PHASE 2 (2026-06) — Universal Simulator Provenance Envelope.
+# ─────────────────────────────────────────────────────────────────────
+def _stamp_mlb_sim_out(payload: dict, *, player_stats: dict,
+                       sim_prob: float, model_prob: float | None) -> dict:
+    """Attach universal provenance envelope to the MLB sim output.
+
+    CAUSAL_INDEPENDENT when the simulator was driven by real
+    player stats (ba, k_rate, hr_per_ab, etc.).  PRIOR_ONLY when
+    only league-average defaults were available.  Signal count =
+    number of non-None real stat inputs.
+    """
+    try:
+        from services.simulator_provenance import (
+            stamp_sim_output, classify_input_quality,
+        )
+        real_keys = ("ba", "hr_per_ab", "rbi_per_ab", "k_rate",
+                     "bf_per_inning", "expected_innings", "obp",
+                     "lineup_slot", "team_runs_projection")
+        signals = sum(
+            1 for k in real_keys
+            if isinstance(player_stats.get(k), (int, float))
+        )
+        if signals >= 3:
+            provenance = "CAUSAL_INDEPENDENT"
+        elif signals >= 1:
+            provenance = "EMPIRICAL_INDEPENDENT"
+        else:
+            provenance = "PRIOR_ONLY"
+        stamp_sim_output(
+            payload, provenance=provenance,
+            input_quality=classify_input_quality(signals),
+            sim_prob=sim_prob, model_prob=model_prob,
+        )
+    except Exception:
+        pass
+    return payload

@@ -204,7 +204,59 @@ def compute_expected_k(ctx: dict, pitcher_name: str) -> Optional[dict]:
         "expected_k": round(lam, 2),
         "components": components,
         "data_quality": signals,
+        # PHASE 2 (2026-06) — Universal Simulator Provenance Tagging.
+        # Poisson K probability is CAUSAL_INDEPENDENT from the book:
+        # λ is computed from pitcher K/9 × expected IP × opponent K% ×
+        # park × umpire × Statcast — NOT back-solved from sportsbook
+        # implied probability.  When only the league-average K/9
+        # fallback is used (zero real pitcher signals), the simulator
+        # degrades to PRIOR_ONLY and decision_valid=False.
+        "provenance":     _classify_provenance(components, signals),
+        "input_quality":  _classify_input_quality(signals),
+        "decision_valid": signals >= 2,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# PHASE 2 (2026-06) — Universal simulator classification helpers.
+# Applied to every MLB-K evaluation so downstream Magic/Bet-Quality
+# can distinguish real independent evidence from league-average priors.
+# ─────────────────────────────────────────────────────────────────────
+def _classify_provenance(components: dict, signals: int) -> str:
+    """Return one of:
+        CAUSAL_INDEPENDENT  — pitcher-specific evidence drove λ
+        EMPIRICAL_INDEPENDENT — recent L5 form + opponent + park
+        MODEL_CONDITIONED   — NEVER for MLB-K (kept for parity)
+        PRIOR_ONLY          — only league-avg K/9 available
+        INVALID             — no pitcher found upstream (compute_expected_k
+                              already returns None in this case; kept for
+                              defensive external callers)
+    """
+    if signals <= 0:
+        return "PRIOR_ONLY"
+    # If the base K/9 came from league-average (no pitcher-specific
+    # source) and only 1 auxiliary signal exists, treat as PRIOR_ONLY.
+    if "source_league_avg" in components and signals < 2:
+        return "PRIOR_ONLY"
+    # L5-form-driven base → EMPIRICAL_INDEPENDENT (recent games are the
+    # empirical evidence).  Season K% base → CAUSAL_INDEPENDENT (season
+    # rate is a stable causal input).
+    if "source_l5" in components:
+        return "EMPIRICAL_INDEPENDENT"
+    if "source_season_k_pct" in components:
+        return "CAUSAL_INDEPENDENT"
+    return "PRIOR_ONLY"
+
+
+def _classify_input_quality(signals: int) -> str:
+    """Return one of FULL / STRONG / PARTIAL / PRIOR_ONLY / INVALID.
+
+    Delegates to the universal contract in
+    :mod:`services.simulator_provenance` so every sport shares the
+    same signal-count → quality mapping.
+    """
+    from services.simulator_provenance import classify_input_quality
+    return classify_input_quality(signals)
 
 
 def evaluate_k_pick(
@@ -294,6 +346,10 @@ def evaluate_k_pick(
         "expected_k": lam,
         "components": exp["components"],
         "signals_used": exp["data_quality"],
+        # PHASE 2 (2026-06) — expose simulator provenance downstream.
+        "provenance":     exp.get("provenance"),
+        "input_quality":  exp.get("input_quality"),
+        "decision_valid": exp.get("decision_valid", True),
     }
 
 

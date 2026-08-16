@@ -183,6 +183,39 @@ def simulate(
     out["season_type"]       = st.value
     out["role_uncertainty"]  = _role_uncertainty(ctx, st)
     out["input_provenance"]  = _input_provenance(pick, ctx)
+
+    # PHASE 2 (2026-06) — Universal Simulator Provenance Envelope.
+    # Platinum NFL is CAUSAL_INDEPENDENT: it consumes REAL role/
+    # opportunity data (QB/RB/WR opportunity objects, team_plays,
+    # pass_rate, season type) and NEVER writes sim_probability =
+    # model_probability (§32 contract).  Input quality derives from
+    # role_uncertainty — lower uncertainty = STRONG/FULL, higher =
+    # PARTIAL/PRIOR_ONLY.
+    try:
+        from services.simulator_provenance import stamp_sim_output
+        role_unc = float(out.get("role_uncertainty") or 0.5)
+        if role_unc <= 0.15:
+            input_quality = "FULL"
+        elif role_unc <= 0.30:
+            input_quality = "STRONG"
+        elif role_unc <= 0.55:
+            input_quality = "PARTIAL"
+        elif role_unc <= 0.80:
+            input_quality = "PRIOR_ONLY"
+        else:
+            input_quality = "INVALID"
+        sim_p = out.get("sim_probability") or out.get("stabilized_probability")
+        mp = pick.get("win_probability")
+        if isinstance(mp, (int, float)) and mp > 1:
+            mp = mp / 100.0
+        stamp_sim_output(
+            out, provenance="CAUSAL_INDEPENDENT",
+            input_quality=input_quality,
+            sim_prob=(float(sim_p) if isinstance(sim_p, (int, float)) else None),
+            model_prob=(float(mp) if isinstance(mp, (int, float)) else None),
+        )
+    except Exception:
+        pass
     return out
 
 

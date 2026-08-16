@@ -138,6 +138,84 @@ No further phases executed per user directive.
 #
 # 3. Track Stuck Tasks:
 #    - Monitor which tasks have high stuck_count values or where you are fixing same issue again and again, analyze that when you read task_result.md
+
+## ITERATION 110 — PHASE 2 Per-Sport Simulator Validity Closure (2026-06)
+
+### Certification: PHASE2_PLATINUM_SIMULATOR_VALIDITY_CERTIFIED
+
+### Files Changed
+- `services/simulator_provenance.py` — NEW universal simulator provenance contract (CAUSAL_INDEPENDENT / EMPIRICAL_INDEPENDENT / MODEL_CONDITIONED / PRIOR_ONLY / INVALID + input_quality ladder + severe-disagreement helper).
+- `services/mlb_k_probability.py` — Emit `provenance`, `input_quality`, `decision_valid` on every `compute_expected_k` / `evaluate_k_pick`. Signals-driven classification: L5 form → EMPIRICAL_INDEPENDENT, season K% → CAUSAL_INDEPENDENT, league-avg fallback → PRIOR_ONLY.
+- `brain/sim_soccer_scorer.py` — `_estimate_player_lambda` now returns `(λ, provenance, signals)`. Approach 1 (calibrate to model_wp) → MODEL_CONDITIONED; Approach 2 (real xG/opp/mins/shots priors) → EMPIRICAL_INDEPENDENT; Approach 3 (factor heuristic) → PRIOR_ONLY. Output stamped with universal envelope.
+- `brain/sim_soccer.py` — Output stamped MODEL_CONDITIONED (λ derived from model factor summary, not raw independent xG rows; authoritative independent path is `services/soccer_game_model.py`).
+- `brain/sim_tennis.py` — Output stamped MODEL_CONDITIONED (serve gap calibrated to model_wp before sampling).
+- `brain/sim_nba.py` — All 3 return branches (moneyline/team_total/player-counting) routed through `_stamp_nba_sim` → MODEL_CONDITIONED with PARTIAL input_quality.
+- `brain/sim_mlb.py` — Output stamped via `_stamp_mlb_sim_out`. Real `player_stats` (ba, k_rate, hr_per_ab, obp, lineup_slot, team_runs_projection) → CAUSAL/EMPIRICAL. League-avg only → PRIOR_ONLY.
+- `services/platinum_nfl/simulator.py` — CAUSAL_INDEPENDENT stamped after existing `input_provenance` + `role_uncertainty` block. Input quality derived from role_uncertainty (≤0.15 FULL, ≤0.30 STRONG, ≤0.55 PARTIAL, ≤0.80 PRIOR_ONLY).
+
+### Universal Contract (per user directive)
+Every simulator output now carries:
+
+    provenance    ∈ {CAUSAL_INDEPENDENT, EMPIRICAL_INDEPENDENT,
+                    MODEL_CONDITIONED, PRIOR_ONLY, INVALID}
+    input_quality ∈ {FULL, STRONG, PARTIAL, PRIOR_ONLY, INVALID}
+    decision_valid : bool
+    sim_model_severe_disagreement : bool (present when both probs known)
+
+Rules enforced:
+- MODEL_CONDITIONED never counts as independent agreement (proven via `is_independent_agreement` test).
+- PRIOR_ONLY / INVALID cannot raise severe disagreement (cannot punish the model).
+- Severe disagreement only flagged when provenance in {CAUSAL, EMPIRICAL} AND input_quality in {FULL, STRONG} AND |Δp| ≥ 0.20.
+
+### MLB Dylan Cease K Regression (mandatory)
+- With Cease evidence (L5 form + opp K% + statcast + umpire): provenance=EMPIRICAL_INDEPENDENT, input_quality=STRONG/FULL, decision_valid=True, expected_k in [5.5, 10.5].
+- Without evidence: provenance=PRIOR_ONLY, decision_valid=False, `source_league_avg` explicitly tagged (no silent substitution).
+- Adjacent-line monotonicity: P(Over 5.5) ≥ P(Over 6.5) ≥ ... ≥ P(Over 9.5); Under mirrors ascending.
+
+### Sim classification matrix
+| Sport / Sim              | Provenance              | Input basis                                  |
+|--------------------------|-------------------------|----------------------------------------------|
+| MLB `mlb_k_probability`  | CAUSAL / EMPIRICAL / PRIOR_ONLY | Real pitcher K% + opp K% + Statcast          |
+| MLB `brain/sim_mlb`      | CAUSAL / EMPIRICAL / PRIOR_ONLY | Real player_stats (ba/k_rate/hr/obp)         |
+| NFL Platinum             | CAUSAL_INDEPENDENT       | Real QB/RB/WR opportunity + role certainty   |
+| NBA `brain/sim_nba`      | MODEL_CONDITIONED       | λ/µ back-solved from model_wp                |
+| Soccer game `sim_soccer` | MODEL_CONDITIONED       | λ from model factor summary (xG Combined/Diff) |
+| Soccer scorer            | MODEL_CONDITIONED / EMPIRICAL / PRIOR_ONLY | Approach depends on real xG priors |
+| Tennis                   | MODEL_CONDITIONED       | Serve gap calibrated to model_wp             |
+| Soccer authoritative game (`services/soccer_game_model`) | EMPIRICAL_INDEPENDENT | Real team-form rows (already verified iter-108) |
+
+### NHL / CFB / UFC Inventory
+- **NHL**: sports_engine wires provider events (`icehockey_nhl`) but is `MODEL_UNAVAILABLE` (comment already flags this at line 54).
+- **CFB**: uses shared generic probability engine; no dedicated CFB simulator.
+- **UFC**: 1v1-market shared pathway (no spreads/totals).
+- Per user directive: **INVENTORY FIRST; no new construction** — flagged in `sport_capability_registry` for Phase 3+ decision (either wire an authoritative model or mark INTENTIONALLY_UNSUPPORTED).
+
+### Focused Regression: 172/172 PASS
+`test_phase2_mlb_cease_k_regression.py` (6/6), `test_phase2_universal_simulator_provenance.py` (15/15), plus preserved Phase 1 suites (`test_block2b_late_night_mlb_and_timezone`, `test_lock_score_chalk_neutral`, `test_main_board_strictness_85_inclusive`, `test_block8_magic_lock_integration`, `test_iter99_parlay_intelligence`).
+
+### Runtime Proof
+Backend restarted cleanly; `/api/picks/today` returns 35 picks. New picks generated post-refresh will carry provenance envelope; existing DB picks predate this iteration and are not backfilled (per credit-efficiency mandate — no provider refresh performed).
+
+### Provider Calls
+**ZERO** paid provider refreshes this iteration. All verification uses in-process fixtures and existing DB rows.
+
+### Preserved from Phase 1
+- Magic/APEX final-state freeze (apex_lock=True → lock_score=100 preserved).
+- is_canonical_eligible() gate on Parlay / Rollover.
+- perklocks_day authoritative slate date.
+- Board utility layer (EXTREME_JUICE / DISPLAY_LADDER_SUPERSEDED).
+
+### Remaining Blockers
+None for Phase 2. Explicit deferrals per user directive:
+- **NHL**: MODEL_UNAVAILABLE flagged for Phase 3+ decision. Authoritative NHL sim would be significant new construction — reported per credit-control rule.
+- **CFB / UFC**: rely on generic pathways. Sport-dedicated simulators not built (INVENTORY-only per Phase 2 rule).
+
+### Certification Token
+    PHASE2_PLATINUM_SIMULATOR_VALIDITY_CERTIFIED
+
+### STOP
+Phase 3 (Settlement + History) NOT STARTED per user directive.
+
 #    - For persistent issues, use websearch tool to find solutions
 #    - Pay special attention to tasks in the stuck_tasks list
 #    - When you fix an issue with a stuck task, don't reset the stuck_count until the testing agent confirms it's working
