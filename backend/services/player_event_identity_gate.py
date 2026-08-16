@@ -244,15 +244,20 @@ def is_identity_valid_for_publication(pick: dict) -> bool:
     """Convenience wrapper — returns True iff the pick may cross the
     canonical publication boundary WITHOUT tripping identity rejection.
 
-    Both ``VALID`` and ``NOT_APPLICABLE`` clear publication.
-    ``PLAYER_TEAM_UNRESOLVED`` also clears (fail-open — see docstring),
-    with the expectation that Phase 6 identity_class already routes such
-    picks as PROVISIONAL/UNRESOLVED at the publication boundary.
-    ``PLAYER_EVENT_IDENTITY_MISMATCH`` FAILS closed — the pick cannot
-    publish regardless of Lock Score / Magic / Apex / edge.
+    PHASE 10A (2026-07) — Fail-closed contract:
+      * ``VALID``                              → clears publication.
+      * ``NOT_APPLICABLE`` (team-side markets) → clears publication.
+      * ``PLAYER_TEAM_UNRESOLVED``             → REJECTED (was previously
+        fail-open; the user directive is: if Perklocks cannot prove that
+        a player belongs to one of the exact event participants, it must
+        NOT publish the player prop).
+      * ``PLAYER_EVENT_IDENTITY_MISMATCH``     → REJECTED.
+
+    Rationale: an UNRESOLVED verdict means we cannot prove membership.
+    For production player props that is a rejection, not a soft pass.
     """
-    return evaluate_identity(pick) != \
-        IdentityVerdict.PLAYER_EVENT_IDENTITY_MISMATCH
+    v = evaluate_identity(pick)
+    return v in (IdentityVerdict.VALID, IdentityVerdict.NOT_APPLICABLE)
 
 
 __all__ = [

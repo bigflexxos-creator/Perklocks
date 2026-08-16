@@ -381,7 +381,7 @@ def test_9R_positive_identity_passes_publication_boundary(
 # ═════════════════════════════════════════════════════════════════════════
 def test_9D_unresolved_player_team_returns_unresolved_not_mismatch():
     """A pick lacking any enriched team info must return UNRESOLVED —
-    NOT a mismatch (fail-open per 9D)."""
+    NOT a mismatch (distinct terminal state per 9D)."""
     pick = _publication_ready(
         id="unresolved_pick",
         sport="soccer",
@@ -395,10 +395,17 @@ def test_9D_unresolved_player_team_returns_unresolved_not_mismatch():
     )
     v = evaluate_identity(pick)
     assert v == IdentityVerdict.PLAYER_TEAM_UNRESOLVED
+    # Phase 10A tightening: unresolved player identity is fail-closed
+    # for publication AND for canonical eligibility.
+    pv = evaluate_publication(pick)
+    assert RejectionReason.PLAYER_TEAM_UNRESOLVED.value in pv.reasons, \
+        "Phase 10A: publication must reject unresolved player identity"
+    pick["implied_probability"] = 0.5
+    assert is_canonical_eligible(pick) is False
 
 
 def test_9D_unresolved_event_participants_returns_unresolved():
-    """Event lacks home/away → UNRESOLVED (fail-open)."""
+    """Event lacks home/away → UNRESOLVED → REJECTED at publication."""
     pick = {
         "id": "no_event_pick",
         "sport": "soccer",
@@ -407,10 +414,15 @@ def test_9D_unresolved_event_participants_returns_unresolved():
         "player_name": "Player X",
         "player_team": "Team Y",
         "book_odds": +180,
-        # No event/home_team/away_team
+        "odds_source": "the_odds_api",
+        "identity_class": "AUTHORITATIVE",
+        "model_probability": 0.5,
     }
     v = evaluate_identity(pick)
     assert v == IdentityVerdict.PLAYER_TEAM_UNRESOLVED
+    # Phase 10A — unresolved event participants also fail closed
+    pv = evaluate_publication(pick)
+    assert RejectionReason.PLAYER_TEAM_UNRESOLVED.value in pv.reasons
 
 
 # ═════════════════════════════════════════════════════════════════════════

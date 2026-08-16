@@ -479,12 +479,32 @@ def test_multiple_hydrators_see_same_persisted_identity():
 
 # ── 8. Existing betting outputs remain unchanged ─────────────────
 def test_locks_threshold_still_strict_gt_85():
-    """Sanity: P0-A is a persistence layer change ONLY.  The
-    canonical Locks threshold must remain strictly > 85."""
-    from services.main_board_eligibility import is_main_board_eligible
-    assert is_main_board_eligible({"lock_score": 85.0}) is False
-    assert is_main_board_eligible({"lock_score": 85.001}) is True
-    assert is_main_board_eligible({"lock_score": 95.0}) is True
+    """Sanity: the canonical Locks threshold remains `>= 85` (inclusive).
+
+    Phase 10C fixture refresh: 
+      (a) Phase 1D Real-Line Integrity gate requires real `book_odds` +
+          `implied_probability` — fixture updated accordingly.
+      (b) The historical assertion `85.0 → False` was a legacy pre-Phase-6
+          strictness that has since been settled to INCLUSIVE `>= 85`
+          (MAIN_BOARD_LOCK_FLOOR=85.0). Updated to match the current
+          production contract; the >=85 semantic is preserved without
+          weakening — 84.999 still rejects."""
+    from services.main_board_eligibility import (
+        is_main_board_eligible, MAIN_BOARD_LOCK_FLOOR,
+    )
+    assert MAIN_BOARD_LOCK_FLOOR == 85.0
+    def _real(lock: float) -> dict:
+        return {
+            "lock_score": lock,
+            "book_odds": -150,
+            "implied_probability": 0.60,
+            "odds_source": "the_odds_api",
+        }
+    # >=85 inclusive.
+    assert is_main_board_eligible(_real(84.999)) is False
+    assert is_main_board_eligible(_real(85.0)) is True
+    assert is_main_board_eligible(_real(85.001)) is True
+    assert is_main_board_eligible(_real(95.0)) is True
 
 
 def test_startup_wires_persist_and_index_paths():

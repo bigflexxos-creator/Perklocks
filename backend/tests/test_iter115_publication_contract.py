@@ -54,7 +54,15 @@ def _candidate(pid: str, *, lock=88.0, prob=0.62, edge=3.5,
     return {
         "id": pid,
         "sport": "MLB",
+        # Phase 10C fixture refresh — event participants required by
+        # Phase 10A player→event identity gate.
+        "event": "Yankees @ Red Sox",
+        "home_team": "Red Sox",
+        "away_team": "Yankees",
+        "event_id": "iter115_evt",
         "market": "Aaron Judge (NYY) Over 1.5 hits",
+        "player_name": "Aaron Judge",
+        "player_team": "Yankees",
         "lock_score": lock,
         "win_probability": prob,
         "edge_percent": edge,

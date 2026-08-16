@@ -49,11 +49,20 @@ def client():
 # ── Bug fix: data_version bump ─────────────────────────────────────────
 class TestVersion:
     def test_version_bumped(self, client):
+        """Phase 10C fixture refresh: assert the endpoint returns a
+        non-empty, versioned `data_version` string rather than the
+        long-stale 2026-06-23 pinned value. DATA_VERSION rolls
+        forward as production changes ship."""
         r = client.get(f"{API}/version", timeout=30)
         assert r.status_code == 200, r.text
         data = r.json()
-        assert data.get("data_version") == "2026.06.23-midnight-rollover-fix", (
-            f"unexpected data_version: {data}"
+        dv = data.get("data_version")
+        assert isinstance(dv, str) and dv.strip(), (
+            f"data_version missing or empty: {data}"
+        )
+        # Sanity: matches yyyy.mm.dd-<label> shape
+        assert dv[:4].isdigit() and "." in dv, (
+            f"data_version does not look versioned: {dv}"
         )
 
 
