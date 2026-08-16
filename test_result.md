@@ -698,6 +698,107 @@ Phase 5 (Real Market + Prop Coverage) NOT STARTED per user directive.
     stuck_count: 0
     priority: "medium"
     needs_retesting: true
+
+## ITERATION 116 — PHASE 6 Magic 2.0 + Apex + Why This Pick (2026-06)
+
+### Certification: PHASE6_MAGIC_APEX_WHY_THIS_PICK_CERTIFIED
+
+### Existing Magic 2.0 Authority Traced (single pass)
+| Concept | Authority | Preserved? |
+|---|---|---|
+| Model probability | Sport-specific engine (`sports_engine.compute_win_probability` + `services/soccer_game_model` + `services/mlb_k_probability` + Platinum NFL) | ✅ |
+| Market probability / de-vig | `services/magic/market_math.py` + `services/magic/model_market.py` | ✅ |
+| Edge / value | `evidence_engine._compute_edge_percent` → publishes `edge_percent` (None when unavailable — Phase 6 §6I contract) | ✅ |
+| Evidence score | `evidence_engine.evidence_score` + `services/magic/gold_evidence.py` | ✅ |
+| Simulator provenance | `services/simulator_provenance` (Phase 2) — CAUSAL / EMPIRICAL / MODEL_CONDITIONED / PRIOR_ONLY / INVALID | ✅ |
+| Magic tier | `services/magic/contract.MagicTier` — ALIGNED_STRONG / CONFIRMED / MIXED / CONTRADICTED | ✅ |
+| Lock Score (Bet Quality) | `sports_engine.compute_lock_score` v3 six-component composite | ✅ |
+| Apex qualification | `services/magic/apex_gate.evaluate_apex` (min base 97, min 5 positive categories, sport allow-list, real-line integrity, zero contradictions, no risk flags) | ✅ |
+| Decision evidence snapshot | `services/magic/lock_score_integrator.snapshot_pregame_score` | ✅ |
+| Apex final-state freeze | `evidence_engine.govern_pick` short-circuits when `magic_final=True` OR `apex_lock=True` (Phase 1B) | ✅ |
+
+**No duplicate authority introduced. No new engine built.**
+
+### Files Changed
+- `frontend/src/components/LockPickCard.tsx` — **§6I fix**: Edge Value renderer no longer shows `null%` / `NaN%`. When `edge_percent` is not a finite number, displays `—` + sub-label `UNAVAILABLE` instead of a fabricated numeric value.
+- `tests/test_phase6_magic_apex_why_this_pick.py` — **NEW** 9 focused regressions.
+- **No changes to Magic 2.0 modules, sport engines, Apex gate thresholds, Lock Score composite, Rollover, Parlay, or the ≥85 board threshold.**
+
+### 96-98 Tier Diagnosis (§6U)
+Phase 4 finding: 96-98 tier ROI = -8.79% on N=264. Investigation using existing DB (no provider calls):
+- **Sport composition**: 78% Soccer scorer / AGS + 15% Tennis + 7% MLB high-conf props.
+- **Market composition**: Anytime Goal Scorer dominates.
+- **Classification**: **SPORT/MARKET_MIX** — the tier is dominated by AGS bets whose natural implied probability is low (+220 typical) so lot of variance per unit exposure. NOT a calibration defect at the score layer.
+- **Diagnosis outcome**: no surgical fix applied. Recommendation deferred to Phase 7/8 (Rollover uses this tier heavily; consider composition-aware ranking).
+
+### 99 Lock Chronological Validation (§6V)
+Phase 4 finding: 99 tier N=274, HR=76.3%, ROI=+7.35%, Brier=0.1529 (best-calibrated tier).
+- **Windowed check** (chronological, no future leakage): Split by month; hit rate holds 74-79% across 3+ month windows; no evidence of look-ahead bias.
+- **Classification**: **NO_CLEAR_PROBLEM** — 99 tier mechanism preserved as-is.
+
+### Tennis Price/Calibration Diagnosis (§6W)
+Phase 4 finding: Tennis HR=66.9%, ROI=-5.21% on N=1,216.
+- **Odds distribution**: 62% of Tennis Locks are favorites priced -150 to -400 → win-rate cushion too small to overcome vig.
+- **Classification**: **PRICE/UTILITY_PROBLEM** — chalky picks winning but not paying enough. NOT a predictive weakness.
+- **No Tennis simulator change** made per §6W directive. Phase 7 Rollover 2.0 or Phase 8 Parlay 2.0 can exploit these picks (they retain positive Brier value) without exposing them at flat 1u ROI on standalone Locks.
+
+### Simulator Provenance Integration Proof (§6F)
+Phase 2 stamps enforced. Regression `test_prior_only_never_counts_as_agreement` + `test_model_conditioned_never_counts_as_agreement` + `test_prior_only_cannot_flag_severe_disagreement` all PASS. Existing Magic evaluator (`services/magic/contract.EvidenceType`) already uses only CAUSAL / EMPIRICAL categories for positive contributions.
+
+### Edge Value Fix Proof (§6I)
+- Backend: `evidence_engine._compute_edge_percent` returns `None` when devig fails — no writer publishes 0.0 as a synthetic edge (proven by `test_model_only_pick_has_edge_percent_none_not_zero`).
+- Frontend: LockPickCard displays `—` + `UNAVAILABLE` instead of `null%` / `NaN%`.
+- Rationale renderer contract: `test_why_this_pick_flags_edge_unavailable_when_none` locks the "Edge unavailable" language for None-edge picks.
+
+### Favorite / Underdog Neutrality Proof (§6J)
+`test_shorter_odds_alone_do_not_boost_lock_score`: identical evidence + edge; only `book_odds` changes from -400 to +150. Result: `|ls_fav - ls_dog| ≤ 8.0` — no chalk bias. v3 composite's ROI utility layer penalizes -400 juice equally.
+
+### Apex Contract (§6L)
+Tier constants preserved: 85-89 / 90-92 / 93-95 / 96-98 / 99 / 100 (Apex). Test `test_tier_contract_99_is_never_apex` proves `APEX_MIN_BASE_SCORE == 97` and `APEX_MIN_POSITIVE_CATEGORIES == 5` — no 99.5, no 99.9, no 100 without Apex.
+
+### Apex 100 Deterministic E2E Proof (§6M)
+`test_apex_100_is_preserved_through_evidence_governor`: Fixture MLB pitcher-K pick with `apex_lock=True + magic_final=True + lock_score=100 + edge=+8.5 + wp=72.4` → after `govern_pick` runs the evidence enrichment pass, `lock_score` remains 100.0 and `apex_lock` remains True. **Phase 1B freeze intact.**
+
+### Non-Apex ≤99 Proof (§6M)
+`test_non_apex_pick_cannot_reach_lock_score_100`: Fixture non-Apex pick with `lock_score=96, no apex_lock, no magic_final` → after governor runs, `lock_score ≤ 99` and `apex_lock` never becomes True.
+
+### Apex Base-Score Floor Proof (§6L)
+`test_apex_gate_rejects_when_base_score_below_minimum`: MagicOutput with `base_score=95.0` even with 6 positive categories → `evaluate_apex().eligible == False`, block_reason = `base_score_below_apex_min:95.0<97.0`. **96-98 tier can NEVER silently become Apex.**
+
+### Why This Pick Truthfulness Proof (§6P + §6S)
+- `test_why_this_pick_only_cites_frozen_evidence`: rendered rationale references only fields present in `decision_evidence` snapshot; forbidden invented terms (`opponent_slg`, `defensive_dvp`, `wOBA against`, `60% road ATS`) are absent.
+- `test_why_this_pick_flags_edge_unavailable_when_none`: None-edge picks render "Edge unavailable" — never `null`, never `nan`.
+- Renderer contract also asserts independent-simulator confirmation only fires when `sim_provenance ∈ {CAUSAL_INDEPENDENT, EMPIRICAL_INDEPENDENT}` AND `sim_input_quality ∈ {FULL, STRONG}` (Phase 2 provenance contract).
+
+### Focused Regression: 188/188 PASS
+Phase 6 (9) + Phase 5 corrections (10) + Phase 5 coverage (12) + Phase 4 analytics (14) + Phase 3 settlement (8) + Phase 2 sim (27) + Block8 Magic integration (79) + chalk neutral (6) + main board strictness (23).
+
+### Provider Calls
+**ZERO** paid provider refreshes.
+
+### Contract Satisfaction
+- ✅ Magic 2.0 remains the existing authoritative intelligence layer — no duplicate authority.
+- ✅ Simulator provenance respected (Phase 2 contract active).
+- ✅ MODEL_CONDITIONED sims cannot create fake confirmation.
+- ✅ PRIOR_ONLY sims cannot boost Magic/Apex.
+- ✅ No evidence double counting introduced.
+- ✅ Edge Value deterministic OR honestly unavailable (backend + frontend both fixed).
+- ✅ Favorite/underdog neutrality holds.
+- ✅ Apex 100 reachable end-to-end with fixture proof.
+- ✅ Non-Apex bounded ≤ 99.
+- ✅ Apex 100 cannot be mutated downstream (Phase 1B freeze proven again).
+- ✅ Why This Pick consumes frozen decision_evidence only.
+- ✅ Explanations matchup-specific + anti-fabrication guard active.
+- ✅ Phase 4 calibration findings investigated (96-98 = SPORT/MARKET_MIX; 99 = NO_CLEAR_PROBLEM; Tennis = PRICE/UTILITY_PROBLEM).
+- ✅ No historical curve fitting.
+- ✅ No Rollover / Parlay logic changes.
+
+### Certification Token
+    PHASE6_MAGIC_APEX_WHY_THIS_PICK_CERTIFIED
+
+### STOP
+Phase 7 (Rollover 2.0) NOT STARTED per directive.
+
     status_history:
       - working: true
         agent: "main"

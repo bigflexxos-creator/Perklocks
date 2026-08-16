@@ -420,9 +420,23 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
         />
         <HeroBadge
           icon="⚡"
-          value={`${pick.edge_percent > 0 ? "+" : ""}${pick.edge_percent}%`}
+          value={
+            // PHASE 6 §6I (2026-06) — Edge Value: never display
+            // "null%" / "NaN%" / a fabricated 0.  When the model has
+            // no real market-implied probability to measure against
+            // (e.g. model-only / MLS direct inject with no book line),
+            // ``edge_percent`` is deliberately ``null`` upstream.
+            // Render honest unavailability instead of a number.
+            typeof pick.edge_percent === "number" && !isNaN(pick.edge_percent)
+              ? `${pick.edge_percent > 0 ? "+" : ""}${pick.edge_percent}%`
+              : "—"
+          }
           label="EDGE"
-          sub="VALUE"
+          sub={
+            typeof pick.edge_percent === "number" && !isNaN(pick.edge_percent)
+              ? "VALUE"
+              : "UNAVAILABLE"
+          }
           color={edgeColor}
         />
       </View>
