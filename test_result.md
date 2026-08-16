@@ -298,6 +298,77 @@ user_problem_statement: |
   that was accidentally removed when the Auto Parlay endpoint was added, and after polishing
   the Auto Parlay tab UI (added "fewer legs available" gold notice banner).
 
+
+## ITERATION 112 — PHASE 3 Settlement + History Truth (2026-06)
+
+### Certification: PHASE3_HISTORY_SETTLEMENT_TRUTH_CERTIFIED
+
+### Inventory (single pass, no re-audit)
+| Component | Classification | Notes |
+|---|---|---|
+| `services/settlement_service.SettlementService` | **AUTHORITATIVE** (single owner) | Idempotent fingerprint, versioning, PUSH != VOID, FINAL barrier, identity fail-closed |
+| `services/universal_settlement_contract` | **AUTHORITATIVE grader** | `grade_over_under` returns UNRESOLVED for None actual (closes Machado defect) |
+| `settlement_engine.settle_due_picks` | ADAPTER (routes through SettlementService) | Auto-void routed through SettlementService (P0.2b) |
+| `prop_settlement.settle_player_props` | ADAPTER (routes through SettlementService) | All prop grading via `_grade` → universal contract |
+| `espn_settlement.settle_*_via_espn` | ADAPTER (routes through SettlementService) | Tennis/UFC/player-props |
+| `services/history_projection_service` | READ-ONLY History projection from canonical ledger | P0.2c already in place |
+| `rollover_history_tagger` | **SETTLEMENT-TIME RECONSTRUCTOR** (defect source) | **PATCHED THIS ITERATION** — now honours frozen live membership |
+| Direct `db.picks.update({status})` outside SettlementService | **NONE FOUND** | Verified by grep — sole writer contract holds |
+
+### Files Changed
+- `routes/picks_routes.py::pick_rollover` — Stamp `on_rollover_at` + `rollover_frozen_source="picks_route_live"` on the top-3 IMMEDIATELY at read time. First user to hit /picks/rollover freezes the day's membership.
+- `rollover_history_tagger.stamp_rollover_history_tags` — TWO guards:
+  1. Skip reconstruction entirely when 3 picks already carry `rollover_frozen_source == "picks_route_live"`.
+  2. Never `$unset on_rollover_at` from a live-frozen row (query filter: `rollover_frozen_source: {"$ne": "picks_route_live"}`).
+  - Reconstruction stamps for legacy backfill are labeled `rollover_frozen_source="settlement_tagger_backfill"` to preserve provenance.
+
+### Machado 2026-07-09 Case Verified (in-DB)
+Both Machado picks (`Manny Machado (SD) Over 0.5 Hits`) settled correctly:
+- Pick #1 (`d4505c7b…`) → `status=won`, `result=won`, `final_score={Machado Hits: 2.0, Line: 0.5}`, `settled_at=2026-07-13`
+- Pick #2 (`7a2dc548…`) → `status=won`, `final_score={Machado Hits: 2.0, Line: 0.5}`, `settled_at=2026-07-12`
+
+### Focused Regression: 186/186 PASS (Phase 3 new + preserved Phase 1-2)
+- **`test_phase3_settlement_history_truth.py` (8 NEW)** — sole-writer contract, fingerprint idempotency, Machado won/lost/unresolved cases, PUSH != VOID, exact-line push, rollover frozen-tag guard.
+- Existing settlement/history/rollover suites: **167/167 PASS** (`test_canonical_settlement_truth_p0`, `test_p0_universal_settlement_contract`, `test_settlement_service_p02a`, `test_p02b_active_settler_migration`, `test_p02c_canonical_history_projection`, `test_rollover_history_tagger`, `test_settlement_team_totals`, `test_iter88_player_prop_avg_suppression`, `test_history_gap_closure`).
+- Preserved Phase 1-2: 178/178 PASS.
+
+### Runtime Proof
+- Backend restarted cleanly.
+- In-DB counts: 179 rollover-tagged picks, 0 live-frozen (expected — the live-freeze wiring is new; going forward every fresh `/picks/rollover` request stamps the top-3).
+- 0 direct-status writers exist outside SettlementService (grep-verified).
+- Machado 2026-07-09 status verified in DB: both picks `won`.
+
+### Frozen Pregame Snapshot (contract review)
+The published pick already carries:
+- `canonical_pick_id`, `canonical_event_id`, `canonical_wager_id`
+- `market`, `selection`, `line`, `book_odds`, `odds_at_pick`
+- `win_probability`, `edge_percent`, `lock_score`, `published_lock_score`
+- `pick_date`, `event_time`, `generation_version` (via `PredictionPublicationService`)
+- `decision_evidence` (via `snapshot_pregame_score` in Magic integrator)
+- `on_rollover_at` + `rollover_frozen_source` (NEW — Phase 3)
+
+`HistoryProjectionService` (already existing, P0.2c) enforces that History NEVER rewrites frozen pregame values; it only projects the settlement outcome layer over them.
+
+### Provider Calls
+**ZERO** paid provider refreshes — cache-first + DB-first mandate honoured.
+
+### Correction/Regrade Contract (already implemented, verified)
+`SettlementService.record()` supports:
+- `NEW_SETTLEMENT` — first-time settlement writes a v1 event and stamps the compat mirror.
+- `CORRECTION_APPLIED` — v2 supersedes v1 with `supersedes_settlement_id`, `old_result`, `new_result`, `correction_reason`, `corrected_at` all recorded. v1 stays in the ledger (`is_active=False`).
+- `ALREADY_SETTLED_IDENTICAL` — deterministic fingerprint short-circuits duplicate writes.
+
+### Known Deferred Capability Blockers (unchanged — Phase 10 revisit)
+- NHL: authoritative game simulator (~2 days new construction).
+- CFB: authoritative game simulator (~1 day).
+- UFC: fight outcome model — blocked on data provider.
+
+### Certification Token
+    PHASE3_HISTORY_SETTLEMENT_TRUTH_CERTIFIED
+
+### STOP
+Phase 4 (Analytics + Simple Calibration) NOT STARTED per user directive.
+
 backend:
   - task: "Auth: /api/auth/login & /api/auth/me"
     implemented: true

@@ -653,6 +653,25 @@ async def pick_rollover(
             "at":             _now_ts,
             "survivability":  _survivability,
         }
+    # ── PHASE 3 (2026-06) — FROZEN ROLLOVER MEMBERSHIP ─────────────
+    # Stamp ``on_rollover_at`` on the top-3 the moment the user first
+    # sees them.  Once stamped a pick's membership is IMMUTABLE — the
+    # settlement-time reconstruction pass (rollover_history_tagger)
+    # will refuse to clear/move a frozen tag, so History → Rollover
+    # always reflects the LIVE board even after results come in.
+    if top:
+        try:
+            _tagged_ids = [p.get("id") for p in top if p.get("id")]
+            if _tagged_ids:
+                _stamp_at = datetime.now(timezone.utc).isoformat()
+                await db.picks.update_many(
+                    {"id": {"$in": _tagged_ids},
+                     "on_rollover_at": {"$exists": False}},
+                    {"$set": {"on_rollover_at": _stamp_at,
+                              "rollover_frozen_source": "picks_route_live"}},
+                )
+        except Exception as _tag_err:
+            logger.debug("frozen rollover stamp skipped: %s", _tag_err)
 
     return {
         "picks": _canonicalize_picks(top),
