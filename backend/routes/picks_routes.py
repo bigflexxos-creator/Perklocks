@@ -406,6 +406,15 @@ async def pick_rollover(
     # Sticky miss or expired — proceed with full recompute below.
 
     base_q: dict = {"pick_date": _today_str(), "no_bet": {"$ne": True}}
+    # PHASE 1D (2026-06) — Shared Product Source contract.  Rollover
+    # 2.0 consumes canonical-eligible picks only: real book line
+    # present, not off_board, not model-only.  See
+    # ``services.main_board_eligibility.is_canonical_eligible``
+    # for the Python-side helper used by the parlay engine.
+    base_q["off_board"]        = {"$ne": True}
+    base_q["no_real_book_line"] = {"$ne": True}
+    base_q["model_only"]       = {"$ne": True}
+    base_q["book_odds"]        = {"$exists": True, "$ne": None}
     lt = (line_type or "").lower()
     if lt == "main":
         base_q["is_alt"] = {"$ne": True}
@@ -1794,6 +1803,20 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # represents unique betting opportunities, not sportsbook copies.
     picks = _collapse_cross_book_duplicates(picks)
     picks = _dedupe_game_outcome_picks(picks)
+    # ── PHASE 0 §9-§11 (2026-06) — Board Utility Layer ─────────────
+    # Extreme-juice utility + alt-line ladder collapse.  Both are
+    # READ-TIME projections that tag picks with an explicit
+    # ``consumer_disposition`` (EXTREME_JUICE / DISPLAY_LADDER_
+    # SUPERSEDED) and set ``hide_from_main_board=True``.  Canonical
+    # eligibility is UNCHANGED so Parlay 2.0 can still use these
+    # picks as legs.
+    try:
+        from services.board_utility_layer import apply_board_utility_layer
+        _bul_stats = apply_board_utility_layer(picks)
+        if _bul_stats.get("picks_hidden_total"):
+            logger.info("BoardUtilityLayer: %s", _bul_stats)
+    except Exception as _bul_err:
+        logger.warning("BoardUtilityLayer skipped: %s", _bul_err)
     # Goalscorer pick cap — per match, surface at most the TOP 1 unique
     # player per (team × market_family). Was top_n=4 — but the backtest
     # over 397 graded goalscorer picks showed elite players win Anytime

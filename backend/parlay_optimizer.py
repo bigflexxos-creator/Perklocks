@@ -340,6 +340,18 @@ def score_leg(pick: dict, bucket_map: dict, current_legs: list[dict],
 
 def is_eligible_leg(pick: dict, bucket_map: dict, *, high_risk: bool = False) -> tuple[bool, str]:
     """Hard filters per spec.  Returns (ok, reason_if_rejected)."""
+    # PHASE 1D (2026-06) — Shared Product Source contract.  Every
+    # parlay leg must first pass the canonical-eligibility gate so
+    # Parlay 2.0 consumes the same authoritative candidate pool as
+    # Locks and Rollover.  EXTREME_JUICE / DISPLAY_LADDER_SUPERSEDED
+    # picks REMAIN eligible legs (Phase 8 directive) — the utility
+    # layer only hides them from the standalone Locks board.
+    try:
+        from services.main_board_eligibility import is_canonical_eligible
+        if not is_canonical_eligible(pick):
+            return False, "not canonically eligible"
+    except Exception:
+        pass  # defensive — never break the parlay engine
     if pick.get("no_bet"):
         return False, "no_bet flag"
     if pick.get("is_under_lock"):

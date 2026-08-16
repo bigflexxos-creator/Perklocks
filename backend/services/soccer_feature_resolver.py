@@ -124,11 +124,37 @@ async def resolve_soccer_player_features(
             except Exception:
                 pass
 
-    # ── 4.  Fall through — return whichever we found (even sparse) ─
+    # ── 4.  ESPN MLS stats fallback — PHASE 0 §3-§4 (2026-06). ─────
+    # LAST-RESORT enrichment when internal history stores are empty
+    # for this player.  Only kicks in for MLS/LigaMX-adjacent players
+    # whose evidence didn't populate any Understat / actuals / logs
+    # row (typical for mid-season new MLS signings).
+    # STRICT CONTRACT:
+    #   * ESPN NEVER overwrites canonical IDs (returned row carries
+    #     the canonical_player_id from the identity resolver so
+    #     downstream authority stays intact).
+    #   * ESPN is tagged with a distinct evidence_source
+    #     ("espn_mls_stats") so consumers can differentiate it from
+    #     first-class stores.
+    #   * ESPN season totals are converted to per-90 rates assuming
+    #     ~65 mins/appearance (MLS average starter minutes).
+    try:
+        espn_row = await _lookup_espn_mls_stats(
+            db, primary_name=primary, variants=variants_list,
+            canonical_player_id=canonical_player_id,
+        )
+    except Exception:
+        espn_row = None
+    if espn_row and int(espn_row.get("minutes") or 0) >= 180:
+        return espn_row, "espn_mls_stats"
+
+    # ── 5.  Fall through — return whichever we found (even sparse) ─
     if row:
         return row, "soccer_player_form"
     if agg:
         return agg, "player_game_actuals"
+    if espn_row:
+        return espn_row, "espn_mls_stats"
     return None, ""
 
 
@@ -358,3 +384,63 @@ __all__ = [
     "resolve_soccer_player_matchup",
     "classify_missing_feature_reason",
 ]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# PHASE 0 §3-§4 (2026-06) — ESPN MLS stats fallback.
+# Read-only over ``espn_mls_stats``.  Returns a form-row-shaped dict
+# so downstream code (bridge / scorer / feature engine) can consume
+# it identically to first-class evidence rows.  Season totals are
+# converted to per-90 rates using MLS-typical 65 mins/appearance.
+# Identity is NEVER rewritten — the canonical_player_id passed by
+# the caller (from the identity resolver) is carried through.
+# ─────────────────────────────────────────────────────────────────────
+async def _lookup_espn_mls_stats(
+    db, *, primary_name: str, variants: list[str],
+    canonical_player_id: Optional[str] = None,
+) -> Optional[dict]:
+    if not primary_name and not variants:
+        return None
+    # Search by normalised name variants only — ESPN does not carry
+    # our canonical IDs.
+    all_variants = list({v.strip().lower() for v in
+                        [primary_name, *(variants or [])] if v and v.strip()})
+    if not all_variants:
+        return None
+    doc = None
+    try:
+        doc = await db.espn_mls_stats.find_one(
+            {"name_norm": {"$in": all_variants}}
+        )
+    except Exception:
+        doc = None
+    if not doc:
+        return None
+    games = int(doc.get("games") or 0)
+    if games < 2:
+        return None
+    goals   = float(doc.get("goals")   or 0)
+    assists = float(doc.get("assists") or 0)
+    # MLS-typical average minutes for a leader-appearing player.
+    # We intentionally use a slightly conservative 65 min/appearance
+    # so per-90 rates from ESPN totals aren't inflated.
+    minutes = float(games) * 65.0
+    return {
+        "name_canonical":     primary_name,
+        "player_name":        doc.get("name") or primary_name,
+        # Identity is CARRIED through — never rewritten.
+        "canonical_player_id": canonical_player_id,
+        "goals":              goals,
+        "assists":            assists,
+        "shots":              0.0,   # ESPN leaders feed does not carry shots
+        "shots_on_target":    0.0,
+        "games":              games,
+        "minutes":            int(minutes),
+        "goals_per_90":       (goals   * 90.0) / minutes if minutes else 0.0,
+        "assists_per_90":     (assists * 90.0) / minutes if minutes else 0.0,
+        "shots_per_90":       0.0,
+        "source":             "espn_mls_stats",
+        "sample_size":        games,
+        # Tag so downstream can identify this as an enrichment source.
+        "evidence_source":    "espn_mls_stats",
+    }

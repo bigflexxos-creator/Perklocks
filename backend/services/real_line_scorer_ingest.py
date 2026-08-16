@@ -325,7 +325,19 @@ async def _ingest_player_scorer_row(
         # via the standard `compute_lock_score` weighting.
         if matchup and matchup.get("events", 0) >= 2:
             factors["Matchup History"] = min(1.0, float(matchup["events"]) / 5.0)
-        lock, _ = compute_lock_score(factors, win_prob=model_prob*100)
+        # PHASE 0 §1-§2 (2026-06) — Scorer Lock Score Contract.
+        # Route soccer scorer picks through the v3 six-component
+        # composite (edge / alignment / ROI / data-quality /
+        # volatility / CLV) instead of the legacy win-prob band
+        # map.  Sportsbook implied probability CANNOT inflate the
+        # Lock Score anymore — high LS must be earned by REAL edge
+        # + factor agreement, not by chalk pricing alone.
+        _e_scorer = round((model_prob - book_impl) * 100, 2)
+        lock, _ = compute_lock_score(
+            factors, win_prob=model_prob*100,
+            pick={"book_odds": price, "edge_percent": _e_scorer,
+                  "win_probability": model_prob*100},
+            edge_percent=_e_scorer)
         off_board = lock < 85.0
         rej = SoccerRejection.LOW_LOCK_SCORE.value if off_board else None
         # ── Evidence score for the governor ────────────────────────
@@ -591,7 +603,15 @@ async def _ingest_game_market_row(
                     factors[k] = float(v)
         except Exception as _fe_err:
             logger.debug("feature-engine factor enrichment skipped: %s", _fe_err)
-        lock, _ = compute_lock_score(factors, win_prob=model_prob*100)
+        # PHASE 0 §1-§2 (2026-06) — Game-market Lock Score Contract.
+        # Same v3 six-component composite as scorers so game markets
+        # cannot inflate Lock Score from raw win_prob alone either.
+        _e_game = round((model_prob - book_impl) * 100, 2)
+        lock, _ = compute_lock_score(
+            factors, win_prob=model_prob*100,
+            pick={"book_odds": price, "edge_percent": _e_game,
+                  "win_probability": model_prob*100},
+            edge_percent=_e_game)
         edge_pct_prelim = (model_prob - book_impl) * 100
         off_board = lock < 85.0
         rej = SoccerRejection.LOW_LOCK_SCORE.value if off_board else None

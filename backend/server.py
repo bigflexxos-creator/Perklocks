@@ -287,8 +287,24 @@ _SLATE_TZ = ZoneInfo("America/New_York")
 
 
 def _today_str() -> str:
-    """Current slate date (US Eastern) as YYYY-MM-DD."""
-    return datetime.now(_SLATE_TZ).strftime("%Y-%m-%d")
+    """Current slate date (Perklocks U.S. betting-day) as YYYY-MM-DD.
+
+    PHASE 1I (2026-06) — Single Slate Date Authority.  Delegates to
+    ``services.perklocks_day.current_slate_day`` which uses the
+    canonical 04:00 ET roll (West Coast late-night games stay on
+    the previous US betting slate).  This is the ONE authoritative
+    date/slate contract for the board, Rollover, History,
+    settlement, and event filtering — closes the UTC-midnight
+    flake by centralising the rule.
+    """
+    try:
+        from services.perklocks_day import current_slate_day
+        return current_slate_day()
+    except Exception:
+        # Defensive fallback — never break if the module fails to
+        # import (matches the pre-Phase-1I behaviour of an ET-based
+        # ``strftime`` so callers see a deterministic ISO date).
+        return datetime.now(_SLATE_TZ).strftime("%Y-%m-%d")
 
 
 # Game-time cutoff for "today" feeds. We only want PREGAME picks — once

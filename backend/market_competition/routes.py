@@ -213,8 +213,13 @@ async def _rank_markets_for_event(db, event: str, sport: str, exclude_id: str = 
             "event_time": 1, "is_alt": 1, "no_bet": 1,
         },
     )
-    candidates = []
-    seen_short_markets: set = set()
+    # PHASE 0 §7 (2026-06) — Score ALL candidates BEFORE dedupe.
+    # OLD: dedupe by short_market happened INSIDE the async iteration,
+    # so the first Over/Under/etc row scanned won; a later, higher-
+    # scoring row on the same short_market was silently dropped.
+    # NEW: two-pass — (1) collect + score every eligible candidate,
+    # (2) dedupe by short_market keeping the HIGHEST market_score.
+    raw_candidates = []
     async for p in cursor:
         if not p.get("market"):
             continue
@@ -223,15 +228,13 @@ async def _rank_markets_for_event(db, event: str, sport: str, exclude_id: str = 
         # Skip literal self AND cross-book duplicates of the current wager.
         if _is_same_canonical_wager(p):
             continue
-        # Side-alignment filter (same as before).
+        # Side-alignment filter — safe to apply pre-score (it's a hard
+        # eligibility rule, not a ranking tiebreaker).
         if not _sides_compatible(current_side, p):
             continue
         short = _short_market(p.get("market") or "")
-        if short in seen_short_markets and short != "Unknown":
-            continue
-        seen_short_markets.add(short)
         score = _market_score(p)
-        candidates.append({
+        raw_candidates.append({
             "id":               p.get("id"),
             "market":           p.get("market"),
             "short_market":     short,
@@ -250,6 +253,21 @@ async def _rank_markets_for_event(db, event: str, sport: str, exclude_id: str = 
             "market_score":     round(score, 2),
             "is_current":       False,
         })
+
+    # Pass 2 — dedupe by short_market keeping the highest market_score.
+    # "Unknown" short markets are NEVER deduped so we don't collapse
+    # unrelated markets that failed classification into one group.
+    best_by_short: dict[str, dict] = {}
+    unknown_candidates: list[dict] = []
+    for c in raw_candidates:
+        short = c["short_market"]
+        if short == "Unknown":
+            unknown_candidates.append(c)
+            continue
+        prev = best_by_short.get(short)
+        if prev is None or c["market_score"] > prev["market_score"]:
+            best_by_short[short] = c
+    candidates = list(best_by_short.values()) + unknown_candidates
     candidates.sort(key=lambda x: x["market_score"], reverse=True)
     return candidates
 
