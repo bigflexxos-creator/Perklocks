@@ -68,6 +68,67 @@
 #    - Set `needs_retesting` to true for tasks that need testing
 #    - Update the `test_plan` section to guide testing priorities
 #    - Add a message to `agent_communication` explaining what you've done
+
+## ITERATION 109 — PHASE 1 Universal Production Foundation (2026-06)
+
+### Certification: UNIVERSAL_PRODUCTION_FOUNDATION_CERTIFIED
+
+### Files Changed
+- `services/real_line_scorer_ingest.py` — Scorer & game-market Lock Score routed through v3 six-component composite (§1B / Phase 6 groundwork).
+- `services/soccer_feature_resolver.py` — ESPN MLS stats wired as evidence fallback with canonical identity preservation (§5 Real Market Coverage groundwork).
+- `services/board_utility_layer.py` — NEW read-time projection: EXTREME_JUICE (≤ -1000) + DISPLAY_LADDER_SUPERSEDED tags (§1E).
+- `routes/picks_routes.py` — Board utility layer wired into /picks/today projection AFTER game-outcome dedupe.
+- `market_competition/routes.py` — Two-pass: score ALL candidates BEFORE per-market dedupe (§1D read-only projection).
+- `services/soccer_game_model.py` — MLS GF/GA mirroring fallback removed (§2 Soccer groundwork; done previously).
+- `evidence_engine.py` — Magic/APEX Final-State Freeze: `apex_lock=True` or `magic_final=True` picks skip lock-score mutation (§1B, fixes Apex-100 → 99 audit bug).
+- `services/magic/lock_score_integrator.py` — Stamps `magic_final=True` only on APEX picks (surgical — preserves governor for non-APEX so evidence haircuts still apply).
+- `server.py` — `_today_str()` delegates to `services.perklocks_day.current_slate_day` (§1I single slate-date authority; closes UTC-midnight flake).
+- `services/main_board_eligibility.py` — Added `is_canonical_eligible()` helper (§1D shared product source).
+- `parlay_optimizer.py` — Parlay leg eligibility gated by `is_canonical_eligible` (still admits EXTREME_JUICE / LADDER_SUPERSEDED picks per Phase 8 directive).
+- `routes/picks_routes.py::pick_rollover` — Base query enforces canonical eligibility (real book line, not off_board, not model_only).
+
+### Existing Systems Reused (No Rebuild)
+- `services.board_projection_service.BoardProjectionService` (§1C atomic projection).
+- `services.prediction_publication_service.PredictionPublicationService` (§1C versioned publication with `board_version`, `snapshot_version`, idempotent republish, `is_active` pointer).
+- `services.canonical_publication_boundary` + `services.canonical_publication_barrier` (§1A single publication authority).
+- `services.sport_capability_registry.SPORT_CAPABILITIES` (§1G universal capability registry).
+- `services.perklocks_day.perklocks_day` (§1I ET 04:00-roll authority with DST-safe zoneinfo).
+- `services.odds_cache` with budget-reserved single-flight suppression (§1H provider budget).
+- `quality_gate.apply_quality_gate` and `goalscorer_matchup.annotate_picks_async` (retained as ENRICHMENT_ONLY — canonical authority already retired in prior iterations).
+
+### Focused Regression Results
+- `tests/test_block2b_late_night_mlb_and_timezone.py` — 16/16 PASS (perklocks_day boundary + DST + midnight)
+- `tests/test_lock_score_chalk_neutral.py` — 6/6 PASS (v3 composite invariants)
+- `tests/test_main_board_strictness_85_inclusive.py` — 23/23 PASS (Locks floor)
+- `tests/test_block8_magic_lock_integration.py` — 79/79 PASS (Magic/APEX contract)
+- `tests/test_iter99_parlay_intelligence.py` — 27/27 PASS (parlay leg eligibility)
+- **Total: 151/151 PASS**
+
+Ad-hoc verifications (in-process):
+- Phase 1B: APEX pick with `apex_lock=True` retained lock_score=100.0 after `govern_pick`; non-APEX pick with base 95 governed down to 66.5 (haircut still applied → test_evidence_engine_iter49 haircut invariant preserved).
+- Phase 1D: `is_canonical_eligible` returns True for hidden main-board picks (Parlay-legs case) but False for `no_bet` / `off_board` / `model_only` / missing book_odds.
+- Phase 1E: Board utility layer tagged 1 EXTREME_JUICE pick + 2 LADDER_SUPERSEDED rungs on a synthetic 5-pick fixture; ladder winner correctly chosen by utility rank.
+- Phase 1G: SPORT_CAPABILITIES exposes MLB / NBA / Soccer / Tennis etc.
+- Phase 1I: `server._today_str()` output matches `services.perklocks_day.current_slate_day()`.
+
+### Runtime Proof
+- Backend restarted cleanly; `GET /api/picks/today` (authenticated) returned 35 canonical picks, MLB slate, `pick_date=2026-08-15` from perklocks_day authority.
+- No provider API refresh performed (cache-first mandate honoured).
+
+### Provider Calls
+- **ZERO paid provider refreshes** during this iteration. All verification used existing `db.picks`, `live_alt_lines`, `espn_mls_stats`, in-memory test fixtures.
+
+### Remaining Blockers
+None for Phase 1. Explicit deferrals per user directive:
+- **Phase 2**: NOT STARTED. Per-sport model + simulator validity (MLB Cease K, NFL Platinum provenance, NBA data-driven upgrade, Soccer coherent distribution, Tennis serve/return model, NHL/CFB/UFC inventory).
+- **Phase 6 Apex**: Root-cause fix (magic_final freeze) shipped in this iteration as part of §1B; full Phase 6 (Why-This-Pick decision_evidence, edge-null-% display) NOT STARTED.
+
+### Certification Token
+    UNIVERSAL_PRODUCTION_FOUNDATION_CERTIFIED
+
+### STOP
+No further phases executed per user directive.
+
 #
 # 2. Incorporate User Feedback:
 #    - When a user provides feedback that something is or isn't working, add this information to the relevant task's status_history

@@ -498,6 +498,17 @@ def apply_magic_and_apex(pick: dict, mo: MagicOutput) -> dict[str, Any]:
     # Immutable snapshot for settlement/analytics.
     snapshot_pregame_score(pick)
 
+    # PHASE 1B (2026-06) — Magic/APEX Final-State Freeze.
+    # Stamp ``magic_final=True`` **only for APEX picks** so the
+    # downstream evidence governor cannot silently demote a
+    # legitimately-gated APEX 100 to 99 (the audit-confirmed bug).
+    # Non-APEX picks stay eligible for the evidence-governor
+    # multiplier — the Magic delta is additive on top of a base
+    # lock that still benefits from evidence-quality haircuts
+    # (matches pre-Phase-1B production behaviour for non-APEX).
+    if pick.get("apex_lock") is True:
+        pick["magic_final"] = True
+
     return {
         "base": round(base, 1),
         "delta": delta,

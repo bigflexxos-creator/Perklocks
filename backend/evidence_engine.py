@@ -482,6 +482,42 @@ def govern_pick(
         pick["player_prop_v2_calibrated"] = True
         return pick
 
+    # ── PHASE 1B (2026-06) — Magic/APEX Final-State Freeze ─────────
+    # ONE DECISION STATE CONTRACT: after Block 8 Magic/Apex has
+    # evaluated a pick and produced its final lock_score/apex_lock,
+    # no later generic evidence governor may silently mutate those
+    # fields.  Block 8 assigns lock_score=100 + apex_lock=True (or
+    # cap 99 non-Apex).  If the evidence governor then applies a
+    # multiplier < 1.0, a legitimate Apex-100 is demoted to 99 —
+    # AUDIT-CONFIRMED BUG (Phase 6 root cause).
+    #
+    # Contract: picks marked ``magic_final=True`` by Block 8 (OR
+    # already carrying ``apex_lock=True``) skip lock-score mutation
+    # here.  We still classify features and compute
+    # evidence_score/insights for the audit trail so Deep Dive UI
+    # keeps its reasoning bullets.
+    if pick.get("magic_final") is True or pick.get("apex_lock") is True:
+        classify(features)
+        pick["evidence_score"] = evidence_score(features)
+        sorted_feats = sorted(
+            features, key=lambda f: (f.importance * f.reliability), reverse=True,
+        )
+        insights_in = pick.get("key_insights") or []
+        insights_out, dropped = apply_explanation_governor(
+            insights_in, sorted_feats, pick["evidence_score"],
+        )
+        pick["key_insights"] = insights_out
+        pick["evidence_dropped_insights"] = dropped
+        # Defensive re-canonicalization: force apex to lock_score=100.
+        if pick.get("apex_lock") is True:
+            try:
+                pick["lock_score"] = 100.0
+                if pick.get("lock_score_v2") is not None:
+                    pick["lock_score_v2"] = 100.0
+            except Exception:
+                pass
+        return pick
+
     classify(features)
     score = evidence_score(features)
 

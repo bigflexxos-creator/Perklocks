@@ -143,6 +143,37 @@ def is_main_board_eligible(pick: dict) -> bool:
     return max(ls, ls_v2) >= MAIN_BOARD_LOCK_FLOOR
 
 
+def is_canonical_eligible(pick: dict) -> bool:
+    """Return True iff `pick` is canonically eligible for any
+    downstream product (Locks / Rollover / Parlay).
+
+    PHASE 1D (2026-06) — Shared Product Source contract.
+    Canonical eligibility is BROADER than main-board eligibility:
+
+      * Requires a REAL sportsbook line (identical rule).
+      * Requires the pick is NOT tagged ``no_bet`` or ``off_board``.
+      * Does NOT enforce ``hide_from_main_board`` — an
+        EXTREME_JUICE / DISPLAY_LADDER_SUPERSEDED pick may still
+        be a Parlay leg where mathematically appropriate
+        (Phase 8 directive).
+      * Does NOT enforce the >= 85 Locks floor — Parlay 2.0 uses
+        its own leg-quality gate; Rollover 2.0 uses calibrated
+        survival probability.
+
+    Callers requiring the STRICT main-board contract should use
+    :func:`is_main_board_eligible` instead.
+    """
+    if not isinstance(pick, dict):
+        return False
+    if pick.get("no_bet") is True:
+        return False
+    if pick.get("off_board") is True:
+        return False
+    if not _has_real_market_line(pick):
+        return False
+    return True
+
+
 def _real_line_mongo_predicate() -> dict:
     """Mongo AND-clause enforcing real-line integrity.
 
@@ -224,6 +255,7 @@ __all__ = [
     "MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE",   # backwards-compat alias (== INCLUSIVE)
     "MAIN_BOARD_LOCK_FLOOR_INCLUSIVE",   # backwards-compat alias
     "is_main_board_eligible",
+    "is_canonical_eligible",
     "main_board_lock_score_query",
     "_has_real_market_line",
 ]
