@@ -100,15 +100,33 @@ def simulate_pick(pick: dict) -> Optional[dict]:
             sim_type = "distribution_monte_carlo"
         elif sport == "Soccer":
             from brain.sim_soccer import simulate_soccer_pick
-            out = simulate_soccer_pick(pick)
+            # Post-Cert Defect 2 — pass authoritative team-form context
+            # when it's already stamped on the pick.  Reads existing
+            # enriched fields only; no new provider calls, no new data
+            # source.  Absent context → simulator falls back to
+            # MODEL_CONDITIONED (documented behaviour).
+            soccer_ctx = (pick.get("soccer_ctx")
+                          or pick.get("game_context")
+                          or pick.get("team_form_ctx"))
+            out = simulate_soccer_pick(pick, soccer_ctx=soccer_ctx)
             sim_type = "distribution_monte_carlo"
         elif sport == "NBA":
             from brain.sim_nba import simulate_nba_pick
-            out = simulate_nba_pick(pick)
+            # Post-Cert Defect 2 — pass L10 gamelog rows when stamped
+            # on the pick.  Reads existing enriched fields only.
+            recent_rows = (pick.get("player_recent_rows")
+                           or pick.get("recent_rows")
+                           or pick.get("gamelog"))
+            out = simulate_nba_pick(pick, recent_rows=recent_rows)
             sim_type = "distribution_monte_carlo"
         elif sport == "Tennis":
             from brain.sim_tennis import simulate_tennis_pick
-            out = simulate_tennis_pick(pick)
+            # Post-Cert Defect 2 — pass surface / Elo / hold-break
+            # context when stamped on the pick.
+            tennis_ctx = (pick.get("tennis_ctx")
+                          or pick.get("tennis_context")
+                          or pick.get("surface_context"))
+            out = simulate_tennis_pick(pick, tennis_ctx=tennis_ctx)
             sim_type = "event_simulation"
         else:
             return None
