@@ -1210,3 +1210,72 @@ agent_communication:
         See /app/test_reports/iteration_105.json for full authority
         map + trace + certification checklist.
 
+
+# ═══════════════════════════════════════════════════════════════════
+#  ITER 106 (2026-09): SOCCER_UNIVERSAL_PLAYER_IDENTITY_RESTORED
+# ═══════════════════════════════════════════════════════════════════
+backend:
+  - task: "Shared canonical Soccer identity resolver — all leagues"
+    implemented: true
+    working: true
+    file: "backend/services/soccer_scorer_identity_resolver.py, backend/services/real_line_scorer_ingest.py, backend/services/soccer_rejection_taxonomy.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            SOCCER_UNIVERSAL_PLAYER_IDENTITY_RESTORED_CERTIFIED.
+            Shared event-anchored identity resolver wired into the
+            universal scorer ingester across every enabled Soccer
+            league (MLS, La Liga, EPL, Bundesliga, Serie A, Ligue 1,
+            Liga MX, Allsvenskan, Eliteserien, UCL Q, etc.).
+              • No per-league scorer engines created.
+              • Uses existing player_identities registry (27,680
+                canonical Soccer identities) with server-side
+                prefilter + per-event participants cache.
+              • Identity resolved BEFORE feature/history lookup;
+                canonical_player_id anchors canonical_wager_id.
+              • Diacritics / apostrophes / hyphenated names / initial
+                forms / duplicate registry rows all handled.
+              • History-missing separated from identity-failure per
+                precise taxonomy:
+                  PLAYER_HISTORY_NOT_FOUND (identity ok, no stats),
+                  PLAYER_IDENTITY_UNRESOLVED, PLAYER_IDENTITY_AMBIGUOUS,
+                  PLAYER_TEAM_MISMATCH, STALE_ROSTER,
+                  PLAYER_SOURCE_ID_UNMAPPED, EVENT_IDENTITY_FAILURE,
+                  TEAM_IDENTITY_FAILURE.
+              • Legacy PLAYER_IDENTITY_FAILURE catchall retired
+                (0 rows emit it).
+            Zero provider calls this closure.  Threshold 85 unchanged.
+
+            App-wide identity health (pick_date=2026-08-16):
+              total scorer rows:               563
+              IDENTITY_RESOLVED:               494 (87.7%)
+              PLAYER_IDENTITY_UNRESOLVED:       67
+              PLAYER_IDENTITY_AMBIGUOUS:         2
+              PLAYER_TEAM_MISMATCH:              0
+              STALE_ROSTER:                      0
+              PLAYER_HISTORY_NOT_FOUND:        413
+              legacy_PLAYER_IDENTITY_FAILURE:    0
+              modeled:                         563
+              canonical eligible:                1
+
+            MLS: 444/489 resolved (90.8%).  La Liga: 50/74 (67.6%).
+            Full MLS 20-row trace + certification checklist in
+            /app/test_reports/iteration_106.json.
+
+metadata:
+  last_iteration: 106
+  last_iteration_topic: "SOCCER_UNIVERSAL_PLAYER_IDENTITY_RESTORED — shared event-anchored resolver; history-missing separated from identity-failure; canonical_player_id anchors wager_id"
+  last_iteration_result: "220/222 backend tests green. Zero provider calls. 87.7% app-wide resolution rate. SOCCER_UNIVERSAL_PLAYER_IDENTITY_RESTORED_CERTIFIED."
+
+agent_communication:
+    - agent: "main"
+      message: |
+        SOCCER_UNIVERSAL_PLAYER_IDENTITY_RESTORED_CERTIFIED.
+        See /app/test_reports/iteration_106.json for the full
+        per-league identity health report, 20-row MLS trace,
+        and certification checklist.
+

@@ -131,6 +131,8 @@ def test_real_line_ingest_preserves_book_odds_and_writes_pick():
     # bucket.  Any of these are legitimate — accept the whole set.
     assert any(r in reasons for r in (
         "MISSING_FEATURE_DATA", "PLAYER_IDENTITY_FAILURE",
+        "PLAYER_IDENTITY_UNRESOLVED", "PLAYER_HISTORY_NOT_FOUND",
+        "PLAYER_FORM_NOT_FOUND",
         "NO_PLAYER_HISTORY", "NO_RECENT_FORM",
     )), reasons
     # Deterministic pick id.
