@@ -688,8 +688,10 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
         roi = bucket_row.get("roi", 0.0)
         # ROI 20% → 100, 0% → 50, -10% → 0
         roi_comp = max(0.0, min(100.0, 50 + roi * 2.5))
+        roi_available = True
     else:
         roi_comp = 50.0   # neutral until enough sample
+        roi_available = False
 
     # 4) Data quality — base 75 (placeholder for future injury/lineup feeds)
     data_quality = 75.0
@@ -706,18 +708,42 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     # 6) Closing line strength (CLV)
     odds_at = pick.get("odds_at_pick")
     closing = pick.get("closing_odds")
+    cls_available = False
     if odds_at and closing and odds_at != closing:
         try:
             from analytics import american_to_implied_pct as _imp
             clv = _imp(closing) - _imp(odds_at)
             cls_comp = max(0.0, min(100.0, 50 + clv * 5))
+            cls_available = True
         except Exception:
             cls_comp = 50.0
     else:
         cls_comp = 50.0
 
-    score = (0.35 * edge_comp + 0.20 * market_align + 0.15 * roi_comp
-             + 0.10 * data_quality + 0.10 * vol_comp + 0.10 * cls_comp)
+    # ── Post-Cert Defect 4 — WEIGHT NORMALISATION over AVAILABLE
+    # components.  ROI (n<10) and CLV (missing closing odds) were
+    # previously fixed at neutral 50 with full 0.15 / 0.10 weight,
+    # mathematically capping legitimate high-edge + high-alignment
+    # pregame picks around 83 — below the >=85 Locks floor.  We now
+    # redistribute the unavailable-component weight proportionally
+    # across the components we DO have data for, so a strong pregame
+    # pick can legitimately reach 85+ without inventing evidence.
+    _components = [
+        ("edge",   edge_comp,    0.35, True),
+        ("align",  market_align, 0.20, True),
+        ("roi",    roi_comp,     0.15, roi_available),
+        ("dq",     data_quality, 0.10, True),
+        ("vol",    vol_comp,     0.10, True),
+        ("clv",    cls_comp,     0.10, cls_available),
+    ]
+    _avail_weight = sum(w for _, _, w, ok in _components if ok)
+    if _avail_weight > 0:
+        score = sum(v * w / _avail_weight
+                    for _, v, w, ok in _components if ok)
+    else:
+        # Every component missing — degenerate case; keep original score.
+        score = (0.35 * edge_comp + 0.20 * market_align + 0.15 * roi_comp
+                 + 0.10 * data_quality + 0.10 * vol_comp + 0.10 * cls_comp)
 
     # ── Bet-Quality Floor (EVIDENCE-BASED, 2026-07-04 chalk-bias fix) ────
     # OLD: floor required BOTH win_prob AND edge (e.g. Elite needs wp≥80

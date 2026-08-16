@@ -811,12 +811,21 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         after_tennis = sum(1 for p in picks if (p.get("sport") or "").lower() == "tennis")
         # Attach tennis-specific insights to surviving tennis picks so the
         # Deep Dive UI gets the surface/serve/matchup bullets.
+        #
+        # Post-Cert Defect 6 — Why-This-Pick priority: frozen matchup-
+        # specific evidence must appear FIRST; generic component scores
+        # ("Surface fit 67/100") are FALLBACK ONLY.  Previously we
+        # prepended tennis_insights before existing evidence which
+        # buried H2H / opponent-specific bullets under generic scores.
         for p in picks:
             if (p.get("sport") or "").lower() == "tennis":
                 tennis_insights = build_tennis_insights(p)
                 if tennis_insights:
                     existing = p.get("key_insights") or []
-                    p["key_insights"] = tennis_insights + existing
+                    # PRIMARY: existing frozen decision_evidence-derived
+                    # matchup bullets (H2H, surface-specific record, etc.).
+                    # FALLBACK: generic tennis component summaries.
+                    p["key_insights"] = list(existing) + tennis_insights
         logger.info("Tennis Edge v2: tennis picks %d → %d (filtered + capped)",
                     before_tennis, after_tennis)
     except Exception as e:

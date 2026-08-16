@@ -82,9 +82,12 @@ export function AltLineChips({ pickId }: { pickId: string }) {
 
   const closeModal = useCallback(() => setSelected(null), []);
 
-  // Render nothing when there's nothing meaningful to show.  This
-  // includes: still loading (parent already shows its own spinner),
-  // unsupported sport, no eligible alt lines.
+  // Post-Cert Defect 5 — TERMINAL STATE contract.  The request has
+  // completed; we must render an explicit terminal state instead of
+  // silently returning null (which the user observed as "Loading
+  // alt-lines..." → section disappears with no explanation).  We DO
+  // NOT invent lines — we render a consumer-safe empty state when
+  // there are no real alt lines to show.
   if (loading) {
     return (
       <View style={styles.rowLoading} testID="alt-line-chips-loading">
@@ -94,7 +97,22 @@ export function AltLineChips({ pickId }: { pickId: string }) {
     );
   }
   if (notSupportedReason || !bundle || visible.length === 0) {
-    return null;
+    let message = "No alternate lines available";
+    if (notSupportedReason === "network") {
+      message = "Alternate lines temporarily unavailable";
+    } else if (notSupportedReason) {
+      // Provider-side reasons (retired player, sport gate, no history,
+      // insufficient sample) all resolve to the same consumer-safe
+      // empty state — the specific classification is available in
+      // the backend response for support triage.
+      message = "No alternate lines available";
+    }
+    return (
+      <View style={styles.rowEmpty} testID="alt-line-chips-empty">
+        <Text style={styles.emptyTitle}>ALT-LINE MAGIC</Text>
+        <Text style={styles.emptyText}>{message}</Text>
+      </View>
+    );
   }
 
   return (
@@ -362,6 +380,27 @@ const styles = StyleSheet.create({
     borderTopColor: COLORS.borderDefault,
   },
   loadingText: { color: COLORS.textMuted, fontSize: 12 },
+  rowEmpty: {
+    marginTop: 12,
+    paddingTop: 12,
+    paddingHorizontal: 16,
+    paddingBottom: 4,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: COLORS.borderDefault,
+    gap: 4,
+  },
+  emptyTitle: {
+    color: COLORS.goldElite,
+    fontSize: 12,
+    fontWeight: "700",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+  emptyText: {
+    color: COLORS.textMuted,
+    fontSize: 12,
+    fontStyle: "italic",
+  },
 
   chip: {
     minWidth: 76,
