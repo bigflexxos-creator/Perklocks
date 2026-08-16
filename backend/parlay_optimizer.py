@@ -908,22 +908,44 @@ def american_to_decimal(american: int) -> float:
     return 1 + (american / 100 if american > 0 else 100 / abs(american))
 
 
+PARLAY_OPTIMIZER_VERSION = "parlay2.optimizer.v1.1"
+
+
 def parlay_to_payload(parlay: dict, bucket_map: dict) -> dict:
-    """Convert one built parlay to API response shape."""
+    """Convert one built parlay to API response shape.
+
+    Phase 8E — real-line integrity: legs missing a valid `book_odds`
+    (0, None, or non-numeric) are excluded from the combined-odds
+    calculation. We NEVER default missing odds to +100 — that would
+    synthesise a sportsbook price. If NO leg has a real price the
+    payload returns combined_odds=None so consumers surface the
+    unavailability honestly (mirrors Phase 6 Edge Value contract).
+    """
     legs = parlay["legs"]
     health = parlay["health"]
     decimal_total = 1.0
+    priced_legs = 0
     for L in legs:
+        raw = L.get("book_odds")
         try:
-            decimal_total *= american_to_decimal(int(L.get("book_odds") or 100))
+            am = int(raw) if raw is not None else 0
         except (ValueError, TypeError):
+            am = 0
+        if not am:
             continue
-    if decimal_total >= 2.0:
-        combined_american = int(round((decimal_total - 1) * 100))
-        combined_str = f"+{combined_american}"
+        decimal_total *= american_to_decimal(am)
+        priced_legs += 1
+    combined_odds_available = priced_legs == len(legs) and priced_legs > 0
+    if combined_odds_available:
+        if decimal_total >= 2.0:
+            combined_american = int(round((decimal_total - 1) * 100))
+            combined_str = f"+{combined_american}"
+        else:
+            combined_american = int(round(-100 / max(decimal_total - 1, 0.001)))
+            combined_str = str(combined_american)
     else:
-        combined_american = int(round(-100 / max(decimal_total - 1, 0.001)))
-        combined_str = str(combined_american)
+        decimal_total = None
+        combined_str = None
 
     reasons = explain_parlay(legs, health, bucket_map)
     return {
@@ -939,9 +961,11 @@ def parlay_to_payload(parlay: dict, bucket_map: dict) -> dict:
         "diversification_pct": health["diversification_pct"],
         "correlation_score": health["correlation_score"],
         "stability_score": health["stability_score"],
-        "combined_decimal_odds": round(decimal_total, 3),
+        "combined_decimal_odds": round(decimal_total, 3) if decimal_total is not None else None,
         "combined_american_odds": combined_str,
-        "payout_on_100": round(100 * decimal_total, 2),
-        "profit_on_100": round(100 * (decimal_total - 1), 2),
+        "combined_odds_available": combined_odds_available,
+        "payout_on_100": round(100 * decimal_total, 2) if decimal_total is not None else None,
+        "profit_on_100": round(100 * (decimal_total - 1), 2) if decimal_total is not None else None,
+        "optimizer_version": PARLAY_OPTIMIZER_VERSION,
         "reasons": reasons,
     }

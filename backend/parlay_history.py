@@ -66,37 +66,88 @@ def _payout_per_unit(combined_odds: int, stake: float = 1.0) -> float:
     return round(stake * 100.0 / abs(combined_odds), 2)
 
 
+PARLAY_SELECTOR_VERSION = "parlay2.save.v1"
+
+
 async def save_parlay(db, *, user_id: str, legs: list[dict],
                        mode: str = "standard",
                        stake: float = 1.0) -> dict:
-    """Persist a user-tapped parlay. Idempotent (same legs → same id)."""
+    """Persist a user-tapped parlay. Idempotent (same legs → same id).
+
+    Phase 8E real-line integrity + Phase 8AE frozen-snapshot contract:
+      * Every leg MUST carry a real, non-zero `book_odds`. Legs missing
+        an odds value are rejected (we never synthesise a price).
+      * The frozen snapshot preserves Magic/Apex, simulator provenance,
+        edge, published lock, decision_evidence pointers, and the
+        selector version so post-game settlement cannot rewrite the
+        pregame decision (parallel to Phase 7 Rollover freeze).
+    """
     if not legs or len(legs) < 2:
         raise ValueError("parlay must have at least 2 legs")
     leg_ids = [str(p.get("id") or p.get("pick_id")) for p in legs if (p.get("id") or p.get("pick_id"))]
     if len(leg_ids) != len(legs):
         raise ValueError("every leg must have an id")
+    # Phase 8E: real-line integrity — reject legs missing a real price.
+    for p in legs:
+        raw = p.get("book_odds")
+        try:
+            am = int(raw) if raw is not None else 0
+        except (ValueError, TypeError):
+            am = 0
+        if not am:
+            raise ValueError(
+                f"leg {p.get('id') or p.get('pick_id') or '?'} missing real "
+                f"book_odds — Phase 8E real-line integrity forbids saving "
+                f"parlays with synthetic or unavailable prices"
+            )
     pid = _parlay_id(user_id, leg_ids)
     existing = await db.parlay_history.find_one({"id": pid})
     if existing:
         return existing  # idempotent
-    odds = [int(p.get("book_odds") or 0) for p in legs]
+    odds = [int(p.get("book_odds")) for p in legs]
     combined = _american_combine(odds)
-    # Snapshot only the fields we'll display so we don't drag huge pick docs.
+    # Frozen snapshot — captures every field settlement/analytics may
+    # want to inspect without re-reading the (possibly-mutated) source
+    # pick. Never rewritten after creation.
     leg_snapshots = []
     for p in legs:
         leg_snapshots.append({
             "pick_id": str(p.get("id") or p.get("pick_id")),
+            "canonical_pick_id": p.get("canonical_pick_id"),
+            "canonical_wager_id": p.get("canonical_wager_id"),
             "sport": p.get("sport"),
             "league": p.get("league"),
             "event": p.get("event"),
+            "event_id": p.get("event_id"),
             "event_time": p.get("event_time"),
             "market": p.get("market"),
             "selection": p.get("selection"),
-            "book_odds": int(p.get("book_odds") or 0),
+            "line": p.get("line"),
+            "book_odds": int(p.get("book_odds")),
+            "provider": p.get("provider"),
             "lock_score": p.get("lock_score"),
+            "published_lock_score": p.get("published_lock_score"),
+            "win_probability": p.get("win_probability"),
+            "edge_percent": p.get("edge_percent"),
+            "magic_final": p.get("magic_final"),
+            "apex_lock": p.get("apex_lock"),
+            "simulator_provenance": p.get("simulator_provenance"),
+            "input_quality": p.get("input_quality"),
+            "decision_evidence_id": p.get("decision_evidence_id"),
+            "is_alt": bool(p.get("is_alt")),
             "status": "pending",  # filled later by resolver
         })
     now = datetime.now(timezone.utc).isoformat()
+    # Phase 8AE frozen correlation classification — best-effort, never fatal.
+    correlation_snapshot: Optional[dict] = None
+    try:
+        from services.parlay_intelligence.correlation_engine import (
+            analyze_correlations as _analyze_correlations,
+        )
+        _report = _analyze_correlations(legs)
+        correlation_snapshot = _report.to_dict()
+    except Exception as _corr_err:
+        logger.warning("save_parlay: correlation snapshot skipped: %s", _corr_err)
     doc = {
         "id": pid,
         "user_id": user_id,
@@ -109,9 +160,13 @@ async def save_parlay(db, *, user_id: str, legs: list[dict],
         "status": "live",
         "legs_won": 0,
         "legs_lost": 0,
+        "legs_void": 0,
         "legs_pending": len(leg_ids),
         "settled_at": None,
         "payout": None,
+        "selector_version": PARLAY_SELECTOR_VERSION,
+        "frozen_at": now,
+        "correlation_snapshot": correlation_snapshot,
     }
     await db.parlay_history.insert_one(doc)
     logger.info("Saved parlay %s for user %s (%d legs, %+d)",
@@ -264,7 +319,13 @@ async def resolve_saved_parlays(db) -> dict:
             if i < len(legs_view):
                 legs_view[i]["status"] = leg_status[i]
         wins = sum(1 for s in leg_status if s == "won")
-        loss = sum(1 for s in leg_status if s in ("lost", "void"))
+        # Phase 8AG — VOID/PUSH are NOT losses. A parlay is "lost" iff at
+        # least one leg is actually LOST. VOID/PUSH legs are neutral: the
+        # ticket reduces to the remaining priced legs (standard sportsbook
+        # behavior). We keep separate counters so display + analytics can
+        # distinguish outcomes.
+        loss = sum(1 for s in leg_status if s == "lost")
+        void = sum(1 for s in leg_status if s in ("void", "push"))
         pending = sum(1 for s in leg_status if s not in ("won", "lost", "void", "push"))
         new_status = parlay["status"]
         settled_at = parlay.get("settled_at")
@@ -274,16 +335,39 @@ async def resolve_saved_parlays(db) -> dict:
             settled_at = now
             payout = 0.0
             lost += 1
-        elif pending == 0 and wins == len(leg_ids):
+        elif pending == 0 and (wins + void) == len(leg_ids) and wins > 0:
             new_status = "won"
             settled_at = now
-            payout = _payout_per_unit(parlay.get("combined_odds") or 0,
-                                       parlay.get("stake") or 1.0)
+            # When any leg is void/push, the ticket recomputes on the
+            # remaining priced legs. We already stored each snapshot's
+            # book_odds, so re-derive the combined price on the survivors.
+            if void == 0:
+                payout = _payout_per_unit(parlay.get("combined_odds") or 0,
+                                           parlay.get("stake") or 1.0)
+            else:
+                surviving_odds = [
+                    int(legs_view[i].get("book_odds") or 0)
+                    for i, s in enumerate(leg_status)
+                    if s == "won" and i < len(legs_view)
+                    and legs_view[i].get("book_odds")
+                ]
+                if surviving_odds:
+                    recombined = _american_combine(surviving_odds)
+                    payout = _payout_per_unit(recombined,
+                                               parlay.get("stake") or 1.0)
+                else:
+                    payout = 0.0
             won += 1
+        elif pending == 0 and wins == 0 and void == len(leg_ids):
+            # All legs void → refund (no action).
+            new_status = "void"
+            settled_at = now
+            payout = float(parlay.get("stake") or 1.0)
         # Only persist if something changed.
         if (new_status != parlay["status"]
             or wins != parlay.get("legs_won")
             or loss != parlay.get("legs_lost")
+            or void != parlay.get("legs_void")
             or pending != parlay.get("legs_pending")):
             await db.parlay_history.update_one(
                 {"id": parlay["id"]},
@@ -291,6 +375,7 @@ async def resolve_saved_parlays(db) -> dict:
                     "status": new_status,
                     "legs_won": wins,
                     "legs_lost": loss,
+                    "legs_void": void,
                     "legs_pending": pending,
                     "legs": legs_view,
                     "settled_at": settled_at,
@@ -485,7 +570,9 @@ async def resettle_parlay(db, *, user_id: str, parlay_id: str) -> dict:
     for i in range(min(len(legs_view), len(leg_status))):
         legs_view[i]["status"] = leg_status[i]
     wins = sum(1 for s in leg_status if s == "won")
-    loss = sum(1 for s in leg_status if s in ("lost", "void"))
+    # Phase 8AG — VOID/PUSH != LOST.
+    loss = sum(1 for s in leg_status if s == "lost")
+    void = sum(1 for s in leg_status if s in ("void", "push"))
     pending = sum(1 for s in leg_status if s not in ("won", "lost", "void", "push"))
     new_status = parlay.get("status") or "live"
     settled_at = parlay.get("settled_at")
@@ -494,19 +581,39 @@ async def resettle_parlay(db, *, user_id: str, parlay_id: str) -> dict:
         new_status = "lost"
         settled_at = now
         payout = 0.0
-    elif pending == 0 and wins == len(leg_ids) and wins > 0:
+    elif pending == 0 and (wins + void) == len(leg_ids) and wins > 0:
         new_status = "won"
         settled_at = now
-        payout = _payout_per_unit(
-            parlay.get("combined_odds") or 0,
-            parlay.get("stake") or 1.0,
-        )
+        if void == 0:
+            payout = _payout_per_unit(
+                parlay.get("combined_odds") or 0,
+                parlay.get("stake") or 1.0,
+            )
+        else:
+            surviving_odds = [
+                int(legs_view[i].get("book_odds") or 0)
+                for i, s in enumerate(leg_status)
+                if s == "won" and i < len(legs_view)
+                and legs_view[i].get("book_odds")
+            ]
+            if surviving_odds:
+                payout = _payout_per_unit(
+                    _american_combine(surviving_odds),
+                    parlay.get("stake") or 1.0,
+                )
+            else:
+                payout = 0.0
+    elif pending == 0 and wins == 0 and void == len(leg_ids):
+        new_status = "void"
+        settled_at = now
+        payout = float(parlay.get("stake") or 1.0)
     await db.parlay_history.update_one(
         {"id": parlay_id, "user_id": user_id},
         {"$set": {
             "status": new_status,
             "legs_won": wins,
             "legs_lost": loss,
+            "legs_void": void,
             "legs_pending": pending,
             "legs": legs_view,
             "settled_at": settled_at,

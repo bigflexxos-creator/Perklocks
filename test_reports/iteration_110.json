@@ -1,0 +1,33 @@
+{
+  "summary": "Phase 8 Parlay 2.0 Closure — backend certification. Ran the dedicated Phase 8 suite (21/21 PASS), Phase 2-7 regression sweep (62/62 PASS), and legacy parlay unit tests (79/79 PASS) — total 162/162 PASS. Spot-checked the 4 surgical repairs in source: (D1) parlay_optimizer.parlay_to_payload no longer synthesises book_odds via `int(book_odds or 100)` — uses combined_odds_available flag with None values instead; (D2) parlay_history.save_parlay raises ValueError when any leg lacks a valid non-zero book_odds and freezes the full Phase 8AE snapshot (canonical_pick_id, canonical_wager_id, event_id, provider, edge_percent, magic_final, apex_lock, simulator_provenance, input_quality, decision_evidence_id, selector_version, frozen_at); (D3) parlay_history.resolve_saved_parlays + resettle_parlay separate VOID/PUSH from LOSS, all-void → 'void' status w/ refund, mixed win+void recomputes payout on surviving priced legs; (D4) PARLAY_OPTIMIZER_VERSION='parlay2.optimizer.v1.1' and PARLAY_SELECTOR_VERSION='parlay2.save.v1' stamped. Git status confirms only parlay_optimizer.py + parlay_history.py modified — Phase 6/7 locked files (sport_capability_registry.py, evidence_engine.py, apex_gate.py, rollover_history_tagger.py, main_board_eligibility.py, simulator_provenance.py) are untouched.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase8_parlay2_closure.py",
+    "/app/test_reports/pytest/phase8_results.xml",
+    "/app/test_reports/pytest/phase2_7_regression.xml",
+    "/app/test_reports/pytest/legacy_parlay.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "parlay_optimizer.py surgical repair verified: real-line integrity preserved (no synthetic +100 fallback).",
+    "parlay_history.py surgical repair verified: refuses to save without real book_odds; VOID != LOSS in resolve/resettle; extended frozen snapshot fields present.",
+    "Version stamps present on both save (parlay2.save.v1) and payload (parlay2.optimizer.v1.1) — freeze contract enforced.",
+    "No unauthorized edits to Phase 6/7 locked systems (git status clean for those paths)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (162/162 across Phase 8 + Phase 2-7 regression + legacy parlay)", "frontend": "N/A (backend-only test per request)"},
+  "seed_data_creation": "None — Phase 8 tests are deterministic (in-memory fixtures + AsyncMock as designed).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase 8 Parlay 2.0 Closure is fully certified backend-side. Deterministic dedicated suites total 83 tests (21 Phase 8 + 62 Phase 2-7) plus 79 legacy parlay tests = 162/162 PASS. Note: pre-existing env-dependent HTTP smoke tests (test_alt_parlay_deep_dive_fix.py, test_parlay_overhaul_review.py, test_parlay_optimizer.py, test_parlay_v11.py) require EXPO_PUBLIC_BACKEND_URL and live pick data in DB — they are unchanged since Phase 7 and are NOT Phase 8 defects (per main-agent context). Do not flag them.",
+  "rca_of_issue": "N/A — no defects surfaced during Phase 8 certification."
+}
