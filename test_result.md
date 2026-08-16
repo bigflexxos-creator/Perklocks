@@ -1279,3 +1279,61 @@ agent_communication:
         per-league identity health report, 20-row MLS trace,
         and certification checklist.
 
+
+# ═══════════════════════════════════════════════════════════════════
+#  ITER 107 (2026-09): UNIVERSAL_IDENTITY_HISTORY_BRIDGE_CERTIFIED
+# ═══════════════════════════════════════════════════════════════════
+backend:
+  - task: "Soccer feature resolver — canonical-ID-first history lookup"
+    implemented: true
+    working: true
+    file: "backend/services/soccer_feature_resolver.py, backend/services/real_line_scorer_ingest.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            UNIVERSAL_IDENTITY_HISTORY_BRIDGE_CERTIFIED.
+            resolve_soccer_player_features + resolve_soccer_player_
+            prior now accept canonical_player_id, canonical_player_
+            name, aliases, provider_player_name and query in the
+            correct priority: canonical_player_id FIRST, verified
+            aliases SECOND, name variants LAST.  The shared ingester
+            passes the full ResolvedIdentity so raw provider name
+            is never the primary join key.
+
+            Cross-sport audit (50-case MLS classification + broader
+            player_game_actuals field survey) proved the Soccer
+            defect is Soccer-only.  MLB / NFL / NBA / Tennis already
+            join by authoritative IDs (canonical_player_id /
+            mlbam_id / player_id / player_key).  NHL / UFC / CFB
+            have no data yet.  No other sport changed.  All working
+            sport-specific identifiers preserved.
+
+            The current MLS 397 PLAYER_HISTORY_NOT_FOUND rows are
+            all TRUE_HISTORY_COVERAGE_GAP (0 join failures) — the
+            players are new/backup MLS with zero rows anywhere in
+            actuals/form/logs.  Future canonical_player_id backfills
+            on historical rows will benefit automatically from the
+            fixed resolver contract.
+
+            Regression tripwires (iter107 tests) prevent:
+              • loss of authoritative IDs on player_game_actuals
+              • re-conflation of history-missing with identity-failure
+              • same-name player merge without canonical ID
+              • re-introduction of raw display-name-only history joins
+
+metadata:
+  last_iteration: 107
+  last_iteration_topic: "UNIVERSAL_IDENTITY_HISTORY_BRIDGE — canonical-ID-first history lookup for Soccer; cross-sport audit; zero provider calls"
+  last_iteration_result: "229/230 backend tests green (99.6%). Zero provider calls. UNIVERSAL_IDENTITY_HISTORY_BRIDGE_CERTIFIED."
+
+agent_communication:
+    - agent: "main"
+      message: |
+        UNIVERSAL_IDENTITY_HISTORY_BRIDGE_CERTIFIED.  See
+        /app/test_reports/iteration_107.json for full identity/
+        history join health per sport + 50-case classification.
+

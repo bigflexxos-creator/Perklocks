@@ -37,52 +37,92 @@ from services.soccer_historical_stats import aggregate_player_season
 # ─────────────────────────────────────────────────────────────────────
 async def resolve_soccer_player_features(
     db, *, player_name: str, league: str,
+    canonical_player_id: Optional[str] = None,
+    canonical_player_name: Optional[str] = None,
+    aliases: Optional[list[str]] = None,
+    provider_player_name: Optional[str] = None,
 ) -> tuple[Optional[dict], str]:
     """Return ``(feature_row, evidence_source)`` for the player.
 
-    ``feature_row`` matches the schema expected by
-    :func:`services.soccer_scorer_bridge.compute_soccer_scorer_factors_sync`.
-    """
-    if not player_name:
-        return None, ""
-    nc = player_name.strip().lower()
+    UNIVERSAL_IDENTITY_HISTORY_BRIDGE (2026-09) — lookup priority:
+      1. canonical_player_id (when the store carries the field)
+      2. verified aliases (identity registry) — set of names
+      3. canonical name (from the identity registry)
+      4. normalized provider display name fallback
 
-    # ── 1.  soccer_player_form (pre-aggregated) ─────────────────
-    row = await db.soccer_player_form.find_one({"name_canonical": nc})
+    Raw provider name is no longer the primary key.  Callers should
+    pass the full ResolvedIdentity so downstream evidence stores can
+    match on canonical IDs first and only fall back to name matching
+    when the historical row lacks the ID.
+    """
+    if not player_name and not canonical_player_name:
+        return None, ""
+
+    # ── Build a de-duplicated, normalised set of name variants
+    #    covering canonical + aliases + provider + accent-strips.
+    def _norm_name(s: str) -> str:
+        return (s or "").strip().lower()
+
+    def _ascii(s: str) -> str:
+        import unicodedata as _ud
+        if not s:
+            return ""
+        n = _ud.normalize("NFKD", s)
+        return "".join(c for c in n if not _ud.combining(c)).strip().lower()
+
+    variants: set[str] = set()
+    for n in (
+        canonical_player_name, provider_player_name, player_name,
+        *(aliases or []),
+    ):
+        if n:
+            variants.add(_norm_name(n))
+            variants.add(_ascii(n))
+    variants.discard("")
+    variants_list = list(variants)
+    primary = _norm_name(canonical_player_name or player_name)
+
+    # ── 1.  soccer_player_form — canonical_player_id then variants ─
+    row = None
+    if canonical_player_id:
+        row = await db.soccer_player_form.find_one(
+            {"canonical_player_id": canonical_player_id}
+        )
+    if not row and variants_list:
+        row = await db.soccer_player_form.find_one(
+            {"name_canonical": {"$in": variants_list}}
+        )
     if row and int(row.get("minutes") or 0) >= 90:
         return row, "soccer_player_form"
 
-    # ── 2.  player_game_actuals rolling aggregate ──────────────
-    # 305k-row universal store, populated by History/backfill.
-    # Filter to Soccer + fuzzy player_name match.  Aggregate the
-    # last 25 appearances into a normalized form dict.
+    # ── 2.  player_game_actuals rolling aggregate — ID-first ────
     try:
-        agg = await _aggregate_from_actuals(db, player_name=player_name)
+        agg = await _aggregate_from_actuals(
+            db, player_name=primary,
+            canonical_player_id=canonical_player_id,
+            name_variants=variants_list,
+        )
     except Exception:
         agg = None
     if agg and (agg.get("minutes") or 0) >= 90:
         return agg, "player_game_actuals"
 
-    # ── 3.  soccer_player_game_logs current-season aggregate ───
+    # ── 3.  soccer_player_game_logs current/prior season ────────
     if league:
-        try:
-            cur_season = resolve_current_season(league)
-            g = await aggregate_player_season(
-                db, player_name_canonical=nc, season=cur_season,
-            )
-            if g and int(g.get("minutes") or 0) >= 180:
-                return g, "logs_current_season"
-        except Exception:
-            pass
-        try:
-            prior_season = resolve_prior_season(league)
-            g2 = await aggregate_player_season(
-                db, player_name_canonical=nc, season=prior_season,
-            )
-            if g2 and int(g2.get("minutes") or 0) >= 400:
-                return g2, "logs_prior_season"
-        except Exception:
-            pass
+        for season_fn, min_mins, label in (
+            (resolve_current_season, 180, "logs_current_season"),
+            (resolve_prior_season,   400, "logs_prior_season"),
+        ):
+            try:
+                season = season_fn(league)
+                for nc in [primary, *variants_list]:
+                    g = await aggregate_player_season(
+                        db, player_name_canonical=nc, season=season,
+                    )
+                    if g and int(g.get("minutes") or 0) >= min_mins:
+                        return g, label
+            except Exception:
+                pass
 
     # ── 4.  Fall through — return whichever we found (even sparse) ─
     if row:
@@ -94,16 +134,39 @@ async def resolve_soccer_player_features(
 
 async def resolve_soccer_player_prior(
     db, *, player_name: str, league: str,
+    canonical_player_name: Optional[str] = None,
+    aliases: Optional[list[str]] = None,
 ) -> Optional[dict]:
-    """Prior-season aggregate for empirical-Bayes blending."""
-    if not player_name or not league:
+    """Prior-season aggregate for empirical-Bayes blending.
+    Tries every verified alias variant of the canonical player.
+    """
+    if (not player_name and not canonical_player_name) or not league:
         return None
-    nc = player_name.strip().lower()
+    def _norm_name(s: str) -> str:
+        return (s or "").strip().lower()
+    def _ascii(s: str) -> str:
+        import unicodedata as _ud
+        if not s:
+            return ""
+        n = _ud.normalize("NFKD", s)
+        return "".join(c for c in n if not _ud.combining(c)).strip().lower()
+    variants: set[str] = set()
+    for n in (
+        canonical_player_name, player_name, *(aliases or []),
+    ):
+        if n:
+            variants.add(_norm_name(n))
+            variants.add(_ascii(n))
+    variants.discard("")
     try:
         prior_season = resolve_prior_season(league)
-        return await aggregate_player_season(
-            db, player_name_canonical=nc, season=prior_season,
-        )
+        for nc in variants:
+            row = await aggregate_player_season(
+                db, player_name_canonical=nc, season=prior_season,
+            )
+            if row:
+                return row
+        return None
     except Exception:
         return None
 
@@ -209,49 +272,72 @@ async def classify_missing_feature_reason(
 # ─────────────────────────────────────────────────────────────────────
 async def _aggregate_from_actuals(
     db, *, player_name: str, sample: int = 25,
+    canonical_player_id: Optional[str] = None,
+    name_variants: Optional[list[str]] = None,
 ) -> Optional[dict]:
     """Aggregate the last ``sample`` Soccer entries from
     ``player_game_actuals`` into a form-row-shaped dict.
 
-    Population size: 305,132 rows across sports.  Currently populated
-    for many MLS players (Messi/Evander/Bouanga/Suárez/etc), plus
-    other leagues that the History backfill has hit.
+    UNIVERSAL_IDENTITY_HISTORY_BRIDGE (2026-09) — canonical-ID first,
+    verified aliases second, exact name last.
     """
-    q = {
-        "sport": "soccer",
-        "player_name": {"$regex": f"^{player_name.strip()}$", "$options": "i"},
-    }
-    docs = await db.player_game_actuals.find(q).sort(
-        [("event_time", -1)]
-    ).limit(sample).to_list(sample)
-    if not docs:
-        return None
+    q: dict = {"sport": "soccer"}
+    # (1) Canonical ID join — used when the store carries the field.
+    if canonical_player_id:
+        q_id = dict(q, canonical_player_id=canonical_player_id)
+        docs = await db.player_game_actuals.find(q_id).sort(
+            [("event_time", -1)]
+        ).limit(sample).to_list(sample)
+        if docs:
+            return _summarise_actuals_docs(docs, primary_name=player_name)
 
-    goals = 0.0
-    assists = 0.0
-    shots = 0.0
-    sot = 0.0
-    minutes_est = 0.0
-    n = 0
+    # (2) Alias / variant join — case-insensitive $in on the
+    #     normalised set from the resolver.
+    variants = list(name_variants or [])
+    if not variants and player_name:
+        variants = [player_name.strip().lower()]
+    # Dedupe case-insensitively — the regex is already
+    # case-insensitive so no need for both cases.
+    variants = list({v.strip().lower() for v in variants if v and v.strip()})
+    if variants:
+        # When only one variant, use a plain equality-regex to keep
+        # simple test doubles happy.  Otherwise emit an $or list of
+        # per-variant regex clauses.
+        if len(variants) == 1:
+            q_alias = dict(q, player_name={"$regex": f"^{variants[0]}$",
+                                              "$options": "i"})
+        else:
+            alias_re = [{"player_name": {"$regex": f"^{v}$",
+                                           "$options": "i"}}
+                         for v in variants]
+            q_alias = dict(q, **{"$or": alias_re})
+        docs = await db.player_game_actuals.find(q_alias).sort(
+            [("event_time", -1)]
+        ).limit(sample).to_list(sample)
+        if docs:
+            return _summarise_actuals_docs(docs, primary_name=player_name)
+
+    return None
+
+
+def _summarise_actuals_docs(docs: list, *, primary_name: str) -> dict:
+    goals = 0.0; assists = 0.0; shots = 0.0; sot = 0.0
+    minutes_est = 0.0; n = 0
     for d in docs:
         a = d.get("actuals") or {}
-        # Actuals may store None for shots_on_target — skip nulls.
         goals   += float(a.get("goals")   or 0)
         assists += float(a.get("assists") or 0)
         shots   += float(a.get("shots")   or 0)
         sot_v = a.get("shots_on_target")
         if sot_v is not None:
             sot += float(sot_v)
-        # Assume ~90 minutes per appearance since minutes are not
-        # in the actuals store — this is a documented approximation
-        # (the bridge's shrinkage handles the noise).
         minutes_est += 90.0
         n += 1
     if n == 0:
-        return None
+        return None  # type: ignore
     return {
-        "name_canonical":     player_name.strip().lower(),
-        "player_name":        player_name,
+        "name_canonical":     (primary_name or "").strip().lower(),
+        "player_name":        primary_name,
         "goals":              goals,
         "assists":            assists,
         "shots":              shots,
