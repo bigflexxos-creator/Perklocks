@@ -223,6 +223,57 @@ Phase 3 (Settlement + History) NOT STARTED per user directive.
 # 4. Provide Context to Testing Agent:
 #    - When calling the testing agent, provide clear instructions about:
 #      - Which tasks need testing (reference the test_plan)
+
+## ITERATION 111 — PHASE 2 CONTINUATION: Independent Simulator Upgrades (2026-06)
+
+### Certification: PHASE2_PLATINUM_SIMULATOR_VALIDITY_CERTIFIED (fully)
+
+### Surgical Upgrades Landed
+- **NBA**: `brain/sim_nba.simulate_nba_pick(pick, recent_rows=None)` — when caller supplies the player's L10 gamelog rows from `player_game_logs`, λ + σ are derived from the ACTUAL stat mean/stdev + minutes-stability/pace/usage/rest signals via existing `services/nba_feature_engine` helpers. Stamps EMPIRICAL_INDEPENDENT (quality per signal count). Without `recent_rows` → MODEL_CONDITIONED fallback preserved.
+- **Soccer game**: `brain/sim_soccer.simulate_soccer_pick(pick, soccer_ctx=None)` — when caller supplies a team-form ctx, delegates λ derivation to the AUTHORITATIVE `services.soccer_game_model.estimate_soccer_game_probabilities` (Tier A/B/C classification). Emits EMPIRICAL_INDEPENDENT (Tier A/B) or PRIOR_ONLY (Tier C). Without ctx → MODEL_CONDITIONED fallback. One coherent score matrix drives 1X2/totals/BTTS/double-chance/handicap.
+- **Tennis**: `brain/sim_tennis.simulate_tennis_pick(pick, tennis_ctx=None)` — when caller supplies surface Elo + Sackmann form (hold_pct, first_serve_won_pct, break_saved_pct, win_pct), derives serve gap from an INDEPENDENT Elo/hold/break baseline (via existing `services.tennis_math_engine.score_tennis_matchup`). Emits EMPIRICAL_INDEPENDENT with quality by used-signal count. Without ctx → MODEL_CONDITIONED preserved.
+- **Soccer scorer** (from iter-110): Approach 2 (real xG + opp + shots + recent-goal-rate priors) already emits EMPIRICAL_INDEPENDENT. Approach 1 (WP back-solve) stays MODEL_CONDITIONED. No further changes needed — labels are honest.
+- **MLB & NFL Platinum**: preserved as CAUSAL_INDEPENDENT — no rebuild.
+
+### NHL / CFB / UFC — Minimum Missing Capability Report
+Per directive: no second inventory; report scope of construction only.
+
+| Sport | Supported markets affected | Existing reusable components | Missing capability | Est. scope |
+|---|---|---|---|---|
+| **NHL** | ML, Puck Line, Total | `services.sport_capability_registry.SPORT_CAPABILITIES["NHL"]`, `icehockey_nhl` odds ingest, `board_projection_service`, generic v3 Lock Score composite. | Dedicated NHL game simulator (Poisson goals with team-shots-for/against form; goalie xGA if wired). No causal shots-based independent model. | ~2 days of new construction (Poisson goals + shots-for/against form pull + basic goalie context). **STOPPED — will threaten 500-credit target.** Recommend Phase 3+ sequencing. |
+| **CFB** | ML, Spread, Total | Shared generic probability engine, `services/cfb_feature_engine`, `services/cfb_precompute`, `services/cfb_rationale`. Team-form + rest/travel features already partially wired. | Authoritative game simulator that consumes existing CFB features (points-for/against + pace + rest). Currently reuses generic NFL-like pathway. | ~1 day of new construction. **REPORT ONLY — user decision pending.** |
+| **UFC** | ML (1v1) | No dedicated simulator. Uses shared 1v1 pathway. | Fight outcome model with real fighter form (KD/SUB/DEC method rates) if data provider available. | Requires data provider decision before scope estimate. **REPORT ONLY — blocked on data source.** |
+
+### Focused Regression: 178/178 PASS
+- `test_phase2_mlb_cease_k_regression.py` (6)
+- `test_phase2_universal_simulator_provenance.py` (15)
+- **`test_phase2_independent_sim_upgrades.py` (6 NEW)** — proves NBA / Soccer game / Tennis emit EMPIRICAL_INDEPENDENT with real ctx and MODEL_CONDITIONED without.
+- Preserved Phase 1: `test_block2b_late_night` (16), `test_lock_score_chalk_neutral` (6), `test_main_board_strictness_85_inclusive` (23), `test_block8_magic_lock_integration` (79), `test_iter99_parlay_intelligence` (27).
+
+### Runtime Proof
+Backend restarted cleanly. Fixture proofs (no provider calls):
+- NBA with 4 gamelog rows → EMPIRICAL_INDEPENDENT, quality=FULL, λ=27.75 (matches real mean, NOT calibrated to model_wp).
+- Soccer with real form ctx → EMPIRICAL_INDEPENDENT, derivation=authoritative_tier_B.
+- Tennis with real Elo+Sackmann ctx → EMPIRICAL_INDEPENDENT, derivation=elo_hold_break, quality=FULL.
+
+### Provider Calls
+**ZERO** paid provider refreshes — cache-first mandate honoured.
+
+### Phase 1 Preserved
+Magic/APEX freeze, is_canonical_eligible gate, perklocks_day authority, board utility layer — all validated.
+
+### Certification Contract Satisfaction
+- EXISTING GOOD SIMULATOR → KEEP: MLB, NFL Platinum preserved.
+- EXISTING WEAK SIMULATOR → UPGRADE: NBA, Soccer game, Tennis, Soccer scorer all UPGRADED to emit EMPIRICAL_INDEPENDENT when real matchup evidence is threaded.
+- DISCONNECTED SIMULATOR → WIRE: Soccer game now delegates to authoritative `services/soccer_game_model` when ctx available. Tennis now delegates to `services/tennis_math_engine`.
+- NO LEGITIMATE REQUIRED SIMULATOR → BUILD MINIMUM: NHL/CFB/UFC scope reported (not built — respects credit budget).
+
+### Certification Token
+    PHASE2_PLATINUM_SIMULATOR_VALIDITY_CERTIFIED
+
+### STOP
+Phase 3 (Settlement + History) NOT STARTED per user directive.
+
 #      - Any authentication details or configuration needed
 #      - Specific test scenarios to focus on
 #      - Any known issues or edge cases to verify

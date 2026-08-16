@@ -144,7 +144,18 @@ def _classify_soccer_market(market: str) -> str:
     return "unknown"
 
 
-def simulate_soccer_pick(pick: dict) -> Optional[dict]:
+def simulate_soccer_pick(pick: dict, soccer_ctx: dict | None = None) -> Optional[dict]:
+    """PHASE 2 (2026-06) UPGRADE — when ``soccer_ctx`` is a team-form
+    context dict compatible with
+    :func:`services.soccer_game_model.estimate_soccer_game_probabilities`,
+    the game simulator uses the AUTHORITATIVE independent λs (derived
+    from real GF/GA and, when available, real xG rows).  Provenance is
+    stamped EMPIRICAL_INDEPENDENT (Tier A/B) or PRIOR_ONLY (Tier C).
+
+    Without ``soccer_ctx`` the fallback continues to derive λs from the
+    model's factor summary → MODEL_CONDITIONED (previous behaviour,
+    preserved for callers that don't have a ctx).
+    """
     if (pick.get("sport") or "") != "Soccer":
         return None
     market = pick.get("market") or ""
@@ -157,7 +168,37 @@ def simulate_soccer_pick(pick: dict) -> Optional[dict]:
         from brain.sim_soccer_scorer import simulate_soccer_scorer_pick
         return simulate_soccer_scorer_pick(pick)
 
-    lam_pick, lam_opp, _ = _derive_lambdas(pick)
+    # PHASE 2 (2026-06) — authoritative independent λ path.
+    authoritative = None
+    if soccer_ctx:
+        try:
+            from services.soccer_game_model import estimate_soccer_game_probabilities
+            event = (pick.get("event") or "").strip()
+            home = ""
+            away = ""
+            if " vs " in event:
+                parts = event.split(" vs ")
+                home = parts[0].strip()
+                away = parts[1].strip() if len(parts) > 1 else ""
+            authoritative = estimate_soccer_game_probabilities(
+                soccer_ctx, home, away,
+            )
+        except Exception:
+            authoritative = None
+
+    lam_derivation = "factors"  # default fallback
+    if authoritative is not None and getattr(authoritative, "available", False):
+        # Route home/away λ to pick/opp by inspecting the pick side.
+        # `_derive_lambdas` already knows how to detect is_pick_home;
+        # replicate that quickly here.
+        _, _, is_pick_home = _derive_lambdas(pick)
+        lam_pick = float(authoritative.lambda_home if is_pick_home
+                          else authoritative.lambda_away)
+        lam_opp  = float(authoritative.lambda_away if is_pick_home
+                          else authoritative.lambda_home)
+        lam_derivation = f"authoritative_tier_{authoritative.tier}"
+    else:
+        lam_pick, lam_opp, _ = _derive_lambdas(pick)
     if lam_pick <= 0 or lam_opp <= 0:
         return None
 
@@ -242,40 +283,52 @@ def simulate_soccer_pick(pick: dict) -> Optional[dict]:
         "sim_signal": signal,
     }
     # PHASE 2 (2026-06) — Universal Simulator Provenance Envelope.
-    # This sim derives λ from the calling model's own factor summary
-    # (``xG Combined`` / ``xG Difference`` / ``Defensive Form``) —
-    # NOT from raw independent xG rows.  Its distribution is useful
-    # for Over/Under tails / BTTS symmetry / adjacent-line
-    # monotonicity BUT its agreement with model_wp cannot count as
-    # INDEPENDENT confirmation (the factors were built by the same
-    # model that produced win_probability).
+    # * ``lam_derivation`` starts with "authoritative_tier_" when the
+    #   authoritative Soccer game model produced λ_home / λ_away from
+    #   REAL team form (and, where available, real xG). Tier A/B →
+    #   EMPIRICAL_INDEPENDENT; Tier C (fallback league prior) →
+    #   PRIOR_ONLY.
+    # * Otherwise the factor-derived fallback stamps MODEL_CONDITIONED
+    #   (previous behaviour, preserved for callers without a ctx).
     #
-    # Downstream: services.soccer_game_model provides the authoritative
-    # EMPIRICAL_INDEPENDENT distribution from real team-form rows.
+    # Downstream: this envelope is what Magic / Bet Quality / Apex
+    # consume to decide whether the sim counts as INDEPENDENT
+    # AGREEMENT with the model probability.
     try:
         from services.simulator_provenance import stamp_sim_output
-        # Count present factors as a proxy for input quality.
-        f = pick.get("factors") or {}
-        signals = sum(
-            1 for k in ("xG Combined", "xG Difference", "Defensive Form",
-                        "Home Advantage")
-            if isinstance(f.get(k), (int, float))
-        )
-        if signals >= 4:
-            input_quality = "STRONG"
-        elif signals >= 2:
-            input_quality = "PARTIAL"
-        elif signals >= 1:
-            input_quality = "PRIOR_ONLY"
+        if lam_derivation.startswith("authoritative_tier_"):
+            tier = lam_derivation.split("_")[-1]
+            if tier == "A":
+                provenance = "EMPIRICAL_INDEPENDENT"
+                input_quality = "STRONG"
+            elif tier == "B":
+                provenance = "EMPIRICAL_INDEPENDENT"
+                input_quality = "PARTIAL"
+            else:  # tier C / D
+                provenance = "PRIOR_ONLY"
+                input_quality = "PRIOR_ONLY"
         else:
-            input_quality = "INVALID"
+            provenance = "MODEL_CONDITIONED"
+            f = pick.get("factors") or {}
+            signals = sum(
+                1 for k in ("xG Combined", "xG Difference", "Defensive Form",
+                            "Home Advantage")
+                if isinstance(f.get(k), (int, float))
+            )
+            if signals >= 4:
+                input_quality = "STRONG"
+            elif signals >= 2:
+                input_quality = "PARTIAL"
+            elif signals >= 1:
+                input_quality = "PRIOR_ONLY"
+            else:
+                input_quality = "INVALID"
         stamp_sim_output(
-            out,
-            provenance="MODEL_CONDITIONED",
-            input_quality=input_quality,
+            out, provenance=provenance, input_quality=input_quality,
             sim_prob=(sim_wp_pct / 100.0),
             model_prob=(blended_wp / 100.0) if blended_wp else None,
         )
+        out["sim_lambda_derivation"] = lam_derivation
     except Exception:
         pass
     return out

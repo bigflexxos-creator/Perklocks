@@ -154,7 +154,16 @@ def _factor_adjustment(pick: dict, cat: str) -> float:
     return max(0.90, min(1.10, adj))
 
 
-def simulate_nba_pick(pick: dict) -> Optional[dict]:
+def simulate_nba_pick(pick: dict, recent_rows: list[dict] | None = None) -> Optional[dict]:
+    """Run Monte Carlo for a single NBA pick.
+
+    PHASE 2 (2026-06) UPGRADE — when ``recent_rows`` (a list of the
+    player's L10 gamelog dicts from ``player_game_logs``) is supplied,
+    the player-counting branch derives λ + sigma from the actual
+    stat distribution and stamps EMPIRICAL_INDEPENDENT.  Without
+    ``recent_rows`` the fallback back-solves from model_wp and
+    stamps MODEL_CONDITIONED (previous behaviour, preserved).
+    """
     if (pick.get("sport") or "") != "NBA":
         return None
     market = pick.get("market") or ""
@@ -233,11 +242,68 @@ def simulate_nba_pick(pick: dict) -> Optional[dict]:
     else:
         count_dist = "poisson"
 
-    lam = _calibrate_lambda(threshold, model_wp, is_under, count_dist=count_dist)
-    lam *= _factor_adjustment(pick, cat)
+    # PHASE 2 (2026-06) — EMPIRICAL_INDEPENDENT path.  When we have
+    # the player's L10 rows from ``player_game_logs``, derive λ and
+    # sigma from the ACTUAL stat mean / stdev (opponent-adjusted where
+    # possible) instead of back-solving from model_wp.  This makes the
+    # NBA sim genuine independent evidence for Magic / Bet Quality.
+    real_stats_used = 0
+    real_lam = None
+    real_sigma = None
+    _stat_key_by_cat = {
+        "points":    "points",
+        "rebounds":  "rebounds",
+        "assists":   "assists",
+        "pra":       "pra",   # handled specially — pts + reb + ast
+        "threes":    "threes",
+        "steals":    "steals",
+        "blocks":    "blocks",
+    }
+    if recent_rows and cat in _stat_key_by_cat:
+        stat_key = _stat_key_by_cat[cat]
+        vals: list[float] = []
+        for r in recent_rows[:10]:
+            if cat == "pra":
+                pts = r.get("points"); reb = r.get("rebounds"); ast = r.get("assists")
+                if all(isinstance(x, (int, float)) for x in (pts, reb, ast)):
+                    vals.append(float(pts) + float(reb) + float(ast))
+            else:
+                v = r.get(stat_key)
+                if isinstance(v, (int, float)):
+                    vals.append(float(v))
+        if len(vals) >= 3:
+            mean = sum(vals) / len(vals)
+            variance = sum((v - mean) ** 2 for v in vals) / len(vals)
+            real_lam = max(0.5, mean)
+            real_sigma = max(1.5, variance ** 0.5)
+            real_stats_used = len(vals)
+            # Additional independent signals — minutes stability, pace,
+            # usage, rest days — collected via the existing
+            # nba_feature_engine helpers so we don't duplicate logic.
+            try:
+                from services.nba_feature_engine import (
+                    _factor_minutes_stability, _factor_pace,
+                    _factor_usage, _factor_rest,
+                )
+                for fn in (_factor_minutes_stability, _factor_pace,
+                           _factor_usage, _factor_rest):
+                    if fn(recent_rows) is not None:
+                        real_stats_used += 1
+            except Exception:
+                pass
+
+    if real_lam is not None:
+        lam = real_lam
+        if count_dist == "normal":
+            sigma = real_sigma
+        # Poisson variance = mean, no separate sigma needed.
+    else:
+        lam = _calibrate_lambda(threshold, model_wp, is_under, count_dist=count_dist)
+        lam *= _factor_adjustment(pick, cat)
 
     if count_dist == "normal":
-        sigma = max(2.0, math.sqrt(lam) * 1.5)
+        if real_lam is None:
+            sigma = max(2.0, math.sqrt(lam) * 1.5)
         # Vectorised — clip to non-negative integer counts.
         distribution = np.clip(np.round(np.random.normal(lam, sigma, RUNS)), 0, None).astype(int)
     else:
@@ -280,23 +346,34 @@ def simulate_nba_pick(pick: dict) -> Optional[dict]:
         # Risk Meter — P10/P25/P50/P75/P90 of the projected stat
         # distribution plus where the line sits within it.
         **compute_percentiles(distribution, threshold=threshold),
-    }, sim_prob=p_win, model_prob=model_wp)
+    }, sim_prob=p_win, model_prob=model_wp,
+       empirical_signals=real_stats_used)
 
 
-def _stamp_nba_sim(payload: dict, sim_prob: float, model_prob: float) -> dict:
+def _stamp_nba_sim(payload: dict, sim_prob: float, model_prob: float,
+                    *, empirical_signals: int = 0) -> dict:
     """PHASE 2 (2026-06) provenance stamper for NBA sim outputs.
-    Every branch of simulate_nba_pick calibrates its distribution
-    parameters to model_wp before sampling, so its agreement with
-    model_wp is by construction — MODEL_CONDITIONED. Downstream
-    Magic / Bet Quality / Apex MUST NOT count it as independent
-    evidence.  The distribution IS still useful for percentile /
-    alt-line / risk-meter surfaces.
+
+    * ``empirical_signals == 0`` — no real gamelog rows consumed;
+      λ/µ were calibrated to model_wp before sampling → MODEL_CONDITIONED.
+    * ``empirical_signals >= 3`` — real L10 mean/stdev + stability /
+      pace / usage / rest signals drove the distribution →
+      EMPIRICAL_INDEPENDENT (may count as independent evidence).
+
+    The distribution IS still useful for percentile / alt-line / risk-
+    meter surfaces even in the MODEL_CONDITIONED branch.
     """
     try:
-        from services.simulator_provenance import stamp_sim_output
+        from services.simulator_provenance import (
+            stamp_sim_output, classify_input_quality,
+        )
+        if empirical_signals >= 3:
+            provenance = "EMPIRICAL_INDEPENDENT"
+        else:
+            provenance = "MODEL_CONDITIONED"
         stamp_sim_output(
-            payload, provenance="MODEL_CONDITIONED",
-            input_quality="PARTIAL",
+            payload, provenance=provenance,
+            input_quality=classify_input_quality(empirical_signals),
             sim_prob=sim_prob, model_prob=model_prob,
         )
     except Exception:
