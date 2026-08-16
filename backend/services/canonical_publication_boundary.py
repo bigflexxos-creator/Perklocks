@@ -99,6 +99,8 @@ class RejectionReason(str, enum.Enum):
     BOUNDARY_INTERNAL_ERROR     = "BOUNDARY_INTERNAL_ERROR"
     # Phase 9B/9F — player→event identity mismatch rejection.
     PLAYER_EVENT_IDENTITY_MISMATCH = "PLAYER_EVENT_IDENTITY_MISMATCH"
+    # Phase 10A — cannot prove player belongs to event participants.
+    PLAYER_TEAM_UNRESOLVED         = "PLAYER_TEAM_UNRESOLVED"
 
 
 # Verified real-sportsbook odds sources.  ANY producer that intends to
@@ -295,8 +297,9 @@ def evaluate_publication(pick: dict) -> BoundaryVerdict:
         if not (isinstance(ic, str) and ic in _VALID_IDENTITY_CLASSES):
             reasons.append(RejectionReason.MISSING_IDENTITY_CLASS.value)
 
-        # ── Rule 6 (Phase 9B/9F) — player→event identity gate ──
-        # Fail-closed for provable player↔event mismatches.
+        # ── Rule 6 (Phase 9B/9F + Phase 10A) — player→event identity gate ──
+        # Fail-closed for provable mismatches AND for unresolvable
+        # identity on player-markets (Phase 10A tightening).
         try:
             from services.player_event_identity_gate import (
                 evaluate_identity, IdentityVerdict,
@@ -305,6 +308,12 @@ def evaluate_publication(pick: dict) -> BoundaryVerdict:
             if id_verdict == IdentityVerdict.PLAYER_EVENT_IDENTITY_MISMATCH:
                 reasons.append(
                     RejectionReason.PLAYER_EVENT_IDENTITY_MISMATCH.value
+                )
+            elif id_verdict == IdentityVerdict.PLAYER_TEAM_UNRESOLVED:
+                # Phase 10A: cannot prove membership → reject rather than
+                # silently attach the player to the "most likely" event.
+                reasons.append(
+                    RejectionReason.PLAYER_TEAM_UNRESOLVED.value
                 )
         except Exception:
             # Never let the gate crash the boundary — fail-open on gate

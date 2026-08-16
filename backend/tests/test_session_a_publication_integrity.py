@@ -78,13 +78,25 @@ def _real_candidate(pid: str, *, lock=88.0, prob=0.62,
                      identity_class="AUTHORITATIVE",
                      ) -> dict:
     """Session-A-compliant candidate: model_probability + real odds +
-    identity_class populated.  Passes every rule of the boundary."""
+    identity_class populated.  Passes every rule of the boundary.
+
+    Phase 10C fixture refresh: added canonical event participants
+    (`event`, `home_team`, `away_team`) so the Phase 10A player→event
+    identity gate can prove that "Aaron Judge / NYY" belongs to the
+    Yankees @ Red Sox event.  This was implicit in real production
+    picks (the enricher populates these) but the legacy fixture
+    predates the identity gate."""
     return {
         "id":                 pid,
         "sport":              "MLB",
+        "event":              "Yankees @ Red Sox",
+        "home_team":          "Red Sox",
+        "away_team":          "Yankees",
+        "event_id":           "sess_a_evt_1",
         "market":             "Aaron Judge Over 1.5 hits",
         "player_name":        "Aaron Judge",
         "team":               "NYY",
+        "player_team":        "Yankees",
         "lock_score":         lock,
         "win_probability":    prob * 100.0,
         "model_probability":  prob,

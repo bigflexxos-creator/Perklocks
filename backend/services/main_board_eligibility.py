@@ -175,13 +175,15 @@ def is_canonical_eligible(pick: dict) -> bool:
         return False
     if not _has_real_market_line(pick):
         return False
-    # Phase 9L — identity gate defense-in-depth.
+    # Phase 9L + Phase 10A — identity gate defense-in-depth.
+    # Both proven MISMATCH and UNRESOLVABLE player identity fail closed.
     try:
         from services.player_event_identity_gate import (
             evaluate_identity, IdentityVerdict,
         )
-        if evaluate_identity(pick) == \
-                IdentityVerdict.PLAYER_EVENT_IDENTITY_MISMATCH:
+        _v = evaluate_identity(pick)
+        if _v in (IdentityVerdict.PLAYER_EVENT_IDENTITY_MISMATCH,
+                  IdentityVerdict.PLAYER_TEAM_UNRESOLVED):
             return False
     except Exception:
         # Never let the gate crash canonical eligibility.
