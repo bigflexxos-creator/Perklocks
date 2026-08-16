@@ -212,12 +212,35 @@ async def _ingest_player_scorer_row(
 
     book_impl = _implied_prob(price)
 
+    # SOCCER_UNIVERSAL_PLAYER_IDENTITY (2026-09) §1-§8 — resolve
+    # canonical identity BEFORE any feature/history lookup.  Uses
+    # the shared, event-anchored identity registry
+    # (``player_identities``, 27k+ Soccer players across every
+    # enabled league).  The same resolver is used for MLS / EPL /
+    # Liga MX / La Liga / Bundesliga / Serie A / Ligue 1 / etc.
+    from services.soccer_scorer_identity_resolver import (
+        resolve_soccer_scorer_identity,
+        STATUS_RESOLVED, STATUS_UNRESOLVED, STATUS_AMBIGUOUS,
+        STATUS_TEAM_MISMATCH, STATUS_STALE_ROSTER,
+        STATUS_SOURCE_ID_UNMAPPED, STATUS_EVENT_IDENTITY_FAILURE,
+        STATUS_TEAM_IDENTITY_FAILURE,
+    )
+    identity = await resolve_soccer_scorer_identity(
+        db, provider_player=player, provider_event_id=event_id,
+        home_team=home or "", away_team=away or "", league=league,
+    )
+    # Downstream feature/history lookup uses the CANONICAL name when
+    # identity is resolved (so alias variants collapse); falls back to
+    # the raw provider name when unresolved.  History-missing is a
+    # SEPARATE arrow from identity-missing (per §5).
+    lookup_name = identity.canonical_name or player
+
     # League-aware feature + prior lookup.
     form_row, evidence_source = await resolve_soccer_player_features(
-        db, player_name=player, league=league,
+        db, player_name=lookup_name, league=league,
     )
     prior_row = await resolve_soccer_player_prior(
-        db, player_name=player, league=league,
+        db, player_name=lookup_name, league=league,
     )
     # H2H matchup dossier (existing backfilled evidence) — bridge
     # uses this as matchup context, NEVER as a substitute for form.
@@ -228,21 +251,48 @@ async def _ingest_player_scorer_row(
     matchup = None
     if opp_team:
         matchup = await resolve_soccer_player_matchup(
-            db, player_name=player, opponent_team=opp_team,
+            db, player_name=lookup_name, opponent_team=opp_team,
         )
 
     bridge = compute_soccer_scorer_factors_sync(
-        player=player, market_key=mk, book_implied=book_impl,
+        player=lookup_name, market_key=mk, book_implied=book_impl,
         form_row=form_row, prior_form_row=prior_row, league=league,
     )
     if not bridge:
-        # Precise MISSING_FEATURE_DATA breakdown per taxonomy.
-        try:
-            rej = await classify_missing_feature_reason(
-                db, player_name=player, league=league,
-            )
-        except Exception:
-            rej = SoccerRejection.MISSING_FEATURE_DATA.value
+        # SOCCER_UNIVERSAL_PLAYER_IDENTITY (2026-09) §5 — history
+        # missing is a SEPARATE arrow from identity missing.  If
+        # identity resolved but bridge (features/history) is empty,
+        # emit PLAYER_HISTORY_NOT_FOUND / PLAYER_FORM_NOT_FOUND —
+        # NOT PLAYER_IDENTITY_FAILURE.
+        if identity.status == STATUS_RESOLVED:
+            # Identity is fine — this is a data-availability arrow.
+            if evidence_source in (None, "", "none"):
+                rej = SoccerRejection.PLAYER_HISTORY_NOT_FOUND.value
+            else:
+                rej = SoccerRejection.PLAYER_FORM_NOT_FOUND.value
+        elif identity.status == STATUS_UNRESOLVED:
+            rej = SoccerRejection.PLAYER_IDENTITY_UNRESOLVED.value
+        elif identity.status == STATUS_AMBIGUOUS:
+            rej = SoccerRejection.PLAYER_IDENTITY_AMBIGUOUS.value
+        elif identity.status == STATUS_TEAM_MISMATCH:
+            rej = SoccerRejection.PLAYER_TEAM_MISMATCH.value
+        elif identity.status == STATUS_STALE_ROSTER:
+            rej = SoccerRejection.STALE_ROSTER.value
+        elif identity.status == STATUS_SOURCE_ID_UNMAPPED:
+            rej = SoccerRejection.PLAYER_SOURCE_ID_UNMAPPED.value
+        elif identity.status == STATUS_EVENT_IDENTITY_FAILURE:
+            rej = SoccerRejection.EVENT_IDENTITY_FAILURE.value
+        elif identity.status == STATUS_TEAM_IDENTITY_FAILURE:
+            rej = SoccerRejection.TEAM_IDENTITY_FAILURE.value
+        else:
+            # Fall back to precise resolver-independent classifier
+            # so we never drop into a generic MISSING_FEATURE_DATA.
+            try:
+                rej = await classify_missing_feature_reason(
+                    db, player_name=lookup_name, league=league,
+                )
+            except Exception:
+                rej = SoccerRejection.MISSING_FEATURE_DATA.value
         model_prob = book_impl
         # SOCCER_MARKET_COMPETITION_RUNTIME (2026-09) §5 — Book Implied
         # Probability is used for edge / market-alignment / de-vig
@@ -298,9 +348,17 @@ async def _ingest_player_scorer_row(
     pick_id, external_id = _deterministic_id(
         "real_line_alt_scorer_v1", event_id, mk, player, bookmaker=book,
     )
-    # ── Canonical wager identity (player-prop) ─────────────────
-    _norm_player = (player or "").strip().lower()
-    canonical_wager_id = f"{event_id}|player_prop|{mk.lower()}|{_norm_player}|"
+    # SOCCER_UNIVERSAL_PLAYER_IDENTITY (2026-09) §10 — canonical wager
+    # identity for player markets anchors on canonical_player_id (not
+    # raw provider display name).  Falls back to normalized display
+    # name only when identity could not be resolved — this keeps the
+    # wager routable while still surfacing the identity gap upstream.
+    _cpid_component = identity.canonical_player_id or (
+        _norm := (player or "").strip().lower()
+    )
+    canonical_wager_id = (
+        f"{event_id}|player_prop|{mk.lower()}|{_cpid_component}|"
+    )
     doc = {
         "id": pick_id,
         "external_id": external_id,
@@ -308,6 +366,20 @@ async def _ingest_player_scorer_row(
         "provider_event_id":   event_id,
         "provider_market_key": mk,
         "provider_selection":  player,
+        # SOCCER_UNIVERSAL_PLAYER_IDENTITY (2026-09) — full identity
+        # trace stamped on the pick doc so telemetry can always
+        # report exactly why a scorer disappeared (or how it was
+        # resolved).  None of these fields may be rewritten by
+        # ESPN or downstream enrichment (§7).
+        "identity_status":            identity.status,
+        "identity_resolution_method": identity.resolution_method,
+        "canonical_player_id":        identity.canonical_player_id,
+        "canonical_player_name":      identity.canonical_name,
+        "canonical_team_id":          identity.canonical_team_id,
+        "canonical_team_name":        identity.canonical_team_name,
+        "canonical_event_id":         identity.canonical_event_id or event_id,
+        "normalized_player_name":     identity.normalized_player,
+        "provider_player_name":       player,
         "sport": "Soccer",
         "league": league,
         "sport_key": sport_key,

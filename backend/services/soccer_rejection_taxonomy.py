@@ -20,16 +20,28 @@ class SoccerRejection(str, enum.Enum):
     STALE_EVENT                       = "STALE_EVENT"
     EVENT_IDENTITY_FAILURE            = "EVENT_IDENTITY_FAILURE"
     PLAYER_IDENTITY_FAILURE           = "PLAYER_IDENTITY_FAILURE"
+    # SOCCER_UNIVERSAL_PLAYER_IDENTITY (2026-09) — precise identity taxonomy.
+    # `PLAYER_IDENTITY_FAILURE` is retained as a legacy alias for
+    # backwards compatibility; new code must use the specific status.
+    PLAYER_IDENTITY_UNRESOLVED        = "PLAYER_IDENTITY_UNRESOLVED"
+    PLAYER_IDENTITY_AMBIGUOUS         = "PLAYER_IDENTITY_AMBIGUOUS"
+    PLAYER_TEAM_MISMATCH              = "PLAYER_TEAM_MISMATCH"
+    STALE_ROSTER                      = "STALE_ROSTER"
+    PLAYER_SOURCE_ID_UNMAPPED         = "PLAYER_SOURCE_ID_UNMAPPED"
+    TEAM_IDENTITY_FAILURE             = "TEAM_IDENTITY_FAILURE"
     IDENTITY_FAILURE                  = "IDENTITY_FAILURE"
     MARKET_NORMALIZATION_FAILURE      = "MARKET_NORMALIZATION_FAILURE"
     REAL_LINE_NOT_PRESERVED           = "REAL_LINE_NOT_PRESERVED"
-    # Candidate / feature side
+    # Candidate / feature side — history/form missing is NOT identity failure.
     CANDIDATE_NOT_CREATED             = "CANDIDATE_NOT_CREATED"
     MISSING_FEATURE_DATA              = "MISSING_FEATURE_DATA"
     NO_TEAM_CONTEXT                   = "NO_TEAM_CONTEXT"
     NO_PLAYER_CONTEXT                 = "NO_PLAYER_CONTEXT"
     NO_RECENT_FORM                    = "NO_RECENT_FORM"
     NO_PLAYER_HISTORY                 = "NO_PLAYER_HISTORY"
+    PLAYER_HISTORY_NOT_FOUND          = "PLAYER_HISTORY_NOT_FOUND"
+    PLAYER_FORM_NOT_FOUND             = "PLAYER_FORM_NOT_FOUND"
+    ENRICHMENT_NOT_FOUND              = "ENRICHMENT_NOT_FOUND"
     EVIDENCE_INSUFFICIENT             = "EVIDENCE_INSUFFICIENT"
     MODEL_NOT_INVOKED                 = "MODEL_NOT_INVOKED"
     NO_MODEL_PROBABILITY              = "NO_MODEL_PROBABILITY"
