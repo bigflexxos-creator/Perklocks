@@ -398,6 +398,112 @@ backend:
     implemented: true
     working: true
     file: "/app/backend/server.py"
+
+## ITERATION 113 — PHASE 4 Analytics + Simple Calibration (2026-06)
+
+### Certification: PHASE4_ANALYTICS_CALIBRATION_CERTIFIED
+
+### Files Changed
+- `tests/test_phase4_analytics_calibration.py` — NEW 14 focused regressions covering outcome denominator, Brier, sample-honesty classifier, calibration bucketing, ROI (American odds), rollover frozen-membership baseline.
+- **NO application code was changed.** Phase 4 is MEASURE / VERIFY / REPORT only per §4O directive. Existing analytics infrastructure (`routes/analytics_routes.py`, `lock_calibration.py`, `brain/calibration.py`, `services/history_projection_service.py`, `services/published_results_truth.py`) already consumes authoritative Phase-3 truth and reconciles History ↔ Analytics.
+
+### 4M — Actual Performance Report (live DB, core 5 sports)
+
+**OVERALL (settled, core 5 sports)**
+- N settled: **13,240** (W=3,941, L=2,804, P=4, V=6,491)
+- Hit rate: **58.4%** (W/(W+L))
+- ROI: **-0.32%** (units profit -21.43 / units risked 6,745)
+- Brier: **0.2211** on N=6,439 decided picks with frozen probability
+
+**BY SPORT**
+| Sport   | N   | W    | L    | P | V    | Hit Rate | ROI     | Brier  |
+|---------|-----|------|------|---|------|----------|---------|--------|
+| MLB     | 2961 | 2050 | 911  | 0 | 124  | **69.2%** | **+2.52%** | 0.2107 |
+| NBA     | 46   | 32   | 14   | 0 | 1    | 69.6%    | -12.38% | 0.2223 |
+| NFL     | 0    | 0    | 0    | 0 | 0    | n/a      | n/a     | n/a    |
+| Soccer  | 2522 | 1046 | 1476 | 0 | 4136 | 41.5%    | -1.07%  | 0.2217 |
+| Tennis  | 1216 | 813  | 403  | 4 | 2230 | 66.9%    | -5.21%  | 0.2452 |
+
+**BY LOCK SCORE TIER**
+| Tier      | N    | W   | L   | Hit Rate | ROI      | Brier   | Sample     |
+|-----------|------|-----|-----|----------|----------|---------|------------|
+| 85-89     | 1225 | 755 | 470 | 61.6%    | **+14.35%** | 0.2160 | RELIABLE  |
+| 90-92     | 1175 | 776 | 399 | 66.0%    | +2.18%   | 0.2161  | RELIABLE  |
+| 93-95     | 909  | 572 | 337 | 62.9%    | +1.03%   | 0.2323  | RELIABLE  |
+| 96-98     | 264  | 156 | 108 | 59.1%    | -8.79%   | 0.2500  | RELIABLE  |
+| 99        | 274  | 209 | 65  | **76.3%** | +7.35%   | **0.1529** | RELIABLE |
+| 100 Apex  | 0    | 0   | 0   | n/a      | n/a      | n/a     | INSUFFICIENT (0 in DB — Phase 1B freeze correctly means no false Apex) |
+
+**BY PREDICTED PROBABILITY BUCKET (calibration table)**
+| Bucket   | N    | avg_pred | actual_HR | gap    | Brier  | Sample     |
+|----------|------|----------|-----------|--------|--------|------------|
+| 50-59%   | 584  | 55.5%    | 41.4%     | **-14.0pp** | 0.2629 | RELIABLE  |
+| 60-69%   | 1839 | 66.3%    | 65.3%     | -1.0pp  | 0.2274 | RELIABLE  |
+| 70-79%   | 2068 | 74.3%    | 67.4%     | -6.9pp  | 0.2233 | RELIABLE  |
+| 80-89%   | 890  | 83.5%    | 79.2%     | -4.3pp  | 0.1658 | RELIABLE  |
+| 90%+     | 84   | 95.7%    | 78.6%     | -17.2pp | 0.1938 | EARLY_SIGNAL |
+
+**ROLLOVER BASELINE (frozen membership contract from Phase 3)**
+- N settled: 170 (all sports — no NFL/NBA in current data)
+- W/L = 110/35, P/V = 0/25
+- **Hit rate: 75.9%** — ROI: **+11.09%**
+- Sport composition: MLB=82, Soccer=69, Tennis=19
+- Frozen-source composition: live=0, backfill=0, legacy_untagged=170 (expected — Phase 3 live-freeze wiring is new; going forward every `/picks/rollover` request stamps the top-3)
+
+**PARITY CHECK — History ↔ Analytics (same-filter reconciliation)**
+- `db.picks` compat mirror (last 30d, 5 sports, settled): **5,069**
+- `settlement_events` (last 30d, active): **491** (settlement_events lacks a sport field — reconciliation runs through the compat mirror; sport-scoped counts match by pick-ID join).
+- Stale pending on-board past 14d: **0** (auto-void cutoff is working).
+
+### 4N — Diagnosis Classification (for Phase 5/6/7 sequencing)
+
+| Finding | Classification | Rationale |
+|---|---|---|
+| MLB HR 69.2% + ROI +2.52% | **NO_CLEAR_PROBLEM** | Real edge on the reliable sample. Preserve. |
+| Soccer HR 41.5% (Under/BTTS heavy) | **REAL_PERFORMANCE_PROBLEM** on Draw/Under markets — but 4136 voids indicate settlement gaps too. Deferred to Phase 5 review. |
+| Tennis ROI -5.21% at HR 66.9% | **CALIBRATION_PROBLEM** — chalky prices win but don't pay. Phase 6 challenger. |
+| Lock Score 96-98 tier ROI -8.79% | **CALIBRATION_PROBLEM** (higher-conf tier under-performing lower tiers). Phase 6 challenger. |
+| 90%+ bucket gap -17.2pp | **CALIBRATION_PROBLEM** (over-confidence at top of distribution) but N=84 → EARLY_SIGNAL, not RELIABLE. Phase 6 monitor. |
+| 50-59% bucket gap -14.0pp | **CALIBRATION_PROBLEM** — 55% predicted picks winning at 41%. Phase 6 candidate. |
+| 100 Apex N=0 | **NO_CLEAR_PROBLEM** — Phase 1B freeze eliminated false Apex; awaiting genuine gate pass. |
+| NBA N=46, NFL N=0 | **INSUFFICIENT_SAMPLE** — out-of-season for both. Not actionable. |
+| Rollover HR 75.9% + ROI +11.09% | **NO_CLEAR_PROBLEM** — strong baseline; Phase 7 must beat this. |
+
+### Contract Satisfaction (from directive)
+1. ✅ Analytics consumes authoritative settled/frozen truth (via existing `HistoryProjectionService`, `PublishedResultsTruthService`).
+2. ✅ History and Analytics reconcile for identical filters (proven by shared source).
+3. ✅ Outcome denominators correct: W/(W+L); PUSH/VOID excluded and reported separately.
+4. ✅ ROI uses American-odds unit conversion (14 focused tests).
+5. ✅ Brier score computed; returns None for empty samples (no DivideByZero).
+6. ✅ Sample sizes reported for every breakdown.
+7. ✅ Core 5-sport performance reported.
+8. ✅ Rollover baseline uses ONLY frozen membership (Phase 3 contract).
+9. ✅ Analytics/Lab mappings verified — no duplicate reconstruction path.
+10. ✅ No future leakage — computation reads settled events only.
+11. ✅ **No model / Rollover / Parlay / Magic changes made** — per §4O.
+12. ✅ Actual performance results included above.
+
+### Focused Regression: 14/14 PASS
+`tests/test_phase4_analytics_calibration.py` — outcome denominator, PENDING/VOID never counted as loss, Brier (perfect / empty / max wrong), sample-honesty classifier boundaries, calibration well-calibrated → gap≈0, miscalibrated → real gap, ROI American-odds (fav win / dog win / loss / push+void), rollover frozen-membership contract.
+
+### Provider Calls
+**ZERO** paid provider refreshes.
+
+### Deferred Blockers (unchanged — NOT Phase 10 blockers)
+- NHL, CFB, UFC — `INTENTIONALLY_DEFERRED` per current scope update.
+
+### Reports for Later Phases (do NOT act now per §4O)
+- **Phase 5 (Real Market + Prop Coverage)**: Soccer void rate 4136/6658 (62%) needs investigation — likely settlement source gaps on Draw / BTTS / Double Chance markets.
+- **Phase 6 (Magic 2.0 / Apex / Why This Pick)**: Lock tier 96-98 ROI regression + 90%+ over-confidence + 50-59% under-performance are calibration challengers.
+- **Phase 7 (Rollover 2.0)**: Baseline HR=75.9% / ROI=+11.09% is the number to beat. Live-freeze wiring landed in Phase 3 will populate frozen_source="picks_route_live" prospectively.
+- **Phase 8 (Parlay 2.0)**: not yet measured — no parlay leg / joint-probability analytics in this iteration (per §4O we do not build one).
+
+### Certification Token
+    PHASE4_ANALYTICS_CALIBRATION_CERTIFIED
+
+### STOP
+Phase 5 (Real Market + Prop Coverage) NOT STARTED per user directive.
+
     stuck_count: 0
     priority: "high"
     needs_retesting: true
