@@ -146,8 +146,17 @@ SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
         "prop_markets": [
             "player_goal_scorer_anytime",
             "player_to_score_or_assist",
-            "player_first_goal_scorer",
         ],
+        # PHASE 5 FIX 1 (2026-06) — FIRST/LAST goal scorer are
+        # INTENTIONALLY_UNSUPPORTED per product requirement.  Previous
+        # Soccer repair removed them from acquisition/ingest and they
+        # MUST NOT be re-advertised as supported.  The unsupported map
+        # is authoritative — consumer surfaces read this to honestly
+        # render the market as unsupported.
+        "unsupported_markets": {
+            "player_first_goal_scorer": "INTENTIONALLY_UNSUPPORTED",
+            "player_last_goal_scorer":  "INTENTIONALLY_UNSUPPORTED",
+        },
         "fallback_sources": [
             "soccer_hot_scorers",     # top-scorer AGS anchor
             "espn_soccer_fixtures",   # ESPN scoreboard fallback
@@ -295,8 +304,19 @@ def production_status(sport: str) -> str:
 
 def market_production_status(sport: str, market_key: str) -> str:
     """Return the honest per-market production status.  Falls back to
-    the sport-level status when a per-market override is absent."""
+    the sport-level status when a per-market override is absent.
+
+    PHASE 5 FIX 1 (2026-06) — checks ``unsupported_markets`` FIRST so
+    an intentionally-unsupported prop (e.g. Soccer first/last goal
+    scorer) cannot inherit the sport-level SUPPORTED status.
+    """
     entry = SPORT_CAPABILITIES.get(sport) or {}
+    unsupported = entry.get("unsupported_markets") or {}
+    if market_key in unsupported:
+        val = unsupported[market_key]
+        if val in VALID_PRODUCTION_STATUSES:
+            return val
+        return "INTENTIONALLY_UNSUPPORTED"
     market_status = entry.get("market_status") or {}
     override = market_status.get(market_key)
     if override in VALID_PRODUCTION_STATUSES:
