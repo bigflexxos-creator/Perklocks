@@ -38,6 +38,7 @@ from typing import Any
 SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
     "MLB": {
         "enabled": True,
+        "production_status": "SUPPORTED",   # PHASE 5 §5A
         "game_markets": ["h2h", "spreads", "totals"],
         "prop_markets": [
             "batter_hits", "batter_hits_alternate",
@@ -56,6 +57,18 @@ SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
     },
     "NBA": {
         "enabled": True,
+        # PHASE 5 (2026-06) — Production status classification per §5A.
+        # Overall sport is SUPPORTED because player props travel the full
+        # canonical path.  Game markets are MODEL_UNAVAILABLE — no
+        # authoritative independent NBA game model has been wired since
+        # Phase 1B retired the sportsbook-follow pseudo-model.
+        "production_status": "SUPPORTED",
+        "market_status": {
+            "h2h":     "MODEL_UNAVAILABLE",
+            "spreads": "MODEL_UNAVAILABLE",
+            "totals":  "MODEL_UNAVAILABLE",
+            # Player props all SUPPORTED (see prop_markets list below).
+        },
         "game_markets": ["h2h", "spreads", "totals"],
         "prop_markets": [
             "player_points", "player_rebounds", "player_assists",
@@ -79,6 +92,7 @@ SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
     },
     "NFL": {
         "enabled": True,
+        "production_status": "SUPPORTED",   # PHASE 5 §5A
         "game_markets": ["h2h", "spreads", "totals"],
         "prop_markets": [
             "player_pass_yds", "player_pass_yds_alternate",
@@ -104,6 +118,15 @@ SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
     },
     "CFB": {
         "enabled": True,
+        # PHASE 5 (2026-06) — INTENTIONALLY_DEFERRED per release scope
+        # update.  Not a Phase 10 blocker for this release.  Capability
+        # code preserved for future re-enablement.
+        "production_status": "INTENTIONALLY_DEFERRED",
+        "market_status": {
+            "h2h":     "MODEL_UNAVAILABLE",
+            "spreads": "MODEL_UNAVAILABLE",
+            "totals":  "MODEL_UNAVAILABLE",
+        },
         "game_markets": ["h2h", "spreads", "totals"],
         "prop_markets": [],   # thin CFB player-prop catalogue on Odds API
         "fallback_sources": [],
@@ -118,6 +141,7 @@ SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
     },
     "Soccer": {
         "enabled": True,
+        "production_status": "SUPPORTED",   # PHASE 5 §5A
         "game_markets": ["h2h", "spreads", "totals", "btts", "double_chance"],
         "prop_markets": [
             "player_goal_scorer_anytime",
@@ -141,6 +165,7 @@ SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
     },
     "Tennis": {
         "enabled": True,
+        "production_status": "SUPPORTED",   # PHASE 5 §5A
         "game_markets": ["h2h", "spreads", "totals"],
         "prop_markets": [],   # tennis props not exposed by Odds API
         "fallback_sources": ["tennis_extra"],  # TennisExplorer scrape
@@ -154,6 +179,12 @@ SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
     },
     "UFC": {
         "enabled": True,
+        # PHASE 5 (2026-06) — INTENTIONALLY_DEFERRED per release scope.
+        "production_status": "INTENTIONALLY_DEFERRED",
+        "market_status": {
+            "h2h":    "MODEL_UNAVAILABLE",
+            "totals": "MODEL_UNAVAILABLE",
+        },
         "game_markets": ["h2h", "totals"],   # rounds totals + ML
         "prop_markets": [],  # confirmed no MMA props on Odds API
         "fallback_sources": ["ufc_espn_ingest"],
@@ -167,6 +198,13 @@ SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
     },
     "NHL": {
         "enabled": True,
+        # PHASE 5 (2026-06) — INTENTIONALLY_DEFERRED per release scope.
+        "production_status": "INTENTIONALLY_DEFERRED",
+        "market_status": {
+            "h2h":     "MODEL_UNAVAILABLE",
+            "spreads": "MODEL_UNAVAILABLE",
+            "totals":  "MODEL_UNAVAILABLE",
+        },
         "game_markets": ["h2h", "spreads", "totals"],
         "prop_markets": [],   # not yet wired
         "fallback_sources": [],
@@ -221,6 +259,63 @@ def supports_locks(sport: str) -> bool:
     return bool(entry.get("supports_locks"))
 
 
+# ─────────────────────────────────────────────────────────────────────
+# PHASE 5 (2026-06) — Production-status helpers per §5A.
+#
+# Contract: consumer surfaces MUST call these to render honest
+# capability strings rather than checking ``enabled`` alone.  A sport
+# with ``enabled=True`` but ``production_status="INTENTIONALLY_DEFERRED"``
+# is preserved in the codebase but MUST NOT appear as production-ready
+# in any UI badge / capability API / filter enumeration.
+#
+# Valid values:
+#   SUPPORTED
+#   PROVIDER_UNAVAILABLE
+#   MODEL_UNAVAILABLE
+#   INTENTIONALLY_UNSUPPORTED
+#   INTENTIONALLY_DEFERRED     (current release only — not permanent)
+# ─────────────────────────────────────────────────────────────────────
+VALID_PRODUCTION_STATUSES: frozenset[str] = frozenset({
+    "SUPPORTED", "PROVIDER_UNAVAILABLE", "MODEL_UNAVAILABLE",
+    "INTENTIONALLY_UNSUPPORTED", "INTENTIONALLY_DEFERRED",
+})
+
+
+def production_status(sport: str) -> str:
+    """Return the honest production status for `sport`.  Defaults to
+    ``MODEL_UNAVAILABLE`` when the registry lacks an explicit tag."""
+    entry = SPORT_CAPABILITIES.get(sport) or {}
+    status = entry.get("production_status")
+    if status in VALID_PRODUCTION_STATUSES:
+        return status
+    # Legacy entries without an explicit status default to
+    # MODEL_UNAVAILABLE (honest — we haven't classified them yet).
+    return "MODEL_UNAVAILABLE"
+
+
+def market_production_status(sport: str, market_key: str) -> str:
+    """Return the honest per-market production status.  Falls back to
+    the sport-level status when a per-market override is absent."""
+    entry = SPORT_CAPABILITIES.get(sport) or {}
+    market_status = entry.get("market_status") or {}
+    override = market_status.get(market_key)
+    if override in VALID_PRODUCTION_STATUSES:
+        return override
+    return production_status(sport)
+
+
+def core_release_sports() -> list[str]:
+    """The current five sports required for production certification."""
+    return ["MLB", "NFL", "NBA", "Soccer", "Tennis"]
+
+
+def is_production_ready(sport: str) -> bool:
+    """True iff the sport can be advertised as production-ready on
+    consumer surfaces.  Deferred / model-unavailable / provider-
+    unavailable sports return False."""
+    return production_status(sport) == "SUPPORTED"
+
+
 def capability_matrix() -> dict[str, dict[str, Any]]:
     """Return a shallow copy of the registry for read-only consumers."""
     return {k: dict(v) for k, v in SPORT_CAPABILITIES.items()}
@@ -234,4 +329,10 @@ __all__ = [
     "enabled_sports",
     "supports_locks",
     "capability_matrix",
+    # PHASE 5 (2026-06) — production-status helpers
+    "VALID_PRODUCTION_STATUSES",
+    "production_status",
+    "market_production_status",
+    "core_release_sports",
+    "is_production_ready",
 ]
