@@ -980,10 +980,25 @@ async def annotate_picks_async(
 
             if apply_drop and result.recommend_drop and not p.get("elite_protect"):
                 dropped_count += 1
+                # UNIVERSAL_RUNTIME_AUTHORITY_CONSOLIDATION (2026-09)
+                # — even when apply_drop=True we still annotate the
+                # pick with disposition metadata BEFORE removing it,
+                # so downstream telemetry can trace the drop.
+                p.update(result.to_pick_fields())
+                p["matchup_recommends_drop"] = True
+                p["consumer_disposition"] = "DISPLAY_HIDDEN_BY_MATCHUP"
+                p["disposition_reason"] = "; ".join(
+                    result.drop_reasons
+                ) if result.drop_reasons else "matchup_low_confidence"
+                p["disposition_stage"] = "goalscorer_matchup_read_time"
                 continue
 
             # Annotate pick with explainability + new score field.
             p.update(result.to_pick_fields())
+            # Explicit enrichment tag — pick REMAINS canonically
+            # eligible regardless of matchup outcome.  Locks / read-
+            # time consumers must NOT silently drop the pick.
+            p["matchup_recommends_drop"] = bool(result.recommend_drop)
             survived.append(p)
         except Exception as e:
             logger.warning(

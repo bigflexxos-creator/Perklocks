@@ -1301,31 +1301,34 @@ def _event_tokens_from_pick_event(event_str: str) -> set[str]:
 
 def apply_quality_gate(
     picks: Iterable[dict], *, tag_blocked: bool = False,
+    enforce: bool = True,
 ) -> tuple[list[dict], dict]:
     """Filter the pick list.
 
-    Returns `(kept, stats)` where stats is a dict of
-    `{block_reason: count}` for observability.
+    Returns ``(kept, stats)`` where ``stats`` is a dict of
+    ``{block_reason: count}`` for observability.
+
+    UNIVERSAL_RUNTIME_AUTHORITY_CONSOLIDATION (2026-09)
+      * ``enforce`` — when ``False``, the gate becomes
+        ENRICHMENT_ONLY: it tags every pick that WOULD have been
+        blocked with ``quality_gate_block_reason`` + explicit
+        ``consumer_disposition = "DISPLAY_HIDDEN_BY_QUALITY_GATE"``
+        but **does not drop the pick**.  This preserves the
+        current authoritative pre-publication canonical eligibility
+        decision — read-time consumers project canonical truth, they
+        do NOT re-model it.  Cross-cutting integrity rules that
+        MUST remain enforced at read time (real-line existence, live-
+        alt-line validation) run as separate calls, not inside this
+        function.
+      * Default ``enforce=True`` remains for legacy call-sites and
+        pre-publication ingest paths where the gate IS an
+        authoritative decision-maker.
 
     Filter policy (2026-06-30, user clarification):
       ▸ Lock Score is the DEEP-THINKING ENGINE'S signal and is NEVER
-        capped here. The engine decides Lock 95/99 — quality_gate
-        does not.
-      ▸ Edge can be NEGATIVE on legitimate sportsbook lines (e.g. MLB
-        Over 0.5 Hits at -300 chalk has -EV but is a real, bettable
-        line). We DO NOT blanket-drop -EV picks because that erases
-        entire markets (MLB batter props, etc.).
-      ▸ TARGETED drops only:
-          1. `_block_reason` — synthetic / impossible markets
-             (Soccer FGS 3% lottery, MLB NRFI/ML/YRFI low-winrate
-             buckets, etc.). These are pre-validated heuristics.
-          2. Tennis synthetic-chalk Over lines — already removed by
-             `_drop_tennis_synthetic_lines` AFTER alt-line validation
-             confirms the line+price doesn't exist on any book.
-      ▸ The elite-anchor + coherence-cap pipeline still runs to keep
-        FIELD CONSISTENCY across `lock_score / v2 / raw / peak`, but
-        the only field a cap actually lowers is on negative-edge picks
-        as defense-in-depth (matches what the detail endpoint does).
+        capped here.
+      ▸ Edge can be NEGATIVE on legitimate sportsbook lines.
+      ▸ TARGETED drops only.
     """
     kept: list[dict] = []
     blocked_counts: dict[str, int] = {}
@@ -1334,24 +1337,25 @@ def apply_quality_gate(
         if reason is None:
             # ── Phase 2A.5 DEFECT #4 (2026-08) ─────────────────────
             # `_apply_elite_scorer_anchor` RETIRED as a finalizer step.
-            # No player receives an artificial Lock Score / win_probability
-            # override because of their name.  Elite classification is
-            # a downstream evidence-derived label from
-            # `services.soccer_scorer_bridge.quality_profile` and does
-            # not directly assign Lock Score.  (Function retained as a
-            # no-op-safe helper for backwards-compat imports.)
+            # Elite classification is now a downstream evidence-derived
+            # label from `services.soccer_scorer_bridge.quality_profile`
+            # and does not directly assign Lock Score.
             # _apply_elite_scorer_anchor(p)   # retired 2026-08 Phase 2A.5
-            # Display caps RETIRED — was demoting Anytime scorers based
-            # on calibration; lock score now comes from engine only.
             _apply_display_cap(p)
-            # Coherence cap — only fires on negative-edge picks now
-            # (Rules 2/3 retired per user clarification 2026-06-30).
-            # Defense-in-depth for the detail endpoint; the board
-            # itself does NOT drop -EV picks.
             _apply_lockscore_coherence(p)
             kept.append(p)
             continue
         blocked_counts[reason] = blocked_counts.get(reason, 0) + 1
+        if not enforce:
+            # ENRICHMENT_ONLY: annotate + retain.  Explicit
+            # disposition so telemetry can see why UI hides it.
+            p["quality_gate_block_reason"] = reason
+            p.setdefault("consumer_disposition",
+                          "DISPLAY_HIDDEN_BY_QUALITY_GATE")
+            p.setdefault("disposition_reason", reason)
+            p.setdefault("disposition_stage", "quality_gate_read_time")
+            kept.append(p)
+            continue
         if tag_blocked:
             p["quality_gate_block_reason"] = reason
             kept.append(p)

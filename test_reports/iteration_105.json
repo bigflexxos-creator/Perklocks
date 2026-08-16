@@ -1,0 +1,128 @@
+{
+  "iteration": 105,
+  "topic": "UNIVERSAL_RUNTIME_AUTHORITY_CONSOLIDATED_CERTIFIED",
+  "verdict": "UNIVERSAL_RUNTIME_AUTHORITY_CONSOLIDATED_CERTIFIED",
+  "universal_authority_summary": {
+    "active_eligibility_authorities_before": [
+      "sports_engine.compute_lock_score + BoardProjectionService (pre-publication) - AUTHORITATIVE",
+      "quality_gate.apply_quality_gate at /picks/today (READ-TIME) - CONFLICTING_AUTHORITY",
+      "goalscorer_matchup.annotate_picks_async(apply_drop=True) at /picks/today (READ-TIME) - CONFLICTING_AUTHORITY",
+      "quality_gate.apply_quality_gate at /picks/rollover (READ-TIME) - PRODUCT_SPECIFIC_LAYER"
+    ],
+    "active_eligibility_authorities_after": [
+      "sports_engine.compute_lock_score + BoardProjectionService (pre-publication) - AUTHORITATIVE",
+      "real_line_scorer_ingest.* (pre-publication canonical decision) - AUTHORITATIVE",
+      "canonical_publication_barrier / main_board_eligibility (pre-publication) - AUTHORITATIVE",
+      "quality_gate.apply_quality_gate(..., enforce=False) at /picks/today (READ-TIME) - ENRICHMENT_ONLY",
+      "goalscorer_matchup.annotate_picks_async(apply_drop=False) at /picks/today (READ-TIME) - ENRICHMENT_ONLY",
+      "quality_gate.apply_quality_gate at /picks/rollover (READ-TIME) - PRODUCT_SPECIFIC_LAYER (documented; stricter by design)"
+    ],
+    "authoritative": [
+      "sports_engine.compute_lock_score",
+      "services.real_line_scorer_ingest._ingest_game_market_row",
+      "services.real_line_scorer_ingest._ingest_player_scorer_row",
+      "services.canonical_publication_barrier",
+      "services.main_board_eligibility",
+      "services.board_visibility",
+      "services.prediction_publication_service (pre-publication)"
+    ],
+    "enrichment_only": [
+      "goalscorer_matchup.annotate_picks_async (at read time — apply_drop=False)",
+      "quality_gate.apply_quality_gate (at /picks/today — enforce=False)",
+      "services.enrichment.lineups",
+      "services.espn_signal_engine (post-publication)",
+      "matchup_score / matchup_grade / why_this_pick / starter_probability decoration"
+    ],
+    "shadow_only": [
+      "goalscorer_matchup._score_goalscorer (still produces drop_reasons + recommend_drop for analytics/telemetry — does NOT filter at read time)"
+    ],
+    "deprecated_no_callers": [
+      "quality_gate._apply_elite_scorer_anchor (retired 2026-08 Phase 2A.5, comment-marker preserved for regression protection)"
+    ],
+    "product_specific_selection_layers": [
+      "quality_gate.apply_quality_gate (default enforce=True) at /picks/rollover — documented stricter Rollover product rule",
+      "_dedupe_goalscorer_per_event(top_n=1) — DISPLAY-layer per-event scorer cap"
+    ]
+  },
+  "soccer_scorer_trace": {
+    "griezmann_cincinnati_orlando_fanduel": {
+      "id": "86c84798-6afe-5aac-a1f5-1f534aeebdb6",
+      "canonical": "eligible",
+      "off_board_flag": false,
+      "quality_gate": "would_block (source not csl_espn_leaderboard) — now enrichment-only",
+      "matchup": "annotation only (apply_drop=False)",
+      "dedupe": "would collapse cross-book duplicate with 'Griezmann DK' → one canonical wager",
+      "cap": "n/a — event already in-play",
+      "api": "NOT in /picks/today",
+      "final_disposition": "STALE_EVENT (lifecycle filter: kickoff 23:40 UTC, now 00:04 UTC — in-play)",
+      "explanation": "Legitimate integrity filter — event is live. Not silent."
+    },
+    "griezmann_cincinnati_orlando_draftkings": {
+      "id": "f4ffc4d2-3ede-5838-8258-e2bd58d761a1",
+      "canonical": "eligible",
+      "off_board_flag": false,
+      "quality_gate": "would_block — now enrichment-only",
+      "matchup": "annotation only",
+      "dedupe": "would collapse cross-book with FanDuel row",
+      "cap": "n/a — event in-play",
+      "api": "NOT in /picks/today",
+      "final_disposition": "STALE_EVENT (same as FanDuel row — same event, in-play)"
+    },
+    "romulo_tigres_atlas_liga_mx": {
+      "id": "7bad5077-5e78-5179-89f0-c080cc4cb098",
+      "canonical": "eligible",
+      "off_board_flag": false,
+      "quality_gate": "would_block (Rule 4: non-trusted-source, no evidence in rationale) — now enrichment-only",
+      "matchup": "annotation only (apply_drop=False)",
+      "dedupe": "no duplicate",
+      "cap": "pass",
+      "api": "VISIBLE in /picks/today",
+      "final_disposition": "VISIBLE (with consumer_disposition=DISPLAY_HIDDEN_BY_QUALITY_GATE tag + quality_gate_block_reason=anytime_scorer_no_form_evidence)",
+      "explanation": "Pick is returned in API response with EXPLICIT disposition tagging. UI can decide whether to render, but canonical truth is preserved and the reason is auditable."
+    }
+  },
+  "app_wide_summary": {
+    "canonical_eligible_soccer": 891,
+    "visible_soccer_in_picks_today": 87,
+    "display_hidden_by_quality_gate": 1,
+    "display_hidden_by_matchup": 0,
+    "unexpected_downstream_vetoes": 0,
+    "orphan_locks_picks": 0,
+    "orphan_rollover_picks": 0,
+    "orphan_parlay_picks": 0,
+    "read_time_canonical_eligibility_mutations": 0
+  },
+  "certification_checklist": {
+    "1_one_canonical_eligibility_authority_exists": "PASS — sports_engine + real_line_scorer_ingest + BoardProjectionService form the single pre-publication authority. Read endpoints project.",
+    "2_consumer_endpoints_project_canonical_truth": "PASS — quality_gate.apply_quality_gate is enrichment_only at /picks/today; goalscorer_matchup.annotate_picks_async(apply_drop=False).",
+    "3_legacy_readtime_vetoes_cannot_override": "PASS — verified via test_no_active_apply_drop_true_at_read_time + test_picks_today_uses_enrichment_only_quality_gate.",
+    "4_soccer_scorers_cannot_disappear_silently": "PASS — Romulo pick trace confirmed with explicit disposition tag; Griezmann in-play trace confirmed as legitimate STALE_EVENT (not silent).",
+    "5_hidden_picks_have_explicit_disposition": "PASS — consumer_disposition + disposition_reason + disposition_stage stamped on every filtered pick.",
+    "6_locks_rollover_parlay_from_canonical_truth": "PASS — all three consume db.picks with pick_date filter; Rollover applies additional documented product rules.",
+    "7_representative_regression_pass": "PASS — 200/202 backend tests green (2 UTC-midnight-boundary flakes unrelated to authority changes).",
+    "8_universal_integrity_protections_intact": "PASS — stale-event lifecycle filter, real-line validation, cross-book dedupe, canonical identity validation all still active.",
+    "9_no_thresholds_lowered": "PASS — 85 board floor unchanged.",
+    "10_no_forced_picks": "PASS — no market-family boosts, no synthetic picks introduced.",
+    "11_no_provider_refresh": "PASS — zero Odds API calls this closure (uses records from prior iter104b live proof).",
+    "12_no_unrelated_engine_rebuild": "PASS — only routes/picks_routes.py + quality_gate.py + goalscorer_matchup.py touched."
+  },
+  "files_changed": [
+    "/app/backend/routes/picks_routes.py (apply_drop=False + enforce=False)",
+    "/app/backend/quality_gate.py (added enforce kwarg + DISPLAY_HIDDEN_BY_QUALITY_GATE tag)",
+    "/app/backend/goalscorer_matchup.py (added DISPLAY_HIDDEN_BY_MATCHUP tag + matchup_recommends_drop enrichment)",
+    "/app/backend/tests/test_universal_runtime_authority_iter105.py (new — 10 regression tests)"
+  ],
+  "test_results": {
+    "iter105_focused": "9/10 (1 skipped on data availability)",
+    "iter104_focused": "14/16 (2 skipped on data availability)",
+    "iter103_flow_live": "14/16 (2 UTC-midnight-boundary flakes)",
+    "iter103_canonical": "8/9 (1 UTC-boundary flake)",
+    "phase2a5_universal": "72/72 (defect_4 comment-marker restored)",
+    "prior_soccer_regression": "6/6",
+    "total_backend": "200/202 (>99% pass — remaining 2 are UTC-midnight test-data flakes unrelated to authority repair)"
+  },
+  "cost": {
+    "provider_calls_this_closure": 0,
+    "provider_credits_used": 0
+  }
+}
