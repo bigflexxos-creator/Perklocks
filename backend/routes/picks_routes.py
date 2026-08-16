@@ -664,12 +664,21 @@ async def pick_rollover(
             _tagged_ids = [p.get("id") for p in top if p.get("id")]
             if _tagged_ids:
                 _stamp_at = datetime.now(timezone.utc).isoformat()
-                await db.picks.update_many(
-                    {"id": {"$in": _tagged_ids},
-                     "on_rollover_at": {"$exists": False}},
-                    {"$set": {"on_rollover_at": _stamp_at,
-                              "rollover_frozen_source": "picks_route_live"}},
-                )
+                # PHASE 7 §7W (2026-06) — Rollover Snapshot metadata.
+                # Stamp selection_rank + selector version so History /
+                # Analytics can reproduce the exact live selection
+                # without postgame reconstruction.
+                for _rank, _pid in enumerate(_tagged_ids, start=1):
+                    await db.picks.update_many(
+                        {"id": _pid,
+                         "on_rollover_at": {"$exists": False}},
+                        {"$set": {
+                            "on_rollover_at":          _stamp_at,
+                            "rollover_frozen_source":  "picks_route_live",
+                            "rollover_selection_rank": _rank,
+                            "rollover_selector_version": "rollover2.picks_route.v1",
+                        }},
+                    )
         except Exception as _tag_err:
             logger.debug("frozen rollover stamp skipped: %s", _tag_err)
 
