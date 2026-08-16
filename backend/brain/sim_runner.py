@@ -123,6 +123,32 @@ def simulate_pick(pick: dict) -> Optional[dict]:
         out.setdefault("seed",                 seed)
         out.setdefault("independent_evidence", True)
         out.setdefault("valid",                True)
+        # Post-Cert Defect 1 — PROVENANCE OVERRIDE.
+        # The Phase-2 provenance contract is AUTHORITATIVE.  If the
+        # simulator reports MODEL_CONDITIONED / PRIOR_ONLY / INVALID —
+        # or explicitly reports decision_valid=False — the legacy
+        # ``independent_evidence`` / ``valid`` compatibility defaults
+        # (set above via setdefault so we don't disturb simulators that
+        # already returned the correct value) MUST be overridden here.
+        # Only CAUSAL_INDEPENDENT / EMPIRICAL_INDEPENDENT with a FULL /
+        # STRONG confidence and decision_valid=True may count as
+        # independent confirmation downstream.
+        _prov = out.get("simulator_provenance") or out.get("provenance")
+        _conf = (out.get("input_quality")
+                 or out.get("confidence_bucket")
+                 or out.get("provenance_confidence") or "").upper()
+        _decision_valid = out.get("decision_valid", True)
+        if _prov in ("MODEL_CONDITIONED", "PRIOR_ONLY", "INVALID"):
+            out["independent_evidence"] = False
+        if _prov == "INVALID":
+            out["valid"] = False
+        if _decision_valid is False:
+            out["independent_evidence"] = False
+            out["valid"] = False
+        if _prov in ("CAUSAL_INDEPENDENT", "EMPIRICAL_INDEPENDENT"):
+            # Independent provenance requires FULL/STRONG confidence.
+            if _conf and _conf not in ("FULL", "STRONG", "HIGH"):
+                out["independent_evidence"] = False
         return out
     except Exception as e:
         logger.warning("Simulator failed for pick %s (sport=%s): %s",

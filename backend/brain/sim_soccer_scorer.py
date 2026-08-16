@@ -130,43 +130,21 @@ def _estimate_player_lambda(pick: dict, priors: dict) -> tuple[float, str, int]:
     PHASE 2 (2026-06) — returns ``(lambda, provenance, signals)`` so
     downstream consumers can classify the simulator output:
 
-      * Approach 1 (calibrate to model_wp) → MODEL_CONDITIONED (never
+      * Approach 1 (real xG / opp / minutes priors) → EMPIRICAL_INDEPENDENT.
+      * Approach 2 (calibrate to model_wp) → MODEL_CONDITIONED (never
         counts as independent agreement — it's a back-solve).
-      * Approach 2 (real xG / opp / minutes priors) → EMPIRICAL_INDEPENDENT.
       * Approach 3 (factor heuristic only) → PRIOR_ONLY.
 
-    Order of preference:
-      1. Calibrate to model_wp (the matchup-aware ground truth)
-      2. Use parsed key_insights (xG/match + opp adjustment)
-      3. Fall back to factor-based heuristic
+    Post-Cert Defect 3A — SCORER PRIORITY.  Previously Approach 1 was
+    model-WP back-solve which is MODEL_CONDITIONED and cannot serve as
+    independent confirmation.  Real empirical player evidence (xG,
+    opponent, minutes) must be tried FIRST so that when it exists the
+    simulator can emit EMPIRICAL_INDEPENDENT provenance.  We never
+    invent evidence — if priors are absent we fall back to the
+    model-conditioned back-solve, then to the pure heuristic.
     """
-    # Approach 1: Calibrate to model WP. For ATGS, P(goals≥1) = 1 - e^-λ
-    # so model_wp / 100 = 1 - e^-λ → λ = -ln(1 - p)
-    model_wp = float(pick.get("win_probability") or 0) / 100.0
-    if 0.02 < model_wp < 0.98:
-        # Calibrate against the SPECIFIC market we're pricing — but for now
-        # we always calibrate against ATGS-equivalent. For "2+ goals" or
-        # "hat-trick" the model_wp already reflects the harder threshold,
-        # so we need to undo that. We'll use ATGS-equivalent λ when possible:
-        market = (pick.get("market") or "").lower()
-        if "anytime" in market or ("to score" in market and "first" not in market and "last" not in market):
-            lam = -math.log(1.0 - model_wp)
-        elif "2+ goals" in market or "to score 2" in market:
-            # P(X >= 2) = 1 - e^-λ (1 + λ) = model_wp. Bisect for λ.
-            lam = _bisect_lambda_for_atleast_k(2, model_wp)
-        elif "hat" in market or "3+ goals" in market:
-            lam = _bisect_lambda_for_atleast_k(3, model_wp)
-        elif "first goal" in market or "last goal" in market:
-            # FGS/LGS ≈ P(scores) × (1 / (1 + N-1 other scorers))
-            # Inverse: λ ≈ -ln(1 - 2 * model_wp) but bounded. Simpler: treat as ATGS proxy.
-            lam = -math.log(1.0 - min(0.95, model_wp * 2.5))
-        else:
-            lam = -math.log(1.0 - model_wp)
-        # MODEL_CONDITIONED: 1 signal (the model's own WP).  Cannot
-        # act as independent evidence downstream.
-        return max(0.05, min(2.5, lam)), "MODEL_CONDITIONED", 1
-
-    # Approach 2: Direct from key_insights (real player-xG / opp / minutes)
+    # ── Approach 1 (post-Cert Defect 3A): REAL EMPIRICAL PRIORS FIRST.
+    # Direct from key_insights: player-xG / opp / minutes / recent form.
     if "player_xg_per_game" in priors:
         base = priors["player_xg_per_game"]
         # Opponent strength adjustment
@@ -188,8 +166,29 @@ def _estimate_player_lambda(pick: dict, priors: dict) -> tuple[float, str, int]:
             signals,
         )
 
-    # Approach 3: Factor-based fallback — priors-only, DO NOT count as
-    # independent evidence and DO NOT flag severe disagreement.
+    # ── Approach 2: MODEL-CONDITIONED back-solve.
+    # For ATGS, P(goals>=1) = 1 - e^-λ so model_wp / 100 = 1 - e^-λ →
+    # λ = -ln(1 - p).  MODEL_CONDITIONED — cannot count as independent
+    # evidence downstream even if the fit is tight.
+    model_wp = float(pick.get("win_probability") or 0) / 100.0
+    if 0.02 < model_wp < 0.98:
+        market = (pick.get("market") or "").lower()
+        if "anytime" in market or ("to score" in market and "first" not in market and "last" not in market):
+            lam = -math.log(1.0 - model_wp)
+        elif "2+ goals" in market or "to score 2" in market:
+            # P(X >= 2) = 1 - e^-λ (1 + λ) = model_wp. Bisect for λ.
+            lam = _bisect_lambda_for_atleast_k(2, model_wp)
+        elif "hat" in market or "3+ goals" in market:
+            lam = _bisect_lambda_for_atleast_k(3, model_wp)
+        elif "first goal" in market or "last goal" in market:
+            # FGS/LGS ≈ P(scores) × (1 / (1 + N-1 other scorers))
+            lam = -math.log(1.0 - min(0.95, model_wp * 2.5))
+        else:
+            lam = -math.log(1.0 - model_wp)
+        return max(0.05, min(2.5, lam)), "MODEL_CONDITIONED", 1
+
+    # ── Approach 3: Factor-based fallback — PRIOR_ONLY, cannot count
+    # as independent evidence and cannot boost Lock / Magic / Apex.
     f = pick.get("factors") or {}
     try:
         vol = float(f.get("Recent Volume / Usage", 50.0))

@@ -236,9 +236,17 @@ def _extract_event_participants(pick: dict) -> tuple[str, str]:
 
 def _extract_player_team(pick: dict) -> str:
     """Return the player's team normalized.  Empty string when the pick
-    lacks any enriched team hint (fail-open — see module docstring)."""
+    lacks any enriched team hint (fail-open — see module docstring).
+
+    Post-Cert Defect 3B — recognises the Soccer scorer ingestion's
+    ``canonical_team_name`` field as an authoritative player-team
+    source (matches other authoritative fields like ``player_team`` /
+    ``elite_player_team``).  Never invents a team — only reads existing
+    enriched fields.
+    """
     for k in ("player_team", "elite_player_team",
-              "player_team_name", "team", "team_abbrev"):
+              "player_team_name", "canonical_team_name",
+              "team", "team_abbrev"):
         v = pick.get(k)
         if isinstance(v, str) and v.strip():
             return _norm(v)
