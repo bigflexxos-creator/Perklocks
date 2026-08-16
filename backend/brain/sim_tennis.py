@@ -252,7 +252,16 @@ def _signal(disagreement: float) -> str:
     return "neutral"
 
 
-def simulate_tennis_pick(pick: dict) -> Optional[dict]:
+def simulate_tennis_pick(pick: dict, tennis_ctx: dict | None = None) -> Optional[dict]:
+    """PHASE 2 (2026-06) UPGRADE — when ``tennis_ctx`` carries real
+    surface Elo / hold_pct / form / H2H signals compatible with
+    :func:`services.tennis_math_engine.score_tennis_matchup`, this sim
+    derives serve percentages from an EMPIRICAL_INDEPENDENT baseline
+    (surface Elo + hold/break) instead of back-solving from model_wp.
+
+    Fallback (no ctx) preserves the existing model-conditioned
+    calibration for backwards compatibility.
+    """
     if (pick.get("sport") or "") != "Tennis":
         return None
     market = pick.get("market") or ""
@@ -268,15 +277,46 @@ def simulate_tennis_pick(pick: dict) -> Optional[dict]:
     # to the pick's main player so we can interpret the games margin correctly.
     spread_line = _extract_spread(market) if cat == "game_spread" else 0.0
 
-    # Calibrate serve qualities to the model's WP. For SPREAD markets the
-    # model's WP is P(cover), NOT P(match win) — so we calibrate against
-    # the spread-cover rate, not match win rate. This was the bug that made
-    # +4.5 underdog spreads look like 65% winners (their match WP was much
-    # lower than their cover WP).
-    if cat == "game_spread":
-        p_serve, o_serve = _calibrate_serve_gap_for_spread(spread_line, model_wp)
-    else:
-        p_serve, o_serve = _calibrate_serve_gap(model_wp)
+    # PHASE 2 (2026-06) — INDEPENDENT SERVE-GAP path.  When
+    # ``tennis_ctx`` carries surface Elo + hold_pct signals, derive
+    # p_serve / o_serve from those inputs (independent of the model's
+    # win probability).  Otherwise fall back to WP-calibration.
+    independent_signals = 0
+    serve_derivation = "model_calibrated"
+    if tennis_ctx and cat != "game_spread":
+        try:
+            # Elo baseline gives the win_prob directly; convert to a
+            # serve-gap by inverting our _calibrate helper against the
+            # ELO-derived WP so the sim samples from the INDEPENDENT
+            # probability.
+            from services.tennis_math_engine import score_tennis_matchup
+            home = tennis_ctx.get("home") or pick.get("home_team") or ""
+            away = tennis_ctx.get("away") or pick.get("away_team") or ""
+            surface = tennis_ctx.get("surface") or "hard"
+            sig = score_tennis_matchup(home, away, surface, 0.5, tennis_ctx)
+            elo_wp = sig.get("home_win_prob")
+            used = sig.get("used_signals") or []
+            has_elo = sig.get("has_elo_baseline", False)
+            if elo_wp is not None and (has_elo or len(used) >= 2):
+                # elo_wp is home's WP; determine whether pick side is home.
+                pick_team = (pick.get("selection") or "").strip().lower()
+                is_pick_home = bool(home) and (
+                    pick_team == home.strip().lower() or
+                    pick_team in home.strip().lower()
+                )
+                pick_wp = float(elo_wp) if is_pick_home else 1.0 - float(elo_wp)
+                pick_wp = max(0.05, min(0.95, pick_wp))
+                p_serve, o_serve = _calibrate_serve_gap(pick_wp)
+                independent_signals = len(used)
+                serve_derivation = "elo_hold_break"
+        except Exception:
+            pass
+
+    if serve_derivation == "model_calibrated":
+        if cat == "game_spread":
+            p_serve, o_serve = _calibrate_serve_gap_for_spread(spread_line, model_wp)
+        else:
+            p_serve, o_serve = _calibrate_serve_gap(model_wp)
 
     threshold = _extract_threshold(market)
     is_under = _is_under(market)
@@ -353,26 +393,27 @@ def simulate_tennis_pick(pick: dict) -> Optional[dict]:
         payload["sim_avg_games_margin"] = round(sum(games_margin_dist) / max(1, n), 2)
 
     # PHASE 2 (2026-06) — Universal Simulator Provenance Envelope.
-    # This sim CALIBRATES p_serve / o_serve to match the model's WP
-    # (see _calibrate_serve_gap / _calibrate_serve_gap_for_spread).
-    # That's a back-solve from the model's own probability — the
-    # resulting sim_win_probability agreeing with model_wp is a
-    # tautology.  Classify as MODEL_CONDITIONED so downstream Magic /
-    # Bet Quality / Apex do not count it as independent evidence.
-    # The distribution IS still useful for total-games quantiles,
-    # alt-line sensitivity, and adjacent-spread monotonicity.
+    # * ``serve_derivation == "elo_hold_break"`` — serve gap came from
+    #   real surface Elo + hold/break signals (INDEPENDENT of model_wp).
+    #   Provenance → EMPIRICAL_INDEPENDENT with quality by signal count.
+    # * ``serve_derivation == "model_calibrated"`` — legacy path,
+    #   back-solves from model_wp → MODEL_CONDITIONED (kept for
+    #   callers without a Tennis ctx).
     try:
-        from services.simulator_provenance import stamp_sim_output
-        # A future upgrade path (real Elo / serve / return / surface
-        # inputs) will emit EMPIRICAL_INDEPENDENT here — for now the
-        # sim is a calibrated posterior.
-        stamp_sim_output(
-            payload,
-            provenance="MODEL_CONDITIONED",
-            input_quality="PARTIAL",
-            sim_prob=(sim_wp_pct / 100.0),
-            model_prob=float(model_wp),
+        from services.simulator_provenance import (
+            stamp_sim_output, classify_input_quality,
         )
+        if serve_derivation == "elo_hold_break" and independent_signals >= 2:
+            provenance = "EMPIRICAL_INDEPENDENT"
+            quality = classify_input_quality(independent_signals)
+        else:
+            provenance = "MODEL_CONDITIONED"
+            quality = "PARTIAL"
+        stamp_sim_output(
+            payload, provenance=provenance, input_quality=quality,
+            sim_prob=(sim_wp_pct / 100.0), model_prob=float(model_wp),
+        )
+        payload["sim_serve_derivation"] = serve_derivation
     except Exception:
         pass
     return payload
