@@ -16,17 +16,21 @@ canonical publication.  It also runs INSIDE
 ``canonical_publication_boundary.evaluate_publication`` as defense-in-
 depth so an upstream skip cannot slip an invalid identity onto the board.
 
-Design rules (per Phase 9)
-──────────────────────────
+Design rules (per Phase 9, refined by Phase 10A + post-Phase-10 audit)
+─────────────────────────────────────────────────────────────────────
 * Fail-closed for provable mismatches — no silent attach to the most
   likely event, no confidence downgrade.
-* Fail-open for provably UNKNOWABLE identities — a pick lacking any
-  enriched `player_team` / participant identifiers is passed through to
-  the pre-existing `identity_class` machinery (Phase 6/2 handles the
-  low-confidence case).  A future upgrade may promote UNKNOWABLE to
-  fail-closed once every producer emits enriched identity.
+* Fail-closed for provably UNRESOLVABLE player identities (Phase 10A):
+  if we cannot prove membership, we do not publish the player prop.
 * Team-side markets (moneyline / spread / total) are NOT_APPLICABLE
   because the "player" concept does not apply.
+* Player-market detection is CANONICAL-KEY AWARE
+  (post-Phase-10 audit fix): recognises both human-readable display
+  labels ("Anytime Goal Scorer", "Passing Yards", …) AND provider /
+  canonical market keys ("player_goal_scorer_anytime",
+  "player_pass_yds", …).  Reads ``market``, ``market_key``, AND
+  ``provider_market_key`` so a canonical-key producer cannot bypass
+  identity validation by choosing a non-display label.
 * Reuse `services.pick_identity_authority` normalization helpers where
   practical.  DO NOT construct a competing identity table.
 
@@ -36,7 +40,8 @@ Terminal reasons emitted
     NOT_APPLICABLE                 — market has no player concept
                                      (team-side / totals).
     PLAYER_TEAM_UNRESOLVED         — pick lacks enough enrichment to
-                                     prove membership.  Fail-open.
+                                     prove membership.  FAIL-CLOSED
+                                     for publication (Phase 10A).
     PLAYER_EVENT_IDENTITY_MISMATCH — proven mismatch.  Fail-closed.
 
 This module is intentionally pure/synchronous — no DB I/O.  All inputs
@@ -85,6 +90,66 @@ _PLAYER_MARKET_TOKENS: tuple[str, ...] = (
 )
 
 
+# Post-Phase-10 audit fix — CANONICAL PROVIDER MARKET KEYS.
+# Producers routinely stamp picks with normalized keys such as
+# ``player_goal_scorer_anytime`` instead of the human-readable label
+# ``Anytime Goal Scorer``.  Prior to this registry, the substring match
+# above missed the canonical form (e.g. no "anytime goal scorer" spaces)
+# and the gate returned NOT_APPLICABLE, silently bypassing player-event
+# validation.  This registry closes the bypass by matching normalized
+# market keys AND display labels against BOTH `market` and
+# `market_key`/`provider_market_key` fields.
+_CANONICAL_PLAYER_MARKET_KEYS: frozenset[str] = frozenset({
+    # ── Soccer ───────────────────────────────────────────────────────
+    "player_goal_scorer_anytime",
+    "player_first_goal_scorer",
+    "player_last_goal_scorer",
+    "player_to_score_or_assist",
+    "player_shots_on_target",
+    "player_shots",
+    "player_assists_soccer",
+    # ── MLB ──────────────────────────────────────────────────────────
+    "batter_hits", "batter_total_bases",
+    "batter_home_runs", "batter_rbis", "batter_runs_scored",
+    "batter_stolen_bases", "batter_walks",
+    "pitcher_strikeouts", "pitcher_outs",
+    "pitcher_hits_allowed", "pitcher_walks_allowed",
+    "pitcher_earned_runs", "pitcher_record_a_win",
+    # Real alt-line MLB equivalents
+    "batter_hits_alternate", "batter_total_bases_alternate",
+    "batter_home_runs_alternate",
+    "pitcher_strikeouts_alternate", "pitcher_outs_alternate",
+    "pitcher_hits_allowed_alternate", "pitcher_earned_runs_alternate",
+    # ── NFL ──────────────────────────────────────────────────────────
+    "player_pass_yds", "player_pass_tds", "player_pass_completions",
+    "player_pass_attempts", "player_pass_interceptions",
+    "player_rush_yds", "player_rush_tds", "player_rush_attempts",
+    "player_reception_yds", "player_reception_tds",
+    "player_receptions",
+    "player_anytime_td", "player_first_td", "player_last_td",
+    "player_1st_td",
+    "player_pats", "player_field_goals",
+    # Real alt-line NFL equivalents
+    "player_pass_yds_alternate", "player_pass_tds_alternate",
+    "player_rush_yds_alternate", "player_rush_tds_alternate",
+    "player_reception_yds_alternate", "player_reception_tds_alternate",
+    "player_receptions_alternate", "player_anytime_td_alternate",
+    # ── NBA ──────────────────────────────────────────────────────────
+    "player_points", "player_rebounds", "player_assists",
+    "player_threes", "player_blocks", "player_steals",
+    "player_turnovers", "player_double_double", "player_triple_double",
+    # Fused NBA markets — PRA / PR / PA / RA
+    "player_points_rebounds_assists",
+    "player_points_rebounds",
+    "player_points_assists",
+    "player_rebounds_assists",
+    # Real alt-line NBA equivalents
+    "player_points_alternate", "player_rebounds_alternate",
+    "player_assists_alternate", "player_threes_alternate",
+    "player_points_rebounds_assists_alternate",
+})
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Normalization helpers
 # ═══════════════════════════════════════════════════════════════════════
@@ -98,8 +163,51 @@ def _norm(s: Optional[str]) -> str:
     return " ".join(s.lower().split()).strip()
 
 
+def _canonical_market_key(s: Optional[str]) -> str:
+    """Return the lowercase, whitespace-collapsed canonical form of a
+    provider market key.  Producers may write ``player_goal_scorer_anytime``
+    or ``Player Goal Scorer - Anytime``; we normalise both to
+    ``player_goal_scorer_anytime`` for registry lookup.
+    """
+    if not s:
+        return ""
+    s = str(s).strip().lower()
+    # unify separators — spaces, hyphens, dots → underscore
+    for ch in (" ", "-", ".", "/"):
+        s = s.replace(ch, "_")
+    # collapse consecutive underscores
+    while "__" in s:
+        s = s.replace("__", "_")
+    return s.strip("_")
+
+
 def _is_player_market(pick: dict) -> bool:
-    market = _norm(pick.get("market"))
+    """Return True iff the pick names a player as the participant.
+
+    Post-Phase-10 audit fix — reads BOTH the display-label ``market``
+    string AND the canonical-key fields ``market_key`` /
+    ``provider_market_key`` / ``market_id`` / ``bookmaker_market_key``.
+    A pick that carries only a canonical provider key (e.g.
+    ``player_goal_scorer_anytime``) is now correctly classified as a
+    player market instead of leaking through as NOT_APPLICABLE.
+    """
+    # ── (a) Canonical-key match ─────────────────────────────────────
+    for k in ("market_key", "provider_market_key",
+              "market_id", "bookmaker_market_key"):
+        raw = pick.get(k)
+        if raw:
+            key_norm = _canonical_market_key(raw)
+            if key_norm in _CANONICAL_PLAYER_MARKET_KEYS:
+                return True
+    # The `market` string itself may be a canonical key on some
+    # producers (soccer feeds routinely write market="player_goal_scorer_anytime").
+    market_raw = pick.get("market")
+    if market_raw:
+        key_norm = _canonical_market_key(market_raw)
+        if key_norm in _CANONICAL_PLAYER_MARKET_KEYS:
+            return True
+    # ── (b) Display-label substring match ───────────────────────────
+    market = _norm(market_raw)
     if not market:
         return False
     for token in _PLAYER_MARKET_TOKENS:

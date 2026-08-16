@@ -134,6 +134,22 @@ def is_main_board_eligible(pick: dict) -> bool:
     if pick.get("hide_from_main_board") is True:
         return False
 
+    # ── Phase 10A + post-Phase-10 audit — identity gate ──────────
+    # Defense-in-depth: block identity-mismatch / unresolvable player
+    # picks from ever appearing on the main Locks board, even if some
+    # upstream stage forgot to gate them.
+    try:
+        from services.player_event_identity_gate import (
+            evaluate_identity, IdentityVerdict,
+        )
+        _v = evaluate_identity(pick)
+        if _v in (IdentityVerdict.PLAYER_EVENT_IDENTITY_MISMATCH,
+                  IdentityVerdict.PLAYER_TEAM_UNRESOLVED):
+            return False
+    except Exception:
+        # Never let the gate crash main-board eligibility.
+        pass
+
     pls = _f(pick.get("published_lock_score"))
     if pls is not None:
         return pls >= MAIN_BOARD_LOCK_FLOOR
