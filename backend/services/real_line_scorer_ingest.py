@@ -234,13 +234,24 @@ async def _ingest_player_scorer_row(
     # the raw provider name when unresolved.  History-missing is a
     # SEPARATE arrow from identity-missing (per §5).
     lookup_name = identity.canonical_name or player
+    _identity_aliases = list(identity.aliases_used or [])
 
-    # League-aware feature + prior lookup.
+    # UNIVERSAL_IDENTITY_HISTORY_BRIDGE (2026-09) — pass the full
+    # ResolvedIdentity to the feature resolver so history lookups
+    # can key on canonical_player_id / verified aliases FIRST, then
+    # fall back to name variants.  Raw provider name is no longer
+    # the primary join key.
     form_row, evidence_source = await resolve_soccer_player_features(
         db, player_name=lookup_name, league=league,
+        canonical_player_id=identity.canonical_player_id,
+        canonical_player_name=identity.canonical_name,
+        aliases=_identity_aliases,
+        provider_player_name=player,
     )
     prior_row = await resolve_soccer_player_prior(
         db, player_name=lookup_name, league=league,
+        canonical_player_name=identity.canonical_name,
+        aliases=_identity_aliases,
     )
     # H2H matchup dossier (existing backfilled evidence) — bridge
     # uses this as matchup context, NEVER as a substitute for form.

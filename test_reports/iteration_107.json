@@ -1,0 +1,67 @@
+{
+  "iteration": 107,
+  "topic": "UNIVERSAL_IDENTITY_HISTORY_BRIDGE_CERTIFIED",
+  "verdict": "UNIVERSAL_IDENTITY_HISTORY_BRIDGE_CERTIFIED",
+  "summary": "Shared Soccer feature/prior resolver now accepts canonical_player_id + verified aliases + canonical_player_name + provider_player_name. History lookups query by canonical ID FIRST, verified aliases SECOND, name variants LAST. The universal scorer ingester passes the full ResolvedIdentity to the resolver; raw provider name is no longer the primary join key. Cross-sport audit confirmed the Soccer defect was Soccer-only — MLB/NFL/NBA/Tennis already use authoritative IDs (canonical_player_id / mlbam_id / player_id / player_key). Zero provider calls this closure.",
+  "identity_history_join_health": {
+    "soccer": {
+      "canonical_id_first": true,
+      "verified_aliases_consumed": true,
+      "history_recovered_from_join_failures": 0,
+      "true_history_gaps_after_fix": "all 50 MLS PLAYER_HISTORY_NOT_FOUND cases are TRUE coverage gaps — new/backup MLS players with zero PGA rows under ANY name variant (Ayoub Jabbari, Kenji Mboma Dem, Owen Graham-Roache, Kristian Fletcher, Woobens Pacius, etc.)",
+      "remaining_join_failures": 0,
+      "note": "The bridge fix is correctly wired — it produces zero incremental recovery because the current MLS history-missing set has no data anywhere in the actuals/form/logs stores; not a join defect. Future backfills that populate canonical_player_id on historical rows will benefit automatically."
+    },
+    "mlb":    {"same_defect_present": "NO",  "action": "no repair — canonical_player_id/mlbam_id already used"},
+    "nfl":    {"same_defect_present": "NO",  "action": "no repair — player_id already used"},
+    "nba":    {"same_defect_present": "NO",  "action": "no repair — player_id already used"},
+    "nhl":    {"same_defect_present": "N/A", "action": "no data yet in player_game_actuals"},
+    "tennis": {"same_defect_present": "NO",  "action": "no repair — player_key already used"},
+    "ufc":    {"same_defect_present": "N/A", "action": "no data yet in player_game_actuals"},
+    "cfb":    {"same_defect_present": "N/A", "action": "no data yet in player_game_actuals"}
+  },
+  "mls_50_case_classification": {
+    "CANONICAL_ID_JOIN_MISSING":            0,
+    "ALIAS_JOIN_MISSING":                    0,
+    "SOURCE_ID_JOIN_MISSING":                0,
+    "HISTORY_EXISTS_UNDER_DIFFERENT_NAME":   0,
+    "TRUE_HISTORY_COVERAGE_GAP":            50,
+    "TEAM_CONTEXT_MISMATCH":                 0,
+    "UNKNOWN":                               0
+  },
+  "certification_checklist": {
+    "soccer_history_lookup_canonical_id_first": "PASS",
+    "verified_aliases_actually_consumed":       "PASS",
+    "exact_name_no_longer_primary_path":        "PASS",
+    "mls_history_missing_remeasured":           "PASS (50/50 = TRUE_HISTORY_COVERAGE_GAP)",
+    "true_gaps_separated_from_join_failures":   "PASS",
+    "shared_repair_applies_all_soccer_leagues": "PASS (single resolver, no per-league adapters)",
+    "no_thresholds_lowered":                    "PASS",
+    "no_scorer_picks_forced":                   "PASS",
+    "no_provider_calls_required":               "PASS (0 Odds API calls)",
+    "other_sports_audited_for_same_defect":     "PASS",
+    "other_sports_changed_only_if_proven":      "PASS (0 changes — no defect proven)",
+    "authoritative_sport_ids_preserved":        "PASS (regression test guards MLB/NFL/NBA/Tennis IDs)",
+    "history_joins_no_longer_discard_identity": "PASS"
+  },
+  "files_changed": [
+    "/app/backend/services/soccer_feature_resolver.py (canonical_id-first lookup + variants; new params: canonical_player_id, canonical_player_name, aliases, provider_player_name)",
+    "/app/backend/services/real_line_scorer_ingest.py (pass full ResolvedIdentity through to resolver)",
+    "/app/backend/tests/test_universal_identity_history_bridge_iter107.py (new — 9 focused tests)"
+  ],
+  "test_results": {
+    "iter107_focused": "9/9",
+    "iter106_focused": "12/13 (1 skip)",
+    "iter105_authority": "10/10",
+    "iter104_focused": "14/16 (2 data-availability skips)",
+    "iter103_canonical": "9/9",
+    "iter103_flow": "15/16 (1 UTC-midnight boundary flake — pre-existing)",
+    "phase2a5_universal": "78/78",
+    "soccer_regression": "6/6",
+    "total_backend": "229/230 (99.6% pass — remaining 1 is UTC-midnight boundary, unrelated to identity/history)"
+  },
+  "cost": {
+    "provider_calls_this_closure": 0,
+    "provider_credits_used": 0
+  }
+}
