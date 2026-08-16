@@ -698,18 +698,15 @@ async def _mls_form_adapter(db, team_name: str) -> Optional[dict[str, Any]]:
         _MLS_FORM_CACHE[key] = None  # type: ignore
         return None
 
-    # When one side is missing, use the other as best-available symmetric
-    # signal (a strong-scoring team is usually not a defensive fortress
-    # either).  This keeps the estimator in TIER_B/C rather than
-    # collapsing to `INSUFFICIENT_HISTORY`.
-    if gf_avg is None and ga_avg is not None:
-        gf_avg = ga_avg
-    if ga_avg is None and gf_avg is not None:
-        ga_avg = gf_avg
-
+    # SOCCER_FINAL_RUNTIME_INTEGRITY (2026-09) §15 — do NOT mirror
+    # missing attacking evidence from defensive evidence (or vice
+    # versa).  Missing GF is not equivalent to GA.  Leave the side
+    # None and let the existing engine's league-prior shrinkage
+    # handle the gap explicitly.  Prior behavior (mirror-fill) is
+    # removed.
     row = {
-        "gf_avg":    float(gf_avg),
-        "ga_avg":    float(ga_avg),
+        "gf_avg":    float(gf_avg) if gf_avg is not None else None,
+        "ga_avg":    float(ga_avg) if ga_avg is not None else None,
         "n_matches": max(max_games, n_matches),
         "matches":   max(max_games, n_matches),
         "source":    "mls_espn_stats+player_game_actuals",
