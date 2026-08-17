@@ -376,7 +376,22 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
               </Text>
             </View>
           )}
-          <Text style={styles.market} numberOfLines={2}>{pick.market}</Text>
+          {_isPlayerProp ? (
+            <View style={styles.playerTitleRow}>
+              <PlayerIdentity
+                pick={pick}
+                size={32}
+                variant="circle"
+                ringColor={tierVisual.borderColor}
+                isPlayerProp={true}
+              />
+              <Text style={[styles.market, styles.playerTitleText]} numberOfLines={2}>
+                {pick.market}
+              </Text>
+            </View>
+          ) : (
+            <Text style={styles.market} numberOfLines={2}>{pick.market}</Text>
+          )}
           {/* ── Player Prop Intelligence archetype badge (v2 engine) ── */}
           {(() => {
             const arch = (pick as any).archetype as string | undefined;
@@ -438,15 +453,6 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
 
       {/* Lock v3 — Stacked badge hero row: Bet Quality / Expected Win / Edge */}
       <View style={styles.heroBadgeRow}>
-        <View style={styles.heroIdentitySlot}>
-          <PlayerIdentity
-            pick={pick}
-            size={48}
-            variant="circle"
-            ringColor={tierVisual.borderColor}
-            isPlayerProp={_isPlayerProp}
-          />
-        </View>
         <HeroBadge
           icon="🔒"
           value={`${Math.round(displayLock)}`}
@@ -2056,17 +2062,23 @@ const styles = StyleSheet.create({
 
   heroBadgeRow: {
     flexDirection: "row",
-    alignItems: "center",
     gap: 8,
     marginTop: 16,
     marginBottom: 12,
   },
-  heroIdentitySlot: {
-    // Compact leading identity avatar — sits before the three hero
-    // badges without stealing width from them (flex:0).
-    justifyContent: "center",
+  // Inline player-identity row for player-prop cards ONLY.  Game markets
+  // continue to rely on the existing PickEventRow (both team logos) and
+  // MUST NOT render this row — enforced by the ``_isPlayerProp`` guard.
+  playerTitleRow: {
+    flexDirection: "row",
     alignItems: "center",
-    marginRight: 2,
+    gap: 10,
+    marginTop: 2,
+  },
+  playerTitleText: {
+    // Absorb remaining horizontal space so long market strings wrap
+    // cleanly beside the small (32dp) avatar without pushing width.
+    flex: 1,
   },
   heroBadge: {
     flex: 1,
