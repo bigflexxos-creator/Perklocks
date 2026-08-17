@@ -437,6 +437,16 @@ async def _decorate_with_espn_meta(picks: list[dict]) -> list[dict]:
             await _sig(db, p)         # ← the analysis layer
         except Exception:
             pass  # non-critical enrichment
+    # ── Player-headshot presentation layer (2026-06) ────────────────
+    # Attach ``player_meta.headshot_url`` for PLAYER-PROP picks only.
+    # Reuses db.players (ESPN athletes + MLB Stats API) — the same
+    # canonical identity source used elsewhere in the pipeline.
+    # NEVER touches lock_score / probability / edge / eligibility.
+    try:
+        from services.player_meta_decorator import decorate_with_player_meta
+        await decorate_with_player_meta(db, picks)
+    except Exception as _pm_err:
+        logger.debug("player_meta decorator skipped (non-fatal): %s", _pm_err)
     return picks
 
 
