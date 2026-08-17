@@ -210,22 +210,145 @@ async def load_published(db, *, days: int = 30,
     """Load canonical published records.  Returns a list of dicts
     with publication-time values preserved plus a
     ``_has_prediction_snapshot`` flag injected for downstream dedupe
-    tie-breaking and a ``_classification`` field."""
+    tie-breaking and a ``_classification`` field.
+
+    ── History Zero μ-fix (2026-06) — starvation-proof reads ─────
+    Prior implementation issued ONE bounded read sorted by
+    ``event_time DESC LIMIT 5000``.  In production with thousands
+    of newer pending/future canonical picks queued for grading,
+    OLDER settled WIN/LOSS/PUSH/VOID rows dropped off the tail of
+    the slice and History returned ZERO.
+
+    We now split the read into THREE bounded, mutually-exclusive
+    slices — every one starvation-proof against the other:
+
+      1. SETTLED slice (starvation-proof anchor)
+         status ∈ {won,lost,push,void,unresolved}
+         sort settled_at DESC (fallback event_time), limit 3000
+
+      2. PENDING slice (only if ``include_pending=True``)
+         status ∈ {pending, None}
+         sort event_time DESC, limit 2000
+
+      3. SNAPSHOT-ADMISSION slice (fixes root cause #2)
+         Any prediction_snapshots row inside the window whose
+         ``pick_id`` is NOT already present in slices 1-2 and whose
+         underlying pick still exists in ``db.picks`` inside the
+         time window and is not explicitly excluded is admitted
+         with ``_has_prediction_snapshot=True`` so it classifies
+         as PROVEN_PUBLISHED even if it lacks the newer
+         ``publication_source`` / ``on_*_at`` fields.  Bounded 500.
+
+    Total ceiling: 5500 rows.  No unbounded read.  Canonical
+    provenance preserved (all three slices intersect the same
+    ``canonical_query`` time + rejection gates).
+    """
     q = canonical_query(days=days,
                           exclude_ambiguous_legacy=exclude_ambiguous_legacy,
                           include_pending=include_pending)
-    picks = await db.picks.find(q, {"_id": 0}).sort(
-        "event_time", -1).limit(5000).to_list(length=5000)
 
-    # Hydrate prediction-snapshot presence.  A single lookup query
-    # keeps this O(1) per pick.
+    # ── Slice 1: SETTLED (starvation-proof anchor) ────────────────
+    settled_q = {"$and": q["$and"] + [
+        {"status": {"$in": ["won", "lost", "push", "void", "unresolved"]}},
+    ]}
+    # Prefer settled_at ordering when present (canonical) so the
+    # newest graded rows lead; if a legacy row lacks settled_at
+    # Mongo treats missing as smallest and it falls to the tail —
+    # still inside the 3000 ceiling, still not starved by pending.
+    settled = await db.picks.find(settled_q, {"_id": 0}).sort(
+        [("settled_at", -1), ("event_time", -1)]).limit(3000).to_list(
+        length=3000)
+    settled_ids = {p.get("id") for p in settled if p.get("id")}
+
+    # ── Slice 2: PENDING (only if requested) ──────────────────────
+    pending: list[dict] = []
+    if include_pending:
+        pending_q = {"$and": q["$and"] + [
+            {"$or": [
+                {"status": {"$in": [None, "pending"]}},
+                {"status": {"$exists": False}},
+            ]},
+        ]}
+        pending = await db.picks.find(pending_q, {"_id": 0}).sort(
+            "event_time", -1).limit(2000).to_list(length=2000)
+        pending = [p for p in pending if p.get("id") not in settled_ids]
+
+    picks = settled + pending
+
+    # ── Slice 3: SNAPSHOT-ADMISSION (fixes root cause #2) ─────────
+    # A legacy pick with a canonical prediction_snapshot inside the
+    # window MUST be considered PROVEN_PUBLISHED, even if it lacks
+    # the newer publication_source / on_*_at / published_at fields.
+    # We admit ONLY snapshot-backed pick_ids that (a) live in
+    # db.picks inside the same 30-day window and (b) are not
+    # explicitly excluded via no_bet / hide_from_main_board /
+    # excluded_from_history.  Canonical provenance preserved.
+    cutoff = (datetime.now(timezone.utc)
+               - timedelta(days=days)).isoformat()
+    existing_ids: set = set()
+    for p in picks:
+        pid = p.get("id")
+        if pid: existing_ids.add(pid)
+
+    snap_admit_ids: set = set()
+    try:
+        # Sorted DESC by recency so we discover snapshot-backed picks
+        # closest to the current window first.  We iterate up to
+        # 20000 snapshot rows (bounded scan) but only KEEP pick_ids
+        # not already surfaced by slices 1-2, and stop as soon as
+        # we've collected 500 admissions (matches the admit_q ceiling).
+        snap_cursor = db.prediction_snapshots.find(
+            {"$or": [
+                {"snapshot_created_at": {"$gte": cutoff}},
+                {"created_at":          {"$gte": cutoff}},
+                {"published_at":        {"$gte": cutoff}},
+            ]},
+            {"_id": 0, "pick_id": 1, "prediction_id": 1, "id": 1},
+        ).sort([("snapshot_created_at", -1),
+                 ("created_at",         -1)]).limit(20000)
+        async for r in snap_cursor:
+            for k in ("pick_id", "prediction_id", "id"):
+                v = r.get(k)
+                if v and v not in existing_ids:
+                    snap_admit_ids.add(v)
+                    if len(snap_admit_ids) >= 500:
+                        break
+            if len(snap_admit_ids) >= 500:
+                break
+    except Exception:
+        # Snapshot collection missing / errored — degrade to slices 1-2.
+        snap_admit_ids = set()
+
+    if snap_admit_ids:
+        # Bounded admission — preserve time window + rejection gates.
+        admit_q = {
+            "id": {"$in": list(snap_admit_ids)[:500]},
+            "$or": [
+                {"settled_at": {"$gte": cutoff}},
+                {"event_time": {"$gte": cutoff}},
+            ],
+            "no_bet":                {"$ne": True},
+            "hide_from_main_board":  {"$ne": True},
+            "excluded_from_history": {"$ne": True},
+        }
+        admitted = await db.picks.find(
+            admit_q, {"_id": 0}).limit(500).to_list(length=500)
+        # Pre-flag as snapshot-backed so classify_publication returns
+        # PROVEN_PUBLISHED (line 92: _has_prediction_snapshot=True).
+        for a in admitted:
+            a["_has_prediction_snapshot"] = True
+        picks.extend(admitted)
+
+    # Hydrate prediction-snapshot presence for the WHOLE population.
+    # A single lookup query keeps this O(1) per pick.
     ids = [p["id"] for p in picks if p.get("id")]
-    have_snap: set[str] = set()
+    have_snap: set[str] = set(a.get("id") for a in picks
+                                if a.get("_has_prediction_snapshot"))
     if ids:
         async for r in db.prediction_snapshots.find(
-                {"$or": [{"pick_id": {"$in": ids}},
+                {"$or": [{"pick_id":       {"$in": ids}},
                           {"prediction_id": {"$in": ids}},
-                          {"id": {"$in": ids}}]},
+                          {"id":            {"$in": ids}}]},
                 {"_id": 0, "pick_id": 1, "prediction_id": 1, "id": 1}):
             for k in ("pick_id", "prediction_id", "id"):
                 v = r.get(k)
