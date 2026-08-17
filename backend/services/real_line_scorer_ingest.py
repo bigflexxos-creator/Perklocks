@@ -715,12 +715,45 @@ async def _upsert_pick(db, doc: dict) -> None:
     encodes (source, event, market, selection, line, bookmaker) so
     two different bookmakers on the same market produce distinct
     picks — filtering solely by id prevents duplicate-key errors
-    caused by composite-filter racing between iterations."""
+    caused by composite-filter racing between iterations.
+
+    ── Final Production Closure μ-closure (2026-06) — GAP 2 fix ──
+    After the raw pick row upsert, ROUTE the pick through the
+    canonical publication helper so an immutable
+    ``prediction_snapshots`` row is created and the frozen
+    ``published_probability`` / ``published_edge`` /
+    ``published_lock_score`` values are dual-written.  Prior to
+    this fix the caller stamped ``publication_source`` on the pick
+    document but never invoked the canonical publication service —
+    that constituted a DIRECT_CANONICAL_PUBLICATION_BYPASS even
+    though the read gate accepted the stamped field.
+    """
     pick_id = doc["id"]
     await db.picks.update_one(
         {"id": pick_id},
         {"$set": doc}, upsert=True,
     )
+    # Route through the shared canonical publisher.  Non-actionable
+    # rows (off_board=True) are skipped by the helper — they still
+    # carry ``publication_source`` on the document for audit but
+    # don't create a snapshot.
+    if not doc.get("off_board"):
+        try:
+            from services.publication_helpers import publish_upserted_picks
+            await publish_upserted_picks(
+                db, [doc],
+                publication_source=doc.get(
+                    "publication_source", "real_line_soccer_v2"),
+                caller_label="real_line_scorer_ingest",
+            )
+        except Exception as _pub_err:
+            # Publication failure must never break the ingest.  The
+            # B1 canonical read gate will filter this pick until the
+            # next successful publish attempt.
+            logger.warning(
+                "real_line_scorer_ingest canonical publish failed for %s: %s",
+                pick_id, _pub_err,
+            )
 
 
 async def ingest_real_line_soccer_scorers(
