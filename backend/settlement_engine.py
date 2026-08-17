@@ -315,10 +315,43 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
                    "off_board": {"$ne": True}}
     if sport_filter:
         query["sport"] = {"$in": list(sport_filter)}
-    cursor = db.picks.find(query, {"_id": 0})
+    # ── Phase A (2026-06): Starvation Fix ─────────────────────────
+    # The unsorted find() used to return picks in natural insertion
+    # order — meaning when >2000 pending picks accumulated, the
+    # OLDEST unresolved picks NEVER surfaced (they were pushed off
+    # the batch by newer inserts).  History showed 0 graded picks in
+    # production because the queue-head kept churning on skippable
+    # rows (props_pending / in-progress) while resolvable older picks
+    # starved.
+    #
+    # Fix: sort ascending by ``event_time`` so the oldest completed
+    # events get the first attempt every run.  Combined with the
+    # bounded 2000-doc limit we now guarantee forward progress:
+    # unresolved OLD picks are always in the head cohort until they
+    # either settle, void, or get marked SETTLEMENT_UNSUPPORTED.
+    cursor = db.picks.find(query, {"_id": 0}).sort("event_time", 1)
     picks = await cursor.to_list(length=2000)
-    counts = {"settled": 0, "won": 0, "lost": 0, "push": 0, "skipped": 0, "props_pending": 0, "auto_voided": 0}
+    counts = {"settled": 0, "won": 0, "lost": 0, "push": 0,
+              "skipped": 0, "props_pending": 0, "auto_voided": 0,
+              "unsupported_terminated": 0, "candidates_examined": 0,
+              "attempts": 0, "success": 0, "fail": 0,
+              "terminal_reasons": {}}
+    counts["candidates_examined"] = len(picks)
     if not picks:
+        # Even on an empty queue we record a telemetry beat so the
+        # admin dashboard can prove the settler ran and found nothing
+        # (vs. failed silently — a completely different failure mode).
+        try:
+            from services.settlement_telemetry import (
+                record_run, oldest_unresolved_age_seconds,
+            )
+            counts["oldest_unresolved_age_seconds"] = (
+                await oldest_unresolved_age_seconds(db)
+            )
+            await record_run(db, {**counts,
+                                    "sport_filter": sport_filter})
+        except Exception as _te:
+            logger.debug("telemetry empty-run skipped: %s", _te)
         return counts
 
     # ── Auto-void stale picks (>14 days past event_time) ──────────────
@@ -379,6 +412,74 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
         # Remove voided picks from in-memory processing list
         voided_set = set(stale_ids)
         picks = [p for p in picks if p.get("id") not in voided_set]
+
+    # ── Phase A (2026-06) — SETTLEMENT_UNSUPPORTED terminator ─────
+    # Some published markets have NO authoritative grading path in
+    # the current settler set (e.g. Soccer Shots, Cards, Corners,
+    # First Goalscorer, HT/FT, Correct Score, Asian Handicap).  They
+    # were staying PENDING forever, inflating the queue and
+    # contributing to starvation.
+    #
+    # Terminate them once, canonically — VOID via SettlementService
+    # with source `settler_unsupported:*` so they exit the queue
+    # cleanly and analytics can bucket the terminal reasons.  Only
+    # picks whose event has already completed (event_time in the
+    # past) are terminated — future/live picks are left alone.
+    try:
+        from services.settlement_capability import classify, UNSUPPORTED
+        from services.settlement_service import SettlementService
+        _svc_unsupp = SettlementService(db)
+        await _svc_unsupp.ensure_indices()
+        _now_iso = datetime.now(timezone.utc).isoformat()
+        _kept: list[dict] = []
+        _terminated_reasons: dict[str, int] = {}
+        for p in picks:
+            _et = p.get("event_time") or ""
+            # Only terminate picks whose event has already ended —
+            # live/future markets stay untouched (they may resolve
+            # via a supported path once the fixture completes and
+            # capability is broadened).
+            _event_past = bool(_et and _et < _now_iso)
+            if not _event_past:
+                _kept.append(p)
+                continue
+            status, reason = classify(
+                p.get("sport"), p.get("market"), p.get("league"))
+            if status != UNSUPPORTED:
+                _kept.append(p)
+                continue
+            # Terminal void via canonical service.
+            try:
+                _res = await _svc_unsupp.settle_from_pick(
+                    p,
+                    result                    = "void",
+                    source                    = reason or "settler_unsupported:generic_unknown",
+                    authoritative_event_final = False,   # VOID skips FINAL barrier
+                    analytics_mirror          = {
+                        "void_reason":       reason or "settler_unsupported",
+                        "terminated_phase":  "PhaseA_SettlementCapability",
+                    },
+                )
+                if _res.get("status") in ("NEW_SETTLEMENT",
+                                          "CORRECTION_APPLIED"):
+                    counts["unsupported_terminated"] += 1
+                    _terminated_reasons[reason] = (
+                        _terminated_reasons.get(reason, 0) + 1)
+                else:
+                    # If the service refused (e.g. identity mismatch
+                    # on legacy row), keep the pick in the queue so
+                    # normal settlement can still take a shot.
+                    _kept.append(p)
+            except Exception as _ue:
+                logger.debug("unsupported terminate failed for %s: %s",
+                             p.get("id"), _ue)
+                _kept.append(p)
+        picks = _kept
+        # Merge into the run's terminal-reason counter.
+        if _terminated_reasons:
+            counts["terminal_reasons"].update(_terminated_reasons)
+    except Exception as _uce:
+        logger.warning("settlement_capability terminator err: %s", _uce)
 
     # Group by sport so we batch score fetches.
     by_sport: dict[str, list[dict]] = {}
@@ -501,6 +602,7 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
             if not outcome:
                 counts["skipped"] += 1
                 continue
+            counts["attempts"] += 1
             scores_dict = {s["name"]: s["score"] for s in (score_payload.get("scores") or [])}
             # Compute units_profit + CLV at settle time so the analytics
             # dashboard never has to recompute from raw odds.
@@ -540,7 +642,7 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
                 from services.settlement_service import SettlementService
                 _settle_svc = SettlementService(db)
                 await _settle_svc.ensure_indices()
-                await _settle_svc.settle_from_pick(
+                _svc_res = await _settle_svc.settle_from_pick(
                     pick,
                     result                    = outcome,
                     source                    = "settlement_engine",
@@ -548,7 +650,20 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
                     authoritative_event_final = True,   # score_payload["completed"] proved above
                     analytics_mirror          = _analytics,
                 )
+                _svc_status = (_svc_res or {}).get("status", "")
+                if _svc_status in ("NEW_SETTLEMENT",
+                                    "CORRECTION_APPLIED",
+                                    "ALREADY_SETTLED_IDENTICAL"):
+                    counts["success"] += 1
+                else:
+                    counts["fail"] += 1
+                    _reason = f"svc_refusal:{_svc_status or 'unknown'}"
+                    counts["terminal_reasons"][_reason] = (
+                        counts["terminal_reasons"].get(_reason, 0) + 1)
             except Exception as _s_err:
+                counts["fail"] += 1
+                counts["terminal_reasons"]["svc_exception"] = (
+                    counts["terminal_reasons"].get("svc_exception", 0) + 1)
                 logger.warning(
                     "settlement_service.record failed for %s: %s",
                     pick.get("id"), _s_err)
@@ -695,6 +810,22 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
         logger.info("Rollover history tags refreshed: %s", tag_res)
     except Exception as e:
         logger.warning("Rollover history tagger failed: %s", e)
+
+    # ── Phase A telemetry (2026-06) ────────────────────────────────
+    # Record a run-summary doc so the admin dashboard / boundary
+    # trace can observe queue health WITHOUT introducing a new
+    # observability framework.  Failure is swallowed inside
+    # record_run itself; this MUST NEVER be able to fail the loop.
+    try:
+        from services.settlement_telemetry import (
+            record_run, oldest_unresolved_age_seconds,
+        )
+        counts["oldest_unresolved_age_seconds"] = (
+            await oldest_unresolved_age_seconds(db)
+        )
+        await record_run(db, {**counts, "sport_filter": sport_filter})
+    except Exception as _te:
+        logger.debug("telemetry final-run write skipped: %s", _te)
 
     return counts
 
