@@ -1461,9 +1461,45 @@ async def _ensure_today_picks() -> None:
     multiple clients hit an empty slate at the same time.
     """
     today = _today_str()
-    count = await db.picks.count_documents({"pick_date": today})
-    if count >= 20:
+    # ── Phase C1 μ-closure (2026-06) — actionable-coverage health ─
+    # Prior gate used the raw pick count for today (``>= 20``) as
+    # "slate healthy".  That masked days with 20+ rejected /
+    # off-board / non-canonical / stale rows and zero actionable
+    # coverage — the exact defect the audit surfaced.  We now count
+    # picks that (a) are canonically published, (b) aren't hidden
+    # via the off-board / settlement-block gates, and (c) still
+    # have a future event_time (in-play).  If canonical actionable
+    # coverage < 20, we schedule a background refresh.  Failure
+    # closed: if the actionable-count query itself errors we
+    # ALWAYS schedule a refresh (never silently claim healthy).
+    _now_iso = datetime.now(timezone.utc).isoformat()
+    _actionable_query = {
+        "pick_date": today,
+        "publication_source": {"$exists": True, "$ne": None},
+        "off_board": {"$ne": True},
+        "settlement_block": {"$ne": True},
+        "no_bet": {"$ne": True},
+        "status": {"$in": [None, "pending"]},
+        "event_time": {"$gte": _now_iso},
+    }
+    try:
+        actionable = await db.picks.count_documents(_actionable_query)
+    except Exception as _hc_err:
+        logger.warning(
+            "ensure_today_picks: actionable count errored (%s) — "
+            "forcing refresh (fail-closed)", _hc_err,
+        )
+        actionable = 0
+    # Diagnostic-only raw count kept for observability but no longer
+    # used as the healthy-slate gate.
+    raw_count = await db.picks.count_documents({"pick_date": today})
+    if actionable >= 20:
+        logger.debug(
+            "ensure_today_picks: %d actionable / %d raw for %s — healthy",
+            actionable, raw_count, today,
+        )
         return
+    count = actionable
     logger.info(
         "ensure_today_picks: only %d picks for %s — scheduling background refresh",
         count, today,
