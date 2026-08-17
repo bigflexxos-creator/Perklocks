@@ -156,16 +156,27 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     time_filter = {"event_time": {"$gte": window_floor_iso, "$lte": window_cap_iso}}
 
     # ─── Fetch candidate pool ───
+    # ── Phase B9 μ-closure (2026-06) — canonical eligibility gate ──
+    # Parlay pool MUST originate from canonical published truth.  A
+    # pick with a high legacy or V2 score is NEVER admitted unless
+    # PredictionPublicationService has dual-written the canonical
+    # ``publication_source`` marker on its pick document.
+    from services.canonical_board_source import (
+        canonical_publication_filter,
+    )
+    _canon_filt = canonical_publication_filter()
     base_q = {
         "pick_date": _today_str(),
         "no_bet": {"$ne": True},
         "is_under_lock": {"$ne": True},
+        "off_board": {"$ne": True},
+        "settlement_block": {"$ne": True},
         **sport_filter, **line_filter, **market_filter, **league_filter,
         **time_filter,
+        **_canon_filt,   # canonical publication gate (fail-closed default)
     }
-    # Lock floor by mode. Advanced.safer is the strictest (92), high_risk the
-    # loosest (70). We ALSO check `lock_score_v2` because the legacy `lock_score`
-    # column can drift behind v2 between learning passes.
+    # Lock floor by mode. Advanced.safer is the strictest (92),
+    # high_risk the loosest (70).
     if is_high_risk:
         lock_floor_val = 70
     elif is_advanced and advanced_sub_norm == "safer":
@@ -177,9 +188,16 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     else:
         lock_floor_val = 85
     base_q.pop("lock_score", None)
+    # ── Phase B9 μ-closure — canonical Lock Score read ─────────────
+    # Prior code admitted candidates via
+    #   {"$or": [{"lock_score": …}, {"lock_score_v2": …}]}
+    # allowing shadow V2 to leak unpublished picks into Parlay.  We
+    # now prefer canonical ``published_lock_score`` first (frozen at
+    # publication), then legacy ``lock_score``.  ``lock_score_v2`` is
+    # NEVER used to admit a Parlay candidate.
     base_q["$or"] = [
-        {"lock_score": {"$gte": lock_floor_val}},
-        {"lock_score_v2": {"$gte": lock_floor_val}},
+        {"published_lock_score": {"$gte": lock_floor_val}},
+        {"lock_score":            {"$gte": lock_floor_val}},
     ]
     pool = await db.picks.find(base_q, {"_id": 0}).sort("lock_score", -1).limit(400).to_list(length=400)
     pool = _canonicalize_picks(pool)
