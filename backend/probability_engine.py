@@ -234,6 +234,145 @@ def compute_edge(p_calibrated: float, book_odds: Optional[float]) -> float:
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# Shared Brain convergence (2026-06 · Surgical Brain Update)
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Perklocks Brain must NOT blindly average model + simulator.  This is
+# the shared convergence classifier used by every sport engine that
+# publishes a canonical pick.
+#
+#     STRONG_CONVERGENCE       — model + sim + implied all within
+#                                ±3 pp and evidence quality ≥ MODERATE
+#     MODERATE_CONVERGENCE     — components within ±6 pp
+#     MIXED_EVIDENCE           — components within ±12 pp
+#     STRONG_DISAGREEMENT      — spread > 12 pp
+#
+# Each classification yields a ``confidence_multiplier`` in [0.55, 1.0]
+# that downstream consumers (Lock Score, uncertainty envelope) can
+# apply to modulate quality WITHOUT rewriting the canonical
+# probability.  Frozen published truth (B3 μ-closure) is preserved:
+# convergence is a diagnostic dimension surfaced via the
+# ``diagnostic`` block, not a rewrite of ``p_calibrated``.
+#
+# Sample-size honesty (§5): evidence quality attenuates the multiplier
+# so a tiny H2H can't masquerade as strong evidence.
+# Simulator provenance (§6): PRIOR_ONLY is capped BELOW full-context.
+
+CONVERGENCE_STRONG_PP        = 0.03    # ±3 pp — tight agreement
+CONVERGENCE_MODERATE_PP      = 0.06    # ±6 pp
+CONVERGENCE_MIXED_PP         = 0.12    # ±12 pp; beyond ⇒ STRONG_DISAGREEMENT
+
+
+def _spread(values: list[float]) -> float:
+    """Maximum pairwise absolute delta over finite non-None inputs."""
+    vals = [v for v in values if isinstance(v, (int, float))]
+    if len(vals) < 2:
+        return 0.0
+    return max(vals) - min(vals)
+
+
+def _evidence_quality_multiplier(evidence_quality: Optional[str]) -> float:
+    """Map evidence quality tag to confidence multiplier.
+
+    Reuses existing per-sport tags where available:
+      STRONG    → 1.00
+      MODERATE  → 0.90
+      WEAK      → 0.75
+      MISSING   → 0.60
+    Unknown / None conservatively treated as MODERATE.
+    """
+    tag = (evidence_quality or "MODERATE").upper()
+    return {"STRONG": 1.00, "MODERATE": 0.90,
+            "WEAK":   0.75, "MISSING":  0.60}.get(tag, 0.90)
+
+
+def _sim_provenance_multiplier(sim_provenance: Optional[str]) -> float:
+    """Map simulator provenance to confidence multiplier.
+
+    Reuses existing simulator provenance vocabulary:
+      REAL_PLAYER_CONTEXT / CAUSAL_INDEPENDENT / EMPIRICAL_INDEPENDENT
+                             → 1.00 (full context)
+      PARTIAL_CONTEXT         → 0.90
+      MODEL_CONDITIONED       → 0.85
+      PRIOR_ONLY              → 0.72 (capped BELOW full-context)
+      INVALID / None (sim did not run)   → 0.85 (v1↔v2 spread carries)
+    """
+    tag = (sim_provenance or "").upper()
+    if tag in ("REAL_PLAYER_CONTEXT", "CAUSAL_INDEPENDENT",
+               "EMPIRICAL_INDEPENDENT"):
+        return 1.00
+    if tag == "PARTIAL_CONTEXT":       return 0.90
+    if tag == "MODEL_CONDITIONED":     return 0.85
+    if tag == "PRIOR_ONLY":            return 0.72
+    return 0.85    # sim did not run OR INVALID
+
+
+def classify_convergence(*, p_v1: float, p_v2: float,
+                          p_sim: Optional[float],
+                          implied: Optional[float] = None,
+                          sim_provenance: Optional[str] = None,
+                          evidence_quality: Optional[str] = None,
+                          sim_ran: bool = False) -> dict:
+    """Return convergence classification + confidence multiplier.
+
+    Output:
+        {
+          "label":                 STRONG_CONVERGENCE | MODERATE_CONVERGENCE
+                                    | MIXED_EVIDENCE | STRONG_DISAGREEMENT,
+          "spread_pp":             float — max component spread
+          "confidence_multiplier": float ∈ [0.55, 1.00]
+          "evidence_quality":      pass-through tag
+          "sim_provenance":        pass-through tag
+        }
+
+    Contract:
+      • Favorite / underdog neutral — implied is ONE of the components,
+        NOT a truth override.
+      • PRIOR_ONLY provenance CANNOT reach 1.00 multiplier even with
+        perfect model↔sim agreement (capped 0.72).
+      • MISSING evidence CANNOT reach STRONG_CONVERGENCE (capped 0.60).
+      • Uncertainty is preserved on disagreement — multiplier falls to
+        0.55 on STRONG_DISAGREEMENT, never below.
+    """
+    components: list[float] = [p_v1, p_v2]
+    if sim_ran and p_sim is not None:
+        components.append(p_sim)
+    # Market is CONTEXT, not truth — included in spread ONLY to detect
+    # the case where our components collectively disagree with the book.
+    if implied is not None:
+        components.append(implied)
+
+    spread = _spread(components)
+
+    if spread <= CONVERGENCE_STRONG_PP:
+        label = "STRONG_CONVERGENCE"
+        base  = 1.00
+    elif spread <= CONVERGENCE_MODERATE_PP:
+        label = "MODERATE_CONVERGENCE"
+        base  = 0.92
+    elif spread <= CONVERGENCE_MIXED_PP:
+        label = "MIXED_EVIDENCE"
+        base  = 0.80
+    else:
+        label = "STRONG_DISAGREEMENT"
+        base  = 0.62
+
+    ev_m  = _evidence_quality_multiplier(evidence_quality)
+    sim_m = _sim_provenance_multiplier(sim_provenance)
+
+    mult = base * ev_m * sim_m
+    # Clamp to defined envelope.  Never below 0.55.
+    mult = max(0.55, min(1.00, mult))
+    return {
+        "label":                 label,
+        "spread_pp":             round(spread, 4),
+        "confidence_multiplier": round(mult, 4),
+        "evidence_quality":      (evidence_quality or "MODERATE").upper(),
+        "sim_provenance":        (sim_provenance   or "NONE").upper(),
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # Layer 5 — classification (LOCK / PREMIUM / NORMAL / CHALK)
 # ──────────────────────────────────────────────────────────────────────────
 
@@ -353,6 +492,22 @@ def unified_probability_report(pick: dict) -> dict:
     else:
         edge_frozen = edge_current
 
+    # ── Surgical Brain Update (2026-06) — convergence layer ───────
+    # Compute shared convergence classification.  It is DIAGNOSTIC —
+    # the frozen canonical fields above remain the authoritative
+    # publication truth (B3 contract).  Convergence gives downstream
+    # consumers a principled measure of decision quality.
+    convergence = classify_convergence(
+        p_v1              = p_v1,
+        p_v2              = p_v2,
+        p_sim             = p_sim if sim_ran else None,
+        implied           = implied,
+        sim_provenance    = pick.get("simulator_provenance")
+                              or pick.get("sim_provenance"),
+        evidence_quality  = pick.get("evidence_quality"),
+        sim_ran           = sim_ran,
+    )
+
     # Classification is derived from CANONICAL frozen inputs so a
     # user viewing the breakdown always sees the same tier that was
     # active at publication.
@@ -393,5 +548,7 @@ def unified_probability_report(pick: dict) -> dict:
             "edge_current":         round(edge_current, 4),
             "delta_p_calibrated":   round(p_calibrated_current - p_calibrated_frozen, 4),
             "delta_edge":           round(edge_current - edge_frozen, 4),
+            # ── Surgical Brain Update (2026-06) ─────────────────
+            "convergence":          convergence,
         },
     }
