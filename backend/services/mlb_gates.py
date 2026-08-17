@@ -121,11 +121,24 @@ def data_quality_cap_for_status(status: str) -> Optional[float]:
     Returns ``None`` for statuses that must NOT publish (bench / scratched)
     to signal the caller to drop the pick entirely.  Returns a float cap
     otherwise.
+
+    ── MLB Early-Availability μ-fix (2026-06) ────────────────────
+    Prior ``unknown`` cap of 79.0 was BELOW the canonical 85 Board
+    floor, meaning ANY hitter prop reaching the pipeline before a
+    projected lineup landed was silently invisible on the Board even
+    if the sportsbook line was real and the pick otherwise qualified.
+    The intended contract is: preserve uncertainty safeguards for
+    UNKNOWN, but allow Board reachability when the pick legitimately
+    qualifies ≥ canonical floor.  New cap ``88`` sits ABOVE the
+    canonical 85 floor and BELOW the ``projected_starter`` cap
+    (92) — a truly elite pick can still surface, but its lock
+    ceiling remains materially below a confirmed-lineup pick, which
+    is the appropriate uncertainty safeguard.
     """
     if status in ("bench", "scratched"):
         return None            # do not publish
     if status == "unknown":
-        return 79.0            # cannot reach elite (95+) tier
+        return 88.0            # early-availability: above 85 Board floor
     if status == "projected_starter":
         return 92.0            # cap below Lock tier without confirmation
     # confirmed_starter — no cap
