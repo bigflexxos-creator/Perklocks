@@ -60,6 +60,55 @@ PROPLINE_BASE = "https://api.prop-line.com/v1"
 _auth_dead: bool = False
 _no_key_warned: bool = False
 
+# ── Phase G4/G5 μ-closure (2026-06) ────────────────────────────────
+# Global quota-exhaustion latch — set once a 429 confirms the daily
+# limit hit.  Distinguished from _auth_dead (invalid credentials).
+# After the latch flips, propline stops attempting network calls
+# until process restart (legitimate reset).  Cached rows remain
+# usable subject to their own freshness check.
+_quota_dead: bool = False
+_quota_dead_at: str = ""
+
+# Lightweight in-process accounting (G5).  Bumped on every call to
+# ``_request``.  Read via ``get_propline_accounting()`` — do NOT
+# create a new analytics framework; this is a tiny counter dict.
+_accounting: dict[str, int] = {
+    "requests_attempted":   0,
+    "network_calls":        0,
+    "cache_hits":           0,
+    "avoided_by_latch":     0,
+    "avoided_by_auth_dead": 0,
+    "http_429":             0,
+    "http_401_403":         0,
+    "http_5xx":             0,
+    "success_200":          0,
+}
+
+
+def get_propline_accounting() -> dict:
+    """Return a snapshot of the in-process propline accounting counters
+    plus the current latch/plan decision.  Used by admin dashboards
+    and G6 plan-decision reporting.  Free-tier plan (1,000/day) is
+    RETAINED as long as projected daily usage stays under 900.
+    """
+    net = _accounting.get("network_calls", 0)
+    # Projected daily = per-run counter (process-level).  Ops treats
+    # the last full 24h cycle as authoritative; we surface it here.
+    plan_decision = (
+        "UPGRADE_5000_DAY" if net > 900 else "KEEP_1000_DAY"
+    )
+    return {
+        **_accounting,
+        "auth_dead":         _auth_dead,
+        "quota_dead":        _quota_dead,
+        "quota_dead_at":     _quota_dead_at,
+        "plan_decision":     plan_decision,
+    }
+
+
+def _bump(key: str) -> None:
+    _accounting[key] = _accounting.get(key, 0) + 1
+
 # US retail books — pick PRICES users can actually take.
 US_RETAIL_BOOKS = frozenset({
     "draftkings", "fanduel", "betmgm", "betrivers", "bovada",
@@ -208,7 +257,8 @@ def _composite_key(event_id: str, book: str, market: str, sel: str,
 
 async def _request(cx: httpx.AsyncClient, path: str,
                    params: Optional[dict] = None) -> Optional[object]:
-    global _auth_dead, _no_key_warned
+    global _auth_dead, _no_key_warned, _quota_dead, _quota_dead_at
+    _bump("requests_attempted")
 
     # No credentials — don't send a request with a None/empty header and then
     # misreport the rejection as throttling. Warn once, then stay quiet.
@@ -225,16 +275,27 @@ async def _request(cx: httpx.AsyncClient, path: str,
 
     # Credentials already rejected once — further calls cannot succeed.
     if _auth_dead:
+        _bump("avoided_by_auth_dead")
+        return None
+
+    # ── Phase G4 μ-closure — quota latch ──────────────────────────
+    # Once daily quota is confirmed exhausted, we STOP attempting
+    # network calls until legitimate reset (process restart).
+    # Prevents doomed league-by-league 429 storm.
+    if _quota_dead:
+        _bump("avoided_by_latch")
         return None
 
     headers = {"X-API-Key": PROPLINE_API_KEY, "Accept": "application/json"}
     try:
+        _bump("network_calls")
         r = await cx.get(f"{PROPLINE_BASE}{path}", params=params,
                          headers=headers, timeout=20)
         # Auth failure is NOT a rate limit. Latch it, say so plainly, and stop
         # retrying instead of sleeping 30s forever.
         if r.status_code in (401, 403):
             _auth_dead = True
+            _bump("http_401_403")
             logger.error(
                 "prop-line REJECTED our API key (status=%s on %s, body=%s). "
                 "Not a rate limit — the key is invalid, expired, or the "
@@ -244,16 +305,31 @@ async def _request(cx: httpx.AsyncClient, path: str,
             )
             return None
         if r.status_code == 429:
-            logger.warning(
-                "prop-line genuinely rate-limited (429) on %s, sleeping 30s",
-                path,
-            )
-            await asyncio.sleep(30)
+            # ── Phase G4 μ-closure — activate quota latch ────────
+            # Genuine rate-limit / daily-quota exhaustion.  Instead
+            # of the old 30s-sleep-and-retry (which burned 30s of
+            # every 30-min tick per sport), we flip the shared latch
+            # and stop attempting further requests this process.
+            # Retained cache rows remain usable subject to freshness.
+            _bump("http_429")
+            if not _quota_dead:
+                _quota_dead = True
+                _quota_dead_at = datetime.now(timezone.utc).isoformat()
+                logger.warning(
+                    "prop-line QUOTA EXHAUSTED (status=429 on %s) — "
+                    "activating shared latch RATE_LIMITED_EXTERNAL_DEPENDENCY "
+                    "for the remainder of the process.  Subsequent calls "
+                    "will be avoided; cache rows still served per freshness.",
+                    path,
+                )
             return None
+        if r.status_code >= 500:
+            _bump("http_5xx")
         if r.status_code != 200:
             logger.warning("prop-line %s status=%s body=%s",
                            path, r.status_code, r.text[:200])
             return None
+        _bump("success_200")
         return r.json()
     except Exception as e:
         logger.warning("prop-line %s error: %s", path, e)
