@@ -1482,6 +1482,35 @@ async def _ensure_today_picks() -> None:
         "status": {"$in": [None, "pending"]},
         "event_time": {"$gte": _now_iso},
     }
+    # ── Player-Prop Health Starvation μ-fix (2026-06) ─────────────────
+    # Prior behavior collapsed game-market + player-prop coverage into
+    # a single "actionable >= 20" gate.  A slate with 30 game markets
+    # and ZERO player-prop rows was declared HEALTHY — masking prop-
+    # flow starvation (the exact defect the audit surfaced).
+    #
+    # New behavior evaluates the two populations SEPARATELY:
+    #   GAME_MARKET_HEALTH  — overall actionable coverage (>=20)
+    #   PLAYER_PROP_HEALTH  — flow-ran-and-produced-output signal:
+    #       actionable prop picks >= 3   OR
+    #       ANY prop rows for today >= 5  (rejects/blocks count as
+    #                                       proof the flow executed)
+    #
+    # Both must be healthy for the slate to be healthy.  If PROPS are
+    # starved (flow never ran) we schedule the existing refresh — the
+    # orchestrator is idempotent so game-market coverage stays
+    # canonical and no duplicates are created.  This satisfies:
+    #   • MLB game markets healthy + props starved  → REFRESH
+    #   • MLB game markets healthy + props all model-rejected → HEALTHY
+    #     (no pointless retry loop)
+    #   • Provider-budget blocked → refresh path re-tries and existing
+    #     terminal-reason stamping applies (no new engine created).
+    _prop_selector = {
+        "$or": [
+            {"selection_v2.selection.player": {"$exists": True, "$ne": None}},
+            {"elite_player_name":            {"$exists": True, "$nin": [None, ""]}},
+            {"player_name":                  {"$exists": True, "$nin": [None, ""]}},
+        ],
+    }
     try:
         actionable = await db.picks.count_documents(_actionable_query)
     except Exception as _hc_err:
@@ -1490,19 +1519,50 @@ async def _ensure_today_picks() -> None:
             "forcing refresh (fail-closed)", _hc_err,
         )
         actionable = 0
+    # PLAYER_PROP_HEALTH — actionable count AND any-status flow signal.
+    try:
+        _prop_actionable_query = {**_actionable_query, **_prop_selector}
+        prop_actionable = await db.picks.count_documents(_prop_actionable_query)
+    except Exception as _hc_err:
+        logger.warning(
+            "ensure_today_picks: prop actionable count errored (%s) — "
+            "forcing refresh (fail-closed)", _hc_err,
+        )
+        prop_actionable = 0
+    try:
+        _prop_any_query = {"pick_date": today, **_prop_selector}
+        prop_any = await db.picks.count_documents(_prop_any_query)
+    except Exception as _hc_err:
+        logger.warning(
+            "ensure_today_picks: prop any-status count errored (%s) — "
+            "forcing refresh (fail-closed)", _hc_err,
+        )
+        prop_any = 0
     # Diagnostic-only raw count kept for observability but no longer
     # used as the healthy-slate gate.
     raw_count = await db.picks.count_documents({"pick_date": today})
-    if actionable >= 20:
+    game_market_healthy = actionable >= 20
+    # ``prop_actionable >= 3`` covers the healthy-with-picks case;
+    # ``prop_any >= 5`` covers the "flow ran, everything rejected"
+    # case (rejected rows still land in db.picks with off_board /
+    # no_bet / settlement_block markers and thus DON'T count in
+    # ``prop_actionable`` — but their presence proves starvation is
+    # not the cause).
+    player_prop_healthy = (prop_actionable >= 3) or (prop_any >= 5)
+    if game_market_healthy and player_prop_healthy:
         logger.debug(
-            "ensure_today_picks: %d actionable / %d raw for %s — healthy",
-            actionable, raw_count, today,
+            "ensure_today_picks: %d actionable / %d raw for %s "
+            "(prop_actionable=%d prop_any=%d) — healthy",
+            actionable, raw_count, today, prop_actionable, prop_any,
         )
         return
     count = actionable
     logger.info(
-        "ensure_today_picks: only %d picks for %s — scheduling background refresh",
-        count, today,
+        "ensure_today_picks: game_market_healthy=%s player_prop_healthy=%s "
+        "actionable=%d raw=%d prop_actionable=%d prop_any=%d for %s — "
+        "scheduling background refresh",
+        game_market_healthy, player_prop_healthy,
+        count, raw_count, prop_actionable, prop_any, today,
     )
     global _refresh_in_flight
     if _refresh_in_flight:
