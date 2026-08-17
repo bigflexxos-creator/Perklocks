@@ -2757,17 +2757,38 @@ async def force_refresh(user: Annotated[UserPublic, Depends(current_user)]):
     except Exception:
         pass
     next_dt = now + timedelta(seconds=REFRESH_COOLDOWN_SECONDS)
+    # ── Phase C5 μ-closure (2026-06) — truthful refresh semantics ──
+    # ``count`` is preserved for backward-compat clients that already
+    # render it, but we now surface an explicit truthful breakdown so
+    # the UI (or any consumer) can render "X existing records" vs
+    # "X new picks generated" honestly.  This endpoint is DB-only —
+    # it NEVER generates picks — so ``actually_generated`` is always 0.
+    canonical_today = 0
+    try:
+        canonical_today = await db.picks.count_documents(
+            {"pick_date": today,
+             "publication_source": {"$exists": True, "$ne": None}}
+        )
+    except Exception:
+        canonical_today = 0
     return {
         "refreshed": True,
         "queued": False,                   # no background job — Phase 2β
         "db_only": True,                   # explicit signal to any UI hook
+        # Legacy field — total DB records for today (existing only).
         "count": existing,
+        # ── B/C μ-closure — truthful refresh label decomposition ──
+        "existing_records":     existing,
+        "actually_generated":   0,          # DB-only endpoint never generates
+        "canonical_published":  canonical_today,
         "date": today,
+        "refresh_timestamp": now.isoformat(),
         "cooldown_seconds": REFRESH_COOLDOWN_SECONDS,
         "next_refresh_at": next_dt.isoformat(),
         "last_refresh_at": now.isoformat(),
-        "note": "Returning the latest published picks. Refreshes now "
-                 "come from the scheduled snapshot cadence.",
+        "note": "DB-only refresh — 0 new picks generated. Response "
+                 "reflects the currently-published canonical slate. "
+                 "New picks arrive on the scheduled snapshot cadence.",
     }
 
 

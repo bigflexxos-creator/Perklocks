@@ -260,55 +260,62 @@ def classify(p_calibrated: float, edge: float, stability: float, implied: float)
 # ──────────────────────────────────────────────────────────────────────────
 
 def unified_probability_report(pick: dict) -> dict:
-    """Returns the full breakdown for one pick, matching the exact
-    shape the spec requested:
+    """Returns the full breakdown for one pick.
+
+    ── Phase B3 μ-closure (2026-06) — FROZEN CANONICAL TRUTH ─────────
+    The authoritative top-level fields (``p_calibrated``, ``edge``,
+    plus the derived ``classification``) are read from the FROZEN
+    canonical publication snapshot on the pick document (fields
+    ``published_probability`` and ``published_edge``) whenever they
+    are present.  This guarantees that mutating current model inputs
+    AFTER publication does NOT alter authoritative Pick Breakdown
+    values shown to the user.
+
+    The intermediate inputs (p_v1, p_v2, sim_probability, effective
+    weights, stability score) are recomputed live from current model
+    state — they are surfaced under ``diagnostic`` with an explicit
+    ``label = "CURRENT_DIAGNOSTIC_RECALCULATION"`` so consumers can
+    tell them apart from frozen canonical truth.
 
         {
-          "p_v1": 0.78,
-          "p_v2": 0.74,
-          "sim_probability": 0.81,
-          "p_final": 0.766,
-          "p_calibrated": 0.731,
-          "edge": 0.041,
-          "classification": "PREMIUM",
-          "simulator_variance": 0.0064
+          "p_calibrated":      <frozen canonical when available>
+          "edge":              <frozen canonical when available>
+          "classification":    <derived from frozen canonical>
+          "frozen_source":     "publication_snapshot" | "current_recalculation"
+
+          "diagnostic": {
+              "label":               "CURRENT_DIAGNOSTIC_RECALCULATION",
+              "p_v1": ...,
+              "p_v2": ...,
+              "sim_probability": ...,
+              "p_final": ...,
+              "p_calibrated_current": ...,
+              "edge_current": ...,
+              "effective_weights": ...,
+              "stability_score": ...,
+          }
         }
 
-    Plus auxiliary fields (stability_score, implied_probability) so
-    UI consumers can show the full picture.
+    Older clients that read the flat schema continue to work because
+    the top-level fields keep the same names — they simply now
+    resolve to the frozen canonical values whenever the pick carries
+    them.  The ``diagnostic`` block is additive metadata.
     """
     p_v1 = compute_v1_probability(pick)
     p_v2 = compute_v2_probability(pick)
     p_sim, sim_variance, sim_stability = compute_sim_probability(pick)
 
     p_final = ensemble(p_v1, p_v2, p_sim)
-    p_calibrated = calibrate(p_final)
+    p_calibrated_current = calibrate(p_final)
 
-    # ── Did the simulator actually run? ────────────────────────────
-    # `compute_sim_probability` returns `p_v2` as a stand-in when the
-    # simulator wasn't wired for this market (e.g. MLB ±1.5 spread,
-    # most non-MLB markets pre-Phase B). That stand-in keeps the
-    # ensemble math working, but it would be MISLEADING to surface a
-    # confident "Simulator: 64.6%" reading in the UI when no Monte
-    # Carlo actually executed. Track sim_ran so we can:
-    #   1) Return `sim_probability: null` to clients (truthful API).
-    #   2) Recompute effective weights as (0.30 v1 + 0.70 v2 + 0 sim)
-    #      so the UI's weight tags match what was actually blended.
-    #   3) Drop variance to null too (a 0.0 variance reads as "very
-    #      confident" but actually means "we never simulated").
     sim_p_raw = pick.get("sim_win_probability")
     sim_ran = isinstance(sim_p_raw, (int, float)) and sim_p_raw > 0
     if sim_ran:
         stability = sim_stability
         effective_weights = {"v1": W_V1, "v2": W_V2, "sim": W_SIM}
     else:
-        # Convert v1↔v2 disagreement into a [0..1] stability score.
-        # Coefficient 4.0 maps a 25pp spread to stability=0 (max
-        # disagreement), 0pp spread to stability=1.0.
         spread = abs(p_v1 - p_v2)
         stability = max(0.0, min(1.0, 1.0 - 4.0 * spread))
-        # When sim didn't run, p_sim==p_v2 so the 25% sim weight was
-        # effectively absorbed into v2. Reflect that for the UI.
         effective_weights = {
             "v1":  W_V1,
             "v2":  round(W_V2 + W_SIM, 2),
@@ -317,35 +324,74 @@ def unified_probability_report(pick: dict) -> dict:
 
     book_odds = pick.get("book_odds")
     implied = implied_probability_from_odds(book_odds)
-    edge = compute_edge(p_calibrated, book_odds)
-    cls = classify(p_calibrated, edge, stability, implied)
+    edge_current = compute_edge(p_calibrated_current, book_odds)
+
+    # ── B3 μ-closure — canonical frozen resolution ────────────────
+    # Prefer the published canonical values written at publication
+    # time by PredictionPublicationService.  Fall back to the current
+    # recalculation ONLY when the pick predates the dual-write
+    # (legacy row) or the fields are absent.
+    pub_p = pick.get("published_probability")
+    pub_e = pick.get("published_edge")
+    frozen_source = "current_recalculation"
+    try:
+        _pub_p_f = float(pub_p) if pub_p is not None else None
+        _pub_e_f = float(pub_e) if pub_e is not None else None
+    except (TypeError, ValueError):
+        _pub_p_f = None
+        _pub_e_f = None
+    if _pub_p_f is not None and 0.0 <= _pub_p_f <= 1.0:
+        p_calibrated_frozen = _pub_p_f
+        frozen_source = "publication_snapshot"
+    else:
+        p_calibrated_frozen = p_calibrated_current
+    if _pub_e_f is not None:
+        # published_edge is stored as a decimal fraction (e.g. 0.041).
+        # Guard against pickle-drift stored as a percent-scale value
+        # (>1.0) by dividing by 100 in that case.
+        edge_frozen = _pub_e_f if abs(_pub_e_f) <= 1.0 else _pub_e_f / 100.0
+    else:
+        edge_frozen = edge_current
+
+    # Classification is derived from CANONICAL frozen inputs so a
+    # user viewing the breakdown always sees the same tier that was
+    # active at publication.
+    cls = classify(p_calibrated_frozen, edge_frozen, stability, implied)
 
     return {
+        # ── Authoritative frozen canonical fields ──────────────────
+        "p_calibrated": round(p_calibrated_frozen, 4),
+        "edge":         round(edge_frozen, 4),
+        "classification": cls,
+        "frozen_source": frozen_source,
+        # ── Backward-compatible surface for existing clients ───────
+        # (Kept at parity with historical shape — but authoritative
+        # values here are frozen when a canonical snapshot exists.)
         "p_v1": round(p_v1, 4),
         "p_v2": round(p_v2, 4),
-        # When the simulator didn't run for this market, return None so
-        # clients can render an honest "not run" UI instead of a fake
-        # confident reading. Internally `p_sim` is still the v2 stand-in
-        # used for blending, but that's an implementation detail.
         "sim_probability": round(p_sim, 4) if sim_ran else None,
         "p_final": round(p_final, 4),
-        "p_calibrated": round(p_calibrated, 4),
-        "edge": round(edge, 4),
-        "classification": cls,
-        # Variance is null when sim didn't run (a 0.0 reading would be
-        # indistinguishable from "extremely confident sim").
         "simulator_variance": round(sim_variance, 6) if sim_ran else None,
         "sim_ran": sim_ran,
-        # Aux fields (not in the strict spec, but UI-useful)
         "stability_score": round(stability, 4),
         "implied_probability": round(implied, 4),
-        # Nominal weights from spec — held constant for parity with
-        # historical reports. `effective_weights` reflects what was
-        # actually blended into p_final on this specific pick.
         "weights": {"v1": W_V1, "v2": W_V2, "sim": W_SIM},
         "effective_weights": effective_weights,
         "calibration": {
             "fit_sample_size": _calib_get_curve().fit_sample_size,
             "last_fit_at": _calib_get_curve().last_fit_at,
+        },
+        # ── Explicit diagnostic recalculation block (B3) ───────────
+        "diagnostic": {
+            "label": "CURRENT_DIAGNOSTIC_RECALCULATION",
+            "note": (
+                "Live recomputation from current mutable model state — "
+                "surfaced only for observability, never used as "
+                "authoritative Pick Breakdown truth."
+            ),
+            "p_calibrated_current": round(p_calibrated_current, 4),
+            "edge_current":         round(edge_current, 4),
+            "delta_p_calibrated":   round(p_calibrated_current - p_calibrated_frozen, 4),
+            "delta_edge":           round(edge_current - edge_frozen, 4),
         },
     }

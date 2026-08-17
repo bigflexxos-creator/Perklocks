@@ -1078,29 +1078,19 @@ def _dedupe_goalscorer_per_event(picks: list[dict], top_n: int = 3) -> list[dict
             best_by_player.values(),
             key=lambda x: -float(x.get("win_probability") or 0),
         )
-        top_picks = ranked[:top_n]
-        # Step 4: ALL elites survive (not just one) — Gyökeres / Mbappé
-        # / Haaland are the headline picks of the slate and should
-        # never be dropped silently.
-        protected_elite = [
-            p for p in ranked[top_n:]
-            if (p.get("elite_player") or p.get("auto_elite"))
-        ]
-        # Step 5: market-confirmed favourites also survive. ANY player
-        # with book implied probability >= 40% is being priced as a
-        # primary scoring threat by sharp UK/EU books. We trust the
-        # bookmaker's price more than our model's win_probability rank
-        # for marquee scorers — bug report: "I see Dieng but not Mané or
-        # Ismaïla Sarr" — all three were +100 (50% implied), all in the
-        # same Senegal squad, but our model rank kept only Dieng. This
-        # rule ensures any 40%+ implied scorer always reaches the board.
-        protected_market_fav = [
-            p for p in ranked[top_n:]
-            if (
-                p not in protected_elite
-                and float(p.get("implied_probability") or 0) >= 40.0
-            )
-        ]
+        # Step 3: Phase C4 μ-closure (2026-06) — no arbitrary top-N
+        # eligibility cap.  All deduped qualifying goalscorers pass
+        # through; ranking is preserved so highest win_probability
+        # candidates surface first, but ALL real, canonical,
+        # settlement-supported scorers stay reachable.  ``top_n`` is
+        # kept as a diagnostic index used by the audit log only.
+        top_picks = ranked
+        # Legacy overflow "protection" lists are now empty because
+        # nothing is dropped by the top-N cap; kept as empty lists so
+        # the audit log rows below still reference the same variable
+        # names without an IndexError.
+        protected_elite: list[dict] = []
+        protected_market_fav: list[dict] = []
         kept.extend(top_picks)
         kept.extend(protected_elite)
         kept.extend(protected_market_fav)
