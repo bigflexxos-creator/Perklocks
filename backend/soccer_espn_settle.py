@@ -722,7 +722,7 @@ async def settle_soccer_picks_via_espn(db, *, days_back: int = 14,
             {"market": {"$regex": "Draw No Bet", "$options": "i"}},
             {"market": {"$regex": "Double Chance", "$options": "i"}},
         ],
-    }).limit(max_picks)
+    }).sort("event_time", 1).limit(max_picks)
 
     try:
         from quality_gate import _extract_player_from_pick

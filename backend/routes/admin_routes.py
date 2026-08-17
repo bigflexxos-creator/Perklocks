@@ -2257,3 +2257,35 @@ async def admin_boundary_trace(
 
     return trace
 
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Phase A — Settlement Telemetry Read
+# ═════════════════════════════════════════════════════════════════════
+@router.get("/admin/settlement_telemetry")
+async def admin_settlement_telemetry(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    limit: int = 10,
+):
+    """Return the ``limit`` most-recent settlement run summaries.
+
+    Emitted by ``settle_due_picks()`` at the end of every run.
+    Read-only; admin auth required.  Fields:
+      * recorded_at
+      * candidates_examined / attempts / success / fail
+      * settled / won / lost / push / auto_voided / unsupported_terminated
+      * oldest_unresolved_age_seconds
+      * terminal_reasons  (bucketed by reason)
+      * sport_filter      (which sports the run scoped to; null = all)
+    """
+    from deps import db as database
+    from services.settlement_telemetry import (
+        read_latest, oldest_unresolved_age_seconds,
+    )
+    docs = await read_latest(database, limit=max(1, min(limit, 50)))
+    return {
+        "latest_run_count":              len(docs),
+        "oldest_unresolved_age_seconds": await oldest_unresolved_age_seconds(database),
+        "runs":                          docs,
+    }
+

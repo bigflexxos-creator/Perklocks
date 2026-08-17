@@ -826,11 +826,13 @@ async def settle_player_props(db, max_picks: int = 800) -> dict:
     Returns counts: settled / won / lost / push / skipped / errors.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+    # Phase A (2026-06) — oldest-first ordering guarantees forward
+    # progress across settlement runs even when >max_picks pending.
     cursor = db.picks.find(
         {"status": {"$in": [None, "pending"]},
          "off_board": {"$ne": True}},  # Board-visibility gate (2026-07-21)
         {"_id": 0},
-    ).limit(max_picks)
+    ).sort("event_time", 1).limit(max_picks)
     picks = await cursor.to_list(length=max_picks)
     counts = {"settled": 0, "won": 0, "lost": 0, "push": 0, "skipped": 0, "errors": 0, "scanned": 0}
     if not picks:
