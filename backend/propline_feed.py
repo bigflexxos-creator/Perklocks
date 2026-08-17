@@ -476,6 +476,56 @@ async def refresh_propline_alt_lines(db: AsyncIOMotorDatabase) -> dict:
                 if not ev_id:
                     continue
                 stats["events"] += 1
+
+                # ── Phase G4/A1/A2 μ-closure (2026-06) ────────────
+                # CACHE-FIRST + TIME-TO-EVENT WINDOW gate.
+                #
+                # Before we call ``_fetch_event_odds`` (which issues
+                # PropLine network requests), check whether we
+                # already have fresh rows for this event.  The
+                # freshness threshold varies by time-to-event so we
+                # match the required scheduler contract:
+                #   >12h TTE  → 60-min freshness (rare / cache-first)
+                #   3-12h TTE → 20-min freshness (stale-only refresh)
+                #   0-3h TTE  →  5-min freshness (targeted pregame)
+                #   past      → skip entirely (completed event)
+                try:
+                    commence_dt = datetime.fromisoformat(
+                        (ev.get("commence_time") or "").replace("Z", "+00:00")
+                    )
+                    tte_hours = (commence_dt - now).total_seconds() / 3600.0
+                except Exception:
+                    tte_hours = 1.0  # fail-safe: treat as pregame
+
+                if tte_hours <= -0.25:
+                    # Event started >15 min ago — completed enough
+                    # that PropLine markets are useless.  Skip.
+                    _bump("cache_hits")     # accounted as "avoided"
+                    continue
+
+                if tte_hours > 12:
+                    fresh_min = 60
+                elif tte_hours > 3:
+                    fresh_min = 20
+                else:
+                    fresh_min = 5
+
+                fresh_cutoff = now - timedelta(minutes=fresh_min)
+                # A cache-hit here means the collection already has
+                # at least one alt-line row for this event that was
+                # last_seen within the freshness window.
+                try:
+                    fresh_row = await db.propline_alt_lines.find_one(
+                        {"event_id": ev_id,
+                         "last_seen": {"$gte": fresh_cutoff}},
+                        {"_id": 1},
+                    )
+                except Exception:
+                    fresh_row = None
+                if fresh_row is not None:
+                    _bump("cache_hits")
+                    continue    # skip network call — cache is fresh
+
                 odds = await _fetch_event_odds(cx, sport_key, ev_id, markets)
                 if not odds:
                     continue
