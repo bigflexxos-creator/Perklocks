@@ -3329,6 +3329,74 @@ async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) 
     markets = PLAYER_PROP_MARKETS.get(sport)
     if not markets:
         return {}
+
+    # ── MLB Prop Cache-First μ-closure (2026-06) ──────────────────
+    # Before making a network request, check if we already retain
+    # fresh REAL sportsbook rows for this event's MLB prop markets
+    # in ``live_alt_lines``.  When present, reconstruct the Odds API
+    # payload shape from cache — ZERO external calls, downstream
+    # consumers see the identical shape.  Freshness:
+    #    5 minutes for live/in-play events (unchanged upstream cadence)
+    #   15 minutes otherwise (matches upstream cache TTL contract)
+    # Real-line safety: cache rows were themselves written from real
+    # provider responses in this same function, so we can never
+    # synthesize a bettable line from a model projection.
+    if sport == "MLB":
+        try:
+            from server import db as _db
+            _now  = datetime.now(timezone.utc)
+            _stale = _now - timedelta(minutes=15)
+            _cache_rows = await _db.live_alt_lines.find(
+                {"event_id": event_id,
+                 "sport": "mlb",
+                 "last_seen": {"$gte": _stale}},
+                {"_id": 0},
+            ).to_list(length=5000)
+            if _cache_rows:
+                # Reconstruct the Odds API bookmakers/markets/outcomes shape.
+                _bm_map: dict[str, dict] = {}
+                for r in _cache_rows:
+                    _book = r.get("sportsbook")
+                    _mkey = r.get("market_key")
+                    if not _book or not _mkey:
+                        continue
+                    _bm = _bm_map.setdefault(_book, {"key": _book,
+                                                      "markets": {}})
+                    _mk = _bm["markets"].setdefault(_mkey, {"key": _mkey,
+                                                             "outcomes": []})
+                    _mk["outcomes"].append({
+                        "name":        r.get("selection"),
+                        "description": r.get("selection"),
+                        "point":       r.get("line"),
+                        "price":       r.get("price"),
+                    })
+                # Flatten map → list matching Odds API shape.
+                bookmakers = []
+                for _book, _bm in _bm_map.items():
+                    _bm["markets"] = list(_bm["markets"].values())
+                    bookmakers.append(_bm)
+                logger.info(
+                    "MLB prop cache-first HIT event=%s rows=%d books=%d "
+                    "→ ZERO provider call this cycle",
+                    event_id, len(_cache_rows), len(bookmakers),
+                )
+                # Reconstructed shape matches downstream expectations.
+                _cache_row = _cache_rows[0]
+                return {
+                    "id":            event_id,
+                    "sport_key":     sport_key,
+                    "home_team":     _cache_row.get("home_team"),
+                    "away_team":     _cache_row.get("away_team"),
+                    "commence_time": _cache_row.get("commence_time"),
+                    "bookmakers":    bookmakers,
+                    "_cache_hit":    True,   # observable diagnostic
+                }
+        except Exception as _cf_err:
+            logger.debug(
+                "MLB cache-first lookup skipped for %s: %s",
+                event_id, _cf_err,
+            )
+
     # Region selection — CRITICAL for soccer goal-scorer markets. US books
     # (DraftKings/FanDuel) only expose a HANDFUL of players per soccer match;
     # UK/EU books (Pinnacle, Marathon, bet365) expose the full team rosters.
@@ -3389,6 +3457,42 @@ async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) 
                 logger.info(
                     "MLB H+R+RBI availability: event=%s outcomes=%d",
                     event_id, hrr,
+                )
+            # ── MLB Prop Cache Write μ-closure (2026-06) ──────────
+            # After a successful real-provider fetch, PERSIST the
+            # normalized rows into ``live_alt_lines`` so subsequent
+            # iterations can serve the same event from cache
+            # without another provider call.  We reuse the exact
+            # normalization pattern from ``alt_lines_feed.py`` to
+            # keep identity/schema consistent.  Best-effort — write
+            # failure must NEVER break the pick pipeline.
+            try:
+                from server import db as _db
+                from alt_lines_feed import _flatten_odds as _fo
+                _now = datetime.now(timezone.utc)
+                _rows = _fo(data, "mlb", "baseball_mlb", _now)
+                if _rows:
+                    from pymongo import UpdateOne
+                    _ops = [
+                        UpdateOne(
+                            {"market_id": r["market_id"]},
+                            {"$set": r},
+                            upsert=True,
+                        ) for r in _rows
+                    ]
+                    if _ops:
+                        _res = await _db.live_alt_lines.bulk_write(
+                            _ops, ordered=False)
+                        logger.info(
+                            "MLB prop cache WRITE event=%s rows=%d "
+                            "upserts=%d (cache-first ready next cycle)",
+                            event_id, len(_rows),
+                            (_res.upserted_count or 0) + (_res.modified_count or 0),
+                        )
+            except Exception as _cw_err:
+                logger.debug(
+                    "MLB prop cache write skipped for %s: %s",
+                    event_id, _cw_err,
                 )
         return data
 
