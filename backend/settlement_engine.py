@@ -312,7 +312,14 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
                    # off_board picks (Brain-filtered, validator-blocked,
                    # low-lock, model-only) stay pending forever so ROI
                    # analytics reflect the *visible* slate.
-                   "off_board": {"$ne": True}}
+                   "off_board": {"$ne": True},
+                   # ── Phase A micro-closure (2026-06): actionable-only
+                   # candidate filter.  Picks marked with
+                   # ``settlement_block: True`` have no authoritative
+                   # grading path and are excluded from the queue so
+                   # they cannot occupy head batches → guarantees
+                   # forward progress across bounded runs.
+                   "settlement_block": {"$ne": True}}
     if sport_filter:
         query["sport"] = {"$in": list(sport_filter)}
     # ── Phase A (2026-06): Starvation Fix ─────────────────────────
@@ -414,68 +421,73 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
         picks = [p for p in picks if p.get("id") not in voided_set]
 
     # ── Phase A (2026-06) — SETTLEMENT_UNSUPPORTED terminator ─────
-    # Some published markets have NO authoritative grading path in
-    # the current settler set (e.g. Soccer Shots, Cards, Corners,
-    # First Goalscorer, HT/FT, Correct Score, Asian Handicap).  They
-    # were staying PENDING forever, inflating the queue and
-    # contributing to starvation.
+    # (2026-06 micro-closure) Some published markets have NO
+    # authoritative grading path in the current settler set (Soccer
+    # Shots, Cards, Corners, First Goalscorer, HT/FT, Correct
+    # Score, Asian Handicap).  They cannot be graded and MUST NOT
+    # be fabricated as VOID — lack of Perklocks settlement
+    # capability is NOT an authoritative sportsbook VOID.
     #
-    # Terminate them once, canonically — VOID via SettlementService
-    # with source `settler_unsupported:*` so they exit the queue
-    # cleanly and analytics can bucket the terminal reasons.  Only
-    # picks whose event has already completed (event_time in the
-    # past) are terminated — future/live picks are left alone.
+    # Instead we stamp a BLOCKED disposition into pick METADATA
+    # (leaving canonical ``status='pending'`` untouched, so
+    # SettlementService remains the sole outcome writer and History
+    # W/L/PUSH/VOID hit-rate/ROI is not contaminated), and add
+    # ``settlement_block: True`` — future settlement passes exclude
+    # these picks via the candidate-query gate, giving true forward
+    # progress.
+    #
+    # Frozen publication truth is preserved (no status/result/off_board
+    # mutation on the published record).  Analytics can still audit
+    # the terminal reasons by grouping on ``settlement_block_reason``.
     try:
         from services.settlement_capability import classify, UNSUPPORTED
-        from services.settlement_service import SettlementService
-        _svc_unsupp = SettlementService(db)
-        await _svc_unsupp.ensure_indices()
         _now_iso = datetime.now(timezone.utc).isoformat()
         _kept: list[dict] = []
         _terminated_reasons: dict[str, int] = {}
+        _block_ids: list[str] = []
+        _block_reasons_by_id: dict[str, str] = {}
         for p in picks:
             _et = p.get("event_time") or ""
-            # Only terminate picks whose event has already ended —
-            # live/future markets stay untouched (they may resolve
-            # via a supported path once the fixture completes and
-            # capability is broadened).
             _event_past = bool(_et and _et < _now_iso)
             if not _event_past:
                 _kept.append(p)
                 continue
-            status, reason = classify(
+            status_c, reason = classify(
                 p.get("sport"), p.get("market"), p.get("league"))
-            if status != UNSUPPORTED:
+            if status_c != UNSUPPORTED:
                 _kept.append(p)
                 continue
-            # Terminal void via canonical service.
-            try:
-                _res = await _svc_unsupp.settle_from_pick(
-                    p,
-                    result                    = "void",
-                    source                    = reason or "settler_unsupported:generic_unknown",
-                    authoritative_event_final = False,   # VOID skips FINAL barrier
-                    analytics_mirror          = {
-                        "void_reason":       reason or "settler_unsupported",
-                        "terminated_phase":  "PhaseA_SettlementCapability",
-                    },
-                )
-                if _res.get("status") in ("NEW_SETTLEMENT",
-                                          "CORRECTION_APPLIED"):
-                    counts["unsupported_terminated"] += 1
-                    _terminated_reasons[reason] = (
-                        _terminated_reasons.get(reason, 0) + 1)
-                else:
-                    # If the service refused (e.g. identity mismatch
-                    # on legacy row), keep the pick in the queue so
-                    # normal settlement can still take a shot.
-                    _kept.append(p)
-            except Exception as _ue:
-                logger.debug("unsupported terminate failed for %s: %s",
-                             p.get("id"), _ue)
+            _pid = p.get("id")
+            if not _pid:
                 _kept.append(p)
+                continue
+            _block_ids.append(_pid)
+            _block_reasons_by_id[_pid] = reason or "settler_unsupported:generic_unknown"
+            _terminated_reasons[reason] = (
+                _terminated_reasons.get(reason, 0) + 1)
+        if _block_ids:
+            # Bulk metadata write — NOT a status write.  Canonical
+            # status stays ``pending`` so no outcome is fabricated.
+            try:
+                from pymongo import UpdateOne
+                ops = [
+                    UpdateOne(
+                        {"id": _pid, "status": {"$in": [None, "pending"]}},
+                        {"$set": {
+                            "settlement_block":        True,
+                            "settlement_block_reason": _block_reasons_by_id[_pid],
+                            "settlement_block_at":     _now_iso,
+                        }},
+                    ) for _pid in _block_ids
+                ]
+                if ops:
+                    res = await db.picks.bulk_write(ops, ordered=False)
+                    counts["unsupported_terminated"] = (
+                        res.modified_count or len(_block_ids))
+            except Exception as _bwe:
+                logger.warning("unsupported block metadata write err: %s", _bwe)
+                counts["unsupported_terminated"] = 0
         picks = _kept
-        # Merge into the run's terminal-reason counter.
         if _terminated_reasons:
             counts["terminal_reasons"].update(_terminated_reasons)
     except Exception as _uce:

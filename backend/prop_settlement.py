@@ -830,7 +830,8 @@ async def settle_player_props(db, max_picks: int = 800) -> dict:
     # progress across settlement runs even when >max_picks pending.
     cursor = db.picks.find(
         {"status": {"$in": [None, "pending"]},
-         "off_board": {"$ne": True}},  # Board-visibility gate (2026-07-21)
+         "off_board": {"$ne": True},  # Board-visibility gate (2026-07-21)
+         "settlement_block": {"$ne": True}},  # Phase A μ-closure — actionable only
         {"_id": 0},
     ).sort("event_time", 1).limit(max_picks)
     picks = await cursor.to_list(length=max_picks)
