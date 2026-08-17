@@ -2153,3 +2153,107 @@ async def admin_production_truth_mode(
         "mode":               current_mode().value,
         "recent_violations":  recent_violations(limit=50),
     }
+
+# ═════════════════════════════════════════════════════════════════════
+# Phase A — Boundary Trace (V2.1)
+# ═════════════════════════════════════════════════════════════════════
+@router.get("/admin/boundary_trace")
+async def admin_boundary_trace(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    days: int = 30,
+):
+    """Read-only settlement + History lifecycle diagnostic.
+
+    Reports counts through each boundary so the FIRST unexpected
+    collapse (where completed published picks stop reaching History)
+    can be located.  DOES NOT MUTATE — no grading, no settlement
+    creation, no db writes.  Admin auth required.
+    """
+    from collections import Counter
+    from deps import db as database
+    now = datetime.now(timezone.utc)
+    horizon_iso = (now - timedelta(days=days)).isoformat()
+    now_iso = now.isoformat()
+
+    async def _cnt(coll: str, q: dict) -> int:
+        try:
+            return await database[coll].count_documents(q)
+        except Exception:
+            return -1
+
+    colls = await database.list_collection_names()
+
+    trace: dict = {"window_days": days, "now": now_iso}
+
+    # B1 published picks in window
+    trace["B1_published_picks_in_window"] = await _cnt(
+        "picks",
+        {"publication_state": "PUBLISHED",
+         "created_at": {"$gte": horizon_iso}},
+    )
+    # B2 published + event completed
+    trace["B2_published_event_completed"] = await _cnt(
+        "picks",
+        {"publication_state": "PUBLISHED",
+         "created_at": {"$gte": horizon_iso},
+         "event_time": {"$lt": now_iso}},
+    )
+    # B3 picks.status graded
+    trace["B3_status_graded"] = await _cnt(
+        "picks",
+        {"created_at": {"$gte": horizon_iso},
+         "status": {"$in": ["won", "lost", "push", "void"]}},
+    )
+    # B4 settlement_events in window
+    trace["B4_settlement_events_in_window"] = await _cnt(
+        "settlement_events",
+        {"created_at": {"$gte": horizon_iso}},
+    ) if "settlement_events" in colls else "COLLECTION_MISSING"
+    # B5 history projection
+    if "history_projection" in colls:
+        trace["B5_history_projection_docs"] = await _cnt(
+            "history_projection", {})
+    else:
+        trace["B5_history_projection_docs"] = "COLLECTION_NOT_PRESENT"
+    # B6 pending but event completed (starvation)
+    trace["B6_pending_completed_event"] = await _cnt(
+        "picks",
+        {"created_at": {"$gte": horizon_iso},
+         "status": {"$in": [None, "pending", "PENDING"]},
+         "event_time": {"$lt": now_iso}},
+    )
+    # B7 oldest completed unresolved age (starvation indicator)
+    oldest = None
+    async for p in database.picks.find(
+        {"status": {"$in": [None, "pending", "PENDING"]},
+         "event_time": {"$lt": now_iso}},
+        {"event_time": 1, "id": 1, "sport": 1, "market": 1},
+    ).sort("event_time", 1).limit(1):
+        oldest = p
+    trace["B7_oldest_pending_completed"] = (
+        {"pick_id": oldest.get("id"),
+         "sport": oldest.get("sport"),
+         "market": oldest.get("market"),
+         "event_time": oldest.get("event_time")}
+        if oldest else None
+    )
+    # Distributions
+    st = Counter()
+    async for p in database.picks.find(
+        {"created_at": {"$gte": horizon_iso}}, {"status": 1}
+    ).limit(50000):
+        st[p.get("status")] += 1
+    trace["status_distribution"] = {str(k): v for k, v in st.items()}
+    pub = Counter()
+    async for p in database.picks.find(
+        {"created_at": {"$gte": horizon_iso}}, {"publication_state": 1}
+    ).limit(50000):
+        pub[p.get("publication_state")] += 1
+    trace["publication_state_distribution"] = {str(k): v for k, v in pub.items()}
+    # Totals
+    trace["total_picks_all_time"] = await _cnt("picks", {})
+    trace["published_all_time"] = await _cnt(
+        "picks", {"publication_state": "PUBLISHED"})
+
+    return trace
+
