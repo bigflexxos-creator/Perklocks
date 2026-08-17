@@ -378,6 +378,23 @@ export type Pick = {
     player_display?: string;       // e.g. "8.2 K / start vs KC"
     player_sample?: number;        // starts / meetings / matches
   };
+
+  // ─── Player identity (2026-06 headshot μ-closure) ─────────────────
+  // Attached ONLY for player-prop picks whose canonical (sport, name,
+  // team) resolves against ``db.players`` (populated by the ESPN
+  // athlete ingestor + MLB Stats API).  Presentation-only metadata —
+  // never influences pick identity, dedupe, Lock Score, probability,
+  // edge, publication, or settlement.  Absent for game markets.
+  player_meta?: {
+    display_name: string;
+    team?: string;
+    headshot_url: string;
+    headshot_source: string;
+    headshot_verified: boolean;
+    external_id?: number | string;
+    mlb_id?: number;
+    player_id?: number | string;
+  };
 };
 
 export type PickRationale = {

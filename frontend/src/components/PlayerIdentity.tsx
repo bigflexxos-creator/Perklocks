@@ -74,21 +74,62 @@ export function PlayerIdentity({
   ringColor,
   isPlayerProp = false,
 }: Props) {
-  const [errored, setErrored] = useState(false);
+  // Two-stage error state — a broken player headshot must degrade to
+  // the team-logo chain, and a broken team logo must degrade to the
+  // sport silhouette.  Never to a broken-image icon; the card ALWAYS
+  // renders.
+  const [headshotErrored, setHeadshotErrored] = useState(false);
+  const [logoErrored, setLogoErrored] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   const home = (pick as any).home_meta || {};
   const away = (pick as any).away_meta || {};
 
   const side = pickPlayerSide(pick);
+  // ── REAL PLAYER HEADSHOT (2026-06) ────────────────────────────────
+  // Prefer the verified server-canonical headshot when the backend
+  // has stamped ``player_meta.headshot_url`` (via the shared
+  // ``player_meta_decorator``).  This is present ONLY for
+  // player-prop cards where canonical identity resolved cleanly
+  // against ``db.players`` (ESPN athletes + MLB Stats).
+  //
+  // Contract:
+  //   • Missing player_meta ⇒ never fabricate — falls through to
+  //     the team-logo chain.
+  //   • ``headshot_verified === true`` is REQUIRED — a non-verified
+  //     stamp is treated as absent.
+  const pm: any = (pick as any).player_meta;
+  const verifiedHeadshot: string | undefined =
+    pm && pm.headshot_verified === true && typeof pm.headshot_url === "string"
+      ? pm.headshot_url
+      : undefined;
+
   const primaryLogo: string | undefined =
     side === "home" ? home.logo : side === "away" ? away.logo : (home.logo || away.logo);
   const secondaryLogo: string | undefined =
     side === "home" ? away.logo : side === "away" ? home.logo : undefined;
 
-  // Choose the best available logo (server-side canonical).
-  const uri: string | undefined =
-    !errored && primaryLogo ? primaryLogo : secondaryLogo;
+  // Resolution priority:
+  //   1. verified player headshot (only when present + verified)
+  //   2. player-side team logo
+  //   3. opposite-side team logo
+  //   4. sport silhouette (rendered by the fallback branch below)
+  //
+  // Two-stage graceful degradation:
+  //   • headshot fails → drops to team logo
+  //   • team logo also fails → drops to silhouette
+  let uri: string | undefined;
+  let isHeadshot = false;
+  if (verifiedHeadshot && !headshotErrored) {
+    uri = verifiedHeadshot;
+    isHeadshot = true;
+  } else if (primaryLogo && !logoErrored) {
+    uri = primaryLogo;
+  } else if (secondaryLogo && !logoErrored) {
+    uri = secondaryLogo;
+  } else {
+    uri = undefined;
+  }
 
   const radius = variant === "circle" ? size / 2 : RADIUS.md;
   const ring = ringColor || COLORS.borderStrong;
@@ -120,14 +161,25 @@ export function PlayerIdentity({
       <Image
         source={{ uri }}
         onLoad={() => setLoaded(true)}
-        onError={() => setErrored(true)}
+        onError={() => {
+          // Two-stage degradation — headshot fail drops to team logo;
+          // a subsequent team-logo fail drops to the silhouette branch.
+          if (isHeadshot) {
+            setHeadshotErrored(true);
+            setLoaded(false);
+          } else {
+            setLogoErrored(true);
+            setLoaded(false);
+          }
+        }}
+        // For headshots use ``cover`` so faces fill the circle cleanly;
+        // for team logos keep ``contain`` so crests don't get cropped.
+        resizeMode={isHeadshot ? "cover" : "contain"}
         // Fixed dimensions — avoids layout shift.
         style={[
           styles.img,
           { width: size, height: size, borderRadius: radius, opacity: loaded ? 1 : 0.001 },
         ]}
-        // Native platforms accept `resizeMode`; on web it is ignored safely.
-        resizeMode="contain"
         {...(Platform.OS === "web"
           ? ({ loading: "lazy" } as any)
           : ({ } as any))}
