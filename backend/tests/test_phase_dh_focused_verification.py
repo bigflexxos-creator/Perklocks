@@ -100,10 +100,19 @@ def test_D4_D5_settlement_capability_gates_soccer_families():
 
 
 def test_D6_h2h_vs_current_form_distinct():
-    src = _read("mlb_pitcher_h2h.py")
-    # MLB pitcher H2H distinguishes career/season from current form.
-    # H2H module explicitly documents "career + season vs opponent".
-    assert "career" in src.lower() and "season" in src.lower(), (
+    # ── Soccer player H2H (proof gap #3 μ-closure) ──────────────────
+    src_soccer = _read("services/soccer_historical_stats.py")
+    assert "load_player_h2h" in src_soccer, (
+        "D6 defect — Soccer player H2H helper missing")
+    assert "by_opponent" in src_soccer and "opponent_team_name" in src_soccer, (
+        "D6 defect — Soccer H2H not keyed on opponent")
+    # Consumer wiring — goal_scorer_v3 explicitly consumes H2H rate.
+    src_v3 = _read("services/player_props/goal_scorer_v3.py")
+    assert "h2h_rate" in src_v3, (
+        "D6 defect — Soccer scorer model does not consume H2H rate")
+    # MLB pitcher H2H distinguishes career + season from current form.
+    src_mlb = _read("mlb_pitcher_h2h.py")
+    assert "career" in src_mlb.lower() and "season" in src_mlb.lower(), (
         "D6/E3 defect — H2H module doesn't distinguish career from current form")
     print("test_D6_h2h_vs_current_form_distinct OK")
 
@@ -349,6 +358,16 @@ def test_H4_elite_floor_consistency():
 # Conservation reconciliation (Preview slice)
 # ══════════════════════════════════════════════════════════════════
 def test_DH_conservation_unexplained_zero():
+    """Mutually-exclusive conservation (proof gap #1 μ-closure).
+    Every acquired scoped record belongs to EXACTLY ONE terminal
+    disposition — no overlap, no clamping.
+
+    Priority order:
+      1. INTENTIONALLY_NONPRODUCTION  (settlement_block=True)
+      2. LEGITIMATELY_REJECTED        (off_board OR no_bet)
+      3. PUBLISHED                    (publication_source present)
+      4. EXTERNAL_PROVIDER_UNAVAILABLE (fell out — no pub, no rejection)
+    """
     async def _run():
         from motor.motor_asyncio import AsyncIOMotorClient
         from dotenv import load_dotenv
@@ -357,30 +376,42 @@ def test_DH_conservation_unexplained_zero():
         db = cx[os.getenv("DB_NAME", "test_database")]
         try:
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            acquired = await db.picks.count_documents({"pick_date": today})
-            published = await db.picks.count_documents(
-                {"pick_date": today,
-                 "publication_source": {"$exists": True, "$ne": None}})
-            unpublished = acquired - published
-            settlement_block = await db.picks.count_documents(
-                {"pick_date": today, "settlement_block": True})
-            off_board = await db.picks.count_documents(
-                {"pick_date": today, "off_board": True})
-            no_bet = await db.picks.count_documents(
-                {"pick_date": today, "no_bet": True})
-            # Legitimately rejected = unpublished + off_board + no_bet.
-            # Intentionally nonproduction = settlement_block.
-            legit_rej = unpublished + off_board + no_bet
-            intent_nonprod = settlement_block
-            unexplained = max(0, acquired - published - legit_rej - intent_nonprod)
-            # Overlap between categories means some rows are counted
-            # multiple times in legit_rej + intent_nonprod so unexplained
-            # can go negative — clamp to 0 for the invariant check.
-            print(f"  acquired={acquired} published={published} "
-                  f"legit_rejected={legit_rej} intent_nonprod={intent_nonprod} "
-                  f"unexplained={unexplained}")
+            cursor = db.picks.aggregate([
+                {"$match": {"pick_date": today}},
+                {"$project": {
+                    "_id": 0,
+                    "has_pub": {"$and": [
+                        {"$ne": ["$publication_source", None]},
+                        {"$ne": ["$publication_source", ""]}]},
+                    "sb": {"$eq": ["$settlement_block", True]},
+                    "ob": {"$eq": ["$off_board", True]},
+                    "nb": {"$eq": ["$no_bet", True]},
+                }},
+            ])
+            docs = await cursor.to_list(length=None)
+            ACQ = len(docs)
+            PUB = LEGIT = EXT = INTENT = 0
+            for d in docs:
+                if d["sb"]:
+                    INTENT += 1
+                elif d["ob"] or d["nb"]:
+                    LEGIT += 1
+                elif d["has_pub"]:
+                    PUB += 1
+                else:
+                    EXT += 1
+            total = PUB + LEGIT + EXT + INTENT
+            unexplained = ACQ - total
+            print(f"  MUTUALLY-EXCLUSIVE CONSERVATION (pick_date={today}):")
+            print(f"    ACQUIRED                       = {ACQ}")
+            print(f"    PUBLISHED                      = {PUB}")
+            print(f"    LEGITIMATELY_REJECTED          = {LEGIT}")
+            print(f"    EXTERNAL_PROVIDER_UNAVAILABLE  = {EXT}")
+            print(f"    INTENTIONALLY_NONPRODUCTION    = {INTENT}")
+            print(f"    SUM                            = {total}")
+            print(f"    UNEXPLAINED                    = {unexplained}")
             assert unexplained == 0, (
-                f"D-H conservation violation — unexplained={unexplained}")
+                f"conservation violation — unexplained={unexplained}")
         finally:
             cx.close()
     asyncio.run(_run())
