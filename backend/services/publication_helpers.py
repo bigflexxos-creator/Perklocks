@@ -94,8 +94,34 @@ async def publish_upserted_picks(
     try:
         from services.pick_identity_enricher import enrich_pick_identity_async
         from services.pick_model_evidence import extract_model_evidence
+        # ── Brain Runtime Wiring μ-closure (2026-06) ─────────────────
+        # Every candidate that passes through this canonical
+        # publication chokepoint receives ONE shared convergence
+        # classification.  Zero per-sport engine changes — the sport
+        # runtime has already stamped whatever metadata it knows
+        # (model_probability / simulator_probability /
+        # simulator_provenance / evidence_quality / lineup context).
+        # This shared pass reads that metadata (falling back to
+        # inferences from existing pick fields when the sport
+        # engine didn't stamp explicitly), calls the shared
+        # ``classify_convergence`` classifier, and writes back
+        # three DIAGNOSTIC fields on the pick doc:
+        #   convergence_label
+        #   convergence_spread_pp
+        #   convergence_confidence_multiplier
+        # It NEVER mutates ``win_probability`` / ``published_*`` /
+        # ``lock_score`` — canonical truth remains frozen.
+        try:
+            from probability_engine import (
+                classify_convergence,
+                implied_probability_from_odds,
+            )
+        except Exception:
+            classify_convergence          = None   # type: ignore
+            implied_probability_from_odds = None   # type: ignore
         _enriched_count = 0
         _model_evidence_count = 0
+        _convergence_count = 0
         for p in picks_list:
             try:
                 ident = await enrich_pick_identity_async(db, p)
@@ -109,6 +135,56 @@ async def publish_upserted_picks(
                 logger.debug("model evidence extractor raised on pick %s: %s",
                               p.get("id"), _e_me)
                 model = {}
+            # ── Shared convergence stamp ─────────────────────────
+            if classify_convergence is not None:
+                try:
+                    # Pull whatever the sport runtime already provided.
+                    _model_p = p.get("model_probability") \
+                                if p.get("model_probability") is not None \
+                                else p.get("win_probability")
+                    _sim_p   = p.get("simulator_probability") \
+                                if p.get("simulator_probability") is not None \
+                                else p.get("sim_win_probability")
+                    _sim_prov = (p.get("simulator_provenance")
+                                    or p.get("sim_provenance")
+                                    or (model or {}).get("simulator_provenance"))
+                    _ev_q     = (p.get("evidence_quality")
+                                    or (model or {}).get("evidence_quality")
+                                    or "MODERATE")
+                    _implied = None
+                    if implied_probability_from_odds is not None:
+                        _bo = p.get("book_odds") or p.get("odds_at_pick")
+                        try:
+                            _implied = implied_probability_from_odds(_bo)
+                        except Exception:
+                            _implied = None
+                    _sim_ran = isinstance(_sim_p, (int, float)) and _sim_p > 0
+                    if isinstance(_model_p, (int, float)) and _model_p > 0:
+                        _p_v2 = _sim_p if _sim_ran else _model_p
+                        _conv = classify_convergence(
+                            p_v1              = float(_model_p),
+                            p_v2              = float(_p_v2),
+                            p_sim             = float(_sim_p) if _sim_ran else None,
+                            implied           = _implied,
+                            sim_provenance    = _sim_prov,
+                            evidence_quality  = _ev_q,
+                            sim_ran           = _sim_ran,
+                        )
+                        p["convergence_label"] = _conv["label"]
+                        p["convergence_spread_pp"] = _conv["spread_pp"]
+                        p["convergence_confidence_multiplier"] = (
+                            _conv["confidence_multiplier"])
+                        # Preserve evidence + provenance we resolved
+                        # so downstream can trust the same tags.
+                        if not p.get("evidence_quality"):
+                            p["evidence_quality"] = _conv["evidence_quality"]
+                        if not (p.get("simulator_provenance")
+                                 or p.get("sim_provenance")):
+                            p["simulator_provenance"] = _conv["sim_provenance"]
+                        _convergence_count += 1
+                except Exception as _e_cv:
+                    logger.debug("convergence enricher raised on pick %s: %s",
+                                  p.get("id"), _e_cv)
             # Compute update_fields FIRST against the original (pre-
             # merge) pick, so we know which values we actually need
             # to persist.  Producer-supplied canonical values are
@@ -156,6 +232,16 @@ async def publish_upserted_picks(
             # fields immediately.
             for k, v in update_fields.items():
                 p[k] = v
+            # ── Brain Runtime Wiring — persist convergence stamp ──
+            # The convergence enricher above wrote fields directly onto
+            # the in-memory ``p`` dict; add them to update_fields so
+            # the DB row persists them alongside identity/model_evidence.
+            for _cv_k in ("convergence_label", "convergence_spread_pp",
+                           "convergence_confidence_multiplier",
+                           "evidence_quality", "simulator_provenance"):
+                _cv_v = p.get(_cv_k)
+                if _cv_v is not None:
+                    update_fields[_cv_k] = _cv_v
             # Persist to the ALREADY-UPSERTED pick document so future
             # queries (Pre-Magic cert, Magic 2.0 when eventually
             # wired, history joins) see canonical identity.
