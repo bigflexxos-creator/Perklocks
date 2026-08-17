@@ -767,18 +767,40 @@ async def picks_history(
         import logging as _lg
         _lg.getLogger("lockscore.history").warning(
             "history projection fallback: %s", _pe)
-    # Backward-compatibility: return the previously-expected shape but
-    # with the P0.5 truth applied.  Outcome-neutral dedupe was already
-    # applied inside load().  We no longer apply the legacy
-    # `_STATUS_RANK`-based win-biased collapse.
-    picks = sorted(picks, key=lambda p: p.get("event_time") or "",
-                    reverse=True)[:2000]
+    # ── History Zero μ-fix (route cap, 2026-06) ───────────────────
+    # Prior route order:
+    #   1. sort by event_time DESC
+    #   2. slice [:2000]
+    #   3. filter settled
+    # Root cause: thousands of newer PENDING / future canonical
+    # picks (with event_time > all older settled picks) filled the
+    # 2000-row cap and evicted legitimate settled WIN/LOSS rows from
+    # the response — the History UI showed "Total 0" even though the
+    # loader had correctly returned the settled slice.
+    #
+    # New route order (starvation-proof at the route boundary):
+    #   1. Split into HISTORY-VISIBLE (settled) + PENDING
+    #   2. Sort settled newest-first (settled_at → event_time)
+    #   3. Apply the 2000-row cap to the SETTLED slice ONLY
+    #   4. Summarise / expose stats over the returned settled records
+    #   5. Pending picks remain available inside `_truth.summarise` for
+    #      diagnostic counts but never consume the response payload.
+    _HISTORY_STATES = ("won", "lost", "push", "void", "unresolved")
+    history_visible = [p for p in picks
+                        if p.get("status") in _HISTORY_STATES]
+    # Sort history-visible newest-first — prefer settled_at (canonical
+    # grading timestamp) then fall back to event_time.
+    history_visible.sort(
+        key=lambda p: (p.get("settled_at") or p.get("event_time") or ""),
+        reverse=True,
+    )
+    # Apply the 2000-row response cap to the settled slice ONLY.
+    picks = history_visible[:2000]
 
     # ─── §8 explicit canonical-state visibility ────────────────────
     _summary = _truth.summarise(picks)
     settled = [p for p in picks
-                if p.get("status") in ("won", "lost", "push", "void",
-                                        "unresolved")]
+                if p.get("status") in _HISTORY_STATES]
     won         = _summary["won"]
     lost        = _summary["lost"]
     push        = _summary["push"]
