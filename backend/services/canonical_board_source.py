@@ -70,26 +70,17 @@ from typing import Any
 # Env var name — canonical source of the on/off switch.
 ENV_VAR = "LOCKSCORE_REQUIRE_CANONICAL_PUBLICATION"
 
-# Default: OFF — explicit opt-in only.
+# Default: **ON** (fail-closed) — Phase B1 μ-closure (2026-06).
 #
-# P0-4 (2026-08-08): the gate is a migration feature-flag, not a
-# permanent security guard.  Deploying the P0-1 through P0-3 code
-# base with the gate defaulting ON would immediately hide any
-# non-canonical row on the first production request, before we've
-# had a chance to run a canonical-verification refresh cycle.
+# Prior default was OFF ("explicit opt-in") for the P0 rollout window.
+# That window has closed — every active writer now dual-writes the
+# publication snapshot AND canonical fields, so defaulting the gate
+# OFF turned into an active fail-open bug (Phase B1 confirmed defect).
 #
-# Safe deployment sequence:
-#   1. push code (default OFF — no user-facing change)
-#   2. wait for / trigger one scheduled refresh so every active
-#      writer publishes its picks canonically
-#   3. verify canonical coverage on the live board
-#   4. explicitly set `LOCKSCORE_REQUIRE_CANONICAL_PUBLICATION=true`
-#      in the production environment (e.g. via /app/backend/.env)
-#   5. restart backend
-#
-# Anything set explicitly (`true` / `1` / `yes` / `on`) enables the
-# gate; any other value or an empty string leaves it OFF.
-_DEFAULT_ENABLED = False
+# Emergency bypass: set the env var explicitly to `false` / `0` /
+# `no` / `off` if a hotfix truly requires legacy ingest visibility.
+# Any other value (including empty / absent) keeps the gate ON.
+_DEFAULT_ENABLED = True
 
 
 def is_canonical_publication_required() -> bool:
@@ -98,14 +89,13 @@ def is_canonical_publication_required() -> bool:
     Reads the env var each call so operators can flip it live via
     supervisor restart without touching code.
 
-    Default (env absent): **OFF**.  This is an explicit-opt-in
-    migration flag; see the `_DEFAULT_ENABLED` comment above and
-    PUBLICATION_CONTRACT.md.
+    Default (env absent): **ON** (Phase B1 μ-closure).  Only an
+    explicit ``false``/``0``/``no``/``off`` value disables the gate.
     """
     raw = os.environ.get(ENV_VAR)
-    if raw is None:
+    if raw is None or raw.strip() == "":
         return _DEFAULT_ENABLED
-    return raw.strip().lower() in {"true", "1", "yes", "on"}
+    return raw.strip().lower() not in {"false", "0", "no", "off"}
 
 
 def canonical_publication_filter() -> dict[str, Any]:

@@ -1583,12 +1583,17 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 "LOCKSCORE_REQUIRE_CANONICAL_PUBLICATION",
             )
     except Exception as _canon_err:
-        # Never break the board because the gate module itself
-        # errored — degraded visibility is preferable to a hard 500.
-        logger.warning(
-            "canonical publication gate skipped due to error: %s",
+        # Phase B1 μ-closure (2026-06) — canonical gate MUST FAIL
+        # CLOSED on error.  Previous behavior logged and continued,
+        # exposing noncanonical picks on the Locks board.  We now
+        # inject a filter that MATCHES ZERO documents so the board
+        # is EMPTY rather than contaminated — degraded UX is strictly
+        # preferable to a canonical-truth violation.
+        logger.error(
+            "canonical publication gate FAILED CLOSED due to error: %s",
             _canon_err,
         )
+        q["__canonical_gate_error__"] = {"$exists": True}  # matches 0 docs
     # ── P0-2 GLOBAL LOCKS THRESHOLD ENFORCEMENT (2026-08-11) ──────────
     # Every sub-query above (elite_q, model_only_q, tennis_ml_q,
     # tennis_alt_q, tennis_extra_q, mlb_k_q, mlb_hitter_q,
@@ -1845,13 +1850,15 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             logger.info("BoardUtilityLayer: %s", _bul_stats)
     except Exception as _bul_err:
         logger.warning("BoardUtilityLayer skipped: %s", _bul_err)
-    # Goalscorer pick cap — per match, surface at most the TOP 1 unique
-    # player per (team × market_family). Was top_n=4 — but the backtest
-    # over 397 graded goalscorer picks showed elite players win Anytime
-    # at ~27% while the 2nd/3rd/4th-best options bottom out under 10%.
-    # Surfacing only the single mathematically-best candidate per team
-    # is the user's mandate (2026-06-29).
-    picks = _dedupe_goalscorer_per_event(picks, top_n=1)
+    # Phase C4 μ-closure (2026-06) — restore multi-scorer eligibility.
+    # Prior code capped goalscorer picks at ``top_n=1`` per event,
+    # silently removing legitimate secondary scorers who cleared the
+    # canonical eligibility gates (real-line + settlement-supported +
+    # ≥85 Lock).  Confirmed defect: audit found real qualified
+    # goalscorer candidates hidden despite passing every canonical
+    # check.  We now surface up to 3 unique scorer candidates per
+    # event — dedupe by canonical identity still applied downstream.
+    picks = _dedupe_goalscorer_per_event(picks, top_n=3)
     # ── Goalscorer Matchup Engine v3 (2026-06-30) ──────────────────
     # Matchup-first ranking layer on top of the curated/synth/book-derived
     # goalscorer picks. Applies the user-mandated weights
@@ -2089,24 +2096,27 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     except Exception as _se:
         logger.warning("Real-streak enrichment skipped on /picks/today: %s", _se)
     canonical = _canonicalize_picks(picks)
-    # ── Per-sport cap of 100 (2026-07-26) ─────────────────────────────
+    # ── Per-sport cap of 100 (2026-07-26, μ-closed 2026-06 Phase C3) ─
     # Mobile home + soccer tabs were timing out because Soccer alone
     # returned 400+ picks in a ~2MB response. Cap each sport to the
-    # TOP 100 by lock_score so the wire payload stays under ~500KB and
-    # the frontend renders in <2s even on 3G. Per-sport tabs still get
-    # their full slate up to 100 picks; higher-lock picks are always
-    # kept first (sort already applied above).
+    # TOP 100 by lock_score so the wire payload stays under ~500KB.
     #
-    # ── Safety valve (2026-07-26 follow-up) ───────────────────────────
-    # ALWAYS keep picks with lock_score >= 90 regardless of the per-
-    # sport count. Diagnostic run showed a busy Soccer slate can have
-    # 150+ picks all clustered in the 85-92 lock band; hard-capping at
-    # position 100 could drop legit 90-lock picks (esp. on heavy days).
-    # The safety-valve guarantees any near-elite pick makes the board
-    # while still bounding the payload for typical slates (~99% of
-    # days have <100 lock≥90 picks per sport).
+    # ── Phase C3 μ-closure (2026-06) — Lock 85+ safety valve ────────
+    # Prior safety-valve floor of 90 silently dropped canonical
+    # eligible Lock 85-89 records past position #100 per sport.  Now
+    # anchored at 85 (the canonical main-board floor) so every
+    # canonical-eligible pick remains reachable regardless of
+    # per-sport position.  Only sub-85 (below main-board contract)
+    # picks past position #100 are trimmed for payload safety.
+    #
+    # ── Phase B6 μ-closure (2026-06) — canonical Lock Score read ────
+    # Prior code read ``lock_score_v2 or lock_score`` (V2-first) for
+    # the cap-selection decision.  We now read
+    # ``published_lock_score or lock_score`` so the canonical /
+    # published score drives cap ordering; V2 (shadow) is never used
+    # for authoritative selection.
     _PER_SPORT_CAP = 100
-    _SAFETY_VALVE_LOCK = 90.0
+    _SAFETY_VALVE_LOCK = 85.0
     if canonical:
         _cap_counts: dict[str, int] = {}
         _cap_diag: dict[str, dict[str, int]] = {}
@@ -2114,9 +2124,9 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         _dropped_by_cap = 0
         for p in canonical:
             sp = str(p.get("sport") or "").strip() or "Unknown"
-            lk = float(p.get("lock_score_v2") or p.get("lock_score") or 0)
+            lk = float(p.get("published_lock_score") or p.get("lock_score") or 0)
             if _cap_counts.get(sp, 0) >= _PER_SPORT_CAP:
-                # Safety-valve: keep if lock >= 90 even past the cap.
+                # Safety-valve: keep if lock >= 85 (canonical floor).
                 if lk >= _SAFETY_VALVE_LOCK:
                     _capped.append(p)
                     _cap_counts[sp] = _cap_counts.get(sp, 0) + 1
@@ -2142,14 +2152,15 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 "picks_today per-sport cap: kept=%d dropped=%d counts=%s diag=%s",
                 len(_capped), _dropped_by_cap, _cap_counts, _cap_diag,
             )
-            # Alert-level if any lock≥90 got dropped despite safety valve
-            # (should never happen — cap check happens BEFORE safety
-            # valve — but log for forensic clarity).
-            _bad = sum(v.get("dropped_ge90", 0) for v in _cap_diag.values())
+            # μ-closure C3 invariant: no Lock >= 85 pick may be dropped
+            # by the per-sport cap.  If this ever triggers it's a bug
+            # in ordering or the valve — WARN so we notice.
+            _bad = sum((v.get("dropped_ge90", 0) + v.get("dropped_85_89", 0))
+                        for v in _cap_diag.values())
             if _bad > 0:
                 logger.warning(
-                    "picks_today per-sport cap DROPPED %d lock≥90 picks — "
-                    "safety valve failed. diag=%s", _bad, _cap_diag,
+                    "picks_today per-sport cap DROPPED %d Lock>=85 picks — "
+                    "canonical eligibility violation. diag=%s", _bad, _cap_diag,
                 )
         canonical = _capped
     # ── Team Total suppression (2026-07-19) ───────────────────────────
