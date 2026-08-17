@@ -709,11 +709,28 @@ async def picks_history(
 ):
     """Settled picks from the last N days, newest first.
 
-    Applies the same correlated-pick dedup as the live picks endpoint
-    so the History tab doesn't show "Player Over 0.5 Hits" AND
-    "Player Over 0.5 Total Bases" as two separate losses — they're
-    one logical bet.
+    ── Final Production μ-closure (2026-06) — B1 fix ─────────────────
+    The UI copy says "Pull to refresh to trigger a settlement check".
+    Prior implementation only re-fetched history without invoking the
+    settlement pipeline — so completed canonical picks that had never
+    yet been graded would keep showing "TOTAL 0" forever in
+    Production even though the settlement scheduler was running.  We
+    now kick a fire-and-forget settlement pass at the start of every
+    history request so a pull-to-refresh actually converges the
+    canonical W/L/PUSH state before we project it.
+
+    Fire-and-forget is intentional — the response DOES NOT block on
+    settlement completion (which can take seconds when the queue is
+    non-trivial).  The next pull-to-refresh will see any newly
+    graded picks.  Failure is swallowed to keep read-only guarantees.
     """
+    # ── B1 μ-closure: trigger settlement fire-and-forget ──────────
+    try:
+        import asyncio as _aio
+        from settlement_engine import settle_due_picks
+        _aio.create_task(settle_due_picks(db))
+    except Exception:
+        pass  # settlement failure must NEVER break the history read
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     # ─── P0.5 (2026-08) Canonical Published-Results Truth ─────────────
     # History MUST derive from the same canonical published population
