@@ -711,6 +711,7 @@ async def settle_soccer_picks_via_espn(db, *, days_back: int = 14,
         "sport": "Soccer",
         "status": {"$in": [None, "pending"]},
         "off_board": {"$ne": True},  # Board-visibility gate (2026-07-21)
+        "settlement_block": {"$ne": True},  # Phase A μ-closure — actionable only
         "event_time": {"$gte": lo, "$lte": hi},
         "$or": [
             {"market": {"$regex": "Anytime Goal Scorer", "$options": "i"}},

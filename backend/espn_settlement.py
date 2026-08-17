@@ -207,7 +207,8 @@ async def settle_tennis_via_espn(db) -> dict:
     cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
     picks = await db.picks.find(
         {"sport": "Tennis", "status": {"$in": [None, "pending"]},
-         "off_board": {"$ne": True}},  # Board-visibility gate (2026-07-21)
+         "off_board": {"$ne": True},  # Board-visibility gate (2026-07-21)
+         "settlement_block": {"$ne": True}},  # Phase A μ-closure
         {"_id": 0},
     ).sort("event_time", 1).to_list(length=1000)
     if not picks:
@@ -454,7 +455,8 @@ async def settle_ufc_via_espn(db) -> dict:
     cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
     picks = await db.picks.find(
         {"sport": "UFC", "status": {"$in": [None, "pending"]},
-         "off_board": {"$ne": True}},  # Board-visibility gate (2026-07-21)
+         "off_board": {"$ne": True},  # Board-visibility gate (2026-07-21)
+         "settlement_block": {"$ne": True}},  # Phase A μ-closure
         {"_id": 0},
     ).sort("event_time", 1).to_list(length=500)
     if not picks:
@@ -608,6 +610,7 @@ async def settle_player_props_via_espn(db) -> dict:
         "status": {"$in": [None, "pending"]},
         "league": {"$regex": "Props"},
         "off_board": {"$ne": True},  # Board-visibility gate (2026-07-21)
+        "settlement_block": {"$ne": True},  # Phase A μ-closure
     }, {"_id": 0}).sort("event_time", 1).to_list(length=2000)
     if not picks:
         return counts
