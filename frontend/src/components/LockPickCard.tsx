@@ -1,7 +1,8 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { View, Text, StyleSheet, Pressable, Platform, LayoutAnimation, UIManager, ActivityIndicator, Modal, TextInput } from "react-native";
 import { useRouter } from "expo-router";
-import { COLORS, GRADE_COLORS } from "@/src/theme";
+import { COLORS, GRADE_COLORS, getLockTierVisual, RADIUS } from "@/src/theme";
+import { PlayerIdentity } from "@/src/components/PlayerIdentity";
 import { Pick, PickRationale, api } from "@/src/lib/api";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { useMLBLive } from "@/src/contexts/MLBLiveContext";
@@ -103,6 +104,20 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
   // wire is already the right number. We keep `getDisplayLock` as defense
   // in depth in case any pick slips through with v2 > v1.
   const displayLock = getDisplayLock(pick);
+  // ── Premium UI 2.0 tier visual (VISUAL ONLY — never touches
+  // published_lock_score / grade / probability / edge / eligibility) ──
+  const tierVisual = getLockTierVisual(displayLock);
+  // Only pick.lock_score == 100 receives the full APEX hero treatment.
+  // A 99 stays firmly below APEX visually per PREMIUM_UI_2.0 spec.
+  const isApexHero = tierVisual.key === "APEX";
+  // Player-prop heuristic — presence of a player token in the
+  // canonical selection block OR a market that plainly targets a
+  // named player.  Falls back safely when unresolved (isPlayerProp=false
+  // → team-logo card treatment instead of forcing a player slot).
+  const _selPlayer = (pick as any).selection_v2?.selection?.player as string | null | undefined;
+  const _isPlayerProp = Boolean(
+    _selPlayer || (pick as any).elite_player_name || (pick as any).player_name
+  );
   // Anything that referenced pick.lock_score for visual logic now uses
   // displayLock so the badge / progress bar / strong-lock gates all
   // match the headline number.
@@ -131,10 +146,29 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
       onPress={() => router.push(`/pick/${pick.id}`)}
       style={({ pressed }) => [
         styles.card,
-        isApex && styles.cardApex,
-        pressed && { opacity: 0.85, transform: [{ scale: 0.98 }] },
+        {
+          backgroundColor: tierVisual.surfaceBg,
+          borderColor: tierVisual.borderColor,
+          borderWidth: tierVisual.borderWidth,
+          shadowColor: tierVisual.glowColor,
+          shadowOpacity: tierVisual.glowOpacity,
+          shadowRadius: tierVisual.glowRadius,
+          shadowOffset: { width: 0, height: 4 },
+        },
+        isApexHero && styles.cardApexElevation,
+        pressed && { opacity: 0.9, transform: [{ scale: 0.985 }] },
       ]}
     >
+      {/* Subtle top-edge gloss highlight — premium depth cue. */}
+      <View
+        pointerEvents="none"
+        style={[
+          styles.topGloss,
+          { backgroundColor: tierVisual.surfaceGlossTop },
+          isApexHero && styles.topGlossApex,
+        ]}
+      />
+
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
           <View style={styles.tagRow}>
@@ -404,6 +438,15 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
 
       {/* Lock v3 — Stacked badge hero row: Bet Quality / Expected Win / Edge */}
       <View style={styles.heroBadgeRow}>
+        <View style={styles.heroIdentitySlot}>
+          <PlayerIdentity
+            pick={pick}
+            size={48}
+            variant="circle"
+            ringColor={tierVisual.borderColor}
+            isPlayerProp={_isPlayerProp}
+          />
+        </View>
         <HeroBadge
           icon="🔒"
           value={`${Math.round(displayLock)}`}
@@ -1503,20 +1546,75 @@ function gradeChipStyle(grade: string) {
 
 const styles = StyleSheet.create({
   card: {
+    // Base card — the surface/border/shadow are OVERRIDDEN per-pick by
+    // the tier visual resolver so we don't hardcode colors here.
     backgroundColor: COLORS.surface,
-    borderRadius: 16,
+    borderRadius: RADIUS.xl,
     padding: 18,
     borderWidth: 1,
     borderColor: COLORS.borderDefault,
     marginBottom: 14,
+    // Slight elevation so the card feels lifted from the background,
+    // even for STANDARD tier where the tier visual glow is minimal.
+    elevation: 4,
+    overflow: "hidden",
   },
   cardApex: {
-    borderColor: "#FFD700",
-    borderWidth: 1.5,
-    shadowColor: "#FFD700",
-    shadowOpacity: 0.25,
-    shadowOffset: { width: 0, height: 0 },
-    shadowRadius: 8,
+    // Retained for legacy back-compat; APEX picks now drive their
+    // border/glow from the tier visual resolver, but this class is
+    // still applied by external screens (e.g. Rollover) that predate
+    // Premium UI 2.0.  Kept intentionally subtle here.
+    borderColor: "rgba(255,210,74,0.75)",
+    borderWidth: 1.75,
+  },
+  cardApexElevation: {
+    // Extra shadow depth reserved exclusively for pick.lock_score==100.
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 12,
+  },
+  // ── Premium UI 2.0 surfaces ───────────────────────────────────────
+  topGloss: {
+    // Subtle top-edge highlight — creates dimensional gloss.
+    position: "absolute",
+    top: 0, left: 0, right: 0,
+    height: 42,
+    // Slight rounded top edge inherited from card.borderRadius.
+    borderTopLeftRadius: RADIUS.xl,
+    borderTopRightRadius: RADIUS.xl,
+  },
+  topGlossApex: {
+    // A slightly taller / warmer highlight only for APEX.
+    height: 60,
+  },
+  identitySlot: {
+    position: "absolute",
+    top: 12,
+    right: 12,
+    // On top of the top-gloss and the tag row; still non-interactive
+    // (pointerEvents="none" on the slot) so it doesn't steal presses.
+    zIndex: 5,
+  },
+  tierBadge: {
+    position: "absolute",
+    top: 12,
+    left: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: RADIUS.pill,
+    borderWidth: 1,
+    zIndex: 6,
+  },
+  tierBadgeIcon: {
+    fontSize: 11,
+    lineHeight: 12,
+  },
+  tierBadgeText: {
+    fontSize: 9.5,
+    fontWeight: "900",
+    letterSpacing: 1.0,
   },
   v2Chip: {
     flexDirection: "row",
@@ -1958,9 +2056,17 @@ const styles = StyleSheet.create({
 
   heroBadgeRow: {
     flexDirection: "row",
+    alignItems: "center",
     gap: 8,
     marginTop: 16,
     marginBottom: 12,
+  },
+  heroIdentitySlot: {
+    // Compact leading identity avatar — sits before the three hero
+    // badges without stealing width from them (flex:0).
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 2,
   },
   heroBadge: {
     flex: 1,
