@@ -90,12 +90,19 @@ async def reap_stuck_picks(db, *, hours: int = _STUCK_HOURS) -> dict:
     _svc = SettlementService(db)
     await _svc.ensure_indices()
 
+    # ── Block 4E μ-closure — BOUNDED REAPER ──────────────────────
+    # PRIOR DEFECT: ``to_list(length=None)`` loaded ALL matching
+    # stuck picks into memory in one shot — a large backlog could
+    # OOM or block for tens of seconds.  New: bounded per-run batch;
+    # subsequent runs advance naturally because reaped rows exit
+    # the ``status:"pending"`` filter above.
+    _STUCK_REAPER_BATCH = 500
     to_reap = await db.picks.find(
         q,
         {"id": 1, "event": 1, "market": 1, "side": 1, "line": 1,
          "fanduel_event_id": 1, "event_id": 1, "sport": 1, "league": 1,
          "source": 1, "event_time": 1, "status": 1},
-    ).to_list(length=None)
+    ).limit(_STUCK_REAPER_BATCH).to_list(length=_STUCK_REAPER_BATCH)
 
     voided_n = 0
     for _r in to_reap:

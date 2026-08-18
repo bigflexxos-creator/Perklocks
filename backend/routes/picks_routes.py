@@ -724,11 +724,36 @@ async def picks_history(
     non-trivial).  The next pull-to-refresh will see any newly
     graded picks.  Failure is swallowed to keep read-only guarantees.
     """
-    # ── B1 μ-closure: trigger settlement fire-and-forget ──────────
+    # ── Block 4F μ-closure — SINGLE HISTORY SETTLEMENT TRIGGER ────
+    # PRIOR DEFECT: every /history GET fired an unconditional
+    # create_task(settle_due_picks(db)) — a rapid pull-to-refresh
+    # or a concurrent frontend + POST /picks/settle could launch
+    # multiple overlapping settlement passes doing the same work.
+    #
+    # NEW: bounded module-level single-flight guard.  If a
+    # settlement task from a recent history refresh is still in
+    # flight (or ran within a small cooldown window), we skip
+    # the fire-and-forget.  Failure paths never block the read.
     try:
-        import asyncio as _aio
+        import asyncio as _aio, time as _t
         from settlement_engine import settle_due_picks
-        _aio.create_task(settle_due_picks(db))
+        global _HIST_SETTLE_COOLDOWN_UNTIL, _HIST_SETTLE_INFLIGHT
+        _now_ts = _t.monotonic()
+        _cool_until = globals().get("_HIST_SETTLE_COOLDOWN_UNTIL", 0.0)
+        _inflight  = globals().get("_HIST_SETTLE_INFLIGHT", None)
+        _still_running = bool(_inflight and not _inflight.done())
+        if _still_running or _now_ts < _cool_until:
+            pass    # Skip — recent trigger still owns the pass.
+        else:
+            async def _wrapped():
+                try:
+                    await settle_due_picks(db)
+                finally:
+                    # 30s cooldown after finish → prevents thrash.
+                    import time as _tt
+                    globals()["_HIST_SETTLE_COOLDOWN_UNTIL"] = (
+                        _tt.monotonic() + 30.0)
+            globals()["_HIST_SETTLE_INFLIGHT"] = _aio.create_task(_wrapped())
     except Exception:
         pass  # settlement failure must NEVER break the history read
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
