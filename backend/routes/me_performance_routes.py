@@ -49,6 +49,32 @@ def _iso_cutoff(days: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
 
+# ── μ-closure P4 (2026-06) — Analytics Frozen Truth Contract ──────────
+# Production Analytics/ROI/hit-rate MUST NOT include:
+#   • Research / synthetic / backfill / historical placeholder rows.
+#   • Learning candidates that never crossed canonical publication.
+# We layer this into every aggregation ``$match`` stage.
+_PROD_TRUTH_FILTER: dict = {
+    # Positive canonical eligibility: the pick was PUBLISHED live to
+    # the Board (dual-write from PredictionPublicationService).
+    "publication_state": "PUBLISHED",
+    # Deny-list for provenance flags that indicate a non-production row.
+    "backfill":       {"$ne": True},
+    "synthetic":      {"$ne": True},
+    "research_only":  {"$ne": True},
+    "sample_data":    {"$ne": True},
+    "historical_only": {"$ne": True},
+}
+
+
+def _frozen_lock_score_expr() -> dict:
+    """MongoDB expression: prefer ``published_lock_score`` (frozen at
+    publication) over post-publication mutable ``lock_score``.  Used
+    by band / hit-rate calibrations that MUST evaluate the model
+    against the value the user actually SAW at bet time."""
+    return {"$ifNull": ["$published_lock_score", "$lock_score"]}
+
+
 # ── /api/me/performance — Top-level summary ──────────────────────────
 @router.get("/performance")
 async def user_performance(
@@ -67,7 +93,7 @@ async def user_performance(
       }
     """
     async def _agg(match_extra: dict | None = None) -> dict:
-        match = {"status": {"$in": ["won", "lost", "push"]}}
+        match = {"status": {"$in": ["won", "lost", "push"]}, **_PROD_TRUTH_FILTER}
         if match_extra:
             match.update(match_extra)
         pipeline = [
@@ -103,7 +129,16 @@ async def user_performance(
 
     all_time = await _agg()
     recent = await _agg({"created_at": {"$gte": _iso_cutoff(days)}})
-    high_conv = await _agg({"lock_score": {"$gte": 85}})
+    # High-conviction: read against FROZEN published_lock_score when
+    # available so the tier the user saw at publication time drives
+    # inclusion — not any post-publication mutation.
+    high_conv = await _agg({
+        "$or": [
+            {"published_lock_score": {"$gte": 85}},
+            {"published_lock_score": {"$exists": False},
+             "lock_score": {"$gte": 85}},
+        ],
+    })
 
     return {
         "all_time": all_time,
@@ -120,7 +155,7 @@ async def user_perf_by_sport(
     days: Optional[int] = Query(None, ge=1, le=365,
         description="Trailing window in days. Omit for all-time."),
 ):
-    match = {"status": {"$in": ["won", "lost", "push"]}}
+    match = {"status": {"$in": ["won", "lost", "push"]}, **_PROD_TRUTH_FILTER}
     if days:
         match["created_at"] = {"$gte": _iso_cutoff(days)}
     pipeline = [
@@ -162,20 +197,29 @@ async def user_perf_by_band(
     days: Optional[int] = Query(None, ge=1, le=365),
 ):
     """Hit rate & ROI by lock-score band. Proves the model is
-    well-calibrated — 90+ locks should have the highest hit rate."""
-    match = {"status": {"$in": ["won", "lost", "push"]}}
+    well-calibrated — 90+ locks should have the highest hit rate.
+
+    μ-closure P4 (2026-06): band assignment reads FROZEN
+    ``published_lock_score`` when available so the tier the user
+    actually SAW at publication time drives the calibration bucket
+    — not post-publication mutable ``lock_score``.
+    """
+    match = {"status": {"$in": ["won", "lost", "push"]}, **_PROD_TRUTH_FILTER}
     if days:
         match["created_at"] = {"$gte": _iso_cutoff(days)}
     pipeline = [
         {"$match": match},
         {"$addFields": {
+            "_frozen_lock": _frozen_lock_score_expr(),
+        }},
+        {"$addFields": {
             "band": {
                 "$switch": {
                     "branches": [
-                        {"case": {"$gte": ["$lock_score", 90]}, "then": "90+"},
-                        {"case": {"$gte": ["$lock_score", 80]}, "then": "80-89"},
-                        {"case": {"$gte": ["$lock_score", 70]}, "then": "70-79"},
-                        {"case": {"$gte": ["$lock_score", 60]}, "then": "60-69"},
+                        {"case": {"$gte": ["$_frozen_lock", 90]}, "then": "90+"},
+                        {"case": {"$gte": ["$_frozen_lock", 80]}, "then": "80-89"},
+                        {"case": {"$gte": ["$_frozen_lock", 70]}, "then": "70-79"},
+                        {"case": {"$gte": ["$_frozen_lock", 60]}, "then": "60-69"},
                     ],
                     "default": "<60",
                 },
@@ -218,6 +262,7 @@ async def user_perf_trend(
     match = {
         "status": {"$in": ["won", "lost", "push"]},
         "created_at": {"$gte": _iso_cutoff(days)},
+        **_PROD_TRUTH_FILTER,
     }
     pipeline = [
         {"$match": match},

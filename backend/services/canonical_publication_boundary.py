@@ -101,6 +101,10 @@ class RejectionReason(str, enum.Enum):
     PLAYER_EVENT_IDENTITY_MISMATCH = "PLAYER_EVENT_IDENTITY_MISMATCH"
     # Phase 10A — cannot prove player belongs to event participants.
     PLAYER_TEAM_UNRESOLVED         = "PLAYER_TEAM_UNRESOLVED"
+    # μ-closure Priority 2 (2026-06) — market cannot be authoritatively
+    # settled by any currently-wired settler.  Fail closed so the pick
+    # never becomes an actionable Board wager.
+    SETTLEMENT_UNSUPPORTED         = "SETTLEMENT_UNSUPPORTED"
 
 
 # Verified real-sportsbook odds sources.  ANY producer that intends to
@@ -319,6 +323,42 @@ def evaluate_publication(pick: dict) -> BoundaryVerdict:
             # Never let the gate crash the boundary — fail-open on gate
             # failure since identity check is defense-in-depth, not the
             # primary quality contract.
+            pass
+
+        # ── Rule 7 (μ-closure P2, 2026-06) — Settlement Capability ──
+        # A pick whose (sport, market, league) is authoritatively
+        # classified as SETTLEMENT_UNSUPPORTED must NEVER become an
+        # actionable Board wager.  We fail closed at the publication
+        # boundary — every producer's batch crosses this contract.
+        # UNKNOWN classifications remain permitted (fail-open) so a
+        # new market surface is not silently blocked before the
+        # registry is updated.  Only the explicit UNSUPPORTED deny-
+        # list rejects here.
+        try:
+            from services.settlement_capability import (
+                classify as _settle_classify,
+                UNSUPPORTED as _SETTLE_UNSUPPORTED,
+            )
+            # Producers may store the market under multiple keys;
+            # canonical priority: market_key → market → prop_market → bet_type.
+            _market = (
+                pick.get("market_key")
+                or pick.get("market")
+                or pick.get("prop_market")
+                or pick.get("bet_type")
+            )
+            _sport = pick.get("sport") or pick.get("sport_key")
+            _league = pick.get("league")
+            if _market:
+                _status, _reason = _settle_classify(_sport, _market, _league)
+                if _status == _SETTLE_UNSUPPORTED:
+                    reasons.append(
+                        RejectionReason.SETTLEMENT_UNSUPPORTED.value
+                    )
+        except Exception:
+            # Never let the capability check crash the boundary.
+            # Defense-in-depth — settler auto-void still catches
+            # any that slip through.
             pass
 
         if reasons:

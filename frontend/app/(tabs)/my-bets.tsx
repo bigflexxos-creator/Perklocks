@@ -9,6 +9,8 @@ import { Stack } from "expo-router";
 
 import { api } from "@/src/lib/api";
 import { COLORS } from "@/src/theme";
+import { swrCacheRead, swrCacheWrite } from "@/src/lib/useSWR";
+import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 
 const sign = (n: number) => (n > 0 ? "+" : "");
 const fmt = (n: number, d = 2) => (Number.isFinite(n) ? n.toFixed(d) : "—");
@@ -18,17 +20,29 @@ type SportRows = Awaited<ReturnType<typeof api.myAnalyticsBySport>>;
 type MarketRows = Awaited<ReturnType<typeof api.myAnalyticsByMarket>>;
 type BetList = Awaited<ReturnType<typeof api.listMyBets>>;
 
+// μ-closure P3 — My Bets SWR snapshot.
+type MyBetsSnapshot = {
+  summary: Summary | null;
+  bySport: SportRows | null;
+  byMarket: MarketRows | null;
+  pending: BetList | null;
+  history: BetList | null;
+};
+const _mybetsKey = "my-bets|default";
+
 export default function MyBetsScreen() {
-  const [summary, setSummary] = useState<Summary | null>(null);
-  const [bySport, setBySport] = useState<SportRows | null>(null);
-  const [byMarket, setByMarket] = useState<MarketRows | null>(null);
-  const [pending, setPending] = useState<BetList | null>(null);
-  const [history, setHistory] = useState<BetList | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Seed synchronously from SWR cache — warm revisit skips skeleton.
+  const _initial = swrCacheRead<MyBetsSnapshot>(_mybetsKey);
+  const [summary, setSummary] = useState<Summary | null>(_initial?.summary ?? null);
+  const [bySport, setBySport] = useState<SportRows | null>(_initial?.bySport ?? null);
+  const [byMarket, setByMarket] = useState<MarketRows | null>(_initial?.byMarket ?? null);
+  const [pending, setPending] = useState<BetList | null>(_initial?.pending ?? null);
+  const [history, setHistory] = useState<BetList | null>(_initial?.history ?? null);
+  const [loading, setLoading] = useState(_initial === undefined);
   const [refreshing, setRefreshing] = useState(false);
   const [tab, setTab] = useState<"pending" | "history">("pending");
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (silent: boolean = false) => {
     try {
       const [s, sp, mk, p, h] = await Promise.all([
         api.myAnalyticsSummary().catch(() => null),
@@ -42,17 +56,31 @@ export default function MyBetsScreen() {
       setByMarket(mk);
       setPending(p);
       setHistory(h);
+      swrCacheWrite<MyBetsSnapshot>(_mybetsKey, {
+        summary: s, bySport: sp, byMarket: mk, pending: p, history: h,
+      });
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
       setRefreshing(false);
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    // If we have cached data, do a silent background refresh; otherwise cold.
+    if (_initial) {
+      load(true);
+    } else {
+      load(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Silent refetch on tab focus — warm revisit never flashes.
+  useFocusRefetch(() => load(true), [load], 30_000);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
-    load();
+    load(false);
   }, [load]);
 
   const removeBet = useCallback(async (betId: string) => {
@@ -64,7 +92,7 @@ export default function MyBetsScreen() {
         onPress: async () => {
           try {
             await api.deleteMyBet(betId);
-            load();
+            load(false);
           } catch (e: any) {
             Alert.alert("Could not remove", e?.message ?? "Try again in a moment.");
           }

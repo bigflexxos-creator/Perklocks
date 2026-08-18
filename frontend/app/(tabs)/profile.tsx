@@ -9,23 +9,45 @@ import { COLORS } from "@/src/theme";
 import { useAuth } from "@/src/contexts/AuthContext";
 import { api } from "@/src/lib/api";
 import { APP_DATA_VERSION, forceClearAllCaches } from "@/src/lib/cachebust";
+import { swrCacheRead, swrCacheWrite } from "@/src/lib/useSWR";
+import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 
 const BACKEND_URL_DISPLAY = (process.env.EXPO_PUBLIC_BACKEND_URL || "auto")
   .replace(/^https?:\/\//, "")
   .replace(/\/$/, "");
 
+// μ-closure P3 — Profile stats SWR key.
+type ProfileStats = {
+  date: string; total_picks: number; elite_count: number; avg_edge_percent: number;
+  by_sport: { sport: string; count: number; avg_lock: number; avg_edge: number; elite_count: number }[];
+} | null;
+const _profileKey = "profile|stats";
+
 export default function ProfileScreen() {
   const { user, signOut } = useAuth();
   const router = useRouter();
-  const [stats, setStats] = useState<{
-    date: string; total_picks: number; elite_count: number; avg_edge_percent: number;
-    by_sport: { sport: string; count: number; avg_lock: number; avg_edge: number; elite_count: number }[];
-  } | null>(null);
-  const [loading, setLoading] = useState(true);
+  const _initialStats = swrCacheRead<ProfileStats>(_profileKey);
+  const [stats, setStats] = useState<ProfileStats>(_initialStats ?? null);
+  const [loading, setLoading] = useState(_initialStats === undefined);
+
+  const loadStats = React.useCallback((silent: boolean) => {
+    api.stats()
+      .then((res) => {
+        setStats(res);
+        swrCacheWrite<ProfileStats>(_profileKey, res);
+      })
+      .catch(() => {})
+      .finally(() => { if (!silent) setLoading(false); });
+  }, []);
 
   useEffect(() => {
-    api.stats().then(setStats).catch(() => {}).finally(() => setLoading(false));
+    // Warm revisit: silent refresh; cold: full loading state.
+    loadStats(_initialStats !== undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Silent focus revalidation — no skeleton flash on tab switch.
+  useFocusRefetch(() => loadStats(true), [loadStats], 30_000);
 
   const onLogout = async () => {
     await signOut();

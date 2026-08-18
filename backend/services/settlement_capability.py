@@ -109,6 +109,11 @@ _SOCCER_SUPPORTED_PATTERNS: tuple[str, ...] = (
     "to score or assist",
     "score & assist",
     "score or assist",
+    # Underscored variants used by Odds API keys directly.
+    "goal scorer anytime",
+    "player goal scorer anytime",
+    "player to score or assist",
+    "player first goal scorer",   # explicit — still classified separately below
 )
 
 
@@ -131,16 +136,22 @@ def classify(sport: Optional[str], market: Optional[str],
     mk = (market or "").strip().lower()
     if not sp or not mk:
         return (UNKNOWN, None)
+    # Normalize underscored market_keys (e.g. "player_shots_on_target")
+    # to the human-readable form ("player shots on target") the deny/
+    # allow patterns are authored against.  Both forms are checked so
+    # the classifier is robust to either producer convention.
+    mk_norm = mk.replace("_", " ")
+    mk_forms = (mk, mk_norm) if mk != mk_norm else (mk,)
 
     # ── Soccer ────────────────────────────────────────────────────
     if sp == "soccer":
         # Deny-list first (more specific).
         for pat, reason in _SOCCER_UNSUPPORTED_PATTERNS:
-            if pat in mk:
+            if any(pat in form for form in mk_forms):
                 return (UNSUPPORTED, reason)
         # Allow-list.
         for pat in _SOCCER_SUPPORTED_PATTERNS:
-            if pat in mk:
+            if any(pat in form for form in mk_forms):
                 return (SUPPORTED, None)
         return (UNKNOWN, None)
 
@@ -153,7 +164,7 @@ def classify(sport: Optional[str], market: Optional[str],
         "total ", "total goals", "total runs", "total points",
         "total games", "team total", "win or draw",
     )
-    if any(t in mk for t in game_tokens):
+    if any(t in form for t in game_tokens for form in mk_forms):
         return (SUPPORTED, None)
 
     # Player-prop markets across MLB / NBA / WNBA / Tennis / UFC —

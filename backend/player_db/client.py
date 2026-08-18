@@ -22,7 +22,31 @@ logger = logging.getLogger("lockscore.player_db.client")
 
 
 def _canonical(name: str) -> str:
-    return (name or "").strip().lower()
+    """Normalize a player name for lookup.
+
+    2026-06 μ-fix (Tennis Player Photo Identity): apply Unicode
+    NFKD decomposition + strip combining marks so that provider
+    variants like ``"Carlos Alcaráz"`` collapse to ``"carlos alcaraz"``
+    and match the ASCII-only spelling stored by the Sackmann CSV
+    ingestor (Djokovic / Alcaraz / Munar / etc.).
+
+    Also normalizes internal whitespace so ``"J.  Sinner"`` /
+    ``"Jannik   Sinner"`` map to the same canonical key.
+
+    We intentionally do NOT do initial expansion or first/last
+    reordering here — that runs one level up (find_player) and
+    only via the LAST-NAME fallback path so mis-attribution is
+    impossible.
+    """
+    if not name:
+        return ""
+    import unicodedata as _ud
+    s = _ud.normalize("NFKD", str(name).strip())
+    # Drop combining diacritics (category Mn = Mark, Nonspacing).
+    s = "".join(ch for ch in s if not _ud.combining(ch))
+    # Collapse internal whitespace to a single space.
+    s = " ".join(s.split())
+    return s.lower()
 
 
 async def find_player(sport: str, name: str, team: str | None = None) -> dict | None:
@@ -32,6 +56,10 @@ async def find_player(sport: str, name: str, team: str | None = None) -> dict | 
     `team` is an optional abbreviation hint (e.g. 'MIN', 'KC') used to
     disambiguate when multiple players share the same exact name —
     e.g. Justin Jefferson (Vikings WR) vs Justin Jefferson (Browns LB).
+
+    2026-06 μ-fix: Tennis picks arriving with accented spellings
+    (Alcaráz, Djoković) now match ASCII-stored rows via NFKD
+    normalization in ``_canonical``.
     """
     import re as _re   # local import — module load order safety
     s = (sport or "").lower()
