@@ -1475,7 +1475,20 @@ async def _ensure_today_picks() -> None:
     _now_iso = datetime.now(timezone.utc).isoformat()
     _actionable_query = {
         "pick_date": today,
-        "publication_source": {"$exists": True, "$ne": None},
+        # ── Block 3A μ-closure — STRONG CANONICAL PUBLICATION ────────
+        # PRIOR DEFECT: ``publication_source exists`` is TOO WEAK —
+        # raw / pending / failed / rejected lifecycle rows can carry
+        # a source label without ever having reached the canonical
+        # PUBLISHED state.  We now require ``publication_state ==
+        # "PUBLISHED"`` (the authoritative marker set by
+        # ``canonical_publication_boundary.evaluate_publication``)
+        # OR ``publication_source`` for the legacy pre-lifecycle
+        # picks that predate the state field (dual-write bridge).
+        "$or": [
+            {"publication_state": "PUBLISHED"},
+            {"publication_state": {"$exists": False},
+             "publication_source": {"$exists": True, "$ne": None}},
+        ],
         "off_board": {"$ne": True},
         "settlement_block": {"$ne": True},
         "no_bet": {"$ne": True},

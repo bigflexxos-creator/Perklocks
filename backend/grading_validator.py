@@ -327,18 +327,63 @@ async def _run_cross_check(db, query: dict, verifier, source_label: str) -> dict
             "our_grade":         current,
             f"{source_label}":   result,
         })
+        # ── Block 4A μ-closure — SETTLEMENT IMMUTABILITY ────────────
+        # PRIOR DEFECT: mutated ``status`` back to "pending" and
+        # ``$unset settled_at`` — a generic validator was overwriting
+        # canonical settlement.  That created "permanent limbo": the
+        # pick was neither settled (mirror said pending) nor
+        # ungradable (canonical still had a settlement_event).
+        #
+        # NEW BEHAVIOR (bounded disagreement disposition):
+        #   • Preserve canonical ``status`` + ``settled_at``.  Do NOT
+        #     mutate them from the validator.  Canonical settlement
+        #     truth lives in ``settlement_events`` + the authoritative
+        #     settler pipeline; corrections must flow through THAT
+        #     contract, not a validator side-effect.
+        #   • Stamp ``grade_disagreement`` metadata for downstream
+        #     audit and bounded correction:
+        #       - detected_at, our_grade_was, verifier result
+        #       - previous_settled_at (audit — was ours, keep for
+        #         provenance)
+        #       - attempts counter for bounded retry
+        #       - disposition: "correction_required"
+        #   • The stuck-pick reaper already skips rows carrying
+        #     ``grade_disagreement`` — with our new semantics that
+        #     is CORRECT because the row is not really "pending".
+        _prior_attempts = 0
+        try:
+            _gd_prev = p.get("grade_disagreement") or {}
+            if isinstance(_gd_prev, dict):
+                _prior_attempts = int(_gd_prev.get("attempts") or 0)
+        except Exception:
+            pass
+        _MAX_DISAGREE_ATTEMPTS = 5
+        _attempts = _prior_attempts + 1
+        _disposition = (
+            "terminal_unresolved"
+            if _attempts >= _MAX_DISAGREE_ATTEMPTS
+            else "correction_required"
+        )
+        _now_iso = datetime.now(timezone.utc).isoformat()
         await db.picks.update_one(
             {"id": p.get("id")},
             {"$set": {
-                "status": "pending",
+                # Canonical settlement fields are DELIBERATELY NOT
+                # touched here — the row's ``status`` and
+                # ``settled_at`` remain whatever the authoritative
+                # settler wrote.
                 "grade_disagreement": {
-                    "detected_at":         datetime.now(timezone.utc).isoformat(),
-                    "our_grade_was":       current,
+                    "detected_at":          _now_iso,
+                    "our_grade_was":        current,
                     f"{source_label}_said": result,
-                    "previous_settled_at": p.get("settled_at"),
+                    "previous_settled_at":  p.get("settled_at"),
+                    "attempts":             _attempts,
+                    "disposition":          _disposition,
                 },
-             },
-             "$unset": {"settled_at": "", "settle_source": "", "settle_reason": ""}},
+                "grade_verified_at":       _now_iso,
+                "grade_verify_source":     f"{source_label}_disagreement",
+                "grade_verify_result":     "disagreement",
+            }},
         )
         summary["reopened"] += 1
     if summary["mismatched"]:
