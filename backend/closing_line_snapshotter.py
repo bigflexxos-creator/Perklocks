@@ -303,20 +303,24 @@ async def _snapshot_closes_once(db) -> dict:
     for (sport, eid), picks_for_event in by_event.items():
         sport_key = _ODDS_SPORT_KEY.get(sport)
         if not sport_key:
-            # For sports we can't snapshot live, fall back to book_odds so
-            # the analytics page never returns NaN.
+            # μ-closure P4 (2026-06) — CLV Contract Fix:
+            # A real observed closing line is UNAVAILABLE for this
+            # sport (no upstream provider mapping).  We MUST NOT
+            # fabricate `closing_odds = opening odds` + `clv_value = 0`
+            # because that pollutes the CLV average of every downstream
+            # analytics consumer with fake zero-CLV samples.
+            # Contract: closing_odds = null, clv_value = null.  The
+            # `closing_odds_source = "unavailable"` field flags the
+            # reason without contaminating aggregates.
             for pick in picks_for_event:
                 await db.picks.update_one(
                     {"id": pick["id"]},
                     {"$set": {
-                        "closing_odds":              pick.get("book_odds"),
+                        "closing_odds":              None,
                         "closing_odds_snapshotted":  True,
-                        "closing_odds_source":       "fallback_book_odds",
+                        "closing_odds_source":       "unavailable",
                         "closing_odds_at":           _now_utc(),
-                        # No real close captured → CLV is undefined. Set
-                        # 0 so the analytics page doesn't display NaN
-                        # but the fallback source field flags it as such.
-                        "clv_value":                 0.0,
+                        "clv_value":                 None,
                     }},
                 )
             continue
@@ -325,14 +329,19 @@ async def _snapshot_closes_once(db) -> dict:
             result = _match_pick_to_odds(pick, bookmakers or [])
             pinnacle: Optional[float] = None
             if result is None:
-                # If we can't read the close, fall back to book_odds.
-                price = pick.get("book_odds")
-                source = "fallback_book_odds"
+                # μ-closure P4 (2026-06) — CLV Contract Fix:
+                # Live close returned no match → we do NOT know the
+                # market close. Do not fabricate `closing_odds =
+                # book_odds` + `clv_value = 0`. Store null for both
+                # so aggregates exclude this pick (see me_performance_routes
+                # clv_n predicate: `$ne None`).
+                price = None
+                source = "unavailable"
             else:
                 price, pinnacle = result
                 source = "odds_api_live"
             from analytics import clv_units as _clv
-            clv = _clv(pick.get("odds_at_pick"), price)
+            clv = _clv(pick.get("odds_at_pick"), price) if price is not None else None
             update_set: dict = {
                 "closing_odds":              price,
                 "closing_odds_snapshotted":  True,

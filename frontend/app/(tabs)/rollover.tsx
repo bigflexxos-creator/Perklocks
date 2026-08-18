@@ -16,24 +16,40 @@ import { SkeletonList } from "@/src/components/Skeleton";
 import { EmptyState } from "@/src/components/EmptyState";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
+import { swrCacheRead, swrCacheWrite } from "@/src/lib/useSWR";
 import { getDisplayLockRounded } from "@/src/lib/lockScore";
 
 const RANK_LABELS = ["TOP PICK", "OPTION #2", "OPTION #3"];
 const RANK_COLORS = [COLORS.goldElite, COLORS.voltBlue, COLORS.neonGreen];
 
+// μ-closure P3 (2026-06) — SWR cache key builder.  Warm revisits with
+// the SAME filters use the previous snapshot instantly; only a
+// dep-change to filters that has never been loaded triggers the
+// skeleton state.
+type RolloverSnapshot = {
+  picks: Pick[];
+  pool: number;
+  survivability: any;
+};
+const _rolloverKey = (lt: LineType, sp: string, f: PickFilters) =>
+  `rollover|${lt}|${sp}|${JSON.stringify(f || {})}`;
+
 export default function RolloverScreen() {
   const router = useRouter();
-  const [picks, setPicks] = useState<Pick[]>([]);
-  const [pool, setPool] = useState<number>(0);
-  const [survivability, setSurvivability] = useState<any>(null);
+  // Seed synchronously from SWR cache (warm revisit → no skeleton).
   const [lineType, setLineType] = useState<LineType>("both");
   const [sport, setSport] = useState<string>("All");
   const [filters, setFilters] = useState<PickFilters>({});
-  const [loading, setLoading] = useState(true);
+  const _initialKey = _rolloverKey(lineType, sport, filters);
+  const _initialSnap = swrCacheRead<RolloverSnapshot>(_initialKey);
+  const [picks, setPicks] = useState<Pick[]>(_initialSnap?.picks ?? []);
+  const [pool, setPool] = useState<number>(_initialSnap?.pool ?? 0);
+  const [survivability, setSurvivability] = useState<any>(_initialSnap?.survivability ?? null);
+  const [loading, setLoading] = useState(_initialSnap === undefined);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async (lt: LineType, sp: string, f: PickFilters) => {
+  const load = useCallback(async (lt: LineType, sp: string, f: PickFilters, silent: boolean = false) => {
     try {
       setError(null);
       const res = await api.rollover(lt, f, sp);
@@ -41,29 +57,54 @@ export default function RolloverScreen() {
       const arr = (res.picks && res.picks.length > 0)
         ? res.picks
         : (res.pick ? [res.pick] : []);
-      setPicks(arr.filter((p: Pick) => p.sport !== "KBO"));
-      setPool(res.total_evaluated ?? 0);
-      setSurvivability((res as any).survivability ?? null);
+      const nextPicks = arr.filter((p: Pick) => p.sport !== "KBO");
+      const nextPool = res.total_evaluated ?? 0;
+      const nextSurv = (res as any).survivability ?? null;
+      setPicks(nextPicks);
+      setPool(nextPool);
+      setSurvivability(nextSurv);
+      // Seed the SWR cache for the next warm revisit.
+      swrCacheWrite<RolloverSnapshot>(
+        _rolloverKey(lt, sp, f),
+        { picks: nextPicks, pool: nextPool, survivability: nextSurv },
+      );
     } catch (e: any) {
       console.warn("rollover load", e);
-      setError(String(e?.message || "Couldn't load rollover picks."));
+      if (!silent) setError(String(e?.message || "Couldn't load rollover picks."));
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
       setRefreshing(false);
     }
   }, []);
 
-  useEffect(() => { setLoading(true); load(lineType, sport, filters); }, [lineType, sport, filters, load]);
+  useEffect(() => {
+    const key = _rolloverKey(lineType, sport, filters);
+    const cached = swrCacheRead<RolloverSnapshot>(key);
+    if (cached) {
+      // Warm — paint immediately, kick off silent background refresh.
+      setPicks(cached.picks);
+      setPool(cached.pool);
+      setSurvivability(cached.survivability);
+      setLoading(false);
+      load(lineType, sport, filters, true);
+    } else {
+      // Cold — full skeleton state.
+      setLoading(true);
+      load(lineType, sport, filters, false);
+    }
+  }, [lineType, sport, filters, load]);
 
   // Smart refetch on focus — calls API again when the user returns to the
   // tab, but skips if last successful fetch was less than 30 s ago.
+  // Combined with the SWR seed above, the tab paint is INSTANT on warm
+  // revisits and only a silent background refresh runs.
   useFocusRefetch(
-    () => load(lineType, sport, filters),
+    () => load(lineType, sport, filters, true),
     [load, lineType, sport, filters],
     30_000,
   );
 
-  const onRefresh = () => { setRefreshing(true); load(lineType, sport, filters); };
+  const onRefresh = () => { setRefreshing(true); load(lineType, sport, filters, false); };
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -160,18 +201,31 @@ function RolloverCard({ pick, rank, pool, onPress }: { pick: Pick; rank: number;
       testID={`rollover-card-${rank}`}
       style={({ pressed }) => [
         styles.card,
+        // μ-closure UI3 (2026-06): rank-driven visual hierarchy —
+        // #1 becomes the HERO card (thicker border, gold ring, subtle
+        // luminous tint) while #2/#3 sit as supporting cards.
+        isTop ? styles.cardHero : styles.cardSupport,
         { borderColor: rankColor, borderWidth: isTop ? 2 : 1 },
         pressed && { transform: [{ scale: 0.99 }] },
       ]}
     >
       <View style={styles.cardHeader}>
-        <View style={[styles.rankBadge, { backgroundColor: `${rankColor}20`, borderColor: rankColor }]}>
+        <View style={[
+          styles.rankBadge,
+          {
+            backgroundColor: isTop ? `${rankColor}2E` : `${rankColor}20`,
+            borderColor: rankColor,
+          },
+        ]}>
           <Ionicons
             name={isTop ? "trophy" : "ribbon"}
-            size={12}
+            size={isTop ? 13 : 12}
             color={rankColor}
           />
-          <Text style={[styles.rankBadgeText, { color: rankColor }]}>{rankLabel}</Text>
+          <Text style={[
+            styles.rankBadgeText,
+            { color: rankColor, fontSize: isTop ? 11 : 10 },
+          ]}>{rankLabel}</Text>
         </View>
         <Text style={styles.poolNote}>OF {pool}</Text>
       </View>
@@ -237,6 +291,25 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderRadius: 16, padding: 18,
     marginBottom: 14,
+  },
+  // Hero (#1) — luminous navy tint, gold ambient shadow, more air.
+  cardHero: {
+    backgroundColor: COLORS.surfaceElevated ?? COLORS.surface,
+    padding: 20,
+    marginBottom: 16,
+    shadowColor: COLORS.goldElite,
+    shadowOpacity: 0.28,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
+  },
+  // Supporting (#2/#3) — softer surface, subtle blue ambient.
+  cardSupport: {
+    shadowColor: COLORS.voltBlue,
+    shadowOpacity: 0.10,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 2,
   },
   cardHeader: {
     flexDirection: "row", justifyContent: "space-between", alignItems: "center",

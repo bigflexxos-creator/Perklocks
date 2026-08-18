@@ -255,8 +255,17 @@ const styles = StyleSheet.create({
   emptyMsg: { color: COLORS.textMuted, fontSize: 13, marginTop: 6, textAlign: "center", paddingHorizontal: 24 },
 
   card: {
-    backgroundColor: COLORS.surface, borderRadius: 14, padding: 14, marginBottom: 10,
+    backgroundColor: COLORS.surfaceElevated ?? COLORS.surface,
+    borderRadius: 14, padding: 14, marginBottom: 10,
     borderWidth: 1, borderColor: COLORS.borderDefault,
+    // μ-closure UI3 (2026-06): History result rows get ambient
+    // depth so WIN/LOSS/PUSH/VOID states pop off the deep-navy
+    // environment.
+    shadowColor: COLORS.voltBlue,
+    shadowOpacity: 0.10,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 2,
   },
   cardTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 6 },
   cardSport: { color: COLORS.textSecondary, fontSize: 10, fontWeight: "800", letterSpacing: 1.2 },

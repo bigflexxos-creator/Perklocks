@@ -3352,7 +3352,30 @@ async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) 
                  "last_seen": {"$gte": _stale}},
                 {"_id": 0},
             ).to_list(length=5000)
-            if _cache_rows:
+            # ── 2026-06 μ-closure: FAMILY-AWARE cache completeness ─────
+            # Old behavior: ANY fresh row for the event caused a cache
+            # HIT, even if the caller requested a DIFFERENT market
+            # family that had never been fetched. That silently
+            # suppressed provider acquisition for the missing family
+            # for the entire cache TTL window.
+            #
+            # New contract: cache HIT requires that EVERY requested
+            # market family is represented by at least one fresh
+            # cached row. If ANY requested family is missing, we fall
+            # through to the provider fetch so the missing family is
+            # acquired. Freshness is already enforced by the query's
+            # `last_seen >= _stale` filter, so this is purely a
+            # completeness gate on top of freshness.
+            _requested_families: set[str] = {
+                _prop_family_key(m) for m in (markets or []) if m
+            }
+            _cached_families: set[str] = {
+                _prop_family_key(r.get("market_key") or "")
+                for r in _cache_rows
+                if r.get("market_key")
+            }
+            _missing_families = _requested_families - _cached_families
+            if _cache_rows and not _missing_families:
                 # Reconstruct the Odds API bookmakers/markets/outcomes shape.
                 _bm_map: dict[str, dict] = {}
                 for r in _cache_rows:
@@ -3377,8 +3400,10 @@ async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) 
                     bookmakers.append(_bm)
                 logger.info(
                     "MLB prop cache-first HIT event=%s rows=%d books=%d "
-                    "→ ZERO provider call this cycle",
+                    "families=%d/%d → ZERO provider call this cycle",
                     event_id, len(_cache_rows), len(bookmakers),
+                    len(_cached_families & _requested_families),
+                    len(_requested_families) or len(_cached_families),
                 )
                 # Reconstructed shape matches downstream expectations.
                 _cache_row = _cache_rows[0]
@@ -3391,6 +3416,13 @@ async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) 
                     "bookmakers":    bookmakers,
                     "_cache_hit":    True,   # observable diagnostic
                 }
+            elif _cache_rows and _missing_families:
+                logger.info(
+                    "MLB prop cache PARTIAL event=%s cached_families=%d "
+                    "missing=%s → provider fetch required",
+                    event_id, len(_cached_families),
+                    sorted(_missing_families),
+                )
         except Exception as _cf_err:
             logger.debug(
                 "MLB cache-first lookup skipped for %s: %s",

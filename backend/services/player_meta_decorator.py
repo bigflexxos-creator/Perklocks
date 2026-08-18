@@ -44,7 +44,19 @@ _cache: dict[tuple[str, str, str], tuple[float, Optional[dict]]] = {}
 
 
 def _canonical(name: str) -> str:
-    return (name or "").strip().lower()
+    """Match player_db.client._canonical — Unicode-normalized lookup.
+
+    2026-06 μ-fix: keeps the decorator's cache key aligned with
+    the DB-side canonical spelling so Tennis picks with accented
+    provider spellings hit the same cache entry as ASCII variants.
+    """
+    if not name:
+        return ""
+    import unicodedata as _ud
+    s = _ud.normalize("NFKD", str(name).strip())
+    s = "".join(ch for ch in s if not _ud.combining(ch))
+    s = " ".join(s.split())
+    return s.lower()
 
 
 def _cache_get(key: tuple[str, str, str]) -> tuple[bool, Optional[dict]]:

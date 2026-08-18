@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { COLORS } from "@/src/theme";
 import { useAuth } from "@/src/contexts/AuthContext";
 import { BetSlipFab } from "@/src/components/BetSlipFab";
+import { preloadPrimaryTabs } from "@/src/lib/preloadPrimaryTabs";
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
@@ -14,6 +15,15 @@ export default function TabsLayout() {
 
   useEffect(() => {
     if (!loading && !user) router.replace("/(auth)/login");
+  }, [loading, user]);
+
+  // μ-closure P3 (2026-06): once authenticated, silently preload the
+  // primary tabs' data into the SWR cache so first visits paint
+  // instantly instead of showing the cold skeleton.
+  useEffect(() => {
+    if (!loading && user) {
+      void preloadPrimaryTabs();
+    }
   }, [loading, user]);
 
   // CRITICAL (2026-06-30 v25 — permanent fix):

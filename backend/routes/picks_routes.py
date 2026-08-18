@@ -405,6 +405,77 @@ async def pick_rollover(
                 }
     # Sticky miss or expired — proceed with full recompute below.
 
+    # ── μ-closure P4 (2026-06) — DB-FROZEN MEMBERSHIP RESTORE ────────
+    # The RAM sticky cache above is cleared on backend restart / worker
+    # rotation, but the ``on_rollover_at`` + ``rollover_selection_rank``
+    # stamps in ``db.picks`` are IMMUTABLE for the product day.  If we
+    # find frozen top-3 picks for today's date that still qualify
+    # (not off_board, not settled, still in-window), we return those
+    # in their frozen rank order — the display SURVIVES cache clears
+    # and process restarts.
+    #
+    # Only runs when the caller has not supplied narrowing filters that
+    # would change the eligible universe (sport / market / league /
+    # non-empty line_type).  For filtered slices we fall through to
+    # the fresh recompute so per-filter picks reflect the requested
+    # slice — those are ranked/cached separately by ``_sticky_key``.
+    _no_filters = (
+        not sport_filter_active
+        and not (market or "").strip()
+        and not (league or "").strip()
+        and (line_type or "").lower() in ("", "both")
+    )
+    if _no_filters:
+        try:
+            frozen_docs = await db.picks.find(
+                {"pick_date": _today_str(),
+                 "on_rollover_at": {"$exists": True},
+                 "rollover_frozen_source": "picks_route_live",
+                 "rollover_selection_rank": {"$in": [1, 2, 3]},
+                 "no_bet": {"$ne": True},
+                 "off_board": {"$ne": True},
+                 "status": {"$in": ["pending", None]}},
+                {"_id": 0},
+            ).to_list(length=16)
+            if frozen_docs:
+                # Deduplicate — earliest stamp wins (guards against any
+                # historical double-stamp).
+                by_rank: dict[int, dict] = {}
+                for d in frozen_docs:
+                    r = int(d.get("rollover_selection_rank") or 0)
+                    if r in (1, 2, 3) and r not in by_rank:
+                        by_rank[r] = d
+                ordered = [by_rank[r] for r in (1, 2, 3) if r in by_rank]
+                # Must have all 3 ranks AND survive the play-window
+                # gate to serve from frozen membership.  Missing ranks
+                # (e.g. only #1+#2 stamped from a partial earlier
+                # response) fall through to full recompute so the
+                # user gets a complete top-3.
+                ordered = _filter_in_play_window(ordered)
+                if len(ordered) == 3:
+                    logger.info(
+                        "Rollover DB-frozen restore hit: 3 picks recovered "
+                        "for %s (survived cache clear)", _today_str(),
+                    )
+                    _ROLLOVER_STICKY_CACHE[_sticky_key] = {
+                        "ids":            [p.get("id") for p in ordered if p.get("id")],
+                        "at":             _now_ts,
+                        "survivability":  {"mode": "db_frozen_restore"},
+                    }
+                    return {
+                        "picks": _canonicalize_picks(ordered),
+                        "pick":  _canonicalize_lock_score(ordered[0]),
+                        "composite_rank": None,
+                        "total_evaluated": len(ordered),
+                        "scoped_to_today": True,
+                        "rollover_version": "v4-db-frozen",
+                        "sticky": True,
+                        "survivability": {"mode": "db_frozen_restore"},
+                    }
+        except Exception as _frozen_err:
+            logger.debug("DB-frozen rollover restore skipped: %s", _frozen_err)
+    # DB-frozen miss — full recompute path.
+
     base_q: dict = {"pick_date": _today_str(), "no_bet": {"$ne": True}}
     # PHASE 1D (2026-06) — Shared Product Source contract.  Rollover
     # 2.0 consumes canonical-eligible picks only: real book line

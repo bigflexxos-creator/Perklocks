@@ -17,6 +17,7 @@ import {
 } from "@/src/lib/sportsbookLinks";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
+import { swrCacheRead, swrCacheWrite } from "@/src/lib/useSWR";
 import { getDisplayLockRounded } from "@/src/lib/lockScore";
 import { buildSlipText as buildGamblySlipText, shareSlip, saveSlipImage } from "@/src/lib/shareBetSlip";
 import { SkeletonList } from "@/src/components/Skeleton";
@@ -38,6 +39,21 @@ const CARD_TAGLINES: Record<ParlayCard["label"], string> = {
   BALANCED: "Best risk-reward balance",
   AGGRESSIVE: "Bigger payouts, more variance",
 };
+
+// μ-closure P3 — Parlay SWR key builder. Warm revisits with the SAME
+// input tuple show the previous parlay set instantly; only a change
+// to inputs (mode/legs/sport/etc.) that has never been resolved
+// triggers the skeleton state.
+type ParlaySnapshot = { parlays: ParlayCard[]; reason: string };
+const _parlayKey = (
+  n: number, m: string, s: string, lt: string,
+  incl: string[], excl: string[], f: any, r: number,
+  locked: string[], sMode: string, wHours: number, nonce: number,
+  advSub?: string,
+) =>
+  `parlay|${n}|${m}|${s}|${lt}|${incl.join(",")}|${excl.join(",")}|`
+  + `${JSON.stringify(f || {})}|${r}|${locked.join(",")}|`
+  + `${sMode}|${wHours}|${nonce}|${advSub || ""}`;
 
 // Health grade → colour
 const GRADE_TINT: Record<string, string> = {
@@ -81,19 +97,26 @@ export default function ParlayScreen() {
     async (n: number, m: "standard" | "high_risk" | "today_window" | "advanced", s: string, lt: LineType,
            incl: string[], excl: string[], f: any, r: number, locked: string[],
            sMode: "auto"|"custom"|"single", wHours: number, nonce: number,
-           advSub?: "safer" | "ev") => {
+           advSub?: "safer" | "ev", silent: boolean = false) => {
       try {
         setError(null);
         const res = await api.parlay(
           n, m, s, lt, incl, f, r, locked, sMode, wHours, excl, nonce, advSub,
         );
-        setParlays(res.parlays || []);
-        setReason(res.reason || "");
+        const parlays = res.parlays || [];
+        const reason = res.reason || "";
+        setParlays(parlays);
+        setReason(reason);
+        // Seed the SWR cache for warm revisits.
+        swrCacheWrite<ParlaySnapshot>(
+          _parlayKey(n, m, s, lt, incl, excl, f, r, locked, sMode, wHours, nonce, advSub),
+          { parlays, reason },
+        );
       } catch (e: any) {
         console.warn("parlay load", e);
-        setError(String(e?.message || "Couldn't build parlays."));
+        if (!silent) setError(String(e?.message || "Couldn't build parlays."));
       } finally {
-        setLoading(false);
+        if (!silent) setLoading(false);
         setRefreshing(false);
       }
     },
@@ -105,21 +128,34 @@ export default function ParlayScreen() {
 
   useEffect(() => {
     if (!hydrated) return;
-    setLoading(true);
-    load(legs, mode, sport, lineType, includedSports, excludedSports,
-         filters, rank, lockedIds, sportMode, windowHours, refreshNonce,
-         mode === "advanced" ? advancedSub : undefined);
+    const key = _parlayKey(legs, mode, sport, lineType, includedSports, excludedSports,
+                           filters, rank, lockedIds, sportMode, windowHours, refreshNonce,
+                           mode === "advanced" ? advancedSub : undefined);
+    const cached = swrCacheRead<ParlaySnapshot>(key);
+    if (cached) {
+      // Warm — paint instantly, silent background revalidation.
+      setParlays(cached.parlays);
+      setReason(cached.reason);
+      setLoading(false);
+      load(legs, mode, sport, lineType, includedSports, excludedSports,
+           filters, rank, lockedIds, sportMode, windowHours, refreshNonce,
+           mode === "advanced" ? advancedSub : undefined, true);
+    } else {
+      setLoading(true);
+      load(legs, mode, sport, lineType, includedSports, excludedSports,
+           filters, rank, lockedIds, sportMode, windowHours, refreshNonce,
+           mode === "advanced" ? advancedSub : undefined, false);
+    }
   }, [hydrated, legs, mode, sport, lineType, includedSports, excludedSports,
       filters, rank, lockedIds, sportMode, windowHours, refreshNonce, load, advancedSub]);
 
-  // Smart refetch on focus — re-rebuild the parlay when the user returns
-  // to the tab, but suppress duplicate calls inside 30 s.
+  // Smart refetch on focus — silent (SWR) so warm revisits never flash.
   useFocusRefetch(
     () => {
       if (!hydrated) return;
       load(legs, mode, sport, lineType, includedSports, excludedSports,
            filters, rank, lockedIds, sportMode, windowHours, refreshNonce,
-           mode === "advanced" ? advancedSub : undefined);
+           mode === "advanced" ? advancedSub : undefined, true);
     },
     [hydrated, legs, mode, sport, lineType, includedSports, excludedSports,
      filters, rank, lockedIds, sportMode, windowHours, refreshNonce, load, advancedSub],
@@ -946,11 +982,19 @@ const styles = StyleSheet.create({
   emptyMsg: { color: COLORS.textMuted, fontSize: 13, marginTop: 6, textAlign: "center", paddingHorizontal: 30 },
   intro: { color: COLORS.textMuted, fontSize: 11, fontWeight: "700", letterSpacing: 0.6, marginBottom: 14, textAlign: "center" },
   cardWrap: {
-    backgroundColor: COLORS.surface,
+    backgroundColor: COLORS.surfaceElevated ?? COLORS.surface,
     borderRadius: 18,
     padding: 16,
     marginBottom: 16,
     borderWidth: 1.5,
+    // μ-closure UI3 (2026-06): Parlay cockpit polish — luminous
+    // ambient shadow so each parlay card lifts off the deep-navy
+    // background like a premium betting ticket.
+    shadowColor: COLORS.voltBlue,
+    shadowOpacity: 0.18,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
   },
   cardHeader: {
     flexDirection: "row", alignItems: "center", justifyContent: "space-between",
