@@ -361,10 +361,19 @@ def is_eligible_leg(pick: dict, bucket_map: dict, *, high_risk: bool = False) ->
     edge = float(pick.get("edge_percent") or 0)
     win_p = float(pick.get("win_probability") or 0)
 
-    # High-risk mode: relax lock to 75 but require positive edge.
-    # Standard: full spec Lock≥88, Edge≥+3.
-    min_lock = 75.0 if high_risk else MIN_LOCK_SCORE
-    min_edge = 1.0 if high_risk else MIN_EDGE_PCT
+    # μ-closure LIVE (2026-06) — Parlay candidate starvation Fix 2B:
+    # Standard admission is now aligned with the canonical Board floor
+    # (>= 85). Edge is used as a QUALITY/RANKING input inside
+    # ``score_leg`` (edge_component contribution), NOT as a hard gate
+    # that starves the optimizer before intelligence can rank.  The
+    # anti-hero + bucket ROI + correlation + synergy layers below /
+    # inside score_leg remain in force.  High-risk keeps its softer
+    # lock (75); Advanced.EV/Safer keep their stricter contract at
+    # the route level via ``lock_floor_val``.
+    min_lock = 75.0 if high_risk else 85.0   # canonical Board floor
+    # Standard mode: edge is scored, not gated.  High-risk keeps a
+    # small positive-edge sanity floor to filter obvious junk.
+    min_edge = 1.0 if high_risk else None
 
     # Alt-prop carve-out (added 2026-06-23 per user spec "Add ALT
     # picks to the Parlay Optimizer's eligible legs"). Chalk-ladder
@@ -377,12 +386,12 @@ def is_eligible_leg(pick: dict, bucket_map: dict, *, high_risk: bool = False) ->
     # leg pool. Carve-out: any leg flagged `is_alt` (or legacy
     # `is_alt_prop`) clears with min_edge of +1.0% without forcing
     # the user into high-risk mode globally.
-    if (pick.get("is_alt") or pick.get("is_alt_prop")) and min_edge > 1.0:
+    if (pick.get("is_alt") or pick.get("is_alt_prop")) and min_edge is not None and min_edge > 1.0:
         min_edge = 1.0
 
     if lock < min_lock:
         return False, f"lock {lock:.0f} < {min_lock:.0f}"
-    if edge < min_edge:
+    if min_edge is not None and edge < min_edge:
         return False, f"edge {edge:+.1f}% < {min_edge:+.0f}%"
     if win_p <= 0:
         return False, "no win_probability"

@@ -707,10 +707,16 @@ async def settle_soccer_picks_via_espn(db, *, days_back: int = 14,
 
     summary = {"scanned": 0, "settled": 0, "won": 0, "lost": 0,
                "push": 0, "skipped": 0, "no_match": 0, "no_league": 0}
+    # μ-closure LIVE (2026-06) — Settlement Reachability Fix 3B:
+    # Historical publication → still owed a grade even if off_board now.
+    from services.canonical_board_source import (
+        canonical_publication_filter as _canon_pub_filter,
+    )
+    _canon = _canon_pub_filter()
     cursor = db.picks.find({
         "sport": "Soccer",
         "status": {"$in": [None, "pending"]},
-        "off_board": {"$ne": True},  # Board-visibility gate (2026-07-21)
+        **_canon,  # canonical PUBLISHED (or legacy bridge) — REQUIRED.
         "settlement_block": {"$ne": True},  # Phase A μ-closure — actionable only
         "event_time": {"$gte": lo, "$lte": hi},
         "$or": [

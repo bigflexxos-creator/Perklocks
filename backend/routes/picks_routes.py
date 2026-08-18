@@ -419,8 +419,14 @@ async def pick_rollover(
     # non-empty line_type).  For filtered slices we fall through to
     # the fresh recompute so per-filter picks reflect the requested
     # slice — those are ranked/cached separately by ``_sticky_key``.
+    #
+    # 2026-06 live-crash fix: derive `sport_filter_active` INLINE here
+    # so the frozen-restore block never crashes on the first request
+    # (previously it referenced the variable before it was assigned
+    # further down during base_q construction).
+    _sport_active_here = bool(sport and sport.lower() != "all")
     _no_filters = (
-        not sport_filter_active
+        not _sport_active_here
         and not (market or "").strip()
         and not (league or "").strip()
         and (line_type or "").lower() in ("", "both")

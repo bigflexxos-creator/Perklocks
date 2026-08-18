@@ -160,11 +160,31 @@ export default function HistoryScreen() {
           </View>
         ) : (
           filtered.map((p) => {
-            const isLoss = p.status === "lost";
-            const isWin = p.status === "won";
-            const isPush = p.status === "push";
-            const statusColor = isWin ? COLORS.neonGreen : isLoss ? COLORS.electricBlaze : COLORS.textMuted;
-            const statusLabel = isWin ? "WON" : isLoss ? "LOST" : isPush ? "PUSH" : "PENDING";
+            // μ-closure LIVE (2026-06) — History Fix 3A: explicit
+            // canonical state mapping. Only a genuine `pending` value
+            // may show PENDING; `void` and `unresolved` must show
+            // themselves so users don't see settled picks as PENDING.
+            const s = (p.status || "").toLowerCase();
+            const isLoss = s === "lost";
+            const isWin = s === "won";
+            const isPush = s === "push";
+            const isVoid = s === "void";
+            const isUnresolved = s === "unresolved";
+            const isPending = s === "pending" || s === "";
+            const statusColor =
+              isWin        ? COLORS.neonGreen   :
+              isLoss       ? COLORS.electricBlaze :
+              isPush       ? COLORS.textMuted   :
+              isVoid       ? COLORS.textSecondary : // neutral
+              isUnresolved ? COLORS.goldElite   : // amber/diagnostic
+                             COLORS.goldElite;    // pending → amber/live
+            const statusLabel =
+              isWin        ? "WON"        :
+              isLoss       ? "LOST"       :
+              isPush       ? "PUSH"       :
+              isVoid       ? "VOID"       :
+              isUnresolved ? "UNRESOLVED" :
+                             "PENDING";
             const expanded = openId === p.id;
             const scoreStr = p.final_score ? Object.entries(p.final_score).map(([t, s]) => `${t} ${s}`).join(" · ") : "";
             return (
