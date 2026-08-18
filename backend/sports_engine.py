@@ -4633,13 +4633,29 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     # K vs Padres -150" — Padres K at 16% vs him). Our
                     # historical bleed was ALL Over K props. Enabling Unders
                     # gives us the fade side of overpriced-K-Over chalk.
+                    #
+                    # ── 2026-06 μ-closure FIX 2 (MLB Early Prop Coverage) ─
+                    # Extend the Under-allow exception to Hits, Total Bases,
+                    # H+R+RBI, and pitcher_outs main lines. Previously any
+                    # main-line Under for these families was dropped BEFORE
+                    # the MLB feature/model engines saw the real market —
+                    # legitimate Unders that the model may value never
+                    # reached scoring. Pair-conflict/dedupe/model floors
+                    # downstream still decide the winning side per contract.
                     is_alt_mk = mk in _ALT_PROP_MARKETS
-                    is_k_main_under = (
-                        mk == "pitcher_strikeouts"
+                    _MAIN_UNDER_ALLOWED_MK = {
+                        "pitcher_strikeouts",
+                        "batter_hits",
+                        "batter_total_bases",
+                        "batter_hits_runs_rbis",
+                        "pitcher_outs",
+                    }
+                    is_prop_main_under = (
+                        mk in _MAIN_UNDER_ALLOWED_MK
                         and str(side).lower() == "under"
                     )
                     if (not is_alt_mk
-                            and not is_k_main_under
+                            and not is_prop_main_under
                             and str(side).lower() == "under"):
                         continue
                     # Block 2A.5.2 (2026-06 restoration): Total Bases is
@@ -4937,6 +4953,20 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             # hitters keep firing under the standard hitter-prop gate.
             if implied < 0.55:
                 continue
+        elif mk in ("batter_total_bases", "batter_total_bases_alternate"):
+            # ── 2026-06 μ-closure FIX 3 (MLB Early Prop Coverage) ────
+            # Main-line Total Bases is priced -105 to -140 (51-58%
+            # implied) — well below the generic 0.62 gate. Previously
+            # ALL main-line TB was silently dropped here. Give TB
+            # its own market-specific PRE-MODEL acquisition floor
+            # consistent with sibling hitter markets (Hits 0.55,
+            # H+R+RBI 0.50). The `_HIGH_PROB_MIN_IMPLIED = 0.62`
+            # generic gate was designed for HR/hitting markets, not
+            # for chalky main-line TB. Pair conflict / model /
+            # Brain / >=85 Board floor still enforce quality
+            # downstream — this only stops the pre-model starvation.
+            if implied < 0.50:
+                continue
         # ── 2026-07-21 BLANKET ODDS CAP for K props ──────────────────
         # Regardless of mk key, reject any pitcher strikeout pick
         # priced worse than -250. Belt-and-suspenders vs. any mk-key
@@ -4963,6 +4993,8 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 "batter_hits_runs_rbis_alternate",
                 "batter_hits",
                 "batter_hits_alternate",
+                "batter_total_bases",
+                "batter_total_bases_alternate",
                 "pitcher_outs",
                 "pitcher_strikeouts",
                 "pitcher_strikeouts_alternate",
@@ -5233,6 +5265,33 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 real_factors = {}
                 _sources = []
             else:
+                # ── 2026-06 μ-closure FIX 1 — Early Hitter Hydration ──
+                # For Hits / TB / H+R+RBI, if the player is UNKNOWN
+                # (not present in ctx.hitters), attempt to hydrate a
+                # minimal REAL row from cached Statcast + hitter_intel
+                # so the feature engine can extract >=3 real factors.
+                # Lineup status stays "unknown" — the existing 88 cap
+                # still applies.  Only real data is attached; no
+                # fabrication.  If nothing available, MISSING_FEATURE_DATA
+                # still fires below for the correct data reason.
+                _HITTER_FAMILY_MK = {
+                    "batter_hits", "batter_hits_alternate",
+                    "batter_total_bases", "batter_total_bases_alternate",
+                    "batter_hits_runs_rbis", "batter_hits_runs_rbis_alternate",
+                }
+                if (mk in _HITTER_FAMILY_MK
+                        and _lu_status == "unknown"
+                        and player):
+                    try:
+                        from services.mlb_early_hitter_hydrate import (
+                            hydrate_missing_hitter,
+                        )
+                        hydrate_missing_hitter(_game_ctx, player)
+                    except Exception as _hy_err:
+                        logger.debug(
+                            "early hitter hydration skipped for %s: %s",
+                            player, _hy_err,
+                        )
                 real_factors, _sources = build_mlb_hitter_factors(
                     _game_ctx, player=player, is_home=_is_home,
                     opp_pitcher_name=_opp_sp,
