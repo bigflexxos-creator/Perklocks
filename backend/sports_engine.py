@@ -4708,7 +4708,35 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     _winner = "over" if _o_edge >= _u_edge else "under"
                     _reason = f"kmath_both_pass_edge_tiebreak({_o_edge:.1f}vs{_u_edge:.1f})"
                 else:
-                    _winner, _reason = None, "kmath_neither_pass"
+                    # ── Block 2B μ-closure — K SINGLE-GATE ─────────
+                    # PRIOR DEFECT: when NEITHER side passed the
+                    # K-math emit check the pair-dedup dropped BOTH,
+                    # acting as a second independent model gate.  The
+                    # authoritative K-math gate downstream (~line 5020
+                    # in this file) already decides emit/skip for the
+                    # surviving candidate.  Here we ONLY resolve the
+                    # over/under CONFLICT — never double-gate.
+                    #
+                    # New behaviour: when K-math cannot distinguish
+                    # emit-ability, fall back to a BOOK-EDGE tiebreak
+                    # (higher implied → prefer that side).  If book
+                    # odds are equally unusable we default to "over"
+                    # (the historical baseline).  Downstream primary
+                    # K-math gate remains the sole authoritative
+                    # emit/skip decision.
+                    _o_pri = _side_map.get("over", (None, None))[1]
+                    _u_pri = _side_map.get("under", (None, None))[1]
+                    _o_imp = float((_o_eval or {}).get("book_implied") or 0)
+                    _u_imp = float((_u_eval or {}).get("book_implied") or 0)
+                    if _o_imp or _u_imp:
+                        _winner = "over" if _o_imp >= _u_imp else "under"
+                        _reason = (
+                            f"kmath_neither_book_impl_tiebreak"
+                            f"({_o_imp:.2f}vs{_u_imp:.2f})"
+                        )
+                    else:
+                        _winner = "over"
+                        _reason = "kmath_neither_default_over"
                 logger.info(
                     "PAIR_DEDUP_K: pitcher=%s line=%s over_ok=%s under_ok=%s winner=%s reason=%s",
                     _player_b, _point_b, _o_ok, _u_ok, _winner, _reason,
@@ -4716,8 +4744,34 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             except Exception as _pdx:
                 logger.debug("Pair dedup K math failed for %s (line=%s): %s",
                              _player_b, _point_b, _pdx)
-                # Failed K math → indeterminate → drop both.
-                _winner, _reason = None, "kmath_error"
+                # ── Block 2B μ-closure — K SINGLE-GATE ─────────────
+                # PRIOR DEFECT: on K-math exception we returned
+                # ``_winner = None``, dropping BOTH sides silently
+                # before the authoritative K-math gate could decide.
+                # NEW: fall through to a book-implied tiebreak so
+                # ONE candidate survives to reach the primary gate.
+                _o_pri = _side_map.get("over", (None, None))[1]
+                _u_pri = _side_map.get("under", (None, None))[1]
+                # Higher-price (less negative for favorites, less
+                # positive for dogs) → higher implied.  Cheap heuristic
+                # without recomputing book_implied.
+                def _implied(px):
+                    try:
+                        px = int(px)
+                        if px == 0: return 0.0
+                        return (
+                            (-px) / ((-px) + 100.0) if px < 0
+                            else 100.0 / (px + 100.0)
+                        )
+                    except Exception:
+                        return 0.0
+                _o_imp = _implied(_o_pri)
+                _u_imp = _implied(_u_pri)
+                if _o_imp or _u_imp:
+                    _winner = "over" if _o_imp >= _u_imp else "under"
+                else:
+                    _winner = "over"
+                _reason = f"kmath_error_book_impl_fallback({_o_imp:.2f}vs{_u_imp:.2f})"
         else:
             # Non-K symmetric pair → deterministic book-consensus.
             _o_median = _side_map.get("over", (None, None))[1]

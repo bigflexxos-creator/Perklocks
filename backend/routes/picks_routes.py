@@ -2806,7 +2806,12 @@ async def force_refresh(user: Annotated[UserPublic, Depends(current_user)]):
     try:
         canonical_today = await db.picks.count_documents(
             {"pick_date": today,
-             "publication_source": {"$exists": True, "$ne": None}}
+             # Block 3A μ-closure: strong canonical publication predicate.
+             "$or": [
+                 {"publication_state": "PUBLISHED"},
+                 {"publication_state": {"$exists": False},
+                  "publication_source": {"$exists": True, "$ne": None}},
+             ]}
         )
     except Exception:
         canonical_today = 0

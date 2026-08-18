@@ -1086,13 +1086,160 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     # User report (2026-06-28): "They come back when I play with tabs
     # but not staying"  ← classic symptom of catching the populated
     # window between refresh cycles.
+    # ── Family-Conservation Delete Filter (Block 1 μ-closure) ────────
+    # PRIOR DEFECT: date-scoped + sport-scoped deletes purged every
+    # market family for the sport, so a refresh that (for example)
+    # regenerated MLB game markets but failed to regenerate the Hits
+    # / Pitcher-Strikeouts families would DELETE the previously
+    # healthy Hits/K rows before any replacement was written.
+    #
+    # FIX: classify each ``safe_picks`` row into a market family and
+    # RESTRICT the atomic delete to only the families that this
+    # refresh cycle actually produced.  Families that saw zero
+    # candidates in ``safe_picks`` are preserved verbatim.
+    #
+    # SAFETY:
+    #   • Normal expiry (event start / settlement / off-board /
+    #     scratch / stale line) still runs — those rows are removed
+    #     by their existing owners.
+    #   • Semantic-identity delete (below, unchanged) still purges
+    #     contradictory rows on the SAME semantic tuple.
+    #   • The ``seen_ids`` id-collision delete (also below, unchanged)
+    #     still overwrites re-generated pick IDs.
+    #   • Sticky-pin protection via ``_pin_filter`` unchanged.
+    #
+    # This is PRESENTATION of the refresh boundary; it never touches
+    # published_lock_score / win_probability / edge / eligibility /
+    # canonical publication / Board >=85 floor / Apex 100.
+    def _classify_pick_family(p: dict) -> str:
+        """Return a stable family key for ``p``.  Player-prop families
+        share the vocabulary already established by ``_MARKET_STAT_TO_FAMILY``
+        below; all other markets collapse to ``"game_market"`` (Moneyline
+        / Spread / Total / RL / BTTS / DC / anytime_scorer / etc.)."""
+        mkt = (p.get("market") or "").lower()
+        # Player-prop stat markers — align with existing MLB regex below.
+        if "strikeouts" in mkt:              return "pitcher_strikeouts"
+        if "hits + runs + rbis" in mkt:      return "batter_hits_runs_rbis"
+        if "home runs" in mkt or "home run"  in mkt: return "batter_home_runs"
+        if "total bases" in mkt:             return "batter_total_bases"
+        if "rbis" in mkt or "rbi " in mkt:   return "batter_rbis"
+        if "runs scored" in mkt:             return "batter_runs_scored"
+        if "pitching outs" in mkt or "pitcher outs" in mkt: return "pitcher_outs"
+        if "earned runs" in mkt:             return "pitcher_earned_runs"
+        if "hits allowed" in mkt:            return "pitcher_hits_allowed"
+        if " hits" in mkt or mkt.endswith("hits") or "over/under hits" in mkt:
+            return "batter_hits"
+        if "walks" in mkt:                   return "pitcher_walks"
+        # NFL / NBA / Soccer player families — cheap-substring lookup.
+        if "passing yards" in mkt or "pass yards" in mkt: return "nfl_passing_yards"
+        if "rushing yards" in mkt or "rush yards" in mkt: return "nfl_rushing_yards"
+        if "receiving yards" in mkt or "rec yards" in mkt: return "nfl_receiving_yards"
+        if "receptions" in mkt:              return "nfl_receptions"
+        if "anytime td" in mkt or "anytime touchdown" in mkt: return "nfl_anytime_td"
+        if "points" in mkt and any(sp in mkt for sp in ("nba", "wnba")): return "nba_points"
+        if "rebounds" in mkt:                return "nba_rebounds"
+        if "assists" in mkt:                 return "nba_assists"
+        if "pra" in mkt or "points + rebounds + assists" in mkt: return "nba_pra"
+        if "anytime scorer" in mkt or "first scorer" in mkt or "last scorer" in mkt:
+            return "soccer_anytime_scorer"
+        if "score or assist" in mkt or "score/assist" in mkt: return "soccer_score_or_assist"
+        # Everything else — moneyline / spread / total / BTTS / DC /
+        # h2h / RL / 1X2 — is a game market.
+        return "game_market"
+
+    # Build set of families the refresh actually produced.
+    _refreshed_families: set = set()
+    for _rp in safe_picks:
+        _fam = _classify_pick_family(_rp)
+        if _fam:
+            _refreshed_families.add(_fam)
+    # ``safe_picks`` may still be empty at this point on catastrophic
+    # provider outages — in that case DO NOT touch the DB.  This is
+    # the "REFRESH_EXECUTION_FAILURE" terminal disposition; healthy
+    # existing rows remain.
+    _has_refreshed_families = bool(_refreshed_families)
+    _family_conservation_filter: dict = {}
+    # Family field to delete against — we must derive it via
+    # ``$expr`` since documents don't carry ``market_family`` yet.
+    # Cheapest is a market-regex whitelist per refreshed family.
+    def _family_market_regex(fam: str) -> Optional[str]:
+        if fam == "pitcher_strikeouts":   return r"strikeouts"
+        if fam == "batter_hits_runs_rbis": return r"hits\s*\+\s*runs\s*\+\s*rbis"
+        if fam == "batter_home_runs":     return r"home\s+runs?"
+        if fam == "batter_total_bases":   return r"total\s+bases"
+        if fam == "batter_rbis":          return r"rbis?\b"
+        if fam == "batter_runs_scored":   return r"runs\s+scored"
+        if fam == "batter_hits":          return r"\bhits(\s+over|\s+under|\s*$)"
+        if fam == "pitcher_outs":         return r"(pitching|pitcher)\s+outs"
+        if fam == "pitcher_earned_runs":  return r"earned\s+runs"
+        if fam == "pitcher_hits_allowed": return r"hits\s+allowed"
+        if fam == "pitcher_walks":        return r"walks"
+        if fam == "nfl_passing_yards":    return r"pass(ing)?\s+yards"
+        if fam == "nfl_rushing_yards":    return r"rush(ing)?\s+yards"
+        if fam == "nfl_receiving_yards":  return r"rec(eiving)?\s+yards"
+        if fam == "nfl_receptions":       return r"receptions"
+        if fam == "nfl_anytime_td":       return r"anytime\s+(td|touchdown)"
+        if fam == "nba_points":           return r"points"
+        if fam == "nba_rebounds":         return r"rebounds"
+        if fam == "nba_assists":          return r"assists"
+        if fam == "nba_pra":              return r"(pra\b|points\s*\+\s*rebounds\s*\+\s*assists)"
+        if fam == "soccer_anytime_scorer": return r"(anytime|first|last)\s+scorer"
+        if fam == "soccer_score_or_assist": return r"score\s*(or|/)\s*assist"
+        # game_market: everything NOT matching a prop pattern above.
+        return None
+    _refreshed_regexes = [
+        _family_market_regex(f) for f in _refreshed_families
+        if _family_market_regex(f)
+    ]
+    _game_refreshed = ("game_market" in _refreshed_families)
+    if _has_refreshed_families:
+        # Build "market must match a refreshed family" OR "market
+        # does NOT match ANY prop family AND game markets refreshed".
+        _all_prop_regex = (
+            r"(strikeouts|hits\s*\+\s*runs\s*\+\s*rbis|home\s+runs?|"
+            r"total\s+bases|rbis?\b|runs\s+scored|\bhits(\s+over|\s+under|\s*$)|"
+            r"(pitching|pitcher)\s+outs|earned\s+runs|hits\s+allowed|walks|"
+            r"pass(ing)?\s+yards|rush(ing)?\s+yards|rec(eiving)?\s+yards|"
+            r"receptions|anytime\s+(td|touchdown)|points|rebounds|assists|"
+            r"pra\b|(anytime|first|last)\s+scorer|score\s*(or|/)\s*assist)"
+        )
+        _or_clauses: list = []
+        for _rx in _refreshed_regexes:
+            _or_clauses.append({"market": {"$regex": _rx, "$options": "i"}})
+        if _game_refreshed:
+            _or_clauses.append(
+                {"market": {"$not": {"$regex": _all_prop_regex, "$options": "i"}}}
+            )
+        if _or_clauses:
+            _family_conservation_filter = {"$or": _or_clauses}
     async def _apply_atomic_delete():
+        # Fail-safe: never wipe healthy rows when the refresh produced
+        # nothing (execution failure / provider outage / cache miss).
+        if not _has_refreshed_families:
+            logger.warning(
+                "atomic_delete: skipped (REFRESH_EXECUTION_FAILURE) — "
+                "safe_picks is empty; %d existing rows preserved.",
+                await db.picks.count_documents({"pick_date": date_str}),
+            )
+            return
+        # Family-conservation filter is a $and clause added below.
         if sport_filter:
-            await db.picks.delete_many({"pick_date": date_str, "sport": sport_filter, **_pin_filter})
-            await db.picks.delete_many({"id": {"$in": list(seen_ids)}, "sport": sport_filter, **_pin_filter})
+            await db.picks.delete_many({
+                "pick_date": date_str, "sport": sport_filter,
+                **_pin_filter, **_family_conservation_filter,
+            })
+            await db.picks.delete_many({
+                "id": {"$in": list(seen_ids)}, "sport": sport_filter,
+                **_pin_filter,
+            })
         else:
-            await db.picks.delete_many({"pick_date": date_str, **_pin_filter})
-            await db.picks.delete_many({"id": {"$in": list(seen_ids)}, **_pin_filter})
+            await db.picks.delete_many({
+                "pick_date": date_str, **_pin_filter,
+                **_family_conservation_filter,
+            })
+            await db.picks.delete_many({
+                "id": {"$in": list(seen_ids)}, **_pin_filter,
+            })
         # ── ID-COLLISION FRESH-OVERWRITE ──
         # If the current refresh re-generates a pick whose `id` is ALSO a
         # sticky 95+ pin in DB, the existing row blocks the new insert

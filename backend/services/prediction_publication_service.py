@@ -519,6 +519,71 @@ class PredictionPublicationService:
             logger.debug("publish_batch line wire skipped: %s",
                          _line_wire_err)
 
+        # ── Block 6A μ-closure — UNIVERSAL BRAIN DECISION EFFECT ────
+        # Convergence attenuation MUST run at the lowest common
+        # prepublication boundary so EVERY canonical publication path
+        # (publication_helpers.publish_upserted_picks + direct-inject
+        # writers) receives the same Brain decision effect exactly
+        # once before ``evaluate_publication`` freezes the row.
+        #
+        # ``publication_helpers`` already stamps convergence upstream
+        # when it processes a pick; we check ``convergence_confidence
+        # _multiplier`` for idempotency to prevent double application.
+        # Direct callers (mls_direct_inject / soccer_prop_inject) do
+        # NOT flow through the helper, so this block applies the same
+        # attenuation formula here.
+        try:
+            from probability_engine import classify_convergence
+            for _c in candidates_list:
+                # Idempotency guard — helper already ran for this pick.
+                if _c.get("convergence_confidence_multiplier") is not None:
+                    continue
+                _model_p = (_c.get("model_probability")
+                            if _c.get("model_probability") is not None
+                            else _c.get("win_probability"))
+                _sim_p = (_c.get("simulator_probability")
+                          if _c.get("simulator_probability") is not None
+                          else _c.get("sim_win_probability"))
+                if not isinstance(_model_p, (int, float)) or _model_p <= 0:
+                    continue
+                _sim_ran = isinstance(_sim_p, (int, float)) and _sim_p > 0
+                _p_v2 = float(_sim_p) if _sim_ran else float(_model_p)
+                _ev_q = (_c.get("evidence_quality")
+                         or (_c.get("model_evidence") or {}).get("evidence_quality")
+                         or "MODERATE")
+                _sim_pv = (_c.get("simulator_provenance")
+                           or _c.get("sim_provenance") or "PRIOR_ONLY")
+                try:
+                    _conv = classify_convergence(
+                        p_v1=float(_model_p),
+                        p_v2=_p_v2,
+                        p_sim=float(_sim_p) if _sim_ran else None,
+                        sim_provenance=_sim_pv,
+                        evidence_quality=_ev_q,
+                        sim_ran=_sim_ran,
+                    )
+                except Exception:
+                    continue
+                _c["convergence_label"] = _conv["label"]
+                _c["convergence_spread_pp"] = _conv["spread_pp"]
+                _c["convergence_confidence_multiplier"] = _conv[
+                    "confidence_multiplier"]
+                # Apply lock_score attenuation formula (same as helper).
+                _orig_lock = _c.get("lock_score")
+                if isinstance(_orig_lock, (int, float)):
+                    _orig_f = float(_orig_lock)
+                    _mult = float(_conv["confidence_multiplier"])
+                    _excess = max(0.0, _orig_f - 70.0)
+                    _adj = 70.0 + _excess * _mult
+                    if _adj < _orig_f:
+                        _c["lock_score"] = round(_adj, 2)
+                        _c["lock_score_pre_convergence"] = round(_orig_f, 2)
+                        _c["convergence_lock_score_delta"] = round(
+                            _orig_f - _adj, 2)
+        except Exception as _brain_err:                # pragma: no cover
+            logger.debug("publish_batch brain attenuation skipped: %s",
+                         _brain_err)
+
         rejected_boundary: list[dict] = []
         rejection_reasons_counter: dict[str, int] = {}
         publishable: list[dict] = []
