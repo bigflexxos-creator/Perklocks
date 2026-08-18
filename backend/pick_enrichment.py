@@ -776,26 +776,58 @@ def _run_mlb_intel(picks: list[dict]) -> int:
             }
 
             # Market-aware lean.
-            line = 0.5
+            # ── μ-closure LIVE (2026-06) — Universal simulator canonical line ──
+            # Structured `pick["line"]` is authoritative.  Display-text
+            # parsing is a LAST-RESORT fallback ONLY when no structured
+            # line exists — and if BOTH are missing, we skip the lean
+            # calculation entirely (INVALID_INPUT) rather than silently
+            # evaluating against a made-up threshold of 0.5.
+            _canonical_line = pick.get("line")
+            if isinstance(_canonical_line, (int, float)):
+                line = float(_canonical_line)
+                _line_source = "canonical"
+            else:
+                # Fallback: parse from display text only if structured
+                # line is genuinely absent.
+                market_label = pick.get("market") or ""
+                mlower = market_label.lower()
+                mlin = __import__("re").search(r"(\d+(?:\.\d+)?)", mlower)
+                if mlin:
+                    try:
+                        line = float(mlin.group(1))
+                        _line_source = "display_text_fallback"
+                    except Exception:
+                        line = None
+                        _line_source = "invalid"
+                else:
+                    line = None
+                    _line_source = "invalid"
             market_label = pick.get("market") or ""
-            mlower = market_label.lower()
-            mlin = __import__("re").search(r"(\d+(?:\.\d+)?)", mlower)
-            if mlin:
-                try:
-                    line = float(mlin.group(1))
-                except Exception:
-                    pass
             market_p = pick.get("implied_probability")
+            if line is None:
+                # No canonical threshold available → simulator
+                # contribution MUST be zero.  Do not compute a lean/edge
+                # against a fabricated 0.5 threshold.
+                pick.setdefault("pick_rationale", {})["lean_input_status"] = "INVALID_INPUT"
+                logger.info(
+                    "sim: INVALID_INPUT — no canonical line for %s "
+                    "(market=%r); simulator contribution zeroed",
+                    name, market_label,
+                )
+                return True
             if isinstance(market_p, (int, float)):
                 if market_p > 1.0:
                     market_p = market_p / 100.0
                 lean = mlb_hitter_intel.lean_and_edge(
                     m, market_p, line=line, market=market_label,
                 )
+                # Stamp threshold provenance so downstream can verify.
                 pick["pick_rationale"]["lean"] = lean["lean"]
                 pick["pick_rationale"]["edge_pct_points"] = lean["edge_pct_points"]
                 pick["pick_rationale"]["model_prob"] = lean["model_prob"]
                 pick["pick_rationale"]["sub_scores"] = lean.get("sub_scores")
+                pick["pick_rationale"]["_sim_threshold_used"] = line
+                pick["pick_rationale"]["_sim_line_source"] = _line_source
             return True
         except Exception as e:
             logger.debug(f"mlb_intel build failed for {name}: {e}")
