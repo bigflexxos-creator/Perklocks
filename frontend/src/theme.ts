@@ -12,15 +12,18 @@
  */
 export const COLORS = {
   // ── Layered dark surfaces (UI 3.0 environment lift) ──────────────
-  //  Boosted 2026-08 — user reported the app environment still felt
-  //  crushed/dull.  New palette: luminous deep-navy with a
-  //  perceptible electric-blue ambient tint so the app reads as
-  //  "dark luxury sports intelligence" rather than flat black.
-  bg: "#0B1226",              // luminous deep navy (was #050710)
-  surface: "#1A2340",         // richer elevated navy (was #141A2B)
+  //  2026-06 μ-closure — background visibility micro-lift.  User
+  //  screenshots showed the deep-navy environment reading slightly
+  //  too subdued.  Nudged the ambient tone ~12% more luminous
+  //  without changing surface / border / gold / typography so
+  //  cards still clearly separate from the environment.  Direction
+  //  preserved: deep navy premium — not bright blue, not washed out,
+  //  not neon.
+  bg: "#0F1832",              // luminous deep navy (was #0B1226 — +12% brighter)
+  surface: "#1A2340",         // richer elevated navy (unchanged)
   surfaceElevated: "#242E4F",
   surfaceRaised: "#2E3960",
-  surfaceGloss: "rgba(120,180,255,0.10)",   // subtle blue ambient
+  surfaceGloss: "rgba(130,190,255,0.12)",   // slightly stronger blue ambient (was 120,180,255 @ 0.10)
   surfaceInset: "rgba(255,255,255,0.06)",
 
   // Back-compat aliases (existing screens read these).
