@@ -12,58 +12,61 @@
  */
 export const COLORS = {
   // ── Layered dark surfaces ─────────────────────────────────────────
-  //  bg          — app background (deepest)
-  //  surface     — default card surface
-  //  surfaceRaised — elevated card / grouped section
-  //  surfaceGloss  — top-of-card highlight tone
-  //  surfaceInset  — inset chip / progress-track base
-  bg: "#07080C",
-  surface: "#111420",
-  surfaceElevated: "#171A28",
-  surfaceRaised: "#1B1F30",
-  surfaceGloss: "rgba(255,255,255,0.045)",
-  surfaceInset: "rgba(255,255,255,0.04)",
+  //  Boosted 2026-06 for real-device visibility: measurable luminance
+  //  separation between bg → surface → elevated → raised → gloss so
+  //  that on mobile OLED the card visibly lifts off the page.
+  bg: "#050710",
+  surface: "#141A2B",
+  surfaceElevated: "#1D2338",
+  surfaceRaised: "#242B44",
+  surfaceGloss: "rgba(255,255,255,0.085)",
+  surfaceInset: "rgba(255,255,255,0.06)",
 
   // Back-compat aliases (existing screens read these).
   // Point at slightly warmer/richer navy versions.
   //   → produces immediately-perceptible depth without touching call sites.
 
   // ── Text ─────────────────────────────────────────────────────────
+  //  Secondary/muted brightened for crisp readability on OLED.
   textPrimary: "#FFFFFF",
-  textSecondary: "#C4C7D4",
-  textMuted: "#8A8FA3",
-  textDim: "#5F6478",
+  textSecondary: "#D6D9E4",
+  textMuted: "#9CA1B5",
+  textDim: "#6B7186",
 
   // ── Brand accents ────────────────────────────────────────────────
-  voltBlue: "#2F84FF",     // brighter, more premium than the old #007AFF
-  electricBlaze: "#FF4D4A",
-  neonGreen: "#3DDC77",
+  //  Volt blue and neon green nudged toward luminous premium tones;
+  //  gold moved from muddy amber to bright metallic yellow.
+  voltBlue: "#4C9BFF",     // luminous premium blue (was #2F84FF)
+  electricBlaze: "#FF5F5C",
+  neonGreen: "#4DE68A",    // richer emerald (was #3DDC77)
   // Perklocks gold identity — richer metallic tones.
-  goldElite: "#FFD24A",
-  goldRich: "#F5B417",
-  goldDeep: "#B87C00",
-  goldGloss: "rgba(255,210,74,0.14)",
+  goldElite: "#FFDD5C",    // brighter metallic gold (was #FFD24A)
+  goldRich:  "#FFC736",    // luminous rich gold (was #F5B417)
+  goldDeep:  "#D69100",    // deep metallic base (was #B87C00)
+  goldGloss: "rgba(255,221,92,0.22)",
 
   // ── Borders ──────────────────────────────────────────────────────
-  borderDefault: "rgba(255,255,255,0.08)",
-  borderStrong:  "rgba(255,255,255,0.14)",
-  borderActive:  "rgba(255,255,255,0.28)",
-  borderGold:    "rgba(255,210,74,0.55)",
+  //  Stronger baseline so cards visibly separate from the background
+  //  on mobile.
+  borderDefault: "rgba(255,255,255,0.14)",
+  borderStrong:  "rgba(255,255,255,0.22)",
+  borderActive:  "rgba(255,255,255,0.38)",
+  borderGold:    "rgba(255,221,92,0.70)",
 
   // ── State colors ─────────────────────────────────────────────────
   dangerBg: "#1B0708",
-  dangerBorder: "rgba(255,77,74,0.30)",
-  dangerSurface: "rgba(255,77,74,0.08)",
-  successBg: "rgba(61,220,119,0.10)",
-  successBorder: "rgba(61,220,119,0.32)",
+  dangerBorder: "rgba(255,95,92,0.42)",
+  dangerSurface: "rgba(255,95,92,0.12)",
+  successBg: "rgba(77,230,138,0.14)",
+  successBorder: "rgba(77,230,138,0.42)",
 
   // ── History result surfaces ──────────────────────────────────────
-  winSurface: "rgba(61,220,119,0.10)",
-  winBorder:  "rgba(61,220,119,0.40)",
-  lossSurface: "rgba(255,77,74,0.10)",
-  lossBorder:  "rgba(255,77,74,0.36)",
-  pushSurface: "rgba(255,255,255,0.06)",
-  pushBorder:  "rgba(255,255,255,0.20)",
+  winSurface: "rgba(77,230,138,0.14)",
+  winBorder:  "rgba(77,230,138,0.52)",
+  lossSurface: "rgba(255,95,92,0.14)",
+  lossBorder:  "rgba(255,95,92,0.46)",
+  pushSurface: "rgba(255,255,255,0.09)",
+  pushBorder:  "rgba(255,255,255,0.26)",
 };
 
 // ─────────────────────────────────────────────────────────────────────
@@ -101,17 +104,17 @@ export function getLockTierVisual(lockScore: number): LockTierVisual {
       key: "APEX",
       label: "APEX LOCK",
       accent: COLORS.goldElite,
-      accentSoft: "rgba(255,210,74,0.18)",
-      borderColor: "rgba(255,210,74,0.75)",
-      borderWidth: 1.75,
-      surfaceBg: "#1A1608",
-      surfaceGlossTop: "rgba(255,210,74,0.12)",
+      accentSoft: "rgba(255,221,92,0.26)",
+      borderColor: "rgba(255,221,92,0.90)",
+      borderWidth: 2,
+      surfaceBg: "#2A2210",
+      surfaceGlossTop: "rgba(255,221,92,0.22)",
       glowColor: COLORS.goldElite,
-      glowOpacity: 0.45,
-      glowRadius: 18,
-      chipBg: "rgba(255,210,74,0.20)",
+      glowOpacity: 0.60,
+      glowRadius: 22,
+      chipBg: "rgba(255,221,92,0.28)",
       chipTextColor: COLORS.goldElite,
-      chipBorderColor: "rgba(255,210,74,0.80)",
+      chipBorderColor: "rgba(255,221,92,0.95)",
       icon: "⚡",
     };
   }
@@ -120,17 +123,17 @@ export function getLockTierVisual(lockScore: number): LockTierVisual {
       key: "PEAK",
       label: "99 LOCK",
       accent: COLORS.goldRich,
-      accentSoft: "rgba(245,180,23,0.16)",
-      borderColor: "rgba(245,180,23,0.55)",
-      borderWidth: 1.5,
-      surfaceBg: "#161422",
-      surfaceGlossTop: "rgba(245,180,23,0.09)",
+      accentSoft: "rgba(255,199,54,0.22)",
+      borderColor: "rgba(255,199,54,0.72)",
+      borderWidth: 1.75,
+      surfaceBg: "#1F1B2D",
+      surfaceGlossTop: "rgba(255,199,54,0.15)",
       glowColor: COLORS.goldRich,
-      glowOpacity: 0.30,
-      glowRadius: 12,
-      chipBg: "rgba(245,180,23,0.16)",
+      glowOpacity: 0.42,
+      glowRadius: 14,
+      chipBg: "rgba(255,199,54,0.22)",
       chipTextColor: COLORS.goldRich,
-      chipBorderColor: "rgba(245,180,23,0.55)",
+      chipBorderColor: "rgba(255,199,54,0.72)",
     };
   }
   if (s >= 96) {
@@ -138,17 +141,17 @@ export function getLockTierVisual(lockScore: number): LockTierVisual {
       key: "RARE",
       label: "RARE LOCK",
       accent: COLORS.neonGreen,
-      accentSoft: "rgba(61,220,119,0.14)",
-      borderColor: "rgba(61,220,119,0.55)",
-      borderWidth: 1.35,
-      surfaceBg: "#0F1A18",
-      surfaceGlossTop: "rgba(61,220,119,0.08)",
+      accentSoft: "rgba(77,230,138,0.22)",
+      borderColor: "rgba(77,230,138,0.72)",
+      borderWidth: 1.6,
+      surfaceBg: "#132420",
+      surfaceGlossTop: "rgba(77,230,138,0.14)",
       glowColor: COLORS.neonGreen,
-      glowOpacity: 0.22,
-      glowRadius: 10,
-      chipBg: "rgba(61,220,119,0.14)",
+      glowOpacity: 0.34,
+      glowRadius: 12,
+      chipBg: "rgba(77,230,138,0.22)",
       chipTextColor: COLORS.neonGreen,
-      chipBorderColor: "rgba(61,220,119,0.55)",
+      chipBorderColor: "rgba(77,230,138,0.72)",
     };
   }
   if (s >= 93) {
@@ -156,53 +159,53 @@ export function getLockTierVisual(lockScore: number): LockTierVisual {
       key: "STRONG",
       label: "STRONG LOCK",
       accent: COLORS.voltBlue,
-      accentSoft: "rgba(47,132,255,0.14)",
-      borderColor: "rgba(47,132,255,0.45)",
-      borderWidth: 1.25,
-      surfaceBg: "#101528",
-      surfaceGlossTop: "rgba(47,132,255,0.06)",
+      accentSoft: "rgba(76,155,255,0.22)",
+      borderColor: "rgba(76,155,255,0.62)",
+      borderWidth: 1.5,
+      surfaceBg: "#131C33",
+      surfaceGlossTop: "rgba(76,155,255,0.12)",
       glowColor: COLORS.voltBlue,
-      glowOpacity: 0.16,
-      glowRadius: 8,
-      chipBg: "rgba(47,132,255,0.14)",
+      glowOpacity: 0.26,
+      glowRadius: 10,
+      chipBg: "rgba(76,155,255,0.22)",
       chipTextColor: COLORS.voltBlue,
-      chipBorderColor: "rgba(47,132,255,0.50)",
+      chipBorderColor: "rgba(76,155,255,0.66)",
     };
   }
   if (s >= 90) {
     return {
       key: "ELITE",
       label: "ELITE SETUP",
-      accent: "#9BB0FF",
-      accentSoft: "rgba(155,176,255,0.12)",
-      borderColor: "rgba(155,176,255,0.28)",
-      borderWidth: 1.15,
+      accent: "#B8C6FF",
+      accentSoft: "rgba(184,198,255,0.20)",
+      borderColor: "rgba(184,198,255,0.44)",
+      borderWidth: 1.35,
       surfaceBg: COLORS.surfaceElevated,
-      surfaceGlossTop: "rgba(255,255,255,0.05)",
+      surfaceGlossTop: "rgba(255,255,255,0.09)",
       glowColor: "#000000",
-      glowOpacity: 0.28,
-      glowRadius: 8,
-      chipBg: "rgba(155,176,255,0.12)",
-      chipTextColor: "#9BB0FF",
-      chipBorderColor: "rgba(155,176,255,0.28)",
+      glowOpacity: 0.42,
+      glowRadius: 10,
+      chipBg: "rgba(184,198,255,0.20)",
+      chipTextColor: "#B8C6FF",
+      chipBorderColor: "rgba(184,198,255,0.44)",
     };
   }
-  // 85–89 STANDARD (clean premium baseline)
+  // 85–89 STANDARD (clean premium baseline — brightened surface + border)
   return {
     key: "STANDARD",
     label: "LOCK",
     accent: COLORS.textSecondary,
-    accentSoft: "rgba(255,255,255,0.06)",
-    borderColor: COLORS.borderDefault,
-    borderWidth: 1,
+    accentSoft: "rgba(255,255,255,0.10)",
+    borderColor: COLORS.borderStrong,
+    borderWidth: 1.2,
     surfaceBg: COLORS.surface,
     surfaceGlossTop: COLORS.surfaceGloss,
     glowColor: "#000000",
-    glowOpacity: 0.28,
-    glowRadius: 8,
-    chipBg: "rgba(255,255,255,0.06)",
-    chipTextColor: COLORS.textSecondary,
-    chipBorderColor: COLORS.borderStrong,
+    glowOpacity: 0.40,
+    glowRadius: 10,
+    chipBg: "rgba(255,255,255,0.10)",
+    chipTextColor: COLORS.textPrimary,
+    chipBorderColor: COLORS.borderActive,
   };
 }
 
