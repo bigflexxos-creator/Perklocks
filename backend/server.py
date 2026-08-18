@@ -1562,6 +1562,57 @@ async def _ensure_today_picks() -> None:
     # ``prop_actionable`` — but their presence proves starvation is
     # not the cause).
     player_prop_healthy = (prop_actionable >= 3) or (prop_any >= 5)
+    # ── Block 1A μ-closure — FAMILY-LEVEL MLB PROP HEALTH ─────────────
+    # Broad prop_actionable / prop_any counts can hide starvation of
+    # ONE MLB family (e.g. Ks) when another family (e.g. Hits) or
+    # Soccer props are healthy.  Evaluate each active MLB family
+    # independently so a starved family triggers refresh even when the
+    # global prop count looks healthy.
+    _MLB_FAMILY_REGEXES = {
+        "batter_hits":         r"\bhits(\s+over|\s+under|\s*$)",
+        "pitcher_strikeouts":  r"strikeouts",
+        "batter_total_bases":  r"total\s+bases",
+        "batter_home_runs":    r"home\s+runs?",
+        "batter_rbis":         r"rbis?\b",
+        "pitcher_outs":        r"(pitching|pitcher)\s+outs",
+    }
+    mlb_family_starved: list[str] = []
+    try:
+        mlb_has_game = await db.picks.count_documents({
+            "pick_date": today, "sport": "MLB",
+            "market": {"$not": {"$regex":
+                r"(strikeouts|hits|home\s+runs?|total\s+bases|rbis?\b|"
+                r"pitching\s+outs|pitcher\s+outs)",
+                "$options": "i"}},
+        })
+        # Only enforce family-level health if MLB has an active slate
+        # today.  Off-season / preseason days should NOT trigger
+        # infinite refresh loops on families with no expected feed.
+        if mlb_has_game >= 3:
+            for _fam, _rx in _MLB_FAMILY_REGEXES.items():
+                _fam_actionable = await db.picks.count_documents({
+                    **_actionable_query, "sport": "MLB",
+                    "market": {"$regex": _rx, "$options": "i"},
+                })
+                _fam_any = await db.picks.count_documents({
+                    "pick_date": today, "sport": "MLB",
+                    "market": {"$regex": _rx, "$options": "i"},
+                })
+                # FAMILY_STARVED iff zero actionable AND zero any-status
+                # rows for the family — flow provably never executed
+                # (or executed and produced nothing at all).  When any
+                # rows exist (even rejects), family is HEALTHY_NO_
+                # QUALIFIED_PICKS and we DON'T retry.
+                if _fam_actionable == 0 and _fam_any == 0:
+                    mlb_family_starved.append(_fam)
+    except Exception as _fam_err:
+        logger.debug("family-level health check errored: %s", _fam_err)
+    if mlb_family_starved:
+        player_prop_healthy = False
+        logger.info(
+            "ensure_today_picks: MLB families starved=%s — forcing refresh",
+            mlb_family_starved,
+        )
     if game_market_healthy and player_prop_healthy:
         logger.debug(
             "ensure_today_picks: %d actionable / %d raw for %s "
