@@ -78,7 +78,7 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     Pin legs: pass `locked_ids` (comma-separated pick IDs).
     """
     from parlay_optimizer import (
-        build_top_parlays, parlay_to_payload,
+        build_top_parlays, parlay_to_payload, is_eligible_leg,
     )
     # Lazy import every helper from server.py used in this handler.
     # See /picks/today for the rationale (circular-import avoidance).
@@ -165,8 +165,14 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         canonical_publication_filter,
     )
     _canon_filt = canonical_publication_filter()
+    # μ-closure LIVE (2026-06) — Parlay candidate starvation Fix 2A:
+    # For extended event windows (24h / 48h / 72h+) candidate admission
+    # MUST be driven by canonical publication + event_time inside the
+    # requested window — NOT a single-day `pick_date == today` equality
+    # that silently excludes future-day canonical picks. The Today /
+    # 1-5h overlay keeps the product-day restriction because it IS a
+    # today-only surface.
     base_q = {
-        "pick_date": _today_str(),
         "no_bet": {"$ne": True},
         "is_under_lock": {"$ne": True},
         "off_board": {"$ne": True},
@@ -175,6 +181,12 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         **time_filter,
         **_canon_filt,   # canonical publication gate (fail-closed default)
     }
+    if is_today_window:
+        # Today / 1-5h overlay: keep the product-day restriction.
+        base_q["pick_date"] = _today_str()
+    # For 24h / 48h / 72h+ windows the event_time filter above is the
+    # authoritative admission gate — future-day canonical picks
+    # inside the window are eligible.
     # Lock floor by mode. Advanced.safer is the strictest (92),
     # high_risk the loosest (70).
     if is_high_risk:
@@ -201,6 +213,17 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     ]
     pool = await db.picks.find(base_q, {"_id": 0}).sort("lock_score", -1).limit(400).to_list(length=400)
     pool = _canonicalize_picks(pool)
+    # μ-closure LIVE (2026-06) — Advanced EV positive-EV contract.
+    # For Advanced.EV mode ONLY, apply an explicit positive-edge gate
+    # because EV is the stated product objective for that sub-mode.
+    # Standard / High-risk / Advanced.Safer keep edge as a
+    # quality/ranking input inside the optimizer, not a hard gate.
+    canonical_pool_count = len(pool)
+    ev_gated_out = 0
+    if is_advanced and advanced_sub_norm == "ev":
+        _before = len(pool)
+        pool = [p for p in pool if float(p.get("edge_percent") or 0) > 0]
+        ev_gated_out = _before - len(pool)
 
     # ─── Bucket-map ROI ───
     raw_buckets = await _historical_winrates()
@@ -289,14 +312,35 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         if window_hours != 24:
             hints.append(f"within {window_hours}h")
         hint_str = (" " + " ".join(hints)) if hints else ""
+        # μ-closure LIVE (2026-06) — truthful empty diagnostic from the
+        # LIVE funnel counts, not a stale hard-coded "need +3% edge" line.
+        try:
+            _eligible_count = sum(
+                1 for _p in pool
+                if is_eligible_leg(_p, bucket_map, high_risk=is_high_risk)[0]
+            )
+        except Exception:
+            _eligible_count = None
+        diag = {
+            "canonical_pool":     canonical_pool_count,
+            "ev_gated_out":       ev_gated_out,
+            "window_pool":        len(pool),
+            "optimizer_eligible": _eligible_count,
+            "target_legs":        target_legs,
+            "window_hours":       window_hours,
+            "mode":               mode,
+            "advanced_sub":       advanced_sub_norm if is_advanced else None,
+        }
         return {
             "parlay": None,
             "parlays": [],
             "reason": (
-                f"Not enough qualifying picks today{hint_str} to build a "
-                f"{target_legs}-leg parlay (need Lock>=88, Edge>=+3%, "
-                f"positive ROI)."
+                f"Not enough qualifying picks{hint_str} to build a "
+                f"{target_legs}-leg parlay — canonical={canonical_pool_count}, "
+                f"window={len(pool)}, "
+                f"optimizer-eligible={_eligible_count if _eligible_count is not None else 'n/a'}."
             ),
+            "diagnostic": diag,
             "rank": rank,
             "locked_ids": [p.get("id") for p in locked_picks],
             "window_hours": window_hours,

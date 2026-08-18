@@ -306,13 +306,24 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
         MLB-only 5-min loop to avoid burning Odds API credits on
         Soccer/Tennis/UFC/NBA on every tick (those use a 15-min cadence).
     """
+    # μ-closure LIVE (2026-06) — Settlement Reachability Fix 3B:
+    # Settlement eligibility is derived from HISTORICAL publication
+    # truth, NOT current Board visibility.  A pick that WAS canonically
+    # published to the user is still owed a grade even if it later
+    # became off_board (superseded, ladder-hidden, or removed by
+    # current display rules).  Removing the "off_board != True"
+    # exclusion here + gating on canonical publication ensures no
+    # legitimate wager stays PENDING forever after being pulled off
+    # the current board.
+    from services.canonical_board_source import (
+        canonical_publication_filter,
+    )
+    _canon_filt = canonical_publication_filter()
     query: dict = {"status": {"$in": [None, "pending"]},
-                   # ── Board-visibility gate (2026-07-21): only settle
-                   # picks that actually surfaced on the user board.
-                   # off_board picks (Brain-filtered, validator-blocked,
-                   # low-lock, model-only) stay pending forever so ROI
-                   # analytics reflect the *visible* slate.
-                   "off_board": {"$ne": True},
+                   # canonical PUBLISHED (or legacy bridge — see
+                   # canonical_publication_filter) — historical
+                   # publication is what qualifies for grading.
+                   **_canon_filt,
                    # ── Phase A micro-closure (2026-06): actionable-only
                    # candidate filter.  Picks marked with
                    # ``settlement_block: True`` have no authoritative
