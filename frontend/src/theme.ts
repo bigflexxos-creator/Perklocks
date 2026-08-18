@@ -25,23 +25,27 @@ export const COLORS = {
   surfaceInset: "rgba(255,255,255,0.06)",
 
   // ── Text ─────────────────────────────────────────────────────────
-  //  Primary near-white with slight cool tint = crisp on OLED.
+  //  Gold Impact visibility correction (2026-06):
+  //  Bumped secondary + muted brighter so filter labels, sport chips,
+  //  timer strings, and inactive tab items are readable on the deeper
+  //  #070B14 background.  Primary stays crisp near-white.
   textPrimary: "#F5F6F8",
-  textSecondary: "#B3BAC7",
-  textMuted: "#7F8999",
+  textSecondary: "#CDD3DF",   // was #B3BAC7 — chips/labels readable
+  textMuted: "#A0AAB9",       // was #7F8999 — inactive nav/counts legible
   textDim: "#6B7186",
 
   // ── Brand accents ────────────────────────────────────────────────
   //  Volt blue and neon green nudged toward luminous premium tones;
-  //  Gold Impact: bold metallic yellow (core / bright / dark).
+  //  Gold Impact: brighter luminous core so LOCK numbers/premium
+  //  labels read as GOLD, not brown.
   voltBlue: "#4C9BFF",
   electricBlaze: "#FF5F5C",
   neonGreen: "#4DE68A",
-  // Perklocks gold identity — bold metallic tones (Gold Impact).
-  goldElite: "#F5C542",    // core gold (was #FFDD5C)
-  goldRich:  "#FFD95A",    // bright metallic gold (was #FFC736)
-  goldDeep:  "#B98A17",    // deep metallic base (was #D69100)
-  goldGloss: "rgba(245,197,66,0.24)",
+  // Perklocks gold identity — luminous metallic tones (Gold Impact).
+  goldElite: "#FFD95A",    // core LUMINOUS gold (was #F5C542 — reads brown)
+  goldRich:  "#FFE785",    // bright metallic gold (was #FFD95A)
+  goldDeep:  "#B98A17",    // deep metallic base
+  goldGloss: "rgba(255,217,90,0.24)",
 
   // ── Borders ──────────────────────────────────────────────────────
   //  Stronger baseline so cards visibly separate from the deeper
@@ -49,7 +53,7 @@ export const COLORS = {
   borderDefault: "rgba(255,255,255,0.18)",
   borderStrong:  "rgba(255,255,255,0.28)",
   borderActive:  "rgba(255,255,255,0.42)",
-  borderGold:    "rgba(245,197,66,0.72)",
+  borderGold:    "rgba(255,217,90,0.75)",
 
   // ── State colors ─────────────────────────────────────────────────
   dangerBg: "#1B0708",
