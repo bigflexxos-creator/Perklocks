@@ -101,20 +101,29 @@ def is_canonical_publication_required() -> bool:
 def canonical_publication_filter() -> dict[str, Any]:
     """Return a Mongo filter fragment enforcing canonical publication.
 
-    A pick is board-eligible iff it carries a `publication_source`
-    value on the `picks` document.  This field is written **only** by
-    `services.prediction_publication_service.PredictionPublicationService`
-    during its dual-write step, so its presence is equivalent to
-    "a canonical publication row was created for this prediction".
+    Block 1E μ-closure — STRONG PUBLICATION PREDICATE.  Prior version
+    only required ``publication_source`` to exist, which allowed raw /
+    PENDING / FAILED / REJECTED lifecycle rows carrying a source label
+    to leak into actionable consumers.  Aligned with the strong
+    predicate now used by ``server._ensure_today_picks`` and
+    ``picks_routes.canonical_today``:
+
+      • ``publication_state == "PUBLISHED"``  — new canonical rows.
+      • Legacy bridge: no ``publication_state`` field AND a
+        ``publication_source`` present (pre-lifecycle rows).
 
     When the guard is disabled via env, returns an empty dict which
-    is a no-op inside a Mongo `$and` clause.
+    is a no-op inside a Mongo ``$and`` clause.
     """
     if not is_canonical_publication_required():
         return {}
-    # `publication_source` is a string when set (never null, never
-    # empty by contract), so "exists" is the tightest safe check.
-    return {"publication_source": {"$exists": True, "$ne": None}}
+    return {
+        "$or": [
+            {"publication_state": "PUBLISHED"},
+            {"publication_state": {"$exists": False},
+             "publication_source": {"$exists": True, "$ne": None}},
+        ],
+    }
 
 
 __all__ = [
