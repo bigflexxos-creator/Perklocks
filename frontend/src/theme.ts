@@ -11,15 +11,16 @@
  * (published_lock_score / grade / probability / edge) is not touched.
  */
 export const COLORS = {
-  // ── Layered dark surfaces ─────────────────────────────────────────
-  //  Boosted 2026-06 for real-device visibility: measurable luminance
-  //  separation between bg → surface → elevated → raised → gloss so
-  //  that on mobile OLED the card visibly lifts off the page.
-  bg: "#050710",
-  surface: "#141A2B",
-  surfaceElevated: "#1D2338",
-  surfaceRaised: "#242B44",
-  surfaceGloss: "rgba(255,255,255,0.085)",
+  // ── Layered dark surfaces (UI 3.0 environment lift) ──────────────
+  //  Boosted 2026-08 — user reported the app environment still felt
+  //  crushed/dull.  New palette: luminous deep-navy with a
+  //  perceptible electric-blue ambient tint so the app reads as
+  //  "dark luxury sports intelligence" rather than flat black.
+  bg: "#0B1226",              // luminous deep navy (was #050710)
+  surface: "#1A2340",         // richer elevated navy (was #141A2B)
+  surfaceElevated: "#242E4F",
+  surfaceRaised: "#2E3960",
+  surfaceGloss: "rgba(120,180,255,0.10)",   // subtle blue ambient
   surfaceInset: "rgba(255,255,255,0.06)",
 
   // Back-compat aliases (existing screens read these).

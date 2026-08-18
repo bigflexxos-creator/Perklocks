@@ -617,13 +617,59 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
               {Array.isArray((pick as any).why_this_pick) &&
                 ((pick as any).why_this_pick as string[]).length > 0 && (
                   <View style={styles.whyMatchupBullets}>
-                    {((pick as any).why_this_pick as string[])
-                      .slice(0, 8)
-                      .map((b, i) => (
+                    {(() => {
+                      // ── Block 4 μ-closure — WHY-THIS-PICK PRIORITY ──
+                      // Reorder + suppress bullets so market-specific
+                      // evidence surfaces first and generic filler
+                      // sinks to last:
+                      //   1) market-specific evidence
+                      //   2) H2H sample-supported
+                      //   3) matchup / recent-form / splits
+                      //   4) sport-specific rationale
+                      //   5) generic key_insights (LAST — suppressed
+                      //      entirely when richer bullets exist)
+                      const raw = ((pick as any).why_this_pick as string[]) || [];
+                      const isGenericFiller = (s: string): boolean => {
+                        const t = s.toLowerCase();
+                        return (
+                          /^\s*model\s+\d/i.test(t) ||
+                          t.startsWith("pick rationale (auto)") ||
+                          t.startsWith("strong model probability") ||
+                          /^\s*confidence[:\s]/i.test(t) ||
+                          /^\s*edge[:\s]/i.test(t) ||
+                          t === "playing at home" ||
+                          t === "home team" ||
+                          /^\s*win probability\s*\d/i.test(t)
+                        );
+                      };
+                      const isH2H = (s: string): boolean =>
+                        /\b(h2h|head[-\s]?to[-\s]?head|record vs|record against|meetings?|vs\.?\s+opp)\b/i.test(s);
+                      const isMatchup = (s: string): boolean =>
+                        /\b(l5|l10|last\s+\d|form|split|vs\.?\s+lhp|vs\.?\s+rhp|home\/away|xg|xg\/90|hard\s*hit|barrel|ip\/start|k\/9|whip|era)\b/i.test(s);
+                      const isMarketSpecific = (s: string): boolean =>
+                        /\b(over|under|line|projected|projection|expected outs|expected strikeouts|season average|career avg|median)\b/i.test(s);
+                      const priority = (s: string): number => {
+                        if (isGenericFiller(s)) return 4;   // last
+                        if (isMarketSpecific(s)) return 0;
+                        if (isH2H(s)) return 1;
+                        if (isMatchup(s)) return 2;
+                        return 3;                            // sport-specific / other
+                      };
+                      const scored = raw.map((s, i) => ({ s, i, p: priority(s) }));
+                      // Suppress generic filler entirely when there is
+                      // at least one richer bullet available.
+                      const hasRicher = scored.some(x => x.p < 4);
+                      const filtered = hasRicher
+                        ? scored.filter(x => x.p < 4)
+                        : scored;
+                      // Stable sort by priority then original index.
+                      filtered.sort((a, b) => a.p - b.p || a.i - b.i);
+                      return filtered.slice(0, 8).map((x, i) => (
                         <Text key={`why-${i}`} style={styles.whyMatchupBullet}>
-                          • {b}
+                          • {x.s}
                         </Text>
-                      ))}
+                      ));
+                    })()}
                   </View>
                 )}
 
