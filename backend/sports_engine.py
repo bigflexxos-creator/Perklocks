@@ -4827,8 +4827,33 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             if _o_median is not None and _u_median is not None:
                 _o_imp = _implied_prob(_o_median)
                 _u_imp = _implied_prob(_u_median)
+                # ── 2026-06 μ-closure MLB Prop Flow Repair — FIX 1 ──
+                # Balanced-book starvation: previously ANY symmetric
+                # pair with |over_imp − under_imp| < 5pp had `_winner
+                # = None` which set `_allowed_sides[_key] = set()`
+                # → BOTH sides eliminated before the model saw them.
+                # For non-K hitter/prop families the sportsbook's
+                # near-50/50 pricing must NOT be the sole disqualifier.
+                # The predictive engine gets to evaluate BOTH sides
+                # and downstream contradiction dedupe (line 6109+)
+                # picks the winning side by edge/lock — no fabricated
+                # winner, no lowered Board floor, no synthetic lines.
+                _KEEP_BOTH_ON_BALANCED_FAMILIES = {
+                    "batter_hits",
+                    "batter_total_bases",
+                    "batter_hits_runs_rbis",
+                    "pitcher_outs",
+                }
                 if abs(_o_imp - _u_imp) < 0.05:
-                    _winner, _reason = None, f"balanced({_o_imp:.3f}vs{_u_imp:.3f})"
+                    if _fam in _KEEP_BOTH_ON_BALANCED_FAMILIES:
+                        _winner, _reason = "both", (
+                            f"balanced_pass_through_to_model"
+                            f"({_o_imp:.3f}vs{_u_imp:.3f})"
+                        )
+                    else:
+                        _winner, _reason = None, (
+                            f"balanced({_o_imp:.3f}vs{_u_imp:.3f})"
+                        )
                 elif _o_imp > _u_imp:
                     _winner, _reason = "over", f"book_over({_o_imp:.3f}vs{_u_imp:.3f})"
                 else:
@@ -4837,7 +4862,11 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     "PAIR_DEDUP_STD: player=%s family=%s line=%s winner=%s (%s)",
                     _player_b, _fam, _point_b, _winner, _reason,
                 )
-        _allowed_sides[_key] = {_winner} if _winner else set()
+        # Convert winner sentinel → allowed set. "both" = allow O/U to model.
+        if _winner == "both":
+            _allowed_sides[_key] = {"over", "under"}
+        else:
+            _allowed_sides[_key] = {_winner} if _winner else set()
     # Filter bucket in place — keep only entries whose side is allowed.
     _filtered_bucket = {}
     _dropped = 0
@@ -5110,14 +5139,35 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         _atd_evidence_block: Optional[dict] = None
         if sport == "MLB" and is_pitcher_prop:
             from services.mlb_feature_engine import (
-                build_mlb_pitcher_k_factors, has_enough_real_data,
+                build_mlb_pitcher_k_factors,
+                build_mlb_pitcher_outs_factors,
+                has_enough_real_data,
             )
-            from services.mlb_gates import record_rejection as _mlb_reject
+            from services.mlb_gates import (
+                record_rejection as _mlb_reject,
+                record_funnel_step as _mlb_funnel,
+            )
+            # ── Funnel step: candidate_created ─────────────────
+            try: _mlb_funnel("candidate_created", market_key=mk)
+            except Exception: pass
             _game_ctx = (payload.get("_ctx") if isinstance(payload, dict) else None) or {}
-            real_factors, _sources = build_mlb_pitcher_k_factors(
-                _game_ctx, player=player, side=str(side),
-                line=point if isinstance(point, (int, float)) else None,
-            )
+            # ── 2026-06 μ-closure MLB Prop Flow Repair — FIX 4 ──
+            # Route Outs Recorded through workload/durability factor
+            # builder; keep K family on the K builder.
+            _is_outs_prop = mk in ("pitcher_outs", "pitcher_outs_alternate")
+            if _is_outs_prop:
+                real_factors, _sources = build_mlb_pitcher_outs_factors(
+                    _game_ctx, player=player, side=str(side),
+                    line=point if isinstance(point, (int, float)) else None,
+                )
+            else:
+                real_factors, _sources = build_mlb_pitcher_k_factors(
+                    _game_ctx, player=player, side=str(side),
+                    line=point if isinstance(point, (int, float)) else None,
+                )
+            # ── Funnel step: model_evaluated ─────────────────
+            try: _mlb_funnel("model_evaluated", market_key=mk)
+            except Exception: pass
             if not has_enough_real_data(real_factors, "k_prop"):
                 _skip_pick = True
                 _mlb_reject("missing_feature_data", market_key=mk)
@@ -5143,11 +5193,24 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                             _skip_pick = True
                             try:
                                 from services.mlb_gates import record_rejection as _mlb_reject
+                                # ── 2026-06 μ-closure MLB Prop Flow Repair — FIX 3 ──
+                                # Align K-math emit-false reasons with MLB
+                                # rejection telemetry keys so board-visibility
+                                # diagnostics distinguish acquisition / model /
+                                # edge / direction issues instead of collapsing
+                                # everything into "ev_gate".
                                 _reason_map = {
-                                    "book_odds_chalk_trap":  "implied_probability_gate",
-                                    "edge_too_low":          "edge_gate",
-                                    "model_prob_too_low":    "ev_gate",
-                                    "under_self_contradict": "correlation_conflict",
+                                    "no_pitcher_data":         "missing_feature_data",
+                                    "insufficient_signals":    "missing_feature_data",
+                                    "odds_too_chalky":         "implied_probability_gate",
+                                    "insufficient_edge":       "edge_gate",
+                                    "edge_too_low":            "edge_gate",
+                                    "model_win_prob_low":      "ev_gate",
+                                    "model_prob_too_low":      "ev_gate",
+                                    "under_self_contradict":   "correlation_conflict",
+                                    "under_but_expected_over": "correlation_conflict",
+                                    "over_but_expected_under": "correlation_conflict",
+                                    "book_odds_chalk_trap":    "implied_probability_gate",
                                 }
                                 _mlb_reject(_reason_map.get(_k_eval.get("reason"), "ev_gate"),
                                              market_key=mk)
@@ -5228,7 +5291,11 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     should_publish            as _lu_should_publish,
                     data_quality_cap_for_status as _lu_cap,
                     record_rejection          as _mlb_reject,
+                    record_funnel_step        as _mlb_funnel,
                 )
+                # ── Funnel step: candidate_created (hitter) ──
+                try: _mlb_funnel("candidate_created", market_key=mk)
+                except Exception: pass
                 _lu_status = _classify_lu(
                     lineup_confirmed=_hb.get("lineup_confirmed"),
                     is_starter=_hb.get("is_starter"),

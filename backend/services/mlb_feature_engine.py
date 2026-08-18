@@ -229,6 +229,56 @@ def build_mlb_pitcher_k_factors(ctx: dict, player: str,
     return factors, sources
 
 
+def build_mlb_pitcher_outs_factors(
+    ctx: dict, player: str, side: str, line: Optional[float] = None,
+) -> tuple[dict, list[str]]:
+    """Build Pitcher Outs Recorded factors from REAL data.
+
+    2026-06 μ-closure MLB Prop Flow Repair — FIX 4:
+    Outs Recorded is a DURABILITY / start-depth market, NOT a K market.
+    Under this repair the sports_engine routes Outs candidates through
+    THIS builder (was previously ``build_mlb_pitcher_k_factors``), so
+    the model evaluates the outs question on workload evidence:
+
+      * Innings/start (pitch count / workload proxy)
+      * Recent workload form (L5)
+      * Park run-suppression → longer starts survive
+      * Opp K% (still relevant: whiffs finish innings faster than BIP)
+
+    ``factor_pitcher_recent_k`` is retained as a secondary — a pitcher
+    who strikes people out reaches the outs line more efficiently —
+    but the primary signals are workload-based.
+
+    Uses ONLY existing real factors; no new data source, no fabrication.
+    ``has_enough_real_data("outs_prop", …)`` treats this like ``k_prop``
+    for the MIN_FACTORS gate (3+ real signals).
+    """
+    factors: dict[str, Optional[float]] = {
+        "Pitch Count / Workload":       factor_pitch_count_workload(ctx, player, line),
+        "Recent Workload Form (L5)":    factor_recent_k_form(ctx, player),
+        "Park Run Environment":         factor_park_k(ctx),
+        "Opp K% vs same hand":          factor_opp_team_k_vs_hand(ctx, player, side),
+        "Pitcher K/9 (recent)":         factor_pitcher_recent_k(ctx, player),
+        # DFS projection when available — many DFS lines already include
+        # innings expectation which is directly relevant to outs.
+        "DFS K Projection vs Line":     factor_dfs_pitcher_k_projection(ctx, player, line, side),
+    }
+    sources: list[str] = []
+    if factors["Pitch Count / Workload"] is not None:
+        sources.append("statsapi_pitcher_ip_per_start")
+    if factors["Recent Workload Form (L5)"] is not None:
+        sources.append("statsapi_pitcher_l5")
+    if factors["Park Run Environment"] is not None:
+        sources.append("park_factors_table")
+    if factors["Opp K% vs same hand"] is not None:
+        sources.append("statsapi_team_k_split")
+    if factors["Pitcher K/9 (recent)"] is not None:
+        sources.append("statsapi_pitcher_season_k")
+    if factors["DFS K Projection vs Line"] is not None:
+        sources.append("dfs_projection_local")
+    return factors, sources
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # BATTER HIT / HR / TB PROP FACTORS
 # ═══════════════════════════════════════════════════════════════════════

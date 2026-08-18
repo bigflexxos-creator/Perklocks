@@ -45,11 +45,37 @@ class _CounterState:
     counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     counts_by_market: dict[str, dict[str, int]] = field(
         default_factory=lambda: defaultdict(lambda: defaultdict(int)))
+    # ── 2026-06 μ-closure — five-market funnel telemetry ─────────
+    # Per-family step counters: provider_received → candidate_created
+    # → model_evaluated → passed_model → published → board_visible.
+    # Reset()able and exposed via snapshot().
+    funnel_by_market: dict[str, dict[str, int]] = field(
+        default_factory=lambda: defaultdict(lambda: defaultdict(int)))
     since: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 _state = _CounterState()
 _lock = Lock()
+
+
+# ── Funnel step-counter API ─────────────────────────────────────────
+FUNNEL_STEPS: tuple[str, ...] = (
+    "provider_received",
+    "candidate_created",
+    "model_evaluated",
+    "passed_model",
+    "published",
+    "board_visible",
+)
+
+
+def record_funnel_step(step: str, *, market_key: str, amount: int = 1) -> None:
+    """Increment a step counter for ``market_key`` in the production
+    funnel.  Unknown steps are silently dropped."""
+    if step not in FUNNEL_STEPS or not market_key:
+        return
+    with _lock:
+        _state.funnel_by_market[market_key][step] += amount
 
 
 def record_rejection(reason: str, *,
@@ -72,6 +98,10 @@ def snapshot() -> dict:
             "since": _state.since,
             "totals": dict(_state.counts),
             "by_market": {mk: dict(v) for mk, v in _state.counts_by_market.items()},
+            "funnel_by_market": {
+                mk: dict(v) for mk, v in _state.funnel_by_market.items()
+            },
+            "funnel_steps": list(FUNNEL_STEPS),
             "reasons": list(REJECTION_REASONS),
         }
 
@@ -80,6 +110,7 @@ def reset() -> None:
     with _lock:
         _state.counts.clear()
         _state.counts_by_market.clear()
+        _state.funnel_by_market.clear()
         _state.since = datetime.now(timezone.utc).isoformat()
 
 
@@ -197,6 +228,8 @@ def build_bookmaker_metadata(
 __all__ = [
     "REJECTION_REASONS",
     "record_rejection",
+    "FUNNEL_STEPS",
+    "record_funnel_step",
     "snapshot",
     "reset",
     "LINEUP_STATES",
