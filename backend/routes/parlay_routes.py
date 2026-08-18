@@ -270,9 +270,22 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         synergy_map=synergy_map,
     )
 
-    # ─── HIGH-RISK / TODAY SAFETY NET: auto-expand window if empty ───
+    # ─── AUTO-EXPAND WINDOW SAFETY NET ────────────────────────────
+    # μ-closure LIVE (2026-06) — Parlay starvation recovery:
+    # Standard and Advanced (safer + EV) can also auto-expand the
+    # event-time window when the initial user-selected horizon yields
+    # no valid parlay.  This preserves their OWN eligibility rules
+    # (Lock floor, edge floor, EV filter, correlation controls,
+    # real-line requirements) — the ONLY thing that changes is the
+    # event_time upper bound.  High Risk keeps its existing behavior;
+    # Standard/Advanced were previously starved by short windows even
+    # when identical valid candidates existed slightly later in the
+    # slate.  Modes are not blended; each still lives under its own
+    # thresholds.
     auto_expanded_to: Optional[int] = None
-    expandable = is_high_risk or is_today_window
+    expandable = is_high_risk or is_today_window or (
+        (mode or "").lower() in ("standard", "advanced")
+    )
     if not top and expandable and window_hours < 168:
         ladder = (8, 12, 24, 72, 168) if is_today_window else (72, 168)
         for fallback_window in ladder:
@@ -282,6 +295,9 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
             fb_q = {**base_q}
             fb_q["event_time"] = {"$gte": window_floor_iso, "$lte": fb_cap}
             fb_pool = await db.picks.find(fb_q, {"_id": 0}).sort("lock_score", -1).limit(400).to_list(length=400)
+            # Preserve mode-specific eligibility on the expanded pool.
+            if is_advanced and advanced_sub_norm == "ev":
+                fb_pool = [p for p in fb_pool if float(p.get("edge_percent") or 0) > 0]
             if len(fb_pool) < 5:
                 continue
             fb_top = await asyncio.to_thread(
