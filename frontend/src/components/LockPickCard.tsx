@@ -1471,8 +1471,23 @@ const trackedCache = (() => {
 function HeroBadge({
   icon, value, label, sub, color,
 }: { icon: string; value: string; label: string; sub: string; color: string }) {
+  // Premium raised-panel look — brighter accent-tinted surface, stronger
+  // accent border, and a subtle inner top gloss for glass dimensionality.
   return (
-    <View style={[styles.heroBadge, { borderColor: color + "55", backgroundColor: color + "10" }]}>
+    <View
+      style={[
+        styles.heroBadge,
+        {
+          borderColor: color + "A0",           // 62% — visibly present
+          backgroundColor: color + "22",        // 13% — richer tint on OLED
+          shadowColor: color,
+          shadowOpacity: 0.22,
+          shadowRadius: 6,
+          shadowOffset: { width: 0, height: 3 },
+        },
+      ]}
+    >
+      <View pointerEvents="none" style={styles.heroBadgeGloss} />
       <Text style={styles.heroIcon}>{icon}</Text>
       <Text style={[styles.heroValue, { color }]} numberOfLines={1}>{value}</Text>
       <Text style={styles.heroLabel}>{label}</Text>
@@ -1580,17 +1595,18 @@ const styles = StyleSheet.create({
   },
   // ── Premium UI 2.0 surfaces ───────────────────────────────────────
   topGloss: {
-    // Subtle top-edge highlight — creates dimensional gloss.
+    // Brighter, taller top-edge highlight — creates a visible glass
+    // dimension on OLED without overpowering betting information.
     position: "absolute",
     top: 0, left: 0, right: 0,
-    height: 42,
+    height: 56,
     // Slight rounded top edge inherited from card.borderRadius.
     borderTopLeftRadius: RADIUS.xl,
     borderTopRightRadius: RADIUS.xl,
   },
   topGlossApex: {
-    // A slightly taller / warmer highlight only for APEX.
-    height: 60,
+    // A stronger warmer highlight only for APEX.
+    height: 78,
   },
   identitySlot: {
     position: "absolute",
@@ -2085,9 +2101,20 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 8,
     borderRadius: 12,
-    borderWidth: 1,
+    borderWidth: 1.25,
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
+    elevation: 3,
+  },
+  heroBadgeGloss: {
+    // Subtle inner top-highlight — glass panel dimensionality.
+    position: "absolute",
+    top: 0, left: 0, right: 0,
+    height: 18,
+    backgroundColor: "rgba(255,255,255,0.09)",
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
   },
   heroIcon: { fontSize: 14, marginBottom: 2 },
   heroValue: { fontSize: 22, fontWeight: "900", letterSpacing: -0.6, marginTop: 2 },
