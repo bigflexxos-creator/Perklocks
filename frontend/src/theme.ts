@@ -11,51 +11,45 @@
  * (published_lock_score / grade / probability / edge) is not touched.
  */
 export const COLORS = {
-  // ── Layered dark surfaces (UI 3.0 environment lift) ──────────────
-  //  2026-06 μ-closure — background visibility micro-lift.  User
-  //  screenshots showed the deep-navy environment reading slightly
-  //  too subdued.  Nudged the ambient tone ~12% more luminous
-  //  without changing surface / border / gold / typography so
-  //  cards still clearly separate from the environment.  Direction
-  //  preserved: deep navy premium — not bright blue, not washed out,
-  //  not neon.
-  bg: "#0F1832",              // luminous deep navy (was #0B1226 — +12% brighter)
-  surface: "#1A2340",         // richer elevated navy (unchanged)
-  surfaceElevated: "#242E4F",
-  surfaceRaised: "#2E3960",
-  surfaceGloss: "rgba(130,190,255,0.12)",   // slightly stronger blue ambient (was 120,180,255 @ 0.10)
+  // ── Layered dark surfaces (UI 3.0 — GOLD IMPACT micro-pass) ──────
+  //  2026-06 μ-pass "Gold Impact Option 1": deeper near-black navy so
+  //  the gold-on-dark contrast reads bold and premium instead of
+  //  washed.  Card surface, borders, text, and gold tokens all
+  //  brightened in lockstep.  All layout / component structure
+  //  untouched — only color values.
+  bg: "#070B14",              // deep near-black navy (was #0F1832)
+  surface: "#090E18",         // matching card surface (was #1A2340)
+  surfaceElevated: "#111828",
+  surfaceRaised: "#182034",
+  surfaceGloss: "rgba(255,221,92,0.10)",   // gold ambient glow (was blue)
   surfaceInset: "rgba(255,255,255,0.06)",
 
-  // Back-compat aliases (existing screens read these).
-  // Point at slightly warmer/richer navy versions.
-  //   → produces immediately-perceptible depth without touching call sites.
-
   // ── Text ─────────────────────────────────────────────────────────
-  //  Secondary/muted brightened for crisp readability on OLED.
-  textPrimary: "#FFFFFF",
-  textSecondary: "#D6D9E4",
-  textMuted: "#9CA1B5",
+  //  Primary near-white with slight cool tint = crisp on OLED.
+  textPrimary: "#F5F6F8",
+  textSecondary: "#B3BAC7",
+  textMuted: "#7F8999",
   textDim: "#6B7186",
 
   // ── Brand accents ────────────────────────────────────────────────
   //  Volt blue and neon green nudged toward luminous premium tones;
-  //  gold moved from muddy amber to bright metallic yellow.
-  voltBlue: "#4C9BFF",     // luminous premium blue (was #2F84FF)
+  //  Gold Impact: bold metallic yellow (core / bright / dark).
+  voltBlue: "#4C9BFF",
   electricBlaze: "#FF5F5C",
-  neonGreen: "#4DE68A",    // richer emerald (was #3DDC77)
-  // Perklocks gold identity — richer metallic tones.
-  goldElite: "#FFDD5C",    // brighter metallic gold (was #FFD24A)
-  goldRich:  "#FFC736",    // luminous rich gold (was #F5B417)
-  goldDeep:  "#D69100",    // deep metallic base (was #B87C00)
-  goldGloss: "rgba(255,221,92,0.22)",
+  neonGreen: "#4DE68A",
+  // Perklocks gold identity — bold metallic tones (Gold Impact).
+  goldElite: "#F5C542",    // core gold (was #FFDD5C)
+  goldRich:  "#FFD95A",    // bright metallic gold (was #FFC736)
+  goldDeep:  "#B98A17",    // deep metallic base (was #D69100)
+  goldGloss: "rgba(245,197,66,0.24)",
 
   // ── Borders ──────────────────────────────────────────────────────
-  //  Stronger baseline so cards visibly separate from the background
-  //  on mobile.
-  borderDefault: "rgba(255,255,255,0.14)",
-  borderStrong:  "rgba(255,255,255,0.22)",
-  borderActive:  "rgba(255,255,255,0.38)",
-  borderGold:    "rgba(255,221,92,0.70)",
+  //  Stronger baseline so cards visibly separate from the deeper
+  //  near-black background.
+  borderDefault: "rgba(255,255,255,0.18)",
+  borderStrong:  "rgba(255,255,255,0.28)",
+  borderActive:  "rgba(255,255,255,0.42)",
+  borderGold:    "rgba(245,197,66,0.72)",
 
   // ── State colors ─────────────────────────────────────────────────
   dangerBg: "#1B0708",
