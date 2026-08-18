@@ -718,9 +718,66 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
                   </View>
                 )}
 
-              {!!rationale!.summary && (
-                <Text style={styles.whySummary}>{rationale!.summary}</Text>
-              )}
+              {/* ── μ-closure: Summary suppression ────────────────────
+                  `rationale.summary` may only render when it carries
+                  genuinely useful sporting/matchup info OR when no
+                  richer evidence exists. Generic model / edge / win-
+                  probability restatements are suppressed here because
+                  those numbers already live in the LOCK / WIN / EDGE
+                  panel and would duplicate.  Quality > bullet count. */}
+              {(() => {
+                const summary = rationale!.summary;
+                if (!summary) return null;
+                const s = String(summary).toLowerCase();
+                // Generic-filler patterns: probability / model / edge /
+                // "playing at home" / "X% model win prob, +Ypp over book"
+                const isGenericSummary =
+                  /\bmodel\s+\d{1,3}\s*%/i.test(s) ||
+                  /\bmodel\s+win\s*prob/i.test(s) ||
+                  /\bwin\s*probability\s*\d/i.test(s) ||
+                  /\+\d+(?:\.\d+)?\s*pp\s+over\s+book/i.test(s) ||
+                  /\bconfidence\b/i.test(s) && /\d/.test(s) ||
+                  /^\s*edge[:\s]/i.test(s) ||
+                  s === "playing at home" ||
+                  s.includes("model win probability") ||
+                  /^\s*model\s+\d/i.test(s) ||
+                  /^total\s+runs\s*:/i.test(s) ||
+                  /^total\s+goals\s*:/i.test(s) ||
+                  /pick rationale \(auto\)/i.test(s);
+                // Richer evidence detection — mirrors the same heuristics
+                // used by the why_this_pick priority chain above plus
+                // matchup / splits / pitcher_quality / recent_form /
+                // multipliers / evidence / h2h presence.
+                const rawWhy = ((pick as any).why_this_pick as string[]) || [];
+                const richBulletCount = rawWhy.filter((b: string) => {
+                  const t = b.toLowerCase();
+                  const isFiller =
+                    /^\s*model\s+\d/i.test(t) ||
+                    t.startsWith("pick rationale (auto)") ||
+                    t.startsWith("strong model probability") ||
+                    /^\s*confidence[:\s]/i.test(t) ||
+                    /^\s*edge[:\s]/i.test(t) ||
+                    t === "playing at home" ||
+                    t === "home team" ||
+                    /^\s*win probability\s*\d/i.test(t);
+                  return !isFiller;
+                }).length;
+                const hasRicher =
+                  richBulletCount > 0 ||
+                  !!rationale!.matchup?.pitcher ||
+                  !!rationale!.matchup?.ballpark ||
+                  !!rationale!.splits ||
+                  !!rationale!.pitcher_quality ||
+                  !!rationale!.recent_form ||
+                  !!rationale!.multipliers ||
+                  (rationale!.evidence?.length ?? 0) > 0 ||
+                  !!(pick as any).h2h_summary ||
+                  !!(pick as any).h2h_compact;
+                // Render only when: (a) not generic OR (b) generic but
+                // it's the ONLY honest rationale we have.
+                if (isGenericSummary && hasRicher) return null;
+                return <Text style={styles.whySummary}>{String(summary)}</Text>;
+              })()}
 
               {rationale!.matchup && (rationale!.matchup.pitcher ||
                 rationale!.matchup.ballpark) && (
