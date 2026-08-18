@@ -319,7 +319,20 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
                    # grading path and are excluded from the queue so
                    # they cannot occupy head batches → guarantees
                    # forward progress across bounded runs.
-                   "settlement_block": {"$ne": True}}
+                   "settlement_block": {"$ne": True},
+                   # ── 1C μ-closure — RETRY_AFTER FORWARD PROGRESS ──
+                   # Rows that already failed authoritative settlement
+                   # carry ``next_settlement_attempt_at`` set in the
+                   # future.  Skip them until that timestamp arrives so
+                   # they cannot repeatedly occupy the head cohort and
+                   # block newer due picks.  Rows without the field
+                   # (never attempted) match via $exists=False branch.
+                   "$or": [
+                       {"next_settlement_attempt_at": {"$exists": False}},
+                       {"next_settlement_attempt_at": {
+                           "$lte": datetime.now(timezone.utc).isoformat()
+                       }},
+                   ]}
     if sport_filter:
         query["sport"] = {"$in": list(sport_filter)}
     # ── Phase A (2026-06): Starvation Fix ─────────────────────────
@@ -672,6 +685,26 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
                     _reason = f"svc_refusal:{_svc_status or 'unknown'}"
                     counts["terminal_reasons"][_reason] = (
                         counts["terminal_reasons"].get(_reason, 0) + 1)
+                    # ── 1C μ-closure — RETRY_AFTER BACKOFF ─────────
+                    # Stamp bounded exponential backoff so this row
+                    # cannot repeatedly occupy the head cohort.
+                    try:
+                        from datetime import timedelta
+                        _attempts = int(pick.get("settle_attempts") or 0) + 1
+                        _delay_min = min(1440,
+                            5 * (3 ** max(0, _attempts - 1)))  # 5→15→45→135→405→1215→1440
+                        _next = (datetime.now(timezone.utc)
+                                 + timedelta(minutes=_delay_min)).isoformat()
+                        await db.picks.update_one(
+                            {"id": pick.get("id")},
+                            {"$set": {
+                                "next_settlement_attempt_at": _next,
+                                "settle_attempts": _attempts,
+                                "last_settle_failure_reason": _reason,
+                            }},
+                        )
+                    except Exception:
+                        pass
             except Exception as _s_err:
                 counts["fail"] += 1
                 counts["terminal_reasons"]["svc_exception"] = (
@@ -679,6 +712,24 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
                 logger.warning(
                     "settlement_service.record failed for %s: %s",
                     pick.get("id"), _s_err)
+                # Same retry_after backoff on exception paths.
+                try:
+                    from datetime import timedelta
+                    _attempts = int(pick.get("settle_attempts") or 0) + 1
+                    _delay_min = min(1440,
+                        5 * (3 ** max(0, _attempts - 1)))
+                    _next = (datetime.now(timezone.utc)
+                             + timedelta(minutes=_delay_min)).isoformat()
+                    await db.picks.update_one(
+                        {"id": pick.get("id")},
+                        {"$set": {
+                            "next_settlement_attempt_at": _next,
+                            "settle_attempts": _attempts,
+                            "last_settle_failure_reason": "svc_exception",
+                        }},
+                    )
+                except Exception:
+                    pass
             # ── Propagate to user_bets (2026-07-21) ─────────────────
             # If any user has tracked this pick via /user/bets/track,
             # their personal bet gets settled with the same outcome.
