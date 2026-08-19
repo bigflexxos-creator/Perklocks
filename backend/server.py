@@ -4076,12 +4076,34 @@ async def on_startup():
     # ``odds_source='real_book_line'`` + ``odds_provider='sportsgameodds'``
     # so downstream normalization / model / publication / settlement
     # treat the rows exactly like any other real-line source.
+    #
+    # ── PROVIDER SWITCH (env-only, no code edit) ─────────────────
+    # ``PRIMARY_ODDS_PROVIDER=sportsgameodds``  (default during trial) → SGO loop runs.
+    # ``PRIMARY_ODDS_PROVIDER=the_odds_api`` / ``odds_api``            → SGO loop skips.
+    # The Odds API path stays unconditional (its own breaker / cache
+    # governs it), so setting the switch to ``the_odds_api`` simply
+    # turns SGO off and leaves the legacy provider as sole source.
     try:
         from services.sportsgameodds_adapter import (
             ingest_all_configured as _sgo_ingest_all,
         )
 
+        _sgo_primary = (
+            os.environ.get("PRIMARY_ODDS_PROVIDER")
+            or "sportsgameodds"
+        ).strip().lower()
+
         async def _sgo_loop(db):
+            # Config-only switch — re-checked on every restart. When
+            # not primary, the loop no-ops so The Odds API is the
+            # sole real-line source.
+            if _sgo_primary != "sportsgameodds":
+                logger.info(
+                    "SportsGameOdds loop disabled by config "
+                    "(PRIMARY_ODDS_PROVIDER=%s)",
+                    _sgo_primary,
+                )
+                return
             await asyncio.sleep(30)   # startup grace
             while True:
                 try:
@@ -4100,7 +4122,9 @@ async def on_startup():
 
         _deferred_task(lambda: _sgo_loop(db),                DEFER_BASE * 3)
         logger.info(
-            "SportsGameOdds PRIMARY provider armed (15-min loop, 6-day trial)"
+            "SportsGameOdds PRIMARY provider armed "
+            "(PRIMARY_ODDS_PROVIDER=%s, 15-min loop, 6-day trial)",
+            _sgo_primary,
         )
     except Exception as e:
         logger.warning("SportsGameOdds primary provider not armed: %s", e)
