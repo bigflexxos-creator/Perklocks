@@ -250,7 +250,45 @@ async def score_pending_sgo_rows(db, *, limit: int = 500) -> dict:
     counts = {"scanned": 0, "scored": 0,
               "by_sport": {"MLB": 0, "Soccer": 0, "Tennis": 0},
               "skipped": 0, "errors": 0,
+              "published": 0, "publish_errors": 0,
               "tennis_context_unavailable": 0}
+
+    # ── PERKLOCKS DOWNSTREAM PUBLICATION WIRING (2026-06) ────────────
+    # After the SGO row receives its real sport-model score, it MUST
+    # traverse the SAME canonical publication chokepoint every other
+    # producer uses (``services.publication_helpers.publish_upserted_picks``).
+    # That helper is what stamps ``publication_state='PUBLISHED'`` and
+    # writes an immutable ``prediction_snapshots`` row so the
+    # ``canonical_publication_filter`` on ``/picks/today`` accepts the
+    # row.  Without this call the row is scored on ``db.picks`` but
+    # invisible to the board.  The helper is idempotent and skips
+    # off-board rows internally so legitimate integrity gates are
+    # preserved.
+    async def _publish_scored(sgo_row: dict, update_fields: dict) -> None:
+        try:
+            # Skip publication for rows that legitimately stayed
+            # off-board after scoring — matches ``_upsert_pick``'s own
+            # guard in real_line_scorer_ingest.py L766.
+            resolved_off_board = update_fields.get(
+                "off_board", sgo_row.get("off_board"))
+            if resolved_off_board is True:
+                return
+            merged = {**sgo_row, **update_fields}
+            merged["publication_source"] = merged.get(
+                "publication_source") or "sportsgameodds_v2"
+            from services.publication_helpers import (
+                publish_upserted_picks as _pub,
+            )
+            await _pub(
+                db, [merged],
+                publication_source=merged["publication_source"],
+                caller_label="sgo_scorer_bridge",
+            )
+            counts["published"] += 1
+        except Exception as _pub_err:
+            counts["publish_errors"] += 1
+            logger.debug("sgo publish failed for %s: %s",
+                          sgo_row.get("id"), _pub_err)
     try:
         cursor = db.picks.find(q).limit(limit)
         async for sgo in cursor:
@@ -297,6 +335,7 @@ async def score_pending_sgo_rows(db, *, limit: int = 500) -> dict:
                     )
                     counts["scored"] += 1
                     counts["by_sport"]["Tennis"] += 1
+                    await _publish_scored(sgo, update)
                 except Exception as _e:
                     counts["errors"] += 1
                     logger.debug("sgo tennis upsert %s failed: %s",
@@ -378,10 +417,36 @@ async def score_pending_sgo_rows(db, *, limit: int = 500) -> dict:
                 counts["scored"] += 1
                 if sport in counts["by_sport"]:
                     counts["by_sport"][sport] += 1
+                await _publish_scored(sgo, update)
             except Exception as _e:
                 counts["errors"] += 1
                 logger.debug("sgo score upsert %s failed: %s",
                               sgo.get("id"), _e)
     except Exception as _e:
         logger.warning("sgo score pass failed: %s", _e)
+
+    # ── PERKLOCKS DOWNSTREAM BACKFILL (2026-06) ──────────────────────
+    # Publish already-scored SGO rows that still lack canonical
+    # publication (``publication_state='PUBLISHED'``).  This closes
+    # the gap for rows scored by a prior pipeline version that
+    # wrote ``lock_score`` but never routed through
+    # ``publish_upserted_picks``.  Off-board rows are skipped by
+    # ``_publish_scored`` so legitimate integrity gates
+    # (identity/roster/etc.) stay intact.
+    try:
+        backfill_q = {
+            "source": "sportsgameodds_v2",
+            "lock_score": {"$gte": 85},
+            "off_board": {"$ne": True},
+            "$or": [
+                {"publication_state": {"$exists": False}},
+                {"publication_state": {"$ne": "PUBLISHED"}},
+            ],
+        }
+        backfill_cursor = db.picks.find(backfill_q).limit(limit)
+        async for sgo_bf in backfill_cursor:
+            await _publish_scored(sgo_bf, {})
+    except Exception as _bf_err:
+        logger.warning("sgo publication backfill failed: %s", _bf_err)
+
     return counts
