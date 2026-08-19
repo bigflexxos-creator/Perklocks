@@ -96,6 +96,135 @@ def _sgo_row_to_ingest_shape(sgo: dict) -> Optional[dict]:
     }
 
 
+async def _score_tennis_sgo(db, sgo: dict, now_iso: str) -> Optional[dict]:
+    """Score a single SGO Tennis row by REUSING the existing production
+    Tennis scorer ``services.tennis_math_engine.score_tennis_matchup``.
+
+    Contract:
+      * No new Tennis math, Elo, edge, or Lock-Score formula is introduced.
+      * Moneyline / h2h rows are scored via ``score_tennis_matchup`` +
+        ``has_real_tennis_signal`` (identical gate to the production
+        Tennis pipeline in ``sports_engine._backfill_tennis_moneylines``).
+      * The Lock-Score ladder used here is byte-identical to that
+        production caller (see sports_engine.py ~L2816-2821).
+      * The Sackmann/h2h context is built via the same lookup helpers
+        (``services.tennis.fallback.get_player_stats/get_h2h``) that
+        the production caller uses. If context is missing / the
+        signal gate fails → return ``None`` so the caller records
+        ``tennis_context_unavailable`` (no fallback / self-heal).
+      * Non-moneyline markets (spread / total) have NO existing sport-
+        model scorer we can reuse without inventing new math, so we
+        return ``None`` for them here — they remain unscored SGO rows.
+    """
+    price = sgo.get("book_odds")
+    home = sgo.get("home_team")
+    away = sgo.get("away_team")
+    if not (isinstance(price, (int, float)) and home and away):
+        return None
+
+    mk = (sgo.get("market_key") or "").lower()
+    is_ml = ("moneyline" in mk) or (mk in ("h2h", "match winner"))
+    if not is_ml:
+        # No existing production Tennis scorer for spread/total that we
+        # can reuse without inventing new math — leave unscored.
+        return None
+
+    sel = (sgo.get("provider_selection") or sgo.get("selection") or "").strip()
+    picked, other = home, away
+    if sel:
+        low = sel.lower()
+        if home.lower() in low and away.lower() not in low:
+            picked, other = home, away
+        elif away.lower() in low and home.lower() not in low:
+            picked, other = away, home
+
+    # Implied probability of the picked side at the book price.
+    p_int = int(price)
+    picked_implied = 100.0 / (p_int + 100.0) if p_int > 0 else (-p_int) / (-p_int + 100.0)
+
+    # ── Build tennis ctx — mirrors production `_backfill_tennis_moneylines`
+    league = str(sgo.get("league") or sgo.get("sport_key") or "").lower()
+    ev_name = str(sgo.get("event_name") or f"{home} vs {away}").lower()
+    combo = f"{league} {ev_name}"
+    ctx: dict = {}
+    if any(t in combo for t in ("australian open", "french open", "wimbledon", "us open")):
+        ctx["match_tier"] = "slam"
+    elif any(t in combo for t in ("atp 1000", "wta 1000", "masters 1000")):
+        ctx["match_tier"] = "atp1000"
+    elif any(t in combo for t in ("atp 500", "wta 500")):
+        ctx["match_tier"] = "atp500"
+    elif any(t in combo for t in ("atp 250", "wta 250")):
+        ctx["match_tier"] = "atp250"
+    elif "challenger" in combo:
+        ctx["match_tier"] = "challenger"
+    elif any(t in combo for t in ("itf", "w15", "w25", "w40", "w60", "m15", "m25")):
+        ctx["match_tier"] = "itf"
+
+    if "wimbledon" in ev_name or "grass" in ev_name:
+        surface_key = "Grass"
+    elif any(x in ev_name for x in ("french", "clay", "roland", "monte carlo", "madrid", "rome", "barcelona")):
+        surface_key = "Clay"
+    else:
+        surface_key = "Hard"
+    surface_l = surface_key.lower()
+
+    # Same Sackmann/h2h lookups the production caller uses (silent no-op)
+    try:
+        from services.tennis.fallback import get_player_stats, get_h2h
+        sa = await get_player_stats(db, picked, surface_key)
+        sb = await get_player_stats(db, other, surface_key)
+        if sa:
+            ctx["sackmann_a"] = sa
+        if sb:
+            ctx["sackmann_b"] = sb
+        h = await get_h2h(db, picked, other)
+        if h and h.get("matches", 0) >= 1:
+            ctx["h2h_a_wins"] = h.get("a_wins", 0)
+            ctx["h2h_b_wins"] = h.get("b_wins", 0)
+    except Exception as _lookup_err:
+        logger.debug("sgo tennis ctx lookup failed for %s vs %s: %s",
+                      picked, other, _lookup_err)
+
+    # ── Score via the EXISTING production Tennis scorer ─────────────
+    try:
+        from services.tennis_math_engine import (
+            score_tennis_matchup, has_real_tennis_signal,
+        )
+    except Exception as _imp_err:
+        logger.debug("sgo tennis math engine import failed: %s", _imp_err)
+        return None
+
+    signal = score_tennis_matchup(picked, other, surface_l, picked_implied, ctx)
+    if not (signal and has_real_tennis_signal(signal)):
+        return None
+
+    model_wp = float(signal["home_win_prob"])
+    # win_prob / edge_pct — identical to production caller
+    win_prob = round(min(0.95, max(0.15, model_wp)) * 100, 1)
+    edge_pct = round((win_prob / 100.0 - picked_implied) * 100.0, 2)
+    # Lock-Score ladder — byte-identical to
+    # sports_engine._backfill_tennis_moneylines (~L2816-2821)
+    if model_wp >= 0.85:   lock_score = 96.0
+    elif model_wp >= 0.75: lock_score = 92.0
+    elif model_wp >= 0.65: lock_score = 88.0
+    elif model_wp >= 0.55: lock_score = 82.0
+    elif model_wp >= 0.50: lock_score = 76.0
+    else:                  lock_score = 70.0
+
+    return {
+        "model_probability": round(model_wp, 4),
+        "model_win_prob":    round(model_wp, 4),
+        "win_probability":   win_prob,
+        "edge_percent":      edge_pct,
+        "implied_probability": round(picked_implied, 4),
+        "lock_score":        lock_score,
+        "published_lock_score": lock_score,
+        "model_source":      "tennis_math_engine.score_tennis_matchup",
+        "data_driven_used":  True,
+        "data_driven_contribs": dict(signal.get("contributions") or {}),
+    }
+
+
 async def score_pending_sgo_rows(db, *, limit: int = 500) -> dict:
     """Score every current SGO row that has no ``lock_score`` yet.
 
@@ -138,13 +267,30 @@ async def score_pending_sgo_rows(db, *, limit: int = 500) -> dict:
             # no fallback / self-heal.
             if sport == "Tennis" \
                     and sgo.get("market_family") == "game_market":
-                res = await _score_tennis_sgo(sgo, now_iso)
+                res = await _score_tennis_sgo(db, sgo, now_iso)
                 if res is None:
                     counts["tennis_context_unavailable"] += 1
                     continue
                 update = res
                 update["updated_at"] = now_iso
                 update["scored_by"]  = "sport_model"
+                # ── Stale scoring-reason recompute (Tennis) ─────────────
+                # Same rule as the general branch below: only strip
+                # provably stale scoring reasons when the real Tennis
+                # model has produced a valid probability. Do NOT clear
+                # legitimate protections.
+                model_prob_out = update.get("model_probability") or 0
+                lock_out       = update.get("lock_score") or 0
+                if isinstance(model_prob_out, (int, float)) and model_prob_out > 0:
+                    orig_reasons = list(sgo.get("off_board_reasons") or [])
+                    new_reasons = [
+                        r for r in orig_reasons
+                        if r not in ("NO_MODEL_PROBABILITY", "lock<85", "grade='Pass'")
+                    ]
+                    if len(new_reasons) != len(orig_reasons):
+                        update["off_board_reasons"] = new_reasons
+                        if not new_reasons and lock_out >= 85:
+                            update["off_board"] = False
                 try:
                     await db.picks.update_one(
                         {"id": sgo.get("id")}, {"$set": update},
