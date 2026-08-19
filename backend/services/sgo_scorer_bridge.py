@@ -158,6 +158,41 @@ async def score_pending_sgo_rows(db, *, limit: int = 500) -> dict:
             # Retain the SGO writer marker + provider tag.
             update["updated_at"] = now_iso
             update["scored_by"]  = "sport_model"   # NOT self-heal
+
+            # ── PERKLOCKS UNIVERSAL WIRING (2026-06) ─────────────────
+            # Post-scoring stale-reason recomputation.  When the real
+            # sport model has produced a valid ``model_probability``
+            # (and therefore a valid ``lock_score``), the row must NOT
+            # keep contradictory scoring-rejection reasons on its
+            # ``off_board_reasons`` list.  We ONLY strip the two
+            # scoring-dependent reasons here; every other legitimate
+            # protection (synthetic, no_real_book_line, identity
+            # failures, chalk_trap, longshot_trap, validation_block,
+            # no_bet, provider_unavailable, TEAM_CONTEXT_UNAVAILABLE)
+            # is preserved untouched.
+            #
+            # If nothing remains after stripping, ``off_board`` is
+            # cleared so the canonical publisher can evaluate the row.
+            # The 85+ floor and every other visibility gate downstream
+            # remain the sole authority.
+            model_prob_out = doc.get("model_probability") \
+                or doc.get("model_win_prob")
+            if isinstance(model_prob_out, (int, float)) and model_prob_out > 0:
+                new_reasons = [
+                    r for r in (doc.get("off_board_reasons") or [])
+                    if r not in ("NO_MODEL_PROBABILITY", "lock<85")
+                ]
+                # Only rewrite off_board_reasons when we actually
+                # stripped a stale scoring reason.
+                orig = doc.get("off_board_reasons") or []
+                if len(new_reasons) != len(orig):
+                    update["off_board_reasons"] = new_reasons
+                    # Clear off_board only when NO reasons remain AND
+                    # canonical lock qualifies (>=85).  Otherwise leave
+                    # the flag intact so downstream board rules run.
+                    lock_out = doc.get("lock_score") or 0
+                    if not new_reasons and lock_out >= 85:
+                        update["off_board"] = False
             try:
                 await db.picks.update_one(
                     {"id": sgo.get("id")},
