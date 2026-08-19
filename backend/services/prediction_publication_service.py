@@ -568,18 +568,15 @@ class PredictionPublicationService:
                 _c["convergence_spread_pp"] = _conv["spread_pp"]
                 _c["convergence_confidence_multiplier"] = _conv[
                     "confidence_multiplier"]
-                # Apply lock_score attenuation formula (same as helper).
-                _orig_lock = _c.get("lock_score")
-                if isinstance(_orig_lock, (int, float)):
-                    _orig_f = float(_orig_lock)
-                    _mult = float(_conv["confidence_multiplier"])
-                    _excess = max(0.0, _orig_f - 70.0)
-                    _adj = 70.0 + _excess * _mult
-                    if _adj < _orig_f:
-                        _c["lock_score"] = round(_adj, 2)
-                        _c["lock_score_pre_convergence"] = round(_orig_f, 2)
-                        _c["convergence_lock_score_delta"] = round(
-                            _orig_f - _adj, 2)
+                # ── PERKLOCKS FIX 1 (2026-06) ─────────────────────────
+                # Canonical `lock_score` is STRICTLY authoritative and
+                # is NEVER mutated at the publication boundary. The
+                # convergence label + multiplier are recorded as
+                # evidence-only signals; downstream Brain / Rollover
+                # / Parlay flows treat them as advisory context, not a
+                # score override. Any prior `70 + (lock_score - 70) *
+                # confidence_multiplier` attenuation formula has been
+                # removed. See Universal Flow Final Closure spec.
         except Exception as _brain_err:                # pragma: no cover
             logger.debug("publish_batch brain attenuation skipped: %s",
                          _brain_err)

@@ -112,8 +112,17 @@ def extract_model_evidence(pick: dict) -> dict:
     # Missing → out.get('model_probability') is absent (stays UNKNOWN).
 
     # ── simulator_probability ───────────────────────────────────
-    for f in ("simulator_probability", "sim_probability",
-                "monte_carlo_probability"):
+    # PERKLOCKS FIX 4 (2026-06): `sim_win_probability` is the canonical
+    # field written by the sport-specific Monte Carlo simulators
+    # (sim_mlb / sim_nba / sim_tennis / sim_soccer / etc.). It was
+    # previously not routed through `_normalise_prob`, meaning raw
+    # 0-100 percent values (e.g. 91) were persisted as `9100%` when
+    # downstream consumers assumed [0, 1]. Adding it to the priority
+    # list here routes every sim probability through `_to_unit`
+    # normalisation, guaranteeing all Brain / classification math
+    # sees probabilities in [0, 1].
+    for f in ("simulator_probability", "sim_win_probability",
+                "sim_probability", "monte_carlo_probability"):
         v = _normalise_prob(pick.get(f))
         if v is not None:
             out["simulator_probability"] = v
@@ -157,8 +166,8 @@ def _classify_kind(src_field: str, pick: dict) -> str:
                       (pick.get("calibration_version") not in
                        (None, "", "legacy_unknown"))
         return "calibrated" if cal_marker else "model"
-    if src_field in ("simulator_probability", "sim_probability",
-                      "monte_carlo_probability"):
+    if src_field in ("simulator_probability", "sim_win_probability",
+                      "sim_probability", "monte_carlo_probability"):
         return "simulator"
     return "unknown"
 
