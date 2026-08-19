@@ -2253,6 +2253,33 @@ async def root():
     return {"ok": True, "service": "PerkLocks AI", "date": _today_str()}
 
 
+# ── SportsGameOdds admin/health endpoints (6-day primary trial) ────
+# Isolated from The Odds API circuit breaker — SGO status is reported
+# independently so /admin/provider-health can distinguish the two.
+
+@api.get("/admin/sgo/health")
+async def sgo_health():
+    """Authenticated SGO probe. Never returns the API key."""
+    try:
+        from services.sportsgameodds_adapter import health_ping
+        ok = await health_ping()
+        return {"ok": bool(ok), "provider": "sportsgameodds"}
+    except Exception as e:
+        return {"ok": False, "provider": "sportsgameodds",
+                "error": str(e)[:200]}
+
+
+@api.post("/admin/sgo/ingest")
+async def sgo_ingest_now(only_pregame: bool = True):
+    """On-demand SGO ingestion trigger — same code path as the loop."""
+    try:
+        from services.sportsgameodds_adapter import ingest_all_configured
+        totals = await ingest_all_configured(db, only_pregame=only_pregame)
+        return {"ok": True, "totals": totals}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:400]}
+
+
 # ────────────────────── Historical Sports Intelligence Engine ──────────────────────
 # Admin endpoints for Historical Engine (backfill / status / player-form
 # lookup) now live in `routes/admin_routes.py`. The Lock Engine itself
@@ -4041,6 +4068,42 @@ async def on_startup():
         logger.info("Soccer pipeline scheduler armed (15-min pregame loop + 24h backfill loop)")
     except Exception as e:
         logger.warning("Soccer pipeline scheduler not armed: %s", e)
+    # ── SportsGameOdds PRIMARY provider (6-day trial, 2026-06) ──────
+    # SGO feeds the EXISTING canonical pipeline as PRIMARY while
+    # The Odds API remains OUT_OF_USAGE_CREDITS. Independent of the
+    # Odds API circuit breaker — a 401 on the fallback must NOT
+    # disable this loop. Writes into ``db.picks`` with
+    # ``odds_source='real_book_line'`` + ``odds_provider='sportsgameodds'``
+    # so downstream normalization / model / publication / settlement
+    # treat the rows exactly like any other real-line source.
+    try:
+        from services.sportsgameodds_adapter import (
+            ingest_all_configured as _sgo_ingest_all,
+        )
+
+        async def _sgo_loop(db):
+            await asyncio.sleep(30)   # startup grace
+            while True:
+                try:
+                    totals = await _sgo_ingest_all(db, only_pregame=True)
+                    logger.info(
+                        "sportsgameodds cycle complete: events=%s picks_seen=%s upserted=%s",
+                        totals.get("events"),
+                        totals.get("picks_seen"),
+                        totals.get("picks_upserted"),
+                    )
+                except Exception as _e:
+                    logger.warning("sportsgameodds loop error: %s", _e)
+                # 15-min cadence — matches soccer_pipeline_loop; respects
+                # SGO rate limits without hammering the trial account.
+                await asyncio.sleep(900)
+
+        _deferred_task(lambda: _sgo_loop(db),                DEFER_BASE * 3)
+        logger.info(
+            "SportsGameOdds PRIMARY provider armed (15-min loop, 6-day trial)"
+        )
+    except Exception as e:
+        logger.warning("SportsGameOdds primary provider not armed: %s", e)
     # ── UEFA ESPN fallback ingest (Champions/Europa/Conference) ─────
     # Our primary sources (The Odds API + football-data.org) don't carry
     # UEFA qualification rounds until close to kickoff. ESPN's public
