@@ -1330,51 +1330,67 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     _primary_lock_predicate = main_board_lock_score_query(
         min_lock=floor if floor > MAIN_BOARD_LOCK_FLOOR_EXCLUSIVE else None,
     )
+
+    # ── PERKLOCKS CANONICAL 85+ LOCKS REACHABILITY CLOSURE (2026-06) ────
+    # Local helper: canonical Lock Score predicate at an arbitrary floor
+    # for the sport-specific carve-outs below (elite / model-only /
+    # tennis / MLB K / MLB hitter / soccer scorer / high-lock bypass).
+    #
+    # Contract:
+    #   1. Prefer canonical ``published_lock_score`` when present.
+    #   2. Fall back to legacy ``lock_score`` / ``lock_score_v2`` only
+    #      when the canonical field is absent on the doc.
+    #
+    # This closes the "stale legacy score overrides canonical" loophole:
+    # a canonically-published 85+ pick can no longer be blocked by a
+    # lingering low ``lock_score`` on the row, and a canonically-
+    # de-locked pick can no longer sneak back onto the board via a
+    # stale high ``lock_score_v2``.
+    def _canonical_lock_or(floor_: float) -> dict:
+        return {"$or": [
+            {"published_lock_score": {"$gte": float(floor_)}},
+            {
+                "$and": [
+                    {"published_lock_score": {"$exists": False}},
+                    {"$or": [
+                        {"lock_score":    {"$gte": float(floor_)}},
+                        {"lock_score_v2": {"$gte": float(floor_)}},
+                    ]},
+                ]
+            },
+        ]}
     standard_q = {
         "no_bet": {"$ne": True},
-        # NOTE: Two $or clauses combined via $and (Python dict can't hold
-        # two "$or" keys — the second overwrites the first).
-        "$and": [
-            {"$or": [
-                # Canonical Locks predicate (published_lock_score first).
-                _primary_lock_predicate,
-                # ── Chalk Trap picks (2026-07-21) ─────────────────────
-                # User: "I still want the 200 picks for options" —
-                # chalk-trapped picks have lock=72 (below floor) BUT must
-                # stay visible so the ⚠️ TRAP warning surfaces. Match on
-                # `chalk_trap_meta.original_lock` (the pre-demotion score)
-                # so a pick that was Elite/Strong Lock before the trap
-                # still passes floor.
-                {"chalk_trap": True, "chalk_trap_meta.original_lock": {"$gte": floor}},
-                {"chalk_verified": True},
-                # ── ESPN fallback bypass (iter-97, 2026-07-26) ────────
-                # Lower-tier soccer leagues (CSL, Sweden, Norway, Finland)
-                # are covered by `espn_soccer_fixtures` while The Odds
-                # API is 401ing. ESPN scoreboards have thin odds data so
-                # these picks land at lock 50-75 (below the default 85
-                # floor). Bypass the floor for `source=espn_fallback` so
-                # these leagues remain visible; the pick payload carries
-                # `odds_source=espn_fallback` + `confidence_penalty=-8`
-                # so the frontend can flag it as a soft/fallback pick.
-                {"source": "espn_fallback"},
-            ]},
-            # ── Edge filter (relaxed 2026-07-21) ─────────────────────
-            # OLD: `edge_percent >= 0` was killing 82% of MLB picks
-            # (115 of 141) because heavy-juiced favorites routinely
-            # price -6 to -12pp below book implied. User mandate:
-            # "I still want the 200 picks for options because me or
-            # users don't bet every pick — just the app grading all
-            # picks". NEW: `edge_percent >= -8` still hides truly bad
-            # picks (model says book is 8pp+ sharper) but keeps the
-            # informational slate visible. Chalk-trap/verified picks
-            # always pass regardless of edge.
-            {"$or": [
-                {"edge_percent": {"$gte": -8}},
-                {"edge_percent": {"$exists": False}},
-                {"edge_percent": None},
-                {"chalk_verified": True},
-                {"chalk_trap": True},
-            ]},
+        # PERKLOCKS Canonical 85+ Reachability (2026-06): the main board
+        # is gated by CANONICAL LOCK SCORE only.  Sportsbook edge is
+        # kept as a display/analytics signal but MUST NOT gate board
+        # visibility — the prior ``edge_percent >= -8`` clause was
+        # suppressing canonically-locked 85+ picks whenever heavy-juice
+        # favorites priced below implied.  Chalk-trap / chalk-verified
+        # / ESPN-fallback bypasses stay in the score OR so those
+        # explicit product carve-outs still surface.
+        "$or": [
+            # Canonical Locks predicate (published_lock_score first).
+            _primary_lock_predicate,
+            # ── Chalk Trap picks (2026-07-21) ─────────────────────
+            # User: "I still want the 200 picks for options" —
+            # chalk-trapped picks have lock=72 (below floor) BUT must
+            # stay visible so the ⚠️ TRAP warning surfaces. Match on
+            # `chalk_trap_meta.original_lock` (the pre-demotion score)
+            # so a pick that was Elite/Strong Lock before the trap
+            # still passes floor.
+            {"chalk_trap": True, "chalk_trap_meta.original_lock": {"$gte": floor}},
+            {"chalk_verified": True},
+            # ── ESPN fallback bypass (iter-97, 2026-07-26) ────────
+            # Lower-tier soccer leagues (CSL, Sweden, Norway, Finland)
+            # are covered by `espn_soccer_fixtures` while The Odds
+            # API is 401ing. ESPN scoreboards have thin odds data so
+            # these picks land at lock 50-75 (below the default 85
+            # floor). Bypass the floor for `source=espn_fallback` so
+            # these leagues remain visible; the pick payload carries
+            # `odds_source=espn_fallback` + `confidence_penalty=-8`
+            # so the frontend can flag it as a soft/fallback pick.
+            {"source": "espn_fallback"},
         ],
         # ── ITF Tennis carve-out (2026-07-16) ────────────────────────
         # ITF Futures picks (source=tennis_extra, league contains
@@ -1404,10 +1420,8 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     elite_q = {
         "elite_player": True,
         "no_bet": {"$ne": True},
-        "$or": [
-            {"lock_score": {"$gte": 80.0}},
-            {"lock_score_v2": {"$gte": 80.0}},
-        ],
+        # PERKLOCKS: canonical score precedence (published_lock_score first).
+        **_canonical_lock_or(80.0),
     }
     # ── Model-only (SportDB synth scorer / lower-tier league) carve-out ──
     # Picks generated by `sportdb_player_scorer` for CSL / MLS / J-League /
@@ -1430,12 +1444,8 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         # Use a slightly looser lock floor than the standard 85 — model-
         # only picks land at 75-99 depending on career tier and we want
         # the user to see the full lower-league slate.
-        "$and": [{
-            "$or": [
-                {"lock_score": {"$gte": 75.0}},
-                {"lock_score_v2": {"$gte": 75.0}},
-            ],
-        }],
+        # PERKLOCKS: canonical score precedence.
+        "$and": [_canonical_lock_or(75.0)],
     }
     # ── Tennis Moneyline carve-out (bandit-hot exception) ──────────────
     # User report 2026-06-22: "Why I got so many tennis overs instead of
@@ -1463,15 +1473,22 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         "sport": "Tennis",
         "market": {"$regex": "moneyline", "$options": "i"},
         "no_bet": {"$ne": True},
+        # PERKLOCKS: edge no longer gates board admission; canonical
+        # score precedence replaces legacy lock_score / lock_score_v2.
         "$or": [
             # Path 1: standard Odds-API tennis ML (main tour only)
             {
-                "edge_percent": {"$gte": -3.0},
                 # Exclude ITF from Path 1 — routed through Path 2 with strict 95 floor.
                 "league": {"$not": {"$regex": r"itf|futures|m15|m25|w15|w25|w35", "$options": "i"}},
                 "$or": [
-                    {"lock_score": {"$gte": 80.0}},
-                    {"lock_score_v2": {"$gte": 80.0}},
+                    {"published_lock_score": {"$gte": 80.0}},
+                    {"$and": [
+                        {"published_lock_score": {"$exists": False}},
+                        {"$or": [
+                            {"lock_score":    {"$gte": 80.0}},
+                            {"lock_score_v2": {"$gte": 80.0}},
+                        ]},
+                    ]},
                     {"bandit_lift": {"$gt": 0}},
                 ],
             },
@@ -1482,17 +1499,11 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 "$or": [
                     {
                         "league": {"$regex": r"itf|futures|m15|m25|w15|w25|w35", "$options": "i"},
-                        "$or": [
-                            {"lock_score": {"$gte": 95.0}},
-                            {"lock_score_v2": {"$gte": 95.0}},
-                        ],
+                        **_canonical_lock_or(95.0),
                     },
                     {
                         "league": {"$not": {"$regex": r"itf|futures|m15|m25|w15|w25|w35", "$options": "i"}},
-                        "$or": [
-                            {"lock_score": {"$gte": 80.0}},
-                            {"lock_score_v2": {"$gte": 80.0}},
-                        ],
+                        **_canonical_lock_or(80.0),
                     },
                 ],
             },
@@ -1502,37 +1513,30 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         "sport": "Tennis",
         "source": {"$in": ["tennis_extra", "tennis_extra_model"]},
         "no_bet": {"$ne": True},
+        # PERKLOCKS: canonical score precedence.
         "$or": [
             # ITF/Futures — strict 95+ floor
             {
                 "league": {"$regex": r"itf|futures|m15|m25|w15|w25|w35", "$options": "i"},
-                "$or": [
-                    {"lock_score": {"$gte": 95.0}},
-                    {"lock_score_v2": {"$gte": 95.0}},
-                ],
+                **_canonical_lock_or(95.0),
             },
             # Main tour (ATP/WTA/Challenger) — 75 floor
             {
                 "league": {"$not": {"$regex": r"itf|futures|m15|m25|w15|w25|w35", "$options": "i"}},
-                "$or": [
-                    {"lock_score": {"$gte": 75.0}},
-                    {"lock_score_v2": {"$gte": 75.0}},
-                ],
+                **_canonical_lock_or(75.0),
             },
         ],
     }
     tennis_alt_q = {
         "sport": "Tennis",
         "no_bet": {"$ne": True},
+        # PERKLOCKS: edge removed from Locks admission; canonical
+        # score precedence for the alt-lock floor.
         "$or": [
             {"is_alt_prop": True},
             {"market": {"$regex": r"\(alt\)|[+\-]\d+(\.\d+)?\s+spread|\bspread\b|total games|games over|games under", "$options": "i"}},
         ],
-        "edge_percent": {"$gte": -8.0},
-        "$and": [{"$or": [
-            {"lock_score": {"$gte": 70.0}},
-            {"lock_score_v2": {"$gte": 70.0}},
-        ]}],
+        "$and": [_canonical_lock_or(70.0)],
     }
     # User report 2026-06-22: "I'm not seeing no strikeout bets" + Gerrit
     # Cole strikeout pick had lock=73.7 (strong) but edge=-6.87 (chalk-priced
@@ -1559,11 +1563,9 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         "sport": "MLB",
         "market": {"$regex": "strikeout", "$options": "i"},
         "no_bet": {"$ne": True},
-        "edge_percent": {"$gte": 0.0},   # was -12.0 — tightened per ROI analysis
-        "$or": [
-            {"lock_score": {"$gte": 70.0}},
-            {"lock_score_v2": {"$gte": 70.0}},
-        ],
+        # PERKLOCKS: edge no longer gates board admission; canonical
+        # score precedence for the K-market floor.
+        **_canonical_lock_or(70.0),
     }
     # ── Soccer Goal Scorer / Score-or-Assist carve-out ──────────────────
     # User report 2026-06-23: "Goalscorers showing on soccer lab but not
@@ -1581,11 +1583,9 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         "sport": "Soccer",
         "market": {"$regex": "goal scorer|score or assist|score & assist", "$options": "i"},
         "no_bet": {"$ne": True},
-        "edge_percent": {"$gte": -6.0},
-        "$or": [
-            {"lock_score": {"$gte": 85.0}},
-            {"lock_score_v2": {"$gte": 85.0}},
-        ],
+        # PERKLOCKS: edge no longer gates board admission; canonical
+        # score precedence for the scorer-market floor.
+        **_canonical_lock_or(85.0),
     }
     # ── MLB Hitter alt-lock carve-out ──────────────────────────────
     # User report 2026-06-24: "Where are the hitters at for ATL/SD —
@@ -1613,11 +1613,9 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         # double-count strikeouts (already covered by mlb_k_q).
         "$nor": [{"market": {"$regex": "strikeout|outs recorded", "$options": "i"}}],
         "no_bet": {"$ne": True},
-        "edge_percent": {"$gte": -10.0},
-        "$or": [
-            {"lock_score": {"$gte": 70.0}},
-            {"lock_score_v2": {"$gte": 70.0}},
-        ],
+        # PERKLOCKS: edge no longer gates board admission; canonical
+        # score precedence for the hitter-market floor.
+        **_canonical_lock_or(70.0),
     }
     # ── Universal high-lock bypass ───────────────────────────────────
     # Any pick with lock_score ≥ 90 (or v2 ≥ 90) surfaces on the board
@@ -1636,21 +1634,11 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # at 90+ lock, K props with negative edge are structurally losing.
     high_lock_bypass_q = {
         "no_bet": {"$ne": True},
-        "$or": [
-            {"lock_score":    {"$gte": 90.0}},
-            {"lock_score_v2": {"$gte": 90.0}},
-        ],
-        # Exclusion: prevent negative-edge K props from re-entering via
-        # the high-lock bypass. The mlb_k_q sub-query handles positive-
-        # edge K props; anything with negative edge here is exactly the
-        # bleed segment (see 2026-07-21 ROI analysis: -43.8% ROI).
-        "$nor": [
-            {
-                "sport": "MLB",
-                "market": {"$regex": "strikeout", "$options": "i"},
-                "edge_percent": {"$lt": 0.0},
-            }
-        ],
+        # PERKLOCKS: canonical score precedence at the 90 bypass floor,
+        # and edge-based exclusions have been removed (edge is no longer
+        # a Locks admission signal — it remains in the payload as
+        # display/analytics context only).
+        **_canonical_lock_or(90.0),
     }
     # 2026-07-21 (USER REPORT): "why didn't JL Struff and Cerundolo make
     # board — they play today". Root cause: their tennis picks had
