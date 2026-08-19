@@ -51,6 +51,7 @@ with authoritative team names should do so BEFORE calling the gate.
 from __future__ import annotations
 
 import enum
+import re
 import unicodedata
 from typing import Any, Optional
 
@@ -291,7 +292,18 @@ def evaluate_identity(pick: dict) -> IdentityVerdict:
 
     # Tennis — the "player" IS the selection.  Verify the selection is
     # one of the two competitors named in the event.
+    #
+    # PERKLOCKS TENNIS REACHABILITY (2026-06):
+    #   Tennis GAME-TOTAL / SPREAD / (Alt) markets carry
+    #   ``selection ∈ {"Over", "Under"}`` (or a numeric spread) and
+    #   are NOT player selections. They must be classified
+    #   ``NOT_APPLICABLE`` — otherwise the player-name-match rule
+    #   below incorrectly rejects every game-total pick as
+    #   ``PLAYER_EVENT_IDENTITY_MISMATCH``. The Tennis moneyline
+    #   path is preserved (selection = player name).
     if sport == "tennis":
+        if not _is_tennis_player_selection(pick):
+            return IdentityVerdict.NOT_APPLICABLE
         return _evaluate_tennis(pick)
 
     # Team-side markets have no player concept — NOT_APPLICABLE.
@@ -305,11 +317,137 @@ def evaluate_identity(pick: dict) -> IdentityVerdict:
 
     player_team_n = _extract_player_team(pick)
     if not player_team_n:
+        # PERKLOCKS MLB REACHABILITY (2026-06): try to derive the
+        # player's team from the market label itself before failing.
+        # MLB hitter markets are frequently written as
+        # ``"Henry Bolte (OAK) Henry Bolte 2.5 Hits + Runs + RBIs"``
+        # — the (TEAM_ABBREV) parenthetical carries the identity but
+        # was not being consumed anywhere. Read it here as a last-
+        # chance signal so legitimate hitter rows with real book
+        # odds + positive edge reach publication.
+        derived = _derive_player_team_from_market(pick)
+        if derived:
+            player_team_n = _norm(derived)
+    if not player_team_n:
         return IdentityVerdict.PLAYER_TEAM_UNRESOLVED
 
     if _teams_match(player_team_n, home_n, away_n):
         return IdentityVerdict.VALID
     return IdentityVerdict.PLAYER_EVENT_IDENTITY_MISMATCH
+
+
+# ── PERKLOCKS TENNIS/MLB REACHABILITY (2026-06) ──────────────────────
+# Helper predicates & derivers used by ``evaluate_identity`` above.
+# Kept adjacent to the caller for readability; each function is small,
+# side-effect-free, and never mutates the pick.
+
+_TENNIS_NON_PLAYER_SELECTION_TOKENS = (
+    "over", "under", "yes", "no", "draw",
+)
+
+def _is_tennis_player_selection(pick: dict) -> bool:
+    """Return True iff the Tennis pick's ``selection`` is meant to be
+    a player name (Moneyline / To Win / retirement).  Game-total,
+    spread, BTTS, and (Alt) selections are ``NOT_APPLICABLE``.
+    """
+    sel = pick.get("selection")
+    if not isinstance(sel, str):
+        return False
+    sel_n = _norm(sel)
+    if not sel_n:
+        return False
+    # Explicit non-player selections short-circuit.
+    if sel_n in _TENNIS_NON_PLAYER_SELECTION_TOKENS:
+        return False
+    # Anything with a leading over/under keyword is a total.
+    for tok in _TENNIS_NON_PLAYER_SELECTION_TOKENS:
+        if sel_n.startswith(tok + " ") or sel_n.endswith(" " + tok):
+            return False
+    # Numeric-only selections (spreads / totals lines) are also not players.
+    stripped = sel_n.replace("+", "").replace("-", "").replace(".", "").replace(" ", "")
+    if stripped.isdigit():
+        return False
+    # Market-label based inference — game totals / spreads are never
+    # player-identity gated.
+    market = _norm(pick.get("market"))
+    if any(t in market for t in ("games (alt)", "total games", "games over",
+                                   "games under", "spread", "handicap",
+                                   " (alt)", "\bset spread\b")):
+        return False
+    return True
+
+
+_MLB_TEAM_PAREN_RE = re.compile(r"\(([A-Z]{2,4})\)")
+
+# ── MLB team-abbrev canonical map ────────────────────────────────────
+# ONLY used when the derived player-team candidate is a 2-4 letter
+# uppercase abbreviation (from an MLB market label parenthetical).
+# Maps each abbrev to a distinctive city/team token that reliably
+# appears in the ``event`` / ``home_team`` / ``away_team`` strings.
+# Multiple tokens per abbrev handles franchise rebrands (e.g. Oakland
+# Athletics → Athletics) and city vs mascot ambiguity.
+_MLB_ABBREV_TO_TEAM_TOKENS = {
+    "ARI": ["arizona", "diamondbacks"], "ATL": ["atlanta", "braves"],
+    "BAL": ["baltimore", "orioles"], "BOS": ["boston", "red sox"],
+    "CHC": ["cubs", "chicago cubs"], "CHW": ["white sox"],
+    "CIN": ["cincinnati", "reds"], "CLE": ["cleveland", "guardians"],
+    "COL": ["colorado", "rockies"], "DET": ["detroit", "tigers"],
+    "HOU": ["houston", "astros"], "KC": ["kansas city", "royals"],
+    "KCR": ["kansas city", "royals"], "LAA": ["angels", "los angeles angels"],
+    "LAD": ["dodgers", "los angeles dodgers"], "MIA": ["miami", "marlins"],
+    "MIL": ["milwaukee", "brewers"], "MIN": ["minnesota", "twins"],
+    "NYM": ["mets", "new york mets"], "NYY": ["yankees", "new york yankees"],
+    "OAK": ["athletics", "oakland"], "ATH": ["athletics", "oakland"],
+    "PHI": ["philadelphia", "phillies"], "PIT": ["pittsburgh", "pirates"],
+    "SD": ["san diego", "padres"], "SDP": ["san diego", "padres"],
+    "SEA": ["seattle", "mariners"], "SF": ["san francisco", "giants"],
+    "SFG": ["san francisco", "giants"], "STL": ["st. louis", "cardinals"],
+    "TB": ["tampa bay", "rays"], "TBR": ["tampa bay", "rays"],
+    "TEX": ["texas", "rangers"], "TOR": ["toronto", "blue jays"],
+    "WSH": ["washington", "nationals"], "WAS": ["washington", "nationals"],
+}
+
+
+def _derive_player_team_from_market(pick: dict) -> Optional[str]:
+    """Return an inferred player-team parsed from the ``market`` label
+    (MLB hitter path).  Never guesses — only reads an explicit ``(ABC)``
+    parenthetical the ingestion writer already produced.
+
+    Returns the FIRST expanded team token that actually appears in the
+    pick's event/home/away — this defends against franchise rebrands
+    (Oakland Athletics → Athletics) and city vs mascot mismatches.
+    Falls back to the raw abbrev when no expansion tokens are known.
+    """
+    market = pick.get("market")
+    if not isinstance(market, str) or not market:
+        return None
+    m = _MLB_TEAM_PAREN_RE.search(market)
+    if not m:
+        return None
+    abbrev = m.group(1)
+    if not abbrev:
+        return None
+    sport = str(pick.get("sport") or "").strip().lower()
+    if sport != "mlb":
+        return abbrev
+    tokens = _MLB_ABBREV_TO_TEAM_TOKENS.get(abbrev.upper())
+    if not tokens:
+        return abbrev
+    # Prefer the token that actually appears in the event/home/away
+    # strings so the downstream substring match resolves correctly.
+    haystack_parts = [
+        pick.get("event") or "",
+        pick.get("home_team") or "",
+        pick.get("away_team") or "",
+    ]
+    haystack = " | ".join(str(x) for x in haystack_parts).lower()
+    for tok in tokens:
+        if tok in haystack:
+            return tok
+    # None of the tokens appear — fall back to the first token so the
+    # caller can still register a proven mismatch (rather than an
+    # unresolved verdict).
+    return tokens[0]
 
 
 def _evaluate_tennis(pick: dict) -> IdentityVerdict:
