@@ -32,11 +32,16 @@ def test_probability_normalization_92_and_0_92_equivalent():
 
 def test_probability_extreme_edge_cases():
     from probability_engine import _to_unit
-    assert _to_unit(-1) == 0.0
+    # Universal Flow FINAL: invalid inputs return None, not 0.5.
+    assert _to_unit(-1) is None
     assert _to_unit(0) == 0.0
-    assert _to_unit(1000) == 1.0
-    assert _to_unit(None) == 0.5
-    assert _to_unit("x") == 0.5
+    assert _to_unit(1000) is None
+    assert _to_unit(None) is None
+    assert _to_unit("x") is None
+    assert _to_unit(float("nan")) is None
+    # Valid values still normalize:
+    assert _to_unit(92) == 0.92
+    assert _to_unit(0.92) == 0.92
 
 
 def test_sim_win_probability_normalization():
