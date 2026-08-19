@@ -182,60 +182,45 @@ async def publish_upserted_picks(
                                  or p.get("sim_provenance")):
                             p["simulator_provenance"] = _conv["sim_provenance"]
                         # ── Brain Decision-Effect μ-closure (2026-06) ──
-                        # Apply the convergence CONFIDENCE MULTIPLIER
-                        # to the EXISTING ``lock_score`` input BEFORE
-                        # ``publisher.publish_batch`` freezes it into
-                        # the canonical ``published_lock_score``.
-                        #
-                        # Contract:
-                        #   • ONE canonical Lock Score remains — the
-                        #     existing ``lock_score`` field IS the
-                        #     input; we do not create a v3, a shadow,
-                        #     or a persisted "adjusted_lock_score".
-                        #   • Convergence acts as a QUALITY / UNCER-
-                        #     TAINTY component: multiplier=1.00 leaves
-                        #     lock_score untouched; multiplier<1.00
-                        #     proportionally attenuates the excess
-                        #     above a conservative 70-point floor so
-                        #     the Board's >=85 gate can respond to
-                        #     disagreement / PRIOR_ONLY / weak evidence.
-                        #   • Favorite/underdog NEUTRAL — the
-                        #     multiplier is a function of convergence,
-                        #     evidence quality, and simulator prove-
-                        #     nance ONLY.  Implied is a component of
-                        #     the spread, NOT a truth override.
-                        #   • Apex 100 REMAINS REACHABLE — a genuine
-                        #     STRONG_CONVERGENCE + STRONG evidence +
-                        #     REAL_PLAYER_CONTEXT candidate emits
-                        #     multiplier=1.00, so its lock_score is
-                        #     UNCHANGED and Apex gating still applies.
-                        #   • Monotone reduction only — the adjustment
-                        #     never inflates lock_score.
+                        #  UNIVERSAL FLOW RECOVERY (2026-06):
+                        #  Brain must NOT rewrite the canonical Lock
+                        #  Score.  The sport/model scoring layer owns
+                        #  ``lock_score`` entering canonical
+                        #  publication.  Brain evaluates the prediction
+                        #  and emits DIAGNOSTIC sidecars (convergence,
+                        #  spread, confidence_multiplier, evidence
+                        #  quality, simulator provenance) — but the
+                        #  Lock Score itself is preserved untouched.
+                        #  Downstream consumers can use the sidecars
+                        #  to gate/rank, but the canonical score
+                        #  entering publication == the score
+                        #  produced by the sport model.
                         try:
                             _orig_lock = p.get("lock_score")
                             if isinstance(_orig_lock, (int, float)):
                                 _orig_lock_f = float(_orig_lock)
                                 _mult_f = float(_conv["confidence_multiplier"])
+                                # Compute the diagnostic-only "what
+                                # convergence would have adjusted to"
+                                # value for auditability, but do NOT
+                                # write it to lock_score.
                                 _quality_floor = 70.0
                                 _excess = max(
                                     0.0, _orig_lock_f - _quality_floor)
                                 _adj = _quality_floor + _excess * _mult_f
-                                # Monotone reduction only.
-                                if _adj < _orig_lock_f:
-                                    p["lock_score"] = round(_adj, 2)
-                                    # Diagnostic sidecars ONLY — these are
-                                    # NOT alternative Lock Scores.  They
-                                    # let downstream audits reproduce the
-                                    # adjustment; the canonical field
-                                    # remains ``lock_score`` (and, post
-                                    # publication, ``published_lock_score``).
+                                if _mult_f < 1.0 and _adj < _orig_lock_f:
+                                    # Diagnostic sidecars only.  The
+                                    # canonical `lock_score` field is
+                                    # UNCHANGED so
+                                    # LOCK_SCORE_BEFORE_BRAIN ==
+                                    # LOCK_SCORE_ENTERING_PUBLICATION.
                                     p["lock_score_pre_convergence"] = (
                                         round(_orig_lock_f, 2))
-                                    p["convergence_lock_score_delta"] = (
+                                    p["convergence_lock_score_delta_hypothetical"] = (
                                         round(_orig_lock_f - _adj, 2))
                         except Exception as _e_adj:
                             logger.debug(
-                                "convergence lock_score adjust skipped "
+                                "convergence sidecar skipped "
                                 "for %s: %s", p.get("id"), _e_adj)
                         _convergence_count += 1
                 except Exception as _e_cv:

@@ -207,9 +207,15 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     # now prefer canonical ``published_lock_score`` first (frozen at
     # publication), then legacy ``lock_score``.  ``lock_score_v2`` is
     # NEVER used to admit a Parlay candidate.
+    # ── Universal Flow Recovery (2026-06) — canonical precedence ──
+    #  Legacy ``lock_score`` may ONLY admit a candidate when
+    #  ``published_lock_score`` is genuinely absent.  Prevents a
+    #  stale lock_score=94 from overriding a canonical
+    #  published_lock_score=82.
     base_q["$or"] = [
         {"published_lock_score": {"$gte": lock_floor_val}},
-        {"lock_score":            {"$gte": lock_floor_val}},
+        {"published_lock_score": {"$exists": False},
+         "lock_score":            {"$gte": lock_floor_val}},
     ]
     pool = await db.picks.find(base_q, {"_id": 0}).sort("lock_score", -1).limit(400).to_list(length=400)
     pool = _canonicalize_picks(pool)

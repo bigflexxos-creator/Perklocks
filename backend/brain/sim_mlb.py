@@ -44,9 +44,14 @@ def _wilson_ci(p: float, n: int, z: float = 1.96) -> tuple[float, float]:
 
 
 def _extract_threshold(market: str) -> float:
-    """Pull the over/under line from 'Over 1.5 Hits' → 1.5."""
-    m = re.search(r"(?:over|under)\s+(\d+(?:\.\d+)?)", (market or "").lower())
-    return float(m.group(1)) if m else 0.5
+    """Legacy display-text parse — retained ONLY as last-resort fallback
+    when a structured ``pick["line"]`` is genuinely absent.
+    Returns NaN on parse failure so callers can detect INVALID_INPUT
+    (no silent 0.5 substitution)."""
+    m = _re.search(r"(?:over|under)\s+(\d+(?:\.\d+)?)", (market or "").lower())
+    if not m:
+        m = _re.search(r"(\d+(?:\.\d+)?)", str(market or ""))
+    return float(m.group(1)) if m else float("nan")
 
 
 def _is_under(market: str) -> bool:

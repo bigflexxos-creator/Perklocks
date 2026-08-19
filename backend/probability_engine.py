@@ -80,25 +80,33 @@ CHALK_IMPLIED: float = 0.65
 # Layer 1 — three independent probabilities
 # ──────────────────────────────────────────────────────────────────────────
 
+def _to_unit(v) -> float:
+    """Universal Flow Recovery (2026-06) — Normalize a probability to
+    [0, 1] handling both 0-1 and 0-100 representations.
+    * values already in [0, 1] pass through unchanged (0.92 → 0.92)
+    * values > 1 are treated as percentages and divided by 100
+      (92 → 0.92, 92.0 → 0.92)
+    * negative / NaN / non-numeric → 0.5
+    """
+    try:
+        f = float(v)
+    except Exception:
+        return 0.5
+    if f != f:
+        return 0.5
+    if f > 1.0:
+        f = f / 100.0
+    return max(0.0, min(1.0, f))
+
+
 def compute_v1_probability(pick: dict) -> float:
-    """Baseline deterministic probability.
-
-    Source priority (each falls back to the next):
-      1. pick.model_win_probability — the raw, pre-learning model output.
-         This is the cleanest deterministic signal: rolling form, Elo
-         ratings, historical win rates as computed at pick-generation
-         time, BEFORE the bucket/calibration adjustments piled on.
-      2. pick.implied_probability — the book's own number (a deterministic
-         estimator no worse than chance for chalky markets).
-      3. pick.win_probability — last-resort fallback.
-
-    All numbers are normalised to [0, 1].
+    """Baseline deterministic probability.  All numbers normalised to
+    [0, 1] via ``_to_unit`` so mixed 0-1 / 0-100 inputs are safe.
     """
     for key in ("model_win_probability", "implied_probability", "win_probability"):
         v = pick.get(key)
         if isinstance(v, (int, float)) and v > 0:
-            # The pick fields are stored as 0..100 percentages. Normalise.
-            return max(0.0, min(1.0, float(v) / 100.0))
+            return _to_unit(v)
     return 0.5
 
 
@@ -117,14 +125,10 @@ def compute_v2_probability(pick: dict) -> float:
     """
     wp = pick.get("win_probability")
     if isinstance(wp, (int, float)) and wp > 0:
-        return max(0.0, min(1.0, float(wp) / 100.0))
+        return _to_unit(wp)
     v2_lock = pick.get("lock_score_v2")
     if isinstance(v2_lock, (int, float)) and v2_lock > 0:
-        # Convert lock_score_v2 (0..99) into a probability proxy. The
-        # 6-component v2 engine is calibrated so that score equals
-        # roughly the expected win rate, so a direct /100 mapping is
-        # the honest conversion.
-        return max(0.0, min(1.0, float(v2_lock) / 100.0))
+        return _to_unit(v2_lock)
     return compute_v1_probability(pick)
 
 
@@ -146,15 +150,14 @@ def compute_sim_probability(pick: dict) -> tuple[float, float, float]:
     """
     sim_p = pick.get("sim_win_probability")
     if not isinstance(sim_p, (int, float)) or sim_p <= 0:
-        # No sim available — degrade gracefully by deferring to v2 with
-        # a low stability score so the ensemble down-weights this leg.
         return compute_v2_probability(pick), 0.0, 0.0
-    sim_p = max(0.0, min(1.0, float(sim_p) / 100.0))
+    sim_p = _to_unit(sim_p)
     lo = pick.get("sim_ci_lower")
     hi = pick.get("sim_ci_upper")
     if isinstance(lo, (int, float)) and isinstance(hi, (int, float)) and hi > lo:
-        # Convert percentage CIs to 0..1
-        ci_width = max(0.0, float(hi) - float(lo)) / 100.0
+        # CI values can be in 0-1 OR 0-100; normalise both endpoints.
+        lo_u = _to_unit(lo); hi_u = _to_unit(hi)
+        ci_width = max(0.0, hi_u - lo_u)
         variance = (ci_width / 4.0) ** 2   # rough back-out: 95% CI ≈ 4σ
         stability = max(0.0, min(1.0, 1.0 - ci_width))
     else:
