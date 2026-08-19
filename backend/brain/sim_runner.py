@@ -312,32 +312,19 @@ def _anchor_pick_to_sim(pick: dict, sim_wp: float,
     new_lock = round(max(0.0, min(99.0, new_lock)), 1)
     anchored = abs(applied_delta) >= 0.1        # meaningful adjustment
 
-    if anchored:
-        pick["lock_score"]         = new_lock
-        pick["lock_score_raw"]     = new_lock
-        pick["lock_score_v2"]      = new_lock
-        pick["lock_score_v2_raw"]  = new_lock
-        try:
-            prev_peak = float(pick.get("lock_score_peak") or 0.0)
-        except (TypeError, ValueError):
-            prev_peak = 0.0
-        pick["lock_score_peak"] = round(max(new_lock, prev_peak), 1)
-        if pick["lock_score_peak"] >= 95.0:
-            pick["pinned"] = True
-        eb = pick.get("evidence_breakdown")
-        if isinstance(eb, dict):
-            eb["multiplier"]    = 1.0
-            eb["lock_raw"]      = new_lock
-            eb["lock_governed"] = new_lock
-            eb["sim_anchored"]  = True
-        try:
-            from sports_engine import _grade, _confidence
-            pick["grade"]      = _grade(new_lock)
-            pick["confidence"] = _confidence(new_lock)
-        except Exception:
-            pass
+    # ── PERKLOCKS FIX 2 (2026-06) ────────────────────────────────
+    # Simulators are EVIDENCE, not owners of canonical lock_score.
+    # The prior code path here overwrote `lock_score` / `lock_score_raw`
+    # / `lock_score_v2` / `lock_score_v2_raw` / `lock_score_peak` and
+    # even downstream `grade` / `confidence` from the simulator baseline.
+    # That violated the Universal Flow contract: canonical Lock Scores
+    # are set once by the model pipeline and MUST NOT be mutated by
+    # simulator anchoring. The audit fields below still record the
+    # would-be delta so the Brain / analytics can weight sim agreement,
+    # but the canonical `lock_score` on the pick is left untouched.
+    # See Universal Flow Final Closure spec.
 
-    # Audit fields — populated whether or not we mutated.
+    # Audit fields — populated whether or not an anchor would have applied.
     pick["sim_lock_anchor"]         = round(baseline, 1)
     pick["sim_lock_prior"]          = round(prior_lock, 1)
     pick["sim_lock_residual"]       = round(residual, 2)
@@ -350,7 +337,7 @@ def _anchor_pick_to_sim(pick: dict, sim_wp: float,
         "residual":   round(residual, 2),
         "applied_delta": round(applied_delta, 2),
         "anchored":   anchored,
-        "new_lock":   new_lock,
+        "new_lock":   round(prior_lock, 1),
     }
 
 

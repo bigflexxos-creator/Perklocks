@@ -1,25 +1,28 @@
 """Block 6 focused test — Brain universal prepublication chokepoint.
 
-Certifies that the convergence attenuation formula now runs at the
-LOWEST COMMON prepublication boundary (``publish_batch``), so EVERY
-publication path receives the same Brain decision effect exactly
-once — regardless of whether the pick arrived via
-``publish_upserted_picks`` (existing path) or a direct-inject
-writer that calls ``publish_batch`` directly (mls_direct_inject /
-soccer_prop_inject).
+PERKLOCKS FIX 5 (2026-06): The legacy contract of this test file was
+that ``publish_batch`` attenuates ``lock_score`` via the convergence
+confidence multiplier (``70 + (lock_score - 70) * mult``). That
+attenuation has been REMOVED as part of the Universal Flow Final
+Closure — canonical ``lock_score`` is now strictly authoritative and
+must NOT be mutated by any downstream Brain / publication path. The
+convergence label + multiplier are still recorded on the pick as
+evidence signals, but they no longer overwrite the score.
 
-Contract:
+Refreshed contract:
   1. A direct-batch path (no prior helper enrichment) receives the
-     same attenuation as the helper path.
+     convergence LABEL + MULTIPLIER stamps, but ``lock_score`` is
+     LEFT UNCHANGED regardless of the multiplier.
   2. A pick already stamped by the helper (idempotency marker
      ``convergence_confidence_multiplier`` present) is NOT
-     double-attenuated.
-  3. STRONG_CONVERGENCE + STRONG + REAL_PLAYER_CONTEXT keeps
-     lock_score unchanged (multiplier = 1.0).
-  4. STRONG_DISAGREEMENT + WEAK + PRIOR_ONLY attenuates lock_score.
+     re-stamped and its ``lock_score`` remains whatever it was.
+  3. STRONG_CONVERGENCE keeps ``lock_score`` unchanged (unchanged
+     behaviour — mult=1.0 was already a no-op).
+  4. STRONG_DISAGREEMENT stamps a low multiplier as ADVISORY
+     evidence but does NOT attenuate ``lock_score``.
 """
 from __future__ import annotations
-import asyncio, os, sys
+import os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -27,7 +30,9 @@ from probability_engine import classify_convergence
 
 
 # The publish_batch decision-effect block extracted for isolated
-# testing — mirrors the code we shipped into publish_batch verbatim.
+# testing — mirrors the post-FIX-1 code in
+# services/prediction_publication_service.py: convergence is
+# LABEL-ONLY, lock_score is never mutated.
 def _apply_publish_batch_brain(cand: dict) -> None:
     if cand.get("convergence_confidence_multiplier") is not None:
         return
@@ -48,21 +53,13 @@ def _apply_publish_batch_brain(cand: dict) -> None:
     cand["convergence_label"] = _conv["label"]
     cand["convergence_spread_pp"] = _conv["spread_pp"]
     cand["convergence_confidence_multiplier"] = _conv["confidence_multiplier"]
-    _orig_lock = cand.get("lock_score")
-    if isinstance(_orig_lock, (int, float)):
-        _mult = float(_conv["confidence_multiplier"])
-        _excess = max(0.0, float(_orig_lock) - 70.0)
-        _adj = 70.0 + _excess * _mult
-        if _adj < float(_orig_lock):
-            cand["lock_score_pre_convergence"] = round(float(_orig_lock), 2)
-            cand["lock_score"] = round(_adj, 2)
-            cand["convergence_lock_score_delta"] = round(
-                float(_orig_lock) - _adj, 2)
+    # PERKLOCKS FIX 1/5: lock_score is NEVER mutated here.
 
 
-def test_direct_batch_path_receives_brain_effect():
-    """Direct callers of publish_batch (no helper enrichment) MUST
-    receive the same convergence attenuation as helper-processed picks."""
+def test_direct_batch_path_stamps_brain_evidence_only():
+    """Direct callers of publish_batch (no helper enrichment) receive
+    the convergence label + multiplier as EVIDENCE, but their
+    canonical ``lock_score`` is untouched."""
     cand = {
         "id": "DIRECT_A",
         "model_probability": 0.62,
@@ -73,29 +70,31 @@ def test_direct_batch_path_receives_brain_effect():
     }
     _apply_publish_batch_brain(cand)
     assert cand["convergence_label"] == "STRONG_DISAGREEMENT"
-    assert cand["lock_score"] < 95.0
-    assert cand["lock_score_pre_convergence"] == 95.0
+    # Canonical lock_score is authoritative — no mutation.
+    assert cand["lock_score"] == 95.0
+    assert "lock_score_pre_convergence" not in cand
+    assert "convergence_lock_score_delta" not in cand
+    # Multiplier still recorded as advisory evidence.
+    assert cand["convergence_confidence_multiplier"] < 1.0
 
 
 def test_idempotent_when_helper_already_stamped():
-    """If helper already stamped convergence, publish_batch MUST NOT
-    reapply the attenuation (idempotency guard)."""
+    """If a pick was already stamped upstream (marker present),
+    publish_batch MUST be a no-op."""
     cand = {
         "id": "HELPER_STAMPED",
         "model_probability": 0.62,
         "simulator_probability": 0.30,
         "evidence_quality": "WEAK",
         "simulator_provenance": "PRIOR_ONLY",
-        "lock_score": 83.75,                         # already attenuated
-        "convergence_confidence_multiplier": 0.55,    # helper marker
+        "lock_score": 95.0,
+        "convergence_confidence_multiplier": 0.55,    # marker
         "convergence_label": "STRONG_DISAGREEMENT",
-        "lock_score_pre_convergence": 95.0,
     }
     _apply_publish_batch_brain(cand)
-    # Nothing changed — publish_batch respects prior helper stamp.
-    assert cand["lock_score"] == 83.75
+    assert cand["lock_score"] == 95.0
     assert cand["convergence_confidence_multiplier"] == 0.55
-    assert cand["lock_score_pre_convergence"] == 95.0
+    assert cand["convergence_label"] == "STRONG_DISAGREEMENT"
 
 
 def test_strong_convergence_preserves_lock_score():
@@ -110,12 +109,13 @@ def test_strong_convergence_preserves_lock_score():
     _apply_publish_batch_brain(cand)
     assert cand["convergence_label"] == "STRONG_CONVERGENCE"
     assert cand["lock_score"] == 96.0
-    assert cand.get("lock_score_pre_convergence") is None
+    assert "lock_score_pre_convergence" not in cand
 
 
 def test_two_publication_paths_same_result():
-    """The helper path (represented by pre-stamped state) and the
-    direct-batch path must yield the same final lock_score."""
+    """Both publication paths must be functionally equivalent —
+    same evidence stamps, and (post-FIX-1) same lock_score = the
+    canonical input, untouched."""
     base = {
         "model_probability": 0.62,
         "simulator_probability": 0.30,
@@ -127,6 +127,7 @@ def test_two_publication_paths_same_result():
     b = dict(base, id="B")
     _apply_publish_batch_brain(a)
     _apply_publish_batch_brain(b)
-    assert a["lock_score"] == b["lock_score"]
+    assert a["lock_score"] == b["lock_score"] == 95.0
     assert a["convergence_confidence_multiplier"] == \
         b["convergence_confidence_multiplier"]
+    assert a["convergence_label"] == b["convergence_label"]

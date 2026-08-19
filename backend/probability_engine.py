@@ -351,8 +351,16 @@ def classify_convergence(*, p_v1: float, p_v2: float,
         }
 
     Contract:
-      • Favorite / underdog neutral — implied is ONE of the components,
-        NOT a truth override.
+      • Favorite / underdog neutral — internal convergence measures
+        agreement between MODEL and SIMULATOR only.
+      • PERKLOCKS FIX 3 (2026-06): sportsbook `implied` is NO LONGER
+        part of the internal convergence spread. It is a MARKET signal,
+        not an internal predictor; commingling it here was masking
+        genuine model↔sim disagreement whenever the book happened to
+        agree with our components. `implied` is still accepted as a
+        parameter for API compatibility (and surfaced in the returned
+        dict) so callers can still compute market-edge separately, but
+        it is excluded from the spread math.
       • PRIOR_ONLY provenance CANNOT reach 1.00 multiplier even with
         perfect model↔sim agreement (capped 0.72).
       • MISSING evidence CANNOT reach STRONG_CONVERGENCE (capped 0.60).
@@ -362,10 +370,14 @@ def classify_convergence(*, p_v1: float, p_v2: float,
     components: list[float] = [p_v1, p_v2]
     if sim_ran and p_sim is not None:
         components.append(p_sim)
-    # Market is CONTEXT, not truth — included in spread ONLY to detect
-    # the case where our components collectively disagree with the book.
-    if implied is not None:
-        components.append(implied)
+    # ── PERKLOCKS FIX 3 (2026-06) ────────────────────────────────
+    # Sportsbook `implied` is deliberately EXCLUDED from the
+    # convergence spread. It is a market-context signal, not an
+    # internal predictor, and mixing it in was letting book-agreement
+    # paper over real model↔sim disagreement. Market edge is computed
+    # separately via `edge = p_calibrated - implied` in the classify
+    # pipeline; convergence here strictly measures our INTERNAL
+    # predictors.
 
     spread = _spread(components)
 

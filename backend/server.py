@@ -2126,19 +2126,31 @@ async def mlb_live(user: Annotated[UserPublic, Depends(current_user)]):
 async def stats_summary(user: Annotated[UserPublic, Depends(current_user)]):
     """Hero-card totals for the Locks tab.
 
-    Computed from the SAME picks the user actually sees on /picks/today —
-    i.e. lock_score >= 85, no NO-BET, no negative edge, AND game time
-    has not yet passed the play-window cutoff. Under-style locks ARE
-    counted (matching /picks/today's behaviour) so the hero number
-    matches the visible list across every sport tab.
+    PERKLOCKS FIX 6 (2026-06): This endpoint MUST match the exact
+    canonical Locks eligibility used by ``/picks/today``. Prior code
+    filtered on ``lock_score >= 85`` alone, which admitted picks that
+    the canonical publication pipeline had already de-locked (their
+    authoritative ``published_lock_score`` was below floor). That
+    produced the misleading "170 live picks" hero count while the
+    actual visible slate on ``/picks/today`` was materially smaller.
+
+    Fix: use the same ``main_board_lock_score_query`` helper as
+    ``/picks/today`` — this coalesces ``published_lock_score`` first
+    and only falls back to ``lock_score`` when the canonical field is
+    absent. Under-style locks + elite anchors continue to count so
+    the hero number equals the visible list across every sport tab.
     """
+    from services.main_board_eligibility import main_board_lock_score_query
     await _ensure_today_picks()
     today = _today_str()
+    # Canonical Locks predicate — published_lock_score first, fall back
+    # to legacy lock_score only when the canonical field is absent.
+    _primary_lock_predicate = main_board_lock_score_query(min_lock=None)
     base_q = {
         "pick_date": today,
-        "lock_score": {"$gte": 85},
         "no_bet": {"$ne": True},
         "edge_percent": {"$gte": 0},
+        **_primary_lock_predicate,
     }
     elite_q = {
         "pick_date": today,
@@ -2161,15 +2173,26 @@ async def stats_summary(user: Annotated[UserPublic, Depends(current_user)]):
     # Apply the same play-window filter as /picks/today.
     rows = _filter_in_play_window(rows)
 
-    # Per-sport aggregates
+    # Per-sport aggregates.  PERKLOCKS FIX 6: read the canonical
+    # ``published_lock_score`` first so elite/lock aggregates align
+    # with the same coalesce logic that gated eligibility above.
+    def _canon_lock(p: dict) -> float:
+        v = p.get("published_lock_score")
+        if v is None:
+            v = p.get("lock_score")
+        try:
+            return float(v or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
     by_sport_map: dict[str, dict] = {}
     for p in rows:
         sp = p.get("sport") or "Unknown"
         b = by_sport_map.setdefault(sp, {"count": 0, "lock_sum": 0.0, "edge_sum": 0.0, "elite": 0})
         b["count"] += 1
-        b["lock_sum"] += float(p.get("lock_score") or 0)
+        b["lock_sum"] += _canon_lock(p)
         b["edge_sum"] += float(p.get("edge_percent") or 0)
-        if p.get("elite_player") or float(p.get("lock_score") or 0) >= 95:
+        if p.get("elite_player") or _canon_lock(p) >= 95:
             b["elite"] += 1
     by_sport = [
         {"sport": sp,
@@ -2181,7 +2204,7 @@ async def stats_summary(user: Annotated[UserPublic, Depends(current_user)]):
     ]
     total = len(rows)
     elite = sum(1 for p in rows
-                if p.get("elite_player") or float(p.get("lock_score") or 0) >= 95)
+                if p.get("elite_player") or _canon_lock(p) >= 95)
     # Average edge across the visible slate (matches /picks/today universe).
     if rows:
         avg_edge = round(sum(float(p.get("edge_percent") or 0) for p in rows) / len(rows), 2)
