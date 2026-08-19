@@ -2149,7 +2149,6 @@ async def stats_summary(user: Annotated[UserPublic, Depends(current_user)]):
     base_q = {
         "pick_date": today,
         "no_bet": {"$ne": True},
-        "edge_percent": {"$gte": 0},
         **_primary_lock_predicate,
     }
     elite_q = {
