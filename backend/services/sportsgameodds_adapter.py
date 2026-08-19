@@ -9,44 +9,48 @@ models, or Lock Scores; it only produces normalized `db.picks` rows
 whose downstream canonical publication path is identical to every
 other real-line writer.
 
-Design goals (surgical)
------------------------
-1.  ONE shared adapter (this module). Every sport goes through the same
-    normalizer.
-2.  Isolated from The Odds API circuit breaker — a 401
-    OUT_OF_USAGE_CREDITS on the primary provider must not disable SGO.
-3.  Preserves the existing real-line contract (odds_source=real_book_line
-    equivalent), integrity gates, publication rules, and settlement.
-4.  No Lock-Score work, no synthetic conversion, no model changes.
+CANONICAL INPUT CONTRACT (2026-06 revision)
+-------------------------------------------
+After the initial activation pass, comparison against known-good
+``real_line_soccer_v2`` rows revealed two divergences that were
+collapsing Lock-Score distributions on SGO rows:
 
-Contract
---------
-- Access the key via ``os.environ.get("SPORTSGAMEODDS_API_KEY")`` — never
-  logged, never printed, never mirrored to the frontend.
-- All outbound requests carry ``x-api-key`` + a real ``User-Agent``
-  (Cloudflare in front of SGO rejects header-less requests with 1010).
-- Every persisted row carries::
+1. **Player-entity oddIDs masquerading as game markets.** SGO
+   serves ``points-<playerID>-…-ou-over`` outcomes (a player's
+   "total points/goals in the match") alongside team ``points-all``
+   ones.  The v1 adapter matched only on
+   ``(statID, betTypeID, periodID)`` and emitted the player one as
+   a Total Goals row with a bogus ``player_name`` attached to a
+   game market.  This is now gated on ``statEntityID`` — game
+   markets are only emitted when the entity is ``all`` / ``home``
+   / ``away`` / ``draw``.
 
-      odds_source          = "real_book_line"
-      odds_provider        = "sportsgameodds"
-      no_real_book_line    = False
-      is_model_only        = False
-      synthetic            = False
+2. **Missing canonical routing fields.** Downstream models
+   (``soccer_game_model``, MLB pitcher/hitter, tennis) require the
+   fields set by the Odds-API-family real-line writers:
+   ``market_family``, ``market_key`` (canonical: ``totals`` /
+   ``moneyline`` / ``spreads`` / ``player_prop``), ``provider_selection``,
+   ``side``, ``line_source``, ``no_bet=False``,
+   ``no_real_book_line=False``, ``odds_status='book_line_present'``,
+   and a market label that embeds the line
+   (``"Total Goals Under 3.5"`` — not ``"Total Goals"``).  Rows
+   missing these fields fall into default/fallback score paths
+   with degraded Lock Scores.  All are now emitted.
 
-  so ``services.board_visibility.compute_off_board`` and the main-board
-  eligibility gate treat SGO rows exactly like any other real line.
+3. **Bookmaker provenance.** ``bookmaker`` is now selected from
+   ``byBookmaker`` using an established best-line preference list
+   (fanduel > draftkings > betmgm > caesars > pointsbet > bet365 …).
+   ``consensus`` is used only when no named book is present.
 
-- Provider-specific caps present in The Odds API path (odds_api_gateway
-  budget throttle, top-1 scorer cap, request-budget breaker) are NOT
-  invoked here — SGO calls do not touch that gateway.
-
-Public API
-----------
-- ``fetch_events(league_id: str, limit: int = 100) -> list[dict]``
-- ``fetch_event_with_odds(event_id: str) -> dict | None``
-- ``normalize_event(ev: dict) -> list[dict]``   # canonical picks
-- ``ingest_league(db, league_id, sport, limit=25, only_pregame=True)``
-- ``ingest_all_configured(db, only_pregame=True)``
+Design goals (surgical, unchanged)
+----------------------------------
+1.  ONE shared adapter (this module). Every sport goes through the
+    same normalizer.
+2.  Isolated from The Odds API circuit breaker.
+3.  Preserves the existing real-line contract, integrity gates,
+    publication rules, and settlement.
+4.  No Lock-Score work, no synthetic conversion, no model changes,
+    no predictive-formula edits.
 """
 
 from __future__ import annotations
@@ -54,7 +58,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import uuid5, NAMESPACE_URL
 
@@ -68,11 +72,9 @@ _UA = "Perklocks-Backend/1.0"
 _MAX_CONCURRENCY = 4
 _SEMAPHORE = asyncio.Semaphore(_MAX_CONCURRENCY)
 
-# Perklocks league configuration.  Only leagues Perklocks already models
-# are enabled here; the underlying canonical pipeline decides what to
-# publish downstream.
+# Sports/leagues to poll on each cycle. Order irrelevant — every league
+# is processed independently by ``ingest_all_configured``.
 _ENABLED_LEAGUES: list[tuple[str, str]] = [
-    # (SGO leagueID, Perklocks canonical sport label)
     ("MLB",           "MLB"),
     ("EPL",           "Soccer"),
     ("LALIGA",        "Soccer"),
@@ -84,66 +86,73 @@ _ENABLED_LEAGUES: list[tuple[str, str]] = [
     ("WTA",           "Tennis"),
 ]
 
-# Market taxonomy — maps SGO (statID, betTypeID, periodID) triples to a
-# canonical Perklocks market label. ONLY markets the existing pipeline
-# already understands. Anything not in this table is silently ignored
-# (never fabricated, never emitted as synthetic).
-_MARKET_MAP_MLB: dict[tuple[str, str, str], str] = {
-    ("points", "ml",     "game"): "Moneyline",
-    ("points", "sp",     "game"): "Run Line",
-    ("points", "ou",     "game"): "Total Runs",
-    # MLB player props (statEntityID = <playerID>).
-    ("batting_hits",           "ou", "game"): "Hits",
-    ("batting_totalBases",     "ou", "game"): "Total Bases",
-    ("batting_hits+runs+rbi",  "ou", "game"): "Hits + Runs + RBIs",
-    ("batting_RBI",            "ou", "game"): "RBIs",
-    ("batting_homeRuns",       "ou", "game"): "Home Runs",
-    ("batting_homeRuns",       "yn", "game"): "Home Run",
-    ("pitching_strikeouts",    "ou", "game"): "Strikeouts",
-    ("pitching_outs",          "ou", "game"): "Outs Recorded",
+# ── Canonical market taxonomy ───────────────────────────────────────
+# Each entry:
+#     (statID, betTypeID, periodID) →
+#         (canonical_market_label, canonical_market_key, market_family)
+#
+# ``canonical_market_key`` MUST match the values the existing sport
+# models dispatch on (``moneyline``, ``totals``, ``spreads``,
+# ``player_prop``). ``market_family`` MUST match the buckets the
+# canonical publication service uses.
+
+_MARKET_MAP_MLB_GAME: dict[tuple[str, str, str], tuple[str, str, str]] = {
+    ("points", "ml",     "game"): ("Moneyline",       "moneyline", "game_market"),
+    ("points", "sp",     "game"): ("Run Line",        "spreads",   "game_market"),
+    ("points", "ou",     "game"): ("Total Runs",      "totals",    "game_market"),
 }
-_MARKET_MAP_SOCCER: dict[tuple[str, str, str], str] = {
-    ("points", "ml3way", "reg"):  "Match Result (1X2)",
-    ("points", "ml3way", "game"): "Match Result (1X2)",
-    ("points", "ou",     "reg"):  "Total Goals",
-    ("points", "ou",     "game"): "Total Goals",
-    ("points", "sp",     "reg"):  "Asian Handicap",
-    ("points", "sp",     "game"): "Asian Handicap",
-    ("points", "yn",     "reg"):  "Both Teams To Score",
-    # Player props
-    ("goals",           "yn", "reg"):  "Anytime Goal Scorer",
-    ("goals",           "yn", "game"): "Anytime Goal Scorer",
-    ("goals+assists",   "yn", "reg"):  "To Score or Assist",
-    ("goals+assists",   "yn", "game"): "To Score or Assist",
-    ("assists",         "yn", "reg"):  "Anytime Assist",
-    ("shots",           "ou", "reg"):  "Shots",
-    ("shotsOnTarget",   "ou", "reg"):  "Shots on Target",
+_MARKET_MAP_MLB_PLAYER: dict[tuple[str, str, str], tuple[str, str, str]] = {
+    ("batting_hits",           "ou", "game"): ("Hits",              "player_prop", "player_prop"),
+    ("batting_totalBases",     "ou", "game"): ("Total Bases",       "player_prop", "player_prop"),
+    ("batting_hits+runs+rbi",  "ou", "game"): ("Hits + Runs + RBIs","player_prop", "player_prop"),
+    ("batting_RBI",            "ou", "game"): ("RBIs",              "player_prop", "player_prop"),
+    ("batting_homeRuns",       "ou", "game"): ("Home Runs",         "player_prop", "player_prop"),
+    ("batting_homeRuns",       "yn", "game"): ("Home Run",          "player_prop", "player_prop"),
+    ("pitching_strikeouts",    "ou", "game"): ("Strikeouts",        "player_prop", "player_prop"),
+    ("pitching_outs",          "ou", "game"): ("Outs Recorded",     "player_prop", "player_prop"),
 }
-_MARKET_MAP_TENNIS: dict[tuple[str, str, str], str] = {
-    ("points", "ml",     "game"): "Moneyline",
-    ("points", "sp",     "game"): "Set Spread",
-    ("points", "ou",     "game"): "Total Games",
-    # Alternate lines share the same betTypeID here (SGO doesn't
-    # separate them) — downstream tennis carve-outs already treat
-    # additional totals/spreads as ALT lines.
+_MARKET_MAP_SOCCER_GAME: dict[tuple[str, str, str], tuple[str, str, str]] = {
+    ("points", "ml3way", "reg"):  ("Match Result (1X2)", "h2h",     "game_market"),
+    ("points", "ml3way", "game"): ("Match Result (1X2)", "h2h",     "game_market"),
+    ("points", "ou",     "reg"):  ("Total Goals",        "totals",  "game_market"),
+    ("points", "ou",     "game"): ("Total Goals",        "totals",  "game_market"),
+    ("points", "sp",     "reg"):  ("Asian Handicap",     "spreads", "game_market"),
+    ("points", "sp",     "game"): ("Asian Handicap",     "spreads", "game_market"),
+    ("points", "yn",     "reg"):  ("Both Teams To Score","btts",    "game_market"),
 }
+_MARKET_MAP_SOCCER_PLAYER: dict[tuple[str, str, str], tuple[str, str, str]] = {
+    ("goals",           "yn", "reg"):  ("Anytime Goal Scorer",  "player_prop", "player_prop"),
+    ("goals",           "yn", "game"): ("Anytime Goal Scorer",  "player_prop", "player_prop"),
+    ("goals+assists",   "yn", "reg"):  ("To Score or Assist",   "player_prop", "player_prop"),
+    ("goals+assists",   "yn", "game"): ("To Score or Assist",   "player_prop", "player_prop"),
+    ("assists",         "yn", "reg"):  ("Anytime Assist",       "player_prop", "player_prop"),
+    ("shots",           "ou", "reg"):  ("Shots",                "player_prop", "player_prop"),
+    ("shotsOnTarget",   "ou", "reg"):  ("Shots on Target",      "player_prop", "player_prop"),
+}
+_MARKET_MAP_TENNIS_GAME: dict[tuple[str, str, str], tuple[str, str, str]] = {
+    ("points", "ml",     "game"): ("Moneyline",   "moneyline", "game_market"),
+    ("points", "sp",     "game"): ("Set Spread",  "spreads",   "game_market"),
+    ("points", "ou",     "game"): ("Total Games", "totals",    "game_market"),
+}
+
+# Best-line bookmaker preference (canonical Perklocks order).
+_BOOKMAKER_PREFERENCE = (
+    "fanduel", "draftkings", "betmgm", "caesars", "pointsbet",
+    "bet365", "betrivers", "espnbet", "fanatics", "hardrock",
+    "unibet_us", "bovada", "wynnbet", "circa", "prophetexchange",
+)
 
 
 def _api_key() -> str:
-    k = os.environ.get("SPORTSGAMEODDS_API_KEY") or ""
-    return k.strip()
+    return (os.environ.get("SPORTSGAMEODDS_API_KEY") or "").strip()
 
 
 def _headers() -> dict[str, str]:
-    return {
-        "x-api-key":   _api_key(),
-        "User-Agent":  _UA,
-        "Accept":      "application/json",
-    }
+    return {"x-api-key": _api_key(), "User-Agent": _UA,
+             "Accept": "application/json"}
 
 
 async def _get(client: httpx.AsyncClient, path: str, **params) -> Any:
-    """Single-flight-safe GET.  Never logs the key or the raw header."""
     async with _SEMAPHORE:
         r = await client.get(f"{_BASE}{path}", params=params, timeout=_TIMEOUT)
     if r.status_code == 429:
@@ -159,16 +168,11 @@ async def _get(client: httpx.AsyncClient, path: str, **params) -> Any:
 
 async def fetch_events(league_id: str, *, limit: int = 100,
                           only_pregame: bool = True) -> list[dict]:
-    """Fetch events for ``league_id``.  When ``only_pregame`` is True
-    we filter out started/completed/cancelled events after retrieval
-    (SGO does not currently expose a native pregame filter)."""
     if not _api_key():
         return []
     async with httpx.AsyncClient(headers=_headers()) as client:
-        d = await _get(client, "/events",
-                        leagueID=league_id,
-                        oddsAvailable="true",
-                        limit=str(limit))
+        d = await _get(client, "/events", leagueID=league_id,
+                        oddsAvailable="true", limit=str(limit))
     if not d or not isinstance(d, dict):
         return []
     events = d.get("data") or []
@@ -184,7 +188,6 @@ def _is_pregame(ev: dict) -> bool:
 
 
 def _to_int_odds(s: Any) -> Optional[int]:
-    """SGO returns American odds as strings like ``"+205"`` / ``"-138"``."""
     if s is None:
         return None
     try:
@@ -208,47 +211,131 @@ def _classify_sport(league_id: str) -> str:
     return "Unknown"
 
 
-def _market_map(sport: str) -> dict[tuple[str, str, str], str]:
-    if sport == "MLB":     return _MARKET_MAP_MLB
-    if sport == "Soccer":  return _MARKET_MAP_SOCCER
-    if sport == "Tennis":  return _MARKET_MAP_TENNIS
-    return {}
+def _lookup_market(sport: str, stat_id: str, bet_type: str, period: str,
+                     stat_entity: str
+                    ) -> Optional[tuple[str, str, str, bool]]:
+    """Return ``(canonical_label, canonical_key, market_family, is_player)``
+    or ``None`` when this SGO outcome should not be emitted.
+
+    The critical gate: outcomes whose ``statEntityID`` is a playerID may
+    ONLY resolve against the player-market submap. Outcomes whose
+    entity is ``all`` / ``home`` / ``away`` / ``draw`` may ONLY resolve
+    against the game-market submap. This closes the v1 bug where a
+    ``points-<playerID>-…-ou-over`` was routed to ``Total Goals``.
+    """
+    key = (stat_id, bet_type, period)
+    is_team_entity = stat_entity in ("all", "home", "away", "draw")
+    is_player_entity = not is_team_entity and bool(stat_entity)
+
+    if sport == "MLB":
+        if is_team_entity and key in _MARKET_MAP_MLB_GAME:
+            lbl, ck, fam = _MARKET_MAP_MLB_GAME[key]
+            return lbl, ck, fam, False
+        if is_player_entity and key in _MARKET_MAP_MLB_PLAYER:
+            lbl, ck, fam = _MARKET_MAP_MLB_PLAYER[key]
+            return lbl, ck, fam, True
+        return None
+    if sport == "Soccer":
+        if is_team_entity and key in _MARKET_MAP_SOCCER_GAME:
+            lbl, ck, fam = _MARKET_MAP_SOCCER_GAME[key]
+            return lbl, ck, fam, False
+        if is_player_entity and key in _MARKET_MAP_SOCCER_PLAYER:
+            lbl, ck, fam = _MARKET_MAP_SOCCER_PLAYER[key]
+            return lbl, ck, fam, True
+        return None
+    if sport == "Tennis":
+        if is_team_entity and key in _MARKET_MAP_TENNIS_GAME:
+            lbl, ck, fam = _MARKET_MAP_TENNIS_GAME[key]
+            return lbl, ck, fam, False
+        return None
+    return None
 
 
-def _side_label(o: dict, teams: dict, players: dict) -> Optional[str]:
-    """Return the human-readable selection label for the outcome."""
-    side = (o.get("sideID") or "").lower()
+def _select_best_bookmaker(o: dict) -> tuple[Optional[str], Optional[int],
+                                                    Optional[str]]:
+    """Pick a named bookmaker from ``byBookmaker`` following the
+    canonical preference order. Returns ``(bookmaker, book_odds,
+    last_updated_at)``. Falls back to consensus ``bookOdds`` only
+    when no named book is available.
+    """
+    by = o.get("byBookmaker") or {}
+    for name in _BOOKMAKER_PREFERENCE:
+        entry = by.get(name)
+        if isinstance(entry, dict) and entry.get("available") \
+                and entry.get("odds") is not None:
+            oi = _to_int_odds(entry.get("odds"))
+            if oi is not None:
+                return name, oi, entry.get("lastUpdatedAt")
+    # No preferred book — take any available named book.
+    for name, entry in by.items():
+        if isinstance(entry, dict) and entry.get("available") \
+                and entry.get("odds") is not None:
+            oi = _to_int_odds(entry.get("odds"))
+            if oi is not None:
+                return name, oi, entry.get("lastUpdatedAt")
+    # Last-resort: consensus bookOdds (aggregate). Marked as such by
+    # the caller via ``bookmaker='consensus'``.
+    return None, None, None
+
+
+def _side_and_selection(o: dict, teams: dict, players: dict,
+                         canonical_label: str,
+                         canonical_key: str) -> tuple[str, Optional[str],
+                                                       Optional[float],
+                                                       Optional[str]]:
+    """Return ``(selection, side, line, market_label_with_line)``."""
+    side_raw = (o.get("sideID") or "").lower()
     sent = o.get("statEntityID") or ""
     bet_type = (o.get("betTypeID") or "").lower()
 
-    if bet_type in ("ou",):
-        line = o.get("bookOverUnder") or o.get("fairOverUnder")
-        if side == "over":
-            return f"Over {line}" if line is not None else "Over"
-        if side == "under":
-            return f"Under {line}" if line is not None else "Under"
-    if bet_type == "sp":
-        line = o.get("bookSpread") or o.get("fairSpread")
-        which = teams.get(side, {}) if side in ("home", "away") else None
+    # Line — real numeric extraction (ou.bookOverUnder / sp.bookSpread).
+    line: Optional[float] = None
+    for k in ("bookOverUnder", "fairOverUnder",
+                "bookSpread", "fairSpread"):
+        v = o.get(k)
+        if v is not None:
+            try:
+                line = float(v)
+                break
+            except (TypeError, ValueError):
+                pass
+
+    market_label = canonical_label
+    selection: Optional[str] = None
+
+    if bet_type == "ou":
+        if side_raw == "over":
+            selection = f"Over {line}" if line is not None else "Over"
+        elif side_raw == "under":
+            selection = f"Under {line}" if line is not None else "Under"
+        # Embed line in market label (matches canonical writers).
+        if line is not None:
+            market_label = f"{canonical_label} {selection}"
+    elif bet_type == "sp":
+        which = teams.get(side_raw) if side_raw in ("home", "away") else None
         team_name = (which or {}).get("names", {}).get("long") if which else None
         if team_name and line is not None:
-            return f"{team_name} {line}"
-        if team_name:
-            return team_name
-    if bet_type in ("ml", "ml3way"):
-        which = teams.get(side, {}) if side in ("home", "away") else None
+            selection = f"{team_name} {line:+g}"
+            market_label = f"{canonical_label} {team_name} {line:+g}"
+        elif team_name:
+            selection = team_name
+    elif bet_type in ("ml", "ml3way"):
+        which = teams.get(side_raw) if side_raw in ("home", "away") else None
         if which:
-            return which.get("names", {}).get("long")
-        if side == "draw":
-            return "Draw"
-    if bet_type == "yn":
-        # Player YN prop — selection is the player + Yes/No.
+            selection = which.get("names", {}).get("long")
+        elif side_raw == "draw":
+            selection = "Draw"
+    elif bet_type == "yn":
         pl = players.get(sent) or {}
-        pname = pl.get("name") or f"{pl.get('firstName','')} {pl.get('lastName','')}".strip()
+        pname = pl.get("name") \
+            or f"{pl.get('firstName','')} {pl.get('lastName','')}".strip()
         if pname:
-            return f"{pname} {'Yes' if side == 'yes' else 'No'}"
-        return "Yes" if side == "yes" else "No"
-    return None
+            selection = f"{pname} {'Yes' if side_raw == 'yes' else 'No'}"
+            market_label = f"{canonical_label} - {pname}"
+        else:
+            selection = "Yes" if side_raw == "yes" else "No"
+
+    return (selection or "", side_raw or None, line, market_label)
 
 
 def _stable_pick_id(sport: str, event_id: str, oid: str) -> str:
@@ -259,17 +346,15 @@ def _stable_pick_id(sport: str, event_id: str, oid: str) -> str:
 def normalize_event(ev: dict) -> list[dict]:
     """Produce canonical Perklocks pick rows from a single SGO event.
 
-    Only outcomes whose ``(statID, betTypeID, periodID)`` is present in
-    the enabled market map are emitted. Every row satisfies the
-    real-line contract (real numeric ``book_odds``, valid identity,
-    ``odds_source='real_book_line'``, ``odds_provider='sportsgameodds'``).
+    Every emitted row satisfies the real-line contract AND the
+    canonical model-input contract (see module docstring). No
+    predictive formula is invoked here — this is a pure normalizer.
     """
     if not isinstance(ev, dict):
         return []
     league_id = ev.get("leagueID") or ""
     sport = _classify_sport(league_id)
-    mm = _market_map(sport)
-    if not mm:
+    if sport == "Unknown":
         return []
 
     teams   = ev.get("teams")   or {}
@@ -285,67 +370,53 @@ def normalize_event(ev: dict) -> list[dict]:
     if not home or not away:
         return []
 
-    league_display = ev.get("leagueID") or league_id
+    league_display = league_id
     now_iso = datetime.now(timezone.utc).isoformat()
     picks: list[dict] = []
 
     for oid, o in (ev.get("odds") or {}).items():
         if not isinstance(o, dict):
             continue
-        # ── Filter for enabled markets ──────────────────────────
-        stat_id  = o.get("statID") or ""
-        bet_type = o.get("betTypeID") or ""
-        period   = o.get("periodID") or ""
-        canonical_market = mm.get((stat_id, bet_type, period))
-        if not canonical_market:
+        stat_id     = o.get("statID") or ""
+        bet_type    = o.get("betTypeID") or ""
+        period      = o.get("periodID") or ""
+        stat_entity = o.get("statEntityID") or ""
+
+        market_info = _lookup_market(sport, stat_id, bet_type, period,
+                                        stat_entity)
+        if not market_info:
             continue
-        # Must have real book odds — SGO's `bookOdds` is authoritative.
-        book_odds = _to_int_odds(o.get("bookOdds"))
+        canonical_label, canonical_key, market_family, is_player = market_info
+
+        # Real book price via canonical bookmaker preference. Fall back
+        # to consensus ``bookOdds`` only when no named book available.
+        bm_name, bm_odds, bm_ts = _select_best_bookmaker(o)
+        book_odds = bm_odds if bm_odds is not None \
+            else _to_int_odds(o.get("bookOdds"))
         if book_odds is None:
             continue
+        bookmaker = bm_name if bm_name else "consensus"
 
-        # Line (for OU / spread) — carry both possible fields.
-        line: Optional[float] = None
-        for k in ("bookOverUnder", "fairOverUnder",
-                  "bookSpread", "fairSpread"):
-            v = o.get(k)
-            if v is not None:
-                try:
-                    line = float(v)
-                    break
-                except (TypeError, ValueError):
-                    pass
-
-        # Selection label.
-        selection = _side_label(o, teams, players)
+        selection, side, line, market_label = _side_and_selection(
+            o, teams, players, canonical_label, canonical_key,
+        )
         if not selection:
             continue
 
-        # Player identity (for player props only).
-        sent = o.get("statEntityID") or ""
+        # Player identity — ONLY for player markets.
         player_name: Optional[str] = None
         player_team: Optional[str] = None
-        if sent in players:
-            pl = players[sent]
+        player_id_out: Optional[str] = None
+        if is_player and stat_entity in players:
+            pl = players[stat_entity]
+            player_id_out = stat_entity
             player_name = pl.get("name") \
                 or f"{pl.get('firstName','')} {pl.get('lastName','')}".strip()
             tid = pl.get("teamID")
-            # Resolve player_team to canonical team name via the event's teams block.
-            for side_key, side_val in teams.items():
-                if not isinstance(side_val, dict):
-                    continue
-                if side_val.get("teamID") == tid:
+            for _, side_val in teams.items():
+                if isinstance(side_val, dict) and side_val.get("teamID") == tid:
                     player_team = side_val.get("names", {}).get("long")
                     break
-        # Best available bookmaker for provenance.
-        bms = list((o.get("byBookmaker") or {}).keys())
-        bookmaker = bms[0] if bms else "consensus"
-        provider_ts = None
-        try:
-            provider_ts = (o.get("byBookmaker", {}).get(bookmaker) or {}
-                          ).get("lastUpdatedAt")
-        except Exception:
-            provider_ts = None
 
         implied = _implied_from_american(book_odds)
         pick_id = _stable_pick_id(sport, event_id, oid)
@@ -361,31 +432,47 @@ def normalize_event(ev: dict) -> list[dict]:
             "home_team":                home,
             "away_team":                away,
             "event_time":               event_time,
-            "market":                   canonical_market,
-            "market_key":               f"{stat_id}|{bet_type}|{period}",
+            "commence_time":            event_time,
+            "commence_time_utc":        event_time,
+            # ── Canonical market routing (matches real_line_soccer_v2 shape) ──
+            "market":                   market_label,
+            "market_key":               canonical_key,
+            "market_family":            market_family,
+            "provider_market_key":      canonical_key,
+            "provider_selection":       "Under" if side == "under" else
+                                          "Over" if side == "over"  else
+                                          selection,
             "selection":                selection,
+            "side":                     side,
             "line":                     line,
+            "provider_line":            line,
+            "line_source":              "sgo_provider",
             "book_odds":                book_odds,
-            "implied_probability":      round(implied, 4) if implied else None,
+            "implied_probability":      round((implied or 0) * 100, 3)
+                                          if implied is not None else None,
             "bookmaker":                bookmaker,
-            "provider_timestamp":       provider_ts,
-            # ── REAL-LINE CONTRACT (mandatory) ───────────────
+            "provider_timestamp":       bm_ts or None,
+            # ── REAL-LINE CONTRACT (mandatory) ───────────────────────
             "odds_source":              "real_book_line",
             "odds_provider":            "sportsgameodds",
+            "odds_status":              "book_line_present",
             "no_real_book_line":        False,
             "is_model_only":            False,
             "model_only":               False,
             "synthetic":                False,
             "is_synthetic_scorer":      False,
-            # ── Identity (populated when applicable) ─────────
+            "no_bet":                   False,
+            # ── Identity ─────────────────────────────────────────────
             "player_name":              player_name,
             "player_team":              player_team,
-            "player_id":                sent if sent in players else None,
-            # ── Ingest bookkeeping ───────────────────────────
+            "player_id":                player_id_out,
+            # ── Ingest bookkeeping ───────────────────────────────────
             "source":                   "sportsgameodds_v2",
+            "publication_source":       "sportsgameodds_v2",
+            "provenance":               "sportsgameodds_v2",
             "pick_date":                event_time[:10] if event_time else None,
             "ingested_at":              now_iso,
-            "publication_state":        None,  # canonical publisher owns this
+            "publication_state":        None,
         }
         picks.append(pick)
     return picks
@@ -393,12 +480,6 @@ def normalize_event(ev: dict) -> list[dict]:
 
 async def ingest_league(db, sgo_league_id: str, sport: str, *,
                           limit: int = 25, only_pregame: bool = True) -> dict:
-    """Fetch → normalize → upsert.  Idempotent by stable ``id``.
-
-    Returns counts: ``{"events": …, "picks_seen": …, "picks_upserted": …}``.
-    Never lowers Lock Scores, never publishes; canonical publisher runs
-    on its normal cadence.
-    """
     events = await fetch_events(sgo_league_id, limit=limit,
                                   only_pregame=only_pregame)
     counts = {"events": len(events), "picks_seen": 0, "picks_upserted": 0}
@@ -418,13 +499,11 @@ async def ingest_league(db, sgo_league_id: str, sport: str, *,
                 if res.upserted_id is not None or res.modified_count > 0:
                     counts["picks_upserted"] += 1
             except Exception as _err:
-                # Never break the batch on a single-row DB hiccup.
                 logger.debug("sgo upsert skip %s: %s", row.get("id"), _err)
     return counts
 
 
 async def ingest_all_configured(db, *, only_pregame: bool = True) -> dict:
-    """Cycle every enabled league. Independent of The Odds API state."""
     totals = {"events": 0, "picks_seen": 0, "picks_upserted": 0,
               "by_league": {}}
     for lg, sport in _ENABLED_LEAGUES:
@@ -443,9 +522,7 @@ async def ingest_all_configured(db, *, only_pregame: bool = True) -> dict:
     return totals
 
 
-# ── Small helper for admin-triggered on-demand fetch ────────────────
 async def health_ping() -> bool:
-    """Cheap authenticated probe used by /api/admin/provider-health."""
     if not _api_key():
         return False
     async with httpx.AsyncClient(headers=_headers()) as client:
