@@ -700,7 +700,6 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
                     # Stamp bounded exponential backoff so this row
                     # cannot repeatedly occupy the head cohort.
                     try:
-                        from datetime import timedelta
                         _attempts = int(pick.get("settle_attempts") or 0) + 1
                         _delay_min = min(1440,
                             5 * (3 ** max(0, _attempts - 1)))  # 5→15→45→135→405→1215→1440
@@ -725,7 +724,6 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
                     pick.get("id"), _s_err)
                 # Same retry_after backoff on exception paths.
                 try:
-                    from datetime import timedelta
                     _attempts = int(pick.get("settle_attempts") or 0) + 1
                     _delay_min = min(1440,
                         5 * (3 ** max(0, _attempts - 1)))
