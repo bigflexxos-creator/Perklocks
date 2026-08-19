@@ -4087,6 +4087,9 @@ async def on_startup():
         from services.sportsgameodds_adapter import (
             ingest_all_configured as _sgo_ingest_all,
         )
+        from services.sgo_scorer_bridge import (
+            score_pending_sgo_rows as _sgo_score_pending,
+        )
 
         _sgo_primary = (
             os.environ.get("PRIMARY_ODDS_PROVIDER")
@@ -4113,6 +4116,16 @@ async def on_startup():
                         totals.get("events"),
                         totals.get("picks_seen"),
                         totals.get("picks_upserted"),
+                    )
+                    # PERKLOCKS SGO SHARED-SCORER WIRING (2026-06):
+                    # Route the freshly-ingested SGO rows through the
+                    # EXISTING MLB / Soccer / Tennis scorer that the
+                    # Odds-API-family path uses. No new scoring
+                    # formulas, no self-heal fallback — the same
+                    # sport model produces every lock_score.
+                    scored = await _sgo_score_pending(db, limit=1500)
+                    logger.info(
+                        "sportsgameodds scoring pass: %s", scored,
                     )
                 except Exception as _e:
                     logger.warning("sportsgameodds loop error: %s", _e)
