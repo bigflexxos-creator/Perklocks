@@ -120,16 +120,47 @@ async def score_pending_sgo_rows(db, *, limit: int = 500) -> dict:
     }
     counts = {"scanned": 0, "scored": 0,
               "by_sport": {"MLB": 0, "Soccer": 0, "Tennis": 0},
-              "skipped": 0, "errors": 0}
+              "skipped": 0, "errors": 0,
+              "tennis_context_unavailable": 0}
     try:
         cursor = db.picks.find(q).limit(limit)
         async for sgo in cursor:
             counts["scanned"] += 1
+            sport = sgo.get("sport")
+
+            # ── PERKLOCKS SGO TENNIS WIRING (2026-06) ────────────────
+            # Tennis production scoring lives in
+            # ``services.tennis_math_engine.score_tennis_matchup``
+            # (Elo-based). The Odds-API-family caller is
+            # ``sports_engine.py`` around line 1299 — same call
+            # signature reused here so SGO Tennis rows converge on
+            # the EXACT SAME Tennis intelligence. No new formulas,
+            # no fallback / self-heal.
+            if sport == "Tennis" \
+                    and sgo.get("market_family") == "game_market":
+                res = await _score_tennis_sgo(sgo, now_iso)
+                if res is None:
+                    counts["tennis_context_unavailable"] += 1
+                    continue
+                update = res
+                update["updated_at"] = now_iso
+                update["scored_by"]  = "sport_model"
+                try:
+                    await db.picks.update_one(
+                        {"id": sgo.get("id")}, {"$set": update},
+                    )
+                    counts["scored"] += 1
+                    counts["by_sport"]["Tennis"] += 1
+                except Exception as _e:
+                    counts["errors"] += 1
+                    logger.debug("sgo tennis upsert %s failed: %s",
+                                  sgo.get("id"), _e)
+                continue
+
             row = _sgo_row_to_ingest_shape(sgo)
             if not row:
                 counts["skipped"] += 1
                 continue
-            sport = sgo.get("sport")
             market_family = sgo.get("market_family")
             try:
                 if market_family == "game_market":
