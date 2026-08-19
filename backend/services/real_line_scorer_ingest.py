@@ -557,8 +557,34 @@ async def _ingest_game_market_row(
 
     if model_prob is None:
         # ── Precise rejection classification ─────────────────────
+        # PERKLOCKS UNIVERSAL SOCCER (2026-06):
+        #   • BOTH sides missing form + league is one whose historical
+        #     stores are known to be empty (Brasileirao B, CSL, Chile,
+        #     Sweden, Norway, Finland, Ireland, low-tier Asian, etc.)
+        #     → TEAM_CONTEXT_UNAVAILABLE (category C — provider/data
+        #       gap, NOT a fixable code path).
+        #   • BOTH sides missing form but league IS covered → keep
+        #     NO_TEAM_CONTEXT (category B — indicates a wiring gap).
+        #   • ONE side missing form → NO_MODEL_PROBABILITY (partial
+        #     coverage; downstream priors should have carried us).
         if not (ctx_dbg.get("home_form_source") or ctx_dbg.get("away_form_source")):
-            rej = SoccerRejection.NO_TEAM_CONTEXT.value
+            _lg = (league or "").lower()
+            _uncovered = any(t in _lg for t in (
+                "brasileirao b", "serie b", "serie c", "csl",
+                "chinese super", "chile", "campeonato", "norway",
+                "eliteserien", "sweden", "allsvenskan", "superettan",
+                "finland", "veikkausliiga", "ireland premier",
+                "conference league qualification",
+                "champions league qualification",
+                "champions league qualifiers",
+                "europa league qualification",
+                "nations league",
+                "libertadores", "sudamericana", "liga mx",
+            ))
+            if _uncovered:
+                rej = SoccerRejection.TEAM_CONTEXT_UNAVAILABLE.value
+            else:
+                rej = SoccerRejection.NO_TEAM_CONTEXT.value
         else:
             rej = SoccerRejection.NO_MODEL_PROBABILITY.value
         model_prob = book_impl  # temp: anchor at implied for LS math

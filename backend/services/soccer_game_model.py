@@ -46,10 +46,131 @@ from __future__ import annotations
 
 import logging
 import math
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 logger = logging.getLogger("lockscore.soccer_game_model")
+
+
+# ── PERKLOCKS UNIVERSAL SOCCER (2026-06) ─────────────────────────────
+# Shared team-name normalization helpers used by ``build_soccer_team_ctx``
+# to resolve the Odds API canonical form (``Atlético Madrid``,
+# ``Málaga``, ``Deportivo La Coruña``, ``Borussia Mönchengladbach``,
+# ``Olympique Lyonnais``) against the ASCII short forms stored in
+# ``soccer_matches`` (``Ath Madrid``, ``Malaga``, ``RC Deportivo La
+# Coruña``, ``M'gladbach``, ``Lyon``). No fabrication — these are
+# strictly retry variants; the primary exact match is still tried
+# first.
+
+_TEAM_PREFIX_ALIASES = (
+    "AS ", "AC ", "AFC ", "SS ", "SSC ", "SC ", "FC ", "CF ", "CD ",
+    "CA ", "CR ", "RC ", "RCD ", "RCA ", "SD ", "UD ", "US ", "UC ",
+    "SV ", "SG ", "1. FC ", "1.FC ", "1. FSV ", "TSG ", "VfB ",
+    "VfL ", "Real ", "Deportivo ", "Athletic ", "Atlético ",
+    "Atletico ", "Ath ", "Club ", "Olympique ", "Stade ",
+    "Racing ", "Sporting ",
+)
+_TEAM_SUFFIX_ALIASES = (
+    " FC", " CF", " AFC", " SC", " AC", " Vigo", " Bilbao",
+    " Madrid", " City", " Town", " United", " de Barcelona",
+    " Lyonnais", " Marseille", " Berlin", " München",
+)
+
+
+def _strip_accents(s: str) -> str:
+    """Return ``s`` with combining marks removed (Unicode NFKD → ASCII)."""
+    if not s:
+        return ""
+    nk = unicodedata.normalize("NFKD", s)
+    return "".join(c for c in nk if not unicodedata.combining(c))
+
+
+def _regex_escape(s: str) -> str:
+    """Escape user-supplied strings before dropping them into a Mongo
+    ``$regex``. Prevents parentheses / dots / apostrophes in team
+    names (``M'gladbach``, ``1. FC Köln``) from being interpreted as
+    regex metacharacters."""
+    return re.escape(s or "")
+
+
+def _team_name_variants(name: str) -> list[str]:
+    """Return ordered team-name retry variants.
+
+    Order is strict — exact first, then accent-stripped, then common
+    alias forms. Duplicates are removed while preserving order so
+    the primary hit still wins on identical databases.
+    """
+    if not name:
+        return []
+    base = name.strip()
+    ascii_ = _strip_accents(base)
+    variants: list[str] = [base]
+    if ascii_ and ascii_ != base:
+        variants.append(ascii_)
+    # Alias stripping — only apply if the prefix/suffix is actually there.
+    for src in list(variants):
+        for pfx in _TEAM_PREFIX_ALIASES:
+            if src.lower().startswith(pfx.lower()):
+                stripped = src[len(pfx):].strip()
+                if stripped and stripped not in variants:
+                    variants.append(stripped)
+        for sfx in _TEAM_SUFFIX_ALIASES:
+            if src.lower().endswith(sfx.lower()):
+                stripped = src[: -len(sfx)].strip()
+                if stripped and stripped not in variants:
+                    variants.append(stripped)
+    # Named-alias contractions (Odds API long-form → soccer_matches short form).
+    # Only applied to the accent-stripped copy of the input so the
+    # primary exact match is never skipped.
+    _CONTRACTIONS = (
+        ("Atletico ",  "Ath "),
+        ("Athletic ",  "Ath "),
+        ("Olympique Lyonnais", "Lyon"),
+        ("Olympique de Marseille", "Marseille"),
+        ("Olympique ", ""),
+        ("Espanyol",   "Espanol"),
+        ("RCD Espanyol de Barcelona", "Espanol"),
+        ("Deportivo Alavés", "Alaves"),
+        ("Deportivo Alaves", "Alaves"),
+        ("Alavés",     "Alaves"),
+        ("Cádiz",      "Cadiz"),
+        ("Almería",    "Almeria"),
+        ("Leganés",    "Leganes"),
+        ("RC Deportivo La Coruña", "Deportivo La Coruna"),
+        ("Borussia Mönchengladbach", "M'gladbach"),
+        ("Bayer Leverkusen",  "Bayer 04 Leverkusen"),
+        ("FC Bayern München", "Bayern Munich"),
+        ("FC Bayern",  "Bayern Munich"),
+    )
+    for src, dst in _CONTRACTIONS:
+        for i, v in enumerate(list(variants)):
+            if src.lower() in v.lower():
+                new = re.sub(re.escape(src), dst, v, flags=re.IGNORECASE).strip()
+                if new and new not in variants:
+                    variants.append(new)
+    return variants
+
+
+def _team_core_token(name: str) -> str:
+    """Return the longest single alpha token from ``name`` (used as a
+    last-chance ``$regex contains`` seed). Skips generic short tokens
+    like ``FC`` / ``CF`` / ``SC`` / ``AC`` / ``AS``."""
+    if not name:
+        return ""
+    ascii_ = _strip_accents(name)
+    tokens = re.findall(r"[A-Za-z]+", ascii_)
+    _skip = {"fc", "cf", "sc", "ac", "as", "sd", "cd", "ca", "cr",
+             "rc", "rcd", "afc", "us", "uc", "sv", "sg", "ss", "ssc",
+             "vfb", "vfl", "tsg", "de", "la", "el", "1"}
+    candidates = [t for t in tokens if t.lower() not in _skip and len(t) >= 4]
+    if not candidates:
+        return ""
+    # Longest token — typically the distinctive part of the name
+    # (``Málaga`` → ``Malaga``, ``Deportivo La Coruña`` → ``Deportivo``,
+    # ``Borussia Mönchengladbach`` → ``Monchengladbach``).
+    return sorted(candidates, key=len, reverse=True)[0]
 
 # ------------------------------------------------------------------ #
 # Constants
@@ -431,6 +552,19 @@ async def build_soccer_team_ctx(
     memoisation collapses the 3-4 DB round-trips per team into ONE
     per fixture per minute — this is the difference between a 30-90s
     startup ingest and a 3-5s one.
+
+    PERKLOCKS UNIVERSAL SOCCER (2026-06):
+      Team-name resolution now retries with an accent-stripped form
+      and a small set of shared prefix/suffix aliases before giving
+      up. This closes the La Liga / Ligue 1 / Bundesliga / Serie A
+      NO_TEAM_CONTEXT bleed where the Odds API sends the accented
+      canonical form (``Atlético Madrid``, ``Málaga``,
+      ``Borussia Mönchengladbach``, ``Deportivo La Coruña``) while
+      ``soccer_matches`` stores the ASCII short form
+      (``Ath Madrid``, ``Malaga``, ``M'gladbach``, ``RC Deportivo
+      La Coruña``). The variants are tried in strict order and only
+      as fallbacks — never as overrides — so legitimate hits keep
+      their exact match.
     """
     import time
     global _CTX_CACHE, _CTX_CACHE_TS
@@ -451,20 +585,27 @@ async def build_soccer_team_ctx(
         if not team_name:
             continue
         row = None
-        try:
-            row = await db.soccer_team_form.find_one({
-                "team_canonical": team_name.strip().lower(),
-            })
-        except Exception:
-            row = None
-        if not row:
+        variants = _team_name_variants(team_name)
+        for variant in variants:
             try:
-                row = await db.team_form.find_one({
-                    "sport": "Soccer",
-                    "team": {"$regex": f"^{team_name.strip()}$", "$options": "i"},
+                row = await db.soccer_team_form.find_one({
+                    "team_canonical": variant.lower(),
                 })
             except Exception:
                 row = None
+            if row:
+                break
+        if not row:
+            for variant in variants:
+                try:
+                    row = await db.team_form.find_one({
+                        "sport": "Soccer",
+                        "team": {"$regex": f"^{_regex_escape(variant)}$", "$options": "i"},
+                    })
+                except Exception:
+                    row = None
+                if row:
+                    break
         if row:
             gf = row.get("gf_per_match") or row.get("gf_avg") or row.get("gf") or row.get("goals_for_per_game")
             ga = row.get("ga_per_match") or row.get("ga_avg") or row.get("ga") or row.get("goals_against_per_game")
@@ -478,55 +619,99 @@ async def build_soccer_team_ctx(
             }
         else:
             # ── Fallback: derive from raw historical matches ──────
-            try:
-                match_filter: dict[str, Any] = {
-                    "$or": [
-                        {"home_team": {"$regex": f"^{team_name.strip()}$", "$options": "i"}},
-                        {"away_team": {"$regex": f"^{team_name.strip()}$", "$options": "i"}},
-                    ],
-                    "home_score": {"$exists": True, "$ne": None},
-                    "away_score": {"$exists": True, "$ne": None},
-                }
-                docs = await db.soccer_matches.find(match_filter).sort(
-                    [("date", -1)]
-                ).limit(20).to_list(20)
-                if docs:
-                    tot_gf = 0.0
-                    tot_ga = 0.0
-                    n = 0
-                    tn = team_name.strip().lower()
-                    for d in docs:
-                        hs = d.get("home_score")
-                        as_ = d.get("away_score")
-                        if hs is None or as_ is None:
-                            continue
-                        try:
-                            hs = float(hs); as_ = float(as_)
-                        except Exception:
-                            continue
-                        if (d.get("home_team") or "").strip().lower() == tn:
-                            tot_gf += hs; tot_ga += as_
-                        else:
-                            tot_gf += as_; tot_ga += hs
-                        n += 1
-                    if n:
-                        ctx[f"{side}_form"] = {
-                            "gf_avg":     tot_gf / n,
-                            "ga_avg":     tot_ga / n,
-                            "n_matches":  n,
-                            "matches":    n,
-                            "source":     "soccer_matches_rolling20",
-                        }
-            except Exception as _mm_err:
-                logger.debug(
-                    "soccer_matches rollup failed for %s: %s",
-                    team_name, _mm_err,
-                )
+            # Try every team-name variant (exact, then accent-stripped,
+            # then contains-match) before giving up.
+            docs = None
+            resolved_variant = None
+            for variant in variants:
+                try:
+                    match_filter: dict[str, Any] = {
+                        "$or": [
+                            {"home_team": {"$regex": f"^{_regex_escape(variant)}$", "$options": "i"}},
+                            {"away_team": {"$regex": f"^{_regex_escape(variant)}$", "$options": "i"}},
+                        ],
+                        "home_score": {"$exists": True, "$ne": None},
+                        "away_score": {"$exists": True, "$ne": None},
+                    }
+                    d = await db.soccer_matches.find(match_filter).sort(
+                        [("date", -1)]
+                    ).limit(20).to_list(20)
+                    if d:
+                        docs = d
+                        resolved_variant = variant
+                        break
+                except Exception as _mm_err:
+                    logger.debug(
+                        "soccer_matches rollup failed for %s (variant=%r): %s",
+                        team_name, variant, _mm_err,
+                    )
+            # Last-chance contains match for compound names
+            # (e.g. "Bayern Munich" ~ "FC Bayern München").
+            if not docs:
+                try:
+                    core = _team_core_token(team_name)
+                    if core and len(core) >= 4:
+                        d = await db.soccer_matches.find({
+                            "$or": [
+                                {"home_team": {"$regex": _regex_escape(core), "$options": "i"}},
+                                {"away_team": {"$regex": _regex_escape(core), "$options": "i"}},
+                            ],
+                            "home_score": {"$exists": True, "$ne": None},
+                            "away_score": {"$exists": True, "$ne": None},
+                        }).sort([("date", -1)]).limit(20).to_list(20)
+                        if d:
+                            docs = d
+                            resolved_variant = f"~contains:{core}"
+                except Exception:
+                    pass
+            if docs:
+                tot_gf = 0.0
+                tot_ga = 0.0
+                n = 0
+                # Resolve which side each doc puts the team on by
+                # checking against the resolved variant (or the
+                # original team name if we matched via contains).
+                match_target = (resolved_variant or team_name).strip().lower()
+                # Strip leading "~contains:" marker for token compares.
+                if match_target.startswith("~contains:"):
+                    match_target = match_target[len("~contains:"):]
+                for d in docs:
+                    hs = d.get("home_score")
+                    as_ = d.get("away_score")
+                    if hs is None or as_ is None:
+                        continue
+                    try:
+                        hs = float(hs); as_ = float(as_)
+                    except Exception:
+                        continue
+                    ht = (d.get("home_team") or "").strip().lower()
+                    at = (d.get("away_team") or "").strip().lower()
+                    if match_target in ht or ht in match_target:
+                        tot_gf += hs; tot_ga += as_
+                    elif match_target in at or at in match_target:
+                        tot_gf += as_; tot_ga += hs
+                    else:
+                        # Ambiguous match — skip this row rather than
+                        # attribute goals to the wrong side.
+                        continue
+                    n += 1
+                if n:
+                    ctx[f"{side}_form"] = {
+                        "gf_avg":     tot_gf / n,
+                        "ga_avg":     tot_ga / n,
+                        "n_matches":  n,
+                        "matches":    n,
+                        "source":     "soccer_matches_rolling20",
+                    }
         # xG rolling window (optional).
         try:
-            xg = await db.soccer_team_xg_rolling.find_one({
-                "team_canonical": team_name.strip().lower(),
-            })
+            xg = None
+            for variant in variants:
+                xg = await db.soccer_team_xg_rolling.find_one({
+                    "team_canonical": variant.lower(),
+                })
+                if xg:
+                    break
             if xg:
                 ctx[f"{side}_xg_rolling"] = {
                     "xg_for":     float(xg.get("xg_for") or 0),

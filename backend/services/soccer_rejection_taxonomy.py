@@ -36,6 +36,13 @@ class SoccerRejection(str, enum.Enum):
     CANDIDATE_NOT_CREATED             = "CANDIDATE_NOT_CREATED"
     MISSING_FEATURE_DATA              = "MISSING_FEATURE_DATA"
     NO_TEAM_CONTEXT                   = "NO_TEAM_CONTEXT"
+    # PERKLOCKS UNIVERSAL SOCCER (2026-06) — league genuinely has no
+    # coverage in Perklocks historical stores (soccer_matches /
+    # soccer_team_form / team_form all empty for the competition).
+    # Distinguished from NO_TEAM_CONTEXT so operators can tell a
+    # wiring gap (fixable in code) apart from a data-provider gap
+    # (needs upstream ingest expansion).
+    TEAM_CONTEXT_UNAVAILABLE          = "TEAM_CONTEXT_UNAVAILABLE"
     NO_PLAYER_CONTEXT                 = "NO_PLAYER_CONTEXT"
     NO_RECENT_FORM                    = "NO_RECENT_FORM"
     NO_PLAYER_HISTORY                 = "NO_PLAYER_HISTORY"
