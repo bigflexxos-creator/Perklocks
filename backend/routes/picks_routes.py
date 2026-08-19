@@ -631,7 +631,17 @@ async def pick_rollover(
         return True, ""
 
     # Pull qualifying candidates (V4 filter)
-    q = {**base_q, "lock_score": {"$gte": LOCK_FLOOR}}
+    # ── Universal Flow Recovery (2026-06) — canonical score
+    #    precedence at the Mongo pre-filter.
+    #    Rollover admission MUST honor ``published_lock_score`` when
+    #    present; a pick with published_lock_score=92 and legacy
+    #    lock_score=87 was previously starved before ``_passes_v4``
+    #    could evaluate it.  Use $expr with $ifNull so the Mongo
+    #    predicate matches the same coalesce logic in _passes_v4.
+    q = {**base_q, "$expr": {"$gte": [
+        {"$ifNull": ["$published_lock_score", "$lock_score"]},
+        LOCK_FLOOR,
+    ]}}
     candidates: list = await db.picks.find(q, {"_id": 0}).to_list(length=800)
     reject_reasons: dict[str, int] = {}
     picks: list = []
