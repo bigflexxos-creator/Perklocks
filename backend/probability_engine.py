@@ -80,33 +80,46 @@ CHALK_IMPLIED: float = 0.65
 # Layer 1 — three independent probabilities
 # ──────────────────────────────────────────────────────────────────────────
 
-def _to_unit(v) -> float:
-    """Universal Flow Recovery (2026-06) — Normalize a probability to
-    [0, 1] handling both 0-1 and 0-100 representations.
+def _to_unit(v):
+    """Universal Flow Recovery FINAL (2026-06) — Normalize a probability
+    to [0, 1] handling both 0-1 and 0-100 representations.  Returns
+    ``None`` (not 0.5) for invalid / NaN / non-numeric inputs so
+    downstream Brain/convergence handle "unavailable" explicitly
+    instead of consuming a fabricated 50% prediction.
+
     * values already in [0, 1] pass through unchanged (0.92 → 0.92)
     * values > 1 are treated as percentages and divided by 100
       (92 → 0.92, 92.0 → 0.92)
-    * negative / NaN / non-numeric → 0.5
+    * negative / NaN / non-numeric / None → None (INVALID_INPUT)
     """
     try:
         f = float(v)
     except Exception:
-        return 0.5
-    if f != f:
-        return 0.5
+        return None
+    if f != f:   # NaN
+        return None
+    if f < 0.0:
+        return None
     if f > 1.0:
         f = f / 100.0
-    return max(0.0, min(1.0, f))
+        # After the /100, still out of range → invalid.
+        if f > 1.0:
+            return None
+    return f
 
 
 def compute_v1_probability(pick: dict) -> float:
-    """Baseline deterministic probability.  All numbers normalised to
-    [0, 1] via ``_to_unit`` so mixed 0-1 / 0-100 inputs are safe.
+    """Baseline deterministic probability.  Cascades through candidate
+    sources; only a genuine None from ``_to_unit`` on ALL sources falls
+    back to 0.5 — a value present but invalid does NOT masquerade as
+    50%.  Downstream may still treat 0.5 as neutral for degradation.
     """
     for key in ("model_win_probability", "implied_probability", "win_probability"):
         v = pick.get(key)
         if isinstance(v, (int, float)) and v > 0:
-            return _to_unit(v)
+            u = _to_unit(v)
+            if u is not None:
+                return u
     return 0.5
 
 
@@ -125,10 +138,14 @@ def compute_v2_probability(pick: dict) -> float:
     """
     wp = pick.get("win_probability")
     if isinstance(wp, (int, float)) and wp > 0:
-        return _to_unit(wp)
+        u = _to_unit(wp)
+        if u is not None:
+            return u
     v2_lock = pick.get("lock_score_v2")
     if isinstance(v2_lock, (int, float)) and v2_lock > 0:
-        return _to_unit(v2_lock)
+        u = _to_unit(v2_lock)
+        if u is not None:
+            return u
     return compute_v1_probability(pick)
 
 
@@ -148,16 +165,21 @@ def compute_sim_probability(pick: dict) -> tuple[float, float, float]:
     stability_score = 1 - normalised CI width. A 95% CI of [0.79, 0.89]
     has width 0.10 → stability 0.90. Wide CI = unstable Monte Carlo.
     """
-    sim_p = pick.get("sim_win_probability")
-    if not isinstance(sim_p, (int, float)) or sim_p <= 0:
+    sim_p_raw = pick.get("sim_win_probability")
+    if not isinstance(sim_p_raw, (int, float)) or sim_p_raw <= 0:
         return compute_v2_probability(pick), 0.0, 0.0
-    sim_p = _to_unit(sim_p)
+    sim_p = _to_unit(sim_p_raw)
+    if sim_p is None:
+        # Sim prob present but INVALID — degrade to v2 (do not fake).
+        return compute_v2_probability(pick), 0.0, 0.0
     lo = pick.get("sim_ci_lower")
     hi = pick.get("sim_ci_upper")
     if isinstance(lo, (int, float)) and isinstance(hi, (int, float)) and hi > lo:
-        # CI values can be in 0-1 OR 0-100; normalise both endpoints.
         lo_u = _to_unit(lo); hi_u = _to_unit(hi)
-        ci_width = max(0.0, hi_u - lo_u)
+        if lo_u is None or hi_u is None:
+            ci_width = 0.10
+        else:
+            ci_width = max(0.0, hi_u - lo_u)
         variance = (ci_width / 4.0) ** 2   # rough back-out: 95% CI ≈ 4σ
         stability = max(0.0, min(1.0, 1.0 - ci_width))
     else:
