@@ -96,6 +96,134 @@ def _sgo_row_to_ingest_shape(sgo: dict) -> Optional[dict]:
     }
 
 
+async def _mark_route_reason(db, sgo: dict, reason_code: str) -> None:
+    """Attach a routing rejection reason on the SGO row without
+    revoking legitimate protections.  Idempotent — same reason is
+    added only once.  Does NOT touch ``lock_score`` / scoring fields.
+    """
+    try:
+        cur = list(sgo.get("off_board_reasons") or [])
+        if reason_code in cur:
+            return
+        cur.append(reason_code)
+        await db.picks.update_one(
+            {"id": sgo.get("id")},
+            {"$set": {"off_board_reasons": cur,
+                       "off_board": True,
+                       "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+    except Exception as _e:
+        logger.debug("mark_route_reason %s on %s failed: %s",
+                      reason_code, sgo.get("id"), _e)
+
+
+async def _score_mlb_sgo(db, sgo: dict, now_iso: str) -> Optional[dict]:
+    """Score a single SGO MLB row by REUSING the existing MLB
+    data-driven models in ``services.data_driven_model``.
+
+    Contract:
+      * No new MLB math, no random tilt, no fallback to book_implied
+        for unsupported markets.
+      * Totals →  ``mlb_total_prob``
+      * Hitter props (Hits / Total Bases / H+R+RBI / RBIs / Home Runs)
+        →  ``mlb_hitter_prob``
+      * Pitcher props (Strikeouts / Outs Recorded) → ``mlb_pitcher_prop_prob``
+      * Moneyline / Run Line have no dedicated MLB probability model
+        yet in Perklocks (see sports_engine.py L1252 comment) — we
+        return ``None`` and let the caller record
+        ``SGO_MLB_ML_MODEL_UNAVAILABLE`` instead of inventing a lift.
+      * If required context is unavailable, the DD models return
+        ``mp == implied`` (0 lift) — we treat that as no signal and
+        return ``None`` so the row is honestly counted as
+        ``mlb_context_unavailable``.
+
+    Returns a dict of scoring fields to $set onto the SGO row, or
+    ``None`` when routing/context/model are missing (caller counts
+    the specific bucket).
+    """
+    price = sgo.get("book_odds")
+    if not isinstance(price, (int, float)):
+        return None
+
+    p_int = int(price)
+    implied = 100.0 / (p_int + 100.0) if p_int > 0 else (-p_int) / (-p_int + 100.0)
+
+    mk = (sgo.get("market_key") or "").lower()
+    fam = (sgo.get("market_family") or "").lower()
+    market_label = sgo.get("market") or ""
+    line = sgo.get("line")
+    try:
+        line = float(line) if line is not None else None
+    except (TypeError, ValueError):
+        line = None
+    side_raw = (sgo.get("side") or "").lower()
+    side = "Over" if side_raw == "over" else "Under" if side_raw == "under" else side_raw.capitalize()
+
+    HITTER_KEYS = {"batter_hits", "batter_total_bases", "batter_hits_runs_rbis",
+                    "batter_rbis", "batter_home_runs"}
+    PITCHER_KEYS = {"pitcher_strikeouts", "pitcher_outs"}
+
+    ctx: dict = {}   # data-driven models tolerate empty ctx (0 lift).
+
+    try:
+        if fam == "game_market" and mk == "totals":
+            if line is None or side not in ("Over", "Under"):
+                return None
+            from services.data_driven_model import mlb_total_prob
+            res = mlb_total_prob(side, line, implied, ctx)
+            model_source = "data_driven_model.mlb_total_prob"
+        elif fam == "player_prop" and mk in HITTER_KEYS:
+            from services.data_driven_model import mlb_hitter_prob
+            res = mlb_hitter_prob(market_label, side, line if line is not None else 0.5,
+                                    implied, ctx)
+            model_source = "data_driven_model.mlb_hitter_prob"
+        elif fam == "player_prop" and mk in PITCHER_KEYS:
+            from services.data_driven_model import mlb_pitcher_prop_prob
+            res = mlb_pitcher_prop_prob(market_label, side, line if line is not None else 0.5,
+                                         implied, ctx)
+            model_source = "data_driven_model.mlb_pitcher_prop_prob"
+        else:
+            # Moneyline / spreads / unmapped keys — no dedicated MLB
+            # model.  Signal caller so it can tag SGO_MLB_ML_MODEL_UNAVAILABLE.
+            return {"_no_mlb_model_for_market": mk}
+    except Exception as _e:
+        logger.debug("mlb DD scorer failed for %s / %s: %s", mk, market_label, _e)
+        return None
+
+    if not isinstance(res, dict) or "mp" not in res:
+        return None
+    mp = float(res.get("mp") or 0.0)
+    total_lift = float(res.get("total_lift") or 0.0)
+    # No signal → don't publish a book-following pick as "scored".
+    if abs(total_lift) < 1e-4:
+        return None
+
+    win_prob   = round(mp * 100.0, 1)
+    edge_pct   = round((mp - implied) * 100.0, 2)
+
+    # Lock-Score ladder — mirrors production `sports_engine._backfill_tennis_moneylines`
+    # style ladder used elsewhere for pure-model rows.  No new formula.
+    if mp >= 0.85:   lock_score = 96.0
+    elif mp >= 0.75: lock_score = 92.0
+    elif mp >= 0.65: lock_score = 88.0
+    elif mp >= 0.55: lock_score = 82.0
+    elif mp >= 0.50: lock_score = 76.0
+    else:            lock_score = 70.0
+
+    return {
+        "model_probability":    round(mp, 4),
+        "model_win_prob":       round(mp, 4),
+        "win_probability":      win_prob,
+        "edge_percent":         edge_pct,
+        "implied_probability":  round(implied * 100.0, 3),
+        "lock_score":           lock_score,
+        "published_lock_score": lock_score,
+        "model_source":         model_source,
+        "data_driven_used":     True,
+        "data_driven_contribs": dict(res.get("contributions") or {}),
+    }
+
+
 async def _score_tennis_sgo(db, sgo: dict, now_iso: str) -> Optional[dict]:
     """Score a single SGO Tennis row by REUSING the existing production
     Tennis scorer ``services.tennis_math_engine.score_tennis_matchup``.
@@ -251,7 +379,10 @@ async def score_pending_sgo_rows(db, *, limit: int = 500) -> dict:
               "by_sport": {"MLB": 0, "Soccer": 0, "Tennis": 0},
               "skipped": 0, "errors": 0,
               "published": 0, "publish_errors": 0,
-              "tennis_context_unavailable": 0}
+              "tennis_context_unavailable": 0,
+              "mlb_context_unavailable": 0,
+              "mlb_ml_model_unavailable": 0,
+              "unsupported_sport_route": 0}
 
     # ── PERKLOCKS DOWNSTREAM PUBLICATION WIRING (2026-06) ────────────
     # After the SGO row receives its real sport-model score, it MUST
@@ -295,16 +426,19 @@ async def score_pending_sgo_rows(db, *, limit: int = 500) -> dict:
             counts["scanned"] += 1
             sport = sgo.get("sport")
 
-            # ── PERKLOCKS SGO TENNIS WIRING (2026-06) ────────────────
-            # Tennis production scoring lives in
-            # ``services.tennis_math_engine.score_tennis_matchup``
-            # (Elo-based). The Odds-API-family caller is
-            # ``sports_engine.py`` around line 1299 — same call
-            # signature reused here so SGO Tennis rows converge on
-            # the EXACT SAME Tennis intelligence. No new formulas,
-            # no fallback / self-heal.
-            if sport == "Tennis" \
-                    and sgo.get("market_family") == "game_market":
+            # ── PERKLOCKS UNIVERSAL SPORT ROUTING (2026-06) ──────────
+            # Explicit sport-aware routing.  Every supported sport
+            # goes to its OWN production scorer.  No Soccer
+            # fallthrough — unknown sports fail closed with
+            # ``SGO_UNSUPPORTED_SPORT_ROUTE`` rather than getting
+            # scored by the Soccer game model.
+            if sport == "Tennis":
+                if sgo.get("market_family") != "game_market":
+                    # No dedicated Tennis scorer for spreads / totals /
+                    # player props on SGO rows — quarantine honestly.
+                    await _mark_route_reason(db, sgo, "SGO_UNSUPPORTED_SPORT_ROUTE")
+                    counts["unsupported_sport_route"] += 1
+                    continue
                 res = await _score_tennis_sgo(db, sgo, now_iso)
                 if res is None:
                     counts["tennis_context_unavailable"] += 1
@@ -312,11 +446,6 @@ async def score_pending_sgo_rows(db, *, limit: int = 500) -> dict:
                 update = res
                 update["updated_at"] = now_iso
                 update["scored_by"]  = "sport_model"
-                # ── Stale scoring-reason recompute (Tennis) ─────────────
-                # Same rule as the general branch below: only strip
-                # provably stale scoring reasons when the real Tennis
-                # model has produced a valid probability. Do NOT clear
-                # legitimate protections.
                 model_prob_out = update.get("model_probability") or 0
                 lock_out       = update.get("lock_score") or 0
                 if isinstance(model_prob_out, (int, float)) and model_prob_out > 0:
@@ -342,6 +471,59 @@ async def score_pending_sgo_rows(db, *, limit: int = 500) -> dict:
                                   sgo.get("id"), _e)
                 continue
 
+            if sport == "MLB":
+                res = await _score_mlb_sgo(db, sgo, now_iso)
+                if res is None:
+                    counts["mlb_context_unavailable"] += 1
+                    continue
+                if res.get("_no_mlb_model_for_market"):
+                    await _mark_route_reason(db, sgo, "SGO_MLB_ML_MODEL_UNAVAILABLE")
+                    counts["mlb_ml_model_unavailable"] += 1
+                    continue
+                update = res
+                update["updated_at"] = now_iso
+                update["scored_by"]  = "sport_model"
+                model_prob_out = update.get("model_probability") or 0
+                lock_out       = update.get("lock_score") or 0
+                if isinstance(model_prob_out, (int, float)) and model_prob_out > 0:
+                    orig_reasons = list(sgo.get("off_board_reasons") or [])
+                    # Strip ONLY stale routing/scoring reasons caused by
+                    # the prior wrong Soccer route.  Legitimate reasons
+                    # (PLAYER_IDENTITY_UNRESOLVED, MLB_PARTIAL_PERIOD_
+                    # MISLABELED, no_real_book_line, no_bet, synthetic,
+                    # validation_block, expired event) are preserved.
+                    STALE_MLB_ROUTING = {
+                        "NO_MODEL_PROBABILITY", "lock<85", "grade='Pass'",
+                        "NO_TEAM_CONTEXT", "TEAM_CONTEXT_UNAVAILABLE",
+                        "soccer_model_error",
+                    }
+                    new_reasons = [r for r in orig_reasons if r not in STALE_MLB_ROUTING]
+                    if len(new_reasons) != len(orig_reasons):
+                        update["off_board_reasons"] = new_reasons
+                        if not new_reasons and lock_out >= 85:
+                            update["off_board"] = False
+                try:
+                    await db.picks.update_one(
+                        {"id": sgo.get("id")}, {"$set": update},
+                    )
+                    counts["scored"] += 1
+                    counts["by_sport"]["MLB"] += 1
+                    await _publish_scored(sgo, update)
+                except Exception as _e:
+                    counts["errors"] += 1
+                    logger.debug("sgo mlb upsert %s failed: %s",
+                                  sgo.get("id"), _e)
+                continue
+
+            if sport != "Soccer":
+                # NFL / NBA / other unmapped sports: NO existing production
+                # scorer wired for SGO rows.  Fail closed — do NOT route
+                # into Soccer.
+                await _mark_route_reason(db, sgo, "SGO_UNSUPPORTED_SPORT_ROUTE")
+                counts["unsupported_sport_route"] += 1
+                continue
+
+            # ── Soccer route (unchanged production path) ────────────
             row = _sgo_row_to_ingest_shape(sgo)
             if not row:
                 counts["skipped"] += 1
@@ -424,6 +606,60 @@ async def score_pending_sgo_rows(db, *, limit: int = 500) -> dict:
                               sgo.get("id"), _e)
     except Exception as _e:
         logger.warning("sgo score pass failed: %s", _e)
+
+    # ── PERKLOCKS SGO MLB WRONG-SOCCER-ROUTE RECOVERY (2026-06) ──────
+    # Reset scoring artifacts on current/future SGO MLB rows that were
+    # previously scored through the Soccer game-model path so they
+    # re-enter the correct MLB scorer on the next pass. We
+    # deliberately EXCLUDE rows with legitimate protections
+    # (PLAYER_IDENTITY_UNRESOLVED / MLB_PARTIAL_PERIOD_MISLABELED /
+    # no_real_book_line / no_bet / synthetic / validation_block /
+    # expired event / finished game) — those stay off-board.
+    try:
+        LEGIT_MLB_PROTECTIONS = {
+            "PLAYER_IDENTITY_UNRESOLVED", "MLB_PARTIAL_PERIOD_MISLABELED",
+            "no_real_book_line", "synthetic", "validation_block",
+            "expired_event", "SGO_UNSUPPORTED_SPORT_ROUTE",
+        }
+        mlb_recover_q = {
+            "source": "sportsgameodds_v2",
+            "sport": "MLB",
+            "model_source": "soccer_game_model",
+            "$or": [
+                {"event_time": {"$gte": now_iso}},
+                {"event_time": {"$exists": False}},
+            ],
+        }
+        n_reset = 0
+        async for sgo_mlb in db.picks.find(mlb_recover_q).limit(limit):
+            reasons = set(sgo_mlb.get("off_board_reasons") or [])
+            if reasons & LEGIT_MLB_PROTECTIONS:
+                # Legitimate blocker present — do NOT revive.
+                continue
+            if sgo_mlb.get("no_bet") is True:
+                continue
+            # Wipe scoring so the main loop picks it up next time.
+            await db.picks.update_one(
+                {"id": sgo_mlb.get("id")},
+                {"$set": {
+                    "lock_score": None,
+                    "published_lock_score": None,
+                    "model_probability": None,
+                    "model_source": None,
+                    "scored_by": None,
+                    "off_board": False,
+                    "off_board_reasons": [],
+                    "publication_state": None,
+                    "updated_at": now_iso,
+                }},
+            )
+            n_reset += 1
+        if n_reset:
+            counts["mlb_recovered_for_rescoring"] = n_reset
+            logger.info("SGO MLB recovery: reset %d rows for re-scoring",
+                         n_reset)
+    except Exception as _rec_err:
+        logger.warning("sgo mlb recovery failed: %s", _rec_err)
 
     # ── PERKLOCKS DOWNSTREAM BACKFILL (2026-06) ──────────────────────
     # Publish already-scored SGO rows that still lack canonical
