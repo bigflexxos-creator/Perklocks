@@ -315,6 +315,16 @@ def _side_and_selection(o: dict, teams: dict, players: dict,
         which = teams.get(side_raw) if side_raw in ("home", "away") else None
         team_name = (which or {}).get("names", {}).get("long") if which else None
         if team_name and line is not None:
+            # ── AH0 / Draw-No-Bet clarity fix (2026-06) ──────────
+            # Asian Handicap ±0 is functionally Draw No Bet on
+            # 1X2 sports (Soccer).  Users find "TEAM +0" confusing.
+            # When the line is exactly 0 and this row was mapped as
+            # Asian Handicap (Soccer only via the market map), the
+            # caller re-labels this to "TEAM — Draw No Bet" via the
+            # post-return branch in ``normalize_event``.  We still
+            # keep the raw ``line=0.0`` on the row so downstream
+            # settlement / grading logic that depends on the numeric
+            # handicap value is unchanged.
             selection = f"{team_name} {line:+g}"
             market_label = f"{canonical_label} {team_name} {line:+g}"
         elif team_name:
@@ -325,6 +335,17 @@ def _side_and_selection(o: dict, teams: dict, players: dict,
             selection = which.get("names", {}).get("long")
         elif side_raw == "draw":
             selection = "Draw"
+        # ── Actionable-selection display fix (2026-06) ──────────────
+        # Odds-API canonical card contract uses
+        # ``market = f"{selection} Moneyline"`` so LockPickCard
+        # renders "Taylor Fritz Moneyline" not just "Moneyline".
+        # SGO previously emitted market_label='Moneyline' losing the
+        # picked-side identity.  We prepend the selection when we
+        # have one and the row is a real ML/ml3way team pick.
+        if selection and selection != "Draw":
+            market_label = f"{selection} Moneyline"
+        elif selection == "Draw":
+            market_label = f"{canonical_label} - Draw"
     elif bet_type == "yn":
         pl = players.get(sent) or {}
         pname = pl.get("name") \
@@ -402,6 +423,46 @@ def normalize_event(ev: dict) -> list[dict]:
         )
         if not selection:
             continue
+
+        # ── MLB full-game market sanity gate (2026-06) ───────────────
+        # SGO occasionally emits partial-period MLB totals / spreads
+        # with ``periodID='game'`` but a line that is impossible for a
+        # true full-game market (e.g. ``Total Runs Under 4.5`` when
+        # actual full-game MLB totals are 6.5-11.5, or ``Run Line -3.5``
+        # when actual full-game MLB run lines are almost always ±1.5).
+        # Rather than infer / rewrite the line we quarantine (skip)
+        # the row so it never gets published as a full-game market.
+        # See PERKLOCKS market integrity mandate — do NOT manufacture
+        # or reshape lines; only publish rows we can prove represent
+        # the intended full-game market.
+        if sport == "MLB" and market_family == "game_market" and not is_player:
+            try:
+                _ln = float(line) if line is not None else None
+            except (TypeError, ValueError):
+                _ln = None
+            if _ln is not None:
+                # Full-game runs totals: typical range 6.0-12.0.
+                if canonical_key == "totals" and _ln < 6.0:
+                    continue
+                # Full-game run line: essentially always exactly ±1.5.
+                # Anything with |line|>=2.5 is a period/alt masquerading
+                # as full-game.
+                if canonical_key == "spreads" and abs(_ln) >= 2.5:
+                    continue
+
+        # ── Soccer Asian Handicap ±0 → Draw No Bet re-label (2026-06)
+        # AH0 is functionally identical to DNB on 1X2 markets and
+        # users find "TEAM +0" confusing.  We only re-label the
+        # display fields — ``line`` / ``market_key`` / ``market_family``
+        # stay intact so downstream settlement math is unaffected.
+        if (sport == "Soccer" and canonical_key == "spreads"
+                and line is not None and abs(float(line)) < 1e-9):
+            team_side = teams.get(side) if side in ("home", "away") else None
+            _tname = (team_side or {}).get("names", {}).get("long") \
+                if team_side else None
+            if _tname:
+                selection = f"{_tname} — Draw No Bet"
+                market_label = f"{_tname} — Draw No Bet"
 
         # Player identity — ONLY for player markets.
         player_name: Optional[str] = None
