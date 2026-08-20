@@ -102,14 +102,21 @@ _MARKET_MAP_MLB_GAME: dict[tuple[str, str, str], tuple[str, str, str]] = {
     ("points", "ou",     "game"): ("Total Runs",      "totals",    "game_market"),
 }
 _MARKET_MAP_MLB_PLAYER: dict[tuple[str, str, str], tuple[str, str, str]] = {
-    ("batting_hits",           "ou", "game"): ("Hits",              "player_prop", "player_prop"),
-    ("batting_totalBases",     "ou", "game"): ("Total Bases",       "player_prop", "player_prop"),
-    ("batting_hits+runs+rbi",  "ou", "game"): ("Hits + Runs + RBIs","player_prop", "player_prop"),
-    ("batting_RBI",            "ou", "game"): ("RBIs",              "player_prop", "player_prop"),
-    ("batting_homeRuns",       "ou", "game"): ("Home Runs",         "player_prop", "player_prop"),
-    ("batting_homeRuns",       "yn", "game"): ("Home Run",          "player_prop", "player_prop"),
-    ("pitching_strikeouts",    "ou", "game"): ("Strikeouts",        "player_prop", "player_prop"),
-    ("pitching_outs",          "ou", "game"): ("Outs Recorded",     "player_prop", "player_prop"),
+    # ── PERKLOCKS UNIVERSAL SPORT ROUTING (2026-06) ──────────────────
+    # Emit sport-specific canonical market_keys (not the generic
+    # ``player_prop``) so the existing MLB data-driven scorers
+    # (``mlb_hitter_prob`` / ``mlb_pitcher_prop_prob``) can dispatch
+    # correctly.  Family stays ``player_prop`` because the ingest
+    # publication path buckets on family; the sport model dispatch
+    # keys on ``market_key``.
+    ("batting_hits",           "ou", "game"): ("Hits",              "batter_hits",           "player_prop"),
+    ("batting_totalBases",     "ou", "game"): ("Total Bases",       "batter_total_bases",    "player_prop"),
+    ("batting_hits+runs+rbi",  "ou", "game"): ("Hits + Runs + RBIs","batter_hits_runs_rbis", "player_prop"),
+    ("batting_RBI",            "ou", "game"): ("RBIs",              "batter_rbis",           "player_prop"),
+    ("batting_homeRuns",       "ou", "game"): ("Home Runs",         "batter_home_runs",      "player_prop"),
+    ("batting_homeRuns",       "yn", "game"): ("Home Run",          "batter_home_runs",      "player_prop"),
+    ("pitching_strikeouts",    "ou", "game"): ("Strikeouts",        "pitcher_strikeouts",    "player_prop"),
+    ("pitching_outs",          "ou", "game"): ("Outs Recorded",     "pitcher_outs",          "player_prop"),
 }
 _MARKET_MAP_SOCCER_GAME: dict[tuple[str, str, str], tuple[str, str, str]] = {
     ("points", "ml3way", "reg"):  ("Match Result (1X2)", "h2h",     "game_market"),
