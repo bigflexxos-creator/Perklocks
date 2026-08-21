@@ -646,14 +646,24 @@ async def score_pending_sgo_rows(db, *, limit: int = 500) -> dict:
             # ``SGO_UNSUPPORTED_SPORT_ROUTE`` rather than getting
             # scored by the Soccer game model.
             if sport == "Tennis":
-                if sgo.get("market_family") != "game_market":
-                    # No dedicated Tennis scorer for spreads / totals /
-                    # player props on SGO rows — quarantine honestly.
-                    await _mark_route_reason(db, sgo, "SGO_UNSUPPORTED_SPORT_ROUTE")
+                # Only Tennis Moneyline has an existing production
+                # scorer (services.tennis_math_engine.score_tennis_matchup).
+                # Everything else (spreads / totals / player props)
+                # has NO production model — fail closed with an
+                # explicit reason so nothing is silently dropped.
+                mk_tennis = (sgo.get("market_key") or "").lower()
+                is_ml = ("moneyline" in mk_tennis) or (mk_tennis in ("h2h",))
+                if sgo.get("market_family") != "game_market" or not is_ml:
+                    await _mark_route_reason(
+                        db, sgo, "SGO_TENNIS_MARKET_UNSUPPORTED",
+                    )
                     counts["unsupported_sport_route"] += 1
                     continue
                 res = await _score_tennis_sgo(db, sgo, now_iso)
                 if res is None:
+                    await _mark_route_reason(
+                        db, sgo, "SGO_TENNIS_CONTEXT_UNAVAILABLE",
+                    )
                     counts["tennis_context_unavailable"] += 1
                     continue
                 update = res
@@ -687,6 +697,11 @@ async def score_pending_sgo_rows(db, *, limit: int = 500) -> dict:
             if sport == "MLB":
                 res = await _score_mlb_sgo(db, sgo, now_iso)
                 if res is None:
+                    # Explicit stamp so context-unavailable rows are
+                    # not silent — same taxonomy as the counter.
+                    await _mark_route_reason(
+                        db, sgo, "SGO_MLB_CONTEXT_UNAVAILABLE",
+                    )
                     counts["mlb_context_unavailable"] += 1
                     continue
                 if res.get("_no_mlb_model_for_market"):
