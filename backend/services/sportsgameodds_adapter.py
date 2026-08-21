@@ -128,13 +128,20 @@ _MARKET_MAP_SOCCER_GAME: dict[tuple[str, str, str], tuple[str, str, str]] = {
     ("points", "yn",     "reg"):  ("Both Teams To Score","btts",    "game_market"),
 }
 _MARKET_MAP_SOCCER_PLAYER: dict[tuple[str, str, str], tuple[str, str, str]] = {
-    ("goals",           "yn", "reg"):  ("Anytime Goal Scorer",  "player_prop", "player_prop"),
-    ("goals",           "yn", "game"): ("Anytime Goal Scorer",  "player_prop", "player_prop"),
-    ("goals+assists",   "yn", "reg"):  ("To Score or Assist",   "player_prop", "player_prop"),
-    ("goals+assists",   "yn", "game"): ("To Score or Assist",   "player_prop", "player_prop"),
-    ("assists",         "yn", "reg"):  ("Anytime Assist",       "player_prop", "player_prop"),
-    ("shots",           "ou", "reg"):  ("Shots",                "player_prop", "player_prop"),
-    ("shotsOnTarget",   "ou", "reg"):  ("Shots on Target",      "player_prop", "player_prop"),
+    # ── PERKLOCKS SGO FLOW CLOSURE (2026-06) ─────────────────────────
+    # Preserve canonical sport-specific market_keys so the refresh
+    # orchestrator's family classifier (services.pick_refresh_
+    # orchestrator._classify_pick_family) and the Soccer scorer
+    # dispatch see the correct identity.  Family stays
+    # ``player_prop`` because publication buckets on family; the
+    # scorer keys on ``market_key``.
+    ("goals",           "yn", "reg"):  ("Anytime Goal Scorer",  "soccer_anytime_scorer",   "player_prop"),
+    ("goals",           "yn", "game"): ("Anytime Goal Scorer",  "soccer_anytime_scorer",   "player_prop"),
+    ("goals+assists",   "yn", "reg"):  ("To Score or Assist",   "soccer_score_or_assist",  "player_prop"),
+    ("goals+assists",   "yn", "game"): ("To Score or Assist",   "soccer_score_or_assist",  "player_prop"),
+    ("assists",         "yn", "reg"):  ("Anytime Assist",       "soccer_anytime_assist",   "player_prop"),
+    ("shots",           "ou", "reg"):  ("Shots",                "soccer_shots",            "player_prop"),
+    ("shotsOnTarget",   "ou", "reg"):  ("Shots on Target",      "soccer_shots_on_target",  "player_prop"),
 }
 _MARKET_MAP_TENNIS_GAME: dict[tuple[str, str, str], tuple[str, str, str]] = {
     ("points", "ml",     "game"): ("Moneyline",   "moneyline", "game_market"),
