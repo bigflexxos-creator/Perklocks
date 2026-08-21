@@ -96,6 +96,50 @@ def _sgo_row_to_ingest_shape(sgo: dict) -> Optional[dict]:
     }
 
 
+# ── SGO MLB context cache (PERKLOCKS surgical closure, 2026-06) ────
+# Small module-level TTL cache so multiple sportsbook duplicates of
+# the same MLB game share one ``build_mlb_game_context`` fetch.
+# 15-min TTL — matches the SGO ingest cadence.
+import time as _time_mod
+_MLB_CTX_CACHE: dict[tuple, tuple[float, dict]] = {}
+_MLB_CTX_TTL_S = 900.0
+
+
+async def _get_mlb_game_ctx(db, home: str, away: str,
+                              event_time: Optional[str],
+                              event_id: Optional[str]) -> Optional[dict]:
+    """Fetch (or reuse cached) MLB game context for the SGO row using
+    the EXISTING ``services.game_context.build_mlb_game_context``
+    helper.  Never manufactures data — returns ``None`` on error and
+    the caller falls back to empty ctx (models produce 0 lift and
+    the row honestly counts as ``mlb_context_unavailable``).
+    """
+    if not home or not away:
+        return None
+    key = (home.lower(), away.lower(), (event_time or "")[:10])
+    hit = _MLB_CTX_CACHE.get(key)
+    if hit and (_time_mod.time() - hit[0]) < _MLB_CTX_TTL_S:
+        return hit[1]
+    try:
+        from services.game_context import build_mlb_game_context
+        game = {
+            "home_team":     home,
+            "away_team":     away,
+            "commence_time": event_time,
+            "id":            event_id or "",
+            "external_id":   event_id or "",
+        }
+        ctx = await build_mlb_game_context(game)
+        if not isinstance(ctx, dict):
+            ctx = {}
+        _MLB_CTX_CACHE[key] = (_time_mod.time(), ctx)
+        return ctx
+    except Exception as _e:
+        logger.debug("build_mlb_game_context failed for %s @ %s: %s",
+                      away, home, _e)
+        return None
+
+
 async def _mark_route_reason(db, sgo: dict, reason_code: str) -> None:
     """Attach a routing rejection reason on the SGO row without
     revoking legitimate protections.  Idempotent — same reason is
@@ -115,6 +159,127 @@ async def _mark_route_reason(db, sgo: dict, reason_code: str) -> None:
     except Exception as _e:
         logger.debug("mark_route_reason %s on %s failed: %s",
                       reason_code, sgo.get("id"), _e)
+
+
+def _project_mlb_pick_ctx(game_ctx: dict, sgo: dict,
+                            fam: str, mk: str) -> dict:
+    """Project the game-level MLB context (as returned by
+    ``build_mlb_game_context``) into the per-pick ctx shape that the
+    ``data_driven_model`` MLB functions expect.  This is a pure
+    projection — no new math, no synthesized fields.  When a
+    field is not present in ``game_ctx`` it is simply omitted, so
+    the DD models fall back to "no signal" for that factor.
+
+    Same convention used in the Odds-API MLB pipeline in
+    ``sports_engine.py`` around L5275 (`_hb = _hitters.get(...)`).
+    """
+    if not isinstance(game_ctx, dict):
+        return {}
+    if fam == "game_market" and mk == "totals":
+        # mlb_total_prob reads directly from game-level fields —
+        # pass through untouched.
+        return game_ctx
+
+    pctx: dict = {"weather": game_ctx.get("weather") or {}}
+    home_team = game_ctx.get("home_team") or ""
+    away_team = game_ctx.get("away_team") or ""
+
+    if fam == "player_prop" and mk in {"batter_hits", "batter_total_bases",
+                                          "batter_hits_runs_rbis",
+                                          "batter_rbis", "batter_home_runs"}:
+        player = str(sgo.get("player_name") or "").strip().lower()
+        hitters = game_ctx.get("hitters") or {}
+        hb = hitters.get(player) or {}
+        sc = hb.get("statcast") or {}
+        bstats: dict = {}
+        if isinstance(sc.get("xwoba"), (int, float)):
+            bstats["xwoba"] = sc["xwoba"]
+        if isinstance(sc.get("barrel_pct"), (int, float)):
+            bstats["barrel_pct"] = sc["barrel_pct"]
+        if isinstance(sc.get("xba"), (int, float)):
+            bstats["xba"] = sc["xba"]
+        # hr_per_pa isn't in statcast but the batter row may carry it
+        if isinstance(hb.get("hr_per_pa"), (int, float)):
+            bstats["hr_per_pa"] = hb["hr_per_pa"]
+        if bstats:
+            pctx["batter_stats"] = bstats
+        # Batter hand — sometimes 'bats', sometimes 'hand'.
+        bh = hb.get("bats") or hb.get("hand")
+        if bh:
+            pctx["batter_hand"] = bh
+        # Opposing pitcher hand
+        pctx["pitcher_hand"] = hb.get("opp_pitcher_hand")
+        # Park HR by hand — fall back to plain park_hr_factor if
+        # the per-hand slice isn't populated (same fallback the
+        # sports_engine.py pipeline uses).
+        park_hand = game_ctx.get("park_hr_hand_factor")
+        if isinstance(park_hand, (int, float)):
+            pctx["park_hr_hand_factor"] = park_hand
+        elif isinstance(game_ctx.get("park_hr_factor"), (int, float)):
+            pctx["park_hr_hand_factor"] = game_ctx["park_hr_factor"]
+        # Opposing pitcher stats (for HR-context lift)
+        opp_pname = (hb.get("opp_pitcher_name") or "").strip()
+        is_home = bool(hb.get("is_home"))
+        opp_sp = game_ctx.get("starting_pitcher_away") if is_home \
+            else game_ctx.get("starting_pitcher_home")
+        opp_sp = opp_sp or {}
+        sp_sc = opp_sp.get("statcast") or {}
+        pstats: dict = {}
+        if isinstance(sp_sc.get("xera"), (int, float)):
+            pstats["xERA"] = sp_sc["xera"]
+        if isinstance(sp_sc.get("xwoba_against"), (int, float)):
+            pstats["xwoba_allowed"] = sp_sc["xwoba_against"]
+        if isinstance(opp_sp.get("hr_per_9"), (int, float)):
+            pstats["hr_allowed_9"] = opp_sp["hr_per_9"]
+        elif isinstance(opp_sp.get("hr9"), (int, float)):
+            pstats["hr_allowed_9"] = opp_sp["hr9"]
+        if isinstance(opp_sp.get("stuff_plus"), (int, float)):
+            pstats["stuff_plus"] = opp_sp["stuff_plus"]
+        if pstats:
+            pctx["pitcher_stats"] = pstats
+        return pctx
+
+    if fam == "player_prop" and mk in {"pitcher_strikeouts", "pitcher_outs"}:
+        # Locate the starting pitcher for the pick's player_team.
+        pteam = str(sgo.get("player_team") or "").strip().lower()
+        sp_h = game_ctx.get("starting_pitcher_home") or {}
+        sp_a = game_ctx.get("starting_pitcher_away") or {}
+        if pteam and pteam == home_team.strip().lower():
+            sp = sp_h
+        elif pteam and pteam == away_team.strip().lower():
+            sp = sp_a
+        else:
+            # Fallback: match by name.
+            pname_l = str(sgo.get("player_name") or "").strip().lower()
+            if (sp_h.get("name") or "").strip().lower() == pname_l:
+                sp = sp_h
+            elif (sp_a.get("name") or "").strip().lower() == pname_l:
+                sp = sp_a
+            else:
+                sp = {}
+        sc = sp.get("statcast") or {}
+        pstats: dict = {}
+        if isinstance(sp.get("k_pct"), (int, float)):
+            pstats["k_pct"] = sp["k_pct"]
+        if isinstance(sc.get("xera"), (int, float)):
+            pstats["xERA"] = sc["xera"]
+        if isinstance(sc.get("xwoba_against"), (int, float)):
+            pstats["xwoba_allowed"] = sc["xwoba_against"]
+        if isinstance(sp.get("stuff_plus"), (int, float)):
+            pstats["stuff_plus"] = sp["stuff_plus"]
+        if pstats:
+            pctx["pitcher_stats"] = pstats
+        if isinstance(sp.get("ip_per_start"), (int, float)):
+            pctx["pitcher_stamina_ip_avg"] = sp["ip_per_start"]
+        if isinstance(sp.get("opp_k_pct"), (int, float)):
+            # opp_k_pct in game_ctx is 0-1 fraction; DD model expects
+            # a %-style value (22 for 22%).  Same normalisation the
+            # sports_engine.py pipeline does when calling this model.
+            opk = float(sp["opp_k_pct"])
+            pctx["opposing_lineup_k_pct"] = opk * 100.0 if opk <= 1.0 else opk
+        return pctx
+
+    return pctx
 
 
 async def _score_mlb_sgo(db, sgo: dict, now_iso: str) -> Optional[dict]:
@@ -163,24 +328,58 @@ async def _score_mlb_sgo(db, sgo: dict, now_iso: str) -> Optional[dict]:
                     "batter_rbis", "batter_home_runs"}
     PITCHER_KEYS = {"pitcher_strikeouts", "pitcher_outs"}
 
-    ctx: dict = {}   # data-driven models tolerate empty ctx (0 lift).
+    # ── PERKLOCKS SGO MLB SURGICAL CLOSURE (2026-06) ─────────────────
+    # Reuse the EXISTING production MLB context builder + identity
+    # resolver.  No new helpers, no source-tagged branches.  The
+    # ctx builder is cached per (home, away, date) so sportsbook
+    # duplicates of the same game don't fan out to 20 StatsAPI
+    # round-trips.  The player resolver already caches by
+    # (sport, name, team) inside pick_identity_authority.
+    ctx = await _get_mlb_game_ctx(
+        db, sgo.get("home_team") or "", sgo.get("away_team") or "",
+        sgo.get("event_time"), sgo.get("event_id"),
+    )
+    if ctx is None:
+        ctx = {}
+    # Project the game-level ctx into the per-pick ctx the DD models
+    # expect.  Same mapping the Odds-API MLB pipeline uses inline.
+    pick_ctx = _project_mlb_pick_ctx(ctx, sgo, fam, mk)
+
+    # Player identity — source-agnostic resolver (queries db.players +
+    # db.player_game_actuals).  We only stamp the canonical id back
+    # onto the SGO row if resolution succeeds AUTHORITATIVELY.
+    pname = sgo.get("player_name")
+    pteam = sgo.get("player_team")
+    resolved_pid: Optional[str] = None
+    resolved_class: str = ""
+    if pname and fam == "player_prop":
+        try:
+            from services.pick_identity_authority import (
+                resolve_player_authoritative,
+            )
+            resolved_pid, resolved_class = await resolve_player_authoritative(
+                db, sport="MLB", name=pname, team_hint=pteam,
+            )
+        except Exception as _id_err:
+            logger.debug("sgo mlb identity resolve failed for %s: %s",
+                          pname, _id_err)
 
     try:
         if fam == "game_market" and mk == "totals":
             if line is None or side not in ("Over", "Under"):
                 return None
             from services.data_driven_model import mlb_total_prob
-            res = mlb_total_prob(side, line, implied, ctx)
+            res = mlb_total_prob(side, line, implied, pick_ctx)
             model_source = "data_driven_model.mlb_total_prob"
         elif fam == "player_prop" and mk in HITTER_KEYS:
             from services.data_driven_model import mlb_hitter_prob
             res = mlb_hitter_prob(market_label, side, line if line is not None else 0.5,
-                                    implied, ctx)
+                                    implied, pick_ctx)
             model_source = "data_driven_model.mlb_hitter_prob"
         elif fam == "player_prop" and mk in PITCHER_KEYS:
             from services.data_driven_model import mlb_pitcher_prop_prob
             res = mlb_pitcher_prop_prob(market_label, side, line if line is not None else 0.5,
-                                         implied, ctx)
+                                         implied, pick_ctx)
             model_source = "data_driven_model.mlb_pitcher_prop_prob"
         else:
             # Moneyline / spreads / unmapped keys — no dedicated MLB
@@ -201,14 +400,22 @@ async def _score_mlb_sgo(db, sgo: dict, now_iso: str) -> Optional[dict]:
     win_prob   = round(mp * 100.0, 1)
     edge_pct   = round((mp - implied) * 100.0, 2)
 
-    # Lock-Score ladder — mirrors production `sports_engine._backfill_tennis_moneylines`
-    # style ladder used elsewhere for pure-model rows.  No new formula.
-    if mp >= 0.85:   lock_score = 96.0
-    elif mp >= 0.75: lock_score = 92.0
-    elif mp >= 0.65: lock_score = 88.0
-    elif mp >= 0.55: lock_score = 82.0
-    elif mp >= 0.50: lock_score = 76.0
-    else:            lock_score = 70.0
+    # ── Lock Score via the EXISTING production formula ───────────────
+    # ``sports_engine.compute_lock_score`` incorporates edge into the
+    # score so chalky picks with negative edge don't inherit a 96
+    # from a pure ladder.  Same call the MLB Odds-API pipeline uses
+    # (sports_engine.py L1421 area).  No new formula.
+    try:
+        from sports_engine import compute_lock_score
+        lock_score, _factors_norm = compute_lock_score(
+            {}, win_prob=win_prob, edge_percent=edge_pct,
+        )
+    except Exception as _e:
+        logger.debug("compute_lock_score failed on MLB SGO row: %s", _e)
+        # Extremely defensive fallback — should not fire in practice.
+        lock_score = None
+    if lock_score is None:
+        return None
 
     return {
         "model_probability":    round(mp, 4),
@@ -221,6 +428,12 @@ async def _score_mlb_sgo(db, sgo: dict, now_iso: str) -> Optional[dict]:
         "model_source":         model_source,
         "data_driven_used":     True,
         "data_driven_contribs": dict(res.get("contributions") or {}),
+        # ── PERKLOCKS SGO MLB identity attach (surgical closure) ─────
+        # Only stamp canonical id if the source-agnostic resolver
+        # returned an AUTHORITATIVE match.  MAPPED / UNRESOLVED do
+        # NOT clear the identity gate.
+        "_resolved_player_id":     resolved_pid,
+        "_resolved_identity_class": resolved_class or None,
     }
 
 
@@ -480,24 +693,42 @@ async def score_pending_sgo_rows(db, *, limit: int = 500) -> dict:
                     await _mark_route_reason(db, sgo, "SGO_MLB_ML_MODEL_UNAVAILABLE")
                     counts["mlb_ml_model_unavailable"] += 1
                     continue
+                # Peel identity fields out of the score result — we
+                # want them on the DB row (canonical player id) but
+                # not passed through the publication payload as-is.
+                _rpid  = res.pop("_resolved_player_id", None)
+                _rcls  = res.pop("_resolved_identity_class", None)
                 update = res
                 update["updated_at"] = now_iso
                 update["scored_by"]  = "sport_model"
+                if _rpid:
+                    update["player_id"] = _rpid
+                    update["identity_class"] = _rcls
                 model_prob_out = update.get("model_probability") or 0
                 lock_out       = update.get("lock_score") or 0
                 if isinstance(model_prob_out, (int, float)) and model_prob_out > 0:
                     orig_reasons = list(sgo.get("off_board_reasons") or [])
-                    # Strip ONLY stale routing/scoring reasons caused by
-                    # the prior wrong Soccer route.  Legitimate reasons
-                    # (PLAYER_IDENTITY_UNRESOLVED, MLB_PARTIAL_PERIOD_
-                    # MISLABELED, no_real_book_line, no_bet, synthetic,
+                    # Strip stale routing/scoring reasons caused by
+                    # the prior wrong Soccer route.  Also clear
+                    # PLAYER_IDENTITY_UNRESOLVED ONLY when we now
+                    # have an AUTHORITATIVE canonical player id from
+                    # the source-agnostic resolver.  Legitimate
+                    # protections (MLB_PARTIAL_PERIOD_MISLABELED,
+                    # no_real_book_line, no_bet, synthetic,
                     # validation_block, expired event) are preserved.
                     STALE_MLB_ROUTING = {
                         "NO_MODEL_PROBABILITY", "lock<85", "grade='Pass'",
                         "NO_TEAM_CONTEXT", "TEAM_CONTEXT_UNAVAILABLE",
                         "soccer_model_error",
                     }
-                    new_reasons = [r for r in orig_reasons if r not in STALE_MLB_ROUTING]
+                    _authoritative = (_rcls == "AUTHORITATIVE") and bool(_rpid)
+                    def _keep(r: str) -> bool:
+                        if r in STALE_MLB_ROUTING:
+                            return False
+                        if r == "PLAYER_IDENTITY_UNRESOLVED" and _authoritative:
+                            return False
+                        return True
+                    new_reasons = [r for r in orig_reasons if _keep(r)]
                     if len(new_reasons) != len(orig_reasons):
                         update["off_board_reasons"] = new_reasons
                         if not new_reasons and lock_out >= 85:
@@ -617,17 +848,27 @@ async def score_pending_sgo_rows(db, *, limit: int = 500) -> dict:
     # expired event / finished game) — those stay off-board.
     try:
         LEGIT_MLB_PROTECTIONS = {
-            "PLAYER_IDENTITY_UNRESOLVED", "MLB_PARTIAL_PERIOD_MISLABELED",
+            "MLB_PARTIAL_PERIOD_MISLABELED",
             "no_real_book_line", "synthetic", "validation_block",
             "expired_event", "SGO_UNSUPPORTED_SPORT_ROUTE",
         }
         mlb_recover_q = {
             "source": "sportsgameodds_v2",
             "sport": "MLB",
-            "model_source": "soccer_game_model",
             "$or": [
                 {"event_time": {"$gte": now_iso}},
                 {"event_time": {"$exists": False}},
+            ],
+            "$and": [
+                {"$or": [
+                    # Was scored by the wrong Soccer route
+                    {"model_source": "soccer_game_model"},
+                    # OR was blocked purely by source-specific
+                    # identity failure (now covered by canonical
+                    # resolver)
+                    {"off_board_reasons": "PLAYER_IDENTITY_UNRESOLVED",
+                     "model_source": {"$in": [None, "soccer_game_model"]}},
+                ]},
             ],
         }
         n_reset = 0
