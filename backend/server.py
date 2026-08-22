@@ -1614,27 +1614,40 @@ async def _ensure_today_picks() -> None:
             mlb_family_starved,
         )
 
-    # ── Per-Sport Starvation μ-fix (2026-08-22) ──────────────────────
-    # Global actionable / prop counts HIDE per-sport starvation. A
-    # Soccer-only slate (e.g. 14 fresh + 21 legacy sgo ghosts = 35
-    # rows) makes `game_market_healthy == True` AND
-    # `player_prop_healthy == True` while MLB / NFL / NBA / CFB /
-    # NHL / Tennis have ZERO rows and their pipelines never ran.
+    # ══════════════════════════════════════════════════════════════════
+    # PER-SPORT HEALTH GATES (2026-08-22 mk-II)
+    # ──────────────────────────────────────────────────────────────────
+    # Every same-class starvation vector closed in one pass:
     #
-    # Production symptom (2026-08-22 report):
-    #     /api/picks/today → 35 Soccer, 0 everything else, indefinitely.
-    #
-    # Fix: for each active sport, evaluate flow health INDEPENDENTLY
-    # of the global count. STARVED iff zero actionable AND zero
-    # any-status rows for the sport (flow provably never executed).
-    # Rows that exist but are model-rejected legitimately count as
-    # HEALTHY_NO_QUALIFIED_PICKS — no retry loop.
-    #
-    # Legacy SGO ghost rows are EXCLUDED from these counts (`id`
-    # starts with `sgo-` OR provider/source contains
-    # `sportsgameodds`) — they are DB residue from the removed SGO
-    # provider and must not be counted as proof-of-flow.
-    _ACTIVE_SPORTS_FOR_HEALTH = ("MLB", "NFL", "NBA", "CFB", "NHL", "Tennis", "Soccer")
+    #   • Game-market health is evaluated PER SPORT.
+    #   • Player-prop health is evaluated PER SPORT.
+    #   • MLB family-level starvation logic is preserved above.
+    #   • Legacy SGO rows are excluded from ALL health calculations.
+    #   • `_sport_refresh_state` tracks last_attempted / last_succeeded /
+    #     last_flow_result per sport so HONEST_EMPTY (flow ran → 0 rows
+    #     legitimately) is distinguished from STARVED (flow never ran
+    #     or raised) — HONEST_EMPTY sports do NOT drive refresh loops.
+    #   • `_refresh_in_flight` has a stuck-guard: any in-flight state
+    #     older than 10 min is treated as stale (crashed refresh) and
+    #     force-reset so recovery can proceed.
+    #   • Snapshot mode / provider budget / coordinator architecture
+    #     remain untouched — refresh is fired via the existing
+    #     `_refresh_picks(today)` orchestrator entry point.
+    # ══════════════════════════════════════════════════════════════════
+    _now_ts = _time.time()
+
+    # ── Stuck-guard on the global refresh-in-flight state.  A crashed
+    # refresh could leave `_refresh_in_flight = True` forever and block
+    # every future recovery attempt.  Force-reset after 10 min.
+    global _refresh_in_flight, _refresh_in_flight_started_at
+    if _refresh_in_flight and (_now_ts - _refresh_in_flight_started_at) > 600:
+        logger.warning(
+            "ensure_today_picks: _refresh_in_flight has been true for "
+            "%.0fs (>10min) — force-resetting stuck guard",
+            _now_ts - _refresh_in_flight_started_at,
+        )
+        _refresh_in_flight = False
+
     _NON_LEGACY_FILTERS = {
         # MongoDB $not:{$regex} matches non-matching values AND missing
         # fields — a single flat filter suffices, no $or wrapping.
@@ -1642,56 +1655,152 @@ async def _ensure_today_picks() -> None:
         "odds_provider": {"$not": {"$regex": "sportsgameodds", "$options": "i"}},
         "source":        {"$not": {"$regex": "sportsgameodds", "$options": "i"}},
     }
+
+    # Per-sport minimum-actionable thresholds.  Niche / small-slate
+    # sports have lower thresholds so a legit 1-3 picks Tennis day is
+    # considered HEALTHY rather than starved.  MLB / NFL / Soccer keep
+    # the higher bar consistent with prior global health gate.
+    _SPORT_HEALTH_MINS = {
+        "MLB":    {"actionable": 5, "prop_actionable": 2, "prop_any": 3},
+        "NFL":    {"actionable": 3, "prop_actionable": 2, "prop_any": 3},
+        "NBA":    {"actionable": 3, "prop_actionable": 2, "prop_any": 3},
+        "CFB":    {"actionable": 2, "prop_actionable": 1, "prop_any": 2},
+        "NHL":    {"actionable": 2, "prop_actionable": 1, "prop_any": 2},
+        "Tennis": {"actionable": 1, "prop_actionable": 0, "prop_any": 0},
+        "Soccer": {"actionable": 3, "prop_actionable": 1, "prop_any": 2},
+    }
+
+    # Rehydrate cache of "active" sports from Mongo (30 min TTL) so we
+    # don't lock the list to a process-lifetime constant.  A sport is
+    # ACTIVE if it currently receives provider events — we approximate
+    # by "successfully produced picks or attempted refresh in the last
+    # 24h" (persisted in `sport_refresh_state`).  On cold start, or if
+    # the persisted set is empty, we fall back to the static tuple so
+    # bootstrap always exercises every configured sport.
+    global _active_sports_cache, _active_sports_cache_at
+    _ACTIVE_SPORTS_STATIC = ("MLB", "NFL", "NBA", "CFB", "NHL", "Tennis", "Soccer")
+    if _now_ts - _active_sports_cache_at > 1800 or not _active_sports_cache:
+        try:
+            cursor = db.sport_refresh_state.find(
+                {"last_attempted_at": {"$gte": _now_ts - 86400}},
+                {"sport": 1, "_id": 0},
+            )
+            recent = {doc["sport"] async for doc in cursor}
+            _active_sports_cache = tuple(sorted(recent | set(_ACTIVE_SPORTS_STATIC)))
+            _active_sports_cache_at = _now_ts
+        except Exception as _cache_err:
+            logger.debug(
+                "active_sports_cache rehydrate errored (%s) — using static",
+                _cache_err,
+            )
+            _active_sports_cache = _ACTIVE_SPORTS_STATIC
+            _active_sports_cache_at = _now_ts
+
+    # Load per-sport refresh state from Mongo once per health-gate call.
+    # In-memory `_sport_refresh_state` is authoritative during the call
+    # and gets rewritten by `_background_refresh` on completion.
+    global _sport_refresh_state
+    if not _sport_refresh_state:
+        try:
+            async for doc in db.sport_refresh_state.find({}, {"_id": 0}):
+                _sport_refresh_state[doc["sport"]] = doc
+        except Exception as _load_err:
+            logger.debug("sport_refresh_state load errored: %s", _load_err)
+
+    # Classify each active sport into one of:
+    #   HEALTHY               — coverage meets per-sport thresholds
+    #   HEALTHY_NO_QUALIFIED  — rows exist but zero actionable (all rejected)
+    #   HONEST_EMPTY          — zero rows AND recent successful refresh
+    #                           that produced zero (pre-season / off-window)
+    #   SPORT_STARVED         — zero rows AND no recent successful refresh
+    #   PIPELINE_EXCEPTION    — last flow raised (retry with backoff)
+    #
+    # STARVED and PIPELINE_EXCEPTION trigger refresh; HEALTHY variants
+    # and HONEST_EMPTY do NOT.
+    sport_status: dict[str, str] = {}
     sport_starved: list[str] = []
-    try:
-        for _sport in _ACTIVE_SPORTS_FOR_HEALTH:
+    for _sport in _active_sports_cache:
+        try:
+            _mins = _SPORT_HEALTH_MINS.get(_sport, {"actionable": 2, "prop_actionable": 0, "prop_any": 0})
             _sp_actionable = await db.picks.count_documents({
                 **_actionable_query, "sport": _sport, **_NON_LEGACY_FILTERS,
             })
-            if _sp_actionable > 0:
-                continue  # healthy actionable coverage for this sport
             _sp_any = await db.picks.count_documents({
                 "pick_date": today, "sport": _sport, **_NON_LEGACY_FILTERS,
             })
-            if _sp_any == 0:
-                # Zero actionable AND zero any-status (non-legacy) rows.
-                # Flow provably never executed for this sport today.
+            # PROP HEALTH — per sport, mirrored from the global check.
+            _sp_prop_actionable = await db.picks.count_documents({
+                **_actionable_query, "sport": _sport, **_prop_selector, **_NON_LEGACY_FILTERS,
+            })
+            _sp_prop_any = await db.picks.count_documents({
+                "pick_date": today, "sport": _sport, **_prop_selector, **_NON_LEGACY_FILTERS,
+            })
+
+            _game_ok = _sp_actionable >= _mins["actionable"]
+            _prop_ok = (
+                _sp_prop_actionable >= _mins["prop_actionable"]
+                or _sp_prop_any >= _mins["prop_any"]
+                or _mins["prop_actionable"] == 0  # sport with no expected prop feed
+            )
+
+            if _game_ok and _prop_ok:
+                sport_status[_sport] = "HEALTHY"
+                continue
+            if _sp_any > 0:
+                # Rows exist but coverage sub-threshold — model rejected
+                # them (off_board / no_bet / settlement_block / status).
+                # Not starvation; do not retry.
+                sport_status[_sport] = "HEALTHY_NO_QUALIFIED"
+                continue
+
+            # Zero rows.  Look at persisted refresh state to distinguish
+            # HONEST_EMPTY from SPORT_STARVED.
+            _state = _sport_refresh_state.get(_sport) or {}
+            _last_result   = _state.get("last_flow_result")
+            _last_succeed  = float(_state.get("last_succeeded_at") or 0)
+            _last_attempt  = float(_state.get("last_attempted_at") or 0)
+
+            if _last_result == "exception":
+                # Pipeline crashed last time — treat as starved and retry
+                # (subject to the 15-min per-sport cooldown below).
+                sport_status[_sport] = "PIPELINE_EXCEPTION"
                 sport_starved.append(_sport)
-    except Exception as _sp_err:
-        logger.warning(
-            "ensure_today_picks: per-sport starvation check errored "
-            "(%s) — forcing refresh (fail-closed)", _sp_err,
-        )
-        sport_starved = list(_ACTIVE_SPORTS_FOR_HEALTH)
+            elif _last_result == "honest_empty" and (_now_ts - _last_succeed) < 4 * 3600:
+                # Recent successful refresh legitimately produced zero.
+                # Do NOT drive a retry loop for pre-season / off-window
+                # sports; wait for the next 4h window before re-checking.
+                sport_status[_sport] = "HONEST_EMPTY"
+            elif _last_attempt > 0 and (_now_ts - _last_attempt) < 15 * 60:
+                # Very recent attempt — respect a 15-min per-sport cooldown
+                # regardless of outcome to avoid stampede.
+                sport_status[_sport] = "STARVED_COOLDOWN"
+            else:
+                sport_status[_sport] = "SPORT_STARVED"
+                sport_starved.append(_sport)
+        except Exception as _sp_err:
+            logger.warning(
+                "ensure_today_picks: per-sport check for %s errored (%s) "
+                "— treating as starved (fail-closed)", _sport, _sp_err,
+            )
+            sport_status[_sport] = "PIPELINE_EXCEPTION"
+            sport_starved.append(_sport)
+
+    _healthy_sports = [s for s, st in sport_status.items()
+                       if st in ("HEALTHY", "HEALTHY_NO_QUALIFIED", "HONEST_EMPTY", "STARVED_COOLDOWN")]
+
     if sport_starved:
-        # Refresh-loop guard: after we force one starvation-driven
-        # refresh, cooldown for 15 min before firing another. This
-        # honors "rows exist but legitimately all fail model/85
-        # gates → treat as flow healthy; do not refresh-loop" — but
-        # extended to the "flow ran, produced ZERO rows of any
-        # status" case, which for pre-season / off-window sports
-        # (NBA/CFB/NHL right now) is the honest steady state.
-        global _last_starvation_refresh_at
-        _cooldown_s = 15 * 60
-        _now_ts = _time.time()
-        if _now_ts - _last_starvation_refresh_at < _cooldown_s:
-            logger.debug(
-                "ensure_today_picks: sports_starved=%s but starvation-"
-                "refresh cooldown active (%.0fs remaining) — skipping",
-                sport_starved, _cooldown_s - (_now_ts - _last_starvation_refresh_at),
-            )
-        else:
-            # A single coordinated refresh restores all starved sports —
-            # `_refresh_picks(today)` is orchestrator-scoped and iterates
-            # every configured sport internally. No hourly-global toggle
-            # is turned on. Snapshot mode / provider budget / coordinator
-            # architecture remain intact.
-            game_market_healthy = False
-            _last_starvation_refresh_at = _now_ts
-            logger.info(
-                "ensure_today_picks: sports_starved=%s (Soccer-mask defect"
-                " closed) — forcing refresh", sport_starved,
-            )
+        # Open the refresh gate — starvation trumps whatever the global
+        # aggregate check concluded above (Soccer no longer masks anyone).
+        game_market_healthy = False
+        logger.info(
+            "ensure_today_picks: sports_status=%s — refresh triggered for %s",
+            sport_status, sport_starved,
+        )
+    else:
+        logger.info(
+            "ensure_today_picks: per-sport verdict all clean %s",
+            sport_status,
+        )
     if game_market_healthy and player_prop_healthy:
         logger.debug(
             "ensure_today_picks: %d actionable / %d raw for %s "
@@ -1707,19 +1816,82 @@ async def _ensure_today_picks() -> None:
         game_market_healthy, player_prop_healthy,
         count, raw_count, prop_actionable, prop_any, today,
     )
-    global _refresh_in_flight
+    # Note: `_refresh_in_flight` and `_refresh_in_flight_started_at`
+    # were already declared global earlier in this function (stuck-
+    # guard block).  Python forbids re-declaring, so we just re-check
+    # and set here.
     if _refresh_in_flight:
         return  # a refresh is already running for the current day
     _refresh_in_flight = True
+    _refresh_in_flight_started_at = _time.time()
 
     async def _background_refresh():
         global _refresh_in_flight
+        # Snapshot per-sport pre-refresh row counts so we can classify
+        # each sport's outcome (produced_N vs honest_empty vs exception).
+        _pre_counts: dict[str, int] = {}
+        try:
+            for _sport in _active_sports_cache:
+                _pre_counts[_sport] = await db.picks.count_documents({
+                    "pick_date": today, "sport": _sport, **_NON_LEGACY_FILTERS,
+                })
+        except Exception as _pre_err:
+            logger.debug("pre-refresh count errored: %s", _pre_err)
+
+        _attempted_at = _time.time()
+        _exc: Optional[Exception] = None
         try:
             await _refresh_picks(today)
         except Exception as e:
+            _exc = e
             logger.warning("Background refresh failed: %s", e)
         finally:
             _refresh_in_flight = False
+
+        # Post-refresh classification & persistence per sport.
+        _succeeded_at = None if _exc else _attempted_at
+        logger.info(
+            "background_refresh classifier: sports=%s exc=%s",
+            list(_active_sports_cache), (str(_exc) if _exc else None),
+        )
+        try:
+            _ops = []
+            for _sport in _active_sports_cache:
+                try:
+                    _post = await db.picks.count_documents({
+                        "pick_date": today, "sport": _sport, **_NON_LEGACY_FILTERS,
+                    })
+                except Exception:
+                    _post = 0
+                if _exc:
+                    _result = "exception"
+                elif _post > 0:
+                    _result = f"produced_{_post - _pre_counts.get(_sport, 0)}"
+                else:
+                    _result = "honest_empty"
+                _doc = {
+                    "sport": _sport,
+                    "last_attempted_at": _attempted_at,
+                    "last_succeeded_at": _succeeded_at if _succeeded_at else _sport_refresh_state.get(_sport, {}).get("last_succeeded_at"),
+                    "last_flow_result": _result,
+                    "last_produced_count": _post,
+                }
+                _sport_refresh_state[_sport] = _doc
+                _ops.append((_sport, _doc))
+            # Best-effort Mongo persist (upsert per sport).
+            for _sport, _doc in _ops:
+                try:
+                    await db.sport_refresh_state.update_one(
+                        {"sport": _sport}, {"$set": _doc}, upsert=True,
+                    )
+                except Exception as _wr_err:
+                    logger.warning("sport_refresh_state persist %s errored: %s", _sport, _wr_err)
+            logger.info(
+                "background_refresh: persisted per-sport state (%d sports, exc=%s)",
+                len(_ops), "yes" if _exc else "no",
+            )
+        except Exception as _cls_err:
+            logger.warning("post-refresh classification errored: %s", _cls_err)
 
     # Fire-and-forget — don't await, don't block the response. The
     # picks_today handler will return whatever's in the DB right now
@@ -1740,13 +1912,26 @@ async def _ensure_today_picks() -> None:
 # Module-level guard: prevents overlapping refresh stampedes when
 # multiple clients hit an empty /picks/today at the same time.
 _refresh_in_flight: bool = False
+# Timestamp when the current in-flight refresh was fired.  Enables the
+# stuck-guard in `_ensure_today_picks` to reset the flag after 10 min
+# so a crashed refresh can never permanently block recovery.
+_refresh_in_flight_started_at: float = 0.0
 
-# Per-Sport Starvation μ-fix (2026-08-22): cooldown timestamp for
-# the last starvation-triggered refresh so pre-season / off-window
-# sports with zero legitimate rows don't drive an infinite refresh
-# loop.  15-minute cooldown paired with the starvation check above.
+# Per-Sport Health Gates (2026-08-22 mk-II).  In-memory mirror of the
+# `sport_refresh_state` Mongo collection.  Populated on first health
+# check (lazy hydrate) and rewritten by `_background_refresh` on
+# completion.  Each entry:
+#   { sport, last_attempted_at, last_succeeded_at,
+#     last_flow_result, last_produced_count }
 import time as _time
-_last_starvation_refresh_at: float = 0.0
+_sport_refresh_state: dict = {}
+
+# 30-min TTL cache of "active" sports (persisted in
+# sport_refresh_state.last_attempted_at in the last 24h).  Falls back
+# to the static tuple on cold start.  Prevents a process-lifetime
+# constant from silently missing newly-seasonal sports.
+_active_sports_cache: tuple = ()
+_active_sports_cache_at: float = 0.0
 
 
 # ── Market filter taxonomy ────────────────────────────────────────────────
