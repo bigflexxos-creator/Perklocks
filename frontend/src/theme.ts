@@ -38,12 +38,17 @@ export const COLORS = {
   //  Volt blue and neon green nudged toward luminous premium tones;
   //  Gold Impact: brighter luminous core so LOCK numbers/premium
   //  labels read as GOLD, not brown.
+  //  Locks Mockup Match (2026-08-22): further luminized gold identity
+  //  to match the attached mockup's metallic-gold treatment (PERKLOCKS
+  //  wordmark, LOCK box, active LOCKS tab, featured card border).
   voltBlue: "#4C9BFF",
   electricBlaze: "#FF5F5C",
   neonGreen: "#4DE68A",
-  // Perklocks gold identity — luminous metallic tones (Gold Impact).
-  goldElite: "#FFD95A",    // core LUMINOUS gold (was #F5C542 — reads brown)
-  goldRich:  "#FFE785",    // bright metallic gold (was #FFD95A)
+  neonLime:  "#B6FF3D",   // confidence-bar mid-stop (lime)
+  // Perklocks gold identity — luminous metallic tones (Gold Impact + Mockup).
+  goldElite: "#FFD24A",    // core LUMINOUS gold — metallic base
+  goldRich:  "#FFE580",    // bright metallic gold highlight
+  goldGlow:  "#FFC933",    // saturated gold used for outer-glow shadow tint
   goldDeep:  "#B98A17",    // deep metallic base
   goldGloss: "rgba(255,217,90,0.24)",
 
@@ -233,6 +238,43 @@ export const SPORT_ICONS: Record<string, string> = {
 };
 
 export const SPORTS = ["All", "MLB", "NBA", "NFL", "CFB", "NHL", "Soccer", "Tennis", "UFC"] as const;
+
+// ── Sport-color neon accents (Locks Mockup 2026-08-22) ───────────────
+// Controlled neon accents applied to sport chips, thin card edges,
+// icons, and glows. Used ONLY as accents — never as a full flood.
+// "All" defaults to luminous gold (the Perklocks brand identity).
+export const SPORT_COLORS: Record<string, {
+  accent: string;      // Full-strength neon color
+  soft: string;        // Semi-transparent surface tint (~15%)
+  border: string;      // Semi-transparent border (~60%)
+  glow: string;        // Shadow tint (matches accent)
+}> = {
+  All:    { accent: "#FFD24A", soft: "rgba(255,210,74,0.14)", border: "rgba(255,210,74,0.62)", glow: "#FFD24A" },
+  MLB:    { accent: "#4C9BFF", soft: "rgba(76,155,255,0.14)", border: "rgba(76,155,255,0.62)", glow: "#4C9BFF" },
+  NBA:    { accent: "#B98CFF", soft: "rgba(185,140,255,0.14)", border: "rgba(185,140,255,0.62)", glow: "#B98CFF" },
+  NFL:    { accent: "#4DE68A", soft: "rgba(77,230,138,0.14)", border: "rgba(77,230,138,0.60)", glow: "#4DE68A" },
+  CFB:    { accent: "#FF9548", soft: "rgba(255,149,72,0.14)", border: "rgba(255,149,72,0.62)", glow: "#FF9548" },
+  NHL:    { accent: "#5EE3FF", soft: "rgba(94,227,255,0.14)", border: "rgba(94,227,255,0.62)", glow: "#5EE3FF" },
+  Tennis: { accent: "#D4FF3D", soft: "rgba(212,255,61,0.14)", border: "rgba(212,255,61,0.62)", glow: "#D4FF3D" },
+  Soccer: { accent: "#5EE3FF", soft: "rgba(94,227,255,0.14)", border: "rgba(94,227,255,0.62)", glow: "#5EE3FF" },
+  UFC:    { accent: "#FF5F5C", soft: "rgba(255,95,92,0.14)",  border: "rgba(255,95,92,0.60)",  glow: "#FF5F5C" },
+};
+
+// Convenience — safe lookup with All-gold fallback.
+export function getSportColor(sport?: string) {
+  if (!sport) return SPORT_COLORS.All;
+  return SPORT_COLORS[sport] || SPORT_COLORS.All;
+}
+
+// Confidence-bar gradient stops (green → lime → gold → orange → red).
+// Used by LockPickCard's progress bar per mockup spec §8.
+export const CONFIDENCE_GRADIENT = [
+  "#4DE68A",   // green (low-lock end)
+  "#B6FF3D",   // lime
+  "#FFD24A",   // gold
+  "#FF9548",   // orange
+  "#FF5F5C",   // red
+];
 
 // ── Depth / shadow scale ────────────────────────────────────────────
 export const SHADOW = {

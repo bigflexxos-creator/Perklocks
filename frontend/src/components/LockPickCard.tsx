@@ -1,7 +1,8 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { View, Text, StyleSheet, Pressable, Platform, LayoutAnimation, UIManager, ActivityIndicator, Modal, TextInput } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import { COLORS, GRADE_COLORS, getLockTierVisual, RADIUS } from "@/src/theme";
+import { COLORS, GRADE_COLORS, getLockTierVisual, RADIUS, getSportColor, CONFIDENCE_GRADIENT } from "@/src/theme";
 import { PlayerIdentity } from "@/src/components/PlayerIdentity";
 import { Pick, PickRationale, api } from "@/src/lib/api";
 import { formatGameTime } from "@/src/lib/formatGameTime";
@@ -16,7 +17,7 @@ import { AltLineChips } from "@/src/components/AltLineChips";
 // the full Pick type through the closure.
 type LockPick = Pick;
 
-function LockPickCardImpl({ pick }: { pick: Pick }) {
+function LockPickCardImpl({ pick, featured = false }: { pick: Pick; featured?: boolean }) {
   const router = useRouter();
   const [whyOpen, setWhyOpen] = useState(false);
   // The lite payload trims `pick_rationale` to summary + lean + top
@@ -148,32 +149,77 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
         styles.card,
         {
           backgroundColor: tierVisual.surfaceBg,
-          borderColor: tierVisual.borderColor,
-          borderWidth: tierVisual.borderWidth,
-          shadowColor: tierVisual.glowColor,
-          shadowOpacity: tierVisual.glowOpacity,
-          shadowRadius: tierVisual.glowRadius,
-          shadowOffset: { width: 0, height: 4 },
+          borderColor: featured ? "rgba(255,210,74,0.85)" : tierVisual.borderColor,
+          borderWidth: featured ? 1.75 : tierVisual.borderWidth,
+          shadowColor: featured
+            ? COLORS.goldGlow
+            : (getSportColor(pick.sport).glow || tierVisual.glowColor),
+          shadowOpacity: featured ? 0.55 : Math.max(tierVisual.glowOpacity, 0.32),
+          shadowRadius: featured ? 22 : Math.max(tierVisual.glowRadius, 12),
+          shadowOffset: { width: 0, height: featured ? 8 : 4 },
         },
         isApexHero && styles.cardApexElevation,
+        featured && styles.cardFeatured,
         pressed && { opacity: 0.9, transform: [{ scale: 0.985 }] },
       ]}
     >
+      {/* Featured atmosphere (mockup §5): a very-low-opacity radial-style
+          gradient behind the card content that reads as "stadium
+          lighting" without impairing text legibility. Rendered only on
+          the featured card so the rest of the board stays clean. */}
+      {featured && (
+        <View pointerEvents="none" style={styles.featuredAtmosphere}>
+          <LinearGradient
+            colors={[
+              "rgba(255,210,74,0.18)",
+              "rgba(255,210,74,0.06)",
+              "rgba(0,0,0,0.00)",
+            ]}
+            start={{ x: 0.1, y: 0 }}
+            end={{ x: 0.9, y: 1 }}
+            style={StyleSheet.absoluteFill}
+          />
+          <LinearGradient
+            colors={[
+              getSportColor(pick.sport).glow + "26",
+              "rgba(0,0,0,0.00)",
+            ]}
+            start={{ x: 1, y: 0 }}
+            end={{ x: 0, y: 1 }}
+            style={StyleSheet.absoluteFill}
+          />
+        </View>
+      )}
+
       {/* Subtle top-edge gloss highlight — premium depth cue. */}
       <View
         pointerEvents="none"
         style={[
           styles.topGloss,
-          { backgroundColor: tierVisual.surfaceGlossTop },
-          isApexHero && styles.topGlossApex,
+          { backgroundColor: featured ? "rgba(255,210,74,0.18)" : tierVisual.surfaceGlossTop },
+          (isApexHero || featured) && styles.topGlossApex,
         ]}
       />
 
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
           <View style={styles.tagRow}>
-            <View style={styles.tag}>
-              <Text style={styles.tagText}>
+            <View
+              style={[
+                styles.tag,
+                {
+                  backgroundColor: getSportColor(pick.sport).soft,
+                  borderWidth: 1,
+                  borderColor: getSportColor(pick.sport).border,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.tagText,
+                  { color: getSportColor(pick.sport).accent },
+                ]}
+              >
                 {pick.sport.toUpperCase()}
               </Text>
             </View>
@@ -451,14 +497,18 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
         </View>
       </View>
 
-      {/* Lock v3 — Stacked badge hero row: Bet Quality / Expected Win / Edge */}
+      {/* Lock v3 — Stacked badge hero row: Bet Quality / Expected Win / Edge.
+          Locks-Mockup 2026-08-22: distinct visual treatment per metric —
+          LOCK (metallic gold), WIN (cool neutral), EDGE (neon green when
+          the value is positive; red when negative). Matches mockup §6. */}
       <View style={styles.heroBadgeRow}>
         <HeroBadge
           icon="🔒"
           value={`${Math.round(displayLock)}`}
           label="LOCK"
           sub="BET QUALITY"
-          color={gradeColor}
+          color={COLORS.goldElite}
+          variant="gold"
         />
         <HeroBadge
           icon="📊"
@@ -466,16 +516,11 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
           label="WIN"
           sub="EXPECTED"
           color={COLORS.textPrimary}
+          variant="neutral"
         />
         <HeroBadge
           icon="⚡"
           value={
-            // PHASE 6 §6I (2026-06) — Edge Value: never display
-            // "null%" / "NaN%" / a fabricated 0.  When the model has
-            // no real market-implied probability to measure against
-            // (e.g. model-only / MLS direct inject with no book line),
-            // ``edge_percent`` is deliberately ``null`` upstream.
-            // Render honest unavailability instead of a number.
             typeof pick.edge_percent === "number" && !isNaN(pick.edge_percent)
               ? `${pick.edge_percent > 0 ? "+" : ""}${pick.edge_percent}%`
               : "—"
@@ -487,6 +532,7 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
               : "UNAVAILABLE"
           }
           color={edgeColor}
+          variant={edgeColor === COLORS.neonGreen ? "green" : "red"}
         />
       </View>
 
@@ -500,11 +546,24 @@ function LockPickCardImpl({ pick }: { pick: Pick }) {
         />
       </View>
 
+      {/* Confidence bar — Locks-Mockup 2026-08-22 §8: green → lime →
+          gold → orange → red gradient with a bright indicator at the
+          current lock position. Same underlying value (displayLock) —
+          purely presentational upgrade. */}
       <View style={styles.progressTrack}>
+        <LinearGradient
+          colors={CONFIDENCE_GRADIENT}
+          start={{ x: 0, y: 0.5 }}
+          end={{ x: 1, y: 0.5 }}
+          style={StyleSheet.absoluteFill}
+        />
         <View
           style={[
-            styles.progressFill,
-            { width: `${Math.min(100, displayLock)}%`, backgroundColor: gradeColor },
+            styles.progressIndicator,
+            {
+              left: `${Math.min(98, Math.max(1, displayLock))}%`,
+              shadowColor: COLORS.goldGlow,
+            },
           ]}
         />
       </View>
@@ -1572,20 +1631,38 @@ const trackedCache = (() => {
 })();
 
 function HeroBadge({
-  icon, value, label, sub, color,
-}: { icon: string; value: string; label: string; sub: string; color: string }) {
-  // Premium raised-panel look — brighter accent-tinted surface, stronger
-  // accent border, and a subtle inner top gloss for glass dimensionality.
+  icon, value, label, sub, color, variant = "neutral",
+}: {
+  icon: string;
+  value: string;
+  label: string;
+  sub: string;
+  color: string;
+  variant?: "gold" | "green" | "red" | "neutral";
+}) {
+  // Locks-Mockup 2026-08-22: each variant paints its own premium
+  // treatment — gold LOCK box, cool WIN box, positive-green EDGE box.
+  const variantStyle =
+    variant === "gold" ? styles.heroBadgeGold
+    : variant === "green" ? styles.heroBadgeGreen
+    : variant === "red" ? styles.heroBadgeRed
+    : styles.heroBadgeNeutral;
+
+  const glowColor =
+    variant === "gold" ? COLORS.goldGlow
+    : variant === "green" ? COLORS.neonGreen
+    : variant === "red" ? COLORS.electricBlaze
+    : "#000000";
+
   return (
     <View
       style={[
         styles.heroBadge,
+        variantStyle,
         {
-          borderColor: color + "A0",           // 62% — visibly present
-          backgroundColor: color + "22",        // 13% — richer tint on OLED
-          shadowColor: color,
-          shadowOpacity: 0.22,
-          shadowRadius: 6,
+          shadowColor: glowColor,
+          shadowOpacity: variant === "neutral" ? 0.28 : 0.45,
+          shadowRadius: variant === "neutral" ? 6 : 10,
           shadowOffset: { width: 0, height: 3 },
         },
       ]}
@@ -1593,7 +1670,7 @@ function HeroBadge({
       <View pointerEvents="none" style={styles.heroBadgeGloss} />
       <Text style={styles.heroIcon}>{icon}</Text>
       <Text style={[styles.heroValue, { color }]} numberOfLines={1}>{value}</Text>
-      <Text style={styles.heroLabel}>{label}</Text>
+      <Text style={[styles.heroLabel, variant === "gold" && { color: COLORS.goldRich }]}>{label}</Text>
       <Text style={styles.heroSub}>{sub}</Text>
     </View>
   );
@@ -1618,9 +1695,11 @@ function Metric({ label, value, color }: { label: string; value: string; color: 
 // (they're stable references after `setPicks(fresh)`, and the deep
 // rationale is fetched lazily into local state — so it's invisible to
 // the parent's pick prop).
-function arePropsEqual(prev: { pick: Pick }, next: { pick: Pick }): boolean {
+function arePropsEqual(prev: { pick: Pick; featured?: boolean }, next: { pick: Pick; featured?: boolean }): boolean {
   const a = prev.pick;
   const b = next.pick;
+  // Featured flag drives border/glow/atmosphere — force re-render on flip.
+  if ((prev.featured || false) !== (next.featured || false)) return false;
   if (a === b) return true;                  // referential — fast path
   if (a.id !== b.id) return false;
   // Numeric fields the card paints
@@ -1681,6 +1760,18 @@ const styles = StyleSheet.create({
     // Slight elevation so the card feels lifted from the background,
     // even for STANDARD tier where the tier visual glow is minimal.
     elevation: 4,
+    overflow: "hidden",
+  },
+  // Locks-Mockup 2026-08-22 §4: featured hero card gets thicker padding,
+  // deeper shadow, and stronger elevation so it visibly dominates.
+  cardFeatured: {
+    padding: 20,
+    marginBottom: 18,
+    elevation: 12,
+  },
+  featuredAtmosphere: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: RADIUS.xl,
     overflow: "hidden",
   },
   cardApex: {
@@ -2204,11 +2295,28 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 8,
     borderRadius: 12,
-    borderWidth: 1.25,
+    borderWidth: 1.4,
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
     elevation: 3,
+  },
+  // ── Locks-Mockup 2026-08-22 §6: distinct per-metric variants ──────
+  heroBadgeGold: {
+    backgroundColor: "rgba(255,210,74,0.14)",
+    borderColor: "rgba(255,210,74,0.85)",
+  },
+  heroBadgeGreen: {
+    backgroundColor: "rgba(77,230,138,0.14)",
+    borderColor: "rgba(77,230,138,0.75)",
+  },
+  heroBadgeRed: {
+    backgroundColor: "rgba(255,95,92,0.12)",
+    borderColor: "rgba(255,95,92,0.65)",
+  },
+  heroBadgeNeutral: {
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderColor: "rgba(255,255,255,0.22)",
   },
   heroBadgeGloss: {
     // Subtle inner top-highlight — glass panel dimensionality.
@@ -2220,12 +2328,12 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 12,
   },
   heroIcon: { fontSize: 14, marginBottom: 2 },
-  heroValue: { fontSize: 22, fontWeight: "900", letterSpacing: -0.6, marginTop: 2 },
+  heroValue: { fontSize: 24, fontWeight: "900", letterSpacing: -0.8, marginTop: 2 },
   heroLabel: {
     color: COLORS.textPrimary,
-    fontSize: 9,
+    fontSize: 9.5,
     fontWeight: "900",
-    letterSpacing: 1.4,
+    letterSpacing: 1.5,
     marginTop: 4,
   },
   heroSub: {
@@ -2276,12 +2384,32 @@ const styles = StyleSheet.create({
     letterSpacing: 1.0,
   },
   progressTrack: {
-    height: 4,
+    height: 6,
     backgroundColor: "rgba(255,255,255,0.06)",
-    borderRadius: 2,
+    borderRadius: 3,
     overflow: "hidden",
+    position: "relative",
   },
-  progressFill: { height: "100%", borderRadius: 2 },
+  // Legacy — kept for backwards compat but no longer rendered.
+  progressFill: { height: "100%", borderRadius: 3 },
+  // Locks-Mockup 2026-08-22 §8: bright indicator dot on the gradient
+  // bar showing the current lock position. Marker is 12px wide with a
+  // luminous outline; glows in gold to draw the eye.
+  progressIndicator: {
+    position: "absolute",
+    top: -3,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    marginLeft: -6,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1.5,
+    borderColor: COLORS.goldElite,
+    shadowOpacity: 0.9,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 4,
+  },
   footer: {
     flexDirection: "row",
     justifyContent: "space-between",

@@ -1,5 +1,5 @@
 import React, { useEffect } from "react";
-import { View } from "react-native";
+import { View, StyleSheet } from "react-native";
 import { Tabs, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -7,6 +7,26 @@ import { COLORS } from "@/src/theme";
 import { useAuth } from "@/src/contexts/AuthContext";
 import { BetSlipFab } from "@/src/components/BetSlipFab";
 import { preloadPrimaryTabs } from "@/src/lib/preloadPrimaryTabs";
+
+/**
+ * Locks-Mockup 2026-08-22 §13: active tab (LOCKS) renders inside a
+ * luminous gold container so the current section is unmistakably
+ * highlighted. Inactive tabs render the plain icon in muted gray.
+ * Icon set / labels / routes are unchanged.
+ */
+function TabIcon({
+  name, color, focused,
+}: {
+  name: React.ComponentProps<typeof Ionicons>["name"];
+  color: string;
+  focused: boolean;
+}) {
+  return (
+    <View style={[styles.iconWrap, focused && styles.iconWrapActive]}>
+      <Ionicons name={name} color={color} size={focused ? 22 : 20} />
+    </View>
+  );
+}
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
@@ -71,23 +91,25 @@ export default function TabsLayout() {
           // "bottom row making bleed" — the 4% alpha at 0.96 was enough
           // to silhouette the Locks slate under the tab bar when Profile
           // was active.
-          backgroundColor: "#0a0a0a",
-          borderTopColor: COLORS.borderDefault,
+          backgroundColor: "#08090f",
+          borderTopColor: "rgba(255,255,255,0.08)",
           borderTopWidth: 1,
-          height: 64 + insets.bottom,
+          height: 68 + insets.bottom,
           paddingBottom: insets.bottom + 6,
           paddingTop: 8,
         },
         tabBarActiveTintColor: COLORS.goldElite,
         tabBarInactiveTintColor: COLORS.textMuted,
-        tabBarLabelStyle: { fontSize: 10, fontWeight: "800", letterSpacing: 1.2 },
+        tabBarLabelStyle: { fontSize: 10, fontWeight: "900", letterSpacing: 1.4, marginTop: 2 },
       }}
     >
       <Tabs.Screen
         name="index"
         options={{
           title: "LOCKS",
-          tabBarIcon: ({ color, size }) => <Ionicons name="lock-closed" color={color} size={size} />,
+          tabBarIcon: ({ color, focused }) => (
+            <TabIcon name="lock-closed" color={color} focused={focused} />
+          ),
           tabBarButtonTestID: "tab-locks",
         }}
       />
@@ -95,7 +117,9 @@ export default function TabsLayout() {
         name="rollover"
         options={{
           title: "ROLLOVER",
-          tabBarIcon: ({ color, size }) => <Ionicons name="flash" color={color} size={size} />,
+          tabBarIcon: ({ color, focused }) => (
+            <TabIcon name="flash" color={color} focused={focused} />
+          ),
           tabBarButtonTestID: "tab-rollover",
         }}
       />
@@ -122,7 +146,9 @@ export default function TabsLayout() {
         name="parlay"
         options={{
           title: "PARLAY",
-          tabBarIcon: ({ color, size }) => <Ionicons name="layers" color={color} size={size} />,
+          tabBarIcon: ({ color, focused }) => (
+            <TabIcon name="layers" color={color} focused={focused} />
+          ),
           tabBarButtonTestID: "tab-parlay",
         }}
       />
@@ -134,7 +160,9 @@ export default function TabsLayout() {
         name="my-bets"
         options={{
           title: "MY BETS",
-          tabBarIcon: ({ color, size }) => <Ionicons name="wallet" color={color} size={size} />,
+          tabBarIcon: ({ color, focused }) => (
+            <TabIcon name="wallet" color={color} focused={focused} />
+          ),
           tabBarButtonTestID: "tab-my-bets",
         }}
       />
@@ -164,7 +192,9 @@ export default function TabsLayout() {
         name="profile"
         options={{
           title: "PROFILE",
-          tabBarIcon: ({ color, size }) => <Ionicons name="person-circle" color={color} size={size} />,
+          tabBarIcon: ({ color, focused }) => (
+            <TabIcon name="person-circle" color={color} focused={focused} />
+          ),
           tabBarButtonTestID: "tab-profile",
         }}
       />
@@ -179,7 +209,9 @@ export default function TabsLayout() {
         options={{
           href: (user?.role === "admin") ? "/(tabs)/admin" : null,
           title: "ADMIN",
-          tabBarIcon: ({ color, size }) => <Ionicons name="shield-checkmark" color={color} size={size} />,
+          tabBarIcon: ({ color, focused }) => (
+            <TabIcon name="shield-checkmark" color={color} focused={focused} />
+          ),
           tabBarButtonTestID: "tab-admin",
         }}
       />
@@ -188,3 +220,21 @@ export default function TabsLayout() {
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  // Locks-Mockup 2026-08-22 §13: active-tab pill container. Icon gets
+  // a warm gold "lantern" behind it — inactive tabs are plain icons.
+  iconWrap: {
+    width: 40, height: 30, borderRadius: 12,
+    alignItems: "center", justifyContent: "center",
+  },
+  iconWrapActive: {
+    backgroundColor: "rgba(255,210,74,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(255,210,74,0.55)",
+    shadowColor: "#FFC933",
+    shadowOpacity: 0.55,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
+  },
+});
