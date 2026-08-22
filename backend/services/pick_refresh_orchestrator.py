@@ -1148,6 +1148,20 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         return "game_market"
 
     # Build set of families the refresh actually produced.
+    # ── PERKLOCKS BUGFIX (2026-06): guard against UnboundLocalError.
+    # ``safe_picks`` used to be defined only at line ~1375 (after the
+    # malformed-drop loop) but is read here for the family-conservation
+    # delete filter.  On the MLB refresh path this raised ``cannot
+    # access local variable 'safe_picks'`` and aborted the entire
+    # refresh, leaving MLB Locks empty even though The Odds API
+    # returned fresh data.  Initialize with the raw ``picks`` list
+    # (family classification tolerates malformed rows since it just
+    # derives a family key from ``market``); the authoritative
+    # malformed-drop still runs at line ~1375 before DB write.
+    try:
+        _ = safe_picks  # type: ignore[has-type]
+    except (NameError, UnboundLocalError):
+        safe_picks = list(picks) if isinstance(picks, list) else []
     _refreshed_families: set = set()
     for _rp in safe_picks:
         _fam = _classify_pick_family(_rp)
