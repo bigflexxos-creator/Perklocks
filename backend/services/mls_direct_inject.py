@@ -357,6 +357,17 @@ async def _generate_for_event(ev: dict, all_scorers: list[dict],
                 "market_type": route.market,
                 "selection": name,
                 "pick_side": name,
+                # MLS PLAYER-PROP SIGNAL CLOSURE (2026-08-22):
+                # Top-level `player_name` + `team` guaranteed on every
+                # emitted pick so `player_team_fixture_validator` never
+                # false-blocks with player_name_missing / player_team_invalid
+                # for markets whose suffix isn't in the market-string
+                # regex whitelist (e.g. "Anytime Assist").  Same fix
+                # applies to `soccer_prop_inject` — see that file.
+                "player_name": name,
+                "player": name,
+                "team": team,
+                "player_team": team,
                 "model_win_prob": p,
                 "model_probability": p,
                 "win_probability": round(p * 100, 2),
