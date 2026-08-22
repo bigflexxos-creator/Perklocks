@@ -2253,31 +2253,9 @@ async def root():
     return {"ok": True, "service": "PerkLocks AI", "date": _today_str()}
 
 
-# ── SportsGameOdds admin/health endpoints (6-day primary trial) ────
-# Isolated from The Odds API circuit breaker — SGO status is reported
-# independently so /admin/provider-health can distinguish the two.
-
-@api.get("/admin/sgo/health")
-async def sgo_health():
-    """Authenticated SGO probe. Never returns the API key."""
-    try:
-        from services.sportsgameodds_adapter import health_ping
-        ok = await health_ping()
-        return {"ok": bool(ok), "provider": "sportsgameodds"}
-    except Exception as e:
-        return {"ok": False, "provider": "sportsgameodds",
-                "error": str(e)[:200]}
-
-
-@api.post("/admin/sgo/ingest")
-async def sgo_ingest_now(only_pregame: bool = True):
-    """On-demand SGO ingestion trigger — same code path as the loop."""
-    try:
-        from services.sportsgameodds_adapter import ingest_all_configured
-        totals = await ingest_all_configured(db, only_pregame=only_pregame)
-        return {"ok": True, "totals": totals}
-    except Exception as e:
-        return {"ok": False, "error": str(e)[:400]}
+# ── SportsGameOdds provider PERMANENTLY REMOVED (2026-06) ──────────
+# Admin endpoints and adapter deleted. The Odds API is the sole
+# real-line odds provider.
 
 
 # ────────────────────── Historical Sports Intelligence Engine ──────────────────────
@@ -4068,79 +4046,11 @@ async def on_startup():
         logger.info("Soccer pipeline scheduler armed (15-min pregame loop + 24h backfill loop)")
     except Exception as e:
         logger.warning("Soccer pipeline scheduler not armed: %s", e)
-    # ── SportsGameOdds PRIMARY provider (6-day trial, 2026-06) ──────
-    # SGO feeds the EXISTING canonical pipeline as PRIMARY while
-    # The Odds API remains OUT_OF_USAGE_CREDITS. Independent of the
-    # Odds API circuit breaker — a 401 on the fallback must NOT
-    # disable this loop. Writes into ``db.picks`` with
-    # ``odds_source='real_book_line'`` + ``odds_provider='sportsgameodds'``
-    # so downstream normalization / model / publication / settlement
-    # treat the rows exactly like any other real-line source.
-    #
-    # ── PROVIDER SWITCH (env-only, no code edit) ─────────────────
-    # ``PRIMARY_ODDS_PROVIDER=sportsgameodds``  (default during trial) → SGO loop runs.
-    # ``PRIMARY_ODDS_PROVIDER=the_odds_api`` / ``odds_api``            → SGO loop skips.
-    # The Odds API path stays unconditional (its own breaker / cache
-    # governs it), so setting the switch to ``the_odds_api`` simply
-    # turns SGO off and leaves the legacy provider as sole source.
-    try:
-        from services.sportsgameodds_adapter import (
-            ingest_all_configured as _sgo_ingest_all,
-        )
-        from services.sgo_scorer_bridge import (
-            score_pending_sgo_rows as _sgo_score_pending,
-        )
-
-        _sgo_primary = (
-            os.environ.get("PRIMARY_ODDS_PROVIDER")
-            or "sportsgameodds"
-        ).strip().lower()
-
-        async def _sgo_loop(db):
-            # Config-only switch — re-checked on every restart. When
-            # not primary, the loop no-ops so The Odds API is the
-            # sole real-line source.
-            if _sgo_primary != "sportsgameodds":
-                logger.info(
-                    "SportsGameOdds loop disabled by config "
-                    "(PRIMARY_ODDS_PROVIDER=%s)",
-                    _sgo_primary,
-                )
-                return
-            await asyncio.sleep(30)   # startup grace
-            while True:
-                try:
-                    totals = await _sgo_ingest_all(db, only_pregame=True)
-                    logger.info(
-                        "sportsgameodds cycle complete: events=%s picks_seen=%s upserted=%s",
-                        totals.get("events"),
-                        totals.get("picks_seen"),
-                        totals.get("picks_upserted"),
-                    )
-                    # PERKLOCKS SGO SHARED-SCORER WIRING (2026-06):
-                    # Route the freshly-ingested SGO rows through the
-                    # EXISTING MLB / Soccer / Tennis scorer that the
-                    # Odds-API-family path uses. No new scoring
-                    # formulas, no self-heal fallback — the same
-                    # sport model produces every lock_score.
-                    scored = await _sgo_score_pending(db, limit=1500)
-                    logger.info(
-                        "sportsgameodds scoring pass: %s", scored,
-                    )
-                except Exception as _e:
-                    logger.warning("sportsgameodds loop error: %s", _e)
-                # 15-min cadence — matches soccer_pipeline_loop; respects
-                # SGO rate limits without hammering the trial account.
-                await asyncio.sleep(900)
-
-        _deferred_task(lambda: _sgo_loop(db),                DEFER_BASE * 3)
-        logger.info(
-            "SportsGameOdds PRIMARY provider armed "
-            "(PRIMARY_ODDS_PROVIDER=%s, 15-min loop, 6-day trial)",
-            _sgo_primary,
-        )
-    except Exception as e:
-        logger.warning("SportsGameOdds primary provider not armed: %s", e)
+    # ── SportsGameOdds provider PERMANENTLY REMOVED (2026-06) ──────
+    # The Odds API is the sole real-line odds provider. No SGO loop,
+    # no SGO ingest, no SGO scorer bridge. If a future provider is
+    # re-introduced it should live under its own module — the SGO
+    # code path is not maintained here anymore.
     # ── UEFA ESPN fallback ingest (Champions/Europa/Conference) ─────
     # Our primary sources (The Odds API + football-data.org) don't carry
     # UEFA qualification rounds until close to kickoff. ESPN's public
