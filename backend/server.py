@@ -3124,7 +3124,13 @@ async def _daily_refresh_loop():
 # UTC = 11 AM – 7 PM ET). Cheap because we filter to MLB only — non-MLB
 # fetchers are skipped (saves Odds credits) and other sports' picks are not
 # wiped from the DB.
-_MLB_QUICK_REFRESH_INTERVAL = 5 * 60   # 5 minutes (today, near-start games)
+_MLB_QUICK_REFRESH_INTERVAL = 30 * 60  # 30 minutes — post-publish freeze policy
+                                       # (was 5min; 2026-08-22).  Once a pick is
+                                       # published we freeze its snapshot; discovery
+                                       # of NEW selections still runs every 30min
+                                       # during the US window, which is cheap
+                                       # enough that pregame lines still surface
+                                       # 60-90min before first pitch.
 _MLB_TOMORROW_REFRESH_INTERVAL = 30 * 60   # 30 minutes (tomorrow's board — Phase 2γ)
 _MLB_WINDOW_START_UTC_HOUR = 15        # 11 AM ET
 _MLB_WINDOW_END_UTC_HOUR = 3           # 11 PM ET / 8 PM PT — covers late West Coast first pitches (wraps past midnight UTC)
@@ -3162,9 +3168,9 @@ async def _mlb_pregame_loop():
                 lease = await coord.acquire(
                     "mlb_pregame_refresh_today",
                     lease_seconds=180,
-                    min_interval_seconds=180,   # min 3-min spacing
+                    min_interval_seconds=_MLB_QUICK_REFRESH_INTERVAL,
                     caller="mlb_pregame_loop",
-                    reason="pregame_5min",
+                    reason="pregame_30min",
                 )
                 if lease:
                     token = lease.lease_token
