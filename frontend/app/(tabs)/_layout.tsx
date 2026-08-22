@@ -222,19 +222,20 @@ export default function TabsLayout() {
 }
 
 const styles = StyleSheet.create({
-  // Locks-Mockup 2026-08-22 §13: active-tab pill container. Icon gets
-  // a warm gold "lantern" behind it — inactive tabs are plain icons.
+  // Locks-Mockup 2026-08-22 correction §13: BLACK elevated container
+  // with a luminous gold border + soft outer glow. Interior stays true
+  // black so the icon sits inside a dark "lantern", not a gold wash.
   iconWrap: {
-    width: 40, height: 30, borderRadius: 12,
+    width: 42, height: 32, borderRadius: 12,
     alignItems: "center", justifyContent: "center",
   },
   iconWrapActive: {
-    backgroundColor: "rgba(255,210,74,0.14)",
-    borderWidth: 1,
-    borderColor: "rgba(255,210,74,0.55)",
-    shadowColor: "#FFC933",
-    shadowOpacity: 0.55,
-    shadowRadius: 8,
+    backgroundColor: "#000000",
+    borderWidth: 1.4,
+    borderColor: "rgba(255,215,0,0.85)",
+    shadowColor: "#FFD700",
+    shadowOpacity: 0.75,
+    shadowRadius: 10,
     shadowOffset: { width: 0, height: 0 },
   },
 });

@@ -29,9 +29,9 @@ export const COLORS = {
   //  Bumped secondary + muted brighter so filter labels, sport chips,
   //  timer strings, and inactive tab items are readable on the deeper
   //  #070B14 background.  Primary stays crisp near-white.
-  textPrimary: "#F5F6F8",
-  textSecondary: "#CDD3DF",   // was #B3BAC7 — chips/labels readable
-  textMuted: "#A0AAB9",       // was #7F8999 — inactive nav/counts legible
+  textPrimary: "#FFFFFF",
+  textSecondary: "#DDE2EC",   // bumped for contrast on true-black
+  textMuted: "#9AA3B4",       // still muted but readable
   textDim: "#6B7186",
 
   // ── Brand accents ────────────────────────────────────────────────
@@ -46,11 +46,14 @@ export const COLORS = {
   neonGreen: "#4DE68A",
   neonLime:  "#B6FF3D",   // confidence-bar mid-stop (lime)
   // Perklocks gold identity — luminous metallic tones (Gold Impact + Mockup).
-  goldElite: "#FFD24A",    // core LUMINOUS gold — metallic base
-  goldRich:  "#FFE580",    // bright metallic gold highlight
+  //  Mockup correction 2026-08-22: bumped goldElite/goldRich to true
+  //  luminous #FFD700 core so the wordmark, LOCK box, and active tab
+  //  read as bright metallic gold rather than dull brown/olive.
+  goldElite: "#FFD700",    // true luminous gold core
+  goldRich:  "#FFE066",    // bright metallic gold highlight
   goldGlow:  "#FFC933",    // saturated gold used for outer-glow shadow tint
   goldDeep:  "#B98A17",    // deep metallic base
-  goldGloss: "rgba(255,217,90,0.24)",
+  goldGloss: "rgba(255,215,0,0.28)",
 
   // ── Borders ──────────────────────────────────────────────────────
   //  Stronger baseline so cards visibly separate from the deeper
@@ -249,7 +252,7 @@ export const SPORT_COLORS: Record<string, {
   border: string;      // Semi-transparent border (~60%)
   glow: string;        // Shadow tint (matches accent)
 }> = {
-  All:    { accent: "#FFD24A", soft: "rgba(255,210,74,0.14)", border: "rgba(255,210,74,0.62)", glow: "#FFD24A" },
+  All:    { accent: "#FFD700", soft: "rgba(255,215,0,0.14)", border: "rgba(255,215,0,0.68)", glow: "#FFD700" },
   MLB:    { accent: "#4C9BFF", soft: "rgba(76,155,255,0.14)", border: "rgba(76,155,255,0.62)", glow: "#4C9BFF" },
   NBA:    { accent: "#B98CFF", soft: "rgba(185,140,255,0.14)", border: "rgba(185,140,255,0.62)", glow: "#B98CFF" },
   NFL:    { accent: "#4DE68A", soft: "rgba(77,230,138,0.14)", border: "rgba(77,230,138,0.60)", glow: "#4DE68A" },
@@ -271,7 +274,7 @@ export function getSportColor(sport?: string) {
 export const CONFIDENCE_GRADIENT = [
   "#4DE68A",   // green (low-lock end)
   "#B6FF3D",   // lime
-  "#FFD24A",   // gold
+  "#FFD700",   // gold
   "#FF9548",   // orange
   "#FF5F5C",   // red
 ];
