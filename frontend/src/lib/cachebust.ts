@@ -39,7 +39,13 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 // ─── Client-baked cache version (Layer 3) ───────────────────────────────────
 // Bump on every CLIENT-side data shape / content change.
 // Format: YYYYMMDD-N  so collisions are obvious in git history.
-export const APP_DATA_VERSION = "20260808-canonical-board-cache-v70";
+//
+// 2026-08-22 — Expo Go client-freshness permanent fix.  Bumped so every
+// deployed build wipes prior in-flight caches on first launch and starts
+// from a fresh /api/picks/today snapshot.  Combined with the new
+// AppState-resume refetch + UPDATE-button SWR-cache invalidation, this
+// guarantees stale cached picks can never survive a newer API truth.
+export const APP_DATA_VERSION = "20260822-client-freshness-appstate-v71";
 
 // ─── Backend-version snapshot (Layer 2 - stored after each /api/version call)
 const CLIENT_VERSION_KEY = "perkslocks.client_data_version";
