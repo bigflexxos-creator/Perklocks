@@ -321,11 +321,11 @@ async def loop() -> None:
             # Trigger in-place prop repair when ASA sync succeeded.
             if summary.get("ok") and summary.get("written", 0) > 0:
                 try:
-                    from services.mls_prop_repair import repair_mls_props
+                    from services.mls_prop_repair import repair_soccer_props
                     from deps import db
-                    repair = await repair_mls_props(db)
+                    repair = await repair_soccer_props(db)
                     logger.info(
-                        "MLS prop repair applied: on_board_new=%d "
+                        "Soccer prop repair applied: on_board_new=%d "
                         "updated_up=%d updated_down=%d off_board_new=%d",
                         repair.get("on_board_new", 0),
                         repair.get("updated_up", 0),
@@ -333,7 +333,7 @@ async def loop() -> None:
                         repair.get("off_board_new", 0),
                     )
                 except Exception as _rp_err:
-                    logger.warning("MLS prop repair post-ASA failed: %s",
+                    logger.warning("Soccer prop repair post-ASA failed: %s",
                                     _rp_err)
         except Exception as e:
             logger.warning("MLS ASA cycle failed: %s", e)
