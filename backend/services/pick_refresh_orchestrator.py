@@ -1115,34 +1115,71 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         """Return a stable family key for ``p``.  Player-prop families
         share the vocabulary already established by ``_MARKET_STAT_TO_FAMILY``
         below; all other markets collapse to ``"game_market"`` (Moneyline
-        / Spread / Total / RL / BTTS / DC / anytime_scorer / etc.)."""
+        / Spread / Total / RL / BTTS / DC / anytime_scorer / etc.).
+
+        Universal Starvation Root-Class Closure (2026-08-22):
+        Every supported prop family MUST classify to a distinct family
+        key so the atomic-delete conservation filter can never wipe a
+        family that this refresh cycle did not regenerate.
+        """
         mkt = (p.get("market") or "").lower()
-        # Player-prop stat markers — align with existing MLB regex below.
+        # ─── MLB families (explicit) ──────────────────────────────────
         if "strikeouts" in mkt:              return "pitcher_strikeouts"
-        if "hits + runs + rbis" in mkt:      return "batter_hits_runs_rbis"
+        if "hits + runs + rbis" in mkt or "hits+runs+rbis" in mkt:
+            return "batter_hits_runs_rbis"
         if "home runs" in mkt or "home run"  in mkt: return "batter_home_runs"
         if "total bases" in mkt:             return "batter_total_bases"
+        if "singles" in mkt:                 return "batter_singles"
+        if "doubles" in mkt:                 return "batter_doubles"
+        if "triples" in mkt:                 return "batter_triples"
         if "rbis" in mkt or "rbi " in mkt:   return "batter_rbis"
         if "runs scored" in mkt:             return "batter_runs_scored"
+        if "stolen base" in mkt:             return "batter_stolen_bases"
         if "pitching outs" in mkt or "pitcher outs" in mkt: return "pitcher_outs"
         if "earned runs" in mkt:             return "pitcher_earned_runs"
         if "hits allowed" in mkt:            return "pitcher_hits_allowed"
         if " hits" in mkt or mkt.endswith("hits") or "over/under hits" in mkt:
             return "batter_hits"
         if "walks" in mkt:                   return "pitcher_walks"
-        # NFL / NBA / Soccer player families — cheap-substring lookup.
+        # ─── NFL families (explicit) ──────────────────────────────────
         if "passing yards" in mkt or "pass yards" in mkt: return "nfl_passing_yards"
         if "rushing yards" in mkt or "rush yards" in mkt: return "nfl_rushing_yards"
         if "receiving yards" in mkt or "rec yards" in mkt: return "nfl_receiving_yards"
         if "receptions" in mkt:              return "nfl_receptions"
-        if "anytime td" in mkt or "anytime touchdown" in mkt: return "nfl_anytime_td"
-        if "points" in mkt and any(sp in mkt for sp in ("nba", "wnba")): return "nba_points"
+        if "passing tds" in mkt or "pass tds" in mkt or "passing touchdowns" in mkt:
+            return "nfl_passing_tds"
+        if "first td" in mkt or "first touchdown" in mkt:
+            return "nfl_first_td"
+        if "anytime td" in mkt or "anytime touchdown" in mkt:
+            return "nfl_anytime_td"
+        # ─── NBA / WNBA / basketball families (explicit) ──────────────
+        if "threes" in mkt or "three pointers" in mkt or "3-pointers" in mkt or "3pm" in mkt:
+            return "nba_threes"
+        if "pra" in mkt or "points + rebounds + assists" in mkt:
+            return "nba_pra"
+        if "points" in mkt and any(sp in mkt for sp in ("nba", "wnba", "basketball", "cbb")):
+            return "nba_points"
         if "rebounds" in mkt:                return "nba_rebounds"
-        if "assists" in mkt:                 return "nba_assists"
-        if "pra" in mkt or "points + rebounds + assists" in mkt: return "nba_pra"
-        if "anytime scorer" in mkt or "first scorer" in mkt or "last scorer" in mkt:
+        if "assists" in mkt and "score or assist" not in mkt and "score/assist" not in mkt:
+            return "nba_assists"
+        # ─── Soccer families (explicit) ───────────────────────────────
+        if "score or assist" in mkt or "score/assist" in mkt:
+            return "soccer_score_or_assist"
+        if "anytime assist" in mkt:          return "soccer_anytime_assist"
+        if "anytime goal scorer" in mkt or "anytime scorer" in mkt:
             return "soccer_anytime_scorer"
-        if "score or assist" in mkt or "score/assist" in mkt: return "soccer_score_or_assist"
+        if "first goal scorer" in mkt or "last goal scorer" in mkt \
+                or "first scorer" in mkt or "last scorer" in mkt:
+            return "soccer_first_last_scorer"
+        if "shots on target" in mkt or "sot" in mkt:
+            return "soccer_shots_on_target"
+        if "shots" in mkt and "on target" not in mkt:
+            return "soccer_shots"
+        # ─── Tennis families (explicit) ───────────────────────────────
+        if "total games" in mkt:             return "tennis_total_games"
+        if "set betting" in mkt:             return "tennis_set_betting"
+        if "match tie break" in mkt or "tiebreak" in mkt or "tie-break" in mkt:
+            return "tennis_tiebreak"
         # Everything else — moneyline / spread / total / BTTS / DC /
         # h2h / RL / 1X2 — is a game market.
         return "game_market"
@@ -1177,28 +1214,47 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     # ``$expr`` since documents don't carry ``market_family`` yet.
     # Cheapest is a market-regex whitelist per refreshed family.
     def _family_market_regex(fam: str) -> Optional[str]:
+        # ─── MLB families ────────────────────────────────────────────
         if fam == "pitcher_strikeouts":   return r"strikeouts"
         if fam == "batter_hits_runs_rbis": return r"hits\s*\+\s*runs\s*\+\s*rbis"
         if fam == "batter_home_runs":     return r"home\s+runs?"
         if fam == "batter_total_bases":   return r"total\s+bases"
+        if fam == "batter_singles":       return r"singles"
+        if fam == "batter_doubles":       return r"doubles"
+        if fam == "batter_triples":       return r"triples"
         if fam == "batter_rbis":          return r"rbis?\b"
         if fam == "batter_runs_scored":   return r"runs\s+scored"
+        if fam == "batter_stolen_bases":  return r"stolen\s+base"
         if fam == "batter_hits":          return r"\bhits(\s+over|\s+under|\s*$)"
         if fam == "pitcher_outs":         return r"(pitching|pitcher)\s+outs"
         if fam == "pitcher_earned_runs":  return r"earned\s+runs"
         if fam == "pitcher_hits_allowed": return r"hits\s+allowed"
         if fam == "pitcher_walks":        return r"walks"
+        # ─── NFL families ────────────────────────────────────────────
         if fam == "nfl_passing_yards":    return r"pass(ing)?\s+yards"
         if fam == "nfl_rushing_yards":    return r"rush(ing)?\s+yards"
         if fam == "nfl_receiving_yards":  return r"rec(eiving)?\s+yards"
         if fam == "nfl_receptions":       return r"receptions"
+        if fam == "nfl_passing_tds":      return r"pass(ing)?\s+t(ds?|ouchdowns?)"
+        if fam == "nfl_first_td":         return r"first\s+t(d|ouchdown)"
         if fam == "nfl_anytime_td":       return r"anytime\s+(td|touchdown)"
+        # ─── NBA families ────────────────────────────────────────────
+        if fam == "nba_threes":           return r"(threes|three\s*pointers|3-?pointers|3pm)"
+        if fam == "nba_pra":              return r"(pra\b|points\s*\+\s*rebounds\s*\+\s*assists)"
         if fam == "nba_points":           return r"points"
         if fam == "nba_rebounds":         return r"rebounds"
         if fam == "nba_assists":          return r"assists"
-        if fam == "nba_pra":              return r"(pra\b|points\s*\+\s*rebounds\s*\+\s*assists)"
-        if fam == "soccer_anytime_scorer": return r"(anytime|first|last)\s+scorer"
+        # ─── Soccer families ─────────────────────────────────────────
         if fam == "soccer_score_or_assist": return r"score\s*(or|/)\s*assist"
+        if fam == "soccer_anytime_assist": return r"anytime\s+assist"
+        if fam == "soccer_anytime_scorer": return r"anytime\s+(goal\s+)?scorer"
+        if fam == "soccer_first_last_scorer": return r"(first|last)\s+(goal\s+)?scorer"
+        if fam == "soccer_shots_on_target": return r"shots\s+on\s+target|\bsot\b"
+        if fam == "soccer_shots":         return r"\bshots\b"
+        # ─── Tennis families ─────────────────────────────────────────
+        if fam == "tennis_total_games":   return r"total\s+games"
+        if fam == "tennis_set_betting":   return r"set\s+betting"
+        if fam == "tennis_tiebreak":      return r"match\s+tie[\s\-]?break|tiebreak"
         # game_market: everything NOT matching a prop pattern above.
         return None
     _refreshed_regexes = [
@@ -1211,11 +1267,19 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         # does NOT match ANY prop family AND game markets refreshed".
         _all_prop_regex = (
             r"(strikeouts|hits\s*\+\s*runs\s*\+\s*rbis|home\s+runs?|"
-            r"total\s+bases|rbis?\b|runs\s+scored|\bhits(\s+over|\s+under|\s*$)|"
+            r"total\s+bases|singles|doubles|triples|rbis?\b|runs\s+scored|"
+            r"stolen\s+base|\bhits(\s+over|\s+under|\s*$)|"
             r"(pitching|pitcher)\s+outs|earned\s+runs|hits\s+allowed|walks|"
             r"pass(ing)?\s+yards|rush(ing)?\s+yards|rec(eiving)?\s+yards|"
-            r"receptions|anytime\s+(td|touchdown)|points|rebounds|assists|"
-            r"pra\b|(anytime|first|last)\s+scorer|score\s*(or|/)\s*assist)"
+            r"receptions|pass(ing)?\s+t(ds?|ouchdowns?)|"
+            r"first\s+t(d|ouchdown)|anytime\s+(td|touchdown)|"
+            r"threes|three\s*pointers|3-?pointers|3pm|"
+            r"pra\b|points\s*\+\s*rebounds\s*\+\s*assists|"
+            r"points|rebounds|assists|"
+            r"anytime\s+(goal\s+)?scorer|(first|last)\s+(goal\s+)?scorer|"
+            r"score\s*(or|/)\s*assist|anytime\s+assist|"
+            r"shots\s+on\s+target|\bsot\b|\bshots\b|"
+            r"total\s+games|set\s+betting|match\s+tie[\s\-]?break|tiebreak)"
         )
         _or_clauses: list = []
         for _rx in _refreshed_regexes:
