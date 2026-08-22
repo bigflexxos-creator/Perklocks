@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View, Text, StyleSheet, ScrollView, RefreshControl,
   ActivityIndicator, Pressable, TouchableOpacity, Animated, Easing,
+  AppState,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
@@ -18,6 +19,7 @@ import { StaleVersionBanner } from "@/src/components/StaleVersionBanner";
 import { StaleBuildBanner } from "@/src/components/StaleBuildBanner";
 import { EventGroupSkeleton } from "@/src/components/Skeleton";
 import { PremiumHeader } from "@/src/components/PremiumHeader";
+import { swrCacheClear } from "@/src/lib/useSWR";
 import { storage } from "@/src/utils/storage";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 import { useFilters } from "@/src/stores/useFilters";
@@ -554,6 +556,29 @@ export default function LocksScreen() {
     5_000,
   );
 
+  // ── Client freshness fix (Expo Go 2026-08-22) ────────────────────
+  //   Expo Go users left the app in the background then re-opened it
+  //   30+ min later; `useFocusEffect` does NOT fire on foreground
+  //   resume when the Locks tab was already focused before pause. So
+  //   picks stayed pinned to the pre-pause payload until the user
+  //   manually switched tabs or hit UPDATE.
+  //
+  //   Fix: subscribe to AppState. On every "active" transition, force
+  //   a silent refetch of the board + cooldown. Bounded by the same
+  //   5s cooldown as focus refetch to avoid a burst on rapid toggles.
+  const lastResumeRef = useRef<number>(0);
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next !== "active") return;
+      const now = Date.now();
+      if (now - lastResumeRef.current < 5_000) return;
+      lastResumeRef.current = now;
+      load(sport, lineType, sortKey, filters, sortDir);
+      loadCooldown();
+    });
+    return () => { sub.remove(); };
+  }, [sport, lineType, sortKey, filters, sortDir, load, loadCooldown]);
+
   const onRefresh = () => {
     setRefreshing(true);
     load(sport, lineType, sortKey, filters, sortDir);
@@ -577,6 +602,11 @@ export default function LocksScreen() {
     }
     setLoading(true);
     try {
+      // Client-freshness fix 2026-08-22 — manual UPDATE invalidates
+      // the in-memory SWR cache for ALL primary tabs so a stale
+      // sibling snapshot (e.g. Rollover / Parlay) can't survive.
+      // On the next focus of any tab, a fresh fetch is guaranteed.
+      swrCacheClear();
       const res = await api.refresh();
       // Backend tells us the next-allowed time. Drive the countdown from
       // that instead of guessing client-side.
