@@ -148,12 +148,9 @@ function LockPickCardImpl({ pick, featured = false }: { pick: Pick; featured?: b
       style={({ pressed }) => [
         styles.card,
         {
-          // Locks-Mockup 2026-08-22 correction: keep card interior TRUE
-          // BLACK. Tier-driven greens/purples were washing the surface
-          // (RARE tier paints #132420 → felt olive under a gold rim).
-          // Sport/gold accents are now applied ONLY via border + edge
-          // illumination, never as a fill.
-          backgroundColor: featured ? "#050607" : "#0A0C10",
+          // Locks-Mockup 2026-08-22 correction (+brightness lift): keep
+          // card interior TRUE BLACK-ish but lift so labels/logos pop.
+          backgroundColor: featured ? "#0B0E14" : "#12172A",
           borderColor: featured
             ? "rgba(255,215,0,0.85)"
             : (getSportColor(pick.sport).border || tierVisual.borderColor),
@@ -178,20 +175,20 @@ function LockPickCardImpl({ pick, featured = false }: { pick: Pick; featured?: b
           coloring the interior. */}
       {featured && (
         <View pointerEvents="none" style={styles.featuredAtmosphere}>
-          {/* Base — deep black wash so text stays crisp. */}
+          {/* Base — lifted black wash (was 55/85/95 — too dark) so
+              logos and secondary text stay readable while ambient
+              depth remains. */}
           <LinearGradient
-            colors={["rgba(0,0,0,0.55)", "rgba(0,0,0,0.85)", "rgba(0,0,0,0.95)"]}
+            colors={["rgba(0,0,0,0.30)", "rgba(0,0,0,0.55)", "rgba(0,0,0,0.75)"]}
             start={{ x: 0.5, y: 0 }}
             end={{ x: 0.5, y: 1 }}
             style={StyleSheet.absoluteFill}
           />
-          {/* Very subtle top-edge sport illumination — 8% tint fading
-              to fully transparent within ~40% of card height. Feels
-              like "stadium lights above the pitch" without coloring
-              the surface. */}
+          {/* Very subtle top-edge sport illumination — brighter tint
+              (33 → 44) so the sport color visibly kisses the top edge. */}
           <LinearGradient
             colors={[
-              getSportColor(pick.sport).glow + "22",
+              getSportColor(pick.sport).glow + "33",
               "rgba(0,0,0,0)",
             ]}
             start={{ x: 0.5, y: 0 }}
@@ -2315,24 +2312,25 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     elevation: 3,
   },
-  // ── Locks-Mockup 2026-08-22 correction: BLACK surfaces with only
-  // colored borders + values. Previous tinted backgrounds contributed
-  // to the "muddy wash" the user rejected.
+  // Brightness lift 2026-08-22: interiors nudged from rgba(0,0,0,0.55)
+  // to rgba(20,25,40,0.55) so metric boxes read as elevated glass
+  // rather than pitch-black cutouts — while still contrasting against
+  // the sport-tinted card behind them.
   heroBadgeGold: {
-    backgroundColor: "rgba(0,0,0,0.55)",
-    borderColor: "rgba(255,215,0,0.85)",
+    backgroundColor: "rgba(24,20,8,0.85)",
+    borderColor: "rgba(255,215,0,0.90)",
   },
   heroBadgeGreen: {
-    backgroundColor: "rgba(0,0,0,0.55)",
-    borderColor: "rgba(77,230,138,0.80)",
+    backgroundColor: "rgba(10,24,16,0.85)",
+    borderColor: "rgba(77,230,138,0.85)",
   },
   heroBadgeRed: {
-    backgroundColor: "rgba(0,0,0,0.55)",
-    borderColor: "rgba(255,95,92,0.70)",
+    backgroundColor: "rgba(24,10,10,0.85)",
+    borderColor: "rgba(255,95,92,0.75)",
   },
   heroBadgeNeutral: {
-    backgroundColor: "rgba(0,0,0,0.55)",
-    borderColor: "rgba(255,255,255,0.22)",
+    backgroundColor: "rgba(18,22,34,0.85)",
+    borderColor: "rgba(255,255,255,0.30)",
   },
   heroBadgeGloss: {
     // Subtle inner top-highlight — glass panel dimensionality.
