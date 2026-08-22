@@ -235,7 +235,9 @@ const styles = StyleSheet.create({
   },
   brandScrim: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.62)",
+    // Brightness lift 2026-08-22: reduced from 0.62 to 0.48 so brand
+    // background subtly shows through — screen no longer feels flat.
+    backgroundColor: "rgba(0,0,0,0.48)",
     zIndex: 1,
   },
 });

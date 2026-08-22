@@ -17,22 +17,20 @@ export const COLORS = {
   //  washed.  Card surface, borders, text, and gold tokens all
   //  brightened in lockstep.  All layout / component structure
   //  untouched — only color values.
-  bg: "#070B14",              // deep near-black navy (was #0F1832)
-  surface: "#090E18",         // matching card surface (was #1A2340)
-  surfaceElevated: "#111828",
-  surfaceRaised: "#182034",
-  surfaceGloss: "rgba(255,221,92,0.10)",   // gold ambient glow (was blue)
-  surfaceInset: "rgba(255,255,255,0.06)",
+  bg: "#0B0F1A",              // slightly lifted from #070B14
+  surface: "#0E1320",         // lifted from #090E18
+  surfaceElevated: "#151B2B",
+  surfaceRaised: "#1D2438",
+  surfaceGloss: "rgba(255,221,92,0.12)",
+  surfaceInset: "rgba(255,255,255,0.08)",
 
   // ── Text ─────────────────────────────────────────────────────────
-  //  Gold Impact visibility correction (2026-06):
-  //  Bumped secondary + muted brighter so filter labels, sport chips,
-  //  timer strings, and inactive tab items are readable on the deeper
-  //  #070B14 background.  Primary stays crisp near-white.
+  //  Brightness lift 2026-08-22: primary stays pure white; secondary
+  //  and muted brightened so labels/dates/counts pop cleanly.
   textPrimary: "#FFFFFF",
-  textSecondary: "#DDE2EC",   // bumped for contrast on true-black
-  textMuted: "#9AA3B4",       // still muted but readable
-  textDim: "#6B7186",
+  textSecondary: "#E6EAF2",   // lifted from #DDE2EC
+  textMuted: "#AAB3C4",       // lifted from #9AA3B4
+  textDim: "#7A8194",
 
   // ── Brand accents ────────────────────────────────────────────────
   //  Volt blue and neon green nudged toward luminous premium tones;
@@ -56,12 +54,11 @@ export const COLORS = {
   goldGloss: "rgba(255,215,0,0.28)",
 
   // ── Borders ──────────────────────────────────────────────────────
-  //  Stronger baseline so cards visibly separate from the deeper
-  //  near-black background.
-  borderDefault: "rgba(255,255,255,0.18)",
-  borderStrong:  "rgba(255,255,255,0.28)",
-  borderActive:  "rgba(255,255,255,0.42)",
-  borderGold:    "rgba(255,217,90,0.75)",
+  //  Brightness lift 2026-08-22: bumped so cards separate more clearly.
+  borderDefault: "rgba(255,255,255,0.22)",
+  borderStrong:  "rgba(255,255,255,0.32)",
+  borderActive:  "rgba(255,255,255,0.48)",
+  borderGold:    "rgba(255,215,0,0.82)",
 
   // ── State colors ─────────────────────────────────────────────────
   dangerBg: "#1B0708",
