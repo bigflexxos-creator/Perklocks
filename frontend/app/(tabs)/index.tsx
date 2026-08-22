@@ -17,6 +17,7 @@ import { NFLIntelligenceSection } from "@/src/components/NFLIntelligenceSection"
 import { StaleVersionBanner } from "@/src/components/StaleVersionBanner";
 import { StaleBuildBanner } from "@/src/components/StaleBuildBanner";
 import { EventGroupSkeleton } from "@/src/components/Skeleton";
+import { PremiumHeader } from "@/src/components/PremiumHeader";
 import { storage } from "@/src/utils/storage";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 import { useFilters } from "@/src/stores/useFilters";
@@ -192,7 +193,32 @@ export default function LocksScreen() {
     return () => loop.stop();
   }, [pulseAnim]);
   const spin = spinAnim.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
-  const pulseOpacity = pulseAnim.interpolate({ inputRange: [0, 1], outputRange: [0.55, 1] });
+  // pulseOpacity was consumed by the inline "Updated" dot which moved
+  // into PremiumHeader (which owns its own internal pulse loop). Kept
+  // pulseAnim in place because future micro-interactions may want it.
+
+  // ── Featured Card Rotation (Locks-Mockup 2026-08-22) ─────────────
+  // Rotate the featured hero card between the top-N picks of the
+  // first day-group every ~7s. Returning users always see a fresh
+  // spotlight instead of the same locked-in pick.
+  //
+  //   • Only rotates when the first group has ≥2 picks (else the
+  //     highlight is static).
+  //   • Rotation range = min(5, group.items.length) so we cycle
+  //     through the best 5 max.
+  //   • Resets to 0 on sport/filter change or when picks payload
+  //     mutates (via picks.length dep).
+  const [featuredIdx, setFeaturedIdx] = useState(0);
+  useEffect(() => {
+    setFeaturedIdx(0);
+  }, [sport, lineType, filters, picks.length]);
+  useEffect(() => {
+    if (picks.length < 2) return;
+    const t = setInterval(() => {
+      setFeaturedIdx((i) => (i + 1) % 5);   // cap 5 — grouper caps below
+    }, 7000);
+    return () => clearInterval(t);
+  }, [picks.length]);
 
   // 1-second tick to drive the cooldown countdown. Only runs while a
   // cooldown is active to avoid waking the UI thread needlessly.
@@ -575,40 +601,38 @@ export default function LocksScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
-      <View style={styles.header}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.brand}>PERKLOCKS</Text>
-          <Text style={styles.tagline}>LOCK IN. CASH OUT.</Text>
-          <Text style={styles.date}>
-            Today&apos;s Locks · {new Date().toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}
-          </Text>
-          <View style={styles.updatedRow}>
-            <Animated.View style={[styles.updatedDot, { opacity: pulseOpacity }]} />
-            <Text style={styles.updatedLabel}>Updated {timeAgo(lastLoadedAt)}</Text>
-          </View>
-          {remaining > 0 && (
-            <Text style={styles.cooldownLabel} testID="refresh-cooldown-label">
-              New picks in {formatCountdown(remaining)}
-            </Text>
-          )}
-        </View>
-        <Pressable
-          testID="refresh-button"
-          onPress={onForceRefresh}
-          style={[styles.refreshBtn, remaining > 0 && styles.refreshBtnDisabled]}
-          hitSlop={10}
+      <PremiumHeader
+        title="PERKLOCKS"
+        tagline="LOCK IN. CASH OUT."
+        subtitle={`Today's Locks · ${new Date().toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}`}
+        status={{ label: `Updated ${timeAgo(lastLoadedAt)}` }}
+        right={
+          <Pressable
+            testID="refresh-button"
+            onPress={onForceRefresh}
+            style={[styles.refreshBtn, remaining > 0 && styles.refreshBtnDisabled]}
+            hitSlop={10}
+          >
+            {remaining > 0 ? (
+              <Text style={styles.refreshBtnCountdown} testID="refresh-button-countdown">
+                {formatCountdown(remaining)}
+              </Text>
+            ) : (
+              <Animated.View style={{ transform: [{ rotate: spin }] }}>
+                <Ionicons name="refresh" size={20} color={COLORS.goldElite} />
+              </Animated.View>
+            )}
+          </Pressable>
+        }
+      />
+      {remaining > 0 && (
+        <Text
+          style={styles.cooldownStripe}
+          testID="refresh-cooldown-label"
         >
-          {remaining > 0 ? (
-            <Text style={styles.refreshBtnCountdown} testID="refresh-button-countdown">
-              {formatCountdown(remaining)}
-            </Text>
-          ) : (
-            <Animated.View style={{ transform: [{ rotate: spin }] }}>
-              <Ionicons name="refresh" size={20} color={COLORS.goldElite} />
-            </Animated.View>
-          )}
-        </Pressable>
-      </View>
+          New picks in {formatCountdown(remaining)}
+        </Text>
+      )}
 
       {toast && (
         <View style={styles.toast} pointerEvents="none">
@@ -896,12 +920,13 @@ export default function LocksScreen() {
           /* Picks render in the grouped block below */ null
         )}
         {/* Grouped render — replaces the flat list when picks exist.
-            First pick of the FIRST group ("TODAY" in typical case) is
-            visually promoted as the "featured" hero card per mockup §4:
-            layered black/glass surface, subtle sport-colored outer glow,
-            stadium ambient gradient, and stronger premium border. */}
+            The featured hero card rotates through the top-5 picks of
+            the first group every 7s so the spotlight stays fresh. */}
         {visiblePicks.length > 0 && groupPicksByDay(visiblePicks).map((group, gIdx) => {
           const uniqueEvents = new Set(group.items.map((p) => p.event || "")).size;
+          // Rotation is clamped to the first group and capped at 5 picks.
+          const rotationCount = gIdx === 0 ? Math.min(5, group.items.length) : 0;
+          const featuredIdxInGroup = rotationCount > 0 ? featuredIdx % rotationCount : -1;
           return (
             <View key={group.key} style={styles.dayGroup}>
               <View style={styles.dayHeader}>
@@ -914,7 +939,7 @@ export default function LocksScreen() {
                 <LockPickCard
                   key={p.id}
                   pick={p}
-                  featured={gIdx === 0 && pIdx === 0}
+                  featured={gIdx === 0 && pIdx === featuredIdxInGroup}
                 />
               ))}
             </View>
@@ -1026,6 +1051,13 @@ const styles = StyleSheet.create({
   cooldownLabel: {
     fontSize: 10.5, color: COLORS.goldRich, fontWeight: "800",
     marginTop: 3, letterSpacing: 0.4,
+  },
+  // Locks-Mockup 2026-08-22: subtle cooldown stripe under header when
+  // a refresh cooldown is active. Restored after PremiumHeader refactor.
+  cooldownStripe: {
+    fontSize: 11, color: COLORS.goldRich, fontWeight: "800",
+    letterSpacing: 0.5, paddingHorizontal: 20, paddingBottom: 4,
+    marginTop: -8,
   },
   toast: {
     position: "absolute", top: 110, alignSelf: "center", zIndex: 10,

@@ -9,6 +9,7 @@ import { Stack } from "expo-router";
 
 import { api } from "@/src/lib/api";
 import { COLORS } from "@/src/theme";
+import { PremiumHeader } from "@/src/components/PremiumHeader";
 import { swrCacheRead, swrCacheWrite } from "@/src/lib/useSWR";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 
@@ -122,12 +123,10 @@ export default function MyBetsScreen() {
         contentContainerStyle={styles.scroll}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.neonGreen} />}
       >
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>My Bets</Text>
-          <Text style={styles.headerSub}>
-            Personal ROI for the picks you&apos;ve tracked. Nothing else counts.
-          </Text>
-        </View>
+        <PremiumHeader
+          title="MY BETS"
+          tagline="PERSONAL ROI · TRACKED PICKS ONLY"
+        />
 
         {/* ── Summary row ────────────────────────────────────────── */}
         <View style={styles.summaryRow}>
