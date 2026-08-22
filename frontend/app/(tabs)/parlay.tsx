@@ -10,6 +10,7 @@ import { COLORS, GRADE_COLORS } from "@/src/theme";
 import { api, LineType, ParlayCard } from "@/src/lib/api";
 import { LineTypeToggle } from "@/src/components/LineTypeToggle";
 import { SportFilterBar } from "@/src/components/SportFilterBar";
+import { PremiumHeader } from "@/src/components/PremiumHeader";
 import { useParlayPreferences } from "@/src/lib/useParlayPreferences";
 import {
   SportsbookId,
@@ -242,29 +243,29 @@ export default function ParlayScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
-      <View style={styles.header}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.brand}>AUTO PARLAY</Text>
-          <Text style={[styles.tag, { color: accentColor }]}>
-            {isHighRisk
-              ? "HIGH RISK · 10-20 LEG LOTTERY"
-              : isTodayWindow
-                ? "TODAY · NEXT 1-5h · HIGH PROBABILITY"
-                : isAdvanced
-                  ? (advancedSub === "safer" ? "ADVANCED · SAFER · HIT-RATE OPTIMIZED" : "ADVANCED · HIGH EV · LONG-RUN PROFIT")
-                  : "OPTIMIZER V1 · SAFE / BALANCED / AGGRESSIVE"}
-          </Text>
-        </View>
-        <Pressable
-          onPress={() => router.push("/parlay-history")}
-          hitSlop={10}
-          testID="parlay-history-btn"
-          style={({ pressed }) => [styles.histBtn, pressed && { opacity: 0.7 }]}
-        >
-          <Ionicons name="trophy-outline" size={16} color={COLORS.goldElite} />
-          <Text style={styles.histTxt}>HISTORY</Text>
-        </Pressable>
-      </View>
+      <PremiumHeader
+        title="AUTO PARLAY"
+        tagline={
+          isHighRisk
+            ? "HIGH RISK · 10-20 LEG LOTTERY"
+            : isTodayWindow
+              ? "TODAY · NEXT 1-5h · HIGH PROBABILITY"
+              : isAdvanced
+                ? (advancedSub === "safer" ? "ADVANCED · SAFER · HIT-RATE OPTIMIZED" : "ADVANCED · HIGH EV · LONG-RUN PROFIT")
+                : "OPTIMIZER V1 · SAFE / BALANCED / AGGRESSIVE"
+        }
+        right={
+          <Pressable
+            onPress={() => router.push("/parlay-history")}
+            hitSlop={10}
+            testID="parlay-history-btn"
+            style={({ pressed }) => [styles.histBtn, pressed && { opacity: 0.7 }]}
+          >
+            <Ionicons name="trophy-outline" size={16} color={COLORS.goldElite} />
+            <Text style={styles.histTxt}>HISTORY</Text>
+          </Pressable>
+        }
+      />
 
       {/* Regenerate button — shuffles the optimizer seed so the user gets
           a freshly-built parlay every tap. Pinned legs survive. Sits as a

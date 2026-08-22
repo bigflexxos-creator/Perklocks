@@ -8,6 +8,7 @@ import { useRouter } from "expo-router";
 import { COLORS } from "@/src/theme";
 import { useAuth } from "@/src/contexts/AuthContext";
 import { api } from "@/src/lib/api";
+import { PremiumHeader } from "@/src/components/PremiumHeader";
 import { APP_DATA_VERSION, forceClearAllCaches } from "@/src/lib/cachebust";
 import { swrCacheRead, swrCacheWrite } from "@/src/lib/useSWR";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
@@ -107,7 +108,10 @@ export default function ProfileScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.title}>PROFILE</Text>
+        <PremiumHeader
+          title="PROFILE"
+          tagline={user?.email ? "PERKLOCKS ACCOUNT" : undefined}
+        />
 
         <View style={styles.userCard}>
           <View style={styles.avatar}>

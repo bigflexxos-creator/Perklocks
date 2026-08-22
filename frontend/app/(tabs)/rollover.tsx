@@ -11,6 +11,7 @@ import { api, Pick, LineType, PickFilters } from "@/src/lib/api";
 import { LineTypeToggle } from "@/src/components/LineTypeToggle";
 import { ChipRow } from "@/src/components/ChipRow";
 import { SportFilterBar } from "@/src/components/SportFilterBar";
+import { PremiumHeader } from "@/src/components/PremiumHeader";
 import { PickEventRow } from "@/src/components/PickEventRow";
 import { SkeletonList } from "@/src/components/Skeleton";
 import { EmptyState } from "@/src/components/EmptyState";
@@ -108,13 +109,15 @@ export default function RolloverScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.brand}>ROLLOVER</Text>
-          <Text style={styles.tag}>3 SAFEST BETS · BOARD-WIDE</Text>
-        </View>
-        <Ionicons name="flash" size={28} color={COLORS.goldElite} />
-      </View>
+      <PremiumHeader
+        title="ROLLOVER"
+        tagline="3 SAFEST BETS · BOARD-WIDE"
+        right={
+          <View style={{ paddingRight: 4 }}>
+            <Ionicons name="flash" size={28} color={COLORS.goldElite} />
+          </View>
+        }
+      />
 
       <LineTypeToggle value={lineType} onChange={setLineType} testIDPrefix="rollover-line" />
       <ChipRow
