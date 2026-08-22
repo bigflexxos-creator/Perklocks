@@ -148,14 +148,21 @@ function LockPickCardImpl({ pick, featured = false }: { pick: Pick; featured?: b
       style={({ pressed }) => [
         styles.card,
         {
-          backgroundColor: tierVisual.surfaceBg,
-          borderColor: featured ? "rgba(255,210,74,0.85)" : tierVisual.borderColor,
-          borderWidth: featured ? 1.75 : tierVisual.borderWidth,
+          // Locks-Mockup 2026-08-22 correction: keep card interior TRUE
+          // BLACK. Tier-driven greens/purples were washing the surface
+          // (RARE tier paints #132420 → felt olive under a gold rim).
+          // Sport/gold accents are now applied ONLY via border + edge
+          // illumination, never as a fill.
+          backgroundColor: featured ? "#050607" : "#0A0C10",
+          borderColor: featured
+            ? "rgba(255,215,0,0.85)"
+            : (getSportColor(pick.sport).border || tierVisual.borderColor),
+          borderWidth: featured ? 1.75 : Math.max(tierVisual.borderWidth, 1),
           shadowColor: featured
-            ? COLORS.goldGlow
+            ? "#FFD700"
             : (getSportColor(pick.sport).glow || tierVisual.glowColor),
-          shadowOpacity: featured ? 0.55 : Math.max(tierVisual.glowOpacity, 0.32),
-          shadowRadius: featured ? 22 : Math.max(tierVisual.glowRadius, 12),
+          shadowOpacity: featured ? 0.55 : Math.max(tierVisual.glowOpacity * 0.7, 0.22),
+          shadowRadius: featured ? 22 : Math.max(tierVisual.glowRadius, 10),
           shadowOffset: { width: 0, height: featured ? 8 : 4 },
         },
         isApexHero && styles.cardApexElevation,
@@ -163,29 +170,32 @@ function LockPickCardImpl({ pick, featured = false }: { pick: Pick; featured?: b
         pressed && { opacity: 0.9, transform: [{ scale: 0.985 }] },
       ]}
     >
-      {/* Featured atmosphere (mockup §5): a very-low-opacity radial-style
-          gradient behind the card content that reads as "stadium
-          lighting" without impairing text legibility. Rendered only on
-          the featured card so the rest of the board stays clean. */}
+      {/* Featured atmosphere (mockup §4/§5): VERY DARK ambient depth —
+          a low-opacity radial-like gradient that reads as stadium
+          lighting behind the content without tinting the surface.
+          Black-first stack; only a single thin sport-colored edge
+          illumination at the top so the card feels "lit" without
+          coloring the interior. */}
       {featured && (
         <View pointerEvents="none" style={styles.featuredAtmosphere}>
+          {/* Base — deep black wash so text stays crisp. */}
           <LinearGradient
-            colors={[
-              "rgba(255,210,74,0.18)",
-              "rgba(255,210,74,0.06)",
-              "rgba(0,0,0,0.00)",
-            ]}
-            start={{ x: 0.1, y: 0 }}
-            end={{ x: 0.9, y: 1 }}
+            colors={["rgba(0,0,0,0.55)", "rgba(0,0,0,0.85)", "rgba(0,0,0,0.95)"]}
+            start={{ x: 0.5, y: 0 }}
+            end={{ x: 0.5, y: 1 }}
             style={StyleSheet.absoluteFill}
           />
+          {/* Very subtle top-edge sport illumination — 8% tint fading
+              to fully transparent within ~40% of card height. Feels
+              like "stadium lights above the pitch" without coloring
+              the surface. */}
           <LinearGradient
             colors={[
-              getSportColor(pick.sport).glow + "26",
-              "rgba(0,0,0,0.00)",
+              getSportColor(pick.sport).glow + "22",
+              "rgba(0,0,0,0)",
             ]}
-            start={{ x: 1, y: 0 }}
-            end={{ x: 0, y: 1 }}
+            start={{ x: 0.5, y: 0 }}
+            end={{ x: 0.5, y: 0.45 }}
             style={StyleSheet.absoluteFill}
           />
         </View>
@@ -196,7 +206,11 @@ function LockPickCardImpl({ pick, featured = false }: { pick: Pick; featured?: b
         pointerEvents="none"
         style={[
           styles.topGloss,
-          { backgroundColor: featured ? "rgba(255,210,74,0.18)" : tierVisual.surfaceGlossTop },
+          {
+            backgroundColor: featured
+              ? "rgba(255,215,0,0.10)"
+              : "rgba(255,255,255,0.05)",
+          },
           (isApexHero || featured) && styles.topGlossApex,
         ]}
       />
@@ -2301,21 +2315,23 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     elevation: 3,
   },
-  // ── Locks-Mockup 2026-08-22 §6: distinct per-metric variants ──────
+  // ── Locks-Mockup 2026-08-22 correction: BLACK surfaces with only
+  // colored borders + values. Previous tinted backgrounds contributed
+  // to the "muddy wash" the user rejected.
   heroBadgeGold: {
-    backgroundColor: "rgba(255,210,74,0.14)",
-    borderColor: "rgba(255,210,74,0.85)",
+    backgroundColor: "rgba(0,0,0,0.55)",
+    borderColor: "rgba(255,215,0,0.85)",
   },
   heroBadgeGreen: {
-    backgroundColor: "rgba(77,230,138,0.14)",
-    borderColor: "rgba(77,230,138,0.75)",
+    backgroundColor: "rgba(0,0,0,0.55)",
+    borderColor: "rgba(77,230,138,0.80)",
   },
   heroBadgeRed: {
-    backgroundColor: "rgba(255,95,92,0.12)",
-    borderColor: "rgba(255,95,92,0.65)",
+    backgroundColor: "rgba(0,0,0,0.55)",
+    borderColor: "rgba(255,95,92,0.70)",
   },
   heroBadgeNeutral: {
-    backgroundColor: "rgba(255,255,255,0.05)",
+    backgroundColor: "rgba(0,0,0,0.55)",
     borderColor: "rgba(255,255,255,0.22)",
   },
   heroBadgeGloss: {
