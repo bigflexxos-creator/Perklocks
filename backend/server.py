@@ -1613,6 +1613,85 @@ async def _ensure_today_picks() -> None:
             "ensure_today_picks: MLB families starved=%s — forcing refresh",
             mlb_family_starved,
         )
+
+    # ── Per-Sport Starvation μ-fix (2026-08-22) ──────────────────────
+    # Global actionable / prop counts HIDE per-sport starvation. A
+    # Soccer-only slate (e.g. 14 fresh + 21 legacy sgo ghosts = 35
+    # rows) makes `game_market_healthy == True` AND
+    # `player_prop_healthy == True` while MLB / NFL / NBA / CFB /
+    # NHL / Tennis have ZERO rows and their pipelines never ran.
+    #
+    # Production symptom (2026-08-22 report):
+    #     /api/picks/today → 35 Soccer, 0 everything else, indefinitely.
+    #
+    # Fix: for each active sport, evaluate flow health INDEPENDENTLY
+    # of the global count. STARVED iff zero actionable AND zero
+    # any-status rows for the sport (flow provably never executed).
+    # Rows that exist but are model-rejected legitimately count as
+    # HEALTHY_NO_QUALIFIED_PICKS — no retry loop.
+    #
+    # Legacy SGO ghost rows are EXCLUDED from these counts (`id`
+    # starts with `sgo-` OR provider/source contains
+    # `sportsgameodds`) — they are DB residue from the removed SGO
+    # provider and must not be counted as proof-of-flow.
+    _ACTIVE_SPORTS_FOR_HEALTH = ("MLB", "NFL", "NBA", "CFB", "NHL", "Tennis", "Soccer")
+    _NON_LEGACY_FILTERS = {
+        # MongoDB $not:{$regex} matches non-matching values AND missing
+        # fields — a single flat filter suffices, no $or wrapping.
+        "id":            {"$not": {"$regex": "^sgo-"}},
+        "odds_provider": {"$not": {"$regex": "sportsgameodds", "$options": "i"}},
+        "source":        {"$not": {"$regex": "sportsgameodds", "$options": "i"}},
+    }
+    sport_starved: list[str] = []
+    try:
+        for _sport in _ACTIVE_SPORTS_FOR_HEALTH:
+            _sp_actionable = await db.picks.count_documents({
+                **_actionable_query, "sport": _sport, **_NON_LEGACY_FILTERS,
+            })
+            if _sp_actionable > 0:
+                continue  # healthy actionable coverage for this sport
+            _sp_any = await db.picks.count_documents({
+                "pick_date": today, "sport": _sport, **_NON_LEGACY_FILTERS,
+            })
+            if _sp_any == 0:
+                # Zero actionable AND zero any-status (non-legacy) rows.
+                # Flow provably never executed for this sport today.
+                sport_starved.append(_sport)
+    except Exception as _sp_err:
+        logger.warning(
+            "ensure_today_picks: per-sport starvation check errored "
+            "(%s) — forcing refresh (fail-closed)", _sp_err,
+        )
+        sport_starved = list(_ACTIVE_SPORTS_FOR_HEALTH)
+    if sport_starved:
+        # Refresh-loop guard: after we force one starvation-driven
+        # refresh, cooldown for 15 min before firing another. This
+        # honors "rows exist but legitimately all fail model/85
+        # gates → treat as flow healthy; do not refresh-loop" — but
+        # extended to the "flow ran, produced ZERO rows of any
+        # status" case, which for pre-season / off-window sports
+        # (NBA/CFB/NHL right now) is the honest steady state.
+        global _last_starvation_refresh_at
+        _cooldown_s = 15 * 60
+        _now_ts = _time.time()
+        if _now_ts - _last_starvation_refresh_at < _cooldown_s:
+            logger.debug(
+                "ensure_today_picks: sports_starved=%s but starvation-"
+                "refresh cooldown active (%.0fs remaining) — skipping",
+                sport_starved, _cooldown_s - (_now_ts - _last_starvation_refresh_at),
+            )
+        else:
+            # A single coordinated refresh restores all starved sports —
+            # `_refresh_picks(today)` is orchestrator-scoped and iterates
+            # every configured sport internally. No hourly-global toggle
+            # is turned on. Snapshot mode / provider budget / coordinator
+            # architecture remain intact.
+            game_market_healthy = False
+            _last_starvation_refresh_at = _now_ts
+            logger.info(
+                "ensure_today_picks: sports_starved=%s (Soccer-mask defect"
+                " closed) — forcing refresh", sport_starved,
+            )
     if game_market_healthy and player_prop_healthy:
         logger.debug(
             "ensure_today_picks: %d actionable / %d raw for %s "
@@ -1661,6 +1740,13 @@ async def _ensure_today_picks() -> None:
 # Module-level guard: prevents overlapping refresh stampedes when
 # multiple clients hit an empty /picks/today at the same time.
 _refresh_in_flight: bool = False
+
+# Per-Sport Starvation μ-fix (2026-08-22): cooldown timestamp for
+# the last starvation-triggered refresh so pre-season / off-window
+# sports with zero legitimate rows don't drive an infinite refresh
+# loop.  15-minute cooldown paired with the starvation check above.
+import time as _time
+_last_starvation_refresh_at: float = 0.0
 
 
 # ── Market filter taxonomy ────────────────────────────────────────────────
