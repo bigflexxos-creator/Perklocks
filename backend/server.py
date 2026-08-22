@@ -4735,6 +4735,24 @@ async def on_startup():
     except Exception as e:
         logger.warning("Soccer Prop Inject worker failed to start: %s", e)
 
+    # ── MLS Player Stats Fetcher (ASA, 2026-08-22) ─────────────────
+    # Free American Soccer Analysis public API — populates
+    # `soccer_player_form` with real MLS xG / xA / shots / per-90
+    # data so the Soccer scorer bridge produces honest model
+    # probabilities instead of the empty-xG fallback that was
+    # collapsing every MLS player prop to Lock Score 55.  No paid
+    # provider — this is direct free public data, so no JobCoordinator
+    # / ProviderBudget gating required.
+    try:
+        from services.mls_player_stats import loop as _mls_player_stats_loop
+        _TASK_REGISTRY.register_and_start(
+            'mls_player_stats_loop', lambda: _mls_player_stats_loop(),
+            task_type='recurring_loop', critical=False,
+        )
+        logger.info("MLS Player Stats (ASA) armed — 12h cadence, free public API")
+    except Exception as e:
+        logger.warning("MLS Player Stats fetcher failed to start: %s", e)
+
     # ── Circuit-Breaker Cross-Pod Sync (2026-08-09, ticket #222563) ───
     # Odds API circuit-breaker state (sports_engine._API_DISABLED etc.)
     # is per-process. With 2 replicas the pods diverge and an admin
