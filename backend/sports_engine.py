@@ -4622,6 +4622,24 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 else:
                     if not (player and side and price is not None and point is not None):
                         continue
+                    # ── MLB Over/Under Direction Preservation (2026-08-22) ──
+                    # Some Odds API alt-line payloads emit outcomes where
+                    # `outcome.name` is the PLAYER NAME rather than
+                    # "Over" / "Under" — the direction is either implicit
+                    # in the market key or lost.  Prior code accepted
+                    # `side="Griffin Conine"` verbatim, producing
+                    # malformed market strings like
+                    #   "Griffin Conine (MIA) Griffin Conine 1.5 Hits + Runs + RBIs"
+                    # (direction silently dropped, player name
+                    # duplicated).  Fail-closed: if side is not a valid
+                    # Over/Under direction, skip the outcome so
+                    # downstream `_prop_market_label` cannot emit a
+                    # direction-less market string.  Numeric-point
+                    # markets ALWAYS carry a real Over/Under side; a
+                    # non-directional side is a payload defect.
+                    _side_norm = str(side).strip().lower()
+                    if _side_norm not in ("over", "under"):
+                        continue
                     # Standard markets: drop Unders (user pref). For alt markets,
                     # KEEP Unders — they fuel the "Under of the Day" feature
                     # (alt Unders with super-high lines are some of the safest
