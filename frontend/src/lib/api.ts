@@ -2,6 +2,59 @@ import { storage } from "@/src/utils/storage";
 import { Platform } from "react-native";
 
 // ═══════════════════════════════════════════════════════════════════
+// Expo/Native freshness closure — 2026-08-22
+// ───────────────────────────────────────────────────────────────────
+// The SportsGameOdds (SGO) provider was permanently removed in a
+// prior session. However, 21 legacy SGO-prefixed rows survived the
+// purge in the PRODUCTION picks collection (they carried
+// `publication_state: PUBLISHED` at the moment of the wipe and were
+// never overwritten by fresh-provider ingestion because they use a
+// different `canonical_wager_id`).
+//
+// Preview DB is clean → preview/web look correct.
+// Production DB still has these ghosts → Expo/native shows them.
+//
+// User forbids backend/DB purge, so the fix is a defensive CLIENT
+// filter at the API boundary that drops any pick whose provenance
+// includes `sportsgameodds` or whose id begins with `sgo-`.  Once the
+// next deploy pushes this bundle, Expo/native picks-of-today will
+// match the fresh-provider set exactly.
+//
+// Cheap (O(n)), pure, side-effect free — safe to inline at every
+// picks-returning endpoint (getTodaysPicks, rollover, …).
+// ═══════════════════════════════════════════════════════════════════
+function isLegacySgoPick(p: { id?: string;
+                              odds_provider?: string;
+                              source?: string;
+                              publication_source?: string;
+                              provenance?: string }): boolean {
+  if (!p) return false;
+  if (typeof p.id === "string" && p.id.startsWith("sgo-")) return true;
+  const s = (p.odds_provider || "") + "|" + (p.source || "") + "|" +
+            (p.publication_source || "") + "|" + (p.provenance || "");
+  return s.toLowerCase().includes("sportsgameodds");
+}
+
+function dropLegacySgoPicks<T extends { id?: string }>(picks: T[]): T[] {
+  if (!Array.isArray(picks) || picks.length === 0) return picks;
+  const kept: T[] = [];
+  let dropped = 0;
+  for (const p of picks) {
+    if (isLegacySgoPick(p as {
+      id?: string; odds_provider?: string; source?: string;
+      publication_source?: string; provenance?: string;
+    })) { dropped++; continue; }
+    kept.push(p);
+  }
+  if (dropped > 0 && typeof console !== "undefined") {
+    // Keep a single crisp log so we can prove the filter fired on
+    // Expo/native without leaving noisy per-pick spam.
+    console.log(`[freshness] Dropped ${dropped} legacy SGO pick(s) at client boundary`);
+  }
+  return kept;
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Backend URL resolution — Phase 1 (2026-08-11):
 // ───────────────────────────────────────────────────────────────────
 // One authoritative resolver.  Every frontend consumer routes through
@@ -1078,7 +1131,10 @@ export const api = {
         message:    string;
         suggestion?: string;
       } | null;
-    }>(`/picks/today${q ? `?${q}` : ""}`);
+    }>(`/picks/today${q ? `?${q}` : ""}`).then((r) => ({
+      ...r,
+      picks: dropLegacySgoPicks(r.picks || []),
+    }));
   },
   sportMarkets: (sport: string) =>
     request<{ sport: string; markets: SportMarket[]; leagues: SportLeague[] }>(
@@ -1096,7 +1152,7 @@ export const api = {
     const q = qs.toString();
     return request<{ picks: Pick[]; pick: Pick | null; composite_rank?: number; total_evaluated?: number }>(
       `/picks/rollover${q ? `?${q}` : ""}`,
-    );
+    ).then((r) => ({ ...r, picks: dropLegacySgoPicks(r.picks || []) }));
   },
   underOfTheDay: (lineType?: LineType, sortKey?: SortKey, filters?: PickFilters, sport?: string) => {
     const qs = new URLSearchParams();
