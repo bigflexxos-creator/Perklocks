@@ -184,11 +184,13 @@ function LockPickCardImpl({ pick, featured = false }: { pick: Pick; featured?: b
             end={{ x: 0.5, y: 1 }}
             style={StyleSheet.absoluteFill}
           />
-          {/* Very subtle top-edge sport illumination — brighter tint
-              (33 → 44) so the sport color visibly kisses the top edge. */}
+          {/* Featured hero card always uses GOLD top-edge illumination
+              regardless of sport — matches the mockup's "premium gold
+              featured" treatment. Sport identity is still delivered
+              via the sport tag chip + PEAK/SIGNAL colors. */}
           <LinearGradient
             colors={[
-              getSportColor(pick.sport).glow + "33",
+              "rgba(255,215,0,0.28)",
               "rgba(0,0,0,0)",
             ]}
             start={{ x: 0.5, y: 0 }}
