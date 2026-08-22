@@ -1,5 +1,5 @@
-import React, { useEffect, useRef } from "react";
-import { View, Text, StyleSheet, Animated, Pressable, Platform } from "react-native";
+import React from "react";
+import { View, Text, StyleSheet, Pressable, Platform } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS } from "@/src/theme";
 
@@ -35,19 +35,8 @@ export function PremiumHeader({
   };
   right?: React.ReactNode;
 }) {
-  const pulse = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    if (!status) return;
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, { toValue: 1, duration: 900, useNativeDriver: true }),
-        Animated.timing(pulse, { toValue: 0, duration: 900, useNativeDriver: true }),
-      ]),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [pulse, status]);
-  const dotOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.55, 1] });
+  // Pulse animation disabled per user request 2026-08-22 — dot renders
+  // as a steady green light instead of a strobing indicator.
 
   return (
     <View style={styles.header}>
@@ -57,10 +46,10 @@ export function PremiumHeader({
         {subtitle && <Text style={styles.subtitle}>{subtitle}</Text>}
         {status && (
           <View style={styles.statusRow}>
-            <Animated.View
+            <View
               style={[
                 styles.statusDot,
-                { backgroundColor: status.color || COLORS.neonGreen, opacity: dotOpacity, shadowColor: status.color || COLORS.neonGreen },
+                { backgroundColor: status.color || COLORS.neonGreen, shadowColor: status.color || COLORS.neonGreen },
               ]}
             />
             <Text style={[styles.statusLabel, { color: status.color || COLORS.neonGreen }]}>
