@@ -1760,12 +1760,20 @@ async def _ensure_today_picks() -> None:
             _last_succeed  = float(_state.get("last_succeeded_at") or 0)
             _last_attempt  = float(_state.get("last_attempted_at") or 0)
 
-            if _last_result == "exception":
+            if _last_result == "PIPELINE_EXCEPTION" or _last_result == "exception":
                 # Pipeline crashed last time — treat as starved and retry
                 # (subject to the 15-min per-sport cooldown below).
                 sport_status[_sport] = "PIPELINE_EXCEPTION"
                 sport_starved.append(_sport)
-            elif _last_result == "honest_empty" and (_now_ts - _last_succeed) < 4 * 3600:
+            elif _last_result == "PROVIDER_UNAVAILABLE":
+                # Provider gateway was disabled — retry once circuit
+                # closes (per-sport 15-min cooldown protects churn).
+                if _last_attempt > 0 and (_now_ts - _last_attempt) < 15 * 60:
+                    sport_status[_sport] = "STARVED_COOLDOWN"
+                else:
+                    sport_status[_sport] = "PROVIDER_UNAVAILABLE"
+                    sport_starved.append(_sport)
+            elif (_last_result in ("HONEST_EMPTY", "honest_empty")) and (_now_ts - _last_succeed) < 4 * 3600:
                 # Recent successful refresh legitimately produced zero.
                 # Do NOT drive a retry loop for pre-season / off-window
                 # sports; wait for the next 4h window before re-checking.
@@ -1850,9 +1858,20 @@ async def _ensure_today_picks() -> None:
 
         # Post-refresh classification & persistence per sport.
         _succeeded_at = None if _exc else _attempted_at
+
+        # Read Odds-API circuit state (best-effort) so PROVIDER_UNAVAILABLE
+        # can be distinguished from HONEST_EMPTY when the sport produced
+        # zero rows solely because the provider gateway was disabled.
+        _provider_open = False
+        try:
+            from sports_engine import _API_DISABLED as _oai_disabled  # type: ignore
+            _provider_open = bool(_oai_disabled)
+        except Exception:
+            _provider_open = False
+
         logger.info(
-            "background_refresh classifier: sports=%s exc=%s",
-            list(_active_sports_cache), (str(_exc) if _exc else None),
+            "background_refresh classifier: sports=%s exc=%s provider_open=%s",
+            list(_active_sports_cache), (str(_exc) if _exc else None), _provider_open,
         )
         try:
             _ops = []
@@ -1863,18 +1882,41 @@ async def _ensure_today_picks() -> None:
                     })
                 except Exception:
                     _post = 0
+                # Canonical zero-reason vocabulary per user contract:
+                #   HONEST_EMPTY, PROVIDER_UNAVAILABLE, MODEL_UNAVAILABLE,
+                #   IDENTITY_UNRESOLVED, PIPELINE_EXCEPTION, SPORT_STARVED
+                # Also collect per-family produced set so consumers can
+                # verify family conservation across cycles.
+                _families: dict = {}
+                try:
+                    _fam_cursor = db.picks.aggregate([
+                        {"$match": {"pick_date": today, "sport": _sport, **_NON_LEGACY_FILTERS}},
+                        {"$group": {"_id": {"$ifNull": ["$market_family", "$market"]}, "n": {"$sum": 1}}},
+                    ])
+                    async for _row in _fam_cursor:
+                        _families[str(_row["_id"])] = int(_row["n"])
+                except Exception:
+                    pass
                 if _exc:
-                    _result = "exception"
+                    _result = "PIPELINE_EXCEPTION"
+                    _zero_reason = "PIPELINE_EXCEPTION"
                 elif _post > 0:
                     _result = f"produced_{_post - _pre_counts.get(_sport, 0)}"
+                    _zero_reason = None
+                elif _provider_open:
+                    _result = "PROVIDER_UNAVAILABLE"
+                    _zero_reason = "PROVIDER_UNAVAILABLE"
                 else:
-                    _result = "honest_empty"
+                    _result = "HONEST_EMPTY"
+                    _zero_reason = "HONEST_EMPTY"
                 _doc = {
                     "sport": _sport,
                     "last_attempted_at": _attempted_at,
                     "last_succeeded_at": _succeeded_at if _succeeded_at else _sport_refresh_state.get(_sport, {}).get("last_succeeded_at"),
                     "last_flow_result": _result,
                     "last_produced_count": _post,
+                    "last_zero_reason": _zero_reason,
+                    "last_families": _families,
                 }
                 _sport_refresh_state[_sport] = _doc
                 _ops.append((_sport, _doc))
