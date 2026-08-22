@@ -201,15 +201,23 @@ def _match_pick_to_odds(pick: dict, bookmakers: list) -> Optional[tuple[float, O
 #  Loop 1 — line observer
 # ──────────────────────────────────────────────────────────────────────
 async def line_observer_loop(db) -> None:
-    """Every OBSERVER_INTERVAL_SECONDS, log a line observation for every
-    still-pending pick into `pick_line_history`."""
-    await db.pick_line_history.create_index([("pick_id", 1), ("observed_at", -1)])
-    while True:
-        try:
-            await _observe_once(db)
-        except Exception as e:
-            logger.warning("line observer cycle failed: %s", e)
-        await asyncio.sleep(OBSERVER_INTERVAL_SECONDS)
+    """DISABLED 2026-08-22 — post-publish freeze policy.
+    User contract: "Once a pick is published, I do NOT care about later
+    line movement or CLV."  This loop previously polled the Odds API
+    every ``OBSERVER_INTERVAL_SECONDS`` for every pending pick to log
+    line drift into ``pick_line_history``.  That's a large recurring
+    paid burn with zero product value under the new freeze policy.
+
+    Historical ``pick_line_history`` rows and any existing CLV fields
+    on picks remain untouched — only FUTURE paid polling is disabled.
+    The task returns immediately so ``_deferred_task`` can garbage
+    collect it.
+    """
+    logger.info(
+        "line_observer_loop: DISABLED per post-publish freeze policy "
+        "(2026-08-22) — 0 paid CLV/observer calls"
+    )
+    return
 
 
 async def _observe_once(db) -> dict:
@@ -267,12 +275,19 @@ async def _observe_once(db) -> dict:
 #  Loop 2 — closing snapshotter
 # ──────────────────────────────────────────────────────────────────────
 async def closing_snapshotter_loop(db) -> None:
-    while True:
-        try:
-            await _snapshot_closes_once(db)
-        except Exception as e:
-            logger.warning("closing snapshotter cycle failed: %s", e)
-        await asyncio.sleep(CLOSER_INTERVAL_SECONDS)
+    """DISABLED 2026-08-22 — post-publish freeze policy.
+    Previously polled the Odds API on a rolling ``CLOSER_INTERVAL_SECONDS``
+    tick to snapshot closing lines for picks about to kick off.  Under
+    the new freeze contract we ignore closing-line movement entirely —
+    published picks are frozen, and settlement uses free score feeds,
+    not paid odds polling.  Historical ``closing_odds_*`` fields are
+    preserved; only future paid snapshots are disabled.
+    """
+    logger.info(
+        "closing_snapshotter_loop: DISABLED per post-publish freeze policy "
+        "(2026-08-22) — 0 paid closing-line calls"
+    )
+    return
 
 
 async def _snapshot_closes_once(db) -> dict:
