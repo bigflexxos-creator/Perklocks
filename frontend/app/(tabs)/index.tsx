@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View, Text, StyleSheet, ScrollView, RefreshControl,
-  ActivityIndicator, Pressable, TouchableOpacity,
+  ActivityIndicator, Pressable, TouchableOpacity, Animated, Easing,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
@@ -155,6 +155,44 @@ export default function LocksScreen() {
     const t = setInterval(() => forceTick((n) => n + 1), 30000);
     return () => clearInterval(t);
   }, []);
+
+  // ── Locks-Mockup 2026-08-22 micro-interactions ────────────────────
+  // • Refresh icon spins while a refresh is in flight (`refreshing`).
+  // • The "Updated just now" green status pulses gently while live.
+  // Uses Animated.Value refs so the shared driver reuses the frame.
+  const spinAnim = useRef(new Animated.Value(0)).current;
+  const pulseAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    let loop: Animated.CompositeAnimation | null = null;
+    if (refreshing) {
+      spinAnim.setValue(0);
+      loop = Animated.loop(
+        Animated.timing(spinAnim, {
+          toValue: 1,
+          duration: 900,
+          easing: Easing.linear,
+          useNativeDriver: true,
+        }),
+      );
+      loop.start();
+    } else {
+      spinAnim.stopAnimation();
+      spinAnim.setValue(0);
+    }
+    return () => { loop?.stop(); };
+  }, [refreshing, spinAnim]);
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, { toValue: 1, duration: 900, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 0, duration: 900, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pulseAnim]);
+  const spin = spinAnim.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
+  const pulseOpacity = pulseAnim.interpolate({ inputRange: [0, 1], outputRange: [0.55, 1] });
 
   // 1-second tick to drive the cooldown countdown. Only runs while a
   // cooldown is active to avoid waking the UI thread needlessly.
@@ -538,13 +576,16 @@ export default function LocksScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
-        <View>
+        <View style={{ flex: 1 }}>
           <Text style={styles.brand}>PERKLOCKS</Text>
           <Text style={styles.tagline}>LOCK IN. CASH OUT.</Text>
           <Text style={styles.date}>
             Today&apos;s Locks · {new Date().toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}
           </Text>
-          <Text style={styles.updatedLabel}>Updated {timeAgo(lastLoadedAt)}</Text>
+          <View style={styles.updatedRow}>
+            <Animated.View style={[styles.updatedDot, { opacity: pulseOpacity }]} />
+            <Text style={styles.updatedLabel}>Updated {timeAgo(lastLoadedAt)}</Text>
+          </View>
           {remaining > 0 && (
             <Text style={styles.cooldownLabel} testID="refresh-cooldown-label">
               New picks in {formatCountdown(remaining)}
@@ -562,7 +603,9 @@ export default function LocksScreen() {
               {formatCountdown(remaining)}
             </Text>
           ) : (
-            <Ionicons name="refresh" size={20} color={COLORS.textPrimary} />
+            <Animated.View style={{ transform: [{ rotate: spin }] }}>
+              <Ionicons name="refresh" size={20} color={COLORS.goldElite} />
+            </Animated.View>
           )}
         </Pressable>
       </View>
@@ -852,8 +895,12 @@ export default function LocksScreen() {
         ) : (
           /* Picks render in the grouped block below */ null
         )}
-        {/* Grouped render — replaces the flat list when picks exist. */}
-        {visiblePicks.length > 0 && groupPicksByDay(visiblePicks).map((group) => {
+        {/* Grouped render — replaces the flat list when picks exist.
+            First pick of the FIRST group ("TODAY" in typical case) is
+            visually promoted as the "featured" hero card per mockup §4:
+            layered black/glass surface, subtle sport-colored outer glow,
+            stadium ambient gradient, and stronger premium border. */}
+        {visiblePicks.length > 0 && groupPicksByDay(visiblePicks).map((group, gIdx) => {
           const uniqueEvents = new Set(group.items.map((p) => p.event || "")).size;
           return (
             <View key={group.key} style={styles.dayGroup}>
@@ -863,7 +910,13 @@ export default function LocksScreen() {
                   {uniqueEvents} {uniqueEvents === 1 ? "GAME" : "GAMES"} · {group.items.length} {group.items.length === 1 ? "PICK" : "PICKS"}
                 </Text>
               </View>
-              {group.items.map((p) => <LockPickCard key={p.id} pick={p} />)}
+              {group.items.map((p, pIdx) => (
+                <LockPickCard
+                  key={p.id}
+                  pick={p}
+                  featured={gIdx === 0 && pIdx === 0}
+                />
+              ))}
             </View>
           );
         })}
@@ -927,13 +980,52 @@ const styles = StyleSheet.create({
   // so the global ImageBackground in app/_layout.tsx (the PerkLocks stadium
   // composite + scrim) shows through every tab.
   safe: { flex: 1, backgroundColor: "transparent" },
-  header: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 14,
-    flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end" },
-  brand: { fontSize: 22, fontWeight: "900", color: COLORS.textPrimary, letterSpacing: 3 },
-  tagline: { fontSize: 10, fontWeight: "700", color: COLORS.goldElite, letterSpacing: 2.4, marginTop: 2, marginBottom: 2 },
-  date: { fontSize: 11, color: COLORS.textMuted, fontWeight: "600", marginTop: 4, letterSpacing: 0.5 },
-  updatedLabel: { fontSize: 10, color: COLORS.neonGreen, fontWeight: "700", marginTop: 4, letterSpacing: 0.4 },
-  cooldownLabel: { fontSize: 10, color: COLORS.goldElite, fontWeight: "700", marginTop: 2, letterSpacing: 0.4 },
+  header: {
+    paddingHorizontal: 20, paddingTop: 8, paddingBottom: 14,
+    flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end",
+  },
+  brand: {
+    fontSize: 28,
+    fontWeight: "900",
+    color: COLORS.goldElite,
+    letterSpacing: 4,
+    // Luminous glow around the wordmark — matches mockup §1/§9.
+    textShadowColor: "rgba(255,210,74,0.55)",
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 12,
+  },
+  tagline: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: COLORS.goldRich,
+    letterSpacing: 3,
+    marginTop: 3,
+    marginBottom: 2,
+    opacity: 0.92,
+  },
+  date: {
+    fontSize: 11.5,
+    color: COLORS.textSecondary,
+    fontWeight: "600",
+    marginTop: 6,
+    letterSpacing: 0.4,
+  },
+  updatedRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 5 },
+  updatedDot: {
+    width: 7, height: 7, borderRadius: 4,
+    backgroundColor: COLORS.neonGreen,
+    shadowColor: COLORS.neonGreen,
+    shadowOpacity: 0.85,
+    shadowRadius: 5,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  updatedLabel: {
+    fontSize: 11, color: COLORS.neonGreen, fontWeight: "800", letterSpacing: 0.5,
+  },
+  cooldownLabel: {
+    fontSize: 10.5, color: COLORS.goldRich, fontWeight: "800",
+    marginTop: 3, letterSpacing: 0.4,
+  },
   toast: {
     position: "absolute", top: 110, alignSelf: "center", zIndex: 10,
     flexDirection: "row", alignItems: "center", gap: 8,
@@ -943,17 +1035,23 @@ const styles = StyleSheet.create({
   },
   toastText: { color: COLORS.textPrimary, fontSize: 13, fontWeight: "700" },
   refreshBtn: {
-    minWidth: 64, height: 40, borderRadius: 20,
-    backgroundColor: COLORS.surface, alignItems: "center", justifyContent: "center",
-    borderWidth: 1, borderColor: COLORS.borderDefault,
-    paddingHorizontal: 12,
+    minWidth: 44, height: 44, borderRadius: 22,
+    backgroundColor: "rgba(255,210,74,0.06)",
+    alignItems: "center", justifyContent: "center",
+    borderWidth: 1.4, borderColor: "rgba(255,210,74,0.55)",
+    paddingHorizontal: 10,
+    shadowColor: COLORS.goldGlow,
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 },
   },
   refreshBtnDisabled: {
     borderColor: COLORS.goldElite,
-    opacity: 0.85,
+    backgroundColor: "rgba(255,210,74,0.14)",
+    opacity: 0.95,
   },
   refreshBtnCountdown: {
-    color: COLORS.goldElite, fontSize: 11, fontWeight: "800",
+    color: COLORS.goldElite, fontSize: 11, fontWeight: "900",
     letterSpacing: 0, fontVariant: ["tabular-nums"],
     textAlign: "center",
   },
@@ -1065,22 +1163,26 @@ const styles = StyleSheet.create({
   // UPDATE button — explicit refresh CTA. Power users use pull-to-refresh
   // but the visible button removes the "is anything happening?" doubt.
   updateBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: 10,
-    borderWidth: 1,
-    borderColor: COLORS.goldElite,
-    backgroundColor: COLORS.goldElite + "12",
+    borderWidth: 1.4,
+    borderColor: "rgba(255,210,74,0.75)",
+    backgroundColor: "rgba(255,210,74,0.12)",
     marginRight: 20,
     marginBottom: 10,
-    minWidth: 64,
+    minWidth: 72,
     alignItems: "center",
+    shadowColor: COLORS.goldGlow,
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
   },
   updateBtnTxt: {
     color: COLORS.goldElite,
     fontSize: 11,
     fontWeight: "900",
-    letterSpacing: 1.2,
+    letterSpacing: 1.5,
   },
   // Reset-all-filters pill — destructive accent, only shown when any
   // narrowing predicate is active. Placed between the GameFilter
