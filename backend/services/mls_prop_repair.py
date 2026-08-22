@@ -1,19 +1,19 @@
-"""In-place repair for MLS player-prop picks after ASA sync.
+"""In-place repair for Soccer player-prop picks after form/xG refresh.
 
-Context (2026-08-22): the MLS player-prop board was frozen at Lock
-Score = 55.0 because ``soccer_player_form`` had ZERO MLS players,
-which caused ``compute_soccer_scorer_factors_sync`` to see xG = 0 and
-produce ~4% model probabilities for legitimate MLS scorers.
-
-The ASA fetcher (``services.mls_player_stats``) now populates 690+
-MLS players with real xG / xA / per-90 stats.  This module re-scores
-EXISTING MLS player-prop picks in place using the ORIGINAL stored
+Context (2026-08-22): after populating ``soccer_player_form`` with
+real MLS xG / xA data via the ASA fetcher, the same lock-promotion
+logic should apply to EVERY soccer league.  This module rescores all
+existing Soccer player-scorer picks in place using their stored
 ``book_odds`` — no new Odds API call is made (freeze-after-publish
-compliant).
+compliant) — and applies the universal confidence ladder so honest
+high-conviction picks reach the >=85 board on all leagues (EPL /
+La Liga / Bundesliga / Ligue 1 / Serie A / MLS / Liga MX / etc).
 
 Usage:
-    from services.mls_prop_repair import repair_mls_props
-    summary = await repair_mls_props(db)
+    from services.mls_prop_repair import repair_soccer_props
+    summary = await repair_soccer_props(db)
+
+``repair_mls_props`` is retained as an alias for backwards compat.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-logger = logging.getLogger("lockscore.mls_prop_repair")
+logger = logging.getLogger("lockscore.soccer_prop_repair")
 
 _SCORER_MARKET_KEYS = {
     "player_goal_scorer_anytime",
@@ -69,23 +69,10 @@ async def repair_mls_props(db) -> dict:
     from sports_engine import compute_lock_score
     from pymongo import UpdateOne
 
-    # Broad match: any MLS soccer player-scorer pick from ANY producer.
-    q = {
-        "$or": [
-            {"sport_key": "soccer_usa_mls"},
-            {"league": "MLS"},
-        ],
-        "market_type": {"$in": list(_SCORER_MARKET_KEYS) + list(_SCORER_MARKET_KEYS)},
-    }
-    # market_type isn't reliably populated on the alt_scorer path — try
-    # `market_key` too.  Union approach: scan any MLS pick that has a
-    # player selection and a scorer-shaped market string.
-    q = {
-        "$or": [
-            {"sport_key": "soccer_usa_mls"},
-            {"league": "MLS"},
-        ],
-    }
+    # UNIVERSAL 2026-08-22 — repair scorer picks across EVERY soccer
+    # league (EPL / La Liga / Bundesliga / Ligue 1 / Serie A / MLS /
+    # Liga MX / etc).  Same identity + evidence + ladder path applies.
+    q = {"sport": {"$in": ["Soccer", "soccer"]}}
 
     now_iso = datetime.now(timezone.utc).isoformat()
     ops = []
@@ -137,8 +124,15 @@ async def repair_mls_props(db) -> dict:
             continue
         book_impl = _implied_prob(book_odds)
 
+        # Universal — resolve using the pick's own league (falls back
+        # to inferring from sport_key when missing).
+        pick_league = str(p.get("league") or "").strip()
+        if not pick_league:
+            _sk = str(p.get("sport_key") or "")
+            pick_league = "MLS" if _sk == "soccer_usa_mls" else _sk
+
         form_row, evidence_source = await resolve_soccer_player_features(
-            db, player_name=player, league="MLS",
+            db, player_name=player, league=pick_league,
             canonical_player_id=p.get("canonical_player_id"),
             canonical_player_name=p.get("canonical_player_name"),
         )
@@ -147,7 +141,7 @@ async def repair_mls_props(db) -> dict:
             continue
 
         prior_row = await resolve_soccer_player_prior(
-            db, player_name=player, league="MLS",
+            db, player_name=player, league=pick_league,
             canonical_player_name=p.get("canonical_player_name"),
         )
 
@@ -173,7 +167,9 @@ async def repair_mls_props(db) -> dict:
                     get_player_stats, classify_archetype,
                 )
                 from services.player_props.assist_model import predict_assist
-                stats_obj = await get_player_stats(player, league_hint="MLS")
+                stats_obj = await get_player_stats(
+                    player, league_hint=pick_league or None,
+                )
                 if not stats_obj or not stats_obj.data_ok:
                     stats["no_form"] += 1
                     continue
@@ -238,6 +234,24 @@ async def repair_mls_props(db) -> dict:
                 pick={"book_odds": book_odds, "edge_percent": _e_scorer,
                        "win_probability": model_prob * 100},
                 edge_percent=_e_scorer)
+            # UNIVERSAL soccer scorer promotion — see
+            # `services.soccer_scorer_lock_ladder.apply_scorer_lock_promotion`
+            try:
+                from services.soccer_scorer_lock_ladder import (
+                    apply_scorer_lock_promotion,
+                )
+                new_lock_val, _ = apply_scorer_lock_promotion(
+                    strict_lock=new_lock_val,
+                    model_prob=model_prob,
+                    evidence_source=evidence_source or "",
+                    games=int(form_row.get("games") or 0),
+                    minutes=int(form_row.get("minutes") or 0),
+                    goals_per_90=float(form_row.get("goals_per_90") or 0),
+                    npxg_per_90=float(form_row.get("npxg_per_90") or 0),
+                    market_fit=None,
+                )
+            except Exception:
+                pass
             new_lock = round(new_lock_val, 2)
             off_board = new_lock < 85.0
             rej = "LOW_LOCK_SCORE" if off_board else None
@@ -287,10 +301,14 @@ async def repair_mls_props(db) -> dict:
             try:
                 await db.picks.bulk_write(chunk, ordered=False)
             except Exception as e:
-                logger.warning("mls_prop_repair bulk_write chunk failed: %s", e)
+                logger.warning("soccer_prop_repair bulk_write chunk failed: %s", e)
 
-    logger.info("MLS prop repair complete: %s", stats)
+    logger.info("Soccer prop repair complete: %s", stats)
     return stats
 
 
-__all__ = ["repair_mls_props"]
+# Universal alias — the canonical name reflecting all soccer leagues.
+repair_soccer_props = repair_mls_props
+
+
+__all__ = ["repair_mls_props", "repair_soccer_props"]

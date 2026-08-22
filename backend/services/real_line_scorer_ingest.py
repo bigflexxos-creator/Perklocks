@@ -338,6 +338,32 @@ async def _ingest_player_scorer_row(
             pick={"book_odds": price, "edge_percent": _e_scorer,
                   "win_probability": model_prob*100},
             edge_percent=_e_scorer)
+        # ── UNIVERSAL Soccer Player-Prop Lock Ladder (2026-08-22) ──
+        # Book pricing on Anytime Goal Scorer / Anytime Assist is
+        # extremely tight — the strict-edge composite score above
+        # correctly gates game markets but keeps legitimate high-
+        # conviction player picks trapped below 85 on EVERY league
+        # (EPL / La Liga / MLS / Ligue 1 / etc).  When we have real
+        # player-form evidence + a valid model_prob, apply the
+        # confidence ladder used by direct-inject producers so the
+        # real-line path converges on the same Lock Score band.
+        # NEVER lowers a strict-edge lock — takes MAX of the two.
+        try:
+            from services.soccer_scorer_lock_ladder import (
+                apply_scorer_lock_promotion,
+            )
+            _promoted, _lock_method = apply_scorer_lock_promotion(
+                strict_lock=lock, model_prob=model_prob,
+                evidence_source=evidence_source or "",
+                games=int((form_row or {}).get("games") or 0),
+                minutes=int((form_row or {}).get("minutes") or 0),
+                goals_per_90=float((form_row or {}).get("goals_per_90") or 0),
+                npxg_per_90=float((form_row or {}).get("npxg_per_90") or 0),
+                market_fit=None,
+            )
+            lock = _promoted
+        except Exception:
+            _lock_method = "strict_edge"
         off_board = lock < 85.0
         rej = SoccerRejection.LOW_LOCK_SCORE.value if off_board else None
         # ── Evidence score for the governor ────────────────────────
