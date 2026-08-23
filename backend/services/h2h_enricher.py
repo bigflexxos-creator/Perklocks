@@ -137,25 +137,34 @@ def _infer_pick_team(pick: dict, home: str, away: str) -> Optional[str]:
 
 async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
                                  limit: int = 10,
-                                 pick_team: Optional[str] = None) -> Optional[dict]:
-    """Aggregate historical meetings between the two teams.
+                                 pick_team: Optional[str] = None,
+                                 canonical_home_id: Optional[str] = None,
+                                 canonical_away_id: Optional[str] = None,
+                                 ) -> Optional[dict]:
+    """Aggregate AUTHORITATIVE historical meetings between two teams.
+
+    2026-08-23 AUTHORITATIVE_H2H_TRUTH — this function now prefers
+    canonical actual-game history and treats settled Perklocks picks
+    ONLY as app-history diagnostics (never as authoritative meeting
+    counts).  Also emits ``career_meetings`` (true total) separately
+    from ``recent_sample_n`` (rows loaded under `limit`) so a query
+    limit never becomes the career count (§5).
 
     Args:
         pick_team: When provided, the returned `record` is stamped from
-            this team's perspective (wins-losses). When absent, we
-            default to the picked team = HOME (matching pre-existing
-            behaviour for team bets where home was implicitly favoured).
+            this team's perspective (wins-losses).
+        canonical_home_id / canonical_away_id: canonical identity IDs.
+            When present, they take priority over name-regex matching
+            (§2) so alias variants never split a real matchup.
 
-    Priority sources (all cheap DB scans):
-      • MLB / NFL / NBA / NHL → `games` collection (schema: `home`, `away`,
-        `date`, `result: {home:int, away:int}`, `status: 'Final'`).
-      • Soccer                → `soccer_matches` collection (schema:
-        `home_team`, `away_team`, `date`, `home_score`, `away_score`).
-      • Fallback              → scan our own `picks` collection for rows
-        where `final_score` is a team-keyed dict (`{'HomeTeam': '3',
-        'AwayTeam': '2'}` — Soccer team-level picks). Player-prop
-        dicts (`{'<Player> Strikeouts': 7.0}`) are ignored — those
-        don't give us team-level scores.
+    Priority sources (highest → lowest confidence):
+      P0 · `team_game_actuals` by canonical IDs (MLB / NFL / Soccer)
+      P1 · `games` collection (MLB / NFL / NHL / Tennis game logs)
+      P2 · `soccer_matches` collection (Soccer full leagues)
+      P3 · settled-picks DIAGNOSTIC (labelled ``app_history_only``,
+           never counted as authoritative career meetings — kept only
+           for developer visibility).
+      CFB / NBA / UFC : honest none when no authoritative data exists.
     """
     if not (home and away):
         return None
@@ -165,18 +174,73 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
     # `_tennis_player_h2h`, so return None here and let that path win.
     if sport == "Tennis":
         return None
+    # UFC has no authoritative team-vs-team meeting model (fighters not
+    # teams).  Prior-fight H2H for UFC is player-level; return honest
+    # None so callers don't fabricate a team H2H card.
+    if sport == "UFC":
+        return None
 
     meetings: list[dict] = []
     home_l = home.strip().lower()
     away_l = away.strip().lower()
     src_label: Optional[str] = None  # audit trail — which collection served the data
+    authoritative: bool = False       # True only when data is real game/match history
+    career_meetings: Optional[int] = None  # §5 — true total (may exceed limit)
 
-    # 1) MLB / NFL / NBA / NHL — `games` collection
-    if sport in {"MLB", "NFL", "NBA", "NHL"}:
+    # ── P0 · team_game_actuals via canonical identity ──
+    # Preferred whenever the pick has canonical IDs.  Handles alias
+    # variants correctly (§2 — Hamburger SV ↔ Hamburg, München ↔ Munich,
+    # etc.) because canonical IDs are the join key.
+    sport_key_tga = {
+        "MLB":    "mlb",
+        "NFL":    "nfl",
+        "Soccer": "soccer",
+    }.get(sport)
+    if sport_key_tga and canonical_home_id and canonical_away_id:
+        try:
+            tga = db.team_game_actuals
+            q_tga = {
+                "sport": sport_key_tga,
+                "canonical_team_id":      canonical_home_id,
+                "canonical_opponent_id":  canonical_away_id,
+            }
+            career_meetings = int(await tga.count_documents(q_tga))
+            if career_meetings > 0:
+                cur = tga.find(q_tga, {
+                    "_id": 0, "event_time": 1, "team_score": 1,
+                    "opponent_score": 1, "competition": 1, "home_away": 1,
+                }).sort("event_time", -1).limit(limit)
+                for r in await cur.to_list(length=limit):
+                    ts = r.get("team_score")
+                    os_ = r.get("opponent_score")
+                    if ts is None or os_ is None:
+                        continue
+                    # Rows are perspective=canonical_home_id, so
+                    # team_score = home score.
+                    meetings.append({
+                        "date":            str(r.get("event_time") or "")[:10],
+                        "score":           f"{int(ts)}-{int(os_)}",
+                        "home_team_score": int(ts),
+                        "away_team_score": int(os_),
+                        "venue":           r.get("competition") or "",
+                    })
+                if meetings:
+                    src_label = "team_game_actuals"
+                    authoritative = True
+        except Exception as e:
+            logger.debug("team_game_actuals canonical scan failed: %s", e)
+
+    # ── P1 · games collection (MLB / NFL / NBA / NHL / CFB) ──
+    if sport in {"MLB", "NFL", "NBA", "NHL", "CFB", "NCAAF"} and not meetings:
         try:
             games_coll = db.games
+            # CFB rows may be stored under "cfb" or "ncaaf" or "college_football".
+            sport_key_lower = {
+                "CFB":   "cfb",
+                "NCAAF": "cfb",
+            }.get(sport, sport.lower())
             q = {
-                "sport": sport.lower(),
+                "sport": sport_key_lower,
                 "status": {"$in": ["Final", "final", "FT", "Completed"]},
                 "$or": [
                     {"home": {"$regex": f"^{re.escape(home)}$", "$options": "i"},
@@ -185,6 +249,7 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
                      "away": {"$regex": f"^{re.escape(home)}$", "$options": "i"}},
                 ],
             }
+            career_meetings = int(await games_coll.count_documents(q))
             cur = games_coll.find(q, {
                 "_id": 0, "home": 1, "away": 1, "date": 1,
                 "result": 1, "venue": 1,
@@ -206,6 +271,7 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
                 })
             if meetings:
                 src_label = "games"
+                authoritative = True
         except Exception as e:
             logger.debug("games coll scan failed: %s", e)
 
@@ -256,6 +322,11 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
                 "_id": 0, "home_team": 1, "away_team": 1, "date": 1,
                 "home_score": 1, "away_score": 1, "league": 1,
             }).sort("date", -1).limit(limit)
+            # §5 — separate career_meetings (true total) from loaded rows.
+            try:
+                career_meetings = int(await sm.count_documents(q))
+            except Exception:
+                pass
             for m in await cur.to_list(length=limit):
                 h_score = m.get("home_score")
                 a_score = m.get("away_score")
@@ -275,11 +346,19 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
                 })
             if meetings:
                 src_label = "soccer_matches"
+                authoritative = True
         except Exception as e:
             logger.debug("soccer_matches scan failed: %s", e)
 
-    # 3) Fallback — settled picks with team-keyed final_score dict
-    if not meetings:
+    # 3) DIAGNOSTIC — settled Perklocks picks (NEVER authoritative §1).
+    # Retained only as an app-history observability path.  Marked
+    # ``app_history_only=True`` and NOT counted as career_meetings.
+    # For any sport with an existing canonical/actual-history source
+    # (MLB, NFL, NHL, Soccer, Tennis) we suppress this fallback so a
+    # transient collection-name mismatch never turns settled picks into
+    # a fake authoritative H2H card.
+    _SPORTS_WITH_AUTHORITATIVE_SOURCE = {"MLB", "NFL", "NBA", "NHL", "Soccer", "Tennis"}
+    if not meetings and sport not in _SPORTS_WITH_AUTHORITATIVE_SOURCE:
         try:
             home_re = re.escape(home)
             away_re = re.escape(away)
@@ -324,7 +403,9 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
                 if len(meetings) >= limit:
                     break
             if meetings:
-                src_label = "settled_picks_db"
+                src_label = "settled_picks_diagnostic"
+                # authoritative stays False — settled picks are NEVER
+                # counted as authoritative meetings (§1).
         except Exception as e:
             logger.debug("h2h picks fallback failed: %s", e)
 
@@ -366,8 +447,27 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
         pick_losses = away_wins
     record_str = f"{pick_wins}-{pick_losses}"
 
+    # §5 truthful coverage — career_meetings is the TRUE total (from
+    # count_documents), recent_sample_n is what fits under `limit`.  A
+    # query limit MUST NEVER become the career count.
+    recent_sample_n = len(meetings)
+    if career_meetings is None:
+        career_meetings = recent_sample_n
+    # For app-history-only (settled picks) rows, career count is
+    # UNKNOWN — we surface it as the recent sample only, tagged.
+    if not authoritative:
+        career_meetings = recent_sample_n
+
     return {
-        "meetings": len(meetings),
+        # Legacy field — kept for chip compatibility; equal to
+        # recent_sample_n so the "L{n}" chip shows what was actually
+        # loaded, not a fabricated total.
+        "meetings": recent_sample_n,
+        # §5 — new authoritative-truth fields.
+        "career_meetings":  career_meetings,
+        "recent_sample_n":  recent_sample_n,
+        "authoritative":    authoritative,
+        "app_history_only": (not authoritative and src_label == "settled_picks_diagnostic"),
         "record": record_str,
         "pick_wins": pick_wins,
         "pick_losses": pick_losses,
@@ -677,17 +777,26 @@ async def _tennis_player_h2h(db, pick: dict) -> Optional[dict]:
 
 
 async def _soccer_player_h2h(db, pick: dict) -> Optional[dict]:
-    """Soccer player's goals/assists vs a specific opponent, from our own
-    settled picks history."""
-    sel = (pick.get("selection") or "").strip()
+    """Soccer player-vs-opponent H2H — AUTHORITATIVE actual game logs.
+
+    2026-08-23 AUTHORITATIVE_H2H_TRUTH: uses actual player game logs
+    (``soccer_player_game_logs`` / ``mls_player_matchup_history``)
+    with canonical opponent identity.  Settled Perklocks picks are
+    NEVER treated as real player-vs-opponent history (§1, §4).
+
+    Opponent resolution (§4):
+      * home-team player  → away opponent
+      * away-team player  → home opponent
+      * ``canonical_opponent_id`` from the pick doc wins when present.
+    """
+    sel = (pick.get("selection") or pick.get("player_name") or "").strip()
     market = (pick.get("market") or "").lower()
     if not sel or not any(k in market for k in ("goal scorer", "assist", "score or assist")):
         return None
     home = (pick.get("home_team") or "").strip()
     away = (pick.get("away_team") or "").strip()
-    # Determine opponent from the pick's team (if we have it) or fall back
-    # to "either home or away — the one that isn't the player's team".
-    team_hint = (pick.get("team") or "").strip()
+    # Determine opponent from the pick's team (§4).
+    team_hint = (pick.get("team") or pick.get("player_team") or "").strip()
     if team_hint and home and team_hint.lower() == home.lower():
         opp = away
     elif team_hint and away and team_hint.lower() == away.lower():
@@ -696,40 +805,127 @@ async def _soccer_player_h2h(db, pick: dict) -> Optional[dict]:
         opp = away or home
     if not opp:
         return None
-    home_re = re.escape(home) if home else ".+"
-    away_re = re.escape(away) if away else ".+"
-    q = {
-        "sport": "Soccer",
-        "selection": sel,
-        "status": {"$in": ["won", "lost"]},
-        "$or": [
-            {"event": {"$regex": f"^{home_re}\\s*@\\s*{away_re}$", "$options": "i"}},
-            {"event": {"$regex": f"^{away_re}\\s*@\\s*{home_re}$", "$options": "i"}},
-        ],
-    }
+
+    # Canonical opponent identity from the pick doc (§2) — takes
+    # priority over name matching so alias variants never split real
+    # player-vs-opponent history.
+    canonical_opp_id = pick.get("canonical_opponent_id") or pick.get("opponent_team_id")
+
+    sel_norm = sel.strip().lower()
+
+    # ── P0 · MLS specialised player matchup history ──
     try:
-        cur = db.picks.find(
-            q, {"_id": 0, "event_time": 1, "market": 1, "status": 1, "event": 1},
-        ).sort("event_time", -1).limit(15)
-        rows = await cur.to_list(length=15)
+        row = await db.mls_player_matchup_history.find_one(
+            {"player_name_norm": sel_norm},
+            {"_id": 0, "player_name": 1, "by_opponent": 1, "total_events": 1},
+        )
     except Exception as e:
-        logger.debug("Soccer player H2H DB lookup failed: %s", e)
+        logger.debug("mls_player_matchup_history lookup failed: %s", e)
+        row = None
+    if row and isinstance(row.get("by_opponent"), list):
+        opp_l = opp.strip().lower()
+        target = None
+        for entry in row["by_opponent"]:
+            e_id = str(entry.get("opponent_id") or "")
+            e_name = str(entry.get("opponent_name") or "").strip().lower()
+            if canonical_opp_id and e_id and e_id == str(canonical_opp_id):
+                target = entry; break
+            if e_name and e_name == opp_l:
+                target = entry; break
+        if target and int(target.get("matches") or 0) > 0:
+            matches = int(target.get("matches") or 0)
+            goals   = int(target.get("goals") or 0)
+            assists = int(target.get("assists") or 0)
+            shots   = int(target.get("shots") or 0)
+            scored_matches  = int(target.get("scored_matches") or 0)
+            assist_matches  = int(target.get("assist_matches") or 0)
+            # Choose primary stat by market family (§6).
+            if "assist" in market and "goal" not in market.split("assist")[0][-20:]:
+                pv = round(assists / matches, 2) if matches else 0.0
+                stat_label, disp = "avg_assists", f"{pv:.2f} A/gm vs {opp} ({matches} apps)"
+                stat_hits = assist_matches
+            else:
+                pv = round(goals / matches, 2) if matches else 0.0
+                stat_label, disp = "avg_goals", f"{pv:.2f} G/gm vs {opp} ({matches} apps)"
+                stat_hits = scored_matches
+            recent_events = [
+                {"date": r.get("date"), "goals": r.get("goals"),
+                 "assists": r.get("assists"), "shots": r.get("shots")}
+                for r in (target.get("recent") or [])[:5]
+            ]
+            return {
+                "player": sel,
+                "vs_opponent": opp,
+                "sample_size": matches,
+                "career_meetings": matches,
+                "recent_sample_n": min(matches, len(recent_events)),
+                "authoritative": True,
+                "source": "mls_player_matchup_history",
+                "primary_stat": stat_label,
+                "primary_value": pv,
+                "primary_value_display": disp,
+                "stat_hit_matches": stat_hits,
+                "goals": goals,
+                "assists": assists,
+                "shots": shots,
+                "recent": recent_events,
+            }
+
+    # ── P1 · non-MLS soccer_player_game_logs by canonical opponent ──
+    try:
+        q = {"name_canonical": sel_norm}
+        if canonical_opp_id:
+            q["opponent_team_id"] = str(canonical_opp_id)
+        else:
+            # Name-match fallback (§2 — name matching allowed as fallback only).
+            q["opponent_team_name"] = {"$regex": f"^{re.escape(opp)}$", "$options": "i"}
+        career_meetings = int(await db.soccer_player_game_logs.count_documents(q))
+        if career_meetings == 0:
+            return None
+        cur = db.soccer_player_game_logs.find(q, {
+            "_id": 0, "match_date": 1, "goals": 1, "assists": 1, "shots": 1,
+            "minutes": 1, "opponent_team_name": 1,
+        }).sort("match_date", -1).limit(10)
+        rows = await cur.to_list(length=10)
+    except Exception as e:
+        logger.debug("soccer_player_game_logs H2H lookup failed: %s", e)
         return None
     if not rows:
         return None
-    hits = sum(1 for r in rows if r.get("status") == "won")
-    total = len(rows)
-    pct = round(hits / total * 100.0, 1) if total else 0.0
+    goals_total = sum(int(r.get("goals") or 0) for r in rows)
+    assists_total = sum(int(r.get("assists") or 0) for r in rows)
+    shots_total = sum(int(r.get("shots") or 0) for r in rows)
+    scored_matches = sum(1 for r in rows if int(r.get("goals") or 0) > 0)
+    assist_matches = sum(1 for r in rows if int(r.get("assists") or 0) > 0)
+    n = len(rows)
+    if "assist" in market and "goal" not in market.split("assist")[0][-20:]:
+        pv = round(assists_total / n, 2) if n else 0.0
+        stat_label, disp = "avg_assists", f"{pv:.2f} A/gm vs {opp} ({career_meetings} apps)"
+        stat_hits = assist_matches
+    else:
+        pv = round(goals_total / n, 2) if n else 0.0
+        stat_label, disp = "avg_goals", f"{pv:.2f} G/gm vs {opp} ({career_meetings} apps)"
+        stat_hits = scored_matches
     return {
         "player": sel,
         "vs_opponent": opp,
-        "sample_size": total,
-        "primary_stat": "hit_rate",
-        "primary_value": pct,
-        "primary_value_display": f"{hits}/{total} hits vs {opp} ({pct:.0f}%)",
-        "recent": [{"date": str(r.get("event_time") or "")[:10],
-                     "result": r.get("status") or "—",
-                     "event": r.get("event") or ""} for r in rows[:5]],
+        "sample_size": career_meetings,
+        "career_meetings": career_meetings,
+        "recent_sample_n": n,
+        "authoritative": True,
+        "source": "soccer_player_game_logs",
+        "primary_stat": stat_label,
+        "primary_value": pv,
+        "primary_value_display": disp,
+        "stat_hit_matches": stat_hits,
+        "goals": goals_total,
+        "assists": assists_total,
+        "shots": shots_total,
+        "recent": [{"date": str(r.get("match_date") or "")[:10],
+                     "goals": int(r.get("goals") or 0),
+                     "assists": int(r.get("assists") or 0),
+                     "shots": int(r.get("shots") or 0)}
+                    for r in rows[:5]],
     }
 
 
@@ -909,12 +1105,16 @@ async def build_h2h_bundle(db, pick: dict, *, fast_mode: bool = False) -> dict:
     sources: list[str] = []
 
     # Team-level H2H — works for every sport that has final scores logged.
-    team_h2h = await _team_h2h_from_settled(db, sport, home, away, limit=10,
-                                            pick_team=pick_team)
+    team_h2h = await _team_h2h_from_settled(
+        db, sport, home, away, limit=10,
+        pick_team=pick_team,
+        canonical_home_id=pick.get("canonical_team_id"),
+        canonical_away_id=pick.get("canonical_opponent_id"),
+    )
     if team_h2h:
         # Use the specific collection label so the audit trail (`sources`)
         # accurately reflects where the H2H data actually came from.
-        sources.append(team_h2h.get("source") or "settled_picks_db")
+        sources.append(team_h2h.get("source") or "settled_picks_diagnostic")
 
     # Player-level H2H — sport-specific.
     player_h2h: Optional[dict] = None
@@ -936,10 +1136,11 @@ async def build_h2h_bundle(db, pick: dict, *, fast_mode: bool = False) -> dict:
             if player_h2h:
                 sources.append("tennis_matches_history")
         elif sport == "Soccer":
-            # Soccer player H2H uses our own settled picks DB — cheap.
+            # 2026-08-23: authoritative canonical player game logs
+            # (soccer_player_game_logs + mls_player_matchup_history).
             player_h2h = await _soccer_player_h2h(db, pick)
             if player_h2h:
-                sources.append("settled_picks_db")
+                sources.append(player_h2h.get("source") or "soccer_player_game_logs")
         # NFL/NBA — team-level from settled DB is enough for MVP;
         # player-vs-opp splits deferred to a follow-up when we have the data.
     except Exception as e:
@@ -951,14 +1152,15 @@ async def build_h2h_bundle(db, pick: dict, *, fast_mode: bool = False) -> dict:
         "ok": bool(team_h2h or player_h2h),
         "sport": sport,
         # SOCCER_REGRESSION_RUNTIME §7 — truthful reason codes.
-        # Callers/frontend can distinguish genuine identity failure
-        # from insufficient sample from source absence.  When
-        # `team_h2h` succeeded but had <3 meetings we tag
-        # H2H_INSUFFICIENT_SAMPLE; when no store returned any row
-        # we tag H2H_SOURCE_UNAVAILABLE.  IDENTITY_FAILURE is
-        # reserved for future canonical-id mismatch detection.
+        # 2026-08-23 AUTHORITATIVE_H2H_TRUTH — extended:
+        #   H2H_AUTHORITATIVE          — real game/match history
+        #   H2H_APP_HISTORY_ONLY       — only settled-picks diagnostic
+        #   H2H_INSUFFICIENT_SAMPLE    — authoritative but <3 events
+        #   H2H_SOURCE_UNAVAILABLE     — no source returned any row
         "status": (
-            "H2H_AVAILABLE" if team_h2h else "H2H_SOURCE_UNAVAILABLE"
+            "H2H_AUTHORITATIVE" if (team_h2h and team_h2h.get("authoritative")) else
+            "H2H_APP_HISTORY_ONLY" if (team_h2h and team_h2h.get("app_history_only")) else
+            ("H2H_AVAILABLE" if team_h2h else "H2H_SOURCE_UNAVAILABLE")
         ),
         "summary": _build_summary(sport, team_h2h, player_h2h,
                                    pick_market=pick.get("market") or ""),
