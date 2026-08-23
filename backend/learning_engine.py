@@ -58,12 +58,26 @@ async def recompute_learned_weights(db) -> dict[str, Any]:
     the caller can log / inspect.
     """
     import math
+    # ── 2026-08-23 PASS 2 — canonical published-truth ONLY ──
+    # Prior code read raw db.picks with status ∈ {won,lost,push}.
+    # That population includes generated-but-unpublished picks that
+    # must NEVER train future model/market weights.  Filter by the
+    # canonical-publication query so only actually-published picks
+    # feed learning.  Formulas below are unchanged.
+    from services.published_results_truth import canonical_query
+    # days=10000 effectively means "all published history" without
+    # adding a new API surface — canonical_query enforces provenance,
+    # not a strict window.
+    _base_q = canonical_query(days=10000, include_pending=False)
+    _q = dict(_base_q)
+    _q["status"] = {"$in": ["won", "lost", "push"]}
     cursor = db.picks.find(
-        {"status": {"$in": ["won", "lost", "push"]}},
+        _q,
         {"_id": 0, "sport": 1, "market": 1, "status": 1, "lock_score": 1,
          "win_probability": 1, "edge_percent": 1, "units_profit": 1,
          "units_risked": 1, "confidence_bucket": 1,
-         "event_time": 1, "settled_at": 1, "clv_value": 1},
+         "event_time": 1, "settled_at": 1, "clv_value": 1,
+         "published_lock_score": 1, "published_at": 1},
     )
     picks = await cursor.to_list(length=20_000)
     now_iso = datetime.now(timezone.utc).isoformat()
