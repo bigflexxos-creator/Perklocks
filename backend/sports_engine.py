@@ -7875,7 +7875,17 @@ async def generate_all_picks(
 
         # Candidates: keep only picks whose edge is not meaningfully negative.
         # Edge >= -0.5% is the floor (tiny noise allowed; clear -EV picks excluded).
-        all_candidates = [p for p in all_picks if p.get("edge_percent", 0.0) >= -0.5]
+        # 2026-08-23 hardening — some upstream producers legitimately emit
+        # ``edge_percent=None`` (e.g. no-book direct-inject shadow rows).
+        # Treat None as "0 edge" instead of crashing the whole refresh
+        # pipeline (previously masked ALL MLB hitter props for hours).
+        def _edge_gt(p):
+            e = p.get("edge_percent")
+            try:
+                return float(e) >= -0.5
+            except (TypeError, ValueError):
+                return True   # unknown edge — keep pick, let downstream gate it
+        all_candidates = [p for p in all_picks if _edge_gt(p)]
         today_candidates = [p for p in all_candidates if _starts_today(p)]
         # Prefer today's games. If we have at least 3 quality picks today,
         # the Elite tier is built exclusively from today. Otherwise we fall
