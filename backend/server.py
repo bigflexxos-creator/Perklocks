@@ -1760,22 +1760,37 @@ async def _ensure_today_picks() -> None:
             if _game_ok and _prop_ok:
                 sport_status[_sport] = "HEALTHY"
                 continue
-            # ── 2026-08-23 CHEAP SURGICAL — family-level starvation ──
+            # ── 2026-08-23 PASS 1 — TRUE GAME vs PROP HEALTH ──
             # Prior logic used ``_sp_any > 0`` as a blanket "healthy"
-            # signal — that let a healthy game slate mask a totally
-            # missing prop family (or vice versa).  Now the health
-            # check is family-aware: any single missing family drives
-            # a refresh so the OTHER family can catch up.
+            # signal and derived _sp_game_any as (_sp_any - _sp_prop_any)
+            # which is fragile.  Query game rows POSITIVELY as the
+            # inverse of the prop selector so props can NEVER satisfy
+            # game health (or vice versa).  Capability-truth
+            # (``sport_capability_registry``) is consulted below to
+            # decide whether a sport is EXPECTED to publish props.
+            try:
+                from services.sport_capability_registry import (
+                    prop_markets_for,
+                )
+                _expected_props = bool(prop_markets_for(_sport))
+            except Exception:
+                _expected_props = _mins.get("prop_actionable", 0) > 0
+            # Inverse prop-selector for a positive GAME-row count.
+            _game_selector: dict[str, Any] = {}
+            if _prop_selector.get("market_type"):
+                _game_selector["market_type"] = {
+                    "$nin": list(
+                        (_prop_selector["market_type"] or {}).get("$in") or []
+                    )
+                }
             _sp_game_any = await db.picks.count_documents({
                 "pick_date": today, "sport": _sport,
-                **{k: v for k, v in _prop_selector.items() if False},
                 **_NON_LEGACY_FILTERS,
-                "market_type": {"$nin": list((_prop_selector.get("market_type") or {}).get("$in") or [])} if _prop_selector.get("market_type") else {"$exists": True},
-            }) if False else max(0, _sp_any - _sp_prop_any)
-            # Family-missing = zero rows of that family AND sport is
-            # expected to have that family (per _mins).
+                **_game_selector,
+            })
+            # Family-missing decisions use the capability-truth signal.
             _game_missing = (not _game_ok) and _sp_game_any == 0 and _mins["actionable"] > 0
-            _prop_missing = (not _prop_ok) and _sp_prop_any == 0 and _mins["prop_actionable"] > 0
+            _prop_missing = (not _prop_ok) and _sp_prop_any == 0 and _expected_props
             if _prop_missing and not _game_missing:
                 # game markets healthy, props starved — refresh so props catch up.
                 sport_status[_sport] = "PROP_STARVED"
@@ -1786,6 +1801,60 @@ async def _ensure_today_picks() -> None:
                 sport_status[_sport] = "GAME_STARVED"
                 sport_starved.append(_sport)
                 continue
+            # ── 2026-08-23 PASS 1 — Universal family conservation ──
+            # NFL / NBA / MLB per-family missing detection.  A healthy
+            # family cannot hide a missing supported family.  The
+            # ``prop_markets_for`` list is authoritative — if a family
+            # has zero rows despite the sport being marked expected
+            # to publish it, emit a targeted starvation label.
+            _family_patterns = {
+                "NFL": [
+                    ("PASSING_YARDS", r"Pass(ing)? Yards"),
+                    ("RUSHING_YARDS", r"Rush(ing)? Yards"),
+                    ("RECEIVING_YARDS", r"Receiving Yards|Rec(eption)? Yards"),
+                    ("RECEPTIONS",    r"Receptions"),
+                    ("ANYTIME_TD",    r"Anytime (TD|Touchdown)"),
+                ],
+                "NBA": [
+                    ("POINTS",   r"Over \d.*Points|Under \d.*Points"),
+                    ("REBOUNDS", r"Rebounds"),
+                    ("ASSISTS",  r"\bAssists\b"),
+                    ("THREES",   r"Threes|3-Pointers|3PM"),
+                ],
+                "MLB": [
+                    ("HITS",         r"Over 0\.5 Hits|Over 1\.5 Hits|Under \d\.\d Hits"),
+                    ("HOME_RUNS",    r"Home Run"),
+                    ("TOTAL_BASES",  r"Total Bases"),
+                    ("STRIKEOUTS",   r"Strikeouts?"),
+                ],
+            }
+            if _sport in _family_patterns and _expected_props:
+                try:
+                    _missing_families: list[str] = []
+                    for _fam_name, _rx in _family_patterns[_sport]:
+                        _fam_any = await db.picks.count_documents({
+                            "pick_date": today, "sport": _sport,
+                            **_NON_LEGACY_FILTERS,
+                            "market": {"$regex": _rx, "$options": "i"},
+                        })
+                        if _fam_any == 0:
+                            _missing_families.append(_fam_name)
+                    # Only emit family starvation when SOME family is
+                    # populated (healthy) — otherwise it's a wholesale
+                    # PROP_STARVED already handled above.
+                    _families_populated = (
+                        len(_family_patterns[_sport]) - len(_missing_families)
+                    )
+                    if _missing_families and _families_populated > 0:
+                        _first = _missing_families[0]
+                        sport_status[_sport] = f"{_first}_STARVED"
+                        sport_starved.append(_sport)
+                        continue
+                except Exception as _fam_err:
+                    logger.debug(
+                        "%s family granularity check errored: %s",
+                        _sport, _fam_err,
+                    )
             # ── 2026-08-23 FINAL — Soccer game-family granularity ──
             # BTTS / Double Chance / Totals are Soccer GAME families,
             # NOT player props.  If any of them is missing while
@@ -1826,6 +1895,63 @@ async def _ensure_today_picks() -> None:
                 except Exception as _sm_err:
                     logger.debug("Soccer game-family granularity check errored: %s",
                                   _sm_err)
+            # ── 2026-08-23 PASS 1 — Soccer LEAGUE-level starvation ──
+            # A healthy Soccer league (e.g. MLS) must NOT mask another
+            # active supported league with zero rows (e.g. Eredivisie /
+            # Chinese Super League).  Cross-reference active
+            # ``soccer_*`` provider keys against the leagues we
+            # actually have picks for today.
+            if _sport == "Soccer":
+                try:
+                    from sports_engine import _ACTIVE_KEYS
+                    _active_soccer = {
+                        k for k in _ACTIVE_KEYS if k.startswith("soccer_")
+                    }
+                    if _active_soccer:
+                        _leagues_covered = set(
+                            await db.picks.distinct("sport_key", {
+                                "pick_date": today, "sport": "Soccer",
+                                **_NON_LEGACY_FILTERS,
+                            })
+                        )
+                        _leagues_missing = _active_soccer - _leagues_covered
+                        if _leagues_missing and _leagues_covered:
+                            _lg = sorted(_leagues_missing)[0]
+                            sport_status[_sport] = f"LEAGUE_STARVED:{_lg}"
+                            sport_starved.append(_sport)
+                            continue
+                except Exception as _lg_err:
+                    logger.debug(
+                        "Soccer league-level starvation check errored: %s",
+                        _lg_err,
+                    )
+            # ── 2026-08-23 PASS 1 — Tennis TOURNAMENT-level starvation ──
+            # Same principle for Tennis: healthy tournament A cannot
+            # mask an active supported tournament B with zero rows.
+            if _sport == "Tennis":
+                try:
+                    from sports_engine import _ACTIVE_KEYS
+                    _active_tennis = {
+                        k for k in _ACTIVE_KEYS if k.startswith("tennis_")
+                    }
+                    if _active_tennis:
+                        _tourneys_covered = set(
+                            await db.picks.distinct("sport_key", {
+                                "pick_date": today, "sport": "Tennis",
+                                **_NON_LEGACY_FILTERS,
+                            })
+                        )
+                        _tourneys_missing = _active_tennis - _tourneys_covered
+                        if _tourneys_missing and _tourneys_covered:
+                            _t = sorted(_tourneys_missing)[0]
+                            sport_status[_sport] = f"TOURNAMENT_STARVED:{_t}"
+                            sport_starved.append(_sport)
+                            continue
+                except Exception as _tn_err:
+                    logger.debug(
+                        "Tennis tournament-level starvation check errored: %s",
+                        _tn_err,
+                    )
             if _sp_any > 0 and not (_game_missing or _prop_missing):
                 # Rows exist but coverage sub-threshold — model rejected
                 # them (off_board / no_bet / settlement_block / status).
@@ -4145,9 +4271,16 @@ async def on_startup():
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=25)
         n_fresh = await db.live_alt_lines.count_documents({
             "sport":      {"$in": ["soccer", "Soccer"]},
+            # 2026-08-23 PASS 1 — Remove ``player_first_goal_scorer`` from
+            # the freshness probe.  Capability truth marks First Goal
+            # Scorer INTENTIONALLY_UNSUPPORTED (see
+            # ``sport_capability_registry.SPORT_CAPABILITIES['Soccer']
+            # ['unsupported_markets']``), and ``alt_lines_feed`` already
+            # excludes it from acquisition — the freshness probe must
+            # not require it either or it can wrongly report "not fresh"
+            # for the two markets we DO support.
             "market_key": {"$in": [
                 "player_goal_scorer_anytime",
-                "player_first_goal_scorer",
                 "player_to_score_or_assist",
             ]},
             "last_seen":  {"$gte": cutoff},

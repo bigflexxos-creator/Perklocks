@@ -128,6 +128,13 @@ SPORT_KEYS: dict[str, list[str]] = {
 # Cache active sports list per process so we don't burn quota.
 _ACTIVE_KEYS: set[str] = set()
 _ACTIVE_LOADED = False
+# 2026-08-23 PASS 1 — cheap TTL refresh (30 min).  Previously
+# ``_ACTIVE_LOADED`` was a one-shot boolean, so any provider catalog
+# change (new active league mid-season) never reached production
+# until the process restarted.  TTL of 30 min matches the existing
+# health-cycle cadence and never induces aggressive polling.
+_ACTIVE_LOADED_AT: float = 0.0
+_ACTIVE_TTL_S: float = 30 * 60
 
 # Circuit breaker: once the Odds API repeatedly fails (bad key, exhausted
 # quota, network outage), stop hammering it for the rest of this process.
@@ -514,13 +521,34 @@ async def _gateway_fallback_get(*, url: str, params: dict,
 
 
 async def _load_active_sports() -> None:
-    global _ACTIVE_LOADED
-    if _ACTIVE_LOADED:
+    """Load provider active-key catalog.
+
+    2026-08-23 PASS 1 — Add cheap TTL refresh so the active-key set
+    does not remain frozen for the entire backend process.  Provider
+    catalog is refetched at most once per ``_ACTIVE_TTL_S`` seconds
+    (default 30 min).  On refresh, previously-known keys are
+    preserved (union) so a transient provider blip cannot wipe the
+    catalog.  Reuses the existing ``_get`` cache path — no aggressive
+    polling.
+    """
+    global _ACTIVE_LOADED, _ACTIVE_LOADED_AT
+    import time as _t
+    _now = _t.monotonic()
+    if _ACTIVE_LOADED and (_now - _ACTIVE_LOADED_AT) < _ACTIVE_TTL_S:
         return
     data = await _get(f"{BASE}/sports", {})
     if isinstance(data, list):
         _ACTIVE_KEYS.update(s["key"] for s in data if s.get("active"))
     _ACTIVE_LOADED = True
+    _ACTIVE_LOADED_AT = _now
+
+
+async def ensure_active_keys_fresh() -> None:
+    """Public helper for consumers that want to force a TTL check
+    before reading ``_ACTIVE_KEYS`` (e.g. per-league starvation
+    detector).  Idempotent — no-op inside the TTL window.
+    """
+    await _load_active_sports()
 
 
 async def _fetch_odds_for(sport_key: str, regions: str = "us", sport: str | None = None) -> list:
@@ -2528,12 +2556,47 @@ async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
     all_picks: list[dict] = []
     # Soccer needs UK region to get the Draw outcome in the h2h market.
     region = "uk" if sport == "Soccer" else "us"
-    for key in SPORT_KEYS.get(sport, []):
+    # ── 2026-08-23 PASS 1 — Universal active provider discovery ──
+    # Static ``SPORT_KEYS[sport]`` is FALLBACK only; the authoritative
+    # league/tournament set is ``_ACTIVE_KEYS`` filtered by prefix.
+    # This automatically reaches active supported leagues (Eredivisie
+    # / China Super League / new Tennis tournaments) without any
+    # per-league patch.  A key is included iff (a) it's in the static
+    # fallback OR (b) the provider catalog marks it active AND the
+    # prefix matches the sport.
+    _prefix_map = {
+        "Soccer":  "soccer_",
+        "Tennis":  "tennis_",
+    }
+    _static_keys = list(SPORT_KEYS.get(sport, []))
+    _sport_keys: list[str] = list(_static_keys)
+    _pfx = _prefix_map.get(sport)
+    if _pfx and _ACTIVE_KEYS:
+        _static_set = set(_static_keys)
+        for _k in sorted(_ACTIVE_KEYS):
+            if _k.startswith(_pfx) and _k not in _static_set:
+                _sport_keys.append(_k)
+    for key in _sport_keys:
         if _ACTIVE_KEYS and key not in _ACTIVE_KEYS:
             continue
         games = await _fetch_odds_for(key, regions=region, sport=sport)
         league_label = LEAGUE_LABELS.get(key, sport)
-        for g in games[:40]:  # tennis-friendly cap (Wimbledon has 48+ matches/day)
+        # ── 2026-08-23 PASS 1 — Bounded fair-slate selection ──
+        # Prior ``games[:40]`` silently dropped eligible events past
+        # position 40 based purely on provider-returned order, which
+        # broke large Tennis tournament slates (Wimbledon has 48+
+        # matches/day) and multi-slot MLB days.  Now we sort by
+        # commence_time ascending FIRST — the 40 earliest events are
+        # always the ones a user cares about; nothing eligible is
+        # dropped solely because of provider ordering.
+        try:
+            games_sorted = sorted(
+                games,
+                key=lambda g: g.get("commence_time") or "9999-99-99",
+            )
+        except Exception:
+            games_sorted = games
+        for g in games_sorted[:40]:
             # ─── Data-driven context prefetch (2026-07-19/20) ─────────
             # Fetch weather, park HR, xG rolling, Sackmann etc. BEFORE
             # generating picks so the model can compute an actual data-
@@ -6470,7 +6533,21 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
         except Exception as e:
             logger.warning("MLB roster refresh failed: %s", e)
     all_picks: list[dict] = []
-    for key in SPORT_KEYS.get(sport, []):
+    # ── 2026-08-23 PASS 1 — Universal active provider discovery
+    # (player-props path).  Same fallback-vs-authoritative wiring as
+    # the base game acquisition above so props automatically reach
+    # newly-active supported leagues/tournaments without static
+    # patches.  ``SPORT_KEYS`` remains fallback ONLY.
+    _prefix_map = {"Soccer": "soccer_", "Tennis": "tennis_"}
+    _static_keys = list(SPORT_KEYS.get(sport, []))
+    _sport_keys: list[str] = list(_static_keys)
+    _pfx = _prefix_map.get(sport)
+    if _pfx and _ACTIVE_KEYS:
+        _static_set = set(_static_keys)
+        for _k in sorted(_ACTIVE_KEYS):
+            if _k.startswith(_pfx) and _k not in _static_set:
+                _sport_keys.append(_k)
+    for key in _sport_keys:
         if _ACTIVE_KEYS and key not in _ACTIVE_KEYS:
             continue
         events = await _get(f"{BASE}/sports/{key}/events", {})
