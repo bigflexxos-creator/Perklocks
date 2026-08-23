@@ -82,6 +82,10 @@ async def backfill_current_season(db) -> dict:
                             "date": g.get("gameDate"),
                             "home": (home.get("placeName") or {}).get("default") if isinstance(home.get("placeName"), dict) else home.get("name"),
                             "away": (away.get("placeName") or {}).get("default") if isinstance(away.get("placeName"), dict) else away.get("name"),
+                            "home_team_id": str(home.get("id") or ""),
+                            "away_team_id": str(away.get("id") or ""),
+                            "home_abbrev":  home.get("abbrev") or "",
+                            "away_abbrev":  away.get("abbrev") or "",
                             "result": {"home": home.get("score"), "away": away.get("score")},
                             "status": "Final",
                         }},
@@ -127,6 +131,16 @@ async def incremental_sync(db, since: Optional[datetime] = None) -> dict:
                         {"$set": {
                             "sport": "nhl",
                             "date": g.get("gameDate"),
+                            # 2026-08-23 H2H_DATA_COMPLETION — write
+                            # canonical team identity so NHL H2H can
+                            # resolve opponent (bug: prior incremental
+                            # dropped these fields, breaking NHL H2H).
+                            "home": (home.get("placeName") or {}).get("default") if isinstance(home.get("placeName"), dict) else home.get("name"),
+                            "away": (away.get("placeName") or {}).get("default") if isinstance(away.get("placeName"), dict) else away.get("name"),
+                            "home_team_id": str(home.get("id") or ""),
+                            "away_team_id": str(away.get("id") or ""),
+                            "home_abbrev":  home.get("abbrev") or "",
+                            "away_abbrev":  away.get("abbrev") or "",
                             "result": {"home": home.get("score"), "away": away.get("score")},
                             "status": "Final",
                         }},
@@ -146,11 +160,22 @@ async def _ingest_boxscore(cx: httpx.AsyncClient, db, game_id) -> int:
     if not data:
         return 0
     inserted = 0
+    # 2026-08-23 H2H_DATA_COMPLETION — extract canonical team ids up front
+    # so player logs carry opponent identity for H2H.
+    home_block = data.get("homeTeam") or {}
+    away_block = data.get("awayTeam") or {}
+    home_tid = str(home_block.get("id") or "")
+    away_tid = str(away_block.get("id") or "")
+    home_name = (home_block.get("placeName") or {}).get("default") if isinstance(home_block.get("placeName"), dict) else home_block.get("name")
+    away_name = (away_block.get("placeName") or {}).get("default") if isinstance(away_block.get("placeName"), dict) else away_block.get("name")
     # NHL boxscore v1 has playerByGameStats.{awayTeam,homeTeam}.{forwards,defense,goalies}
     pbgs = (data.get("playerByGameStats") or {})
     for side_key in ("awayTeam", "homeTeam"):
         side = pbgs.get(side_key) or {}
-        team_name = ((data.get(side_key.replace("Team", "")) or {}).get("name") or {}).get("default") if isinstance((data.get(side_key.replace("Team", "")) or {}).get("name"), dict) else None
+        is_home_side = (side_key == "homeTeam")
+        team_name = home_name if is_home_side else away_name
+        team_tid  = home_tid  if is_home_side else away_tid
+        opp_tid   = away_tid  if is_home_side else home_tid
         for group in ("forwards", "defense", "goalies"):
             for p in side.get(group) or []:
                 pid = p.get("playerId")
@@ -174,6 +199,9 @@ async def _ingest_boxscore(cx: httpx.AsyncClient, db, game_id) -> int:
                     "sport": "nhl",
                     "name": full_name,
                     "team": team_name,
+                    "team_id": team_tid,
+                    "opp_team_id": opp_tid,
+                    "is_home": is_home_side,
                     "position": p.get("position"),
                 }
                 if group == "goalies":
@@ -202,3 +230,71 @@ async def _ingest_boxscore(cx: httpx.AsyncClient, db, game_id) -> int:
                 )
                 inserted += 1
     return inserted
+
+
+async def enrich_player_log_opponents(db) -> dict:
+    """One-shot enrichment — populate ``opp_team_id`` / ``team_id`` /
+    ``is_home`` on existing ``player_game_logs`` sport='nhl' rows using
+    the canonical ``games`` collection (2026-08-23 H2H_DATA_COMPLETION).
+
+    Uses ONLY existing stored data — no external API calls.  Rows whose
+    game_id has no games row with team ids remain honestly unresolved.
+    """
+    enriched = 0
+    unresolved = 0
+    scanned = 0
+    async for log in db.player_game_logs.find(
+        {"sport": "nhl",
+         "$or": [{"opp_team_id": {"$in": [None, ""]}},
+                  {"opp_team_id": {"$exists": False}}]},
+        {"_id": 1, "game_id": 1, "team": 1, "name": 1},
+    ):
+        scanned += 1
+        gid = log.get("game_id")
+        if not gid:
+            unresolved += 1
+            continue
+        game = await db.games.find_one(
+            {"game_id": gid, "sport": "nhl"},
+            {"_id": 0, "home": 1, "away": 1,
+             "home_team_id": 1, "away_team_id": 1,
+             "home_abbrev": 1, "away_abbrev": 1},
+        )
+        if not game:
+            unresolved += 1
+            continue
+        home_tid = str(game.get("home_team_id") or "")
+        away_tid = str(game.get("away_team_id") or "")
+        if not (home_tid and away_tid):
+            unresolved += 1
+            continue
+        # Determine which side the player was on.  If ``team`` on the log
+        # is the home name/abbrev, opp = away id; else opp = home id.
+        team = (log.get("team") or "").strip().lower()
+        home_id_match = any(
+            team == (v or "").strip().lower()
+            for v in (game.get("home"), game.get("home_abbrev"), home_tid)
+        )
+        away_id_match = any(
+            team == (v or "").strip().lower()
+            for v in (game.get("away"), game.get("away_abbrev"), away_tid)
+        )
+        if home_id_match:
+            team_tid, opp_tid, is_home = home_tid, away_tid, True
+        elif away_id_match:
+            team_tid, opp_tid, is_home = away_tid, home_tid, False
+        else:
+            # Team side unresolved from stored log.team — honest miss.
+            unresolved += 1
+            continue
+        await db.player_game_logs.update_one(
+            {"_id": log["_id"]},
+            {"$set": {
+                "team_id":     team_tid,
+                "opp_team_id": opp_tid,
+                "is_home":     is_home,
+            }},
+        )
+        enriched += 1
+    return {"scanned": scanned, "enriched": enriched, "unresolved": unresolved}
+

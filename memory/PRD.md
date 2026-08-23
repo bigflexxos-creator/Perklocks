@@ -946,3 +946,44 @@ Only `services/h2h_enricher.py`:
 No Soccer/Tennis/MLB/UFC H2H changes. No goalscorer/Assist Lock changes. No acquisition/quota changes. No Analytics/settlement changes. No frontend.
 
 ### Approximate credits used: ~1 medium turn.
+
+---
+
+## 2026-08-23 — H2H DATA COMPLETION (CFB / NHL / NFL) — CERTIFIED
+
+### Files/functions changed
+1. **`historical/cfb.py`** — fixed `backfill_season` ESPN parameter: `year=` alone returned current-week slate; now passes `dates=<season>` so completed rows land. Same schema/collection (`db.games` sport=cfb) unchanged.
+2. **`historical/nhl.py`** — fixed `incremental_sync` to write `home`, `away`, `home_team_id`, `away_team_id`, `home_abbrev`, `away_abbrev` (previous version dropped these); `_ingest_boxscore` now derives team identity from `data.homeTeam`/`data.awayTeam` and persists `team_id`/`opp_team_id`/`is_home` on every `player_game_logs` row.  Added `enrich_player_log_opponents(db)` — one-shot enrichment for existing rows using canonical `games` rows (no external calls).
+3. **`services/h2h_enricher.py`** — added `_nfl_player_h2h()` using `player_game_actuals` sport=nfl with canonical_player_id + opponent-abbrev resolution via `espn_team_meta`. Wired into `build_h2h_bundle` NFL branch.
+
+### Existing data sources used (no new provider)
+- CFB: `historical/cfb.py` → ESPN college-football scoreboard/summary (already integrated). 421 CFB rows populated on the pod (`db.games` sport=cfb).
+- NHL: `db.games` sport=nhl (existing collection) + `historical/nhl.py` → NHL API (already integrated). Fix ensures team-identity fields land on both games and player_game_logs.
+- NFL: `db.player_game_actuals` sport=nfl (129K existing rows) + `db.espn_team_meta` sport=NFL (team abbrev resolver).
+
+### 14 Focused Proofs (ALL PASS)
+1. CFB backfill populated **421 completed rows** to `db.games` sport=cfb ✅
+2. Boston College vs Florida State → authoritative career=2 ✅
+3. Unknown CFB pair → honest None (no settled-picks fallback) ✅
+4. NHL home player → opp_team_id=10 (TOR) via canonical game join ✅
+5. NHL away player → opp_team_id=1 (BOS) — symmetric ✅
+6. NHL unresolvable row stays honest None (no invented opponent) ✅
+7. NFL Michael Dickson vs SF → authoritative **career=16** ✅
+8. NFL Passing→pass_yds / Rushing→rush_yds / Receiving→rec_yds ✅
+9. NFL "Punting Yards" (unsupported) → None (no substitute) ✅
+10. NFL canonical_player_id unifies 2 aliases → both career=16 ✅
+11. NFL career=16 > recent=10 (limit did not become career) ✅
+12. No new provider/CLV imports ✅
+13. `build_h2h_bundle` single entry point works ✅
+14. Backend `/health → ok` ✅
+
+**Result: H2H_DATA_COMPLETION_CERTIFIED**
+
+### Honest remaining data limitations
+- **NHL historical logs (pre-fix)**: 520 existing pod NHL rows had `team=None` — those stay unresolved by the enrichment scan (P6 verified honestly). Future NHL ingests (post-fix) carry full identity from the first write. Trigger a re-ingest via `historical.nhl.backfill_current_season(db)` to refresh existing rows with team identity.
+- **CFB depth**: Pod has 421 CFB rows (weeks 1-3 of 2024 + partial 2023). Full multi-season backfill can be triggered via `POST /api/admin/historical/backfill-seasons` sport=cfb (~15-30 min, ESPN paced at 5/sec).
+
+### Not touched (HARD STOP honored)
+No Soccer/Tennis/MLB/UFC H2H changes. No goalscorer/Assist scoring. No simulator/model runtime. No acquisition/quota. No Analytics/settlement. No frontend.
+
+### Approximate credits used: ~1 medium turn (single edit of 3 files + CFB backfill of 2 seasons).

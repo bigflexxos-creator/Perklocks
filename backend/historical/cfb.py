@@ -182,7 +182,12 @@ async def backfill_season(db, season: int) -> dict:
                 if games_inserted >= max_weeks * 30:
                     break
                 data = await _get(cx, "/scoreboard",
-                                  {"seasontype": season_type, "week": wk, "year": season,
+                                  {"seasontype": season_type, "week": wk,
+                                   # 2026-08-23 H2H_DATA_COMPLETION — ESPN
+                                   # honours the `dates=YYYY` filter to pin
+                                   # a season; `year` alone falls back to
+                                   # today's slate.
+                                   "dates": season, "year": season,
                                    "groups": 80, "limit": 200})
                 await asyncio.sleep(_PACE)
                 if not data:
