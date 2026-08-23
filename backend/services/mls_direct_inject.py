@@ -321,11 +321,25 @@ async def _generate_for_event(ev: dict, all_scorers: list[dict],
             # Emit book_odds=None + no_real_book_line=True instead.
             book_odds = None
 
-            if p >= 0.55: lock = 95.0
-            elif p >= 0.40: lock = 91.0
-            elif p >= 0.25: lock = 87.0
-            elif p >= 0.15: lock = 83.0
-            else:            lock = 80.0
+            # 2026-08-23 GOALSCORER DECLUSTERING — route through
+            # shared continuous helper instead of fixed 95/91/87/83/80
+            # anchors.  Preserves evidence tiers as labels but final
+            # Lock is continuous from model probability + evidence.
+            from services.soccer_scorer_lock_ladder import (
+                confidence_ladder_lock as _lock_helper,
+            )
+            lock = _lock_helper(
+                model_prob=p,
+                confidence=(rec.confidence if rec else "MEDIUM"),
+                market_fit=None,
+                games=int(getattr(stats, "games", 0) or 0),
+                minutes=int(getattr(stats, "minutes", 0) or 0),
+                goals_per_90=float(getattr(stats, "goals_per_90", 0) or 0),
+                npxg_per_90=float(getattr(stats, "npxg_per_90", 0) or 0),
+                xa_per_90=float(getattr(stats, "xa_per_90", 0) or 0),
+                recent_form_score=getattr(stats, "form_score", None),
+                evidence_source=str(getattr(stats, "source", "") or ""),
+            )
             if route.confidence == "HIGH": lock = min(99.0, lock + 2.0)
             elif route.confidence == "LOW": lock = max(75.0, lock - 3.0)
             if route.market_fit >= 90:
