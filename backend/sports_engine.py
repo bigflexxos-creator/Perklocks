@@ -490,8 +490,28 @@ async def _gateway_fallback_get(*, url: str, params: dict,
         return None
     try:
         from services.odds_api_gateway import OddsApiGateway
+        from services import provider_budget_priority as _pbp
         from server import db as _server_db
         gw = OddsApiGateway(_server_db)
+        # ── 2026-08-23 QUOTA — priority routing ──
+        # Route current game markets to P1, player props to P2, alt/
+        # strong-market secondaries to P3.  Prior code passed no
+        # priority to gateway.fetch → the gateway defaulted every
+        # request to P3, so live-slate game fetches shared a lane with
+        # background preloads.  Priority is derived from the markets
+        # tag (Odds API canonical vocabulary), never a display string.
+        _mk = (markets_tag or "").lower()
+        _url_l = (url or "").lower()
+        if any(t in _mk for t in ("player_", "batter_", "pitcher_")):
+            _priority = _pbp.P2_PLAYER_PROPS
+        elif any(t in _mk for t in ("alternate_", "_alternate",
+                                     "btts", "double_chance")):
+            _priority = _pbp.P3_ALT_STRONG
+        elif "h2h" in _mk or "spreads" in _mk or "totals" in _mk \
+                or "/odds" in _url_l or "/events" in _url_l:
+            _priority = _pbp.P1_LOCKS_TODAY
+        else:
+            _priority = _pbp.P3_ALT_STRONG
         result = await gw.fetch(
             url,
             params={k: v for k, v in (params or {}).items()
@@ -501,6 +521,7 @@ async def _gateway_fallback_get(*, url: str, params: dict,
             job_name="sports_engine_cache_failure_fallback",
             sport_key=sport_key,
             markets=markets_tag,
+            priority=_priority,
             emergency_requested=emergency_requested,
         )
         if result and result.data is not None:
@@ -524,12 +545,14 @@ async def _load_active_sports() -> None:
     """Load provider active-key catalog.
 
     2026-08-23 PASS 1 — Add cheap TTL refresh so the active-key set
-    does not remain frozen for the entire backend process.  Provider
-    catalog is refetched at most once per ``_ACTIVE_TTL_S`` seconds
-    (default 30 min).  On refresh, previously-known keys are
-    preserved (union) so a transient provider blip cannot wipe the
-    catalog.  Reuses the existing ``_get`` cache path — no aggressive
-    polling.
+    does not remain frozen for the entire backend process.
+    2026-08-23 QUOTA PASS — REPLACE-on-success semantics (union-only
+    left inactive keys in the snapshot forever, causing false
+    starvation on decommissioned leagues).  On a SUCCESSFUL provider
+    catalog refresh we now REPLACE the snapshot with the latest
+    active set.  On FAILURE we preserve the last-good snapshot —
+    a transient provider blip never wipes it.  Reuses the existing
+    ``_get`` cache path — no aggressive polling.
     """
     global _ACTIVE_LOADED, _ACTIVE_LOADED_AT
     import time as _t
@@ -537,9 +560,19 @@ async def _load_active_sports() -> None:
     if _ACTIVE_LOADED and (_now - _ACTIVE_LOADED_AT) < _ACTIVE_TTL_S:
         return
     data = await _get(f"{BASE}/sports", {})
-    if isinstance(data, list):
-        _ACTIVE_KEYS.update(s["key"] for s in data if s.get("active"))
-    _ACTIVE_LOADED = True
+    if isinstance(data, list) and data:
+        # SUCCESS — REPLACE the snapshot with the fresh catalog so
+        # keys that are no longer active fall out.
+        _fresh = {s["key"] for s in data if isinstance(s, dict)
+                    and s.get("active") and s.get("key")}
+        if _fresh:
+            _ACTIVE_KEYS.clear()
+            _ACTIVE_KEYS.update(_fresh)
+            _ACTIVE_LOADED = True
+            _ACTIVE_LOADED_AT = _now
+            return
+    # FAILURE — keep last-good snapshot; only advance the timestamp
+    # so we don't hammer the provider retrying immediately.
     _ACTIVE_LOADED_AT = _now
 
 
@@ -2581,22 +2614,61 @@ async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
             continue
         games = await _fetch_odds_for(key, regions=region, sport=sport)
         league_label = LEAGUE_LABELS.get(key, sport)
-        # ── 2026-08-23 PASS 1 — Bounded fair-slate selection ──
-        # Prior ``games[:40]`` silently dropped eligible events past
-        # position 40 based purely on provider-returned order, which
-        # broke large Tennis tournament slates (Wimbledon has 48+
-        # matches/day) and multi-slot MLB days.  Now we sort by
-        # commence_time ascending FIRST — the 40 earliest events are
-        # always the ones a user cares about; nothing eligible is
-        # dropped solely because of provider ordering.
+        # ── 2026-08-23 QUOTA — bounded fair-window slate (no hard drop) ──
+        # Prior code did ``sorted(games, commence_time)[:40]`` which
+        # STILL permanently dropped valid current/future events
+        # beyond position 40.  Replaced by a bounded window:
+        #   * Anchor at the nearest commence_time (now or next start).
+        #   * Include every event whose commence_time is inside a
+        #     ``_SLATE_WINDOW_HOURS`` window (default 30 h) from the
+        #     anchor.  This is a natural "today's slate" boundary —
+        #     late-night doubleheaders and next-morning tips stay
+        #     reachable but next-week fixtures don't leak in.
+        #   * Absolute safety cap (``_SLATE_HARD_MAX``) prevents a
+        #     runaway iteration on pathological catalogs; picked large
+        #     enough (150) that no realistic single-day supported
+        #     slate hits it (Wimbledon peaks ~48 matches/day, MLB
+        #     ~30 games, NFL Sunday ~14).  The cap is a safety valve,
+        #     never a silent business filter.
         try:
-            games_sorted = sorted(
-                games,
-                key=lambda g: g.get("commence_time") or "9999-99-99",
-            )
+            from datetime import datetime as _dt, timezone as _tz, \
+                timedelta as _td
+            def _ct(g):
+                return g.get("commence_time") or "9999-99-99"
+            games_sorted = sorted(games, key=_ct)
+            _SLATE_WINDOW_HOURS = 30
+            _SLATE_HARD_MAX = 150
+            _anchor = None
+            _now_dt = _dt.now(_tz.utc)
+            for _g in games_sorted:
+                try:
+                    _c = _dt.fromisoformat(
+                        (_g.get("commence_time") or "").replace("Z", "+00:00")
+                    )
+                except Exception:
+                    continue
+                if _c >= _now_dt - _td(hours=2):
+                    _anchor = _c
+                    break
+            if _anchor is None:
+                games_windowed = games_sorted[:_SLATE_HARD_MAX]
+            else:
+                _end = _anchor + _td(hours=_SLATE_WINDOW_HOURS)
+                games_windowed = []
+                for _g in games_sorted:
+                    try:
+                        _c = _dt.fromisoformat(
+                            (_g.get("commence_time") or "").replace("Z", "+00:00")
+                        )
+                    except Exception:
+                        continue
+                    if _c <= _end:
+                        games_windowed.append(_g)
+                    if len(games_windowed) >= _SLATE_HARD_MAX:
+                        break
         except Exception:
-            games_sorted = games
-        for g in games_sorted[:40]:
+            games_windowed = games[:150]
+        for g in games_windowed:
             # ─── Data-driven context prefetch (2026-07-19/20) ─────────
             # Fetch weather, park HR, xG rolling, Sackmann etc. BEFORE
             # generating picks so the model can compute an actual data-
@@ -7563,7 +7635,19 @@ async def generate_all_picks(
     # catalogue is thin — CFB game-level markets already flow via
     # Phase 1 above).  UFC has no prop markets (see PLAYER_PROP_MARKETS
     # comment) and NHL is not yet supported.
+    # 2026-08-23 QUOTA — FAIR CROSS-SPORT PROP ACQUISITION.
+    # Prior code iterated ``prop_sports`` in fixed order ["MLB", "NBA",
+    # "NFL", "Soccer"] serially with a 1.2s delay between sports.  When
+    # provider budget is constrained, MLB (first) could consume every
+    # protected credit before Soccer (last) got a request in.  Rotate
+    # the start index by day-of-year so each sport gets the earliest
+    # slot on a rolling basis — same total sport count, same 1.2s
+    # spacing, no additional parallelism, no quota-limit change.
     prop_sports = [s for s in ("MLB", "NBA", "NFL", "Soccer") if _want(s)]
+    if len(prop_sports) > 1:
+        from datetime import datetime as _pd_dt, timezone as _pd_tz
+        _rot = _pd_dt.now(_pd_tz.utc).timetuple().tm_yday % len(prop_sports)
+        prop_sports = prop_sports[_rot:] + prop_sports[:_rot]
     for sport in prop_sports:
         try:
             props = await _fetch_player_props_for_sport(sport)
