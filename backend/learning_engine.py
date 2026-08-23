@@ -75,146 +75,147 @@ async def recompute_learned_weights(db) -> dict[str, Any]:
         await db.learned_weights.replace_one({"_id": "current"}, empty, upsert=True)
         return empty
 
-    def _age_weight(p: dict) -> float:
-        """Exponential time-decay: w = exp(-age_days / HALF_LIFE_DAYS).
-        Falls back to 1.0 if event_time/settled_at can't be parsed."""
-        ts = p.get("settled_at") or p.get("event_time") or ""
-        if not ts:
-            return 1.0
-        try:
-            iso = ts[:-1] + "+00:00" if ts.endswith("Z") else ts
-            dt = datetime.fromisoformat(iso)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            age_days = max(0.0, (now_utc - dt).total_seconds() / 86400.0)
-            return math.exp(-age_days / HALF_LIFE_DAYS)
-        except Exception:
-            return 1.0
+    # ── 2026-08-23 FINAL — event-loop offload ─────────────────────
+    # ``recompute_learned_weights`` iterates up to 20 000 settled
+    # picks and builds per-bucket / per-band aggregates + Bayesian
+    # shrinkage + time-decay math.  That's pure-Python CPU work with
+    # no I/O between the async DB read above and the async DB write
+    # below — a perfect worker-thread candidate.  ``_compute_payload``
+    # is a sync helper containing NO Mongo / HTTP / event-loop-bound
+    # objects; result comes back as a plain dict for the async write.
+    def _compute_payload():
+        import math
+        def _age_weight(p: dict) -> float:
+            ts = p.get("settled_at") or p.get("event_time") or ""
+            if not ts:
+                return 1.0
+            try:
+                iso = ts[:-1] + "+00:00" if ts.endswith("Z") else ts
+                dt = datetime.fromisoformat(iso)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                age_days = max(0.0, (now_utc - dt).total_seconds() / 86400.0)
+                return math.exp(-age_days / HALF_LIFE_DAYS)
+            except Exception:
+                return 1.0
 
-    # ── 1) Per-(sport, market_label) bucket weight ──────────────────────
-    buckets: dict[tuple[str, str], dict] = {}
-    for p in picks:
-        key = (p.get("sport") or "Unknown", _market_label(p.get("market")))
-        b = buckets.setdefault(key, {
-            "sport": key[0], "market_label": key[1],
-            "n": 0, "wins": 0, "losses": 0, "pushes": 0,
-            "units_risked": 0.0, "units_profit": 0.0,
-            "model_wp_sum": 0.0,
-            "decayed_n": 0.0, "decayed_wins": 0.0, "decayed_risked": 0.0,
-            "decayed_profit": 0.0, "decayed_wp_sum": 0.0,
-        })
-        w = _age_weight(p)
-        b["n"] += 1
-        b["decayed_n"] += w
-        if p["status"] == "won":
-            b["wins"] += 1
-            b["decayed_wins"] += w
-        elif p["status"] == "lost":
-            b["losses"] += 1
-        else:
-            b["pushes"] += 1
-        if p["status"] != "push":
-            risked = p.get("units_risked", 1.0)
-            b["units_risked"] += risked
-            b["decayed_risked"] += risked * w
-        profit = p.get("units_profit") or 0.0
-        b["units_profit"] += profit
-        b["decayed_profit"] += profit * w
-        wp = p.get("win_probability") or 0.0
-        b["model_wp_sum"] += wp
-        b["decayed_wp_sum"] += wp * w
+        buckets: dict[tuple[str, str], dict] = {}
+        for p in picks:
+            key = (p.get("sport") or "Unknown", _market_label(p.get("market")))
+            b = buckets.setdefault(key, {
+                "sport": key[0], "market_label": key[1],
+                "n": 0, "wins": 0, "losses": 0, "pushes": 0,
+                "units_risked": 0.0, "units_profit": 0.0,
+                "model_wp_sum": 0.0,
+                "decayed_n": 0.0, "decayed_wins": 0.0, "decayed_risked": 0.0,
+                "decayed_profit": 0.0, "decayed_wp_sum": 0.0,
+            })
+            w = _age_weight(p)
+            b["n"] += 1
+            b["decayed_n"] += w
+            if p["status"] == "won":
+                b["wins"] += 1
+                b["decayed_wins"] += w
+            elif p["status"] == "lost":
+                b["losses"] += 1
+            else:
+                b["pushes"] += 1
+            if p["status"] != "push":
+                risked = p.get("units_risked", 1.0)
+                b["units_risked"] += risked
+                b["decayed_risked"] += risked * w
+            profit = p.get("units_profit") or 0.0
+            b["units_profit"] += profit
+            b["decayed_profit"] += profit * w
+            wp = p.get("win_probability") or 0.0
+            b["model_wp_sum"] += wp
+            b["decayed_wp_sum"] += wp * w
 
-    rows: list[dict] = []
-    for b in buckets.values():
-        decisive = b["wins"] + b["losses"]
-        hit_rate = (b["wins"] * 100 / decisive) if decisive else 0.0
-        expected = (b["model_wp_sum"] / b["n"]) if b["n"] else 0.0
-        roi = (b["units_profit"] * 100 / b["units_risked"]) if b["units_risked"] else 0.0
-        # Time-decayed metrics for the learnable weight
-        d_roi = (b["decayed_profit"] * 100 / b["decayed_risked"]) if b["decayed_risked"] else 0.0
-        d_expected = (b["decayed_wp_sum"] / b["decayed_n"]) if b["decayed_n"] else 0.0
-        d_hit_rate = (b["decayed_wins"] * 100 / b["decayed_n"]) if b["decayed_n"] else 0.0
-        # ── Bayesian shrinkage ──────────────────────────────────────
-        # At n=K (=10), shrinkage = 0.5; at n=30, shrinkage = 0.75; at
-        # n=100, shrinkage ≈ 0.91. Replaces the old binary gate so we
-        # extract SOME signal from low-sample buckets while still
-        # capping over-confidence on tiny samples.
-        if b["n"] >= MIN_SAMPLES:
-            shrinkage = b["n"] / (b["n"] + SHRINKAGE_K)
-            roi_signal = (d_roi / 100.0) * ROI_GAIN
-            cal_signal = ((d_hit_rate - d_expected) / 100.0) * CAL_GAIN
-            raw = (roi_signal + cal_signal) * shrinkage
-            weight = max(-MAX_WP_DELTA, min(MAX_WP_DELTA, raw))
-        else:
-            weight = 0.0
-        rows.append({
-            "sport": b["sport"],
-            "market_label": b["market_label"],
-            "n": b["n"],
-            "wins": b["wins"],
-            "losses": b["losses"],
-            "hit_rate": round(hit_rate, 1),
-            "expected_wp": round(expected, 1),
-            "roi": round(roi, 2),
-            "decayed_roi": round(d_roi, 2),
-            "decayed_hit_rate": round(d_hit_rate, 1),
-            "shrinkage": round(b["n"] / (b["n"] + SHRINKAGE_K), 3) if b["n"] else 0.0,
-            "weight": round(weight, 4),
-            "active": b["n"] >= MIN_SAMPLES,
-        })
-    rows.sort(key=lambda r: r["decayed_roi"], reverse=True)
+        rows: list[dict] = []
+        for b in buckets.values():
+            decisive = b["wins"] + b["losses"]
+            hit_rate = (b["wins"] * 100 / decisive) if decisive else 0.0
+            expected = (b["model_wp_sum"] / b["n"]) if b["n"] else 0.0
+            roi = (b["units_profit"] * 100 / b["units_risked"]) if b["units_risked"] else 0.0
+            d_roi = (b["decayed_profit"] * 100 / b["decayed_risked"]) if b["decayed_risked"] else 0.0
+            d_expected = (b["decayed_wp_sum"] / b["decayed_n"]) if b["decayed_n"] else 0.0
+            d_hit_rate = (b["decayed_wins"] * 100 / b["decayed_n"]) if b["decayed_n"] else 0.0
+            if b["n"] >= MIN_SAMPLES:
+                shrinkage = b["n"] / (b["n"] + SHRINKAGE_K)
+                roi_signal = (d_roi / 100.0) * ROI_GAIN
+                cal_signal = ((d_hit_rate - d_expected) / 100.0) * CAL_GAIN
+                raw = (roi_signal + cal_signal) * shrinkage
+                weight = max(-MAX_WP_DELTA, min(MAX_WP_DELTA, raw))
+            else:
+                weight = 0.0
+            rows.append({
+                "sport": b["sport"],
+                "market_label": b["market_label"],
+                "n": b["n"],
+                "wins": b["wins"],
+                "losses": b["losses"],
+                "hit_rate": round(hit_rate, 1),
+                "expected_wp": round(expected, 1),
+                "roi": round(roi, 2),
+                "decayed_roi": round(d_roi, 2),
+                "decayed_hit_rate": round(d_hit_rate, 1),
+                "shrinkage": round(b["n"] / (b["n"] + SHRINKAGE_K), 3) if b["n"] else 0.0,
+                "weight": round(weight, 4),
+                "active": b["n"] >= MIN_SAMPLES,
+            })
+        rows.sort(key=lambda r: r["decayed_roi"], reverse=True)
 
-    # ── 2) Win-Probability calibration (NOT lock-score bands) ───────────
-    # Per spec v3: Lock Score is bet-quality, NOT win-probability. So
-    # calibration must compare the model's Expected Win % to Actual Win %,
-    # binned by WP range — not by lock-score band.
-    wp_bins = [(50, 60), (60, 70), (70, 80), (80, 90), (90, 100)]
-    bin_labels = ["WP 50-60%", "WP 60-70%", "WP 70-80%", "WP 80-90%", "WP 90-100%"]
-    bands: dict[str, dict] = {}
-    for label in bin_labels:
-        bands[label] = {"band": label, "n": 0, "wins": 0, "losses": 0, "wp_sum": 0.0}
-    for p in picks:
-        if p["status"] == "push":
-            continue
-        if (p.get("formula_v") or 1) < 2:
-            continue
-        wp = p.get("win_probability") or 0
-        idx = None
-        for i, (lo, hi) in enumerate(wp_bins):
-            if lo <= wp < hi or (i == len(wp_bins) - 1 and wp >= hi - 10):
-                idx = i
-                break
-        if idx is None:
-            continue
-        bk = bin_labels[idx]
-        bd = bands[bk]
-        bd["n"] += 1
-        bd["wp_sum"] += wp
-        if p["status"] == "won":
-            bd["wins"] += 1
-        elif p["status"] == "lost":
-            bd["losses"] += 1
+        wp_bins = [(50, 60), (60, 70), (70, 80), (80, 90), (90, 100)]
+        bin_labels = ["WP 50-60%", "WP 60-70%", "WP 70-80%", "WP 80-90%", "WP 90-100%"]
+        bands: dict[str, dict] = {}
+        for label in bin_labels:
+            bands[label] = {"band": label, "n": 0, "wins": 0, "losses": 0, "wp_sum": 0.0}
+        for p in picks:
+            if p["status"] == "push":
+                continue
+            if (p.get("formula_v") or 1) < 2:
+                continue
+            wp = p.get("win_probability") or 0
+            idx = None
+            for i, (lo, hi) in enumerate(wp_bins):
+                if lo <= wp < hi or (i == len(wp_bins) - 1 and wp >= hi - 10):
+                    idx = i
+                    break
+            if idx is None:
+                continue
+            bk = bin_labels[idx]
+            bd = bands[bk]
+            bd["n"] += 1
+            bd["wp_sum"] += wp
+            if p["status"] == "won":
+                bd["wins"] += 1
+            elif p["status"] == "lost":
+                bd["losses"] += 1
 
-    calibration: list[dict] = []
-    for label in bin_labels:
-        bd = bands[label]
-        decisive = bd["wins"] + bd["losses"]
-        actual = (bd["wins"] * 100 / decisive) if decisive else 0.0
-        expected = bd["wp_sum"] / bd["n"] if bd["n"] else 0.0
-        delta_pp = actual - expected
-        if bd["n"] >= MIN_SAMPLES:
-            adj = max(-MAX_CAL_DELTA, min(MAX_CAL_DELTA, delta_pp / 100.0))
-        else:
-            adj = 0.0
-        calibration.append({
-            "band": label,
-            "n": bd["n"],
-            "actual": round(actual, 1),
-            "expected": round(expected, 1),
-            "delta": round(delta_pp, 2),
-            "adjustment": round(adj, 4),
-            "active": bd["n"] >= MIN_SAMPLES,
-        })
+        calibration: list[dict] = []
+        for label in bin_labels:
+            bd = bands[label]
+            decisive = bd["wins"] + bd["losses"]
+            actual = (bd["wins"] * 100 / decisive) if decisive else 0.0
+            expected = bd["wp_sum"] / bd["n"] if bd["n"] else 0.0
+            delta_pp = actual - expected
+            if bd["n"] >= MIN_SAMPLES:
+                adj = max(-MAX_CAL_DELTA, min(MAX_CAL_DELTA, delta_pp / 100.0))
+            else:
+                adj = 0.0
+            calibration.append({
+                "band": label,
+                "n": bd["n"],
+                "actual": round(actual, 1),
+                "expected": round(expected, 1),
+                "delta": round(delta_pp, 2),
+                "adjustment": round(adj, 4),
+                "active": bd["n"] >= MIN_SAMPLES,
+            })
+        return rows, calibration
+
+    import asyncio as _asyncio
+    rows, calibration = await _asyncio.to_thread(_compute_payload)
 
     payload = {
         "_id": "current",

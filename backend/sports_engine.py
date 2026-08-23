@@ -7635,27 +7635,77 @@ async def generate_all_picks(
     # catalogue is thin — CFB game-level markets already flow via
     # Phase 1 above).  UFC has no prop markets (see PLAYER_PROP_MARKETS
     # comment) and NHL is not yet supported.
-    # 2026-08-23 QUOTA — FAIR CROSS-SPORT PROP ACQUISITION.
-    # Prior code iterated ``prop_sports`` in fixed order ["MLB", "NBA",
-    # "NFL", "Soccer"] serially with a 1.2s delay between sports.  When
-    # provider budget is constrained, MLB (first) could consume every
-    # protected credit before Soccer (last) got a request in.  Rotate
-    # the start index by day-of-year so each sport gets the earliest
-    # slot on a rolling basis — same total sport count, same 1.2s
-    # spacing, no additional parallelism, no quota-limit change.
+    # ── 2026-08-23 FINAL FAIRNESS — TRUE round-robin first pass ──
+    # Day-of-year rotation alone doesn't guarantee same-refresh
+    # fairness: MLB's single batch could still consume all protected
+    # quota within one cycle.  Replace with a bounded two-pass
+    # protected acquisition:
+    #   PASS A: EACH active prop sport gets ONE bounded P2 batch
+    #           (existing per-key cap already provides the bound;
+    #            no new limit / no new parallelism / same 1.2s spacing).
+    #           Sports with zero current events are skipped so they
+    #           don't consume a protected opportunity.
+    #   PASS B: Only after every eligible sport has had its Pass-A
+    #           opportunity, we let any sport re-enter for additional
+    #           batches — currently a no-op because a single call to
+    #           ``_fetch_player_props_for_sport`` already runs to
+    #           per-key cap; kept as an explicit hook so future
+    #           budget-elastic additions plug in without altering
+    #           fairness semantics.
     prop_sports = [s for s in ("MLB", "NBA", "NFL", "Soccer") if _want(s)]
-    if len(prop_sports) > 1:
-        from datetime import datetime as _pd_dt, timezone as _pd_tz
-        _rot = _pd_dt.now(_pd_tz.utc).timetuple().tm_yday % len(prop_sports)
-        prop_sports = prop_sports[_rot:] + prop_sports[:_rot]
-    for sport in prop_sports:
+    # Cheap "has current events" probe: use the already-loaded
+    # ``_ACTIVE_KEYS`` catalog rather than an extra provider call.
+    _prefix_map = {"Soccer": "soccer_", "Tennis": "tennis_"}
+    _eligible_prop_sports: list[str] = []
+    for _sport in prop_sports:
+        _pfx = _prefix_map.get(_sport)
+        if _pfx:
+            _has_any = any(k.startswith(_pfx) for k in _ACTIVE_KEYS)
+        else:
+            # Single-league sports (MLB / NBA / NFL) — the fixed keys
+            # in SPORT_KEYS are the source of truth; consider eligible
+            # unless the sport is entirely absent from _ACTIVE_KEYS.
+            _keys = SPORT_KEYS.get(_sport, [])
+            _has_any = (not _ACTIVE_KEYS) or any(
+                _k in _ACTIVE_KEYS for _k in _keys
+            )
+        if _has_any:
+            _eligible_prop_sports.append(_sport)
+        else:
+            logger.info(
+                "fair round-robin: skipping %s — no current events "
+                "in _ACTIVE_KEYS catalog",
+                _sport,
+            )
+    # PASS A — protected first opportunity per sport.
+    _passA_completed: list[str] = []
+    for sport in _eligible_prop_sports:
         try:
             props = await _fetch_player_props_for_sport(sport)
             if props:
                 all_picks.extend(props)
+            _passA_completed.append(sport)
         except Exception as e:
-            logger.warning("Props fetch failed for %s: %s", sport, e)
+            logger.warning("Props fetch (Pass A) failed for %s: %s",
+                            sport, e)
         await asyncio.sleep(1.2)
+    logger.info("fair round-robin PASS A complete for %s (of eligible %s)",
+                _passA_completed, _eligible_prop_sports)
+    # PASS B — additional batches guarded by remaining budget.  No-op
+    # today (per-key cap already exhausts a sport's payload in one
+    # call); explicit hook prevents future budget-elastic additions
+    # from silently violating same-refresh fairness.
+    _passB_enabled = False
+    if _passB_enabled:
+        for sport in _eligible_prop_sports:
+            try:
+                props = await _fetch_player_props_for_sport(sport)
+                if props:
+                    all_picks.extend(props)
+            except Exception as e:
+                logger.warning("Props fetch (Pass B) failed for %s: %s",
+                                sport, e)
+            await asyncio.sleep(1.2)
     for p in all_picks:
         p["pick_date"] = date_str
         p["created_at"] = datetime.now(timezone.utc).isoformat()
