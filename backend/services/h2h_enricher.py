@@ -1045,8 +1045,67 @@ async def _nba_player_h2h(db, pick: dict) -> Optional[dict]:
     except Exception as e:
         logger.debug("NBA player H2H count failed: %s", e)
         return None
+
+    # 2026-08-23 H2H_DATA_COMPLETION §3 — fallback to canonical
+    # `player_game_actuals` sport=nba when `player_game_logs` has no
+    # rows for this player+opponent.  Match by canonical player id
+    # (primary) or player_name (fallback).  Uses actual historical
+    # game rows only — no settled-pick H2H, no invented stats.
     if career_meetings == 0:
-        return None
+        canonical_pid = pick.get("canonical_player_id")
+        acts_q: dict = {"sport": "nba", "opponent": opp_id}
+        if canonical_pid:
+            acts_q["canonical_player_id"] = str(canonical_pid)
+        else:
+            acts_q["player_name"] = {"$regex": f"^{re.escape(name)}$", "$options": "i"}
+        try:
+            acts_career = int(await db.player_game_actuals.count_documents(acts_q))
+        except Exception:
+            acts_career = 0
+        if acts_career == 0:
+            return None
+        try:
+            cur = db.player_game_actuals.find(acts_q, {
+                "_id": 0, "event_time": 1, "actuals": 1, "canonical_player_id": 1,
+            }).sort("event_time", -1).limit(10)
+            acts_rows = await cur.to_list(length=10)
+        except Exception:
+            return None
+        if not acts_rows:
+            return None
+
+        def _acts_stat(row: dict, key: str) -> float:
+            a = row.get("actuals") or {}
+            if key == "pra":
+                return float((a.get("points") or 0) + (a.get("rebounds") or 0)
+                              + (a.get("assists") or 0))
+            v = a.get(key)
+            return float(v or 0)
+
+        # §6 — honest unavailable if the requested stat isn't stored.
+        have_stat = any(
+            (r.get("actuals") or {}).get(stat_key) is not None
+            for r in acts_rows) or stat_key == "pra"
+        if not have_stat:
+            return None
+        vals = [_acts_stat(r, stat_key) for r in acts_rows]
+        avg = round(sum(vals) / len(vals), 2) if vals else 0.0
+        return {
+            "player": name,
+            "vs_opponent": opp_name,
+            "sample_size": acts_career,
+            "career_meetings": acts_career,
+            "recent_sample_n": len(acts_rows),
+            "authoritative": True,
+            "source": "player_game_actuals",
+            "primary_stat": stat_key,
+            "primary_value": avg,
+            "primary_value_display": f"{avg:.1f} {label} vs {opp_name} ({acts_career} gm)",
+            "market_family": stat_key,
+            "market_specific": True,
+            "recent": [{"date": str(r.get("event_time") or "")[:10],
+                         "value": _acts_stat(r, stat_key)} for r in acts_rows[:5]],
+        }
     projection = {"_id": 0, "date": 1, "opp_team_id": 1, "points": 1,
                    "rebounds": 1, "assists": 1, "threes_made": 1,
                    "steals": 1, "blocks": 1, "is_home": 1}
