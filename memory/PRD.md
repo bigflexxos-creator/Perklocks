@@ -880,3 +880,25 @@ Only `services/h2h_enricher.py`:
 No Lock formulas, no provider integrations, no History/Analytics changes, no Rollover/Parlay changes, no CLV additions, no frontend redesign.  Only H2H retrieval/identity truth.
 
 ### Approximate credits used: ~1 medium turn (single-file edit + proof script).
+
+---
+
+## 2026-08-23 — ANYTIME ASSIST LOCK CHECK (no code change)
+
+### Active Assist final-Lock constructors
+1. `services/real_line_scorer_ingest.py` — real sportsbook Assist line path (uses `apply_scorer_lock_promotion`).
+2. `services/mls_direct_inject.py` — MLS direct-inject Assist (uses `confidence_ladder_lock`).
+3. `services/soccer_prop_inject.py` — Big-5 model-only Assist (uses `confidence_ladder_lock`).
+All three ALREADY route through `services/soccer_scorer_lock_ladder` (the continuous helper certified in the goalscorer declustering pass on 2026-08-23).
+
+### Findings
+- No fixed 88/89/90/91/92/93/94/95/96 near-final anchor assignments in any active Assist path.
+- Sweep 46,656 Assist configs — worst bucket 13.2% (below 20% clustering threshold).
+- Same p=0.25 with weak vs rich evidence → Δ=8.07 (evidence-driven).
+- Weak Assist stays below 85 (75.0 floor observed).
+- 96+ share = 0.02% (rare, multi-signal-gated).
+- Modules import clean.
+
+### Verdict: **ASSIST_LOCK_ALREADY_CONTINUOUS — NO CHANGE REQUIRED**
+
+No scoring code changed. No H2H / provider / model / UI changes. Cheap proof only.
