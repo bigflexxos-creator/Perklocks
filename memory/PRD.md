@@ -902,3 +902,47 @@ All three ALREADY route through `services/soccer_scorer_lock_ladder` (the contin
 ### Verdict: **ASSIST_LOCK_ALREADY_CONTINUOUS — NO CHANGE REQUIRED**
 
 No scoring code changed. No H2H / provider / model / UI changes. Cheap proof only.
+
+---
+
+## 2026-08-23 — REMAINING H2H COVERAGE (NBA/NHL/CFB) — CERTIFIED
+
+### Files/functions changed
+Only `services/h2h_enricher.py`:
+- **Added `_resolve_team_id()`** — canonical team_id resolver via `espn_team_meta` (§2 canonical identity first).
+- **Added `_nba_market_family()`** — maps NBA prop market strings to stat keys (points/rebounds/assists/threes_made/pra/steals/blocks).
+- **Added `_nba_player_h2h()`** — queries `db.player_game_logs` sport=nba by player name + opp_team_id (resolved via espn_team_meta). Emits market-specific stat with `career_meetings` (count) + `recent_sample_n` (loaded rows).
+- **Added `_nhl_player_h2h()`** — attempts direct `opp_team_id` join on `player_game_logs` sport=nhl; returns honest None when opponent identity cannot be resolved (pod NHL logs lack opp_team_id).
+- **Wired NBA and NHL branches** into `build_h2h_bundle`, replacing the `NFL/NBA — deferred to follow-up` comment.
+- **Added CFB/NCAAF to `_SPORTS_WITH_AUTHORITATIVE_SOURCE`** — settled-picks fallback definitively gated for CFB.
+
+### Existing data sources used (no new provider added)
+- `db.player_game_logs` sport=nba (20,415 rows) — canonical player H2H
+- `db.espn_team_meta` sport=NBA/NHL (30/32 teams) — team-id resolver
+- `db.player_game_logs` sport=nhl (520 rows) — attempts NHL H2H (no opp_team_id today)
+- `db.games` sport=cfb — already the read path (populated by existing `historical/cfb.py` ESPN ingest triggered via `/api/admin/historical/backfill-seasons`)
+
+### 12 Focused Proofs (ALL PASS)
+1. NBA Brook Lopez vs Indiana Pacers → **career=20**, authoritative=True ✅
+2. NBA Points→points / Rebounds→rebounds / Assists→assists (market stat honesty) ✅
+3. NBA canonical id — "Boston Celtics" / "Celtics" / "boston" → team_id=**2** ✅
+4. NHL honest None (no opp_team_id on logs — pod data limitation) ✅
+5. NHL missing-stat → honest unavailable (no substitution) ✅
+6. CFB ingest writes to `db.games` sport='cfb' (canonical read path wired) ✅
+7. CFB team H2H authoritative career=3 with scratch rows (proves read path) ✅
+8. Unknown CFB pair → honest None (no settled-picks fallback) ✅
+9. NBA career=20 > recent=10 (limit never becomes career) ✅
+10. No new provider/CLV imports added ✅
+11. `build_h2h_bundle` single entry point still works ✅
+12. Modules reload; backend `/health → ok` ✅
+
+**Result: REMAINING_H2H_COVERAGE_CERTIFIED**
+
+### Honest remaining data-source limitation
+- **NHL opponent identity**: pod `player_game_logs` sport=nhl (520 rows) does NOT carry `opp_team_id`, AND `db.games` sport=nhl rows have `home=None` / `away=None`. So NHL player H2H returns honest None on the pod dataset. **Wiring is prepared**: once either data source starts carrying opponent identity, `_nhl_player_h2h` resolves H2H automatically without further code change.
+- **CFB current row count**: `db.games` sport=cfb currently has 0 rows in this pod. Existing ESPN ingest job (`historical/cfb.py` → `db.games.update_one`) is wired to populate the same canonical collection. Run via `POST /api/admin/historical/backfill-seasons` sport=cfb.
+
+### Not touched (HARD STOP honored)
+No Soccer/Tennis/MLB/UFC H2H changes. No goalscorer/Assist Lock changes. No acquisition/quota changes. No Analytics/settlement changes. No frontend.
+
+### Approximate credits used: ~1 medium turn.

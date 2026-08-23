@@ -357,7 +357,7 @@ async def _team_h2h_from_settled(db, sport: str, home: str, away: str,
     # (MLB, NFL, NHL, Soccer, Tennis) we suppress this fallback so a
     # transient collection-name mismatch never turns settled picks into
     # a fake authoritative H2H card.
-    _SPORTS_WITH_AUTHORITATIVE_SOURCE = {"MLB", "NFL", "NBA", "NHL", "Soccer", "Tennis"}
+    _SPORTS_WITH_AUTHORITATIVE_SOURCE = {"MLB", "NFL", "NBA", "NHL", "Soccer", "Tennis", "CFB", "NCAAF"}
     if not meetings and sport not in _SPORTS_WITH_AUTHORITATIVE_SOURCE:
         try:
             home_re = re.escape(home)
@@ -776,6 +776,235 @@ async def _tennis_player_h2h(db, pick: dict) -> Optional[dict]:
     }
 
 
+async def _resolve_team_id(db, sport: str, name: str) -> Optional[str]:
+    """Resolve a display team name to ESPN team_id via `espn_team_meta`.
+
+    Used by NBA/NHL player H2H (§2 — canonical identity first, name
+    matching only as fallback).  Cheap single-doc lookup, no external
+    calls.  Returns None if unresolved (honest).
+    """
+    if not name:
+        return None
+    norm = "".join(ch.lower() for ch in name if ch.isalnum())
+    try:
+        row = await db.espn_team_meta.find_one(
+            {"sport": sport, "$or": [
+                {"norm_name": norm},
+                {"aliases": {"$in": [norm, name.strip().lower()]}},
+                {"display_name": {"$regex": f"^{re.escape(name.strip())}$", "$options": "i"}},
+            ]},
+            {"_id": 0, "team_id": 1},
+        )
+        return str(row["team_id"]) if row and row.get("team_id") else None
+    except Exception as e:
+        logger.debug("espn_team_meta resolve failed sport=%s name=%s: %s", sport, name, e)
+        return None
+
+
+def _nba_market_family(market: str) -> tuple[str, str, str]:
+    """Return (stat_key_in_logs, display_label, sample_unit) for the
+    NBA prop family in the given market string, or ('', '', '') when
+    the market has no recognisable stat family."""
+    m = (market or "").lower()
+    if "3-pointer" in m or "three-pointer" in m or "threes" in m:
+        return ("threes_made", "3P/gm", "games")
+    if "rebound" in m:
+        return ("rebounds", "REB/gm", "games")
+    if "assist" in m:
+        return ("assists", "AST/gm", "games")
+    if "pra" in m:
+        return ("pra", "PRA/gm", "games")
+    if "steal" in m:
+        return ("steals", "STL/gm", "games")
+    if "block" in m:
+        return ("blocks", "BLK/gm", "games")
+    if "point" in m:
+        return ("points", "PTS/gm", "games")
+    return ("", "", "")
+
+
+async def _nba_player_h2h(db, pick: dict) -> Optional[dict]:
+    """NBA player-vs-opponent H2H — actual `player_game_logs` history.
+
+    2026-08-23 REMAINING_H2H_COVERAGE — canonical identity first:
+      1. Resolve opponent team_id via `espn_team_meta` sport=NBA.
+      2. Query `player_game_logs` by player name + opp_team_id.
+      3. Emit market-specific stat (§6: points/rebounds/assists/threes/PRA).
+      4. Honest unavailable when identity cannot be resolved.
+    """
+    sel  = (pick.get("selection") or "").strip()
+    name = (pick.get("player_name") or pick.get("player") or "").strip()
+    if not name:
+        # Try to parse from selection: "LeBron James Points Over 25.5"
+        import re as _re
+        m = _re.match(r"^\s*([A-Z][A-Za-z.'\- ]+?)\s+(Points|Rebounds|Assists|Threes|3-Pointer|3-Pointers|PRA|Steals|Blocks)\b",
+                        sel)
+        if m:
+            name = m.group(1).strip()
+    if not name:
+        return None
+
+    market = (pick.get("market") or "").lower()
+    stat_key, label, unit = _nba_market_family(market)
+    if not stat_key:
+        # No recognised NBA prop family (moneyline/spread/total).  Skip.
+        return None
+
+    home = (pick.get("home_team") or "").strip()
+    away = (pick.get("away_team") or "").strip()
+    team_hint = (pick.get("team") or pick.get("player_team") or "").strip()
+    if team_hint and home and team_hint.lower() == home.lower():
+        opp_name = away
+    elif team_hint and away and team_hint.lower() == away.lower():
+        opp_name = home
+    else:
+        opp_name = away or home
+    if not opp_name:
+        return None
+
+    # §2 canonical identity first.
+    opp_id = await _resolve_team_id(db, "NBA", opp_name)
+    if not opp_id:
+        # Honest — no way to resolve opponent → no H2H
+        return None
+
+    # PRA is a composite — sum of points/rebounds/assists per row.
+    logs_coll = db.player_game_logs
+    base_q = {
+        "sport": "nba",
+        "player": {"$regex": f"^{re.escape(name)}$", "$options": "i"},
+        "opp_team_id": opp_id,
+    }
+    try:
+        career_meetings = int(await logs_coll.count_documents(base_q))
+    except Exception as e:
+        logger.debug("NBA player H2H count failed: %s", e)
+        return None
+    if career_meetings == 0:
+        return None
+    projection = {"_id": 0, "date": 1, "opp_team_id": 1, "points": 1,
+                   "rebounds": 1, "assists": 1, "threes_made": 1,
+                   "steals": 1, "blocks": 1, "is_home": 1}
+    try:
+        cur = logs_coll.find(base_q, projection).sort("date", -1).limit(10)
+        rows = await cur.to_list(length=10)
+    except Exception as e:
+        logger.debug("NBA player H2H fetch failed: %s", e)
+        return None
+    if not rows:
+        return None
+
+    def _row_stat(r: dict, key: str) -> float:
+        if key == "pra":
+            return float((r.get("points") or 0) + (r.get("rebounds") or 0)
+                          + (r.get("assists") or 0))
+        v = r.get(key)
+        return float(v or 0)
+
+    values = [_row_stat(r, stat_key) for r in rows]
+    avg = round(sum(values) / len(values), 2) if values else 0.0
+    return {
+        "player": name,
+        "vs_opponent": opp_name,
+        "sample_size": career_meetings,
+        "career_meetings": career_meetings,
+        "recent_sample_n": len(rows),
+        "authoritative": True,
+        "source": "player_game_logs",
+        "primary_stat": stat_key,
+        "primary_value": avg,
+        "primary_value_display": f"{avg:.1f} {label} vs {opp_name} ({career_meetings} gm)",
+        "market_family": stat_key,
+        "market_specific": True,
+        "recent": [{"date": str(r.get("date") or "")[:10],
+                     "value": _row_stat(r, stat_key),
+                     "home": bool(r.get("is_home"))} for r in rows[:5]],
+    }
+
+
+async def _nhl_player_h2h(db, pick: dict) -> Optional[dict]:
+    """NHL player-vs-opponent H2H — attempts canonical join through
+    ``player_game_logs`` + ``games``.  Current pod NHL rows lack
+    ``opp_team_id`` on logs AND lack ``home``/``away`` on ``games`` —
+    so opponent identity CANNOT be resolved from existing storage for
+    this pod's dataset.  Returns honest None with ``reason`` metadata.
+
+    Wiring is prepared: if either data source later carries opponent
+    identity, this function will resolve H2H automatically without any
+    further code change.
+    """
+    market = (pick.get("market") or "").lower()
+    if not any(k in market for k in ("goal", "assist", "point", "shot", "saves")):
+        return None
+    name = (pick.get("player_name") or pick.get("player") or "").strip()
+    if not name:
+        return None
+    home = (pick.get("home_team") or "").strip()
+    away = (pick.get("away_team") or "").strip()
+    team_hint = (pick.get("team") or "").strip()
+    opp_name = (away if team_hint.lower() == home.lower() else home) or away or home
+    if not opp_name:
+        return None
+    opp_id = await _resolve_team_id(db, "NHL", opp_name)
+    if not opp_id:
+        return None
+
+    # Try direct opp_team_id on logs first.
+    try:
+        direct_ct = int(await db.player_game_logs.count_documents({
+            "sport": "nhl",
+            "name": {"$regex": f"^{re.escape(name)}", "$options": "i"},
+            "opp_team_id": opp_id,
+        }))
+    except Exception:
+        direct_ct = 0
+
+    if direct_ct > 0:
+        try:
+            cur = db.player_game_logs.find({
+                "sport": "nhl",
+                "name": {"$regex": f"^{re.escape(name)}", "$options": "i"},
+                "opp_team_id": opp_id,
+            }, {"_id": 0, "goals": 1, "assists": 1, "shots": 1,
+                 "points": 1, "date": 1}).sort("date", -1).limit(10)
+            rows = await cur.to_list(length=10)
+        except Exception:
+            return None
+        if not rows:
+            return None
+        # Market-specific stat (§6).
+        if "shot" in market:
+            key, label = "shots", "SOG"
+        elif "assist" in market and "point" not in market:
+            key, label = "assists", "A"
+        elif "goal" in market:
+            key, label = "goals", "G"
+        else:
+            key, label = "points", "PTS"
+        vals = [float(r.get(key) or 0) for r in rows]
+        avg = round(sum(vals) / len(vals), 2) if vals else 0.0
+        return {
+            "player": name,
+            "vs_opponent": opp_name,
+            "sample_size": direct_ct,
+            "career_meetings": direct_ct,
+            "recent_sample_n": len(rows),
+            "authoritative": True,
+            "source": "player_game_logs",
+            "primary_stat": f"avg_{key}",
+            "primary_value": avg,
+            "primary_value_display": f"{avg:.2f} {label}/gm vs {opp_name} ({direct_ct} gm)",
+            "market_family": key,
+            "market_specific": True,
+            "recent": [{"date": str(r.get("date") or "")[:10],
+                          "value": float(r.get(key) or 0)} for r in rows[:5]],
+        }
+
+    # No opp_team_id in logs — honest unavailable.  Attempted join via
+    # `games` would fail because pod NHL games lack home/away names.
+    return None
+
+
 async def _soccer_player_h2h(db, pick: dict) -> Optional[dict]:
     """Soccer player-vs-opponent H2H — AUTHORITATIVE actual game logs.
 
@@ -1141,7 +1370,20 @@ async def build_h2h_bundle(db, pick: dict, *, fast_mode: bool = False) -> dict:
             player_h2h = await _soccer_player_h2h(db, pick)
             if player_h2h:
                 sources.append(player_h2h.get("source") or "soccer_player_game_logs")
-        # NFL/NBA — team-level from settled DB is enough for MVP;
+        elif sport == "NBA":
+            # 2026-08-23 REMAINING_H2H_COVERAGE — canonical player_game_logs
+            # by name + espn_team_meta opponent id.
+            player_h2h = await _nba_player_h2h(db, pick)
+            if player_h2h:
+                sources.append(player_h2h.get("source") or "player_game_logs")
+        elif sport == "NHL":
+            # 2026-08-23 REMAINING_H2H_COVERAGE — attempts canonical join.
+            # Returns None when opponent identity cannot be resolved from
+            # existing storage (honest unavailable).
+            player_h2h = await _nhl_player_h2h(db, pick)
+            if player_h2h:
+                sources.append(player_h2h.get("source") or "player_game_logs")
+        # NFL — team-level from settled DB is enough for MVP;
         # player-vs-opp splits deferred to a follow-up when we have the data.
     except Exception as e:
         logger.debug("player H2H failed for sport=%s: %s", sport, e)
