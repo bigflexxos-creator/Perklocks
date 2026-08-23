@@ -1122,6 +1122,40 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         key so the atomic-delete conservation filter can never wipe a
         family that this refresh cycle did not regenerate.
         """
+        # ── 2026-08-23 FINAL SURGICAL — canonical routing first ──
+        # sport + provider_market_key is the authoritative signal.
+        # Prior display-text-only path required tokens like "NBA" /
+        # "WNBA" to appear inside the market string, which forced
+        # NBA Player Points → "nba_points" only when the text spelled
+        # out the sport.  It also let ambiguous strings like
+        # "Anytime Assist" (Soccer) drift into NBA_AST when sport
+        # metadata was ignored.  This canonical block runs FIRST;
+        # legacy display-text below is preserved unchanged as fallback.
+        _sport = str(p.get("sport") or "").strip().lower()
+        _mk = str(p.get("provider_market_key")
+                    or p.get("market_key") or "").strip().lower()
+        _canonical = {
+            ("soccer", "player_anytime_assist"):        "soccer_anytime_assist",
+            ("soccer", "anytime_assist"):               "soccer_anytime_assist",
+            ("soccer", "player_goal_scorer_anytime"):   "soccer_anytime_scorer",
+            ("soccer", "player_first_goal_scorer"):     "soccer_anytime_scorer",
+            ("soccer", "player_to_score_or_assist"):    "soccer_score_or_assist",
+            ("nba",   "player_points"):                 "nba_points",
+            ("nba",   "player_points_alternate"):       "nba_points",
+            ("nba",   "player_rebounds"):               "nba_rebounds",
+            ("nba",   "player_rebounds_alternate"):     "nba_rebounds",
+            ("nba",   "player_assists"):                "nba_assists",
+            ("nba",   "player_assists_alternate"):      "nba_assists",
+            ("nba",   "player_threes"):                 "nba_threes",
+            ("nba",   "player_threes_alternate"):       "nba_threes",
+            ("nba",   "player_points_rebounds_assists"): "nba_pra",
+            ("wnba",  "player_points"):                 "nba_points",
+            ("wnba",  "player_rebounds"):               "nba_rebounds",
+            ("wnba",  "player_assists"):                "nba_assists",
+        }
+        _c = _canonical.get((_sport, _mk))
+        if _c:
+            return _c
         mkt = (p.get("market") or "").lower()
         # ─── MLB families (explicit) ──────────────────────────────────
         if "strikeouts" in mkt:              return "pitcher_strikeouts"
@@ -2084,14 +2118,44 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
 
 
 # ── Moved from server.py lines 2368-2436 (Phase 3F-1) ──
-def _prop_family_key(market: str) -> str:
+def _prop_family_key(market: str, pick: dict | None = None) -> str:
     """Categorise a player-prop market label into a coarse family.
 
-    Returned families group Over/Under sides of the SAME stat together so
-    the contradiction reconciler can identify "same player, opposite
-    side" pairs even across refresh runs. Returns "" when the market
-    isn't a supported player-prop family.
+    2026-08-23 FINAL SURGICAL — canonical market_key + sport routing
+    takes precedence over the fragile display-text match below.  This
+    is the same fix already applied to
+    ``market_evidence_profiles.classify_market``; both production
+    classifiers now agree so Soccer Anytime Assist never mis-routes
+    to NBA_AST and NBA Player Points never depends on "NBA" appearing
+    in the display text.  ``pick`` is optional to preserve every
+    existing call-site.
     """
+    if pick is not None:
+        _sport = str(pick.get("sport") or "").strip().lower()
+        _mk = str(pick.get("provider_market_key")
+                    or pick.get("market_key") or "").strip().lower()
+        _soc = {
+            "player_goal_scorer_anytime":  "SOC_GOALSCORER",
+            "player_first_goal_scorer":    "SOC_GOALSCORER",
+            "player_to_score_or_assist":   "SOC_GOALSCORER",
+            "player_anytime_assist":       "SOC_ASSIST",
+            "anytime_assist":              "SOC_ASSIST",
+        }
+        _nba = {
+            "player_points":               "NBA_PTS",
+            "player_points_alternate":     "NBA_PTS",
+            "player_rebounds":             "NBA_REB",
+            "player_rebounds_alternate":   "NBA_REB",
+            "player_assists":              "NBA_AST",
+            "player_assists_alternate":    "NBA_AST",
+            "player_threes":               "NBA_THREES",
+            "player_threes_alternate":     "NBA_THREES",
+            "player_points_rebounds_assists": "NBA_PRA",
+        }
+        if _sport == "soccer" and _mk in _soc:
+            return _soc[_mk]
+        if _sport in ("nba", "wnba") and _mk in _nba:
+            return _nba[_mk]
     m = (market or "").lower()
     # Order matters — check compound families before their sub-strings.
     if "hits + runs + rbis" in m or "hits + runs" in m: return "MLB_HRR"
@@ -2108,6 +2172,8 @@ def _prop_family_key(market: str) -> str:
     if "receptions" in m:                return "NFL_REC"
     if "pass tds" in m or "passing tds" in m: return "NFL_PASS_TDS"
     if "rush tds" in m or "rushing tds" in m: return "NFL_RUSH_TDS"
+    if "anytime assist" in m:            return "SOC_ASSIST"
+    if "anytime goal scorer" in m or "goalscorer" in m: return "SOC_GOALSCORER"
     if "points" in m:                    return "NBA_PTS"
     if "rebounds" in m:                  return "NBA_REB"
     if "assists" in m:                   return "NBA_AST"

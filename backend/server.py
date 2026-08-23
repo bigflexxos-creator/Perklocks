@@ -49,6 +49,20 @@ from deps import db, client, logger, current_user, strip_mongo as _strip_mongo  
 app = FastAPI(title="PerkLocks AI")
 api = APIRouter(prefix="/api")
 
+
+# ── 2026-08-23 FINAL SURGICAL — bare /health probe ──
+# Emergent K8s container probes hit ``GET /health`` (not
+# ``/api/health``).  This endpoint MUST:
+#   • return HTTP 200
+#   • perform NO DB queries
+#   • perform NO provider calls
+#   • do NO heavy computation
+# so it never fails the container's liveness/readiness check.
+# ``/api/health`` continues to expose the richer diagnostic payload.
+@app.get("/health", include_in_schema=False)
+async def _bare_health_probe():  # pragma: no cover — trivial
+    return {"status": "ok"}
+
 # ── Picks routes (Phase 1 + Phase 2 + Phase 3 — full extraction) ──
 # This module now owns EVERY `/picks/*` route. Mounted here at the top
 # right after `api = APIRouter()` so its routes are registered before

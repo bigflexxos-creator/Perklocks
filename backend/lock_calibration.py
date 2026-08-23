@@ -217,7 +217,18 @@ async def fit_from_db(db) -> dict:
     pairs.sort(key=lambda t: t[0])
     xs = [p[0] for p in pairs]
     ys = [p[1] for p in pairs]
-    knots_x, knots_y = _pool_adjacent_violators(xs, ys)
+    # ── 2026-08-23 FINAL SURGICAL — event-loop offload ──
+    # ``_pool_adjacent_violators`` (isotonic regression PAVA) and
+    # ``_compute_band_stats`` are pure-CPU numeric passes; on large
+    # settled-picks samples they can hog the single asyncio thread
+    # long enough to freeze inbound HTTP.  Push those two sync
+    # calculations onto a worker thread (asyncio.to_thread) while
+    # keeping the async DB read/write boundaries unchanged.  No math
+    # change, no cadence change.
+    import asyncio as _asyncio
+    knots_x, knots_y = await _asyncio.to_thread(
+        _pool_adjacent_violators, xs, ys,
+    )
 
     # Light smoothing: clamp y in [0.02, 0.98] so display can never collapse
     # to extreme 0/1 — keeps tiny samples (e.g. 1 win out of 1) from
@@ -229,7 +240,7 @@ async def fit_from_db(db) -> dict:
     _curve.percentiles = xs[:]   # already sorted
     _curve.fit_sample_size = n
     _curve.last_fit_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
-    _curve.band_stats = _compute_band_stats(pairs)
+    _curve.band_stats = await _asyncio.to_thread(_compute_band_stats, pairs)
 
     # Persist
     try:
