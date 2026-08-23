@@ -75,15 +75,14 @@ async def model_performance(
     """Auto-tracked model performance: ROI, CLV, Edge, calibration. Does
     NOT require the user to log any bets — every generated pick is
     simulated as a 1u flat stake."""
-    # ── 2026-08-23 CANONICAL TRUTH #3 — read-only analytics GET ──
-    # ``backfill_metrics(db)`` writes settlement fields to db.picks
-    # (`units_profit`, `units_risked`, ...).  A GET request must never
-    # mutate canonical records — settlement runs on its own scheduler.
-    # The ``backfill`` query flag is retained for API back-compat but
-    # is now ignored on the GET path; explicit backfill lives at
-    # ``POST /api/admin/backfill-metrics`` (see admin_routes.py).
-    from analytics import compute_model_performance
-    return await compute_model_performance(db, days=days)
+    # ── 2026-08-23 PASS 2 — canonical published-truth population ──
+    # ``compute_from_canonical_truth`` reads ONLY the
+    # PublishedResultsTruthService population and uses frozen
+    # publication-time values (Lock / probability / odds).  No raw
+    # db.picks reconstruction, no legacy 89+ eligibility, no Soccer
+    # alt exception logic, no CLV / provider calls.
+    from services.analytics_truth import compute_from_canonical_truth
+    return await compute_from_canonical_truth(db, days=days)
 
 
 @router.get("/analytics/sim-backtest")
