@@ -823,6 +823,171 @@ def _nba_market_family(market: str) -> tuple[str, str, str]:
     return ("", "", "")
 
 
+async def _nfl_player_h2h(db, pick: dict) -> Optional[dict]:
+    """NFL player-vs-opponent H2H — actual `player_game_actuals` history.
+
+    2026-08-23 H2H_DATA_COMPLETION — canonical identity first:
+      1. Resolve player via ``canonical_player_id`` when provided by
+         the pick doc; else name-match fallback within
+         ``player_game_actuals`` sport=nfl.
+      2. Resolve opponent team abbrev via ``espn_team_meta`` sport=NFL
+         so alias variants collapse to one canonical opponent.
+      3. Emit market-specific stat (§6: pass_yds / pass_tds / rush_yds /
+         rec_yds / receptions / interceptions / rush_tds / rec_tds /
+         attempts / completions / targets).
+      4. Honest unavailable when the requested market stat is not stored
+         (no substitution).
+    """
+    name = (pick.get("player_name") or pick.get("player") or "").strip()
+    market = (pick.get("market") or "").lower()
+    if not name:
+        # Attempt "First Last Passing Yards Over 250.5" style parse.
+        import re as _re
+        m = _re.match(
+            r"^\s*([A-Z][A-Za-z.'\- ]+?)\s+(Passing|Rushing|Receiving|Receptions|Interceptions|Anytime Touchdown|Anytime TD|1st Touchdown)\b",
+            pick.get("selection") or "")
+        if m:
+            name = m.group(1).strip()
+    if not name:
+        return None
+
+    # Market → stat key map (§6 stat honesty)
+    NFL_STAT_MAP = [
+        (("passing yards", "pass yards"),           "pass_yds"),
+        (("passing tds", "passing touchdown"),       "pass_tds"),
+        (("rushing yards", "rush yards"),            "rush_yds"),
+        (("rushing tds", "rushing touchdown"),       "rush_tds"),
+        (("receiving yards", "rec yards"),           "rec_yds"),
+        (("receiving tds", "receiving touchdown"),   "rec_tds"),
+        (("receptions",),                             "receptions"),
+        (("interceptions",),                          "interceptions"),
+        (("completions",),                            "completions"),
+        (("pass attempts", "passing attempts"),      "attempts"),
+        (("rush attempts", "rushing attempts",
+          "carries"),                                 "rush_attempts"),
+        (("targets",),                                "targets"),
+    ]
+    stat_key = ""
+    for keywords, key in NFL_STAT_MAP:
+        if any(k in market for k in keywords):
+            stat_key = key
+            break
+    if not stat_key:
+        # Not a supported NFL prop family.
+        return None
+
+    home = (pick.get("home_team") or "").strip()
+    away = (pick.get("away_team") or "").strip()
+    team_hint = (pick.get("team") or pick.get("player_team") or "").strip()
+    if team_hint and home and team_hint.lower() == home.lower():
+        opp_name = away
+    elif team_hint and away and team_hint.lower() == away.lower():
+        opp_name = home
+    else:
+        opp_name = away or home
+    if not opp_name:
+        return None
+
+    # Resolve opponent to a canonical abbrev via espn_team_meta (§2).
+    opp_row = await db.espn_team_meta.find_one(
+        {"sport": "NFL",
+         "$or": [
+             {"norm_name": "".join(c.lower() for c in opp_name if c.isalnum())},
+             {"aliases": opp_name.strip().lower()},
+             {"display_name": {"$regex": f"^{re.escape(opp_name.strip())}$",
+                                 "$options": "i"}},
+         ]},
+        {"_id": 0, "abbreviation": 1},
+    )
+    if not opp_row:
+        return None
+    opp_abbr = opp_row["abbreviation"]
+
+    coll = db.player_game_actuals
+    canonical_pid = pick.get("canonical_player_id")
+    base_q: dict = {"sport": "nfl", "opponent": opp_abbr}
+    if canonical_pid:
+        base_q["canonical_player_id"] = str(canonical_pid)
+    else:
+        base_q["player_name"] = {"$regex": f"^{re.escape(name)}$", "$options": "i"}
+    try:
+        career_meetings = int(await coll.count_documents(base_q))
+    except Exception as e:
+        logger.debug("NFL player H2H count failed: %s", e)
+        return None
+    if career_meetings == 0:
+        return None
+    try:
+        cur = coll.find(base_q, {"_id": 0, "event_time": 1, "week": 1,
+                                    "season": 1, "actuals": 1,
+                                    "canonical_player_id": 1,
+                                    "player_name": 1}).sort("event_time", -1).limit(10)
+        rows = await cur.to_list(length=10)
+    except Exception as e:
+        logger.debug("NFL player H2H fetch failed: %s", e)
+        return None
+    if not rows:
+        return None
+
+    # Sample the actuals to detect coverage of the requested stat.
+    values: list[float] = []
+    have_stat = False
+    for r in rows:
+        act = r.get("actuals") or {}
+        if stat_key in act and act.get(stat_key) is not None:
+            have_stat = True
+            try:
+                values.append(float(act.get(stat_key) or 0))
+            except (TypeError, ValueError):
+                continue
+    if not have_stat:
+        # §6 — do NOT substitute another stat.  Report honestly.
+        return {
+            "player": name,
+            "vs_opponent": opp_name,
+            "sample_size": 0,
+            "career_meetings": career_meetings,
+            "recent_sample_n": len(rows),
+            "authoritative": False,
+            "source": "player_game_actuals",
+            "primary_stat": None,
+            "primary_value": None,
+            "primary_value_display": (
+                f"No {market!r}-specific H2H stat available vs {opp_name}"
+            )[:180],
+            "market_family": stat_key,
+            "market_specific": False,
+            "recent": [],
+        }
+    avg = round(sum(values) / len(values), 2) if values else 0.0
+    LABEL = {
+        "pass_yds": "PaYds", "pass_tds": "PaTD", "rush_yds": "RuYds",
+        "rush_tds": "RuTD", "rec_yds": "ReYds", "rec_tds": "ReTD",
+        "receptions": "REC", "interceptions": "INT",
+        "completions": "CMP", "attempts": "PaAtt",
+        "rush_attempts": "RuAtt", "targets": "TGT",
+    }.get(stat_key, stat_key.upper())
+    return {
+        "player": name,
+        "vs_opponent": opp_name,
+        "sample_size": career_meetings,
+        "career_meetings": career_meetings,
+        "recent_sample_n": len(rows),
+        "authoritative": True,
+        "source": "player_game_actuals",
+        "primary_stat": stat_key,
+        "primary_value": avg,
+        "primary_value_display": f"{avg:.1f} {LABEL} vs {opp_name} ({career_meetings} gm)",
+        "market_family": stat_key,
+        "market_specific": True,
+        "recent": [{"date": str(r.get("event_time") or "")[:10],
+                     "week": r.get("week"),
+                     "season": r.get("season"),
+                     "value": float((r.get("actuals") or {}).get(stat_key) or 0)}
+                    for r in rows[:5]],
+    }
+
+
 async def _nba_player_h2h(db, pick: dict) -> Optional[dict]:
     """NBA player-vs-opponent H2H — actual `player_game_logs` history.
 
@@ -1383,6 +1548,13 @@ async def build_h2h_bundle(db, pick: dict, *, fast_mode: bool = False) -> dict:
             player_h2h = await _nhl_player_h2h(db, pick)
             if player_h2h:
                 sources.append(player_h2h.get("source") or "player_game_logs")
+        elif sport == "NFL":
+            # 2026-08-23 H2H_DATA_COMPLETION — player_game_actuals
+            # sport=nfl (~129K rows) with canonical_player_id + opponent
+            # abbreviation + market-specific actuals.
+            player_h2h = await _nfl_player_h2h(db, pick)
+            if player_h2h:
+                sources.append(player_h2h.get("source") or "player_game_actuals")
         # NFL — team-level from settled DB is enough for MVP;
         # player-vs-opp splits deferred to a follow-up when we have the data.
     except Exception as e:
