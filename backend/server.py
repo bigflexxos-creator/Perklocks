@@ -1746,7 +1746,33 @@ async def _ensure_today_picks() -> None:
             if _game_ok and _prop_ok:
                 sport_status[_sport] = "HEALTHY"
                 continue
-            if _sp_any > 0:
+            # ── 2026-08-23 CHEAP SURGICAL — family-level starvation ──
+            # Prior logic used ``_sp_any > 0`` as a blanket "healthy"
+            # signal — that let a healthy game slate mask a totally
+            # missing prop family (or vice versa).  Now the health
+            # check is family-aware: any single missing family drives
+            # a refresh so the OTHER family can catch up.
+            _sp_game_any = await db.picks.count_documents({
+                "pick_date": today, "sport": _sport,
+                **{k: v for k, v in _prop_selector.items() if False},
+                **_NON_LEGACY_FILTERS,
+                "market_type": {"$nin": list((_prop_selector.get("market_type") or {}).get("$in") or [])} if _prop_selector.get("market_type") else {"$exists": True},
+            }) if False else max(0, _sp_any - _sp_prop_any)
+            # Family-missing = zero rows of that family AND sport is
+            # expected to have that family (per _mins).
+            _game_missing = (not _game_ok) and _sp_game_any == 0 and _mins["actionable"] > 0
+            _prop_missing = (not _prop_ok) and _sp_prop_any == 0 and _mins["prop_actionable"] > 0
+            if _prop_missing and not _game_missing:
+                # game markets healthy, props starved — refresh so props catch up.
+                sport_status[_sport] = "PROP_STARVED"
+                sport_starved.append(_sport)
+                continue
+            if _game_missing and not _prop_missing:
+                # props healthy, game markets starved — refresh so game markets catch up.
+                sport_status[_sport] = "GAME_STARVED"
+                sport_starved.append(_sport)
+                continue
+            if _sp_any > 0 and not (_game_missing or _prop_missing):
                 # Rows exist but coverage sub-threshold — model rejected
                 # them (off_board / no_bet / settlement_block / status).
                 # Not starvation; do not retry.
