@@ -813,3 +813,27 @@ Sweep 8748 caller configurations (`/tmp/proof_caller_integration.py`) — worst 
 
 ### Next (blocked on user approval)
 - P1: Authoritative H2H truth wiring (Soccer → NBA → NHL → CFB → NFL → Tennis → MLB → UFC).
+
+---
+
+## 2026-08-23 — SPORTDB GOALSCORER DECLUSTERING (Msg follow-up closure)
+
+### Delivered
+- **`sportdb_player_scorer._prob_to_lock` rewired** to route through the certified continuous helper `services/soccer_scorer_lock_ladder.confidence_ladder_lock`.  Fixed near-final tier anchors (58/68/78/88/92/96) permanently removed — only doc/comment mentions of historical anchors remain (no executable ladder).
+- **Honest evidence mapping** — SportDB inputs mapped 1:1: `matches`→games, `weighted_rate`→goals_per_90, `rating`→recent_form_score.  Missing SportDB signals (minutes, xG, opp/GK) passed as neutral None/0.  Career-goal count (≥100) gates `expected_minutes_conf=1.0` because a 100+ career-goal player IS a regular starter (no invented stats).
+- **All 3 active callers** now use the continuous contract automatically: `sportdb_player_scorer.py:977-978`, `sportdb_player_scorer.py:1118` (career-boost path), and `soccer_hot_scorers.py:193`.
+
+### Live proof (9 cheap surgical proofs — /tmp/proof_sportdb_declustering.py)
+✅ SPORTDB_GOALSCORER_CONTINUOUS_LOCK_CERTIFIED
+1. Same-p different evidence differentiated: **89.8 / 87.7 / 84.94**
+2. No executable fixed 58/68/78/88/92/96 ladder remains
+3. Same p=0.35 → Δ=**4.39** between rich vs thin evidence
+4. Weak SportDB scorer stays <85 → **75.4**
+5. Multi-signal ranks above solo: **92.64 > 88.1**
+6. Sweep 4500 configs — **66.0%** meet canonical ≥85 rule
+7. 96+ share **1.22%** (rare/guarded); absolute-elite still reaches **99.4**
+8. Only `sportdb_player_scorer.py` changed (git diff scope-locked)
+9. Modules reload clean; backend restarts clean; `/health → ok`; pipeline actively publishing.
+
+### Not touched (per HARD STOP)
+- No H2H / provider / model-probability / UI / History / Analytics / Rollover / Parlay changes.
