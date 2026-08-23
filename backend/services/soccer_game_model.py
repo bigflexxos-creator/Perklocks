@@ -713,9 +713,21 @@ async def build_soccer_team_ctx(
                 if xg:
                     break
             if xg:
+                # ── 2026-08-23 FINAL SURGICAL — Team xG schema
+                # normalization.  The reader (``_extract_strength`` above)
+                # expects ``xg_avg`` / ``xga_avg``; some upstream
+                # populators wrote ``xg_for`` / ``xg_against``.
+                # Emit BOTH so every downstream consumer resolves the
+                # same numeric evidence regardless of alias.  No new
+                # data invented — pure key normalization.
+                _xg_for  = float(xg.get("xg_for") or xg.get("xg_avg") or 0)
+                _xg_agst = float(xg.get("xg_against") or xg.get("xga_avg") or 0)
                 ctx[f"{side}_xg_rolling"] = {
-                    "xg_for":     float(xg.get("xg_for") or 0),
-                    "xg_against": float(xg.get("xg_against") or 0),
+                    "xg_for":     _xg_for,
+                    "xg_against": _xg_agst,
+                    # Canonical aliases the Soccer game model reads.
+                    "xg_avg":     _xg_for,
+                    "xga_avg":    _xg_agst,
                     "matches":    int(xg.get("matches") or 0),
                     "source":     xg.get("source") or "xg_rolling",
                 }

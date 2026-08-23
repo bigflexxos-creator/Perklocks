@@ -1772,6 +1772,46 @@ async def _ensure_today_picks() -> None:
                 sport_status[_sport] = "GAME_STARVED"
                 sport_starved.append(_sport)
                 continue
+            # ── 2026-08-23 FINAL — Soccer game-family granularity ──
+            # BTTS / Double Chance / Totals are Soccer GAME families,
+            # NOT player props.  If any of them is missing while
+            # scorer rows exist, classify as game-family starvation
+            # (BTTS_STARVED / DOUBLE_CHANCE_STARVED / TOTALS_STARVED)
+            # so the refresh loop targets game markets, not props.
+            if _sport == "Soccer" and not _game_missing and not _prop_missing:
+                try:
+                    _btts_any = await db.picks.count_documents({
+                        "pick_date": today, "sport": "Soccer",
+                        "market": {"$regex": "Both Teams to Score|BTTS",
+                                    "$options": "i"},
+                        **_NON_LEGACY_FILTERS,
+                    })
+                    _dc_any = await db.picks.count_documents({
+                        "pick_date": today, "sport": "Soccer",
+                        "market": {"$regex": "Double Chance|Win or Draw",
+                                    "$options": "i"},
+                        **_NON_LEGACY_FILTERS,
+                    })
+                    _tot_any = await db.picks.count_documents({
+                        "pick_date": today, "sport": "Soccer",
+                        "market": {"$regex": "^Total ",
+                                    "$options": "i"},
+                        **_NON_LEGACY_FILTERS,
+                    })
+                    _soc_missing_families = []
+                    if _btts_any == 0: _soc_missing_families.append("BTTS")
+                    if _dc_any == 0:   _soc_missing_families.append("DOUBLE_CHANCE")
+                    if _tot_any == 0:  _soc_missing_families.append("TOTALS")
+                    if _soc_missing_families:
+                        # First missing family drives the label (BTTS
+                        # takes precedence when multiple are missing).
+                        _fam = _soc_missing_families[0]
+                        sport_status[_sport] = f"{_fam}_STARVED"
+                        sport_starved.append(_sport)
+                        continue
+                except Exception as _sm_err:
+                    logger.debug("Soccer game-family granularity check errored: %s",
+                                  _sm_err)
             if _sp_any > 0 and not (_game_missing or _prop_missing):
                 # Rows exist but coverage sub-threshold — model rejected
                 # them (off_board / no_bet / settlement_block / status).

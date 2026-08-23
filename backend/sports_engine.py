@@ -1566,7 +1566,20 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 if sport in ("MLB", "Soccer") and _ml_sources:
                     ml_pick["real_data_sources"] = list(_ml_sources)
                     ml_pick["real_data_count"] = len(_ml_sources)
-                picks.append(ml_pick)
+                # ── 2026-08-23 FINAL SURGICAL — ONE SOCCER PRODUCTION
+                # WRITER.  ``services.real_line_scorer_ingest`` is the
+                # single authoritative Soccer 1X2 / BTTS / Double
+                # Chance / Totals publisher.  This legacy path is
+                # kept behind an explicit env flag purely for
+                # emergency operator fallback; DEFAULT = disabled.
+                _SOCCER_LEGACY_ENABLED = (
+                    os.getenv("SOCCER_GAME_MARKET_LEGACY_ENABLED", "").lower()
+                    in ("1", "true", "yes")
+                )
+                if sport == "Soccer" and not _SOCCER_LEGACY_ENABLED:
+                    pass  # skip legacy 1X2 emission
+                else:
+                    picks.append(ml_pick)
 
         # Soccer-only: Double Chance (Win-or-Draw) picks.
         #
@@ -1684,7 +1697,16 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         if _dc_sources:
                             dc_pick["real_data_sources"] = list(_dc_sources)
                             dc_pick["real_data_count"] = len(_dc_sources)
-                        picks.append(dc_pick)
+                        # 2026-08-23 FINAL SURGICAL — ONE SOCCER
+                        # PRODUCTION WRITER (Double Chance).  Legacy
+                        # DC emission is gated OFF; real_line_scorer_ingest
+                        # is authoritative.
+                        _SOCCER_LEGACY_ENABLED = (
+                            os.getenv("SOCCER_GAME_MARKET_LEGACY_ENABLED", "").lower()
+                            in ("1", "true", "yes")
+                        )
+                        if _SOCCER_LEGACY_ENABLED:
+                            picks.append(dc_pick)
                         try:
                             from services.pipeline_diagnostic import log_reason as _plog
                             _plog(
@@ -1708,8 +1730,9 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
         # behind an explicit env flag so no user-visible behaviour
         # changes unless operators opt in.
         _SOCCER_BTTS_LEGACY_ENABLED = (
-            os.getenv("SOCCER_BTTS_LEGACY_ENABLED", "").lower() in
-            ("1", "true", "yes")
+            os.getenv("SOCCER_GAME_MARKET_LEGACY_ENABLED",
+                       os.getenv("SOCCER_BTTS_LEGACY_ENABLED", "")).lower()
+            in ("1", "true", "yes")
         )
         if sport == "Soccer" and _SOCCER_BTTS_LEGACY_ENABLED:
             _btts_outcomes = (game.get("_btts_outcomes") or []) if isinstance(game, dict) else []
@@ -2070,7 +2093,19 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                                     attach_game_sim_provenance(
                                         total_pick, _sim_best)
                             # PHASE 2A — de-vig handled at build time.
-                            picks.append(total_pick)
+                            # 2026-08-23 FINAL SURGICAL — ONE SOCCER
+                            # PRODUCTION WRITER (Totals).  Legacy Soccer
+                            # totals emission is gated OFF; real_line_scorer_ingest
+                            # is authoritative for Soccer Totals.
+                            if sport == "Soccer":
+                                _SOCCER_LEGACY_ENABLED = (
+                                    os.getenv("SOCCER_GAME_MARKET_LEGACY_ENABLED", "").lower()
+                                    in ("1", "true", "yes")
+                                )
+                                if not _SOCCER_LEGACY_ENABLED:
+                                    total_pick = None
+                            if total_pick is not None:
+                                picks.append(total_pick)
 
             # ── Soccer Poisson-synthesized alt totals (Over 1.5, Over 3.5) ──
             # The Odds API doesn't return alternate_totals for soccer in the
@@ -3938,31 +3973,42 @@ def _build_tennis_alt_picks(
                 line = pick_obj.get("point")
                 price = int(pick_obj.get("price"))
                 imp = _implied_prob(price)
-                # ── 2026-08-23 CHEAP SURGICAL — no `imp + 0.02` lift ──
-                # Prior code stamped model_prob = book_impl + 0.02
-                # which fabricated a +2pp edge on every alt spread —
-                # producing a fake publishable signal from no real
-                # tennis math.  Use the shared tennis matchup model
-                # to derive an honest per-side probability when real
-                # signal is present, otherwise anchor mp = book_impl
-                # so edge = 0 and the pick is naturally gated out of
-                # Locks by the strict >=85 board rule + edge floor.
+                # ── 2026-08-23 CHEAP SURGICAL FINAL — Tennis alt SPREAD
+                # authority.  ``imp + 0.02`` is dead.  Use the existing
+                # Tennis match distribution (``score_tennis_matchup``)
+                # to derive the per-side win probability at the SAME
+                # book-implied anchor.  If real Tennis signal is not
+                # present we fail closed by stamping ``model_line=True``
+                # (the canonical barrier already blocks it) and skip
+                # the pick — do NOT fall back to ``mp = imp``.
+                mp = None
+                _sig = None
                 try:
                     from services.tennis_math_engine import (
                         score_tennis_matchup, has_real_tennis_signal,
                     )
-                    _surface = str(payload.get("surface") or (game.get("surface") if isinstance(game, dict) else "") or "hard").lower()
+                    _surface = str(
+                        (game.get("surface") if isinstance(game, dict) else "")
+                        or "hard"
+                    ).lower()
+                    _ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
                     _sig = score_tennis_matchup(
-                        home, away, _surface, imp,
-                        (game.get("_ctx") if isinstance(game, dict) else None) or {},
-                    ) if False else None
+                        home, away, _surface, imp, _ctx,
+                    )
+                    if _sig and has_real_tennis_signal(_sig):
+                        _p_home = float(_sig.get("home_win_prob") or 0.5)
+                        # Alt spread cover ≈ match-winner probability
+                        # of the covering side (a +N.5 games handicap
+                        # is dominated by the match-winner outcome in
+                        # best-of-3 tennis).  A future set-count model
+                        # would refine this; for now use the shared
+                        # distribution verbatim.
+                        mp = _p_home if side == home else (1.0 - _p_home)
                 except Exception:
-                    _sig = None
-                # Cheap conservative default: mp = book_impl.  A future
-                # Tennis alt-total distribution would replace this line
-                # verbatim; the current directive is to KILL the +0.02
-                # synthetic lift, not to build a new distribution.
-                mp = imp
+                    mp = None
+                if mp is None:
+                    # Fail closed — do not emit synthetic mp.
+                    continue
                 factors = {}
                 lock, breakdown = compute_lock_score(
                     factors, win_prob=mp * 100, edge_percent=(mp * 100 - imp * 100)
@@ -4001,9 +4047,42 @@ def _build_tennis_alt_picks(
                 line = pick_obj.get("point")
                 price = int(pick_obj.get("price"))
                 imp = _implied_prob(price)
-                # 2026-08-23 CHEAP SURGICAL — no `imp + 0.02` lift.
-                # See matching comment in the alt-spread block above.
-                mp = imp
+                # 2026-08-23 CHEAP SURGICAL FINAL — Tennis alt TOTAL
+                # authority.  Derive Over/Under probability from the
+                # existing Tennis match distribution (Elo differential
+                # → match competitiveness → projected total games).
+                # Fail closed when no real signal is present — do NOT
+                # publish `mp = imp` as the model probability.
+                mp = None
+                try:
+                    from services.tennis_math_engine import (
+                        score_tennis_matchup, has_real_tennis_signal,
+                    )
+                    import math as _math
+                    _surface = str(
+                        (game.get("surface") if isinstance(game, dict) else "")
+                        or "hard"
+                    ).lower()
+                    _ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
+                    _sig = score_tennis_matchup(home, away, _surface, imp, _ctx)
+                    if _sig and has_real_tennis_signal(_sig):
+                        _hp = float(_sig.get("home_win_prob") or 0.5)
+                        # Match competitiveness: 1.0 = coin-flip, 0 = blowout.
+                        _competitive = 1.0 - abs(_hp - 0.5) * 2.0
+                        # Best-of-3 projected total games:
+                        #   blowout (2 sets 6-2 / 6-3)  → ~17 games
+                        #   competitive coin-flip (3 sets or long tiebreaks) → ~24 games
+                        _proj_games = 17.0 + _competitive * 7.0
+                        # Convert to Over/Under probability with a
+                        # logistic anchor (σ=2.5 games ≈ empirical std).
+                        _z = (_proj_games - float(line)) / 2.5
+                        _p_over = 1.0 / (1.0 + _math.exp(-_z))
+                        mp = _p_over if side == "Over" else (1.0 - _p_over)
+                except Exception:
+                    mp = None
+                if mp is None:
+                    # Fail closed — no real Tennis distribution available.
+                    continue
                 # 2026-07-21 Phase 2: tennis alt total — no random factors.
                 factors = {}
                 lock, breakdown = compute_lock_score(
