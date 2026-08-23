@@ -858,11 +858,60 @@ async def ingest_real_line_soccer_scorers(
             else:
                 doc, rej = None, None
         except Exception as e:
+            # ── 2026-08-23 CHEAP SURGICAL — Identity fail-closed ──
+            # For player-prop rows, any exception during ingest
+            # (identity resolution / feature lookup / bridge) MUST
+            # produce a visible off-board row with an explicit
+            # rejection reason.  The prior blanket ``continue`` hid
+            # identity failures entirely, letting downstream code
+            # publish siblings without warning.  Game-market rows
+            # keep the previous skip behaviour (they have no player
+            # identity to fail closed on).
             logger.warning(
                 "real-line ingest exception on row %s: %s",
                 row.get("_id"), e,
             )
-            stats["skipped"] += 1
+            if mk in _SCORER_MARKETS:
+                _ev_id = row.get("event_id") or "?"
+                _sel   = (row.get("selection") or "").strip() or "?"
+                _mk    = row.get("market_key") or "?"
+                _price = row.get("price")
+                try:
+                    _price = int(_price) if _price is not None else None
+                except Exception:
+                    _price = None
+                doc = {
+                    "_id": f"identity_failclosed|{_ev_id}|{_mk}|{_sel}",
+                    "sport": "Soccer",
+                    "league": _league_from_sport_key(row.get("odds_api_sport") or ""),
+                    "event_id": _ev_id,
+                    "selection": _sel,
+                    "player_name": _sel,
+                    "market_key": _mk,
+                    "market_type": _mk,
+                    "book_odds": _price,
+                    "pick_date": today,
+                    "created_at": now_iso,
+                    "updated_at": now_iso,
+                    "off_board": True,
+                    "no_bet": True,
+                    "identity_status": "IDENTITY_EXCEPTION",
+                    "off_board_reasons": ["identity_exception"],
+                    "publication_gate": "identity_fail_closed",
+                    "source": "real_line_scorer_ingest_fail_closed",
+                    "exception": str(e)[:200],
+                }
+                try:
+                    await _upsert_pick(db, doc)
+                except Exception as _pers_err:
+                    logger.warning("identity fail-closed persist failed: %s",
+                                    _pers_err)
+                stats["off_board"] += 1
+                stats["by_rejection"]["identity_exception"] = (
+                    stats["by_rejection"].get("identity_exception", 0) + 1
+                )
+            else:
+                stats["skipped"] += 1
             continue
 
         if doc is None:

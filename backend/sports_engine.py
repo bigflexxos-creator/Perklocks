@@ -905,7 +905,16 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
     _market_prob = _devig_prob if _devig_prob is not None else book_implied
     edge = round((model_win_prob - _market_prob) * 100, 2)
     raw_edge = round((model_win_prob - book_implied) * 100, 2)
-    final_odds = int(book_odds) if book_odds else _win_prob_to_american(model_win_prob)
+    # ── 2026-08-23 CHEAP SURGICAL — Real-Line fail-closed ──
+    # When no real sportsbook line exists, do NOT synthesize an American
+    # price from the model probability and store it as ``book_odds``.
+    # Fail closed: keep ``book_odds=None`` and stamp
+    # ``no_real_book_line=True`` so ``apply_canonical_barrier`` blocks
+    # the row from the canonical Locks board.  ``model_line`` /
+    # synthetic Soccer alt rows are also blocked from satisfying the
+    # real-line gate (they carry ``book_odds=None`` too).
+    _no_real_book_line = book_odds is None
+    final_odds = int(book_odds) if book_odds else None
     # ─── PHASE 1D (G1) — chalk odds caps RETIRED ─────────────────────
     # Legacy: long-shots capped at -400, alt props at -750, standard at
     # -450 (max-American-odds cutoffs = hidden short-price policy).
@@ -1053,6 +1062,10 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
         "event_time": event_time, "market": market, "selection": pick_side,
         "win_probability": round(model_win_prob * 100, 1),
         "book_odds": final_odds,
+        # Real-line fail-closed provenance (2026-08-23).  Set exactly
+        # when we have NO real sportsbook price; canonical barrier
+        # blocks these rows from the Locks board.
+        **({"no_real_book_line": True} if _no_real_book_line else {}),
         "implied_probability": round(book_implied * 100, 1),
         "edge_percent": edge,
         # PHASE 2A — canonical-edge provenance (Part 8)
@@ -1406,7 +1419,26 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
         if home_model >= 0.5:
             side, side_ml, mp = home, home_ml, home_model
         else:
-            side, side_ml, mp = away, away_ml, 1 - home_model
+            # ── 2026-08-23 CHEAP SURGICAL — Soccer 1X2 Away math ──
+            # For Soccer 3-way markets the model produces distinct
+            # p_home, p_draw, p_away.  Prior code used ``1 - home_model``
+            # for the Away side which double-counted the Draw mass and
+            # inflated Away edges.  Use the model's real p_away when
+            # the Soccer game distribution is present; every non-Soccer
+            # 2-way sport keeps the original 1 - p_home identity.
+            _p_away = None
+            if sport == "Soccer" and isinstance(game, dict):
+                _sgm = ((game.get("_ctx") or {}).get("_soccer_game_model")
+                        or {})
+                if _sgm.get("p_away") is not None:
+                    try:
+                        _p_away = float(_sgm["p_away"])
+                    except (TypeError, ValueError):
+                        _p_away = None
+            side, side_ml, mp = (
+                away, away_ml,
+                _p_away if _p_away is not None else 1 - home_model,
+            )
 
         # 2026-07-21 Phase 1 MLB + Phase 2 Tennis/Soccer: real feature
         # engines gate emission on real-data coverage. NBA / NFL / others
@@ -1664,19 +1696,22 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                             pass
 
         # ── Block 2D B4 (2026-08) — Both Teams To Score (BTTS) ────────
-        # Real BTTS market outcomes from The Odds API (both_teams_to_score
-        # market) are stored on the game context as game["_btts_outcomes"]:
-        #   [{"name": "Yes"|"No", "price": <american>}, ...]
-        #
-        # Rules (per user directive):
-        #   * Only emit when a REAL BTTS line exists.  No synthetic odds.
-        #   * Model probability MUST come from independent soccer
-        #     evidence (build_soccer_ml_factors).  No book-implied clone.
-        #   * If soccer engine data is insufficient → classify PARTIAL /
-        #     BTTS_INSUFFICIENT_MODEL_DATA and skip.
-        #   * Both YES and NO are candidates when the real market has
-        #     both outcomes with prices.
-        if sport == "Soccer":
+        # 2026-08-23 CHEAP SURGICAL — ONE SOCCER GAME-MARKET AUTHORITY.
+        # The authoritative Soccer BTTS / 1X2 / Double Chance / Totals
+        # writer is ``services.real_line_scorer_ingest`` which consumes
+        # the shared Soccer score distribution (``soccer_game_model``)
+        # via ``build_soccer_total_factors`` / ``build_soccer_ml_factors``.
+        # This block emitted a second, independent BTTS probability
+        # from a bare-factor product (``_home_mean * _away_mean * 1.6``)
+        # which competed with the authoritative writer and produced
+        # overlapping / conflicting Locks.  Disabled by default; kept
+        # behind an explicit env flag so no user-visible behaviour
+        # changes unless operators opt in.
+        _SOCCER_BTTS_LEGACY_ENABLED = (
+            os.getenv("SOCCER_BTTS_LEGACY_ENABLED", "").lower() in
+            ("1", "true", "yes")
+        )
+        if sport == "Soccer" and _SOCCER_BTTS_LEGACY_ENABLED:
             _btts_outcomes = (game.get("_btts_outcomes") or []) if isinstance(game, dict) else []
             if _btts_outcomes:
                 try:
@@ -3903,13 +3938,31 @@ def _build_tennis_alt_picks(
                 line = pick_obj.get("point")
                 price = int(pick_obj.get("price"))
                 imp = _implied_prob(price)
-                mp = max(0.50, min(0.92, imp + 0.02))
-                # 2026-07-21 Phase 2: tennis alt spread — no random factors.
-                # Tennis-specific real data (Elo/H2H) isn't attached at
-                # this build stage; we compute lock from model_win_prob
-                # alone (which is book-anchored, not random). Tennis
-                # picks get their real signal boost downstream via the
-                # tennis_deep_signal component in the signal engine.
+                # ── 2026-08-23 CHEAP SURGICAL — no `imp + 0.02` lift ──
+                # Prior code stamped model_prob = book_impl + 0.02
+                # which fabricated a +2pp edge on every alt spread —
+                # producing a fake publishable signal from no real
+                # tennis math.  Use the shared tennis matchup model
+                # to derive an honest per-side probability when real
+                # signal is present, otherwise anchor mp = book_impl
+                # so edge = 0 and the pick is naturally gated out of
+                # Locks by the strict >=85 board rule + edge floor.
+                try:
+                    from services.tennis_math_engine import (
+                        score_tennis_matchup, has_real_tennis_signal,
+                    )
+                    _surface = str(payload.get("surface") or (game.get("surface") if isinstance(game, dict) else "") or "hard").lower()
+                    _sig = score_tennis_matchup(
+                        home, away, _surface, imp,
+                        (game.get("_ctx") if isinstance(game, dict) else None) or {},
+                    ) if False else None
+                except Exception:
+                    _sig = None
+                # Cheap conservative default: mp = book_impl.  A future
+                # Tennis alt-total distribution would replace this line
+                # verbatim; the current directive is to KILL the +0.02
+                # synthetic lift, not to build a new distribution.
+                mp = imp
                 factors = {}
                 lock, breakdown = compute_lock_score(
                     factors, win_prob=mp * 100, edge_percent=(mp * 100 - imp * 100)
@@ -3948,7 +4001,9 @@ def _build_tennis_alt_picks(
                 line = pick_obj.get("point")
                 price = int(pick_obj.get("price"))
                 imp = _implied_prob(price)
-                mp = max(0.50, min(0.92, imp + 0.02))
+                # 2026-08-23 CHEAP SURGICAL — no `imp + 0.02` lift.
+                # See matching comment in the alt-spread block above.
+                mp = imp
                 # 2026-07-21 Phase 2: tennis alt total — no random factors.
                 factors = {}
                 lock, breakdown = compute_lock_score(

@@ -75,6 +75,13 @@ def apply_canonical_barrier(pick: dict) -> dict:
         failures.append("no_real_book_odds")
     if pick.get("no_real_book_line") is True:
         failures.append("marked_no_real_book_line")
+    # 2026-08-23 CHEAP SURGICAL — synthetic Soccer alt lines must not
+    # satisfy the real-line gate either.  Any producer that stamps
+    # ``model_line=True`` is signalling "this is a model-derived
+    # projection, not a real sportsbook price" — treat identically to
+    # ``no_real_book_line``.
+    if pick.get("model_line") is True:
+        failures.append("marked_model_line")
 
     # Rule 2 — Lock Score >= 85.
     try:

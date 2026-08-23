@@ -172,6 +172,54 @@ def classify_market(pick: dict) -> MarketFamily:
     sport = (pick.get("sport") or "").strip().lower()
     market = _norm_market(pick.get("market") or "")
 
+    # ── 2026-08-23 CHEAP SURGICAL — canonical market_key first ──
+    # Fragile display-text matching (e.g. requiring "NBA" in the
+    # market string, or letting a Soccer "Anytime Assist" leak into
+    # the NBA_AST branch) is superseded by sport + canonical market
+    # key.  The upstream ingest already stamps ``provider_market_key``
+    # from The Odds API.  When available we use it verbatim and
+    # skip the substring search entirely.  All previously supported
+    # families (NFL / MLB / Tennis) are preserved below.
+    _mk_canonical = str(
+        pick.get("provider_market_key")
+        or pick.get("market_key")
+        or ""
+    ).strip().lower()
+    _canonical_soccer = {
+        "player_goal_scorer_anytime":  MarketFamily.SOC_GOALSCORER,
+        "player_first_goal_scorer":    MarketFamily.SOC_GOALSCORER,
+        "player_to_score_or_assist":   MarketFamily.SOC_GOALSCORER,
+        "player_anytime_assist":       MarketFamily.SOC_ASSIST,
+        "anytime_assist":              MarketFamily.SOC_ASSIST,
+        "both_teams_to_score":         MarketFamily.SOC_BTTS,
+        "btts":                        MarketFamily.SOC_BTTS,
+        "double_chance":               MarketFamily.SOC_DOUBLE_CHANCE,
+        "totals":                      MarketFamily.SOC_TOTAL,
+        "alternate_totals":            MarketFamily.SOC_TOTAL,
+        "h2h":                         MarketFamily.SOC_ML,
+        "moneyline":                   MarketFamily.SOC_ML,
+    }
+    _canonical_nba = {
+        "player_points":               MarketFamily.NBA_POINTS,
+        "player_points_alternate":     MarketFamily.NBA_POINTS,
+        "player_rebounds":             MarketFamily.NBA_REB,
+        "player_rebounds_alternate":   MarketFamily.NBA_REB,
+        "player_assists":              MarketFamily.NBA_AST,
+        "player_assists_alternate":    MarketFamily.NBA_AST,
+        "player_threes":               MarketFamily.NBA_THREES,
+        "player_threes_alternate":     MarketFamily.NBA_THREES,
+        "player_blocks":               MarketFamily.NBA_BLK,
+        "player_steals":               MarketFamily.NBA_STL,
+        "player_points_rebounds_assists":  MarketFamily.NBA_PRA,
+        "player_points_rebounds_assists_alternate": MarketFamily.NBA_PRA,
+    }
+    if sport == "soccer" and _mk_canonical in _canonical_soccer:
+        return _canonical_soccer[_mk_canonical]
+    if sport in ("nba", "wnba") and _mk_canonical in _canonical_nba:
+        return _canonical_nba[_mk_canonical]
+    # NB — existing NFL / MLB / Tennis display-text paths remain the
+    # source of truth for those sports (they already work correctly).
+
     # ── MLB ──
     if sport == "mlb":
         # PITCHER PROPS first (they contain "outs" / "strikeout" tokens)

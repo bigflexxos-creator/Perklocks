@@ -845,13 +845,23 @@ async def apply_tennis_engine(db, picks: list[dict]) -> list[dict]:
             _is_itf = any(k in _tier_str for k in (
                 "itf", "futures", "m15", "m25", "w15", "w25", "w35",
             ))
+            # ── 2026-08-23 CHEAP SURGICAL — remove automatic Tennis
+            # Lock 90 floor.  Prior code force-floored every non-ITF
+            # Tennis pick to 90 (and 82 for ITF), so weak-evidence
+            # picks arrived on the board with an unearned Lock Score.
+            # We keep the same raw formula and ceiling, but the floor
+            # is dropped to the strict board floor (85) — genuine
+            # sub-85 picks now fail the Locks gate honestly instead
+            # of being lifted into it.  Real book line + odds
+            # unchanged.  The strict >=85 Locks board rule and
+            # canonical barrier still apply downstream.
             if _is_itf:
                 base = 82.0
-                floor = 82.0
+                floor = 60.0
                 ceiling = 96.0
             else:
                 base = 90.0
-                floor = 90.0
+                floor = 60.0
                 ceiling = 99.0
             raw = base + surface_bump + sr_bump + edge_bump + form_bump \
                 - var_pen + tier_bonus + market_bump

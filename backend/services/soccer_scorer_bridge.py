@@ -196,8 +196,33 @@ def compute_soccer_scorer_factors_sync(
         return None
 
     # ── Extract features ─────────────────────────────────────────────
-    xg = float(form_row.get("xg") or form_row.get("xG") or 0.0)
-    xa = float(form_row.get("xa") or form_row.get("xA") or 0.0)
+    # 2026-08-23 CHEAP SURGICAL — Soccer xG field normalization.
+    # Different upstream sources use different aliases for the same
+    # field.  Normalize them once here so the Soccer scorer model
+    # receives xG / xA whatever the upstream calls it.  No model
+    # change, no invented values.
+    def _xg_alias(row: dict) -> float:
+        for _k in ("xg", "xG", "expected_goals", "xgoals",
+                    "npxg", "npxG", "non_penalty_xg"):
+            _v = row.get(_k)
+            if _v is not None:
+                try:
+                    return float(_v)
+                except (TypeError, ValueError):
+                    continue
+        return 0.0
+    def _xa_alias(row: dict) -> float:
+        for _k in ("xa", "xA", "expected_assists", "xassists",
+                    "primary_xa", "xag"):
+            _v = row.get(_k)
+            if _v is not None:
+                try:
+                    return float(_v)
+                except (TypeError, ValueError):
+                    continue
+        return 0.0
+    xg = _xg_alias(form_row)
+    xa = _xa_alias(form_row)
     goals = float(form_row.get("goals") or 0.0)
     minutes = int(form_row.get("minutes") or 0)
     games = int(form_row.get("games") or form_row.get("games_played") or 0)
@@ -251,8 +276,8 @@ def compute_soccer_scorer_factors_sync(
                 starts=int(prior_form_row.get("starts")
                            or prior_form_row.get("games_started") or 0),
                 goals=float(prior_form_row.get("goals") or 0),
-                xg=float(prior_form_row.get("xg") or 0),
-                xa=float(prior_form_row.get("xa") or 0),
+                xg=_xg_alias(prior_form_row),
+                xa=_xa_alias(prior_form_row),
                 shots=float(prior_form_row.get("shots") or 0),
                 sot=float(prior_form_row.get("sot") or 0),
                 team=str(prior_form_row.get("team") or ""),
