@@ -783,3 +783,33 @@ Canonical TARGET policy: `model_probability − devig_market_probability` (vig i
 ### Next (blocked on user approval)
 - Phase 2B — NHL + NBA + CFB + UFC game models (do not begin until 2A approved).
 - Phase 2C — Tennis/Magic final closure. Phase 3 — Consumer/History/Settlement (incl. Machado grading).
+
+---
+
+## 2026-08-23 — GOALSCORER LOCK DECLUSTERING (Msg 849 closure)
+
+### Delivered
+- **Continuous Lock formula** in `services/soccer_scorer_lock_ladder.confidence_ladder_lock`: replaced fixed anchors (95/91/87/83/80) with a piecewise-linear model-prob base plus 8 independent continuous evidence contributions (xG/90, goals/90, sample size, recent form, minutes confidence, opp defence, GK quality, confidence tag).
+- **Rarity guardrails as soft ceilings**: Lock ≥96 requires ≥3 positive evidence signals; ≥92.5 requires ≥2; 99.5+ reserved (apex 100 never derived).
+- **Callers rewired**: `services/mls_direct_inject.py` and `services/soccer_prop_inject.py` now pass live stats (games, minutes, xG/90, form) into the shared helper. Same declustering applies to every MLS/Big-5 goalscorer path.
+
+### Live proof (9 cheap surgical proofs — /tmp/proof_goalscorer_declustering.py)
+✅ ALL 9 PASSED — direct python invocation, no pytest / no testing_agent.
+1. 3 goalscorers same-p differentiated: 91.55 / 87.67 / 85.84
+2. Weak scorer stays <85: 67.58
+3. 96-99 rare: solo high-prob capped 92.5; multi-signal elite → 99.4
+4. Same p=0.35, different evidence → Δ=7.05 Lock spread
+5. Sweep 3072 configs: worst bucket 9.7% (was 100% at Lock 89)
+6. Continuity: max local Δ = 0.30 across p=0.15..0.65
+7. Fail-closed: None→80.0; absurd→60.0 (bounded 60..99.4)
+8. Confidence tag is nudge (2.10pt spread), not ±2 anchor
+9. Promotion MAX-guards (never lowers strict_edge)
+
+### Caller-level integration proof
+Sweep 8748 caller configurations (`/tmp/proof_caller_integration.py`) — worst bucket 6.4%, Lock=89 = 5.72% (no clustering after route +2/-3/+1/-2 nudges).
+
+### Flagged but NOT modified (HARD STOP per user directive)
+- `sportdb_player_scorer._prob_to_lock` still uses tier-anchored 58/68/78/88/92/96 for career-goals synthesis (CSL/J-League). Different anchor set than the 89-cluster complaint. Awaiting user go-ahead before touching.
+
+### Next (blocked on user approval)
+- P1: Authoritative H2H truth wiring (Soccer → NBA → NHL → CFB → NFL → Tennis → MLB → UFC).

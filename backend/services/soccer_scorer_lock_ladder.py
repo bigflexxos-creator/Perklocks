@@ -51,37 +51,135 @@ _STRONG_EVIDENCE_SOURCES = {
 
 def confidence_ladder_lock(model_prob: float,
                             confidence: str = "MEDIUM",
-                            market_fit: Optional[int] = None) -> float:
-    """Return the model-conviction lock score for a player-scorer pick.
+                            market_fit: Optional[int] = None,
+                            *,
+                            games: int = 0,
+                            minutes: int = 0,
+                            goals_per_90: float = 0.0,
+                            npxg_per_90: float = 0.0,
+                            xa_per_90: float = 0.0,
+                            recent_form_score: Optional[float] = None,
+                            expected_minutes_conf: Optional[float] = None,
+                            opp_def_quality: Optional[float] = None,
+                            gk_quality: Optional[float] = None,
+                            evidence_source: str = "",
+                            ) -> float:
+    """Continuous evidence-weighted goalscorer Lock Score.
 
-    ``confidence`` — "HIGH" / "MEDIUM" / "LOW".  Defaults to MEDIUM.
-    ``market_fit`` — optional 0-100 archetype/market fit score.
+    2026-08-23 CHEAP SURGICAL — Declustering.  Prior implementation
+    used FIXED anchors (95 / 91 / 87 / 83 / 80) + fixed +/-2 tuning,
+    causing every strong scorer to collapse to exactly 89.  The new
+    formula:
+      * uses model_prob as the primary continuous driver
+      * adds independent continuous evidence contributions (xG rate,
+        form, minutes confidence, opponent quality, GK quality)
+      * keeps tiers only as SOFT CEILINGS (never as anchors)
+      * fails closed below 85 when evidence is weak
+      * preserves rarity (96+ requires multi-signal agreement)
+      * Lock != win probability: identical model_prob with different
+        evidence quality yields different Lock Scores
+    Signature is backwards-compatible; new kwargs default to sentinels
+    so unwired call-sites still compute a sensible continuous Lock.
     """
     if model_prob is None:
         return 80.0
     p = float(model_prob)
-    if p >= 0.55:
-        lock = 95.0
+
+    # ── Primary continuous driver (model probability) ──
+    # Piecewise-linear so shape matches historical rarity: a strong
+    # scorer (p=0.55) starts near 91 and elite scorers (p>=0.65) can
+    # reach the 93-95 band, without ever pinning to a fixed anchor.
+    if p >= 0.60:
+        base = 91.0 + (p - 0.60) * 60.0   # p=0.60→91, p=0.75→100 (capped later)
     elif p >= 0.40:
-        lock = 91.0
+        base = 84.0 + (p - 0.40) * 35.0   # p=0.40→84, p=0.60→91
     elif p >= 0.25:
-        lock = 87.0
+        base = 78.0 + (p - 0.25) * 40.0   # p=0.25→78, p=0.40→84
     elif p >= 0.15:
-        lock = 83.0
+        base = 72.0 + (p - 0.15) * 60.0   # p=0.15→72, p=0.25→78
     else:
-        lock = 80.0
+        base = 60.0 + max(0.0, p) * 80.0  # never reaches 72
 
-    if confidence == "HIGH":
-        lock = min(99.0, lock + 2.0)
-    elif confidence == "LOW":
-        lock = max(75.0, lock - 3.0)
-
+    # ── Continuous evidence contributions (each independently graded) ──
+    # 1. Volume signal: xG per 90 (0.0 → 0, 0.60+ → +2.0)
+    _xg_signal = min(2.0, (npxg_per_90 or 0.0) * 3.5)
+    # 2. Realized scoring rate (finishing) — mild positive on hot runs
+    _goals_signal = min(1.5, (goals_per_90 or 0.0) * 2.0)
+    # 3. Sample quality — full-season minutes earns up to +1.5, small
+    #    sample <5 games drops -3.0 (fails closed on thin evidence).
+    if games >= 15 and minutes >= 1000:
+        _sample_signal = 1.5
+    elif games >= 8:
+        _sample_signal = 0.8
+    elif games >= 5:
+        _sample_signal = 0.0
+    else:
+        _sample_signal = -3.0
+    # 4. Recent form (0..100 scale — 50 is neutral).  ±1.5 range.
+    _form_signal = 0.0
+    if recent_form_score is not None:
+        try:
+            _fs = float(recent_form_score)
+            _form_signal = max(-1.5, min(1.5, (_fs - 50.0) / 20.0))
+        except (TypeError, ValueError):
+            pass
+    # 5. Minutes / start confidence (0..1 scale).  Full starter earns
+    #    +1.0; sub-only (<0.5) subtracts up to -2.0.
+    _min_signal = 0.0
+    if expected_minutes_conf is not None:
+        try:
+            _emc = float(expected_minutes_conf)
+            _min_signal = -2.0 + _emc * 3.0
+            _min_signal = max(-2.0, min(1.0, _min_signal))
+        except (TypeError, ValueError):
+            pass
+    # 6. Opponent defensive weakness (0..1 = leaky).  Up to +1.0.
+    _opp_signal = 0.0
+    if opp_def_quality is not None:
+        try:
+            _opp = float(opp_def_quality)
+            _opp_signal = max(-1.0, min(1.0, (_opp - 0.5) * 2.0))
+        except (TypeError, ValueError):
+            pass
+    # 7. Goalkeeper weakness (0..1 = leaky).  Up to +0.75.
+    _gk_signal = 0.0
+    if gk_quality is not None:
+        try:
+            _gkq = float(gk_quality)
+            _gk_signal = max(-0.75, min(0.75, (_gkq - 0.5) * 1.5))
+        except (TypeError, ValueError):
+            pass
+    # 8. Confidence tag — small nudge, never an anchor.
+    _conf_signal = {"HIGH": 0.6, "MEDIUM": 0.0, "LOW": -1.5}.get(
+        (confidence or "").upper(), 0.0)
+    # 9. Market fit — small nudge for archetype alignment.
+    _fit_signal = 0.0
     if market_fit is not None:
-        if market_fit >= 90:
-            lock = min(99.0, lock + 1.0)
-        elif market_fit < 40:
-            lock = max(75.0, lock - 2.0)
+        try:
+            _fit_signal = max(-1.0, min(1.0, (float(market_fit) - 50.0) / 50.0))
+        except (TypeError, ValueError):
+            pass
 
+    lock = base + _xg_signal + _goals_signal + _sample_signal \
+        + _form_signal + _min_signal + _opp_signal + _gk_signal \
+        + _conf_signal + _fit_signal
+
+    # ── Rarity guardrails (soft ceilings, never anchors) ──
+    # 96+ requires multi-signal agreement.
+    _positive_contribs = sum(
+        1 for s in (_xg_signal, _goals_signal, _form_signal,
+                     _min_signal, _opp_signal)
+        if s >= 0.5
+    )
+    if _positive_contribs < 3 and lock > 95.5:
+        lock = 95.5
+    if _positive_contribs < 2 and lock > 92.5:
+        lock = 92.5
+    # 100 Apex reserved — never derived from continuous formula.
+    if lock >= 99.5:
+        lock = 99.4
+    # Fail-closed floor: below 60 is uninformative in this context.
+    lock = max(60.0, min(99.4, lock))
     return round(lock, 2)
 
 
