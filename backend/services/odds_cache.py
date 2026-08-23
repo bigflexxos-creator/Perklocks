@@ -870,11 +870,28 @@ async def cached_httpx_get(
         if db is not None:
             try:
                 from services.odds_api_gateway import OddsApiGateway
+                from services import provider_budget_priority as _pbp
                 gw = OddsApiGateway(db)
-                # `cached_httpx_get` doesn't require caller/reason, so
-                # we pass sane defaults for legacy call-sites.  The
-                # Phase 2γ migration task moves these to explicit
-                # gateway.fetch() invocations with real caller/reason.
+                # ── 2026-08-23 QUOTA — priority routing ──
+                # Prior code passed no priority; gateway defaulted to
+                # P3.  Derive priority from the markets tag so live
+                # game / player-prop / alt fetches sit in the correct
+                # lane.
+                _mk_tag = (markets or params.get("markets") or "").lower()
+                _url_l = (url or "").lower()
+                if any(t in _mk_tag for t in ("player_", "batter_",
+                                                "pitcher_")):
+                    _priority = _pbp.P2_PLAYER_PROPS
+                elif any(t in _mk_tag for t in ("alternate_",
+                                                 "_alternate", "btts",
+                                                 "double_chance")):
+                    _priority = _pbp.P3_ALT_STRONG
+                elif ("h2h" in _mk_tag or "spreads" in _mk_tag
+                        or "totals" in _mk_tag
+                        or "/odds" in _url_l or "/events" in _url_l):
+                    _priority = _pbp.P1_LOCKS_TODAY
+                else:
+                    _priority = _pbp.P3_ALT_STRONG
                 res = await gw.fetch(
                     url,
                     params=params,
@@ -886,6 +903,7 @@ async def cached_httpx_get(
                     regions=params.get("regions"),
                     bookmakers=params.get("bookmakers"),
                     odds_format=params.get("oddsFormat"),
+                    priority=_priority,
                     emergency_requested=False,
                     cache_policy="force_refresh" if force_refresh else "normal",
                     timeout_seconds=timeout,
