@@ -7855,7 +7855,15 @@ async def generate_all_picks(
             # Tiebreaker: edge (when two picks share a lock_score, prefer
             # the one with more value). Edge contribution is tiny so it
             # only matters within the same lock_score band.
-            return p["lock_score"] + max(0.0, p.get("edge_percent", 0.0)) * 0.1
+            # 2026-08-23 hardening — some producers legitimately emit
+            # ``edge_percent=None`` (no-book direct-inject shadow rows).
+            # Treat None as 0.0 so this comparator never blows up.
+            _e = p.get("edge_percent")
+            try:
+                _e_val = float(_e)
+            except (TypeError, ValueError):
+                _e_val = 0.0
+            return p["lock_score"] + max(0.0, _e_val) * 0.1
 
         # Filter to games that actually kick off within the next 24 hours.
         # This ensures the Elite tier surfaces TODAY'S best bets, not games
