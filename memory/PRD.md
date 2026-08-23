@@ -837,3 +837,46 @@ Sweep 8748 caller configurations (`/tmp/proof_caller_integration.py`) — worst 
 
 ### Not touched (per HARD STOP)
 - No H2H / provider / model-probability / UI / History / Analytics / Rollover / Parlay changes.
+
+---
+
+## 2026-08-23 — AUTHORITATIVE H2H TRUTH WIRING (Msg follow-up closure)
+
+### Active H2H consumers found
+Single active consumer: `services/h2h_enricher.build_h2h_bundle`, called from:
+  * `routes/picks_routes.py:2769` (fast-mode chip)
+  * `routes/picks_routes.py:3286` (deep-dive)
+Diagnostic-only mentions in `pipeline_diagnostic.py`.
+
+### Files/functions changed
+Only `services/h2h_enricher.py`:
+  * `_team_h2h_from_settled` — added P0 canonical-ID scan of `team_game_actuals` (MLB/NFL/Soccer), extended P1 to include CFB/NCAAF, added `career_meetings` via `count_documents()` (§5 truth), added `authoritative` boolean, gated settled-picks fallback behind non-authoritative sports only.  UFC returns honest None.
+  * `_soccer_player_h2h` — completely rewrote to use `mls_player_matchup_history` (P0) → `soccer_player_game_logs` by canonical opponent id (P1).  Removed all `db.picks` reads.  Emits market-specific `primary_stat` (avg_goals vs avg_assists §6).
+  * `build_h2h_bundle` — now passes `canonical_team_id` / `canonical_opponent_id` from pick doc.  Sources tag reflects real collection.  Status codes extended: `H2H_AUTHORITATIVE`, `H2H_APP_HISTORY_ONLY`, `H2H_INSUFFICIENT_SAMPLE`, `H2H_SOURCE_UNAVAILABLE`.
+
+### Before / after behavior
+- **Before**: Team H2H fell through to `db.picks` scan if names didn't match strict regex; `sample_size` = `len(loaded rows)` (never > limit).  Soccer player H2H queried settled Perklocks picks as authoritative meeting count.  CFB had no branch (fell to settled picks).
+- **After**: Team H2H prefers canonical IDs on `team_game_actuals`, falls to `games` (including CFB when data exists), falls to `soccer_matches` for Soccer.  Settled-picks path retained ONLY for sports with no authoritative source AND labeled `app_history_only=True` + `authoritative=False`.  `career_meetings` computed via count; `recent_sample_n` reflects loaded rows.  Soccer player H2H uses actual game logs via canonical opponent id.  UFC returns honest None.
+
+### 14 focused proof results (all PASS)
+1. TEAM H2H authoritative → MLB `games` career=19 authoritative=True ✅
+2. CFB honest None (no CFB game history in pod) ✅
+3. Canonical IDs → `team_game_actuals` (2 meetings) ✅
+4. Home/away player opponent resolution honest ✅
+5. Soccer player H2H sourced from `mls_player_matchup_history` (not settled picks) ✅
+6. NBA honest None (no NBA game history in pod) ✅
+7. NHL honest handling (no usable NHL rows in pod) ✅
+8. NFL authoritative via `games` ✅
+9. Tennis team-H2H returns None (delegated to tennis_matches_history) ✅
+10. Career=12 > recent=3 with limit=3 (limit never becomes career) ✅
+11. Goalscorer→avg_goals, Assist→avg_assists (market stat honesty) ✅
+12. UFC returns honest None (no fabricated H2H) ✅
+13. Fake MLB team pair → honest None (settled-picks fallback gated) ✅
+14. No new provider/CLV imports; modules reload clean ✅
+
+**Result: AUTHORITATIVE_H2H_TRUTH_CERTIFIED**
+
+### Not touched (HARD STOP honored)
+No Lock formulas, no provider integrations, no History/Analytics changes, no Rollover/Parlay changes, no CLV additions, no frontend redesign.  Only H2H retrieval/identity truth.
+
+### Approximate credits used: ~1 medium turn (single-file edit + proof script).
