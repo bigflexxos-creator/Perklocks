@@ -48,9 +48,9 @@ def _extract_threshold(market: str) -> float:
     when a structured ``pick["line"]`` is genuinely absent.
     Returns NaN on parse failure so callers can detect INVALID_INPUT
     (no silent 0.5 substitution)."""
-    m = _re.search(r"(?:over|under)\s+(\d+(?:\.\d+)?)", (market or "").lower())
+    m = re.search(r"(?:over|under)\s+(\d+(?:\.\d+)?)", (market or "").lower())
     if not m:
-        m = _re.search(r"(\d+(?:\.\d+)?)", str(market or ""))
+        m = re.search(r"(\d+(?:\.\d+)?)", str(market or ""))
     return float(m.group(1)) if m else float("nan")
 
 

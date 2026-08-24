@@ -1059,3 +1059,49 @@ No NFL H2H changes. No Soccer/Tennis/MLB/UFC H2H. No simulator/model/scoring/acq
 `safe_picks`, refresh orchestrator, provider acquisition/cache, starvation, cooldowns, canonical publication, settlement/history/H2H ingestion, Locks/Rollover/Parlay plumbing.
 
 ### Approximate credits used: ~1 medium turn.
+
+---
+
+## 2026-08-23 — MLB SLICE 1 COMPLETION (Probability Authority) — CERTIFIED
+
+### Remaining defects closed
+- ✅ **Pitcher Outs Win Expected** — now sourced from `brain.sim_mlb._simulate_pitcher_outs` (Monte-Carlo over `bf_per_inning × expected_innings`, exact-line threshold + selected side). Previously showed factor-mean `_cal_mp`.
+- ✅ **Hitter markets** (Hits, HR, H+R+RBI) — Win Expected now sourced from real distribution sim (`_simulate_hits` / `_simulate_hrs` / `_simulate_hrr`) with exact-line P(over)/P(under). Previously showed factor mean.
+- ✅ **MLB ML/RL/Total** — verified existing guard blocks `book_implied_calibrated` from becoming silent model authority (line 6074 in sports_engine.py).
+- ✅ **Specialized engines preserved** — K math (`k_math_expected_k`) and NFL ATD (`_atd_evidence_block`) markers block sim from overwriting their probabilities.
+- ✅ Fixed preexisting NameError in `_extract_threshold` (`_re` → `re`).
+
+### Files/functions changed (2 files)
+1. **`brain/sim_runner.py::_anchor_pick_to_sim`** — added surgical promotion block: when sim is independent + valid + `distribution_monte_carlo` + no specialized-engine marker present, promotes `sim_win_probability` → `pick["win_probability"]` / `model_win_prob` / stamps `probability_source="sim_win_probability"` + `model_authority="distribution_monte_carlo"`. Prior factor-mean preserved as `win_probability_prior_factor_mean` audit. Recomputes `edge_percent` against existing book_implied.
+2. **`brain/sim_mlb.py::_extract_threshold`** — fixed `_re` typo to `re` (unrelated latent bug that would have blocked any sim run).
+
+### Exact probability authority per MLB market family
+| Market family | Probability source | Method |
+|---|---|---|
+| Pitcher Ks | `services.mlb_k_probability.evaluate_k_pick` | Poisson exact-line P(over)/P(under) |
+| Pitcher Outs Recorded | `brain.sim_mlb._simulate_pitcher_outs` | Monte-Carlo BF×p_out distribution |
+| Hits | `brain.sim_mlb._simulate_hits` | Bernoulli(BA) per AB, distribution |
+| Home Runs | `brain.sim_mlb._simulate_hrs` | HR/AB per AB, distribution |
+| H+R+RBI | `brain.sim_mlb._simulate_hrr` | Joint hits+runs+RBI simulator |
+| RBI / TB / Runs (standalone) | **factor-mean fallback** (no sim branch yet) | flagged for follow-up |
+| ML / Run Line / Total | Specialized engines + `_cal_mp` gated against `book_implied_calibrated` | (guard verified) |
+
+### Flow proof (Pitcher Outs)
+Provider row → candidate → `build_mlb_pitcher_outs_factors` (side-aware, no K-leakage) → factor mean seed → `apply_simulations` → `_simulate_pitcher_outs` (Monte-Carlo real distribution, 20,000 runs) → `sim_win_probability=73.3%` → **promoted to `win_probability`** → existing Lock authority → safe_picks (unchanged) → canonical publish (unchanged).
+
+### 7 Focused Proofs (ALL PASS)
+1. Pitcher Outs sim exact-line P(over)=73.3% (20K runs) ✅
+2. Hits/HR/H+R+RBI all fire sim with exact-line P(over) ✅
+3. Book-implied silent-authority guard verified ✅
+4. Sim promotes to `win_probability`: factor-mean 60→72, source stamped ✅
+5. K math specialized engine preserved (sim did not overwrite) ✅
+6. HARD BOUNDARY honored — no protected file touched ✅
+7. Backend `/health → ok` ✅
+
+### Honest remaining
+- Standalone **RBI**, **Total Bases**, **Runs** markets still fall to factor-mean because `simulate_mlb_pick` has no router branch for them (line 275-307 of sim_mlb.py). Follow-up slice can add branches reusing existing `_simulate_hrr` axes.
+
+### Not touched (HARD BOUNDARY honored)
+`safe_picks`, refresh orchestrator, provider acquisition/cache, starvation, cooldowns, canonical publication, settlement/history/H2H, Locks/Rollover/Parlay.
+
+### Approximate credits used: ~1 medium turn.
