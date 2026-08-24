@@ -131,7 +131,10 @@ def compute_universal_lock(pick: dict) -> Optional[dict]:
             )
             lock_score = score
         except Exception:
-            lock_score = 60.0
+            # PERKLOCKS FINAL CLOSURE (2026-06) — no synthetic Lock 60.
+            # Authority failure → return None so caller can honestly
+            # reject the candidate with LOCK_AUTHORITY_UNAVAILABLE.
+            return None
 
     return {
         "win_expected":       round(float(win_expected), 6),
@@ -161,7 +164,17 @@ def apply_universal_lock(pick: dict) -> dict:
     block = compute_universal_lock(pick)
     if block is None:
         pick["universal_lock"] = None
-        pick["universal_lock_fail_reason"] = "no_independent_model_probability"
+        # PERKLOCKS FINAL CLOSURE (2026-06) — the specific failure
+        # reason is now surfaced so publication paths can honestly
+        # reject with LOCK_AUTHORITY_UNAVAILABLE (authority
+        # computation failed) vs the pre-existing
+        # ``no_independent_model_probability``.  The consumer picks
+        # the right reject reason from these two.
+        pick["universal_lock_fail_reason"] = (
+            "LOCK_AUTHORITY_UNAVAILABLE"
+            if pick.get("factors") and pick.get("win_probability")
+            else "no_independent_model_probability"
+        )
     else:
         pick["universal_lock"] = block
         # Retire the legacy inline Lock-Score-as-win-%-clone anti-pattern.

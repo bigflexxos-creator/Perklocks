@@ -6277,9 +6277,17 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     pass
         elif is_pitcher_prop:
             # Non-MLB pitcher props (KBO etc.) — Phase 1 real engine
-            # only covers MLB.  Book-follow calibration retained.
-            factors = {"Book Implied Probability": mp}
-            _mlb_features_used = ["book_implied_calibrated"]
+            # only covers MLB.
+            # PERKLOCKS FINAL CLOSURE (2026-06) — book-follow removed.
+            _skip_pick = True
+            try:
+                from services.pipeline_diagnostic import log_reason as _plog
+                _plog(
+                    sport=sport, market=mk, player=player,
+                    reason="NON_MLB_PITCHER_MODEL_UNAVAILABLE",
+                )
+            except Exception:
+                pass
         elif sport == "NBA" and mk and mk.startswith("player_"):
             # ── Phase 4D — NBA feature engine (2026-08-06) ──────────
             # Consumes `ctx["nba_precomputed"][player_lower][mk]`
@@ -6357,13 +6365,23 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                         )
                     except Exception:
                         pass
-                    factors = {"Book Implied Probability": mp}
-                    _mlb_features_used = ["book_implied_calibrated",
-                                          "soccer_scorer_bridge_no_form"]
+                    # PERKLOCKS FINAL CLOSURE (2026-06) — Soccer
+                    # scorer missing form/context now fails closed
+                    # (was: silent book-implied clone).
+                    _skip_pick = True
             else:
-                # WNBA / UFC / soccer non-scorer.  Book-follow.
-                factors = {"Book Implied Probability": mp}
-                _mlb_features_used = ["book_implied_calibrated"]
+                # WNBA / UFC / soccer non-scorer / generic unsupported
+                # prop.  PERKLOCKS FINAL CLOSURE (2026-06) — no more
+                # book-follow.  Real supported model or fail-closed.
+                _skip_pick = True
+                try:
+                    from services.pipeline_diagnostic import log_reason as _plog
+                    _plog(
+                        sport=sport, market=mk, player=player,
+                        reason="UNSUPPORTED_MARKET_NO_REAL_MODEL",
+                    )
+                except Exception:
+                    pass
 
         # 2026-07-21 — DROP the pick if we couldn't build a real-data
         # factor set (Phase 1 MLB gate). Skips the rest of this iteration.
