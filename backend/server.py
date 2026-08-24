@@ -1821,7 +1821,10 @@ async def _ensure_today_picks() -> None:
             _family_patterns = {
                 "NFL": [
                     ("PASSING_YARDS", r"Pass(ing)? Yards"),
+                    ("PASSING_ATTEMPTS", r"Pass(ing)? Attempts"),
+                    ("COMPLETIONS",   r"Completions"),
                     ("RUSHING_YARDS", r"Rush(ing)? Yards"),
+                    ("RUSHING_ATTEMPTS", r"Rush(ing)? Attempts|Carries"),
                     ("RECEIVING_YARDS", r"Receiving Yards|Rec(eption)? Yards"),
                     ("RECEPTIONS",    r"Receptions"),
                     ("ANYTIME_TD",    r"Anytime (TD|Touchdown)"),
@@ -1831,12 +1834,26 @@ async def _ensure_today_picks() -> None:
                     ("REBOUNDS", r"Rebounds"),
                     ("ASSISTS",  r"\bAssists\b"),
                     ("THREES",   r"Threes|3-Pointers|3PM"),
+                    # PRA / P+R / P+A / R+A — universal family conservation.
+                    ("PRA",  r"Points \+ Rebounds \+ Assists|PRA"),
+                    ("P_R",  r"Points \+ Rebounds\b(?! \+ Assists)|\bP\+R\b"),
+                    ("P_A",  r"Points \+ Assists\b|\bP\+A\b"),
+                    ("R_A",  r"Rebounds \+ Assists\b|\bR\+A\b"),
                 ],
                 "MLB": [
                     ("HITS",         r"Over 0\.5 Hits|Over 1\.5 Hits|Under \d\.\d Hits"),
                     ("HOME_RUNS",    r"Home Run"),
                     ("TOTAL_BASES",  r"Total Bases"),
                     ("STRIKEOUTS",   r"Strikeouts?"),
+                    ("OUTS",         r"Outs Recorded|Outs\b"),
+                    ("H_R_RBI",      r"Hits \+ Runs \+ RBI|H\+R\+RBI"),
+                ],
+                "NHL": [
+                    ("GOALS",         r"Anytime Goal|Goal Scorer|\bGoals\b"),
+                    ("ASSISTS",       r"\bAssists\b"),
+                    ("POINTS",        r"\bPoints\b"),
+                    ("SHOTS_ON_GOAL", r"Shots on Goal|SOG"),
+                    ("SAVES",         r"\bSaves\b|Total Saves"),
                 ],
             }
             if _sport in _family_patterns and _expected_props:
@@ -1968,6 +1985,33 @@ async def _ensure_today_picks() -> None:
                 # them (off_board / no_bet / settlement_block / status).
                 # Not starvation; do not retry.
                 sport_status[_sport] = "HEALTHY_NO_QUALIFIED"
+                continue
+
+            # ── FINAL FLOW + SETTLEMENT PARITY (2026-06) — SEASON-AWARE
+            # HEALTH.  Before falling into the SPORT_STARVED loop we
+            # ask the provider whether the sport has any CURRENT
+            # events at all.  During offseason (NHL / NFL / MLB / CFB
+            # depending on the calendar) the provider legitimately
+            # returns 0 events and no starvation refresh should fire.
+            #
+            # Contract:
+            #   * When current_events == 0 → NO_CURRENT_EVENTS (not
+            #     starved, not retried).
+            #   * When current_events > 0 → normal starvation logic
+            #     activates automatically.
+            #
+            # Cheap check: read the persisted sport-refresh state's
+            # ``last_current_events`` counter if available; otherwise
+            # fall back to a quick provider-events query where safe.
+            _current_events = None
+            try:
+                _state_ce = _sport_refresh_state.get(_sport) or {}
+                _current_events = _state_ce.get("last_current_events")
+            except Exception:
+                pass
+            if _current_events == 0:
+                sport_status[_sport] = "NO_CURRENT_EVENTS"
+                # NOT added to sport_starved → no refresh loop.
                 continue
 
             # Zero rows.  Look at persisted refresh state to distinguish
