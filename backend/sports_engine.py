@@ -5651,6 +5651,9 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     opp_pitcher_name=_opp_sp,
                     market_type=mk,
                     line=point if isinstance(point, (int, float)) else None,
+                    # 2026-08-23 MLB MODEL-INTEGRITY SLICE — pass selected
+                    # side so hitter factors mirror on Under picks.
+                    side=str(side),
                 )
             if not _skip_pick and not has_enough_real_data(real_factors, "hitter_prop"):
                 _skip_pick = True

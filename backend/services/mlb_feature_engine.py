@@ -185,29 +185,75 @@ def factor_recent_k_form(ctx: dict, pitcher_name: str) -> Optional[float]:
     return None
 
 
+def factor_recent_outs_form(ctx: dict, pitcher_name: str,
+                              side: str = "over") -> Optional[float]:
+    """L5-start average OUTS RECORDED factor for the Outs market.
+
+    2026-08-23 MLB MODEL-INTEGRITY SLICE — closes the K-stat leakage in
+    the Outs prop scoring path.  Previously the Outs builder used
+    `factor_recent_k_form` (K COUNT) as its L5 workload signal, which
+    is a different underlying statistic (§Model-Integrity — "Every
+    factor must use the correct underlying statistic").
+
+    Sources (any of, in priority order):
+      * ``sp.l5_avg_outs``   — most direct (outs per start avg)
+      * ``sp.l5_avg_ip``     — innings converted to outs (× 3)
+
+    Returns None honestly when neither is populated — no fallback to
+    K-count, no book-implied substitute, no synthetic value.
+
+    Side awareness:
+      * ``over``  — higher L5 outs → higher score (support Over)
+      * ``under`` — mirrored: higher L5 outs → lower score (fade Under)
+    """
+    for side_key in ("starting_pitcher_home", "starting_pitcher_away"):
+        sp = ctx.get(side_key) or {}
+        if sp.get("name", "").strip().lower() == pitcher_name.strip().lower():
+            l5_outs = sp.get("l5_avg_outs")
+            if not isinstance(l5_outs, (int, float)):
+                l5_ip = sp.get("l5_avg_ip")
+                if isinstance(l5_ip, (int, float)):
+                    l5_outs = float(l5_ip) * 3.0
+            if isinstance(l5_outs, (int, float)):
+                # Range: MLB starter L5 outs typically 12-21 (4-7 IP).
+                score = _scale(float(l5_outs), 12.0, 21.0)
+                if str(side).lower() == "under":
+                    score = 1.0 - score
+                return round(score, 3)
+    return None
+
+
 def build_mlb_pitcher_k_factors(ctx: dict, player: str,
                                 side: str, line: Optional[float] = None) -> tuple[dict, list[str]]:
     """Build all K-prop factors from REAL data.
 
+    2026-08-23 MLB MODEL-INTEGRITY SLICE — every supporting factor is
+    now side-aware: on Under, factors that measure "more Ks likely"
+    are mirrored so they cannot silently reward the opposite selected
+    side.  The dedicated K probability engine (``mlb_k_probability``)
+    remains the primary authority — this builder only supplies
+    supporting evidence for the ancillary scoring path.
+
     Returns:
         (factors_dict, sources_list)
-
-    factors_dict keys → Optional[float] (None if unavailable).
-    Callers MUST filter out Nones and check MIN_FACTORS_K_PROP before emit.
     """
+    _side_norm = str(side).lower()
+    def _mirror(v):
+        return None if v is None else round(1.0 - v, 3) if _side_norm == "under" else v
     factors: dict[str, Optional[float]] = {
-        "Pitcher K/9 (recent)":       factor_pitcher_recent_k(ctx, player),
-        "Opp K% vs same hand":        factor_opp_team_k_vs_hand(ctx, player, side),
-        "Pitch Count / Workload":     factor_pitch_count_workload(ctx, player, line),
-        "Park Strikeout Factor":      factor_park_k(ctx),
-        "Recent Strikeout Form (L5)": factor_recent_k_form(ctx, player),
-        # 2026-07-22 Statcast xwOBA-against layer — captures elite whiff
-        # pitchers even before their raw K/9 catches up.
-        "Pitcher xwOBA-Against (Statcast)": factor_pitcher_statcast_k_upside(ctx, player),
-        # 2026-07-22 Home-plate umpire K-zone bias (durable ±2.5pp signal)
-        "Umpire K-Zone Bias":         factor_umpire_pitcher_k(ctx, side),
-        # 2026-07-22 DFS-style locally-projected K line probability
-        "DFS K Projection vs Line":   factor_dfs_pitcher_k_projection(ctx, player, line, side),
+        # Every factor below is naturally "Over-flavoured" (higher = more
+        # Ks).  Mirror for Under so evidence points to the SELECTED side.
+        "Pitcher K/9 (recent)":       _mirror(factor_pitcher_recent_k(ctx, player)),
+        # `factor_opp_team_k_vs_hand` already mirrors internally
+        "Opp K% vs same hand":        factor_opp_team_k_vs_hand(ctx, player, _side_norm),
+        "Pitch Count / Workload":     _mirror(factor_pitch_count_workload(ctx, player, line)),
+        "Park Strikeout Factor":      _mirror(factor_park_k(ctx)),
+        "Recent Strikeout Form (L5)": _mirror(factor_recent_k_form(ctx, player)),
+        "Pitcher xwOBA-Against (Statcast)": _mirror(factor_pitcher_statcast_k_upside(ctx, player)),
+        # `factor_umpire_pitcher_k` already reads side to bias correctly
+        "Umpire K-Zone Bias":         factor_umpire_pitcher_k(ctx, _side_norm),
+        # `factor_dfs_pitcher_k_projection` already reads side + line
+        "DFS K Projection vs Line":   factor_dfs_pitcher_k_projection(ctx, player, line, _side_norm),
     }
     sources = []
     if factors["Pitcher K/9 (recent)"] is not None:
@@ -234,48 +280,50 @@ def build_mlb_pitcher_outs_factors(
 ) -> tuple[dict, list[str]]:
     """Build Pitcher Outs Recorded factors from REAL data.
 
-    2026-06 μ-closure MLB Prop Flow Repair — FIX 4:
-    Outs Recorded is a DURABILITY / start-depth market, NOT a K market.
-    Under this repair the sports_engine routes Outs candidates through
-    THIS builder (was previously ``build_mlb_pitcher_k_factors``), so
-    the model evaluates the outs question on workload evidence:
+    2026-08-23 MLB MODEL-INTEGRITY SLICE — closes 3 confirmed defects:
+      1. **K-stat leakage removed** — the L5 signal now reads
+         actual outs history (``l5_avg_outs`` / ``l5_avg_ip``) via
+         ``factor_recent_outs_form``, not K count.
+      2. **K-line DFS projection removed** — ``factor_dfs_pitcher_k_projection``
+         was calibrated for the K line, not the Outs line, so it no
+         longer contributes silent authority to Outs picks.
+      3. **Side-aware** — every workload factor now mirrors on Under
+         (deeper start = supports Over, fades Under).  A pitcher's
+         quality signal cannot silently reward the opposite selected
+         side.
 
-      * Innings/start (pitch count / workload proxy)
-      * Recent workload form (L5)
-      * Park run-suppression → longer starts survive
-      * Opp K% (still relevant: whiffs finish innings faster than BIP)
+    K/9 (``factor_pitcher_recent_k``) is retained as a legitimate
+    SECONDARY workload proxy — a whiff-heavy pitcher retires batters
+    per inning slightly faster than a contact pitcher — but the
+    PRIMARY signals are workload/durability based.
 
-    ``factor_pitcher_recent_k`` is retained as a secondary — a pitcher
-    who strikes people out reaches the outs line more efficiently —
-    but the primary signals are workload-based.
-
-    Uses ONLY existing real factors; no new data source, no fabrication.
-    ``has_enough_real_data("outs_prop", …)`` treats this like ``k_prop``
-    for the MIN_FACTORS gate (3+ real signals).
+    Uses ONLY real signals; no fabrication, no book-implied fallback.
     """
+    _side_norm = str(side).lower()
+    def _mirror(v):
+        return None if v is None else round(1.0 - v, 3) if _side_norm == "under" else v
     factors: dict[str, Optional[float]] = {
-        "Pitch Count / Workload":       factor_pitch_count_workload(ctx, player, line),
-        "Recent Workload Form (L5)":    factor_recent_k_form(ctx, player),
-        "Park Run Environment":         factor_park_k(ctx),
-        "Opp K% vs same hand":          factor_opp_team_k_vs_hand(ctx, player, side),
-        "Pitcher K/9 (recent)":         factor_pitcher_recent_k(ctx, player),
-        # DFS projection when available — many DFS lines already include
-        # innings expectation which is directly relevant to outs.
-        "DFS K Projection vs Line":     factor_dfs_pitcher_k_projection(ctx, player, line, side),
+        # PRIMARY workload/durability (mirrored for Under)
+        "Pitch Count / Workload":    _mirror(factor_pitch_count_workload(ctx, player, line)),
+        "Recent Outs Form (L5)":     factor_recent_outs_form(ctx, player, side=_side_norm),
+        "Park Run Environment":      _mirror(factor_park_k(ctx)),
+        # SECONDARY — a K-heavy pitcher gets outs faster (side-aware upstream)
+        "Opp K% vs same hand":       factor_opp_team_k_vs_hand(ctx, player, _side_norm),
+        "Pitcher K/9 (recent)":      _mirror(factor_pitcher_recent_k(ctx, player)),
+        # DFS K Projection intentionally REMOVED — calibrated for K line,
+        # would leak K-market model authority into the Outs market.
     }
     sources: list[str] = []
     if factors["Pitch Count / Workload"] is not None:
         sources.append("statsapi_pitcher_ip_per_start")
-    if factors["Recent Workload Form (L5)"] is not None:
-        sources.append("statsapi_pitcher_l5")
+    if factors["Recent Outs Form (L5)"] is not None:
+        sources.append("statsapi_pitcher_l5_outs")
     if factors["Park Run Environment"] is not None:
         sources.append("park_factors_table")
     if factors["Opp K% vs same hand"] is not None:
         sources.append("statsapi_team_k_split")
     if factors["Pitcher K/9 (recent)"] is not None:
         sources.append("statsapi_pitcher_season_k")
-    if factors["DFS K Projection vs Line"] is not None:
-        sources.append("dfs_projection_local")
     return factors, sources
 
 
@@ -541,28 +589,43 @@ def factor_dfs_pitcher_k_projection(ctx: dict, pitcher: str,
 def build_mlb_hitter_factors(ctx: dict, player: str, is_home: bool = True,
                              opp_pitcher_name: Optional[str] = None,
                              market_type: str = "hits",
-                             line: Optional[float] = None) -> tuple[dict, list[str]]:
+                             line: Optional[float] = None,
+                             side: str = "over") -> tuple[dict, list[str]]:
     """Build hitter-prop factors from REAL data (or None).
+
+    2026-08-23 MLB MODEL-INTEGRITY SLICE — added ``side`` parameter and
+    mirrors every naturally "Over-flavoured" factor when the selected
+    side is Under.  This closes the confirmed defect where hitter Under
+    picks received positive evidence from factors that measure "more
+    likely to hit" (opposite-side positive evidence — §Model-Integrity).
 
     2026-07-22 — expanded to 11 factors with Statcast xStats, umpire
     zone, and DFS-style daily projection.
     """
+    _side_norm = str(side).lower()
+    def _mirror(v):
+        return None if v is None else round(1.0 - v, 3) if _side_norm == "under" else v
     factors: dict[str, Optional[float]] = {
-        "Recent L10 Hit Rate":       factor_batter_recent_form(ctx, player),
-        "Matchup vs Defense":        factor_batter_matchup_vs_defense(ctx, player),
-        "Home/Away Splits":          factor_batter_home_away(ctx, player, is_home),
-        "Platoon Advantage":         factor_batter_platoon(ctx, player, opp_pitcher_name),
-        "BvP (career vs pitcher)":   factor_batter_bvp(ctx, player),
+        "Recent L10 Hit Rate":       _mirror(factor_batter_recent_form(ctx, player)),
+        "Matchup vs Defense":        _mirror(factor_batter_matchup_vs_defense(ctx, player)),
+        "Home/Away Splits":          _mirror(factor_batter_home_away(ctx, player, is_home)),
+        "Platoon Advantage":         _mirror(factor_batter_platoon(ctx, player, opp_pitcher_name)),
+        "BvP (career vs pitcher)":   _mirror(factor_batter_bvp(ctx, player)),
         # ── Statcast xStats layer ────────────────────────────────
-        "Expected BA (Statcast)":    factor_batter_statcast_xba(ctx, player),
-        "Barrel% (Quality of Contact)": factor_batter_statcast_barrel(ctx, player),
-        "Hard-Hit % (Statcast)":     factor_batter_statcast_hardhit(ctx, player),
-        "Regression Signal (xBA-BA)": factor_batter_statcast_luck(ctx, player),
+        "Expected BA (Statcast)":    _mirror(factor_batter_statcast_xba(ctx, player)),
+        "Barrel% (Quality of Contact)": _mirror(factor_batter_statcast_barrel(ctx, player)),
+        "Hard-Hit % (Statcast)":     _mirror(factor_batter_statcast_hardhit(ctx, player)),
+        "Regression Signal (xBA-BA)": _mirror(factor_batter_statcast_luck(ctx, player)),
         # 2026-07-22 Umpire zone bias (tight = hitter-friendly)
-        "Umpire Zone (Hitter Bias)": factor_umpire_hitter(ctx),
-        # 2026-07-22 DFS-style locally-projected line probability
+        "Umpire Zone (Hitter Bias)": _mirror(factor_umpire_hitter(ctx)),
+        # 2026-07-22 DFS-style locally-projected line probability —
+        # already reads market_type + line; passing `side` for consistency.
         "DFS Projection vs Line":    factor_dfs_hitter_projection(ctx, player, market_type, line),
     }
+    # DFS projection is calibrated for OVER by default — mirror for Under.
+    if factors["DFS Projection vs Line"] is not None and _side_norm == "under":
+        factors["DFS Projection vs Line"] = round(
+            1.0 - factors["DFS Projection vs Line"], 3)
     sources = []
     for k, v in factors.items():
         if v is not None:
