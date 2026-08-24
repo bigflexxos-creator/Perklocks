@@ -179,6 +179,13 @@ def build_soccer_total_factors(ctx: dict, side: str) -> tuple[dict, list[str]]:
     Styles / Injuries remain None until upstream data lands —
     MISSING DATA stays MISSING, never invented.
 
+    PERKLOCKS PASS 3 (2026-06) — SIDE-AWARE MIRRORING.  Combined xG /
+    Combined Goals Scored / Combined Goals Conceded are all
+    naturally Over-flavoured (high value ⇒ high P(over)).  For an
+    Under selection every factor is mirrored via ``1 - f`` so
+    evidence cannot silently reward the opposite side.  Contract
+    matches the NFL side-aware fix in ``services.nfl_feature_engine``.
+
     Falls to ``PARTIAL`` classification when only 2 of 6 factors fire
     (below MIN_FACTORS_SOCCER_TOTAL=3) — caller drops the pick.
     """
@@ -207,6 +214,71 @@ def build_soccer_total_factors(ctx: dict, side: str) -> tuple[dict, list[str]]:
         "Manager Styles":           None,   # roadmap
         "Injuries (both teams)":    None,   # roadmap
     }
+
+    # ── PASS 3 side-aware mirroring ──────────────────────────────
+    _side_norm = str(side or "over").strip().lower()
+    if _side_norm.startswith("under") or _side_norm == "u":
+        for _k in ("Combined xG", "Combined Goals Scored",
+                    "Combined Goals Conceded"):
+            v = factors.get(_k)
+            if isinstance(v, (int, float)):
+                factors[_k] = round(1.0 - v, 3)
+
+    sources = [k for k, v in factors.items() if v is not None]
+    return factors, sources
+
+
+def build_soccer_btts_factors(ctx: dict, selection: str) -> tuple[dict, list[str]]:
+    """Soccer BTTS (Both-Teams-to-Score) factors — side-aware.
+
+    PERKLOCKS PASS 3 (2026-06) — BTTS evidence must respect the
+    selected side.  For ``Yes`` evidence is naturally aligned with
+    the "both teams score often" archetype (high xG on both sides,
+    high goals-scored, low defensive strength on both sides).  For
+    ``No``, every factor is mirrored via ``1 - f`` so a BTTS-No
+    selection cannot ride positive evidence intended for BTTS-Yes.
+
+    Falls to ``PARTIAL`` classification when only 2 of 4 factors fire
+    (below MIN_FACTORS_SOCCER_TOTAL=3) — caller drops the pick.
+    """
+    home_team = ctx.get("home_team") or ""
+    away_team = ctx.get("away_team") or ""
+
+    both_have_xg = (ctx.get("home_xg_rolling") is not None
+                    and ctx.get("away_xg_rolling") is not None)
+    hx = factor_xg_diff(ctx, home_team) if both_have_xg else None
+    ax = factor_xg_diff(ctx, away_team) if both_have_xg else None
+    combined_xg = round(((hx or 0.60) + (ax or 0.60)) / 2.0, 3) \
+        if both_have_xg else None
+
+    hf = factor_goals_scored(ctx, home_team)
+    af = factor_goals_scored(ctx, away_team)
+    combined_goals = round((hf + af) / 2.0, 3) \
+        if (hf is not None and af is not None) else None
+
+    hc = factor_goals_conceded(ctx, home_team)
+    ac = factor_goals_conceded(ctx, away_team)
+    combined_conceded = round((hc + ac) / 2.0, 3) \
+        if (hc is not None and ac is not None) else None
+
+    # Both teams scoring often ⇒ each side needs its own attack (xG,
+    # goals scored) AND weak-ish opposing defense (opp goals conceded
+    # high).  Baseline shape favours BTTS-Yes; mirror for BTTS-No.
+    factors: dict[str, Optional[float]] = {
+        "Combined xG":              combined_xg,
+        "Combined Goals Scored":    combined_goals,
+        "Combined Goals Conceded":  combined_conceded,
+        "H2H BTTS trend":           None,     # data ingest pending
+    }
+
+    sel = str(selection or "yes").strip().lower()
+    if sel in ("no", "n") or sel.startswith("no"):
+        for _k in ("Combined xG", "Combined Goals Scored",
+                    "Combined Goals Conceded"):
+            v = factors.get(_k)
+            if isinstance(v, (int, float)):
+                factors[_k] = round(1.0 - v, 3)
+
     sources = [k for k, v in factors.items() if v is not None]
     return factors, sources
 
@@ -220,6 +292,7 @@ def has_enough_soccer_data(factors: dict, market_type: str = "ml") -> bool:
 __all__ = [
     "build_soccer_ml_factors",
     "build_soccer_total_factors",
+    "build_soccer_btts_factors",
     "has_enough_soccer_data",
     "MIN_FACTORS_SOCCER_ML",
     "MIN_FACTORS_SOCCER_TOTAL",

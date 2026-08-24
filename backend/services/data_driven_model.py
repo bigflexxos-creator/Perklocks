@@ -740,32 +740,32 @@ def tennis_ml_prob(
                 used.append("tier_itf_dog_lift")
 
     # ── Model-anchored implied signal (2026-07-21) ────────────────────
-    # Every tennis pick has SOMETHING for the DD model to say based on
-    # the market's own vig-free implied probability. This ensures the
-    # `data_driven_contribs` dict is never empty for tennis_extra even
-    # when Sackmann has zero player data (WTA / doubles / most ITF).
-    # Fires in the 55-88% implied band (the "healthy fav" zone).
+    # PERKLOCKS PASS 3 (2026-06) — Universal Probability-Authority
+    # Closure §Tennis.  The prior implementation added a positive
+    # ``lift`` for `book_anchor` / `book_coverage` / `value_zone`
+    # whenever the market itself matched a chalky implied band.
+    # That silently turned SPORTSBOOK information into predictive
+    # inflation on top of the book-implied anchor.  Per directive:
+    #
+    #   "Keep sportsbook information as benchmark/metadata only".
+    #
+    # Fix: emit the same audit rows so downstream rationale/UI can
+    # still describe the market context, but with ZERO lift and NO
+    # entry into `used` (which would otherwise count them as
+    # independent signals).  A book-only tennis pick now has an
+    # empty ``used`` set which correctly maps to
+    # ``MODEL_CONDITIONED`` (diagnostic only — cannot promote Win
+    # Expected further downstream).
     if 0.55 <= implied <= 0.88:
-        # Book consensus implied → small anchor lift confirming the
-        # market pricing itself. Slightly stronger for the tour zones.
         if 0.65 <= implied <= 0.80:
-            contribs["book_anchor"] = 0.006
-            lift += 0.006
-            used.append("book_anchor")
+            contribs["book_anchor"] = 0.0    # benchmark only, no lift
         else:
-            contribs["book_anchor"] = 0.004
-            lift += 0.004
-            used.append("book_anchor")
+            contribs["book_anchor"] = 0.0    # benchmark only, no lift
 
     # ── Real-book confirmation (US sportsbook coverage) ──────────────
-    # When a US-regulated sportsbook (FanDuel/DK/MGM) actually carries
-    # the match — pulled by tennis_extra/real_odds.py — the line is
-    # dramatically sharper than a European scrape. Confirms that
-    # money is actually flowing on the market side we picked.
+    # Metadata only — coverage does NOT create predictive lift.
     if ctx.get("using_real_odds"):
-        contribs["book_coverage"] = 0.006
-        lift += 0.006
-        used.append("book_coverage")
+        contribs["book_coverage"] = 0.0      # benchmark only, no lift
     if ctx.get("fair_odds_model"):
         # Elo/form-driven fair-odds engine says the market side is
         # justified. Model-based confirmation independent of book.
@@ -783,10 +783,12 @@ def tennis_ml_prob(
         lift += -0.004
         used.append("chalk_dampener")
     elif 0.60 <= implied < 0.70:
-        # Sweet spot — historically the best-ROI fav band.
-        contribs["value_zone"] = 0.005
-        lift += 0.005
-        used.append("value_zone")
+        # PASS 3 (2026-06) — ``value_zone`` was previously a +0.005
+        # positive lift purely from a chalky implied band (book-
+        # driven).  Retained as an audit row with ZERO lift so the
+        # UI can still describe the market context, but it no
+        # longer inflates Win Expected.
+        contribs["value_zone"] = 0.0         # benchmark only, no lift
 
     total_lift = _clamp(lift, -CAP_TOTAL, CAP_TOTAL)
     mp = _clamp(implied + total_lift, 0.10, 0.92)

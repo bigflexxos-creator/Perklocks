@@ -694,6 +694,116 @@ def _win_prob_to_american(prob: float) -> int:
     return int(round(100 * (1 - prob) / prob))
 
 
+def _compute_data_quality_score(pick: dict | None,
+                                  factors: dict[str, float]) -> float:
+    """PERKLOCKS PASS 4 (2026-06) — real evidence-quality score.
+
+    Replaces the fixed ``data_quality = 75.0`` placeholder with a
+    value derived from the pick itself.  Each component is ∈ [0,100]
+    and only present components are averaged so missing evidence
+    lowers DQ without silently boosting it via a neutral 50 default.
+    """
+    if pick is None:
+        return 60.0
+
+    comps: list[tuple[str, float]] = []
+
+    # (a) sample depth — number of real factors present.
+    n_real = sum(1 for v in (factors or {}).values()
+                    if isinstance(v, (int, float)))
+    if n_real > 0:
+        comps.append(("sample_depth",
+                        min(100.0, 40.0 + n_real * 12.0)))
+
+    # (b) exact-market history coverage — hit% vs line factor present.
+    for k in ("Career vs Opponent Hit%", "Hit Rate vs Line",
+              "Hit% (last 20 at line)", "Exact-Line Hit%",
+              "L5 Avg vs Line"):
+        if isinstance((factors or {}).get(k), (int, float)):
+            comps.append(("exact_market_hist", 100.0))
+            break
+
+    # (c) distribution uncertainty — Wilson CI width penalty.
+    lo = pick.get("sim_ci_lower")
+    hi = pick.get("sim_ci_upper")
+    if isinstance(lo, (int, float)) and isinstance(hi, (int, float)):
+        width = max(0.0, float(hi) - float(lo))
+        comps.append(("distribution_unc", max(0.0, 100.0 - width * 3.0)))
+
+    # (d) calibration quality — model_version present + no calibration warn.
+    if pick.get("model_version"):
+        base = 80.0
+        if pick.get("calibration_band_warning"):
+            base -= 30.0
+        comps.append(("calibration_quality", max(0.0, base)))
+
+    # (e) identity confidence.
+    if (pick.get("canonical_player_id")
+            or pick.get("player_id")
+            or pick.get("provider_player_id")):
+        comps.append(("identity_confidence", 100.0))
+    elif pick.get("player") or pick.get("player_name"):
+        comps.append(("identity_confidence", 60.0))
+
+    # (f) H2H / opponent coverage.
+    for k in ("H2H Recent", "Career vs Opponent Hit%", "H2H"):
+        if isinstance((factors or {}).get(k), (int, float)):
+            comps.append(("h2h_coverage", 100.0)); break
+
+    # (g) data freshness — pick first_seen within 24h of event.
+    try:
+        from datetime import datetime, timezone
+        fs = pick.get("first_seen_at") or pick.get("created_at")
+        et = pick.get("event_time") or pick.get("commence_time")
+        if fs and et:
+            a = datetime.fromisoformat(str(fs).replace("Z", "+00:00"))
+            b = datetime.fromisoformat(str(et).replace("Z", "+00:00"))
+            hours = abs((b - a).total_seconds()) / 3600.0
+            if hours <= 6:
+                comps.append(("data_freshness", 100.0))
+            elif hours <= 24:
+                comps.append(("data_freshness", 80.0))
+            elif hours <= 72:
+                comps.append(("data_freshness", 55.0))
+            else:
+                comps.append(("data_freshness", 30.0))
+    except Exception:
+        pass
+
+    # (h) model provenance.
+    prov = (pick.get("simulator_provenance")
+             or pick.get("provenance")
+             or pick.get("probability_provenance"))
+    if prov == "CAUSAL_INDEPENDENT":
+        comps.append(("model_provenance", 100.0))
+    elif prov == "EMPIRICAL_INDEPENDENT":
+        comps.append(("model_provenance", 90.0))
+    elif prov == "MODEL_CONDITIONED":
+        comps.append(("model_provenance", 50.0))
+    elif prov == "PRIOR_ONLY":
+        comps.append(("model_provenance", 30.0))
+    elif prov == "INVALID":
+        comps.append(("model_provenance", 0.0))
+
+    # (i) market edge (already computed on the pick).
+    ep = pick.get("edge_percent")
+    if isinstance(ep, (int, float)):
+        # Positive edge lifts DQ; neutral edge keeps it near 60.
+        comps.append(("market_edge",
+                       max(0.0, min(100.0, 60.0 + float(ep) * 3.0))))
+
+    # (j) lineup/injury completeness — ONLY when REAL data present.
+    for k in ("lineup_confirmed", "injury_report", "starter_confirmed"):
+        if pick.get(k) is True:
+            comps.append(("lineup_completeness", 100.0)); break
+
+    if not comps:
+        return 60.0
+    return round(sum(v for _, v in comps) / len(comps), 1)
+
+
+
+
 def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
                         pick: dict | None = None, bucket_row: dict | None = None,
                         edge_percent: float | None = None) -> tuple[float, dict]:
@@ -754,8 +864,25 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
         roi_comp = 50.0   # neutral until enough sample
         roi_available = False
 
-    # 4) Data quality — base 75 (placeholder for future injury/lineup feeds)
-    data_quality = 75.0
+    # 4) Data quality — PERKLOCKS PASS 4 (2026-06).  Replaces the
+    # prior hard-coded ``data_quality = 75.0`` placeholder with a
+    # real evidence-quality score derived from the pick itself.
+    # Components (each ∈ [0,100], averaged over the ones we
+    # actually have data for):
+    #   * sample_depth        — # of real factors (evidence_count)
+    #   * exact_market_hist   — has hit-rate-vs-line window (0/100)
+    #   * distribution_unc    — sim CI width penalty (0-100)
+    #   * calibration_quality — model_version present + calibration_band
+    #                              warning absent
+    #   * identity_confidence — canonical player/participant id present
+    #   * h2h_opp_coverage    — H2H hit% factor present
+    #   * data_freshness      — first_seen_at within 24h of event_time
+    #   * model_provenance    — CAUSAL/EMPIRICAL independent = 100,
+    #                              MODEL_CONDITIONED = 50, PRIOR_ONLY = 30
+    #   * lineup_completeness — real lineup/injury data present
+    # A pick with NO real evidence stays at the neutral 60 (below the
+    # old 75 floor) so Lock cannot inflate purely from placeholder DQ.
+    data_quality = _compute_data_quality_score(pick, factors)
 
     # 5) Volatility control (lower volatility = higher score)
     vol = 80.0
@@ -894,7 +1021,25 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
         "bucket_n":     bucket_n,
         "agreement":    round(factor_agreement, 3),
     }
-    return max(55.0, min(99.0, round(score, 1))), weighted
+    final_score = max(55.0, min(99.0, round(score, 1)))
+
+    # ── PERKLOCKS PASS 4 (2026-06) — Universal Lock Authority wiring.
+    # Stamps the universal-authority block on the pick so downstream
+    # publication / rollover / parlay consumers can validate that the
+    # pick's Win Expected came from a legitimate independent model
+    # (not from book-implied masquerade).  Candidate-level mutation
+    # only — never touches safe_picks / orchestrator / canonical
+    # publication plumbing.
+    try:
+        from services.universal_lock_authority import apply_universal_lock
+        # Ensure pick["lock_score"] reflects the just-computed value so
+        # the authority reuses it rather than recomputing.
+        pick["lock_score"] = final_score
+        apply_universal_lock(pick)
+    except Exception:  # pragma: no cover — never break legacy paths
+        pass
+
+    return final_score, weighted
 
 
 def _median_price(book_outcomes: list, name: str) -> int | None:
@@ -5964,9 +6109,22 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 factors = _cfb_pc["factors"]
                 _mlb_features_used = _cfb_pc.get("sources") or ["cfb_feature_engine"]
             else:
-                factors = {"Book Implied Probability": mp}
-                _mlb_features_used = ["book_implied_calibrated",
-                                       "cfb_engine_no_precompute"]
+                # PERKLOCKS PASS 3 (2026-06) — book-implied fallback
+                # REMOVED as predictive/model authority.  Missing CFB
+                # precompute = DATA_INSUFFICIENT for the candidate.
+                # The pick is skipped (never crash safe_picks / never
+                # starve any other market).  When the feature engine
+                # regains coverage the same pick will re-emit
+                # cleanly through the real-authority branch above.
+                _skip_pick = True
+                try:
+                    from services.pipeline_diagnostic import log_reason as _plog
+                    _plog(
+                        sport="CFB", market=mk, player=player,
+                        reason="CFB_ENGINE_NO_PRECOMPUTE_DATA_INSUFFICIENT",
+                    )
+                except Exception:
+                    pass
         elif is_pitcher_prop:
             # Non-MLB pitcher props (KBO etc.) — Phase 1 real engine
             # only covers MLB.  Book-follow calibration retained.
