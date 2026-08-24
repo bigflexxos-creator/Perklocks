@@ -187,8 +187,25 @@ async def build_nfl_prop_factors(
         "Home/Away Split":           _factor_home_away(splits, stat_prefix, is_home),
         "Career vs Opponent Hit%":   _factor_prop_hit_rate(hit_row),
         "Opponent Defense Allowance": _factor_matchup(opp_pos, prop_stat, line),
-        "Book Implied Anchor":       _factor_book_implied(book_implied),
+        # 2026-08-23 NFL MODEL-INTEGRITY (Pass 2) — Book Implied removed
+        # from the factor set.  It was the confirmed "silent book-implied
+        # model authority" defect.  Preserved in `sources` only as an
+        # audit hint (visible to the pick rationale) but no longer
+        # participates in evidence scoring.
     }
+    # 2026-08-23 side-aware mirroring — every naturally Over-flavoured
+    # factor above is mirrored on Under so evidence cannot silently
+    # reward the opposite selected side (§Model-Integrity — "L5/L3/
+    # trend/matchup evidence must be side-aware").
+    # `Career vs Opponent Hit%` is already computed with `side` passed
+    # to `player_prop_hit_rate_vs_opponent` upstream so it stays as-is.
+    _side_norm = str(side or "over").lower()
+    if _side_norm == "under":
+        for _k in ("L5 Avg vs Line", "L3 vs Season Trend", "Home/Away Split",
+                    "Opponent Defense Allowance"):
+            v = factors.get(_k)
+            if isinstance(v, (int, float)):
+                factors[_k] = round(1.0 - v, 3)
 
     sources = []
     if factors["L5 Avg vs Line"] is not None:
@@ -201,8 +218,9 @@ async def build_nfl_prop_factors(
         sources.append("nflverse_career_vs_opp")
     if factors["Opponent Defense Allowance"] is not None:
         sources.append("nflverse_opp_defense_agg")
-    if factors["Book Implied Anchor"] is not None:
-        sources.append("odds_api_book_implied")
+    # Book Implied retained as audit-only source (removed from factors).
+    if isinstance(book_implied, (int, float)):
+        sources.append("odds_api_book_implied[audit_only]")
 
     # Rationale — the "Why this pick" prose we surface on the UI.
     rationale_bits = []
