@@ -21,7 +21,7 @@ logger = logging.getLogger("lockscore.brain.sim_runner")
 
 # Lazy import per sport — keeps the runner lightweight when only some sports
 # have simulators.
-_SPORTS_WITH_SIM = {"MLB", "Soccer", "NBA", "Tennis"}
+_SPORTS_WITH_SIM = {"MLB", "Soccer", "NBA", "Tennis", "NFL", "NHL"}
 
 
 def _player_stats_from_pick(pick: dict) -> dict:
@@ -129,30 +129,44 @@ def simulate_pick(pick: dict) -> Optional[dict]:
             out = simulate_tennis_pick(pick, tennis_ctx=tennis_ctx)
             sim_type = "event_simulation"
         elif sport == "NFL" or sport == "CFB":
-            # 2026-08-23 NFL/CFB (Pass 2) — root-level `sim_nfl.py` is a
-            # stub returning `{"ran": False}`.  Honest handling: pass a
-            # non-executable signal upstream so the anchor step skips
-            # sim-promotion (no book-implied fallback, no factor mean
-            # masquerade).  When a real NFL sim ships, plug it here.
+            # Pass 2 (2026-06) — NFL now has a real distribution
+            # Monte Carlo simulator at ``sim_nfl.simulate``.  It
+            # honours the standard fail-closed contract (returns
+            # ran=False for game markets [handled by Platinum NFL],
+            # ATD markets [handled by nfl_atd_engine], and any
+            # candidate with insufficient real history).  CFB is out
+            # of scope for Pass 2 and continues to receive the
+            # ran=False stub.
             try:
                 from sim_nfl import simulate as _nfl_sim  # type: ignore
                 _stub = _nfl_sim(pick)
                 if _stub and _stub.get("ran"):
                     out = _stub
-                    sim_type = "distribution_monte_carlo"
+                    sim_type = _stub.get("simulator_type",
+                                          "distribution_monte_carlo")
                 else:
                     return None
             except Exception:
                 return None
         elif sport == "NHL":
-            # 2026-08-23 NHL (Pass 2) — no NHL simulator in codebase.
-            # Return None so `_anchor_pick_to_sim` will NOT promote a
-            # fabricated probability and callers see honest "no sim
-            # authority" (Win Expected stays at factor-mean or falls
-            # closed at emit gates upstream).  Wiring is prepared: add a
-            # `sim_nhl.simulate_nhl_pick` import here when the simulator
-            # lands, no plumbing change needed.
-            return None
+            # Pass 2 (2026-06) — NHL simulator lives at
+            # ``brain.sim_nhl.simulate``.  Handles game markets
+            # (moneyline / puck line / total) via a Poisson team-
+            # score model and player markets (goals / assists /
+            # points / SOG / saves) via per-game stat distributions.
+            # DATA_INSUFFICIENT / UNSUPPORTED_MARKET → ran=False so
+            # this pick is skipped without a fabricated probability.
+            try:
+                from brain.sim_nhl import simulate as _nhl_sim
+                _stub = _nhl_sim(pick)
+                if _stub and _stub.get("ran"):
+                    out = _stub
+                    sim_type = _stub.get("simulator_type",
+                                          "distribution_monte_carlo")
+                else:
+                    return None
+            except Exception:
+                return None
         else:
             return None
 
@@ -205,6 +219,8 @@ _SIM_VERSIONS = {
     "NBA":    "1.1.0",
     "Soccer": "1.1.0",
     "Tennis": "1.1.0",
+    "NFL":    "2.0.0",   # Pass 2 real distribution
+    "NHL":    "1.0.0",   # Pass 2 real distribution
 }
 
 
