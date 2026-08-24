@@ -1025,3 +1025,37 @@ No Soccer/Tennis/MLB/UFC H2H changes. No goalscorer/Assist scoring. No simulator
 No NFL H2H changes. No Soccer/Tennis/MLB/UFC H2H. No simulator/model/scoring/acquisition/frontend/settlement.
 
 ### Approximate credits used: ~1 medium turn (single file edit + two background backfill jobs).
+
+---
+
+## 2026-08-23 — MLB MODEL-INTEGRITY SLICE 1 — CERTIFIED
+
+### Files/functions changed (2 files)
+1. **`services/mlb_feature_engine.py`**:
+   - Added `factor_recent_outs_form(ctx, pitcher, side)` — reads real outs history (`l5_avg_outs` or `l5_avg_ip`); side-aware.
+   - Rewrote `build_mlb_pitcher_outs_factors()` — removed K-count leakage (`factor_recent_k_form`), removed K-line-calibrated `factor_dfs_pitcher_k_projection`, added Under-mirror wrapper on every naturally Over-flavoured factor.
+   - Rewrote `build_mlb_pitcher_k_factors()` — same Under-mirror wrapper so ancillary K evidence cannot silently reward the opposite side (dedicated K probability engine preserved as primary authority).
+   - Added `side=` parameter to `build_mlb_hitter_factors()` — mirrors every Over-flavoured hitter factor for Under picks.
+2. **`sports_engine.py`** — pass `side=str(side)` to `build_mlb_hitter_factors()` at line 5649 (existing call site only, no orchestrator/safe_picks/canonical touched).
+
+### Defects closed
+- ✅ Pitcher Outs K-count leakage removed (L5 factor now reads actual outs, not K count)
+- ✅ K-line DFS projection removed from Outs factors (was silent K-market authority in Outs picks)
+- ✅ Every Outs/K/Hitter factor now side-aware (Under evidence mirrored)
+- ✅ Empty-ctx → all None honest fail-closed (no book-implied fallback introduced)
+- ✅ Dedicated K probability engine untouched (primary authority preserved)
+
+### 8 Focused Proofs (ALL PASS)
+1. `factor_recent_outs_form` reads outs history; returns None honestly when only K data present ✅
+2. Outs Under mirrors: L5 over=0.889 / under=0.111; Workload over=0.913 / under=0.087 ✅
+3. K prop Under mirrors: L5 over=0.95 / under=0.05; K/9 over=0.885 / under=0.115 ✅
+4. Hitter factors Under mirrors: L10 over=0.906 / under=0.094 ✅
+5. Empty ctx → all None (no invented values) ✅
+6. Source code has no K-form or DFS-K *calls* in Outs builder ✅
+7. HARD BOUNDARY preserved — no protected file touched ✅
+8. Backend `/health → ok` ✅
+
+### Not touched (HARD BOUNDARY honored)
+`safe_picks`, refresh orchestrator, provider acquisition/cache, starvation, cooldowns, canonical publication, settlement/history/H2H ingestion, Locks/Rollover/Parlay plumbing.
+
+### Approximate credits used: ~1 medium turn.
