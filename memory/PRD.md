@@ -1204,3 +1204,37 @@ Migrating 4 direct API callers in `sports_engine.py`, `services/mls_direct_injec
 `safe_picks`, refresh orchestrator, provider acquisition/cache, starvation, cooldowns, canonical publication plumbing, settlement/history/H2H, Locks/Rollover/Parlay consumers, scoring/model engines.
 
 ### Approximate credits used: ~1 medium turn.
+
+---
+
+## 2026-08-24 — MLB Game Markets Reachability Fix (FALSE_GATE_BLOCKER)
+
+**Symptom (user report)**: MLB game markets (Moneyline, Run Line, Total Runs) not appearing on the /picks/today board despite 20 canonical-eligible published picks in DB.
+
+**Root Cause (proven via live DB probe)**:
+- `/picks/today` filter used legacy `grade` field (`"grade": {"$ne": "Pass"}`) at picks_routes.py:1699.
+- APEX gate live-overwrites the legacy `grade` field to `"Pass"` (with `apex_block_reason=magic_tier_not_aligned_strong:INSUFFICIENT_EVIDENCE`) on picks where evidence stack falls short of the APEX tier — even when the CANONICAL `published_grade` snapshot (Phase 1c immutable) says `"Lock"`.
+- Result: filter dropped all 20 MLB game markets today (dozens more player props too — 6 of 67 canonical-eligible survived).
+
+**Surgical Fix** (single file, additive):
+- `/app/backend/routes/picks_routes.py` — replaced the legacy `"grade": {"$ne": "Pass"}` top-level clause with a canonical-first predicate inside the `$and` list:
+  ```
+  {"$or": [
+      {"published_grade": {"$exists": True, "$ne": "Pass"}},
+      {"$and": [
+          {"published_grade": {"$exists": False}},
+          {"grade": {"$ne": "Pass"}},
+      ]},
+  ]}
+  ```
+- Prefers the immutable canonical `published_grade` (Phase-1c snapshot); falls back to legacy `grade` only for pre-canonical rows without a snapshot. Preserves the "no Pass grade on board" intent exactly — just against the authoritative field.
+
+**Live Verification** (post-restart, via `/api/picks/today`):
+| Query | Before Fix | After Fix |
+|---|---|---|
+| MLB total picks | 6 | 30 |
+| MLB game markets | 0 | 19 (5 ML + 10 RL + 4 Total) |
+| Pass-graded leaks | 0 | 0 |
+| Soccer / Tennis / all-sports | unchanged | unchanged |
+
+**Hard Boundary Honored**: No changes to `safe_picks`, refresh orchestrator, starvation gates, acquisition pipelines, canonical dedupe, model_integrity_gate, or scoring engines. Single-file, single-clause read-time predicate change.
