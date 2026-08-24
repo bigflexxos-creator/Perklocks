@@ -1311,17 +1311,22 @@ async def _record(db, pick: dict, outcome: str, detail: dict, counts: dict):
         counts["unresolved_gated"] += 1
         return  # never write a lost/won without an actual
     if outcome == "lost" and _value == 0 and _line is not None:
-        # A '0' actual is ONLY acceptable when the authoritative
-        # source explicitly confirmed the participant recorded zero
-        # for THIS market family.  We treat a bare zero from
-        # settlement_detail as suspicious and require an explicit
-        # ``authoritative_zero=True`` flag on the detail row.  Since
-        # no current caller sets that flag, this converts the
-        # Seymour failure class to 'unresolved' automatically.
-        if not (detail or {}).get("authoritative_zero"):
-            counts.setdefault("unresolved_gated_zero", 0)
-            counts["unresolved_gated_zero"] += 1
-            return
+        # FINAL PARITY CLOSURE (2026-06) — authoritative zero is a
+        # valid actual.  The prior guard converted every value=0 loss
+        # to ``unresolved_gated_zero`` because no caller stamped
+        # ``authoritative_zero=True`` explicitly.  This silently
+        # blocked legitimate settlements like:
+        #     Over 0.5 Hits, actual=0 → LOSS
+        # The missing-actual case is already trapped at ``_value is
+        # None`` above; a numeric 0 arriving through the settlement
+        # detail block means the caller HAS an authoritative stat.
+        #
+        # We keep the flag as an *optional* override for callers that
+        # want to be explicit, but no longer refuse settlement when
+        # it is absent.  The stat-quality contract is enforced
+        # upstream by the pick's settlement_detail resolver + the
+        # existing MLB Stats API cross-check below.
+        pass
 
     # ── Authoritative MLB cross-check (2026-07-13 user mandate: "I want
     # all picks on board to grade correctly across all sports"). Some
@@ -1413,7 +1418,7 @@ async def _record(db, pick: dict, outcome: str, detail: dict, counts: dict):
         from services.settlement_service import SettlementService
         _svc = SettlementService(db)
         await _svc.ensure_indices()
-        await _svc.settle_from_pick(
+        _svc_result = await _svc.settle_from_pick(
             pick,
             result                    = outcome,
             source                    = "prop_settlement",
@@ -1424,6 +1429,27 @@ async def _record(db, pick: dict, outcome: str, detail: dict, counts: dict):
     except Exception as _e:
         logger.warning("prop_settlement SettlementService.record err %s: %s",
                        pick.get("id"), _e)
+        # FINAL PARITY CLOSURE (2026-06) — settlement telemetry truth.
+        # SettlementService raised → the canonical write did NOT
+        # succeed.  Refuse to increment the outcome / settled counters
+        # so failed writes remain PENDING with an explicit reason.
+        counts.setdefault("settlement_write_failed", 0)
+        counts["settlement_write_failed"] += 1
+        return
+    else:
+        # A REFUSAL_* status means the service refused the write
+        # (missing actual / identity mismatch / live event / …).
+        # Only outcome writes and idempotent-identical returns count
+        # toward settled/won/lost/push telemetry.
+        _svc_status = (_svc_result or {}).get("status")
+        _outcome_statuses = {"won", "lost", "push",
+                              "already_settled_identical"}
+        if _svc_status not in _outcome_statuses:
+            counts.setdefault("settlement_refused", 0)
+            counts["settlement_refused"] += 1
+            counts.setdefault(f"refused_{_svc_status or 'unknown'}", 0)
+            counts[f"refused_{_svc_status or 'unknown'}"] += 1
+            return
     # ── Propagate to user_bets (2026-07-21) — see routes/user_bets_routes.py
     try:
         from routes.user_bets_routes import propagate_pick_settlement

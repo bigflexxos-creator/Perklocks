@@ -385,6 +385,52 @@ async def _run_cross_check(db, query: dict, verifier, source_label: str) -> dict
                 "grade_verify_result":     "disagreement",
             }},
         )
+        # FINAL PARITY CLOSURE (2026-06) — correction wiring truth.
+        # Previously the validator STAMPED ``correction_required``
+        # and STOPPED — leaving the wrong canonical grade active on
+        # ``settlement_events``.  Now we actually submit the
+        # corrected grade to SettlementService so the canonical
+        # audit chain (settlement_version + supersedes_settlement_id
+        # + fingerprint) captures the correction.  Terminal
+        # disagreements (attempts ≥ max) are NOT re-submitted — they
+        # remain flagged but do not thrash the settler.
+        if _disposition == "correction_required":
+            try:
+                from services.settlement_service import SettlementService
+                _svc = SettlementService(db)
+                await _svc.ensure_indices()
+                _corr = await _svc.settle_from_pick(
+                    p,
+                    result                    = result,
+                    source                    = f"{source_label}_correction",
+                    actual_result             = {
+                        "player": p.get("player_name"),
+                        "stat":   p.get("market"),
+                        "line":   p.get("line"),
+                        "correction_evidence":  {
+                            "our_grade_was":    current,
+                            f"{source_label}":  result,
+                            "detected_at":      _now_iso,
+                            "attempts":         _attempts,
+                            "verifier_source":  source_label,
+                        },
+                    },
+                    authoritative_event_final = True,
+                )
+                _corr_status = (_corr or {}).get("status")
+                await db.picks.update_one(
+                    {"id": p.get("id")},
+                    {"$set": {
+                        "grade_disagreement.correction_submitted_at": _now_iso,
+                        "grade_disagreement.correction_status":        _corr_status,
+                        "grade_disagreement.corrected_grade":          result,
+                    }},
+                )
+            except Exception as _corr_err:
+                logger.warning(
+                    "grading_validator correction submit failed for %s: %s",
+                    p.get("id"), _corr_err,
+                )
         summary["reopened"] += 1
     if summary["mismatched"]:
         level = (logging.WARNING
