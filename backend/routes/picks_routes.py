@@ -2384,6 +2384,46 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         except Exception:
             pass
 
+    # ── P0 FINAL (2026-06) — CANONICAL WAGER DEDUPE on response.
+    # The /picks/today response was previously assembled from
+    # `db.picks` via a Mongo union of sub-queries (elite / model_only /
+    # tennis_ml / tennis_extra / mlb_k / soccer_scorer / high_lock /
+    # standard), then decorated / capped / eligibility-filtered — but
+    # NEVER passed through the canonical wager dedupe.  When multiple
+    # producers store the SAME semantic wager under different display
+    # names (e.g. "Tjen J." vs "Janice Tjen", "Vekic D." vs
+    # "Donna Vekic") each row survived every filter above and both
+    # cards rendered on the board.
+    #
+    # We collapse right here — after all filtering, before the final
+    # payload is serialised — using ``services.board_projection_service
+    # .dedupe_canonical`` (the same helper /picks/all uses via
+    # ``BoardProjectionService.project``).  Contract:
+    #   * Best-quality row wins the collapse (lock DESC → time earlier
+    #     → deterministic id tie-break — see ``_sort_key_lock_desc``).
+    #   * Sportsbook quotes / book_odds / win_probability are NEVER
+    #     recomputed — the winning row is emitted verbatim.
+    #   * Distinct (event, participant, market_family, side, line)
+    #     tuples remain distinct.
+    #   * Stale / legacy rows that never had a canonical_wager_key
+    #     stamped are STILL collapsed via on-the-fly
+    #     ``canonical_wager_identity`` — no blind DB deletion.
+    try:
+        from services.board_projection_service import dedupe_canonical
+        _pre_dedupe = len(canonical)
+        canonical = dedupe_canonical(canonical)
+        _dropped_dedupe = _pre_dedupe - len(canonical)
+        if _dropped_dedupe:
+            logger.info(
+                "picks_today canonical wager dedupe collapsed %d "
+                "duplicate row(s) (kept %d canonical wagers).",
+                _dropped_dedupe, len(canonical),
+            )
+    except Exception as _dd_err:
+        logger.warning(
+            "picks_today canonical wager dedupe skipped: %s", _dd_err,
+        )
+
     # ── Alt-line availability diagnostic (2026-07-13) ─────────────────
     # When the client asks for `line_type=alt` and gets zero (or very
     # few) tennis picks back, the reason is almost always that The Odds
