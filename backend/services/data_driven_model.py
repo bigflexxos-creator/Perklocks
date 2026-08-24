@@ -672,12 +672,17 @@ def tennis_ml_prob(
     # bookmakers. Tight consensus (< 3pp spread) = sharp market =
     # trust the line. Wide spread (> 8pp) = uncertain market where
     # the median line is more likely wrong; small mean-reversion fade.
+    #
+    # PASS 3-5 CLOSURE (2026-06) — Universal Probability-Authority.
+    # ``sharp_consensus`` was a positive lift purely derived from book
+    # agreement, adding independent Win Expected probability from
+    # market self-confirmation.  Now retained as ZERO-lift audit only.
+    # ``book_uncertainty`` remains a negative DAMPENER (fade) which is
+    # a valid market-uncertainty signal.
     consensus_spread = ctx.get("book_consensus_spread_pp")
     if isinstance(consensus_spread, (int, float)):
         if consensus_spread <= 3.0:
-            contribs["sharp_consensus"] = 0.008
-            lift += 0.008
-            used.append("sharp_consensus")
+            contribs["sharp_consensus"] = 0.0     # benchmark only, no lift
         elif consensus_spread >= 8.0:
             contribs["book_uncertainty"] = -0.010
             lift += -0.010
@@ -691,6 +696,14 @@ def tennis_ml_prob(
     # AND dogs (was dogs-only which excluded tennis_extra's 100% favorite
     # picks). Different sign per tier: chalk favorites in sharp markets
     # tend to hold; chalk favorites in soft ITF markets tend to slip.
+    #
+    # PASS 3-5 CLOSURE (2026-06) — Universal Probability-Authority.
+    # Every FAVORITE-tier positive lift and every market-derived
+    # DOG-lift here was derived purely from tier metadata + book
+    # favoritism (no real performance signal).  Retained as ZERO-lift
+    # audit rows only.  Negative DAMPENERS (tier_dog_fade in Slam /
+    # Masters) remain in place — those describe legitimate market
+    # sharpness, not a synthetic Win Expected boost.
     tier = ctx.get("match_tier")
     if isinstance(tier, str):
         tier_l = tier.lower()
@@ -698,46 +711,32 @@ def tennis_ml_prob(
         # Slam / Masters 1000 — sharp, favorites hold, dogs fade
         if any(k in tier_l for k in ("slam", "atp1000", "wta1000", "masters")):
             if is_fav:
-                contribs["tier_sharp_fav"] = 0.010
-                lift += 0.010
-                used.append("tier_sharp_fav")
+                contribs["tier_sharp_fav"] = 0.0     # benchmark only, no lift
             else:
                 contribs["tier_dog_fade"] = -0.008
                 lift += -0.008
                 used.append("tier_dog_fade")
         elif any(k in tier_l for k in ("atp 500", "wta 500", "500")):
             if is_fav:
-                contribs["tier_semi_sharp_fav"] = 0.006
-                lift += 0.006
-                used.append("tier_semi_sharp_fav")
+                contribs["tier_semi_sharp_fav"] = 0.0  # benchmark only, no lift
         elif any(k in tier_l for k in ("atp 250", "wta 250", "250")):
             # Tour-level 250 — slightly softer market, small fav bump
             if is_fav:
-                contribs["tier_tour_fav"] = 0.004
-                lift += 0.004
-                used.append("tier_tour_fav")
+                contribs["tier_tour_fav"] = 0.0       # benchmark only, no lift
         elif "challenger" in tier_l:
             # Challenger — mid-softness market. Favorites at book-consensus
             # implied win slightly more than book price (chalk holds).
             if is_fav:
-                contribs["tier_challenger_fav"] = 0.008
-                lift += 0.008
-                used.append("tier_challenger_fav")
+                contribs["tier_challenger_fav"] = 0.0 # benchmark only, no lift
             else:
-                contribs["tier_dog_lift"] = 0.010
-                lift += 0.010
-                used.append("tier_dog_lift")
+                contribs["tier_dog_lift"] = 0.0       # benchmark only, no lift
         elif any(k in tier_l for k in ("itf", "futures", "m15", "m25", "w15", "w25")):
             # ITF Futures — HIGHEST market softness. Favorites still hold
             # but retirement risk cuts the reliable edge.
             if is_fav:
-                contribs["tier_itf_fav"] = 0.006
-                lift += 0.006
-                used.append("tier_itf_fav")
+                contribs["tier_itf_fav"] = 0.0        # benchmark only, no lift
             else:
-                contribs["tier_itf_dog_lift"] = 0.012
-                lift += 0.012
-                used.append("tier_itf_dog_lift")
+                contribs["tier_itf_dog_lift"] = 0.0   # benchmark only, no lift
 
     # ── Model-anchored implied signal (2026-07-21) ────────────────────
     # PERKLOCKS PASS 3 (2026-06) — Universal Probability-Authority

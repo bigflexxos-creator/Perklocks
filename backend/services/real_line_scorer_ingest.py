@@ -648,7 +648,13 @@ async def _ingest_game_market_row(
             )
             if mk_lc in ("h2h", "double_chance", "spreads", "alternate_spreads"):
                 _real, _ = build_soccer_ml_factors(ctx, _pick_side_team)
-            elif mk_lc in ("totals", "alternate_totals", "btts", "both_teams_to_score"):
+            elif mk_lc in ("btts", "both_teams_to_score"):
+                # PASS 3-5 CLOSURE (2026-06) — BTTS side-aware builder.
+                from services.soccer_feature_engine import (
+                    build_soccer_btts_factors,
+                )
+                _real, _ = build_soccer_btts_factors(ctx, sel or "yes")
+            elif mk_lc in ("totals", "alternate_totals"):
                 _real, _ = build_soccer_total_factors(ctx, sel or "")
             for k, v in (_real or {}).items():
                 if isinstance(v, (int, float)):
