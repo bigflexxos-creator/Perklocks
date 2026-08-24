@@ -306,7 +306,21 @@ def simulate_mlb_pick(pick: dict, player_stats: dict | None = None) -> Optional[
             stats.get("expected_innings", 6.0),
         )
     else:
-        return None
+        # ── Game markets (Moneyline / Run Line / Total) — Poisson
+        # team-score model.  This is the P0 (2026-06 Final Closure)
+        # extension: previously ``sim_mlb`` returned None for game
+        # markets, leaving whatever book/factor-seeded probability
+        # the caller attached as the final published prob.  We now
+        # derive real per-team run-scoring λ from the existing MLB
+        # inputs (probable pitcher K-rate / team runs projection /
+        # park & environment / home-away) and simulate the game.
+        _game = _simulate_mlb_game_market(pick, stats)
+        # Fail-closed contract: game-market failures return None so
+        # sim_runner leaves the caller's model/prob untouched — never
+        # a partial ran=False payload.
+        if _game is None or not _game.get("ran", True):
+            return None
+        return _game
 
     if not distribution:
         return None
@@ -395,3 +409,230 @@ def _stamp_mlb_sim_out(payload: dict, *, player_stats: dict,
     except Exception:
         pass
     return payload
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# MLB GAME-MARKET SIMULATOR — Moneyline / Run Line / Total
+# Added 2026-06 in the Perklocks final production closure.  Uses the
+# existing per-team MLB context (probable pitchers, offense, park,
+# home/away) to run a Poisson team-score Monte Carlo, then derives
+# exact selected-side probabilities for ML / Run Line / Total in ONE
+# coherent simulation.  Distinct from the player-prop path above.
+# ═══════════════════════════════════════════════════════════════════════
+import math as _math
+
+_MLB_LEAGUE_AVG_RUNS = 4.55            # 2024 MLB avg runs/game/team
+_MLB_LEAGUE_K_RATE   = LEAGUE_K_RATE   # existing constant
+_MLB_LEAGUE_PARK_FACTOR = 1.0
+
+def _mlb_pick_side(pick: dict, *, home: str, away: str) -> Optional[str]:
+    """Return "home" or "away" from a ML/RunLine pick."""
+    h = (home or "").strip().lower()
+    a = (away or "").strip().lower()
+    for k in ("side", "selection", "pick_side", "pick"):
+        v = str(pick.get(k) or "").strip().lower()
+        if not v:
+            continue
+        if h and h in v:
+            return "home"
+        if a and a in v:
+            return "away"
+    return None
+
+def _mlb_extract_line(pick: dict) -> Optional[float]:
+    for k in ("line", "point", "threshold"):
+        v = pick.get(k)
+        try:
+            if v is not None: return float(v)
+        except (TypeError, ValueError): pass
+    m = _re_num.search(str(pick.get("market") or ""))
+    if m:
+        try: return float(m.group(1))
+        except ValueError: return None
+    return None
+
+import re as _re
+_re_num = _re.compile(r"(-?\d+(?:\.\d+)?)")
+
+def _mlb_classify_game_market(pick: dict) -> Optional[str]:
+    """Return "moneyline" | "run_line" | "total" or None."""
+    raw = str(pick.get("market") or "").strip().lower()
+    mk  = str(pick.get("market_key") or "").strip().lower()
+    if "moneyline" in raw or mk in ("h2h", "moneyline"):
+        return "moneyline"
+    if "run line" in raw or "runline" in raw or "run_line" in mk \
+       or "spread" in mk or "spreads" == mk:
+        return "run_line"
+    # Team total is handled by the alt-team-total flow, not here.
+    if "team total" in raw:
+        return None
+    if raw.startswith("total ") or " total " in raw \
+       or raw.endswith(" total") or mk in ("totals", "total"):
+        return "total"
+    return None
+
+def _mlb_team_lambda(pick: dict, stats: dict, *, is_home: bool) -> float:
+    """Derive an offense-vs-pitching expected runs (λ) for the team.
+
+    Inputs (all optional — missing ones fall back to league average):
+        pitcher_k_rate         opposing pitcher K rate
+        pitcher_era            opposing pitcher ERA
+        team_runs_projection   pre-game per-team runs projection (best)
+        park_factor            ballpark run factor (1.0 = neutral)
+        home_field_bump        home offense edge (default 0.10)
+    """
+    # Best signal: an explicit projected run total for this team.
+    proj = stats.get("team_runs_projection")
+    if isinstance(proj, (int, float)) and proj > 0:
+        base = float(proj)
+    else:
+        base = _MLB_LEAGUE_AVG_RUNS
+        # Opposing pitcher K-rate adjustment (very high K-rate → fewer runs).
+        opp_k = stats.get("pitcher_k_rate")
+        if isinstance(opp_k, (int, float)):
+            base *= max(0.75, min(1.20,
+                                     1.0 + (_MLB_LEAGUE_K_RATE - float(opp_k)) * 1.5))
+        # ERA-based adjustment when available.
+        opp_era = stats.get("pitcher_era")
+        if isinstance(opp_era, (int, float)) and opp_era > 0:
+            base *= max(0.75, min(1.25, float(opp_era) / 4.30))
+    park = stats.get("park_factor")
+    if isinstance(park, (int, float)) and 0.7 < park < 1.4:
+        base *= float(park)
+    if is_home:
+        base *= 1.03
+    else:
+        base *= 0.97
+    return max(0.5, min(12.0, base))
+
+def _sample_poisson_int(lam: float) -> int:
+    if lam <= 0: return 0
+    L = _math.exp(-lam)
+    k = 0; p = 1.0
+    while True:
+        k += 1; p *= random.random()
+        if p < L: break
+    return k - 1
+
+def _simulate_mlb_game_market(pick: dict, stats: dict) -> Optional[dict]:
+    """Coherent Poisson team-score MC → ML / Run Line / Total probs.
+
+    Real inputs required (fail-closed when absent):
+        home_team + away_team
+        AT LEAST ONE of: team_runs_projection, pitcher_k_rate,
+                          pitcher_era, park_factor
+    """
+    kind = _mlb_classify_game_market(pick)
+    if kind is None:
+        return None
+    home = pick.get("home_team") or ""
+    away = pick.get("away_team") or ""
+    if not home or not away:
+        return {"ran": False, "reason": "DATA_INSUFFICIENT",
+                 "detail": "missing_home_or_away_team"}
+    # Real-signal gate — need at least ONE real MLB context input.
+    home_stats = stats.get("home") or stats or {}
+    away_stats = stats.get("away") or stats or {}
+    _real_signals = 0
+    for src in (home_stats, away_stats, pick):
+        for k in ("team_runs_projection", "pitcher_k_rate",
+                  "pitcher_era", "park_factor"):
+            if isinstance(src.get(k), (int, float)):
+                _real_signals += 1
+                break
+    if _real_signals == 0:
+        return {"ran": False, "reason": "DATA_INSUFFICIENT",
+                 "detail": "no_real_mlb_context_inputs"}
+
+    home_lam = _mlb_team_lambda(pick, home_stats, is_home=True)
+    away_lam = _mlb_team_lambda(pick, away_stats, is_home=False)
+    RUNS = 20_000
+    home_scores: list[int] = []
+    away_scores: list[int] = []
+    for _ in range(RUNS):
+        h = _sample_poisson_int(home_lam)
+        a = _sample_poisson_int(away_lam)
+        # MLB never ties — extra innings resolve.  50/50 walk-off.
+        if h == a:
+            if random.random() < 0.5: h += 1
+            else:                     a += 1
+        home_scores.append(h); away_scores.append(a)
+    totals = [h + a for h, a in zip(home_scores, away_scores)]
+
+    line = _mlb_extract_line(pick)
+    if kind == "moneyline":
+        team = _mlb_pick_side(pick, home=home, away=away)
+        if team is None:
+            return {"ran": False, "reason": "MISSING_SIDE"}
+        wins = sum(1 for h, a in zip(home_scores, away_scores)
+                     if (h > a if team == "home" else a > h))
+        distribution = home_scores if team == "home" else away_scores
+        threshold = None
+    elif kind == "run_line":
+        team = _mlb_pick_side(pick, home=home, away=away)
+        if team is None or line is None:
+            return {"ran": False, "reason": "MISSING_SIDE_OR_LINE"}
+        wins = 0
+        for h, a in zip(home_scores, away_scores):
+            margin = (h - a) if team == "home" else (a - h)
+            if margin > line: wins += 1
+        distribution = [(h - a) if team == "home" else (a - h)
+                          for h, a in zip(home_scores, away_scores)]
+        threshold = line
+    else:  # total
+        if line is None:
+            return {"ran": False, "reason": "MISSING_LINE"}
+        is_under = _is_under(pick.get("market") or "")
+        if str(pick.get("side") or pick.get("selection") or "").lower().startswith("under"):
+            is_under = True
+        elif str(pick.get("side") or pick.get("selection") or "").lower().startswith("over"):
+            is_under = False
+        wins = sum(1 for t in totals
+                     if (t < line if is_under else t > line))
+        distribution = totals
+        threshold = line
+
+    n = len(distribution)
+    p_win = wins / n if n else 0.0
+    ci_lo, ci_hi = _wilson_ci(p_win, n)
+    blended_wp = float(pick.get("win_probability") or 0)
+    sim_wp_pct = round(p_win * 100, 1)
+    disagreement = round(sim_wp_pct - blended_wp, 2)
+    signal = "stronger" if disagreement > 5 else ("weaker" if disagreement < -5 else "neutral")
+
+    payload = {
+        "sim_win_probability":          sim_wp_pct,
+        "sim_ci_lower":                 round(ci_lo * 100, 1),
+        "sim_ci_upper":                 round(ci_hi * 100, 1),
+        "sim_runs":                     n,
+        "sim_threshold":                threshold,
+        "sim_expected_stat":            round(sum(distribution) / max(1, n), 2),
+        "sim_disagreement_with_model":  disagreement,
+        "sim_signal":                   signal,
+        "sim_game_market_kind":         kind,
+        "sim_home_lambda":              round(home_lam, 3),
+        "sim_away_lambda":              round(away_lam, 3),
+        "simulator_type":               "distribution_monte_carlo",
+        "simulator_name":               "mlb_simulator_game",
+        "simulator_version":            "1.0.0",
+        "independent_evidence":         True,
+        "valid":                        True,
+        **compute_percentiles(distribution, threshold=threshold),
+    }
+    # Provenance envelope — CAUSAL when we had ≥2 real signals,
+    # EMPIRICAL when 1.
+    return _stamp_mlb_sim_out(
+        payload,
+        player_stats={
+            "team_runs_projection_home": home_stats.get("team_runs_projection"),
+            "team_runs_projection_away": away_stats.get("team_runs_projection"),
+            "pitcher_k_rate_home":        home_stats.get("pitcher_k_rate"),
+            "pitcher_k_rate_away":        away_stats.get("pitcher_k_rate"),
+            "pitcher_era_home":           home_stats.get("pitcher_era"),
+            "pitcher_era_away":           away_stats.get("pitcher_era"),
+            "park_factor":                stats.get("park_factor"),
+        },
+        sim_prob=p_win,
+        model_prob=(blended_wp / 100.0) if blended_wp else None,
+    )
+

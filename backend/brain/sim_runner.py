@@ -59,6 +59,37 @@ def _player_stats_from_pick(pick: dict) -> dict:
     obp = (bvp.get("obp") or pi.get("season_obp") or pi.get("obp"))
     if obp is not None:
         stats["obp"] = obp
+    # ── PERKLOCKS FINAL CLOSURE (2026-06) — MLB GAME-MARKET context ──
+    # For MLB moneyline / run-line / total the game-market simulator
+    # in ``brain.sim_mlb._simulate_mlb_game_market`` reads two
+    # nested dicts (``stats["home"]`` / ``stats["away"]``) instead of
+    # the player-flat shape above.  We prefer any pre-stamped
+    # ``mlb_game_ctx`` block (populated upstream by the MLB feature
+    # engine) and additionally lift a small set of top-level pick
+    # fields into both team slots so the sim has real inputs even
+    # when the feature engine hasn't stamped a per-team block.
+    _mgc = pick.get("mlb_game_ctx") or pick.get("mlb_game_context")
+    if isinstance(_mgc, dict):
+        if isinstance(_mgc.get("home"), dict):
+            stats["home"] = dict(_mgc["home"])
+        if isinstance(_mgc.get("away"), dict):
+            stats["away"] = dict(_mgc["away"])
+        if "park_factor" in _mgc:
+            stats["park_factor"] = _mgc["park_factor"]
+    # Top-level fallbacks (independent per-team lift).
+    home_lift = {}
+    away_lift = {}
+    for k in ("team_runs_projection", "pitcher_k_rate", "pitcher_era"):
+        hv = pick.get(f"home_{k}")
+        av = pick.get(f"away_{k}")
+        if isinstance(hv, (int, float)): home_lift[k] = hv
+        if isinstance(av, (int, float)): away_lift[k] = av
+    if home_lift:
+        stats.setdefault("home", {}).update(home_lift)
+    if away_lift:
+        stats.setdefault("away", {}).update(away_lift)
+    if isinstance(pick.get("park_factor"), (int, float)):
+        stats["park_factor"] = pick["park_factor"]
     return stats
 
 
