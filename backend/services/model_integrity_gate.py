@@ -107,10 +107,22 @@ def evaluate(pick: dict) -> dict:
     away = str(p.get("away_team") or "").strip().lower()
     player = str(p.get("player_name") or p.get("player") or "").strip().lower()
     sel = str(p.get("side") or p.get("selection") or p.get("pick") or "").strip().lower()
+    event_str = str(p.get("event") or "").strip().lower()
     is_player_market = bool(player)
     if not is_player_market:
         # Team-market: selected side must resolve to home OR away.
-        if not (home and away):
+        # 2026-06 MLB game-market fix — accept ``event`` string
+        # (e.g. "San Diego Padres @ Pittsburgh Pirates") as a valid
+        # canonical team identity when home_team / away_team are
+        # attached later in the pipeline (canonical publish enricher).
+        # Also accept a non-empty ``selection`` team name.  This
+        # unblocks MLB ML / Run Line / Total candidates whose team
+        # fields are stamped AFTER compute_lock_score.
+        has_event_identity = bool(
+            event_str and (" vs " in event_str or " @ " in event_str or " v " in event_str)
+        )
+        has_selection = bool(sel)
+        if not (home and away) and not (has_event_identity and has_selection):
             return _reject(REJECT_DATA_INSUFFICIENT,
                             "missing_canonical_team_identity")
 
