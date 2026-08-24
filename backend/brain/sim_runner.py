@@ -331,6 +331,56 @@ def _anchor_pick_to_sim(pick: dict, sim_wp: float,
     pick["sim_lock_applied_delta"]  = round(applied_delta, 2)
     pick["lock_anchored_to_sim"]    = anchored
 
+    # ── 2026-08-23 MLB MODEL-INTEGRITY SLICE 1 CLOSURE ────────────────
+    # Promote the simulator's exact-line + selected-side probability to
+    # the pick's canonical Win Expected (`win_probability` /
+    # `model_win_prob`) — replacing the factor-average `_cal_mp` that
+    # sports_engine seeded when no specialized engine was available.
+    # This closes the confirmed defect: "Do not treat generic factor
+    # averages as calibrated probability".
+    #
+    # Guard rails (surgical, opt-in only):
+    #   * Only fires for INDEPENDENT + VALID distribution simulators
+    #     (already gated above — reaching here implies both true).
+    #   * Preserves specialized-engine probabilities (K-math /
+    #     nfl_atd_engine / soccer_scorer / etc.).  When the pick already
+    #     carries a specialized-engine marker, we leave `win_probability`
+    #     alone and only stamp `sim_win_probability` audit.
+    #   * Sim must have run enough runs (`sim_runs >= MIN_RUNS_FOR_ANCHOR`,
+    #     already checked before `_anchor_pick_to_sim` is called).
+    #
+    # This ONLY touches the pick object in-place at the same call site
+    # that already writes lock audit — no orchestrator / safe_picks /
+    # canonical-publication plumbing is modified.
+    _HAS_SPECIALIZED_ENGINE = any(
+        pick.get(marker) is not None for marker in (
+            "k_math_expected_k",         # MLB K probability engine (Poisson)
+            "_atd_evidence_block",        # NFL ATD engine
+            "atd_model_override",         # NFL ATD engine (legacy key)
+            "nfl_yardage_engine_output",  # NFL yardage engine (if wired)
+            "soccer_scorer_probability",  # Soccer scorer engine
+        )
+    )
+    _sim_type = (sim_meta or {}).get("simulator_type", "")
+    if (not _HAS_SPECIALIZED_ENGINE
+            and _sim_type == "distribution_monte_carlo"
+            and 0.02 <= sim_wp <= 0.99):
+        # Preserve the prior factor-average as audit for telemetry so
+        # any regression is diagnosable.
+        prior_wp = pick.get("win_probability")
+        if prior_wp is not None:
+            pick["win_probability_prior_factor_mean"] = prior_wp
+        pick["win_probability"]     = round(sim_wp * 100, 1)
+        pick["model_win_prob"]      = float(sim_wp)
+        pick["probability_source"]  = "sim_win_probability"
+        pick["model_authority"]     = "distribution_monte_carlo"
+        # Edge recomputation: use the same book_implied that was
+        # attached upstream so callers reading `edge_percent` see the
+        # sim-anchored edge, not the stale factor-mean edge.
+        _book_imp = pick.get("book_implied") or pick.get("implied_probability")
+        if isinstance(_book_imp, (int, float)) and _book_imp > 0:
+            pick["edge_percent"] = round((sim_wp - float(_book_imp)) * 100, 2)
+
     return {
         "prior_lock": round(prior_lock, 1),
         "baseline":   round(baseline, 1),
