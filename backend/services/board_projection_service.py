@@ -73,25 +73,44 @@ def _canonical_market_identity(pick: dict) -> tuple:
 
 # ─── Canonical dedupe (§7) ─────────────────────────────────────────
 def dedupe_canonical(picks: Iterable[dict]) -> list[dict]:
-    """Collapse exact canonical duplicates while preserving distinct
-    alt-lines.  A duplicate is defined as SAME canonical_pick_id, or
-    SAME (event_id + market + side + line) tuple when the id is
-    missing.  Order-preserving on first occurrence."""
-    seen_ids: set[str] = set()
-    seen_identities: set[tuple] = set()
+    """Semantic canonical wager dedupe — 2026-08-23 PASS 1 closure.
+
+    Priority:
+      1. SEMANTIC canonical wager identity — canonical event +
+         canonical participant + market_family + side + line.  Alias
+         variants (Janice Tjen / Tjen J. / J. Tjen) collapse into one
+         wager here, regardless of producer/pick ID.
+      2. Producer/mongo ID (legacy tie-break for rows lacking
+         canonical enrichment).
+
+    Different sportsbook prices remain quote metadata on ONE wager
+    (not separate rows).
+    """
+    from services.pick_identity_enricher import canonical_wager_identity
     out: list[dict] = []
-    for p in picks:
-        pid = _canonical_pick_id(p)
-        if pid and pid in seen_ids:
+    seen: dict[tuple, dict] = {}
+    for pick in picks:
+        canon = canonical_wager_identity(pick)
+        if canon[0] and canon[1] and canon[2]:
+            key: tuple = canon
+        else:
+            # Legacy: producer/mongo id fallback ONLY when semantic
+            # identity is degenerate (no canonical event OR
+            # participant OR market).
+            key = (_canonical_pick_id(pick),)
+        if key in seen:
+            # Keep the first row; retain best quote per existing policy
+            # by preferring the row with a real sportsbook price if the
+            # incumbent lacks one.
+            incumbent = seen[key]
+            if not incumbent.get("odds_american") and pick.get("odds_american"):
+                # swap: newer row has a real price, promote it.
+                idx = out.index(incumbent)
+                out[idx] = pick
+                seen[key] = pick
             continue
-        ev = (p.get("event_id") or p.get("fanduel_event_id") or "").strip()
-        identity = (ev,) + _canonical_market_identity(p)
-        if not pid and identity in seen_identities:
-            continue
-        if pid:
-            seen_ids.add(pid)
-        seen_identities.add(identity)
-        out.append(p)
+        seen[key] = pick
+        out.append(pick)
     return out
 
 

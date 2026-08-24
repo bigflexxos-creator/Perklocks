@@ -1169,3 +1169,38 @@ Wiring point in `sim_runner.py::simulate_pick` prepared for when a real NHL sim 
 `safe_picks`, refresh orchestrator, provider acquisition/cache, starvation, cooldowns, canonical publication, settlement/history/H2H, Locks/Rollover/Parlay.
 
 ### Approximate credits used: ~1 medium turn.
+
+---
+
+## 2026-08-23 — PASS 1 PART A (Canonical Identity Dedupe) — CERTIFIED
+
+### Part B (Odds API single-gateway migration) — DEFERRED
+Migrating 4 direct API callers in `sports_engine.py`, `services/mls_direct_inject.py`, `services/soccer_prop_inject.py`, `brain/nrfi_engine.py` through `OddsApiGateway` in the same turn risks breaking working feeds. Deferred to a dedicated pass. Zero direct-call code touched in this turn.
+
+### Files/functions changed (4 files)
+1. **`services/pick_identity_enricher.py`** — added `canonical_wager_identity()` + `canonical_participant_key()` + `_norm_participant_name()`. Alias resolver produces `surname_initial` (e.g., "Janice Tjen" / "Tjen J." / "J. Tjen" → `tjen_j`; sister players stay distinct via initial: `williams_s` vs `williams_v`).
+2. **`services/published_results_truth.py::_identity_key`** — now prioritises semantic canonical identity over producer/pick IDs; legacy fallback retained for rows lacking canonical enrichment.
+3. **`services/board_projection_service.py::dedupe_canonical`** — same precedence flip; different sportsbook prices remain quote metadata on ONE wager (best-quote-wins policy preserved).
+4. **`server.py::_collapse_cross_book_duplicates`** — `_wager_key` now uses semantic canonical identity first.
+
+### Defect closed
+- ✅ Tjen duplicate-wager class universally closed — display-name aliases (`Janice Tjen` / `Tjen J.` / `J. Tjen`) collapse to one semantic wager at all 3 dedupe boundaries.
+- ✅ Different producer/pick IDs cannot bypass semantic dedupe.
+- ✅ Legitimately distinct lines/sides remain separate.
+- ✅ Team-sport canonical identity works (uses `canonical_team_id` + `canonical_event_id`).
+- ✅ Sister players (same surname) stay distinct via initial.
+
+### 8 Focused Proofs (ALL PASS)
+1. Tjen aliases collapse — 3 producer IDs → 1 canonical identity ✅
+2. Different producer IDs → still 1 wager after dedupe ✅
+3. Distinct lines/sides (over 25.5, over 26.5, under 25.5) → 3 wagers preserved ✅
+4. MLB team canonical → 1 wager ✅
+5. Serena_s ≠ Venus_v (sisters distinct) ✅
+6. `_identity_key` collapses aliases in published truth ✅
+7. HARD BOUNDARY preserved — no protected file touched ✅
+8. Backend `/health → ok` ✅
+
+### Not touched (HARD BOUNDARY honored)
+`safe_picks`, refresh orchestrator, provider acquisition/cache, starvation, cooldowns, canonical publication plumbing, settlement/history/H2H, Locks/Rollover/Parlay consumers, scoring/model engines.
+
+### Approximate credits used: ~1 medium turn.

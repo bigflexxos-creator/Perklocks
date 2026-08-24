@@ -753,6 +753,17 @@ def _collapse_cross_book_duplicates(picks: list[dict]) -> list[dict]:
         return (p.get("market_key") or "").strip().lower()
 
     def _wager_key(p: dict) -> tuple:
+        # 2026-08-23 PASS 1 — semantic canonical wager identity so
+        # Tjen-style aliases (display-name splits, provider event
+        # strings) collapse into one cross-book wager, not many.
+        try:
+            from services.pick_identity_enricher import canonical_wager_identity
+            canon = canonical_wager_identity(p)
+            if canon[0] and canon[1] and canon[2]:
+                return canon
+        except Exception:
+            pass
+        # Legacy fallback (retained for rows lacking canonical enrichment).
         return (
             (p.get("sport") or "").strip().lower(),
             (p.get("event") or p.get("event_id") or "").strip().lower(),
