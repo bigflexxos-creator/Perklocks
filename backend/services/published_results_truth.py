@@ -96,14 +96,21 @@ def classify_publication(pick: dict) -> str:
 
 # ── Stable, outcome-neutral dedupe (spec §3) ───────────────────
 def _identity_key(pick: dict) -> tuple:
-    """Stable canonical identity used for dedupe.  NEVER includes
-    the pick's outcome/result. Order of precedence:
+    """Universal semantic wager identity — 2026-08-23 PASS 1 closure.
 
-        1. canonical publication id  (prediction_snapshots.pick_id)
-        2. canonical pick id         (`id` / `pick_id`)
-        3. (provider_event_id, canonical_player_id, market_family,
-            line, side)
+    Prioritises CANONICAL participant/event/market identity over
+    producer/pick IDs so Tjen-style display-name aliases never split
+    one semantic wager into multiple published truth rows.
     """
+    try:
+        from services.pick_identity_enricher import canonical_wager_identity
+        canon = canonical_wager_identity(pick)
+        if canon[0] and canon[1] and canon[2]:
+            return canon
+    except Exception:
+        pass
+    # Legacy fallback (producer-ID precedence) — kept ONLY for rows
+    # lacking canonical enrichment.  Do NOT rely on this for new code.
     pub_id = (pick.get("published_pick_id")
                or pick.get("canonical_publication_id"))
     if pub_id:

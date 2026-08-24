@@ -557,7 +557,114 @@ async def enrich_pick_identity_async(db, pick: dict) -> dict:
     return out
 
 
+# ═════════════════════════════════════════════════════════════════════
+# 2026-08-23 PASS 1 — UNIVERSAL CANONICAL WAGER IDENTITY
+# One source of truth for dedupe/collapse boundaries.  Prioritises
+# CANONICAL identity over producer/pick IDs so alias variants
+# (Janice Tjen / Tjen J. / J. Tjen) never split one semantic wager.
+# ═════════════════════════════════════════════════════════════════════
+def _norm_participant_name(name: Optional[str]) -> str:
+    """Fold display-name variants into a single canonical key.
+
+    Handles:
+      * "Janice Tjen"  → "tjen_j"
+      * "Tjen J."      → "tjen_j"
+      * "J. Tjen"      → "tjen_j"
+      * accents / punctuation stripped
+      * different players sharing a surname stay distinct via initial
+        (e.g., "Serena Williams" → "williams_s" vs "Venus Williams" → "williams_v")
+    """
+    if not name:
+        return ""
+    s = str(name).lower()
+    import unicodedata as _u
+    s = "".join(c for c in _u.normalize("NFKD", s) if not _u.combining(c))
+    # Tokenise on spaces/punctuation; keep only alphabetic content.
+    import re as _re
+    tokens = [t for t in _re.findall(r"[a-z]+", s) if t]
+    if not tokens:
+        return ""
+    if len(tokens) == 1:
+        return tokens[0]
+    # If ANY token is a single-letter initial, the surname is the
+    # longest multi-letter token and the initial is that single letter.
+    initials = [t for t in tokens if len(t) == 1]
+    multis   = [t for t in tokens if len(t) > 1]
+    if initials and multis:
+        surname = max(multis, key=len)
+        initial = initials[0]
+    else:
+        # All full tokens → follow "First … Last" English convention.
+        surname = tokens[-1]
+        initial = tokens[0][0]
+    return f"{surname}_{initial}"
+
+
+def canonical_participant_key(pick: dict) -> str:
+    """Best-available canonical participant identity for dedupe.
+
+    Priority:
+      1. canonical_player_id (set by enrich_pick_identity)
+      2. canonical_team_id
+      3. normalized player_name / selection / team
+    """
+    for k in ("canonical_player_id", "canonical_team_id"):
+        v = pick.get(k)
+        if v:
+            return f"{k}:{v}"
+    for k in ("player_name", "player", "team", "selection", "side"):
+        v = pick.get(k)
+        if v:
+            return f"name:{_norm_participant_name(v)}"
+    return ""
+
+
+def canonical_wager_identity(pick: dict) -> tuple:
+    """SEMANTIC canonical wager identity.
+
+    (canonical_event, canonical_participant, market_family, side, line)
+
+    Two picks with the SAME tuple are the SAME semantic wager, even if
+    they carry different producer/pick IDs, different display strings,
+    or different sportsbook quotes.  Different sportsbook prices remain
+    quote metadata on ONE wager (not separate Locks).
+    """
+    # Canonical event: prefer explicit canonical id; fall back to
+    # provider id; last resort to composite of sport + normalised
+    # participants + event_time so accented/aliased display events
+    # can still collapse.
+    canon_event = (
+        pick.get("canonical_event_id")
+        or pick.get("provider_event_id")
+        or pick.get("event_id")
+    )
+    if not canon_event:
+        sport = (pick.get("sport") or "").strip().lower()
+        home = _norm_participant_name(pick.get("home_team"))
+        away = _norm_participant_name(pick.get("away_team"))
+        etime = (pick.get("event_time") or "")[:16]  # up to minute
+        participants = tuple(sorted([home, away]))
+        canon_event = f"{sport}:{participants[0]}:{participants[1]}:{etime}"
+
+    participant = canonical_participant_key(pick)
+    market_family = (
+        (pick.get("market_family") or "").strip().lower()
+        or (pick.get("market_key") or "").strip().lower()
+        or (pick.get("market") or "").strip().lower()
+    )
+    side = (pick.get("side") or pick.get("selection") or "").strip().lower()
+    line = pick.get("line")
+    try:
+        line_norm = f"{float(line):g}" if line is not None else ""
+    except (TypeError, ValueError):
+        line_norm = str(line) if line is not None else ""
+    return (canon_event, participant, market_family, side, line_norm)
+
+
+
 __all__ = [
+    "canonical_wager_identity",
+    "canonical_participant_key",
     "enrich_pick_identity",
     "enrich_pick_identity_async",
     "apply_enrichment",
