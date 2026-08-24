@@ -43,7 +43,16 @@ import httpx
 logger = logging.getLogger("lockscore.odds_provider")
 
 _ODDS_API_KEY = os.getenv("THE_ODDS_API_KEY") or ""
-_PRIMARY = (os.getenv("ODDS_PRIMARY_PROVIDER") or "odds_api").strip().lower()
+# 2026-08-23 Pass 1B — unify PRIMARY_ODDS_PROVIDER + ODDS_PRIMARY_PROVIDER
+# into ONE effective config truth so downstream code can read either
+# name and get the same value.  Precedence: ODDS_PRIMARY_PROVIDER wins
+# (existing production key), fallback to PRIMARY_ODDS_PROVIDER, then
+# default 'odds_api'.
+_PRIMARY = (
+    os.getenv("ODDS_PRIMARY_PROVIDER")
+    or os.getenv("PRIMARY_ODDS_PROVIDER")
+    or "odds_api"
+).strip().lower()
 # Accept BOTH the rotated-pool names AND the single `APISPORTS_KEY` that is
 # what actually ships in this app's secrets. Previously only the _1/_2/_3
 # names were read, so on a real deployment `_API_SPORTS_KEYS` was always

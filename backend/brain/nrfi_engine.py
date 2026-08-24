@@ -231,18 +231,35 @@ async def _find_odds_event_id(
     client: httpx.AsyncClient, home_team: str, away_team: str,
 ) -> str | None:
     """Match an MLB Stats API game to The Odds API event id by team
-    name. Cached per refresh."""
+    name. Cached per refresh.
+
+    Pass 1B (2026-06) — routed through OddsApiGateway via the shared
+    ``cached_httpx_get`` helper so this call is budget-reserved,
+    single-flight-suppressed, and logged.  The ``client`` argument is
+    retained for signature compatibility but is no longer used to
+    issue the paid Odds API request.
+    """
     if not _ODDS_KEY:
         return None
     url = f"{_ODDS_BASE}/sports/baseball_mlb/events"
     try:
-        r = await client.get(url, params={"apiKey": _ODDS_KEY, "dateFormat": "iso"}, timeout=_TIMEOUT)
-        if r.status_code != 200:
+        from services.odds_cache import cached_httpx_get
+        data = await cached_httpx_get(
+            url,
+            {"dateFormat": "iso"},
+            api_key=_ODDS_KEY,
+            endpoint_type="events_list",
+            caller="brain.nrfi_engine._find_odds_event_id",
+            sport_key="baseball_mlb",
+            skip_completed=True,
+            timeout=_TIMEOUT.read if hasattr(_TIMEOUT, "read") else 15.0,
+        )
+        if not isinstance(data, list):
             return None
         # MLB Stats API uses abbreviations (LAD) while Odds API uses
         # full names (Los Angeles Dodgers). Match on the abbreviation
         # being a substring of either team name. Loose but works.
-        for ev in r.json():
+        for ev in data:
             h = (ev.get("home_team") or "").lower()
             a = (ev.get("away_team") or "").lower()
             if home_team.lower() in h or away_team.lower() in a:
@@ -455,16 +472,26 @@ async def generate_nrfi_yrfi_picks(db: AsyncIOMotorDatabase) -> dict:
     async with httpx.AsyncClient(headers=_HEADERS) as client:
         games = await _fetch_schedule(client, date_iso)
         # Pre-fetch the Odds API event list once and build a name→id index
+        # Pass 1B (2026-06) — routed through OddsApiGateway via the
+        # shared ``cached_httpx_get`` helper.  Same endpoint / params
+        # (events_list), same cadence (one call per NRFI run), just
+        # budget-reserved + single-flight-suppressed.
         odds_index: dict[str, str] = {}
         if _ODDS_KEY:
             try:
-                r = await client.get(
+                from services.odds_cache import cached_httpx_get
+                data = await cached_httpx_get(
                     f"{_ODDS_BASE}/sports/baseball_mlb/events",
-                    params={"apiKey": _ODDS_KEY, "dateFormat": "iso"},
-                    timeout=_TIMEOUT,
+                    {"dateFormat": "iso"},
+                    api_key=_ODDS_KEY,
+                    endpoint_type="events_list",
+                    caller="brain.nrfi_engine.run",
+                    sport_key="baseball_mlb",
+                    skip_completed=True,
+                    timeout=15.0,
                 )
-                if r.status_code == 200:
-                    for ev in r.json():
+                if isinstance(data, list):
+                    for ev in data:
                         h = (ev.get("home_team") or "").lower()
                         a = (ev.get("away_team") or "").lower()
                         odds_index[f"{h}|{a}"] = ev.get("id")
