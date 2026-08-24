@@ -848,6 +848,16 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     # Legacy fallback when caller doesn't pass a pick — used only by old code
     # paths that haven't migrated. Anchored on win_prob as before so tests
     # don't break.
+    #
+    # PASS OLD-LOGIC MIGRATION (2026-06) — do NOT stamp Universal Lock
+    # authority + Model-Integrity Gate on the EPHEMERAL pick.  The
+    # previous wiring attached authorities to a temporary object that
+    # was then discarded (the real published pick is created by the
+    # caller with its own copy of ``factors``).  Per directive
+    # "No temporary object may receive authority/gate stamps while a
+    # different final pick gets published" we now simply return the
+    # bounded legacy score and leave authority stamping to the caller
+    # who owns the real candidate.
     if _legacy_pick_none and pick.get("_ephemeral_lock_score_pick"):
         wp = max(0.0, min(1.0, (win_prob or 0) / 100.0))
         if wp < 0.30:   base = 40 + wp * (50 / 0.30)
@@ -859,20 +869,6 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
         peak = max(factors.values()) if factors else 0
         score = base + (avg - 0.5) * 10 + (peak - 0.5) * 2
         _legacy_score = max(55.0, min(99.0, round(score, 1)))
-        # Stamp Lock + universal-authority + gate on the ephemeral
-        # pick so the wiring is observable.  Ephemeral picks are
-        # NEVER published — the return signature is unchanged.
-        pick["lock_score"] = _legacy_score
-        try:
-            from services.universal_lock_authority import apply_universal_lock
-            apply_universal_lock(pick)
-        except Exception:  # pragma: no cover
-            pass
-        try:
-            from services.model_integrity_gate import evaluate as _mi_evaluate
-            pick["model_integrity_gate"] = _mi_evaluate(pick)
-        except Exception:  # pragma: no cover
-            pass
         return _legacy_score, weighted
 
     # ── v3 six-component composite ────────────────────────────────────────
@@ -1696,7 +1692,32 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                             pass
                 except Exception as _sgm_err:
                     logger.debug("soccer_game_model wiring failed: %s", _sgm_err)
-            if sport not in ("MLB", "Soccer") and _ml_model_unavailable is None:
+            if sport == "Soccer" and _ml_model_unavailable is None:
+                pass  # soccer_game_model already handled above
+            elif sport in ("NBA", "NHL") and _ml_model_unavailable is None:
+                # PASS OLD-LOGIC MIGRATION (2026-06) — NBA/NHL Game
+                # Markets.  Previously blanketed with MODEL_UNAVAILABLE
+                # here so ML/Spread/Total candidates never reached the
+                # already-built sim_nba / sim_nhl distributions.  New
+                # rule: seed with book_implied so the candidate can be
+                # BUILT, then rely on sim_runner.apply_simulations to
+                # PROMOTE ``sim_win_probability`` into
+                # ``win_probability`` via the (now fixed)
+                # ``_anchor_pick_to_sim`` percent-aware guard.  The
+                # book-implied seed is NEVER the final published
+                # probability — the sim distribution is.
+                #
+                # Provenance stamped so the model-integrity gate + the
+                # universal Lock authority treat this as an EMPIRICAL
+                # candidate only AFTER sim promotion.  Until promotion
+                # fires the pick carries ``probability_source =
+                # book_implied_seed`` so telemetry can attribute any
+                # un-promoted case.
+                if isinstance(game, dict):
+                    game.setdefault("_ctx", {}).setdefault(
+                        "_sim_pending", True)
+            elif sport not in ("MLB", "Soccer", "NBA", "NHL") \
+                    and _ml_model_unavailable is None:
                 _ml_model_unavailable = "MODEL_UNAVAILABLE"
         if home_model >= 0.5:
             side, side_ml, mp = home, home_ml, home_model
@@ -1943,25 +1964,52 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     # signal when available, otherwise fall back to the
                     # engine's win probability alone (conservative — we
                     # never re-inject book implied).
-                    _factor_win = real_dc_factors.get("Team Form Model") \
-                        or real_dc_factors.get("Team Strength") \
-                        or None
-                    # Compute engine-anchored model prob from ML factor
-                    # mean (existing shape).  Reuse the same
-                    # compute_lock_score path shape as ML pick.
+                    # PASS OLD-LOGIC MIGRATION (2026-06) — Double
+                    # Chance model probability comes from the score-
+                    # matrix directly (P(home_win) + P(draw) for "1X",
+                    # P(away_win) + P(draw) for "X2", P(home_win) +
+                    # P(away_win) for "12").  Previously ``dc_model``
+                    # was ``max(0.55, min(0.95, _factor_mean + 0.05))``
+                    # — a generic factor-mean masquerading as model
+                    # probability.  The score-matrix is the same
+                    # authoritative Soccer game distribution that
+                    # already governs 1X2 / Totals / BTTS.
                     factors2 = {k: v for k, v in real_dc_factors.items()
                                  if v is not None}
-                    # For win_prob we use the mean of the engine's real
-                    # ML factors, expressed as a probability.  This is
-                    # INDEPENDENT of book implied — the factors come
-                    # from build_soccer_ml_factors (xG, form, etc.).
-                    _factor_mean = (sum(factors2.values()) / len(factors2)
-                                     if factors2 else 0.55)
-                    # Add draw safety-net: DC covers Win OR Draw, so the
-                    # engine's P(win) is a LOWER bound on P(DC).  We
-                    # cap at 0.95 to avoid overconfidence, and we do
-                    # NOT clamp to the book-implied value.
-                    dc_model = max(0.55, min(0.95, _factor_mean + 0.05))
+                    _sgm = _game_ctx.get("_soccer_game_model") or {}
+                    _p_home = _sgm.get("p_home")
+                    _p_draw = _sgm.get("p_draw")
+                    _p_away = _sgm.get("p_away")
+                    _dc_from_matrix = None
+                    if isinstance(_p_home, (int, float)) \
+                       and isinstance(_p_draw, (int, float)) \
+                       and isinstance(_p_away, (int, float)):
+                        if dc_side_key == "1X":
+                            _dc_from_matrix = float(_p_home) + float(_p_draw)
+                        elif dc_side_key == "X2":
+                            _dc_from_matrix = float(_p_away) + float(_p_draw)
+                        else:   # "12"
+                            _dc_from_matrix = float(_p_home) + float(_p_away)
+                    if _dc_from_matrix is not None:
+                        dc_model = max(0.05, min(0.99, _dc_from_matrix))
+                        dc_probability_source = "score_matrix"
+                    else:
+                        # Score-matrix unavailable → fail closed
+                        # (no factor-mean fallback for model authority).
+                        try:
+                            from services.pipeline_diagnostic import log_reason as _plog
+                            _plog(
+                                sport="Soccer", market="double_chance",
+                                event=f"{away} @ {home}",
+                                reason="DOUBLE_CHANCE_SCORE_MATRIX_UNAVAILABLE",
+                            )
+                        except Exception:
+                            pass
+                        dc_model = None
+                        dc_probability_source = None
+                if dc_model is None:
+                    dc_pick = None
+                else:
                     lock2, breakdown2 = compute_lock_score(
                         factors2, win_prob=dc_model * 100)
                     dc_pick = _build_pick(
@@ -1976,6 +2024,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         external_id=f"{sport}-{game_id}-dc",
                     )
                     if dc_pick:
+                        dc_pick["probability_source"] = dc_probability_source
                         if _dc_sources:
                             dc_pick["real_data_sources"] = list(_dc_sources)
                             dc_pick["real_data_count"] = len(_dc_sources)
