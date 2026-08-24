@@ -1688,6 +1688,17 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 {"event_time": {"$in": [None, ""]}},
                 {"event_time": {"$exists": False}},
             ]},
+            # Canonical-first grade filter (see comment block above).
+            # Prefer `published_grade` (immutable Phase-1c snapshot).
+            # Fall back to legacy `grade` only when the row has never
+            # been snapshot-published (`published_grade` absent).
+            {"$or": [
+                {"published_grade": {"$exists": True, "$ne": "Pass"}},
+                {"$and": [
+                    {"published_grade": {"$exists": False}},
+                    {"grade": {"$ne": "Pass"}},
+                ]},
+            ]},
         ],
         # Exclude special-tab markets (NRFI/YRFI lives in its own MLB
         # sub-tab — user explicitly asked to keep these off the main board).
@@ -1696,7 +1707,24 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         # Pass = pick failed lock-tier thresholds. User: "pass should not
         # make the board". Also filter no_bet globally so tennis-dropped
         # picks with stale shadow lock fields can't leak through.
-        "grade": {"$ne": "Pass"},
+        #
+        # 2026-08-24 FALSE-GATE-BLOCKER FIX (MLB game markets):
+        # The legacy `grade` field is being live-overwritten by the APEX
+        # gate to "Pass" (with `apex_block_reason=magic_tier_not_aligned_
+        # strong:INSUFFICIENT_EVIDENCE`) even when the canonical publication
+        # snapshot graded the pick as Lock / Strong Lock / Elite Lock.
+        # Proof: today's slate has 20 published MLB game-market picks
+        # (ML / RL / Totals, pub_lock 90-93, publication_state=PUBLISHED)
+        # with `published_grade="Lock"` but `grade="Pass"` — the current
+        # filter dropped ALL of them (only 4 MLB picks survived where 61
+        # were canonical-eligible). Fix: prefer the CANONICAL
+        # `published_grade` (Phase 1c snapshot, immutable) with a legacy
+        # fallback to `grade` for pre-canonical rows that never received
+        # a snapshot. Preserves the "no Pass grade on board" intent
+        # exactly — just against the authoritative field.
+        # Legacy `"grade": {"$ne": "Pass"}` migrated below into the
+        # $and clause so the compound predicate isn't overwritten by
+        # the top-level $or on line ~1711.
         "no_bet": {"$ne": True},
         # 2026-07-21 — trapped picks (chalk_trap / longshot_trap) are
         # tagged off_board by board_visibility. Filter them out here so
