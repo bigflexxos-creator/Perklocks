@@ -663,12 +663,117 @@ def canonical_wager_identity(pick: dict) -> tuple:
         side_norm = _norm_participant_name(side)
         if side_norm:
             side = side_norm
+
+    # 2026-06 FINAL PASS — MARKET-FAMILY NORMALIZATION.
+    # A live-reachability defect surfaced two duplicate cards for the
+    # same wager because ``market`` was the DISPLAY string
+    # ``"<PlayerName> Moneyline"`` and different producers rendered the
+    # player differently (``"Tjen J. Moneyline"`` vs
+    # ``"Janice Tjen Moneyline"``).  The tuple then split on the
+    # ``market_family`` slot even though the canonical event +
+    # participant + side already agreed.
+    #
+    # Fix: collapse the market_family down to the *type* token that
+    # actually identifies the wager family (moneyline / spread / total
+    # / btts / puckline / …).  When neither ``market_family`` nor
+    # ``market_key`` was provided by the producer, we detect the type
+    # by keyword scan of the display market string.
+    if not pick.get("market_family") and not pick.get("market_key"):
+        market_family = _canonicalize_market_family(market_family)
+
     line = pick.get("line")
     try:
         line_norm = f"{float(line):g}" if line is not None else ""
     except (TypeError, ValueError):
         line_norm = str(line) if line is not None else ""
     return (canon_event, participant, market_family, side, line_norm)
+
+
+# ── Market-family canonicalisation ─────────────────────────────────
+# Ordered from most-specific to most-generic so a display string like
+# ``"Player Passing Yards Alternate Over 249.5"`` matches
+# ``passing_yards_alternate`` before falling to ``passing_yards``.
+_MARKET_FAMILY_TOKENS: tuple[tuple[str, str], ...] = (
+    # Alt-line variants first.
+    ("alternate spread",       "spread_alternate"),
+    ("alternate total",        "totals_alternate"),
+    ("alt games",              "totals_alternate"),
+    ("games (alt)",            "totals_alternate"),
+    ("alternate",              "alternate"),
+    # Team markets.
+    ("moneyline",              "moneyline"),
+    ("puck line",              "puck_line"),
+    ("puckline",               "puck_line"),
+    ("run line",               "run_line"),
+    ("runline",                "run_line"),
+    ("spread",                 "spread"),
+    ("handicap",               "handicap"),
+    ("draw no bet",            "draw_no_bet"),
+    ("double chance",          "double_chance"),
+    ("both teams to score",    "btts"),
+    ("btts",                   "btts"),
+    # Total variants.
+    ("total games",            "total_games"),
+    ("total goals",            "total_goals"),
+    ("total runs",             "total_runs"),
+    ("total points",           "total_points"),
+    ("total rounds",           "total_rounds"),
+    ("total corners",          "total_corners"),
+    ("total cards",            "total_cards"),
+    ("team total",             "team_total"),
+    ("total ",                 "total"),
+    ("over/under",             "total"),
+    ("o/u",                    "total"),
+    # Player-prop families.
+    ("passing yards",          "passing_yards"),
+    ("passing tds",            "passing_tds"),
+    ("passing attempts",       "passing_attempts"),
+    ("passing completions",    "passing_completions"),
+    ("rushing yards",          "rushing_yards"),
+    ("rushing attempts",       "rushing_attempts"),
+    ("rushing tds",            "rushing_tds"),
+    ("receiving yards",        "receiving_yards"),
+    ("receptions",             "receptions"),
+    ("receiving tds",          "receiving_tds"),
+    ("anytime td",             "anytime_td"),
+    ("first td",               "first_td"),
+    ("shots on goal",          "shots_on_goal"),
+    ("saves",                  "saves"),
+    ("goals",                  "goals"),
+    ("assists",                "assists"),
+    ("points",                 "points"),
+    ("strikeouts",             "strikeouts"),
+    ("total bases",            "total_bases"),
+    ("hits",                   "hits"),
+    ("home runs",              "home_runs"),
+    ("rbi",                    "rbi"),
+    ("runs",                   "runs"),
+)
+
+
+def _canonicalize_market_family(display: str) -> str:
+    """Collapse a display market string to a canonical type token.
+
+    Examples::
+
+        _canonicalize_market_family("tjen j. moneyline")     → "moneyline"
+        _canonicalize_market_family("janice tjen moneyline") → "moneyline"
+        _canonicalize_market_family("over 22.5 games (alt)") → "totals_alternate"
+        _canonicalize_market_family("total goals")           → "total_goals"
+
+    The DISPLAY market ALSO carries the participant name for
+    individual-sport moneyline picks — that leakage was the exact
+    live-reachability defect fixed here.
+    """
+    s = (display or "").strip().lower()
+    if not s:
+        return ""
+    for needle, family in _MARKET_FAMILY_TOKENS:
+        if needle in s:
+            return family
+    # No known family — fall back to the raw display so genuine
+    # different markets remain distinct.
+    return s
 
 
 
