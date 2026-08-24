@@ -403,16 +403,25 @@ def _anchor_pick_to_sim(pick: dict, sim_wp: float,
         )
     )
     _sim_type = (sim_meta or {}).get("simulator_type", "")
+    # PASS OLD-LOGIC MIGRATION (2026-06) — accept sim_wp both as
+    # PERCENT (0-100, produced by sim_mlb / sim_nba / sim_nfl / sim_nhl
+    # via ``sim_wp_pct = round(p*100, 1)``) and as FRACTION (0-1, legacy
+    # callers).  Previously the guard ``0.02 <= sim_wp <= 0.99`` only
+    # matched the fraction form, so distribution simulators produced
+    # ``sim_win_probability`` audit rows that never promoted to
+    # ``win_probability`` — leaving book-implied / factor-mean seeds
+    # as the final published probability.  Normalise once here.
+    _sim_wp_frac = float(sim_wp) / 100.0 if float(sim_wp) > 1.0 else float(sim_wp)
     if (not _HAS_SPECIALIZED_ENGINE
             and _sim_type == "distribution_monte_carlo"
-            and 0.02 <= sim_wp <= 0.99):
+            and 0.02 <= _sim_wp_frac <= 0.99):
         # Preserve the prior factor-average as audit for telemetry so
         # any regression is diagnosable.
         prior_wp = pick.get("win_probability")
         if prior_wp is not None:
             pick["win_probability_prior_factor_mean"] = prior_wp
-        pick["win_probability"]     = round(sim_wp * 100, 1)
-        pick["model_win_prob"]      = float(sim_wp)
+        pick["win_probability"]     = round(_sim_wp_frac * 100, 1)
+        pick["model_win_prob"]      = float(_sim_wp_frac)
         pick["probability_source"]  = "sim_win_probability"
         pick["model_authority"]     = "distribution_monte_carlo"
         # Edge recomputation: use the same book_implied that was
@@ -420,7 +429,7 @@ def _anchor_pick_to_sim(pick: dict, sim_wp: float,
         # sim-anchored edge, not the stale factor-mean edge.
         _book_imp = pick.get("book_implied") or pick.get("implied_probability")
         if isinstance(_book_imp, (int, float)) and _book_imp > 0:
-            pick["edge_percent"] = round((sim_wp - float(_book_imp)) * 100, 2)
+            pick["edge_percent"] = round((_sim_wp_frac - float(_book_imp)) * 100, 2)
 
     return {
         "prior_lock": round(prior_lock, 1),

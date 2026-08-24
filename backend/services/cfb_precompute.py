@@ -11,7 +11,14 @@ the async CFB fetch path (fetch_cfb_picks in sports_engine.py) BEFORE
 handing the ctx to `_picks_from_game`. Then the emission branch reads:
 
     _pc = (ctx.get("cfb_precomputed") or {}).get(player.lower(), {}).get(mk) or {}
-    factors = _pc.get("factors") or {"Book Implied Probability": mp}
+    factors = _pc.get("factors") or ...     # if empty → _skip_pick = True
+
+PASS OLD-LOGIC MIGRATION (2026-06) — the legacy book-implied
+fallback (``{"Book Implied Probability": mp}``) has been removed
+from the emission branch (see sports_engine.py CFB branch which
+now sets ``_skip_pick = True`` when precompute has no real factors).
+No caller of this module falls back to book_implied.  Real model
+data or fail closed.
 
 Zero cost when CFB market list is empty (July / August pre-season).
 """

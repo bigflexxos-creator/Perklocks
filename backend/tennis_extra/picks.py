@@ -245,8 +245,48 @@ async def fetch_extra_tennis_picks(
             except Exception:
                 continue
         else:
-            implied_p1 = float(m.get("implied_p1") or 0)
-            implied_p2 = float(m.get("implied_p2") or 0)
+            # PASS OLD-LOGIC MIGRATION (2026-06) — Tennis Backfill.
+            # ``implied_p1``/``implied_p2`` come from the sportsbook
+            # odds attached to the row.  Using them as the model
+            # probability would initialise the modelled Tennis pick
+            # from the SPORTSBOOK FAVORITE ("book_implied") and hope
+            # downstream gates catch it — the exact anti-pattern the
+            # migration forbids.
+            #
+            # New rule: attempt to promote the book-only candidate to
+            # an EMPIRICAL_INDEPENDENT Tennis signal first (Elo fair-
+            # odds).  If Elo produces a valid probability we use that
+            # (real independent signal).  Otherwise the pick is
+            # skipped with ``MODEL_UNAVAILABLE`` — no book-only
+            # publication.
+            try:
+                from .odds_engine import fair_win_probability
+                fair = await fair_win_probability(
+                    m["player1"], m["player2"],
+                    tournament=m.get("tournament") or "")
+                if not fair or not isinstance(fair.get("prob_a"),
+                                                 (int, float)):
+                    raise ValueError("no_elo_fair_probability")
+                implied_p1 = float(fair["prob_a"])
+                implied_p2 = float(fair["prob_b"])
+                is_model_pick = True
+                model_components = fair.get("components")
+                # Keep book_odds context so we can compute a real edge
+                # against the book downstream — but the MODEL
+                # probability is Elo-derived, not book-implied.
+            except Exception:
+                # Elo unavailable → honestly skip.  Never fall back
+                # to book_implied as the model probability.
+                try:
+                    from services.pipeline_diagnostic import log_reason as _plog
+                    _plog(
+                        sport="Tennis", market="moneyline",
+                        event=f"{m.get('player1')} vs {m.get('player2')}",
+                        reason="TENNIS_MODEL_UNAVAILABLE_NO_ELO_FAIR",
+                    )
+                except Exception:
+                    pass
+                continue
         # Normalize for vig (sum often exceeds 1.0).
         s = implied_p1 + implied_p2
         if s <= 0:

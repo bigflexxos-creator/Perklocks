@@ -66,6 +66,11 @@ _SPECIALIZED_ENGINE_MARKERS = (
     "nfl_yardage_engine_output",        # NFL yardage engine
     "soccer_scorer_probability",        # Soccer scorer engine
     "platinum_challenger",              # Platinum NFL challenger
+    "awaiting_sim_distribution",        # NBA/NHL — sim_runner will
+                                          # promote sim_win_probability
+                                          # AFTER this gate; treat the
+                                          # pick as having a specialized
+                                          # engine authority in-flight.
 )
 
 
