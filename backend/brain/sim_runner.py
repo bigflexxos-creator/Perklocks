@@ -128,6 +128,31 @@ def simulate_pick(pick: dict) -> Optional[dict]:
                           or pick.get("surface_context"))
             out = simulate_tennis_pick(pick, tennis_ctx=tennis_ctx)
             sim_type = "event_simulation"
+        elif sport == "NFL" or sport == "CFB":
+            # 2026-08-23 NFL/CFB (Pass 2) — root-level `sim_nfl.py` is a
+            # stub returning `{"ran": False}`.  Honest handling: pass a
+            # non-executable signal upstream so the anchor step skips
+            # sim-promotion (no book-implied fallback, no factor mean
+            # masquerade).  When a real NFL sim ships, plug it here.
+            try:
+                from sim_nfl import simulate as _nfl_sim  # type: ignore
+                _stub = _nfl_sim(pick)
+                if _stub and _stub.get("ran"):
+                    out = _stub
+                    sim_type = "distribution_monte_carlo"
+                else:
+                    return None
+            except Exception:
+                return None
+        elif sport == "NHL":
+            # 2026-08-23 NHL (Pass 2) — no NHL simulator in codebase.
+            # Return None so `_anchor_pick_to_sim` will NOT promote a
+            # fabricated probability and callers see honest "no sim
+            # authority" (Win Expected stays at factor-mean or falls
+            # closed at emit gates upstream).  Wiring is prepared: add a
+            # `sim_nhl.simulate_nhl_pick` import here when the simulator
+            # lands, no plumbing change needed.
+            return None
         else:
             return None
 

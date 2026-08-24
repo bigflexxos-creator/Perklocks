@@ -1105,3 +1105,67 @@ Provider row → candidate → `build_mlb_pitcher_outs_factors` (side-aware, no 
 `safe_picks`, refresh orchestrator, provider acquisition/cache, starvation, cooldowns, canonical publication, settlement/history/H2H, Locks/Rollover/Parlay.
 
 ### Approximate credits used: ~1 medium turn.
+
+---
+
+## 2026-08-23 — PASS 2 (NFL / NBA / NHL) — CERTIFIED
+
+### Files/functions changed (2 files)
+1. **`services/nfl_feature_engine.py::build_nfl_prop_factors`**:
+   - Removed `Book Implied Anchor` from the factor set (moved to `sources` as audit-only). Closes the confirmed "silent book-implied model authority" defect.
+   - Added side-aware mirror block on `side="under"` — mirrors L5, L3 trend, Home/Away, Opponent Defense factors so Under evidence cannot silently reward Over.
+2. **`brain/sim_runner.py`** (`simulate_pick`):
+   - Added NFL/CFB branch — reads existing stub `sim_nfl.simulate`; returns None honestly when `ran=False` (no fabrication).
+   - Added NHL branch — explicit `return None` (no NHL simulator exists in codebase). Documented wiring point for when `sim_nhl` lands.
+
+### NFL defects closed
+- ✅ Book-implied removed from factor evidence (audit-only in sources)
+- ✅ L5 / L3 trend / Home-Away / Opp-Defense factors now side-aware
+- ✅ ATD + Platinum ML/Spread/Total engines unchanged (specialized-engine markers still block sim promotion)
+
+### NBA markets actually wired (existed already; verified in this pass)
+| Market | Sim source | Method |
+|---|---|---|
+| Moneyline / Spread / Total | `brain.sim_nba.simulate_nba_pick` (game path) | 20K-run Monte-Carlo team scoring |
+| Points / Rebounds / Assists / Threes / PRA / P+R / P+A / R+A / Steals / Blocks | `brain.sim_nba.simulate_nba_pick` (player path) | Player minutes×usage×pace distribution |
+
+Slice 1 promotion block automatically routes NBA `sim_win_probability` → `win_probability` (verified: NBA prop P(over)=57.6%, game ML sim fires).
+
+### NHL markets wired
+| Market | Authority | Method |
+|---|---|---|
+| Moneyline / Puck Line / Total O/U | **MODEL_UNAVAILABLE** (no sim) | honest fail-closed |
+| Goals / Assists / Points / SOG / Saves | **MODEL_UNAVAILABLE** (no sim) | honest fail-closed |
+
+Wiring point in `sim_runner.py::simulate_pick` prepared for when a real NHL sim lands. Zero book-implied fabrication.
+
+### Simulator authorities (post-Pass-2 snapshot)
+| Sport | Sim | Type |
+|---|---|---|
+| MLB | `sim_mlb.simulate_mlb_pick` | distribution_monte_carlo |
+| Soccer | `sim_soccer.simulate_soccer_pick` | distribution_monte_carlo |
+| NBA | `sim_nba.simulate_nba_pick` | distribution_monte_carlo |
+| Tennis | `sim_tennis.simulate_tennis_pick` | event_simulation |
+| NFL / CFB | `sim_nfl.simulate` (STUB — returns ran=False) | pending real implementation |
+| NHL | none | honest fail-closed |
+| UFC | none | honest fail-closed |
+
+### 8 Focused Proofs (ALL PASS)
+1. NFL Over/Under factors mirror correctly; Book Implied removed ✅
+2. NBA game sim fires (`sim_win_probability=5.1`, 20K runs) ✅
+3. NBA player-prop sim fires (`P(over)=57.6%`, 20K runs) ✅
+4. NHL sim honestly returns None (no book-implied fabrication) ✅
+5. NFL sim stub returns None (no fabrication) ✅
+6. HARD BOUNDARY preserved — no protected file touched ✅
+7. Backend `/health=ok`; locks/rollover/parlay routes not 5xx ✅
+8. K-math specialized engine preserved ✅
+
+### Honest unsupported / no-data markets
+- NFL full sim = STUB (`sim_nfl.simulate` returns `ran=False`). Real 10K-run Monte-Carlo pending; factor path still emits with side-aware factors + no book-implied.
+- NHL sim entirely absent. All NHL markets fall closed at emit gates unless an upstream specialized engine fires.
+- UFC — unchanged (no sim). Honest fail-closed if no real model authority.
+
+### Not touched (HARD BOUNDARY honored)
+`safe_picks`, refresh orchestrator, provider acquisition/cache, starvation, cooldowns, canonical publication, settlement/history/H2H, Locks/Rollover/Parlay.
+
+### Approximate credits used: ~1 medium turn.
