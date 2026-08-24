@@ -653,6 +653,16 @@ def canonical_wager_identity(pick: dict) -> tuple:
         or (pick.get("market") or "").strip().lower()
     )
     side = (pick.get("side") or pick.get("selection") or "").strip().lower()
+    # 2026-08-23 Pass 1B — for INDIVIDUAL-SPORT moneyline (Tennis / UFC /
+    # golf player prop side selectors), the `side` value is a player
+    # DISPLAY NAME.  Fold it through the same alias resolver so
+    # "Janice Tjen" / "Tjen J." / "J. Tjen" collapse to one identity.
+    # Team-sport moneyline (side = full team name) also benefits.
+    _mkt_lc = (market_family or "").lower()
+    if "moneyline" in _mkt_lc or _mkt_lc in ("ml", "h2h", "match_winner"):
+        side_norm = _norm_participant_name(side)
+        if side_norm:
+            side = side_norm
     line = pick.get("line")
     try:
         line_norm = f"{float(line):g}" if line is not None else ""
