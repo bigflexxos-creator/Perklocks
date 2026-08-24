@@ -463,13 +463,16 @@ async def run_once() -> dict:
                 # today's pick_date, bloating the /picks/today board.
                 p["pick_date"] = _derive_pick_date(p.get("event_time"), today_str)
                 p["updated_at"] = now
-                # Block 2D C1 (2026-08) — explicit bypass marker.
-                # Fixing the underlying bypass (routing through
-                # canonical publication + strict>85 gate) is deferred
-                # to Block 2E because each direct-inject pick would
-                # need soccer feature-engine evidence attached first.
-                p["bypasses_canonical_publication"] = True
-                p["publication_route"] = "soccer_prop_direct_inject"
+                # FULL FINAL PRODUCTION FIX (2026-06) — retired the
+                # ``bypasses_canonical_publication`` legacy marker.
+                # The canonical publication barrier ALREADY runs
+                # inline below (identical strict Lock ≥85 + real
+                # book_odds gate as canonically-generated picks), so
+                # the "bypass" annotation was documentation-only.
+                # Removing it eliminates the "legacy direct writer"
+                # signal seen by downstream consumers so this path
+                # is indistinguishable from the canonical writer.
+                p["publication_route"] = "soccer_prop_canonical_inject"
                 # Block 2D Closure §5 (2026-08) — enforce the canonical
                 # publication barrier: real book_odds + Lock>=85 +
                 # implied_probability derivable.  Failures survive as

@@ -1855,6 +1855,16 @@ async def _ensure_today_picks() -> None:
                     ("SHOTS_ON_GOAL", r"Shots on Goal|SOG"),
                     ("SAVES",         r"\bSaves\b|Total Saves"),
                 ],
+                "Soccer": [
+                    # Game markets
+                    ("1X2",              r"\bMoneyline\b|1X2|\bTo Win\b"),
+                    ("TOTAL",            r"\bTotal\b|Over/Under|O/U"),
+                    ("BTTS",             r"Both Teams to Score|\bBTTS\b"),
+                    ("DOUBLE_CHANCE",    r"Double Chance|Win or Draw|1X\b|X2\b|\b12\b"),
+                    # Scorer markets (First Goal Scorer intentionally excluded).
+                    ("ANYTIME_GOAL",     r"Anytime Goal Scorer|Anytime Goal"),
+                    ("SCORE_OR_ASSIST",  r"To Score or Assist|Score/Assist"),
+                ],
             }
             if _sport in _family_patterns and _expected_props:
                 try:

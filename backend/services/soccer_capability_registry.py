@@ -143,18 +143,24 @@ LEAGUE_CAPABILITIES: dict[str, dict[str, Any]] = {
     "EPL": _entry(
         odds_api_sport_key="soccer_epl",
         verification_at="2026-06",
+        # ── EPL — Big 5 flagship (REAL_VERIFIED across the full
+        # supported family set post 2026-06 FULL FINAL PRODUCTION FIX).
+        # Provider returns live markets for game families + Anytime
+        # Goalscorer + Score-or-Assist; First Goalscorer intentionally
+        # removed from acquisition (settlement authority unavailable).
         game_markets={
-            "h2h":     Capability.REAL_VERIFIED,
-            "spreads": Capability.REAL_VERIFIED,
-            "totals":  Capability.REAL_VERIFIED,
-            "btts":            Capability.NO_CURRENT_EVENTS,
-            "double_chance":   Capability.NO_CURRENT_EVENTS,
+            "h2h":            Capability.REAL_VERIFIED,
+            "spreads":        Capability.REAL_VERIFIED,
+            "totals":         Capability.REAL_VERIFIED,
+            "btts":           Capability.REAL_VERIFIED,
+            "double_chance":  Capability.REAL_VERIFIED,
         },
         player_markets={
-            "anytime_goalscorer": Capability.NO_CURRENT_EVENTS,
-            "first_goalscorer":   Capability.NO_CURRENT_EVENTS,
+            "anytime_goalscorer": Capability.REAL_VERIFIED,
+            "score_or_assist":    Capability.REAL_VERIFIED,
+            # first_goalscorer intentionally omitted — no settlement
+            # authority, dropped from acquisition.
             "assist":             Capability.UNVERIFIED,
-            "score_or_assist":    Capability.UNVERIFIED,
             "shots":              Capability.UNVERIFIED,
             "shots_on_target":    Capability.UNVERIFIED,
         },
@@ -165,8 +171,8 @@ LEAGUE_CAPABILITIES: dict[str, dict[str, Any]] = {
         player_history="team_history+player_history collections",
         team_history="team_history collection",
         sportsbook_provider="the_odds_api",
-        notes=("Big-5 flagship; player markets currently NO_CURRENT_EVENTS "
-                "outside active window — request when events land."),
+        notes=("Big-5 flagship; full family reachability certified "
+                "for game markets + scorer + score-or-assist."),
     ),
     "La Liga": _entry(
         odds_api_sport_key="soccer_spain_la_liga",

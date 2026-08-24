@@ -3469,13 +3469,15 @@ PLAYER_PROP_MARKETS = {
     # Soccer player props — 3 markets The Odds API supports:
     #   • player_goal_scorer_anytime  → "Anytime Goal Scorer"
     #   • player_to_score_or_assist   → "To Score or Assist"
-    #   • player_first_goal_scorer    → "First Goal Scorer"
-    # (player_anytime_assist and player_to_score_2_or_more are NOT exposed
-    # by The Odds API — confirmed via 422 INVALID_MARKET response.)
+    # ``player_first_goal_scorer`` — REMOVED (FULL FINAL PRODUCTION FIX,
+    # 2026-06).  Settlement capability marks First Goal Scorer
+    # unsupported (no gradable authoritative "first goal" source
+    # across providers).  Keeping it in acquisition wasted Odds API
+    # quota and produced candidates that could never settle.  Fail
+    # closed → market intentionally omitted.
     "Soccer": [
         "player_goal_scorer_anytime",
         "player_to_score_or_assist",
-        "player_first_goal_scorer",
     ],
     # UFC: The Odds API does NOT expose method-of-victory, round-betting, or
     # any MMA prop markets — only `h2h` (moneyline) and `totals` (rounds)
