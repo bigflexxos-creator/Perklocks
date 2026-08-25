@@ -62,6 +62,191 @@ router = APIRouter(prefix="/ops", tags=["ops"])
 SPORTS = ["MLB", "NFL", "NBA", "NHL", "Soccer", "Tennis", "CFB", "UFC"]
 
 
+@router.get("/settlement-probe")
+async def settlement_probe(
+    pick_id: str,
+    user: Annotated[UserPublic, Depends(current_user)],
+):
+    """Session B — Dry-run of the PitchAPI → Big Balls settlement
+    cascade against a REAL Perklocks pick.  Read-only.  Never writes
+    to db.picks / settlement_events / user_bets.
+
+    Returns:
+      {
+        pick_id, sport, market, selection, event, event_time, league,
+        fixture_resolution: {...},   # PitchAPI + Big Balls IDs
+        provider_actuals: {
+          pitchapi:  {status, actual, latency_ms, provenance},
+          bigballs:  {status, actual, latency_ms, provenance},
+        },
+        cascade_final: {status, actual, chosen_provider, provenance},
+        would_settle_as: "won" | "lost" | "push" | "DATA_UNAVAILABLE",
+      }
+    """
+    from services.providers.soccer_fixture_resolver import resolve_fixture
+    from services.providers import pitchapi as pa, bigballs as bb
+    import re as _re
+    from deps import db as _db
+
+    pick = await _db.picks.find_one({"$or": [{"id": pick_id},
+                                              {"_id": pick_id}]},
+                                     {"_id": 0})
+    if not pick:
+        return {"error": "pick_not_found", "pick_id": pick_id}
+    if (pick.get("sport") or "") != "Soccer":
+        return {"error": "not_soccer", "sport": pick.get("sport")}
+
+    event = pick.get("event") or ""
+    parts = _re.split(r"\s+@\s+", event)
+    if len(parts) != 2:
+        return {"error": "unparseable_event", "event": event}
+    away, home = parts[0].strip(), parts[1].strip()
+
+    fx = await resolve_fixture(
+        _db, perklocks_league=pick.get("league"),
+        event_time_iso=pick.get("event_time"),
+        home_team=home, away_team=away,
+    )
+
+    # ── Map the pick's market → provider market_family ────────
+    market = (pick.get("market") or "").lower()
+    selection = (pick.get("selection") or "").strip()
+    if "anytime goal scorer" in market:
+        mf = "soccer_goalscorer"
+    elif "to score or assist" in market or "score & assist" in market:
+        mf = "soccer_score_or_assist"
+    elif "shots on target" in market:
+        mf = "soccer_player_shots_on_target"
+    elif "shots" in market and "on target" not in market:
+        mf = "soccer_player_shots"
+    elif "total corners" in market or "corners" in market:
+        mf = "soccer_team_corners"
+    elif "cards" in market or "booking" in market:
+        mf = "soccer_cards"
+    elif "assists" in market:
+        mf = "soccer_assists"
+    elif "goal" in market and "scorer" not in market:
+        mf = "soccer_goals"
+    else:
+        mf = None
+
+    result = {
+        "pick_id":    pick.get("id"),
+        "sport":      pick.get("sport"),
+        "market":     pick.get("market"),
+        "market_family_resolved": mf,
+        "selection":  selection,
+        "event":      event,
+        "event_time": pick.get("event_time"),
+        "league":     pick.get("league"),
+        "fixture_resolution": fx,
+        "provider_actuals": {},
+    }
+
+    if not mf:
+        result["cascade_final"] = {
+            "status": "MARKET_UNSUPPORTED",
+            "provenance": {"reason": "market not in scaffold whitelist"},
+        }
+        result["would_settle_as"] = "MARKET_UNSUPPORTED"
+        return result
+
+    # PitchAPI attempt
+    pa_actual = None
+    if fx.get("pitchapi_match_id"):
+        r = await pa.get_completed_actual(
+            _db, sport="soccer",
+            canonical_event_id=fx["pitchapi_match_id"],
+            market_family=mf,
+            player_name=selection,
+        )
+        pa_actual = {
+            "status": r.status, "actual": r.actual,
+            "latency_ms": r.latency_ms, "error_detail": r.error_detail,
+            "provider_event_id": r.provider_event_id,
+        }
+    result["provider_actuals"]["pitchapi"] = pa_actual or {
+        "status": "NO_FIXTURE_ID",
+    }
+
+    # Big Balls attempt (always run so we can prove the cascade)
+    bb_actual = None
+    if fx.get("bigballs_match_id"):
+        r = await bb.get_completed_actual(
+            _db, sport="soccer",
+            canonical_event_id=str(fx["bigballs_match_id"]),
+            market_family=mf,
+            canonical_player_id=None,
+        )
+        bb_actual = {
+            "status": r.status, "actual": r.actual,
+            "latency_ms": r.latency_ms, "error_detail": r.error_detail,
+            "provider_event_id": r.provider_event_id,
+        }
+    result["provider_actuals"]["bigballs"] = bb_actual or {
+        "status": "NO_FIXTURE_ID",
+    }
+
+    # ── Cascade decision (PitchAPI primary, Big Balls fallback) ──
+    chosen = None
+    if pa_actual and pa_actual["status"] == "OK" and \
+            pa_actual["actual"] is not None:
+        chosen = ("pitchapi", pa_actual)
+    elif bb_actual and bb_actual["status"] == "OK" and \
+            bb_actual["actual"] is not None:
+        chosen = ("bigballs", bb_actual)
+
+    if chosen:
+        provider, res = chosen
+        result["cascade_final"] = {
+            "status": "OK",
+            "actual": res["actual"],
+            "chosen_provider": provider,
+            "provenance": {"provider": provider,
+                            "market_family": mf,
+                            "fixture": fx.get(f"{provider}_match_id")},
+        }
+        # ── Grade preview (no write) ────────────────────────────
+        # NOTE: we don't touch settlement_events / picks — this is
+        # a dry-run preview only.  The would_settle_as is computed
+        # exactly as the existing settler would grade a scorer/
+        # score-or-assist market.
+        actual = res["actual"]
+        if mf in ("soccer_goalscorer", "soccer_score_or_assist"):
+            result["would_settle_as"] = "won" if bool(actual) else "lost"
+        else:
+            # Numeric market — needs a line; extract from market string
+            m = _re.search(r"(\d+(?:\.\d+)?)", pick.get("market") or "")
+            if m:
+                line = float(m.group(1))
+                try:
+                    val = float(actual)
+                    if "under" in market:
+                        result["would_settle_as"] = (
+                            "push" if abs(val - line) < 1e-9 else
+                            ("won" if val < line else "lost"))
+                    else:
+                        result["would_settle_as"] = (
+                            "push" if abs(val - line) < 1e-9 else
+                            ("won" if val > line else "lost"))
+                except (TypeError, ValueError):
+                    result["would_settle_as"] = "DATA_UNAVAILABLE"
+            else:
+                result["would_settle_as"] = "DATA_UNAVAILABLE"
+    else:
+        result["cascade_final"] = {
+            "status": "DATA_UNAVAILABLE",
+            "chosen_provider": None,
+            "provenance": {
+                "pitchapi_status": (pa_actual or {}).get("status"),
+                "bigballs_status": (bb_actual or {}).get("status"),
+            },
+        }
+        result["would_settle_as"] = "DATA_UNAVAILABLE"
+
+    return result
+
+
 @router.get("/provider-health")
 async def provider_health(user: Annotated[UserPublic, Depends(current_user)]):
     """P3 — Read-only provider health for the two NEW completed-match
