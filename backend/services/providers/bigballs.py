@@ -64,21 +64,35 @@ AUTH_HEADER_NAME = "x-api-key"
 API_KEY_ENV = "BIGBALLS_API_KEY"
 
 # Cross-sport supported market families. Populated incrementally as
-# each family is proven against a real provider response.  Until then
-# each family stays SETTLEMENT_UNSUPPORTED at the settlement gate.
-SUPPORTED_MARKETS_CROSS_SPORT = frozenset(SOCCER_MARKETS | {
-    # MLB
-    "mlb_hits", "mlb_home_runs", "mlb_strikeouts", "mlb_total_bases",
-    "mlb_outs_recorded", "mlb_earned_runs",
-    # NFL
-    "nfl_passing_yards", "nfl_rushing_yards", "nfl_receiving_yards",
-    "nfl_receptions", "nfl_anytime_td",
-    # NBA
-    "nba_points", "nba_rebounds", "nba_assists", "nba_threes", "nba_pra",
-    # NHL
-    "nhl_goals", "nhl_assists", "nhl_points", "nhl_shots_on_goal",
-    # CFB
-    "cfb_passing_yards", "cfb_rushing_yards", "cfb_receiving_yards",
+# each family is proven against a real provider response.
+#
+# Session C (2026-08-25) — Big Balls plan verification:
+#   • /v1/matches/{id}                → OK (score / status / linescore)
+#   • /v1/matches/{id}/events         → returns null on this plan
+#   • /v1/matches/{id}/statistics     → 403 Edge plan required
+#   • /v1/matches/{id}/players        → 404 route not implemented
+#   • /v1/matches/{id}/lineups        → 404 route not implemented
+#
+# → On the current Preview plan Big Balls can authoritatively fall
+#   back for TEAM/GAME-LINE markets ONLY (final score derivatives):
+#   home_goals, away_goals, total_goals, moneyline, btts, and any
+#   market family that computes purely from the final score.
+# → Player-level markets (goalscorer / assists / shots / SoT) and
+#   team-stat markets (corners / cards) are NOT available on this
+#   plan tier and MUST return DATA_UNAVAILABLE — never faked.
+SUPPORTED_MARKETS_CROSS_SPORT = frozenset({
+    # ── Soccer team/game-line — proven from real /v1/matches/{id} ──
+    "soccer_home_goals",
+    "soccer_away_goals",
+    "soccer_total_goals",
+    "soccer_moneyline",
+    "soccer_btts",
+    "soccer_final_score",
+    # ── Cross-sport game-line (proven /v1/nba,nfl,nhl/games/{id}) ──
+    # These require Session-C follow-ups per sport before being wired
+    # into the settler.
+    "mlb_final_score", "nfl_final_score",
+    "nba_final_score", "nhl_final_score",
 })
 
 
@@ -213,14 +227,12 @@ async def get_completed_actual(
         )
     started = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(
-                f"{DEFAULT_BASE_URL}/v1/games/{canonical_event_id}/stats",
-                headers={"Authorization": f"Bearer {api_key()}"},
-                params={"market": market_family, "sport": (sport or "").lower(),
-                        **({"player_id": canonical_player_id}
-                            if canonical_player_id else {})},
-            )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Session C real endpoint routing. Current plan supports
+            # /v1/matches/{id} for team-level game-line markets only.
+            endpoint = f"{DEFAULT_BASE_URL}/v1/matches/{canonical_event_id}"
+            resp = await client.get(endpoint,
+                                     headers={AUTH_HEADER_NAME: api_key()})
         latency_ms = int((time.monotonic() - started) * 1000)
         if resp.status_code in (401, 403):
             return ProviderResult(
@@ -276,58 +288,57 @@ async def get_completed_actual(
 
 
 def _extract_actual(body: dict, market_family: str) -> Any:
-    """Placeholder mapping. Populated per family after real payload
-    inspection.  Defensive on every branch.
+    """Session C — real Big Balls schema extraction for /v1/matches/{id}.
+
+    Response envelope:
+      { "data": {
+          "id", "sport", "league", "status",
+          "home": {"name", "short_name", ...},
+          "away": {"name", "short_name", ...},
+          "score": {"home": int, "away": int},
+          "linescore": {"home": [...], "away": [...]},
+          "kickoff_utc", "attendance", ...
+        },
+        "meta": {"source", "confidence", "cached", ...},
+        "error": null }
+
+    Only extracts values genuinely present.  Plan-gated fields
+    (statistics/players/lineups) return None → DATA_UNAVAILABLE at
+    the caller.
     """
     if not isinstance(body, dict):
         return None
-    # Soccer families — reuse PitchAPI mapping.
-    if market_family == "soccer_goals":
-        return body.get("player_goals")
-    if market_family == "soccer_goalscorer":
-        try:
-            return bool(int(body.get("player_goals") or 0) >= 1)
-        except (TypeError, ValueError):
-            return None
-    if market_family == "soccer_assists":
-        return body.get("player_assists")
-    if market_family == "soccer_score_or_assist":
-        try:
-            g = int(body.get("player_goals") or 0)
-            a = int(body.get("player_assists") or 0)
-            return bool(g + a >= 1)
-        except (TypeError, ValueError):
-            return None
-    if market_family == "soccer_player_shots":
-        return body.get("player_shots")
-    if market_family == "soccer_player_shots_on_target":
-        return body.get("player_shots_on_target")
-    if market_family == "soccer_team_corners":
-        return body.get("team_corners")
-    if market_family == "soccer_cards":
-        return body.get("cards_total")
-    # MLB / NFL / NBA / NHL / CFB extraction is left as
-    # per-family scaffolding — the settlement pipeline calls this
-    # via a wrap that expects a `None` = DATA_UNAVAILABLE contract.
-    key_map = {
-        "mlb_hits": "hits", "mlb_home_runs": "home_runs",
-        "mlb_strikeouts": "strikeouts", "mlb_total_bases": "total_bases",
-        "mlb_outs_recorded": "outs_recorded", "mlb_earned_runs": "earned_runs",
-        "nfl_passing_yards": "passing_yards",
-        "nfl_rushing_yards": "rushing_yards",
-        "nfl_receiving_yards": "receiving_yards",
-        "nfl_receptions": "receptions",
-        "nfl_anytime_td": "any_touchdown",
-        "nba_points": "points", "nba_rebounds": "rebounds",
-        "nba_assists": "assists", "nba_threes": "three_pointers",
-        "nba_pra": "points_rebounds_assists",
-        "nhl_goals": "goals", "nhl_assists": "assists",
-        "nhl_points": "points", "nhl_shots_on_goal": "shots_on_goal",
-        "cfb_passing_yards": "passing_yards",
-        "cfb_rushing_yards": "rushing_yards",
-        "cfb_receiving_yards": "receiving_yards",
-    }
-    return body.get(key_map.get(market_family, ""))
+    data = body.get("data")
+    if not isinstance(data, dict):
+        return None
+    status = (data.get("status") or "").lower()
+    if status not in ("finished", "final", "ft"):
+        return None
+    score = data.get("score") or {}
+    h = score.get("home"); a = score.get("away")
+    if h is None or a is None:
+        return None
+    try:
+        h = int(h); a = int(a)
+    except (TypeError, ValueError):
+        return None
+    if market_family == "soccer_home_goals":
+        return float(h)
+    if market_family == "soccer_away_goals":
+        return float(a)
+    if market_family == "soccer_total_goals":
+        return float(h + a)
+    if market_family == "soccer_moneyline":
+        # Encoded as {"home":H,"away":A,"draw":bool} so callers can
+        # decide direction — actual is the score object.
+        return {"home": h, "away": a, "draw": h == a}
+    if market_family == "soccer_btts":
+        return bool(h >= 1 and a >= 1)
+    if market_family in ("soccer_final_score", "mlb_final_score",
+                          "nfl_final_score", "nba_final_score",
+                          "nhl_final_score"):
+        return {"home": h, "away": a}
+    return None
 
 
 __all__ = [

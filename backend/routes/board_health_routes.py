@@ -62,6 +62,183 @@ router = APIRouter(prefix="/ops", tags=["ops"])
 SPORTS = ["MLB", "NFL", "NBA", "NHL", "Soccer", "Tennis", "CFB", "UFC"]
 
 
+@router.post("/normalize-soccer-fixture")
+async def normalize_soccer_fixture(
+    pick_id: str,
+    user: Annotated[UserPublic, Depends(current_user)],
+):
+    """Session C — Normalize provider actuals for a completed Soccer
+    fixture into canonical player_game_actuals + team_game_actuals.
+    Read-then-write.  Idempotent — re-running the same pick_id is
+    a no-op after the first run.
+    """
+    from services.providers.soccer_fixture_resolver import resolve_fixture
+    from services.providers import pitchapi as pa, bigballs as bb
+    from services.providers.canonical_actuals_normalizer import (
+        upsert_player_actual, upsert_team_actual,
+    )
+    from deps import db as _db
+    import re as _re, httpx
+
+    pick = await _db.picks.find_one({"$or":[{"id":pick_id},{"_id":pick_id}]},
+                                     {"_id":0})
+    if not pick or (pick.get("sport") or "") != "Soccer":
+        return {"error":"pick_not_found_or_not_soccer"}
+    event = pick.get("event") or ""
+    parts = _re.split(r"\s+@\s+", event)
+    if len(parts) != 2:
+        return {"error":"unparseable_event"}
+    away, home = parts[0].strip(), parts[1].strip()
+    event_time = pick.get("event_time") or ""
+    event_date = event_time[:10]
+    fx = await resolve_fixture(_db, perklocks_league=pick.get("league"),
+                                event_time_iso=event_time,
+                                home_team=home, away_team=away)
+    if fx.get("status") != "OK":
+        return {"error":"fixture_unresolved", "fixture": fx}
+
+    written = {"players": [], "teams": []}
+
+    # ── PitchAPI player payload ─────────────────────────────────
+    if fx.get("pitchapi_match_id") and pa.is_configured():
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(
+                    f"{pa.DEFAULT_BASE_URL}/v1/matches/{fx['pitchapi_match_id']}/players",
+                    headers={pa.AUTH_HEADER_NAME: pa.api_key()})
+            if r.status_code == 200:
+                players = (r.json() or {}).get("data") or []
+                for p in players[:40]:
+                    pl = p.get("player") or {}
+                    pname = pl.get("name") or ""
+                    if not pname:
+                        continue
+                    stat_map = {}
+                    for grp in (p.get("stats") or []):
+                        for _lbl, sd in (grp.get("stats") or {}).items():
+                            key = (sd.get("key") or "").strip()
+                            val = (sd.get("stat") or {}).get("value")
+                            if key and val is not None:
+                                try: stat_map[key] = float(val)
+                                except (TypeError, ValueError): pass
+                    stats = {
+                        "goals":  stat_map.get("goals"),
+                        "assists": stat_map.get("assists"),
+                        "shots":  stat_map.get("total_shots"),
+                        "shots_on_target": stat_map.get("ShotsOnTarget"),
+                        "minutes_played":  stat_map.get("minutes_played"),
+                    }
+                    research = {
+                        "xg": stat_map.get("expected_goals"),
+                        "xa": stat_map.get("expected_assists"),
+                        "chances_created": stat_map.get("chances_created"),
+                        "rating": stat_map.get("rating_title"),
+                    }
+                    res = await upsert_player_actual(
+                        _db,
+                        canonical_event_id=fx["pitchapi_match_id"],
+                        canonical_player_id=pl.get("id"),
+                        provider_player_name=pname,
+                        provider="pitchapi",
+                        provider_event_id=fx["pitchapi_match_id"],
+                        canonical_team_id=p.get("team_id"),
+                        event_date=event_date,
+                        stats=stats,
+                        research=research,
+                    )
+                    if res.get("status") in ("inserted", "updated"):
+                        written["players"].append(
+                            {"name": pname, "status": res["status"]})
+        except Exception as e:
+            written["pitchapi_error"] = type(e).__name__
+
+    # ── Big Balls team payload ─────────────────────────────────
+    if fx.get("bigballs_match_id") and bb.is_configured():
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(
+                    f"{bb.DEFAULT_BASE_URL}/v1/matches/{fx['bigballs_match_id']}",
+                    headers={bb.AUTH_HEADER_NAME: bb.api_key()})
+            if r.status_code == 200:
+                data = (r.json() or {}).get("data") or {}
+                score = data.get("score") or {}
+                if data.get("status") == "finished" and \
+                        score.get("home") is not None and \
+                        score.get("away") is not None:
+                    h = int(score["home"]); a = int(score["away"])
+                    home_res = "won" if h > a else ("lost" if h < a else "draw")
+                    away_res = "won" if a > h else ("lost" if a < h else "draw")
+                    hn = ((data.get("home") or {}).get("name") or home)
+                    an = ((data.get("away") or {}).get("name") or away)
+                    for team_name, side, gf, ga, result in [
+                        (hn, "home", h, a, home_res),
+                        (an, "away", a, h, away_res),
+                    ]:
+                        opp = an if side == "home" else hn
+                        res = await upsert_team_actual(
+                            _db,
+                            canonical_event_id=fx["bigballs_match_id"],
+                            canonical_team_id=None,
+                            provider_team_name=team_name,
+                            provider="bigballs",
+                            provider_event_id=fx["bigballs_match_id"],
+                            opponent_name=opp,
+                            event_date=event_date,
+                            home_away=side,
+                            stats={
+                                "goals_for": float(gf),
+                                "goals_against": float(ga),
+                                "final_score_home": float(h),
+                                "final_score_away": float(a),
+                                "result": result,
+                            },
+                        )
+                        if res.get("status") in ("inserted", "updated"):
+                            written["teams"].append(
+                                {"team": team_name, "status": res["status"]})
+        except Exception as e:
+            written["bigballs_error"] = type(e).__name__
+
+    return {"pick_id": pick_id, "fixture": fx,
+            "normalization": written}
+
+
+@router.get("/canonical-coverage-report")
+async def canonical_coverage_report(
+    user: Annotated[UserPublic, Depends(current_user)],
+):
+    """Session C — read-only per-sport canonical actuals coverage."""
+    from deps import db as _db
+    result = {}
+    for sport in ["soccer", "mlb", "nba", "nfl", "nhl"]:
+        total = await _db.player_game_actuals.count_documents({"sport": sport})
+        with_cpid = await _db.player_game_actuals.count_documents({
+            "sport": sport,
+            "canonical_player_id": {"$exists": True, "$ne": None}})
+        pitchapi_rows = await _db.player_game_actuals.count_documents({
+            "sport": sport, "provenance.provider": "pitchapi"})
+        bigballs_rows = await _db.player_game_actuals.count_documents({
+            "sport": sport, "provenance.provider": "bigballs"})
+        team_total = await _db.team_game_actuals.count_documents({
+            "sport": sport})
+        team_bigballs = await _db.team_game_actuals.count_documents({
+            "sport": sport, "provenance.provider": "bigballs"})
+        result[sport] = {
+            "player_actuals_total": total,
+            "player_actuals_with_cpid": with_cpid,
+            "player_actuals_pitchapi": pitchapi_rows,
+            "player_actuals_bigballs": bigballs_rows,
+            "team_actuals_total": team_total,
+            "team_actuals_bigballs": team_bigballs,
+        }
+    # Fixture map cache
+    fx_cached = await _db.provider_fixture_map.count_documents({})
+    stat_cached = await _db.provider_stat_cache.count_documents({})
+    result["cache"] = {"provider_fixture_map": fx_cached,
+                       "provider_stat_cache": stat_cached}
+    return result
+
+
 @router.get("/settlement-probe")
 async def settlement_probe(
     pick_id: str,
@@ -270,7 +447,8 @@ async def provider_health(user: Annotated[UserPublic, Depends(current_user)]):
         "generated_at": datetime.now(timezone.utc).isoformat()
                                 .replace("+00:00", "Z"),
         "providers": results,
-        "wired_into_settlement": False,   # SCAFFOLD ONLY
+        "wired_into_settlement": True,   # Session B — cascade PRIMARY on
+        "cascade_env_flag": "PERKLOCKS_PROVIDER_CASCADE_ENABLED (default=1)",
     }
 
 
