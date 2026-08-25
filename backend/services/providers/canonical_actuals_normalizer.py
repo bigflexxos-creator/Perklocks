@@ -89,7 +89,6 @@ async def upsert_player_actual(
                 "new_authority": new_authority}
 
     doc = {
-        **key,
         "player_name": provider_player_name,
         "canonical_team_id": canonical_team_id,
         "opponent": opponent,
@@ -110,8 +109,9 @@ async def upsert_player_actual(
     }
     if event_date:
         doc["event_date"] = event_date
+    # D0.2 fix — $setOnInsert cannot contain filter keys.
     await db.player_game_actuals.update_one(
-        {**key}, {"$setOnInsert": doc}, upsert=True)
+        key, {"$setOnInsert": doc}, upsert=True)
     return {"status": "inserted", "new_authority": new_authority}
 
 
@@ -125,12 +125,24 @@ async def upsert_team_actual(
     home_away: Optional[str] = None,
     stats: Optional[dict] = None,
 ) -> dict:
-    """Idempotent upsert into team_game_actuals for a Soccer team."""
+    """Idempotent upsert into team_game_actuals for a Soccer team.
+
+    D0.2 (2026-08-25): the collection has a pre-existing unique index
+    `team_backfill_unique` on ``(sport, canonical_team_id, event_id)``.
+    When both canonical_team_id AND event_id are null, both team-
+    perspective rows collide on the null-null-null tuple.  Fix:
+    stamp `event_id` = ``f"{canonical_event_id}::{home_away}"`` so
+    the home and away perspectives each get a distinct unique key
+    while remaining stable across re-runs (idempotent).
+    """
     if not canonical_event_id or not provider_team_name:
         return {"status": "skipped", "reason": "missing_identity"}
+    unique_event_id = (f"{canonical_event_id}::{home_away}"
+                       if home_away else canonical_event_id)
     key: dict[str, Any] = {"sport": "soccer",
                             "canonical_event_id": canonical_event_id,
-                            "team_name": provider_team_name}
+                            "team_name": provider_team_name,
+                            "event_id": unique_event_id}
     if canonical_team_id:
         key["canonical_team_id"] = canonical_team_id
     now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -156,7 +168,6 @@ async def upsert_team_actual(
                 "new_authority": new_authority}
 
     doc = {
-        **key,
         "opponent": opponent_name,
         "canonical_opponent_id": canonical_opponent_id,
         "home_away": home_away,
@@ -171,8 +182,12 @@ async def upsert_team_actual(
     }
     if event_date:
         doc["event_date"] = event_date
+    # D0.2 fix — $setOnInsert must NOT include keys present in the
+    # filter document (Mongo rejects with "cannot modify filter").
+    # Separate the two so both home and away perspectives insert
+    # cleanly.
     await db.team_game_actuals.update_one(
-        {**key}, {"$setOnInsert": doc}, upsert=True)
+        key, {"$setOnInsert": doc}, upsert=True)
     return {"status": "inserted", "new_authority": new_authority}
 
 

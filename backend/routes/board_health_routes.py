@@ -121,6 +121,19 @@ async def normalize_soccer_fixture(
                             if key and val is not None:
                                 try: stat_map[key] = float(val)
                                 except (TypeError, ValueError): pass
+                    # D0.1 — SKIP non-participants (empty-row prevention).
+                    # A player is a legitimate participant if PitchAPI
+                    # reports any of: minutes_played, goals, assists,
+                    # total_shots, ShotsOnTarget, or a starter status.
+                    participation_signals = (
+                        stat_map.get("minutes_played") or 0,
+                        stat_map.get("goals") or 0,
+                        stat_map.get("assists") or 0,
+                        stat_map.get("total_shots") or 0,
+                        stat_map.get("ShotsOnTarget") or 0,
+                    )
+                    if not any(v > 0 for v in participation_signals):
+                        continue
                     stats = {
                         "goals":  stat_map.get("goals"),
                         "assists": stat_map.get("assists"),
