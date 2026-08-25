@@ -62,6 +62,25 @@ router = APIRouter(prefix="/ops", tags=["ops"])
 SPORTS = ["MLB", "NFL", "NBA", "NHL", "Soccer", "Tennis", "CFB", "UFC"]
 
 
+@router.post("/enrich-mlb-opponent")
+async def enrich_mlb_opponent(
+    user: Annotated[UserPublic, Depends(current_user)],
+    dry_run: bool = False,
+    limit: int = 0,
+    batch_size: int = 500,
+):
+    """Session E — MLB canonical-opponent enrichment.  Read-then-write
+    join between player_game_actuals.event_id and team_game_actuals.
+    Idempotent; safe to re-run; conflict-safe.
+    """
+    from services.team_history.mlb_opponent_enricher import (
+        enrich_mlb_opponent_batch,
+    )
+    from deps import db as _db
+    return await enrich_mlb_opponent_batch(
+        _db, batch_size=batch_size, limit=limit, dry_run=dry_run)
+
+
 @router.post("/normalize-soccer-fixture")
 async def normalize_soccer_fixture(
     pick_id: str,
