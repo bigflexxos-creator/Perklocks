@@ -2080,6 +2080,7 @@ async def alt_lines_for_pick(pick_id: str):
         stat=parsed["stat"],
         opponent=parsed.get("opponent"),
         market_alt_lines=market_alt or None,
+        canonical_player_id=parsed.get("canonical_player_id"),
     )
     return {
         "pick_id":  pick_id,
@@ -2111,6 +2112,7 @@ async def alt_lines_board(sport: str, limit: int = 20):
             player=parsed["player"],
             stat=parsed["stat"],
             opponent=parsed.get("opponent"),
+            canonical_player_id=parsed.get("canonical_player_id"),
         )
         if bundle.alt_lines:
             out.append({"pick_id": pick.get("id"),

@@ -115,6 +115,13 @@ def _parse_pick(pick: dict) -> Optional[dict]:
         "stat":      stat,
         "threshold": threshold,
         "opponent":  opponent or "",
+        # Session A (2026-08-25) — surface the canonical player ID so
+        # the Alt-Line safeguard (and any downstream canonical reader)
+        # can hit `player_game_actuals` by canonical_player_id + lower
+        # -case sport instead of relying on name-based fallback. Field
+        # is optional — pre-canonical picks simply omit it, safeguard
+        # falls back to name.
+        "canonical_player_id": pick.get("canonical_player_id"),
     }
 
 
