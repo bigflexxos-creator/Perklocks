@@ -473,6 +473,24 @@ def apply_magic_and_apex(pick: dict, mo: MagicOutput) -> dict[str, Any]:
     )
     pick["apex_gate_version"] = apex_dec.gate_version
 
+    # ── P6 FINAL SURGICAL REPAIR (2026-08-25) — APEX STATE TELEMETRY ──
+    # Additive-only stamping. Existing `apex_lock` / `apex_reasons` /
+    # `apex_block_reason` semantics are unchanged; these new fields
+    # give consumers an unambiguous evaluation state that can never
+    # be confused with the mutable `grade` field.
+    #   • apex_status:  "APEX" | "NOT_APEX"
+    #   • apex_score:   100 if promoted, else the non-APEX refined score
+    #   • apex_reason:  block_reason (empty for APEX)
+    #   • apex_evaluated_at: ISO-8601 UTC timestamp of this evaluation
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        pick["apex_status"] = "APEX" if apex_dec.eligible else "NOT_APEX"
+        pick["apex_score"] = APEX_SCORE if apex_dec.eligible else round(refined, 1)
+        pick["apex_reason"] = None if apex_dec.eligible else apex_dec.block_reason
+        pick["apex_evaluated_at"] = _dt.now(_tz.utc).isoformat().replace("+00:00", "Z")
+    except Exception:
+        pass  # defensive — telemetry must never break Magic evaluation
+
     if apex_dec.eligible:
         # Explicit APEX — bypass the 99 cap.
         pick["lock_score"]    = APEX_SCORE

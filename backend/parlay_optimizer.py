@@ -239,11 +239,22 @@ def score_leg(pick: dict, bucket_map: dict, current_legs: list[dict],
     map from parlay_learning. When provided, the score gets a small bonus
     for combos historically won and a penalty for combos historically lost.
     """
-    lock = float(pick.get("lock_score") or 0)
+    # ── P0 FINAL SURGICAL REPAIR (2026-08-25) ─────────────────────────
+    # Canonical-first: prefer immutable published_lock_score for ranking
+    # so runtime lock_score drift cannot demote a legitimate elite Lock
+    # below a runtime-inflated non-elite pick. Legacy fallback preserved.
+    try:
+        _pls_raw = pick.get("published_lock_score")
+        _pls = float(_pls_raw) if _pls_raw is not None else None
+    except (TypeError, ValueError):
+        _pls = None
+    try:
+        _legacy_ls = float(pick.get("lock_score") or 0)
+    except (TypeError, ValueError):
+        _legacy_ls = 0.0
+    lock = _pls if _pls is not None else _legacy_ls
     edge = float(pick.get("edge_percent") or 0)
     win_p = float(pick.get("win_probability") or 0)
-
-    # Lock component (already 0-99) — clamp to 0-100
     lock_component = min(100.0, max(0.0, lock))
 
     # Win-probability component. Spec: should "pick highest winning pct
@@ -357,7 +368,24 @@ def is_eligible_leg(pick: dict, bucket_map: dict, *, high_risk: bool = False) ->
     if pick.get("is_under_lock"):
         return False, "under_lock"
 
-    lock = float(pick.get("lock_score") or 0)
+    # ── P0 FINAL SURGICAL REPAIR (2026-08-25) ─────────────────────────
+    # Canonical-first Lock Score read. The immutable
+    # `published_lock_score` is the authoritative admission signal.
+    # `lock_score` (mutable) is used ONLY when the row genuinely lacks
+    # a canonical snapshot (pre-Phase-1c legacy). Previous version
+    # read the mutable field even for canonical rows, which could
+    # silently reject a published 98 whose runtime `lock_score`
+    # drifted below the floor.
+    try:
+        _pls_raw = pick.get("published_lock_score")
+        _pls = float(_pls_raw) if _pls_raw is not None else None
+    except (TypeError, ValueError):
+        _pls = None
+    try:
+        _legacy_ls = float(pick.get("lock_score") or 0)
+    except (TypeError, ValueError):
+        _legacy_ls = 0.0
+    lock = _pls if _pls is not None else _legacy_ls
     edge = float(pick.get("edge_percent") or 0)
     win_p = float(pick.get("win_probability") or 0)
 
@@ -397,12 +425,21 @@ def is_eligible_leg(pick: dict, bucket_map: dict, *, high_risk: bool = False) ->
         return False, "no win_probability"
 
     # Bucket ROI must be non-negative (with sample) — standard mode only
+    # ── P0 FINAL SURGICAL REPAIR (2026-08-25) ─────────────────────────
+    # Historical market-family ROI may WARN or RANK-DOWN a leg but
+    # MUST NOT hard-veto a 95-99 canonical Lock. Elite Locks come from
+    # the authoritative model+publication contract; their admission
+    # cannot be silently overridden by a bucket average. The bucket
+    # penalty is preserved for locks below 95 exactly as before.
     if not high_risk:
         sport = (pick.get("sport") or "").lower()
         family = _market_family(pick.get("market") or "")
         row = bucket_map.get((sport, family)) if bucket_map else None
         if row and row.get("n", 0) >= 20 and float(row.get("roi", 0.0)) < -0.05:
-            return False, f"bucket ROI {row['roi']:+.0%} (losing)"
+            if lock < 95.0:
+                return False, f"bucket ROI {row['roi']:+.0%} (losing)"
+            # Elite Lock (95+): keep candidate; ROI penalty is applied
+            # inside score_leg's ROI component instead of a hard veto.
 
     return True, ""
 

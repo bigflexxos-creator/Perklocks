@@ -217,7 +217,16 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         {"published_lock_score": {"$exists": False},
          "lock_score":            {"$gte": lock_floor_val}},
     ]
-    pool = await db.picks.find(base_q, {"_id": 0}).sort("lock_score", -1).limit(400).to_list(length=400)
+    # ── P0 FINAL SURGICAL REPAIR (2026-08-25) ──────────────────────────
+    # Sort by CANONICAL published_lock_score first; only tiebreak on
+    # legacy lock_score. Previous `.sort("lock_score", -1)` combined
+    # with the canonical filter above could silently drop a published
+    # 98 (whose runtime lock_score drifted down) below a published 87
+    # (whose runtime lock_score drifted up) and get truncated at 400.
+    # Now the canonical score controls ordering AND admission.
+    pool = await db.picks.find(base_q, {"_id": 0}).sort(
+        [("published_lock_score", -1), ("lock_score", -1)]
+    ).limit(400).to_list(length=400)
     pool = _canonicalize_picks(pool)
     # μ-closure LIVE (2026-06) — Advanced EV positive-EV contract.
     # For Advanced.EV mode ONLY, apply an explicit positive-edge gate
@@ -231,6 +240,42 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         pool = [p for p in pool if float(p.get("edge_percent") or 0) > 0]
         ev_gated_out = _before - len(pool)
 
+    # ── P0 FINAL SURGICAL REPAIR (2026-08-25) — ELITE-LOCK TRACE ──────
+    # Track how every published >=95 canonical Lock traverses the funnel.
+    # Silent drops of elite Locks are the demonstrated defect this
+    # instrumentation exists to expose. Each 95+ pool member gets a
+    # per-stage status stamp; the final /parlay response returns the
+    # summary so consumers can PROVE a legitimate rejection reason
+    # rather than "it just disappeared".
+    _elite_trace: list[dict] = []
+    for _p in pool:
+        try:
+            _pls = float(_p.get("published_lock_score") or _p.get("lock_score") or 0)
+        except (TypeError, ValueError):
+            _pls = 0.0
+        if _pls < 95.0:
+            continue
+        _elite_trace.append({
+            "id": _p.get("id"),
+            "sport": _p.get("sport"),
+            "event": _p.get("event"),
+            "market": _p.get("market"),
+            "selection": _p.get("selection"),
+            "published_lock_score": _p.get("published_lock_score"),
+            "lock_score": _p.get("lock_score"),
+            "published_grade": _p.get("published_grade"),
+            "grade": _p.get("grade"),
+            "stages": {
+                "published": True,          # in canonical pool
+                "fetched": True,             # in this pool list
+                "canonicalized": True,
+                "standard_eligible": None,   # populated below
+                "advanced_eligible": None,   # populated below
+                "selected": None,            # populated after build_top_parlays
+                "reject_reason": None,
+            },
+        })
+
     # ─── Bucket-map ROI ───
     raw_buckets = await _historical_winrates()
     bucket_map: dict = {}
@@ -243,13 +288,27 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         bucket_map[k] = {"roi": proxy_roi, "n": n}
 
     # ─── Locked picks ───
+    # ── P0 FINAL SURGICAL REPAIR (2026-08-25) ──────────────────────────
+    # Pinned/locked legs MUST NOT be restricted to `pick_date == today`.
+    # A user pinning a canonical 96-lock scheduled tomorrow was losing
+    # that leg entirely because the `pick_date` gate silently excluded
+    # future-window picks. Canonical publication + explicit user pin +
+    # non-settled status are the only truthful gates here — the
+    # window/eligibility checks downstream will still reject a pinned
+    # pick if it doesn't fit the current parlay window.
     locked_picks: list[dict] = []
     if locked_ids:
         wanted_ids = [s.strip() for s in locked_ids.split(",") if s.strip()]
         if wanted_ids:
+            _pin_q = {
+                "id": {"$in": wanted_ids},
+                "no_bet": {"$ne": True},
+                "off_board": {"$ne": True},
+                "status": {"$in": ["pending", "open", None]},
+                **_canon_filt,  # canonical publication required
+            }
             locked_picks = await db.picks.find(
-                {"id": {"$in": wanted_ids}, "pick_date": _today_str()},
-                {"_id": 0},
+                _pin_q, {"_id": 0},
             ).to_list(length=len(wanted_ids))
 
     # ─── Load learned parlay synergy map ───
@@ -300,7 +359,9 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
             fb_cap = (now_utc + timedelta(hours=fallback_window)).strftime("%Y-%m-%dT%H:%M:%SZ")
             fb_q = {**base_q}
             fb_q["event_time"] = {"$gte": window_floor_iso, "$lte": fb_cap}
-            fb_pool = await db.picks.find(fb_q, {"_id": 0}).sort("lock_score", -1).limit(400).to_list(length=400)
+            fb_pool = await db.picks.find(fb_q, {"_id": 0}).sort(
+                [("published_lock_score", -1), ("lock_score", -1)]
+            ).limit(400).to_list(length=400)
             # Preserve mode-specific eligibility on the expanded pool.
             if is_advanced and advanced_sub_norm == "ev":
                 fb_pool = [p for p in fb_pool if float(p.get("edge_percent") or 0) > 0]
@@ -343,6 +404,24 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
             )
         except Exception:
             _eligible_count = None
+        # ── P0 FINAL SURGICAL REPAIR — populate rejection reason for
+        #     every elite (>=95) canonical Lock that DID NOT make it.
+        try:
+            for _tr in _elite_trace:
+                _match = next((p for p in pool if p.get("id") == _tr["id"]), None)
+                if _match is None:
+                    _tr["stages"]["reject_reason"] = "dropped_before_optimizer"
+                    _tr["stages"]["standard_eligible"] = False
+                    continue
+                _ok, _why = is_eligible_leg(_match, bucket_map, high_risk=is_high_risk)
+                _tr["stages"]["standard_eligible"] = bool(_ok)
+                _tr["stages"]["advanced_eligible"] = bool(_ok)
+                _tr["stages"]["selected"] = False
+                _tr["stages"]["reject_reason"] = (
+                    "no_parlay_built" if _ok else _why
+                )
+        except Exception as _tr_err:
+            logger.warning("elite trace enrichment (empty) failed: %s", _tr_err)
         diag = {
             "canonical_pool":     canonical_pool_count,
             "ev_gated_out":       ev_gated_out,
@@ -352,6 +431,7 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
             "window_hours":       window_hours,
             "mode":               mode,
             "advanced_sub":       advanced_sub_norm if is_advanced else None,
+            "elite_lock_trace":   _elite_trace,
         }
         return {
             "parlay": None,
@@ -408,7 +488,22 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
             if p.get("id") not in used_ids
             and p.get("event_id") not in used_events
         ]
-        alternates.sort(key=lambda p: -(p.get("lock_score") or 0))
+        # ── P0 FINAL SURGICAL REPAIR (2026-08-25) ─────────────────
+        # Rank alternates by canonical published_lock_score first
+        # (immutable), legacy lock_score as tiebreaker. Prevents a
+        # mutable-score drift from pushing an authentic 96-lock
+        # canonical alternate below a runtime-inflated 88.
+        def _alt_rank(p: dict) -> tuple:
+            try:
+                pls = float(p.get("published_lock_score") or 0)
+            except (TypeError, ValueError):
+                pls = 0.0
+            try:
+                ls = float(p.get("lock_score") or 0)
+            except (TypeError, ValueError):
+                ls = 0.0
+            return (-pls, -ls)
+        alternates.sort(key=_alt_rank)
         card["alternates"] = alternates[:5]
         card["alternates_count"] = len(card["alternates"])
     # Persist this parlay slate into history so the learning loop has
@@ -421,6 +516,35 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
             )
     except Exception as _rec_err:
         logger.warning("record_parlay_shown skipped: %s", _rec_err)
+    # ── P0 FINAL SURGICAL REPAIR (2026-08-25) — populate elite-Lock
+    #     rejection reasons on the SUCCESS path. Every published
+    #     >=95 canonical Lock in the pool gets an explicit stages
+    #     stamp so silent disappearances are impossible.
+    try:
+        _selected_ids: set = set()
+        for _card in payloads:
+            for _leg in (_card.get("legs") or []):
+                _lid = _leg.get("id")
+                if _lid:
+                    _selected_ids.add(_lid)
+        for _tr in _elite_trace:
+            _match = next((p for p in pool if p.get("id") == _tr["id"]), None)
+            if _match is None:
+                _tr["stages"]["reject_reason"] = "dropped_before_optimizer"
+                _tr["stages"]["standard_eligible"] = False
+                continue
+            _ok, _why = is_eligible_leg(_match, bucket_map, high_risk=is_high_risk)
+            _tr["stages"]["standard_eligible"] = bool(_ok)
+            _tr["stages"]["advanced_eligible"] = bool(_ok)
+            _tr["stages"]["selected"] = _tr["id"] in _selected_ids
+            if _tr["stages"]["selected"]:
+                _tr["stages"]["reject_reason"] = None
+            elif not _ok:
+                _tr["stages"]["reject_reason"] = _why
+            else:
+                _tr["stages"]["reject_reason"] = "eligible_but_not_optimal_leg"
+    except Exception as _tr_err:
+        logger.warning("elite trace enrichment (success) failed: %s", _tr_err)
     legacy = payloads[1] if len(payloads) > 1 else payloads[0]
     return {
         "parlay": {
@@ -438,4 +562,5 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         "window_hours": window_hours,
         "auto_expanded_to": auto_expanded_to,
         "sport_mode": mode_lower,
+        "elite_lock_trace": _elite_trace,
     }
