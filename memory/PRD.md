@@ -1,3 +1,56 @@
+## 2026-06 — Session F — Combined NFL + Tennis + NBA Canonical Opponent Completion
+Certification: **NFL_TENNIS_NBA_CANONICAL_OPPONENT_CERTIFIED**
+
+### Enrichers built (all idempotent, conflict-safe, bounded, reusable)
+- `services/team_history/nfl_opponent_enricher.py::enrich_nfl_opponent_batch`
+- `services/team_history/tennis_opponent_enricher.py::enrich_tennis_opponent_batch`
+- `services/team_history/nba_opponent_enricher.py::{enrich_nba_opponent_batch, normalize_nba_team_actuals}`
+
+### Ops endpoints (auth required)
+- POST `/api/ops/enrich-nfl-opponent`
+- POST `/api/ops/enrich-tennis-opponent`
+- POST `/api/ops/enrich-nba-opponent`
+- POST `/api/ops/normalize-nba-team-actuals`
+
+### Authoritative joins (proved BEFORE writes)
+- **NFL**: event_id follows nflfastR `{season}_{week}_{away}_{home}` → deterministic parse.
+- **Tennis**: event_id already groups both participants (42,810/42,818 events = exactly 2 rows). Opponent = OTHER canonical_player_id.
+- **NBA**: player_game_actuals.(event_id, cpid) ↔ player_game_logs.(game_id, player_id) → **100%** overlap. Team pulled from pgl (game-specific, not season-team). ESPN team_id → abbrev via `players` registry.
+
+### Live write results
+| Enricher | scanned | would_update | updated | unresolved | conflicts |
+|---|---|---|---|---|---|
+| NFL F1 | 129,657 | 128,601 | **128,601** | 529 | 527 |
+| Tennis F2 | 85,628 | 85,620 | **85,620** | 8 | 0 |
+| NBA F3a (player) | 20,415 | 20,350 | **20,350** | 0 | 65 unmapped opp |
+| NBA F3b (team) | 2,788 games | 5,544 | **5,544 inserts** | 0 | 16 unmapped team |
+
+### AFTER coverage
+- NFL pga: 99.19% canonical (128,601/129,657)
+- Tennis pga: 99.99% (85,620/85,628) opponent + event; no team fields (by design)
+- NBA pga: 99.68% (20,350/20,415)
+- team_game_actuals[nba]: **0 → 5,544** (both perspectives × 2,772 games)
+
+### Idempotency: immediate reruns produced 0 new writes across all 4 enrichers.
+
+### Real H2H proofs
+- NFL: Mahomes vs BAL → 6 canonical rows; Josh Allen vs MIA → 15 rows.
+- Tennis: BS86 (Tomas Barrios Vera) vs N0BS → 5 canonical match rows.
+- NBA: Buddy Hield (2990984) vs HOU → multi-season canonical rows with points/team/home_away.
+- NBA team_game_actuals: game 401584106 → both perspectives (ATL 126-120 W, DET 120-126 L).
+
+### Prediction-Truth Trace (READ-ONLY, no wiring changes in this pass)
+- NFL scorer `build_nfl_opponent_history` reads legacy `opponent` field of pga → **AVAILABLE_RESEARCH_ONLY** (canonical fields populated, not yet consumed).
+- Tennis scorer `build_tennis_workload` reads canonical_opponent_id from PICK but queries `tennis_matches_history` (different collection) → **AVAILABLE_RESEARCH_ONLY**.
+- NBA scorer `build_nba_matchup` reads `team_form` (not pga/tga) → **AVAILABLE_RESEARCH_ONLY**.
+- All three canonical stores now populated and query-ready for future scoring wiring.
+
+### Hard freeze respected
+Zero edits to: prediction/model formulas, Lock Score, Parlay, Alt Magic math, APEX, safe_picks, settlement math, MLB certified history, Soccer history, PitchAPI/BigBalls, NHL. Backend `/health` = 200.
+
+---
+
+
 # LockScore AI — Product Requirements
 
 ## Overview
