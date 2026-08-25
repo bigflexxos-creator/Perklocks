@@ -27,6 +27,24 @@ import { useFilters } from "@/src/stores/useFilters";
 const PREFS_KEY = "locks_feed_prefs_v2";
 type FeedPrefs = { sport?: string; sortKey?: SortKey; lineType?: LineType };
 
+// ── Picks cache (2026-06 hotfix) ─────────────────────────────────────
+// Symptom (Expo Go, Production): "Connection hiccup" / "GAME · 0" on
+// cold boot / app-resume, MLB bets appear-then-disappear. Root cause:
+// the in-memory `picks` state is [] on every fresh JS-runtime start,
+// so the empty-response guard at load() (`picksRef.current.length > 0`)
+// cannot fire on the very first refetch that comes back empty during
+// the backend atomic-swap window — the [] paints and users see 0.
+//
+// Fix: persist `picks` to AsyncStorage after every successful load and
+// re-hydrate on mount BEFORE the first fetch resolves. TTL 24h so a
+// week-old stale slate can't leak in. Sport-scoped so switching tabs
+// never restores the wrong sport. Cache is display-only; the fresh
+// fetch always wins if it lands with data. Zero backend / scorer /
+// pipeline changes.
+const PICKS_CACHE_KEY = "locks_picks_cache_v1";
+const PICKS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+type PicksCache = { sport: string; picks: Pick[]; ts: number };
+
 function timeAgo(d: Date | null): string {
   if (!d) return "—";
   const secs = Math.floor((Date.now() - d.getTime()) / 1000);
@@ -144,6 +162,38 @@ export default function LocksScreen() {
       setPrefsHydrated(true);
     })();
   }, []);
+
+  // ── Picks cache restore (2026-06 hotfix) ────────────────────────
+  // On mount / sport-change, if `picks` is still empty (cold boot,
+  // session bounce, app-resume with dead JS runtime), pull the last
+  // good slate for the current sport off AsyncStorage so the user
+  // sees SOMETHING (not "GAME · 0") while the fresh fetch is in
+  // flight. If the fetch lands with real picks, `setPicks(fresh)`
+  // simply replaces the cache. If it lands empty, the existing
+  // empty-response guard at load() keeps the restored cache visible.
+  useEffect(() => {
+    if (!prefsHydrated) return;   // wait for sport to settle
+    let cancelled = false;
+    (async () => {
+      try {
+        const raw = await storage.getItem<string>(PICKS_CACHE_KEY, "");
+        if (!raw || cancelled) return;
+        const c: PicksCache = JSON.parse(raw as any);
+        if (!c || !Array.isArray(c.picks)) return;
+        // TTL guard — never resurrect a stale slate older than 24h.
+        if (Date.now() - (c.ts || 0) > PICKS_CACHE_TTL_MS) return;
+        // Sport-scoped — only rehydrate when the cached sport matches
+        // what the user is about to view. Prevents "NFL under MLB"
+        // flashes on sport switch.
+        if (c.sport !== sport) return;
+        // Only rehydrate if we don't already have fresh picks in memory.
+        if (picksRef.current.length > 0) return;
+        setPicks(c.picks);
+        lastLoadedForSportRef.current = c.sport;
+      } catch { /* corrupt cache — ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, [sport, prefsHydrated]);
 
   // Persist prefs whenever they change (but only after hydration so we don't
   // overwrite saved values with initial defaults).
@@ -428,6 +478,21 @@ export default function LocksScreen() {
       }
       setPicks(fresh);
       lastLoadedForSportRef.current = requestedSport;
+      // ── Picks cache persist (2026-06 hotfix) ─────────────────
+      // Save the fresh slate so the next cold boot / resume can
+      // rehydrate instantly instead of showing "GAME · 0" while
+      // the first fetch is in flight. Cap at 200 picks to keep
+      // AsyncStorage writes fast (< 200KB per sport).
+      if (fresh.length > 0) {
+        try {
+          const cache: PicksCache = {
+            sport: requestedSport,
+            picks: fresh.slice(0, 200),
+            ts: Date.now(),
+          };
+          storage.setItem(PICKS_CACHE_KEY, JSON.stringify(cache));
+        } catch { /* storage full / serialize err — silent */ }
+      }
       // Alt-line availability diagnostic (2026-07-13): backend tells us
       // when this ALT query hit a book-coverage gap so we can render
       // the reason in the empty state instead of a generic "no locks".
