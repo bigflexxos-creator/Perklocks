@@ -141,6 +141,7 @@ async def generate_alt_lines(
     opponent: Optional[str] = None,
     market_alt_lines: Optional[list[dict]] = None,   # from Odds API alt feed
     top_n: int = 8,
+    canonical_player_id: Optional[str] = None,       # Session A additive
 ) -> AltLineBundle:
     """Produce a ranked bundle of alt lines.
 
@@ -148,10 +149,15 @@ async def generate_alt_lines(
     dicts from the Odds API alternate-line feed. When provided, real
     book prices are used to compute the edge. When absent, thresholds
     are model-projection only.
+
+    `canonical_player_id` — Session A additive. Lets the safeguard
+    hit `player_game_actuals` by canonical id + lowercase sport
+    directly. Backwards-compatible: callers may still omit it.
     """
     # ── Safeguards ────────────────────────────────────────────────
     safe, reason = await is_safe_for_alt_lines(
         db, sport=sport, player_name=player, stat=stat,
+        canonical_player_id=canonical_player_id,
     )
     if not safe:
         return AltLineBundle(sport=sport, player=player, stat=stat,
