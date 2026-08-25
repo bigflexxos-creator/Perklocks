@@ -46,12 +46,37 @@ from typing import Any, Optional
 import httpx
 
 PROVIDER_NAME = "pitchapi"
-PROVIDER_VERSION = "1.0.0-scaffold"
+PROVIDER_VERSION = "1.1.0-real-endpoints"
 
-# Real base URL is placeholder until real product endpoint is confirmed
-# from the provider dashboard. Reads env override so ops can flip it
-# without redeploy.
-DEFAULT_BASE_URL = os.getenv("PITCHAPI_BASE_URL", "https://api.pitchapi.io")
+# ── VERIFIED 2026-08-25 via authenticated real response ───────────────
+# Base URL:  https://api.pitchapi.dev
+# Auth:      X-API-KEY: <key>   (NOT Bearer)
+# Endpoints (confirmed):
+#   GET /v1/leagues                          → list all leagues
+#   GET /v1/leagues/{league_id}              → league detail
+#   GET /v1/leagues/{league_id}/matches      → league match list
+#                                              (finished/scheduled/live)
+#   GET /v1/matches/{match_id}               → match detail
+#   GET /v1/matches/{match_id}/stats         → team stats (periods+groups)
+#   GET /v1/matches/{match_id}/events        → goals + cards + subs
+#                                              types observed:
+#                                              "goal", "yellowcard",
+#                                              "substitution",
+#                                              (redcard on incidence)
+#   GET /v1/matches/{match_id}/lineups       → starting XI + bench
+#   GET /v1/matches/{match_id}/players       → per-player stats
+#                                              (Goals, Assists, Rating,
+#                                              Minutes played, Corners,
+#                                              ShotsOnTarget/OffTarget,
+#                                              total_shots, xG, xA, ...)
+#
+# ID prefixes observed:
+#   league:   "l_<slug>"
+#   match:    "m_<slug>"
+#   team:     "t_<slug>"
+#   player:   "p_<slug>"
+DEFAULT_BASE_URL = os.getenv("PITCHAPI_BASE_URL", "https://api.pitchapi.dev")
+AUTH_HEADER_NAME = "X-API-KEY"
 API_KEY_ENV = "PITCHAPI_API_KEY"
 
 # Supported market family whitelist. A family only becomes SUPPORTED
@@ -119,9 +144,11 @@ async def health_check(timeout: float = 5.0) -> dict:
     started = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
+            # Verified: /v1/leagues is a cheap GET that returns 200 for
+            # authorized keys. No dedicated /ping endpoint exists.
             resp = await client.get(
-                f"{DEFAULT_BASE_URL}/v1/ping",
-                headers={"Authorization": f"Bearer {api_key()}"},
+                f"{DEFAULT_BASE_URL}/v1/leagues",
+                headers={AUTH_HEADER_NAME: api_key()},
             )
             return {
                 "provider": PROVIDER_NAME,
