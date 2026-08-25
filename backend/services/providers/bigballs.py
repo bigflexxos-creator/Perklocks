@@ -35,9 +35,32 @@ import httpx
 from services.providers.pitchapi import ProviderResult, SUPPORTED_MARKETS as SOCCER_MARKETS
 
 PROVIDER_NAME = "bigballs"
-PROVIDER_VERSION = "1.0.0-scaffold"
+PROVIDER_VERSION = "1.1.0-real-endpoints"
 
-DEFAULT_BASE_URL = os.getenv("BIGBALLS_BASE_URL", "https://api.bigballs.tech")
+# ── VERIFIED 2026-08-25 via authenticated real response ───────────────
+# Base URL:  https://api.bigballsdata.com
+# Auth:      x-api-key: <key>
+# Docs:      https://bigballsdata.com/docs
+# OpenAPI:   https://api.bigballsdata.com/openapi.json  (115 endpoints)
+#
+# Endpoints of interest for settlement (verified reachable):
+#   GET /v1/matches                          → match list (soccer)
+#   GET /v1/matches/{id}                     → match detail
+#   GET /v1/matches/{id}/statistics          → match stats
+#   GET /v1/matches/{id}/events              → goals, cards, subs
+#   GET /v1/nba/games                        → NBA cross-sport fallback
+#   GET /v1/nfl/games                        → NFL cross-sport fallback
+#   GET /v1/nhl/games/{id}/matchup           → NHL cross-sport fallback
+#   GET /v1/players/{id}/game-log            → player game log
+#   GET /v1/players/{id}/stats               → season stats
+#   GET /v1/live-stats/{sport}/{matchId}/players → live player stats
+#   GET /v1/leagues?sport=football           → soccer league list
+#
+# NOTE: `/v1/fixtures` does NOT exist here (route_not_found);
+# `/v1/matches` is the canonical entry.  Documented via provider's
+# suggested_fix response.
+DEFAULT_BASE_URL = os.getenv("BIGBALLS_BASE_URL", "https://api.bigballsdata.com")
+AUTH_HEADER_NAME = "x-api-key"
 API_KEY_ENV = "BIGBALLS_API_KEY"
 
 # Cross-sport supported market families. Populated incrementally as
@@ -76,9 +99,10 @@ async def health_check(timeout: float = 5.0) -> dict:
     started = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
+            # Verified: /v1/health is a cheap 200-return endpoint.
             resp = await client.get(
-                f"{DEFAULT_BASE_URL}/v1/ping",
-                headers={"Authorization": f"Bearer {api_key()}"},
+                f"{DEFAULT_BASE_URL}/v1/health",
+                headers={AUTH_HEADER_NAME: api_key()},
             )
             return {
                 "provider": PROVIDER_NAME,
