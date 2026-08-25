@@ -1,3 +1,88 @@
+## 2026-06 — Session G — Final Production Closure + Historical Intelligence (SHADOW)
+Verdict: **PERKLOCKS_PRODUCTION_READY_TO_PUBLISH**
+
+### Files/functions changed (additive only, zero prediction-math edits)
+- **NEW** `services/history_intelligence.py`
+  - `compute_history_shadow(db, pick)` — recency-weighted (90-day half-life exp decay), H2H shrinkage (k=10 toward baseline), 0-meetings=UNKNOWN, temporal-safe cutoff, sport-aware stat map (MLB/NFL/NBA/Tennis/Soccer), tennis surface weighting.
+  - `upsert_shadow(db, pick_id, bundle)` — idempotent write to `pick_enrichment.history_shadow`; never overwrites newer versions.
+  - `backfill_settled_shadow(db, sport, limit)` — bounded chronological backfill (oldest→newest) for P6 validation, no future leakage.
+- `routes/board_health_routes.py` — added ops endpoints:
+  - `POST /api/ops/history-shadow-preview?pick_id=` (on-demand read-only)
+  - `POST /api/ops/history-shadow-backfill?sport=&limit=&dry_run=`
+- **UNCHANGED**: all prediction/model/Lock/Magic/APEX/Parlay/Rollover/scorer/settlement/canonical publication code. Verified by grep — `history_shadow` only referenced in the new service + ops route.
+
+### Before/After counts
+| Metric | Before | After |
+|---|---|---|
+| Files touched (this pass) | — | 2 (1 new module + 1 route add) |
+| `pick_enrichment.history_shadow` rows | 0 | **2,449** (MLB 2,151 + NBA 44 + Tennis 254) |
+| Shadow rows with real career history | 0 | **1,739** (MLB 1,733 + NBA 6) |
+| Prediction/scoring writes changed | 0 | **0** |
+
+### Per-sport canonical history coverage (AFTER Sessions E+F, unchanged this pass)
+| Sport | pga total | canonical opponent | pct | team_game_actuals |
+|---|---|---|---|---|
+| MLB | 64,976 | 63,855 | 98.3% | 4,026 |
+| NFL | 129,657 | 128,601 | 99.2% | 570 |
+| NBA | 20,415 | 20,350 | 99.7% | 5,544 |
+| Tennis | 85,628 | 85,620 | 100.0% | n/a (by design) |
+| Soccer | 4,487 | 4,456 | 99.3% | 50,066 |
+| **NHL** | **0** | **0** | **0.0%** | **0** (source proof failed — see limitations) |
+
+### Shadow-history findings (P6 CURRENT vs SHADOW vs ACTUAL)
+| Sport | Evaluable n | Current hit% | Shadow hit% | Shadow Brier | Verdict |
+|---|---|---|---|---|---|
+| MLB | 126 | **82.5%** | 72.2% | 0.2367 | **Shadow WORSENED vs current — DO NOT activate** |
+| NBA | 0 (evaluable) | — | — | — | INSUFFICIENT_DATA (cpid mismatch between picks & pga) |
+| Tennis | 0 (evaluable) | — | — | — | INSUFFICIENT_DATA (pick cpid `tp:name` vs pga cpid numeric — identity resolver gap) |
+| NFL | 0 (settled player props) | — | — | — | INSUFFICIENT_DATA (no player-line NFL settled in pod) |
+| Soccer | 0 (settled player props) | — | — | — | INSUFFICIENT_DATA (no canonical-player Soccer settled in pod) |
+
+**Recommendation: NOT ACTIVATE history-enhanced scoring in Lock/Magic/APEX.** Shadow evidence on the only measurable sport (MLB, n=126) shows the current model outperforms the shadow-only projection.
+
+### NHL P3 SOURCE PROOF — result: BLOCKED (honestly, not blocking publish)
+Inspected the two candidate NHL sources present in the pod:
+- `games` (751 nhl docs): has `game_id`, `status`, `result.{home,away}` scores — but **no home_team, no away_team, no date**.
+- `player_game_logs` (30,040 nhl rows): has `game_id`, `player_id` (`nhl_xxx`), stats — but **`team` is None**, no opponent, no home_away.
+
+Neither source contains the identity fields required to deterministically resolve canonical_team_id / canonical_opponent_id / home_away. Per user directive we **STOP** and do NOT invent mappings. NHL degrades honestly:
+- 0 NHL picks on today's board (no synthetic H2H shown)
+- 0 NHL settled picks depending on canonical H2H
+- All NHL surfaces show INSUFFICIENT_DATA / UNKNOWN if queried (no false authority)
+
+### Remaining limitations
+- NHL canonical history unavailable — needs an authoritative team/opponent feed (NHL API team roster snapshot per game, or ESPN NHL boxscore ingest). Not blocking publication.
+- Tennis pick↔pga identity: picks use `tp:name-slug`, pga uses ATP alphanumeric ID (`FB98`) — identity resolver missing. Shadow reports INSUFFICIENT_DATA truthfully.
+- NBA pick↔pga identity: partial gap (only 6/44 backfill picks matched pga). Same class of issue.
+- No player-line settled picks exist in pod for NFL/Soccer — P6 evaluation impossible for those.
+- Shadow layer is READ-ONLY research; it is NOT wired into predictions (per directive).
+
+### P5 Production audit (today = 2026-08-25)
+- `/api/health` = 200
+- Board reachability: MLB 2 on-board (2×85+, 2×95+), Soccer 383 on-board (358×85+), other sports 0 (off-season/no slate — expected)
+- APEX 100 reachable (rare) — 0 today, 0 today's Alt-Magic tier-strong picks (correct APEX strictness)
+- Canonical publication authority: `published_lock_score` = 19,865 rows today; `published_grade` = 262 today
+- Settlement supported: MLB 691 real results / Soccer 766 real results
+- `safe_picks` regression lock preserved (pick_refresh_orchestrator.py:418, 1242-1244)
+- `grade` vs `published_grade` board suppression fix preserved (picks_routes.py:1696-1699)
+- MLB opponent enrichment / NFL/Tennis/NBA opponent enrichment / NBA team_game_actuals — all intact & idempotent-rerun-clean
+- PitchAPI + BigBalls soccer settlement cascade — intact
+- No Pass leaks / no synthetic lines / no stale provider ghosts / no silent consumer drops
+- Shadow output NOT read by any scorer (verified via grep: only `history_intelligence.py` + `board_health_routes.py` reference `history_shadow`)
+
+### Final publish verdict
+**PERKLOCKS_PRODUCTION_READY_TO_PUBLISH**
+
+### Post-publish production verification required (single check)
+After Publish/redeploy, run ONE end-to-end verification on the deployed instance:
+1. `GET /api/health` returns 200
+2. `GET /api/picks/today` returns MLB/Soccer boards non-empty with `published_lock_score` ≥ 80
+3. Confirm APEX 100 reachable when a genuinely strong slate presents (may show 0 on a quiet day)
+4. Confirm `pick_enrichment.history_shadow` remains additive-only (no wiring into live scoring)
+
+---
+
+
 ## 2026-06 — Session F — Combined NFL + Tennis + NBA Canonical Opponent Completion
 Certification: **NFL_TENNIS_NBA_CANONICAL_OPPONENT_CERTIFIED**
 

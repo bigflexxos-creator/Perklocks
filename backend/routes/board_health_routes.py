@@ -81,6 +81,47 @@ async def enrich_mlb_opponent(
         _db, batch_size=batch_size, limit=limit, dry_run=dry_run)
 
 
+@router.post("/history-shadow-preview")
+async def history_shadow_preview(
+    pick_id: str,
+    user: Annotated[UserPublic, Depends(current_user)],
+):
+    """P1/P4 — On-demand READ-ONLY history-shadow computation for a
+    single pick (by _id string). Not stored; returned to caller for
+    research/UI. Does NOT affect Lock Score, Magic, APEX, Parlay,
+    Rollover, or model probability.
+    """
+    from services.history_intelligence import compute_history_shadow
+    from deps import db as _db
+    from bson import ObjectId
+    try:
+        oid = ObjectId(pick_id)
+    except Exception:
+        return {"error": "invalid_pick_id"}
+    pick = await _db.picks.find_one({"_id": oid})
+    if not pick:
+        return {"error": "pick_not_found"}
+    return await compute_history_shadow(_db, pick)
+
+
+@router.post("/history-shadow-backfill")
+async def history_shadow_backfill(
+    sport: str,
+    user: Annotated[UserPublic, Depends(current_user)],
+    limit: int = 5000,
+    dry_run: bool = False,
+):
+    """P1/P6 — Bounded backfill of settled player-line picks with a
+    history_shadow bundle (as-of pick's pregame cutoff — no future
+    leakage). Storage: pick_enrichment.history_shadow. Idempotent
+    (newer versions never overwritten by older).
+    """
+    from services.history_intelligence import backfill_settled_shadow
+    from deps import db as _db
+    return await backfill_settled_shadow(_db, sport=sport, limit=limit,
+                                          dry_run=dry_run)
+
+
 @router.post("/enrich-nfl-opponent")
 async def enrich_nfl_opponent(
     user: Annotated[UserPublic, Depends(current_user)],
