@@ -81,6 +81,82 @@ async def enrich_mlb_opponent(
         _db, batch_size=batch_size, limit=limit, dry_run=dry_run)
 
 
+@router.post("/enrich-nfl-opponent")
+async def enrich_nfl_opponent(
+    user: Annotated[UserPublic, Depends(current_user)],
+    dry_run: bool = False,
+    limit: int = 0,
+    batch_size: int = 1000,
+):
+    """Session F1 — NFL canonical-opponent enrichment via event_id
+    parse ({season}_{week}_{away}_{home}). Idempotent, conflict-safe.
+    """
+    from services.team_history.nfl_opponent_enricher import (
+        enrich_nfl_opponent_batch,
+    )
+    from deps import db as _db
+    return await enrich_nfl_opponent_batch(
+        _db, batch_size=batch_size, limit=limit, dry_run=dry_run)
+
+
+@router.post("/enrich-tennis-opponent")
+async def enrich_tennis_opponent(
+    user: Annotated[UserPublic, Depends(current_user)],
+    dry_run: bool = False,
+    limit: int = 0,
+    batch_size: int = 1000,
+):
+    """Session F2 — Tennis canonical-opponent enrichment via
+    same-event 2-row grouping. Opponent = OTHER canonical_player_id.
+    NO team_game_actuals writes. Idempotent, conflict-safe.
+    """
+    from services.team_history.tennis_opponent_enricher import (
+        enrich_tennis_opponent_batch,
+    )
+    from deps import db as _db
+    return await enrich_tennis_opponent_batch(
+        _db, batch_size=batch_size, limit=limit, dry_run=dry_run)
+
+
+@router.post("/enrich-nba-opponent")
+async def enrich_nba_opponent(
+    user: Annotated[UserPublic, Depends(current_user)],
+    dry_run: bool = False,
+    limit: int = 0,
+    batch_size: int = 1000,
+):
+    """Session F3a — NBA canonical-opponent enrichment via
+    player_game_logs join by (game_id, player_id). Uses game-specific
+    team; ESPN team_id → 3-letter abbrev via players registry.
+    """
+    from services.team_history.nba_opponent_enricher import (
+        enrich_nba_opponent_batch,
+    )
+    from deps import db as _db
+    return await enrich_nba_opponent_batch(
+        _db, batch_size=batch_size, limit=limit, dry_run=dry_run)
+
+
+@router.post("/normalize-nba-team-actuals")
+async def normalize_nba_team_actuals(
+    user: Annotated[UserPublic, Depends(current_user)],
+    dry_run: bool = False,
+    limit: int = 0,
+    batch_size: int = 500,
+):
+    """Session F3b — Build NBA team_game_actuals (BOTH home + away
+    perspectives) from authoritative player_game_logs game-meta
+    (dedup by game_id). Idempotent per (sport, event_id,
+    canonical_team_id).
+    """
+    from services.team_history.nba_opponent_enricher import (
+        normalize_nba_team_actuals as _norm,
+    )
+    from deps import db as _db
+    return await _norm(_db, batch_size=batch_size, limit=limit,
+                       dry_run=dry_run)
+
+
 @router.post("/normalize-soccer-fixture")
 async def normalize_soccer_fixture(
     pick_id: str,
