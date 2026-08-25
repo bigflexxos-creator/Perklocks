@@ -415,6 +415,15 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         logger.info("Refreshing picks for %s · sport_filter=%s", date_str, sport_filter)
     else:
         logger.info("Refreshing picks for %s", date_str)
+    # ── P8 FINAL SURGICAL REPAIR (2026-08-25) — safe_picks REGRESSION LOCK ──
+    # Universal pre-declaration eliminates read-before-assignment for
+    # every downstream branch/exception path, including:
+    #   normal refresh, zero candidates, provider exception, enrichment
+    #   exception, one-sport failure, zero published, multi-sport partial
+    #   success. Every subsequent assignment REPLACES this baseline
+    #   (never a `+=` on undefined), so pre-declaring `[]` is a strict
+    #   NO-OP for happy paths and a fail-safe for exception paths.
+    safe_picks: list = []
     # ── Odds API circuit breaker observability + soft re-arm ─────────
     # If the breaker tripped earlier this process (e.g. transient outage,
     # or operator rotating THE_ODDS_API_KEY mid-day), give it ONE shot

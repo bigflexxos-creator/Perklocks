@@ -2987,6 +2987,14 @@ try:
     logger.info("Admin Users dashboard routes mounted at /api/admin/users/*")
     app.include_router(analytics_routes.router)
     logger.info("Analytics routes mounted at /api/analytics/* (15 endpoints)")
+    # ── P12 Board-Health telemetry (2026-08-25) ─────────────────────
+    # Read-only per-sport funnel + parlay + coherence counts.
+    try:
+        from routes import board_health_routes
+        app.include_router(board_health_routes.router, prefix="/api")
+        logger.info("Board-health telemetry mounted at /api/ops/board-health")
+    except Exception as _e_bh:
+        logger.warning("Board-health telemetry failed to mount: %s", _e_bh)
     # ── User Bets + Personal Analytics (2026-07-21) ──────────────────
     # New endpoints for user-scoped bet tracking (see routes/user_bets_routes.py).
     # ALL admin analytics (/analytics/*) are locked to admin role — users
