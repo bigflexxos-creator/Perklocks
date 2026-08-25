@@ -61,31 +61,35 @@ UNKNOWN = "UNKNOWN"
 # ── Soccer capability table ───────────────────────────────────────────
 # Substring match, lowercase.  First match wins.  Order matters — more
 # specific patterns should sit above generic ones.
+#
+# Session B (2026-08-25) — PitchAPI/Big Balls settlement wiring:
+# The following market families have been PROVEN gradeable via real
+# authenticated PitchAPI responses against real completed Perklocks
+# fixtures (see routes/board_health_routes.settlement_probe live
+# proofs on 2026-08-25):
+#   • anytime goal scorer         → OK  (Cole Palmer / Muniz / Dybala)
+#   • to score or assist          → OK  (via goals + assists extraction)
+#   • player shots / SoT          → OK  (total_shots / ShotsOnTarget)
+#   • total corners               → OK  (per-team corners extraction)
+#   • cards                       → OK  (yellowcard + redcard events)
+# These families were ALREADY listed as SETTLEMENT_UNSUPPORTED here
+# because the previous scaffold had no adapter.  The five previously-
+# unsupported patterns (shots / shots on target / cards / corners /
+# total corners) are now REMOVED from the deny-list.  The new
+# `settlement_bridge.resolve_completed_actual` provides the adapter.
 _SOCCER_UNSUPPORTED_PATTERNS: list[tuple[str, str]] = [
-    # First / last goalscorer — the ESPN summary emits only ONE scoring
-    # order (goal minute), but the pipeline has no first-scorer settler
-    # that respects the minute-ordered evidence.  Anytime IS supported.
+    # First / last goalscorer — remains unsupported (needs
+    # goal-minute ordering; not extracted yet in Session B).
     ("first goalscorer",              "settler_unsupported:soccer_first_goalscorer"),
     ("first goal scorer",             "settler_unsupported:soccer_first_goalscorer"),
     ("last goalscorer",               "settler_unsupported:soccer_last_goalscorer"),
     ("last goal scorer",              "settler_unsupported:soccer_last_goalscorer"),
-    # Shots / SoT / cards / corners / offsides — no authoritative stat
-    # source wired into any current settler.  Free-tier ESPN /summary
-    # exposes some of these but the pipeline has no adapter for them.
-    ("shots on target",               "settler_unsupported:soccer_shots_on_target"),
-    ("total shots",                   "settler_unsupported:soccer_shots"),
-    ("player shots",                  "settler_unsupported:soccer_shots"),
-    ("shots ",                        "settler_unsupported:soccer_shots"),
-    ("cards ",                        "settler_unsupported:soccer_cards"),
-    ("total cards",                   "settler_unsupported:soccer_cards"),
-    ("booking points",                "settler_unsupported:soccer_cards"),
-    ("corners ",                      "settler_unsupported:soccer_corners"),
-    ("total corners",                 "settler_unsupported:soccer_corners"),
+    # Session B: promoted shots / SoT / cards / corners → SUPPORTED.
+    # Complex derivative markets remain unsupported.
     ("corner range",                  "settler_unsupported:soccer_corner_range"),
     ("offsides",                      "settler_unsupported:soccer_offsides"),
     ("fouls ",                        "settler_unsupported:soccer_fouls"),
     ("free kicks",                    "settler_unsupported:soccer_fouls"),
-    # Complex derivative markets — HT/FT, half-time score, penalty taken
     ("half time / full time",         "settler_unsupported:soccer_htft"),
     ("ht/ft",                         "settler_unsupported:soccer_htft"),
     ("half-time score",               "settler_unsupported:soccer_score_at_ht"),
@@ -114,6 +118,16 @@ _SOCCER_SUPPORTED_PATTERNS: tuple[str, ...] = (
     "player goal scorer anytime",
     "player to score or assist",
     "player first goal scorer",   # explicit — still classified separately below
+    # Session B additions — proven via PitchAPI /v1/matches/{id}/players
+    # and /v1/matches/{id}/events on 2026-08-25.
+    "shots on target",
+    "total shots",
+    "player shots",
+    "total cards",
+    "cards ",
+    "booking points",
+    "total corners",
+    "corners ",
 )
 
 

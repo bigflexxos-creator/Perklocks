@@ -232,21 +232,24 @@ async def cache_put(db, result: ProviderResult, *, sport: str,
 async def get_completed_actual(
     db, *, sport: str, canonical_event_id: str,
     market_family: str, canonical_player_id: Optional[str] = None,
+    player_name: Optional[str] = None,
     force_refresh: bool = False,
 ) -> ProviderResult:
     """Return actual value for a completed Soccer fixture + market.
 
-    SCAFFOLD-ONLY BEHAVIOR (2026-08-25):
-      • Reads cache first.
-      • On cache miss AND `is_configured()`, issues a REAL request
-        against the placeholder base URL.  If the provider is not
-        yet contactable at the placeholder URL, the request will
-        return PROVIDER_ERROR and NOTHING is cached — caller must
-        treat as DATA_UNAVAILABLE.
-      • Never returns a synthetic actual.
+    2026-08-25 rewrite — REAL endpoint set (verified against live
+    authenticated provider response):
+      • Player markets (goals / assists / goalscorer / score_or_assist
+        / shots / shots_on_target) → GET /v1/matches/{id}/players
+      • Team-corners                → GET /v1/matches/{id}/stats
+      • Cards (yellow/red)          → GET /v1/matches/{id}/events
 
-    Callers MUST enforce the "sport is Soccer" precondition; this
-    module is a Soccer-first provider by design.
+    `canonical_event_id` MUST be the PitchAPI match id (``m_<slug>``).
+    Callers use ``soccer_fixture_resolver`` to obtain it first.
+
+    Player-market lookups require ``player_name`` — PitchAPI player IDs
+    (``p_<slug>``) are NOT known to Perklocks yet, so we match by
+    normalized name against the players payload.
     """
     if (sport or "").lower() != "soccer":
         return ProviderResult(
@@ -277,17 +280,30 @@ async def get_completed_actual(
             error_detail=f"{API_KEY_ENV} not configured",
         )
     started = time.monotonic()
+    # ── Route to the right real endpoint per market family ──────────
+    PLAYER_MARKETS = {
+        "soccer_goals", "soccer_assists", "soccer_goalscorer",
+        "soccer_score_or_assist", "soccer_player_shots",
+        "soccer_player_shots_on_target",
+    }
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(
-                f"{DEFAULT_BASE_URL}/v1/fixtures/{canonical_event_id}/stats",
-                headers={"Authorization": f"Bearer {api_key()}"},
-                params={"market": market_family,
-                        **({"player_id": canonical_player_id}
-                            if canonical_player_id else {})},
-            )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            if market_family in PLAYER_MARKETS:
+                endpoint = f"{DEFAULT_BASE_URL}/v1/matches/{canonical_event_id}/players"
+            elif market_family == "soccer_team_corners":
+                endpoint = f"{DEFAULT_BASE_URL}/v1/matches/{canonical_event_id}/stats"
+            elif market_family == "soccer_cards":
+                endpoint = f"{DEFAULT_BASE_URL}/v1/matches/{canonical_event_id}/events"
+            else:
+                return ProviderResult(
+                    status="MARKET_UNSUPPORTED", provider=PROVIDER_NAME,
+                    canonical_event_id=canonical_event_id,
+                    error_detail=f"no real endpoint for {market_family}",
+                )
+            resp = await client.get(endpoint,
+                                     headers={AUTH_HEADER_NAME: api_key()})
         latency_ms = int((time.monotonic() - started) * 1000)
-        if resp.status_code == 401 or resp.status_code == 403:
+        if resp.status_code in (401, 403):
             return ProviderResult(
                 status="AUTH_FAIL", provider=PROVIDER_NAME,
                 latency_ms=latency_ms,
@@ -295,7 +311,7 @@ async def get_completed_actual(
                 canonical_player_id=canonical_player_id,
                 error_detail=f"HTTP {resp.status_code}",
             )
-        if resp.status_code == 404 or resp.status_code == 204:
+        if resp.status_code in (204, 404):
             return ProviderResult(
                 status="DATA_UNAVAILABLE", provider=PROVIDER_NAME,
                 latency_ms=latency_ms,
@@ -310,8 +326,8 @@ async def get_completed_actual(
                 canonical_player_id=canonical_player_id,
                 error_detail=f"HTTP {resp.status_code}",
             )
-        body = resp.json()
-        actual = _extract_actual(body, market_family)
+        body = resp.json() or {}
+        actual = _extract_actual(body, market_family, player_name=player_name)
         if actual is None:
             return ProviderResult(
                 status="DATA_UNAVAILABLE", provider=PROVIDER_NAME,
@@ -326,7 +342,8 @@ async def get_completed_actual(
             canonical_event_id=canonical_event_id,
             canonical_player_id=canonical_player_id,
             fetched_at=datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
-            provenance={"source": PROVIDER_NAME, "market_family": market_family},
+            provenance={"source": PROVIDER_NAME, "market_family": market_family,
+                        "endpoint": endpoint, "player_name": player_name},
         )
         # Cache authoritative OK responses only.
         await cache_put(db, result, sport=sport, market_family=market_family)
@@ -341,32 +358,126 @@ async def get_completed_actual(
         )
 
 
-def _extract_actual(body: dict, market_family: str) -> Any:
-    """Extract the market-family actual from a provider response.
+def _norm_name(s: str) -> str:
+    import unicodedata as _u
+    s = _u.normalize("NFKD", s or "").encode("ascii","ignore").decode("ascii").lower()
+    import re as _re
+    return _re.sub(r"[^a-z ]+", "", s).strip()
 
-    Placeholder mapping — updated once real provider payload shape
-    is verified. Every branch is defensive to never crash.
+
+def _extract_actual(body: dict, market_family: str,
+                    player_name: Optional[str] = None):
+    """Extract the market-family actual from a real PitchAPI response.
+
+    Player-market extraction walks the nested `stats` groups; team
+    stats extraction walks per-team `stats.groups.stats` similarly.
+    Card extraction counts event_type occurrences in the events list.
     """
     if not isinstance(body, dict):
         return None
-    if market_family == "soccer_goals":
-        return body.get("player_goals")
-    if market_family == "soccer_goalscorer":
-        return bool(body.get("player_goals", 0) and int(body.get("player_goals") or 0) >= 1)
-    if market_family == "soccer_assists":
-        return body.get("player_assists")
-    if market_family == "soccer_score_or_assist":
-        g = int(body.get("player_goals") or 0)
-        a = int(body.get("player_assists") or 0)
-        return bool(g + a >= 1)
-    if market_family == "soccer_player_shots":
-        return body.get("player_shots")
-    if market_family == "soccer_player_shots_on_target":
-        return body.get("player_shots_on_target")
+    data = body.get("data")
+    if data is None:
+        return None
+
+    # ── Player markets ─────────────────────────────────────────
+    PLAYER_MARKETS = {
+        "soccer_goals", "soccer_assists", "soccer_goalscorer",
+        "soccer_score_or_assist", "soccer_player_shots",
+        "soccer_player_shots_on_target",
+    }
+    if market_family in PLAYER_MARKETS:
+        if not player_name:
+            return None
+        target = _norm_name(player_name)
+        target_last = target.split()[-1] if target else ""
+        players = data if isinstance(data, list) else data.get("players")
+        if not isinstance(players, list):
+            return None
+        # Locate player row.  Session B: 3-tier matching:
+        # (1) exact normalized name equality
+        # (2) either side contains the other as a substring
+        # (3) last-token match when the token is unique in the payload
+        # This survives spelling variants like "Aleksei" vs "Aleksey".
+        row = None
+        for p in players:
+            nm = ((p.get("player") or {}).get("name") or "")
+            nn = _norm_name(nm)
+            if nn == target:
+                row = p; break
+        if row is None:
+            for p in players:
+                nm = ((p.get("player") or {}).get("name") or "")
+                nn = _norm_name(nm)
+                if not nn or not target:
+                    continue
+                if target in nn or nn in target:
+                    row = p; break
+        if row is None and target_last and len(target_last) >= 4:
+            # last-name-only match, but only if the last name uniquely
+            # identifies a player in the payload
+            matches = []
+            for p in players:
+                nm = ((p.get("player") or {}).get("name") or "")
+                nn = _norm_name(nm)
+                if nn and target_last in nn.split():
+                    matches.append(p)
+            if len(matches) == 1:
+                row = matches[0]
+        if row is None:
+            return None
+        stat_map: dict[str, float] = {}
+        for grp in (row.get("stats") or []):
+            for _label, sd in (grp.get("stats") or {}).items():
+                key = (sd.get("key") or "").strip()
+                val = (sd.get("stat") or {}).get("value")
+                if key and val is not None:
+                    try:
+                        stat_map[key] = float(val)
+                    except (TypeError, ValueError):
+                        pass
+        goals = stat_map.get("goals", 0.0)
+        assists = stat_map.get("assists", 0.0)
+        if market_family == "soccer_goals":
+            return goals
+        if market_family == "soccer_assists":
+            return assists
+        if market_family == "soccer_goalscorer":
+            return bool(goals >= 1)
+        if market_family == "soccer_score_or_assist":
+            return bool(goals + assists >= 1)
+        if market_family == "soccer_player_shots":
+            return (stat_map.get("total_shots")
+                    or (stat_map.get("ShotsOnTarget", 0)
+                        + stat_map.get("ShotsOffTarget", 0)))
+        if market_family == "soccer_player_shots_on_target":
+            return stat_map.get("ShotsOnTarget")
+        return None
+
+    # ── Team corners ──────────────────────────────────────────
     if market_family == "soccer_team_corners":
-        return body.get("team_corners")
+        total = 0.0
+        for period_row in (data if isinstance(data, list) else []):
+            if period_row.get("period") not in (0, "0", "FT"):
+                continue
+            for grp in (period_row.get("groups") or []):
+                for _lbl, sd in (grp.get("stats") or {}).items():
+                    if (sd.get("key") or "") == "corners":
+                        for team_side in ("home", "away"):
+                            v = (sd.get("stat") or {}).get(team_side)
+                            if v is not None:
+                                try: total += float(v)
+                                except (TypeError, ValueError): pass
+        return total if total > 0 else None
+
+    # ── Cards (yellowcard + redcard events) ───────────────────
     if market_family == "soccer_cards":
-        return body.get("cards_total")
+        events = data if isinstance(data, list) else data.get("events")
+        if not isinstance(events, list):
+            return None
+        y = sum(1 for e in events if e.get("event_type") == "yellowcard")
+        r = sum(1 for e in events if e.get("event_type") == "redcard")
+        return float(y + r)
+
     return None
 
 

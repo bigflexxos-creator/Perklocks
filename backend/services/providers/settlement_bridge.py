@@ -42,6 +42,7 @@ TERMINAL_MISS_STATUSES = frozenset({
 async def resolve_completed_actual(
     db, *, sport: str, canonical_event_id: str,
     market_family: str, canonical_player_id: Optional[str] = None,
+    player_name: Optional[str] = None,
     force_refresh: bool = False,
 ) -> ProviderResult:
     """Return the authoritative completed actual, or a MISS.
@@ -49,6 +50,10 @@ async def resolve_completed_actual(
     Reads PitchAPI first (Soccer only). Falls back to Big Balls if
     PitchAPI does not cover the family or returns a terminal miss.
     Cache is respected on both providers.
+
+    `canonical_event_id` MUST be the PROVIDER match id (``m_<slug>``
+    for PitchAPI, or Big Balls match id).  Callers use
+    ``soccer_fixture_resolver.resolve_fixture`` to obtain both IDs.
     """
     sport_l = (sport or "").lower()
     primary: Optional[ProviderResult] = None
@@ -57,35 +62,10 @@ async def resolve_completed_actual(
             db, sport=sport, canonical_event_id=canonical_event_id,
             market_family=market_family,
             canonical_player_id=canonical_player_id,
+            player_name=player_name,
             force_refresh=force_refresh,
         )
         if primary.status == "OK":
-            # Cross-check with Big Balls only when it also covers
-            # the market — disagreement is DATA_CONFLICT, never
-            # averaged.
-            if market_family in BIGBALLS_MARKETS:
-                secondary = await bigballs_actual(
-                    db, sport=sport, canonical_event_id=canonical_event_id,
-                    market_family=market_family,
-                    canonical_player_id=canonical_player_id,
-                    force_refresh=force_refresh,
-                )
-                if secondary.status == "OK" and secondary.actual != primary.actual:
-                    return ProviderResult(
-                        status="DATA_CONFLICT", provider="cascade",
-                        canonical_event_id=canonical_event_id,
-                        canonical_player_id=canonical_player_id,
-                        error_detail=(
-                            f"pitchapi={primary.actual!r} "
-                            f"bigballs={secondary.actual!r}"
-                        ),
-                        provenance={
-                            "primary":   {"provider": primary.provider,
-                                          "actual": primary.actual},
-                            "secondary": {"provider": secondary.provider,
-                                          "actual": secondary.actual},
-                        },
-                    )
             return primary
         if primary.status not in TERMINAL_MISS_STATUSES:
             return primary

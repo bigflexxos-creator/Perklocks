@@ -24,6 +24,7 @@ vs "Operario PR", "Goiás" vs "Goias").
 from __future__ import annotations
 
 import logging
+import os
 import re
 import unicodedata as _ud
 from datetime import datetime, timedelta, timezone
@@ -825,8 +826,56 @@ async def settle_soccer_picks_via_espn(db, *, days_back: int = 14,
             continue
 
         outcome: Optional[str] = None
-        if ("goal scorer" in market_l or "to score or assist" in market_l
-                or "score & assist" in market_l):
+        # ── Session B (2026-08-25) — PitchAPI/Big Balls PRIMARY path.
+        # Attempt the canonical cascade FIRST for scorer / score-or-
+        # assist markets.  If the cascade returns OK we use its
+        # authoritative actual; otherwise we fall through to the
+        # existing ESPN summary path (SAFE — no behavior loss).
+        # Feature-flagged via env `PERKLOCKS_PROVIDER_CASCADE_ENABLED`
+        # (defaults to "1" — enabled).  Set to "0" to disable.
+        _cascade_provenance: dict = {}
+        if os.getenv("PERKLOCKS_PROVIDER_CASCADE_ENABLED", "1") == "1" \
+                and ("goal scorer" in market_l or
+                     "to score or assist" in market_l or
+                     "score & assist" in market_l):
+            try:
+                from services.providers.soccer_fixture_resolver import (
+                    resolve_fixture,
+                )
+                from services.providers.settlement_bridge import (
+                    resolve_completed_actual,
+                )
+                fx = await resolve_fixture(
+                    db, perklocks_league=p.get("league"),
+                    event_time_iso=p.get("event_time"),
+                    home_team=home_team, away_team=away_team,
+                )
+                if fx.get("pitchapi_match_id"):
+                    mf = ("soccer_score_or_assist"
+                          if ("to score or assist" in market_l or
+                              "score & assist" in market_l)
+                          else "soccer_goalscorer")
+                    cr = await resolve_completed_actual(
+                        db, sport="soccer",
+                        canonical_event_id=fx["pitchapi_match_id"],
+                        market_family=mf,
+                        player_name=sel,
+                    )
+                    if cr.status == "OK" and cr.actual is not None:
+                        outcome = "won" if bool(cr.actual) else "lost"
+                        _cascade_provenance = {
+                            "cascade": True,
+                            "provider": cr.provider,
+                            "market_family": mf,
+                            "provider_event_id": fx["pitchapi_match_id"],
+                        }
+            except Exception as _cerr:
+                logger.warning("provider cascade probe error on %s: %s",
+                                p.get("id") or p.get("_id"), _cerr)
+
+        if outcome is None and \
+                ("goal scorer" in market_l or "to score or assist" in market_l
+                 or "score & assist" in market_l):
             skey = (slug_matched, str(ev.get("id")))
             if skey not in summary_cache:
                 summary_cache[skey] = await _fetch_summary(slug_matched, ev.get("id"))
@@ -898,17 +947,25 @@ async def settle_soccer_picks_via_espn(db, *, days_back: int = 14,
             await _svc.settle_from_pick(
                 _adapter_pick,
                 result                    = outcome,
-                source                    = "soccer_espn_batch_v1",
+                source                    = (
+                    _cascade_provenance.get("provider", "soccer_espn_batch_v1")
+                    + "_cascade" if _cascade_provenance.get("cascade")
+                    else "soccer_espn_batch_v1"
+                ),
                 actual_result             = {
                     "home_goals": home_goals,
                     "away_goals": away_goals,
                     "home_team":  home_team,
                     "away_team":  away_team,
+                    **( {"provider_cascade": _cascade_provenance}
+                        if _cascade_provenance else {} ),
                 },
                 authoritative_event_final = True,   # FT-gated upstream
                 analytics_mirror          = {
                     "units_profit": profit,
-                    "settled_by":   "soccer_espn_batch_v1",
+                    "settled_by":   _cascade_provenance.get("provider",
+                                                             "soccer_espn_batch_v1"),
+                    "cascade_used": bool(_cascade_provenance.get("cascade")),
                 },
             )
         except Exception as _e:
