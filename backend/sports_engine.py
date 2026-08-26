@@ -3475,9 +3475,20 @@ PLAYER_PROP_MARKETS = {
     # across providers).  Keeping it in acquisition wasted Odds API
     # quota and produced candidates that could never settle.  Fail
     # closed → market intentionally omitted.
+    # SLICE 3 (2026-08-26) — expand Soccer acquisition to match
+    # downstream scorer/settlement capability. Previously only anytime-
+    # scorer + score-or-assist were requested from The Odds API even
+    # though the ladder + PitchAPI settlement bridge already handle
+    # anytime-assist / shots / shots-on-target end-to-end. Per-market
+    # isolation is already enforced upstream in `_fetch_event_markets`
+    # (each market is a separate call — an INVALID_MARKET / 422 on one
+    # key never suppresses siblings).
     "Soccer": [
         "player_goal_scorer_anytime",
         "player_to_score_or_assist",
+        "player_anytime_assist",
+        "player_shots",
+        "player_shots_on_target",
     ],
     # UFC: The Odds API does NOT expose method-of-victory, round-betting, or
     # any MMA prop markets — only `h2h` (moneyline) and `totals` (rounds)

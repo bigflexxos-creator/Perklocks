@@ -132,7 +132,8 @@ _SOCCER_SUPPORTED_PATTERNS: tuple[str, ...] = (
 
 
 def classify(sport: Optional[str], market: Optional[str],
-             league: Optional[str] = None) -> tuple[str, Optional[str]]:
+             league: Optional[str] = None,
+             line: Optional[float] = None) -> tuple[str, Optional[str]]:
     """Return ``(status, terminal_reason)`` for a (sport, market) pair.
 
     Status ∈ {SUPPORTED, SETTLEMENT_UNSUPPORTED, UNKNOWN}.
@@ -145,11 +146,31 @@ def classify(sport: Optional[str], market: Optional[str],
     * SETTLEMENT_UNSUPPORTED — matches the explicit deny-list for the sport.
     * UNKNOWN    — neither list matches; caller MUST leave pending.
                    We refuse to terminate on speculation.
+
+    SLICE 5 (2026-08-26) — Quarter Asian-handicap fail-closed.  Books
+    publish quarter lines as plain "Team X +0.25" without the token
+    "asian handicap", so they bypassed the deny-list and reached the
+    ledger — which cannot represent half-win/half-loss / half-push
+    outcomes correctly and would corrupt W/L/ROI. Fail closed when
+    ``line`` is a quarter multiple (…, -0.75, -0.25, 0.25, 0.75, …).
     """
     sp = (sport or "").strip().lower()
     mk = (market or "").strip().lower()
     if not sp or not mk:
         return (UNKNOWN, None)
+    # SLICE 5 quarter-line fail-closed (Soccer/spread markets).
+    if sp == "soccer" and line is not None:
+        try:
+            L = float(line)
+            # Quarter multiple iff 4L is integer but 2L is not (i.e.,
+            # x.25 or x.75 fractional part). Whole numbers and .5
+            # increments are handled by the standard spread settler.
+            q4, q2 = L * 4, L * 2
+            if abs(q4 - round(q4)) < 1e-6 and abs(q2 - round(q2)) > 1e-6:
+                return (UNSUPPORTED,
+                        "settler_unsupported:soccer_asian_quarter_handicap")
+        except (TypeError, ValueError):
+            pass
     # Normalize underscored market_keys (e.g. "player_shots_on_target")
     # to the human-readable form ("player shots on target") the deny/
     # allow patterns are authored against.  Both forms are checked so
@@ -192,15 +213,17 @@ def classify(sport: Optional[str], market: Optional[str],
 
 
 def is_supported(sport: Optional[str], market: Optional[str],
-                 league: Optional[str] = None) -> bool:
+                 league: Optional[str] = None,
+                 line: Optional[float] = None) -> bool:
     """Convenience — True iff status == SUPPORTED."""
-    return classify(sport, market, league)[0] == SUPPORTED
+    return classify(sport, market, league, line)[0] == SUPPORTED
 
 
 def is_unsupported(sport: Optional[str], market: Optional[str],
-                   league: Optional[str] = None) -> bool:
+                   league: Optional[str] = None,
+                   line: Optional[float] = None) -> bool:
     """Convenience — True iff status == SETTLEMENT_UNSUPPORTED."""
-    return classify(sport, market, league)[0] == UNSUPPORTED
+    return classify(sport, market, league, line)[0] == UNSUPPORTED
 
 
 __all__ = [

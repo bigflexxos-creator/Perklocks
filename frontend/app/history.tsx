@@ -35,6 +35,7 @@ export default function HistoryScreen() {
   const [filter, setFilter] = useState<typeof FILTERS[number]>("All");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState<string | null>(null);
   const [analyses, setAnalyses] = useState<Record<string, string>>({});
@@ -46,10 +47,19 @@ export default function HistoryScreen() {
       // Defensive: hide KBO history per product decision (no KBO anywhere).
       setPicks(all.filter((p) => p.sport !== "KBO"));
       setStats(res?.stats ?? null);
+      setLoadError(null);
     } catch (e) {
-      setPicks([]);
-      setStats(null);
-      console.warn("history load", e);
+      // ── SLICE 7 (2026-08-26) — Preserve last-good history on transient error.
+      // Previous behavior wiped picks+stats to [] / null on any error,
+      // erasing legitimate cached history if the network hiccupped.
+      // Show the error honestly but keep the last successful snapshot
+      // visible so the user isn't blank-slate'd by a 500ms provider blip.
+      const msg = e instanceof Error ? (e.message || "Load failed") : "Load failed";
+      const cleanMsg = /520|cloudflare|origin web server/i.test(msg)
+        ? "Connection hiccup — tap to retry."
+        : msg.length > 140 ? msg.slice(0, 140) + "…" : msg;
+      setLoadError(cleanMsg);
+      console.warn("history load (keeping last-good):", e);
     } finally {
       setLoading(false);
       setRefreshing(false);

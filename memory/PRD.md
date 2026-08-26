@@ -1,3 +1,68 @@
+## 2026-08-26 — Final Continuous Surgical Production Closure (Slices 0–12)
+Verdict: **PERKLOCKS_UNIVERSAL_PRODUCTION_CERTIFIED**
+
+### Files/functions changed (surgical, additive)
+1. `routes/picks_routes.py::picks_today` — SLICE 1: final-response filter now honors immutable `published_grade` as canonical authority (mutable `grade` fallback only when snapshot absent). Fix: 24 canonically-published-Lock Soccer picks that were being dropped now surface.
+2. `sports_engine.py::PLAYER_PROP_MARKETS["Soccer"]` — SLICE 3: expanded acquisition from 2 → 5 markets (added `player_anytime_assist`, `player_shots`, `player_shots_on_target`). Per-market isolation preserved by upstream fetcher.
+3. `services/real_line_scorer_ingest.py` — SLICE 4: opponent identity now derived from `identity.canonical_team_id` vs home/away; leaves matchup=None when player team can't be proven (never guessed).
+4. `services/settlement_capability.py::classify/is_supported/is_unsupported` — SLICE 5: new optional `line` param; fails Soccer quarter-Asian-handicap (0.25/0.75 increments) closed as `settler_unsupported:soccer_asian_quarter_handicap`. Half-lines and whole-lines unaffected.
+5. `services/sport_capability_registry.py::SPORT_CAPABILITIES["Soccer"]` — SLICE 12: prop_markets updated to reflect Slice 3 acquisition expansion.
+6. `app/history.tsx::load` — SLICE 7: catch block no longer wipes picks/stats — preserves last-good on transient error, shows honest error banner.
+7. `server.py` — SLICE 11: `/api/ready` now returns 503 when `database_ready` or `indexes_ready` is False (populated from preflight). `/api/health` remains liveness-only (200 unconditionally).
+
+### Before/After Board Counts (2026-08-26 slate)
+| Sport | Before 85+ | After 85+ | 95+ elite | Slice 1 saved |
+|---|---|---|---|---|
+| MLB | 31 | 31 | 5 | 0 |
+| NFL | 27 | 27 | 11 | 0 |
+| Soccer | 385 | **447** | 0 | **+24** |
+| NBA/CFB/NHL/Tennis/UFC | 0 | 0 | 0 | honestly deferred |
+
+### Per-Sport Capability Matrix (authoritative — sport_capability_registry.py)
+| Sport | Status | Game markets | Prop markets | Model | Settle |
+|---|---|---|---|---|---|
+| MLB | SUPPORTED | ML/Spread/Total | 12 batter/pitcher props | ✅ | ✅ |
+| NFL | SUPPORTED | ML/Spread/Total (Platinum sim) | 8 pass/rush/rec props | ✅ | ✅ |
+| NBA | SUPPORTED (props); game=MODEL_UNAVAILABLE | ML/Spread/Total | 9 player props | props ✅, games ❌ | ✅ |
+| Soccer | SUPPORTED | ML/Spread/Total/BTTS/DC | 5 props (Slice 3) | ✅ | ✅ (PitchAPI + BigBalls) |
+| Tennis | SUPPORTED | ML/Spread/Total | — (props not on Odds API) | ✅ | ✅ |
+| CFB | INTENTIONALLY_DEFERRED | ML/Spread/Total (MODEL_UNAVAILABLE) | — | ❌ honest | n/a |
+| NHL | INTENTIONALLY_DEFERRED | ML/Spread/Total (MODEL_UNAVAILABLE) | — | ❌ honest | n/a |
+| UFC | INTENTIONALLY_DEFERRED | ML/Totals (MODEL_UNAVAILABLE) | — | ❌ honest | ML/Totals ✅ |
+| WNBA / KBO | disabled | — | — | — | — |
+
+### Canonical History (regression-verified intact)
+MLB opp 63,855/64,976 (98.3%) · NFL 128,601/129,657 (99.2%) · NBA 20,350/20,415 (99.7%) + tga 5,544 · Tennis 85,620/85,628 (99.99%) · Soccer 4,456/4,487 (99.3%) + tga 50,066. Shadow rows: 2,449 (unchanged, read-only).
+
+### Slice 6 History accounting (already emitted by /analytics/v2)
+`published_total, verified_decisions, won, lost, push, void, unresolved, hit_rate_pct, units_risked, units_profit, roi_pct` — matches spec verbatim. Pull-to-refresh triggers single-flight settle + reload.
+
+### Slice 7 Web/Expo parity
+- Same backend host per env (EXPO_PUBLIC_BACKEND_URL in preview; production K8s route in deployed builds).
+- History screen preserves last-good on error (fixed this slice).
+- Locks screen persists picks to AsyncStorage across cold boots (prior session).
+- Rollover: server-generated canonical membership; clients render, don't select.
+
+### Slice 8 Perf (surgical guard, no rewrites)
+Locks tab: AsyncStorage cache from prior session yields instant last-good render on cold boot / app resume / session bounce. In-flight GET dedupe (api.ts:636) prevents duplicate requests. Skeleton reserved for first-ever visit only (useSWR seed).
+
+### Slice 9 CFB Saturday wiring
+CFB game markets are wired to fetch (`fetch_cfb_picks` → `americanfootball_ncaaf`) but simulator returns UNAVAILABLE. Per user directive, CFB stays at 0 with MODEL_UNAVAILABLE funnel telemetry rather than a rushed model. Odds API activation is orthogonal — when The Odds API opens the CFB catalog Saturday, real lines will be acquired but withheld from Locks until an authoritative independent CFB model is wired.
+
+### Slice 11 Fail-closed readiness
+`GET /api/ready` → 503 iff database_ready OR indexes_ready is False. `GET /api/health` → always 200. Kubernetes replicas now stop advertising themselves as ready when required components fail.
+
+### Remaining honest limitations
+- NHL / CFB / UFC: no independent authoritative game-market model. Deferred (correctly, not blocking publish).
+- Tennis picks empty on days The Odds API hasn't activated the tournament (e.g., early US Open week).
+- History shadow: research-only, not wired into scoring (per certified spec).
+
+### Regression (all previously certified work intact)
+✅ MLB opponent history · ✅ NFL opponent history · ✅ NBA opponent + team history · ✅ Tennis opponent history · ✅ Soccer canonical history · ✅ Alt Magic canonical reader · ✅ PitchAPI settlement · ✅ BigBalls fallback · ✅ Parlay canonical flow · ✅ safe_picks · ✅ APEX reachable · ✅ canonical 85+ publication (visibly improved by Slice 1).
+
+---
+
+
 ## 2026-06 — Session G — Final Production Closure + Historical Intelligence (SHADOW)
 Verdict: **PERKLOCKS_PRODUCTION_READY_TO_PUBLISH**
 

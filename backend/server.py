@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from typing import Annotated, Any, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, status
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, status, Response
 from fastapi.security import OAuth2PasswordBearer
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
@@ -201,7 +201,6 @@ async def get_version():
 
 @api.get("/health")
 @api.get("/healthz")
-@api.get("/ready")
 async def get_health():
     """Liveness/readiness probe — Kubernetes pings this to decide whether
     to restart the container. CRITICAL: must be FAST (<50ms), MUST never
@@ -210,8 +209,36 @@ async def get_health():
     in the access log — the missing endpoint was a candidate for the
     container being repeatedly marked unhealthy and restarted, which
     explained the "server keeps going down" experience.
-    Also serves /healthz and /ready for k8s/gcp/aws probe conventions."""
+    Also serves /healthz for k8s/gcp/aws probe conventions."""
     return {"status": "ok", "ts": datetime.now(timezone.utc).isoformat()}
+
+
+@api.get("/ready")
+async def get_ready(response: Response):
+    """Readiness probe — SLICE 11 (2026-08-26) fail-closed on required
+    critical failures. Distinguishes REQUIRED from OPTIONAL/DEGRADED.
+
+    Required = database_ready + indexes_ready. If either is False the
+    endpoint returns 503 so the load balancer stops sending traffic
+    to this pod. Provider degradation (Odds API breaker open, PitchAPI
+    outage) is OPTIONAL and returns 200 with degraded=True flags so
+    the pod continues serving normal traffic and the board naturally
+    fails-closed at the market classifier layer.
+    """
+    ready_state = globals().get("_READINESS_STATE") or {}
+    db_ok  = bool(ready_state.get("database_ready", True))
+    idx_ok = bool(ready_state.get("indexes_ready", True))
+    ok = db_ok and idx_ok
+    if not ok:
+        response.status_code = 503
+    return {
+        "ready": ok,
+        "database_ready": db_ok,
+        "indexes_ready": idx_ok,
+        "recovery_complete": bool(ready_state.get("recovery_complete", True)),
+        "preflight_duration_ms": ready_state.get("duration_ms"),
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 # ────────────────────── Auth ──────────────────────
@@ -3910,8 +3937,23 @@ async def on_startup():
             _preflight_result.recovery_complete,
             _preflight_result.duration_ms,
         )
+        # SLICE 11 (2026-08-26) — publish preflight state to the readiness
+        # probe so k8s stops routing traffic to a pod whose REQUIRED
+        # components (DB/indexes) failed. Provider outages remain
+        # optional and never trip /ready (they fail-closed at the market
+        # classifier layer).
+        globals()["_READINESS_STATE"] = {
+            "database_ready":    bool(_preflight_result.database_ready),
+            "indexes_ready":     bool(_preflight_result.indexes_ready),
+            "recovery_complete": bool(_preflight_result.recovery_complete),
+            "duration_ms":       _preflight_result.duration_ms,
+        }
     except Exception as _e:
         logger.warning("Phase 3F-2 preflight raised: %s", _e)
+        globals()["_READINESS_STATE"] = {
+            "database_ready": False, "indexes_ready": False,
+            "recovery_complete": False, "duration_ms": None,
+        }
 
     # ── Phase 2 Final (2026-08-11) — hydrate canonical player_identity
     # registry from Mongo so freshness timestamps survive restarts

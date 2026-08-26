@@ -146,6 +146,11 @@ SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
         "prop_markets": [
             "player_goal_scorer_anytime",
             "player_to_score_or_assist",
+            # SLICE 3 (2026-08-26) — acquisition expanded; downstream
+            # ladder + PitchAPI settlement already ready end-to-end.
+            "player_anytime_assist",
+            "player_shots",
+            "player_shots_on_target",
         ],
         # PHASE 5 FIX 1 (2026-06) — FIRST/LAST goal scorer are
         # INTENTIONALLY_UNSUPPORTED per product requirement.  Previous
