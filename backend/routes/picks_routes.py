@@ -2394,9 +2394,26 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # changes lock scores, grades, or tiers; it only drops picks that
     # post-processing has already flagged as non-eligible.
     _pre_final = len(canonical)
+    def _canonical_not_pass(p: dict) -> bool:
+        """SLICE 1 (2026-08-26) — Final-response canonical authority.
+
+        Mirror the DB gate at line ~1695: prefer immutable
+        `published_grade` (Phase-1c canonical snapshot); fall back to
+        legacy mutable `grade` ONLY when a row has never been
+        snapshot-published. Fixes the mutable-grade demotion regression
+        where APEX/scorer_gate/lifecycle can rewrite `grade` to Pass
+        AFTER canonical publication, dropping legit published Locks
+        from the final response even though the DB query included
+        them via `published_grade`.
+        """
+        pg = p.get("published_grade")
+        if pg is not None:            # canonically published — trust it
+            return (str(pg).strip() != "Pass")
+        return (p.get("grade") or "").strip() != "Pass"
+
     canonical = [
         p for p in canonical
-        if (p.get("grade") or "").strip() != "Pass"
+        if _canonical_not_pass(p)
         and not p.get("off_board")
         and not p.get("hide_from_main_board")
         and not p.get("no_bet")

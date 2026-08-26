@@ -258,7 +258,26 @@ async def _ingest_player_scorer_row(
     from services.soccer_feature_resolver import (
         resolve_soccer_player_matchup, classify_missing_feature_reason,
     )
-    opp_team = away if (home and home == row.get("home_team") and away) else home
+    # SLICE 4 (2026-08-26) — Player opponent identity via canonical team.
+    # Previous logic (`opp_team = away if (home and home == row.get("home_team")
+    # and away) else home`) compared home to row.get("home_team") which
+    # is the same field, so opp_team was always `away` — wrong when the
+    # player plays for the AWAY team (returned player's own team as
+    # opponent). Fix: use `identity.canonical_team_id` (resolved above)
+    # against home/away. If player-team cannot be proven, matchup
+    # context remains UNKNOWN (matchup = None) — never guessed.
+    player_team = (identity.canonical_team_id or "").strip()
+    opp_team = None
+    if player_team and home and away:
+        home_norm = str(home).strip().lower()
+        away_norm = str(away).strip().lower()
+        pt_norm = player_team.lower()
+        if pt_norm == home_norm:
+            opp_team = away
+        elif pt_norm == away_norm:
+            opp_team = home
+        # else: player team resolved but doesn't match either fixture side —
+        # identity conflict; leave opp_team=None (UNKNOWN, not guessed)
     matchup = None
     if opp_team:
         matchup = await resolve_soccer_player_matchup(
