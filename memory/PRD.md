@@ -1,3 +1,94 @@
+## 2026-08-27 — CFB Game Model Intelligence Upgrade (SP+ base, shadow enhanced)
+Verdict: **CFB_ENHANCEMENT_PARTIAL_CERTIFIED**
+
+### 1. Files/functions changed
+- `services/cfb_game_model.py` (overwritten) — same public API. New provenance dict carries `shadow_enhanced_margin/total`, `sigma_reason`. Sigma inflation active for missing-data cases; enhancement factors demoted to RESEARCH_ONLY based on validation result.
+- `sports_engine.py::CFB payload precompute` — expanded to load 3 maps into `_ctx`: `cfb_sp_ratings_by_team`, `cfb_returning_prod_by_team`, `cfb_portal_net_by_team`.
+
+### 2. Existing CFB signals successfully reused
+- `cfb_sp_ratings` (137 teams) — ACTIVE base
+- `cfb_returning_production` (270 rows, seasons 2025/2026) — SHADOW/research
+- `cfb_portal` (7,324 rows, 2025/2026) — SHADOW/research (position-weighted net delta)
+- `cfb_teams` (138) — alias resolution
+- `games[sport=cfb]` (2,231) — validation sample
+
+### 3. Signals available but not safely usable (RESEARCH_ONLY)
+- Returning production + portal net: **temporally-clean per-season snapshots not available**. Existing stores hold "latest" per team (single doc), so a 2024-game validation can only use 2026-season features (leakage). Even with that leakage, enhancement showed **no accuracy gain and small Brier degradation** — a strong negative signal.
+
+### 4. Signals genuinely absent (marked UNKNOWN)
+- `cfb_injuries` · `cfb_coaching` · `cfb_talent` · `cfb_recruiting` · `cfb_qb_rating` — all 0 rows. Left UNKNOWN honestly; no fabrication.
+
+### 5. SP+-only vs enhanced validation (526 completed 2024 CFB games)
+| Metric | SP+-only (BASE) | Enhanced |
+|---|---|---|
+| ML accuracy | **66.5%** | 66.9% (+0.38pt) |
+| ML Brier | **0.2170** | 0.2219 (+0.005 **worse**) |
+
+Result: enhancement produces no meaningful improvement and slightly worse calibration. Per feature-promotion rule → **RESEARCH_ONLY**.
+
+### 6. Extreme-probability calibration
+`_logistic(0.1 × margin)` unchanged from base. For the 3 Saturday games, the ACTIVE (SP+-only) probabilities remained the same as pre-enhancement (22.4% / 83.8% / 73.3%). Sigma-inflation on missing-context games monotonically widens uncertainty — never inflates extremes.
+
+### 7. Constant-sigma before/after
+| State | margin σ | total σ | Applied when |
+|---|---|---|---|
+| Base | 13.7 | 13.5 | Full data (both teams' returning + portal present) |
+| Inflated | 16.44 | 16.2 | Missing returning production either team (+20%) |
+| Inflated | 15.76 | 15.53 | Heavy portal net |avg|>3 either team (+15%) |
+| Both | 18.91 | 18.63 | Both conditions (+38%) |
+
+Sigma inflation is monotonically safe (only widens uncertainty; never claims more confidence than base). ACTIVE without validation.
+
+### 8. Saturday before/after candidate traces
+| Game | BASE margin | SHADOW margin | ACTIVE (used live) |
+|---|---|---|---|
+| TCU @ UNC | -12.4 | -12.92 | **-12.4** (BASE) |
+| Texas @ OSU | +16.4 | +14.99 | **+16.4** (BASE) |
+| FSU @ Alabama | +10.1 | +9.33 | **+10.1** (BASE) |
+
+Shadow values recorded in `provenance.shadow_enhanced_margin/total` and `provenance.shadow_status = "RESEARCH_ONLY"` for future comparison when temporally-clean historical snapshots become available.
+
+### 9. Feature status
+| Feature | Status | Reason |
+|---|---|---|
+| SP+ base | **ACTIVE** | validated, unchanged from Slice-P0 baseline |
+| Sigma inflation for missing data | **ACTIVE** | monotonically safe; needs no validation |
+| Returning production adjustment | **RESEARCH_ONLY** | 2024 backtest ΔBrier +0.005 |
+| Portal net adjustment | **RESEARCH_ONLY** | same test; combined with returning |
+| Injuries / QB / Coaching / Talent | **UNAVAILABLE** | data absent in this pod |
+
+### 10. Final CFB feature provenance (per game)
+```
+{
+  "tier": "SP_PLUS_ACTIVE",
+  "expected_margin": <base>,          # ACTIVE
+  "expected_total":  <base>,          # ACTIVE
+  "margin_sigma":    <base or inflated>,
+  "provenance": {
+    "sp_base_margin", "sp_base_total",
+    "shadow_home_returning_adj", "shadow_away_returning_adj",
+    "shadow_home_portal_adj",    "shadow_away_portal_adj",
+    "shadow_enhanced_margin",    "shadow_enhanced_total",
+    "shadow_status": "RESEARCH_ONLY",
+    "shadow_status_reason": "2024-season validation on 526 games: ΔBrier +0.005 (worse) …",
+    "active_sigma_reason",       "active_margin_sigma", "active_total_sigma"
+  },
+  "data_quality": "sp_plus|returning_prod_both|portal_both",
+}
+```
+
+### 11. Regression
+- `/api/health` = 200 · `/api/ready` = 200
+- CFB ML/Spread/Total continue to evaluate (verified live via probes)
+- MLB/NFL/Soccer 2026-08-26 slate counts unchanged (147/28/453 at 85+)
+- APEX / Parlay / Rollover / Publication / Settlement — untouched
+
+### Remaining honest limitation
+Point-in-time historical snapshots (per-season returning-production, per-season portal per team) would enable a fair enhancement backtest. When that data becomes ingestable (out of scope for this pass), the promotion rule can be re-run and shadow features can be flipped ACTIVE if they clear ΔBrier ≤ 0 and Δaccuracy ≥ 0.
+
+---
+
+
 ## 2026-08-26 — Final Missing Closures (P0 CFB + P1 Parity + P2 Perf)
 Verdict: **PERKLOCKS_FINAL_ACCEPTANCE_CERTIFIED**
 
