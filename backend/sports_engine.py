@@ -1716,9 +1716,41 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 if isinstance(game, dict):
                     game.setdefault("_ctx", {}).setdefault(
                         "_sim_pending", True)
-            elif sport not in ("MLB", "Soccer", "NBA", "NHL") \
+            elif sport not in ("MLB", "Soccer", "NBA", "NHL", "CFB") \
                     and _ml_model_unavailable is None:
                 _ml_model_unavailable = "MODEL_UNAVAILABLE"
+            elif sport == "CFB" and _ml_model_unavailable is None:
+                # ── Slice-P0 (2026-08-26) — CFB game-market model ──
+                # Independent authoritative probability from existing
+                # SP+ ratings (`db.cfb_sp_ratings`, 137 teams, current
+                # season). No sportsbook-follow. Records
+                # MODEL_UNAVAILABLE when either team's rating is missing.
+                try:
+                    from services.cfb_game_model import estimate_cfb_game
+                    _game_ctx = ((game.get("_ctx") if isinstance(game, dict) else None)
+                                 or {})
+                    _cfb_game = estimate_cfb_game(_game_ctx, home, away)
+                    if _cfb_game.available:
+                        home_model = float(_cfb_game.p_home_ml)
+                        if isinstance(game, dict):
+                            game.setdefault("_ctx", {})[
+                                "_cfb_game_model"] = _cfb_game.as_dict()
+                        _ml_sources = list(_cfb_game.sources)
+                    else:
+                        _ml_model_unavailable = _cfb_game.reason or "MODEL_UNAVAILABLE"
+                        try:
+                            from services import funnel_telemetry as _funnel
+                            _funnel.record(
+                                sport="CFB", market="moneyline", stage="model",
+                                reason=_ml_model_unavailable,
+                                event=f"{away} @ {home}",
+                                detail=f"cfb_game_model tier={_cfb_game.tier}",
+                            )
+                        except Exception:
+                            pass
+                except Exception as _cgm_err:
+                    logger.warning("cfb_game_model wiring failed: %s", _cgm_err)
+                    _ml_model_unavailable = f"SIM_EXCEPTION:{type(_cgm_err).__name__}"
         if home_model >= 0.5:
             side, side_ml, mp = home, home_ml, home_model
         else:
@@ -3106,12 +3138,60 @@ async def fetch_nfl_picks(date_str: str) -> list[dict]:
 
 async def fetch_cfb_picks(date_str: str) -> list[dict]:
     """College Football pick generator. Same NFL pipeline (ML/Spread/
-    Total + props via Odds API), just keyed on `americanfootball_ncaaf`.
-    CFB-specific features (returning production, transfer portal, SoS)
-    plug in via a follow-up enrichment layer when a CFB-data API key
-    lands. Foundation: ensure CFB games surface on the board the
-    moment Odds API has them (typically mid-August)."""
-    return await _fetch_picks_for_sport("CFB", date_str)
+    Total via Odds API), just keyed on `americanfootball_ncaaf`.
+    CFB player props remain PROVIDER_UNAVAILABLE (Odds API catalog is
+    sparse/unreliable).  Slice-P0 (2026-08-26): pre-load `cfb_sp_ratings`
+    once per fetch so the CFB game-market model (`services.cfb_game_
+    model`) can compute independent ML/Spread/Total probabilities from
+    real SP+ team strength — no sportsbook-follow, no synthetic lines.
+    """
+    picks = await _fetch_picks_for_sport("CFB", date_str)
+    return picks
+
+
+async def _load_cfb_sp_ratings_by_team() -> dict:
+    """Pre-load SP+ ratings once per CFB fetch cycle so every game's
+    per-team lookup is O(1) in memory.  Returns lower-cased team-name
+    dict of rating rows (rating, offense_rating, defense_rating).
+    """
+    from server import db as _db
+    ratings: dict = {}
+    try:
+        # Use the most recent year present (typically current season).
+        latest = await _db.cfb_sp_ratings.find({},
+            {"team": 1, "rating": 1, "offense_rating": 1,
+             "defense_rating": 1, "year": 1, "_id": 0}
+        ).sort([("year", -1)]).to_list(length=500)
+        for r in latest:
+            tk = str(r.get("team") or "").strip().lower()
+            if tk and tk not in ratings:
+                ratings[tk] = r
+        # Also index by alternate_names / mascot when cfb_teams has them
+        # so provider display names like "TCU Horned Frogs" resolve.
+        async for t in _db.cfb_teams.find({},
+                {"school": 1, "alternate_names": 1, "mascot": 1,
+                 "abbreviation": 1, "_id": 0}):
+            school = str(t.get("school") or "").strip().lower()
+            row = ratings.get(school)
+            if not row:
+                continue
+            for alias in (t.get("alternate_names") or []):
+                ak = str(alias or "").strip().lower()
+                if ak: ratings.setdefault(ak, row)
+            mascot = str(t.get("mascot") or "").strip().lower()
+            if mascot:
+                # "TCU Horned Frogs" style: school + " " + mascot
+                combo = f"{school} {mascot}"
+                ratings.setdefault(combo, row)
+                ratings.setdefault(mascot, row)
+            abbrev = str(t.get("abbreviation") or "").strip().lower()
+            if abbrev: ratings.setdefault(abbrev, row)
+    except Exception as _e:
+        try:
+            logger.warning("cfb_sp_ratings preload failed: %s", _e)
+        except Exception:
+            pass
+    return ratings
 
 
 async def fetch_soccer_picks(date_str: str) -> list[dict]:
@@ -7165,6 +7245,49 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                         payload.setdefault("_ctx", {})[
                             "nba_precompute_status"] = f"error:{type(_ctx_err).__name__}"
                 if sport == "CFB":
+                    # Slice-P0 (2026-08-26) — Pre-load SP+ ratings for
+                    # this event's game-market model. Same dispatch site
+                    # as the player-prop precompute; keyed on the same
+                    # ctx dict. Runs even if there are no player-prop
+                    # candidates (game-market path needs it).
+                    try:
+                        from services.database import get_database
+                        _cfb_db = get_database()
+                        _game_ctx = payload.setdefault("_ctx", {})
+                        if "cfb_sp_ratings_by_team" not in _game_ctx:
+                            _sp_map: dict = {}
+                            _rows = await _cfb_db.cfb_sp_ratings.find(
+                                {}, {"team": 1, "rating": 1,
+                                     "offense_rating": 1,
+                                     "defense_rating": 1, "year": 1,
+                                     "_id": 0}
+                            ).sort([("year", -1)]).to_list(length=500)
+                            for _r in _rows:
+                                _tk = str(_r.get("team") or "").strip().lower()
+                                if _tk and _tk not in _sp_map:
+                                    _sp_map[_tk] = _r
+                            async for _t in _cfb_db.cfb_teams.find({},
+                                    {"school": 1, "alternate_names": 1,
+                                     "mascot": 1, "abbreviation": 1,
+                                     "_id": 0}):
+                                _school = str(_t.get("school") or "").strip().lower()
+                                _row = _sp_map.get(_school)
+                                if not _row: continue
+                                for _al in (_t.get("alternate_names") or []):
+                                    _ak = str(_al or "").strip().lower()
+                                    if _ak: _sp_map.setdefault(_ak, _row)
+                                _mascot = str(_t.get("mascot") or "").strip().lower()
+                                if _mascot:
+                                    _sp_map.setdefault(f"{_school} {_mascot}", _row)
+                                _abbrev = str(_t.get("abbreviation") or "").strip().lower()
+                                if _abbrev: _sp_map.setdefault(_abbrev, _row)
+                            _game_ctx["cfb_sp_ratings_by_team"] = _sp_map
+                            _game_ctx["cfb_sp_ratings_status"] = (
+                                "ok" if _sp_map else "empty")
+                    except Exception as _sp_err:
+                        logger.warning("CFB SP+ preload failed: %s", _sp_err)
+                        payload.setdefault("_ctx", {})[
+                            "cfb_sp_ratings_status"] = f"error:{type(_sp_err).__name__}"
                     try:
                         from services.cfb_precompute import (
                             precompute_cfb_factors as _cfb_pre,

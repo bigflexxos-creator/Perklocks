@@ -118,26 +118,34 @@ SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
     },
     "CFB": {
         "enabled": True,
-        # PHASE 5 (2026-06) — INTENTIONALLY_DEFERRED per release scope
-        # update.  Not a Phase 10 blocker for this release.  Capability
-        # code preserved for future re-enablement.
-        "production_status": "INTENTIONALLY_DEFERRED",
+        # Slice-P0 (2026-08-26) — CFB game markets ML/Spread/Total are
+        # now wired via `services.cfb_game_model` using authoritative
+        # `cfb_sp_ratings` (137 teams). Player props remain provider-
+        # unavailable (Odds API CFB prop catalog is sparse/unreliable).
+        "production_status": "SUPPORTED",
         "market_status": {
-            "h2h":     "MODEL_UNAVAILABLE",
-            "spreads": "MODEL_UNAVAILABLE",
-            "totals":  "MODEL_UNAVAILABLE",
+            "h2h":     "SUPPORTED",
+            "spreads": "SUPPORTED",
+            "totals":  "SUPPORTED",
         },
         "game_markets": ["h2h", "spreads", "totals"],
-        "prop_markets": [],   # thin CFB player-prop catalogue on Odds API
+        "prop_markets": [],
+        "unsupported_markets": {
+            "player_pass_yds":    "PROVIDER_UNAVAILABLE",
+            "player_rush_yds":    "PROVIDER_UNAVAILABLE",
+            "player_reception_yds": "PROVIDER_UNAVAILABLE",
+            "player_anytime_td":  "PROVIDER_UNAVAILABLE",
+        },
         "fallback_sources": [],
         "supports_alt_lines": True,
         "supports_locks": True,
-        "notes": ("Market reachability only. Phase 1B: no authoritative "
-                  "independent CFB game-market model is wired — markets "
-                  "record MODEL_UNAVAILABLE funnel telemetry (legacy "
-                  "sportsbook-follow pseudo-modeling retired). Player "
-                  "props NOT wired — The Odds API's CFB prop catalogue "
-                  "is sparse and unreliable."),
+        "notes": ("Slice-P0 (2026-08-26): CFB game-market model wired "
+                  "via cfb_game_model.estimate_cfb_game — reads real "
+                  "SP+ ratings (cfb_sp_ratings, 137 teams) → expected "
+                  "margin/total → win/cover/over probabilities. Never "
+                  "sportsbook-follow. Records MODEL_UNAVAILABLE for "
+                  "games missing SP+ coverage. Player props remain "
+                  "PROVIDER_UNAVAILABLE — thin Odds API catalog."),
     },
     "Soccer": {
         "enabled": True,
