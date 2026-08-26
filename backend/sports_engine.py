@@ -7245,11 +7245,10 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                         payload.setdefault("_ctx", {})[
                             "nba_precompute_status"] = f"error:{type(_ctx_err).__name__}"
                 if sport == "CFB":
-                    # Slice-P0 (2026-08-26) — Pre-load SP+ ratings for
-                    # this event's game-market model. Same dispatch site
-                    # as the player-prop precompute; keyed on the same
-                    # ctx dict. Runs even if there are no player-prop
-                    # candidates (game-market path needs it).
+                    # Slice-P0 (2026-08-26) baseline + enhancement
+                    # (2026-08-27) — Pre-load SP+ ratings, returning
+                    # production, and portal-net maps for the CFB
+                    # game-market model. Reuses existing repo stores.
                     try:
                         from services.database import get_database
                         _cfb_db = get_database()
@@ -7266,22 +7265,89 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                                 _tk = str(_r.get("team") or "").strip().lower()
                                 if _tk and _tk not in _sp_map:
                                     _sp_map[_tk] = _r
+                            # Returning production (latest season first)
+                            _rp_map: dict = {}
+                            _rp_rows = await _cfb_db.cfb_returning_production.find(
+                                {}, {"team": 1, "percent_ppa": 1,
+                                     "percent_passing_ppa": 1,
+                                     "percent_rushing_ppa": 1,
+                                     "percent_receiving_ppa": 1,
+                                     "season": 1, "_id": 0}
+                            ).sort([("season", -1)]).to_list(length=300)
+                            for _r in _rp_rows:
+                                _tk = str(_r.get("team") or "").strip().lower()
+                                if _tk and _tk not in _rp_map:
+                                    _rp_map[_tk] = _r
+                            # Portal net — latest season
+                            _POS_W = {"QB":1.0,"OL":0.6,"OT":0.6,"OG":0.6,
+                                      "C":0.6,"WR":0.5,"RB":0.5,"TE":0.5,
+                                      "DE":0.5,"DL":0.5,"DT":0.5,"EDGE":0.5,
+                                      "LB":0.4,"CB":0.4,"S":0.4,"DB":0.4,
+                                      "K":0.1,"P":0.1,"LS":0.05}
+                            _latest_row = await _cfb_db.cfb_portal.find_one(
+                                {}, {"season": 1, "_id": 0},
+                                sort=[("season", -1)])
+                            _pt_map: dict = {}
+                            if _latest_row and _latest_row.get("season"):
+                                _lsn = _latest_row["season"]
+                                async for _p in _cfb_db.cfb_portal.find(
+                                        {"season": _lsn},
+                                        {"origin": 1, "destination": 1,
+                                         "position": 1, "rating": 1,
+                                         "_id": 0}):
+                                    try:
+                                        _rating = float(_p.get("rating") or 0.5)
+                                    except (TypeError, ValueError):
+                                        _rating = 0.5
+                                    _pos = str(_p.get("position") or "").upper()
+                                    _w = _POS_W.get(_pos, 0.3)
+                                    _adj = _w * (_rating - 0.6)
+                                    for _side, _team in (
+                                            ("in", _p.get("destination")),
+                                            ("out", _p.get("origin"))):
+                                        _tk2 = str(_team or "").strip().lower()
+                                        if not _tk2:
+                                            continue
+                                        _pRow = _pt_map.setdefault(_tk2, {
+                                            "net": 0.0, "incoming_n": 0,
+                                            "outgoing_n": 0,
+                                            "qb_delta": 0.0,
+                                        })
+                                        if _side == "in":
+                                            _pRow["net"] += _adj
+                                            _pRow["incoming_n"] += 1
+                                            if _pos == "QB":
+                                                _pRow["qb_delta"] += _adj
+                                        else:
+                                            _pRow["net"] -= _adj
+                                            _pRow["outgoing_n"] += 1
+                                            if _pos == "QB":
+                                                _pRow["qb_delta"] -= _adj
+                            # Alias expansion using cfb_teams
                             async for _t in _cfb_db.cfb_teams.find({},
                                     {"school": 1, "alternate_names": 1,
                                      "mascot": 1, "abbreviation": 1,
                                      "_id": 0}):
                                 _school = str(_t.get("school") or "").strip().lower()
-                                _row = _sp_map.get(_school)
-                                if not _row: continue
-                                for _al in (_t.get("alternate_names") or []):
-                                    _ak = str(_al or "").strip().lower()
-                                    if _ak: _sp_map.setdefault(_ak, _row)
-                                _mascot = str(_t.get("mascot") or "").strip().lower()
-                                if _mascot:
-                                    _sp_map.setdefault(f"{_school} {_mascot}", _row)
-                                _abbrev = str(_t.get("abbreviation") or "").strip().lower()
-                                if _abbrev: _sp_map.setdefault(_abbrev, _row)
-                            _game_ctx["cfb_sp_ratings_by_team"] = _sp_map
+                                for _dest_map in (_sp_map, _rp_map, _pt_map):
+                                    _val = _dest_map.get(_school)
+                                    if not _val:
+                                        continue
+                                    for _al in (_t.get("alternate_names") or []):
+                                        _ak = str(_al or "").strip().lower()
+                                        if _ak:
+                                            _dest_map.setdefault(_ak, _val)
+                                    _mascot = str(_t.get("mascot") or "").strip().lower()
+                                    if _mascot:
+                                        _dest_map.setdefault(
+                                            f"{_school} {_mascot}", _val)
+                                        _dest_map.setdefault(_mascot, _val)
+                                    _abbrev = str(_t.get("abbreviation") or "").strip().lower()
+                                    if _abbrev:
+                                        _dest_map.setdefault(_abbrev, _val)
+                            _game_ctx["cfb_sp_ratings_by_team"]     = _sp_map
+                            _game_ctx["cfb_returning_prod_by_team"] = _rp_map
+                            _game_ctx["cfb_portal_net_by_team"]     = _pt_map
                             _game_ctx["cfb_sp_ratings_status"] = (
                                 "ok" if _sp_map else "empty")
                     except Exception as _sp_err:
