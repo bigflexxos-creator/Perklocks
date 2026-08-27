@@ -763,6 +763,29 @@ async def board_health(user: Annotated[UserPublic, Depends(current_user)]):
 # (b) the *minimum row count* below which the model is considered
 # INSUFFICIENT.  These floors intentionally low — the goal is to
 # distinguish "never seeded" from "at least one healthy backfill".
+# Sport → simulator module existence check.  Truthful `model_ready`
+# requires an actual simulator, not just history.  Populated lazily.
+def _sim_module_present(sport: str) -> bool:
+    m = {
+        "MLB":    "brain.sim_mlb",
+        "NFL":    "services.platinum_nfl.simulator",  # sim_nfl / platinum sim
+        "NBA":    "brain.sim_nba",
+        "CFB":    "services.cfb_game_model",
+        "Soccer": "services.soccer_game_model",
+        "Tennis": "brain.sim_tennis",
+        "NHL":    "brain.sim_nhl",
+        "UFC":    "brain.sim_ufc",
+    }
+    modname = m.get(sport)
+    if not modname: return False
+    try:
+        import importlib
+        importlib.import_module(modname)
+        return True
+    except Exception:
+        return False
+
+
 _HISTORY_CONTRACTS: list[dict] = [
     {"sport": "MLB",    "required_stores": [
         {"coll": "games",             "query": {"sport": "mlb", "status": "Final"}, "floor": 200},
@@ -929,12 +952,20 @@ async def history_readiness(
         stores_n = len(contract["required_stores"])
         row["row_count"] = total_rows
         row["coverage"]  = round(total_covered / max(1, stores_n), 3)
+        # 2026-08-27 (P4-TRUTH-FIX) — model_ready must independently
+        # verify that an actual simulator/scorer exists.  Prior version
+        # inferred model_ready from history_ready which was misleading
+        # for sports whose data is seeded but whose simulator is absent
+        # (e.g. UFC has 44 event picks but no `brain/sim_ufc.py`).
+        _model_exists = _sim_module_present(sport)
         row["history_ready"] = all(
             (r.get("count") or 0) >= int(r.get("floor") or 0)
             for r in row["required_history"])
-        row["model_ready"] = row["history_ready"]
+        row["model_ready"] = row["history_ready"] and _model_exists
         if not row["history_ready"]:
             row["not_ready_reasons"].append("HISTORY_INSUFFICIENT")
+        if not _model_exists:
+            row["not_ready_reasons"].append("SIMULATOR_ABSENT")
         if not runtime_supported:
             row["not_ready_reasons"].append("REGISTRY_" + reg_status)
         if not settlement_ready and runtime_supported:

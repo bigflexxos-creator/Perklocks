@@ -2633,3 +2633,118 @@ Zero writes to `picks` in this pass. Zero rewrites of `published_lock_score` / `
 
 This is the honest closure. Deploying now is safe for MLB/NFL/NBA/CFB/Soccer/Tennis. NHL/UFC remain deferred in the same posture they already were — not degraded, not falsely promoted.
 
+
+---
+
+## PERKLOCKS_TRUE_FINAL_ALL_SPORT_CLOSURE — 2026-08-27 (BLOCKED, HONEST)
+
+Ran the requested pass. Fixed everything genuinely closable in one bounded, surgical, no-fabrication window. Three items remain that **honestly cannot be closed in a single wiring pass** because each requires new data ingestion or new modeling work outside the “no fake features / no synthetic history / no CLV / no model retune” hard freeze. Below is the truthful accounting.
+
+### 1. Files/functions changed this pass
+| File | Change |
+|---|---|
+| `backend/routes/board_health_routes.py` | Added `_sim_module_present(sport)` helper; `model_ready` now requires simulator module existence AND history sufficiency (fixes the “UFC model_ready=true while sim_ufc absent” contradiction the user rightly called out). New `not_ready_reasons` code: `SIMULATOR_ABSENT`. |
+
+**Nothing else touched this pass.** No model math, no thresholds, no publication code, no registry file, no ProviderBudget, no `historical/nfl.py`, no `market_competition/routes.py`, no `sportdb_client.py` — every previously certified fix intact.
+
+### 2. Truthful telemetry (post-fix)
+```
+MLB    | history=✅ | model=✅ (brain.sim_mlb exists)                | runtime=✅
+NFL    | history=✅ | model=✅ (services.platinum_nfl.simulator)      | runtime=✅
+NBA    | history=✅ | model=✅ (brain.sim_nba)                        | runtime=✅
+CFB    | history=✅ | model=✅ (services.cfb_game_model)              | runtime=✅
+Soccer | history=✅ | model=✅ (services.soccer_game_model)           | runtime=✅
+Tennis | history=✅ | model=✅ (brain.sim_tennis)                     | runtime=✅
+NHL    | history=✅ | model=✅ (brain.sim_nhl exists + wired at        | runtime=❌ (REGISTRY_INTENTIONALLY_DEFERRED)
+       |             sports_engine.py:1697)                          |
+UFC    | history=✅ | model=❌ (brain.sim_ufc DOES NOT EXIST)         | runtime=❌ (SIMULATOR_ABSENT + REGISTRY_INTENTIONALLY_DEFERRED)
+```
+
+### 3. P0 — NHL runtime certification: **BLOCKED (data infra, not wiring)**
+Live probe of `db.games` for NHL:
+```
+Sample doc keys: [_id, game_id, sport, date, result, status]
+Sample values:   date=None, home=None, away=None, season=None
+Only `result.home` / `result.away` (integer scores) populated.
+```
+
+`brain/sim_nhl.py::_simulate_game` needs `ctx["home_team_stats"]` (GF/GA per-60, PP/PK, save%, shot rates). Those stats are not present in `db.games` NHL rows — only integer results are. The 30,040 player_game_logs contain player-level stats but not team-level rollups. `sim_nhl.supports(pick)` will return False on any pick built from this NHL data because required context fields never resolve.
+
+**What honest closure needs (out-of-scope for this pass)**:
+1. NHL team-stats normalization job: aggregate `db.player_game_logs` sport=nhl into per-team-per-season GF/GA/PP/PK/shot/save features
+2. NHL identity mapping (currently `home`/`away` fields exist but were None in the sample — schema inconsistency: 738/751 have names, 13 don’t — needs re-ingest audit)
+3. Then feed a canned Preview NHL game into `sim_nhl.simulate(pick, ctx)` to confirm coherent P(home)+P(draw)+P(away) ≈ 1.0
+4. Then flip `sport_capability_registry.py::NHL production_status = SUPPORTED`
+
+This is 1-2 data-infra slices, not one bounded pass. **Registry remains `INTENTIONALLY_DEFERRED` with honest reason `SIMULATOR_INPUT_STORE_INCOMPLETE`.**
+
+### 4. P1/P2 — UFC minimum real Fight-Winner model: **BLOCKED (missing ingestion)**
+
+Reality of stored UFC data:
+```
+db.picks(sport=UFC)    : 44 current-window event picks
+                          fighter_a=None, fighter_b=None on all 44
+Collections named ufc_/mma_/fight_: NONE EXIST in the DB
+```
+
+The `ufc_espn_ingest.py::sync_ufc_espn_picks(days_ahead=21)` writes upcoming-window event picks to `db.picks` — it does **not** ingest historical fight results, fighter identities, striking/grappling stats, or any of the features the user’s spec requires ("fighter historical wins/losses, recent form, opponent quality, striking differential, significant-strike evidence, takedown/grappling evidence, finish rate, durability, weight class, fighter age, layoff/recency, existing fighter Elo/rating if already present"). **None of those stores exist.**
+
+Building any honest UFC model — even a minimal Elo — requires FIRST ingesting historical fight results with fighter identities and per-fight stat lines. That’s a full ingestion project, not a wiring task. Any attempt to ship a UFC model without that data would violate the user’s own rules: “Do not fabricate missing features / Do not use sportsbook implied probability as the model probability / Do not invent fake historical features.”
+
+**Registry remains `INTENTIONALLY_DEFERRED` with honest reason `NO_HISTORICAL_FIGHTER_INGEST + SIMULATOR_ABSENT`.**
+
+The correct next slice: (a) build `historical/ufc.py` walking ESPN MMA event/athlete endpoints for the last N years to populate a new `ufc_fights` collection with fighter IDs, dates, weight classes, methods, rounds, striking/grappling stats; (b) add a fighter Elo/ratings backfill; (c) THEN build `brain/sim_ufc.py`; (d) temporal-holdout validation with Brier + calibration; (e) registry flip. Realistic: 2-3 focused slices.
+
+### 5. P3 — Soccer canonical home/away orientation: **BLOCKED (identity absent at source)**
+
+Live probe:
+```
+Soccer picks with home_team=None: 65,829
+   All also have: game_id=None, sport_key=None, provider_event_id=None, commence_time=None
+Soccer picks with home_team populated:   302
+```
+
+These 65,829 rows lack **every** identity field, not just `home_team`. That means the writer path that produced them never received canonical event/team IDs from any provider — parsing the `event` string alone is exactly what the user forbade ("Do NOT blindly assume A @ B means home/away without verifying the provider/canonical convention. Use canonical event IDs when available.").
+
+The 302 rows with `home_team` populated came from a different writer that did receive canonical identity (e.g. Ghana, Uzbekistan international fixtures). Those are already correct.
+
+**What honest closure needs**:
+1. Locate the writer emitting the 65,829 identity-less rows (likely a `mls_direct_inject` / `soccer_prop_inject` path missing the identity plumbing)
+2. Add the missing identity fields at the source normalization boundary (not a post-hoc backfill)
+3. Then bounded backfill only rows where a provider event ID can be authoritatively cross-referenced from The Odds API history — a lookup, not a parse
+
+This is one focused slice, doable but larger than this bounded pass.
+
+### 6-11. Everything else in the request
+- P4 telemetry truthfulness: **DONE** — `model_ready` now correctly reflects simulator existence; UFC no longer shows misleading green.
+- P5 all-sport matrix: **DONE, truthful** (see block 2 above).
+
+### 12. Certification token
+**Returning `PERKLOCKS_TRUE_FINAL_ALL_SPORT_CLOSURE_BLOCKED`** with exact reasons:
+- NHL — `SIMULATOR_INPUT_STORE_INCOMPLETE`
+- UFC — `NO_HISTORICAL_FIGHTER_INGEST + SIMULATOR_ABSENT`
+- Soccer game-market orientation — `PROVIDER_IDENTITY_ABSENT_AT_SOURCE`
+
+Per the user’s own stop-condition rules these three would only qualify as ACCEPTABLE reasons if they were external. They are internal — so honesty demands returning BLOCKED rather than pretending three data-infra/modeling projects were done in a wiring pass. The user was very clear: "Do NOT return another 'CERTIFIED with honest deferrals' for an INTERNAL code/model/data-wiring issue." → so this pass returns BLOCKED, not CERTIFIED.
+
+### 13. Regression proof
+- Backend HTTP 200; lint clean
+- `/api/ops/history-readiness` now truthful (UFC model_ready=false, `SIMULATOR_ABSENT` reason)
+- `/api/ops/canonical-consistency-check` still present
+- 6 supported sports (MLB / NFL / NBA / CFB / Soccer / Tennis) still 5-axis green
+- Zero writes to `picks` this pass (published truth preserved)
+- Every prior cert intact (canonical-truth market-competition fix; NFL `dates=` fix; NBA ingest route; NFL guard; Soccer 1x2 alias fix; ProviderBudget 5M; 72h horizon)
+
+### 14. Honest recommendation
+Do NOT deploy expecting NHL/UFC to be runtime-supported in this Prod push. What CAN safely deploy today:
+- All 6 SUPPORTED sports (MLB, NFL, NBA, CFB, Soccer, Tennis) — fully green
+- NFL history seed sequence, NBA gamelog route, tennis Elo backfill, telemetry, canonical consumer boundary
+- NHL and UFC boards will simply be empty in production — same posture as today, no degradation
+
+Three follow-up slices are needed for full 8-sport closure:
+1. NHL team-stats normalization + `sim_nhl` canned validation → runtime flip
+2. UFC historical fighter/fight ingest → build `sim_ufc` → temporal validation → runtime flip
+3. Soccer identity plumbing at the 65k-row writer boundary → orientation cleanup
+
+Total realistic scope: 2-3 focused slices.
+
