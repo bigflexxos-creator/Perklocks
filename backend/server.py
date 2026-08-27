@@ -4036,6 +4036,7 @@ async def on_startup():
     #   stale ingestion-state flag.
     try:
         async def _nfl_bootstrap_guard():
+            import asyncio as _aio
             try:
                 n = await db.games.count_documents({"sport": "nfl", "status": "Final"})
                 if n >= 32:
@@ -4043,26 +4044,82 @@ async def on_startup():
                     return
                 logger.warning(
                     "NFL bootstrap guard: only %d Final games (< 32) — scheduling "
-                    "one-shot backfill of 2025 season via historical/nfl.py "
+                    "one-shot backfill of 2025/2024 seasons via historical/nfl.py "
                     "with skip_if_done=False (overrides any stale zero-row "
                     "'done' marker from the pre-fix ESPN year= path)", n)
                 from historical.multi_season import backfill_seasons
-                res = await backfill_seasons(
-                    db, sports=["nfl"], seasons=[2025],
-                    lookback=1, skip_if_done=False,
-                )
-                logger.info("NFL bootstrap guard: backfill result=%s", res)
-                # Re-check sufficiency and report.  If still insufficient,
-                # log a P0 so ops can drill into the per-sport client.
-                m = await db.games.count_documents({"sport": "nfl", "status": "Final"})
+                # ── 2026-08-27 PRODUCTION NFL BOOTSTRAP HARDENING ─────
+                # Backfill BOTH the current and prior season so a bad
+                # single-season fetch (rate limit, ESPN throttle,
+                # network blip) doesn't leave Production with 0 games.
+                # historical/nfl.py is idempotent (upsert-only) so
+                # over-fetching is safe.  Retry up to 3× with a
+                # widening delay so a transient upstream failure
+                # doesn't leave NFL permanently starved.
+                res = None
+                for attempt in range(3):
+                    try:
+                        res = await backfill_seasons(
+                            db, sports=["nfl"], seasons=[2025, 2024],
+                            lookback=1, skip_if_done=False,
+                        )
+                        logger.info(
+                            "NFL bootstrap guard: backfill attempt %d result=%s",
+                            attempt + 1, res)
+                        # Post-attempt sufficiency check
+                        _m = await db.games.count_documents(
+                            {"sport": "nfl", "status": "Final"})
+                        if _m >= 32:
+                            break
+                        logger.warning(
+                            "NFL bootstrap guard: attempt %d still only %d "
+                            "Final games — retrying in %ds",
+                            attempt + 1, _m, 10 * (attempt + 1))
+                        await _aio.sleep(10 * (attempt + 1))
+                    except Exception as _re:
+                        logger.warning(
+                            "NFL bootstrap guard: attempt %d raised %s — "
+                            "retrying in %ds",
+                            attempt + 1, _re, 10 * (attempt + 1))
+                        await _aio.sleep(10 * (attempt + 1))
+                # Final sufficiency check + trigger picks refresh so the
+                # newly-hydrated ratings are consumed immediately (users
+                # see NFL populate without a manual retry).
+                m = await db.games.count_documents(
+                    {"sport": "nfl", "status": "Final"})
                 if m < 32:
                     logger.error(
-                        "NFL bootstrap guard: AFTER backfill still only %d "
+                        "NFL bootstrap guard: AFTER 3 attempts still only %d "
                         "Final games — historical/nfl.py per-client path "
                         "needs investigation (upstream ESPN dates= empty?)", m)
-                else:
+                    return
+                logger.info(
+                    "NFL bootstrap guard: post-backfill %d Final games — OK. "
+                    "Triggering one NFL picks refresh so hydrated ratings "
+                    "surface in /api/picks/today immediately.", m)
+                # Trigger an immediate NFL-scoped refresh so Production
+                # users don't have to wait for the next scheduler tick.
+                try:
+                    from services.pick_refresh_orchestrator import (
+                        PickRefreshOrchestrator, PickRefreshRequest,
+                    )
+                    from datetime import datetime as _dt, timezone as _tz
+                    _ds = _dt.now(_tz.utc).strftime("%Y-%m-%d")
+                    _o = PickRefreshOrchestrator()
+                    _r = await _o.refresh(PickRefreshRequest(
+                        slate_date=_ds, sport_filter="NFL",
+                        caller="nfl_bootstrap_guard",
+                        reason="post-history-backfill-hydrate",
+                    ))
                     logger.info(
-                        "NFL bootstrap guard: post-backfill %d Final games — OK", m)
+                        "NFL bootstrap guard: post-hydrate refresh "
+                        "published=%s generated=%s",
+                        getattr(_r, "published_count", "?"),
+                        getattr(_r, "generated_count", "?"))
+                except Exception as _refresh_err:
+                    logger.warning(
+                        "NFL bootstrap guard: post-hydrate refresh "
+                        "failed (non-fatal): %s", _refresh_err)
             except Exception as _e:
                 logger.warning("NFL bootstrap guard failed (non-fatal): %s", _e)
         asyncio.create_task(_nfl_bootstrap_guard())

@@ -947,6 +947,127 @@ async def admin_picks_heal(
     }
 
 
+@router.get("/admin/nfl/heal")
+async def admin_nfl_heal(
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+    force: bool = False,
+):
+    """One-click NFL Production heal (GET so it works from browser URL bar).
+
+    Kicks off the full NFL heal chain in the BACKGROUND (backfill 2025 +
+    2024 with `skip_if_done=False`, then trigger NFL picks refresh so
+    hydrated ratings surface immediately).  Returns the CURRENT state
+    right away; poll this URL again ~60-90s later to see progress.
+
+    Designed for the "Production NFL is empty, deploy didn't fix it"
+    scenario.  Idempotent — safe to hit repeatedly.  If a heal task
+    is already running the endpoint just reports current state
+    without launching a duplicate (unless ``force=true``).
+    """
+    import asyncio
+    from historical.multi_season import backfill_seasons
+    from services.pick_refresh_orchestrator import (
+        PickRefreshOrchestrator, PickRefreshRequest,
+    )
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Read current state
+    nfl_final = await db.games.count_documents(
+        {"sport": "nfl", "status": "Final"})
+    nfl_pl = await db.player_game_logs.count_documents({"sport": "nfl"})
+    nfl_picks = await db.picks.count_documents(
+        {"sport": "NFL", "pick_date": today_str})
+    nfl_pub = await db.picks.count_documents(
+        {"sport": "NFL", "pick_date": today_str,
+         "publication_state": "PUBLISHED"})
+
+    # Idempotency guard via a small state doc.
+    state_doc = await db.system_state.find_one({"_id": "nfl_heal_task"}) or {}
+    running = bool(state_doc.get("running"))
+    if running and not force:
+        return {
+            "queued": False,
+            "already_running": True,
+            "started_at": state_doc.get("started_at"),
+            "current_state": {
+                "nfl_final_games": nfl_final,
+                "nfl_player_logs": nfl_pl,
+                "nfl_picks_today": nfl_picks,
+                "nfl_published_today": nfl_pub,
+            },
+            "last_result": state_doc.get("last_result"),
+            "next_step": (
+                "Heal task in progress. Poll this URL again in 60-90s. "
+                "Add ?force=true to override the lock (not recommended)."
+            ),
+        }
+
+    async def _heal_task():
+        try:
+            await db.system_state.update_one(
+                {"_id": "nfl_heal_task"},
+                {"$set": {
+                    "running": True,
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "last_result": None,
+                }},
+                upsert=True,
+            )
+            backfill_res = await backfill_seasons(
+                db, sports=["nfl"], seasons=[2025, 2024],
+                lookback=1, skip_if_done=False,
+            )
+            orch = PickRefreshOrchestrator()
+            refresh_res = await orch.refresh(PickRefreshRequest(
+                slate_date=today_str, sport_filter="NFL",
+                caller="admin/nfl/heal", reason="manual-nfl-heal",
+            ))
+            await db.system_state.update_one(
+                {"_id": "nfl_heal_task"},
+                {"$set": {
+                    "running": False,
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "last_result": {
+                        "backfill": backfill_res,
+                        "refresh": {
+                            "published_count": getattr(refresh_res, "published_count", None),
+                            "generated_count": getattr(refresh_res, "generated_count", None),
+                        },
+                    },
+                }},
+                upsert=True,
+            )
+        except Exception as e:
+            await db.system_state.update_one(
+                {"_id": "nfl_heal_task"},
+                {"$set": {
+                    "running": False,
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "last_result": {"error": str(e)},
+                }},
+                upsert=True,
+            )
+
+    asyncio.create_task(_heal_task())
+    return {
+        "queued": True,
+        "message": (
+            "NFL heal task launched. Poll this URL again in 60-90s to see "
+            "the result. Backfill runs both 2025 + 2024 seasons with "
+            "skip_if_done=False, then an NFL refresh is triggered so "
+            "picks surface on /api/picks/today immediately."
+        ),
+        "current_state": {
+            "nfl_final_games": nfl_final,
+            "nfl_player_logs": nfl_pl,
+            "nfl_picks_today": nfl_picks,
+            "nfl_published_today": nfl_pub,
+        },
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+
+
 @router.post("/admin/rollover/backfill-tags")
 async def admin_backfill_rollover_tags(
     user: Annotated[UserPublic, Depends(current_admin)] = None,
