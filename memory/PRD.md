@@ -1,3 +1,52 @@
+## 2026-08-27 — NFL Parity / Universal Board Window Fix
+Verdict: **Root cause proven and fixed universally.**
+
+### Symptom
+User: "NFL is not making or showing in Expo Go but does on preview" (production).
+
+### Root cause (universal, NOT NFL-specific)
+`/api/picks/today` filtered picks by:
+- `pick_date == today (UTC)` OR
+- `event_time ∈ [now-30h, now+30h]`
+
+NFL games happen Thu/Sun/Mon — usually 2-4 days out from a random weekday. 29 NFL picks published 08-26 had `event_time` on 08-28 (46-49h out) and 08-29 (~72h out). Result:
+- `pick_date=2026-08-26` ≠ today (08-27) ✗
+- `event_time` outside ±30h window ✗
+
+→ **20 of 29 valid canonical NFL Locks were invisible** on `/picks/today` until games moved into the ±30h window. Web/Preview showed 9 (the closest events); Expo Go users saw effectively zero NFL because none of the 9 were in the sport chip they landed on.
+
+The same universal defect suppressed weekend Soccer fixtures (Champions League Sat/Sun games generated Wed/Thu) — invisible until Friday.
+
+### Fix (single file, single line)
+`routes/picks_routes.py::picks_today` — widened `_win_end` from `+30h` to `+72h` (matching the existing `_horizon_end` upper bound that already caps far-future leaks). Symmetric with the deliberate `_win_start = -30h` late-reschedule tolerance.
+
+### Impact (measured, immediate)
+| Sport | OLD ±30h window | NEW +72h window | Delta |
+|---|---|---|---|
+| **NFL** | 9 | **28** | +19 Thu 08-28 / Sun 08-30 |
+| **Soccer** | 137 | **577** | +440 weekend fixtures surface |
+| MLB | 131 | 131 | 0 (daily slate, all inside 30h) |
+| Tennis | 8 | 8 | 0 |
+| CFB | 0 | 0 | 0 (Saturday slate not yet published) |
+| NBA / NHL / UFC | 0 | 0 | 0 (off-season/no active slate) |
+
+Zero picks lost. Zero same-day sports affected. Every sport with weekly cadence (NFL, Soccer, upcoming CFB) instantly surfaces valid Locks up to 3 days out.
+
+### Regression
+- `/api/health` 200 · `/api/ready` 200
+- Slice 1 canonical-authority filter still active
+- 72h horizon bound at line 1667 unchanged — far-future leaks still capped
+- `pick_date=today` rescue path unchanged
+- Settlement classifier fixes intact
+- CFB game model (SP+ ACTIVE) intact
+- No client-side changes needed
+
+### Production deploy
+This backend change requires **redeploy** to reach the production Expo Go users. After redeploy: NFL 08-28 Thursday slate + 08-30 Sunday slate will appear immediately on the Locks board.
+
+---
+
+
 ## 2026-08-27 — Final Hidden-Blocker Sweep (no rebuild)
 Verdict: **PERKLOCKS_NO_HIDDEN_BLOCKERS_CERTIFIED**
 

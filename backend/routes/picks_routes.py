@@ -1657,8 +1657,22 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # event_time=2026-07-20T09Z but the actual match was 2026-07-21T09Z
     # (24-hour reschedule). Pending-status + off_board filters below
     # keep this from resurrecting settled picks or explicit no-bet flags.
+    #
+    # 2026-08-27 NFL PARITY FIX (universal). User reported NFL invisible
+    # on Expo Go even though 29 valid canonical Locks were published for
+    # this Thursday/Sunday's slate. Root cause: NFL games Thu 08-28 and
+    # Sun 08-30 have `event_time` 46-72h from now, which fell OUTSIDE
+    # the ±30h `_win_end` and were only visible when `pick_date == today`.
+    # Since the generator tags pick_date as the date the pick was CREATED
+    # (08-26), and today is 08-27, both criteria failed for 20 of the 29
+    # NFL picks. Widening `_win_end` from +30h to match `_horizon_end`
+    # (+72h) keeps the pick_date=today rescue path intact AND lets any
+    # game up to 3 days out surface immediately upon publication. The
+    # 72h horizon still bounds far-future leaks (line 1667). This
+    # equally helps CFB Saturday slate (48-96h out) and MLS/NBA weekend
+    # cards — a universal fix, not NFL-specific.
     _win_start = (_now - _td(hours=30)).isoformat().replace("+00:00", "Z")
-    _win_end   = (_now + _td(hours=30)).isoformat().replace("+00:00", "Z")
+    _win_end   = (_now + _td(hours=72)).isoformat().replace("+00:00", "Z")
     # ── 72-hour board horizon (2026-07-26) ─────────────────────────────
     # Hide picks for games starting > 72h from now regardless of
     # `pick_date`. Fixes user report: Soccer tab timing out because
