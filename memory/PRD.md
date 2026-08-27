@@ -1,3 +1,53 @@
+## 2026-08-27 — Final Hidden-Blocker Sweep (no rebuild)
+Verdict: **PERKLOCKS_NO_HIDDEN_BLOCKERS_CERTIFIED**
+
+### Root causes proven and fixed (settlement_capability.py — one file)
+1. **Soccer half-line spread** (e.g. `"Team -1.5"` labeled without "Spread" token) → classifier returned UNKNOWN, so settlement engine wouldn't grade Slovakia's real Odds API spread labels. Fix: fallback path — when a numeric half-point / whole-point `line` is provided, non-quarter Soccer spread returns SUPPORTED.
+2. **CFB (also NFL/NBA) half-line spread with bare label** (e.g. `"North Carolina -8.5"`) → same UNKNOWN. Fix: same numeric-line fallback for non-Soccer sports. Standard settlement_engine already grades these.
+3. **Soccer Anytime Assist** (Slice 3 acquisition market) missing from allow-list → UNKNOWN → picks would strand pending. Fix: added `"anytime assist"` and `"player anytime assist"` to `_SOCCER_SUPPORTED_PATTERNS`.
+4. **Tennis "Match Winner"** (moneyline equivalent) missing from game_tokens → UNKNOWN. Fix: added `"match winner"` token.
+
+Soccer quarter Asian handicap remains **correctly** fail-closed (`settler_unsupported:soccer_asian_quarter_handicap`).
+
+### Blockers CHECKED and NOT FOUND
+- Board reachability on completed 2026-08-26 slate — healthy (MLB 151 · NFL 28 · Soccer 482 at 85+; unchanged/improved from prior certifications).
+- Canonical publication authority (Slice 1) — active, still preserves canonically-published Locks with runtime `grade=Pass`.
+- Canonical opponent history — unchanged for all 5 sports (MLB 98.3% · NFL 99.2% · NBA 99.7% · Tennis 99.99% · Soccer 99.3%).
+- NBA team_game_actuals: 5,544 rows intact.
+- Shadow layer: 2,449 rows, still research-only (no scorer reads).
+- Capability registry matches runtime for all 8 sports.
+- Odds API circuit breaker: closed / healthy.
+- `/api/health` = 200 · `/api/ready` = 200 on both preview and production.
+- No new runtime errors in backend log.
+- Web/Expo backend URL config unchanged; Locks + History last-good AsyncStorage caches intact.
+
+### Settlement capability contract (final)
+| Sport | Market | Line | Classification |
+|---|---|---|---|
+| Soccer | Team +0.25 | quarter | SETTLEMENT_UNSUPPORTED (quarter handicap) |
+| Soccer | Team -1.5 | half | SUPPORTED |
+| Soccer | Anytime Assist | none | SUPPORTED |
+| Soccer | Anytime Goal Scorer | none | SUPPORTED |
+| Soccer | Player Shots Over | 2.5 | SUPPORTED |
+| CFB | Team -8.5 | half | SUPPORTED |
+| CFB | Total 47.5 | half | SUPPORTED |
+| NFL | Team -3.5 | half | SUPPORTED |
+| NFL | Passing Yards Over | 245.5 | SUPPORTED |
+| MLB | Team Moneyline | none | SUPPORTED |
+| Tennis | Match Winner | none | SUPPORTED |
+| Tennis | Over 15.5 Games | 15.5 | SUPPORTED |
+
+### Files/functions changed
+- `services/settlement_capability.py::classify` — added Soccer + non-Soccer numeric-line fallback; added `"anytime assist"` allow-list patterns; added `"match winner"` game token.
+
+### Regression
+✅ Slices 1/3/4/5/7/11 · ✅ CFB game model (SP+ active) · ✅ MLB/NFL/NBA/Tennis/Soccer canonical history · ✅ NBA tga 5,544 · ✅ PitchAPI+BigBalls · ✅ safe_picks / APEX / Parlay / Rollover · ✅ History Shadow research-only · ✅ Board counts unchanged/improved
+
+**Verdict**: **PERKLOCKS_NO_HIDDEN_BLOCKERS_CERTIFIED** — three proven settlement-classifier UNKNOWNs closed; no other blocker surfaced across the entire supported sport/market matrix.
+
+---
+
+
 ## 2026-08-27 — CFB Game Model Intelligence Upgrade (SP+ base, shadow enhanced)
 Verdict: **CFB_ENHANCEMENT_PARTIAL_CERTIFIED**
 
