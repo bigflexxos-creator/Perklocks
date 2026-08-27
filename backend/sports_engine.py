@@ -1893,6 +1893,38 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     attach_game_sim_provenance,
                 )
                 attach_game_sim_provenance(ml_pick, _nfl_plat_ml)
+            # ── 2026-08-27 CFB EVIDENCE PROVENANCE (surgical) ───────────
+            # Mirror of NFL Platinum provenance pattern.  When the CFB
+            # SP+ authoritative model produced this ML, stamp
+            # ``model_source`` + ``cfb_game_sim`` on the emitted pick so
+            # the Evidence Governor recognises the model-derived
+            # probability + expected margin/total as independent
+            # signals.  No math change — same p_home_ml already used
+            # to compute win_probability.
+            if ml_pick and sport == "CFB":
+                _cfb_ctx = ((game.get("_ctx") if isinstance(game, dict) else None) or {})
+                _cfb_gm = _cfb_ctx.get("_cfb_game_model") or {}
+                if _cfb_gm.get("available") and _cfb_gm.get("p_home_ml") is not None:
+                    try:
+                        _p_home = float(_cfb_gm.get("p_home_ml"))
+                    except (TypeError, ValueError):
+                        _p_home = None
+                    if _p_home is not None:
+                        _side_prob = _p_home if side == home else round(1.0 - _p_home, 4)
+                        ml_pick["model_source"] = "cfb_sp_game_model"
+                        ml_pick["cfb_game_sim"] = {
+                            "sim_probability": _side_prob,
+                            "p_home_ml": _cfb_gm.get("p_home_ml"),
+                            "expected_margin": _cfb_gm.get("expected_margin"),
+                            "expected_total": _cfb_gm.get("expected_total"),
+                            "margin_sigma": _cfb_gm.get("margin_sigma"),
+                            "total_sigma": _cfb_gm.get("total_sigma"),
+                            "tier": _cfb_gm.get("tier"),
+                            "sources": list(_cfb_gm.get("sources") or []),
+                            "data_quality": _cfb_gm.get("data_quality"),
+                            "market": "Moneyline",
+                            "side": side,
+                        }
             # PHASE 2A — de-vig computed at build time (canonical edge).
             # Post-build attachment retired for game markets.
             if ml_pick:
@@ -2268,6 +2300,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             #   never sportsbook-follow).
             _totals_model_ok = sport in ("MLB", "Soccer")
             _nfl_tot_sims: dict[str, dict] = {}
+            _cfb_tot_probs: dict[str, float] = {}
             if sport == "NFL":
                 try:
                     from services.platinum_nfl.game_runtime import (
@@ -2292,6 +2325,39 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 except Exception as _pe:
                     logger.warning("NFL platinum totals wiring failed: %s", _pe)
                     _totals_model_ok = False
+            elif sport == "CFB":
+                # ── 2026-08-27 CFB TOTAL (surgical wiring) ──────────
+                # Use the existing CFB SP+ authoritative model to
+                # produce Over/Under probability via the shared
+                # cfb_over_probability helper.  No book-follow.
+                _cfb_tot_gm = game_ctx.get("_cfb_game_model") or {}
+                if (_cfb_tot_gm.get("available")
+                        and _cfb_tot_gm.get("expected_total") is not None):
+                    try:
+                        from services.cfb_game_model import cfb_over_probability
+                        _cfb_tot_probs["Over"] = cfb_over_probability(
+                            expected_total=float(_cfb_tot_gm["expected_total"]),
+                            book_line=float(line),
+                            side_is_over=True,
+                            total_sigma=float(_cfb_tot_gm.get("total_sigma") or 13.5),
+                        )
+                        _cfb_tot_probs["Under"] = round(1.0 - _cfb_tot_probs["Over"], 4)
+                        _totals_model_ok = True
+                    except Exception as _cte:
+                        logger.warning("cfb total wiring failed: %s", _cte)
+                        _totals_model_ok = False
+                else:
+                    _totals_model_ok = False
+                    try:
+                        from services import funnel_telemetry as _funnel
+                        _funnel.record(
+                            sport=sport, market="total", stage="model",
+                            reason=(_cfb_tot_gm.get("reason") or "MODEL_UNAVAILABLE"),
+                            event=f"{away} @ {home}",
+                            detail=f"cfb_game_model tier={_cfb_tot_gm.get('tier')}",
+                        )
+                    except Exception:
+                        pass
             elif not _totals_model_ok:
                 try:
                     from services import funnel_telemetry as _funnel
@@ -2316,6 +2382,9 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         mp_o = None
                     else:
                         mp_o = _sim_o["prob"]
+                    contribs_o = None
+                elif sport == "CFB":
+                    mp_o = _cfb_tot_probs.get("Over")
                     contribs_o = None
                 else:
                     # 2026-07-21 FINAL PHASE — deterministic book-anchored
@@ -2351,6 +2420,9 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                             mp_u = None
                         else:
                             mp_u = _sim_u["prob"]
+                        contribs_u = None
+                    elif sport == "CFB":
+                        mp_u = _cfb_tot_probs.get("Under")
                         contribs_u = None
                     else:
                         # 2026-07-21 FINAL PHASE — deterministic. Was
@@ -2422,10 +2494,11 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         else:
                             factors = {k: v for k, v in real_tot_factors.items() if v is not None}
                     else:
-                        # Phase 1B — only NFL reaches this branch, and
-                        # only when the Platinum game sim produced the
-                        # probability (empty factors dict → lock derived
-                        # purely from the authoritative model probability).
+                        # Phase 1B — only NFL / CFB reach this branch,
+                        # and only when the authoritative model produced
+                        # the probability (empty factors dict → lock
+                        # derived purely from the authoritative model
+                        # probability + edge_percent via v3 composite).
                         factors = {}
 
                     if not _skip_total:
@@ -2438,6 +2511,15 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                                       "edge_percent": _e_t,
                                       "win_probability": best["mp"] * 100},
                                 edge_percent=_e_t)
+                        elif sport == "CFB":
+                            # v3 composite for CFB totals (mirror of NFL).
+                            _e_t_cfb = round((best["mp"] - best["implied"]) * 100, 2)
+                            lock, breakdown = compute_lock_score(
+                                factors, win_prob=best["mp"] * 100,
+                                pick={"book_odds": best["price"],
+                                      "edge_percent": _e_t_cfb,
+                                      "win_probability": best["mp"] * 100},
+                                edge_percent=_e_t_cfb)
                         else:
                             lock, breakdown = compute_lock_score(factors, win_prob=best["mp"] * 100)
                         total_pick = _build_pick(
@@ -2480,6 +2562,27 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                                     )
                                     attach_game_sim_provenance(
                                         total_pick, _sim_best)
+                            # ── 2026-08-27 CFB TOTAL provenance ──────
+                            if sport == "CFB":
+                                _cfb_tot_gm2 = game_ctx.get("_cfb_game_model") or {}
+                                if _cfb_tot_gm2.get("available"):
+                                    total_pick["model_source"] = "cfb_sp_game_model"
+                                    total_pick["cfb_game_sim"] = {
+                                        "sim_probability": best["mp"],
+                                        "over_probability": _cfb_tot_probs.get("Over"),
+                                        "under_probability": _cfb_tot_probs.get("Under"),
+                                        "p_home_ml": _cfb_tot_gm2.get("p_home_ml"),
+                                        "expected_margin": _cfb_tot_gm2.get("expected_margin"),
+                                        "expected_total": _cfb_tot_gm2.get("expected_total"),
+                                        "margin_sigma": _cfb_tot_gm2.get("margin_sigma"),
+                                        "total_sigma": _cfb_tot_gm2.get("total_sigma"),
+                                        "tier": _cfb_tot_gm2.get("tier"),
+                                        "sources": list(_cfb_tot_gm2.get("sources") or []),
+                                        "data_quality": _cfb_tot_gm2.get("data_quality"),
+                                        "market": "Total",
+                                        "market_threshold": line,
+                                        "side": best["side"],
+                                    }
                             # PHASE 2A — de-vig handled at build time.
                             # 2026-08-23 FINAL SURGICAL — ONE SOCCER
                             # PRODUCTION WRITER (Totals).  Legacy Soccer
@@ -2618,7 +2721,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
     # instead of tossing a coin at generation time. `_build_pick` returns
     # None for the side that doesn't clear the floors, so we never over-
     # surface a garbage pick — we just stop losing the good one to chance.
-    if spreads_outs and sport in ("MLB", "NBA", "NFL", "KBO", "Tennis", "NHL"):
+    if spreads_outs and sport in ("MLB", "NBA", "NFL", "KBO", "Tennis", "NHL", "CFB"):
         home_sp = next((o for o in spreads_outs if o.get("name") == home), None)
         away_sp = next((o for o in spreads_outs if o.get("name") == away), None)
         if home_sp and away_sp:
@@ -2687,10 +2790,48 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         continue
                     mp = _nfl_plat_sp["prob"]
                     factors = {}
+                elif sport == "CFB":
+                    # ── 2026-08-27 CFB SPREAD (surgical wiring) ──────
+                    # Use the existing CFB SP+ authoritative model
+                    # (already populated on game["_ctx"]["_cfb_game_
+                    # model"] by the pre-fetch) to compute cover
+                    # probability from expected_margin + margin_sigma
+                    # via the shared cfb_cover_probability helper.
+                    # No new math; no book-follow.  When the model is
+                    # unavailable, record MODEL_UNAVAILABLE and skip.
+                    _cfb_sp_ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
+                    _cfb_sp_gm = _cfb_sp_ctx.get("_cfb_game_model") or {}
+                    if not (_cfb_sp_gm.get("available")
+                            and _cfb_sp_gm.get("expected_margin") is not None
+                            and line is not None):
+                        try:
+                            from services import funnel_telemetry as _funnel
+                            _funnel.record(
+                                sport=sport, market="spread", stage="model",
+                                reason=(_cfb_sp_gm.get("reason") or "MODEL_UNAVAILABLE"),
+                                event=f"{away} @ {home}", side=str(side),
+                                detail=f"cfb_game_model tier={_cfb_sp_gm.get('tier')}",
+                            )
+                        except Exception:
+                            pass
+                        continue
+                    try:
+                        from services.cfb_game_model import cfb_cover_probability
+                        _cfb_cover = cfb_cover_probability(
+                            expected_margin=float(_cfb_sp_gm.get("expected_margin")),
+                            book_line=float(line),
+                            side_is_home=(side == home),
+                            margin_sigma=float(_cfb_sp_gm.get("margin_sigma")
+                                               or 13.7),
+                        )
+                    except Exception as _cfb_sp_err:
+                        logger.warning("cfb spread wiring failed: %s", _cfb_sp_err)
+                        continue
+                    mp = float(_cfb_cover)
+                    factors = {}
+                    # Stash so provenance stamp below can reuse it
+                    _cfb_sp_ctx.setdefault("_cfb_spread_prob_by_side", {})[side] = _cfb_cover
                 else:
-                    # Phase 1B — NBA / Tennis / NHL / KBO spreads have no
-                    # authoritative independent model. MODEL_UNAVAILABLE,
-                    # never sportsbook-follow.
                     try:
                         from services import funnel_telemetry as _funnel
                         _funnel.record(
@@ -2710,6 +2851,17 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         pick={"book_odds": price, "edge_percent": _e_sp,
                               "win_probability": mp * 100},
                         edge_percent=_e_sp)
+                elif sport == "CFB":
+                    # Same v3-composite treatment CFB gets on ML: edge +
+                    # win-prob are model-derived, so let the composite
+                    # score the pick with its real edge_percent rather
+                    # than the legacy band map.
+                    _e_sp_cfb = round((mp - implied) * 100, 2)
+                    lock, breakdown = compute_lock_score(
+                        factors, win_prob=mp * 100,
+                        pick={"book_odds": price, "edge_percent": _e_sp_cfb,
+                              "win_probability": mp * 100},
+                        edge_percent=_e_sp_cfb)
                 else:
                     lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
                 sign = "+" if (line or 0) > 0 else ""
@@ -2734,6 +2886,26 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         attach_game_sim_provenance,
                     )
                     attach_game_sim_provenance(_sp_pick, _nfl_plat_sp)
+                # ── 2026-08-27 CFB SPREAD provenance ──────────────
+                if _sp_pick and sport == "CFB":
+                    _cfb_sp_gm2 = ((game.get("_ctx") if isinstance(game, dict) else None) or {}).get("_cfb_game_model") or {}
+                    if _cfb_sp_gm2.get("available"):
+                        _sp_pick["model_source"] = "cfb_sp_game_model"
+                        _sp_pick["cfb_game_sim"] = {
+                            "sim_probability": mp,
+                            "cover_probability": mp,
+                            "p_home_ml": _cfb_sp_gm2.get("p_home_ml"),
+                            "expected_margin": _cfb_sp_gm2.get("expected_margin"),
+                            "expected_total": _cfb_sp_gm2.get("expected_total"),
+                            "margin_sigma": _cfb_sp_gm2.get("margin_sigma"),
+                            "total_sigma": _cfb_sp_gm2.get("total_sigma"),
+                            "tier": _cfb_sp_gm2.get("tier"),
+                            "sources": list(_cfb_sp_gm2.get("sources") or []),
+                            "data_quality": _cfb_sp_gm2.get("data_quality"),
+                            "market": "Spread",
+                            "market_threshold": line,
+                            "side": side,
+                        }
                 # PHASE 2A — de-vig handled at build time.
                 picks.append(_sp_pick)
     return [p for p in picks if p is not None]
@@ -3021,6 +3193,21 @@ async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
                     )
                     g.setdefault("sport_key", key)
                     g["_ctx"] = await build_nfl_game_model_context(g)
+                elif sport == "CFB":
+                    # 2026-08-27 — CFB game-market model wiring fix.
+                    # `estimate_cfb_game` requires
+                    # ``ctx["cfb_sp_ratings_by_team"]`` — without it
+                    # every CFB game returned
+                    # ``MODEL_UNAVAILABLE:no_sp_ratings_ctx`` and zero
+                    # CFB picks reached the board even when SP+ data,
+                    # provider events and bookmakers were all present.
+                    # Reuse the existing pre-loader — no new query
+                    # paths, no math changes.
+                    try:
+                        _cfb_ratings = await _load_cfb_sp_ratings_by_team()
+                    except Exception:
+                        _cfb_ratings = {}
+                    g["_ctx"] = {"cfb_sp_ratings_by_team": _cfb_ratings}
             except Exception as e:
                 logger.debug("%s context prefetch failed for %s: %s",
                              sport, g.get("id"), e)
