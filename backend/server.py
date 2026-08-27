@@ -4018,11 +4018,22 @@ async def on_startup():
     # If `db.games` has < 32 completed NFL rows on a fresh deployment
     # (Prod-history-never-seeded root class), fire ONE background call
     # to the existing multi-season backfill so the 2025 season hydrates
-    # in the background.  Idempotent (skip_if_done=True + upsert-only
-    # writes), bounded (single asyncio task), and never blocks HTTP
-    # startup.  No repeat every restart — the sufficiency check gates
-    # the launch.  All other sports are hydrated via the P4-readiness
-    # dashboard + existing admin routes to keep this guard cheap.
+    # in the background.  Idempotent (upsert-only writes), bounded
+    # (single asyncio task), and never blocks HTTP startup.  No repeat
+    # every restart — the sufficiency check gates the launch.
+    #
+    # 2026-08-27 FALSE-DONE OVERRIDE:
+    #   The pre-fix ESPN `year=YYYY` backfill wrote status="done" with
+    #   games_seen=0/games_inserted=0 into historical_ingestion_state.
+    #   The fixed `dates=` path was permanently skipped when
+    #   skip_if_done=True saw that stale marker.  Now that we've
+    #   proven the actual usable NFL history is insufficient
+    #   (Final games < 32), we force skip_if_done=False so the
+    #   corrected historical/nfl.py runs regardless of any stale
+    #   state.  A second layer in historical/multi_season.py also
+    #   ignores zero-row "done" markers.  Both guards defend the
+    #   same invariant: real MODEL-READY NFL history wins over a
+    #   stale ingestion-state flag.
     try:
         async def _nfl_bootstrap_guard():
             try:
@@ -4032,13 +4043,26 @@ async def on_startup():
                     return
                 logger.warning(
                     "NFL bootstrap guard: only %d Final games (< 32) — scheduling "
-                    "one-shot backfill of 2025 season from historical/nfl.py", n)
+                    "one-shot backfill of 2025 season via historical/nfl.py "
+                    "with skip_if_done=False (overrides any stale zero-row "
+                    "'done' marker from the pre-fix ESPN year= path)", n)
                 from historical.multi_season import backfill_seasons
-                await backfill_seasons(
+                res = await backfill_seasons(
                     db, sports=["nfl"], seasons=[2025],
-                    lookback=1, skip_if_done=True,
+                    lookback=1, skip_if_done=False,
                 )
-                logger.info("NFL bootstrap guard: backfill completed")
+                logger.info("NFL bootstrap guard: backfill result=%s", res)
+                # Re-check sufficiency and report.  If still insufficient,
+                # log a P0 so ops can drill into the per-sport client.
+                m = await db.games.count_documents({"sport": "nfl", "status": "Final"})
+                if m < 32:
+                    logger.error(
+                        "NFL bootstrap guard: AFTER backfill still only %d "
+                        "Final games — historical/nfl.py per-client path "
+                        "needs investigation (upstream ESPN dates= empty?)", m)
+                else:
+                    logger.info(
+                        "NFL bootstrap guard: post-backfill %d Final games — OK", m)
             except Exception as _e:
                 logger.warning("NFL bootstrap guard failed (non-fatal): %s", _e)
         asyncio.create_task(_nfl_bootstrap_guard())

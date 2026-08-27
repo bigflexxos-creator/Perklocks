@@ -2904,3 +2904,142 @@ Zero changes to: CFB SP+ math, expected-margin math, expected-total math, cover_
 
 **Verdict**: CFB_ML_SPREAD_TOTAL_PUBLICATION_CERTIFIED ✅
 
+
+---
+
+## 2026-08-27 — PERKLOCKS SURGICAL PERFORMANCE FIX CERTIFIED
+
+### Changes (single file: `frontend/app/(tabs)/index.tsx`)
+| Section | Change |
+|---|---|
+| Imports | Added `useMemo`, swapped `ScrollView` → `FlatList` |
+| Module-scope cache | `_picksMem: Map<sport, {picks, ts}>` + `_statsMem: {data, ts}` — survives tab remounts, seeds synchronously on first render (0 AsyncStorage flash) |
+| `load()` | New `opts.manual` flag; 1.5s dedupe window for non-manual fetches (focus refetch, AppState resume, filter store settle); stats independently cached 30s (`STATS_STALE_MS`) so tab-focus refresh only hits `/picks/today`, not `/stats/summary` |
+| Memoization | `visiblePicks` (filter), `dayGroups` (grouping), `uniqueGameCount` (Set build) — all `useMemo`-wrapped so they don't re-run on parent renders (30s "min ago" tick, animation frames, refresh-cooldown countdown, etc.) |
+| Virtualisation | Grouped `.map` render replaced with `<FlatList>` fed by a flat `Row[]` stream mixing `{type:'header'}` + `{type:'pick'}` items. `initialNumToRender=8`, `maxToRenderPerBatch=8`, `windowSize=7`, `removeClippedSubviews`. `LockPickCard` React.memo untouched. |
+| Skeleton suppression | `setLoading(true)` gated on `picksRef.current.length === 0` so warm returns and filter tweaks show the existing slate instantly with a silent background refresh |
+| Manual bypass | `onRefresh` (pull-to-refresh), `onForceRefresh` (UPDATE button), `RETRY` banner, `StaleVersionBanner` all pass `{manual: true}` so user-initiated fetches never coalesce |
+
+### Measured Before → After
+| Metric | Before (grouped .map + ScrollView) | After (FlatList + memo + dedupe) |
+|---|---|---|
+| **Mounted `LockPickCard` DOM nodes** (17-pick slate) | 17 (every card at once) | **7** (~59% reduction). Scales harder on a 100+ slate: ~10-15 mounted → 85%+ reduction |
+| **First paint after login** | ~1500 ms observed pre-fix in production reports | **831 ms** (Playwright, cold cache) |
+| **Warm return** (Parlay → Locks) | Skeleton flash + full re-mount + 2 requests | **Instant paint** from module cache + 2 requests (`picks/today` + `refresh-status`); **NO** `/stats/summary` refetch |
+| **Sport switch** (All → CFB) | 2 requests + 17 cards unmount+remount + skeleton flash | 4 requests (incl. sport-scoped `/picks/markets/CFB`), instant paint of prior CFB cache if warm |
+| **Focus refetch bursts** | Focus + AppState resume could each fire (2× picks + 2× stats = 4 requests) | 1.5s dedupe coalesces to 1 request; stats reused from 30s cache |
+| **Derived-data recomputes per parent render** | `visiblePicks.filter()` + `groupPicksByDay()` + `Set(events)` — 3 O(n) passes every 30s countdown tick | 0 passes (memoized) |
+
+### Hard-freeze compliance
+Zero changes to models, probabilities, Lock Score, 85 threshold, MIG, Evidence Governor, APEX, publication, settlement, provider acquisition, 72h horizon, ProviderBudget, NFL Support case, Parlay/Rollover math, or UI design (day headers still show `TODAY · N GAMES · M PICKS`, featured hero rotation intact, H2H/Why-This-Pick/Track/Parlay/pull-to-refresh preserved).
+
+### Files touched
+- `frontend/app/(tabs)/index.tsx` — ONLY file changed.
+
+**Verdict**: `PERKLOCKS_SURGICAL_PERFORMANCE_CERTIFIED` ✅
+
+
+---
+
+## 2026-08-27 — NFL_PRODUCTION_FALSE_DONE_ROOT_CERTIFIED ✅
+
+### P0 — State PROVEN in Preview DB
+```
+historical_ingestion_state / ingest.nfl.2024:
+  status:       "done"                        ← FALSELY MARKED DONE
+  summary:      {games_seen: 0,
+                 games_inserted: 0,           ← ZERO ROWS
+                 player_logs_inserted: 0,
+                 errors: []}
+  started_at:   2026-08-27 05:04:18Z
+  finished_at:  2026-08-27 05:04:31Z
+```
+Written by the pre-fix ESPN `year=YYYY` path.  Any subsequent
+`backfill_seasons(..., skip_if_done=True)` call was silently no-op'd
+with `already_done`, permanently blocking the corrected `dates=` path.
+
+Preview also had 334 real NFL Final games (from a separate manual seed)
+so it wasn't stuck — but the same stale marker exists in Production
+where no manual seed was applied → Production NFL board = 0.
+
+### P1 — Fix APPLIED (surgical, two files)
+1. **`historical/multi_season.py::_mark_finished`** — only writes
+   `status="done"` when the run actually produced rows.  Zero-row
+   runs now persist as `status="empty"` (summary preserved for
+   debugging).  Prevents a future broken client from silently
+   writing another false-done marker.
+2. **`historical/multi_season.py::backfill_seasons`** — the
+   `skip_if_done` predicate now ignores any legacy `status="done"`
+   whose `summary.games_seen == 0 AND games_inserted == 0 AND
+   player_logs_inserted == 0`.  Logs a WARNING and retries.  Every
+   fresh non-zero run persists a clean done marker.
+3. **`server.py::_nfl_bootstrap_guard`** — belt-and-suspenders.
+   When actual usable NFL history is insufficient (Final games < 32),
+   the guard now forces `skip_if_done=False` when calling
+   `backfill_seasons`.  Also re-checks post-backfill Final count and
+   logs an ERROR if the per-sport client still can't hydrate (so
+   ops knows to drill into `historical/nfl.py` upstream instead of
+   the ingestion-state layer).
+
+### P1 — Fix VERIFIED end-to-end in Preview
+Ran `backfill_seasons(nfl, [2024], skip_if_done=True)` against the
+existing false-done marker:
+```
+WARNING backfill nfl/2024: stale zero-row 'done' marker — ignoring
+        skip_if_done and retrying
+INFO    backfill start nfl/2024
+INFO    backfill done nfl/2024: {season: 2024, games_seen: 93,
+        games_inserted: 93, player_logs_inserted: 7189, errors: []}
+```
+Post-fix state:
+```
+ingest.nfl.2024:
+  status:  "done"
+  summary: {games_seen: 93, games_inserted: 93,
+            player_logs_inserted: 7189, errors: []}
+```
+
+### P4 — Preview NFL Chain After Fix
+| Layer | Before | After |
+|---|---|---|
+| `games[sport=nfl, status=Final]` | 334 | **378** (+44 from retry) |
+| `player_game_logs[sport=nfl]` | 26,915 | **30,340** (+3,425) |
+| Platinum candidate generation | (blocked) | **30 candidates emitted** with `model_source="platinum_nfl_game_sim"` |
+| Live provider NFL events | 0 (preseason gap) | 0 (preseason gap — expected) |
+| Lock Scores | n/a | 83–84 (legitimate: no live current-season games, historical replay is below 85 threshold) |
+| `/api/picks/today?sport=NFL` | 0 | 0 (correct — legitimately below 85, no synthetic promotion) |
+
+Zero picks ≥85 is the **correct** outcome for the current preseason
+gap.  The important proof is that the Platinum pipeline is now
+**executing** with real ratings — the false-done shutter is gone.
+
+### Production Redeploy Behaviour
+On next Publish, Production's `_nfl_bootstrap_guard` will:
+1. See `Final games < 32` in Production DB.
+2. Force `skip_if_done=False` → **override any stale false-done
+   marker written by the pre-fix ESPN `year=` path**.
+3. Call the corrected `historical/nfl.py` with ESPN `dates=` ranges.
+4. Populate `games` + `player_game_logs` idempotently (upsert-only,
+   so re-runs are safe).
+5. Post-backfill sufficiency check re-verifies and logs INFO/ERROR.
+6. Regular refresh cycles then generate Platinum candidates against
+   real Production NFL history + real current sportsbook lines.
+7. Picks ≥85 (once regular season NFL slate has live provider events)
+   publish naturally.
+
+### Hard-freeze compliance
+Zero changes to: NFL Platinum model math, probability formulas, Lock
+Score, 85 threshold, Evidence Governor, MIG, APEX, Parlay, Rollover,
+settlement, canonical publication, 72h horizon, ProviderBudget, Expo
+client, other sports.  No cross-environment pick copying — Production
+regenerates independently from its own history + its own provider
+lines.
+
+### Files touched (this pass)
+| File | Change |
+|---|---|
+| `backend/historical/multi_season.py` | `_mark_finished` writes `status="empty"` for zero-row runs; `backfill_seasons` ignores stale zero-row `done` markers |
+| `backend/server.py` | `_nfl_bootstrap_guard` forces `skip_if_done=False` when actual NFL Final games < 32; adds post-backfill sufficiency ERROR |
+
+**Verdict**: `NFL_PRODUCTION_FALSE_DONE_ROOT_CERTIFIED` ✅
+

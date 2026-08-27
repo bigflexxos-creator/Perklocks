@@ -96,10 +96,27 @@ async def _mark_started(db, sport: str, season: int) -> None:
 async def _mark_finished(db, sport: str, season: int, summary: dict) -> None:
     if db is None:
         return
+    # ── 2026-08-27 FALSE-DONE PROTECTION ────────────────────────────
+    # A "done" status must only be written when the backfill actually
+    # produced rows.  A zero-row run (games_seen==0 AND games_inserted
+    # ==0) is either a broken upstream fetcher, a rate-limited window,
+    # or a bug in the per-sport client.  Marking such a run "done"
+    # permanently blocks the next retry under skip_if_done=True — which
+    # was the exact root cause of the NFL Production False-Done outage
+    # (ingest.nfl.YYYY was written with zero rows by the pre-fix ESPN
+    # `year=` path, then the fixed `dates=` path was permanently
+    # skipped).  Persist the zero-row outcome under status="empty" so
+    # the summary is still visible for debugging but the retryable
+    # skip_if_done predicate ignores it.
+    s = summary or {}
+    _seen = int(s.get("games_seen") or 0)
+    _ins  = int(s.get("games_inserted") or 0)
+    _plog = int(s.get("player_logs_inserted") or 0)
+    is_zero_row = (_seen == 0 and _ins == 0 and _plog == 0)
     await db.historical_ingestion_state.update_one(
         {"_id": await _state_key(sport, season)},
         {"$set": {
-            "status": "done",
+            "status": ("empty" if is_zero_row else "done"),
             "finished_at": datetime.now(timezone.utc),
             "summary": summary,
         }},
@@ -194,7 +211,26 @@ async def backfill_seasons(
         for season in season_list:
             try:
                 state = await _get_state(db, sp, season)
-                if skip_if_done and state.get("status") == "done":
+                # ── 2026-08-27 FALSE-DONE OVERRIDE ────────────────
+                # Ignore a legacy "done" marker that was written with
+                # a zero-row summary — the pre-fix NFL ESPN backfill
+                # persisted status="done" + games_seen/inserted=0
+                # even when the upstream year=YYYY query returned no
+                # data, permanently blocking retries.  We now treat
+                # zero-row "done" as retryable; every fresh non-zero
+                # run persists status="done" via _mark_finished's
+                # new guard.
+                _stale_zero_done = False
+                if state.get("status") == "done":
+                    _s = state.get("summary") or {}
+                    if (int(_s.get("games_seen") or 0) == 0
+                            and int(_s.get("games_inserted") or 0) == 0
+                            and int(_s.get("player_logs_inserted") or 0) == 0):
+                        _stale_zero_done = True
+                        logger.warning(
+                            "backfill %s/%s: stale zero-row 'done' marker — "
+                            "ignoring skip_if_done and retrying", sp, season)
+                if skip_if_done and state.get("status") == "done" and not _stale_zero_done:
                     per_season[str(season)] = {"skipped": "already_done", "summary": state.get("summary")}
                     continue
                 await _mark_started(db, sp, season)
