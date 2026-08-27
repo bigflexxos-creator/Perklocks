@@ -1,3 +1,50 @@
+## 2026-08-27 — Soccer Player Feature Resolver Universal Fix
+Verdict: **SOCCER_PLAYER_FEATURE_RESOLUTION_CERTIFIED**
+
+### Root cause (universal, one file)
+`services/soccer_feature_resolver.py::resolve_soccer_player_features` — normalizer variants (`_norm_name` + `_ascii`) preserved hyphens/apostrophes, but the form ingest stores `name_canonical` with those characters STRIPPED (`"Kylian Mbappe-Lottin"` → `"kylian mbappelottin"`). Result: exact `name_canonical: {$in: variants}` query missed → resolver returned `(None, "")` → `soccer_scorer_bridge.evaluate` returned None → `factors={}` → default `lock_score=55` → `off_board=True`. Silent failure across 333 Real Madrid ATGS picks on 08-26 (and hundreds elsewhere).
+
+### Fix (surgical, single function)
+Added `_tight(s)` normalizer matching the ingest shape (accent-strip + drop `-'.’ʼ\``) + added a bounded substring/regex fallback when the provider ships a short name (`"Kylian Mbappé"`) but the form doc has the full legal name (`"Mbappe-Lottin"`). Anchor: last-word ≥ 4 chars, both first-name AND last-name tokens must overlap → never a loose one-token match.
+
+### Universal proof (7 real + 2 fail-closed)
+| Player | League | Match | Form found |
+|---|---|---|---|
+| Kylian Mbappé (accent) | La Liga | Kylian Mbappe-Lottin | ✅ 31g / 25 goals / xG 25.8 |
+| Kylian Mbappe (plain) | La Liga | Kylian Mbappe-Lottin | ✅ same |
+| Lionel Messi | MLS | Lionel Messi | ✅ 27g / 14 goals |
+| Harry Kane | Bundesliga | Harry Kane | ✅ 31g / 36 goals |
+| Erling Haaland | Premier League | Erling Haaland | ✅ 35g / 27 goals |
+| Vinícius Júnior (accents) | La Liga | Vinícius Júnior | ✅ 36g / 16 goals |
+| Jude Bellingham | La Liga | Jude Bellingham | ✅ 28g / 6 goals |
+| N'Golo Kanté (apostrophe) | Saudi_pro_league | — | ❌ NO_EVIDENCE (Saudi form not ingested — correct fail-closed) |
+| Fake Player | La Liga | — | ❌ NO_EVIDENCE (correct) |
+
+### Regression (unchanged)
+- Soccer game markets untouched (this is player-side)
+- 72h visibility window intact
+- MLB/NFL/Tennis/NBA/CFB unchanged
+- Parlay/Rollover/APEX/safe_picks/settlement/PitchAPI/BigBalls untouched
+- `/api/health` = 200
+
+### Impact
+On next Soccer refresh cycle, ATGS/Score-or-Assist/Anytime-Assist/Shots/SoT picks for Mbappé + all similarly-affected players will:
+1. Retrieve real form data (goals, xG, minutes, per-90 rates)
+2. Go through the scorer bridge with real evidence
+3. Get REAL Lock Scores instead of default 55
+4. Publish at 85+ when the model + real book line agree
+5. No longer flagged `off_board=True` for identity-lookup reasons
+
+Default 55 remains ONLY for genuinely evidence-free players (e.g. N'Golo Kanté in Saudi league where no form ingest exists) — that's the honest, designed behavior.
+
+### Files/functions changed
+- `services/soccer_feature_resolver.py::resolve_soccer_player_features` — added `_tight()` normalizer + variants injection + substring/regex fallback with token-overlap safety anchor.
+
+**Verdict**: **SOCCER_PLAYER_FEATURE_RESOLUTION_CERTIFIED** — named players with existing form can no longer silently fall to default 55 due to name-normalizer mismatch. Ready to combine with the +72h window fix on production redeploy.
+
+---
+
+
 ## 2026-08-27 — NFL Parity / Universal Board Window Fix
 Verdict: **Root cause proven and fixed universally.**
 

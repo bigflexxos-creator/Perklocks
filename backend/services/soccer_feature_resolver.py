@@ -70,6 +70,23 @@ async def resolve_soccer_player_features(
         n = _ud.normalize("NFKD", s)
         return "".join(c for c in n if not _ud.combining(c)).strip().lower()
 
+    def _tight(s: str) -> str:
+        """Match the shape the form ingest stores at
+        `name_canonical` — accent-strip + drop hyphens/apostrophes/
+        dots + collapse whitespace.  This is the key defect discovered
+        2026-08-27: form docs store 'kylian mbappelottin' (no hyphen)
+        while the resolver was only trying 'kylian mbappé' / 'kylian
+        mbappe' variants → lookup missed → factors={} → default 55.
+        """
+        import unicodedata as _ud
+        if not s:
+            return ""
+        n = _ud.normalize("NFKD", s)
+        n = "".join(c for c in n if not _ud.combining(c))
+        for ch in "-'.’ʼ`":
+            n = n.replace(ch, "")
+        return " ".join(n.split()).strip().lower()
+
     variants: set[str] = set()
     for n in (
         canonical_player_name, provider_player_name, player_name,
@@ -78,6 +95,7 @@ async def resolve_soccer_player_features(
         if n:
             variants.add(_norm_name(n))
             variants.add(_ascii(n))
+            variants.add(_tight(n))       # <-- 2026-08-27 universal fix
     variants.discard("")
     variants_list = list(variants)
     primary = _norm_name(canonical_player_name or player_name)
@@ -92,6 +110,31 @@ async def resolve_soccer_player_features(
         row = await db.soccer_player_form.find_one(
             {"name_canonical": {"$in": variants_list}}
         )
+    # UNIVERSAL 2026-08-27 — substring fallback when provider ships
+    # a short/first-lastname form (e.g. "Kylian Mbappé") but the
+    # ingest stored the full legal name ("Mbappe-Lottin" → tight
+    # "mbappelottin").  Only fires when NO exact hit was found; only
+    # matches if the "tight" provider name is a substring of the
+    # form doc's tight name AND the surname tokens overlap
+    # substantially (never a one-token loose match).
+    if not row and variants_list:
+        tight_variants = {v for v in variants_list if v}
+        # Prefer variants that contain a space (first + last name)
+        for v in sorted(tight_variants, key=lambda x: (-len(x), x)):
+            if not v or " " not in v:
+                continue
+            # Anchor: last-word must be at least 4 chars — filters
+            # out generic first names.
+            last = v.split()[-1]
+            if len(last) < 4:
+                continue
+            candidate = await db.soccer_player_form.find_one(
+                {"name_canonical": {"$regex": f"^{v.split()[0]}.*{last}",
+                                    "$options": "i"}}
+            )
+            if candidate:
+                row = candidate
+                break
     if row and int(row.get("minutes") or 0) >= 90:
         return row, "soccer_player_form"
 
