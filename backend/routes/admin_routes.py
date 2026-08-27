@@ -181,6 +181,44 @@ async def admin_backfill_tennis_elo(
     return await backfill_tennis_elo(db, days_back=max(1, min(60, days_back)))
 
 
+
+# 2026-08-27 — Production-Bootstrap Closure: expose the existing NBA
+# gamelog ingestor as an admin endpoint so a single one-time Prod seed
+# can hydrate `player_game_logs` (sport='nba'), which is what
+# `services/nba_feature_engine.py` reads.  Zero model changes — this
+# is purely a wire-up of an already-shipped, idempotent ingest utility.
+@router.post("/admin/ingest-nba-gamelogs")
+async def admin_ingest_nba_gamelogs(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    seasons: Optional[str] = None,       # comma-separated e.g. "2024,2025"
+    player_limit: Optional[int] = None,
+):
+    """One-shot Production seed for NBA player game logs.
+
+    Wraps :func:`services.nba_gamelog_ingest.ingest_nba_gamelogs`.
+    Idempotent (upserts by sport+player_id+game_id).  Runs in-process
+    with the ESPN endpoint's public rate limits — a full 2-season
+    hydration is ~15 minutes; caller should treat this as a fire-and-
+    forget and poll `/api/ops/history-readiness` for completion.
+    """
+    from services.nba_gamelog_ingest import ingest_nba_gamelogs
+    season_list = None
+    if seasons:
+        try:
+            season_list = [int(s.strip()) for s in seasons.split(",") if s.strip()]
+        except Exception:
+            raise HTTPException(400, "seasons must be comma-separated ints")
+    import asyncio
+    asyncio.create_task(ingest_nba_gamelogs(
+        db, seasons=season_list, player_limit=player_limit))
+    return {
+        "queued": True,
+        "seasons": season_list,
+        "player_limit": player_limit,
+        "note": "Backfill runs in background. Poll /api/ops/history-readiness.",
+    }
+
+
 # ────────────────────── Historical Sports Intelligence Engine ──────────────────────
 class HistoricalBackfillRequest(BaseModel):
     sports: list[str] | None = None  # default: all 5 sports

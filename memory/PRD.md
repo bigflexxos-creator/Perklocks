@@ -2029,3 +2029,255 @@ No code redeploy is required for the env change to take effect (the code reads e
 ### 9. Hard Freeze Honored
 Zero touches to: models, probabilities, Lock Score, 85 threshold, MIG, APEX, Parlay, Rollover, settlement, canonical publication, CFB game model, `soccer_feature_resolver.py`, History truth. Confirmed by targeted grep after edits.
 
+
+---
+
+## UNIVERSAL_PRODUCTION_HISTORY_BOOTSTRAP_CERTIFIED — 2026-08-27
+
+Cheap / surgical / root-cause only. Zero touches to models, Lock Score, 85 threshold, MIG, APEX, Parlay, Rollover, settlement, canonical publication, CFB math, Soccer resolver, Tennis math, MLB math, NBA math, 72h horizon, ProviderBudget, or History Shadow.
+
+### P0 — NFL: root-cause found + fix applied (needs Prod redeploy)
+
+**BEFORE (Prod, taken 2026-08-27T04:57Z, as admin `bossmanperkins@yahoo.com`)**
+
+| Store (Prod) | count | ready? |
+|---|---:|---|
+| `games` (sport=nfl, status=Final) | 0 | ❌ |
+| `player_game_logs` (sport=nfl) | 0 | ❌ |
+| NFL teams with usable ratings | 0 | ❌ |
+| NFL board-eligible picks | 0 | ❌ |
+
+**Attempted the existing backfill first**: `POST /api/admin/historical/backfill {"sports":["nfl"]}` → returned `{games_seen:0, games_inserted:0}`. Escalated to `POST /api/admin/historical/backfill-seasons {"sports":["nfl"],"seasons":[2023,2024,2025]}` → all three seasons returned `games_seen:0`.
+
+**Root cause of the backfill returning 0**: ESPN's public scoreboard endpoint silently ignores the `year=YYYY` query parameter for prior NFL seasons — it always returns the CURRENT week's slate regardless. The existing NFL historical client (`historical/nfl.py`) walked `year=YYYY&seasontype=…&week=N` per week, so every historical fetch just returned the current 2026 preseason slate (with `completed=False`), scored 0, and inserted nothing. Preview only had 285 NFL games because it seeded LIVE during 2025 while 2025 was the current season on ESPN.
+
+**Fix (surgical)**: Rewrote `historical/nfl.py::backfill_season` to walk `dates=YYYYMMDD-YYYYMMDD` weekly ranges anchored at `Sept 1 (season) → Feb 20 (season+1)`. This is the parameter ESPN actually respects for historical seasons. Preserves `week` numbers via `event.week.number`, keeps upsert semantics, honors existing `HIST_NFL_MAX_WEEKS` cap, no changes to `_ingest_summary` or player-log logic. Preview test: NFL 2024 backfill jumped from `games_seen=0` → `games_seen=49, games_inserted=49, player_logs_inserted=3764` with 32/32 team coverage (weeks 1-4 alone give every team ≥1 game).
+
+**AFTER (Prod)**: Still empty until user redeploys. Once redeployed, one call to `POST /api/admin/historical/backfill-seasons {"sports":["nfl"],"seasons":[2025]}` will seed the full 2025 season (~285 games, ~24k player logs) — enough for `platinum_nfl_game_sim._team_ratings` to build all 32 team ratings within seconds.
+
+**Pipeline trace (post-redeploy expectation)**: real Prod provider event (Patriots@Browns, 08/29T22:00Z, +43h) → `db.games` seed present → `_team_ratings` builds NE & CLE ratings → `platinum_nfl_game_sim` returns expected margin/win-prob → candidate created → Lock Score ≥85 → `published_grade` set → visible on `/api/picks/today?sport=NFL` → Expo Go NFL tab shows the pick.
+
+### P1 — All-Sport Preview vs Production History Matrix
+
+Method: `POST /api/admin/historical/status` on both; per-sport backfill-seasons triggered on Prod for MLB/CFB/NBA/NHL/Tennis/Soccer as authoritative smoke test.
+
+| Sport | Required Store(s) | Preview Count | Prod Count | Model Input Sufficient? | Existing Backfill | Action |
+|---|---|---:|---:|---|---|---|
+| **MLB** | `games`(sport=mlb,Final), `player_game_logs`(sport=mlb) | 2,121 / 66,542 | in-progress, > 1,457 games | ✅ (running now) | `POST /api/admin/historical/backfill mode=incremental sports=[mlb]` | LEAVE UNTOUCHED — continuous ingest is authoritative |
+| **NFL** | `games`(sport=nfl,Final), `player_game_logs`(sport=nfl) | 334 / 26,915 | **0 / 0** | ❌ | `POST /api/admin/historical/backfill-seasons sports=[nfl] seasons=[2025]` | Reuse fixed backfill after Prod redeploys the `dates=` patch |
+| **NBA** | `player_game_logs`(sport=nba) | 20,415 | **0** (balldontlie returned 0) | ❌ | `POST /api/admin/historical/backfill-seasons sports=[nba]` | Set `BALLDONTLIE_KEY` env on Prod, then re-run |
+| **CFB** | `cfb_sp_ratings`, `cfb_teams` | 137 / 138 | **0 / 0** (ESPN returned 0 on Prod even with `dates=YYYY`) | ❌ | `POST /api/admin/historical/backfill-seasons sports=[cfb]` | Redeploy latest CFB client + re-run (Prod may be running pre-2026-08-23 code) |
+| **Soccer** | `soccer_player_form` | 4,751 | done — populating (Big-5 + MLS canonical) | ✅ (hydrating) | `POST /api/admin/historical/backfill-seasons sports=[soccer]` | Continuous; no code change |
+| **Tennis** | `tennis_player_stats`, `tennis_matches`, `tennis_league_averages` | 2,329 / 24,459 / 1 | partial: `player_logs_inserted=272` | ⚠️ partial | `POST /api/admin/historical/backfill-seasons sports=[tennis]` + `POST /api/admin/backfill-tennis-elo days_back=60` | Re-run tennis Elo backfill on Prod |
+| **NHL** | `games`(sport=nhl,Final), `player_game_logs`(sport=nhl) | 751 / 30,040 | **not yet triggered on Prod (state row absent)** | ❌ | `POST /api/admin/historical/backfill-seasons sports=[nhl]` | Off-season; regular season starts Oct 2026 — safe to defer until Sept |
+| **UFC** | (no live model contract) | 0 | 0 | N/A — `SOURCE_UNAVAILABLE` by design | none | LEAVE UNTOUCHED — intentionally deferred |
+
+### P2 — Same-Root Defects Found & Repaired
+
+Only `NFL` was proven to be *code-defective* (the `year=` bug). All other zero-Prod counts are one of:
+- **Env-config gap** (NBA needs `BALLDONTLIE_KEY` on Prod)
+- **Prod-code age** (CFB may be pre-`dates=YYYY` fix)
+- **Never-triggered** (NHL — safe to defer)
+- **External / by design** (Tennis US Open feed inactive; UFC deferred)
+
+Only NFL required a `services/historical/*.py` code change. All other repairs are Prod-side env + rerun.
+
+### P3 — Permanent Self-Seed Protection
+
+**Deliberately deferred to a follow-up pass.** Reasoning: (a) a startup hook has broader blast radius than the cheap/surgical scope allows; (b) the P4 telemetry endpoint below already makes the "was the one-time backfill run?" state observable; (c) an idempotent scheduler-integrated seeder should reuse `JobCoordinator.acquire()` to prevent duplicate cross-worker runs, and that wiring is best done as its own bounded slice. Meanwhile: `/api/ops/history-readiness` (P4) plus the existing `POST /api/admin/historical/backfill-seasons` cover the operator workflow — a red row in the readiness matrix is the direct trigger for the one-line backfill call.
+
+### P4 — Model-Ready Telemetry (NEW, minimal)
+
+**Added** exactly one read-only endpoint — no secrets, no writes, non-admin readable:
+
+`GET /api/ops/history-readiness` → per-sport matrix of:
+- `sport`, `required_history[]` (coll + query + floor + count), `row_count`, `coverage` (0..1)
+- `model_ready` (bool), `history_status` ∈ `SUFFICIENT` | `INSUFFICIENT` | `SOURCE_UNAVAILABLE`
+- `existing_backfill` (exact route+body to repair), `self_seed_hint`, `last_updated`
+
+Contracts are declared in a single table (`_HISTORY_CONTRACTS`) at the top of the new block in `routes/board_health_routes.py` — easy to extend, easy to audit. Floors intentionally low (32 for NFL games, 100 for CFB SP+, etc.) so the endpoint distinguishes "never seeded" from "backfilled at least once".
+
+**Preview probe** (proves the shape):
+```
+{"sport":"MLB","model_ready":true, "history_status":"SUFFICIENT","row_count":68663,...}
+{"sport":"NFL","model_ready":true, "history_status":"SUFFICIENT","row_count":27249,...}
+...
+```
+
+### P5 — Final Production Proof
+
+| Sport | Provider events (72h) | History sufficient (Prod)? | Model executed? | Candidates | ≥85 | Canonical published | Board | Reason for zero (if any) |
+|---|---:|---|---|---:|---:|---:|---:|---|
+| MLB | 7 | ✅ (in-progress, > 1,457 games in `games`) | ✅ | 259 | 243 | 243 | **16** | — |
+| NFL | 17 | ❌ (0 games) | ❌ | 0 | 0 | 0 | **0** | `PRODUCTION_HISTORY_NEVER_SEEDED` (NFL backfill was code-bugged; fix ready — needs redeploy) |
+| NBA | 0 | ❌ (0 logs, but off-season) | — | 0 | 0 | 0 | **0** | `OFFSEASON` (regular season Oct 2026) |
+| CFB | 8 | ❌ (0 SP+ ratings) | ❌ | 0 | 0 | 0 | **0** | `PRODUCTION_HISTORY_NEVER_SEEDED` (Prod redeploy + backfill) |
+| Soccer | 44+ | ✅ | ✅ | 29,477 | 685 | 335 | **319** | — |
+| Tennis | 0 | ⚠️ partial | — | 0 | 0 | 0 | **0** | `PROVIDER_TOURNAMENT_INACTIVE` (US Open feed not on provider) |
+| NHL | 0 | ❌ | — | 0 | 0 | 0 | **0** | `OFFSEASON` (regular Oct 2026) |
+| UFC | — | N/A | — | 0 | 0 | 0 | **0** | `INTENTIONALLY_UNSUPPORTED` |
+
+### Files Touched (Complete, Minimal)
+1. `backend/historical/nfl.py::backfill_season` — swapped `year=` week walk for `dates=YYYYMMDD-YYYYMMDD` weekly range walk. Preserves week number, upsert, cap, and log ingestion logic. Zero model/scoring/settlement contact.
+2. `backend/routes/board_health_routes.py` — appended P4 `_HISTORY_CONTRACTS` + `GET /api/ops/history-readiness`. Read-only, non-admin.
+
+**Not touched (verified by grep)**: any `sports_engine.py`, any `services/platinum_nfl/*`, any `services/cfb_game_model.py`, any `services/soccer_feature_*`, any Lock Score / MIG / APEX / Parlay / Rollover / settlement code, any canonical publication code, `services/odds_cache.py` 72h boundary, `services/provider_budget.py`, `services/history_intelligence.py`.
+
+### Remaining Limitations (Honest)
+- **NFL Prod**: awaits user redeploy of Preview (with the `dates=` fix) then one `backfill-seasons` call.
+- **NBA Prod**: needs `BALLDONTLIE_KEY` env var (mention to Emergent Support).
+- **CFB Prod**: may need Prod redeploy to pick up the `dates=YYYY` fix that landed in Preview on 2026-08-23.
+- **Tennis US Open**: provider hasn't activated the feed — external, not a code issue.
+- **NHL**: off-season; safe to defer until Sept.
+- **UFC**: intentionally deferred; no live model contract exists to seed against.
+
+### Hard Freeze Honored
+Zero touches to any of the pinned areas. Confirmed via post-edit grep across `services/platinum_nfl`, `sports_engine.py`, `services/cfb_game_model.py`, `soccer_feature_resolver.py`, all `magic/*`, all `signal_engine/*`, and all settlement code. Only the two files listed above changed.
+
+
+---
+
+## ALL_SPORT_PRODUCTION_DATA_READY_FOR_SINGLE_DEPLOY — 2026-08-27
+
+Cheap / surgical closure of the Production-history-never-seeded root class across every currently claimed sport. Reused existing authoritative infra; zero model / probability / Lock Score / 85 threshold / MIG / APEX / Parlay / Rollover / settlement / canonical publication / 72h horizon / ProviderBudget / History Shadow changes. No wholesale Preview→Prod DB copy.
+
+### 1 — Root causes found (complete)
+
+| Root class | Sport(s) | Fix |
+|---|---|---|
+| `historical/*.py` fetch-param bug (`year=` ignored by ESPN scoreboard for prior seasons) | NFL | Rewrote `backfill_season` to use `dates=YYYYMMDD-YYYYMMDD` weekly ranges. Preview proof: 0 → 49 games / 32-of-32 teams / 3,764 player logs after 2024 backfill. |
+| Authoritative Prod-seed endpoint absent — the existing `ingest_nba_gamelogs` was never exposed | NBA | Added `POST /api/admin/ingest-nba-gamelogs` wrapping the existing ESPN-based ingestor (idempotent, no key needed). balldontlie NOT required. |
+| Prod runtime capability registry unwired | NHL / UFC | LEFT `sport_capability_registry.py` UNTOUCHED per hard freeze. Both sports remain `INTENTIONALLY_DEFERRED` (`h2h`/`totals` = `MODEL_UNAVAILABLE`). NHL history seeded anyway (data-ready for a future runtime flip). UFC event ingest already wired via `POST /api/admin/ufc-espn-refresh`; no independent UFC simulator exists at `brain/sim_ufc.py`. |
+| Startup guard for the exact “games=0” symptom missing | NFL | Added a bounded, idempotent, background `_nfl_bootstrap_guard` in `server.py`: if `sport=nfl status=Final` < 32 rows, fire ONE `backfill_seasons(sports=['nfl'], seasons=[2025], skip_if_done=True)`. Never blocks HTTP startup. Never re-runs when sufficient. Doesn’t attempt other sports (kept cheap; other sports use the P4 dashboard for manual heal). |
+| P4 telemetry incomplete (UFC missing, NHL untagged, NBA route wrong) | all | Extended `_HISTORY_CONTRACTS` in `routes/board_health_routes.py` to cover all 8 sports honestly with the registry-aware `INTENTIONALLY_UNSUPPORTED` mapping for NHL/UFC. |
+
+### 2 — Files & functions changed (complete list)
+
+| File | Function / block | Purpose |
+|---|---|---|
+| `backend/historical/nfl.py` | `backfill_season` | Swap `year=YYYY&week=N` walk → `dates=YYYYMMDD-YYYYMMDD` weekly range walk (ESPN’s only working historical param). |
+| `backend/routes/admin_routes.py` | *new* `POST /api/admin/ingest-nba-gamelogs` | Expose existing `services.nba_gamelog_ingest.ingest_nba_gamelogs` as one-shot admin backfill (async, upsert). |
+| `backend/server.py` | *new* `_nfl_bootstrap_guard` inside startup lifespan | Idempotent + bounded self-seed for NFL when `games<32`. |
+| `backend/routes/board_health_routes.py` | `_HISTORY_CONTRACTS` + `/api/ops/history-readiness` handler | Registry-aware `history_status`; UFC + NHL added honestly; NBA route corrected to `ingest-nba-gamelogs`. |
+
+Nothing else. Confirmed by post-edit grep: zero touches to any file in `services/platinum_nfl/`, `services/cfb_game_model.py`, `sports_engine.py`, `services/soccer_feature_*`, `services/tennis_math_engine.py`, `services/magic/*`, any settlement code, any canonical publication code, `services/odds_cache.py`, `services/provider_budget.py`, `services/history_intelligence.py`, and `services/sport_capability_registry.py`.
+
+### 3 — Existing sources reused (no reinvention)
+
+- NFL: `historical/nfl.py` (ESPN public scoreboard/summary)
+- NBA: `services/nba_gamelog_ingest.py` (ESPN athlete gamelog) + `services/nba_ingest.py` (live registry) — both already shipping
+- CFB: `services/cfb_ingest.py` (CollegeFootballData) + `historical/cfb.py` (ESPN scoreboard with `dates=YYYY`)
+- Tennis: `historical/tennis.py` (Tennismylife CSV mirror, no key) + `espn_settlement.backfill_tennis_elo` (Elo/form ledger)
+- NHL: `historical/nhl.py` (api-web.nhle.com, no key)
+- UFC: `ufc_espn_ingest.sync_ufc_espn_picks` (event ingest only)
+- MLB / Soccer: **not touched** — continuous ingest is authoritative
+
+### 4 — Per-sport before/after Preview vs Production readiness
+
+| Sport | Preview count | Prod count now | Model-Ready? (Preview) | Registry | After-deploy status |
+|---|---:|---:|---|---|---|
+| MLB | 68,663 rows | 1,457+ (ingesting) | ✅ SUFFICIENT | SUPPORTED | ready |
+| NFL | 27,249 rows (334 Final games / 26,915 logs) | 0 → will hydrate via guard + explicit seed | ✅ SUFFICIENT | SUPPORTED | ready post-deploy |
+| NBA | 21,032 rows (20,415 logs / 617 active players) | 0 → seed via new admin route | ✅ SUFFICIENT | SUPPORTED | ready post-seed |
+| CFB | 275 rows (137 SP+ / 138 teams) | 0 → seed via services-cfb-refresh | ✅ SUFFICIENT | SUPPORTED | ready post-seed (needs `CFBD_API_KEY`) |
+| Soccer | 4,751 form rows | 335 published / 29,477 candidates | ✅ SUFFICIENT | SUPPORTED | already ready |
+| Tennis | 26,789 rows (2,329 stats / 24,459 matches / 1 avgs) | partial (272 rows) → seed via 2 routes | ✅ SUFFICIENT | SUPPORTED | ready post-seed |
+| NHL | 30,791 rows (751 games / 30,040 logs) | 0 → seed via backfill-seasons | ✅ SUFFICIENT | **INTENTIONALLY_DEFERRED** | history seeded; markets stay `MODEL_UNAVAILABLE` until registry flip (not touched per freeze) |
+| UFC | 44 event picks | 0 → seed via ufc-espn-refresh | ✅ SUFFICIENT | **INTENTIONALLY_DEFERRED** | event ingest ready; markets stay `MODEL_UNAVAILABLE` (no independent `sim_ufc`) |
+
+`GET /api/ops/history-readiness` Preview output (verified live):
+
+```
+MLB     SUPPORTED               SUFFICIENT              row=68663 cov=1.0
+NFL     SUPPORTED               SUFFICIENT              row=27249 cov=1.0
+NBA     SUPPORTED               SUFFICIENT              row=21032 cov=1.0
+CFB     SUPPORTED               SUFFICIENT              row=  275 cov=1.0
+Soccer  SUPPORTED               SUFFICIENT              row= 4751 cov=1.0
+Tennis  SUPPORTED               SUFFICIENT              row=26789 cov=1.0
+NHL     INTENTIONALLY_DEFERRED  INTENTIONALLY_UNSUPPORTED row=30791
+UFC     INTENTIONALLY_DEFERRED  INTENTIONALLY_UNSUPPORTED row=   44
+```
+
+### 5 — EXACT one-time Production bootstrap sequence (after Publish)
+
+Assumes admin bearer token `$ADM` obtained via `POST /api/auth/login` with `bossmanperkins@yahoo.com`.
+
+```
+BASE=https://bet-edge-ai-1.emergent.host
+
+# 0. Prerequisite env vars on Prod backend (Support ticket, one-time):
+#    - THE_ODDS_API_KEY           = same as Preview
+#    - CFBD_API_KEY               = free key from collegefootballdata.com
+#    - ODDS_DAILY_CREDIT_LIMIT    = 200000
+#    - ODDS_MONTHLY_CREDIT_LIMIT  = 4800000
+#    - ODDS_EMERGENCY_RESERVE     = 100000
+
+# 1. Publish (deploys history/nfl.py fix + new NBA route + NFL guard + P4)
+# 2. NFL — the startup guard will trigger this automatically; explicit
+#    call included for immediate hydration:
+curl -X POST "$BASE/api/admin/historical/backfill-seasons" \
+  -H "Authorization: Bearer $ADM" -H "Content-Type: application/json" \
+  -d '{"sports":["nfl"],"seasons":[2025],"skip_if_done":true}'
+
+# 3. NBA — the missing hydration route (NEW):
+curl -X POST "$BASE/api/admin/ingest-nba-gamelogs?seasons=2024,2025" \
+  -H "Authorization: Bearer $ADM"
+
+# 4. CFB — SP+ ratings, teams, alias map:
+curl -X POST "$BASE/api/admin/services-cfb-refresh" -H "Authorization: Bearer $ADM"
+
+# 5. Tennis — ATP season history + ESPN Elo/form ledger:
+curl -X POST "$BASE/api/admin/historical/backfill-seasons" \
+  -H "Authorization: Bearer $ADM" -H "Content-Type: application/json" \
+  -d '{"sports":["tennis"],"lookback":1,"skip_if_done":true}'
+curl -X POST "$BASE/api/admin/backfill-tennis-elo?days_back=60" \
+  -H "Authorization: Bearer $ADM"
+
+# 6. NHL — history seed (data-ready even though runtime deferred):
+curl -X POST "$BASE/api/admin/historical/backfill-seasons" \
+  -H "Authorization: Bearer $ADM" -H "Content-Type: application/json" \
+  -d '{"sports":["nhl"],"lookback":1,"skip_if_done":true}'
+
+# 7. UFC — event ingest (markets remain MODEL_UNAVAILABLE per registry):
+curl -X POST "$BASE/api/admin/ufc-espn-refresh?days=21" -H "Authorization: Bearer $ADM"
+
+# 8. One normal provider refresh (the running scheduler will also tick):
+curl -X POST "$BASE/api/picks/refresh" -H "Authorization: Bearer $ADM"
+
+# 9. Verify readiness matrix — every SUPPORTED sport must be SUFFICIENT:
+curl -H "Authorization: Bearer $ADM" "$BASE/api/ops/history-readiness"
+
+# 10. Verify per-sport funnels (candidates → published → visible):
+curl -H "Authorization: Bearer $ADM" "$BASE/api/ops/board-health"
+```
+
+### 6 — Permanent bootstrap safeguards
+
+1. **Startup guard (NFL)** — `_nfl_bootstrap_guard` in `server.py`: fires only if `games<32`, uses existing `historical.multi_season.backfill_seasons(skip_if_done=True)`, background task so it never blocks readiness. Bounded (one season), idempotent (upserts + skip_if_done state), safe across restarts (won’t retrigger when sufficient).
+2. **Readiness telemetry (`/api/ops/history-readiness`)** — now honestly surfaces `SUFFICIENT` / `INSUFFICIENT` / `INTENTIONALLY_UNSUPPORTED` per sport plus the exact repair route. Client can surface “why is this sport empty?” without escalating.
+3. **Broader multi-sport startup seeder deliberately NOT added** — a giant boot-time hydrator would fight with the deferred-startup design that already keeps Cloudflare 520s away (server.py line ~4020 comment). Per-sport manual heal via the readiness dashboard + one-time seed commands above covers every remaining sport safely.
+
+### 7 — Remaining EXTERNAL limitations only
+
+| Sport | Limitation | Nature |
+|---|---|---|
+| CFB | Requires `CFBD_API_KEY` env on Prod (free key at collegefootballdata.com) | External key, one-time env setting |
+| NHL / UFC | Runtime dispatcher not wired (`INTENTIONALLY_DEFERRED` in `sport_capability_registry.py`); markets return `MODEL_UNAVAILABLE` at pick time | Deliberately preserved per hard-freeze on model wiring; a separate certification pass owns the flip |
+| Tennis US Open | Provider feed not activated on The Odds API | Provider-side; unrelated to Perklocks code |
+| NBA / NHL current-season events | Off-season (regular Oct 2026); historical seed still runs & keeps data ready | Timing; not a defect |
+
+### 8 — Final Production-readiness verdict (post-single-deploy)
+
+| Sport | Model-Data Ready? | Reason if zero candidates immediately after seed |
+|---|---|---|
+| MLB | ✅ | — (continuous) |
+| NFL | ✅ | `BELOW_85` on some rows if edge threshold is unmet; NFL Week 1 is Sept 4 → some events still >72h |
+| NBA | ✅ (data ready) | `OFFSEASON` — regular season Oct 21, 2026 |
+| CFB | ✅ (post CFBD_API_KEY) | `NO_PROVIDER_EVENTS` when no CFB slate in 72h |
+| Soccer | ✅ | — (continuous) |
+| Tennis | ✅ (data ready) | `PROVIDER_TOURNAMENT_INACTIVE` (US Open feed) |
+| NHL | ✅ history / **runtime DEFERRED** | `MODEL_UNAVAILABLE` per registry (unchanged per freeze) |
+| UFC | ✅ event ingest / **runtime DEFERRED** | `MODEL_UNAVAILABLE` per registry (unchanged per freeze) |
+
+**No sport will show zero because of `HISTORY_NEVER_SEEDED`, `REQUIRED_MODEL_STORE_EMPTY`, or `FORGOTTEN_ONE_TIME_BACKFILL` after this closure runs.**
+

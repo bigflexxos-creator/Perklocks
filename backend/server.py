@@ -4014,6 +4014,39 @@ async def on_startup():
         logger.warning(
             "player_identity hydrate skipped (non-fatal): %s", _ident_err)
 
+    # ── NFL history bootstrap guard (2026-08-27) ──────────────────────
+    # If `db.games` has < 32 completed NFL rows on a fresh deployment
+    # (Prod-history-never-seeded root class), fire ONE background call
+    # to the existing multi-season backfill so the 2025 season hydrates
+    # in the background.  Idempotent (skip_if_done=True + upsert-only
+    # writes), bounded (single asyncio task), and never blocks HTTP
+    # startup.  No repeat every restart — the sufficiency check gates
+    # the launch.  All other sports are hydrated via the P4-readiness
+    # dashboard + existing admin routes to keep this guard cheap.
+    try:
+        async def _nfl_bootstrap_guard():
+            try:
+                n = await db.games.count_documents({"sport": "nfl", "status": "Final"})
+                if n >= 32:
+                    logger.info("NFL bootstrap guard: %d Final games — sufficient, skip", n)
+                    return
+                logger.warning(
+                    "NFL bootstrap guard: only %d Final games (< 32) — scheduling "
+                    "one-shot backfill of 2025 season from historical/nfl.py", n)
+                from historical.multi_season import backfill_seasons
+                await backfill_seasons(
+                    db, sports=["nfl"], seasons=[2025],
+                    lookback=1, skip_if_done=True,
+                )
+                logger.info("NFL bootstrap guard: backfill completed")
+            except Exception as _e:
+                logger.warning("NFL bootstrap guard failed (non-fatal): %s", _e)
+        asyncio.create_task(_nfl_bootstrap_guard())
+    except Exception as _nfl_guard_err:
+        logger.warning("NFL guard wiring failed (non-fatal): %s", _nfl_guard_err)
+
+
+
     # ── DEFERRED STARTUP (2026-06-28) ─────────────────────────────────
     # In production (emergent.host), all 20+ background loops fired at
     # T+0 and ran concurrently in a single worker, blocking HTTP

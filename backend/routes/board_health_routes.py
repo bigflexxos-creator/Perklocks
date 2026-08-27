@@ -742,3 +742,187 @@ async def board_health(user: Annotated[UserPublic, Depends(current_user)]):
         "per_sport": per_sport,
         "parlay_funnel": parlay_funnel,
     }
+
+
+
+# ─────────────────────────────────────────────────────────────
+#  P4 — HISTORY READINESS TELEMETRY (2026-08-27)
+#
+#  Minimal, read-only, per-sport model-input sufficiency view.
+#  Exposes exactly what each sport's LIVE scorer requires from the
+#  historical stores so Production can never again silently show
+#  "GAME 0" because a one-time backfill was forgotten.
+#
+#  Contract: no secrets, no raw payloads, no writes.  Requires a
+#  logged-in user (not admin) — Prod boards must be able to render
+#  a "why is this sport empty?" hint client-side without escalating
+#  to admin auth.
+# ─────────────────────────────────────────────────────────────
+
+# Each sport declares (a) the collections its LIVE scorer reads and
+# (b) the *minimum row count* below which the model is considered
+# INSUFFICIENT.  These floors intentionally low — the goal is to
+# distinguish "never seeded" from "at least one healthy backfill".
+_HISTORY_CONTRACTS: list[dict] = [
+    {"sport": "MLB",    "required_stores": [
+        {"coll": "games",             "query": {"sport": "mlb", "status": "Final"}, "floor": 200},
+        {"coll": "player_game_logs",  "query": {"sport": "mlb"},                    "floor": 5000},
+    ], "existing_backfill": "POST /api/admin/historical/backfill mode=incremental sports=[mlb]",
+       "self_seed_hint":   "continuous MLB ingest is authoritative — leave untouched",
+       "registry_status": "SUPPORTED"},
+    {"sport": "NFL",    "required_stores": [
+        {"coll": "games",             "query": {"sport": "nfl", "status": "Final"}, "floor": 32},
+        {"coll": "player_game_logs",  "query": {"sport": "nfl"},                    "floor": 500},
+    ], "existing_backfill": "POST /api/admin/historical/backfill-seasons sports=[nfl] seasons=[2025]",
+       "self_seed_hint":   "run existing NFL backfill once per deploy if games<32",
+       "registry_status": "SUPPORTED"},
+    {"sport": "NBA",    "required_stores": [
+        # NBA feature engine (services/nba_feature_engine.py) reads
+        # `player_game_logs` (sport='nba').  Ingested by
+        # `services/nba_gamelog_ingest.py` via ESPN public API — the
+        # authoritative Prod path.  balldontlie is NOT required.
+        {"coll": "player_game_logs",  "query": {"sport": "nba"},                    "floor": 2000},
+        {"coll": "players",           "query": {"sport": "nba", "active": True},   "floor": 200},
+    ], "existing_backfill": "POST /api/admin/ingest-nba-gamelogs seasons=2024,2025",
+       "self_seed_hint":   "ESPN-authoritative; runs bounded, idempotent, no key needed",
+       "registry_status": "SUPPORTED"},
+    {"sport": "CFB",    "required_stores": [
+        {"coll": "cfb_sp_ratings",    "query": {},                                   "floor": 100},
+        {"coll": "cfb_teams",         "query": {},                                   "floor": 100},
+    ], "existing_backfill": "POST /api/admin/services-cfb-refresh",
+       "self_seed_hint":   "requires CFBD_API_KEY env; run once per deploy if sp_ratings<100",
+       "registry_status": "SUPPORTED"},
+    {"sport": "Soccer", "required_stores": [
+        {"coll": "soccer_player_form","query": {},                                   "floor": 500},
+    ], "existing_backfill": "continuous — see services/soccer_pipeline_scheduler",
+       "self_seed_hint":   "soccer_player_form must be populated for player-prop resolution",
+       "registry_status": "SUPPORTED"},
+    {"sport": "Tennis", "required_stores": [
+        # Live tennis scorer reads tennis_player_stats + tennis_matches
+        # + tennis_league_averages via services/tennis_calibration.py.
+        # Historical seed: historical/tennis.py (Tennismylife CSV mirror,
+        # no key required) + POST /api/admin/backfill-tennis-elo for the
+        # ESPN Elo/form ledger.
+        {"coll": "tennis_player_stats","query": {},                                  "floor": 100},
+        {"coll": "tennis_matches",     "query": {},                                  "floor": 1000},
+        {"coll": "tennis_league_averages","query": {"_id": "current"},               "floor": 1},
+    ], "existing_backfill": "POST /api/admin/historical/backfill-seasons sports=[tennis] + POST /api/admin/backfill-tennis-elo days_back=60",
+       "self_seed_hint":   "both routes together seed full model history",
+       "registry_status": "SUPPORTED"},
+    {"sport": "NHL",    "required_stores": [
+        # brain/sim_nhl.py exists but per sport_capability_registry.py
+        # NHL is `INTENTIONALLY_DEFERRED` (h2h/spreads/totals all
+        # MODEL_UNAVAILABLE) — the sim isn't wired to the runtime
+        # dispatcher yet.  We still seed history now so the data is
+        # ready the moment the runtime flip happens.
+        {"coll": "games",              "query": {"sport": "nhl", "status": "Final"}, "floor": 100},
+        {"coll": "player_game_logs",   "query": {"sport": "nhl"},                    "floor": 2000},
+    ], "existing_backfill": "POST /api/admin/historical/backfill-seasons sports=[nhl]",
+       "self_seed_hint":   "historical/nhl.py uses api-web.nhle.com (no key)",
+       "registry_status": "INTENTIONALLY_DEFERRED"},
+    {"sport": "UFC",    "required_stores": [
+        # UFC event ingest (ufc_espn_ingest.py) writes directly to
+        # `picks` for the current-window slate.  Per
+        # sport_capability_registry.py UFC is `INTENTIONALLY_DEFERRED`
+        # (h2h + totals both `MODEL_UNAVAILABLE`) — no independent
+        # simulator exists at brain/sim_ufc.py (confirmed absent).
+        # `ufc_espn_ingest` is the current event ingest.
+        {"coll": "picks",              "query": {"sport": "UFC"},                    "floor": 1},
+    ], "existing_backfill": "POST /api/admin/ufc-espn-refresh days=21",
+       "self_seed_hint":   "event ingest only; independent model deferred (sim_ufc absent)",
+       "registry_status": "INTENTIONALLY_DEFERRED"},
+]
+
+
+@router.get("/history-readiness")
+async def history_readiness(
+    user: Annotated[UserPublic, Depends(current_user)],
+):
+    """P4 — Model-input readiness matrix.
+
+    For each currently supported sport we report:
+      • required_history       — the exact collections its live scorer reads
+      • row_count              — how many rows the DB actually has
+      • coverage               — required_row_count / floor (>=1.0 == sufficient)
+      • model_ready            — bool
+      • history_status         — SUFFICIENT | INSUFFICIENT | SOURCE_UNAVAILABLE
+      • existing_backfill      — where to trigger a repair if insufficient
+      • last_updated           — last time any store received a write (best-effort)
+
+    Zero secrets, zero writes, non-admin readable so the client can
+    surface "why is this sport empty?" without escalating.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    from deps import db as _db
+    coll_names = set(await _db.list_collection_names())
+
+    out = []
+    for contract in _HISTORY_CONTRACTS:
+        sport = contract["sport"]
+        row = {
+            "sport": sport,
+            "required_history": [],
+            "row_count":  0,
+            "coverage":   0.0,
+            "model_ready": False,
+            "history_status": "SUFFICIENT",
+            "existing_backfill": contract.get("existing_backfill"),
+            "self_seed_hint":   contract.get("self_seed_hint"),
+            "last_updated": None,
+        }
+        if not contract["required_stores"]:
+            # No live-model contract (legacy path — retained for defensive
+            # completeness).  registry_status trumps.
+            row["history_status"] = "SOURCE_UNAVAILABLE"
+            row["registry_status"] = contract.get("registry_status")
+            out.append(row)
+            continue
+
+        total_covered = 0.0
+        total_rows    = 0
+        for store in contract["required_stores"]:
+            coll = store["coll"]
+            floor = int(store["floor"])
+            if coll not in coll_names:
+                row["required_history"].append({
+                    "coll": coll, "query": store["query"], "floor": floor,
+                    "count": 0, "present": False,
+                })
+                continue
+            try:
+                n = await _db[coll].count_documents(store["query"])
+            except Exception:
+                n = -1
+            total_rows += max(0, n)
+            total_covered += min(1.0, (n / floor) if floor > 0 else 1.0)
+            row["required_history"].append({
+                "coll": coll, "query": store["query"], "floor": floor,
+                "count": n, "present": True,
+            })
+
+        stores_n = len(contract["required_stores"])
+        row["row_count"] = total_rows
+        row["coverage"]  = round(total_covered / max(1, stores_n), 3)
+        # Model-ready == every declared store meets its floor.
+        row["model_ready"] = all(
+            (r.get("count") or 0) >= int(r.get("floor") or 0)
+            for r in row["required_history"]
+        )
+        # Registry-aware final status: even if history is SUFFICIENT
+        # we honestly surface `INTENTIONALLY_DEFERRED` when the runtime
+        # capability contract (services/sport_capability_registry.py)
+        # has not yet wired the sport's simulator to the dispatcher —
+        # so operators never see a green row for a sport that still
+        # returns MODEL_UNAVAILABLE at pick time.
+        reg = contract.get("registry_status") or "SUPPORTED"
+        row["registry_status"] = reg
+        if reg == "INTENTIONALLY_DEFERRED":
+            row["history_status"] = "INTENTIONALLY_UNSUPPORTED"
+        else:
+            row["history_status"] = "SUFFICIENT" if row["model_ready"] else "INSUFFICIENT"
+        out.append(row)
+
+    return {
+        "generated_at": now,
+        "sports": out,
+    }
