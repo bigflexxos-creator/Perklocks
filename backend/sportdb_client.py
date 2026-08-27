@@ -184,6 +184,9 @@ def _parse_team_form(team_row: dict) -> dict:
     score = 0.0
     if form_letters:
         score = sum(1 if x == "W" else -1 if x == "L" else 0 for x in form_letters[:5]) / max(len(form_letters[:5]), 1)
+    matches_played = _int(team_row.get("matches"))
+    gf_avg = (gf / matches_played) if matches_played > 0 else 0.0
+    ga_avg = (ga / matches_played) if matches_played > 0 else 0.0
     return {
         "team_name": team_row.get("teamName"),
         "team_id": team_row.get("teamId"),
@@ -193,12 +196,27 @@ def _parse_team_form(team_row: dict) -> dict:
         "wins": _int(team_row.get("wins")),
         "draws": _int(team_row.get("draws")),
         "losses": _int(team_row.get("lossesRegular")),
-        "matches": _int(team_row.get("matches")),
+        "matches": matches_played,
         "goals_for": gf,
         "goals_against": ga,
         "goal_diff": gf - ga,
         "form": form_letters[:5],
         "form_score": round(score, 3),
+        # 2026-08-27 — Soccer game-model wiring fix.
+        # `services.game_context.build_soccer_game_context` reads
+        # ``n_matches``/``gf_avg``/``ga_avg`` on the form dict; the
+        # legacy schema only exposed ``matches``/``goals_for``/
+        # ``goals_against`` totals, so the gate at
+        # ``if hf.get("n_matches", 0) >= 3`` always failed and every
+        # La Liga / EPL / Bundesliga / Serie A / Ligue 1 / Eredivisie
+        # / Liga Portugal / Champions/Europa League game was running
+        # the 1x2 model with EMPTY team-strength context — collapsing
+        # to a near-league-prior probability.  This alias exposes the
+        # same numbers under the schema the model already expects.
+        # No coefficients, no priors, no thresholds changed.
+        "n_matches": matches_played,
+        "gf_avg":    round(gf_avg, 3),
+        "ga_avg":    round(ga_avg, 3),
     }
 
 
