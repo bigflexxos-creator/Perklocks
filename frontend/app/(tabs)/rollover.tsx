@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View, Text, StyleSheet, ScrollView,
   RefreshControl, Pressable,
@@ -50,10 +50,24 @@ export default function RolloverScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // 2026-08-27 TAB-ISOLATION P3: async race-protection token.  When the
+  // user rapid-taps sport chips (e.g. CFB → NFL → MLB), earlier fetches
+  // may finish AFTER the newer one — this token discards their results
+  // so the visible screen only reflects the current selection.  Also
+  // captures the `(lineType, sport)` snapshot per request so the
+  // handler can double-check the user didn't change selection while
+  // the request was in flight.
+  const _reqTokenRef = useRef(0);
+
   const load = useCallback(async (lt: LineType, sp: string, f: PickFilters, silent: boolean = false) => {
+    const myToken = _reqTokenRef.current + 1;
+    _reqTokenRef.current = myToken;
+    const reqLt = lt; const reqSp = sp; const reqFilters = f;
     try {
       setError(null);
       const res = await api.rollover(lt, f, sp);
+      // If a newer request has been fired since, drop this result.
+      if (myToken !== _reqTokenRef.current) return;
       // Backend now returns an array of up to 3 picks.
       const arr = (res.picks && res.picks.length > 0)
         ? res.picks
@@ -66,13 +80,16 @@ export default function RolloverScreen() {
       setSurvivability(nextSurv);
       // Seed the SWR cache for the next warm revisit.
       swrCacheWrite<RolloverSnapshot>(
-        _rolloverKey(lt, sp, f),
+        _rolloverKey(reqLt, reqSp, reqFilters),
         { picks: nextPicks, pool: nextPool, survivability: nextSurv },
       );
     } catch (e: any) {
+      // Only surface the error if we're STILL the latest request.
+      if (myToken !== _reqTokenRef.current) return;
       console.warn("rollover load", e);
       if (!silent) setError(String(e?.message || "Couldn't load rollover picks."));
     } finally {
+      if (myToken !== _reqTokenRef.current) return;
       if (!silent) setLoading(false);
       setRefreshing(false);
     }
@@ -89,11 +106,26 @@ export default function RolloverScreen() {
       setLoading(false);
       load(lineType, sport, filters, true);
     } else {
-      // Cold — full skeleton state.
+      // Cold — clear any prior-sport picks BEFORE the shell paints so
+      // an NFL empty-state shows during a CFB → NFL switch instead of
+      // the previous CFB rollover cards leaking through for one frame.
+      setPicks([]);
+      setPool(0);
+      setSurvivability(null);
       setLoading(true);
       load(lineType, sport, filters, false);
     }
   }, [lineType, sport, filters, load]);
+
+  // 2026-08-27 TAB-ISOLATION P2 strict sport invariant.  Even if a
+  // late CFB response leaks through the token guard (e.g. a
+  // useFocusRefetch mid-transition), the render layer refuses to
+  // paint any pick whose canonical sport does not match the
+  // currently selected sport.
+  const visiblePicks = useMemo(() => {
+    if (!sport || sport.toLowerCase() === "all") return picks;
+    return picks.filter((p) => (p.sport || "") === sport);
+  }, [picks, sport]);
 
   // Smart refetch on focus — calls API again when the user returns to the
   // tab, but skips if last successful fetch was less than 30 s ago.
@@ -147,7 +179,7 @@ export default function RolloverScreen() {
             onRetry={() => { setLoading(true); load(lineType, sport, filters); }}
             testID="rollover-error"
           />
-        ) : picks.length === 0 ? (
+        ) : visiblePicks.length === 0 ? (
           <EmptyState
             icon="hourglass-outline"
             title="No qualifying picks"
@@ -172,7 +204,7 @@ export default function RolloverScreen() {
               </View>
             )}
 
-            {picks.map((p, idx) => (
+            {visiblePicks.map((p, idx) => (
               <RolloverCard
                 key={p.id}
                 pick={p}

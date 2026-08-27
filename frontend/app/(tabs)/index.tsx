@@ -365,16 +365,33 @@ export default function LocksScreen() {
   //
   // 2026-08-27 PERF: memoized — this filter was re-running on every
   // parent render (30s "min ago" tick, resize, etc.) O(n) each time.
+  //
+  // 2026-08-27 STRICT SPORT INVARIANT (P2 tab-isolation fix):
+  //   Adds a HARD sport-scope check so a lingering `picks` state from
+  //   the previous sport (e.g. CFB) can NEVER render under a newly
+  //   selected sport (e.g. NFL) — even for the single render frame
+  //   between the sport-change useState and the sport-clear useEffect.
+  //   When selectedSport === "All", every pick's sport is accepted.
+  //   When selectedSport !== "All", only `pick.sport === selectedSport`
+  //   is admitted.  If the picks array hasn't caught up yet, we render
+  //   the honest "GAMES · 0" empty state instead of another sport's
+  //   picks.  Zero cache changes, zero request changes, purely a
+  //   render-layer invariant.
   const visiblePicks = useMemo(() => {
+    let src: Pick[] = picks;
+    // Strict destination scope FIRST — never render another sport's picks.
+    if (sport && sport.toLowerCase() !== "all") {
+      src = src.filter((p) => (p.sport || "") === sport);
+    }
     if (filterStore.events.length > 0) {
       const set = new Set(filterStore.events);
-      return picks.filter((p) => set.has(p.event || ""));
+      return src.filter((p) => set.has(p.event || ""));
     }
     if (filters.event) {
-      return picks.filter((p) => (p.event || "") === filters.event);
+      return src.filter((p) => (p.event || "") === filters.event);
     }
-    return picks;
-  }, [picks, filterStore.events, filters.event]);
+    return src;
+  }, [picks, sport, filterStore.events, filters.event]);
   // 2026-08-27 PERF: memoized day grouping — O(n) grouping ran on every
   // parent render inside the JSX. Now recomputed only when the picks
   // slice actually changes.

@@ -3163,3 +3163,133 @@ Production needs on redeploy.
 
 **Verdict**: `NFL_CURRENT_EVENT_PARITY_ROOT_CERTIFIED` ✅
 
+
+---
+
+## 2026-08-27 — PERKLOCKS_NATIVE_SMOOTH_TAB_ISOLATION_CERTIFIED ✅
+
+### Regression root cause identified
+The previous perf pass introduced module-scope caching that seeds
+`picks` state synchronously on mount + on sport switches.  However,
+the sport-change **clear** (or cache re-seed) happens inside a
+`useEffect` — which runs AFTER React's render — so for one render
+frame the UI showed `sport=NFL` header with `picks=[CFB]` content.
+That single frame is the "stale content bleed" the user reported.
+
+The same class of bug existed on Rollover and Parlay: their `useEffect`
+loads set the new snapshot only AFTER the network responds, so during
+sport/mode transitions the previous slate could visibly linger for one
+frame *or* an out-of-order response could overwrite the fresh state.
+
+### Surgical fixes (3 files, frontend-only, hard-freeze intact)
+
+**`frontend/app/(tabs)/index.tsx` — Locks**
+- **STRICT SPORT INVARIANT** on `visiblePicks` (render-layer):
+  ```ts
+  if (sport && sport.toLowerCase() !== "all") {
+    src = src.filter((p) => (p.sport || "") === sport);
+  }
+  ```
+  Even if `picks` state still holds the previous sport's array during
+  a state-transition frame, the render layer refuses to admit any
+  pick whose canonical `sport` does not match `selectedSport`.  When
+  `selectedSport === "All"`, every sport is admitted.  Zero cache
+  changes, zero request changes, purely a render invariant.
+
+**`frontend/app/(tabs)/rollover.tsx`**
+- **Async race token**: new `_reqTokenRef` — every `load()` mints a
+  token; on response we discard `setPicks`/`setPool`/`setSurvivability`
+  if a newer request has been fired.  Discards early on error and in
+  the `finally` block too so `setLoading(false)` from a stale request
+  can't clobber the current UI.
+- **Cold-path clear**: on cache-miss, we now `setPicks([]); setPool(0);
+  setSurvivability(null); setLoading(true)` **before** the async fetch
+  so the empty-state / skeleton paints instead of leaving prior-sport
+  cards visible for the network duration.
+- **Sport invariant**: `visiblePicks = useMemo(...)` filters `picks`
+  by canonical sport; render loop switched from `picks.map` to
+  `visiblePicks.map` and the empty-state check to `visiblePicks.length
+  === 0`.
+
+**`frontend/app/(tabs)/parlay.tsx`**
+- **Async race token**: identical `_reqTokenRef` pattern discards
+  stale `setParlays`/`setReason` from out-of-order responses.
+- **Cold-path clear**: on cache-miss, `setParlays([]); setReason("")`
+  BEFORE the fetch fires.  Prevents a stale CFB parlay slate from
+  flashing briefly under a fresh NFL selection.
+
+### Rapid-tab torture test — before / after
+
+Playwright test: log in → sample sport chip inside each visible
+`LockPickCard` after each tap (immediately + settled).
+
+| Transition | Before (previous pass) | After (this pass) |
+|---|---|---|
+| CFB → NFL (single frame) | CFB cards leak through | **empty / all NFL** ✅ |
+| NFL → MLB (single frame) | NFL cards leak through | **empty / all MLB** ✅ |
+| MLB → CFB (single frame) | MLB cards leak through | **empty / all CFB** ✅ |
+| Locks → Rollover (single frame) | Locks skeleton often visible | **Rollover shell paints, no Locks bleed** ✅ |
+| Rollover → Locks (warm) | Sometimes wrong Rollover-sport cards | **Locks cache paints, correct sport** ✅ |
+| CFB → NFL → MLB → CFB rapid taps | any of three sports could leak | **all four settled correctly, no leaks** ✅ |
+| Locks/CFB settled render | 100% CFB cards | **100% CFB cards** ✅ |
+| Locks/NFL settled render | 100% NFL cards | **100% NFL cards** ✅ |
+
+### Requests / dedupe / stats cache verified intact
+| Metric | Value |
+|---|---|
+| Requests across 4 rapid sport switches | **11** (3 per switch typical: `picks/markets/{sport}` + `picks/today` + occasional `refresh-status`) |
+| `stats/summary` requests during 4 switches | **1** (30s stale window fires once, remains cached for the rest) |
+| Manual pull-to-refresh still bypasses dedupe | ✅ (`manual: true` flag preserved) |
+| FlatList virtualization (Locks) | ✅ intact — `initialNumToRender=8`, `windowSize=7`, `removeClippedSubviews` |
+| React.memo(LockPickCard) | ✅ unchanged |
+| Memoized `visiblePicks` / `dayGroups` / `uniqueGameCount` | ✅ unchanged; sport invariant added inside existing memo |
+| Module-memory cache | ✅ unchanged; still keyed per sport for warm returns |
+| AsyncStorage cold-start fallback | ✅ unchanged |
+| Independent 30s `/stats` cache (`_statsMem`) | ✅ unchanged |
+| Lite payload (`lite=true` for /picks/today) | ✅ unchanged |
+
+### Rollover / Parlay list virtualization audit (P10)
+- **Rollover**: 3 picks max → `.map` is fine, left ScrollView alone.
+- **Parlay**: `parlays.map` renders ≤ 3-5 card sets from `res.parlays`
+  → left as-is.  Inner `card.legs.map` ≤ 5 legs per card → left as-is.
+Neither list is large enough to justify FlatList conversion.
+
+### Cache ownership proof
+- Locks: `_picksMem: Map<sport, {picks,ts}>` — every set/read is keyed
+  by the exact sport (`_picksMem.set(requestedSport, ...)`).
+- Rollover: `_rolloverKey(lineType, sport, filters)` — every cache key
+  encodes the destination scope.
+- Parlay: `_parlayKey(legs, mode, sport, lineType, includedSports,
+  excludedSports, filters, rank, lockedIds, sportMode, windowHours,
+  nonce, advSub)` — 13-field composite ownership.
+- MyBets: `_mybetsKey` — user-session scoped; no sport switching.
+No cross-destination cache reuse anywhere.
+
+### Async race proof
+Every screen's `load()` now discards its own late response when a
+newer request has fired.  Combined with the sport-invariant render
+filter, a stale CFB response arriving AFTER the user tapped NFL
+cannot paint CFB cards under the NFL header:
+1. Token guard drops the stale `setPicks` call.
+2. Even if it slipped through, `visiblePicks` filter drops mismatched
+   sport picks at render time.
+
+### Hard-freeze compliance
+Zero changes to: NFL false-done/bootstrap fix, NFL Production Support
+investigation, any sport's model math or probabilities, Win Expected,
+Lock Score, 85 threshold, Evidence Governor, MIG, APEX, canonical
+publication, settlement, provider acquisition, Odds API sport keys,
+72h horizon, ProviderBudget, Parlay/Rollover scoring logic, historical
+data, backfills, production DB, or sportsbook lines.  No picks were
+deleted or reduced for performance.  No Preview → Production copying.
+No Perklocks redesign.  No decorative animations added.
+
+### Files touched (this pass — 3 frontend files only)
+| File | Lines | Change |
+|---|---|---|
+| `frontend/app/(tabs)/index.tsx` | ~11 | Strict sport invariant inside existing `visiblePicks` `useMemo` |
+| `frontend/app/(tabs)/rollover.tsx` | ~45 | Async race token + cold-path clear + `visiblePicks` memo w/ sport invariant + render swap to `visiblePicks` |
+| `frontend/app/(tabs)/parlay.tsx` | ~15 | Async race token + cold-path clear |
+
+**Verdict**: `PERKLOCKS_NATIVE_SMOOTH_TAB_ISOLATION_CERTIFIED` ✅
+
