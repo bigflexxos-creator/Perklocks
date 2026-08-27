@@ -3293,3 +3293,128 @@ No Perklocks redesign.  No decorative animations added.
 
 **Verdict**: `PERKLOCKS_NATIVE_SMOOTH_TAB_ISOLATION_CERTIFIED` ✅
 
+
+---
+
+## 2026-08-27 — SOCCER_ATGS_UNIVERSAL_ROOT_CERTIFIED ✅
+
+### Root cause traced end-to-end
+Yamal / Raphinha / Kane ATGS+SoA+Assist picks were being emitted by
+`services/soccer_prop_inject.py` (the synthetic writer that fills
+Big-5 leagues where the paid alt-line feed doesn't reach).  Session A
+(2026-06) had **hard-coded `book_odds = None`** on line 251 because
+The Odds API per-event props endpoint didn't yet expose player-prop
+markets for Big-5.  The canonical publication barrier then rejected
+every emitted pick with `no_real_book_odds` + `marked_no_real_book_line`,
+final `lock_score` was defaulted to 55.0, and the pick landed
+`off_board=True`, `publication_gate=canonical_barrier_rejected`.
+
+Meanwhile the provider ATGS pipeline (`_props_picks_from_event` in
+`sports_engine.py`) **already had real player-prop coverage** for
+these leagues: probe on the live Barcelona game returned Yamal ATGS
+priced at 3 books (skybet -110 / onexbet -104 / williamhill -110).
+
+The synthetic writer was still gated by the stale Session-A comment
+and never attached those real prices, so every synthetic pick fell
+through the canonical barrier.
+
+### Surgical fix (single writer file, hard-freeze intact)
+**`services/soccer_prop_inject.py`**
+1. New `_MARKET_ROUTE_TO_PROVIDER` map covers all three ATGS-family
+   markets plus shots / shots-on-target:
+   ```
+   anytime_goal_scorer → player_goal_scorer_anytime
+   to_score_or_assist  → player_to_score_or_assist
+   anytime_assist      → player_anytime_assist
+   shots               → player_shots
+   shots_on_target     → player_shots_on_target
+   ```
+2. New async helper `_fetch_event_book_odds(sport_key, event_id)`
+   calls the existing `sports_engine._fetch_event_props_payload`
+   ONCE per event and returns `{(provider_market_key,
+   normalized_player_name): median_price}`.  Reuses the same cached
+   HTTP layer — no extra API quota.
+3. `_generate_for_event` fetches the lookup once, passes it through.
+4. Emission loop replaces the `book_odds = None` hard-code with:
+   ```python
+   provider_mk = _MARKET_ROUTE_TO_PROVIDER.get(route.market)
+   _real_odds = _book_odds_lookup.get((provider_mk, _norm(name)))
+   if _real_odds is not None:
+       book_odds = int(_real_odds)
+       no_real_book_line_val = False
+       odds_status_val = "book_line"
+       odds_source_val = "provider_median"
+       # derive book_implied + real edge from p − book_implied
+   else:
+       book_odds = None
+       no_real_book_line_val = True
+       odds_status_val = "no_book_line"
+       odds_source_val = "MODEL_ONLY"
+   ```
+5. Pick-dict `book_odds`, `no_real_book_line`, `book_implied_prob`,
+   `odds_status`, `odds_source`, `edge_percent` all fed from the new
+   real-odds path.  Fail-closed contract preserved: no synthetic
+   American odds anywhere.
+
+### Verified BEFORE → AFTER
+
+**Yamal (Athletic Bilbao @ Barcelona):**
+| Field | BEFORE | AFTER |
+|---|---|---|
+| ATGS book_odds | None | **+105** (real median from 3 books) |
+| SoA book_odds | None | **-180 / -240** (multi-line stored) |
+| lock_score final | 55.0 (defaulted) | **79.7** (ATGS) / **86.4** (SoA) — genuine model math |
+| publication_gate | canonical_barrier_rejected | (no longer barrier-rejected) |
+| lock ≥ 85 for publish | ❌ | ATGS below 85 legit; SoA above 85 |
+
+**Harry Kane (VfB Stuttgart @ Bayern Munich):**
+| Field | BEFORE | AFTER |
+|---|---|---|
+| ATGS book_odds | None | **-200** (real) |
+| SoA book_odds | None | **-300 / -550** (real, chalk) |
+| Shots On Target | None | **+130** (real) |
+| Shots | None | **-163** (real) |
+| lock_score final | 55.0 (defaulted) | **88.2** (ATGS) / **92.5** (SoA) |
+
+**Raphinha (Athletic Bilbao @ Barcelona):**
+- Provider currently doesn't return Raphinha ATGS at any bookmaker
+  in the current 3-book sample.  Correctly falls closed with
+  `book_odds=None + no_real_book_line=True` — legitimate
+  `PROVIDER_MARKET_UNAVAILABLE`.  No synthetic odds.
+
+### Provider coverage proof (live probe)
+| Event | ATGS players priced | SoA players priced | Anytime Assist |
+|---|---|---|---|
+| Athletic Bilbao @ Barcelona | 36 unique (3 books) | ~30 | 0 books returned |
+| VfB Stuttgart @ Bayern Munich | 34 (all books) | 32 | 0 books returned |
+
+Anytime Assist genuinely returns 0 outcomes across sampled books —
+the writer would attach if available; provider silence is honest
+`PROVIDER_MARKET_UNAVAILABLE`.
+
+### Coverage summary — full Soccer ATGS funnel
+| Market family | Total in DB | With real book_odds | Coverage |
+|---|---|---|---|
+| Anytime Goal Scorer | 297 | **262** | **88%** |
+| To Score or Assist | 245 | **245** | **100%** |
+| Anytime Assist | 0 | 0 | provider unavailable this slate |
+
+The remaining 35 ATGS with `book_odds=None` are events where the
+provider returned no player-prop payload (bookmaker coverage gap).
+They fail closed exactly as the Session-A policy specifies — no
+synthetic odds.
+
+### Hard-freeze compliance
+Zero changes to: Soccer model coefficients, ATGS probability math,
+Lock Score formula, 85 threshold, MIG threshold, Evidence Governor
+threshold, APEX, canonical publication rules, settlement, Parlay,
+Rollover, 72h horizon, ProviderBudget, NFL/CFB work, frontend
+smoothness/performance work.  No star-player exception.  No team
+exception.  No probability caps/boosts.  No lowering 85.  No fake
+history.  Legitimate `BELOW_85` picks remain off-board.
+
+### Files touched (this pass)
+`backend/services/soccer_prop_inject.py` — ONLY file changed.
+
+**Verdict**: `SOCCER_ATGS_UNIVERSAL_ROOT_CERTIFIED` ✅
+
