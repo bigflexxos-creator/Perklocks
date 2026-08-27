@@ -108,17 +108,33 @@ def _env_int(name: str, default: int, *,
 
 
 def _daily_limit() -> int:
-    return _env_int("ODDS_DAILY_CREDIT_LIMIT", 3000)
+    # 2026-08-27 — 5M-provider-plan alignment. Prior default (3000) was
+    # sized for the trial tier and would throttle a full multi-sport
+    # slate on Saturdays (NFL + CFB + MLB + Soccer + Tennis all live).
+    # With a 5,000,000-credit monthly ceiling, ≈166,666 credits/day is
+    # the linear fair share; we round up to 200,000 to absorb weekend
+    # peaks without touching the emergency reserve. Env override
+    # (`ODDS_DAILY_CREDIT_LIMIT`) still wins if the operator wants a
+    # different value in Production.
+    return _env_int("ODDS_DAILY_CREDIT_LIMIT", 200_000)
 
 
 def _monthly_limit() -> int:
-    return _env_int("ODDS_MONTHLY_CREDIT_LIMIT", 100_000)
+    # 2026-08-27 — 5M-provider-plan alignment. Prior default (100,000)
+    # is the trial-tier ceiling. On the paid 5M plan we leave a 200k
+    # in-code buffer under the true provider ceiling so accidental
+    # overshoot from concurrent workers still fails locally before it
+    # ever hits The Odds API's hard limit. Env override wins.
+    return _env_int("ODDS_MONTHLY_CREDIT_LIMIT", 4_800_000)
 
 
 def _emergency_reserve() -> int:
     # 0 is a legitimate value — the operator may choose to remove
     # the emergency reserve entirely.
-    return _env_int("ODDS_EMERGENCY_RESERVE", 10_000, allow_zero=True)
+    # 2026-08-27 — scaled to ~2% of the new 5M monthly cap so a
+    # board_missing/board_critically_stale event can heal a full-day
+    # multi-sport slate even during a burst window.
+    return _env_int("ODDS_EMERGENCY_RESERVE", 100_000, allow_zero=True)
 
 
 class ProviderBudget:
