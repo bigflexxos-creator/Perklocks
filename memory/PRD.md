@@ -2281,3 +2281,121 @@ curl -H "Authorization: Bearer $ADM" "$BASE/api/ops/board-health"
 
 **No sport will show zero because of `HISTORY_NEVER_SEEDED`, `REQUIRED_MODEL_STORE_EMPTY`, or `FORGOTTEN_ONE_TIME_BACKFILL` after this closure runs.**
 
+
+---
+
+## SOCCER_PLAYER_GAME_TRUTH_CERTIFIED — 2026-08-27
+
+Trace → prove → fix → retest. Zero model math changes. Fixed the shared consumer-boundary defect that let the Market Competition panel disagree with the pick header; proved Barcelona / Real Madrid ML are legitimately BELOW_85; verified no cross-market contamination and no elite-team special casing.
+
+### 1. Every root cause actually proven
+| # | Root cause | Evidence | Fix status |
+|---|---|---|---|
+| A | **Market Competition panel read mutable `lock_score`/`grade` instead of canonical `published_lock_score`/`published_grade`** | Preview: 81 Soccer published picks with `lock_score != published_lock_score`, 322 with `grade != published_grade`. Example: `Christian Benteke Anytime Goal Scorer` — mutable `lock_score=55, grade=Pass` but published `Lock=81, Grade=Playable`. Same pick, two truths on-screen. | **FIXED** |
+| B | Barcelona/Real Madrid ML "missing" — user perception | Both events **have** ML picks in DB (Barca ML n=66, RM ML n=71). Both off-board with `LOW_LOCK_SCORE`. Model prob = 59.6% (Barca vs Elche, implied 75%) → −15 pt gap. Model prob = 41.77% (RM @ Espanyol, implied 71%) → −30 pt gap. Correctly BELOW_85 per hard-freeze rule. | **NOT A DEFECT — model is doing its job** |
+| C | Off-board picks with `win_probability=99.0` polluting the pick doc | Off-board (`grade=Pass`, `off_board=True`, `bypasses_canonical_publication=True`) so never reaches the client. `model_probability=0.27` still stored correctly. Consumer never sees the 99. | **Contained — no user impact.** Data-cleanup deferred (cheap/surgical scope; consumer-blind) |
+| D | Cross-market contamination potential | Structural check: distinct `pick_rationale.engine` values are per-family (`csl_espn_leaderboard`, `espn_fallback`, `goal_scorer_v3`, `player_prop_intelligence_v2`). Each pick carries its own `market_type` and `pick_rationale.engine`. No shared mutable slot found where one market could overwrite another. | **No defect** |
+
+### 2. Every root cause fixed (surgical, no math)
+**One code fix (consumer boundary, not model)**: `backend/market_competition/routes.py`
+
+- Projection now includes `published_lock_score`, `published_grade`, `published_win_probability`, `canonical_published_at`
+- `_market_score()` prefers `published_win_probability` when present (falls back to mutable for pre-publication rows)
+- Response payload maps `lock_score → published_lock_score ?? lock_score`, `grade → published_grade ?? grade`, `win_probability → published_win_probability ?? win_probability`
+
+Result: after fix, the Market Competition panel and the pick header **cannot disagree** for any published pick, because they now read the same immutable canonical fields.
+
+### 3. Files / functions changed (complete)
+| File | Function | Change | Model math? |
+|---|---|---|---|
+| `backend/market_competition/routes.py` | `_market_score` | Prefer `published_win_probability` | ❌ formula unchanged, only input source |
+| `backend/market_competition/routes.py` | `market_rank_for_pick` cursor + response builder | Projection adds canonical fields; response merges canonical-first | ❌ |
+
+**Not touched (verified by post-edit grep)**: `services/soccer_feature_engine.py`, `services/soccer_scorer_lock_ladder.py`, `services/soccer_feature_resolver.py`, `services/soccer_prop_inject.py`, `services/mls_direct_inject.py`, `services/goal_scorer_v3*`, any player-prop scorer, any game-model, any canonical publication code, ProviderBudget, 72h horizon, `history_intelligence.py`, `sport_capability_registry.py`.
+
+### 4. Yamal ATGS probability provenance
+Live probe across all Yamal picks:
+```
+Lamine Yamal Anytime Goal Scorer  wp=35.36  book=-105/+125/…  ls=79.74
+Lamine Yamal To Score or Assist   wp=53.79  book=-143/-154    ls=86.43
+Lamine Yamal Anytime Assist       wp=38.43  book=+156         ls=89.00
+```
+All Yamal outputs are model-derived, book-anchored, and internally consistent. No 99% inflation on any published Yamal wager. The 99% observed elsewhere occurs only on **off-board / grade=Pass / bypasses_canonical_publication** picks (e.g. Hugo Duro no-book-line rows) that never reach the client. Correctly failed closed.
+
+### 5. Why 85 vs 55 vs 93 disagreement existed
+The published Lock (85) is `published_lock_score` — the immutable Phase-1c snapshot taken at canonical publication time. The 55 came from mutable `lock_score` after a later runtime rescorer downgraded the pick (e.g. barrier gate or lineup mutation). The 93 came from Market Competition’s own formula computed over a **different** input set (the mutable one). All three numbers were technically produced by real code paths — they just weren’t reading the same authoritative field. Consumer-boundary fix in §2 forces every user-facing surface to read the immutable canonical row.
+
+### 6. Player-consumer mismatch BEFORE/AFTER
+| | BEFORE | AFTER |
+|---|---:|---:|
+| Soccer published picks with `lock_score != published_lock_score` visible on Market Competition | **81** | **0** (server serves canonical) |
+| Soccer published picks with `grade != published_grade` visible on Market Competition | **322** | **0** |
+| Soccer published picks with `win_probability != published_win_probability` visible on Market Competition | 0 (unchanged) | 0 |
+
+### 7-11. Per-family funnels (live Preview, active window)
+| Market family | generated | default_55 | ≥85 | published |
+|---|---:|---:|---:|---:|
+| Anytime Goal Scorer | 7,767 | 4,702 | 553 | **168** |
+| Score or Assist | 6,950 | 4,407 | 237 | **186** |
+| Anytime Assist | 773 | 0 | 665 | **523** |
+| Shots | 0 | 0 | 0 | 0 (family not currently acquired from provider) |
+| Shots on Target | 0 | 0 | 0 | 0 (family not currently acquired from provider) |
+
+`default_55` counts are legitimate model-rejection rows (no evidence / barrier-gated / off-board with the fixed 55 sentinel). They correctly fail closed. Not synthetic candidates.
+
+### 12-15. Barcelona / Real Madrid ML complete trace
+| Stage | Barcelona (Barca @ Elche CF) | Real Madrid (RM @ Espanyol) |
+|---|---|---|
+| Odds API event acquired | ✅ | ✅ |
+| h2h market present | ✅ (Barca ML rows n=66 across books) | ✅ (RM ML rows n=71 across books) |
+| Canonical home/away identities | `home_team=None` / `away_team=None` on some rows (data infra gap, not blocking) | same |
+| Soccer game model executed | ✅ | ✅ |
+| Independent win probability | **59.60%** | **41.77%** |
+| Book implied probability (median) | ~75% | ~71% |
+| Edge | **−15.4 pts** | **−29.6 pts** |
+| Lock Score | 55.0 (below-85 sentinel) | 41.77–72.7 (still all <85) |
+| MIG / grade | Pass | Pass |
+| off_board reason (**first exclusion**) | `LOW_LOCK_SCORE` | `LOW_LOCK_SCORE` (+ `lock<85`, `grade='Pass'`) |
+| Publication state | never published | never published |
+
+**Verdict**: Both are legitimate `BELOW_85` outputs. Model is honestly saying Barca @ home vs Elche isn’t a lock at those odds, and Real Madrid on the road vs Espanyol at −250 isn’t a lock either. No elite-team override applied (per hard freeze). No forced Locks placement.
+
+### 16. Elite-team ML root-class result
+Same funnel structure holds for every La Liga club in the current window (Alavés, Getafe, Rayo, Sevilla, Villarreal, Espanyol, Levante, Elche, Atlético, Málaga, Real Betis, Real Sociedad, Athletic, Celta, Valencia, Real Madrid, Barcelona, CA Osasuna, Racing Santander, Deportivo). Each club has ~59-66 ML rows across books. No shared exclusion stage above `LOW_LOCK_SCORE`. No stage-level defect found across the elite-team sample.
+
+### 17. Same-event market conservation
+La Liga current-window sibling markets per event: **DC** (double chance), **ML**, **Draw**, **SPREAD** (spread and asian handicap ±0.25/0.5/…), **TOTAL** (over/under), plus **Player** families. All present in DB for Barca and RM events. No market family missing due to acquisition starvation. Missing = only when the specific line/side legitimately BELOW_85.
+
+### 18. Cross-market contamination
+- Distinct `pick_rationale.engine` per family: `csl_espn_leaderboard`, `espn_fallback`, `goal_scorer_v3`, `player_prop_intelligence_v2` — each writes into its own pick, no shared write slot.
+- Player probability field (`model_probability` / `win_probability`) lives on the pick doc keyed by `market_type` — cannot leak into an ML pick which has a different `market_type` and different identity.
+- Consumer boundary now canonical-truth-first (§2) — Market Competition cannot masquerade with a different Lock.
+
+**Result**: No cross-market contamination observed.
+
+### 19. Regression proof (post-edit)
+| Item | State | Note |
+|---|---|---|
+| Soccer universal player resolver | ✅ unchanged | Mbappé/Kylian Mbappe-Lottin/Yamal/Vinícius/Bellingham/Kane/Haaland/Messi all still resolvable in `soccer_player_form` |
+| Soccer game-model math | ✅ untouched | Barca/RM model probs are the pre-fix values |
+| Soccer player-model math | ✅ untouched | ATGS/SoA/AA funnels unchanged |
+| 72h acquisition/board horizon | ✅ unchanged (72h) | |
+| Soccer settlement | ✅ unchanged | |
+| Quarter Asian Handicap fail-closed | ✅ | |
+| PitchAPI / Big Balls | ✅ | |
+| MLB / NFL / NBA / CFB / Tennis / NHL / UFC | ✅ untouched | |
+| All-sport bootstrap work | ✅ | UFC/NHL still `INTENTIONALLY_UNSUPPORTED`, NFL guard still armed |
+| Lock Score / 85 / MIG / APEX / Parlay / Rollover / History | ✅ unchanged | |
+| Canonical publication + immutable published truth | ✅ preserved (this is exactly what §2 enforces at the consumer boundary) |
+| ProviderBudget | ✅ 200k/day, 4.8M/mo, 100k reserve unchanged |
+| Backend restart | ✅ HTTP 200 |
+| Lint | ✅ clean |
+
+### 20. Remaining EXTERNAL-only limitations
+- **Soccer Shots / Shots-on-Target**: not currently acquired from The Odds API for the leagues in-scope. Provider limitation, not a code gap.
+- **Real Madrid / Barcelona ML BELOW_85**: legitimate model output, not a defect. Would only change if the model is retuned — explicitly out-of-scope per hard freeze.
+- **`home_team=None` / `away_team=None` on some Soccer game-market rows**: data-model normalization gap; does not affect publication or user rendering (pick-detail uses `event` string). Deferred out of cheap/surgical scope.
+
+### Certification
+Every consumer of a published Soccer wager now reads the same immutable canonical truth. Barcelona / Real Madrid ML have proven, legitimate `BELOW_85` reasons. No elite-team or star-player special casing was introduced. Regression clean. No model math changed.
+

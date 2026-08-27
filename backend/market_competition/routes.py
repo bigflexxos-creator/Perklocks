@@ -36,8 +36,17 @@ def _market_score(p: dict) -> float:
       survival   = survival_score (already 0-100, defaults to 60)
       variance   = variance_score (0-100, defaults to 30)
       counter    = counter_score  (0-100, defaults to 0)
+
+    2026-08-27 — canonical-truth first.  When a pick is published, its
+    ``published_win_probability`` is the frozen model output that every
+    other surface displays; prefer it so the ranking never disagrees
+    with the pick's header.
     """
-    prob = float(p.get("win_probability") or 0)            # 0-100
+    prob = float(
+        p.get("published_win_probability")
+        if p.get("published_win_probability") is not None
+        else (p.get("win_probability") or 0)
+    )
     edge_raw = float(p.get("edge_percent") or 0)
     edge_norm = max(0.0, min(30.0, edge_raw)) * (100.0 / 30.0)  # → 0-100
     survival = float(p.get("survival_score") or 60.0)
@@ -211,6 +220,14 @@ async def _rank_markets_for_event(db, event: str, sport: str, exclude_id: str = 
             "lock_score_v2": 1, "tier_v2": 1, "is_apex": 1,
             "counter_score": 1, "survival_score": 1, "variance_score": 1,
             "event_time": 1, "is_alt": 1, "no_bet": 1,
+            # 2026-08-27 — Canonical publication boundary consumer fix:
+            # every user-facing surface must display the IMMUTABLE
+            # canonical truth when a pick has been published, so a
+            # Lock 81 in the header can never disagree with a Lock 55
+            # in this panel for the same wager.  See P0 root closure
+            # in `SOCCER_PLAYER_GAME_TRUTH_CERTIFIED`.
+            "published_lock_score": 1, "published_grade": 1,
+            "published_win_probability": 1, "canonical_published_at": 1,
         },
     )
     # PHASE 0 §7 (2026-06) — Score ALL candidates BEFORE dedupe.
@@ -234,22 +251,30 @@ async def _rank_markets_for_event(db, event: str, sport: str, exclude_id: str = 
             continue
         short = _short_market(p.get("market") or "")
         score = _market_score(p)
+        # 2026-08-27 — Canonical truth first: prefer immutable published
+        # values so this panel and the pick header never disagree.  The
+        # legacy mutable fields are retained ONLY as fallback for
+        # pre-publication picks (which never reach the user anyway when
+        # canonical publication is healthy).
+        _pub_ls = p.get("published_lock_score")
+        _pub_pg = p.get("published_grade")
+        _pub_wp = p.get("published_win_probability")
         raw_candidates.append({
             "id":               p.get("id"),
             "market":           p.get("market"),
             "short_market":     short,
             "selection":        p.get("selection"),
-            "win_probability":  p.get("win_probability"),
+            "win_probability":  _pub_wp if _pub_wp is not None else p.get("win_probability"),
             "edge_percent":     p.get("edge_percent"),
             "book_odds":        p.get("book_odds"),
-            "lock_score":       p.get("lock_score"),
+            "lock_score":       _pub_ls if _pub_ls is not None else p.get("lock_score"),
             "lock_score_v2":    p.get("lock_score_v2"),
             "tier_v2":          p.get("tier_v2"),
             "is_apex":          p.get("is_apex", False),
             "counter_score":    p.get("counter_score"),
             "survival_score":   p.get("survival_score"),
             "variance_score":   p.get("variance_score"),
-            "grade":            p.get("grade"),
+            "grade":            _pub_pg or p.get("grade"),
             "market_score":     round(score, 2),
             "is_current":       False,
         })
