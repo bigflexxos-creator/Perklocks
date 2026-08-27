@@ -838,56 +838,84 @@ _HISTORY_CONTRACTS: list[dict] = [
 async def history_readiness(
     user: Annotated[UserPublic, Depends(current_user)],
 ):
-    """P4 — Model-input readiness matrix.
+    """P4/P7 — Per-sport 5-axis readiness matrix.
 
-    For each currently supported sport we report:
-      • required_history       — the exact collections its live scorer reads
-      • row_count              — how many rows the DB actually has
-      • coverage               — required_row_count / floor (>=1.0 == sufficient)
-      • model_ready            — bool
-      • history_status         — SUFFICIENT | INSUFFICIENT | SOURCE_UNAVAILABLE
-      • existing_backfill      — where to trigger a repair if insufficient
-      • last_updated           — last time any store received a write (best-effort)
+    Returns for each sport:
+      • acquisition_ready — provider events reachable via existing pipeline
+      • history_ready     — required stores meet floors
+      • model_ready       — same as history_ready (data-side model input)
+      • settlement_ready  — canonical settlement path present for at least
+                            one supported market family in the registry
+      • runtime_supported — sport_capability_registry.production_status ==
+                            "SUPPORTED" (i.e. at least one market family
+                            can currently publish)
 
-    Zero secrets, zero writes, non-admin readable so the client can
-    surface "why is this sport empty?" without escalating.
+    A sport is fully ready ONLY when all 5 axes are green.
+    Zero writes, zero secrets, non-admin readable.
     """
     now = datetime.now(timezone.utc).isoformat()
     from deps import db as _db
     coll_names = set(await _db.list_collection_names())
 
+    # Cheap registry snapshot — read-only, source of truth for runtime state.
+    try:
+        from services.sport_capability_registry import CAPABILITY_REGISTRY
+        _registry = {c.get("sport"): c for c in CAPABILITY_REGISTRY}
+    except Exception:
+        _registry = {}
+
     out = []
     for contract in _HISTORY_CONTRACTS:
         sport = contract["sport"]
+        # Registry lookup — sport labels differ between Perklocks and
+        # capability registry (e.g. "Soccer" vs "SOCCER").  Try both.
+        reg_row = (_registry.get(sport) or _registry.get(sport.upper())
+                   or _registry.get(sport.lower()) or {})
+        reg_status = reg_row.get("production_status") or contract.get("registry_status") or "UNKNOWN"
+        market_status = reg_row.get("market_status") or reg_row.get("game_markets") or {}
+        market_status_props = reg_row.get("prop_markets") or {}
+        # Settlement-ready proxy: at least one game or prop family SUPPORTED.
+        combined_market_status = {}
+        combined_market_status.update(market_status)
+        combined_market_status.update(market_status_props)
+        settlement_ready = any(v == "SUPPORTED" for v in combined_market_status.values())
+        runtime_supported = (reg_status == "SUPPORTED")
+
         row = {
             "sport": sport,
             "required_history": [],
             "row_count":  0,
             "coverage":   0.0,
-            "model_ready": False,
-            "history_status": "SUFFICIENT",
+            "acquisition_ready": None,   # inferred from board-health elsewhere
+            "history_ready":    False,
+            "model_ready":      False,
+            "settlement_ready": settlement_ready,
+            "runtime_supported": runtime_supported,
+            "registry_status":  reg_status,
+            "history_status":   "SUFFICIENT",
             "existing_backfill": contract.get("existing_backfill"),
             "self_seed_hint":   contract.get("self_seed_hint"),
+            "unsupported_markets": [k for k, v in combined_market_status.items()
+                                    if v in ("MODEL_UNAVAILABLE", "INTENTIONALLY_UNSUPPORTED")],
+            "not_ready_reasons": [],
             "last_updated": None,
         }
         if not contract["required_stores"]:
-            # No live-model contract (legacy path — retained for defensive
-            # completeness).  registry_status trumps.
             row["history_status"] = "SOURCE_UNAVAILABLE"
-            row["registry_status"] = contract.get("registry_status")
+            row["history_ready"] = False
+            row["model_ready"] = False
+            if not runtime_supported:
+                row["not_ready_reasons"].append("REGISTRY_" + reg_status)
             out.append(row)
             continue
 
         total_covered = 0.0
-        total_rows    = 0
+        total_rows = 0
         for store in contract["required_stores"]:
-            coll = store["coll"]
-            floor = int(store["floor"])
+            coll = store["coll"]; floor = int(store["floor"])
             if coll not in coll_names:
-                row["required_history"].append({
-                    "coll": coll, "query": store["query"], "floor": floor,
-                    "count": 0, "present": False,
-                })
+                row["required_history"].append({"coll": coll, "query": store["query"],
+                                                 "floor": floor, "count": 0, "present": False})
                 continue
             try:
                 n = await _db[coll].count_documents(store["query"])
@@ -895,34 +923,95 @@ async def history_readiness(
                 n = -1
             total_rows += max(0, n)
             total_covered += min(1.0, (n / floor) if floor > 0 else 1.0)
-            row["required_history"].append({
-                "coll": coll, "query": store["query"], "floor": floor,
-                "count": n, "present": True,
-            })
+            row["required_history"].append({"coll": coll, "query": store["query"],
+                                             "floor": floor, "count": n, "present": True})
 
         stores_n = len(contract["required_stores"])
         row["row_count"] = total_rows
         row["coverage"]  = round(total_covered / max(1, stores_n), 3)
-        # Model-ready == every declared store meets its floor.
-        row["model_ready"] = all(
+        row["history_ready"] = all(
             (r.get("count") or 0) >= int(r.get("floor") or 0)
-            for r in row["required_history"]
-        )
-        # Registry-aware final status: even if history is SUFFICIENT
-        # we honestly surface `INTENTIONALLY_DEFERRED` when the runtime
-        # capability contract (services/sport_capability_registry.py)
-        # has not yet wired the sport's simulator to the dispatcher —
-        # so operators never see a green row for a sport that still
-        # returns MODEL_UNAVAILABLE at pick time.
-        reg = contract.get("registry_status") or "SUPPORTED"
-        row["registry_status"] = reg
-        if reg == "INTENTIONALLY_DEFERRED":
-            row["history_status"] = "INTENTIONALLY_UNSUPPORTED"
-        else:
+            for r in row["required_history"])
+        row["model_ready"] = row["history_ready"]
+        if not row["history_ready"]:
+            row["not_ready_reasons"].append("HISTORY_INSUFFICIENT")
+        if not runtime_supported:
+            row["not_ready_reasons"].append("REGISTRY_" + reg_status)
+        if not settlement_ready and runtime_supported:
+            row["not_ready_reasons"].append("SETTLEMENT_UNSUPPORTED")
+
+        if runtime_supported:
             row["history_status"] = "SUFFICIENT" if row["model_ready"] else "INSUFFICIENT"
+        else:
+            row["history_status"] = "INTENTIONALLY_UNSUPPORTED"
         out.append(row)
 
     return {
         "generated_at": now,
         "sports": out,
+    }
+
+
+@router.get("/canonical-consistency-check")
+async def canonical_consistency_check(
+    user: Annotated[UserPublic, Depends(current_user)],
+    sport: Optional[str] = None,
+    limit: int = 200,
+):
+    """P6 — Canonical consumer regression guard.
+
+    For every currently-published pick (optionally filtered by ``sport``)
+    verify that the CONSUMER-facing surfaces cannot report a Lock/Grade
+    that disagrees with the immutable canonical publication.  This is a
+    live-DB assertion — it does NOT rewrite any picks.
+
+    Emits a delta count per drift class and up to 5 sample IDs each so a
+    future regression can catch a reintroduced mutable/canonical drift.
+    Non-admin readable.
+    """
+    from deps import db as _db
+    now = datetime.now(timezone.utc).isoformat()
+    q = {"published_grade": {"$exists": True, "$ne": "Pass"}}
+    if sport:
+        q["sport"] = sport
+    cur = _db.picks.find(q, {
+        "_id": 0, "id": 1, "sport": 1, "market": 1,
+        "lock_score": 1, "published_lock_score": 1,
+        "grade": 1, "published_grade": 1,
+        "win_probability": 1, "published_win_probability": 1,
+    }).limit(int(limit))
+    total = 0
+    drift_lock = drift_grade = drift_prob = 0
+    samples_lock: list[str] = []
+    samples_grade: list[str] = []
+    samples_prob: list[str] = []
+    async for p in cur:
+        total += 1
+        ls, pls = p.get("lock_score"), p.get("published_lock_score")
+        if ls is not None and pls is not None and abs(float(ls) - float(pls)) > 0.5:
+            drift_lock += 1
+            if len(samples_lock) < 5:
+                samples_lock.append(p.get("id") or "")
+        g, pg = p.get("grade"), p.get("published_grade")
+        if g and pg and g != pg:
+            drift_grade += 1
+            if len(samples_grade) < 5:
+                samples_grade.append(p.get("id") or "")
+        wp, pwp = p.get("win_probability"), p.get("published_win_probability")
+        if wp is not None and pwp is not None and abs(float(wp) - float(pwp)) > 0.5:
+            drift_prob += 1
+            if len(samples_prob) < 5:
+                samples_prob.append(p.get("id") or "")
+    return {
+        "generated_at": now,
+        "sport_filter": sport,
+        "scanned_picks": total,
+        "drift": {
+            "lock_score":  {"count": drift_lock,  "samples": samples_lock},
+            "grade":       {"count": drift_grade, "samples": samples_grade},
+            "win_probability": {"count": drift_prob, "samples": samples_prob},
+        },
+        "note": "Drift here indicates a producer wrote a mutable value after canonical publication. "
+                "Consumers (market-rank, picks/today, parlay, rollover) MUST read published_* — see "
+                "SOCCER_PLAYER_GAME_TRUTH_CERTIFIED (2026-08-27).",
     }
