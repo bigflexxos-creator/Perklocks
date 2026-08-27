@@ -118,6 +118,11 @@ _SOCCER_SUPPORTED_PATTERNS: tuple[str, ...] = (
     "player goal scorer anytime",
     "player to score or assist",
     "player first goal scorer",   # explicit — still classified separately below
+    # 2026-08-27 hidden-blocker sweep — Slice 3 added `player_anytime_
+    # assist` acquisition but capability allow-list was missing the
+    # markets, so settled picks returned UNKNOWN and never resolved.
+    "anytime assist",
+    "player anytime assist",
     # Session B additions — proven via PitchAPI /v1/matches/{id}/players
     # and /v1/matches/{id}/events on 2026-08-25.
     "shots on target",
@@ -188,6 +193,18 @@ def classify(sport: Optional[str], market: Optional[str],
         for pat in _SOCCER_SUPPORTED_PATTERNS:
             if any(pat in form for form in mk_forms):
                 return (SUPPORTED, None)
+        # 2026-08-27 hidden-blocker sweep — Soccer spread markets are
+        # commonly labeled as bare "Team -1.5" (no "Spread" token).
+        # If a numeric half-point or whole-point line is present it's
+        # a standard handicap → SUPPORTED. Quarter lines already
+        # fail-closed above.
+        if line is not None:
+            try:
+                L = float(line)
+                if abs(L * 2 - round(L * 2)) < 1e-6:
+                    return (SUPPORTED, None)
+            except (TypeError, ValueError):
+                pass
         return (UNKNOWN, None)
 
     # ── Non-soccer sports — supported by settlement_engine.py ─────
@@ -198,9 +215,29 @@ def classify(sport: Optional[str], market: Optional[str],
         "moneyline", "spread", "run line", "puck line", "handicap",
         "total ", "total goals", "total runs", "total points",
         "total games", "team total", "win or draw",
+        # 2026-08-27 — Tennis "Match Winner" is the moneyline
+        # equivalent; without the explicit token classify() would
+        # return UNKNOWN and settlement would stall. It's the same
+        # binary "which side won" outcome settlement_engine already
+        # grades via the ESPN winner endpoint.
+        "match winner",
     )
     if any(t in form for t in game_tokens for form in mk_forms):
         return (SUPPORTED, None)
+
+    # 2026-08-27 hidden-blocker sweep — Standard game-market spread
+    # labels can arrive as bare "Team -8.5" / "Team +14.5" without
+    # any "Spread" token (CFB / NFL / NBA books commonly do this).
+    # If a numeric half-point or whole-point line is present on a
+    # non-soccer sport, treat as a spread/handicap that
+    # settlement_engine already grades.
+    if line is not None:
+        try:
+            L = float(line)
+            if abs(L * 2 - round(L * 2)) < 1e-6:
+                return (SUPPORTED, None)
+        except (TypeError, ValueError):
+            pass
 
     # Player-prop markets across MLB / NBA / WNBA / Tennis / UFC —
     # handled by prop_settlement.py / espn_settlement.py.  The
