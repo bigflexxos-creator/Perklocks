@@ -352,6 +352,12 @@ def _mlb_stat_for_player(box: dict, player_name: str, stat_key: str) -> Optional
                 section = stats.get(block) or {}
                 if field in section:
                     try:
+                        # ── 2026-08-27 AUTHORITATIVE ZERO STAMP ─────
+                        # Value came from a real MLB Stats API stat
+                        # section — this IS an authoritative zero
+                        # (or non-zero) reading.  Return float; the
+                        # caller `_record` no longer rejects a real
+                        # zero once the resolver has proven the box.
                         return float(section[field])
                     except (TypeError, ValueError):
                         return None
@@ -363,10 +369,21 @@ def _mlb_stat_for_player(box: dict, player_name: str, stat_key: str) -> Optional
                         return float(block[field])
                     except (TypeError, ValueError):
                         continue
-            # Player matched but no usable stat block — DNP / scratch.
-            # Treat as 0 so the prop grades cleanly instead of hanging in
-            # "pending" until the heat death of the universe.
-            return 0.0
+            # ── 2026-08-27 UNIVERSAL FALSE-ZERO FIX (P1) ─────────────
+            # Player matched but no usable stat block for the
+            # requested field.  Previous code returned 0.0 here,
+            # producing the exact "Peter Lambert Ks=0 when actual=5"
+            # false-zero class (a batter named P. Lambert with the
+            # same last name matched, had NO pitching block, so 0.0
+            # was returned for the real pitcher's K prop).  Also hit
+            # scratches / DNPs that are NOT authoritative zeros —
+            # per user contract "player rostered but did not play !=
+            # player played and recorded 0".
+            #
+            # Return None (unresolved) so the settlement gate coerces
+            # to unresolved instead of silently writing a fake loss.
+            # Corrections will be handled versioned by SettlementService.
+            return None
     # Player not on either roster at all — unknown game, bail.
     return None if not found_player else 0.0
 
@@ -974,7 +991,17 @@ async def _settle_group(cx, db, sport: str, date_str: str, batch: list[dict], co
             if outcome == "unresolved":
                 counts["skipped"] += 1
                 continue
-            await _record(db, p, outcome, {"player": player, "stat": stat_label, "value": value, "line": line[0]}, counts)
+            await _record(db, p, outcome, {
+                "player": player, "stat": stat_label, "value": value,
+                "line": line[0],
+                # ── 2026-08-27 AUTHORITATIVE ZERO STAMP ────────────
+                # This value came from `_mlb_stat_for_player` which
+                # now returns None on stat-block absence.  If we
+                # reached this line with a numeric value, the MLB
+                # Stats API authoritatively reported that stat count
+                # (including a real 0).
+                "authoritative_zero": (value == 0),
+            }, counts)
         return
 
     # ESPN sports (NBA, WNBA, NHL, NFL, Soccer)
@@ -1311,22 +1338,43 @@ async def _record(db, pick: dict, outcome: str, detail: dict, counts: dict):
         counts["unresolved_gated"] += 1
         return  # never write a lost/won without an actual
     if outcome == "lost" and _value == 0 and _line is not None:
-        # FINAL PARITY CLOSURE (2026-06) — authoritative zero is a
-        # valid actual.  The prior guard converted every value=0 loss
-        # to ``unresolved_gated_zero`` because no caller stamped
-        # ``authoritative_zero=True`` explicitly.  This silently
-        # blocked legitimate settlements like:
-        #     Over 0.5 Hits, actual=0 → LOSS
-        # The missing-actual case is already trapped at ``_value is
-        # None`` above; a numeric 0 arriving through the settlement
-        # detail block means the caller HAS an authoritative stat.
+        # ── 2026-08-27 UNIVERSAL FALSE-ZERO GUARD (P1) ─────────────
+        # User-mandated invariant: MISSING STAT != ZERO.
+        # actual=0 is only a valid loss when the authoritative source
+        # explicitly reports zero for this player/stat.  A resolver
+        # that couldn't find the stat and returned 0 as a fallback
+        # was the exact class producing "Peter Lambert Ks=0 when
+        # actual=5" false losses.
         #
-        # We keep the flag as an *optional* override for callers that
-        # want to be explicit, but no longer refuse settlement when
-        # it is absent.  The stat-quality contract is enforced
-        # upstream by the pick's settlement_detail resolver + the
-        # existing MLB Stats API cross-check below.
-        pass
+        # Contract: authoritative-zero-capable callers stamp
+        # ``detail["authoritative_zero"] = True`` when the MLB Stats
+        # API / provider explicitly reported zero.  When the flag is
+        # absent and value==0, we run a second-chance verification
+        # against MLB Stats API (MLB picks) OR coerce to unresolved
+        # so History/Analytics never carry a fake loss.
+        _authz = bool((detail or {}).get("authoritative_zero"))
+        if not _authz:
+            _confirmed_zero = False
+            if pick.get("sport") == "MLB":
+                # Second-chance authoritative verification.  If MLB
+                # Stats API confirms the pick as lost with value 0
+                # via _mlb_verify_prop, we accept it as an
+                # authoritative zero.  Any other verdict (unknown,
+                # different value) coerces to unresolved.
+                try:
+                    from grading_validator import _mlb_verify_prop
+                    _av = await _mlb_verify_prop(pick)
+                    if _av == "lost":
+                        _confirmed_zero = True
+                        detail = {**(detail or {}),
+                                  "authoritative_zero": True,
+                                  "zero_source": "mlb_statsapi"}
+                except Exception:
+                    pass
+            if not _confirmed_zero:
+                counts.setdefault("unresolved_false_zero_blocked", 0)
+                counts["unresolved_false_zero_blocked"] += 1
+                return  # do not write a fake loss
 
     # ── Authoritative MLB cross-check (2026-07-13 user mandate: "I want
     # all picks on board to grade correctly across all sports"). Some
