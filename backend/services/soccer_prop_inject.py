@@ -109,6 +109,83 @@ def _american(r: float) -> int:
     )
 
 
+# ── 2026-08-27 SOCCER ATGS PROVIDER-ODDS ATTACHMENT ────────────────
+# Per-event lookup: for a given event, fetch the real player-prop
+# payload once, index by (market_key, normalized_player_name) so
+# each emitted synthetic pick can attach the MEDIAN book price when
+# the provider offers one.  Session A's book_odds=None hardcode
+# predated the per-event props endpoint being live for Big-5 —
+# it's live now (verified: Yamal ATGS priced at 3 books).  Fail-
+# closed policy preserved: if no bookmaker returns a price, we
+# still emit book_odds=None + no_real_book_line=True.
+_MARKET_ROUTE_TO_PROVIDER = {
+    "anytime_goal_scorer": "player_goal_scorer_anytime",
+    "to_score_or_assist":  "player_to_score_or_assist",
+    "anytime_assist":      "player_anytime_assist",
+    "shots":               "player_shots",
+    "shots_on_target":     "player_shots_on_target",
+}
+
+
+async def _fetch_event_book_odds(sport_key: str, event_id: str
+                                  ) -> dict[tuple[str, str], int]:
+    """Return {(provider_market_key, normalized_player_name): median_price}.
+
+    Uses the same per-event provider fetch the main pipeline uses
+    (`_fetch_event_props_payload`) so no extra API quota is spent
+    if the payload is already cached.  Falls back to an empty map
+    on any failure — caller then legitimately marks the emitted
+    pick book_odds=None (fail-closed).
+    """
+    try:
+        from sports_engine import _fetch_event_props_payload
+        payload = await _fetch_event_props_payload(
+            "Soccer", sport_key, event_id)
+    except Exception as _e:
+        try:
+            logger.debug("event props fetch failed for %s/%s: %s",
+                         sport_key, event_id, _e)
+        except Exception:
+            pass
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    from collections import defaultdict
+    accum: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for bm in (payload.get("bookmakers") or []):
+        for m in (bm.get("markets") or []):
+            mk = m.get("key") or ""
+            if mk not in _MARKET_ROUTE_TO_PROVIDER.values():
+                continue
+            for o in (m.get("outcomes") or []):
+                # ATGS-family outcomes: name='Yes', description=<player>.
+                side = (o.get("name") or "").lower()
+                if side != "yes":
+                    # Some feeds use description-only (no Yes/No).
+                    if o.get("description"):
+                        pass
+                    else:
+                        continue
+                raw_player = o.get("description") or o.get("name") or ""
+                if not raw_player or raw_player.lower() in ("yes", "no"):
+                    continue
+                try:
+                    price = int(o.get("price"))
+                except (TypeError, ValueError):
+                    continue
+                key = (mk, _norm(raw_player))
+                accum[key].append(price)
+    # Median for each key.
+    out: dict[tuple[str, str], int] = {}
+    for k, prices in accum.items():
+        if not prices:
+            continue
+        prices_sorted = sorted(prices)
+        mid = prices_sorted[len(prices_sorted) // 2]
+        out[k] = int(mid)
+    return out
+
+
 async def _fetch_events(cx: httpx.AsyncClient, sport_key: str) -> list[dict]:
     key = os.getenv("THE_ODDS_API_KEY", "")
     if not key:
@@ -192,6 +269,13 @@ async def _generate_for_event(ev: dict, sport_key: str,
     commence = ev.get("commence_time") or ""
     event_id = ev.get("id") or f"{sport_key}-{home}-{away}"
 
+    # ── 2026-08-27 ATGS PROVIDER-ODDS LOOKUP ────────────────────────
+    # Fetch real ATGS / SoA / Anytime-Assist odds from the per-event
+    # props endpoint ONCE per event so every emitted pick can attach
+    # the median book price when the provider offers one.  Empty map
+    # (provider silence) means we legitimately emit book_odds=None.
+    _book_odds_lookup = await _fetch_event_book_odds(sport_key, event_id)
+
     async def _emit_for(entry: dict, opp: str, is_home: bool) -> list[dict]:
         from deps import db
         name = entry["name"]
@@ -245,10 +329,47 @@ async def _generate_for_event(ev: dict, sport_key: str,
             if route.confidence == "LOW" and route.market_fit < 60:
                 continue
             p = route.probability
-            # Session A (2026-06) synthetic-odds purge — no real
-            # sportsbook player-prop line source for Big-5 leagues in
-            # this pod.  book_odds MUST NOT be computed from p.
-            book_odds = None
+            # ── 2026-08-27 REAL PROVIDER-ODDS ATTACHMENT ─────────────
+            # The Odds API per-event props endpoint IS live for Big-5
+            # (skybet / onexbet / williamhill / etc. carry ATGS + SoA +
+            # Anytime-Assist).  Look up the median book price for this
+            # (market, player) pair; when present, attach real
+            # book_odds so the canonical publication barrier passes.
+            # When absent (many events still return 0 books for props),
+            # keep the Session-A fail-closed contract exactly:
+            # book_odds=None + no_real_book_line=True + odds_source
+            # ='MODEL_ONLY'.  Zero math changes, zero synthetic odds.
+            provider_mk = _MARKET_ROUTE_TO_PROVIDER.get(route.market)
+            _real_odds = None
+            if provider_mk:
+                _real_odds = _book_odds_lookup.get(
+                    (provider_mk, _norm(name)))
+            if _real_odds is not None:
+                book_odds = int(_real_odds)
+                no_real_book_line_val = False
+                odds_status_val = "book_line"
+                odds_source_val = "provider_median"
+                # Derive implied probability from the real book price.
+                try:
+                    _o = int(book_odds)
+                    if _o > 0:
+                        _book_implied = round(100.0 / (_o + 100.0), 4)
+                    else:
+                        _book_implied = round((-_o) / ((-_o) + 100.0), 4)
+                except (TypeError, ValueError):
+                    _book_implied = None
+                # Real edge = model_prob - book_implied.
+                try:
+                    edge_val = round((p - float(_book_implied)) * 100, 2) if _book_implied is not None else None
+                except (TypeError, ValueError):
+                    edge_val = None
+            else:
+                book_odds = None
+                no_real_book_line_val = True
+                odds_status_val = "no_book_line"
+                odds_source_val = "MODEL_ONLY"
+                _book_implied = None
+                edge_val = None
 
             # 2026-08-23 GOALSCORER DECLUSTERING — shared helper.
             from services.soccer_scorer_lock_ladder import (
@@ -278,12 +399,13 @@ async def _generate_for_event(ev: dict, sport_key: str,
                       ("Lock" if lock >= 90 else "Playable"))
 
             # ── Strict Edge Gate (v3) ──────────────────────────────
-            # We DO NOT calculate a "true betting edge" because we have
-            # no real sportsbook player-prop lines for Big-5 soccer in
-            # this pod.  Session A (2026-06): apply the same rule to
-            # EVERY market — no synthetic 4.0% edges anywhere.
-            edge_val = None
-            odds_source_val = "MODEL_ONLY"
+            # When the provider gave us a real price above, `edge_val`
+            # is real (model_prob − book_implied).  When no book line
+            # exists (Session A), edge stays None and odds_source
+            # remains MODEL_ONLY.  No synthetic 4.0% edges anywhere.
+            if _real_odds is None:
+                edge_val = None
+                odds_source_val = "MODEL_ONLY"
 
             pick = {
                 "id": f"soccer-prop-{route.market}-{event_id}-{name.replace(' ', '_').lower()}",
@@ -310,15 +432,15 @@ async def _generate_for_event(ev: dict, sport_key: str,
                 "model_probability": p,
                 "win_probability": round(p * 100, 2),
                 "book_odds": book_odds,
-                "no_real_book_line": True,
-                "book_implied_prob": None,
+                "no_real_book_line": no_real_book_line_val,
+                "book_implied_prob": _book_implied,
                 "lock_score": lock,
                 "lock_score_v2": lock,
                 "lock_score_v2_raw": lock,
                 "lock_score_peak": lock,
                 "edge_percent": edge_val,
                 "odds_source": odds_source_val,
-                "odds_status": "no_book_line",
+                "odds_status": odds_status_val,
                 "confidence_penalty": -5 if (route.market == "anytime_goal_scorer") else 0,
                 "grade": grade,
                 "confidence": grade,
