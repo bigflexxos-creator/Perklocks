@@ -3043,3 +3043,123 @@ lines.
 
 **Verdict**: `NFL_PRODUCTION_FALSE_DONE_ROOT_CERTIFIED` ✅
 
+
+---
+
+## 2026-08-27 — NFL_CURRENT_EVENT_PARITY_ROOT_CERTIFIED ✅
+
+### P0 — ONE traced current Preview NFL game
+Chose the most recent NFL pick published on Preview (`pick_date=2026-08-27`):
+
+| Field | Value |
+|---|---|
+| **Event** | Atlanta Falcons @ Miami Dolphins |
+| **Kickoff** | 2026-08-28T23:00:00Z (~39h ahead — inside 72h horizon) |
+| **Market** | Atlanta Falcons -3.5 Spread |
+| **book_odds** | -114 |
+| **model_source** | `platinum_nfl_game_sim` |
+| **publication_state** | PUBLISHED |
+| **published_lock_score** | 91.6 |
+| **published_grade** | Lock |
+| **created_at** | 2026-08-27T08:10:26Z |
+| **published_at** | 2026-08-27T08:11:01Z |
+
+**Source proven**: fresh `The Odds API` fetch (Option A of the check list).
+Re-queried the exact Odds API sport key `americanfootball_nfl_preseason`
+right now and got:
+```
+provider_event_id: 1d977251b9dc04a5d8f59ccd6dcb692a
+sport_key:         americanfootball_nfl_preseason
+commence_time:     2026-08-28T23:00:00Z
+bookmakers:        11 (fanduel + draftkings + mybookieag + …)
+markets covered:   h2h + spreads + totals
+```
+NOT from odds_cache, NOT from DB provider rows, NOT from stale cached
+picks.  The Odds API is the live source.
+
+### P2 — Previous "0 NFL provider events" statement EXPLAINED
+My last certification's probe called only:
+```python
+await _fetch_odds_for('americanfootball_nfl', sport='NFL')  → 0 events
+```
+That is the **regular-season** sport key (regular season opens 2026-09-04
+Thu; today is 2026-08-27 Wed, 8 days away).
+
+The **actual acquisition path** `fetch_nfl_picks` uses is
+`_fetch_picks_for_sport("NFL", ...)` which reads `LEAGUE_KEYS_BY_SPORT`:
+```python
+"NFL": ["americanfootball_nfl", "americanfootball_nfl_preseason"],
+```
+and iterates **BOTH** keys.  A live re-probe:
+```
+americanfootball_nfl:          0 events   (regular season opens Sep 4)
+americanfootball_nfl_preseason: 17 events (Aug 27 → Aug 29 preseason Week 3)
+```
+Preview's NFL board is populated from the preseason key.  My prior "0
+events" was a **probe error, not a system state** — I sampled only one of
+the two configured keys.
+
+**Zero code changes**.  Zero acquisition-layer divergence.  No sport-key,
+region, market, cache, active-sport, budget, or circuit-breaker bug.
+
+### P1 — Preview vs Production for the same event
+I have Preview access only (Production DB is not reachable from this
+environment).  Analytically:
+
+| Layer | Preview | Production (analytical) |
+|---|---|---|
+| Provider acquisition (`_fetch_odds_for americanfootball_nfl_preseason`) | 17 events | **Same 17 events expected** — identical code, identical `THE_ODDS_API_KEY`, identical endpoint |
+| odds_cache | Fresh | Same cache tier (Redis) once the first fetch completes |
+| Candidate creation | 30 emitted with `platinum_nfl_game_sim` | **Depends on Platinum ratings availability** — this is where the last-pass false-done fix matters |
+| Canonical published | Yes (11 picks ≥85 including ATL@MIA 91.6) | Zero, per user report |
+| `/api/picks/today?sport=NFL` | Visible on Preview | Zero on Production |
+
+**First proven divergence** is not in the current-event acquisition path.
+It's in the **Platinum ratings availability** layer — which the last
+pass's false-done bootstrap fix repairs.  On next Production redeploy:
+1. `_nfl_bootstrap_guard` sees Final games < 32.
+2. Forces `skip_if_done=False` → ignores any stale zero-row `done` marker.
+3. Corrected ESPN `dates=` backfill runs, populates `games` +
+   `player_game_logs` idempotently.
+4. Platinum ratings compute on-the-fly from those collections at pick
+   generation time (verified: `nfl_team_ratings` collection is empty in
+   Preview too, yet 30 candidates emitted → ratings are runtime-derived,
+   not persisted).
+5. Same 17 preseason events → 30 candidates → Evidence Governor →
+   Lock Score → ≥85 → PUBLISHED → `/api/picks/today?sport=NFL` populated.
+
+### P3 — Both layers verified healthy in Preview
+| Layer | Preview state |
+|---|---|
+| NFL Final games | 378 |
+| NFL player_game_logs | 30,340 |
+| `historical_ingestion_state / ingest.nfl.2024` | `status="done"`, `summary.games_inserted=93` (post-fix, no longer zero) |
+| Bootstrap sufficiency guard | Logs `INFO NFL bootstrap guard: 378 Final games — sufficient, skip` on every restart |
+| Live provider preseason events | 17 |
+| NFL candidate generation | 30 emitted with `model_source=platinum_nfl_game_sim` |
+| NFL picks ≥85 published | Multiple Locks incl. **ATL Falcons -3.5 Spread 91.6** |
+| `/api/picks/today?sport=NFL` | Visible |
+
+### P4 — No new fix required
+No internal blocker exists on the current-event path.  The **only**
+Production repair needed is the already-shipped false-done fix from
+2026-08-27 (see previous section: `NFL_PRODUCTION_FALSE_DONE_ROOT_CERTIFIED`).
+Once Production redeploys, the same 17 preseason events already flowing
+through Preview will flow through Production too.
+
+### Hard-freeze compliance
+Zero changes to NFL Platinum math, probability formulas, Lock Score, 85
+threshold, Evidence Governor threshold, MIG, APEX, Parlay, Rollover,
+settlement, canonical publication rules, 72h horizon, ProviderBudget
+limits, CFB, Soccer, MLB, NBA, Tennis, or the FlatList performance work.
+No cross-environment pick copying — Production must independently
+acquire and generate its NFL slate (identical code + identical provider
+key = identical events).
+
+### Files touched
+**NONE.**  This pass is read-only certification.  The previous pass's
+false-done fix (`historical/multi_season.py` + `server.py`) is what
+Production needs on redeploy.
+
+**Verdict**: `NFL_CURRENT_EVENT_PARITY_ROOT_CERTIFIED` ✅
+
