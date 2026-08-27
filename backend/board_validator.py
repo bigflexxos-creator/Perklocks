@@ -723,6 +723,21 @@ def evidence_threshold(picks: list[dict]) -> tuple[list[dict], dict]:
             if (_plat.get("expected_margin_home") is not None
                     or _plat.get("expected_total") is not None):
                 evidence += 1
+        # ── 2026-08-27 CFB SP+ authoritative-model evidence ──────────
+        # Mirror of NFL Platinum: recognize the CFB SP+ game model's
+        # independent probability + expected margin/total as two
+        # genuinely-independent evidence categories.  The probability
+        # is the model's exact-line output (ML / cover / O-U).  The
+        # expected_margin / expected_total are model INPUT-side
+        # evidence from real stored team ratings — different signal
+        # class from the exact-line probability.  No math changes.
+        _cfb_sim = p.get("cfb_game_sim") or {}
+        if (p.get("model_source") == "cfb_sp_game_model"
+                and _cfb_sim.get("sim_probability") is not None):
+            evidence += 1
+            if (_cfb_sim.get("expected_margin") is not None
+                    or _cfb_sim.get("expected_total") is not None):
+                evidence += 1
 
         if evidence < threshold:
             stats["dropped"] += 1

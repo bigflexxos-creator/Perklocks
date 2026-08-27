@@ -211,6 +211,18 @@ def _is_player_market(pick: dict) -> bool:
     market = _norm(market_raw)
     if not market:
         return False
+    # ── 2026-08-27 GAME-TOTAL / SPREAD SHORT-CIRCUIT ────────────────
+    # Game-level totals and spreads are emitted with canonical
+    # prefixes ("Total <Unit> Over/Under X.Y" and "<Team> ±X.Y
+    # Spread").  Prior to this guard the substring scan below
+    # matched "points"/"goals"/"runs" inside "Total Points" /
+    # "Total Goals" / "Total Runs" and mis-classified team-side
+    # game markets as player props (silent PLAYER_TEAM_UNRESOLVED
+    # rejections on CFB/NFL/NBA/NHL/MLB totals).  Team markets
+    # NEVER carry a player_name / player field, so short-circuit
+    # here to preserve the existing player-prop detection path.
+    if market.startswith("total ") or market.endswith(" spread"):
+        return False
     for token in _PLAYER_MARKET_TOKENS:
         if token in market:
             return True
