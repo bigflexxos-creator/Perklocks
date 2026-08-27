@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  View, Text, StyleSheet, ScrollView, RefreshControl,
+  View, Text, StyleSheet, FlatList, RefreshControl,
   ActivityIndicator, Pressable, TouchableOpacity, Animated, Easing,
   AppState,
 } from "react-native";
@@ -45,6 +45,16 @@ const PICKS_CACHE_KEY = "locks_picks_cache_v1";
 const PICKS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 type PicksCache = { sport: string; picks: Pick[]; ts: number };
 
+// ── 2026-08-27 PERKLOCKS SURGICAL PERF FIX ─────────────────────────
+// Module-scope caches — survive tab-navigation unmounts (React
+// Navigation `unmountOnBlur`-safe) so returning to the Locks tab
+// paints the previous slate SYNCHRONOUSLY on the very first frame
+// instead of waiting for AsyncStorage to resolve.
+const _picksMem: Map<string, { picks: Pick[]; ts: number }> = new Map();
+let _statsMem: { data: any; ts: number } | null = null;
+const STATS_STALE_MS = 30_000;      // /stats independently cached 30s
+const FETCH_DEDUPE_MS = 1500;       // dedupe overlapping non-manual fetches
+
 function timeAgo(d: Date | null): string {
   if (!d) return "—";
   const secs = Math.floor((Date.now() - d.getTime()) / 1000);
@@ -87,7 +97,14 @@ export default function LocksScreen() {
   // Alias — keeps the sport-switch handler readable. Same underlying
   // store setter as `setEvents`.
   const setStoreEvents = setEvents;
-  const [picks, setPicks] = useState<Pick[]>([]);
+  // ── 2026-08-27 SYNCHRONOUS MEMORY SEED ──────────────────────────
+  // Seed `picks` synchronously from the module-scope in-memory cache
+  // (which survives Locks-tab remounts) so warm revisits paint the
+  // previous slate on the FIRST frame. Zero AsyncStorage latency,
+  // zero skeleton flash. The AsyncStorage-persist cache still runs
+  // as the fallback for cold-boot / JS-runtime restart.
+  const _memSeed = _picksMem.get("All");
+  const [picks, setPicks] = useState<Pick[]>(_memSeed?.picks ?? []);
   // Ref mirror of `picks` — read INSIDE useCallback closures where reading
   // `picks` directly would capture a stale snapshot. Adding `picks` to the
   // useCallback deps would recreate `load()` on every setPicks call and
@@ -122,9 +139,9 @@ export default function LocksScreen() {
   const [filters, setFilters] = useState<PickFilters>({});
   const [filterOpen, setFilterOpen] = useState(false);
   const [gameFilterOpen, setGameFilterOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(_memSeed ? false : true);
   const [refreshing, setRefreshing] = useState(false);
-  const [stats, setStats] = useState<{ total_picks: number; elite_count: number; avg_edge_percent: number } | null>(null);
+  const [stats, setStats] = useState<{ total_picks: number; elite_count: number; avg_edge_percent: number } | null>(_statsMem?.data ?? null);
   const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   // Alt-line availability diagnostic (2026-07-13). Populated by the
@@ -345,11 +362,81 @@ export default function LocksScreen() {
   // takes precedence over the legacy single `filters.event`. When the
   // user picks multiple games via the GameFilterSheet, every pick on
   // any of those events is kept; empty array = ALL events.
-  const visiblePicks = filterStore.events.length > 0
-    ? picks.filter((p) => filterStore.events.includes(p.event || ""))
-    : filters.event
-      ? picks.filter((p) => (p.event || "") === filters.event)
-      : picks;
+  //
+  // 2026-08-27 PERF: memoized — this filter was re-running on every
+  // parent render (30s "min ago" tick, resize, etc.) O(n) each time.
+  const visiblePicks = useMemo(() => {
+    if (filterStore.events.length > 0) {
+      const set = new Set(filterStore.events);
+      return picks.filter((p) => set.has(p.event || ""));
+    }
+    if (filters.event) {
+      return picks.filter((p) => (p.event || "") === filters.event);
+    }
+    return picks;
+  }, [picks, filterStore.events, filters.event]);
+  // 2026-08-27 PERF: memoized day grouping — O(n) grouping ran on every
+  // parent render inside the JSX. Now recomputed only when the picks
+  // slice actually changes.
+  const dayGroups = useMemo(
+    () => groupPicksByDay(visiblePicks),
+    [visiblePicks],
+  );
+  // Unique-game count is displayed inside the GameFilterButton pill;
+  // memoize the O(n) Set build so it doesn't rerun on every render.
+  const uniqueGameCount = useMemo(
+    () => new Set(picks.map(p => p.event).filter(Boolean)).size,
+    [picks],
+  );
+  // ── 2026-08-27 PERF: flat sectioned list for FlatList virtualisation ──
+  // Replaces the ScrollView + grouped `.map` render that mounted EVERY
+  // LockPickCard at once (~150+ heavy cards for a full slate). Flattens
+  // the day-groups into one linear stream of `{type: 'header'|'pick'}`
+  // items so React Native's built-in windowed renderer only mounts
+  // ~10-20 cards at a time. Exact UI preserved: day headers still show
+  // "TODAY · 12 GAMES · 34 PICKS", featured hero card rotation still
+  // works, pick cards render identically.
+  type Row =
+    | { type: "header"; key: string; label: string; games: number; count: number }
+    | { type: "pick"; key: string; pick: Pick; featured: boolean };
+  const listRows: Row[] = useMemo(() => {
+    const rows: Row[] = [];
+    dayGroups.forEach((group, gIdx) => {
+      const uniqueEvents = new Set(group.items.map((p) => p.event || "")).size;
+      const rotationCount = gIdx === 0 ? Math.min(5, group.items.length) : 0;
+      const featuredIdxInGroup = rotationCount > 0 ? featuredIdx % rotationCount : -1;
+      rows.push({
+        type: "header",
+        key: `h:${group.key}`,
+        label: group.label,
+        games: uniqueEvents,
+        count: group.items.length,
+      });
+      group.items.forEach((p, pIdx) => {
+        rows.push({
+          type: "pick",
+          key: p.id,
+          pick: p,
+          featured: gIdx === 0 && pIdx === featuredIdxInGroup,
+        });
+      });
+    });
+    return rows;
+  }, [dayGroups, featuredIdx]);
+  const renderRow = useCallback(({ item }: { item: Row }) => {
+    if (item.type === "header") {
+      return (
+        <View style={styles.dayHeader}>
+          <Text style={styles.dayLabel}>{item.label}</Text>
+          <Text style={styles.dayCount}>
+            {item.games} {item.games === 1 ? "GAME" : "GAMES"} · {item.count} {item.count === 1 ? "PICK" : "PICKS"}
+          </Text>
+        </View>
+      );
+    }
+    return <LockPickCard pick={item.pick} featured={item.featured} />;
+  }, []);
+  const rowKeyExtractor = useCallback((item: Row) => item.key, []);
 
   const clearAllNarrowingFilters = () => {
     // Wipe BOTH local pick-filters AND the persisted multi-select
@@ -370,21 +457,27 @@ export default function LocksScreen() {
   // itself but can we stop this".
   const latestLoadTokenRef = useRef(0);
   const lastLoadedForSportRef = useRef<string>("");
-  // Last filter signature painted on screen. We use this to flush the
-  // picks array IMMEDIATELY when the user changes ANY narrowing
-  // filter (market pill / league pill / game pill) — without this,
-  // the previous filter's picks linger on screen while the new fetch
-  // is in flight, making H+R+RBI picks appear under the Strikeouts
-  // pill etc. (user report 2026-06-25: "make organized hit run rbi be
-  // under strikeouts sometimes" / "takes me back to the main tab").
+  // 2026-08-27 PERF: dedupe overlapping non-manual fetches (tab focus,
+  // AppState resume, filter store settle). `manual=true` from onRefresh
+  // / onForceRefresh bypasses this guard.
+  const lastFetchTsRef = useRef<number>(0);
   const lastFilterSignatureRef = useRef<string>("");
 
-  const load = useCallback(async (s: string, lt: LineType, sk: SortKey, f: PickFilters, dir: SortDirection) => {
+  const load = useCallback(async (s: string, lt: LineType, sk: SortKey, f: PickFilters, dir: SortDirection, opts: { manual?: boolean } = {}) => {
+    const now = Date.now();
+    if (!opts.manual && (now - lastFetchTsRef.current) < FETCH_DEDUPE_MS) {
+      return; // silently coalesce back-to-back non-manual fetches
+    }
+    lastFetchTsRef.current = now;
     const myToken = latestLoadTokenRef.current + 1;
     latestLoadTokenRef.current = myToken;
     // Snapshot the requested sport so a late response can prove it
     // matches the CURRENTLY selected sport before painting picks.
     const requestedSport = s;
+    // 2026-08-27 PERF: stats has its own 30s stale window — no need to
+    // re-fetch it on every picks refresh (tab focus, AppState resume,
+    // filter tweak). Cuts request count roughly in half on warm returns.
+    const statsFresh = _statsMem && (now - _statsMem.ts) < STATS_STALE_MS;
     try {
       const [picksRes, statsRes] = await Promise.all([
         api.picksToday(s, lt, sk, f, dir, {
@@ -398,7 +491,7 @@ export default function LocksScreen() {
           gameIds:  filterStore.gameIds,
           search:   filterStore.searchText || undefined,
         }),
-        api.stats().catch(() => null),
+        statsFresh ? Promise.resolve(_statsMem!.data) : api.stats().catch(() => null),
       ]);
       // Discard if a newer load was fired after we sent this one.
       if (myToken !== latestLoadTokenRef.current) return;
@@ -478,6 +571,9 @@ export default function LocksScreen() {
       }
       setPicks(fresh);
       lastLoadedForSportRef.current = requestedSport;
+      // ── 2026-08-27 PERF: mirror to module-scope so a subsequent
+      // tab-return paints the slate SYNCHRONOUSLY on the first frame.
+      _picksMem.set(requestedSport, { picks: fresh, ts: Date.now() });
       // ── Picks cache persist (2026-06 hotfix) ─────────────────
       // Save the fresh slate so the next cold boot / resume can
       // rehydrate instantly instead of showing "GAME · 0" while
@@ -509,14 +605,16 @@ export default function LocksScreen() {
       // top-row totals locally so the hero card matches the visible list.
       if (statsRes) {
         const kboCount = (picksRes.picks || []).filter((p: any) => p.sport === "KBO").length;
+        let nextStats;
         if (kboCount > 0 && typeof statsRes.total_picks === "number") {
-          setStats({
-            ...statsRes,
-            total_picks: Math.max(0, statsRes.total_picks - kboCount),
-          });
+          nextStats = { ...statsRes, total_picks: Math.max(0, statsRes.total_picks - kboCount) };
         } else {
-          setStats(statsRes);
+          nextStats = statsRes;
         }
+        setStats(nextStats);
+        // 2026-08-27 PERF: cache stats independently with its own stale
+        // window so subsequent picks refreshes reuse it.
+        _statsMem = { data: nextStats, ts: Date.now() };
       }
       setLastLoadedAt(new Date());
     } catch (e: any) {
@@ -578,10 +676,24 @@ export default function LocksScreen() {
     // array untouched during filter tweaks is safe — and resilient.
     const sig = sport;
     if (lastFilterSignatureRef.current && lastFilterSignatureRef.current !== sig) {
-      setPicks([]);
+      // Sport actually changed. Seed from module-scope cache for the
+      // new sport so we render its cached slate instantly (or blank
+      // if no cache exists yet). Zero AsyncStorage latency.
+      const _newSeed = _picksMem.get(sig);
+      if (_newSeed) {
+        setPicks(_newSeed.picks);
+      } else {
+        setPicks([]);
+      }
     }
     lastFilterSignatureRef.current = sig;
-    setLoading(true);
+    // 2026-08-27 PERF: Only show the skeleton when we truly have NO
+    // cached picks. On warm returns and filter tweaks (which reuse
+    // the current picks array) we render the existing slate instantly
+    // and refresh silently in the background.
+    if (picksRef.current.length === 0) {
+      setLoading(true);
+    }
     if (!prefsHydrated) return;
     // Don't fire the picks fetch until the AsyncStorage-persisted filter
     // store has finished hydrating. Otherwise we hit the API twice on
@@ -646,7 +758,7 @@ export default function LocksScreen() {
 
   const onRefresh = () => {
     setRefreshing(true);
-    load(sport, lineType, sortKey, filters, sortDir);
+    load(sport, lineType, sortKey, filters, sortDir, { manual: true });
     // Also bump the NFL-intelligence tick so the three NFL feature rows
     // re-fetch in lockstep with the picks feed. Pull-to-refresh now
     // refreshes EVERYTHING on screen, not just the locks list.
@@ -679,7 +791,7 @@ export default function LocksScreen() {
         const t = Date.parse(res.next_refresh_at);
         if (!isNaN(t)) setNextRefreshAt(t);
       }
-      await load(sport, lineType, sortKey, filters, sortDir);
+      await load(sport, lineType, sortKey, filters, sortDir, { manual: true });
       if (res.rate_limited) {
         showToast(res.message || "Refresh on cooldown");
       } else {
@@ -775,7 +887,7 @@ export default function LocksScreen() {
       />
       <SportFilterBar sport={sport} filters={filters} onChange={setFilters} />
       <StaleBuildBanner />
-      <StaleVersionBanner onRefresh={() => load(sport, lineType, sortKey, filters, sortDir)} />
+      <StaleVersionBanner onRefresh={() => load(sport, lineType, sortKey, filters, sortDir, { manual: true })} />
 
       {/* ── Cleaned-up controls row ──
           User spec: "we can take lock, elite and edge at top of page off
@@ -799,7 +911,7 @@ export default function LocksScreen() {
           onPress={() => setGameFilterOpen(true)}
           activeEvent={filters.event}
           activeEventsCount={filterStore.events.length}
-          totalGames={Array.from(new Set(picks.map(p => p.event).filter(Boolean))).length}
+          totalGames={uniqueGameCount}
         />
         <TouchableOpacity
           onPress={onRefresh}
@@ -853,194 +965,155 @@ export default function LocksScreen() {
         }}
       />
 
-      <ScrollView
+      <FlatList
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl tintColor={COLORS.textPrimary} refreshing={refreshing} onRefresh={onRefresh} />}
         showsVerticalScrollIndicator={false}
         testID="locks-scroll"
-      >
-        {/* RETRY BANNER (2026-06-28): renders on top of cached picks
-            when the last /api/picks/today fetch failed (e.g. Cloudflare
-            520 during a worker reload). Tapping triggers an immediate
-            re-fetch; cached picks remain visible underneath so the
-            user is never dumped into an empty board on a transient
-            network blip. */}
-        {!!loadError && (
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onPress={() => {
-              setLoadError(null);
-              setRefreshing(true);
-              load(sport, lineType, sortKey, filters, sortDir);
-            }}
-            style={{
-              backgroundColor: "rgba(255, 88, 88, 0.15)",
-              borderColor: "rgba(255, 88, 88, 0.55)",
-              borderWidth: 1,
-              borderRadius: 12,
-              paddingHorizontal: 14,
-              paddingVertical: 12,
-              marginBottom: 14,
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-            }}
-          >
-            <View style={{ flex: 1, marginRight: 12 }}>
-              <Text style={{ color: "#ffb4b4", fontWeight: "700", fontSize: 13 }}>
-                Connection hiccup
-              </Text>
-              <Text style={{ color: "rgba(255,255,255,0.78)", fontSize: 12, marginTop: 2 }}>
-                Showing your last good slate. Tap to retry.
-              </Text>
-            </View>
-            <Text style={{ color: "#ffb4b4", fontWeight: "800", fontSize: 13 }}>
-              RETRY ↻
-            </Text>
-          </TouchableOpacity>
-        )}
-        {loading ? (
-          <View testID="board-skeleton">
-            {/* Milestone 1.2 — Skeleton loader replaces the plain spinner
-                so the user sees the SHAPE of what's about to appear
-                (event groups + pick cards) instead of a blank frame.
-                Matches the real event-grouped list layout exactly. */}
-            <EventGroupSkeleton picks={2} />
-            <EventGroupSkeleton picks={3} />
-            <EventGroupSkeleton picks={2} />
-            <View style={styles.center}>
-              <ActivityIndicator color={COLORS.voltBlue} />
-            </View>
-          </View>
-        ) : visiblePicks.length === 0 ? (
-          <View style={styles.emptyCard} testID="empty-board">
-            <Ionicons
-              name={altUnavailable ? "information-circle-outline" : "lock-open-outline"}
-              size={42}
-              color={COLORS.textMuted}
-            />
-            <Text style={styles.emptyTitle}>
-              {altUnavailable ? "Alt lines unavailable" : "No locks on the board"}
-            </Text>
-
-            {/* Alt-line book-coverage-gap diagnostic (2026-07-13).
-                When the ALT tab is empty because the current sport's
-                tournaments are outside The Odds API's alt-market
-                coverage (currently: every tennis tournament we
-                surface — Umag, Bastad, Gstaad, Iasi WTA, Athens WTA,
-                Kitzbühel WTA — is 250-tier and not covered), show
-                the backend-provided explanation + suggestion instead
-                of the generic "no locks" empty state. */}
-            {altUnavailable ? (
-              <>
-                <Text style={styles.emptyMsg} testID="empty-msg-alt-unavailable">
-                  {altUnavailable.message}
+        // 2026-08-27 PERF: virtualisation — only ~10-20 cards mounted
+        // at any time instead of the entire slate. Keeps the LockPickCard
+        // React.memo unchanged.
+        data={visiblePicks.length > 0 ? listRows : []}
+        keyExtractor={rowKeyExtractor}
+        renderItem={renderRow}
+        // Windowing tuned to keep first-paint snappy while off-screen
+        // cards stay warm enough to avoid pop-in during flings.
+        initialNumToRender={8}
+        maxToRenderPerBatch={8}
+        windowSize={7}
+        removeClippedSubviews
+        ListHeaderComponent={
+          <>
+            {/* RETRY BANNER (2026-06-28) */}
+            {!!loadError && (
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => {
+                  setLoadError(null);
+                  setRefreshing(true);
+                  load(sport, lineType, sortKey, filters, sortDir, { manual: true });
+                }}
+                style={{
+                  backgroundColor: "rgba(255, 88, 88, 0.15)",
+                  borderColor: "rgba(255, 88, 88, 0.55)",
+                  borderWidth: 1,
+                  borderRadius: 12,
+                  paddingHorizontal: 14,
+                  paddingVertical: 12,
+                  marginBottom: 14,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <View style={{ flex: 1, marginRight: 12 }}>
+                  <Text style={{ color: "#ffb4b4", fontWeight: "700", fontSize: 13 }}>
+                    Connection hiccup
+                  </Text>
+                  <Text style={{ color: "rgba(255,255,255,0.78)", fontSize: 12, marginTop: 2 }}>
+                    Showing your last good slate. Tap to retry.
+                  </Text>
+                </View>
+                <Text style={{ color: "#ffb4b4", fontWeight: "800", fontSize: 13 }}>
+                  RETRY ↻
                 </Text>
-                {!!altUnavailable.suggestion && (
+              </TouchableOpacity>
+            )}
+          </>
+        }
+        ListEmptyComponent={
+          loading ? (
+            <View testID="board-skeleton">
+              {/* Milestone 1.2 skeleton loader — matches event-grouped list. */}
+              <EventGroupSkeleton picks={2} />
+              <EventGroupSkeleton picks={3} />
+              <EventGroupSkeleton picks={2} />
+              <View style={styles.center}>
+                <ActivityIndicator color={COLORS.voltBlue} />
+              </View>
+            </View>
+          ) : (
+            <View style={styles.emptyCard} testID="empty-board">
+              <Ionicons
+                name={altUnavailable ? "information-circle-outline" : "lock-open-outline"}
+                size={42}
+                color={COLORS.textMuted}
+              />
+              <Text style={styles.emptyTitle}>
+                {altUnavailable ? "Alt lines unavailable" : "No locks on the board"}
+              </Text>
+              {altUnavailable ? (
+                <>
+                  <Text style={styles.emptyMsg} testID="empty-msg-alt-unavailable">
+                    {altUnavailable.message}
+                  </Text>
+                  {!!altUnavailable.suggestion && (
+                    <TouchableOpacity
+                      onPress={() => setLineType("main")}
+                      style={styles.emptyCta}
+                      activeOpacity={0.8}
+                      testID="empty-switch-main"
+                    >
+                      <Text style={styles.emptyCtaTxt}>{altUnavailable.suggestion}</Text>
+                    </TouchableOpacity>
+                  )}
+                </>
+              ) : filtersAreNarrowing ? (
+                <>
+                  <Text style={styles.emptyMsg} testID="empty-msg-filters">
+                    Filters are hiding picks from the board. Clear them to see
+                    today&apos;s full slate
+                    {typeof stats?.total_picks === "number" ? ` (${stats.total_picks} picks)` : ""}.
+                  </Text>
                   <TouchableOpacity
-                    onPress={() => setLineType("main")}
+                    onPress={clearAllNarrowingFilters}
                     style={styles.emptyCta}
                     activeOpacity={0.8}
-                    testID="empty-switch-main"
+                    testID="empty-clear-filters"
                   >
-                    <Text style={styles.emptyCtaTxt}>{altUnavailable.suggestion}</Text>
+                    <Text style={styles.emptyCtaTxt}>CLEAR ALL FILTERS</Text>
                   </TouchableOpacity>
-                )}
-              </>
-            ) :
-            /* ── Self-diagnostic empty state ──
-                Recurring P0 ("App still not showing picks") usually has
-                one of three root causes: (1) user has a narrowing
-                filter on (SIM EDGE / market / lock floor) and forgot,
-                (2) user's persisted sport tab is on MLB/NBA/NFL which
-                has 0 picks today while Soccer/Tennis still do, or (3)
-                the slate genuinely has nothing live. We surface the
-                most likely cause + a 1-tap fix instead of a dead-end
-                "pull to refresh" message. */
-            filtersAreNarrowing ? (
-              <>
-                <Text style={styles.emptyMsg} testID="empty-msg-filters">
-                  Filters are hiding picks from the board. Clear them to see
-                  today&apos;s full slate
-                  {typeof stats?.total_picks === "number" ? ` (${stats.total_picks} picks)` : ""}.
-                </Text>
-                <TouchableOpacity
-                  onPress={clearAllNarrowingFilters}
-                  style={styles.emptyCta}
-                  activeOpacity={0.8}
-                  testID="empty-clear-filters"
-                >
-                  <Text style={styles.emptyCtaTxt}>CLEAR ALL FILTERS</Text>
-                </TouchableOpacity>
-              </>
-            ) : sport !== "All" && (stats?.total_picks ?? 0) > 0 ? (
-              <>
-                <Text style={styles.emptyMsg} testID="empty-msg-wrong-sport">
-                  No pregame {sport} setups cleared the lock-score gate today —
-                  but {stats?.total_picks} pick{stats?.total_picks === 1 ? "" : "s"}{" "}
-                  {stats?.total_picks === 1 ? "is" : "are"} live in other sports.
-                </Text>
-                <TouchableOpacity
-                  onPress={() => setSport("All")}
-                  style={styles.emptyCta}
-                  activeOpacity={0.8}
-                  testID="empty-show-all"
-                >
-                  <Text style={styles.emptyCtaTxt}>
-                    SHOW ALL {stats?.total_picks} PICKS
+                </>
+              ) : sport !== "All" && (stats?.total_picks ?? 0) > 0 ? (
+                <>
+                  <Text style={styles.emptyMsg} testID="empty-msg-wrong-sport">
+                    No pregame {sport} setups cleared the lock-score gate today —
+                    but {stats?.total_picks} pick{stats?.total_picks === 1 ? "" : "s"}{" "}
+                    {stats?.total_picks === 1 ? "is" : "are"} live in other sports.
                   </Text>
-                </TouchableOpacity>
-              </>
-            ) : (
-              <Text style={styles.emptyMsg} testID="empty-msg-generic">
-                {sport === "All"
-                  ? "All today's games are either started or below our lock-score gate."
-                  : `No pregame ${sport} setups cleared the lock-score gate.`}
-              </Text>
-            )}
-
-            <View style={styles.emptyDivider} />
-            <Text style={styles.emptyHintLabel}>
-              {remaining > 0
-                ? `NEXT REFRESH IN ${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}`
-                : "PULL DOWN TO REFRESH"}
-            </Text>
-            <Text style={styles.emptyHintSub}>
-              {filtersAreNarrowing
-                ? "Tip: SIM EDGE only surfaces sim ≥75%, which is a small slice of the board."
-                : "Tip: try other sports — soccer + tennis often have late slates."}
-            </Text>
-          </View>
-        ) : (
-          /* Picks render in the grouped block below */ null
-        )}
-        {/* Grouped render — replaces the flat list when picks exist.
-            The featured hero card rotates through the top-5 picks of
-            the first group every 7s so the spotlight stays fresh. */}
-        {visiblePicks.length > 0 && groupPicksByDay(visiblePicks).map((group, gIdx) => {
-          const uniqueEvents = new Set(group.items.map((p) => p.event || "")).size;
-          // Rotation is clamped to the first group and capped at 5 picks.
-          const rotationCount = gIdx === 0 ? Math.min(5, group.items.length) : 0;
-          const featuredIdxInGroup = rotationCount > 0 ? featuredIdx % rotationCount : -1;
-          return (
-            <View key={group.key} style={styles.dayGroup}>
-              <View style={styles.dayHeader}>
-                <Text style={styles.dayLabel}>{group.label}</Text>
-                <Text style={styles.dayCount}>
-                  {uniqueEvents} {uniqueEvents === 1 ? "GAME" : "GAMES"} · {group.items.length} {group.items.length === 1 ? "PICK" : "PICKS"}
+                  <TouchableOpacity
+                    onPress={() => setSport("All")}
+                    style={styles.emptyCta}
+                    activeOpacity={0.8}
+                    testID="empty-show-all"
+                  >
+                    <Text style={styles.emptyCtaTxt}>
+                      SHOW ALL {stats?.total_picks} PICKS
+                    </Text>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <Text style={styles.emptyMsg} testID="empty-msg-generic">
+                  {sport === "All"
+                    ? "All today's games are either started or below our lock-score gate."
+                    : `No pregame ${sport} setups cleared the lock-score gate.`}
                 </Text>
-              </View>
-              {group.items.map((p, pIdx) => (
-                <LockPickCard
-                  key={p.id}
-                  pick={p}
-                  featured={gIdx === 0 && pIdx === featuredIdxInGroup}
-                />
-              ))}
+              )}
+              <View style={styles.emptyDivider} />
+              <Text style={styles.emptyHintLabel}>
+                {remaining > 0
+                  ? `NEXT REFRESH IN ${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}`
+                  : "PULL DOWN TO REFRESH"}
+              </Text>
+              <Text style={styles.emptyHintSub}>
+                {filtersAreNarrowing
+                  ? "Tip: SIM EDGE only surfaces sim ≥75%, which is a small slice of the board."
+                  : "Tip: try other sports — soccer + tennis often have late slates."}
+              </Text>
             </View>
-          );
-        })}
-      </ScrollView>
+          )
+        }
+      />
     </SafeAreaView>
   );
 }
