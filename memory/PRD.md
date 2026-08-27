@@ -3493,3 +3493,60 @@ off-board.
 
 **Verdict**: `SOCCER_PLAYER_IDENTITY_BACKFILL_CERTIFIED` ✅
 
+
+---
+
+## 2026-08-27 — NFL PRODUCTION HEAL HARDENING (surgical) ✅
+
+### Why user's earlier deploys "didn't work"
+- The false-done bootstrap fix was shipping correctly, but the guard fired backfill via `asyncio.create_task(_nfl_bootstrap_guard())` — meaning it runs **in the background AFTER startup completes**.
+- First user visit to the app could happen BEFORE the backfill finished → Locks/NFL tab hit an empty picks table.
+- Once backfill completed, no NFL refresh was triggered → picks didn't materialize until the next scheduled cycle (up to several minutes).
+- If the initial ESPN `dates=` call was rate-limited or transient-failed, the single-attempt guard gave up and never retried.
+
+### Hardening applied (2 files)
+
+**`backend/server.py::_nfl_bootstrap_guard`** — three defenses stacked:
+1. **Two seasons instead of one** — `seasons=[2025, 2024]` so a bad 2025 fetch doesn't leave Production empty; `historical/nfl.py` is idempotent (upsert-only) so double-fetch is safe.
+2. **Retry with widening backoff** — up to 3 attempts with 10/20/30s delays; a transient ESPN blip no longer permanently starves Production.
+3. **Post-hydrate NFL refresh** — after backfill hits ≥32 Final games the guard runs a `PickRefreshOrchestrator` NFL-scoped refresh so newly-hydrated ratings surface on `/api/picks/today` immediately (no waiting for the next scheduler tick).
+
+**`backend/routes/admin_routes.py`** — new `GET /api/admin/nfl/heal`:
+- One-click Production heal (works from browser URL bar while logged in as admin).
+- Kicks off backfill + refresh in the BACKGROUND; returns HTTP 200 immediately with current state (no 85s gateway timeout).
+- Idempotency-locked via `db.system_state["nfl_heal_task"]` so hitting the URL multiple times doesn't spawn duplicate tasks.
+- Poll the same URL 60-90s later to see the `last_result` (backfill counts + refresh published/generated counts) and updated `current_state`.
+- `?force=true` overrides the lock if a stuck task needs restarting.
+
+### How the user should use this
+1. **Deploy to Production** (Publish button — one time) so the enhanced guard + heal endpoint ship.
+2. On Production, log in as admin (bossmanperkins@yahoo.com).
+3. Open in browser: `https://bet-edge-ai-1.emergent.host/api/admin/nfl/heal`
+4. First response shows current state + "queued: true".
+5. Wait 60-90s, refresh the same URL. `last_result` will show:
+   - `backfill.written_by_sport.nfl.written` (games inserted)
+   - `refresh.published_count` (NFL picks that made it to the board)
+   - Updated `current_state.nfl_published_today`
+6. Open Locks → NFL tab. Any NFL picks ≥85 will be visible.
+7. If `after.nfl_published_today = 0` and Preview shows the same, the pipeline is honestly running with 0 picks ≥85 (legitimate math during preseason gap). Not a bug.
+
+### Verified in Preview
+| Field | Value |
+|---|---|
+| GET `/api/admin/nfl/heal` first call | 200 OK, `queued: true`, ~250 ms |
+| GET `/api/admin/nfl/heal` 60s later | 200 OK, `already_running: true` (idempotency lock working) |
+| Preview NFL Final games | **426** |
+| Preview NFL player_game_logs | **34,165** |
+| Preview NFL published today | **1** (ATL Falcons -3.5 Spread 91.6 Lock) |
+
+### Hard-freeze compliance
+Zero changes to NFL Platinum math, probability formulas, Lock Score, 85 threshold, MIG, Evidence Governor, APEX, canonical publication, settlement, provider acquisition, Odds API keys, 72h horizon, ProviderBudget, CFB, Soccer, MLB, NBA, Tennis, or frontend performance work. No Preview → Production pick copying. Production still regenerates its NFL slate independently from its own history + its own provider lines.
+
+### Files touched (this pass)
+| File | Change |
+|---|---|
+| `backend/server.py` | `_nfl_bootstrap_guard` now backfills 2 seasons, retries 3× with backoff, and triggers NFL refresh post-hydrate |
+| `backend/routes/admin_routes.py` | New `GET /api/admin/nfl/heal` — background heal launcher with idempotency lock |
+
+**Verdict**: `NFL_PRODUCTION_HEAL_HARDENING_CERTIFIED` ✅
+
