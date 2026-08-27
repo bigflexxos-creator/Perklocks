@@ -1833,3 +1833,80 @@ The **sole** blocker is the `_win_end = _now + 30h` clause in the Production bui
 - MongoDB `picks` collection (56 NFL rows)
 
 
+
+
+---
+
+## POST-PUBLISH TRIAGE — 2026-08-27 (History + Prod Odds Config)
+
+Three Production symptoms reported after redeploy. Rooted each; ONE was a code bug (fixed in Preview, awaits redeploy). The other two are Production-side data / env / role state that cannot be fixed from Preview code.
+
+### 1a — History Screen Freeze → FIXED IN PREVIEW ✅
+**Root cause**: `app/history.tsx` rendered every settled pick (Production returns 2,000 rows for the 30-day window) inside a non-virtualized `<ScrollView>` via `.map()` — one giant tree in one frame. iOS JS thread blocked for many seconds → screen appeared blank/spinning.
+
+**Fix**: Converted to `<FlatList>` with windowed rendering (`initialNumToRender=10`, `maxToRenderPerBatch=12`, `windowSize=7`). Preserved every existing behavior:
+- Stats card, chip filters, RefreshControl + pull-to-settle
+- Loss-analysis expand/collapse, `openId`, `analyzing`, `analyses` state
+- Last-good-cache preservation on transient errors (Slice 7)
+- Canonical History truth join (unchanged — no backend touched)
+
+**Render timing (mount → first paint, 2,000-row slate)**:
+| Path | Cells rendered on mount | Estimated iOS JS blocking |
+|---|---:|---:|
+| BEFORE (`ScrollView` + `.map()`) | 2,000 | ~4–9 s (device-dependent) — appears frozen |
+| AFTER (`FlatList` window) | ~10 (buffer ~70) | <100 ms — instant |
+
+**Files touched**: `app/history.tsx` only. Backend, settlement, history projection — untouched.
+Lint: clean (no new warnings).
+
+### 2b — Production Admin Role → NOT TOUCHED (per instruction)
+Confirmed: `demo@lockscore.ai` has `role="user"` on Production DB, `role="admin"` on Preview DB. `/api/admin/*` returns HTTP 403 → Admin tab renders blank. **Auth code left unchanged.** Must be corrected in Production DB by Emergent Support.
+
+### 3 — Production Odds Data (NFL/NBA/CFB/Tennis/NHL missing on Prod)
+
+#### 3a — Production Provider Configuration Status (no secrets printed)
+Direct Prod-endpoint introspection was limited by (a) `demo` user lacking admin role and (b) several ops routes returning 404 on Prod. What I could confirm from Prod public endpoints:
+
+| Check | Result | Interpretation |
+|---|---|---|
+| `/api/health` (Prod) | HTTP 200 | Backend reachable |
+| `/api/picks/refresh-status` (Prod) | `last_refresh_at: null` before my probe | Scheduler had never fired since deploy |
+| `/api/picks/refresh` (Prod) | 200 `{"db_only":true,"actually_generated":0}` | **`db_only=true` is BY DESIGN** — see below |
+| `/api/ops/board-health` per_sport (Prod) | MLB `candidates=254`, Soccer `candidates=25320`, **NFL/NBA/CFB/Tennis/NHL all `candidates=0`** | External acquisition for those sports has never touched Production DB |
+| `/api/admin/odds-diagnostic` (Prod) | HTTP 403 | Requires admin — unable to introspect provider circuit state |
+
+**Exact reason Prod returned `db_only=true`**: The user-triggerable endpoint `POST /api/picks/refresh` (see `routes/picks_routes.py:2980-3060`) is a **read-only DB projection by design** — Phase 2β decision. It NEVER calls The Odds API, NEVER generates picks. `db_only=true` is a truthful flag it always returns. This is NOT a symptom of a bad key. **All external acquisition happens exclusively via the internal scheduler `_daily_refresh_loop` in `server.py:3249`, gated by `JobCoordinator.acquire()` + `ProviderBudget.reserve()`.**
+
+Therefore Production's empty NFL/NBA/CFB/Tennis/NHL boards are one of only three possibilities:
+  A. **`THE_ODDS_API_KEY` missing/wrong in Production env** → acquisition auth-rejects → circuit breaker `_state="degraded"` → external providers never called
+  B. **Scheduler `_daily_refresh_loop` never armed** in the Production process (import guard, worker mode, container lifecycle)
+  C. **`ProviderBudget` reservation refused** on Prod (daily/monthly credit ceiling already consumed)
+
+#### Verification on Preview (proves the CODE PATH is sound)
+| Probe | Result |
+|---|---|
+| Preview env `THE_ODDS_API_KEY` loaded | ✅ Yes (32 chars) |
+| Live probe to The Odds API v4 `/sports` | HTTP 200, 81 active sports incl. `americanfootball_nfl` |
+| Preview `/api/picks/today?sport=NFL` | **28 picks returned** (Elite / Strong / Lock) |
+| Preview per-sport board-health | MLB 178→11 visible, NFL 29→28 visible, Soccer 22,511→261 visible |
+
+**Preview proves**: identical code + `THE_ODDS_API_KEY=<same value>` = 28 NFL Locks live. If Production has the same key set and the scheduler is armed, the same output is inevitable.
+
+#### 3b — One Explicit Full Provider-Backed Refresh — NOT RUN YET
+Per instruction: "Once Production provider configuration is proven healthy, run ONE explicit full provider-backed refresh." Preview is proven healthy; **Production has not been proven healthy** (admin diagnostic returned 403). No refresh was triggered on Production because:
+- The user-facing `/api/picks/refresh` cannot generate — DB-only by design.
+- The internal generator is behind the scheduler + JobCoordinator + ProviderBudget — not exposed publicly.
+- The one path that could force it (`/api/admin/picks/heal`) requires admin role (403 on Prod).
+
+**Per-sport counts on Production remain**: NFL 0, NBA 0, CFB 0, Tennis 0, NHL 0.
+
+### Concrete Handover to Emergent Support (only path forward for #2 and #3)
+Ask Emergent Support to do exactly these three things on the Production deployment for `bet-edge-ai-1.emergent.host`:
+1. **Verify** the environment variable `THE_ODDS_API_KEY` is set on the Production backend container and matches the value that ships in the Preview `/app/backend/.env` (do NOT paste the value in tickets — reference it as "the same THE_ODDS_API_KEY as Preview").
+2. **Verify** the scheduler `_daily_refresh_loop` and pipelines are armed in the Production process (check startup logs for lines: `Soccer pipeline scheduler armed`, `Soccer Player Form scheduler armed`, `Startup picks seed`).
+3. **Promote** `demo@lockscore.ai` (user id `c5195f25-d9a6-496e-8ce2-f6c191263df9`) to `role: "admin"` in the Production `users` collection so the Admin tab renders and `/api/admin/*` diagnostics become reachable.
+
+Once (1) + (2) are confirmed, no code change is required — a natural scheduler tick (≤ 5 min) OR one admin-authorized `/api/admin/picks/heal` will hydrate NFL/CFB/Tennis (and NBA/NHL when their seasons are in-window; NBA regular season starts late Oct 2026, NHL regular Oct 2026).
+
+### Rails Honored (nothing touched, verified by grep)
+`models/`, `sports_engine.py` scoring, Lock-Score weights, 85 threshold, APEX logic, parlay math, rollover, settlement math, canonical publication, `soccer_feature_resolver.py`, and all history/settlement backend code — **unchanged**. Only `app/history.tsx` client-side render strategy changed.

@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  View, Text, StyleSheet, ScrollView, ActivityIndicator,
-  RefreshControl, Pressable,
+  View, Text, StyleSheet, FlatList, ActivityIndicator,
+  RefreshControl, Pressable, Platform,
+  type ListRenderItem,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -78,13 +79,13 @@ export default function HistoryScreen() {
     await load();
   };
 
-  const filtered = picks.filter((p) => {
+  const filtered = useMemo(() => picks.filter((p) => {
     if (filter === "Lost") return p.status === "lost";
     if (filter === "Won") return p.status === "won";
     return true;
-  });
+  }), [picks, filter]);
 
-  const openAnalysis = async (pick: HistoryPick) => {
+  const openAnalysis = useCallback(async (pick: HistoryPick) => {
     if (openId === pick.id) { setOpenId(null); return; }
     setOpenId(pick.id);
     if (analyses[pick.id]) return;
@@ -105,7 +106,87 @@ export default function HistoryScreen() {
     } finally {
       setAnalyzing(null);
     }
-  };
+  }, [openId, analyses]);
+
+  // Stable identity + row renderer — memoised so FlatList can window
+  // and reuse cells without a full re-render pass on every state tick.
+  const keyExtractor = useCallback((p: HistoryPick) => p.id, []);
+
+  const renderCard: ListRenderItem<HistoryPick> = useCallback(({ item: p }) => {
+    // μ-closure LIVE (2026-06) — History Fix 3A: explicit
+    // canonical state mapping. Only a genuine `pending` value
+    // may show PENDING; `void` and `unresolved` must show
+    // themselves so users don't see settled picks as PENDING.
+    const s = (p.status || "").toLowerCase();
+    const isLoss = s === "lost";
+    const isWin = s === "won";
+    const isPush = s === "push";
+    const isVoid = s === "void";
+    const isUnresolved = s === "unresolved";
+    const statusColor =
+      isWin        ? COLORS.neonGreen   :
+      isLoss       ? COLORS.electricBlaze :
+      isPush       ? COLORS.textMuted   :
+      isVoid       ? COLORS.textSecondary : // neutral
+      isUnresolved ? COLORS.goldElite   : // amber/diagnostic
+                     COLORS.goldElite;    // pending → amber/live
+    const statusLabel =
+      isWin        ? "WON"        :
+      isLoss       ? "LOST"       :
+      isPush       ? "PUSH"       :
+      isVoid       ? "VOID"       :
+      isUnresolved ? "UNRESOLVED" :
+                     "PENDING";
+    const expanded = openId === p.id;
+    const scoreStr = p.final_score
+      ? Object.entries(p.final_score).map(([t, ss]) => `${t} ${ss}`).join(" · ")
+      : "";
+    return (
+      <Pressable onPress={() => openAnalysis(p)} style={styles.card}>
+        <View style={styles.cardTop}>
+          <Text style={styles.cardSport}>{p.sport}</Text>
+          <View style={[styles.statusPill, { backgroundColor: `${statusColor}22`, borderColor: statusColor }]}>
+            <Text style={[styles.statusText, { color: statusColor }]}>{statusLabel}</Text>
+          </View>
+        </View>
+        <Text style={styles.cardEvent}>{p.event}</Text>
+        {p.event_time && (
+          <Text style={styles.cardTime}>{formatGameTime(p.event_time)}</Text>
+        )}
+        <Text style={styles.cardMarket}>{p.market}</Text>
+        {!!scoreStr && <Text style={styles.cardScore}>Final: {scoreStr}</Text>}
+        <View style={styles.cardMetrics}>
+          <Text style={styles.metric}>Lock {Math.round(p.lock_score)}</Text>
+          <Text style={styles.metricSep}>•</Text>
+          <Text style={styles.metric}>Win {Math.round(p.win_probability)}%</Text>
+          <Text style={styles.metricSep}>•</Text>
+          <Text style={styles.metric}>{p.book_odds > 0 ? `+${p.book_odds}` : p.book_odds}</Text>
+        </View>
+
+        {isLoss && (
+          <View style={styles.analysisRow}>
+            <Ionicons name={expanded ? "chevron-up" : "chevron-down"} size={14} color={COLORS.voltBlue} />
+            <Text style={styles.analysisCta}>
+              {expanded ? "Hide AI analysis" : "Why did this lose? Tap for AI analysis"}
+            </Text>
+          </View>
+        )}
+
+        {expanded && (
+          <View style={styles.analysisBox}>
+            {analyzing === p.id ? (
+              <ActivityIndicator color={COLORS.voltBlue} />
+            ) : (
+              <Text style={styles.analysisText}>
+                {analyses[p.id] ?? "Loading analysis..."}
+              </Text>
+            )}
+          </View>
+        )}
+      </Pressable>
+    );
+  }, [openId, analyzing, analyses, openAnalysis]);
+
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -152,98 +233,48 @@ export default function HistoryScreen() {
         ))}
       </View>
 
-      <ScrollView
-        contentContainerStyle={styles.list}
-        refreshControl={<RefreshControl tintColor={COLORS.textPrimary} refreshing={refreshing} onRefresh={onRefresh} />}
-        showsVerticalScrollIndicator={false}
-      >
-        {loading ? (
-          <View style={styles.center}><ActivityIndicator color={COLORS.voltBlue} /></View>
-        ) : filtered.length === 0 ? (
-          <View style={styles.center}>
-            <Ionicons name="time-outline" size={48} color={COLORS.textMuted} />
-            <Text style={styles.emptyTitle}>No settled picks yet</Text>
-            <Text style={styles.emptyMsg}>
-              Once today&apos;s games end, results will appear here automatically.
-              Pull to refresh to trigger a settlement check.
-            </Text>
-          </View>
-        ) : (
-          filtered.map((p) => {
-            // μ-closure LIVE (2026-06) — History Fix 3A: explicit
-            // canonical state mapping. Only a genuine `pending` value
-            // may show PENDING; `void` and `unresolved` must show
-            // themselves so users don't see settled picks as PENDING.
-            const s = (p.status || "").toLowerCase();
-            const isLoss = s === "lost";
-            const isWin = s === "won";
-            const isPush = s === "push";
-            const isVoid = s === "void";
-            const isUnresolved = s === "unresolved";
-            const isPending = s === "pending" || s === "";
-            const statusColor =
-              isWin        ? COLORS.neonGreen   :
-              isLoss       ? COLORS.electricBlaze :
-              isPush       ? COLORS.textMuted   :
-              isVoid       ? COLORS.textSecondary : // neutral
-              isUnresolved ? COLORS.goldElite   : // amber/diagnostic
-                             COLORS.goldElite;    // pending → amber/live
-            const statusLabel =
-              isWin        ? "WON"        :
-              isLoss       ? "LOST"       :
-              isPush       ? "PUSH"       :
-              isVoid       ? "VOID"       :
-              isUnresolved ? "UNRESOLVED" :
-                             "PENDING";
-            const expanded = openId === p.id;
-            const scoreStr = p.final_score ? Object.entries(p.final_score).map(([t, s]) => `${t} ${s}`).join(" · ") : "";
-            return (
-              <Pressable key={p.id} onPress={() => openAnalysis(p)} style={styles.card}>
-                <View style={styles.cardTop}>
-                  <Text style={styles.cardSport}>{p.sport}</Text>
-                  <View style={[styles.statusPill, { backgroundColor: `${statusColor}22`, borderColor: statusColor }]}>
-                    <Text style={[styles.statusText, { color: statusColor }]}>{statusLabel}</Text>
-                  </View>
-                </View>
-                <Text style={styles.cardEvent}>{p.event}</Text>
-                {p.event_time && (
-                  <Text style={styles.cardTime}>{formatGameTime(p.event_time)}</Text>
-                )}
-                <Text style={styles.cardMarket}>{p.market}</Text>
-                {!!scoreStr && <Text style={styles.cardScore}>Final: {scoreStr}</Text>}
-                <View style={styles.cardMetrics}>
-                  <Text style={styles.metric}>Lock {Math.round(p.lock_score)}</Text>
-                  <Text style={styles.metricSep}>•</Text>
-                  <Text style={styles.metric}>Win {Math.round(p.win_probability)}%</Text>
-                  <Text style={styles.metricSep}>•</Text>
-                  <Text style={styles.metric}>{p.book_odds > 0 ? `+${p.book_odds}` : p.book_odds}</Text>
-                </View>
-
-                {isLoss && (
-                  <View style={styles.analysisRow}>
-                    <Ionicons name={expanded ? "chevron-up" : "chevron-down"} size={14} color={COLORS.voltBlue} />
-                    <Text style={styles.analysisCta}>
-                      {expanded ? "Hide AI analysis" : "Why did this lose? Tap for AI analysis"}
-                    </Text>
-                  </View>
-                )}
-
-                {expanded && (
-                  <View style={styles.analysisBox}>
-                    {analyzing === p.id ? (
-                      <ActivityIndicator color={COLORS.voltBlue} />
-                    ) : (
-                      <Text style={styles.analysisText}>
-                        {analyses[p.id] ?? "Loading analysis..."}
-                      </Text>
-                    )}
-                  </View>
-                )}
-              </Pressable>
-            );
-          })
-        )}
-      </ScrollView>
+      {loading ? (
+        <View style={styles.center}><ActivityIndicator color={COLORS.voltBlue} /></View>
+      ) : (
+        // ── SLICE 8 (2026-08-27) — Virtualized History ──────────────
+        // Prior <ScrollView>+.map() rendered the entire 30-day slate
+        // (≈2,000 rows on Production) in a single frame, which froze
+        // the JS thread for many seconds on iOS. FlatList windows the
+        // render (default ~10 rows on-screen + a small buffer) so
+        // paint is instant regardless of dataset size. UI, filters,
+        // last-good-cache behavior, and canonical History truth are
+        // unchanged — only the mount strategy is windowed.
+        <FlatList
+          data={filtered}
+          keyExtractor={keyExtractor}
+          renderItem={renderCard}
+          contentContainerStyle={styles.list}
+          refreshControl={
+            <RefreshControl
+              tintColor={COLORS.textPrimary}
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+            />
+          }
+          showsVerticalScrollIndicator={false}
+          initialNumToRender={10}
+          maxToRenderPerBatch={12}
+          windowSize={7}
+          updateCellsBatchingPeriod={50}
+          removeClippedSubviews={Platform.OS === "android"}
+          extraData={openId /* re-render only rows toggled */}
+          ListEmptyComponent={
+            <View style={styles.center}>
+              <Ionicons name="time-outline" size={48} color={COLORS.textMuted} />
+              <Text style={styles.emptyTitle}>No settled picks yet</Text>
+              <Text style={styles.emptyMsg}>
+                Once today&apos;s games end, results will appear here automatically.
+                Pull to refresh to trigger a settlement check.
+              </Text>
+            </View>
+          }
+        />
+      )}
     </SafeAreaView>
   );
 }
