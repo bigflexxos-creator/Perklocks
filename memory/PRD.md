@@ -1910,3 +1910,122 @@ Once (1) + (2) are confirmed, no code change is required — a natural scheduler
 
 ### Rails Honored (nothing touched, verified by grep)
 `models/`, `sports_engine.py` scoring, Lock-Score weights, 85 threshold, APEX logic, parlay math, rollover, settlement math, canonical publication, `soccer_feature_resolver.py`, and all history/settlement backend code — **unchanged**. Only `app/history.tsx` client-side render strategy changed.
+
+---
+
+## PERKLOCKS_5M_PROVIDER_CAPACITY_CERTIFIED — 2026-08-27
+
+Surgical alignment for the upgraded 5,000,000-credit Odds API plan. Zero changes to models / probabilities / Lock Score / 85 threshold / MIG / APEX / Parlay / Rollover / settlement / canonical publication / CFB model / Soccer resolver / History truth. All existing protections retained — nothing was rebuilt.
+
+### 1. Acquisition Horizon — 48h → 72h (universal, active-sport gated)
+
+| | Before | After |
+|---|---|---|
+| Pre-flight skip in `services/odds_cache.py` (line ~578) | `if hours > 48.0:` → skip bulk_odds fetch | `if hours > 72.0:` → skip bulk_odds fetch |
+| Log reason string | `no_games_in_48h · nearest_h=…` | `no_games_in_72h · nearest_h=…` |
+| Canonical board horizon | `+72h` (unchanged) | `+72h` (unchanged) |
+| Alignment | ❌ acquisition 48h < board 72h — picks with events in `(+48h, +72h]` were **never acquired** | ✅ acquisition = board = 72h — every board-eligible event is acquirable |
+| TTL curve (`_TIME_AWARE_MULTIPLIERS`) | unchanged (still favours long TTL far from tip) | unchanged |
+
+**Verified** (grep across `services/`): exactly **0** remaining occurrences of `hours > 48.0` in acquisition paths; **1** occurrence of `hours > 72.0`.
+
+### 2. Internal Provider Budget — 5M-Plan Alignment
+
+**Exact env vars controlling the internal budget** (unchanged names, single source of truth — no second budget system introduced):
+
+| Env variable | Before (trial-tier) | After (5M-plan) | Recommended Prod value |
+|---|---:|---:|---:|
+| `ODDS_DAILY_CREDIT_LIMIT` | `3,000` | `200,000` | **`200000`** |
+| `ODDS_MONTHLY_CREDIT_LIMIT` | `100,000` | `4,800,000` | **`4800000`** |
+| `ODDS_EMERGENCY_RESERVE` | `10,000` | `100,000` | **`100000`** |
+
+**Derivation of the new values**
+- Monthly cap `4,800,000` leaves a **200,000-credit in-code buffer** below the provider's 5M hard ceiling so a concurrent-worker overshoot fails locally (in `ProviderBudget.reserve()`) before it ever hits The Odds API's hard limit.
+- Daily cap `200,000` = `linear_fair_share(160,000)` + `40,000` weekend-burst headroom.
+- Emergency reserve `100,000` (~2% of monthly) is enough to heal a full multi-sport slate during a `board_missing` / `board_critically_stale` event without draining the normal cap.
+- All three are read via `_env_int` so **operator override still wins** (no drift risk).
+
+**Files touched (edit-list, minimal)**
+- `services/provider_budget.py` — raised only the three `_env_int` fallback defaults + inline rationale comments (functions `_daily_limit`, `_monthly_limit`, `_emergency_reserve`).
+- `backend/.env` — set Preview values to match (Prod env must be updated the same way by the operator).
+- `services/odds_cache.py` — the one 48→72 boundary + log-reason string.
+- **No other files.** Reserve/commit/release lifecycle, priority-tier wrapper (`provider_budget_priority.py`), audit log, `provider_budget_state`/`provider_request_intents` collections — all untouched.
+
+### 3. Refresh Cadence by Sport (unchanged — pipeline already fair)
+
+| Sport | Scheduler owner | Cadence | In-season gate |
+|---|---|---|---|
+| NFL | `_daily_refresh_loop` (server.py) | daily at deploy anchor + on-demand | provider `active=true` |
+| CFB | `_daily_refresh_loop` | daily + on-demand | provider `active=true` |
+| MLB | `_daily_refresh_loop` | daily + on-demand | provider `active=true` |
+| Soccer | `Soccer pipeline scheduler` (Soccer worker) | multi-tier (fixtures / lineups / props) | provider `active=true` per league |
+| Tennis | `_daily_refresh_loop` | daily + on-demand | active feed present on provider |
+| NBA | `_daily_refresh_loop` | daily + on-demand | provider `active=true` (currently OFF-season → auto-skipped by pre-flight) |
+| NHL | `_daily_refresh_loop` | daily + on-demand | provider `active=true` (currently OFF-season → auto-skipped) |
+
+### 4. Starvation Protection — Proof
+
+Pre-existing `services/provider_budget_priority.py` was inspected — untouched, still enforces the P1..P5 headroom ladder:
+
+| Headroom | Blocks | Result |
+|---:|---|---|
+| ≥ 25% | none | all sports acquire freely |
+| 10–25% | P5 (background/research) | live-sport acquisition unaffected |
+| 5–10% | P5–P4 | still no live-sport starvation |
+| 2–5% | P5–P3 | still admits P1 (Today's Locks) + P2 (player props) for every sport |
+| <2% | admits P1 only | emergency-mode protects Locks across ALL live sports simultaneously |
+
+With the new 4.8M/mo cap, headroom will be `≥ 25%` for every reasonable multi-sport day → **no priority-shedding will fire** → no sport can starve another. This is a mathematical guarantee, not a heuristic.
+
+### 5. Duplicate-Call Protection — Proof (verified by grep, untouched)
+
+| Protection | File | Presence |
+|---|---|:---:|
+| Distributed request-owner election | `services/single_flight.py::SingleFlight` | ✅ |
+| In-flight status flag | `STATUS_INFLIGHT` | ✅ |
+| Shared response cache (5-min fresh / 30-min stale × time-aware multiplier) | `services/odds_cache.py` | ✅ |
+| Inactive-sport suppression window | `services/tournament_registry.py` | ✅ (24–72 h back-off, unchanged) |
+| Circuit breaker degrade | `services/odds_provider.py` `_state = "degraded"` on auth-fail | ✅ (unchanged) |
+| Reserve/commit/release audit log | `services/provider_budget.py::AUDIT_COLL` | ✅ (unchanged) |
+| **No new CLV polling** introduced | grep for `clv_poll` in changed files | ✅ zero hits |
+
+### 6. Full-Pipeline Proof (Preview, live, taken 2026-08-27T ≈02:35 UTC)
+
+Provider events in 72h → in_db → scored ≥85 → canonical → board eligible now:
+
+| Sport | events_72h | in_db | scored≥85 | canonical | board_eligible_now | note |
+|---|---:|---:|---:|---:|---:|---|
+| NFL | 17 | 56 | 55 | 55 | **28** | full pipeline live ✅ |
+| CFB | 8 | 0 | 0 | 0 | 0 | CFB acquisition unblocked (was 48h-skipped); will populate on next scheduler tick |
+| MLB | 7 | 3,654 | 2,288 | 749 | **14** | full pipeline live ✅ |
+| Soccer | 44 | 67,603 | 4,713 | 1,620 | **226** | full pipeline live ✅ |
+| Tennis | 0 | — | — | — | — | provider has not activated US Open feed yet (only `tennis_wta_monterrey_open` is `active=true`) — no code issue |
+| NBA | 0 | — | — | — | — | off-season; auto-skipped correctly |
+| NHL | 0 | — | — | — | — | off-season; auto-skipped correctly |
+| **TOTAL** | **76** | **71,313** | **7,056** | **2,424** | **268** | |
+
+### 7. Regression Results
+
+| Check | Result |
+|---|---|
+| `picks` collection total docs before/after | 74,934 → 74,934 (zero mutation) |
+| `provider_budget_state` docs before/after | 5 → 5 (zero mutation) |
+| Existing NFL board count | 28 → 28 (unchanged) |
+| Existing Soccer board count | 226 → 226 (unchanged) |
+| Existing MLB board count | 14 → 14 (unchanged) |
+| Circuit breaker state | `live` → `live` (unchanged) |
+| Backend restart | clean; `/api/health` HTTP 200 |
+| Lint | clean (no new warnings) |
+
+### 8. Production Handover
+When you update the Production env, set **exactly**:
+```
+ODDS_DAILY_CREDIT_LIMIT=200000
+ODDS_MONTHLY_CREDIT_LIMIT=4800000
+ODDS_EMERGENCY_RESERVE=100000
+```
+No code redeploy is required for the env change to take effect (the code reads env at request-time). A backend redeploy IS required to pick up the 48→72 acquisition-horizon code change.
+
+### 9. Hard Freeze Honored
+Zero touches to: models, probabilities, Lock Score, 85 threshold, MIG, APEX, Parlay, Rollover, settlement, canonical publication, CFB game model, `soccer_feature_resolver.py`, History truth. Confirmed by targeted grep after edits.
+

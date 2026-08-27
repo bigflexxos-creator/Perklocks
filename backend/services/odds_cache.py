@@ -567,20 +567,21 @@ async def cached_odds_get(
 
     # Phase 3 — "no games in horizon" pre-flight. If the events list
     # for this sport has been cached AND shows zero games within the
-    # next 48 h, skip odds fetches entirely for a while (we already
-    # know the response will be empty). This is a huge saving for
-    # off-season sports keys the app still lists (e.g. `basketball_nba`
-    # in July, `americanfootball_nfl` in April).
+    # next 72 h (canonical board horizon post-2026-08 widening), skip
+    # odds fetches entirely for a while (we already know the response
+    # will be empty). This is a huge saving for off-season sports keys
+    # the app still lists (e.g. `basketball_nba` in July,
+    # `americanfootball_nfl` in April).
     if (sport_key and endpoint_type == "bulk_odds"
             and db is not None and not force_refresh):
         try:
             hours = await _compute_hours_to_nearest_game(db, sport_key)
-            if hours is not None and hours > 48.0:
+            if hours is not None and hours > 72.0:
                 await _write_request_log(
                     db, url=url, params=params, sport_key=sport_key,
                     markets=markets, caller=caller,
                     cache_status="hit", upstream_called=False,
-                    reason=f"no_games_in_48h · nearest_h={hours:.1f}",
+                    reason=f"no_games_in_72h · nearest_h={hours:.1f}",
                 )
                 return []
         except Exception as e:
