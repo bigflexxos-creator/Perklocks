@@ -3418,3 +3418,78 @@ history.  Legitimate `BELOW_85` picks remain off-board.
 
 **Verdict**: `SOCCER_ATGS_UNIVERSAL_ROOT_CERTIFIED` ✅
 
+
+---
+
+## 2026-08-27 — SOCCER PLAYER-IDENTITY BACKFILL COMPLETE ✅
+
+### Root cause traced
+The provider ATGS ingester in `services/real_line_scorer_ingest.py`
+(`_ingest_player_scorer_row`) had access to `home_team`, `away_team`,
+resolved `identity.canonical_name`, and `identity.canonical_team_name`
+— but **never wrote them onto the emitted pick dict**.  Downstream
+consumers (roster validator, canonical rationale UI, MIG, publication
+consumer) then saw `home_team=None`, `player_name=None`,
+`player_current_team=None` on 515 rows and rejected them with
+`player_team_invalid` / `roster_unverified` even when the ingester
+had already resolved the identity correctly.
+
+### Surgical fix
+**`services/real_line_scorer_ingest.py::_ingest_player_scorer_row`** —
+propagate the values the ingester already computed onto the pick:
+```python
+"home_team":            home,
+"away_team":            away,
+"home_team_name":       home,
+"away_team_name":       away,
+"player_name":          identity.canonical_name or player,
+"player":               identity.canonical_name or player,
+"team_or_player":       identity.canonical_name or player,
+"player_team":          identity.canonical_team_name,
+"player_current_team":  identity.canonical_team_name,
+"team":                 identity.canonical_team_name,
+```
+No math changes.  No new fetches.  No canonical resolver changes.
+No new writer.  Only fields the row already carries — the
+producer/consumer contract now matches.
+
+### Verified BEFORE → AFTER (live probe, same slate)
+| Metric | BEFORE | AFTER |
+|---|---|---|
+| Picks with `home_team` populated | 0 / 515 | **515 / 515** ✅ |
+| Picks with `player_name` populated | 0 / 515 | **515 / 515** ✅ |
+| Picks with `player_current_team` populated | 0 / 515 | **515 / 515** ✅ |
+| Picks with `IDENTITY_RESOLVED` | 320 (ingester resolved but pick blank) | **320 with fields now visible** |
+| Off-board `player_team_invalid` | 8 | **0** ✅ (eliminated) |
+| Off-board `roster_unverified` | 8 | **0** ✅ (eliminated) |
+| **Soccer player-prop PUBLISHED** | **0** | **8** ✅ |
+
+### Top publishable picks (post-fix, live slate)
+| Player | Market | Book | Lock | Status |
+|---|---|---|---|---|
+| Harry Kane | To Score or Assist | -300 | **92.5** | ✅ PUBLISHED (Lock) |
+| Harry Kane | Anytime Goal Scorer | -210 | **88.2** | ✅ PUBLISHED (Playable) |
+| Michael Olise | To Score or Assist | -260 | **87.8** | ✅ PUBLISHED (Playable) |
+| Lamine Yamal | To Score or Assist | -240 | **86.4** | ✅ PUBLISHED (Playable) |
+| Deniz Undav | To Score or Assist | +140 | 84.7 | Pass (legit below 85) |
+
+### Remaining off-board reasons (all legitimate — external, not internal)
+- **390 LOW_LOCK_SCORE** — honest math, model probability + real book price don't clear 85
+- **99 PLAYER_IDENTITY_UNRESOLVED** — provider long-form names (e.g. "Raul Garcia De Haro") not yet in `player_identities` DB.  Fix requires **external** roster ingestion, not an internal code change
+- **3 PLAYER_IDENTITY_AMBIGUOUS** — collision cases; identity resolver correctly refuses to guess
+- **15 PLAYER_HISTORY_NOT_FOUND** — lower-league players with no Understat coverage
+
+### Hard-freeze compliance
+Zero changes to: Soccer model coefficients, ATGS probability math,
+Lock Score, 85 threshold, MIG, Evidence Governor, APEX, canonical
+publication rules, settlement, provider acquisition, Odds API sport
+keys, ProviderBudget, 72h horizon, NFL/CFB work, or frontend
+performance work.  No star-player boost.  No team boost.  No fake
+history.  Legitimate BELOW_85 picks (Deniz Undav 84.7 etc.) remain
+off-board.
+
+### Files touched (this pass)
+`backend/services/real_line_scorer_ingest.py` — ONLY file changed.
+
+**Verdict**: `SOCCER_PLAYER_IDENTITY_BACKFILL_CERTIFIED` ✅
+

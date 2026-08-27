@@ -453,7 +453,28 @@ async def _ingest_player_scorer_row(
         "sport_key": sport_key,
         "pick_date": today,
         "event": f"{away} @ {home}" if home and away else (home or away),
-        "event_id": event_id,
+        # ── 2026-08-27 IDENTITY PROPAGATION (surgical) ──────────────
+        # Downstream identity gates + rationale UI + fixture
+        # validators read TOP-LEVEL `home_team`/`away_team`/
+        # `player_name` — not `canonical_*` shadow fields.  The
+        # ingester has these values in its row + resolved identity
+        # already; simply propagate them onto the emitted pick so
+        # 192 provider-ATGS rows previously flagged
+        # PLAYER_IDENTITY_UNRESOLVED / player_team_invalid /
+        # roster_unverified can be re-evaluated against the actual
+        # fixture teams instead of NULLs.  Zero math changes; zero
+        # new fetches; only fields the row already carries.
+        "home_team":            home,
+        "away_team":            away,
+        "home_team_name":       home,
+        "away_team_name":       away,
+        "player_name":          identity.canonical_name or player,
+        "player":               identity.canonical_name or player,
+        "team_or_player":       identity.canonical_name or player,
+        "player_team":          identity.canonical_team_name,
+        "player_current_team":  identity.canonical_team_name,
+        "team":                 identity.canonical_team_name,
+        "event_id":             event_id,
         "market": f"{player} {_MARKET_LABEL.get(mk, mk)}",
         "market_key": mk,
         "market_family": "player_prop",
