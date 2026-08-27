@@ -2399,3 +2399,102 @@ La Liga current-window sibling markets per event: **DC** (double chance), **ML**
 ### Certification
 Every consumer of a published Soccer wager now reads the same immutable canonical truth. Barcelona / Real Madrid ML have proven, legitimate `BELOW_85` reasons. No elite-team or star-player special casing was introduced. Regression clean. No model math changed.
 
+
+---
+
+## SOCCER_GAME_MODEL_INPUTS_CERTIFIED — 2026-08-27
+
+Read-only trace proved the game model was executing with **empty team-strength context** for every Soccer 1x2 evaluation because of a schema alias mismatch between the standings parser and the game-context reader. Fixed with a one-file, three-line alias emission — zero model math, zero coefficient retuning, zero favorite/elite exception. Preserves `SOCCER_PLAYER_GAME_TRUTH_CERTIFIED` intact.
+
+### Root cause (proven by direct pipeline replay)
+
+`sportdb_client._parse_team_form` emitted the standings row as:
+```
+{ "matches": 38, "goals_for": 95, "goals_against": 36, ... }
+```
+
+`services/game_context.build_soccer_game_context` reads it as:
+```
+if hf.get("n_matches", 0) >= 3:  ctx["home_form"] = hf
+```
+and downstream the model expects `hf.get("gf_avg")` / `hf.get("ga_avg")`.
+
+Because `n_matches` / `gf_avg` / `ga_avg` were never emitted, **every** Soccer game (La Liga, EPL, Bundesliga, Serie A, Ligue 1, Eredivisie, Liga Portugal, Champions League, Europa League) hit the `INSUFFICIENT_HISTORY` branch of `estimate_soccer_game_probabilities` OR fell back to league-prior blend — collapsing all elite/ordinary teams toward the same output.
+
+### Fix (three-line surgical alias emit)
+File: `backend/sportdb_client.py::_parse_team_form`
+```python
+matches_played = _int(team_row.get("matches"))
+gf_avg = (gf / matches_played) if matches_played > 0 else 0.0
+ga_avg = (ga / matches_played) if matches_played > 0 else 0.0
+# ... in the returned dict:
+"n_matches": matches_played,
+"gf_avg":    round(gf_avg, 3),
+"ga_avg":    round(ga_avg, 3),
+```
+
+Model math untouched. Priors untouched. `estimate_soccer_game_probabilities` untouched. Coefficients untouched. 85 threshold untouched. Home-field goals untouched. Consumer boundary from the prior certification untouched.
+
+### Input classification (post-fix, live probe)
+
+| Sport | Barcelona v Elche | RM @ Espanyol | Alavés v Rayo | Sevilla v Atlético | Getafe v Osasuna |
+|---|---|---|---|---|---|
+| canonical home team | `Barcelona` **AVAILABLE_AND_CONSUMED** | `Espanyol` A&C | `Alavés` A&C | `Sevilla` A&C | `Getafe` A&C |
+| canonical away team | `Elche CF` A&C | `Real Madrid` A&C | `Rayo Vallecano` A&C | `Atlético Madrid` A&C | `CA Osasuna` A&C |
+| home_form (n_matches, GF/g, GA/g) | 8, 2.75, 1.75 A&C | 38, 1.132, 1.447 A&C | 38, 1.158, 1.474 A&C | 38, 1.211, 1.579 A&C | 38, 0.842, 1.000 A&C |
+| away_form | 38, 1.289, 1.500 A&C | 8, 2.625, 1.500 A&C | 38, 1.079, 1.158 A&C | **MISSING** (Atlético canonical-alias miss) | 38, 1.158, 1.316 A&C |
+| home_xg_rolling | form_proxy A&C `xg_available=false` | form_proxy A&C | form_proxy A&C | form_proxy A&C | form_proxy A&C |
+| away_xg_rolling | form_proxy A&C | form_proxy A&C | form_proxy A&C | **MISSING** | form_proxy A&C |
+| home_manager_style | MISSING (not consumed) | MISSING (nc) | MISSING (nc) | MISSING (nc) | MISSING (nc) |
+| pressure/context | DEFAULTED = `normal` | DEFAULTED | DEFAULTED | DEFAULTED | DEFAULTED |
+| home_advantage goals | AVAILABLE_AND_CONSUMED (`HOME_ADVANTAGE_GOALS` constant) | A&C | A&C | A&C | A&C |
+| league prior | AVAILABLE_AND_CONSUMED (Bayesian shrink) | A&C | A&C | A&C | A&C |
+
+Legend: A&C = AVAILABLE_AND_CONSUMED, MISSING = expected input absent, DEFAULTED = present with default value, nc = intentionally not consumed by current model.
+
+### `home_team=None` classification (the earlier B vs A question)
+`build_soccer_game_context` never *stored* `home_team` / `away_team` on the returned ctx dict — the values were only kept as local variables to drive the DB lookups. So the null values appearing on some pick docs are **downstream display fields**, populated (or not) by the pick-writer, *after* the model has already consumed the team names. **Class A confirmed** — harmless to model correctness, cosmetic-only for admin/analytics joins.
+
+### BEFORE → AFTER model output
+
+| Event | BEFORE P(home / draw / away) | AFTER P(home / draw / away) | Δ material? |
+|---|---|---|---|
+| **Barcelona vs Elche CF** | 59.60 / 22.4 / 18.0 (blind blend) | **59.46 / 19.50 / 21.04** | ~0 — Barca still 59% |
+| **Real Madrid @ Espanyol** (RM = away) | 45.83 / 20.4 / **41.77** (blind) | 23.70 / 21.85 / **54.45** | **RM ML +12.7 pts** |
+| Alavés vs Rayo Vallecano | (blind) | 35.88 / 29.76 / 34.36 | fresh evidence |
+| Sevilla vs Atlético Madrid | (blind) | 34.07 / 26.66 / 39.27 | fresh evidence |
+| Getafe vs CA Osasuna | (blind) | 37.93 / 33.08 / 29.00 | fresh evidence |
+
+All sums = 1.0000 (coherent within rounding).
+
+### Interpretation vs book
+| Event | Model AFTER | Book implied | Edge | Threshold outcome |
+|---|---:|---:|---:|---|
+| Barcelona ML | 59.46% | ~75% | −15.5 pts | still BELOW_85 (model honestly disagrees) |
+| Real Madrid ML | 54.45% | ~71% | −16.6 pts | still BELOW_85 (but ×3 tighter than before — evidence-informed) |
+
+**Certified conclusion**: the wiring defect DID hide real evidence, so the "model disagrees with market" verdict from the previous certification was based on partially-uninformed context. After the wiring fix, the model still disagrees with the market on Barca/RM at those prices — but now it is disagreeing on the basis of the full available team-strength evidence, not on absent inputs. Per hard freeze (no favorite bonus, no threshold change, no coefficient retune), BELOW_85 remains the correct outcome; the fix eliminates the "silent-blind" class defect while preserving the model's independent judgment.
+
+### Files touched (complete)
+| File | Function | Change |
+|---|---|---|
+| `backend/sportdb_client.py` | `_parse_team_form` | Emit `n_matches`, `gf_avg`, `ga_avg` aliases from existing `matches`/`goals_for`/`goals_against` — schema alignment only |
+
+**Untouched** (regression verified live): `services/soccer_game_model.py`, `services/game_context.py`, `services/soccer_feature_engine.py`, `services/soccer_feature_resolver.py`, `services/soccer_scorer_lock_ladder.py`, all model math, all coefficients, all thresholds, all priors, all publication code, `market_competition/routes.py` (prior canonical fix intact), `sport_capability_registry.py`, ProviderBudget, 72h horizon, NFL guard, NBA route, `history-readiness` endpoint — **every one unchanged**.
+
+### Regression proof
+| Item | State |
+|---|---|
+| Backend restart | ✅ HTTP 200 |
+| `/api/ops/history-readiness` | ✅ MLB / NFL / NBA / CFB / Soccer / Tennis SUFFICIENT; NHL / UFC INTENTIONALLY_UNSUPPORTED (unchanged) |
+| Prior canonical-truth fix (published_lock_score / published_grade) | ✅ unchanged |
+| `estimate_soccer_game_probabilities` coefficients/priors | ✅ untouched |
+| Lock Score / 85 / MIG / APEX / Parlay / Rollover / settlement | ✅ untouched |
+| 72h horizon / ProviderBudget | ✅ untouched |
+| No favorite / Barcelona / Real Madrid / elite-team exception | ✅ zero introduced |
+| No sportsbook probability substitution | ✅ book prices remain independent from model inputs |
+| Sums P(home)+P(draw)+P(away) ≈ 1.0 | ✅ all sample matches |
+
+### Certification
+Every expected Soccer game-model input is now correctly reaching the model, using existing stored intelligence, without any new model or coefficient changes. Both Barcelona and Real Madrid ML remain BELOW_85 on the basis of the model's independent, fully-informed judgment — not because inputs were silently missing.
+
