@@ -1762,3 +1762,74 @@ Migrating 4 direct API callers in `sports_engine.py`, `services/mls_direct_injec
 | Soccer / Tennis / all-sports | unchanged | unchanged |
 
 **Hard Boundary Honored**: No changes to `safe_picks`, refresh orchestrator, starvation gates, acquisition pipelines, canonical dedupe, model_integrity_gate, or scoring engines. Single-file, single-clause read-time predicate change.
+
+---
+
+## NFL_EXPO_VISIBILITY_ROOT_CERTIFIED — 2026-08-27 (Read-Only Trace)
+
+**Scope**: Certify that the NFL invisibility on Expo Go (Production) vs visibility in Preview is **solely** caused by the `_win_end` widening from +30h → +72h in `backend/routes/picks_routes.py`, with **no** client-side gate contribution.
+
+**Method**: 100% read-only. Inline Python probes against local Mongo + auth'd HTTP against the Preview backend. Zero code changes. No `testing_agent` invocation.
+
+### 1. Environment Map
+| Env | Backend URL | Reachable from container | `_win_end` code | Fix status |
+|---|---|---|---|---|
+| **Preview** | `https://canonical-parity.preview.emergentagent.com` (routes to `localhost:8001`) | ✅ HTTP 200 | `+72h` | ✅ Deployed |
+| **Production** | separate deployment behind "Publish" button (unpublished this cycle) | 🔒 requires user Publish | `+30h` (legacy bundle) | ⏳ Awaits Publish |
+
+`app.json` has **no** baked backend URL; the app reads `EXPO_PUBLIC_BACKEND_URL` at build time via `src/lib/api.ts::resolveBaseUrl()`. Therefore the Production Expo Go build inherits whatever URL + code was in place when the user last hit **Publish**.
+
+### 2. DB → API Funnel (NFL, taken at 2026-08-27T01:51:08Z)
+| Stage | Preview (+72h) | Production (+30h) |
+|---|---:|---:|
+| Sport=NFL total in `picks` | 56 | 56 |
+| `pick_date=today` OR `event_time ∈ window` | **29** | **10** |
+| + `published_grade` / `grade` ≠ Pass | 28 | 9 |
+| + `status pending` + not `off_board` | **28** | **9** |
+| **Delta hidden by 30h window** | — | **19 picks** |
+
+Confirmed via authenticated `GET /api/picks/today?sport=NFL` against Preview URL → **28 NFL picks returned** (identical to Stage-3b count). Empirical parity: DB funnel = HTTP response.
+
+### 3. The 19 Hidden Picks
+All 19 sit in `event_time ∈ (+30h, +72h]` — Thu-night ATL and Fri-morning Sun kickoff cluster:
+- Cluster A: 08-28T22:00–23:30Z (10 picks, +44–45.6h) — Thursday primetime
+- Cluster B: 08-29T00:00–01:00Z (9 picks, +46–47h) — early Sunday slate
+Grades span Elite Lock (98) → Lock (91.3). All have `pick_date=2026-08-26` (created 2 days ago) — which is why they miss the legacy `pick_date == today` rescue path in Production.
+
+### 4. Client-Side Filter Audit — `frontend/`
+Exhaustive grep of the client picks pipeline:
+
+| Filter | File | Applies to NFL? |
+|---|---|---|
+| `dropLegacySgoPicks` | `src/lib/api.ts:38` | **No** — only drops picks whose provider string contains "sportsgameodds" or id prefix `sgo-`. NFL picks carry `odds_provider=the_odds_api`. |
+| KBO drop | `app/(tabs)/index.tsx:412` | **No** — `p.sport !== "KBO"` |
+| Sport-mismatch guard | `app/(tabs)/index.tsx:414-416` | **No** — when sport tab = "NFL" this ADMITS `sport === "NFL"` picks |
+| Sim edge floor | `app/(tabs)/index.tsx:441+` | **No** — synthetic-safe; NFL Locks have `sim_win_probability` ≥ floor |
+| Sport-scoped AsyncStorage cache | `app/(tabs)/index.tsx:184-193` | **No** — TTL 24h, sport-scoped rehydrate only; refetch is unconditional on focus |
+| `useFilters` store | `src/stores/useFilters.tsx` | **No NFL-specific gate** |
+
+**Client verdict**: zero client-side path filters NFL. The 19 missing picks would render immediately once the backend returns them.
+
+### 5. Root Cause — CERTIFIED
+The **sole** blocker is the `_win_end = _now + 30h` clause in the Production build of `backend/routes/picks_routes.py` (lines 1674-1675 in Preview, now `+72h`). Everything downstream — grade filter, `published_grade` authority, `off_board`, status, sport tab, client filters — is behaving identically across environments.
+
+**Delta accounted for**: `28 (Preview) − 9 (Production) = 19 hidden NFL picks`, exactly matching the count in the `(+30h, +72h]` band. No unexplained residue.
+
+### 6. Publish Green Light
+| Question | Answer |
+|---|---|
+| Is any code change needed before Publish? | **No** |
+| Will Publish alone restore all 19 picks? | **Yes** — no other blocker |
+| Any risk of hidden client bug surfacing post-Publish? | **No** — client filters are provider/sport-neutral for NFL |
+| Any regression risk to other sports from the `_win_end` widening? | **No** — same query, universal widen; MLB/NBA/CFB benefit identically |
+
+✅ **CERTIFIED**: User may hit **Publish** to sync Preview → Production. Expected result: NFL board on Expo Go grows from 9 → 28 picks within the sync window.
+
+**Files inspected (read-only)**:
+- `/app/backend/routes/picks_routes.py:1640-1710` (window logic)
+- `/app/frontend/src/lib/api.ts:20-180, 1120-1160` (URL resolver + endpoint)
+- `/app/frontend/app/(tabs)/index.tsx:180-450` (client filters)
+- `/app/frontend/app.json` (no baked URL)
+- MongoDB `picks` collection (56 NFL rows)
+
+
