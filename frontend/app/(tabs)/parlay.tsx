@@ -94,16 +94,27 @@ export default function ParlayScreen() {
     sportMode, windowHours, filters, preferredBook,
   } = prefs;
 
+  // 2026-08-27 TAB-ISOLATION P3: async race-protection token.  When
+  // the user rapid-taps modes/sports (e.g. auto → custom → sport CFB
+  // → sport NFL), an earlier /api/parlay response may arrive AFTER a
+  // newer one — this token discards their `setParlays`/`setReason`
+  // calls so the visible screen only reflects the current selection.
+  const _reqTokenRef = useRef(0);
+
   const load = useCallback(
     async (n: number, m: "standard" | "high_risk" | "today_window" | "advanced", s: string, lt: LineType,
            incl: string[], excl: string[], f: any, r: number, locked: string[],
            sMode: "auto"|"custom"|"single", wHours: number, nonce: number,
            advSub?: "safer" | "ev", silent: boolean = false) => {
+      const myToken = _reqTokenRef.current + 1;
+      _reqTokenRef.current = myToken;
       try {
         setError(null);
         const res = await api.parlay(
           n, m, s, lt, incl, f, r, locked, sMode, wHours, excl, nonce, advSub,
         );
+        // Race guard: if a newer request superseded this one, discard.
+        if (myToken !== _reqTokenRef.current) return;
         const parlays = res.parlays || [];
         const reason = res.reason || "";
         setParlays(parlays);
@@ -114,9 +125,11 @@ export default function ParlayScreen() {
           { parlays, reason },
         );
       } catch (e: any) {
+        if (myToken !== _reqTokenRef.current) return;
         console.warn("parlay load", e);
         if (!silent) setError(String(e?.message || "Couldn't build parlays."));
       } finally {
+        if (myToken !== _reqTokenRef.current) return;
         if (!silent) setLoading(false);
         setRefreshing(false);
       }
@@ -142,6 +155,12 @@ export default function ParlayScreen() {
            filters, rank, lockedIds, sportMode, windowHours, refreshNonce,
            mode === "advanced" ? advancedSub : undefined, true);
     } else {
+      // 2026-08-27 TAB-ISOLATION P0: clear previous-selection parlays
+      // BEFORE the skeleton paints so the user never sees a stale
+      // parlay slate (e.g. CFB parlays) briefly under a freshly
+      // selected sport (e.g. NFL).
+      setParlays([]);
+      setReason("");
       setLoading(true);
       load(legs, mode, sport, lineType, includedSports, excludedSports,
            filters, rank, lockedIds, sportMode, windowHours, refreshNonce,
