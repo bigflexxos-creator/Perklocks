@@ -2012,3 +2012,243 @@ async def research_matchup_dna(
     )
     return {"dna": snap.matchup_dna,
             "sport": sport, "subject": subject, "opponent": opponent}
+
+
+# ── §7 Additional research endpoints ─────────────────────────────────
+@router.get("/research/today")
+async def research_today(
+    sport: str | None = Query(None, description="MLB | NFL | NBA | omit for all"),
+    limit: int = Query(15, ge=1, le=50),
+) -> dict[str, Any]:
+    """Professional Today Feed sections (§8):
+       TOP_RESEARCHED / TREND_RADAR / POSITIVE_REGRESSION / ROLE_CHANGES /
+       STRONG_MATCHUPS / MARKET_DISAGREEMENTS / RISK_FLAGS.
+    """
+    sports = [sport.upper()] if sport else ["MLB", "NFL", "NBA"]
+    from services.research import get_research_service
+    from services.research.trend_radar import classify
+    from services.research.trends import TrendType
+    svc = get_research_service()
+
+    top_researched: list[dict[str, Any]] = []
+    trend_radar: list[dict[str, Any]] = []
+    positive_regression: list[dict[str, Any]] = []
+    role_changes: list[dict[str, Any]] = []
+    strong_matchups: list[dict[str, Any]] = []
+    market_disagreements: list[dict[str, Any]] = []
+    risk_flags: list[dict[str, Any]] = []
+
+    # MLB — Hot Hitters is the anchor.
+    if "MLB" in sports:
+        try:
+            from hot_hitters import build_hot_hitters
+            hh = await build_hot_hitters(limit=25)
+            hitters = hh.get("hitters", [])
+        except Exception:
+            hitters = []
+        for h in hitters[:limit]:
+            sig = classify("MLB", h.get("player_name") or "", h,
+                           player_id=str(h.get("player_id") or ""))
+            row = {"sport": "MLB",
+                   "subject": h.get("player_name"),
+                   "team": h.get("team_abbr"),
+                   "heat_score": h.get("heat_score"),
+                   "l15_avg": h.get("l15_avg"),
+                   "trend": sig.to_dict() if sig else None,
+                   "playing_today": h.get("playing_today"),
+                   "opponent": h.get("next_opponent_abbr"),
+                   "market_relevance": (sig.market_relevance if sig else
+                                       ["Over 0.5 Hits"]),
+                   "reachability": "RESEARCH_ONLY (below-85 or model-only)"}
+            top_researched.append(row)
+            if sig:
+                trend_radar.append(row)
+                if sig.trend_type == TrendType.POSITIVE_REGRESSION:
+                    positive_regression.append(row)
+                if sig.trend_type == TrendType.ROLE_DECLINE:
+                    role_changes.append(row); risk_flags.append(row)
+                if sig.trend_type == TrendType.OVERPERFORMING:
+                    risk_flags.append(row)
+
+    # NFL / NBA — pull today's active subjects from published pick candidates,
+    # then classify. We DO NOT publish any pick here.
+    for sp in [s for s in sports if s in ("NFL", "NBA")]:
+        try:
+            cursor = db.picks.find(
+                {"sport": sp, "player_name": {"$exists": True, "$ne": None}},
+                {"_id": 0, "player_name": 1, "opponent": 1, "event": 1,
+                 "market": 1, "lock_score": 1},
+            ).sort("pick_date", -1).limit(60)
+            picks = await cursor.to_list(length=60)
+        except Exception:
+            picks = []
+        seen: set = set()
+        for p in picks:
+            nm = p.get("player_name")
+            if not nm or nm in seen: continue
+            seen.add(nm)
+            try:
+                snap = await svc.build_snapshot(
+                    sport=sp, subject=nm,
+                    opponent=p.get("opponent") or p.get("event"),
+                    include_shadow=False, include_distribution=False,
+                )
+            except Exception:
+                continue
+            feats = snap.to_ctx()
+            sig = classify(sp, nm, feats)
+            row = {"sport": sp, "subject": nm,
+                   "market": p.get("market"),
+                   "lock_score": p.get("lock_score"),
+                   "trend": sig.to_dict() if sig else None,
+                   "reachability": ("ON_LOCKS" if (p.get("lock_score") or 0) >= 85
+                                   else "RESEARCH_ONLY")}
+            top_researched.append(row)
+            if sig:
+                trend_radar.append(row)
+                if sig.trend_type == TrendType.POSITIVE_REGRESSION:
+                    positive_regression.append(row)
+                if sig.trend_type in (TrendType.ROLE_DECLINE, TrendType.ROLE_BREAKOUT):
+                    role_changes.append(row)
+                if sig.trend_type == TrendType.OVERPERFORMING:
+                    risk_flags.append(row)
+                if sig.trend_type in (TrendType.TARGET_SURGE, TrendType.RUSH_VOLUME_SURGE,
+                                       TrendType.RED_ZONE_SURGE, TrendType.SCORING_SURGE,
+                                       TrendType.MINUTES_INCREASE):
+                    strong_matchups.append(row)
+            if len(top_researched) > limit * 3:
+                break
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "sports": sports,
+        "sections": {
+            "TOP_RESEARCHED": top_researched[:limit],
+            "TREND_RADAR": trend_radar[:limit],
+            "POSITIVE_REGRESSION": positive_regression[:limit],
+            "ROLE_CHANGES": role_changes[:limit],
+            "STRONG_MATCHUPS": strong_matchups[:limit],
+            "MARKET_DISAGREEMENTS": market_disagreements[:limit],
+            "RISK_FLAGS": risk_flags[:limit],
+        },
+        "note": ("RESEARCH_ONLY rows do NOT publish a pick. ON_LOCKS rows are "
+                 "existing canonical Locks with published_lock_score ≥ 85."),
+    }
+
+
+@router.get("/research/trends")
+async def research_trends(
+    sport: str = Query(..., description="MLB | NFL | NBA"),
+    subject: str | None = Query(None),
+    limit: int = Query(25, ge=1, le=100),
+) -> dict[str, Any]:
+    """Trend Radar — classify one subject or scan today's slate."""
+    sport = sport.upper()
+    from services.research import get_research_service
+    from services.research.trend_radar import classify
+    svc = get_research_service()
+    trends: list[dict[str, Any]] = []
+    if subject:
+        snap = await svc.build_snapshot(
+            sport=sport, subject=subject, include_shadow=False,
+        )
+        feats = snap.to_ctx()
+        # merge non-namespaced factuals plus hot-hitter shape if MLB
+        if sport == "MLB":
+            try:
+                from hot_hitters import build_hot_hitters
+                hh = await build_hot_hitters(limit=100)
+                match = next((h for h in hh.get("hitters", [])
+                              if h.get("player_name") == subject), None)
+                if match:
+                    feats.update({k: v for k, v in match.items()
+                                  if k not in feats})
+            except Exception:
+                pass
+        sig = classify(sport, subject, feats)
+        if sig:
+            trends.append(sig.to_dict())
+        return {"sport": sport, "subject": subject, "trends": trends}
+    # Slate scan
+    if sport == "MLB":
+        try:
+            from hot_hitters import build_hot_hitters
+            hh = await build_hot_hitters(limit=limit)
+        except Exception:
+            hh = {"hitters": []}
+        for h in hh.get("hitters", []):
+            sig = classify("MLB", h.get("player_name") or "", h)
+            if sig:
+                trends.append(sig.to_dict())
+    else:
+        try:
+            cursor = db.picks.find(
+                {"sport": sport, "player_name": {"$exists": True, "$ne": None}},
+                {"_id": 0, "player_name": 1, "opponent": 1, "event": 1},
+            ).sort("pick_date", -1).limit(limit * 3)
+            rows = await cursor.to_list(length=limit * 3)
+        except Exception:
+            rows = []
+        seen: set = set()
+        for r in rows:
+            nm = r.get("player_name")
+            if not nm or nm in seen: continue
+            seen.add(nm)
+            snap = await svc.build_snapshot(
+                sport=sport, subject=nm,
+                opponent=r.get("opponent") or r.get("event"),
+                include_shadow=False,
+            )
+            sig = classify(sport, nm, snap.to_ctx())
+            if sig: trends.append(sig.to_dict())
+            if len(trends) >= limit: break
+    return {"sport": sport, "trends": trends}
+
+
+@router.get("/research/coverage")
+async def research_coverage() -> dict[str, Any]:
+    """Data coverage snapshot for the Lab: which sports and markets are
+    factually reachable in this build."""
+    from services.sport_capability_registry import (
+        production_status, prop_markets_for,
+    )
+    from services.research.service import SUPPORTED_SPORTS
+    rows = []
+    for sp in ["MLB", "NFL", "NBA", "Soccer", "Tennis", "CFB", "NHL", "UFC"]:
+        rows.append({
+            "sport": sp,
+            "production_status": production_status(sp),
+            "research_supported": sp.upper() in SUPPORTED_SPORTS,
+            "prop_markets": prop_markets_for(sp),
+        })
+    return {"coverage": rows,
+            "supported_in_strategy_lab": sorted(SUPPORTED_SPORTS)}
+
+
+@router.get("/research/signals")
+async def research_signals(
+    sport: str | None = Query(None),
+    status: str | None = Query(None),
+    limit: int = Query(200, ge=1, le=1000),
+) -> dict[str, Any]:
+    """Signal Registry — persistent lifecycle store."""
+    from services.research import signal_registry
+    return {"signals": await signal_registry.list_signals(
+        sport=sport, status=status, limit=limit,
+    ), "statuses": list(signal_registry.STATUSES)}
+
+
+@router.get("/research/walk-forward")
+async def research_walk_forward(
+    sport: str = Query(...),
+    validation_start: str = Query(..., description="ISO date"),
+    test_start: str = Query(..., description="ISO date"),
+    min_events: int = Query(40, ge=5, le=1000),
+    q_fdr: float = Query(0.10, ge=0.001, le=0.5),
+) -> dict[str, Any]:
+    """§6 walk-forward validation + Benjamini-Hochberg FDR control."""
+    from services.research.validation import walk_forward_validate
+    return await walk_forward_validate(
+        sport=sport, validation_start=validation_start,
+        test_start=test_start, min_events=min_events, q_fdr=q_fdr,
+    )

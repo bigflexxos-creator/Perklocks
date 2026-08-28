@@ -272,6 +272,13 @@ def _reasons(l15_avg: float, l15_ops: float, hit_streak: int,
 async def build_hot_hitters(limit: int = 20) -> dict:
     """Assemble the Hot Hitters leaderboard.  Public entry-point for
     the `/api/lab/hot-hitters` endpoint.
+
+    Strategy Lab 10X §1 upgrade (2026-08-28):
+      * Exact multi-hit game counts pulled from canonical
+        `player_game_logs` — NO MORE `hits * 0.35` approximation.
+      * Trend classification emitted per player (HOT_CONFIRMED /
+        BREAKOUT / POSITIVE_REGRESSION / OVERPERFORMING / ROLE_DECLINE /
+        NEUTRAL). Trend is RESEARCH_ONLY — it never publishes a pick.
     """
     async with httpx.AsyncClient() as client:
         leaderboard, streaks, sched = await asyncio.gather(
@@ -279,6 +286,49 @@ async def build_hot_hitters(limit: int = 20) -> dict:
             _fetch_active_hit_streaks(client),
             _fetch_todays_schedule(client),
         )
+
+    # ── §1 canonical multi-hit truth ──────────────────────────────────
+    # Pull real game-level actuals from `player_game_logs` (MLB canonical)
+    # so 0/1/2/3+ hit game counts are EXACT, never approximated.
+    try:
+        from deps import db
+        pids: list[int] = []
+        for entry in leaderboard:
+            p = entry.get("player") or {}
+            try:
+                pid = int(p.get("id") or 0)
+                if pid:
+                    pids.append(pid)
+            except (TypeError, ValueError):
+                pass
+        multi_hit_map: dict[int, dict] = {}
+        if pids:
+            cursor = db.player_game_logs.aggregate([
+                {"$match": {"sport": "mlb", "player_id": {"$in": pids}}},
+                {"$sort": {"date": -1}},
+                {"$group": {
+                    "_id": "$player_id",
+                    "rows": {"$push": {"h": "$stats.hits",
+                                       "ab": "$stats.at_bats"}}
+                }},
+            ])
+            async for doc in cursor:
+                rows = (doc.get("rows") or [])[:15]
+                buckets = {"g0": 0, "g1": 0, "g2": 0, "g3p": 0, "n": 0}
+                for r in rows:
+                    h = r.get("h") or 0
+                    ab = r.get("ab") or 0
+                    if ab <= 0:
+                        continue
+                    buckets["n"] += 1
+                    if h <= 0: buckets["g0"] += 1
+                    elif h == 1: buckets["g1"] += 1
+                    elif h == 2: buckets["g2"] += 1
+                    else: buckets["g3p"] += 1
+                multi_hit_map[int(doc["_id"])] = buckets
+    except Exception as _e:
+        logger.debug("multi_hit exact fetch fail-open: %s", _e)
+        multi_hit_map = {}
 
     rows: list[dict] = []
     for entry in leaderboard:
@@ -300,17 +350,14 @@ async def build_hot_hitters(limit: int = 20) -> dict:
             continue
         if g < 8:
             continue
-        # multi-hit count within window
-        try:
-            hits = int(stat.get("hits") or 0)
-            multi_hits = 0
-            # rough approx from games (books' feed doesn't expose exact),
-            # multi-hit games ≈ (hits - games_with_1_hit) — we don't have
-            # that split so we approximate via hits/games ratio.
-            if l15_avg >= 0.300 and g > 0:
-                multi_hits = int(hits * 0.35)  # ~35% of hits come in multi-hit games
-        except (TypeError, ValueError):
-            multi_hits = 0
+
+        # §1 EXACT multi-hit truth from canonical game logs.
+        exact = multi_hit_map.get(pid) or {}
+        multi_hits = int(exact.get("g2", 0)) + int(exact.get("g3p", 0))
+        one_hit_games = int(exact.get("g1", 0))
+        zero_hit_games = int(exact.get("g0", 0))
+        exact_n = int(exact.get("n", 0))
+
         streak = streaks.get(pid, 0)
 
         tid = team.get("id")
@@ -322,6 +369,14 @@ async def build_hot_hitters(limit: int = 20) -> dict:
         heat = _heat_score(l15_avg, l15_ops, l15_obp, streak, g)
         if heat < 30:
             continue
+
+        # §1 + §4 trend classification (RESEARCH_ONLY).
+        trend = _classify_hitter_trend(
+            l15_avg=l15_avg, l15_ops=l15_ops, l15_obp=l15_obp,
+            streak=streak, multi_hits=multi_hits,
+            one_hit=one_hit_games, zero_hit=zero_hit_games,
+            n=exact_n, games=g,
+        )
 
         rows.append({
             "player_id": pid,
@@ -336,6 +391,12 @@ async def build_hot_hitters(limit: int = 20) -> dict:
             "l15_obp": round(l15_obp, 3),
             "l15_games": g,
             "hit_streak": streak,
+            "multi_hit_games": multi_hits,
+            "one_hit_games": one_hit_games,
+            "zero_hit_games": zero_hit_games,
+            "exact_game_log_n": exact_n,
+            "trend_type": trend,
+            "trend_provenance": "SHADOW_SIGNAL",  # research-only
             "playing_today": bool(game_ctx),
             "next_opponent": opp_name,
             "next_opponent_abbr": opp_abbr,
@@ -343,7 +404,6 @@ async def build_hot_hitters(limit: int = 20) -> dict:
             "reasons": _reasons(l15_avg, l15_ops, streak, multi_hits, g, opp_pitcher),
         })
 
-    # Sort: playing-today hitters first (actionable), then heat desc.
     rows.sort(key=lambda r: (r["playing_today"], r["heat_score"]),
               reverse=True)
 
@@ -352,4 +412,38 @@ async def build_hot_hitters(limit: int = 20) -> dict:
         "window_days": 15,
         "total_ranked": len(rows),
         "hitters": rows[:limit],
+        "notes": ["multi_hit_games computed from canonical player_game_logs "
+                  "(exact 0/1/2/3+ hit games, no approximation)"],
     }
+
+
+def _classify_hitter_trend(
+    l15_avg: float, l15_ops: float, l15_obp: float,
+    streak: int, multi_hits: int, one_hit: int, zero_hit: int,
+    n: int, games: int,
+) -> str:
+    """Universal Trend Contract classification (RESEARCH_ONLY).
+
+    Never modifies Lock math — surfaced to Lab workstation only.
+    """
+    # Sample gate — n<5 stays NEUTRAL rather than pretending confidence.
+    if n < 5 and games < 8:
+        return "NEUTRAL"
+    multi_rate = multi_hits / n if n > 0 else 0.0
+    hit_game_rate = ((multi_hits + one_hit) / n) if n > 0 else 0.0
+    # ── HOT_CONFIRMED: sustained multi-hit + hot OPS
+    if multi_rate >= 0.35 and l15_ops >= 0.850 and streak >= 3:
+        return "HOT_CONFIRMED"
+    # ── BREAKOUT: OPS spike without long track (small n) + strong recent
+    if l15_ops >= 0.900 and n <= 8 and streak >= 4:
+        return "BREAKOUT"
+    # ── OVERPERFORMING: high avg but weak underlying multi-hit
+    if l15_avg >= 0.330 and multi_rate < 0.20:
+        return "OVERPERFORMING"
+    # ── POSITIVE_REGRESSION: decent OBP but low avg — hits should come
+    if l15_obp >= 0.360 and l15_avg <= 0.240:
+        return "POSITIVE_REGRESSION"
+    # ── ROLE_DECLINE: cold streak + high zero-hit rate
+    if streak <= 1 and n > 0 and zero_hit / n >= 0.55 and l15_ops <= 0.650:
+        return "ROLE_DECLINE"
+    return "NEUTRAL"

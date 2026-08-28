@@ -191,14 +191,10 @@ export function StrategyLabWorkstation({ picks }: { picks: any[] }) {
       )}
 
       {!loading && !error && !subject && (
-        <View style={s.emptyBox}>
-          <Text style={s.emptyTitle}>Pick a subject to begin</Text>
-          <Text style={s.emptyBody}>
-            Enter any {sport} player above, or tap a live slate suggestion. The
-            workstation will pull FACTUAL research (form / matchup / Statcast /
-            role / pace) plus SHADOW pattern signals into one coherent view.
-          </Text>
-        </View>
+        <TodayFeed sport={sport} onPickSubject={(name, opp) => {
+          setSubject(name);
+          if (opp) setOpponent(opp);
+        }} />
       )}
 
       {!loading && subject && snapshot && (
@@ -528,6 +524,80 @@ function fmtOdds(n: number): string {
   return n > 0 ? `+${n}` : `${n}`;
 }
 
+// ── Professional Today Feed (§8) ─────────────────────────────────
+function TodayFeed({ sport, onPickSubject }: {
+  sport: Sport; onPickSubject: (name: string, opponent?: string) => void;
+}) {
+  const [data, setData] = useState<any | null>(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    setLoading(true);
+    api.labResearchToday({ sport, limit: 12 })
+      .then(setData).catch(() => setData(null))
+      .finally(() => setLoading(false));
+  }, [sport]);
+  if (loading) return <ActivityIndicator color={COLORS.textPrimary} style={{ marginTop: 16 }} />;
+  const sections = data?.sections || {};
+  const order: [string, string][] = [
+    ["TOP_RESEARCHED", "Top Researched"],
+    ["TREND_RADAR", "Trend Radar"],
+    ["POSITIVE_REGRESSION", "Positive Regression"],
+    ["STRONG_MATCHUPS", "Strong Matchups"],
+    ["ROLE_CHANGES", "Role Changes"],
+    ["RISK_FLAGS", "Risk / Trap Flags"],
+  ];
+  const nonEmpty = order.filter(([k]) => (sections[k] || []).length > 0);
+  return (
+    <View>
+      <Text style={s.dim}>{data?.note || ""}</Text>
+      {nonEmpty.length === 0 && (
+        <Text style={s.dim}>
+          No {sport} research signals surfaced yet. Populate by opening a
+          subject above or check back after the next data cycle.
+        </Text>
+      )}
+      {nonEmpty.map(([k, label]) => (
+        <View key={k} style={{ marginTop: 8 }}>
+          <Text style={s.h3}>{label}</Text>
+          {(sections[k] || []).slice(0, 6).map((row: any, i: number) => (
+            <TouchableOpacity
+              key={i}
+              onPress={() => onPickSubject(row.subject, row.opponent)}
+              style={s.todayRow}
+              testID={`today-${k}-${i}`}
+            >
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <Text style={s.todaySport}>{row.sport}</Text>
+                  <Text style={s.todayName} numberOfLines={1}>{row.subject}</Text>
+                </View>
+                <Text style={s.todayMeta} numberOfLines={1}>
+                  {(row.trend?.trend_type || "").replace(/_/g, " ")}
+                  {row.trend?.direction ? ` · ${row.trend.direction}` : ""}
+                  {row.trend?.strength ? ` · ${row.trend.strength}` : ""}
+                </Text>
+                {(row.market_relevance || row.market) && (
+                  <Text style={s.todayMeta} numberOfLines={1}>
+                    {(row.market_relevance || [row.market]).slice(0, 2).join(" · ")}
+                  </Text>
+                )}
+              </View>
+              <View style={[
+                s.reachPill,
+                row.reachability === "ON_LOCKS" ? s.reachOnLock : s.reachResearch,
+              ]}>
+                <Text style={s.reachPillTxt}>
+                  {row.reachability === "ON_LOCKS" ? "ON LOCKS" : "RESEARCH"}
+                </Text>
+              </View>
+            </TouchableOpacity>
+          ))}
+        </View>
+      ))}
+    </View>
+  );
+}
+
 const s = StyleSheet.create({
   headerRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 },
   headerTitle: { color: COLORS.textPrimary, fontSize: 15, fontWeight: "900", letterSpacing: 0.5 },
@@ -640,4 +710,19 @@ const s = StyleSheet.create({
   strengthMod:    { backgroundColor: "rgba(201,208,85,0.15)" },
   strengthWeak:   { backgroundColor: "rgba(255,255,255,0.05)" },
   strengthTxt: { color: COLORS.textPrimary, fontSize: 9, fontWeight: "900", letterSpacing: 0.6 },
+
+  // ── Today Feed rows ────────────────────────────────────────────
+  todayRow: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    padding: 10, borderRadius: 8, marginBottom: 5,
+    backgroundColor: "rgba(255,255,255,0.03)",
+    borderWidth: 1, borderColor: COLORS.borderDefault,
+  },
+  todaySport: { color: COLORS.goldElite, fontSize: 10, fontWeight: "900", letterSpacing: 0.6 },
+  todayName: { color: COLORS.textPrimary, fontSize: 13, fontWeight: "800", flex: 1 },
+  todayMeta: { color: COLORS.textMuted, fontSize: 10.5, marginTop: 2 },
+  reachPill: { paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4 },
+  reachOnLock: { backgroundColor: "rgba(64,209,138,0.15)" },
+  reachResearch: { backgroundColor: "rgba(201,208,85,0.10)" },
+  reachPillTxt: { color: COLORS.textPrimary, fontSize: 8.5, fontWeight: "900", letterSpacing: 0.6 },
 });
