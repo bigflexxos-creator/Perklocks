@@ -1077,6 +1077,35 @@ export const api = {
     }>(`/lab/matchup-dna/${encodeURIComponent(sport)}/${encodeURIComponent(subject)}${qs ? "?" + qs : ""}`);
   },
   // ── Strategy Lab 10X — Canonical Research Contract ──────────────
+  labResearchToday: (opts?: { sport?: string; limit?: number }) => {
+    const p = new URLSearchParams();
+    if (opts?.sport) p.set("sport", opts.sport);
+    if (opts?.limit) p.set("limit", String(opts.limit));
+    return request<any>(`/lab/research/today${p.toString() ? "?" + p.toString() : ""}`);
+  },
+  labResearchTrends: (sport: string, opts?: { subject?: string; limit?: number }) => {
+    const p = new URLSearchParams({ sport });
+    if (opts?.subject) p.set("subject", opts.subject);
+    if (opts?.limit) p.set("limit", String(opts.limit));
+    return request<any>(`/lab/research/trends?${p.toString()}`);
+  },
+  labResearchCoverage: () => request<any>(`/lab/research/coverage`),
+  labResearchSignals: (opts?: { sport?: string; status?: string; limit?: number }) => {
+    const p = new URLSearchParams();
+    if (opts?.sport) p.set("sport", opts.sport);
+    if (opts?.status) p.set("status", opts.status);
+    if (opts?.limit) p.set("limit", String(opts.limit));
+    return request<any>(`/lab/research/signals${p.toString() ? "?" + p.toString() : ""}`);
+  },
+  labResearchWalkForward: (opts: { sport: string; validation_start: string; test_start: string; min_events?: number; q_fdr?: number }) => {
+    const p = new URLSearchParams({
+      sport: opts.sport, validation_start: opts.validation_start,
+      test_start: opts.test_start,
+    });
+    if (opts.min_events) p.set("min_events", String(opts.min_events));
+    if (opts.q_fdr) p.set("q_fdr", String(opts.q_fdr));
+    return request<any>(`/lab/research/walk-forward?${p.toString()}`);
+  },
   labResearchContext: (opts: {
     sport: string; subject?: string; opponent?: string;
     event_id?: string; event_label?: string; role?: string;
