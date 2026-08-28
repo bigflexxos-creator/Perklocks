@@ -1076,6 +1076,38 @@ export const api = {
       hot_cold: string;
     }>(`/lab/matchup-dna/${encodeURIComponent(sport)}/${encodeURIComponent(subject)}${qs ? "?" + qs : ""}`);
   },
+  // ── Strategy Lab 10X — Canonical Research Contract ──────────────
+  labResearchContext: (opts: {
+    sport: string; subject?: string; opponent?: string;
+    event_id?: string; event_label?: string; role?: string;
+    include_shadow?: boolean; include_distribution?: boolean;
+    include_calibration?: boolean; market_hint?: string;
+  }) => {
+    const params = new URLSearchParams();
+    Object.entries(opts).forEach(([k, v]) => {
+      if (v != null && v !== "") params.set(k, String(v));
+    });
+    return request<any>(`/lab/research/context?${params.toString()}`);
+  },
+  labResearchDistribution: (sport: string, subject: string, market_hint?: string) => {
+    const p = new URLSearchParams({ sport, subject });
+    if (market_hint) p.set("market_hint", market_hint);
+    return request<any>(`/lab/research/distribution?${p.toString()}`);
+  },
+  labResearchLineExplorer: (sport: string, subject: string, line: number, market_hint?: string) => {
+    const p = new URLSearchParams({ sport, subject, line: String(line) });
+    if (market_hint) p.set("market_hint", market_hint);
+    return request<any>(`/lab/research/line-explorer?${p.toString()}`);
+  },
+  labResearchCalibration: (sport: string) =>
+    request<any>(`/lab/research/calibration?sport=${encodeURIComponent(sport)}`),
+  labResearchPatterns: (sport: string, opts?: { limit?: number; min_sample?: number }) => {
+    const p = new URLSearchParams({ sport });
+    if (opts?.limit) p.set("limit", String(opts.limit));
+    if (opts?.min_sample) p.set("min_sample", String(opts.min_sample));
+    return request<any>(`/lab/research/patterns?${p.toString()}`);
+  },
+
   xgFormShadow: () =>
     request<{
       buckets: {

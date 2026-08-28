@@ -35,11 +35,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { COLORS } from "@/src/theme";
 import { api, getBackendUrl } from "@/src/lib/api";
 import { PickEventRow } from "@/src/components/PickEventRow";
+import { StrategyLabWorkstation } from "@/src/components/StrategyLabWorkstation";
 
 // ── Module type ──────────────────────────────────────────────────────
-type LabModule = "cheats" | "hot" | "research" | "ev" | "sim" | "props" | "corr" | "backtest" | "patterns" | "dna" | "analytics";
+type LabModule = "workstation" | "cheats" | "hot" | "research" | "ev" | "sim" | "props" | "corr" | "backtest" | "patterns" | "dna" | "analytics";
 
 const MODULES: { id: LabModule; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { id: "workstation",label: "Workstation",  icon: "flask" },
   { id: "cheats",    label: "Cheatsheets",  icon: "flash" },
   { id: "hot",       label: "Hot Hitters",  icon: "flame" },
   { id: "analytics", label: "Analytics",    icon: "stats-chart" },
@@ -56,7 +58,7 @@ const MODULES: { id: LabModule; label: string; icon: keyof typeof Ionicons.glyph
 // ── Root screen ──────────────────────────────────────────────────────
 export default function LabScreen() {
   const insets = useSafeAreaInsets();
-  const [module, setModule] = useState<LabModule>("cheats");
+  const [module, setModule] = useState<LabModule>("workstation");
   const [picks, setPicks] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -93,7 +95,7 @@ export default function LabScreen() {
             <Text style={styles.headerTitle}>LAB</Text>
           </View>
           <Text style={styles.headerHint} numberOfLines={1}>
-            Research · EV · Sim · Props
+            Workstation · Research · EV · Sim
           </Text>
         </View>
         {/* Segmented control */}
@@ -150,6 +152,7 @@ export default function LabScreen() {
             />
           }
         >
+          {module === "workstation"&& <StrategyLabWorkstation picks={picks} />}
           {module === "cheats"    && <CheatsheetsModule picks={picks} />}
           {module === "hot"       && <HotHittersModule />}
           {module === "analytics" && <AnalyticsModule />}
