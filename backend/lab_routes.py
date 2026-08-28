@@ -1907,3 +1907,108 @@ async def matchup_dna(sport: str, subject: str, opponent: str | None = Query(Non
 def _empty_record() -> dict:
     return {"n": 0, "won": 0, "lost": 0, "push": 0,
             "hit_rate": 0.0, "units_profit": 0.0, "roi": 0.0}
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# STRATEGY LAB 10X — Canonical Research Endpoints
+# ═══════════════════════════════════════════════════════════════════
+# These are read-only wrappers over `services/research`. FACTUAL vs
+# SHADOW_SIGNAL provenance is preserved in every response so the
+# workstation can render truthfully. NEVER mutate published Lock math.
+
+@router.get("/research/context")
+async def research_context(
+    sport: str = Query(..., description="MLB | NFL | NBA"),
+    subject: str | None = Query(None, description="Player name"),
+    opponent: str | None = Query(None),
+    event_id: str | None = Query(None),
+    event_label: str | None = Query(None),
+    role: str = Query("player", description="batter | pitcher | player"),
+    include_shadow: bool = Query(True),
+    include_distribution: bool = Query(False),
+    include_calibration: bool = Query(False),
+    market_hint: str | None = Query(None),
+) -> dict[str, Any]:
+    """Canonical research snapshot for the Strategy Lab workstation.
+
+    Returns FACTUAL + SHADOW_SIGNAL clearly separated. FACTUAL rows are
+    safe to seed existing production models. SHADOW_SIGNAL is UI-only.
+    """
+    try:
+        from services.research import get_research_service
+        svc = get_research_service()
+        snap = await svc.build_snapshot(
+            sport=sport, subject=subject, opponent=opponent,
+            event_id=event_id, event_label=event_label, role=role,
+            include_shadow=include_shadow,
+            include_distribution=include_distribution,
+            include_calibration=include_calibration,
+        )
+        d = snap.to_dict()
+        if include_distribution and subject and not d.get("distribution"):
+            d["distribution"] = await svc.distribution(sport, subject, market_hint)
+        return d
+    except Exception as e:  # pragma: no cover
+        logger.exception("research/context failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/research/distribution")
+async def research_distribution(
+    sport: str = Query(..., description="MLB | NFL | NBA"),
+    subject: str = Query(...),
+    market_hint: str | None = Query(None),
+) -> dict[str, Any]:
+    from services.research import get_research_service
+    svc = get_research_service()
+    return await svc.distribution(sport, subject, market_hint)
+
+
+@router.get("/research/line-explorer")
+async def research_line_explorer(
+    sport: str = Query(...),
+    subject: str = Query(...),
+    line: float = Query(...),
+    market_hint: str | None = Query(None),
+) -> dict[str, Any]:
+    from services.research import get_research_service
+    svc = get_research_service()
+    return await svc.line_explorer(sport, subject, line, market_hint)
+
+
+@router.get("/research/calibration")
+async def research_calibration(
+    sport: str = Query(..., description="MLB | NFL | NBA"),
+) -> dict[str, Any]:
+    from services.research import get_research_service
+    svc = get_research_service()
+    return await svc.calibration_center(sport)
+
+
+@router.get("/research/patterns")
+async def research_patterns(
+    sport: str = Query(...),
+    limit: int = Query(20, ge=1, le=100),
+    min_sample: int = Query(25, ge=5, le=1000),
+) -> dict[str, Any]:
+    """Pattern Discovery 3.0 — SHADOW-only. NEVER consumed by Lock math."""
+    from services.research import get_research_service
+    svc = get_research_service()
+    return await svc.pattern_discovery(sport, limit=limit, min_sample=min_sample)
+
+
+@router.get("/research/matchup-dna")
+async def research_matchup_dna(
+    sport: str = Query(...),
+    subject: str = Query(...),
+    opponent: str | None = Query(None),
+) -> dict[str, Any]:
+    from services.research import get_research_service
+    svc = get_research_service()
+    snap = await svc.build_snapshot(
+        sport=sport, subject=subject, opponent=opponent,
+        include_shadow=False,
+    )
+    return {"dna": snap.matchup_dna,
+            "sport": sport, "subject": subject, "opponent": opponent}

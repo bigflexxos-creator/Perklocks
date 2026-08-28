@@ -177,8 +177,11 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="lab"
         options={{
-          href: null,
           title: "LAB",
+          tabBarIcon: ({ color, focused }) => (
+            <TabIcon name="flask" color={color} focused={focused} />
+          ),
+          tabBarButtonTestID: "tab-lab",
         }}
       />
       <Tabs.Screen
@@ -198,20 +201,17 @@ export default function TabsLayout() {
           tabBarButtonTestID: "tab-profile",
         }}
       />
-      {/* ── ADMIN tab — visible ONLY to users with role === "admin"
-          (see routes/analytics_routes.py — server enforces 403 on
-          non-admin regardless of UI visibility). Regular users don't
-          see this tab in the bar at all; admins see it as the last
-          entry so they can jump into model/ROI analytics without
-          leaving the tab layout.  2026-07-21. */}
+      {/* ── ADMIN tab — PERMANENTLY HIDDEN from bottom tab bar for
+          all users, including admins (per user directive 2026-08).
+          Admin access is available via Profile → Admin Dashboard for
+          authorized users only. Route/screen preserved; only the tab
+          bar entry is hidden with href: null. Server-side auth
+          (routes/analytics_routes.py) still enforces admin role. */}
       <Tabs.Screen
         name="admin"
         options={{
-          href: (user?.role === "admin") ? "/(tabs)/admin" : null,
+          href: null,
           title: "ADMIN",
-          tabBarIcon: ({ color, focused }) => (
-            <TabIcon name="shield-checkmark" color={color} focused={focused} />
-          ),
           tabBarButtonTestID: "tab-admin",
         }}
       />

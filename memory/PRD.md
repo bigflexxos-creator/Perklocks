@@ -1,3 +1,104 @@
+## 2026-08-28 — Strategy Lab 10X Professional Quant Engine (MLB/NFL/NBA)
+Verdict: **STRATEGY_LAB_10X_MLB_NFL_NBA_CERTIFIED**
+
+### Surgical navigation fix (Step 1 correction)
+- `frontend/app/(tabs)/_layout.tsx` — Admin `Tabs.Screen` set to `href: null`
+  **unconditionally** for ALL users (admins and non-admins). Icon removed.
+  Bottom tab bar is now exactly **6 items**: LOCKS · ROLLOVER · PARLAY ·
+  MY BETS · LAB · PROFILE.
+- Admin access preserved via `Profile → Admin Dashboard` (server-role-gated
+  at `analytics_routes.py`; UI-role-gated at `profile.tsx:171-181`).
+- No change to Admin authorization or route (`/admin/index.tsx` unchanged).
+
+### Canonical research contract layer (NEW — additive only)
+- `backend/services/research/__init__.py` — Public package exports.
+- `backend/services/research/contract.py` — `CanonicalResearchSnapshot`,
+  `ResearchFact`, `ResearchShadowSignal`, `ResearchProvenance`
+  (FACTUAL / SHADOW_SIGNAL), `ResearchQuality` (FULL/STRONG/PARTIAL/
+  PRIOR_ONLY/MISSING), `ResearchSection` (OPPORTUNITY/FORM/MATCHUP/
+  STATCAST/LINEUP/PITCHER/PACE/RED_ZONE/DISTRIBUTION/CALIBRATION/PATTERN).
+- `backend/services/research/service.py` — `ResearchService` aggregator
+  (build_snapshot, distribution, line_explorer, calibration_center,
+  pattern_discovery). `SUPPORTED_SPORTS = {MLB, NFL, NBA}` gate.
+- `backend/services/research/mlb.py` — Reuses `hot_hitters`, `mlb_statcast`,
+  `mlb_pitchers_intel`, `player_game_logs`. FACTUAL: L15 form / xBA /
+  barrel% / hard-hit% / H2H. SHADOW: hot-streak flag (UI-only).
+- `backend/services/research/nfl.py` — Reuses `nfl_players_intel`,
+  `nfl_defense_intel`, `player_game_logs`. FACTUAL: snap% / target share /
+  carry share / RZ touches / air yards / L4 opportunity. SHADOW:
+  target-streak flag.
+- `backend/services/research/nba.py` — Reuses `player_game_logs`,
+  `team_form`. FACTUAL: L10 PTS/REB/AST/PRA/3PM/MIN, opp pace, opp DEF
+  rating. SHADOW: scoring-streak flag.
+- `backend/services/research/bridge.py` — `enrich_ctx_with_factual()`
+  hook. FACTUAL-only injection, NEVER overwrites existing production ctx
+  keys, fail-open on error. Opt-in for future promoted signals.
+
+### Endpoints (mounted at /api/lab/research/*)
+- `GET /research/context` — canonical snapshot (sport, subject, opponent,
+  role, include_shadow, include_distribution, include_calibration).
+- `GET /research/distribution` — empirical stat histogram + percentiles.
+- `GET /research/line-explorer` — over/under % + fair American odds.
+- `GET /research/calibration` — historical bucket calibration table.
+- `GET /research/patterns` — Pattern Discovery 3.0 SHADOW signals only,
+  Wilson-lower-bound ranked, min_sample gate.
+- `GET /research/matchup-dna` — actual-history vs opponent stats.
+
+### Strategy Lab Workstation UI (NEW module in Lab tab)
+- `frontend/src/components/StrategyLabWorkstation.tsx` — NEW.
+  Six subsections: Overview / Facts / Line Value / Matchup DNA /
+  Calibration / Patterns 3.0. Auto-suggests subjects from live slate.
+  FACTUAL rendered green, SHADOW rendered gold with explicit badge.
+- `frontend/app/(tabs)/lab.tsx` — Added `workstation` module as the FIRST
+  entry in the segmented control; default active module.
+- Reused untouched: Cheatsheets, Hot Hitters, Analytics, Research,
+  Correlations, Backtest, Patterns, Matchup DNA, EV Calc, Sim, Props.
+
+### HARD FREEZE respected
+- ✅ Lock math unchanged (v3 composite; 85 threshold; Evidence Governor).
+- ✅ Existing sport models/simulators untouched.
+- ✅ SHADOW_SIGNAL rows CANNOT reach production scorers (proved by test).
+- ✅ No new provider dependency (adapters read existing collections).
+- ✅ Sport gate enforced: only MLB / NFL / NBA supported in this build.
+  CFB / Soccer / NHL / UFC / Tennis correctly rejected at service layer.
+- ✅ Read-only calibration: never mutates settled truth, never rewrites
+  published Lock scores.
+
+### Focused regression: 5/5 PASS
+`tests/test_strategy_lab_research_contract.py`:
+- `test_shadow_never_in_ctx` — SHADOW_SIGNAL absent from `to_ctx()`.
+- `test_to_dict_serializable` — JSON serializes cleanly, provenance
+  labels preserved.
+- `test_bridge_never_overwrites_and_never_pulls_shadow` — bridge fail-open
+  contract + non-overwrite invariant.
+- `test_line_explorer_math_deterministic` — 0.5 over-rate → -100 fair odds.
+- `test_supported_sports_gate` — SUPPORTED_SPORTS == {MLB, NFL, NBA}.
+
+### Runtime proof (live endpoints)
+- `/api/health` → 200
+- `/api/lab/research/context?sport=MLB&subject=Aaron%20Judge&role=batter`
+  → 200, factual/shadow counts, notes recorded
+- `/api/lab/research/context?sport=SOCCER&subject=...`
+  → 200 with `notes=["Sport SOCCER not supported in Strategy Lab 10X
+     (MLB/NFL/NBA only)"]` (gate honored)
+- `/api/lab/research/calibration?sport=MLB` → live buckets 50-59 through
+  90-100, real N and hit-rates from settled picks.
+- `/api/lab/research/patterns?sport=MLB` → SHADOW_SIGNAL rows,
+  Wilson-lower-bound ranked (e.g. "Matt Olson Over 0.5 Hits / heavy_fav":
+  n=26, HR 80.8%, WLB 62.1%, strong).
+
+### Not-scope in this build
+- Universal Grading Truth Steps 2-8 — remain P1, resume next.
+- CFB / Soccer / NHL / UFC / Tennis research adapters — deferred per user
+  directive (MLB/NFL/NBA only in this pass).
+- Strategy Lab 10X full 48-step spec — this build ships the FOUNDATIONAL
+  layers (contract, service, adapters, endpoints, workstation UI, HARD
+  FREEZE enforcement). Additional 10X phases (advanced Prescriber,
+  cross-sport correlation, learned promotion pipeline) remain follow-on.
+
+---
+
+
 ## 2026-08-27 — Soccer Player Feature Resolver Universal Fix
 Verdict: **SOCCER_PLAYER_FEATURE_RESOLUTION_CERTIFIED**
 
