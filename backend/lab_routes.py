@@ -276,9 +276,16 @@ async def correlations_v2(
         avg_combo_odds = round(c["combined_odds_sum"] / n) if n else 0
         roi = c["units_profit_sum"] / c["units_risked_sum"] if c["units_risked_sum"] else 0
         wlb = _wilson_lower_bound(both, n)
+        # §15 correlation identity guard — exclude rows whose leg identity
+        # cannot be resolved. Never expose "Mlb Other" / "Nba Other" etc.
+        la = _prettify_leg(sa, fa)
+        lb = _prettify_leg(sb, fb)
+        if (la == "CORRELATION_LEG_IDENTITY_INCOMPLETE"
+                or lb == "CORRELATION_LEG_IDENTITY_INCOMPLETE"):
+            continue
         rows.append({
-            "leg_a_display": _prettify_leg(sa, fa),
-            "leg_b_display": _prettify_leg(sb, fb),
+            "leg_a_display": la,
+            "leg_b_display": lb,
             "leg_a_family": fa, "leg_b_family": fb,
             "sample_size": n,
             "cohit_pct": round(p_both * 100, 1),
@@ -286,7 +293,19 @@ async def correlations_v2(
             "leg_b_hit_pct": round(pb * 100, 1),
             "combo_odds": avg_combo_odds,
             "roi_pct": round(roi * 100, 1),
-            "ai_confidence": round(wlb * 100),   # Wilson-lower as user-facing confidence
+            # §16 leg quality is SEPARATE from correlation evidence:
+            # `leg_quality_wilson` = Wilson lower bound of the standalone
+            # co-hit rate (a mediocre proxy for how often BOTH win). It
+            # is NOT a same-as-Lock model confidence, and correlation
+            # strength is expressed via `lift` + `correlation_evidence`.
+            "leg_quality_wilson": round(wlb * 100),
+            "correlation_evidence": {
+                "lift": lift,
+                "sample_size": n,
+                "provenance": ("PATTERN_HISTORICAL" if n >= 25
+                               else "PATTERN_LIMITED"),
+                "same_game": (fa.split("_")[0] == fb.split("_")[0]),
+            },
             "lift": lift,
             "plain_english": _plain_verdict(lift, wlb, n),
             "badge": _correlation_badge(lift, roi, n),
@@ -375,6 +394,19 @@ def _prettify_leg(subject: str, family: str, market: str | None = None,
         "UFC_ML": "Moneyline",
     }
     label = market_map.get(family, family.replace("_", " ").title())
+    # §15 correlation identity fix (2026-08-28): NEVER surface a
+    # "_OTHER" bucket as a user-facing label. If the market can't be
+    # resolved to a truthful market family, prefer the raw `market`
+    # string (already trimmed above); if we still have nothing usable,
+    # signal the caller to exclude this leg via an explicit incomplete
+    # identity marker.
+    if family.endswith("_OTHER"):
+        if market:
+            clean = re.sub(r"\s*\([A-Z]{2,4}\)\s*", " ", market).strip()
+            if clean:
+                return (f"{subject} {clean}" if subject and subject != "TEAM"
+                        else clean)
+        return "CORRELATION_LEG_IDENTITY_INCOMPLETE"
     if not subject or subject == "TEAM":
         return label
     if direction and line is not None:
@@ -511,17 +543,35 @@ async def _today_recommended_pairs(sport: str | None):
                 dbb = (ob / 100 + 1) if ob > 0 else (100 / -ob + 1)
                 combo_dec = da * dbb
                 combo_american = round((combo_dec - 1) * 100) if combo_dec >= 2 else round(-100 / (combo_dec - 1))
+                # §15 correlation identity guard.
+                la = _prettify_leg(sa, fa, market=a.get("market"))
+                lb = _prettify_leg(sb, fb, market=b.get("market"))
+                if (la == "CORRELATION_LEG_IDENTITY_INCOMPLETE"
+                        or lb == "CORRELATION_LEG_IDENTITY_INCOMPLETE"):
+                    continue
+                lock_a = float(a.get("lock_score") or 0)
+                lock_b = float(b.get("lock_score") or 0)
                 suggestions.append({
-                    "leg_a_display": _prettify_leg(sa, fa, market=a.get("market")),
-                    "leg_b_display": _prettify_leg(sb, fb, market=b.get("market")),
+                    "leg_a_display": la,
+                    "leg_b_display": lb,
                     "leg_a_family": fa, "leg_b_family": fb,
                     "event": ev,
                     "combo_odds": combo_american,
-                    "avg_lock": round((float(a.get("lock_score") or 0) + float(b.get("lock_score") or 0)) / 2),
-                    "plain_english": "Same-game parlay — legs share game script.",
+                    # §16 — leg quality (Lock A / Lock B) is displayed
+                    # SEPARATELY from dependence/correlation evidence.
+                    "leg_a_lock": round(lock_a),
+                    "leg_b_lock": round(lock_b),
+                    "avg_lock": round((lock_a + lock_b) / 2),
+                    "plain_english": ("Same-game parlay. Leg quality shown as Lock A/B; "
+                                      "correlation evidence UNVERIFIED without historical joint sample."),
                     "badge": {"label": "SGP", "tint": "lime"},
-                    "sample_size": 0,     # today-only suggestion
-                    "ai_confidence": round((float(a.get("lock_score") or 0) + float(b.get("lock_score") or 0)) / 2),
+                    "sample_size": 0,
+                    "correlation_evidence": {
+                        "lift": None,
+                        "sample_size": 0,
+                        "provenance": "CORRELATION_UNVERIFIED",
+                        "same_game": True,
+                    },
                     "cohit_pct": 0,
                     "roi_pct": 0,
                 })
@@ -992,6 +1042,7 @@ async def cheatsheets(
             continue
         settled = await _fetch_subject_history(
             subject, lp.get("sport"), family, is_player_prop,
+            live_pick=lp,
         )
         # Minimum-sample gate: don't fabricate confidence from tiny
         # samples. "Hit in 1 of last 1" is technically true but
@@ -1175,7 +1226,8 @@ async def cheatsheet_detail(pick_id: str):
         raise HTTPException(400, "no player subject on pick")
 
     family = _classify_market_family(lp.get("sport"), lp.get("market") or "")
-    settled = await _fetch_subject_history(player, lp.get("sport"), family, True)
+    settled = await _fetch_subject_history(player, lp.get("sport"), family, True,
+                                            live_pick=lp)
     inferred_own_team = _infer_own_team(settled) if not lp.get("team") else None
     raw_opp = _extract_opponent_full_name(lp, own_team_override=inferred_own_team)
 
@@ -1240,24 +1292,120 @@ async def cheatsheet_detail(pick_id: str):
     }
 
 
+async def _fetch_actual_player_games(
+    subject: str, sport: str | None, family: str, live_pick: dict,
+) -> list[dict]:
+    """§3 authoritative actual-history — evaluate a player's real last-N
+    game outputs against the EXACT threshold on `live_pick`.
+
+    Returns a list of dicts shaped like settled picks (with `status`
+    'won' when the actual stat cleared the threshold in the correct
+    direction, 'lost' otherwise, plus `pick_date` / `settled_at` from
+    `player_game_logs.date`). If the live pick has no parseable line,
+    or the player has no game-log rows, returns [].
+    """
+    if not sport or not subject:
+        return []
+    # Parse threshold + direction from the live pick's market string.
+    market_str = (live_pick.get("market") or "").strip()
+    m_line = re.search(r"(Over|Under)\s+(\d+(?:\.\d+)?)", market_str, re.I)
+    if not m_line:
+        return []
+    direction = m_line.group(1).lower()  # "over" | "under"
+    try:
+        line = float(m_line.group(2))
+    except Exception:
+        return []
+    # Map family -> stat field on `player_game_logs.stats`
+    stat_field = _stat_field_for_family(family)
+    if not stat_field:
+        return []
+    try:
+        cursor = db.player_game_logs.find(
+            {"sport": sport.lower(), "player_name": subject},
+            {"_id": 0, "date": 1, "opponent": 1, "stats": 1,
+             "venue": 1},
+        ).sort("date", -1).limit(30)
+        rows = await cursor.to_list(length=30)
+    except Exception:
+        rows = []
+    if not rows:
+        return []
+    out: list[dict] = []
+    for r in rows:
+        s = r.get("stats") or {}
+        val = s.get(stat_field)
+        # PRA composite for NBA
+        if val is None and stat_field == "pra":
+            val = ((s.get("points") or 0)
+                   + (s.get("rebounds") or 0)
+                   + (s.get("assists") or 0))
+        if val is None:
+            continue
+        try: v = float(val)
+        except Exception: continue
+        if direction == "over":
+            status = "won" if v > line else "lost"
+        else:
+            status = "won" if v < line else "lost"
+        out.append({
+            "id": f"actual::{r.get('date','')}::{subject}",
+            "sport": sport,
+            "market": market_str,
+            "event": r.get("opponent") or "",
+            "player_name": subject,
+            "status": status,
+            "pick_date": r.get("date"),
+            "settled_at": r.get("date"),
+            "venue": r.get("venue"),
+            "actual_value": v,
+            "provenance": "ACTUAL_GAME_HISTORY",
+        })
+    return out
+
+
+def _stat_field_for_family(family: str) -> str | None:
+    return {
+        "MLB_HITS": "hits", "MLB_TB": "total_bases",
+        "MLB_HR": "hr", "MLB_RBI": "rbi",
+        "MLB_KS": "strikeouts", "MLB_OUTS": "outs_recorded",
+        "NFL_REC": "receptions",
+        "NFL_PASS": "passing_yards", "NFL_RUSH": "rushing_yards",
+        "NBA_POINTS": "points", "NBA_REB": "rebounds",
+        "NBA_AST": "assists", "NBA_THREES": "three_pointers_made",
+    }.get(family)
+
+
 async def _fetch_subject_history(
     subject: str, sport: str | None, family: str, is_player_prop: bool,
+    live_pick: dict | None = None,
 ) -> list[dict]:
     """Get the last 30 settled picks for this subject+family.
 
-    Player-name resolution notes
-    ----------------------------
-    Historical picks in this DB sometimes have `player_name` unset or
-    literally set to the string "None" while the actual player is
-    embedded in the `market` field (e.g. `"Mohamed Salah First Goal
-    Scorer"`). To surface real streaks we match by EITHER:
-      * `player_name` regex exact match  (when field is populated), OR
-      * `market` regex substring match   (fallback for legacy rows).
-
-    For team markets we search the `team` field with a contains-regex
-    since team labels can be inconsistent ("Yankees" vs "New York
-    Yankees").
+    §3 (2026-08-28): For player props with a parseable Over/Under
+    threshold, we FIRST try authoritative actual player games from
+    `player_game_logs` and grade against the exact threshold. When that
+    yields enough rows, we return those synthetic "settled" rows (status
+    derived from actual stat vs exact threshold) instead of settled
+    Perklocks picks. Falls back to the historical picks path when
+    insufficient actual-game data exists.
     """
+    # ── §3 authoritative actual-game truth (preferred) ────────────────
+    if is_player_prop and live_pick:
+        try:
+            actual = await _fetch_actual_player_games(
+                subject=subject, sport=sport, family=family, live_pick=live_pick,
+            )
+            if actual and len(actual) >= 5:
+                return actual
+        except Exception as _e:
+            logger.debug("actual-game history fallback: %s", _e)
+
+    # ── Fallback: settled Perklocks history (legacy path) ─────────────
+    # Player-name resolution: historical picks sometimes have
+    # `player_name` unset or literally "None" while the player is
+    # embedded in `market`. Match by EITHER player_name regex OR
+    # market-substring.
     subj_str = subject.strip()
     q: dict[str, Any] = {"status": {"$in": ["won", "lost"]}}
     if is_player_prop:
@@ -2252,3 +2400,74 @@ async def research_walk_forward(
         sport=sport, validation_start=validation_start,
         test_start=test_start, min_events=min_events, q_fdr=q_fdr,
     )
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# §5-§14 Continuous Surgical Research Extensions
+# ═══════════════════════════════════════════════════════════════════
+@router.get("/research/scorecard")
+async def research_scorecard_ep(
+    sport: str = Query(...),
+    subject: str = Query(...),
+    opponent: str | None = Query(None),
+    pick_id: str | None = Query(None),
+    line: float | None = Query(None),
+    stat_field: str | None = Query(None),
+    model_prob: float | None = Query(None),
+    book_odds: int | None = Query(None),
+) -> dict[str, Any]:
+    """Aggregated research scorecard §5-§14.
+
+    Returns role_change, regression, opponent_context, sample_stability,
+    market_disagreement, line_sensitivity, price_quality, h2h_quality,
+    model_drift, and the compact 6-dimension research_scorecard.
+    """
+    from services.research import extended as ext
+    from services.research import get_research_service
+    svc = get_research_service()
+
+    role     = await ext.role_change(sport, subject)
+    matchup  = await ext.opponent_context(sport, subject, opponent)
+    reg      = await ext.regression(sport, subject)
+    # Default stat field by sport if none supplied.
+    field = stat_field or ({"MLB": "hits", "NFL": "receiving_yards",
+                             "NBA": "points"}.get(sport.upper(), "hits"))
+    stab = await ext.sample_stability(sport, subject,
+                                       stat_field=field, line=line)
+    disagree = await ext.market_disagreement(pick_id, model_prob, book_odds)
+    price = None
+    if pick_id and model_prob is not None:
+        price = await ext.price_quality(pick_id, model_prob)
+    # Line sensitivity uses the distribution values.
+    dist = await svc.distribution(sport, subject, market_hint=field)
+    sens = None
+    if line is not None and dist.get("available"):
+        # Choose step based on stat scale.
+        std = dist.get("std") or 1.0
+        step = max(0.5, round(std or 1.0, 1))
+        sens = ext.line_sensitivity(dist.get("values", []), line, step=step)
+    # H2H credibility from matchup DNA sample_size.
+    dna = await svc.build_snapshot(sport=sport, subject=subject,
+                                    opponent=opponent, include_shadow=False)
+    dna_dict = dna.matchup_dna or {}
+    h2h = ext.h2h_quality(int(dna_dict.get("sample_size", 0) or 0))
+    drift = await ext.model_drift(sport)
+    scorecard = ext.research_scorecard(role=role, matchup=matchup,
+                                        regression_r=reg, stability=stab,
+                                        price=price)
+    return {
+        "sport": sport.upper(), "subject": subject, "opponent": opponent,
+        "role_change": role,
+        "regression": reg,
+        "opponent_context": matchup,
+        "sample_stability": stab,
+        "market_disagreement": disagree,
+        "line_sensitivity": sens,
+        "price_quality": price,
+        "h2h_quality": h2h,
+        "matchup_dna": dna_dict,
+        "model_drift": drift,
+        "scorecard": scorecard,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }

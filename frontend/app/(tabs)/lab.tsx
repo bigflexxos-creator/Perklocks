@@ -37,9 +37,49 @@ import { api, getBackendUrl } from "@/src/lib/api";
 import { PickEventRow } from "@/src/components/PickEventRow";
 import { StrategyLabWorkstation } from "@/src/components/StrategyLabWorkstation";
 
-// ── Module type ──────────────────────────────────────────────────────
+// ── §1 Lab navigation consolidation (2026-08-28) ────────────────────
+// Four primary sections with progressive disclosure. The 12-chip legacy
+// menu was collapsed but every existing module is still reachable via
+// its parent section. StrategyLabWorkstation remains the canonical
+// research shell (§2) — never duplicated.
 type LabModule = "workstation" | "cheats" | "hot" | "research" | "ev" | "sim" | "props" | "corr" | "backtest" | "patterns" | "dna" | "analytics";
 
+type LabGroup = "TODAY" | "QUANT" | "PLAYER" | "MARKET";
+
+const GROUPS: { id: LabGroup; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { id: "TODAY",  label: "Today",  icon: "flame" },
+  { id: "QUANT",  label: "Quant",  icon: "stats-chart" },
+  { id: "PLAYER", label: "Player", icon: "person" },
+  { id: "MARKET", label: "Market", icon: "trending-up" },
+];
+
+// Progressive disclosure — each group exposes ordered submodules.
+const GROUP_MODULES: Record<LabGroup, { id: LabModule; label: string; icon: keyof typeof Ionicons.glyphMap }[]> = {
+  TODAY: [
+    { id: "workstation", label: "Research Feed", icon: "flask" },
+    { id: "hot",         label: "Trend Radar",   icon: "flame" },
+    { id: "cheats",      label: "Cheatsheets",   icon: "flash" },
+    { id: "props",       label: "Prop Explorer", icon: "list" },
+  ],
+  QUANT: [
+    { id: "corr",      label: "Correlations", icon: "git-network" },
+    { id: "backtest",  label: "Backtest",     icon: "layers" },
+    { id: "analytics", label: "Calibration",  icon: "speedometer" },
+    { id: "patterns",  label: "Patterns 3.0", icon: "sparkles" },
+  ],
+  PLAYER: [
+    { id: "workstation", label: "Player Research", icon: "flask" },
+    { id: "dna",         label: "Matchup DNA",     icon: "body" },
+    { id: "research",    label: "Research (Legacy)", icon: "search" },
+  ],
+  MARKET: [
+    { id: "workstation", label: "Line Value / Fair Price", icon: "trending-up" },
+    { id: "sim",         label: "Simulation",              icon: "analytics" },
+    { id: "ev",          label: "EV Calc",                 icon: "calculator" },
+  ],
+};
+
+// Legacy flat MODULES table kept for backwards-compatible imports.
 const MODULES: { id: LabModule; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
   { id: "workstation",label: "Workstation",  icon: "flask" },
   { id: "cheats",    label: "Cheatsheets",  icon: "flash" },
@@ -47,7 +87,7 @@ const MODULES: { id: LabModule; label: string; icon: keyof typeof Ionicons.glyph
   { id: "analytics", label: "Analytics",    icon: "stats-chart" },
   { id: "research",  label: "Research",     icon: "search" },
   { id: "corr",      label: "Correlations", icon: "git-network" },
-  { id: "backtest",  label: "Backtest",     icon: "trending-up" },
+  { id: "backtest",  label: "Backtest",     icon: "layers" },
   { id: "patterns",  label: "Patterns",     icon: "sparkles" },
   { id: "dna",       label: "Matchup DNA",  icon: "body" },
   { id: "ev",        label: "EV Calc",      icon: "calculator" },
@@ -58,11 +98,22 @@ const MODULES: { id: LabModule; label: string; icon: keyof typeof Ionicons.glyph
 // ── Root screen ──────────────────────────────────────────────────────
 export default function LabScreen() {
   const insets = useSafeAreaInsets();
+  // §1 4-group navigation. `group` picks the primary section; `module`
+  // picks the submodule within that group.
+  const [group, setGroup] = useState<LabGroup>("TODAY");
   const [module, setModule] = useState<LabModule>("workstation");
   const [picks, setPicks] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // When the group changes, snap to that group's first submodule so the
+  // sub-chips + rendered body always agree.
+  const onSelectGroup = useCallback((g: LabGroup) => {
+    setGroup(g);
+    const first = GROUP_MODULES[g][0];
+    if (first) setModule(first.id);
+  }, []);
 
   const load = useCallback(async () => {
     setError(null);
@@ -95,31 +146,59 @@ export default function LabScreen() {
             <Text style={styles.headerTitle}>LAB</Text>
           </View>
           <Text style={styles.headerHint} numberOfLines={1}>
-            Workstation · Research · EV · Sim
+            Today · Quant · Player · Market
           </Text>
         </View>
-        {/* Segmented control */}
+        {/* §1 4-group primary segmented control */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.segRow}
         >
-          {MODULES.map((m) => {
-            const active = m.id === module;
+          {GROUPS.map((g) => {
+            const active = g.id === group;
             return (
               <TouchableOpacity
-                key={m.id}
-                testID={`lab-tab-${m.id}`}
+                key={g.id}
+                testID={`lab-group-${g.id}`}
                 style={[styles.segChip, active && styles.segChipActive]}
-                onPress={() => setModule(m.id)}
+                onPress={() => onSelectGroup(g.id)}
               >
                 <Ionicons
-                  name={m.icon}
+                  name={g.icon}
                   size={13}
                   color={active ? "#000" : COLORS.textMuted}
                   style={{ marginRight: 4 }}
                 />
                 <Text style={[styles.segTxt, active && styles.segTxtActive]}>
+                  {g.label.toUpperCase()}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+        {/* Progressive disclosure — group's submodules */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.segRow}
+        >
+          {GROUP_MODULES[group].map((m) => {
+            const active = m.id === module;
+            return (
+              <TouchableOpacity
+                key={`${group}-${m.id}`}
+                testID={`lab-sub-${group}-${m.id}`}
+                style={[styles.segSubChip, active && styles.segSubChipActive]}
+                onPress={() => setModule(m.id)}
+              >
+                <Ionicons
+                  name={m.icon}
+                  size={11}
+                  color={active ? COLORS.textPrimary : COLORS.textMuted}
+                  style={{ marginRight: 4 }}
+                />
+                <Text style={[styles.segSubTxt, active && styles.segSubTxtActive]}>
                   {m.label}
                 </Text>
               </TouchableOpacity>
@@ -1501,8 +1580,8 @@ function BacktestModule() {
     <View>
       <SectionHeader
         icon="trending-up"
-        title="Bet Backtester"
-        blurb="How would this filter set have performed historically? Runs against every settled pick and reports win rate, ROI, best/worst day."
+        title="Perklocks Performance Backtest"
+        blurb="Historical performance of PERKLOCKS PUBLISHED PICKS only — not every historical sportsbook opportunity. Filter to see how a strategy would have graded across the settled Perklocks board."
       />
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
@@ -2336,6 +2415,20 @@ const styles = StyleSheet.create({
   segChipActive: { backgroundColor: COLORS.textPrimary, borderColor: COLORS.textPrimary },
   segTxt: { color: COLORS.textMuted, fontSize: 11, fontWeight: "700", letterSpacing: 0.8 },
   segTxtActive: { color: "#000" },
+  // Progressive-disclosure submodule chips (§1)
+  segSubChip: {
+    flexDirection: "row", alignItems: "center",
+    paddingHorizontal: 10, paddingVertical: 4,
+    borderRadius: 14,
+    backgroundColor: "transparent",
+    borderWidth: 1, borderColor: "rgba(255,255,255,0.08)",
+  },
+  segSubChipActive: {
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderColor: COLORS.textPrimary,
+  },
+  segSubTxt: { color: COLORS.textMuted, fontSize: 10, fontWeight: "700", letterSpacing: 0.5 },
+  segSubTxtActive: { color: COLORS.textPrimary },
 
   body: { flex: 1 },
   centered: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },

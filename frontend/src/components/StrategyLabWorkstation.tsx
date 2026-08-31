@@ -28,12 +28,13 @@ type Sport = "MLB" | "NFL" | "NBA";
 const SPORTS: Sport[] = ["MLB", "NFL", "NBA"];
 
 type Subsection =
-  | "overview" | "facts" | "distribution"
+  | "overview" | "facts" | "scorecard" | "distribution"
   | "dna" | "calibration" | "patterns";
 
 const SUBSECTIONS: { id: Subsection; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
   { id: "overview",    label: "Overview",     icon: "grid" },
   { id: "facts",       label: "Facts",        icon: "reader" },
+  { id: "scorecard",   label: "Scorecard",    icon: "podium" },
   { id: "distribution",label: "Line Value",   icon: "trending-up" },
   { id: "dna",         label: "Matchup DNA",  icon: "body" },
   { id: "calibration", label: "Calibration",  icon: "speedometer" },
@@ -201,6 +202,10 @@ export function StrategyLabWorkstation({ picks }: { picks: any[] }) {
         <>
           {section === "overview"    && <OverviewPanel snap={snapshot} />}
           {section === "facts"       && <FactsPanel snap={snapshot} />}
+          {section === "scorecard"   && (
+            <ScorecardPanel sport={sport} subject={subject}
+              opponent={opponent} marketHint={marketHint} line={line} />
+          )}
           {section === "distribution"&& (
             <DistributionPanel snap={snapshot} sport={sport} subject={subject}
               line={line} setLine={setLine} marketHint={marketHint} setMarketHint={setMarketHint} />
@@ -524,6 +529,87 @@ function fmtOdds(n: number): string {
   return n > 0 ? `+${n}` : `${n}`;
 }
 
+// ── Scorecard §5-§14 aggregated research panel ───────────────────
+function ScorecardPanel({ sport, subject, opponent, marketHint, line }: any) {
+  const [data, setData] = useState<any | null>(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    setLoading(true);
+    api.labResearchScorecard({
+      sport, subject, opponent: opponent || undefined,
+      stat_field: marketHint || undefined,
+      line: line ? parseFloat(line) : undefined,
+    }).then(setData).catch(() => setData(null))
+      .finally(() => setLoading(false));
+  }, [sport, subject, opponent, marketHint, line]);
+  if (loading) return <ActivityIndicator color={COLORS.textPrimary} style={{ marginTop: 12 }} />;
+  if (!data) return <Text style={s.dim}>No scorecard data available.</Text>;
+  const dims = data.scorecard?.dimensions || {};
+  const gradeColor = (g: string) =>
+    g === "HIGH" ? "#40d18a" : g === "MEDIUM" ? "#c9d055" : COLORS.textMuted;
+  const dimRows = [
+    ["OPPORTUNITY",     data.role_change?.classification],
+    ["MATCHUP",         data.opponent_context?.classification],
+    ["UNDERLYING_SKILL",data.regression?.classification],
+    ["FORM_STABILITY",  data.sample_stability?.classification],
+    ["PRICE_QUALITY",   data.price_quality?.classification],
+    ["DATA_QUALITY",    null],
+  ];
+  return (
+    <View>
+      <View style={s.miniStatRow}>
+        <Stat label="Overall" value={data.scorecard?.research_quality || "—"}
+              tint={gradeColor(data.scorecard?.research_quality || "")} />
+        <Stat label="Drift" value={data.model_drift?.classification || "—"} />
+        <Stat label="H2H" value={data.h2h_quality?.classification || "—"} />
+        <Stat label="Line" value={data.line_sensitivity?.classification || "—"} />
+      </View>
+      <Text style={s.h3}>Research dimensions</Text>
+      {dimRows.map(([label, cls]) => (
+        <View key={label as string} style={s.scoreRow}>
+          <Text style={s.scoreLbl}>{(label as string).replace(/_/g, " ")}</Text>
+          <View style={{ flex: 1 }}>
+            {cls != null && (
+              <Text style={s.scoreCls} numberOfLines={1}>{String(cls).replace(/_/g, " ")}</Text>
+            )}
+          </View>
+          <View style={[s.gradePill, { backgroundColor: gradeColor(dims[label as string] || "LOW") + "22", borderColor: gradeColor(dims[label as string] || "LOW") + "55" }]}>
+            <Text style={[s.gradePillTxt, { color: gradeColor(dims[label as string] || "LOW") }]}>
+              {dims[label as string] || "LOW"}
+            </Text>
+          </View>
+        </View>
+      ))}
+      {data.market_disagreement?.available && (
+        <>
+          <Text style={s.h3}>Market disagreement</Text>
+          <View style={s.miniStatRow}>
+            <Stat label="Model" value={`${Math.round((data.market_disagreement.model_prob || 0) * 100)}%`} />
+            <Stat label="Market" value={`${Math.round((data.market_disagreement.market_prob || 0) * 100)}%`} />
+            <Stat label="Δ pp" value={`${Math.round((data.market_disagreement.difference || 0) * 100)}`} tint={data.market_disagreement.difference > 0 ? "#40d18a" : "#e46d6d"} />
+            <Stat label="Class" value={(data.market_disagreement.classification || "—").split("_").pop() || "—"} />
+          </View>
+        </>
+      )}
+      {data.line_sensitivity?.available && (
+        <>
+          <Text style={s.h3}>Line sensitivity  (Model thresholds — NOT sportsbook lines)</Text>
+          {(data.line_sensitivity.curve || []).map((c: any, i: number) => (
+            <View key={i} style={s.senseRow}>
+              <Text style={s.senseLbl}>{c.model_threshold}</Text>
+              <View style={s.senseBar}>
+                <View style={[s.senseFill, { width: `${Math.round(c.empirical_over * 100)}%` }]} />
+              </View>
+              <Text style={s.senseVal}>{Math.round(c.empirical_over * 100)}%</Text>
+            </View>
+          ))}
+        </>
+      )}
+      <Text style={s.dim}>{data.scorecard?.note}</Text>
+    </View>
+  );
+}
+
 // ── Professional Today Feed (§8) ─────────────────────────────────
 function TodayFeed({ sport, onPickSubject }: {
   sport: Sport; onPickSubject: (name: string, opponent?: string) => void;
@@ -725,4 +811,20 @@ const s = StyleSheet.create({
   reachOnLock: { backgroundColor: "rgba(64,209,138,0.15)" },
   reachResearch: { backgroundColor: "rgba(201,208,85,0.10)" },
   reachPillTxt: { color: COLORS.textPrimary, fontSize: 8.5, fontWeight: "900", letterSpacing: 0.6 },
+  // Scorecard §14
+  scoreRow: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    paddingVertical: 6, paddingHorizontal: 8, marginBottom: 3,
+    backgroundColor: "rgba(255,255,255,0.02)",
+    borderRadius: 6, borderWidth: 1, borderColor: COLORS.borderDefault,
+  },
+  scoreLbl: { color: COLORS.textPrimary, fontSize: 10, fontWeight: "900", letterSpacing: 0.6, width: 130 },
+  scoreCls: { color: COLORS.textMuted, fontSize: 10.5 },
+  gradePill: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4, borderWidth: 1 },
+  gradePillTxt: { fontSize: 9, fontWeight: "900", letterSpacing: 0.6 },
+  senseRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 4 },
+  senseLbl: { color: COLORS.textMuted, fontSize: 10, width: 44, fontWeight: "700" },
+  senseBar: { flex: 1, height: 6, borderRadius: 3, backgroundColor: "rgba(255,255,255,0.06)", overflow: "hidden" },
+  senseFill: { height: "100%", backgroundColor: COLORS.goldElite },
+  senseVal: { color: COLORS.textPrimary, fontSize: 11, fontWeight: "800", width: 44, textAlign: "right" },
 });

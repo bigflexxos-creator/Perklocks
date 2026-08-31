@@ -1097,6 +1097,17 @@ export const api = {
     if (opts?.limit) p.set("limit", String(opts.limit));
     return request<any>(`/lab/research/signals${p.toString() ? "?" + p.toString() : ""}`);
   },
+  labResearchScorecard: (opts: {
+    sport: string; subject: string; opponent?: string;
+    pick_id?: string; line?: number; stat_field?: string;
+    model_prob?: number; book_odds?: number;
+  }) => {
+    const p = new URLSearchParams();
+    Object.entries(opts).forEach(([k, v]) => {
+      if (v != null && v !== "") p.set(k, String(v));
+    });
+    return request<any>(`/lab/research/scorecard?${p.toString()}`);
+  },
   labResearchWalkForward: (opts: { sport: string; validation_start: string; test_start: string; min_events?: number; q_fdr?: number }) => {
     const p = new URLSearchParams({
       sport: opts.sport, validation_start: opts.validation_start,
