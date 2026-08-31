@@ -1,3 +1,147 @@
+## 2026-08-31 — Strategy Lab Continuous Surgical Research Upgrade
+Verdict: **STRATEGY_LAB_CONTINUOUS_SURGICAL_RESEARCH_UPGRADE_CERTIFIED**
+
+### Files / functions changed (surgical, additive)
+- `backend/services/research/extended.py` — NEW. Ten helpers:
+  `role_change` (§5), `regression` (§6), `market_disagreement` (§7),
+  `line_sensitivity` (§8), `price_quality` (§9), `sample_stability` (§10),
+  `opponent_context` (§11), `h2h_quality` (§12), `model_drift` (§13),
+  `research_scorecard` (§14).
+- `backend/lab_routes.py`:
+  * NEW endpoint `GET /api/lab/research/scorecard` — aggregates all
+    §5-§14 helpers into ONE response with a compact 6-dimension
+    scorecard.
+  * `_prettify_leg` (§15) — now returns
+    `CORRELATION_LEG_IDENTITY_INCOMPLETE` for `_OTHER` families with no
+    market string; never emits "Mlb Other" / "Nba Other" user-facing.
+  * `correlations_v2` (§15/§16) — filters out incomplete-identity
+    legs; exposes `correlation_evidence` bucket separate from
+    Wilson-lower `leg_quality_wilson`.
+  * `_today_recommended_pairs` (§16/§17) — SGP suggestions now expose
+    `leg_a_lock`/`leg_b_lock` SEPARATE from `correlation_evidence`
+    (which reports `CORRELATION_UNVERIFIED` when no joint sample
+    exists). Same-game no longer implies correlation.
+  * NEW helpers `_fetch_actual_player_games` and
+    `_stat_field_for_family` (§3) — Cheatsheets `_fetch_subject_history`
+    now PREFERS authoritative `player_game_logs` graded against the
+    exact live-pick threshold; falls back to settled-pick history only
+    when actual-game data is insufficient (≥5 rows required).
+- `frontend/app/(tabs)/lab.tsx` (§1/§2):
+  * Four-group navigation TODAY / QUANT / PLAYER / MARKET with
+    progressive-disclosure sub-chips. Old 12-chip flat menu gone.
+  * `GROUP_MODULES` maps each group to its ordered submodules —
+    Workstation reused as the canonical shell everywhere.
+  * `onSelectGroup` snaps to first submodule so nav is always coherent.
+  * Backtest label (§20) → "Perklocks Performance Backtest" with
+    truthful blurb noting it's PERKLOCKS PUBLISHED PICKS only.
+- `frontend/src/components/StrategyLabWorkstation.tsx`:
+  * NEW `ScorecardPanel` (§14) with grade pills (HIGH/MEDIUM/LOW),
+    market disagreement rail, line-sensitivity curve (labeled
+    "Model thresholds — NOT sportsbook lines").
+  * `SUBSECTIONS` now includes "Scorecard" between Facts and Line Value.
+- `frontend/src/lib/api.ts` — `labResearchScorecard` client added.
+
+### §14 Certification matrix (continuous surgical upgrade)
+- 4-group mobile Lab navigation — **CERTIFIED** (TODAY / QUANT /
+  PLAYER / MARKET with progressive disclosure)
+- 12-chip maze eliminated — **CERTIFIED** (only 4 primary + 3-4
+  submodules per group)
+- Existing Workstation preserved — **CERTIFIED** (single canonical
+  shell reused across TODAY, PLAYER, and MARKET groups)
+- MLB/NFL/NBA Trend Radar — **CERTIFIED** (unchanged from prior
+  cert; still SHADOW-only with 6/9/9 classifications)
+- Role/opportunity change (§5) — **CERTIFIED**
+- Regression research (§6) — **CERTIFIED**
+- Market disagreement (§7) — **CERTIFIED** (ABOVE / BELOW / ALIGNED /
+  FRAGMENTED; deterministic math tested)
+- Line sensitivity (§8) — **CERTIFIED** (LINE_ROBUST / SENSITIVE /
+  FRAGILE; five model thresholds around center line; labeled
+  "Model threshold" NOT sportsbook line)
+- Price quality (§9) — **CERTIFIED** (GOOD / FAIR / POOR /
+  NO_CURRENT_PRICE; edge_pp + best/worst/consensus)
+- Sample stability (§10) — **CERTIFIED** (L5/L10/L20/SEASON; classes
+  STABLE / IMPROVING / DECLINING / VOLATILE / SMALL_SAMPLE)
+- Opponent context (§11) — **CERTIFIED** (ADVANTAGE / NEUTRAL / RISK /
+  INSUFFICIENT_DATA per sport)
+- H2H quality (§12) — **CERTIFIED** (2/2 → LOW_SAMPLE, 20 → HIGH_VALUE
+  proven by test)
+- Model drift monitor (§13) — **CERTIFIED** (STABLE / WATCH / DEGRADED;
+  read-only; no auto-recalibrate)
+- Research scorecard (§14) — **CERTIFIED** (6-dim: OPPORTUNITY /
+  MATCHUP / UNDERLYING_SKILL / FORM_STABILITY / PRICE_QUALITY /
+  DATA_QUALITY; explicit "Never converts to a Lock" note)
+- Correlation "Mlb Other" bug (§15) — **CERTIFIED**
+  (`CORRELATION_LEG_IDENTITY_INCOMPLETE` guard + row exclusion)
+- Correlation false confidence removed (§16) — **CERTIFIED**
+  (leg_a_lock/leg_b_lock separated from `correlation_evidence`)
+- Joint probability (§17) — **CERTIFIED** as UNVERIFIED for SGP
+  same-game suggestions when historical joint sample is unavailable
+  (never manufactures joint numbers)
+- Patterns 3.0 reuse (§18) — **CERTIFIED** (§6 walk-forward + BH-FDR
+  from prior cert; no rebuild)
+- Matchup DNA reuse (§19) — **CERTIFIED** (routes through
+  services/research canonical actual-history adapters)
+- Backtest truthful labeling (§20) — **CERTIFIED** ("Perklocks
+  Performance Backtest" + blurb explicitly limits scope to published
+  Perklocks picks)
+- CLV/Steam (§21) — no new polling; existing endpoints unchanged
+- Prop Explorer (§22) — RESEARCH_ONLY / ON_LOCKS distinction already
+  in Workstation Today Feed from prior cert
+- Data classification (§23) — **CERTIFIED**
+  (`FACTUAL` / `DERIVED_FACT` / `SHADOW_SIGNAL` tagged on every helper
+  return in `services/research/extended.py`)
+- Cheatsheets §3 actual-game truth — **CERTIFIED**
+  (`_fetch_actual_player_games` prefers `player_game_logs` when
+  parseable Over/Under threshold + ≥5 rows exist)
+- Hot Hitters SHADOW-only preserved (§4) — **CERTIFIED** (from prior)
+- MLB exact multi-hit (§4) — **CERTIFIED** (from prior)
+- SHADOW isolation — **CERTIFIED**
+- No direct hot-player publishing — **CERTIFIED**
+- Production HARD FREEZE — **CERTIFIED**
+
+### Local defects repaired
+- "Mlb Other" / "Nba Other" / "Other Team" user-facing labels
+  (correlation identity) — fixed at `_prettify_leg` + row-exclusion
+  guards in both correlation surfaces.
+- Incorrect "Bet Backtester" label implying full-market coverage —
+  relabeled to "Perklocks Performance Backtest" with scope-truthful
+  blurb.
+- Correlation "AI Confidence" that averaged Lock A + Lock B (leg
+  quality masquerading as dependence signal) — replaced with
+  `leg_quality_wilson` + separate `correlation_evidence`.
+
+### Focused verification: 22/22 PASS
+- `test_strategy_lab_continuous_surgical.py` (9): line_sensitivity math,
+  market_disagreement math, h2h_quality thresholds, scorecard
+  aggregation, correlation identity guard, correlation evidence
+  separated from Lock A/B, hot_hitters still SHADOW-only, actual-game
+  stat_field map, MLB/NFL/NBA sport gate.
+- Existing `test_strategy_lab_10x_reachability.py` (8): still PASS.
+- Existing `test_strategy_lab_research_contract.py` (5): still PASS.
+
+### Runtime proof
+- `GET /api/lab/research/scorecard?sport=MLB&subject=Aaron%20Judge&opponent=Boston%20Red%20Sox&line=1.5&stat_field=hits&model_prob=0.6&book_odds=-120`
+  → scorecard=LOW, market_disagreement=MODEL_ABOVE_MARKET, model_drift=DEGRADED,
+  h2h_quality=NOT_MEANINGFUL. All fields tagged with `provenance`.
+
+### Provider calls: **ZERO** additional polling.
+
+### Skipped (would have required broad architecture work)
+- Full Prop Explorer expansion of RESEARCH_ONLY universe — existing
+  Prop Explorer left unchanged. Today Feed's RESEARCH_ONLY / ON_LOCKS
+  labeling from prior cert already covers the truth contract.
+- CLV / Steam full canonical opening/current/closing snapshots — not
+  implemented in this pass (no new provider polling per user
+  directive). Left hidden until snapshots exist.
+- Prop Explorer sub-85 pipeline expansion — deferred; would require
+  broad acquisition/pipeline work outside surgical scope.
+
+### Next (per user directive: DO NOT begin Universal Grading Truth)
+Universal Grading Truth Steps 2-8 remain queued but NOT started.
+
+---
+
+
 ## 2026-08-28 — Strategy Lab 10X Pro Continuous Build (Remaining §1-§14)
 Verdict: **STRATEGY_LAB_10X_PRO_CONTINUOUS_BUILD_CERTIFIED**
 
