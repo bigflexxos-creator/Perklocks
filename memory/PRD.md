@@ -1,3 +1,86 @@
+## 2026-09-01 — Universal Totals Truth (surgical §9/§11/§14 only)
+Verdict: **NOT CERTIFIED as NFL_CFB_MLB_10X_PLUS_UNIVERSAL_TOTALS_TRUTH_CERTIFIED.**
+Honest partial delivery — one-active-total-side + canonical market
+identity + supersession lifecycle landed and proven. Remaining items
+require substantial per-sport architecture work (distribution
+unification, joint de-vig, walk-forward calibration wiring) that
+cannot be completed in the remaining execution budget without
+risking the certified Tennis / Soccer / MLB paths.
+
+### DELIVERED (surgical, additive)
+**File**: `backend/services/totals_truth_guard.py` (NEW, ~120 LOC)
+* `_canonical_totals_key(pick)` — side-neutral identity
+  `{sport}|{event_id}|{period}|TOTAL|{line:.2f}` (Over/Under is state,
+  not identity — §11).
+* `enforce_single_active_total(db, picks)` — §9/§14:
+  - Stamps `canonical_market_key` on every totals pick.
+  - In-run de-dupe: highest-lock side wins ACTIVE; the other becomes
+    `revision_state=SUPERSEDED_IN_RUN`, `off_board=true`. Signal
+    preserved (row not deleted).
+  - Cross-refresh: prior DB rows with same canonical_market_key but
+    different `selection` are marked `revision_state=SUPERSEDED`,
+    `superseded_at`, `superseded_reason=side_flip_by_newer_active_revision`,
+    `off_board=true`. Immutable in history.
+* `check_over_under_conservation(o, u, p)` — §5 mandatory integrity
+  test with tests verifying 0.55+0.45=OK, 0.55+0.50=FAIL, integer
+  push conservation OK.
+
+**File**: `backend/services/pick_refresh_orchestrator.py`
+* Post-bet-type-tag hook that invokes `enforce_single_active_total`
+  in every refresh. Fail-open on error.
+
+### RUNTIME PROOF
+* Side-neutral identity: `MLB|BAL@COL|FULL_GAME|TOTAL|11.00` yields
+  the same key for Over 11.0 and Under 11.0 (test PASS).
+* Conservation math validates half-line + integer-with-push (test PASS).
+* Regression: `/api/picks/today` returns 100 picks
+  `{Soccer:29, CFB:9, MLB:42, Tennis:20}` — Tennis restoration intact.
+* Rollover / Parlay / settlement paths untouched.
+* Evidence Governor / Lock 85 threshold / published_grade unchanged.
+
+### NOT DELIVERED (honestly deferred)
+The user's spec explicitly says "DO NOT CALL IT CERTIFIED IF ANY
+REQUIRED ITEM IS STILL FAILING." The following require material
+per-sport architecture work beyond a surgical single-file guard:
+
+1. **§4 / §6 sport-specific total DISTRIBUTIONS.** Each of MLB, NFL,
+   CFB, NBA, NHL, Soccer, Tennis needs its per-event authoritative
+   distribution wired end-to-end so Over/Under prices are derived
+   from that ONE distribution. Current per-sport engines already
+   have specialized models but their Total-market output is largely
+   sportsbook-anchored per-side, not distribution-derived.
+2. **§5 conservation enforcement** at publication time — the
+   integrity helper exists (`check_over_under_conservation`) but is
+   not yet gated on publication. Each per-sport engine must produce
+   a joint (O,U,push) tuple through the shared distribution.
+3. **§7 alternate-total ladder monotonicity checks** at publication.
+4. **§8 joint de-vig** — the guard exists conceptually; the code path
+   that computes fair market probability from paired snapshots is not
+   yet the single canonical Edge source.
+5. **§12 walk-forward calibration wiring** per sport+market family.
+6. **§10 revision-history immutability** at settlement time —
+   SUPERSEDED rows are preserved but the settlement path has not
+   been audited to guarantee it never mutates historical revisions.
+7. **NFL / CFB / MLB 10X items** (§1/§2/§3) — most are already
+   implemented per prior certifications. A cheap verify pass was
+   done during the Tennis cert but the specific 10X finishes
+   (opportunity-first NFL model, coherent CFB game distribution,
+   MLB integer-run distribution replacing sportsbook-anchored
+   totals) require per-sport engine work.
+
+### PRESERVED (untouched)
+- Tennis board recovery — proven live (20 Locks on today's board)
+- Soccer (29) / MLB (42) / CFB (9) — proven live
+- NBA / NHL / UFC — untouched
+- Rollover / Parlay / settlement / Lab SHADOW isolation — untouched
+- No Lock math / 85 threshold / Evidence Governor changes
+- No provider migration
+- No arbitrary caps
+- No signals deleted
+
+---
+
+
 ## 2026-09-01 — NFL+MLB+CFB 10X + Tennis Board Recovery (surgical continuation)
 Verdict: **NFL_MLB_CFB_10X_PLUS_TENNIS_BOARD_RECOVERY_CERTIFIED**
 
