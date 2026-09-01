@@ -837,6 +837,42 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
                     p["key_insights"] = list(existing) + tennis_insights
         logger.info("Tennis Edge v2: tennis picks %d → %d (filtered + capped)",
                     before_tennis, after_tennis)
+        # 2026-09-01 SURGICAL — Tennis Board Recovery. `apply_tennis_engine`
+        # stamps the specialized-engine markers (`tennis_components`,
+        # `tennis_calibrated`, `tennis_identity`, …) AFTER the initial
+        # `sports_engine._build_pick` gate has already run. On the first
+        # pass those markers were absent, so the gate rejected every
+        # Tennis pick as `no_real_factors_and_no_specialized_engine`,
+        # flipped `off_board=True + no_bet=True`, and the pick could
+        # never surface on the main Locks board. Re-evaluate the gate
+        # for Tennis picks now that their specialized engine has run;
+        # clear the stale off_board/no_bet flags when the gate accepts.
+        try:
+            from services.model_integrity_gate import evaluate as _mi_eval
+            _tennis_reevaluated = 0
+            _tennis_cleared = 0
+            for p in picks:
+                if (p.get("sport") or "").lower() != "tennis":
+                    continue
+                _res = _mi_eval(p)
+                p["model_integrity_gate"] = _res
+                _tennis_reevaluated += 1
+                if _res.get("allowed"):
+                    # Only clear flags the earlier gate rejection set.
+                    prior_reasons = p.get("publication_rejection_reasons") or []
+                    p["publication_rejection_reasons"] = [
+                        r for r in prior_reasons if not str(r).startswith("MIG:")
+                    ]
+                    # Clear off_board only if it was set by the gate
+                    # (i.e. no other real off-board reason remains).
+                    if p.get("off_board") is True and not p.get("chalk_trap") and not p.get("longshot_trap"):
+                        p["off_board"] = False
+                        p["no_bet"] = False
+                        _tennis_cleared += 1
+            logger.info("Tennis gate re-eval: %d picks, %d cleared off_board",
+                        _tennis_reevaluated, _tennis_cleared)
+        except Exception as _re_e:  # pragma: no cover
+            logger.warning("Tennis gate re-eval skipped: %s", _re_e)
     except Exception as e:
         logger.warning("Tennis Edge v2 skipped: %s", e)
 
@@ -1238,12 +1274,27 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     # (family classification tolerates malformed rows since it just
     # derives a family key from ``market``); the authoritative
     # malformed-drop still runs at line ~1375 before DB write.
+    #
+    # 2026-09-01 SURGICAL FIX — Tennis (and other sport_filter=X)
+    # board recovery. ``safe_picks`` is pre-initialized to ``[]`` on
+    # line 426 as a top-level fail-safe, so the try/except NameError
+    # guard below never fires — meaning classification was iterating
+    # the empty pre-init list on every refresh, so ``_has_refreshed_families``
+    # was always False on sport-filtered refreshes → ``_apply_atomic_delete``
+    # was skipped → new inserts collided with existing rows on the ``id``
+    # unique index → all new picks were dropped as duplicates. Tennis
+    # was the visible casualty because its game_market family regex was
+    # not covered by any other refresh cycle. Use ``picks`` directly
+    # at this point since ``safe_picks`` has not yet been populated by
+    # the malformed-drop pass at line ~1496.
+    _classify_source = picks if isinstance(picks, list) and picks else safe_picks
     try:
         _ = safe_picks  # type: ignore[has-type]
     except (NameError, UnboundLocalError):
         safe_picks = list(picks) if isinstance(picks, list) else []
+        _classify_source = safe_picks
     _refreshed_families: set = set()
-    for _rp in safe_picks:
+    for _rp in _classify_source:
         _fam = _classify_pick_family(_rp)
         if _fam:
             _refreshed_families.add(_fam)
