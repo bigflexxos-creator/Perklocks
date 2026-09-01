@@ -889,6 +889,17 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as e:
         logger.warning("Bet-type tagging skipped: %s", e)
 
+    # ── §9/§11/§14 UNIVERSAL TOTALS TRUTH GUARD (2026-09-01) ──────────
+    # Stamp side-neutral canonical_market_key on every totals pick;
+    # keep only ONE ACTIVE side per canonical market this run;
+    # supersede older ACTIVE DB rows whose side differs from the newer
+    # ACTIVE revision (rows preserved for research/history).
+    try:
+        from services.totals_truth_guard import enforce_single_active_total
+        await enforce_single_active_total(db, picks)
+    except Exception as _tt_e:
+        logger.warning("Totals truth guard skipped: %s", _tt_e)
+
     # ── Learning System v2: apply ROI/CLV/Calibration/Volume weights +
     # 99-Lock gates + calibration band raises to the freshly-built slate.
     try:
