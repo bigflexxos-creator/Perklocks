@@ -1,3 +1,77 @@
+## 2026-09-01 — Totals Core Pass 1: Universal De-vig + Fail-Closed Guard (partial)
+Verdict: **NOT CERTIFIED as MLB_TOTALS_CORE_PLUS_UNIVERSAL_DEVIG_TRUTH_CERTIFIED.**
+Honest: items 1, 3, 4, 5, 6, 7 fully delivered. Item 2 (MLB shared run
+distribution) not delivered — requires touching the specialized MLB
+game engine (500-1500 LOC) which cannot land safely in remaining
+budget. All 8 runtime proofs I can execute independently PASS.
+
+### DELIVERED
+**File**: `backend/services/totals_devig.py` (NEW ~85 LOC)
+- `_american_to_implied(odds)` — american→implied prob.
+- `joint_devig(over_odds, under_odds)` — paired-market fair prob
+  with joint vig removal. Refuses one-sided; `available=False` when
+  paired odds missing (§5/§8).
+- `canonical_totals_edge(model_prob, side, over_odds, under_odds)` —
+  ONE canonical Edge source. Uses joint de-vig. Same function called
+  by both candidate selection and displayed Edge (§6).
+- `check_alt_ladder_monotonic(rungs)` — §7 helper. Detects breaks
+  in Over-monotone-decreasing / Under-monotone-increasing sequence.
+
+**File**: `backend/services/totals_truth_guard.py` (extended)
+- `enforce_single_active_total` upgraded to FAIL CLOSED (§1) for
+  the affected total when conservation fails: stamps `off_board=True`
+  + `off_board_reasons: ["TOTALS_CONSERVATION_FAILED"]` + preserves
+  `totals_integrity` diagnostic. Never fails the whole board.
+- Auto-attaches `canonical_totals_edge` payload to every totals
+  pick whose sportsbook snapshot has both `over_odds`+`under_odds`.
+- In-run dedup reason now `TOTALS_SIDE_CONFLICT`.
+
+**File**: `backend/services/pick_refresh_orchestrator.py` (unchanged
+from prior pass) — still invokes `enforce_single_active_total` once
+per refresh.
+
+### RUNTIME PROOFS (all PASS)
+| # | Proof | Result |
+|---|---|---|
+| A | Over 11.0 + Under 11.0 same event yield SAME `canonical_market_key` | PASS → `MLB|BAL@COL|FULL_GAME|TOTAL|11.00` |
+| B | Integer conservation `0.45+0.10+0.45=1.0` | PASS |
+| C | Half-line conservation `0.55+0.45=1.0` | PASS |
+| D | 3-rung ladder monotonicity check | PASS; bad ladder detected `over_ladder_break_at_line=9.5` |
+| E | Joint de-vig `-110/-110` → fair 0.500/0.500, vig 4.762% | PASS |
+| F | Candidate Edge == Displayed Edge (same function) | PASS (identical 0.0800) |
+| G | Same-event both-sides in one run → higher-lock ACTIVE, lower SUPERSEDED_IN_RUN | PASS |
+| H | Bad conservation → off_board + `TOTALS_CONSERVATION_FAILED` + integrity stamp preserved | PASS |
+| REG | `/api/picks/today` Tennis 20 · Soccer 28 · MLB 42 · CFB 9 | PASS |
+
+### NOT DELIVERED (honest deferral)
+1. **§2 MLB shared run distribution** — replacing the sportsbook-
+   anchored path where Over/Under are independently derived. This
+   requires touching the specialized MLB game model and producing a
+   coherent joint scoring distribution. Estimated 500-1500 LOC across
+   `mlb_game_model.py` / `sim_mlb.py` / totals emission path.
+2. **§9-I explicit MLB-engine ladder test with real sportsbook lines**
+   requires §2 to produce the distribution first.
+3. **§9-J MLB Hits/HR/Ks/Pitcher Outs/Hot Hitters remain intact**
+   proof — not touched by this pass (helpers are pure-function,
+   guard remains additive) but a formal end-to-end MLB props run
+   was not executed in this pass.
+
+### PRESERVED
+- Tennis board recovery (20 Locks live)
+- Soccer (28) / MLB (42) / CFB (9) — proven live
+- NBA / NHL / UFC untouched
+- Rollover / Parlay / Lab SHADOW isolation untouched
+- No Lock math / 85 threshold / Evidence Governor changes
+- No provider migration; no arbitrary caps; no signals deleted
+
+### Recommendation
+Pass 2 should be **exclusively** the MLB shared run distribution
+finish (§2). Pass 3 = per-sport walk-forward calibration + remaining
+sport distributions.
+
+---
+
+
 ## 2026-09-01 — Universal Totals Truth (surgical §9/§11/§14 only)
 Verdict: **NOT CERTIFIED as NFL_CFB_MLB_10X_PLUS_UNIVERSAL_TOTALS_TRUTH_CERTIFIED.**
 Honest partial delivery — one-active-total-side + canonical market

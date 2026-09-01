@@ -39,29 +39,55 @@ def _canonical_totals_key(pick: dict[str, Any]) -> str | None:
 async def enforce_single_active_total(db, picks: list[dict]) -> dict[str, int]:
     """Enforce §9 / §11 / §14 across the picks list + existing DB rows.
 
-    For each Total pick, mark superseded any older ACTIVE row whose
-    canonical_market_key matches but whose side differs. Never delete
-    the older row — stamp `revision_state`, `superseded_at`, and
-    `superseded_reason` for research/audit history.
+    Pass-1 upgrade (2026-09-01) — FAIL CLOSED for affected totals:
+      * side conflict → SUPERSEDED_IN_RUN + off_board (unchanged)
+      * conservation fail on emitted pair → off_board + reason
+      * caller-provided ladder failure stamped upstream — never deleted.
 
-    Also stamps `canonical_market_key` on every totals pick in `picks`
-    for downstream consumers.
+    Never fails the whole board. Unrelated markets keep flowing.
     """
     stats = {"totals_seen": 0, "superseded": 0, "duplicates_dedup": 0,
-             "keys_stamped": 0}
+             "keys_stamped": 0, "conservation_failed": 0}
     if not picks:
         return stats
-    # 1) Stamp key on all in-flight totals picks.
+    # 1) Stamp key on all in-flight totals picks + attach canonical edge
+    # payload where paired-market odds are available on the pick record.
     for p in picks:
         k = _canonical_totals_key(p)
-        if k:
-            p["canonical_market_key"] = k
-            p["revision_state"] = "ACTIVE"
-            stats["keys_stamped"] += 1
-            stats["totals_seen"] += 1
-    # 2) De-dupe within this refresh: if the same canonical_market_key
-    # appears twice (e.g. one OVER + one UNDER), keep the higher-lock
-    # side ACTIVE and mark the other SUPERSEDED_IN_RUN.
+        if not k:
+            continue
+        p["canonical_market_key"] = k
+        p["revision_state"] = p.get("revision_state") or "ACTIVE"
+        stats["keys_stamped"] += 1
+        stats["totals_seen"] += 1
+        # ── §5 conservation enforcement at publication path ──────────
+        o = p.get("total_over_prob")
+        u = p.get("total_under_prob")
+        pu = p.get("total_push_prob") or 0
+        if o is not None and u is not None:
+            ok, reason = check_over_under_conservation(o, u, pu)
+            if not ok:
+                p["off_board"] = True
+                p.setdefault("off_board_reasons", [])
+                if "TOTALS_CONSERVATION_FAILED" not in p["off_board_reasons"]:
+                    p["off_board_reasons"].append("TOTALS_CONSERVATION_FAILED")
+                p["totals_integrity"] = {"ok": False, "reason": reason}
+                stats["conservation_failed"] += 1
+        # ── §8 attach canonical Edge (paired de-vig) when both odds
+        # are present on the pick's stored sportsbook snapshot.
+        try:
+            from services.totals_devig import canonical_totals_edge
+            oo = p.get("over_odds") or p.get("book_over_odds")
+            uo = p.get("under_odds") or p.get("book_under_odds")
+            side = p.get("selection") or p.get("side") or p.get("market")
+            mp = p.get("model_probability") or p.get("win_probability")
+            if mp and mp > 1: mp = mp / 100.0  # normalize percent
+            edge = canonical_totals_edge(mp, side, oo, uo)
+            if edge.get("available"):
+                p["canonical_totals_edge"] = edge
+        except Exception:
+            pass
+    # 2) In-run de-dupe (unchanged).
     by_key: dict[str, list[dict]] = {}
     for p in picks:
         k = p.get("canonical_market_key")
@@ -75,12 +101,11 @@ async def enforce_single_active_total(db, picks: list[dict]) -> dict[str, int]:
         for loser in rows[1:]:
             loser["revision_state"] = "SUPERSEDED_IN_RUN"
             loser["superseded_by_selection"] = winner.get("selection")
-            loser["superseded_reason"] = "lower_lock_same_canonical_market_run"
+            loser["superseded_reason"] = "TOTALS_SIDE_CONFLICT"
             loser["off_board"] = True
-            loser["off_board_reasons"] = list(loser.get("off_board_reasons") or []) + ["superseded_same_market"]
+            loser["off_board_reasons"] = list(loser.get("off_board_reasons") or []) + ["TOTALS_SIDE_CONFLICT"]
             stats["duplicates_dedup"] += 1
-    # 3) Cross-refresh: mark existing DB rows superseded when this run
-    # has an ACTIVE row for the same key with a different side.
+    # 3) Cross-refresh supersession (unchanged).
     now = datetime.now(timezone.utc).isoformat()
     for p in picks:
         if p.get("revision_state") != "ACTIVE":
@@ -112,9 +137,10 @@ async def enforce_single_active_total(db, picks: list[dict]) -> dict[str, int]:
         except Exception as e:  # pragma: no cover
             log.debug("supersession update fail-open %s: %s", k, e)
     if stats["totals_seen"]:
-        log.info("Totals truth guard: seen=%d keys_stamped=%d in-run dedup=%d superseded=%d",
+        log.info("Totals truth guard: seen=%d keys=%d dedup=%d superseded=%d conservation_failed=%d",
                  stats["totals_seen"], stats["keys_stamped"],
-                 stats["duplicates_dedup"], stats["superseded"])
+                 stats["duplicates_dedup"], stats["superseded"],
+                 stats["conservation_failed"])
     return stats
 
 
