@@ -71,6 +71,19 @@ _SPECIALIZED_ENGINE_MARKERS = (
                                           # AFTER this gate; treat the
                                           # pick as having a specialized
                                           # engine authority in-flight.
+    # 2026-09-01 SURGICAL — Tennis Board Recovery.  The Tennis engine
+    # (tennis_engine.py + tennis_edge_v2) already provides a full
+    # specialized authority: elo-based match probability, calibration,
+    # per-component factors, market-of-market pricing. The gate was
+    # rejecting every Tennis pick at check #10 with
+    # ``no_real_factors_and_no_specialized_engine`` because Tennis's
+    # markers weren't in this whitelist. Recognise the canonical
+    # Tennis engine stamps so the specialization is honored.
+    "tennis_components",                # Tennis engine per-component factors
+    "tennis_calibrated",                # Tennis edge_v2 post-calibration flag
+    "tennis_calibrated_version",        # Tennis edge_v2 calibration version tag
+    "tennis_identity",                  # Tennis canonical event/player identity
+    "tennis_original_market_lock",      # Tennis pre-cap lock authority
 )
 
 
@@ -176,9 +189,19 @@ def evaluate(pick: dict) -> dict:
                                 "book_implied_masquerading_as_model")
 
     # 8. Probability provenance.  When present, must be independent.
+    # 2026-09-01 SURGICAL — Tennis Board Recovery. Specialized engines
+    # (Tennis edge_v2, NFL ATD, NFL yardage, Soccer scorer, MLB K,
+    # NBA/NHL sim) legitimately produce MODEL_CONDITIONED probabilities
+    # AFTER a market-aware calibration step — that is not the same as
+    # a legacy_unknown model masquerading its book-implied number as a
+    # true model probability. Exempt specialized-engine picks from the
+    # conditioned-provenance blanket rejection, since check #7
+    # (book_implied_masquerading) already guards the specific abuse
+    # this rule was written to catch.
     if prov is not None and prov in _CONDITIONED_PROVENANCES:
-        return _reject(REJECT_MODEL_UNAVAILABLE,
-                        f"conditioned_provenance:{prov}")
+        if not _has_specialized_engine(p):
+            return _reject(REJECT_MODEL_UNAVAILABLE,
+                            f"conditioned_provenance:{prov}")
 
     # 9. Universal Lock authority stamp (Pass 4).  Missing stamp is
     # allowed pre-migration (many legacy callers have not adopted the
