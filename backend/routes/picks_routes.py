@@ -3027,7 +3027,7 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         if sport and sport.lower() not in ("all", "any"):
             _rescue_query["sport"] = {"$regex": f"^{re.escape(sport)}$",
                                         "$options": "i"}
-        rescued, ebm_ids = await rescue_missing_eligible(
+        rescued, ebm_ids, rescue_rejected = await rescue_missing_eligible(
             db, _served_ids, _rescue_query,
         )
         # Stamp canonical eligibility marker on EVERY row (served + rescued)
@@ -3042,10 +3042,29 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             logger.info(
                 "picks_today eligibility-union rescue: injected %d "
                 "canonically-eligible picks dropped by pipeline "
-                "(EBM=%d).  Root Closure invariant holds.",
-                len(rescued), len(ebm_ids),
+                "(EBM=%d, rescue_rejected=%s).  Root Closure invariant holds.",
+                len(rescued), len(ebm_ids), rescue_rejected,
             )
             canonical.extend(rescued)
+            # Root Closure Part-2 §6 — the merged set must be dedupe-clean
+            # against the SAME canonical wager identity every downstream
+            # consumer uses.  Prevents e.g. 18 rows of "Dynamo Dresden ML"
+            # from different books re-appearing after rescue.
+            try:
+                from services.board_projection_service import dedupe_canonical
+                before = len(canonical)
+                canonical = dedupe_canonical(canonical)
+                if before != len(canonical):
+                    logger.info("picks_today post-rescue dedupe collapsed %d duplicate wagers",
+                                 before - len(canonical))
+            except Exception as _dd:
+                logger.warning("post-rescue dedupe skipped: %s", _dd)
+        elif rescue_rejected:
+            logger.info(
+                "picks_today eligibility-union rescue: no EBM rescued; "
+                "rescue_rejected=%s (invalid rows correctly held back).",
+                rescue_rejected,
+            )
     except Exception as _ebm_err:
         logger.warning("Eligibility union rescue skipped: %s", _ebm_err)
 
