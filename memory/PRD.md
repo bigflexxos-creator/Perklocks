@@ -4893,3 +4893,85 @@ Backend + Expo restart clean.
   Phase 22 — LIVE PREVIEW / EXPO / PRODUCTION ACCEPTANCE
   Phase 23 — SPORT-BY-SPORT LIVE ACCEPTANCE
   Phase 24 — FINAL PRODUCT CERTIFICATION (30-question)
+
+## PHASE 9B — DURABLE JOB OWNERSHIP — VERIFIED
+
+Beyond the DB index registry, Phase 9's authoritative spec requires
+durable cross-replica job idempotency.  Confirmed implemented via
+`services/job_coordinator.py`:
+
+  * `scheduled_jobs.job_name` UNIQUE index — exactly one owner
+    per named job at any time.
+  * Atomic lease acquisition via `find_one_and_update` with an
+    "either expired OR unowned" filter (single-doc atomicity —
+    works on standalone MongoDB without transactions).
+  * `heartbeat` / `release` API — lease extension + explicit
+    release; crashed leases recover on `lease_until` expiry.
+  * `job_execution_log` (30-day TTL) + `job_audit_log` (180-day
+    TTL) — full auditability of every attempt, failure, lease
+    theft, denied-budget event, emergency-reserve usage.
+  * Metadata sanitiser scrubs api_key / authorization / apikey /
+    token / secret / password fields at every depth.
+
+Coverage: provider refresh, publication, settlement, history
+reconciliation, learning, backfills, scheduled jobs — every long-
+running task uses `JobCoordinator.acquire`.
+
+Tests: `tests/test_phase9b_durable_job_ownership.py` — 6/6 PASS.
+
+## PHASE 11 — USER BET LEDGER / PARLAY TRUTH — VERIFIED
+
+Existing `parlay_history.py` implementation proven with the
+authoritative Phase-11 invariants — no code changes required, the
+logic was already correct.  Tests
+`tests/test_phase11_user_bet_ledger.py` — 19/19 PASS.
+
+B1 parlay_id deterministic (sha1) across leg reordering.
+B2 different users → distinct ids.
+B5 American-to-American combine correct (+100+100 → +300,
+   -200-200 → +125, -110+150 → +377, empty → 0).
+B6/B7/B8 VOID/PUSH is NOT a loss — surviving legs REPRICE on
+   their own book_odds; original combined_odds NOT reused.
+   Reprice-payout proven strictly less than the original
+   three-leg combined.
+B9 All-void parlay refunds stake exactly.
+B10 Legless parlay never marks WON (defence-in-depth guard).
+B11 Frozen-snapshot schema-guard: leg snapshot contains every
+   required field (pick_id, canonical_pick_id, canonical_wager_id,
+   sport, event, event_id, event_time, market, selection, line,
+   book_odds, provider, lock_score, published_lock_score,
+   win_probability, edge_percent, magic_final, apex_lock,
+   simulator_provenance, input_quality, decision_evidence_id).
+   `frozen_at` timestamp stamped on every parlay.
+Cash-out estimator: dead-leg → 0; fair-value × 0.93 book hold
+applied.
+
+## Cumulative regression: 174/174 tests pass
+All 12 phase files + `test_block2d_closure`.  Backend + Expo
+restart clean.
+
+## Authoritative 24-phase order (locked)
+  Phase  1 — CANONICAL PREDICTION AUTHORITY ✅
+  Phase  2 — LOCK SCORE / 98 / 99 / APEX AUTHORITY ✅
+  Phase  3 — WHY THIS PICK REBUILD ✅
+  Phase  4 — REAL MARKET / NO SYNTHETIC WAGER TRUTH ✅
+  Phase  5 — SPORT MODEL AUTHORITY ✅ (fail-closed)
+  Phase  6 — DETERMINISTIC SIMULATION ✅
+  Phase  7 — MARKET CONSERVATION / CONTRADICTION ENGINE ✅
+  Phase  8 — CANONICAL EDGE / MARKET COMPARISON ✅
+  Phase  9 — PUBLICATION / DATABASE HARDENING ✅ (+9B durable jobs)
+  Phase 10 — AUTHORITATIVE SETTLEMENT ✅
+  Phase 11 — USER BET LEDGER / PARLAY TRUTH ✅
+  Phase 12 — HISTORY + ANALYTICS ONE RESULTS TRUTH (next)
+  Phase 13 — STRATEGY LAB 10X RESEARCH TRUTH
+  Phase 14 — ROLLOVER 10X
+  Phase 15 — PARLAY 10X
+  Phase 16 — PREVIEW / PRODUCTION / EXPO ONE APP TRUTH
+  Phase 17 — PREMIUM VISUAL SYSTEM 2.0 (frontend, own-session)
+  Phase 18 — REMOVE DUPLICATE / STALE AUTHORITY
+  Phase 19 — OBSERVABILITY / FAIL-CLOSED HARDENING
+  Phase 20 — UNIVERSAL AUTOMATED CONTRACT TESTS
+  Phase 21 — LIVE DATA RECONCILIATION (runtime evidence required)
+  Phase 22 — LIVE PREVIEW / EXPO / PRODUCTION ACCEPTANCE (runtime evidence)
+  Phase 23 — SPORT-BY-SPORT LIVE ACCEPTANCE (runtime evidence)
+  Phase 24 — FINAL PRODUCT CERTIFICATION (30-question)
