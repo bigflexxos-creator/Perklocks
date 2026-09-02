@@ -4975,3 +4975,100 @@ restart clean.
   Phase 22 — LIVE PREVIEW / EXPO / PRODUCTION ACCEPTANCE (runtime evidence)
   Phase 23 — SPORT-BY-SPORT LIVE ACCEPTANCE (runtime evidence)
   Phase 24 — FINAL PRODUCT CERTIFICATION (30-question)
+
+## PHASE 12 — HISTORY + ANALYTICS ONE RESULTS TRUTH — VERIFIED
+
+Authoritative canonical result store identified:
+  * `settlement_events` collection — immutable versioned W/L/P/V
+    ledger (`is_active=True` = current row per prediction).
+  * `prediction_snapshots` — frozen pregame truth (line / odds /
+    lock_score / grade / rationale / model_version / board_version).
+  * `services.history_projection_service.HistoryProjectionService`
+    + `project_pick()` — deterministic READ-ONLY projector both
+    History AND Analytics consume.
+
+Tests: `tests/test_phase12_history_analytics_one_truth.py` — 15/15
+PASS.  R1 canonical result overrides mutable legacy status.  R2
+LIVE picks without a settlement event demote stale legacy status
+to `unresolved` and preserve the original under
+`_legacy_status_without_canonical_event` for audit.  R3 frozen
+pregame overlay (snapshot wins over tampered picks-doc fields;
+None-preservation on absent snapshot values).  R4 PUSH ≠ VOID
+distinct; `cancelled` status→"void" but result preserves
+"cancelled".  R5 correction lineage: settlement_lineage[] sorted
+by version, includes both v1 (superseded) and v2 (active).  R6
+projector deterministic + never mutates input pick or snapshot.
+R7 wrong-identity guard: pick without canonical id flagged
+`_history_projection_error=missing_canonical_pick_id`.  R8
+projector class has NO write methods (grep-scan for update /
+delete / insert / grade / mutate → empty).
+
+## PHASE 13 — STRATEGY LAB 10X RESEARCH TRUTH — VERIFIED
+
+Tests: `tests/test_phase13_strategy_lab_research_truth.py` — 7/7
+PASS.  L1 Lab is READ-ONLY: `lab_routes.py` contains zero
+`db.*.insert/update/delete/replace/bulk_write` calls.  L2
+research aggregates filter to `{won, lost, push, void}` canonical
+settled statuses.  L3 `pending` NEVER included in a settled
+filter.  L4 every metric row exposes `sample_size` for low-N
+badging.  L5 sport identity aligns with `sport_model_authority`
+registry (no divergent labels).  L6 `HistoryProjectionService`
+remains read-only (no write-method invocations in its class body).
+
+## PHASE 14 — ROLLOVER 10X — VERIFIED
+
+Tests: `tests/test_phase14_rollover.py` — 5/5 PASS.
+`rollover_history_tagger.py` is a POST-SETTLEMENT tagger — stamps
+`on_rollover_at` on the exact V4 top-3 picks the user saw live
+that day.  Idempotent (skips picks already tagged).  Rollover
+route uses canonical `won/lost/push/void` statuses.  Route body
+contains ZERO `db.picks.update/delete/replace` calls (read-only
+for statistics).
+
+## PHASE 15 — PARLAY 10X — VERIFIED
+
+Tests: `tests/test_phase15_parlay_10x.py` — 5/5 PASS.  Extends
+Phase 11 with intelligence-layer invariants: correlation snapshot
+frozen on save (no post-save mutation); deterministic sha1 dedup
+prevents duplicate parlay rows; `CASHOUT_BOOK_HOLD = 0.93`
+explicitly declared; cash-out estimate never exceeds full potential
+payout; dead-leg → 0.
+
+## PHASE 16 — PREVIEW / PRODUCTION / EXPO ONE APP TRUTH — VERIFIED
+
+Tests: `tests/test_phase16_one_app_truth.py` — 5/5 PASS.  Single
+`EXPO_PUBLIC_BACKEND_URL` env var declared.  NO hardcoded
+`*.emergentagent.com` URLs in any frontend `.ts`/`.tsx` source
+(all reads route through the env indirection).  At least one
+frontend file reads `process.env.EXPO_PUBLIC_BACKEND_URL`.
+Backend router prefix `"/api"` stable in `server.py`.  NO
+localhost URLs in frontend production TSX.
+
+## Cumulative regression: 211/211 tests pass
+Backend + Expo restart clean.
+
+## Authoritative 24-phase order (locked)
+  Phase  1 — CANONICAL PREDICTION AUTHORITY ✅
+  Phase  2 — LOCK SCORE / 98 / 99 / APEX AUTHORITY ✅
+  Phase  3 — WHY THIS PICK REBUILD ✅
+  Phase  4 — REAL MARKET / NO SYNTHETIC WAGER TRUTH ✅
+  Phase  5 — SPORT MODEL AUTHORITY ✅ (+ fail-closed hardening)
+  Phase  6 — DETERMINISTIC SIMULATION ✅
+  Phase  7 — MARKET CONSERVATION / CONTRADICTION ENGINE ✅
+  Phase  8 — CANONICAL EDGE / MARKET COMPARISON ✅
+  Phase  9 — PUBLICATION / DATABASE HARDENING ✅ (+9B durable jobs)
+  Phase 10 — AUTHORITATIVE SETTLEMENT ✅
+  Phase 11 — USER BET LEDGER / PARLAY TRUTH ✅
+  Phase 12 — HISTORY + ANALYTICS ONE RESULTS TRUTH ✅
+  Phase 13 — STRATEGY LAB 10X RESEARCH TRUTH ✅
+  Phase 14 — ROLLOVER 10X ✅
+  Phase 15 — PARLAY 10X ✅
+  Phase 16 — PREVIEW / PRODUCTION / EXPO ONE APP TRUTH ✅
+  Phase 17 — PREMIUM VISUAL SYSTEM 2.0 (next; surgical frontend overhaul)
+  Phase 18 — REMOVE DUPLICATE / STALE AUTHORITY
+  Phase 19 — OBSERVABILITY / FAIL-CLOSED HARDENING
+  Phase 20 — UNIVERSAL AUTOMATED CONTRACT TESTS
+  Phase 21 — LIVE DATA RECONCILIATION (runtime evidence required)
+  Phase 22 — LIVE PREVIEW / EXPO / PRODUCTION ACCEPTANCE (runtime)
+  Phase 23 — SPORT-BY-SPORT LIVE ACCEPTANCE (runtime)
+  Phase 24 — FINAL PRODUCT CERTIFICATION (30-question)
