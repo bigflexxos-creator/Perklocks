@@ -105,6 +105,13 @@ class RejectionReason(str, enum.Enum):
     # settled by any currently-wired settler.  Fail closed so the pick
     # never becomes an actionable Board wager.
     SETTLEMENT_UNSUPPORTED         = "SETTLEMENT_UNSUPPORTED"
+    # Phase 4 (Real Market Truth) — a pick that stamps ``model_line=True``
+    # is a MODEL-derived line/threshold (e.g. Soccer Poisson-synthesized
+    # alt totals, or any producer's "synthesized from market O/U"
+    # branch).  Those outputs are RESEARCH-ONLY and MUST NOT become
+    # actionable Locks candidates — they carry a book_odds computed
+    # from the model, not an observed sportsbook offering.
+    MODEL_LINE_NOT_REAL_OFFERING   = "MODEL_LINE_NOT_REAL_OFFERING"
 
 
 # Verified real-sportsbook odds sources.  ANY producer that intends to
@@ -287,6 +294,33 @@ def evaluate_publication(pick: dict) -> BoundaryVerdict:
         if pick.get("no_real_book_line") is True and _has_book_odds(pick):
             if RejectionReason.NO_REAL_LINE_WITH_ODDS.value not in reasons:
                 reasons.append(RejectionReason.NO_REAL_LINE_WITH_ODDS.value)
+
+        # ── Phase 4 (Real Market Truth) — model_line rejection ──
+        # ``model_line=True`` marks a producer-synthesized threshold
+        # (Soccer Poisson-alt totals, "synthesized from market O/U",
+        # any model-derived alt line).  Even when it carries a
+        # book_odds integer, that price came from the model — NOT
+        # from an observed sportsbook offering.  Reject at the
+        # canonical boundary so it can NEVER cross into Locks; the
+        # row remains in db.picks (research/shadow provenance).
+        if pick.get("model_line") is True:
+            reasons.append(
+                RejectionReason.MODEL_LINE_NOT_REAL_OFFERING.value)
+        # Additional model-source guard: even without ``model_line``
+        # a producer that tags ``model_source`` starting with the
+        # synthesized-line prefixes must be rejected.  Keeps future
+        # producers (e.g. NFL model-alt-props) from silently leaking.
+        _ms = str(pick.get("model_source") or "").lower()
+        _SYNTHESIZED_MODEL_SOURCE_PREFIXES = (
+            "poisson_from_", "synthetic_", "model_only_",
+            "synthesized_alt", "synthesized_from_",
+        )
+        if _ms and any(_ms.startswith(pref)
+                       for pref in _SYNTHESIZED_MODEL_SOURCE_PREFIXES):
+            if RejectionReason.MODEL_LINE_NOT_REAL_OFFERING.value \
+                    not in reasons:
+                reasons.append(
+                    RejectionReason.MODEL_LINE_NOT_REAL_OFFERING.value)
 
         # ── Rule 5 — synthetic edge ──
         if _has_edge_synth(pick):
