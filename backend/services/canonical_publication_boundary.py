@@ -75,7 +75,15 @@ reason ``BOUNDARY_INTERNAL_ERROR`` — never silently published.
 from __future__ import annotations
 
 import enum
+import logging
 from typing import Any, Optional
+
+# Phase 19 (Observability) — canonical boundary emits structured
+# rejection telemetry.  Every REJECTED verdict logs the sport /
+# market / rejection reasons so operators can grep for
+# `SYNTHETIC_BOOK_ODDS` / `MODEL_LINE_NOT_REAL_OFFERING` / etc.
+# without instrumenting the caller.
+logger = logging.getLogger("lockscore.canonical_publication_boundary")
 
 
 # ── Constants ──────────────────────────────────────────────────────
