@@ -249,9 +249,40 @@ async def rescue_missing_eligible(db, served_ids: set, rescue_query: dict):
     return rescued, ebm_ids, rejected
 
 
+def apply_canonical_locks_eligibility_gate(picks: list) -> tuple:
+    """Root Closure §A — Rollover + Parlay + any consumer that needs
+    the SAME canonical base eligibility population as Locks must call
+    this helper.  It applies EXACTLY the invariants Locks enforces:
+
+        * `compute_locks_eligibility(p).eligible is True`
+        * `rescue_validity_reason(p) is None` (real book offering,
+          settlement-supported, not synthetic, not contradicted,
+          not duplicate-revision)
+
+    Returns (eligible, dropped_by_reason).  Rollover / Parlay may then
+    apply their OWN purpose-specific logic on top of `eligible`, but
+    they must NOT create a second answer to "is this a valid current
+    canonical Lock?".
+    """
+    eligible: list = []
+    dropped: dict = {}
+    for p in picks:
+        if not compute_locks_eligibility(p)["eligible"]:
+            dropped["NOT_ELIGIBLE"] = dropped.get("NOT_ELIGIBLE", 0) + 1
+            continue
+        rej = rescue_validity_reason(p)
+        if rej is not None:
+            dropped[rej] = dropped.get(rej, 0) + 1
+            continue
+        eligible.append(p)
+    return eligible, dropped
+
+
 __all__ = [
     "compute_locks_eligibility",
     "rescue_missing_eligible",
+    "rescue_validity_reason",
+    "apply_canonical_locks_eligibility_gate",
     "CANONICAL_LOCK_FLOOR",
     "CURRENT_PREGAME_LOCK", "BLOCKED", "SUPERSEDED", "EXPIRED",
     "REASON_EVENT_STARTED", "REASON_EVENT_FINAL",
