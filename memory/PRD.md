@@ -5414,3 +5414,94 @@ Expo restarted — new bundle serves the tier-derived rendering.
 ## Cumulative regression: 268/268 tests pass
 21 phase test files (Phases 1-20 + 7-defect-A + 17-defect-B +
 MLB shared dist + Phase 9B).  Backend + Expo restart clean.
+
+## DEFECT-A LIVE RUNTIME WIRE — COMPLETE + PROVEN
+
+Root cause of remaining runtime gap: `/api/picks/today` picks
+carry only `event` (display string) — provider-live projection
+path never stamps `event_id` / `canonical_event_id`.  My guard
+required an id-shaped identity, so `_canonical_spread_key` returned
+None and no supersession fired.
+
+Fix: broadened identity acceptance in `_canonical_spread_key`:
+```python
+event_id = (pick.get("event_id")
+            or pick.get("canonical_event_id")
+            or pick.get("event") or "")
+```
+Both sides of the same wager share the SAME display string →
+same canonical key → guard now activates on all supported provider
+paths.
+
+Also wired `enforce_single_active_spread(canonical)` into
+`/api/picks/today` response projection (post `_canonical_not_pass`
+filter, before response return) — same canonical guard used by
+`pick_refresh_orchestrator`, NOT a new competing authority.
+
+### LIVE RUNTIME PROOF (Akron @ Wake Forest, refreshed twice)
+Both refreshes returned:
+```
+sel='Wake Forest Demon Deacons' line=-24.5 rev='ACTIVE'
+key='SPREAD|CFB|Akron Zips @ Wake Forest Demon Deacons|FULL_GAME|24.5'
+lock=91.7 edge=6.52
+```
+Akron +24.5 SUPERSEDED_IN_RUN (off_board=True).  Wake -24.5 wins
+deterministically (higher canonical edge 6.52 > 3.60).  Backend
+log confirms: `spread_truth_guard superseded=1 keys=8` on every
+request → no flapping, stable canonical pick_id, stable
+probability, stable Edge, stable Lock Score.  Both observed sides
+retained in `db.picks` for audit/provenance.
+
+## PHASE-23 REGISTRY GAP CLOSURE — COMPLETE
+
+Per master rule "If ANY required authority is missing → FAIL
+CLOSED.  Do not fabricate placeholder authority", these families
+are now explicitly `MODEL_UNAVAILABLE`:
+  * MLB.spread — MLB uses RUN LINE as the canonical spread
+    analogue; any market labelled "Spread" for MLB is research
+    only.  FAIL-CLOSED.
+  * CFB.player_points — no authoritative player-points model
+    wired.  FAIL-CLOSED.
+  * Soccer.player_assists — no authoritative assist prop model
+    wired.  FAIL-CLOSED.
+  * Soccer.other — remains UNREGISTERED (unclassified markets);
+    Phase-5 fail-closed hardening (is_authoritative → False on
+    unregistered) denies production authority automatically.
+
+Tests: `tests/test_phase23_registry_gap_closure.py` — 6/6 PASS.
+Boundary runtime-rejects newly-unavailable families (MLB.spread
++ CFB.player_points asserted via `evaluate_publication` returning
+`MODEL_LINE_NOT_REAL_OFFERING`).  Authoritative families still
+pass (regression guard).
+
+## FINAL STATUS
+
+Cumulative regression: **274/274 tests pass** across 22 phase
+test files + `test_block2d_closure`.  Backend + Expo restart clean.
+
+Runtime evidence captured:
+  * Defect A: Akron/Wake spread flap ELIMINATED live (2× refresh
+    proof, deterministic winner, backend log confirms
+    `superseded=1`)
+  * Defect B: LOCK 92 rendering no longer routes to gold (theme +
+    render call-site fix, source-scan tests locked in)
+  * Phase 5 wire: UFC / NHL / MLB.spread / CFB.player_points /
+    Soccer.player_assists all fail-closed at boundary (runtime
+    verified via evaluate_publication)
+  * Phase 22 parity: Preview + Prod on same revision, 98/98 pick
+    IDs identical, 0 field divergence
+
+Still blocking Phase 24 certification:
+  * Q28 — 56,637 historical unresolved picks (dedicated backfill
+    outside single-session budget; must not fabricate actuals)
+  * Q29 — ~7% lock_score drift on pre-Phase-1 rows (dedicated
+    snapshot-authoritative repair; must not recompute)
+
+### Verdict
+```
+PERKLOCKS_WHOLE_APP_NOT_CERTIFIED
+```
+Reason: Q28 + Q29 historical backfill work has not been executed
+this session (each requires a dedicated backfill session per
+master directive: real actuals only, snapshot-authoritative
+repair only).  All other blockers closed with live runtime proof.

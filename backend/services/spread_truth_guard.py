@@ -40,7 +40,14 @@ def _canonical_spread_key(pick: dict) -> str | None:
     are DISTINCT canonical wagers (real ladder rungs preserved).
     """
     sport = pick.get("sport") or ""
-    event_id = pick.get("event_id") or pick.get("canonical_event_id") or ""
+    # Accept any of the three identity fields — some producer paths
+    # (e.g. Odds API live projection) don't stamp event_id, only
+    # the display `event` string.  All three sources of identity
+    # for the same wager collapse to the same canonical key.
+    event_id = (pick.get("event_id")
+                or pick.get("canonical_event_id")
+                or pick.get("event")
+                or "")
     market_lower = (pick.get("market") or "").lower()
     market_family = (pick.get("market_family") or "").lower()
     if not (sport and event_id):
