@@ -2443,6 +2443,39 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         except Exception:
             pass
 
+    # ── Defect A runtime wire (2026-09-02) — spread supersession ─
+    # Live evidence showed `/api/picks/today` serving both Wake
+    # Forest -24.5 AND Akron +24.5 as ACTIVE.  Root cause: the
+    # provider-live projection path that produced these rows never
+    # invoked `enforce_single_active_spread`.  Wire it here at the
+    # response projection stage — this is the SAME canonical guard
+    # used by `pick_refresh_orchestrator.py`, NOT a new competing
+    # authority.
+    #
+    # Authority order respected:
+    #   1. canonical publication revision/state — the guard reads
+    #      `revision_state` and NEVER touches rows already marked
+    #      SUPERSEDED_IN_RUN / off_board by upstream authority.
+    #   2. explicit current/superseded state — losers get their
+    #      revision_state stamped to SUPERSEDED_IN_RUN + off_board=True.
+    #   3. canonical prediction authority — already applied above
+    #      (edge_percent + model_probability come from `hydrate()`).
+    #   4. deterministic tiebreak (edge → mp → lock → pick_id) —
+    #      only fires among otherwise-equal canonical winners.
+    try:
+        from services.spread_truth_guard import enforce_single_active_spread
+        _spread_stats = enforce_single_active_spread(canonical)
+        # After the guard, re-filter losers just marked off_board.
+        canonical = [p for p in canonical if not p.get("off_board")]
+        if _spread_stats.get("superseded", 0) > 0:
+            logger.info(
+                "picks_today spread_truth_guard superseded=%d keys=%d",
+                _spread_stats["superseded"],
+                _spread_stats["keys_stamped"],
+            )
+    except Exception as _sge:
+        logger.warning("picks_today spread guard fail-open: %s", _sge)
+
     # ── P0 FINAL (2026-06) — CANONICAL WAGER DEDUPE on response.
     # The /picks/today response was previously assembled from
     # `db.picks` via a Mongo union of sub-queries (elite / model_only /

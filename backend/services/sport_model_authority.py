@@ -42,6 +42,14 @@ AUTHORITY: dict[str, dict[str, dict[str, Any]]] = {
                              "preserved_specialists": ()},
         "run_line":        {"canonical": "mlb_shared_run_distribution_v1",
                              "preserved_specialists": ()},
+        # Phase 23 gap closure (2026-09-02): MLB does not use "spread"
+        # as an authoritative production family — the canonical MLB
+        # spread analogue is the RUN LINE (registered above).  Any
+        # producer emitting a market labelled "Spread" for MLB is
+        # research-only and must NOT auto-become production
+        # authoritative.  Fail-closed here.
+        "spread":          {"canonical": UNAVAILABLE,
+                             "preserved_specialists": ()},
         "total":           {"canonical": "mlb_shared_run_distribution_v1",
                              "preserved_specialists": ()},
         "team_total":      {"canonical": "mlb_shared_run_distribution_v1",
@@ -87,6 +95,13 @@ AUTHORITY: dict[str, dict[str, dict[str, Any]]] = {
                        "preserved_specialists": ()},
         "total":     {"canonical": "cfb_sp_game_model",
                        "preserved_specialists": ()},
+        # Phase 23 gap closure (2026-09-02): no authoritative CFB
+        # player-points model exists (opportunity + share features
+        # not wired for CFB; identity resolution incomplete).
+        # Fail-closed for production authority; research/Lab may
+        # still inspect.
+        "player_points": {"canonical": UNAVAILABLE,
+                           "preserved_specialists": ()},
     },
     "NBA": {
         "moneyline":     {"canonical": "nba_feature_engine",
@@ -126,6 +141,11 @@ AUTHORITY: dict[str, dict[str, dict[str, Any]]] = {
                                 "preserved_specialists": (
                                     "csl_espn_leaderboard",
                                 )},
+        # Phase 23 gap closure (2026-09-02): no authoritative
+        # Soccer player-assists model wired in production.
+        # Fail-closed here.
+        "player_assists":    {"canonical": UNAVAILABLE,
+                                "preserved_specialists": ()},
     },
     "Tennis": {
         # Tennis authority is REAL-DATA ONLY (Sackmann / surface Elo
