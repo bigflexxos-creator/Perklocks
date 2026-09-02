@@ -172,15 +172,23 @@ def is_authoritative(sport: str, market_family: str,
     """Return True iff `model_source` is the canonical authority (or
     a preserved specialist) for the (sport, market_family) pair.
 
-    Returns True on unregistered pairs (fail-open — new market
-    surface).  Returns False when the pair is registered UNAVAILABLE
-    (fail-closed for UFC / NHL).
+    FAIL-CLOSED semantics (Phase 5 hardening, 2026-06):
+      * Returns False on unregistered (sport, market_family) — a
+        typoed / legacy / synthetic / unsupported family MUST NOT
+        automatically receive production publication authority just
+        because it is absent from the registry.
+      * Returns False when the registered pair is UNAVAILABLE
+        (UFC / NHL).
+      * Returns True only when `model_source` matches the canonical
+        tag or a preserved specialist.
+    Research / Lab surfaces may still inspect unregistered pairs as
+    SHADOW; only PRODUCTION publication authority is denied here.
     """
     if not model_source:
         return False
     entry = get_authority(sport, market_family)
     if entry is None:
-        return True   # unregistered pair, fail-open
+        return False   # fail-closed — unregistered pair is NOT authoritative
     canonical = entry.get("canonical")
     if canonical == UNAVAILABLE:
         return False
@@ -189,6 +197,11 @@ def is_authoritative(sport: str, market_family: str,
     if model_source in (entry.get("preserved_specialists") or ()):
         return True
     return False
+
+
+def is_registered(sport: str, market_family: str) -> bool:
+    """True iff (sport, market_family) is declared in the registry."""
+    return get_authority(sport, market_family) is not None
 
 
 def is_unavailable(sport: str, market_family: str) -> bool:
@@ -205,5 +218,6 @@ __all__ = [
     "UNAVAILABLE",
     "get_authority",
     "is_authoritative",
+    "is_registered",
     "is_unavailable",
 ]

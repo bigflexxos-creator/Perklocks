@@ -4789,3 +4789,107 @@ Distribution + Phase 1 + 2 + 3 + 4 (corrected) + 5 +
   Phases 10-23 — settlement, parlay, lab, rollover, provider-
                  identity chain, telemetry, PVS 2.0
   Phase 24 — FINAL PRODUCT CERTIFICATION (30-question)
+
+## PHASE 5 FAIL-CLOSED HARDENING — CLOSED
+`is_authoritative(sport, market_family, model_source)` now FAILS
+CLOSED on unregistered (sport, market_family) pairs.  A new
+`is_registered(...)` helper exposes registration state so Lab /
+research surfaces can still inspect unregistered pairs as SHADOW
+without granting them production authority.
+
+Updated tests:
+  * `test_is_authoritative_fails_closed_on_unregistered_pair`
+  * `test_unregistered_pair_can_still_be_inspected_by_lab`
+
+## PHASE 6 — DETERMINISTIC SIMULATION — COMPLETED
+
+Root defect fixed: `services/magic/simulators/nfl_simulator.py`
+`_deterministic_seed` used Python builtin `hash()` which is
+RANDOMIZED per process (PYTHONHASHSEED).  Replaced with
+`hashlib.sha256` for process-stable seeds across restarts / pods /
+test runs.
+
+Tests: `tests/test_phase6_deterministic_simulation.py` — 4/4 PASS.
+D1 seed is process-stable.  D2 same-fingerprint → same seed.  D3
+different fingerprints → different seeds.  D4 MLB shared run
+distribution proven deterministic (closed-form Normal CDF).  D5
+conservation invariant preserved.
+
+## PHASE 7 — MARKET CONSERVATION / CONTRADICTION ENGINE — VERIFIED
+
+Existing `totals_truth_guard.check_over_under_conservation` and
+`totals_devig.check_alt_ladder_monotonic` verified with 6/6 tests
+(`tests/test_phase7_contradiction_engine.py`).
+  * Conservation passes on valid pairs, fails on broken pairs,
+    accepts integer-line push probability.
+  * `_canonical_totals_key` remains the side-neutral SUPERSESSION
+    key (never destroys observed wager identity).
+  * Alt-ladder monotonicity accepts valid ladder, rejects broken.
+
+## PHASE 8 — CANONICAL EDGE / MARKET COMPARISON — VERIFIED
+
+`totals_devig.canonical_totals_edge` proven with 6/6 tests
+(`tests/test_phase8_canonical_edge.py`):
+  * Joint de-vig fair probs sum to 1.
+  * Edge is symmetric across Over/Under with the same formula.
+  * Fails CLOSED when paired odds are missing (never falls back
+    to raw one-sided implied).
+  * Deterministic given same inputs.
+  * Uses fair (devig) prob, not raw implied — proven when the
+    book has non-symmetric vig.
+
+## PHASE 9 — PUBLICATION / DATABASE HARDENING — VERIFIED
+
+Existing `services/index_registry.py` proven with 8/8 tests
+(`tests/test_phase9_db_hardening.py`):
+  * `picks.id` UNIQUE.
+  * `prediction_snapshots` has unique (prediction_id, snapshot_version)
+    AND unique (prediction_id, idempotency_key).
+  * `users.email` unique.
+  * `publication_mismatch_report` has 30-day TTL on `logged_at_dt`.
+  * Every index declares `owner_service` (no orphans).
+  * No duplicate (collection, index_name) pairs.
+  * `board_version_idx` present.
+
+## PHASE 10 — AUTHORITATIVE SETTLEMENT — VERIFIED
+
+Existing `services/universal_settlement_contract.py` proven with
+9/9 tests (`tests/test_phase10_authoritative_settlement.py`):
+  * Missing actual ≠ zero: `None` → pending/unresolved, NEVER `lost`.
+  * Over > line, Under < line, integer-line push.
+  * Milestone N+ grades correctly (never confused with Over N.5).
+  * Derived combo markets → None if ANY component missing.
+  * Moneyline: side matching + unresolved on missing winner.
+  * Settlement envelope shape + hard contract violation guard on
+    `settlement_envelope(result="lost", actual=None)`.
+
+## Cumulative regression: 149/149 tests pass
+MLB Shared Run Distribution + Phases 1 + 2 + 3 + 4 (corrected) +
+5 (fail-closed) + 6 + 7 + 8 + 9 + 10 + `test_block2d_closure`.
+Backend + Expo restart clean.
+
+## Authoritative 24-phase order (locked)
+  Phase  1 — CANONICAL PREDICTION AUTHORITY ✅
+  Phase  2 — LOCK SCORE / 98 / 99 / APEX AUTHORITY ✅
+  Phase  3 — WHY THIS PICK REBUILD ✅
+  Phase  4 — REAL MARKET / NO SYNTHETIC WAGER TRUTH ✅
+  Phase  5 — SPORT MODEL AUTHORITY ✅ (fail-closed hardened)
+  Phase  6 — DETERMINISTIC SIMULATION ✅
+  Phase  7 — MARKET CONSERVATION / CONTRADICTION ENGINE ✅
+  Phase  8 — CANONICAL EDGE / MARKET COMPARISON ✅
+  Phase  9 — PUBLICATION / DATABASE HARDENING ✅
+  Phase 10 — AUTHORITATIVE SETTLEMENT ✅
+  Phase 11 — USER BET LEDGER / PARLAY TRUTH (next)
+  Phase 12 — HISTORY + ANALYTICS ONE RESULTS TRUTH
+  Phase 13 — STRATEGY LAB 10X RESEARCH TRUTH
+  Phase 14 — ROLLOVER 10X
+  Phase 15 — PARLAY 10X
+  Phase 16 — PREVIEW / PRODUCTION / EXPO ONE APP TRUTH
+  Phase 17 — PREMIUM VISUAL SYSTEM 2.0
+  Phase 18 — REMOVE DUPLICATE / STALE AUTHORITY
+  Phase 19 — OBSERVABILITY / FAIL-CLOSED HARDENING
+  Phase 20 — UNIVERSAL AUTOMATED CONTRACT TESTS
+  Phase 21 — LIVE DATA RECONCILIATION
+  Phase 22 — LIVE PREVIEW / EXPO / PRODUCTION ACCEPTANCE
+  Phase 23 — SPORT-BY-SPORT LIVE ACCEPTANCE
+  Phase 24 — FINAL PRODUCT CERTIFICATION (30-question)
