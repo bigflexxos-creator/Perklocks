@@ -4692,3 +4692,100 @@ Handoff numbering corrected — the authoritative sequence is:
   Phases 10-23 — per master directive (settlement, parlay, lab,
                  rollover, provider-identity chain, telemetry, PVS 2.0)
   Phase 24 — FINAL PRODUCT CERTIFICATION (30-question)
+
+## PHASE 4 IDENTITY CORRECTION — CLOSED
+
+Prior handoff wording ("Over/Under collapse into one canonical
+wager") was IMPRECISE — the actual code has always preserved side
+in the observed wager identity via `canonical_wager_identity`.  The
+side-neutral `_canonical_totals_key` in `totals_truth_guard` is the
+Phase-7 SUPERSESSION key (used to enforce "only ONE ACTIVE side per
+event+line"), NOT the observed wager identity.
+
+Two artefacts coexist by design:
+  * `canonical_wager_identity(pick)` — SIDE-AWARE tuple used for
+    observed-wager identity, storage row uniqueness, joint de-vig,
+    provenance, and audit.  Over 8.5 ≠ Under 8.5.  Different sides
+    of the same event/market/line are DISTINCT observed wagers.
+  * `_canonical_totals_key(pick)` — SIDE-NEUTRAL supersession key
+    used by the Phase-7 contradiction rule to prevent both sides
+    of the same event/line from being simultaneously exposed as
+    ACTIVE Locks.
+
+New Phase-4 root-class tests added:
+  * `test_over_and_under_at_same_line_are_DISTINCT_observed_wagers`
+  * `test_team_moneylines_home_vs_away_are_distinct_observed_wagers`
+  * `test_player_over_and_under_are_distinct_observed_wagers`
+  * `test_joint_devig_retains_both_observed_sides` — both sides'
+    odds retained for probability conservation
+  * `test_totals_truth_guard_supersession_key_is_side_neutral_by_design`
+    — locks the artefact separation in
+Phase-2 test wording similarly clarified.
+
+## PHASE 5 — SPORT MODEL AUTHORITY — COMPLETED
+
+### New: `services/sport_model_authority.py`
+Read-only registry declaring the ONE canonical authority per
+(sport, market_family) — with preserved specialists where legit.
+
+MLB:
+  * moneyline → `mlb_feature_engine_ml`
+  * run_line / total / team_total → `mlb_shared_run_distribution_v1`
+    (ONE coherent scoring distribution drives all game runs markets)
+  * pitcher_strikeouts → `mlb_stuff_plus_k_model` (specialist)
+    + preserved `mlb_bvp`
+  * pitcher_outs → `mlb_pitcher_outs_model` (specialist)
+  * hitter_hits / home_runs / total_bases → `mlb_hitter_intel`
+    + preserved `mlb_bvp`
+
+NFL:
+  * moneyline / spread / total → `platinum_nfl_game_sim`
+  * player_passing_yards / rushing_yards / receiving_yards /
+    receptions → `platinum_nfl_prop` (specialised)
+  * player_touchdowns → `platinum_nfl_atd`
+
+CFB: moneyline / spread / total → `cfb_sp_game_model`
+NBA: moneyline / spread / total → `nba_feature_engine`;
+     player_points / assists / rebounds → `nba_player_prop_intel`
+Soccer: moneyline / total / btts / double_chance →
+        `soccer_game_model`; goal_scorer → `sportdb_scorer_intel`
+        + preserved `csl_espn_leaderboard`
+Tennis: moneyline / spread / total → `tennis_sackmann_engine`
+        + preserved `tennis_fair_odds_engine`.  Registry EXCLUDES
+        player-name-hash / reputation baselines / sportsbook-implied
+        as authoritative evidence (per Phase 5 master spec).
+
+NHL + UFC: EVERY family registered `MODEL_UNAVAILABLE` — fail
+closed for actionable publication until legitimate features +
+settlement authority land.  `is_authoritative(...)` returns False
+regardless of what a producer stamps.
+
+### Tests: `tests/test_phase5_sport_model_authority.py` — 18/18 PASS
+A1 every sport/family declared.  A2 no cross-family collision.
+A3 UFC + NHL fail-closed.  A4 wiring proof: declared authority tags
+match runtime `model_source` strings actually stamped in
+`sports_engine.py`.  A5 Tennis authority is real-data only (no
+name-hash / no sportsbook baseline as authoritative).  A6 MLB
+run_line / total / team_total share the ONE shared run distribution.
+A7 NFL Platinum covers both game and player families.  Plus:
+`is_authoritative` accepts canonical + preserved specialists,
+rejects synthesized sources (e.g. `poisson_from_main_total`),
+fails-OPEN on unregistered pairs (new market surface).
+
+Cumulative regression: 115/115 tests pass across MLB Shared Run
+Distribution + Phase 1 + 2 + 3 + 4 (corrected) + 5 +
+`test_block2d_closure`.  Backend restarts clean.
+
+## Authoritative 24-phase order (locked)
+  Phase  1 — CANONICAL PREDICTION AUTHORITY ✅
+  Phase  2 — LOCK SCORE / 98 / 99 / APEX AUTHORITY ✅
+  Phase  3 — WHY THIS PICK REBUILD ✅
+  Phase  4 — REAL MARKET / NO SYNTHETIC WAGER TRUTH ✅  (identity corrected)
+  Phase  5 — SPORT MODEL AUTHORITY ✅
+  Phase  6 — DETERMINISTIC SIMULATION (next)
+  Phase  7 — MARKET CONSERVATION / CONTRADICTION ENGINE
+  Phase  8 — CANONICAL EDGE / MARKET COMPARISON
+  Phase  9 — PUBLICATION / DATABASE HARDENING
+  Phases 10-23 — settlement, parlay, lab, rollover, provider-
+                 identity chain, telemetry, PVS 2.0
+  Phase 24 — FINAL PRODUCT CERTIFICATION (30-question)
