@@ -136,6 +136,14 @@ async def _fetch_samples(
 # Deterministic seed from fingerprint fields
 # ═══════════════════════════════════════════════════════════════════
 def _deterministic_seed(pick: dict) -> int:
+    """Process-stable fingerprint seed.
+
+    Phase 6 hardening (2026-06) — Python's builtin ``hash()`` is
+    RANDOMIZED per process (PYTHONHASHSEED) so it produced different
+    seeds for the same pick across restarts.  Use ``hashlib.sha256``
+    which is deterministic across processes / pods / test runs.
+    """
+    import hashlib
     parts = "|".join([
         str(pick.get("id") or ""),
         str(pick.get("canonical_event_id") or ""),
@@ -146,7 +154,9 @@ def _deterministic_seed(pick: dict) -> int:
          if pick.get("line") is not None else "none"),
         SIMULATOR_VERSION,
     ])
-    return abs(hash(parts)) & ((1 << 63) - 1)
+    h = hashlib.sha256(parts.encode("utf-8")).digest()
+    # Take first 8 bytes as unsigned 63-bit int.
+    return int.from_bytes(h[:8], "big") & ((1 << 63) - 1)
 
 
 # ═══════════════════════════════════════════════════════════════════

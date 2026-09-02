@@ -197,12 +197,24 @@ def test_is_authoritative_false_for_synthesized_source():
                               "poisson_from_main_total") is False
 
 
-def test_is_authoritative_falseopen_on_unregistered_pair():
-    """An unregistered (sport, family) fails-OPEN (returns True)
-    so a new market surface isn't silently blocked before its
-    authority is declared."""
+def test_is_authoritative_fails_closed_on_unregistered_pair():
+    """FAIL-CLOSED: an unregistered (sport, market_family) MUST NOT
+    receive production publication authority — a typoed / legacy /
+    synthetic / unsupported family cannot bypass the registry."""
     assert is_authoritative("MLB", "brand_new_family_2027",
-                              "some_new_producer") is True
+                              "some_new_producer") is False
+    # An unregistered SPORT altogether also fails-closed.
+    assert is_authoritative("Cricket", "moneyline",
+                              "cricket_authority_v1") is False
+
+
+def test_unregistered_pair_can_still_be_inspected_by_lab():
+    """Research / Lab surfaces may still SEE the pair — the fail-
+    closed rule applies only to production authority.  is_registered
+    returns False so callers can classify the row as SHADOW."""
+    from services.sport_model_authority import is_registered
+    assert is_registered("MLB", "brand_new_family_2027") is False
+    assert is_registered("MLB", "total") is True
 
 
 if __name__ == "__main__":
