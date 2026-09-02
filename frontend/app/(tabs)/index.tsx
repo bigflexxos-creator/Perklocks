@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   View, Text, StyleSheet, FlatList, RefreshControl,
   ActivityIndicator, Pressable, TouchableOpacity, Animated, Easing,
-  AppState,
+  AppState, Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
@@ -994,12 +994,24 @@ export default function LocksScreen() {
         data={visiblePicks.length > 0 ? listRows : []}
         keyExtractor={rowKeyExtractor}
         renderItem={renderRow}
-        // Windowing tuned to keep first-paint snappy while off-screen
-        // cards stay warm enough to avoid pop-in during flings.
-        initialNumToRender={8}
-        maxToRenderPerBatch={8}
-        windowSize={7}
-        removeClippedSubviews
+        // ── Root Closure 2026-06 LIVE MOBILE FIX ───────────────────
+        // React Native Web + `removeClippedSubviews=true` aggressively
+        // unmounts off-screen DOM nodes and, on iOS Safari's mobile
+        // rendering path, LEAKS the "clipped" state to the layout
+        // measurer — the FlatList's inner scroll container reports
+        // a truncated `contentSize.height` (~8 cards worth) even
+        // though ``data`` contains the full slate. Result: user
+        // scrolls, hits `atBottom=true` on a fake 8-card content,
+        // sees a huge black region below, and CFB `16 → reachable 8`.
+        // Native Expo does NOT exhibit this bug, so we keep the
+        // native optimisation and disable it ONLY on web.
+        // Also raise `initialNumToRender` + `windowSize` on web so
+        // large slates paint completely without a virtualisation
+        // measurement race that strands cards outside contentSize.
+        removeClippedSubviews={Platform.OS !== "web"}
+        initialNumToRender={Platform.OS === "web" ? 40 : 8}
+        maxToRenderPerBatch={Platform.OS === "web" ? 25 : 8}
+        windowSize={Platform.OS === "web" ? 41 : 7}
         ListHeaderComponent={
           <>
             {/* RETRY BANNER (2026-06-28) */}
