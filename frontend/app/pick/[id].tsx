@@ -184,7 +184,7 @@ export default function PickDetail() {
                 </Text>
                 <Text style={styles.scoreSub}>🔒 LOCK SCORE · BET QUALITY</Text>
                 <Text style={styles.scoreNote}>
-                  A 0-99 quality score blending edge, alignment, ROI, data quality, volatility &amp; CLV.
+                  A 0-100 immutable pregame quality score blending edge, model alignment, ROI, data quality &amp; volatility. Frozen at publication; never post-game revised.
                 </Text>
 
                 {/* Lock v3 — Expected Win and Edge displayed alongside */}
@@ -275,8 +275,15 @@ export default function PickDetail() {
                 <View style={styles.aiLoading}>
                   <ActivityIndicator size="small" color={COLORS.voltBlue} />
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.aiLoadingTitle}>Claude Sonnet 4.5 is analyzing this pick…</Text>
-                    <Text style={styles.aiLoadingSub}>AI breakdown usually takes 5–15 seconds. Keep this screen open.</Text>
+                    {/* Root Closure §Y — Canonical Why (frozen structured
+                        evidence) is ALWAYS immediately available above this
+                        section.  This loader is a supplementary AI SUMMARY
+                        of the already-authoritative evidence — the user
+                        never has to wait for AI to see WHY this pick was
+                        published.  AI never invents evidence or authors
+                        eligibility. */}
+                    <Text style={styles.aiLoadingTitle}>Composing supplementary summary…</Text>
+                    <Text style={styles.aiLoadingSub}>Canonical evidence above is authoritative — this AI recap is optional context.</Text>
                   </View>
                 </View>
               )}

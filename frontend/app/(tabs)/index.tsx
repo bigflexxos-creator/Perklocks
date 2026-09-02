@@ -1008,10 +1008,35 @@ export default function LocksScreen() {
         // Also raise `initialNumToRender` + `windowSize` on web so
         // large slates paint completely without a virtualisation
         // measurement race that strands cards outside contentSize.
+        // ── Root Closure §J — ADAPTIVE VIRTUALIZATION AUTO-TUNE ────
+        // Slate-size-aware windowing so 20-pick and 200-pick boards
+        // both feel snappy on native AND web.  Never reintroduces the
+        // fixed RN Web `removeClippedSubviews=true` truncation bug
+        // (invariant `WEB_UNREACHABLE_ELIGIBLE=0`); the web branch
+        // always keeps `removeClippedSubviews=false`.
+        //
+        //   slate ≤ 30    → render everything up front (no window)
+        //   slate 31-80   → moderate window
+        //   slate 81+     → wide window on web to cover all rows,
+        //                   tight window on native (native scrolling
+        //                   handles clipping efficiently)
         removeClippedSubviews={Platform.OS !== "web"}
-        initialNumToRender={Platform.OS === "web" ? 40 : 8}
-        maxToRenderPerBatch={Platform.OS === "web" ? 25 : 8}
-        windowSize={Platform.OS === "web" ? 41 : 7}
+        initialNumToRender={
+          Platform.OS === "web"
+            ? Math.min(listRows.length, listRows.length <= 30 ? listRows.length : listRows.length <= 80 ? 40 : 60)
+            : 8
+        }
+        maxToRenderPerBatch={
+          Platform.OS === "web"
+            ? (listRows.length <= 30 ? 15 : listRows.length <= 80 ? 25 : 40)
+            : 8
+        }
+        windowSize={
+          Platform.OS === "web"
+            ? (listRows.length <= 30 ? 21 : listRows.length <= 80 ? 41 : 61)
+            : 7
+        }
+        updateCellsBatchingPeriod={Platform.OS === "web" ? 30 : 50}
         ListHeaderComponent={
           <>
             {/* RETRY BANNER (2026-06-28) */}
