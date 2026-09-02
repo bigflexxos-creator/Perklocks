@@ -4524,3 +4524,113 @@ Resume at **Phase 2 — Lock Score 98/99/APEX freeze**:
     unique-key on `(sport, market, event, line)`, no downgrade after
     publication.
 
+
+## PHASE 2 — LOCK SCORE / 98 / 99 / APEX AUTHORITY — COMPLETED
+
+### Illegal live promotions RETIRED
+1. **`sports_engine.py` rank-based 95-99 promotion** — the top-5 elite
+   composite candidates used to be force-boosted into the 95-99 band
+   via `rank_boost = (5-i)*1.0 + (5-i)*0.5`.  RETIRED.  Ordering
+   preserved via `_elite_composite` sort (rank is a PRESENTATION
+   signal, never a score input).
+2. **`learning_system_v2.py` elite-name auto-99** — the "marquee lock"
+   branch used to hard-set `lock_score=99` / `is_apex=True` /
+   `tier_v2="Apex Lock"` whenever `p["elite_player"]=True`.  RETIRED
+   (reputation-based promotion detached from canonical scoring).
+   Elite anchors remain first-class signals via
+   `services.elite_players` bumps INSIDE the scoring pipeline, but no
+   longer manufacture a 99/APEX at the learning-loop layer.
+3. **`services/odds_provider.py` provider-fallback dock** — `-10`
+   Lock Score dock when the odds source is api_sports / espn.
+   RETIRED (backup provenance preserved via `odds_source` /
+   `odds_status` / `confidence_penalty` presentation fields).
+4. **`server.py` post-tuning synthetic ladder** — the weekly-tuning
+   step used to promote weak-composite picks UP to 85/90/95/98 via
+   a wp+edge step-function floor.  RETIRED (duplicated the "PHASE 1D
+   G3" retired ladder in `compute_lock_score`).  Grade/confidence
+   still resync to current lock_score without any floor lift.
+
+### Explicit invariant: NO count cap on legitimately earned 98/99/APEX
+`test_no_hardcoded_count_cap_on_98_99_apex` scans the entire backend
+for `MAX_APEX_PICKS` / `APEX_COUNT_LIMIT` / `max_98s` / `max_99s` /
+`cap_apex` — must remain empty.  Multiple legitimate distinct wagers
+can independently earn APEX (100), 99, or 98 without any starvation.
+
+### Canonical uniqueness is per-wager, NOT per-score
+`totals_truth_guard._canonical_totals_key` returns identity keyed on
+(sport, event_id, period, TOTAL, line) — Over/Under is state, not
+identity.  Different lines are distinct canonical wagers → multiple
+legitimate APEX totals can coexist across lines within one game.
+
+### Tests: `tests/test_phase2_lock_score_authority.py` — 14/14 PASS
+R1 write-guard covers `lock_score_v2` / `lock_score_peak` / `grade` /
+`confidence` in addition to `lock_score`.  R2 rank_boost retired
+(source assertion).  R3 marquee-99 retired (source assertion).  R4
+`closing_line_snapshotter.py` never touches lock_score.  R5
+`odds_provider.py` no longer docks 10.  R6 no count-cap constants in
+any source file.  Grade bands preserved: 85→Playable, 90→Lock,
+95→Strong Lock, 98→Elite Lock, 100→APEX.  R7 canonical uniqueness is
+per-wager (same event+line collapses; different lines coexist).
+R8 ≥85 eligibility includes exactly 85 (function + Mongo predicate).
+R9 hydrate shows snapshot value, tampered legacy fields ignored.
+
+### Cumulative regression proof
+`test_mlb_shared_run_distribution` + `test_phase1_canonical_authority`
++ `test_phase2_lock_score_authority` + `test_block2d_closure` = 65/65
+tests pass.  Backend restarts clean (application startup complete).
+
+## PHASE 3 — WHY-THIS-PICK STRUCTURED CONTRACT — COMPLETED
+
+### New: `services/why_this_pick_contract.py`
+Canonical rationale contract:
+  * Required keys: `summary`, `evidence`, `concerns`, `data_source`,
+    `model_win_prob_pct`, `edge_percent`, `lock_score`.
+  * Substantive iff at least ONE of: `evidence` bullet list,
+    `top_factors`, `counter_factors`, `matchup_summary`,
+    `similar_matchup_summary`, `monte_carlo_summary`,
+    `trained_model_summary`, `stats_this_season`.
+  * Rejects: `None`, bare strings, wrong types, missing required
+    keys, vacuous "summary only, empty evidence, no factors".
+
+New helpers:
+  * `validate_rationale(rationale)` → `{ok, reasons, missing_keys,
+    is_substantive}` (never raises).
+  * `assert_publishable_rationale(rationale)` → raises
+    `RationaleContractError` on any contract failure.  Ready for
+    the publication service to call before freezing.
+
+### Tests: `tests/test_phase3_why_this_pick_contract.py` — 13/13 PASS
+W1 rejects None/string/wrong-type.  W2 required keys enforced.
+W3 vacuous fallback text rejected; factor-only + engine-summary
+rationales accepted.  W4 PublishedPayload preserves rationale dict
+byte-for-byte (nested lists/dicts intact) → `hydrate()` round-trips
+identically.  W5 existing `pick_enrichment._build_rationale` still
+produces a compliant shape.
+
+Cumulative regression: 78/78 tests pass across MLB Shared Run Dist +
+Phase 1 + Phase 2 + Phase 3 + `test_block2d_closure`.
+
+## SAFE-CHECKPOINT (Phase 3 complete, Phase 4 next)
+
+Phases 1, 2, 3 verified with root-class invariants.  All in-session
+regressions green.  Backend restarts clean.
+
+Remaining phases (recorded, not silently deferred):
+  Phase  4  SPORT MODEL AUTHORITY CONSOLIDATION
+  Phase  5  CONTRADICTION ENGINE
+  Phase  6  CANONICAL EDGE (§8 totals done; §6/§7 team markets pending)
+  Phase  7  SETTLEMENT HARDENING
+  Phase  8  UNIVERSAL TOTALS TRUTH — MLB shared dist DONE, extend to
+             CFB/NFL/Soccer alt ladders
+  Phase  9  DB HARDENING — unique keys, idempotent upserts, canonical
+             identity indexes on `picks`
+  Phase 10  PARLAY / MY BETS TRUTH FLOW
+  Phase 11  HISTORY / ANALYTICS TRUTH
+  Phase 12  LAB TRUTH FLOW
+  Phase 13  ROLLOVER TRUTH FLOW
+  Phase 14  PROVIDER→IDENTITY→MARKET CHAIN VERIFICATION
+  Phase 15  CROSS-SURFACE CONVERGENCE
+  Phase 16  TELEMETRY & FUNNEL COMPLETENESS
+  Phase 17  PREMIUM VISUAL SYSTEM 2.0 (frontend overhaul)
+  Phase 18-23  Additional surgical fixes per master directive
+  Phase 24  FINAL PRODUCT CERTIFICATION (30-question)

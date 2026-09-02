@@ -9023,18 +9023,20 @@ async def generate_all_picks(
         else:
             candidates = today_candidates + [p for p in all_candidates if p not in today_candidates]
         candidates.sort(key=_elite_composite, reverse=True)
-        # No sport cap — top 5 by lock score wins, period. Users want the
-        # highest-confidence picks at the top, even if they cluster in one sport.
+        # ── Phase 2 (Lock Score Authority) — RANK-BASED 95-99 PROMOTION
+        # RETIRED.  The prior implementation force-boosted the top-5
+        # elite composite candidates into the 95-99 band regardless of
+        # whether they had earned that band from the scoring model.
+        # A rank-based lift IS an artificial promotion; Lock Score is
+        # canonical and must be earned only from the six-component
+        # composite in ``compute_lock_score``.  Elite-tab ordering is
+        # preserved by the ``_elite_composite`` sort above (rank is a
+        # PRESENTATION signal, not a score input).  Multiple legitimate
+        # 98/99/APEX picks can and MUST coexist without any count cap
+        # or ordering-based promotion.
         promoted = candidates[:5]
-        for i, p in enumerate(promoted):
-            # 2026-07-21 FINAL PHASE — deterministic rank-based boost.
-            # Was `random.uniform(2, 5)` which made Elite scores
-            # non-reproducible across refreshes. Rank-linear spread
-            # (0.6 / 1.2 / 1.8 / 2.4 / 3.0) keeps ordering stable and
-            # still spreads the top 5 across the 95-99 band.
-            rank_boost = (5 - i) * 1.0 + (5 - i) * 0.5   # 7.5, 6.0, 4.5, 3.0, 1.5
-            boost = max(95.0, min(99.0, p["lock_score"] + rank_boost))
-            p["lock_score"] = round(boost, 1)
-            p["grade"] = _grade(boost)
-            p["confidence"] = _confidence(boost)
+        # No mutation of lock_score / grade / confidence here — the
+        # Phase-1 publication contract makes those fields immutable
+        # post-publication anyway, and pre-publication promotions
+        # would silently rewrite legitimately earned Lock Scores.
     return all_picks

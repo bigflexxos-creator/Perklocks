@@ -509,19 +509,19 @@ async def apply_v2_to_picks(picks: list[dict], db) -> list[dict]:
     for p in picks:
         if "goal scorer" in (p.get("market") or "").lower():
             gs_by_event.setdefault(p.get("event") or "", []).append(p)
-            # Marquee lock — hardcoded elite scorers always 99 on this market
-            if p.get("elite_player") and not p.get("auto_elite"):
-                p["lock_score"] = 99.0
-                p["lock_score_v2"] = 99.0
-                p["tier_v2"] = "Apex Lock"
-                p["is_apex"] = True
-                p["grade"] = "Elite Lock"
-                p["apex_blockers"] = []
-                p["marquee_locked"] = True
-                p["marquee_reason"] = (
-                    f"{p.get('elite_player_name') or 'Elite scorer'} — always a "
-                    f"threat on goalscorer markets (per user spec)"
-                )
+            # ── Phase 2 (Lock Score Authority) — ELITE-NAME AUTO-99
+            # PROMOTION RETIRED.  The prior "marquee lock" branch
+            # force-set lock_score=99 + is_apex=True whenever
+            # p["elite_player"] was True — a reputation-based promotion
+            # completely detached from the six-component composite in
+            # ``compute_lock_score``.  Elite anchors remain first-class
+            # signals for the scoring model (via ``services.elite_players``
+            # bumps that live inside candidate generation), but they no
+            # longer manufacture a 99/APEX at the learning-loop layer.
+            # Multiple legitimate 98/99/APEX picks continue to coexist
+            # (no count cap); only ARTIFICIAL promotions are removed.
+            # If a genuine elite scorer earns 99 through the canonical
+            # scoring pipeline, that 99 is preserved.
     # ── Goalscorer per-event cap DISABLED in V2 (handled at API layer) ──
     for event, gs in gs_by_event.items():
         if len(gs) <= GS_PICKS_PER_EVENT:

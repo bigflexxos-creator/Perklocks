@@ -3836,21 +3836,26 @@ async def _weekly_model_tuning_loop():
                     # while `grade` stayed at its pre-tuning value — which
                     # caused Lock-90+ picks to display the legacy/stale
                     # "Pass" badge until the next 30-min validator cycle.
+                    # ── Phase 2 (Lock Score Authority) — POST-TUNING
+                    # SYNTHETIC LADDER RETIRED.  The prior branch
+                    # promoted a weak-composite pick UP to the next
+                    # 85/90/95/98 board band based purely on
+                    # win_probability + edge_percent thresholds, which
+                    # duplicated the "PHASE 1D (G3)" ladder already
+                    # retired in ``compute_lock_score``.  Lock Score
+                    # must be earned only from the canonical six-
+                    # component composite — the learning-tuning step
+                    # updates win_probability + edge, but the
+                    # canonical Lock Score is re-derived from the
+                    # composite on the next refresh cycle, not
+                    # ladder-promoted here.  Grade / confidence are
+                    # kept in sync with the CURRENT lock_score without
+                    # any floor lift.
                     try:
                         from sports_engine import _grade, _confidence
-                        wp_v = float(p.get("win_probability") or 0)
-                        ed_v = float(p.get("edge_percent") or 0)
                         cur_lock = float(p.get("lock_score") or 0)
-                        # Step-function floor (matches sports_engine spec)
-                        floor = 0.0
-                        if wp_v >= 80.0 and ed_v >= 15.0: floor = 98.0
-                        elif wp_v >= 75.0 and ed_v >= 10.0: floor = 95.0
-                        elif wp_v >= 70.0 and ed_v >= 5.0:  floor = 90.0
-                        elif wp_v >= 65.0 and ed_v >= 3.0:  floor = 85.0
-                        new_lock = min(99.0, max(cur_lock, floor))
-                        p["lock_score"] = round(new_lock, 1)
-                        p["grade"] = _grade(new_lock)
-                        p["confidence"] = _confidence(new_lock)
+                        p["grade"] = _grade(cur_lock)
+                        p["confidence"] = _confidence(cur_lock)
                     except Exception:
                         pass
                     # Safety net: even with the cursor filter above,

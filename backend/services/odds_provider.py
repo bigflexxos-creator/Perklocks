@@ -256,19 +256,24 @@ def decorate_pick(pick: dict) -> dict:
         # NO edge without real Odds API parity — user spec: "Do NOT
         # calculate true betting edge without real sportsbook odds".
         pick["edge_percent"] = None
-        # Soft-dock the lock score so backup picks visually cool down.
-        _ls = float(pick.get("lock_score") or 0)
-        if _ls > 0:
-            pick["lock_score"] = max(0.0, min(99.0, _ls - 10.0))
+        # ── Phase 2 (Lock Score Authority) — PROVIDER-FALLBACK LOCK
+        # SCORE DOCK RETIRED.  Docking canonical Lock Score by 10
+        # because the odds provider is on a backup source is an
+        # unjustified provider-fallback penalty (the pick's underlying
+        # evidence and scoring components are unchanged).  Backup
+        # provenance is preserved via ``odds_source`` / ``odds_status``
+        # / ``confidence_penalty`` — those remain the signals downstream
+        # UI can consume (presentation-only).  The canonical Lock
+        # Score is authoritative and no longer mutated at read time.
         return pick
     # ESPN or unavailable
     pick["odds_source"] = "espn" if active == "espn" else "unavailable"
     pick["odds_status"] = "missing"
     pick["confidence_penalty"] = -10
     pick["edge_percent"] = None
-    _ls = float(pick.get("lock_score") or 0)
-    if _ls > 0:
-        pick["lock_score"] = max(0.0, min(99.0, _ls - 10.0))
+    # ── Phase 2 (Lock Score Authority) — provider-fallback dock
+    # RETIRED here too (same rationale as above).  ``odds_status``
+    # remains the presentation signal.
     return pick
 
 
