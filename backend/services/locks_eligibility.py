@@ -162,26 +162,91 @@ def _blocked(pick: dict, reason: str, now: datetime) -> dict:
     }
 
 
+def _has_valid_settlement_capability(pick: dict) -> bool:
+    """Every eligible current Lock must be settle-able canonically.
+
+    We approximate this cheaply with attribute presence — the same
+    signals the settlement service consumes:
+      * a market string
+      * a line OR selection identity
+      * a valid sport in the canonical registry
+    """
+    if not (pick.get("market") or "").strip():
+        return False
+    if pick.get("line") is None and not (pick.get("selection") or "").strip():
+        return False
+    return bool((pick.get("sport") or "").strip())
+
+
+def _has_real_book_offering(pick: dict) -> bool:
+    """No synthetic actionable line may reach the board.
+
+    A real sportsbook offering has BOTH `book_odds` (American price)
+    AND a non-model-only source flag.  Rows written by model-only
+    scorers carry explicit markers.
+    """
+    if pick.get("model_only") is True:
+        return False
+    if pick.get("no_real_book_line") is True:
+        return False
+    if pick.get("book_odds") in (None, ""):
+        return False
+    return True
+
+
+def _is_contradiction_free(pick: dict) -> bool:
+    """Reject rows explicitly flagged as contradicted upstream."""
+    if pick.get("contradiction_rejected") is True:
+        return False
+    if pick.get("wager_contradiction") is True:
+        return False
+    return True
+
+
+def rescue_validity_reason(pick: dict) -> Optional[str]:
+    """Return a canonical rejection reason if the pick MUST NOT be
+    rescued, else None.  This is a *tightening* on top of
+    `compute_locks_eligibility.eligible=True` — the rescue layer is a
+    fail-safe, NOT a second authority: it may only re-inject picks
+    that already prove ALL safety conditions.
+    """
+    if not _has_real_book_offering(pick):
+        return REASON_REAL_LINE_INVALID
+    if not _has_valid_settlement_capability(pick):
+        return REASON_SETTLEMENT_UNSUPPORTED
+    if not _is_contradiction_free(pick):
+        return "CONTRADICTION_REJECTED"
+    if pick.get("synthetic") is True or pick.get("synthetic_market") is True:
+        return "SYNTHETIC_MARKET"
+    if pick.get("duplicate_revision") is True:
+        return "DUPLICATE_REVISION"
+    return None
+
+
 async def rescue_missing_eligible(db, served_ids: set, rescue_query: dict):
-    """Return (rescued_picks, ebm_ids) — every eligible pick from
-    `rescue_query` that is NOT in `served_ids`.  Never fabricates;
-    a straight DB read of already-frozen predictions."""
+    """Return (rescued_picks, ebm_ids, rejected_counts) — every eligible
+    pick from `rescue_query` that is NOT in `served_ids` AND passes the
+    full validity gate.  Never fabricates; never resurrects invalid rows."""
     rescued: list[dict] = []
     ebm_ids: list[str] = []
+    rejected: dict[str, int] = {}
     async for p in db.picks.find(rescue_query, projection={"_id": 0}).limit(5000):
         pid = p.get("id")
         if not pid or pid in served_ids:
             continue
-        elig = compute_locks_eligibility(p)
-        if elig["eligible"]:
-            ebm_ids.append(pid)
-            # Best-effort strip of any remaining non-JSON types.
-            for _bk in ("prediction_snapshot_id", "settlement_event_id"):
-                v = p.get(_bk)
-                if v is not None and not isinstance(v, (str, int, float, bool)):
-                    p[_bk] = str(v)
-            rescued.append(p)
-    return rescued, ebm_ids
+        if not compute_locks_eligibility(p)["eligible"]:
+            continue
+        rej = rescue_validity_reason(p)
+        if rej is not None:
+            rejected[rej] = rejected.get(rej, 0) + 1
+            continue
+        ebm_ids.append(pid)
+        for _bk in ("prediction_snapshot_id", "settlement_event_id"):
+            v = p.get(_bk)
+            if v is not None and not isinstance(v, (str, int, float, bool)):
+                p[_bk] = str(v)
+        rescued.append(p)
+    return rescued, ebm_ids, rejected
 
 
 __all__ = [
