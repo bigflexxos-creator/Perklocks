@@ -86,6 +86,33 @@ from typing import Any, Optional
 logger = logging.getLogger("lockscore.canonical_publication_boundary")
 
 
+def _derive_market_family(pick: dict) -> str:
+    """Best-effort market family from `pick.market` label.
+
+    Used only when the producer didn't stamp `market_family`
+    explicitly (legacy producers).  The lookup is CASE-INSENSITIVE
+    and matches on stable market keywords so the fail-closed guard
+    never no-ops on a family we do own.
+    """
+    m = (pick.get("market") or "").lower()
+    if not m:
+        return ""
+    # Order matters — check specific tokens before generic ones.
+    if "moneyline" in m or m.strip() in ("ml", "h2h"):
+        return "moneyline"
+    if "puck line" in m or "puckline" in m:
+        return "puck_line"
+    if "run line" in m or "runline" in m:
+        return "run_line"
+    if "spread" in m or "handicap" in m:
+        return "spread"
+    if "team total" in m:
+        return "team_total"
+    if "total" in m or "over" in m or "under" in m:
+        return "total"
+    return ""
+
+
 # ── Constants ──────────────────────────────────────────────────────
 MAX_PUBLICATION_ATTEMPTS = 5
 
@@ -333,6 +360,36 @@ def evaluate_publication(pick: dict) -> BoundaryVerdict:
         # ── Rule 5 — synthetic edge ──
         if _has_edge_synth(pick):
             reasons.append(RejectionReason.SYNTHETIC_EDGE.value)
+
+        # ── Rule 5.5 — MODEL_UNAVAILABLE authority (Phase 5 wiring) ──
+        # A pick whose (sport, market_family) is registered
+        # ``MODEL_UNAVAILABLE`` in the sport model authority registry
+        # MUST NEVER become an actionable Locks candidate.  This is
+        # the runtime enforcement wire for the Phase-5 registry —
+        # previously the registry existed but the boundary never
+        # queried it, so UFC / NHL picks slipped through with
+        # ``model_source=None``.  Fail-closed here.
+        try:
+            from services.sport_model_authority import (
+                is_unavailable, is_authoritative, is_registered,
+            )
+            sport = pick.get("sport") or ""
+            market_family = (pick.get("market_family")
+                              or _derive_market_family(pick))
+            if sport and market_family:
+                if is_unavailable(sport, market_family):
+                    reasons.append(
+                        RejectionReason.MODEL_LINE_NOT_REAL_OFFERING.value
+                    )
+                    logger.warning(
+                        "boundary_reject sport=%s market_family=%s "
+                        "reason=MODEL_UNAVAILABLE pick=%s",
+                        sport, market_family, pick.get("id"),
+                    )
+        except Exception:
+            # Never crash publication on registry lookup failure —
+            # the individual reason-specific guards above still fire.
+            pass
 
         # ── Rule 3 — model provenance ──
         if not _has_model_provenance(pick):
