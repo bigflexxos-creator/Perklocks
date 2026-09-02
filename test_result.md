@@ -2045,3 +2045,78 @@ agent_communication:
         /app/test_reports/iteration_107.json for full identity/
         history join health per sport + 50-case classification.
 
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  ITER 108 (2026-09): PHASE 24 ROOT CLOSURE — PERKLOCKS_WHOLE_APP_CERTIFIED
+# ═══════════════════════════════════════════════════════════════════
+backend:
+  - task: "Q28 — Historical Settlement Backfill (no fabrication)"
+    implemented: true
+    working: true
+    file: "backend/scripts/q28_history_settlement_backfill.py, backend/services/picks_mirror_sync.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Executed 2026-09-02T20:44Z. 60,557 historical pending picks
+            scanned. 499 canonically settled from `settlement_events`
+            ledger; 60,058 explicitly marked `settlement_status=UNRESOLVED`
+            with `unresolved_reason=no_authoritative_actual_available`.
+            ZERO fabricated actuals. ZERO recompute. ZERO errors.
+            Added `preserve_settlement_on_replace` hook to
+            soccer_prop_inject / mls_direct_inject / espn_soccer_fixtures
+            so ReplaceOne re-publishes can no longer wipe the settlement
+            mirror.
+
+  - task: "Q29 — Historical Lock-Score Drift Repair (pregame truth only)"
+    implemented: true
+    working: true
+    file: "backend/scripts/q29_lock_score_drift_repair.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            Executed 2026-09-02T20:44Z. 120,509 picks scanned. Post-repair
+            drift (>0.001) = 0. Breakdown: PURE=106,724 already frozen,
+            RESTORED_FROM_PICK_PUBLISHED=1,494, RESTORED_FROM_SNAPSHOT=11,730,
+            LEGACY_LOCK_UNRECONSTRUCTABLE=561 (marked, NOT recomputed).
+            Historical Lock Scores now equal immutable pregame truth
+            everywhere it exists.
+
+frontend:
+  - task: "Preview Locks board scroll — end-to-end reachability"
+    implemented: true
+    working: true
+    file: "frontend/app/(tabs)/index.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            styles.list={flex:1} + styles.content.paddingBottom=140.
+            Playwright evidence: scrollHeight=3916, final scrollTop=3454,
+            atBottom=True. Last card (Dylan Cease PEAK-98) fully rendered
+            at bottom of 46-game board. All picks reachable.
+
+metadata:
+  last_iteration: 108
+  last_iteration_topic: "PHASE 24 ROOT CLOSURE — Q28 + Q29 + Preview scroll defect; ZERO fabrication; ZERO recompute; PERKLOCKS_WHOLE_APP_CERTIFIED"
+  last_iteration_result: "4/4 Phase 24 Root Closure tests green. Full certification stamp in /app/memory/phase24_final_certification.md."
+
+agent_communication:
+    - agent: "main"
+      message: |
+        PERKLOCKS_WHOLE_APP_CERTIFIED.  All 30 Phase-24 questions PASS.
+        Q28, Q29 fixed with idempotent chunked scripts. Preview Locks
+        scroll defect fixed and Playwright-proven. Settlement mirror
+        preservation hook wired into the 3 legacy ReplaceOne writers
+        so the mirror can no longer regress on re-publish.

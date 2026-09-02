@@ -615,6 +615,20 @@ async def run_once() -> dict:
                 ops.append(ReplaceOne({"id": p["id"]}, p, upsert=True))
             try:
                 await db.picks.bulk_write(ops, ordered=False)
+                # Root Closure (2026-06) — ReplaceOne wipes the
+                # settlement mirror.  Restore `picks.status` from
+                # the immutable `settlement_events` ledger for every
+                # touched ID so post-settlement rows never regress to
+                # 'pending' after a re-publish sweep.
+                try:
+                    from services.picks_mirror_sync import (
+                        preserve_settlement_on_replace,
+                    )
+                    await preserve_settlement_on_replace(
+                        db, [p.get("id") for p in all_picks if p.get("id")],
+                    )
+                except Exception:
+                    pass
                 try:
                     from services.pipeline_diagnostic import log_reason as _plog
                     from services.pipeline_diagnostic import ReasonCode as _RC

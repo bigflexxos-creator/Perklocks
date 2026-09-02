@@ -827,9 +827,23 @@ async def _upsert_pick(db, doc: dict) -> None:
     though the read gate accepted the stamped field.
     """
     pick_id = doc["id"]
+    # Root Closure (2026-06) — the canonical settlement mirror
+    # (`status` = 'won'/'lost'/'push'/'void') is authoritative once
+    # a settlement_events row exists.  Never regress it back to
+    # 'pending' on a re-scorer sweep.  We split `status` (and its
+    # provenance fields) into $setOnInsert so a NEW pick still gets
+    # 'pending', but an already-settled row is preserved verbatim.
+    _MIRROR_ONLY_ON_INSERT = ("status", "settlement_status", "settled_at",
+                              "unresolved_reason", "settlement_mirror_reconciled_at",
+                              "final_score", "units_profit")
+    set_payload = {k: v for k, v in doc.items() if k not in _MIRROR_ONLY_ON_INSERT}
+    on_insert = {k: doc[k] for k in _MIRROR_ONLY_ON_INSERT if k in doc}
+    update_ops: dict = {"$set": set_payload}
+    if on_insert:
+        update_ops["$setOnInsert"] = on_insert
     await db.picks.update_one(
         {"id": pick_id},
-        {"$set": doc}, upsert=True,
+        update_ops, upsert=True,
     )
     # Route through the shared canonical publisher.  Non-actionable
     # rows (off_board=True) are skipped by the helper — they still
