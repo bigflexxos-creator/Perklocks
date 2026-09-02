@@ -983,6 +983,7 @@ export default function LocksScreen() {
       />
 
       <FlatList
+        style={styles.list}
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl tintColor={COLORS.textPrimary} refreshing={refreshing} onRefresh={onRefresh} />}
         showsVerticalScrollIndicator={false}
@@ -1190,6 +1191,19 @@ const styles = StyleSheet.create({
   // so the global ImageBackground in app/_layout.tsx (the PerkLocks stadium
   // composite + scrim) shows through every tab.
   safe: { flex: 1, backgroundColor: "transparent" },
+  // Phase 17 defect — Locks board scrolling closure (2026-09-02).
+  // FlatList requires `flex:1` on the list itself when it lives inside
+  // a Safe/View tree that has flex parents — otherwise on React Native
+  // Web the list collapses to intrinsic content height and only ~5
+  // cards render before the parent viewport clips the rest.  Bottom
+  // padding raised to 140 so the FINAL card clears the bottom tab bar
+  // (≈ 80px web / 96px iOS + generous safe margin).  Full board (up to
+  // 100+ picks) is now physically scrollable end-to-end.
+  list: { flex: 1 },
+  content: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 140,
+    // Phase 17 defect closure — kept in sync with the new `list`
+    // style above; duplicate `content` removed post-consolidation.
+  },
   header: {
     paddingHorizontal: 20, paddingTop: 8, paddingBottom: 14,
     flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end",
@@ -1282,7 +1296,7 @@ const styles = StyleSheet.create({
   },
   statLabel: { fontSize: 9, color: COLORS.textMuted, fontWeight: "800", letterSpacing: 1.3 },
   statValue: { fontSize: 20, fontWeight: "900", marginTop: 2, letterSpacing: -0.5 },
-  content: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 24 },
+  // `content` styles defined earlier alongside `list` (defect closure).
   center: { paddingVertical: 80, alignItems: "center" },
   emptyTitle: { color: COLORS.textPrimary, fontSize: 16, fontWeight: "800", marginTop: 14 },
   emptyMsg: { color: COLORS.textMuted, fontSize: 13, marginTop: 6, textAlign: "center", paddingHorizontal: 24, lineHeight: 18 },

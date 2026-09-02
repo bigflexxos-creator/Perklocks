@@ -568,6 +568,17 @@ async def run_once() -> dict:
     if ops:
         try:
             await db.picks.bulk_write(ops, ordered=False)
+            # Root Closure (2026-06) — preserve settlement mirror
+            # after ReplaceOne wipes the entire doc.
+            try:
+                from services.picks_mirror_sync import (
+                    preserve_settlement_on_replace,
+                )
+                await preserve_settlement_on_replace(
+                    db, [p.get("id") for p in all_picks if p.get("id")],
+                )
+            except Exception:
+                pass
             try:
                 from services.pipeline_diagnostic import log_reason as _plog
                 from services.pipeline_diagnostic import ReasonCode as _RC

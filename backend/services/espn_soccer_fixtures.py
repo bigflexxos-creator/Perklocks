@@ -410,6 +410,17 @@ async def refresh_once() -> dict:
             if ops:
                 r = await db.picks.bulk_write(ops, ordered=False)
                 counts["picks"] = (r.upserted_count or 0) + (r.modified_count or 0)
+                # Root Closure (2026-06) — preserve settlement mirror
+                # after ReplaceOne wipes the entire doc.
+                try:
+                    from services.picks_mirror_sync import (
+                        preserve_settlement_on_replace,
+                    )
+                    await preserve_settlement_on_replace(
+                        db, [p.get("id") for p in picks_for_publication if p.get("id")],
+                    )
+                except Exception:
+                    pass
                 # ── P0-2 canonical publication ─────────────────────
                 # ESPN scoreboard fallback picks (Odds API 401) are
                 # legitimate user-facing predictions; they must pass
