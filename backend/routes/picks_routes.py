@@ -643,6 +643,24 @@ async def pick_rollover(
         LOCK_FLOOR,
     ]}}
     candidates: list = await db.picks.find(q, {"_id": 0}).to_list(length=800)
+    # ── Root Closure §A — Rollover BASE = canonical Locks eligibility ─
+    # Rollover's V4 rules (Lock ≥89, market whitelist, edge band,
+    # etc.) run AFTER this gate, never in place of it.  This ensures
+    # Rollover's candidate universe is a strict SUBSET of Locks
+    # (SAME publication authority, SAME real-book requirement, SAME
+    # settlement capability, SAME synthetic/contradiction/dup gates).
+    try:
+        from services.locks_eligibility import apply_canonical_locks_eligibility_gate
+        _cand_before = len(candidates)
+        candidates, _canon_dropped = apply_canonical_locks_eligibility_gate(candidates)
+        if _cand_before != len(candidates):
+            import logging as _lg
+            _lg.getLogger("lockscore.rollover").info(
+                "Rollover canonical eligibility gate: %d → %d (dropped=%s)",
+                _cand_before, len(candidates), _canon_dropped,
+            )
+    except Exception:
+        pass
     reject_reasons: dict[str, int] = {}
     picks: list = []
     for p in candidates:

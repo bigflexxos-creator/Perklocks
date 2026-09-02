@@ -228,6 +228,25 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         [("published_lock_score", -1), ("lock_score", -1)]
     ).limit(400).to_list(length=400)
     pool = _canonicalize_picks(pool)
+    # ── Root Closure §A — SAME canonical eligibility as Locks ─────────
+    # Parlay's base candidate population MUST equal the Locks base
+    # canonical eligible set.  Any purpose-specific Parlay logic
+    # (correlation, EV mode, sport diversification, leg count, etc.)
+    # runs AFTER this gate, never in place of it.  Prevents a shadow
+    # eligibility layer from independently deciding "is this a valid
+    # current Lock?" behind Locks' back.
+    try:
+        from services.locks_eligibility import apply_canonical_locks_eligibility_gate
+        _pool_before = len(pool)
+        pool, _canon_dropped = apply_canonical_locks_eligibility_gate(pool)
+        if _pool_before != len(pool):
+            import logging as _lg
+            _lg.getLogger("lockscore.parlay").info(
+                "Parlay canonical eligibility gate: %d → %d (dropped=%s)",
+                _pool_before, len(pool), _canon_dropped,
+            )
+    except Exception:
+        pass
     # μ-closure LIVE (2026-06) — Advanced EV positive-EV contract.
     # For Advanced.EV mode ONLY, apply an explicit positive-edge gate
     # because EV is the stated product objective for that sub-mode.
