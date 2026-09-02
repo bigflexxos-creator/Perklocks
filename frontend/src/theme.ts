@@ -43,15 +43,31 @@ export const COLORS = {
   electricBlaze: "#FF5F5C",
   neonGreen: "#4DE68A",
   neonLime:  "#B6FF3D",   // confidence-bar mid-stop (lime)
-  // Perklocks gold identity — luminous metallic tones (Gold Impact + Mockup).
-  //  Mockup correction 2026-08-22: bumped goldElite/goldRich to true
-  //  luminous #FFD700 core so the wordmark, LOCK box, and active tab
-  //  read as bright metallic gold rather than dull brown/olive.
-  goldElite: "#FFD700",    // true luminous gold core
-  goldRich:  "#FFE066",    // bright metallic gold highlight
+  // Perklocks gold identity — luminous metallic tones.
+  //  Phase 17 PVS 2.0 (2026-06): gold is now RESERVED for TRUE 100
+  //  APEX only (per master directive).  99 PEAK moves to
+  //  perklocksPurple below.  Wordmark / active tab may still use
+  //  gold as brand identity, but tier surfaces gate strictly.
+  goldElite: "#FFD700",    // true luminous gold core — APEX only
+  goldRich:  "#FFE066",    // bright metallic gold highlight — APEX only
   goldGlow:  "#FFC933",    // saturated gold used for outer-glow shadow tint
   goldDeep:  "#B98A17",    // deep metallic base
   goldGloss: "rgba(255,215,0,0.28)",
+
+  // ── Perklocks Intelligence / Premium (Phase 17 PVS 2.0) ─────────
+  //  Purple identifies non-APEX Perklocks intelligence moments:
+  //   * 99 PEAK Lock
+  //   * "Why This Pick" evidence panels
+  //   * Model provenance / AI-generated content markers
+  //   * Elite research / Lab premium features
+  //  Chosen for luminous depth against layered black surfaces without
+  //  competing with the gold APEX identity or the sport neon accents.
+  perklocksPurple:      "#B98CFF",    // luminous premium purple core
+  perklocksPurpleRich:  "#D5B4FF",    // brighter highlight
+  perklocksPurpleDeep:  "#7A4DFF",    // deep base
+  perklocksPurpleSoft:  "rgba(185,140,255,0.20)",
+  perklocksPurpleBorder:"rgba(185,140,255,0.68)",
+  perklocksPurpleGlow:  "rgba(185,140,255,0.35)",
 
   // ── Borders ──────────────────────────────────────────────────────
   //  Brightness lift 2026-08-22: bumped so cards separate more clearly.
@@ -126,21 +142,24 @@ export function getLockTierVisual(lockScore: number): LockTierVisual {
     };
   }
   if (s === 99) {
+    // Phase 17 PVS 2.0 — 99 PEAK now uses Perklocks Intelligence
+    // Purple.  Gold is RESERVED strictly for TRUE 100 APEX.  Peak
+    // remains distinct from Rare Lock (green) via the purple accent.
     return {
       key: "PEAK",
       label: "99 LOCK",
-      accent: COLORS.goldRich,
-      accentSoft: "rgba(255,199,54,0.22)",
-      borderColor: "rgba(255,199,54,0.72)",
+      accent: COLORS.perklocksPurple,
+      accentSoft: COLORS.perklocksPurpleSoft,
+      borderColor: COLORS.perklocksPurpleBorder,
       borderWidth: 1.75,
-      surfaceBg: "#1F1B2D",
-      surfaceGlossTop: "rgba(255,199,54,0.15)",
-      glowColor: COLORS.goldRich,
-      glowOpacity: 0.42,
+      surfaceBg: "#1A162B",
+      surfaceGlossTop: "rgba(185,140,255,0.15)",
+      glowColor: COLORS.perklocksPurple,
+      glowOpacity: 0.44,
       glowRadius: 14,
-      chipBg: "rgba(255,199,54,0.22)",
-      chipTextColor: COLORS.goldRich,
-      chipBorderColor: "rgba(255,199,54,0.72)",
+      chipBg: COLORS.perklocksPurpleSoft,
+      chipTextColor: COLORS.perklocksPurpleRich,
+      chipBorderColor: COLORS.perklocksPurpleBorder,
     };
   }
   if (s >= 96) {
@@ -217,7 +236,8 @@ export function getLockTierVisual(lockScore: number): LockTierVisual {
 }
 
 export const GRADE_COLORS = {
-  "Elite Lock": COLORS.goldElite,
+  "APEX Lock":  COLORS.goldElite,          // 100 APEX only (gold reserved)
+  "Elite Lock": COLORS.perklocksPurple,    // 98-99 non-APEX premium (purple)
   "Strong Lock": COLORS.neonGreen,
   "Lock":       COLORS.neonGreen,
   "Playable":   COLORS.voltBlue,

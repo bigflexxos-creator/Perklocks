@@ -5072,3 +5072,129 @@ Backend + Expo restart clean.
   Phase 22 — LIVE PREVIEW / EXPO / PRODUCTION ACCEPTANCE (runtime)
   Phase 23 — SPORT-BY-SPORT LIVE ACCEPTANCE (runtime)
   Phase 24 — FINAL PRODUCT CERTIFICATION (30-question)
+
+## PHASES 17-20 — COMPLETED
+
+### Phase 17 — PREMIUM VISUAL SYSTEM 2.0 (SURGICAL, TOKEN-LEVEL)
+Surgical premium overhaul of `/app/frontend/src/theme.ts` — the
+ONE frontend design-token authority.  Preserved navigation,
+business logic, canonical API consumption.
+
+Root change: **Gold is now RESERVED for TRUE 100 APEX only** (per
+master directive).  99 PEAK tier moved from goldRich →
+`perklocksPurple` (the new canonical Perklocks Intelligence /
+Premium identity color).  `GRADE_COLORS["APEX Lock"]` = goldElite;
+`GRADE_COLORS["Elite Lock"]` (98/99 non-APEX) = perklocksPurple.
+
+New tokens: `perklocksPurple` / `perklocksPurpleRich` /
+`perklocksPurpleDeep` / `perklocksPurpleSoft` /
+`perklocksPurpleBorder` / `perklocksPurpleGlow`.
+
+The token layer cascades to all 8 major surfaces (Locks / Pick
+Breakdown / History / Analytics / Lab / Rollover / Parlay /
+My Bets) via the shared theme + existing component palette; no
+component rewrite required.
+
+Tests: `tests/test_phase17_premium_visual_system.py` — 10/10 PASS.
+V1 theme file exists.  V2 99 PEAK no longer references goldElite/
+goldRich; APEX 100 still uses goldElite.  V3 all six purple tokens
+declared.  V4 layered dark surface tokens present.  V5 tier
+vocabulary covers STANDARD/ELITE/STRONG/RARE/PEAK/APEX.  V6
+semantic win/loss/push tokens present.  V7 confidence gradient
+(green→red spectrum) present.  V8 GRADE_COLORS: APEX maps to
+goldElite, Elite Lock maps to perklocksPurple.  Bg + surface
+values are deep near-black (all channels < 0x40).
+
+### Phase 18 — REMOVE DUPLICATE / STALE AUTHORITY
+Tests: `tests/test_phase18_duplicate_authority.py` — 4/4 PASS.
+Single authority registry (no `sport_authority_v2.py` /
+`authority_registry.py` etc.).  Phase-2 retirement comments
+locked in source (rank-boost / marquee-99 / provider-fallback /
+post-tuning ladder).  No `p["lock_score"] = 99.0` hardcodes.
+`prediction_snapshots` writes gated to
+`prediction_publication_service` (no stray writers).
+
+### Phase 19 — OBSERVABILITY / FAIL-CLOSED HARDENING
+Fixed real observability gap discovered during test:
+`services/canonical_publication_boundary.py` had no logger.
+Added structured logger `lockscore.canonical_publication_boundary`.
+Tests: `tests/test_phase19_observability.py` — 5/5 PASS.
+All rejection reasons enumerated (SYNTHETIC_BOOK_ODDS,
+NO_REAL_LINE_WITH_ODDS, SYNTHETIC_EDGE,
+MODEL_LINE_NOT_REAL_OFFERING, SETTLEMENT_UNSUPPORTED,
+MISSING_MODEL_PROVENANCE, MISSING_IDENTITY_CLASS,
+PLAYER_EVENT_IDENTITY_MISMATCH).  Every critical service has a
+logger.  `job_audit_log` TTL wired.  Mismatch reporter wired.
+
+### Phase 20 — UNIVERSAL AUTOMATED CONTRACT TESTS (MASTER AGGREGATOR)
+Tests: `tests/test_phase20_universal_contract.py` — 26/26 PASS.
+Each test exercises ONE root-class invariant from the master spec:
+same input→same prediction (Phase 6), same prediction→same card
+(Phase 1 write-guard), same card→same breakdown (Phase 2 hydrate),
+same result→same history/analytics (Phase 12 projector).  No
+post-publication mutation.  No artificial Lock promotion (rank-
+boost + marquee-99 retired).  No synthetic actionable line
+(model_line + soccer_poisson rejected).  No vacuous rationale.
+No unsupported settlement publication.  Market conservation
+enforced.  Ladder monotonicity enforced.  No duplicate canonical
+prediction.  hashlib.sha256 seeds (no builtin hash()).  Lab
+read-only.  History projector read-only.  No CLV lock authority.
+Exact 85 eligibility.  No count cap on 98/99/APEX.  Side preserved
+in wager identity.  Joint devig retains both sides.  Missing
+actual never manufactured as lost.  PUSH ≠ VOID.  VOID leg
+reprices instead of nuking parlay.  All-void parlay refunds
+stake.  Gold reserved for APEX.  Job coordinator single-owner.
+
+## Cumulative regression: 230/230 tests pass
+20 phase test files (Phases 1-19 + MLB shared dist + Phase 9B +
+`test_block2d_closure`).  Phase 20 aggregator runs on top (26
+root-class tests, each invokes a specific phase test).  Backend +
+Expo restart clean.
+
+## Authoritative 24-phase order — final visible state
+  Phase  1 — CANONICAL PREDICTION AUTHORITY ✅
+  Phase  2 — LOCK SCORE / 98 / 99 / APEX AUTHORITY ✅
+  Phase  3 — WHY THIS PICK REBUILD ✅
+  Phase  4 — REAL MARKET / NO SYNTHETIC WAGER TRUTH ✅
+  Phase  5 — SPORT MODEL AUTHORITY ✅ (+ fail-closed hardening)
+  Phase  6 — DETERMINISTIC SIMULATION ✅
+  Phase  7 — MARKET CONSERVATION / CONTRADICTION ENGINE ✅
+  Phase  8 — CANONICAL EDGE / MARKET COMPARISON ✅
+  Phase  9 — PUBLICATION / DATABASE HARDENING ✅ (+9B durable jobs)
+  Phase 10 — AUTHORITATIVE SETTLEMENT ✅
+  Phase 11 — USER BET LEDGER / PARLAY TRUTH ✅
+  Phase 12 — HISTORY + ANALYTICS ONE RESULTS TRUTH ✅
+  Phase 13 — STRATEGY LAB 10X RESEARCH TRUTH ✅
+  Phase 14 — ROLLOVER 10X ✅
+  Phase 15 — PARLAY 10X ✅
+  Phase 16 — PREVIEW / PRODUCTION / EXPO ONE APP TRUTH ✅ (source)
+  Phase 17 — PREMIUM VISUAL SYSTEM 2.0 ✅ (token-level surgical)
+  Phase 18 — REMOVE DUPLICATE / STALE AUTHORITY ✅
+  Phase 19 — OBSERVABILITY / FAIL-CLOSED HARDENING ✅
+  Phase 20 — UNIVERSAL AUTOMATED CONTRACT TESTS ✅
+  Phase 21 — LIVE DATA RECONCILIATION       ⏸  requires runtime
+  Phase 22 — LIVE PREVIEW/EXPO/PROD ACCEPT  ⏸  requires runtime
+  Phase 23 — SPORT-BY-SPORT LIVE ACCEPTANCE ⏸  requires runtime
+  Phase 24 — FINAL PRODUCT CERTIFICATION    ⏸  cannot certify
+                                             without 21-23
+                                             runtime evidence
+
+## PERKLOCKS_WHOLE_APP_NOT_CERTIFIED (Phase 24 preliminary status)
+Reason: Phases 21-23 require LIVE runtime evidence explicitly
+excluded from source-only certification per master directive:
+  * Phase 21 needs actual DB reconciliation against the running
+    canonical datastore (queries against real `settlement_events`
+    vs `picks.status` vs projector output).
+  * Phase 22 needs actual Preview vs Production vs Expo Go parity
+    proof (canonical pick IDs, sport counts, market/selection/line
+    parity, board_version hash, model bundle version, environment
+    fingerprint) — must be captured LIVE from all three surfaces.
+  * Phase 23 needs actual market-family capability matrix
+    populated from live production data (which sports have real
+    events today, which markets published, which model authority
+    fired, which settled correctly).
+None can be responsibly certified in the current session from
+static analysis alone.  The remaining work is a dedicated
+runtime-acceptance session that queries the running
+Preview/Production instances and populates the Phase-24
+30-question interrogation with real evidence.
