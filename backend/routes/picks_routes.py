@@ -2977,6 +2977,78 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         logger.debug("odds fallback decoration skipped: %s", _odds_err)
         _odds_envelope = None
 
+    # ── PERKLOCKS UNIVERSAL LOCKS-ELIGIBILITY UNION RESCUE (2026-06) ───
+    # Root Closure §1-§4: there is ONE canonical eligibility answer per
+    # prediction, and once a pick clears the publication boundary NO
+    # downstream consumer may re-qualify it away.  Even a single leaky
+    # filter anywhere in the ~30-step response pipeline can strand
+    # legit Lock ≥85 picks — repeatedly observed in the wild (Walker
+    # Jenkins Over 0.5 Hits published_lock 91.5 dropped from
+    # /api/picks/today while its Pick Breakdown card still rendered).
+    #
+    # This block enforces the invariant DECLARATIVELY at the response
+    # boundary: after every filter/dedupe/decorator has run, we
+    # re-query the CANONICAL ELIGIBLE UNIVERSE straight from db.picks
+    # (`publication_state=PUBLISHED` ∧ `published_lock_score ≥ 85` ∧
+    # `off_board != True` ∧ `no_bet != True` ∧
+    # `hide_from_main_board != True` ∧ future event) and re-inject
+    # any missing ids.  Each rescued row carries an explicit
+    # `locks_eligibility` object so:
+    #   * the frontend can render it identically to native rows,
+    #   * ops can trace exactly why a pick is here,
+    #   * a permanent regression test can assert
+    #     `ELIGIBLE_BUT_MISSING == 0`.
+    #
+    # NEVER fabricates a pick (rescue-load is a straight DB read of
+    # already-frozen predictions).  NEVER lowers Lock Scores.  NEVER
+    # creates a second board — the union is over IDs on the SAME
+    # published_lock_score+publication_state contract enforced upstream.
+    try:
+        from services.locks_eligibility import (
+            compute_locks_eligibility, rescue_missing_eligible,
+        )
+        _served_ids = {p.get("id") for p in canonical if p.get("id")}
+        _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        # Root Closure §20 — UNIVERSAL rescue.  No horizon cap, no
+        # sport whitelist, no market whitelist.  Every currently
+        # published Lock ≥85 pick with a future event MUST reach
+        # Locks regardless of days-out.  Legitimate 3-day-out CFB /
+        # UEFA / NFL picks all included.
+        _rescue_query = {
+            "publication_state": "PUBLISHED",
+            "published_lock_score": {"$gte": 85},
+            "off_board":            {"$ne": True},
+            "no_bet":               {"$ne": True},
+            "hide_from_main_board": {"$ne": True},
+            "excluded_from_history":{"$ne": True},
+            "status":               {"$in": ["pending", "open", None]},
+            "event_time":           {"$gt": _now_iso},
+        }
+        if sport and sport.lower() not in ("all", "any"):
+            _rescue_query["sport"] = {"$regex": f"^{re.escape(sport)}$",
+                                        "$options": "i"}
+        rescued, ebm_ids = await rescue_missing_eligible(
+            db, _served_ids, _rescue_query,
+        )
+        # Stamp canonical eligibility marker on EVERY row (served + rescued)
+        # so consumers have ONE authoritative eligibility field, not four
+        # loosely-related legacy fields.
+        for _p in canonical:
+            _p["locks_eligibility"] = compute_locks_eligibility(_p)
+        for _r in rescued:
+            _r["locks_eligibility"] = compute_locks_eligibility(_r)
+            _r["locks_eligibility_rescued"] = True
+        if rescued:
+            logger.info(
+                "picks_today eligibility-union rescue: injected %d "
+                "canonically-eligible picks dropped by pipeline "
+                "(EBM=%d).  Root Closure invariant holds.",
+                len(rescued), len(ebm_ids),
+            )
+            canonical.extend(rescued)
+    except Exception as _ebm_err:
+        logger.warning("Eligibility union rescue skipped: %s", _ebm_err)
+
     return {"picks": canonical, "alt_availability": alt_availability,
              "odds_provider": _odds_envelope}
 
