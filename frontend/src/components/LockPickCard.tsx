@@ -514,14 +514,28 @@ function LockPickCardImpl({ pick, featured = false }: { pick: Pick; featured?: b
           Locks-Mockup 2026-08-22: distinct visual treatment per metric —
           LOCK (metallic gold), WIN (cool neutral), EDGE (neon green when
           the value is positive; red when negative). Matches mockup §6. */}
+      {/* Phase 17 defect B closure (2026-09-02) — LOCK badge color
+          MUST derive from the canonical tier visual, not hard-code
+          gold.  Live evidence showed Lock 92 rendering gold because
+          `color={COLORS.goldElite} variant="gold"` fired
+          unconditionally.  Now: 85-89/90-92/93-95/96-98 use their
+          tier accent, 99 PEAK uses Perklocks Purple, 100 APEX
+          remains the only gold path. */}
       <View style={styles.heroBadgeRow}>
         <HeroBadge
           icon="🔒"
           value={`${Math.round(displayLock)}`}
           label="LOCK"
           sub="BET QUALITY"
-          color={COLORS.goldElite}
-          variant="gold"
+          color={tierVisual.accent}
+          variant={
+            tierVisual.key === "APEX"        ? "gold"
+            : tierVisual.key === "PEAK"      ? "purple"
+            : tierVisual.key === "RARE"      ? "green"
+            : tierVisual.key === "STRONG"    ? "green"
+            : tierVisual.key === "ELITE"     ? "neutral"
+            : /* STANDARD */                  "neutral"
+          }
         />
         <HeroBadge
           icon="📊"
@@ -1651,20 +1665,23 @@ function HeroBadge({
   label: string;
   sub: string;
   color: string;
-  variant?: "gold" | "green" | "red" | "neutral";
+  variant?: "gold" | "green" | "red" | "neutral" | "purple";
 }) {
-  // Locks-Mockup 2026-08-22: each variant paints its own premium
-  // treatment — gold LOCK box, cool WIN box, positive-green EDGE box.
+  // Phase 17 defect B closure — added `purple` variant for 99 PEAK.
+  // Gold remains RESERVED for APEX (100).  Neutral covers ELITE
+  // Setup (90-92) + STANDARD (85-89) with cool premium treatment.
   const variantStyle =
-    variant === "gold" ? styles.heroBadgeGold
-    : variant === "green" ? styles.heroBadgeGreen
-    : variant === "red" ? styles.heroBadgeRed
+    variant === "gold"   ? styles.heroBadgeGold
+    : variant === "purple" ? styles.heroBadgePurple
+    : variant === "green"  ? styles.heroBadgeGreen
+    : variant === "red"    ? styles.heroBadgeRed
     : styles.heroBadgeNeutral;
 
   const glowColor =
-    variant === "gold" ? COLORS.goldGlow
-    : variant === "green" ? COLORS.neonGreen
-    : variant === "red" ? COLORS.electricBlaze
+    variant === "gold"   ? COLORS.goldGlow
+    : variant === "purple" ? COLORS.perklocksPurple
+    : variant === "green"  ? COLORS.neonGreen
+    : variant === "red"    ? COLORS.electricBlaze
     : "#000000";
 
   return (
@@ -1683,7 +1700,11 @@ function HeroBadge({
       <View pointerEvents="none" style={styles.heroBadgeGloss} />
       <Text style={styles.heroIcon}>{icon}</Text>
       <Text style={[styles.heroValue, { color }]} numberOfLines={1}>{value}</Text>
-      <Text style={[styles.heroLabel, variant === "gold" && { color: COLORS.goldRich }]}>{label}</Text>
+      <Text style={[
+        styles.heroLabel,
+        variant === "gold"   && { color: COLORS.goldRich },
+        variant === "purple" && { color: COLORS.perklocksPurpleRich },
+      ]}>{label}</Text>
       <Text style={styles.heroSub}>{sub}</Text>
     </View>
   );
@@ -2321,6 +2342,12 @@ const styles = StyleSheet.create({
   heroBadgeGold: {
     backgroundColor: "rgba(24,20,8,0.85)",
     borderColor: "rgba(255,215,0,0.90)",
+  },
+  heroBadgePurple: {
+    // Phase 17 defect B closure — 99 PEAK badge; deep purple bg +
+    // Perklocks Purple border.  Visually distinct from gold APEX.
+    backgroundColor: "rgba(20,16,32,0.85)",
+    borderColor: "rgba(185,140,255,0.90)",
   },
   heroBadgeGreen: {
     backgroundColor: "rgba(10,24,16,0.85)",
