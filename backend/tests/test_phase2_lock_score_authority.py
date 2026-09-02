@@ -162,10 +162,16 @@ def test_grade_bands_preserve_98_99_apex():
 
 
 # ── R7 ── Canonical uniqueness is per-wager, not per-score ──────
-def test_totals_truth_guard_uniqueness_is_side_neutral():
-    """Duplicate representations of the SAME wager (same event/line,
-    both sides emitted) collapse to one ACTIVE via revision_state
-    SUPERSEDED_IN_RUN — NOT via count cap on 98/99/APEX."""
+def test_totals_truth_guard_supersession_key_is_side_neutral_by_design():
+    """CORRECTION: `_canonical_totals_key` is the SUPERSESSION key,
+    NOT the observed wager identity.
+
+    Observed wagers Over 8.5 and Under 8.5 are DISTINCT sportsbook
+    offerings (proven in `test_phase4_real_market_truth.py`).  The
+    supersession key is deliberately side-neutral so the ACTIVE-side
+    contradiction rule can enforce "only one ACTIVE side at a time"
+    on a canonical event+line — that is a Phase-7 concern, not the
+    wager identity itself."""
     from services.totals_truth_guard import _canonical_totals_key
     p_over = {"sport": "MLB", "event_id": "E1", "period": "FULL_GAME",
               "market": "Total Runs Over 8.5", "line": 8.5,
@@ -173,15 +179,15 @@ def test_totals_truth_guard_uniqueness_is_side_neutral():
     p_under = {"sport": "MLB", "event_id": "E1", "period": "FULL_GAME",
                "market": "Total Runs Under 8.5", "line": 8.5,
                "selection": "Under"}
-    # Same canonical wager (event + line) => same key.
+    # Supersession key: side-neutral by design.
     k1 = _canonical_totals_key(p_over)
     k2 = _canonical_totals_key(p_under)
-    assert k1 == k2, "same canonical wager must share the key"
-    # Different line => distinct wager => distinct key (multiple
-    # legitimate APEX totals across lines can coexist).
+    assert k1 == k2, "supersession key must be side-neutral"
+    # Different lines are distinct wagers (also drives the supersession
+    # key at a different bucket).
     p_other_line = dict(p_over); p_other_line["line"] = 9.5
     k3 = _canonical_totals_key(p_other_line)
-    assert k3 != k1, "different lines are distinct canonical wagers"
+    assert k3 != k1, "different lines are distinct wagers"
 
 
 # ── R8 ── ≥85 eligibility includes exactly 85 ───────────────────

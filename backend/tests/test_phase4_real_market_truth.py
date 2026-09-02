@@ -146,33 +146,132 @@ def test_missing_book_odds_not_main_board_eligible():
 
 # ── M5/M6 — Real ladder preservation + canonical uniqueness ─────
 def test_real_alternate_totals_different_lines_coexist():
-    """Two picks at DIFFERENT real lines are DIFFERENT canonical
-    wagers — canonical key must NOT collide."""
-    from services.totals_truth_guard import _canonical_totals_key
+    """Two picks at DIFFERENT real lines are DIFFERENT observed
+    wagers — canonical_wager_identity tuples MUST differ."""
+    from services.pick_identity_enricher import canonical_wager_identity
     p85 = _base_valid_pick(line=8.5, market="Total Runs Over 8.5",
-                            event_id="EVT_X")
+                            event_id="EVT_X", market_family="total",
+                            side="over")
     p95 = _base_valid_pick(line=9.5, market="Total Runs Over 9.5",
-                            event_id="EVT_X",
+                            event_id="EVT_X", market_family="total",
+                            side="over",
                             id="pick_2")
-    k85 = _canonical_totals_key(p85)
-    k95 = _canonical_totals_key(p95)
-    assert k85 != k95, "different real lines must be distinct wagers"
+    t85 = canonical_wager_identity(p85)
+    t95 = canonical_wager_identity(p95)
+    assert t85 != t95, "different real lines must be distinct wagers"
 
 
-def test_duplicate_alias_same_line_collapses_canonically():
-    """Same event + same line + Over vs Under = same canonical
-    wager (side is state, not identity)."""
+def test_over_and_under_at_same_line_are_DISTINCT_observed_wagers():
+    """Phase 4 identity rule (corrected):
+    Over 8.5 and Under 8.5 are DIFFERENT sportsbook offerings.
+    They MUST NOT collapse into one canonical wager identity —
+    `side` is a required component of observed wager identity.
+    (Contradiction/supersession between the two is Phase-7 territory
+    handled by the side-neutral `_canonical_totals_key`.)
+    """
+    from services.pick_identity_enricher import canonical_wager_identity
+    p_over = _base_valid_pick(
+        event_id="EVT_Y", market="Total Runs Over 8.5",
+        market_family="total", side="over", line=8.5,
+        id="pick_over_id",
+    )
+    p_under = _base_valid_pick(
+        event_id="EVT_Y", market="Total Runs Under 8.5",
+        market_family="total", side="under", line=8.5,
+        id="pick_under_id",
+    )
+    t_over = canonical_wager_identity(p_over)
+    t_under = canonical_wager_identity(p_under)
+    assert t_over != t_under, (
+        "Over and Under at the same line are distinct wagers — "
+        f"got identical tuples: {t_over}"
+    )
+    # Explicit — side occupies position 4 in the canonical tuple.
+    assert t_over[3] != t_under[3]
+
+
+def test_team_moneylines_home_vs_away_are_distinct_observed_wagers():
+    """Team A ML and Team B ML on the same event are distinct
+    observed wagers even though they share event + market family."""
+    from services.pick_identity_enricher import canonical_wager_identity
+    p_home = _base_valid_pick(
+        id="pick_home",
+        market="Moneyline", market_family="moneyline",
+        selection="Yankees", side="Yankees",
+        event_id="EVT_ML",
+    )
+    p_away = _base_valid_pick(
+        id="pick_away",
+        market="Moneyline", market_family="moneyline",
+        selection="Red Sox", side="Red Sox",
+        event_id="EVT_ML",
+    )
+    t_home = canonical_wager_identity(p_home)
+    t_away = canonical_wager_identity(p_away)
+    assert t_home != t_away, "team ML sides must be distinct wagers"
+
+
+def test_player_over_and_under_are_distinct_observed_wagers():
+    """A player prop Over 24.5 and Under 24.5 are distinct wagers."""
+    from services.pick_identity_enricher import canonical_wager_identity
+    p_over = _base_valid_pick(
+        id="prop_over",
+        sport="NBA", market="Points Over 24.5",
+        market_family="player_points",
+        player_name="Luka Doncic",
+        selection="Over", side="over", line=24.5,
+        event_id="EVT_LAL_DAL",
+    )
+    p_under = _base_valid_pick(
+        id="prop_under",
+        sport="NBA", market="Points Under 24.5",
+        market_family="player_points",
+        player_name="Luka Doncic",
+        selection="Under", side="under", line=24.5,
+        event_id="EVT_LAL_DAL",
+    )
+    t_over = canonical_wager_identity(p_over)
+    t_under = canonical_wager_identity(p_under)
+    assert t_over != t_under, \
+        "player prop Over vs Under must be distinct wagers"
+
+
+def test_joint_devig_retains_both_observed_sides():
+    """`joint_devig(over_odds, under_odds)` MUST accept BOTH sides
+    of the same event/market/line — the two observed offerings are
+    preserved end-to-end for probability conservation."""
+    from services.totals_devig import joint_devig
+    dv = joint_devig(-110, -110)
+    assert dv["available"] is True
+    assert dv["raw_over_implied"] > 0
+    assert dv["raw_under_implied"] > 0
+    # Both sides retained + jointly de-vigged.
+    assert abs(dv["fair_over"] + dv["fair_under"] - 1.0) < 1e-6
+
+
+def test_totals_truth_guard_supersession_key_is_side_neutral_by_design():
+    """CLARIFICATION test: `_canonical_totals_key` in totals_truth_guard
+    is DELIBERATELY side-neutral because it is the **supersession
+    key** for the ACTIVE-side contradiction rule (Phase 7).  It is
+    NOT the observed wager identity (which lives in
+    `canonical_wager_identity` and includes side).  Both artefacts
+    coexist by design — this test locks that separation in."""
     from services.totals_truth_guard import _canonical_totals_key
-    p_over = _base_valid_pick(line=8.5, event_id="EVT_Y",
-                              market="Total Runs Over 8.5",
-                              selection="Over")
-    p_under = _base_valid_pick(line=8.5, event_id="EVT_Y",
-                               id="pick_under",
-                               market="Total Runs Under 8.5",
-                               selection="Under")
-    k1 = _canonical_totals_key(p_over)
-    k2 = _canonical_totals_key(p_under)
-    assert k1 == k2
+    from services.pick_identity_enricher import canonical_wager_identity
+    p_over = {"sport": "MLB", "event_id": "E1", "period": "FULL_GAME",
+              "market_family": "total",
+              "market": "Total Runs Over 8.5",
+              "line": 8.5, "selection": "Over", "side": "over"}
+    p_under = {"sport": "MLB", "event_id": "E1", "period": "FULL_GAME",
+               "market_family": "total",
+               "market": "Total Runs Under 8.5",
+               "line": 8.5, "selection": "Under", "side": "under"}
+    # Supersession key: side-neutral → both sides map to same key so
+    # the guard can enforce "only one ACTIVE side at a time".
+    assert _canonical_totals_key(p_over) == _canonical_totals_key(p_under)
+    # Observed wager identity: side-aware → the two remain distinct
+    # rows in `db.picks` (each with its own `revision_state`).
+    assert canonical_wager_identity(p_over) != canonical_wager_identity(p_under)
 
 
 # ── M8 — no arbitrary ladder count cap ──────────────────────────
