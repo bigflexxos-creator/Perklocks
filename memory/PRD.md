@@ -4634,3 +4634,61 @@ Remaining phases (recorded, not silently deferred):
   Phase 17  PREMIUM VISUAL SYSTEM 2.0 (frontend overhaul)
   Phase 18-23  Additional surgical fixes per master directive
   Phase 24  FINAL PRODUCT CERTIFICATION (30-question)
+
+## PHASE 4 — REAL MARKET / NO SYNTHETIC WAGER TRUTH — COMPLETED
+
+### Root defect fixed at canonical boundary
+Discovered and closed a leak in `services/canonical_publication_boundary.py`:
+Soccer Poisson-synthesized alt totals (stamped `model_line=True` +
+`model_source="poisson_from_main_total"` + `book_odds=fair_odds`)
+were passing the boundary because `_real_line_state()` classified
+them as REAL (integer book_odds present, no synthetic
+`odds_source` label).  They could reach Locks.
+
+### Fix (surgical, at the ONE canonical publication boundary)
+Added new `RejectionReason.MODEL_LINE_NOT_REAL_OFFERING` + logic in
+`evaluate_publication`:
+  * `model_line == True` → REJECT.
+  * `model_source` starting with `poisson_from_` / `synthetic_` /
+    `model_only_` / `synthesized_alt` / `synthesized_from_` →
+    REJECT.
+Legitimate model-provenance labels (`mlb_shared_run_distribution_v1`,
+`cfb_sp_game_model`, `platinum_nfl_game_runtime`) continue to
+publish — those are canonical MODEL PROVENANCE tags, not
+synthesized-line prefixes.
+
+Existing direct-inject barrier (`apply_canonical_barrier`) already
+rejected `model_line=True` via `marked_model_line`.  The two
+enforcement points are now aligned.
+
+### Tests: `tests/test_phase4_real_market_truth.py` — 15/15 PASS
+M1 model_line rejected. M2 synthetic odds sources / no_real +
+book_odds rejected.  M3 model-only theoretical (book_odds=None +
+no_real_book_line) blocked from main board (research-only).  M4
+REAL publishes cleanly.  M5 different real lines are distinct
+canonical wagers.  M6 same event + same line + Over vs Under =
+same canonical key (side is state).  M7 missing book_odds not
+eligible.  M8 no `MAX_ALT_LINES_PER_EVENT` / `LADDER_COUNT_CAP` /
+similar constant exists in any production module.  M9 Soccer
+Poisson synthesized alt total signature rejected.  M10 generic
+producer `model_line=True` alt prop rejected for NFL / NBA / CFB.
+Bonus: `apply_canonical_barrier` also rejects `model_line=True`.
+
+Cumulative regression: 93/93 tests pass across MLB Shared Run
+Distribution + Phase 1 + Phase 2 + Phase 3 + Phase 4 +
+`test_block2d_closure`.  Backend restarts clean.
+
+## Authoritative 24-phase order (correction applied)
+Handoff numbering corrected — the authoritative sequence is:
+  Phase  1 — CANONICAL PREDICTION AUTHORITY ✅
+  Phase  2 — LOCK SCORE / 98 / 99 / APEX AUTHORITY ✅
+  Phase  3 — WHY THIS PICK REBUILD ✅
+  Phase  4 — REAL MARKET / NO SYNTHETIC WAGER TRUTH ✅  ← this session
+  Phase  5 — SPORT MODEL AUTHORITY (next)
+  Phase  6 — DETERMINISTIC SIMULATION
+  Phase  7 — MARKET CONSERVATION / CONTRADICTION ENGINE
+  Phase  8 — CANONICAL EDGE / MARKET COMPARISON
+  Phase  9 — PUBLICATION / DATABASE HARDENING
+  Phases 10-23 — per master directive (settlement, parlay, lab,
+                 rollover, provider-identity chain, telemetry, PVS 2.0)
+  Phase 24 — FINAL PRODUCT CERTIFICATION (30-question)
