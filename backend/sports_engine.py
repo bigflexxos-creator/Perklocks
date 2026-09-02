@@ -2285,6 +2285,27 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             game_ctx = (game.get("_ctx") or {}) if isinstance(game, dict) else {}
             _use_dd = bool(game_ctx) and sport in ("MLB", "Soccer")
             _dd_fn = None
+            # ── Universal Totals Truth §5 — SHARED distribution for MLB.
+            # When we can invoke the shared run distribution successfully
+            # the two per-side calls below are replaced with a single
+            # conserved (P(Over), P(Under)) pair from ONE Normal(μ,σ).
+            _mlb_shared_dist = None
+            if sport == "MLB" and game_ctx and o_price is not None and u_price is not None:
+                try:
+                    from services.data_driven_model import (
+                        mlb_shared_run_distribution as _shared_fn,
+                    )
+                    _mlb_shared_dist = _shared_fn(
+                        line=float(line),
+                        book_over_odds=o_price,
+                        book_under_odds=u_price,
+                        ctx=game_ctx,
+                    )
+                    if not _mlb_shared_dist.get("available"):
+                        _mlb_shared_dist = None
+                except Exception as _sd_err:
+                    logger.debug("mlb_shared_run_distribution skipped: %s", _sd_err)
+                    _mlb_shared_dist = None
             if _use_dd:
                 try:
                     if sport == "MLB":
@@ -2371,7 +2392,11 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     pass
             if o_price is not None and _totals_model_ok:
                 implied_o = _implied_prob(o_price)
-                if _use_dd and _dd_fn:
+                if _mlb_shared_dist is not None:
+                    # §5 SHARED distribution: conserved P(Over) from one μ.
+                    mp_o = _mlb_shared_dist["mp_over"]
+                    contribs_o = _mlb_shared_dist.get("contribs") or {}
+                elif _use_dd and _dd_fn:
                     dd = _dd_fn("Over", float(line), implied_o, game_ctx)
                     mp_o = dd["mp"]
                     contribs_o = dd["contributions"]
@@ -2409,7 +2434,16 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 # Reject truly lopsided dog-Unders (below 38% implied)
                 # \u2014 there the Over is the only side worth grading.
                 if implied_u >= 0.38:
-                    if _use_dd and _dd_fn:
+                    if _mlb_shared_dist is not None:
+                        # §5 SHARED distribution: conserved P(Under)
+                        # from the SAME μ that produced P(Over) above.
+                        mp_u = _mlb_shared_dist["mp_under"]
+                        # Under contributions are the sign-flip of Over
+                        # contribs so the signal engine still gets
+                        # meaningful reasoning strings.
+                        _co = _mlb_shared_dist.get("contribs") or {}
+                        contribs_u = {k: -v for k, v in _co.items()}
+                    elif _use_dd and _dd_fn:
                         dd = _dd_fn("Under", float(line), implied_u, game_ctx)
                         mp_u = dd["mp"]
                         contribs_u = dd["contributions"]
@@ -2562,6 +2596,29 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                                     )
                                     attach_game_sim_provenance(
                                         total_pick, _sim_best)
+                            # ── §5 SHARED distribution provenance (MLB) ──
+                            # Stamp BOTH sides' conserved probabilities on
+                            # the pick so `totals_truth_guard` verifies
+                            # P(Over) + P(Under) ≈ 1 exactly and never
+                            # goes off-board for a conservation failure.
+                            if sport == "MLB" and _mlb_shared_dist is not None:
+                                total_pick["total_over_prob"] = _mlb_shared_dist["mp_over"]
+                                total_pick["total_under_prob"] = _mlb_shared_dist["mp_under"]
+                                total_pick["total_push_prob"] = 0.0
+                                total_pick["mlb_shared_run_dist"] = {
+                                    "mu": _mlb_shared_dist["mu"],
+                                    "mu_anchor": _mlb_shared_dist["mu_anchor"],
+                                    "mu_shift": _mlb_shared_dist["mu_shift"],
+                                    "sigma": _mlb_shared_dist["sigma"],
+                                    "line": _mlb_shared_dist["line"],
+                                    "fair_over": _mlb_shared_dist["fair_over"],
+                                    "fair_under": _mlb_shared_dist["fair_under"],
+                                    "vig_pct": _mlb_shared_dist.get("vig_pct"),
+                                    "used_data": _mlb_shared_dist.get("used_data") or [],
+                                    "confidence": _mlb_shared_dist.get("confidence") or 0.0,
+                                    "source": _mlb_shared_dist.get("source"),
+                                }
+                                total_pick["model_source"] = "mlb_shared_run_distribution_v1"
                             # ── 2026-08-27 CFB TOTAL provenance ──────
                             if sport == "CFB":
                                 _cfb_tot_gm2 = game_ctx.get("_cfb_game_model") or {}
