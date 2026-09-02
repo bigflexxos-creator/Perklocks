@@ -897,6 +897,22 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     try:
         from services.totals_truth_guard import enforce_single_active_total
         await enforce_single_active_total(db, picks)
+        # ── Phase 7 defect A closure (2026-09-02) — spread guard.
+        # Analogous to totals_truth_guard: side-neutral canonical key
+        # on abs(line) collapses Wake -24.5 / Akron +24.5 into ONE
+        # ACTIVE row.  Deterministic winner selection (edge → mp →
+        # lock → pick_id) prevents Preview board flapping across
+        # refreshes when inputs are stable.
+        try:
+            from services.spread_truth_guard import enforce_single_active_spread
+            _sp_stats = enforce_single_active_spread(picks)
+            if _sp_stats.get("superseded", 0) > 0:
+                logger.info(
+                    "spread_truth_guard superseded=%d keys=%d",
+                    _sp_stats["superseded"], _sp_stats["keys_stamped"],
+                )
+        except Exception as _spe:
+            logger.warning("spread_truth_guard fail-open: %s", _spe)
     except Exception as _tt_e:
         logger.warning("Totals truth guard skipped: %s", _tt_e)
 

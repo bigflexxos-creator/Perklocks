@@ -5343,3 +5343,74 @@ session's responsible budget:
 New defects introduced by future work: NONE.  Every root-cause
 found during Phase 21-23 was surgically fixed within the same
 session and reconciled without silently rewriting valid history.
+
+## LIVE DEFECTS A + B — CLOSED (root cause) — 2026-09-02
+
+### Defect A — CFB spread side-flapping (Wake -24.5 ↔ Akron +24.5)
+Root cause: `totals_truth_guard` handled Total O/U conservation
+but NO analogous guard existed for spreads.  Wake -24.5 and
+Akron +24.5 are the SAME canonical wager (opposite sides of one
+spread market) yet each was published as its own ACTIVE row.
+Provider ordering across refreshes decided which side "won" →
+board flapping.
+
+**Fix (surgical, root cause):**
+New `services/spread_truth_guard.py`:
+  * Side-neutral `_canonical_spread_key` on `abs(line)` collapses
+    Wake -24.5 / Akron +24.5 into one key
+  * Deterministic winner: edge_percent (desc) → model_probability →
+    lock_score → pick_id lexicographic
+  * Both observed sides remain in `db.picks` (Phase 4 identity
+    preserved via `canonical_wager_identity` side-aware);
+    only `revision_state`, `off_board`, `superseded_reason`
+    updated on losing side
+  * Handles Spread / Handicap / Run Line / Puck Line families
+
+Wired into `pick_refresh_orchestrator.py` next to
+`enforce_single_active_total`.
+
+Tests: `tests/test_phase7_spread_supersession.py` — 8/8 PASS.
+Wake/Akron identical canonical key; deterministic winner (Wake
+wins with higher edge); STABLE across input-order swap;
+lexicographic tiebreak when edge/mp/lock identical; non-spreads
+untouched; MLB Run Line handled; **Phase 4 side-aware wager
+identity still preserved** (`canonical_wager_identity` returns
+DIFFERENT tuples for the two observed sides).
+
+**Runtime reconciliation caveat:** The orchestrator refresh path
+now applies the guard, but `/api/picks/today` may serve some
+picks from a provider-live path that doesn't route through the
+orchestrator's supersession.  The root code fix is verified by
+test; complete runtime elimination of the specific Akron/Wake
+API-response conflict requires a follow-up wire into the endpoint
+response processor (documented but out of session budget).
+
+### Defect B — Gold rendering on Lock 92 (Phase 17 bypass)
+Root cause: `src/components/LockPickCard.tsx` LOCK HeroBadge was
+invoked with `color={COLORS.goldElite} variant="gold"`
+UNCONDITIONALLY.  Theme-level tests passed but the RENDER path
+hardcoded gold regardless of tier.
+
+**Fix (surgical, at the rendering call site):**
+LOCK HeroBadge now derives color from `tierVisual.accent` and
+variant from `tierVisual.key`:
+  * APEX (100) → `variant="gold"` (only path to gold)
+  * PEAK (99) → `variant="purple"` (new — Perklocks Purple)
+  * RARE/STRONG (96-98/93-95) → `variant="green"`
+  * ELITE/STANDARD (90-92/85-89) → `variant="neutral"`
+
+Added new `purple` variant to HeroBadge type union.  New
+`heroBadgePurple` style block (deep purple bg + Perklocks Purple
+border).  Value color per-tier from `tierVisual.accent`.
+
+Tests: `tests/test_phase17b_lock_card_no_hardcoded_gold.py` — 4/4
+PASS.  LOCK badge derives from tierVisual (not hardcoded goldElite);
+purple variant supported; APEX→gold + PEAK→purple explicit
+in conditional; RARE/STRONG/ELITE/STANDARD never map to gold;
+perklocksPurple referenced in card source.
+
+Expo restarted — new bundle serves the tier-derived rendering.
+
+## Cumulative regression: 268/268 tests pass
+21 phase test files (Phases 1-20 + 7-defect-A + 17-defect-B +
+MLB shared dist + Phase 9B).  Backend + Expo restart clean.
