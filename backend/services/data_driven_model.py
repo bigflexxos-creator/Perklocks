@@ -192,6 +192,160 @@ def mlb_total_prob(
     }
 
 
+# ══ MLB SHARED RUN DISTRIBUTION (§5 Universal Totals Truth) ══════════════════
+# Universal Totals Truth §5: BOTH Over AND Under probabilities for an MLB
+# Game Total MUST be derived from ONE authoritative run-total distribution
+# so that P(Over) + P(Under) + P(Push) ≡ 1 exactly (conservation).  Prior
+# implementation called `mlb_total_prob` independently for each side which
+# produced two anchor-different estimates and left conservation to the
+# guard's fail-closed off-board list.  This helper folds book fair-prob
+# (joint-devigged) AND the same feature lifts (weather / park / pitching
+# / team scoring) into a single Normal(μ, σ) distribution in RUNS space,
+# then reads P(Over N) / P(Under N) off the same CDF.
+_MLB_TOTAL_SIGMA_DEFAULT = 3.7   # Empirical stdev of MLB game totals (2019-2024).
+
+
+def _phi(z: float) -> float:
+    """Standard-normal CDF via erf (no scipy dependency)."""
+    import math as _m
+    return 0.5 * (1.0 + _m.erf(z / _m.sqrt(2.0)))
+
+
+def _phi_inv(p: float) -> float:
+    """Standard-normal quantile via Beasley-Springer-Moro approximation."""
+    import math as _m
+    if p <= 0.0:
+        return -8.0
+    if p >= 1.0:
+        return 8.0
+    a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+         1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00]
+    b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+         6.680131188771972e+01, -1.328068155288572e+01]
+    c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+         -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00]
+    d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+         3.754408661907416e+00]
+    plow = 0.02425
+    phigh = 1 - plow
+    if p < plow:
+        q = _m.sqrt(-2.0 * _m.log(p))
+        return (((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5]) / \
+               ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1)
+    if p <= phigh:
+        q = p - 0.5
+        r = q * q
+        return (((((a[0]*r + a[1])*r + a[2])*r + a[3])*r + a[4])*r + a[5]) * q / \
+               (((((b[0]*r + b[1])*r + b[2])*r + b[3])*r + b[4])*r + 1)
+    q = _m.sqrt(-2.0 * _m.log(1 - p))
+    return -(((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5]) / \
+             ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1)
+
+
+def mlb_shared_run_distribution(
+    line: float,
+    book_over_odds: int | float | None,
+    book_under_odds: int | float | None,
+    ctx: dict,
+    sigma: float | None = None,
+) -> dict[str, Any]:
+    """Return ONE Normal(μ, σ) MLB game-total distribution + both
+    conserved side probabilities.
+
+    Universal Totals Truth §5:
+        P(Over N)  = 1 − Φ((N − μ)/σ)
+        P(Under N) =     Φ((N − μ)/σ)      (half-line: no push)
+
+    μ_anchor is derived by inverting the CDF against the JOINT-devigged
+    fair book prob so the model starts book-anchored.  Feature lifts
+    (weather / park / pitchers / team_runs) then shift μ in RUNS space
+    by ``Δp × σ × sqrt(2π)`` — the first-order local slope of the CDF
+    around the anchor — which lets the existing per-feature probability
+    caps translate cleanly to a runs-space adjustment while preserving
+    the caps.  Result: identical feature strengths as the legacy
+    per-side model AND perfect conservation, side-symmetric.
+
+    Returns:
+        {
+          available: bool,
+          mp_over:   float,
+          mp_under:  float,
+          mu:        float,         # posterior expected total runs
+          mu_anchor: float,         # book-implied μ before feature lifts
+          sigma:     float,
+          contribs:  {feature: probability_lift_signed_over},
+          used_data: [feature,...],
+          confidence: 0..1,
+          reason:    str | None,    # populated when available=False
+        }
+    """
+    import math as _m
+    sigma = float(sigma if sigma and sigma > 0 else _MLB_TOTAL_SIGMA_DEFAULT)
+
+    # Import here to avoid circular imports on module load.
+    from services.totals_devig import joint_devig
+    dv = joint_devig(book_over_odds, book_under_odds)
+    if not dv.get("available"):
+        return {"available": False,
+                "reason": dv.get("reason", "paired_odds_missing")}
+
+    fair_over = float(dv["fair_over"])
+    fair_over = min(max(fair_over, 0.001), 0.999)
+    # Invert Φ to find μ_anchor s.t. P(X > N) = fair_over → μ = N + σ·Φ⁻¹(fair_over).
+    mu_anchor = float(line) + sigma * _phi_inv(fair_over)
+
+    # ── Compute feature lifts in the *probability* domain reusing the
+    # existing capped per-feature logic in `mlb_total_prob` for Over.
+    # We call it with the book fair Over probability as `implied` so the
+    # returned `total_lift` is the Over-side probability lift.
+    over_side = mlb_total_prob("Over", float(line), fair_over, ctx)
+    p_lift_over = float(over_side.get("total_lift") or 0.0)
+
+    # Translate probability lift → μ (runs) lift via first-order Normal
+    # slope: dp/dμ = φ((N−μ)/σ)/σ  →  Δμ ≈ Δp · σ · sqrt(2π) · e^(z²/2).
+    # We use the slope AT μ_anchor so the linearisation is centred at
+    # the current anchor probability (near 0.5 for typical lines).
+    z_anchor = (float(line) - mu_anchor) / sigma
+    slope = _m.exp(-0.5 * z_anchor * z_anchor) / (sigma * _m.sqrt(2.0 * _m.pi))
+    if slope < 1e-6:
+        slope = 1e-6
+    mu_shift = p_lift_over / slope
+    # Runs-space guard: never let a single game's feature lift exceed
+    # ±1.2 runs (matches the ±10pp probability cap at anchor ~0.5).
+    if mu_shift > 1.2:
+        mu_shift = 1.2
+    elif mu_shift < -1.2:
+        mu_shift = -1.2
+    mu = mu_anchor + mu_shift
+
+    # Read both probabilities off the SAME Normal(μ, σ) CDF.
+    z = (float(line) - mu) / sigma
+    p_under = _phi(z)                       # P(X < N)
+    p_over = 1.0 - p_under                  # P(X > N) — half-line, no push
+    # Half-line MLB totals never push; integer lines are handled by an
+    # explicit ±0.5 continuity correction upstream if ever emitted.
+    p_over = min(max(p_over, 0.001), 0.999)
+    p_under = 1.0 - p_over
+
+    return {
+        "available":  True,
+        "mp_over":    round(p_over, 6),
+        "mp_under":   round(p_under, 6),
+        "mu":         round(mu, 4),
+        "mu_anchor":  round(mu_anchor, 4),
+        "mu_shift":   round(mu_shift, 4),
+        "sigma":      round(sigma, 3),
+        "line":       float(line),
+        "fair_over":  round(fair_over, 6),
+        "fair_under": round(1.0 - fair_over, 6),
+        "vig_pct":    dv.get("vig_pct"),
+        "contribs":   over_side.get("contributions") or {},
+        "used_data":  list(over_side.get("used_data") or []),
+        "confidence": float(over_side.get("confidence") or 0.0),
+        "source":     "mlb_shared_run_distribution_v1",
+    }
+
+
 # ══ MLB HITTER PROP (HR / Hits / Total Bases) ══════════════════════════════════
 def mlb_hitter_prob(
     market: str,         # e.g. "Aaron Judge Over 0.5 Home Runs"

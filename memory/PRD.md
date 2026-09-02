@@ -4419,3 +4419,108 @@ Stats API cross-check.  Legitimate losses remained losses.
 (MLB false-zero root class closed; universal 20-item program is a
 multi-pass program — this pass moved the highest-leverage lever.)
 
+
+═══════════════════════════════════════════════════════════════════
+2026-06 — WHOLE APP ROOT CLOSURE + 10X PRODUCTION BUILD (in progress)
+═══════════════════════════════════════════════════════════════════
+
+## Session context
+User issued Message 642 — a 24-phase authoritative master build
+directive.  Execute continuously, no approval stops between phases,
+surgical root fixes only, no broad audits, no mock certification,
+no silent deferrals.  Session goal: as many phases as budget allows,
+STOP AT A SAFE CHECKPOINT with an exact handoff.
+
+## Completed in this session
+
+### 0. Carry-over — MLB Shared Run Distribution (§5 Universal Totals Truth)
+Files: `services/data_driven_model.py`, `sports_engine.py`
+- New `mlb_shared_run_distribution()` — ONE Normal(μ, σ=3.7) yielding
+  BOTH sides' conserved probabilities from the same run distribution.
+- Anchors μ by inverting Φ against JOINT-devigged fair Over prob so
+  book prices remain the base signal.
+- Applies feature lifts (weather/park/pitching/team scoring) in runs
+  space via first-order Normal slope, capped at ±1.2 runs.
+- Wired into `sports_engine.py` MLB totals emission path — replaces
+  the prior independent per-side calls to `mlb_total_prob`.
+- Stamps `total_over_prob` / `total_under_prob` / `total_push_prob=0`
+  on the pick so `totals_truth_guard.enforce_single_active_total`
+  actively verifies conservation before publication.
+- Provenance block `mlb_shared_run_dist` on each pick.
+Tests: `tests/test_mlb_shared_run_distribution.py` — 8/8 PASS
+(conservation half-line, features, pitchers duel, book anchor,
+mu-shift cap, missing-odds fail-closed, Φ round-trip, symmetry).
+Regression: `tests/test_block2d_closure.py` — 28/28 PASS.
+
+### Phase 1 — Canonical Prediction Authority (verified)
+Existing infrastructure fully verified with new invariant tests:
+- `PredictionPublicationService.publish_batch()` — canonical write
+  barrier with idempotency, versioning, payload_hash, drift log
+- `prediction_snapshots` collection — immutable + versioned
+- `published_write_guard.assert_no_published_mutation` — runtime
+  guard blocks any non-publication mutation of contract/legacy
+  immutable fields
+- `published_prediction_reader.hydrate()` — every user-visible
+  endpoint calls `_canonicalize_picks` which delegates here
+- Dual-write ensures picks-doc legacy aliases match snapshot
+Tests: `tests/test_phase1_canonical_authority.py` — 15/15 PASS
+Invariants proven:
+  I1 Idempotence: payload_hash + idempotency_key stable across
+     re-invocation; diverges on material change.
+  I2 Immutability: guard raises on lock_score / win_probability /
+     published_edge mutation; bulk-op with one immutable fails;
+     escape hatch for publication service works; non-contract
+     fields freely writable.
+  I3 Dual-write parity: `_dual_write` writes legacy aliases with
+     canonical→legacy unit conversion; drift computed against
+     pre-state.
+  I4 Read hydration: snapshot values alias to legacy field names;
+     None-edge preserved; legacy rows tagged; input pick never
+     mutated.
+
+Total tests passing this session: 51/51.
+
+## Phase status inventory (24-phase build)
+- Phase  1 CANONICAL PREDICTION AUTHORITY .................... VERIFIED
+- Phase  2 LOCK SCORE 98/99/APEX FREEZE ...................... NOT STARTED
+- Phase  3 WHY THIS PICK REBUILD ............................. NOT STARTED
+- Phase  4 SPORT MODEL AUTHORITY CONSOLIDATION ............... NOT STARTED
+- Phase  5 CONTRADICTION ENGINE .............................. NOT STARTED
+- Phase  6 CANONICAL EDGE .................................... PARTIAL (totals done §5-§8)
+- Phase  7 SETTLEMENT HARDENING .............................. NOT STARTED
+- Phase  8 UNIVERSAL TOTALS TRUTH — MLB SHARED DIST .......... DONE
+- Phase  9 DB HARDENING (schema/idempotency) ................. NOT STARTED
+- Phase 10 PARLAY / MY BETS TRUTH FLOW ....................... NOT STARTED
+- Phase 11 HISTORY / ANALYTICS TRUTH ......................... NOT STARTED
+- Phase 12 LAB TRUTH FLOW .................................... NOT STARTED
+- Phase 13 ROLLOVER TRUTH FLOW ............................... NOT STARTED
+- Phase 14 PROVIDER→IDENTITY→MARKET CHAIN VERIFICATION ....... NOT STARTED
+- Phase 15 CROSS-SURFACE CONVERGENCE ......................... NOT STARTED
+- Phase 16 TELEMETRY & FUNNEL COMPLETENESS ................... NOT STARTED
+- Phase 17 PREMIUM VISUAL SYSTEM 2.0 (frontend overhaul) ..... NOT STARTED
+- Phase 18-23 (additional surgical fixes per directive) ...... NOT STARTED
+- Phase 24 FINAL CERTIFICATION (30-question) ................. NOT STARTED
+
+## Safe-checkpoint handoff
+Stopping now at a safe boundary before Phase 2 begins.  A single
+session cannot reasonably complete 23 more phases in surgical detail
+while preserving working systems.  User explicitly authorised:
+"Stop at a safe checkpoint and provide a detailed handoff.  Do not
+silently defer required items just to claim a phase or the 24-phase
+build is complete."
+
+### Exact next action
+Resume at **Phase 2 — Lock Score 98/99/APEX freeze**:
+  - Enumerate every write path to `pick["lock_score"]` in
+    `learning_system_v2.py`, `elite_players.py`, `sports_engine.py`
+    (there are ≥6 known writers).
+  - Confirm they all execute PRE-publication (in-memory candidate
+    generation) and NEVER touch `db.picks` post-publication.  The
+    `published_write_guard` should already block violations; add a
+    Phase-2 test proving that if any of those writers were re-called
+    on a published pick doc via `db.picks.update_one`, the guard
+    raises.
+  - Freeze APEX (lock_score==100) rules: single canonical writer,
+    unique-key on `(sport, market, event, line)`, no downgrade after
+    publication.
+
