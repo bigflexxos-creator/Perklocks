@@ -104,31 +104,49 @@ async def reap_stuck_picks(db, *, hours: int = _STUCK_HOURS) -> dict:
          "source": 1, "event_time": 1, "status": 1},
     ).limit(_STUCK_REAPER_BATCH).to_list(length=_STUCK_REAPER_BATCH)
 
-    voided_n = 0
+    # ── Root Closure 2026-06 — NO FABRICATED VOIDS ─────────────
+    # PRIOR DEFECT: The reaper routed stuck picks through
+    # SettlementService with `result='void'` + `authoritative_event_final=
+    # False`.  That inserted a canonical settlement_events row claiming
+    # the wager was VOID — but VOID is a real book status (game
+    # cancelled, market pulled, etc.).  For a pick whose event actually
+    # happened but whose grading feed simply never caught up, VOID is a
+    # fabricated outcome that contaminates hit-rate, ROI, and public
+    # History with false negatives.
+    #
+    # CORRECT CONTRACT (Root Closure Q28 + Q-Reaper):
+    #   * `status='unresolved'`
+    #   * `settlement_status='UNRESOLVED'`
+    #   * `unresolved_reason='stuck_past_settlement_window'`
+    #   * NO settlement_events row inserted (the append-only ledger
+    #     stays honest — it only records real settlements).
+    # Downstream History surfaces render UNRESOLVED distinctly from VOID.
+    unresolved_n = 0
     for _r in to_reap:
         _pid = _r.get("id")
         if not _pid:
             continue
         try:
-            _res = await _svc.settle_from_pick(
-                _r,
-                result                    = "void",
-                source                    = "stuck_pick_reaper",
-                authoritative_event_final = False,
-                analytics_mirror          = {
-                    "void_reason":       "auto_void_stuck_pick_reaper",
-                    "settle_source":     "stuck_pick_reaper",
-                    "learning_excluded": True,
-                },
+            _upd = await db.picks.update_one(
+                {"id": _pid, "status": {"$in": [None, "pending"]}},
+                {"$set": {
+                    "status":                 "unresolved",
+                    "settlement_status":      "UNRESOLVED",
+                    "unresolved_reason":      "stuck_past_settlement_window",
+                    "unresolved_by":          "stuck_pick_reaper",
+                    "unresolved_at":          now.isoformat(),
+                    "learning_excluded":      True,
+                }},
             )
-            if _res.get("status") in ("NEW_SETTLEMENT",
-                                      "CORRECTION_APPLIED"):
-                voided_n += 1
+            if _upd.modified_count:
+                unresolved_n += 1
         except Exception as _e:
-            logger.debug("reaper svc err for %s: %s", _pid, _e)
+            logger.debug("reaper unresolved err for %s: %s", _pid, _e)
+    voided_n = unresolved_n   # keep response shape stable for callers
 
     summary = {
         "reaped":       voided_n,
+        "unresolved":   voided_n,
         "cutoff_hours": hours,
         "cutoff_iso":   cutoff_iso,
         "sample":       [
@@ -138,7 +156,7 @@ async def reap_stuck_picks(db, *, hours: int = _STUCK_HOURS) -> dict:
         ],
     }
     if voided_n:
-        logger.info("Stuck-pick reaper voided %d picks (>%dh past event_time). Sample: %s",
+        logger.info("Stuck-pick reaper marked %d picks UNRESOLVED (>%dh past event_time, no authoritative actual). Sample: %s",
                     voided_n, hours, summary["sample"])
     return summary
 

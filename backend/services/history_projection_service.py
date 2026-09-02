@@ -209,6 +209,54 @@ def project_pick(
         proj["settlement_lineage"] = []
 
     proj["_history_projection_version"] = "p02c.v1"
+
+    # ─── 4.  Root Closure 2026-06 — SETTLEMENT_RESULT_ACTUAL_CONTRADICTION
+    # invariant.  For numerical Over/Under markets, the displayed
+    # actual (mirrored from `pick.final_score`) MUST agree with the
+    # displayed result.  If it doesn't, we mark the projection with
+    # `_actual_contradiction=True` so downstream consumers can log
+    # / fail closed.  The invariant NEVER silently rewrites the
+    # canonical status — the ledger stays authoritative — but a
+    # contradiction is surfaced as a diagnostic + the stale mirror
+    # is suppressed so the UI can't paint an impossible pairing.
+    try:
+        import re as _re
+        market_str = proj.get("market") or ""
+        m = _re.search(r"(over|under)\s*(-?\d+(?:\.\d+)?)", market_str, _re.I)
+        fs = proj.get("final_score")
+        status = (proj.get("status") or "").lower()
+        if m and isinstance(fs, dict) and fs and status in ("won", "lost", "push"):
+            _side = m.group(1).lower()
+            _line = float(m.group(2))
+            _val = None
+            for _k, _v in fs.items():
+                if _k == "Line":
+                    continue
+                try:
+                    _val = float(_v)
+                    break
+                except Exception:
+                    continue
+            if _val is not None:
+                if _side == "over":
+                    _expected = ("won" if _val > _line else
+                                  "lost" if _val < _line else "push")
+                else:
+                    _expected = ("won" if _val < _line else
+                                  "lost" if _val > _line else "push")
+                if _expected != status:
+                    proj["_actual_contradiction"]        = True
+                    proj["_actual_contradiction_reason"] = (
+                        f"final_score={_val} vs line={_line} ({_side}) "
+                        f"implies {_expected} but status={status}"
+                    )
+                    # Suppress the mis-leading mirror so the UI cannot
+                    # paint the contradictory pairing.  Canonical result
+                    # (status) is authoritative and stays.
+                    proj["final_score"] = None
+                    proj["final_score_suppressed"] = True
+    except Exception:
+        pass
     return proj
 
 

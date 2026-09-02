@@ -27,7 +27,7 @@ type HistoryPick = {
   loss_analysis?: string;
 };
 
-const FILTERS = ["All", "Lost", "Won", "Rollover"] as const;
+const FILTERS = ["All", "Won", "Lost", "Push", "Void", "Unresolved", "Rollover"] as const;
 
 export default function HistoryScreen() {
   const router = useRouter();
@@ -80,8 +80,11 @@ export default function HistoryScreen() {
   };
 
   const filtered = useMemo(() => picks.filter((p) => {
-    if (filter === "Lost") return p.status === "lost";
-    if (filter === "Won") return p.status === "won";
+    if (filter === "Lost")       return p.status === "lost";
+    if (filter === "Won")        return p.status === "won";
+    if (filter === "Push")       return p.status === "push";
+    if (filter === "Void")       return p.status === "void";
+    if (filter === "Unresolved") return p.status === "unresolved";
     return true;
   }), [picks, filter]);
 

@@ -41,6 +41,28 @@ VERIFY_WINDOW_MIN = 6 * 60             # 6 hours
 LOOP_INTERVAL_SECS = 60 * 60           # 1 hour
 DAILY_MISMATCH_ALERT_THRESHOLD = 3
 
+# ── Root Closure 2026-06 — authoritative actuals stash ────────
+# Every call to `_mlb_verify_prop` records the AUTHORITATIVE
+# player/stat/value used in the verification here (keyed by
+# pick.id) so the correction submission in `_run_cross_check`
+# can propagate the corrected actual to `pick.final_score`
+# (the compat-mirror the History UI renders).  Bounded to avoid
+# unbounded growth; a soft cap of 5000 covers hours of verifier
+# activity while every corrected pick lands in the same run.
+_LAST_MLB_VERIFY_ACTUALS: dict = {}
+_MAX_STASH = 5000
+
+
+def _stash_actuals(pick_id: str, payload: dict) -> None:
+    if not pick_id:
+        return
+    if len(_LAST_MLB_VERIFY_ACTUALS) >= _MAX_STASH:
+        # Cheap eviction: pop 500 oldest by insertion order.
+        for k in list(_LAST_MLB_VERIFY_ACTUALS.keys())[:500]:
+            _LAST_MLB_VERIFY_ACTUALS.pop(k, None)
+    _LAST_MLB_VERIFY_ACTUALS[pick_id] = payload
+
+
 _MLB_STATS_BASE = "https://statsapi.mlb.com/api/v1"
 _MLB_STAT_MAP = {
     "hits":         "hits",
@@ -55,7 +77,19 @@ _MLB_STAT_MAP = {
 
 async def _mlb_verify_prop(pick: dict) -> Optional[str]:
     """Verify an MLB player-prop pick against MLB Stats API boxscore.
-    Returns 'won' / 'lost' / 'push' or None when we can't verify."""
+
+    Returns 'won' / 'lost' / 'push' or None when we can't verify.
+
+    Root Closure (2026-06): the raw authoritative actuals from the
+    MLB StatsAPI verification are stashed on the pick doc via the
+    module-level dict `_LAST_MLB_VERIFY_ACTUALS` (keyed by pick.id)
+    so the correction path in `_run_cross_check` can overwrite the
+    now-stale `pick.final_score` compat-mirror with the AUTHORITATIVE
+    value.  Without this, the History UI displays the corrected
+    result ('LOST') alongside the pre-correction actual ('4') from
+    the buggy first-pass settler — a mathematical contradiction
+    the user rightly flagged as a certification-blocking defect.
+    """
     market = (pick.get("market") or "").lower()
     selection = pick.get("selection") or pick.get("player_name") or ""
     event_time = pick.get("event_time") or ""
@@ -232,6 +266,29 @@ async def _mlb_verify_prop(pick: dict) -> Optional[str]:
                 # Player is on roster but every block was empty → DNP, grade
                 # against total=0 (standard "Action" resolution).
                 actual = total if found_any or stats else 0.0
+                # ── Root Closure 2026-06 — stash authoritative actuals
+                # so the correction path can propagate them to
+                # `pick.final_score` (the compat-mirror the UI renders).
+                # The label mirrors the shape prop_settlement writes
+                # ("<Player> Hits+Runs+Rbi") so History's stat-line
+                # renderer needs no changes.
+                _stat_label = "+".join(
+                    "Rbi" if sk == "rbi" else sk.capitalize()
+                    for sk in stat_keys
+                )
+                _stash_actuals(pick.get("id"), {
+                    "player":       full.title() or player_name,
+                    "stat":         "+".join(stat_keys),
+                    "value":        actual,
+                    "line":         line,
+                    "direction":    direction,
+                    "final_score": {
+                        f"{full.title() or player_name} {_stat_label}": actual,
+                        "Line": line,
+                    },
+                    "verifier_source": "mlb_statsapi",
+                    "verified_at":     datetime.now(timezone.utc).isoformat(),
+                })
                 if direction == "over":
                     if actual > line:
                         return "won"
@@ -399,32 +456,52 @@ async def _run_cross_check(db, query: dict, verifier, source_label: str) -> dict
                 from services.settlement_service import SettlementService
                 _svc = SettlementService(db)
                 await _svc.ensure_indices()
+                # Root Closure 2026-06 — pull the authoritative actuals
+                # captured by the verifier so the correction event AND
+                # the pick compat-mirror both carry the truthful value
+                # (fixes the "Actual 4 · LOST" contradiction the user
+                # reported on Michael Harris II / Matt Olson).
+                _auth = _LAST_MLB_VERIFY_ACTUALS.get(p.get("id")) or {}
+                _actual_payload = {
+                    "player":       p.get("player_name") or _auth.get("player"),
+                    "stat":         _auth.get("stat") or p.get("market"),
+                    "value":        _auth.get("value"),
+                    "line":         p.get("line") or _auth.get("line"),
+                    "final_score":  _auth.get("final_score"),
+                    "verifier_source": _auth.get("verifier_source") or source_label,
+                    "verified_at":     _auth.get("verified_at") or _now_iso,
+                    "correction_evidence":  {
+                        "our_grade_was":    current,
+                        f"{source_label}":  result,
+                        "detected_at":      _now_iso,
+                        "attempts":         _attempts,
+                        "verifier_source":  source_label,
+                    },
+                }
                 _corr = await _svc.settle_from_pick(
                     p,
                     result                    = result,
                     source                    = f"{source_label}_correction",
-                    actual_result             = {
-                        "player": p.get("player_name"),
-                        "stat":   p.get("market"),
-                        "line":   p.get("line"),
-                        "correction_evidence":  {
-                            "our_grade_was":    current,
-                            f"{source_label}":  result,
-                            "detected_at":      _now_iso,
-                            "attempts":         _attempts,
-                            "verifier_source":  source_label,
-                        },
-                    },
+                    actual_result             = _actual_payload,
                     authoritative_event_final = True,
                 )
                 _corr_status = (_corr or {}).get("status")
+                # Mirror-write pick.final_score so History/Analytics
+                # never display a stale actual next to a corrected
+                # result.  Only write when the verifier actually
+                # captured an authoritative value.
+                _mirror_update = {
+                    "grade_disagreement.correction_submitted_at": _now_iso,
+                    "grade_disagreement.correction_status":        _corr_status,
+                    "grade_disagreement.corrected_grade":          result,
+                }
+                if _auth.get("final_score"):
+                    _mirror_update["final_score"] = _auth["final_score"]
+                    _mirror_update["final_score_source"] = _auth.get("verifier_source", source_label)
+                    _mirror_update["final_score_verified_at"] = _now_iso
                 await db.picks.update_one(
                     {"id": p.get("id")},
-                    {"$set": {
-                        "grade_disagreement.correction_submitted_at": _now_iso,
-                        "grade_disagreement.correction_status":        _corr_status,
-                        "grade_disagreement.corrected_grade":          result,
-                    }},
+                    {"$set": _mirror_update},
                 )
             except Exception as _corr_err:
                 logger.warning(

@@ -58,14 +58,54 @@ CANONICAL_STATES = ("won", "lost", "push", "void", "unresolved")
 
 
 # ── Publication classification ─────────────────────────────────
+# ── HISTORY POPULATION AUTHORITY (Root Closure 2026-06) ────────
+# The public Perklocks Pick History surface MUST represent only
+# predictions that were ACTUALLY published to users (i.e. on the
+# public board / rollover / parlay).  A writer source-tag alone
+# (e.g. `publication_source='real_line_soccer_v2'`) is NOT proof
+# of publication — every candidate emission carries such a tag.
+# Real publication requires ONE of:
+#   * a board-visibility stamp (`on_*_at`)
+#   * an active `prediction_snapshots` row (P0.2c)
+#   * `published_at` timestamp AND `published_lock_score >= 85`
+# combined with `off_board != True` and `no_bet != True`.
+#
+# Legacy rows lacking that proof are classified `LEGACY_RESEARCH_ONLY`
+# and are excluded from public History + public Analytics — but they
+# are NOT deleted (immutable), so Strategy Lab / research surfaces
+# can still consume them under an explicit provenance tag.
+CANONICAL_PUBLICATION_LOCK_FLOOR = 85.0
+
+
+def _is_public_lock(pick: dict) -> bool:
+    """True iff the pick clears the canonical 85+ public-Locks
+    threshold used at the boundary today.  Uses the frozen
+    `published_lock_score` first (immutable pregame truth); falls
+    back to mutable `lock_score` only when the pregame mirror is
+    absent (legacy pre-Phase-1 rows).
+    """
+    v = pick.get("published_lock_score")
+    if v is None:
+        v = pick.get("lock_score")
+    try:
+        return v is not None and float(v) >= CANONICAL_PUBLICATION_LOCK_FLOOR
+    except Exception:
+        return False
+
+
 def classify_publication(pick: dict) -> str:
     """Classify a db.picks row as one of:
 
-      PROVEN_PUBLISHED       — has a canonical prediction_snapshots
-                               entry OR a board-stamp
-                               (`on_*_board_at` / `on_rollover_at` /
-                               `on_parlay_at`) OR
-                               `publication_source` is set.
+      PROVEN_PUBLISHED       — cleared 85+ AND (has a board-stamp
+                               OR active prediction_snapshot
+                               OR `published_at`) AND not marked
+                               off_board / no_bet / hidden.
+      LEGACY_RESEARCH_ONLY   — writer tag only (`publication_source`
+                               set) but no board-stamp / snapshot /
+                               published_at, OR off_board=True at
+                               publication time, OR Lock < 85.
+                               Preserved for research; excluded from
+                               public History + Analytics.
       PROVEN_NOT_PUBLISHED   — `no_bet=True`, `hide_from_main_board=True`,
                                `excluded_from_history=True`.
       AMBIGUOUS_LEGACY       — everything else (typically pre-fence
@@ -80,17 +120,29 @@ def classify_publication(pick: dict) -> str:
         return "PROVEN_NOT_PUBLISHED"
     if pick.get("excluded_from_history") is True:
         return "PROVEN_NOT_PUBLISHED"
-    # Any board-stamp is proof the pick was surfaced.
-    for k in ("on_main_board_at", "on_rollover_at", "on_hr_board_at",
-              "on_under_at", "on_atd_board_at", "on_parlay_at"):
-        if pick.get(k):
-            return "PROVEN_PUBLISHED"
+
+    # ── PROVEN_PUBLISHED requires: real publication evidence + 85+ Lock ──
+    has_board_stamp = any(pick.get(k) for k in (
+        "on_main_board_at", "on_rollover_at", "on_hr_board_at",
+        "on_under_at", "on_atd_board_at", "on_parlay_at",
+    ))
+    has_snapshot = pick.get("_has_prediction_snapshot") is True
+    has_published_at = bool(pick.get("published_at"))
+
+    is_lock_qualified = _is_public_lock(pick)
+    is_on_board = pick.get("off_board") is not True
+
+    if is_lock_qualified and is_on_board and (has_board_stamp or has_snapshot or has_published_at):
+        return "PROVEN_PUBLISHED"
+    if pick.get("elite_pitcher_override") is True and is_lock_qualified:
+        return "PROVEN_PUBLISHED"
+
+    # ── LEGACY_RESEARCH_ONLY — writer-tag emission without real
+    # publication evidence, OR sub-85, OR off_board.  Preserved but
+    # excluded from public History/Analytics.
     if pick.get("publication_source") or pick.get("published_at"):
-        return "PROVEN_PUBLISHED"
-    if pick.get("elite_pitcher_override") is True:
-        return "PROVEN_PUBLISHED"
-    if pick.get("_has_prediction_snapshot") is True:
-        return "PROVEN_PUBLISHED"
+        return "LEGACY_RESEARCH_ONLY"
+
     return "AMBIGUOUS_LEGACY"
 
 
@@ -163,25 +215,23 @@ def stable_publication_dedupe(records: list[dict]) -> list[dict]:
 # ── Canonical query ─────────────────────────────────────────────
 def canonical_query(*, days: int, exclude_ambiguous_legacy: bool = True,
                      include_pending: bool = False) -> dict:
-    """Return the Mongo query for the canonical published-picks
-    population.
+    """Return the Mongo query for the canonical PUBLIC published-picks
+    population (Root Closure 2026-06 tightening).
+
+    A pick is included iff:
+      * it has a real publication signal (board-stamp, `published_at`,
+        or `elite_pitcher_override`) — NOT the writer source-tag
+        alone (that is set on every candidate emission);
+      * it cleared the canonical `Lock >= 85` publication floor;
+      * it is not `off_board=True` / `no_bet=True` /
+        `hide_from_main_board=True` / `excluded_from_history=True`.
+
+    The prediction_snapshots authority (`_has_prediction_snapshot`)
+    is applied post-query in the loader as a rescue for legacy rows
+    that lack the board-stamp but do have a canonical snapshot.
 
     This query is **outcome-agnostic** — it does NOT filter by
-    status.  It filters ONLY on publication provenance (spec §5
-    and §7).  Callers filter/bucket the results by status client
-    side using ``summarise``.
-
-    A pick is included when it has ANY of:
-      * a board-visibility stamp (on_*_at)
-      * `publication_source` populated
-      * `elite_pitcher_override` = True
-      * a canonical prediction_snapshot (checked in the loader —
-        cannot be expressed with a single-collection Mongo query)
-
-    Explicitly excluded (via `PROVEN_NOT_PUBLISHED` rules):
-      * `no_bet=True`
-      * `hide_from_main_board=True`
-      * `excluded_from_history=True`
+    status.  Callers filter/bucket results by status via ``summarise``.
     """
     cutoff = (datetime.now(timezone.utc)
                - timedelta(days=days)).isoformat()
@@ -189,20 +239,35 @@ def canonical_query(*, days: int, exclude_ambiguous_legacy: bool = True,
         {"settled_at": {"$gte": cutoff}},
         {"event_time": {"$gte": cutoff}},
     ]}
+    # Real publication evidence — writer source-tags are NOT enough.
     provenance_gate = {"$or": [
-        {"on_main_board_at":    {"$exists": True}},
-        {"on_rollover_at":      {"$exists": True}},
-        {"on_hr_board_at":      {"$exists": True}},
-        {"on_under_at":         {"$exists": True}},
-        {"on_atd_board_at":     {"$exists": True}},
-        {"on_parlay_at":        {"$exists": True}},
-        {"publication_source":  {"$exists": True, "$ne": None}},
-        {"published_at":        {"$exists": True, "$ne": None}},
+        {"on_main_board_at":       {"$exists": True}},
+        {"on_rollover_at":         {"$exists": True}},
+        {"on_hr_board_at":         {"$exists": True}},
+        {"on_under_at":            {"$exists": True}},
+        {"on_atd_board_at":        {"$exists": True}},
+        {"on_parlay_at":           {"$exists": True}},
+        {"published_at":           {"$exists": True, "$ne": None}},
         {"elite_pitcher_override": True},
+    ]}
+    # 85+ public-Locks canonical floor — checked against the frozen
+    # pregame value first, falling back to mutable when the pregame
+    # mirror is absent.
+    lock_gate = {"$or": [
+        {"published_lock_score": {"$gte": CANONICAL_PUBLICATION_LOCK_FLOOR}},
+        {"$and": [
+            {"$or": [
+                {"published_lock_score": {"$exists": False}},
+                {"published_lock_score": None},
+            ]},
+            {"lock_score": {"$gte": CANONICAL_PUBLICATION_LOCK_FLOOR}},
+        ]},
     ]}
     q: dict = {"$and": [
         time_field_gate,
         provenance_gate,
+        lock_gate,
+        {"off_board":             {"$ne": True}},
         {"no_bet":                {"$ne": True}},
         {"hide_from_main_board":  {"$ne": True}},
         {"excluded_from_history": {"$ne": True}},
