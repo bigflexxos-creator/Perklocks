@@ -260,6 +260,37 @@ def _extract_event_participants(pick: dict) -> tuple[str, str]:
     return _norm(home), _norm(away)
 
 
+def _extract_event_participant_names(pick: dict) -> tuple[str, str]:
+    """Return the DISPLAY-NAME participants regardless of whether IDs
+    are also present.  Used by ``evaluate_identity`` as a second
+    comparison basis so a name-derived player_team can match even
+    when ``_extract_event_participants`` returned numeric IDs.
+
+    PERKLOCKS MAIN 36 UNIVERSAL IDENTITY FIX (2026-06-30):
+    Previously the ID-tuple was the ONLY comparison basis — any pick
+    whose player_team was resolved by market-string parsing ("SF" →
+    "san francisco") was silently marked MISMATCH because the event
+    tuple was ("134", "137").  Every legitimate MLB / NBA / NFL hitter
+    or player prop on a game with `home_team_id`/`away_team_id`
+    populated was falsely blocked from the main board.  Adding the
+    name-tuple as a co-equal comparison basis makes the gate pass
+    whenever EITHER (ids match) OR (names match).  Zero fabrication —
+    we only expand what "the same team" already means to consumers.
+    """
+    home = pick.get("home_team") or ""
+    away = pick.get("away_team") or ""
+    if (not home or not away):
+        event = pick.get("event") or ""
+        if isinstance(event, str) and " @ " in event:
+            parts = event.split(" @ ", 1)
+            if len(parts) == 2:
+                if not away:
+                    away = parts[0]
+                if not home:
+                    home = parts[1]
+    return _norm(home), _norm(away)
+
+
 def _extract_player_team(pick: dict) -> str:
     """Return the player's team normalized.  Empty string when the pick
     lacks any enriched team hint (fail-open — see module docstring).
@@ -343,24 +374,34 @@ def evaluate_identity(pick: dict) -> IdentityVerdict:
     if not home_n or not away_n:
         # Cannot prove membership OR mismatch — fail-open.
         return IdentityVerdict.PLAYER_TEAM_UNRESOLVED
+    # PERKLOCKS MAIN 36 UNIVERSAL IDENTITY FIX (2026-06-30) — also
+    # pull the NAME-based participants so we can match against either
+    # (ids ∪ names).  Fixes the universal false MISMATCH where the
+    # event carried numeric team IDs (e.g. "134"/"137") but the
+    # player's team was derived by NAME (e.g. "san francisco") from
+    # the market-string abbrev — the two-domain mismatch blocked every
+    # legitimate MLB/NBA/NFL/NHL player prop on those events.
+    home_name_n, away_name_n = _extract_event_participant_names(pick)
 
     player_team_n = _extract_player_team(pick)
     if not player_team_n:
         # PERKLOCKS MLB REACHABILITY (2026-06): try to derive the
         # player's team from the market label itself before failing.
-        # MLB hitter markets are frequently written as
-        # ``"Henry Bolte (OAK) Henry Bolte 2.5 Hits + Runs + RBIs"``
-        # — the (TEAM_ABBREV) parenthetical carries the identity but
-        # was not being consumed anywhere. Read it here as a last-
-        # chance signal so legitimate hitter rows with real book
-        # odds + positive edge reach publication.
         derived = _derive_player_team_from_market(pick)
         if derived:
             player_team_n = _norm(derived)
     if not player_team_n:
         return IdentityVerdict.PLAYER_TEAM_UNRESOLVED
 
+    # Match against EITHER the id-domain OR the name-domain.  Both
+    # are treated as co-equal proofs of team membership (Level 1 ids
+    # are stronger evidence but not more authoritative than the
+    # display names when the caller's ``player_team`` was resolved
+    # in the name domain).
     if _teams_match(player_team_n, home_n, away_n):
+        return IdentityVerdict.VALID
+    if (home_name_n and away_name_n
+            and _teams_match(player_team_n, home_name_n, away_name_n)):
         return IdentityVerdict.VALID
     return IdentityVerdict.PLAYER_EVENT_IDENTITY_MISMATCH
 
