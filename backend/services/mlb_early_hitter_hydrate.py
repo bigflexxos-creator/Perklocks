@@ -54,6 +54,17 @@ _SYNC_DB = None
 
 
 def _sync_db():
+    # PERKLOCKS ROOT FIX (2026-09-03) — universal hitter hydration
+    # unblocker.  The previous ``return _SYNC_DB or None`` used
+    # pymongo Database truthiness which raises
+    # ``NotImplementedError: Database objects do not implement truth
+    # value testing`` on every call.  The exception was caught (and
+    # silently ``logger.debug``-swallowed) by the caller in
+    # ``sports_engine._props_picks_from_event``, so hydration was
+    # UNIVERSALLY dead for every MLB hitter — every ``ctx["hitters"]``
+    # stayed empty, every Statcast factor returned None, every
+    # hitter candidate died at ``MISSING_FEATURE_DATA``.  Explicit
+    # ``is None`` and ``is False`` checks bypass truthiness entirely.
     global _SYNC_DB
     if _SYNC_DB is None:
         try:
@@ -63,7 +74,9 @@ def _sync_db():
         except Exception as e:
             logger.debug("sync pymongo init failed: %s", e)
             _SYNC_DB = False   # sentinel — don't retry
-    return _SYNC_DB or None
+    if _SYNC_DB is False:
+        return None
+    return _SYNC_DB
 
 
 def hydrate_missing_hitter(ctx: dict, player_name: str) -> bool:
