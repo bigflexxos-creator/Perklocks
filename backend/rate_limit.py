@@ -85,3 +85,32 @@ def rate_limit(rate_per_min: float, burst: float, scope: str = "user") -> Callab
         return user
 
     return _user_dep
+
+
+# ─────────────────────────────────────────────────────────────────────
+# TEST HELPER — deterministic contract tests
+# ─────────────────────────────────────────────────────────────────────
+def _reset_for_tests(scope_prefix: str | None = None) -> int:
+    """Clear the in-memory token buckets so contract tests do not
+    depend on shared live 429 throttle state.
+
+    PERKLOCKS-MAIN 35 · P1-7 — auth throttle cleanup.  Production
+    behaviour is unchanged: this helper is a plain function that
+    tests call directly.  It is NEVER wired into any FastAPI route
+    or middleware and cannot be triggered from a live client.
+
+    ``scope_prefix``:  when supplied, only buckets whose key starts
+    with the given prefix are cleared (e.g. ``"ip:"`` to reset the
+    login throttle without perturbing per-user compute throttles).
+    Passing ``None`` clears every bucket.
+
+    Returns the number of buckets cleared.
+    """
+    if scope_prefix is None:
+        n = len(_buckets)
+        _buckets.clear()
+        return n
+    to_delete = [k for k in _buckets if k.startswith(scope_prefix)]
+    for k in to_delete:
+        _buckets.pop(k, None)
+    return len(to_delete)

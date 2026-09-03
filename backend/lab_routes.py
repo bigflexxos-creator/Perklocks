@@ -125,11 +125,110 @@ def _bucket_lock(lock: float | None) -> str:
     return "95+"
 
 
-def _classify_market_family(sport: str, market: str) -> str:
+def _lab_family_from_canonical(sport: str, pick: dict) -> str | None:
+    """PERKLOCKS-MAIN 35 · P1-5 — canonical → Lab bucket mapping.
+
+    Consumes the immutable ``PublishedPickContract`` on the row so a
+    pick with real ``canonical_market_family`` never lands in
+    "MLB + Other" simply because its display string is unusual.
+
+    Returns the Lab bucket label when the canonical family is known,
+    or None when only the string heuristic can help (older rows or
+    markets not yet in the registry).
+    """
+    if not isinstance(pick, dict):
+        return None
+    # Prefer the canonical family; fall back to legacy market_family
+    # so partially-migrated rows still land in the right bucket.
+    fam = (pick.get("canonical_market_family")
+           or pick.get("market_family") or "")
+    if not fam:
+        return None
+    fam_l = str(fam).strip().lower()
+    s = (sport or "").upper()
+
+    _MLB = {
+        "hitter_hits":          "MLB_HITS",
+        "hitter_home_runs":     "MLB_HR",
+        "hitter_rbis":          "MLB_RBI",
+        "hitter_total_bases":   "MLB_TB",
+        "hitter_hits_runs_rbis": "MLB_HITS",   # composite → surface as Hits family
+        "pitcher_strikeouts":   "MLB_KS",
+        "pitcher_outs":         "MLB_OUTS",
+        "moneyline":            "MLB_ML",
+        "run_line":             "MLB_RL",
+        "game_total":           "MLB_TOTAL",
+    }
+    _NBA = {
+        "nba_points":    "NBA_POINTS",
+        "nba_rebounds":  "NBA_REB",
+        "nba_assists":   "NBA_AST",
+        "nba_threes":    "NBA_THREES",
+        "nba_pra":       "NBA_POINTS",         # composite → Points family
+        "moneyline":     "NBA_ML",
+        "point_spread":  "NBA_SPREAD",
+        "game_total":    "NBA_TOTAL",
+    }
+    _NFL = {
+        "qb_passing_yards": "NFL_PASS",
+        "qb_passing_tds":   "NFL_PASS",
+        "rb_rushing_yards": "NFL_RUSH",
+        "wr_receiving_yards": "NFL_REC",
+        "wr_receptions":    "NFL_REC",
+        "moneyline":        "NFL_ML",
+        "point_spread":     "NFL_SPREAD",
+        "game_total":       "NFL_TOTAL",
+    }
+    _SOCCER = {
+        "goalscorer_anytime":         "SOC_SCORER",
+        "goalscorer_first":           "SOC_SCORER",
+        "goalscorer_score_or_assist": "SOC_ASSIST",
+        "moneyline":                  "SOC_ML",
+        "btts":                       "SOC_BTTS",
+        "game_total":                 "SOC_TOTAL",
+    }
+    _TENNIS = {
+        "tennis_match_winner":  "TEN_MATCH",
+        "tennis_total_games":   "TEN_GAMES",
+        "tennis_game_handicap": "TEN_GAMES",
+    }
+
+    table = {
+        "MLB":    _MLB,
+        "NBA":    _NBA,
+        "WNBA":   _NBA,
+        "NFL":    _NFL,
+        "CFB":    _NFL,
+        "SOCCER": _SOCCER,
+        "TENNIS": _TENNIS,
+    }.get(s)
+    if not table:
+        return None
+    return table.get(fam_l)
+
+
+def _classify_market_family(sport: str, market: str,
+                              pick: dict | None = None) -> str:
     """Coarse market family for grouping — matches
     market_evidence_profiles.classify_market conceptually but simpler
     string-based buckets suitable for aggregation keys. Kept in-file to
-    avoid the profile module's import weight on hot backtest queries."""
+    avoid the profile module's import weight on hot backtest queries.
+
+    PERKLOCKS-MAIN 35 · P1-5 — CANONICAL IDENTITY FIRST.  When a
+    ``pick`` dict is supplied, we consult the immutable
+    :class:`PublishedPickContract` (via `canonical_market_family` and
+    `provider_market_key`) BEFORE any string heuristics. The legacy
+    market-string branches remain as a fallback for older rows that
+    predate the contract, but a canonical field ALWAYS wins so Lab
+    correlations no longer fabricate "MLB + Other" identities for rows
+    that already know their real family.
+    """
+    # ── Canonical field first ───────────────────────────────────────
+    if isinstance(pick, dict):
+        canonical = _lab_family_from_canonical(sport, pick)
+        if canonical:
+            return canonical
+
     m = (market or "").lower()
     s = (sport or "").upper()
     if s == "MLB":
@@ -212,7 +311,7 @@ async def correlations_v2(
         legs = parlay.get("legs") or []
         reduced: list[tuple[str, str, bool, int]] = []
         for leg in legs:
-            fam = _classify_market_family(leg.get("sport"), leg.get("market") or "")
+            fam = _classify_market_family(leg.get("sport"), leg.get("market") or "", pick=leg)
             subj = (leg.get("player_name") or "").strip()
             if subj.lower() == "none":
                 subj = ""
@@ -523,8 +622,8 @@ async def _today_recommended_pairs(sport: str | None):
         for i in range(len(picks)):
             for j in range(i + 1, len(picks)):
                 a, b = picks[i], picks[j]
-                fa = _classify_market_family(a.get("sport"), a.get("market") or "")
-                fb = _classify_market_family(b.get("sport"), b.get("market") or "")
+                fa = _classify_market_family(a.get("sport"), a.get("market") or "", pick=a)
+                fb = _classify_market_family(b.get("sport"), b.get("market") or "", pick=b)
                 if fa == fb:
                     continue
                 # subjects
@@ -611,7 +710,7 @@ async def correlations(
         # Reduce each leg to (family_key, hit_bool)
         reduced: list[tuple[str, bool]] = []
         for leg in legs:
-            fam = _classify_market_family(leg.get("sport"), leg.get("market") or "")
+            fam = _classify_market_family(leg.get("sport"), leg.get("market") or "", pick=leg)
             leg_status = (leg.get("status") or "").lower()
             hit = leg_status == "won"
             reduced.append((fam, hit))
@@ -732,7 +831,7 @@ async def backtest(
         # Optional post-filter on market family (avoids indexing pain
         # since our picks collection doesn't index synthesised
         # family strings).
-        fam = _classify_market_family(p.get("sport"), p.get("market") or "")
+        fam = _classify_market_family(p.get("sport"), p.get("market") or "", pick=p)
         if market_family and fam != market_family:
             continue
 
@@ -848,7 +947,7 @@ async def patterns(
 
     buckets: dict[str, dict[str, float]] = {}
     async for p in cursor:
-        fam = _classify_market_family(p.get("sport"), p.get("market") or "")
+        fam = _classify_market_family(p.get("sport"), p.get("market") or "", pick=p)
         odds_b = _bucket_odds(p.get("book_odds"))
         edge_b = _bucket_edge(p.get("edge_percent"))
         lock_b = _bucket_lock(p.get("lock_score"))
@@ -1011,7 +1110,7 @@ async def cheatsheets(
             subject = _parse_team_from_market(market_str, lp.get("event") or "")
         if not subject:
             continue
-        family = _classify_market_family(lp.get("sport"), market_str)
+        family = _classify_market_family(lp.get("sport"), market_str, pick=lp)
         # ── Starter gate (Soccer scorer markets, 2026-07-08) ──────
         # Suppress Cheatsheet cards for bench players — same rule the
         # live board uses.  A card without a Live pick is useless, and
@@ -1225,7 +1324,7 @@ async def cheatsheet_detail(pick_id: str):
     if not player:
         raise HTTPException(400, "no player subject on pick")
 
-    family = _classify_market_family(lp.get("sport"), lp.get("market") or "")
+    family = _classify_market_family(lp.get("sport"), lp.get("market") or "", pick=lp)
     settled = await _fetch_subject_history(player, lp.get("sport"), family, True,
                                             live_pick=lp)
     inferred_own_team = _infer_own_team(settled) if not lp.get("team") else None
@@ -1432,7 +1531,7 @@ async def _fetch_subject_history(
     first_goal_re = re.compile(r"first\s+goal\s+scorer|first\s+touchdown|last\s+goal", re.I)
     same_family = [
         h for h in all_hist
-        if _classify_market_family(h.get("sport"), h.get("market") or "") == family
+        if _classify_market_family(h.get("sport"), h.get("market") or "", pick=h) == family
         and not first_goal_re.search(h.get("market") or "")
     ]
     # DEDUPE by unique game (pick_date + event). The picks collection
@@ -1978,7 +2077,7 @@ async def matchup_dna(sport: str, subject: str, opponent: str | None = Query(Non
     # By market family
     fam_map: dict[str, list[dict]] = {}
     for p in all_picks:
-        fam = _classify_market_family(p.get("sport"), p.get("market") or "")
+        fam = _classify_market_family(p.get("sport"), p.get("market") or "", pick=p)
         fam_map.setdefault(fam, []).append(p)
     by_market = [
         {"family": fam, **_record(picks)}

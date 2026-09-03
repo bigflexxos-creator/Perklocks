@@ -1,49 +1,47 @@
-# PerkLocks — Product Requirements (living doc)
+# PerkLocks — Product Requirements
 
-**Last update:** 2026-09-03 (session-end checkpoint)
+## MISSION
+PerkLocks is a wager-analysis platform that surfaces edge-driven sports betting
+picks ("Locks") for MLB, NFL, CFB, Tennis, and Soccer, with honestly-declared
+capability states for NBA / NHL / UFC (provider wired, model deferred).
 
-## Product vision
-Sports betting research + Lock intelligence app: Expo React Native
-frontend, FastAPI + MongoDB backend. Each pick published on the board
-must be **immutable canonical truth** flowing losslessly from
-publication → board → research → settlement → History across Preview
-Web and Expo Go.
+## HARDENED CONTRACTS (PERKLOCKS-MAIN 35 — PERMANENT ROOT CLOSURE CERTIFIED)
 
-## Certified in this session
-See `/app/memory/perklocks_main_34_checkpoint.md` for the full log.
+- **Zero mock data.** Real-time provider truth end-to-end.
+- **Immutable canonical wager identity.** Once published, `PublishedPickContract`
+  freezes selection / line / side / odds / publication_state. Every consumer
+  (Locks, Pick Breakdown, Rollover, Parlay, My Bets, History, Analytics, Lab)
+  reads the same contract.
+- **Format-aware Tennis alt-total pricing.** ATP Grand Slam singles = BO5;
+  WTA + regular tour = BO3. Exact-threshold pricing from a single
+  empirical CDF per event. False-99% at 39.5 / 41.5 / 42.5 permanently
+  closed.
+- **Settlement Hard Gate.** SettlementCapabilityRegistry.is_gradeable() is the
+  shared chokepoint. Missing actuals / not-final / identity-failure /
+  unsupported → UNRESOLVED with reason, NEVER LOSS / zero / VOID.
+- **Universal Market Classification.** UniversalMarketContract.is_alternate()
+  is the single authoritative alt-vs-standard classifier for NFL / NBA / MLB
+  / Tennis props. No manual `_alternate` bypass.
+- **Real Alt-Line Authority.** Canonical publication boundary rejects
+  `model_line=True` and any synthetic sportsbook source. Alt Magic ranks
+  only real observed lines.
+- **Canonical Lab Identity.** Strategy Lab consumes `canonical_market_family`
+  before string heuristics. MLB + Other identity defect closed.
+- **Dynamic Tennis Discovery.** `_discover_tennis_from_catalog` surfaces every
+  provider-supported `tennis_*` key without a code release.
+- **Deterministic Auth Tests.** In-memory rate-limit buckets can be reset by
+  tests; production throttle strength unchanged.
+- **Capability Alignment.** UniversalMarketContract and SportCapabilityRegistry
+  agree on NBA / NHL / UFC state (MODEL_UNAVAILABLE — honest).
+- **Factual "Why This Pick" Only.** No fabricated stats.
+- **Pick Breakdown 2.0.** Read-only view surface over the immutable contract.
+- **Same-Snapshot Parity.** All consumers deterministically produce identical
+  wager identity for the same pick.
 
-### Performance breakthroughs (kept)
-- Slice 1.2B — Lightweight Board DTO whitelist: 1.08 MB → 165 KB
-  (-84.8 %) on `/api/picks/today?lite=true`
-- Slice 1.6 — LockBoardCard render split (lazy Modals + preload MatchupGradeBadge)
-- Slice 1.1 — Cold-start unblocked from `/api/version`; 500 ms icon-font watchdog
-- Slice 3 — expo-image with memory-disk cache for crests + headshots
+## FINAL CERTIFICATION MATRIX
+60 (sport, canonical_market_family) rows registered — 33 ACTIVE, 25
+MODEL_UNAVAILABLE (honest — provider wired, model deferred), 2 RESEARCH_ONLY
+(first-goalscorer & first-TD kept as distinct canonical entries per product
+requirement).
 
-### Root closures (this session)
-- **P0A/P0B** — Full ↔ Lite board membership parity (per-sport +
-  per-market-family) with 5 live-DB contract tests
-- **P0I/P0J/P0K/P0M** — Strategy Lab tap & search hardening
-  (debounce, generation guard, min-length gate, canonical commit
-  fast-path, explicit UX states)
-- **P0D** — `/api/picks/history` ships `settlement_freshness` and
-  Expo History auto-repolls when a settlement pass is in-flight
-
-### Preserved
-- Universal 85+ reachability + rescue
-- Immutable prediction snapshots + settlement ledger
-- Rollover/Parlay canonical base migration
-- Adaptive virtualization
-- Phase-24 Slice 1.2 contract tests
-
-## Remaining scope (deferred safely)
-- P0C — one canonical published-pick contract module
-- P0E/F/G/H — universal grader registry + coverage matrix
-- P0L — Lab learns from canonical settlement (not mutable status)
-- P1 Slices 4-8, 10 — Why This Pick real-evidence, Soccer goalscorer
-  10X, Pick Breakdown 2.0, same-snapshot Web/Native/API parity
-
-## Testing / credentials
-- Test creds : `demo@lockscore.ai` / `demo123`
-- Frontend :  Expo Router; home board uses `<LockBoardCard>`
-- Contract tests : `backend/tests/test_phase24_*` +
-  `backend/tests/test_perklocks_main_34_*` (38 new tests this session)
+Persisted at: `/app/memory/perklocks_main_35_certification_matrix.json`

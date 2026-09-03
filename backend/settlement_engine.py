@@ -118,7 +118,40 @@ def _parse_team_total(market: str) -> tuple[Optional[str], Optional[str], Option
 
 
 def settle_pick(pick: dict, score_payload: dict) -> Optional[str]:
-    """Return 'won' / 'lost' / 'push' / None (not yet settleable)."""
+    """Return 'won' / 'lost' / 'push' / None (not yet settleable).
+
+    PERKLOCKS-MAIN 35 · P0-2 — Settlement Hard Gate.  The very first
+    check delegates to `settlement_hard_gate.evaluate(...)`. When the
+    shared registry says a pick is NOT gradeable — missing actual,
+    identity failure, unsupported market, event-not-final — we return
+    None with the refusal reason stamped on the pick. Never fabricate
+    a LOSS / zero / VOID for a genuine data gap.
+    """
+    # ── SHARED HARD GATE (permanent invariant) ────────────────────────
+    # Route SUPPORTED (sport, canonical_market_family) combos through
+    # the SettlementCapabilityRegistry. If the pick's canonical family
+    # is not in the family map (unknown/unsupported sport-market), the
+    # gate abstains and legacy branches handle it — they also never
+    # fabricate an outcome (they return None on any unrecognized
+    # pattern). This preserves happy-path grading while ensuring no
+    # SUPPORTED market can silently become LOSS on missing actuals.
+    try:
+        from services.settlement_hard_gate import (
+            evaluate as _hg_eval, resolve_family as _hg_family,
+            stamp_refusal,
+        )
+        _family = _hg_family(pick.get("sport"), pick.get("market"))
+        if _family is not None:
+            _gradeable, _reason, _ = _hg_eval(pick, score_payload)
+            if not _gradeable:
+                stamp_refusal(pick, _reason)
+                return None
+    except Exception:
+        # A defect in the gate must never masquerade as a graded
+        # outcome — fall through to the legacy branches which also
+        # return None on any missing input.
+        pass
+
     if not score_payload.get("completed"):
         return None
     scores = score_payload.get("scores") or []
@@ -637,6 +670,13 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
             outcome = settle_pick(pick, score_payload)
             if not outcome:
                 counts["skipped"] += 1
+                # P0-2 — record hard-gate refusal reason (if any) into
+                # terminal_reasons so telemetry / audit can prove the
+                # gate held (never converted missing data to LOSS/zero).
+                if pick.get("_hard_gate_refused"):
+                    _hg_reason = f"hard_gate:{pick.get('_hard_gate_reason') or 'unknown'}"
+                    counts["terminal_reasons"][_hg_reason] = (
+                        counts["terminal_reasons"].get(_hg_reason, 0) + 1)
                 continue
             counts["attempts"] += 1
             scores_dict = {s["name"]: s["score"] for s in (score_payload.get("scores") or [])}
