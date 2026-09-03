@@ -966,9 +966,26 @@ def parlay_to_payload(parlay: dict, bucket_map: dict) -> dict:
     synthesise a sportsbook price. If NO leg has a real price the
     payload returns combined_odds=None so consumers surface the
     unavailability honestly (mirrors Phase 6 Edge Value contract).
+
+    PERKLOCKS-MAIN 34 · STEP 1b (2026-09-03) — every leg now carries a
+    `published_pick_contract` block so Parlay legs describe the
+    IDENTICAL canonical wager the Locks board publishes. The Parlay
+    ranking / correlation / survival math is untouched — this is a
+    pure identity-parity enrichment.
     """
     legs = parlay["legs"]
     health = parlay["health"]
+    # STEP 1b — attach immutable canonical wager to every leg.
+    try:
+        from services.published_pick_contract import PublishedPickContract
+        for _leg in legs:
+            if not isinstance(_leg, dict):
+                continue
+            _c = PublishedPickContract.from_pick(_leg)
+            _leg["published_pick_contract"] = _c.as_dict()
+    except Exception:
+        # Never fail parlay ranking on a contract-attach hiccup.
+        pass
     decimal_total = 1.0
     priced_legs = 0
     for L in legs:

@@ -257,6 +257,20 @@ def project_pick(
                     proj["final_score_suppressed"] = True
     except Exception:
         pass
+
+    # ─── PERKLOCKS-MAIN 34 · STEP 2 (2026-09-03) ─────────────────────
+    # Attach the immutable `published_pick_contract` so a corrected
+    # settlement can NEVER cause the canonical wager identity to drift
+    # between History / Locks / Pick Breakdown / Parlay. Settlement
+    # fields above stay separate — the contract carries the FROZEN
+    # pregame wager, not the result. Failing closed on any hiccup is
+    # cheap — never let contract-attach break projection.
+    try:
+        from services.published_pick_contract import PublishedPickContract
+        _hc = PublishedPickContract.from_pick(proj).as_dict()
+        proj["published_pick_contract"] = _hc
+    except Exception:
+        pass
     return proj
 
 
