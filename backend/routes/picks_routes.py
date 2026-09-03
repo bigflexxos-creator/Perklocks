@@ -549,27 +549,21 @@ async def pick_rollover(
     # appear in Rollover regardless of lock_score.
     base_q["edge_percent"] = {"$gte": 0}
 
-    # ── V4 MARKET BLACKLIST ──────────────────────────────────────────
-    # These families are BANNED from rollover based on the user's own
-    # 1,441-pick settled history (2026-07-01 audit):
-    #   • Soccer goalscorer / assist family → 4-15% hit rate
-    #   • MLB H+R+RBI                       → 35.6%
-    #   • MLB NRFI / YRFI                   → 41.5%
-    # NOTE: MLB Strikeouts REMOVED from blacklist — data shows they hit
-    # at 72.4% and are actually one of the strongest markets.
+    # ── V5 MARKET BLACKLIST — reduced to NON-SETTLEABLE only. ────────
+    # PERKLOCKS MAIN 36 · P1.4 — the stale H+R+RBI and NRFI/YRFI
+    # blacklists are RETIRED (they contradicted current model research).
+    # Only goalscorer/assist markets (which cannot settle reliably in
+    # our provider mix) remain hard-banned.  Historical market ROI is
+    # applied contextually via ``MARKET_BOOSTS`` below, not as a ban.
     existing_market_q = base_q.pop("market", None)
     excluded_markets_block = {
         "market": {
             "$not": {
                 "$regex": (
-                    # Soccer goalscorer / assist family (banned)
                     r"goal scorer|to score or assist|score or assist"
                     r"|score and assist|score & assist"
                     r"|to score 2|to score 3"
                     r"|hat.?trick|first goal|last goal|winning goal|to assist"
-                    # MLB banned family (data-driven)
-                    r"|nrfi|yrfi"
-                    r"|hits\s*\+\s*runs\s*\+\s*rbi|h\+r\+rbi|hits, runs.+rbi"
                 ),
                 "$options": "i",
             },
@@ -580,75 +574,18 @@ async def pick_rollover(
     else:
         base_q["market"] = excluded_markets_block["market"]
 
-    # ─── V4 FLOORS + WINDOWS (data-driven) ───────────────────────────
-    LOCK_FLOOR       = 89       # 89-99 all hit 65-78% historically
-    LOCK_DEAD_LO     = 80       # exclude 80-84 band (47.6% inverted)
-    LOCK_DEAD_HI     = 85
-    WP_FLOOR         = 0.60     # 60% WP — the natural floor of the 89+ tier
-    EDGE_FLOOR       = 0.0      # any positive edge
-    EDGE_CAP         = 12.0     # >12% is inverted signal (51%)
-    CHALK_CAP        = -350     # payout viability
-    ODDS_DEAD_LO     = -140     # exclude -140 to -110 (47.6% coin flip)
-    ODDS_DEAD_HI     = -110
-    MAX_LEGS         = 3
-
-    # Market whitelist multipliers (applied in ranking, not filter)
-    MARKET_BOOSTS = [
-        (r"win or draw|double chance",              1.15),  # 80.0%
-        (r"\bstrikeouts?\b",                        1.10),  # 72.4%
-        (r"total goals",                            1.05),  # 65.7%
-        (r"tennis moneyline|match winner",          1.05),  # 66.7% Tennis ML
-        (r"run line|spread|handicap",               1.02),  # 63.5%
-        (r"\bhits\b(?!.*runs.*rbi)",                1.00),  # 59.6%
-    ]
-
-    def _norm_prob(v) -> float:
-        if v is None: return 0.0
-        try: f = float(v)
-        except Exception: return 0.0
-        return f / 100.0 if f > 1.0 else f
-
-    def _market_multiplier(market: str) -> float:
-        m = (market or "").lower()
-        for pat, boost in MARKET_BOOSTS:
-            if re.search(pat, m):
-                return boost
-        return 1.0
-
-    def _passes_v4(p: dict) -> tuple[bool, str]:
-        """Returns (accept, reject_reason). All V4 rules applied here.
-
-        μ-closure LIVE (2026-06) — Rollover canonical-score precedence:
-        Read authoritative ``published_lock_score`` when present and
-        fall back to legacy ``lock_score`` only when the published
-        value is absent.  Pre-fix used ``lock_score`` unconditionally
-        which pre-filtered the entire candidate pool to zero when
-        publication had shifted the frozen score to the ``published_``
-        field.
-        """
-        lock = float(
-            p.get("published_lock_score")
-            if p.get("published_lock_score") is not None
-            else (p.get("lock_score") or 0)
-        )
-        odds = float(p.get("book_odds") or -9999)
-        edge = float(p.get("edge_percent") or 0)
-        wp   = _norm_prob(p.get("win_probability"))
-        if lock < LOCK_FLOOR:
-            return False, "lock<89"
-        if LOCK_DEAD_LO <= lock < LOCK_DEAD_HI:
-            return False, "lock_dead_zone_80-84"
-        if wp < WP_FLOOR:
-            return False, "wp<0.60"
-        if edge < EDGE_FLOOR:
-            return False, "edge_negative"
-        if edge > EDGE_CAP:
-            return False, "edge>12_inverted"
-        if odds < CHALK_CAP:
-            return False, "odds<-350_chalk"
-        if ODDS_DEAD_LO <= odds < ODDS_DEAD_HI:
-            return False, "odds_dead_zone_-140_-110"
-        return True, ""
+    # PERKLOCKS MAIN 36 · P1 — shared selector.  All V5 rules +
+    # scoring live in ``services.rollover_selector`` so live and
+    # replay use the SAME pure function.
+    from services.rollover_selector import (
+        LOCK_FLOOR, LOCK_DEAD_LO, LOCK_DEAD_HI, WP_FLOOR,
+        EDGE_FLOOR, EDGE_CAP, CHALK_CAP, MAX_LEGS,
+        MARKET_BOOSTS, ev_score as _ev_score,
+        select_rollover_top, canonical_event_key,
+        freeze_metadata, SELECTOR_VERSION as _SELECTOR_VERSION,
+    )
+    # P1.4 retired: ODDS_DEAD_LO / ODDS_DEAD_HI (-140/-110) no longer
+    # applied.  Historical dead-zone contradicts recent settled hits.
 
     # Pull qualifying candidates (V4 filter)
     # ── Universal Flow Recovery (2026-06) — canonical score
@@ -669,36 +606,27 @@ async def pick_rollover(
     # Rollover's candidate universe is a strict SUBSET of Locks
     # (SAME publication authority, SAME real-book requirement, SAME
     # settlement capability, SAME synthetic/contradiction/dup gates).
-    try:
-        from services.locks_eligibility import apply_canonical_locks_eligibility_gate
-        _cand_before = len(candidates)
-        candidates, _canon_dropped = apply_canonical_locks_eligibility_gate(candidates)
-        if _cand_before != len(candidates):
-            import logging as _lg
-            _lg.getLogger("lockscore.rollover").info(
-                "Rollover canonical eligibility gate: %d → %d (dropped=%s)",
-                _cand_before, len(candidates), _canon_dropped,
-            )
-    except Exception:
-        pass
-    reject_reasons: dict[str, int] = {}
-    picks: list = []
-    for p in candidates:
-        ok, reason = _passes_v4(p)
-        if ok:
-            picks.append(p)
-        else:
-            reject_reasons[reason] = reject_reasons.get(reason, 0) + 1
+    # PERKLOCKS MAIN 36 · P1.5 — FAIL CLOSED on required Rollover
+    # authority.  If the canonical Locks eligibility gate errors, we
+    # MUST NOT silently pass every candidate through — that would let
+    # non-canonical rows into Rollover.  Bubble the error so ops
+    # notice, and return an empty selection rather than a tainted one.
+    from services.locks_eligibility import apply_canonical_locks_eligibility_gate
+    _cand_before = len(candidates)
+    candidates, _canon_dropped = apply_canonical_locks_eligibility_gate(candidates)
+    if _cand_before != len(candidates):
+        import logging as _lg
+        _lg.getLogger("lockscore.rollover").info(
+            "Rollover canonical eligibility gate: %d → %d (dropped=%s)",
+            _cand_before, len(candidates), _canon_dropped,
+        )
     total_candidates = len(candidates)
-    rejected_by_gate = total_candidates - len(picks)
-
-    picks = _filter_in_play_window(picks)
-    # ── Quality Gate (2026-06-29) — same backtest-driven filter as
-    # /picks/today. Rollover is supposed to be our SAFEST pick of the
-    # day, so this layer is even more critical here.
+    # ── In-play window + quality gate BEFORE the shared selector so
+    # the canonical selector sees only playable + gate-approved rows.
+    candidates = _filter_in_play_window(candidates)
     try:
         from quality_gate import apply_quality_gate
-        picks, qg_blocked = apply_quality_gate(picks)
+        candidates, qg_blocked = apply_quality_gate(candidates)
         if qg_blocked:
             import logging
             logging.getLogger("lockscore").info(
@@ -707,6 +635,17 @@ async def pick_rollover(
     except Exception as qg_err:
         import logging
         logging.getLogger("lockscore").warning("QualityGate skipped (rollover): %s", qg_err)
+    # ── SHARED SELECTOR — one function for live + replay (P1.2) ─────
+    #    Applies passes_v5 (retired dead-zone/H+R+RBI bans) + ev_score
+    #    ranking + canonical_event_id dedupe (P1.3) + abstain-to-0
+    #    contract (P1.6).
+    top_selected, reject_reasons = select_rollover_top(
+        candidates, max_legs=MAX_LEGS,
+    )
+    rejected_by_gate = total_candidates - len(top_selected)
+    picks = top_selected
+
+    picks = _filter_in_play_window(picks)
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=24)
 
@@ -719,11 +658,12 @@ async def pick_rollover(
     today_picks = [p for p in picks if starts_today(p)]
     pool = today_picks if today_picks else picks
     if not pool:
-        # V4: no qualifying picks. Return empty bundle rather than dilute
-        # with medium-conviction gap-fill.
+        # PERKLOCKS MAIN 36 · P1.6 — legitimately return 0 picks.
+        # NO PICK > FORCED PICK.  Never backfill weak legs.
         return {
             "picks": [], "pick": None, "total_evaluated": 0,
-            "rollover_version": "v4",
+            "rollover_version": "v5",
+            "selector_version": _SELECTOR_VERSION,
             "survivability": {
                 "mode": "data_driven",
                 "lock_floor": LOCK_FLOOR, "wp_floor": WP_FLOOR,
@@ -735,58 +675,9 @@ async def pick_rollover(
             },
         }
 
-    def _ev_score(p: dict) -> float:
-        """V4 composite ranker (data-driven weights):
-          Base = 0.55·wp + 0.20·sim + 0.15·edge_norm + 0.10·alt_bonus
-          × market_multiplier (1.00–1.15)
-          × chalk_penalty × hot/cold multiplier"""
-        wp = _norm_prob(p.get("win_probability"))
-        sim = _norm_prob(p.get("sim_win_probability")) or wp
-        edge = float(p.get("edge_percent") or 0)
-        odds = float(p.get("book_odds") or -100)
-        edge_norm = max(0.0, min(1.0, edge / 8.0))  # normalise at +8pp
-        alt_bonus = 1.0 if p.get("is_alt") else 0.0  # alts historically +7pp
-        base = 0.55 * wp + 0.20 * sim + 0.15 * edge_norm + 0.10 * alt_bonus
-        # Market whitelist boost
-        mkt_mult = _market_multiplier(p.get("market") or "")
-        # Chalk penalty for extreme favourites (-200 or worse)
-        if odds <= -200:
-            chalk_pen = min(0.30, (abs(odds) - 200) / 500.0)
-        else:
-            chalk_pen = 0.0
-        # Historical hot/cold multiplier
-        sig = p.get("historical_signal") or {}
-        if sig.get("label") == "hot" and float(sig.get("consistency") or 0) >= 0.7:
-            hist_mult = 1.05
-        elif sig.get("label") == "cold":
-            hist_mult = 0.95
-        else:
-            hist_mult = 1.0
-        # Signal Engine multiplier (Phase A, 2026-07-12) — persisted
-        # 0-100 Signal Score from services/signal_engine. Bounded to
-        # ±8% so signals nudge the ranking rather than dominate it.
-        ss = p.get("signal_score")
-        try:
-            sig_mult = (1.0 + ((float(ss) - 50.0) / 50.0) * 0.08) if ss is not None else 1.0
-        except (TypeError, ValueError):
-            sig_mult = 1.0
-        return base * mkt_mult * (1.0 - chalk_pen) * hist_mult * sig_mult
-
-    ranked = sorted(pool, key=_ev_score, reverse=True)
-
-    # ─── Bundle assembly: TOP 3 legs, ONE per game ───
-    # V4: no alt-line cap — data shows alts hit 67.5% vs mains 60.8%,
-    # so we PREFER them via the ranking bonus rather than capping them.
-    seen_events: set = set()
-    top: list = []
-    for p in ranked:
-        ev = p.get("event")
-        if ev in seen_events:
-            continue
-        seen_events.add(ev)
-        top.append({**p, "composite_rank": round(_ev_score(p), 2)})
-        if len(top) >= MAX_LEGS:
-            break
+    # Selector already produced the ranked + canonical-event-dedup'd
+    # top-N in ``pool`` order.  Only attach composite_rank for the UI.
+    top = [{**p, "composite_rank": round(_ev_score(p), 2)} for p in pool]
     # ── Persist sticky cache before returning (2026-07-27) ────────────
     _survivability = {
         "mode": "data_driven",
@@ -809,31 +700,34 @@ async def pick_rollover(
             "at":             _now_ts,
             "survivability":  _survivability,
         }
-    # ── PHASE 3 (2026-06) — FROZEN ROLLOVER MEMBERSHIP ─────────────
+    # ── PHASE 3 (2026-06) / P36 P1.7 — FROZEN ROLLOVER MEMBERSHIP ──
     # Stamp ``on_rollover_at`` on the top-3 the moment the user first
     # sees them.  Once stamped a pick's membership is IMMUTABLE — the
     # settlement-time reconstruction pass (rollover_history_tagger)
     # will refuse to clear/move a frozen tag, so History → Rollover
     # always reflects the LIVE board even after results come in.
+    #
+    # P36 P1.7 — stamp canonical_event_id + shared selector_version so
+    # replay / analytics can reproduce the exact live selection.  Only
+    # LIVE_FROZEN_SELECTION rows count toward prospective performance.
     if top:
         try:
             _tagged_ids = [p.get("id") for p in top if p.get("id")]
             if _tagged_ids:
                 _stamp_at = datetime.now(timezone.utc).isoformat()
-                # PHASE 7 §7W (2026-06) — Rollover Snapshot metadata.
-                # Stamp selection_rank + selector version so History /
-                # Analytics can reproduce the exact live selection
-                # without postgame reconstruction.
-                for _rank, _pid in enumerate(_tagged_ids, start=1):
+                for _rank, _row in enumerate(top, start=1):
+                    _pid = _row.get("id")
+                    if not _pid:
+                        continue
+                    _cei = canonical_event_key(_row)
+                    _freeze = freeze_metadata(
+                        rank=_rank, stamped_at=_stamp_at,
+                        canonical_event_id=_cei or None,
+                    )
                     await db.picks.update_many(
                         {"id": _pid,
                          "on_rollover_at": {"$exists": False}},
-                        {"$set": {
-                            "on_rollover_at":          _stamp_at,
-                            "rollover_frozen_source":  "picks_route_live",
-                            "rollover_selection_rank": _rank,
-                            "rollover_selector_version": "rollover2.picks_route.v1",
-                        }},
+                        {"$set": _freeze},
                     )
         except Exception as _tag_err:
             logger.debug("frozen rollover stamp skipped: %s", _tag_err)
