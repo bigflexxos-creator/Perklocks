@@ -141,17 +141,31 @@ def _ladder_group_key(p: dict) -> tuple[str, str, str] | None:
     if not market:
         return None
     # ── Team totals ladder ──
-    for family, needles in _LADDER_MARKET_FAMILIES:
-        if any(n in market for n in needles):
-            # Family key includes the metric (e.g. "totals_over_goals",
-            # "totals_over_corners") so goal ladders and corner ladders
-            # don't collapse together.
-            metric = "goals"
-            for mm in _PROP_METRICS:
-                if mm in market:
-                    metric = mm
-                    break
-            return (event, f"{family}_{metric}", "")
+    # PERKLOCKS ROOT FIX (2026-09-03) — Only PURE team-total markets
+    # (selection is exactly "Over"/"Under") enter the team-totals
+    # ladder.  Previously ANY player-prop market containing "over "
+    # collapsed here — "Brett Bateman (TOR) Over 0.5 Hits", "Rafael
+    # Devers (SF) Over 0.5 Hits", "Vladimir Guerrero Jr. Over 1.5
+    # H+R+RBIs" all collided into the same
+    # (event, "totals_over_hits", "") group and only the highest-
+    # utility pick per event survived — a full board of Elite Lock
+    # hitter props collapsed to a single winner per game.
+    # Player-prop rows now correctly fall through to the player-prop
+    # ladder branch below (line 155) where the selection (player
+    # name) keys each ladder independently.
+    _sel_norm = (p.get("selection") or "").strip().lower()
+    if _sel_norm in ("over", "under"):
+        for family, needles in _LADDER_MARKET_FAMILIES:
+            if any(n in market for n in needles):
+                # Family key includes the metric (e.g. "totals_over_goals",
+                # "totals_over_corners") so goal ladders and corner ladders
+                # don't collapse together.
+                metric = "goals"
+                for mm in _PROP_METRICS:
+                    if mm in market:
+                        metric = mm
+                        break
+                return (event, f"{family}_{metric}", "")
     # ── Player-prop ladders (over/under N.5 <metric>) ──
     #    Only if the market string contains one of the known prop metrics
     #    AND an Over/Under keyword.  This safely excludes moneylines,

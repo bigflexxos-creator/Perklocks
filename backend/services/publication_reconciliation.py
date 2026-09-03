@@ -324,8 +324,52 @@ async def heal_rejected_publications(
         # ── Atomic PUBLISHED write.  Includes:
         #    * lifecycle fields (state + timestamps)
         #    * board-visibility flags (off_board + no_bet)
+        #    * canonical ``published_*`` mirror fields (what the
+        #      main-board eligibility query gates on — mirrors the
+        #      standard ``_build_payload`` mapping in
+        #      ``prediction_publication_service``:
+        #        lock_score      → published_lock_score
+        #        win_probability → published_probability (0-1 unit)
+        #        edge_percent    → published_edge
+        #        line/side/…     → published_line/side/…
+        #      Without these the healed pick would fail
+        #      ``main_board_lock_score_query`` (it filters on
+        #      ``published_lock_score >= 85``).
         #    * every healed enrichment field discovered above
         #      (so downstream readers see the enriched row).
+        def _round2(v: Any) -> Optional[float]:
+            try:
+                return round(float(v), 2)
+            except (TypeError, ValueError):
+                return None
+
+        def _prob_0_1(v: Any) -> Optional[float]:
+            try:
+                x = float(v)
+            except (TypeError, ValueError):
+                return None
+            if x != x:
+                return None
+            if -0.001 <= x <= 1.001:
+                return max(0.0, min(1.0, x))
+            if 0.0 <= x <= 100.5:
+                return max(0.0, min(1.0, x / 100.0))
+            return None
+
+        def _canonical_grade(score: Optional[float]) -> Optional[str]:
+            # Mirrors ``sports_engine._grade`` — the ONE canonical
+            # score→tier mapping used across the platform.  We reuse it
+            # so the healer never invents a grade the rest of the
+            # pipeline doesn't recognise.
+            if score is None:
+                return None
+            if score >= 100: return "APEX Lock"
+            if score >= 98:  return "Elite Lock"
+            if score >= 95:  return "Strong Lock"
+            if score >= 90:  return "Lock"
+            if score >= 85:  return "Playable"
+            return "Pass"
+
         set_fields: dict[str, Any] = {
             "publication_state":            PublicationState.PUBLISHED.value,
             "publication_published_at":     now_iso,
@@ -338,6 +382,59 @@ async def heal_rejected_publications(
             "no_bet":                       False,
             "publication_healed_at":        now_iso,
         }
+        # Canonical published_* mirror fields — required for
+        # ``main_board_lock_score_query`` to surface the row.
+        pls = _round2(p.get("lock_score"))
+        if pls is not None:
+            set_fields["published_lock_score"] = pls
+        pp = _prob_0_1(p.get("win_probability"))
+        if pp is not None:
+            set_fields["published_probability"] = pp
+        pe = p.get("edge_percent")
+        if pe is not None:
+            try:
+                set_fields["published_edge"] = float(pe)
+            except (TypeError, ValueError):
+                pass
+        for _src, _dst in (
+            ("line",           "published_line"),
+            ("book_odds",      "published_odds"),
+            ("side",           "published_side"),
+            ("line_source",    "published_line_source"),
+            ("confidence",     "published_confidence"),
+        ):
+            _v = p.get(_src)
+            if _v is None or _v == "":
+                continue
+            if _dst not in set_fields:
+                set_fields[_dst] = _v
+        # ── Stale-grade healer (matches the "stale-grade healer"
+        # branch already documented in picks_routes.py).  APEX / v2
+        # engines occasionally stamp ``grade='Pass'`` on picks whose
+        # canonical Lock Score clearly clears the >= 85 floor.  When
+        # this happens the picks_routes main-board filter (which
+        # requires ``published_grade != 'Pass'`` when the field
+        # exists) hides the healed pick.  Re-derive the grade from
+        # the canonical Lock Score so the published_grade never
+        # contradicts the immutable numeric score.
+        _canon_g = _canonical_grade(pls)
+        if _canon_g is not None:
+            _incoming_pg = p.get("published_grade")
+            _incoming_g  = p.get("grade")
+            if (_incoming_pg in (None, "", "Pass")
+                    and _canon_g != "Pass"):
+                set_fields["published_grade"] = _canon_g
+            elif _incoming_pg not in (None, ""):
+                # Preserve non-Pass canonical grade from the pick.
+                set_fields["published_grade"] = _incoming_pg
+            else:
+                set_fields["published_grade"] = _canon_g
+            # Also refresh the legacy ``grade`` field when it holds a
+            # stale ``Pass`` so downstream readers that fall back to
+            # ``grade`` (rollover, some legacy views) see the correct
+            # tier.  Never downgrade a legitimate live grade.
+            if (_incoming_g == "Pass" and _canon_g != "Pass"):
+                set_fields["grade"] = _canon_g
         for _hk, _hv in healed_fields.items():
             # Never overwrite a canonical lifecycle field with an
             # enrichment side-effect.
