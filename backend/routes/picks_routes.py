@@ -1692,11 +1692,32 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             # Prefer `published_grade` (immutable Phase-1c snapshot).
             # Fall back to legacy `grade` only when the row has never
             # been snapshot-published (`published_grade` absent).
+            #
+            # PERKLOCKS MAIN 36 · UNIVERSAL LOCK-SCORE FALLBACK
+            # (2026-06-30) — Cruz / Devers / Tidwell probe.  When
+            # `published_grade` is absent AND `grade` is a STALE
+            # "Pass" leftover from a pre-V2 engine build, prefer the
+            # canonical numeric Lock Score (>= 85 Playable floor)
+            # as authority.  The `board_visibility` healer refreshes
+            # `grade` from canonical but new picks minted after healer
+            # runtime may carry the stale value until the next sweep.
+            # Never let a stale text label overrule the immutable
+            # numeric score.
             {"$or": [
                 {"published_grade": {"$exists": True, "$ne": "Pass"}},
                 {"$and": [
                     {"published_grade": {"$exists": False}},
                     {"grade": {"$ne": "Pass"}},
+                ]},
+                # Stale-grade healer: canonical Lock >= 85 overrides
+                # a stored `grade="Pass"` when publication snapshot is
+                # absent (row was minted post-healer runtime).
+                {"$and": [
+                    {"published_grade": {"$exists": False}},
+                    {"$or": [
+                        {"lock_score":    {"$gte": 85}},
+                        {"lock_score_v2": {"$gte": 85}},
+                    ]},
                 ]},
             ]},
         ],
@@ -2409,11 +2430,25 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         AFTER canonical publication, dropping legit published Locks
         from the final response even though the DB query included
         them via `published_grade`.
+
+        PERKLOCKS MAIN 36 · UNIVERSAL LOCK-SCORE FALLBACK (2026-06-30):
+        when the row has no publication snapshot AND its stored `grade`
+        says "Pass" but its canonical numeric Lock Score is >= 85, the
+        numeric score wins.  Same fix as the DB-level `$or` clause —
+        applied here on the fully-decorated payload.
         """
         pg = p.get("published_grade")
         if pg is not None:            # canonically published — trust it
             return (str(pg).strip() != "Pass")
-        return (p.get("grade") or "").strip() != "Pass"
+        if (p.get("grade") or "").strip() != "Pass":
+            return True
+        # Stale-grade healer.
+        try:
+            ls  = float(p.get("lock_score")    or 0)
+            ls2 = float(p.get("lock_score_v2") or 0)
+        except (TypeError, ValueError):
+            return False
+        return max(ls, ls2) >= 85.0
 
     canonical = [
         p for p in canonical
