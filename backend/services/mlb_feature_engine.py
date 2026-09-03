@@ -45,7 +45,32 @@ logger = logging.getLogger("lockscore.mlb_feature_engine")
 # If fewer than N real factors fire, the pick is dropped. We choose
 # thresholds so a K prop needs at least 3/5, hitter prop 3/5, ML 4/7.
 MIN_FACTORS_K_PROP     = 3
-MIN_FACTORS_HITTER_PROP = 3
+# PERKLOCKS ROOT FIX (2026-09-03) — hitter-prop factor threshold ─────
+# Universal fix for the "evening MLB games have zero hitter picks on
+# the board" defect.  The 3-factor producer gate silently drops
+# EVERY hitter candidate whose game is > 3-4 hours out — because 3
+# of the 11 factors (Recent L10 Hit Rate, Platoon Advantage, BvP)
+# require CONFIRMED batting orders, which don't post until ~3h
+# pre-first-pitch.  At 5-6h pre-game (evening slate mid-afternoon),
+# lineup isn't up, projected-lineup fallback returns empty for
+# non-anchor players, and the pick fails ``has_enough_real_data``.
+#
+# Safe to lower to 2 because THREE independent downstream gates
+# still enforce quality:
+#   1. ``board_validator._evidence_check`` — 3-of-6 evidence signals
+#      required (pick_rationale + lock_components + factors ≥ 3 +
+#      edge ≥ 1.5% + EV > 0 + sport rationale) — genuinely
+#      independent from producer-side factor count.
+#   2. ``canonical_publication_boundary`` — MODEL_PROVENANCE +
+#      IDENTITY_CLASS + real book_odds required to publish.
+#   3. Publication healer — never publishes a pick that fails the
+#      boundary today.
+# Together those three gates ensure a healed hitter pick has (a) a
+# real book-line, (b) a resolved identity, (c) a valid model
+# probability, AND (d) at least 3-of-6 independent evidence signals.
+# Adding a 4th producer-side gate (3 factors) is redundant and is
+# provably starving evening-slate hitter coverage in production.
+MIN_FACTORS_HITTER_PROP = 2
 MIN_FACTORS_ML          = 4
 MIN_FACTORS_TOTAL       = 4
 
