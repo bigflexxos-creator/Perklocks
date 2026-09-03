@@ -818,9 +818,33 @@ async def pick_rollover(
         except Exception as _tag_err:
             logger.debug("frozen rollover stamp skipped: %s", _tag_err)
 
+    # PERKLOCKS-MAIN 34 · STEP 3 (2026-09-03) — attach immutable
+    # PublishedPickContract to every rollover pick so Rollover, Locks,
+    # Pick Breakdown, Parlay, My Bets, History describe the identical
+    # canonical wager. IMPORTANT: build the contract from the RAW `top`
+    # rows (still carrying canonical fields) before `_canonicalize_*`
+    # strips them, then splice onto the canonicalized output.
+    try:
+        from services.published_pick_contract import PublishedPickContract as _PPC
+        _contracts_by_idx = []
+        for _raw in top:
+            try:
+                _contracts_by_idx.append(_PPC.from_pick(_raw).as_dict())
+            except Exception:
+                _contracts_by_idx.append(None)
+        _canon_top = _canonicalize_picks(top)
+        for _i, _r in enumerate(_canon_top):
+            if isinstance(_r, dict) and _i < len(_contracts_by_idx) and _contracts_by_idx[_i]:
+                _r["published_pick_contract"] = _contracts_by_idx[_i]
+        _canon_head = _canonicalize_lock_score(top[0]) if top else None
+        if isinstance(_canon_head, dict) and _contracts_by_idx and _contracts_by_idx[0]:
+            _canon_head["published_pick_contract"] = _contracts_by_idx[0]
+    except Exception:
+        _canon_top = _canonicalize_picks(top)
+        _canon_head = _canonicalize_lock_score(top[0]) if top else None
     return {
-        "picks": _canonicalize_picks(top),
-        "pick": _canonicalize_lock_score(top[0]) if top else None,
+        "picks": _canon_top,
+        "pick": _canon_head,
         "composite_rank": top[0]["composite_rank"] if top else None,
         "total_evaluated": len(pool),
         "scoped_to_today": bool(today_picks),
