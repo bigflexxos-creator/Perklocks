@@ -411,9 +411,29 @@ async def pick_rollover(
             if len(docs_ordered) == len(cached_ids):
                 # All cached picks still valid — return sticky result
                 is_sticky_hit = True
+                # PERKLOCKS-MAIN 34 · STEP 3 (2026-09-03) — sticky-hit
+                # path parity: attach the immutable PublishedPickContract
+                # from the RAW cached docs BEFORE canonicalization strips
+                # identity fields, then splice onto the canonicalized
+                # output so Rollover sticky-hit rows describe the same
+                # canonical wager as the Locks board.
+                try:
+                    from services.published_pick_contract import PublishedPickContract as _PPC
+                    _sticky_contracts = [
+                        _PPC.from_pick(_d).as_dict() for _d in docs_ordered
+                    ]
+                except Exception:
+                    _sticky_contracts = []
+                _sticky_picks = _canonicalize_picks(docs_ordered)
+                for _i, _r in enumerate(_sticky_picks):
+                    if isinstance(_r, dict) and _i < len(_sticky_contracts) and _sticky_contracts[_i]:
+                        _r["published_pick_contract"] = _sticky_contracts[_i]
+                _sticky_head = _canonicalize_lock_score(docs_ordered[0]) if docs_ordered else None
+                if isinstance(_sticky_head, dict) and _sticky_contracts:
+                    _sticky_head["published_pick_contract"] = _sticky_contracts[0]
                 return {
-                    "picks": _canonicalize_picks(docs_ordered),
-                    "pick": _canonicalize_lock_score(docs_ordered[0]) if docs_ordered else None,
+                    "picks": _sticky_picks,
+                    "pick": _sticky_head,
                     "composite_rank": None,
                     "total_evaluated": len(docs_ordered),
                     "scoped_to_today": True,

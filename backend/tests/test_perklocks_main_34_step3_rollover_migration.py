@@ -36,15 +36,13 @@ def test_step3_rollover_head_and_picks_carry_contract():
     head = j.get("pick")
     if not picks and not head:
         pytest.skip("no rollover eligibility today")
-    # The rollover route has an alternate sticky-hit early return that
-    # doesn't route through our contract-attach block. Detect it via
-    # the `sticky` flag and skip cleanly — this branch is documented
-    # in `picks_routes.py` and is out of the STEP 3 migration scope.
-    if j.get("sticky"):
-        pytest.skip("rollover on sticky-hit early return path")
+    # The rollover route has an alternate sticky-hit early return.
+    # After PERKLOCKS-MAIN 34 STEP 3 the sticky-hit path ALSO attaches
+    # the contract, so we no longer skip; both paths must ship it.
     if head is not None:
         assert "published_pick_contract" in head, (
-            "STEP 3: rollover head pick missing frozen contract."
+            "STEP 3: rollover head pick missing frozen contract "
+            f"(sticky={j.get('sticky')})."
         )
     for p in picks[:5]:
         assert "published_pick_contract" in p, (
