@@ -2191,6 +2191,61 @@ async def admin_odds_cache_stats(
 
 
 
+
+async def _fetch_game_market_alt_lines(
+    db, *, pick: dict, market_type: str,
+) -> list[dict]:
+    """Pull real sportsbook alt spread / total lines from the Odds
+    API cache for this pick's event.
+
+    Returns a list of ``{line, side, american, bookmaker}`` rows the
+    game-market engine can index by (line, side).  Empty list when
+    the event has no cached alt-line payload.
+    """
+    event_id = pick.get("event_id") or pick.get("id")
+    if not event_id:
+        return []
+    try:
+        doc = await db.odds_api_cache.find_one(
+            {"endpoint_type": "event_alt_lines",
+              "url": {"$regex": str(event_id)}},
+            {"body": 1},
+        )
+    except Exception:
+        return []
+    if not doc or not isinstance(doc.get("body"), dict):
+        return []
+    # Odds API markets for these families:
+    #   alternate_spreads / alternate_spreads_games  → outcomes by TEAM+pt
+    #   alternate_totals  / alternate_totals_games   → Over/Under + pt
+    #   alternate_run_lines / alternate_runs_lines   → MLB spread
+    #   alternate_puck_lines                         → NHL spread
+    if market_type == "spread":
+        allow = {"alternate_spreads", "alternate_spreads_games",
+                  "alternate_run_lines", "alternate_runs_lines",
+                  "alternate_puck_lines"}
+    else:
+        allow = {"alternate_totals", "alternate_totals_games"}
+    rows: list[dict] = []
+    for bk in doc["body"].get("bookmakers", []) or []:
+        bk_key = bk.get("key")
+        for mkt in bk.get("markets", []) or []:
+            if mkt.get("key") not in allow:
+                continue
+            for outcome in mkt.get("outcomes", []) or []:
+                pt = outcome.get("point")
+                if pt is None:
+                    continue
+                rows.append({
+                    "line":       pt,
+                    "side":       outcome.get("name"),
+                    "american":   outcome.get("price"),
+                    "bookmaker":  bk_key,
+                })
+    return rows
+
+
+
 # ═════════════════════════════════════════════════════════════════════
 # Phase 8 — Alt-Line Magic Tier (on-demand computation)
 # ═════════════════════════════════════════════════════════════════════
@@ -2222,9 +2277,15 @@ async def alt_lines_for_pick(pick_id: str):
     # on margin-of-victory (spread) or total (total).
     game_parsed = parse_game_market_pick(pick)
     if game_parsed is not None:
+        # Hydrate real sportsbook alt-lines from the Odds API cache
+        # so chips carry actual book prices + computed edge.
+        game_market_alt = await _fetch_game_market_alt_lines(
+            db, pick=pick, market_type=game_parsed.market_type,
+        )
         bundle_dict = build_game_market_alt_lines(
             sport=pick.get("sport", "").upper(),
             pick=pick, parsed=game_parsed,
+            market_alt_lines=game_market_alt or None,
         )
         return {"pick_id": pick_id, "bundle": bundle_dict}
 

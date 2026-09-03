@@ -222,20 +222,20 @@ def build_game_market_alt_lines(
     pick: dict,
     parsed: GameMarketParse,
     top_n: int = 8,
+    market_alt_lines: Optional[list[dict]] = None,
 ) -> dict:
-    """Return an AltLineBundle-shaped dict for a game-market pick."""
+    """Return an AltLineBundle-shaped dict for a game-market pick.
+
+    ``market_alt_lines`` — optional list of book-price rows from the
+    Odds API alternate feed (``alternate_spreads`` /
+    ``alternate_totals``), used to hydrate real sportsbook prices and
+    computed edge percentages on chips where a matching (line, side)
+    is quoted.  When absent, chips stay ``source: model_projection``.
+    """
     sigma = _sigma_for(sport, parsed.market_type)
     grid = _grid_for_game_market(parsed.line, parsed.market_type, sport)
 
     # ── Solve the underlying distribution ───────────────────────
-    # SPREAD convention: model the *picked team's margin of victory*
-    # ``M``.  Pick covers when ``M > -line`` (dog +2.5 wins when
-    # M > -2.5, so ANY win + losses < 3 cover).  We solve μ_M from
-    # ``P(M > -anchor) = win_prob``, then P(cover at alt line s) =
-    # ``P(M > -s)``.
-    #
-    # TOTAL: model total points ``T``.  Over pick wins when
-    # ``T > line``, Under when ``T < line``.  We solve μ_T.
     if parsed.market_type == "spread":
         anchor_reference = -parsed.line
         p_over = parsed.win_prob
@@ -248,39 +248,85 @@ def build_game_market_alt_lines(
         return _empty_bundle(sport, pick, parsed,
                               "degenerate win_probability")
 
+    # ── Index real book prices by (line, side) ───────────────────
+    book_index: dict[tuple[float, str], dict] = {}
+    for m in (market_alt_lines or []):
+        try:
+            line = float(m.get("line") or m.get("point"))
+            side = (m.get("side") or m.get("name") or "").strip()
+            if not side:
+                continue
+            # For spreads the side is a team name; normalize to a
+            # canonical "team" / "opp" tag against the pick's own
+            # selection so lookups from either perspective hit.
+            if parsed.market_type == "spread":
+                if side.lower() == (pick.get("selection") or "").lower():
+                    key = (line, "team")
+                else:
+                    key = (-line, "opp")
+            else:
+                key = (line, side.capitalize())
+            book_index[key] = m
+        except (TypeError, ValueError):
+            continue
+
     alt_lines: list[dict] = []
     for th in grid:
         if parsed.market_type == "spread":
-            # Alt-spread s → team covers when M > -s.
-            p_th = _normal_sf(-th, mu, sigma)
-            side_lbl = "team_covers"
-            sign_prefix = f"+{th}" if th >= 0 else f"{th}"
-            label_line = f"{sign_prefix}"
-        else:
-            # Alt-total: two chips per threshold (Over / Under).  We
-            # emit BOTH — the side with the higher composite score
-            # rises in the ranker.
+            # TWO-WAY: emit BOTH sides at the SAME grid threshold so
+            # the ranker's group-by-line pairs them together.
+            # ``team_covers @ +th`` is the picked team getting +th
+            # points; ``opp_covers @ +th`` is the opposing team laying
+            # -th (semantically the same underlying spread, just from
+            # the opposing side — this is the "flip" the user taps).
+            p_team = _normal_sf(-th, mu, sigma)
+            alt_lines.append(_row(
+                side="team_covers", line=th, p_model=p_team,
+                anchor_line=parsed.line, anchor_side="team",
+                pick=pick, market=book_index.get((th, "team")),
+            ))
+            alt_lines.append(_row(
+                side="opp_covers", line=th, p_model=1 - p_team,
+                anchor_line=parsed.line, anchor_side="team",
+                pick=pick, market=book_index.get((-th, "opp")),
+            ))
+        else:  # total — emit Over + Under at each threshold
             p_over_th = _normal_sf(th, mu, sigma)
             alt_lines.append(_row(
                 side="Over", line=th, p_model=p_over_th,
                 anchor_line=parsed.line, anchor_side=parsed.side,
-                pick=pick,
+                pick=pick, market=book_index.get((th, "Over")),
             ))
             alt_lines.append(_row(
                 side="Under", line=th, p_model=1 - p_over_th,
                 anchor_line=parsed.line, anchor_side=parsed.side,
-                pick=pick,
+                pick=pick, market=book_index.get((th, "Under")),
             ))
-            continue
-        alt_lines.append(_row(
-            side=side_lbl, line=th, p_model=p_th,
-            anchor_line=parsed.line, anchor_side="team",
-            pick=pick,
-        ))
 
-    # Rank + trim.
-    alt_lines.sort(key=lambda r: r["composite_score"], reverse=True)
-    alt_lines = alt_lines[:top_n]
+    # ── Rank by threshold-LINE (keep pairs together) ────────────
+    from collections import defaultdict
+    by_line: dict[float, list[dict]] = defaultdict(list)
+    for chip in alt_lines:
+        by_line[chip["line"]].append(chip)
+    ranked_lines = sorted(
+        by_line.items(),
+        key=lambda kv: max(c["composite_score"] for c in kv[1]),
+        reverse=True,
+    )[: max(1, int(top_n) // 2)]
+    # Preserve ascending line order within the trimmed set.
+    ranked_lines.sort(key=lambda kv: kv[0])
+    output: list[dict] = []
+    for _, chips in ranked_lines:
+        # Prefer picked-side first, opposing second for spread; Over
+        # first, Under second for total.
+        chips.sort(key=lambda c: (
+            0 if c["side"] in ("team_covers", "Over") else 1))
+        output.extend(chips)
+
+    book_count = sum(1 for c in output if c["source"] == "market")
+    notes = [f"universal_game_market ({parsed.market_type}, σ={sigma})"]
+    if book_count:
+        notes.append(f"{book_count}/{len(output)} chips hydrated with real book prices")
 
     return {
         "sport":      sport,
@@ -289,52 +335,97 @@ def build_game_market_alt_lines(
         "opponent":   pick.get("away_team") if pick.get("home_team") == pick.get("selection")
                         else pick.get("home_team"),
         "projected":  round(mu, 2),
-        "alt_lines":  alt_lines,
-        "notes":      [
-            f"universal_game_market ({parsed.market_type}, σ={sigma})",
-        ],
+        "alt_lines":  output,
+        "notes":      notes,
     }
 
 
 def _row(*, side: str, line: float, p_model: float,
-          anchor_line: float, anchor_side: str, pick: dict) -> dict:
-    """Compose one alt-line row in the same shape as the player-prop
-    engine so the frontend chip renderer is 100 % source-agnostic."""
+          anchor_line: float, anchor_side: str, pick: dict,
+          market: Optional[dict] = None) -> dict:
+    """Compose one alt-line row.  When ``market`` (a book row from
+    the Odds API alternate feed) is provided, real book prices are
+    attached and edge is computed against the model.
+    """
     p_model = max(0.001, min(0.999, p_model))
-    # Composite score: how confident we are relative to a coin flip.
-    # Same weighting the ranker uses for model-projection player
-    # props (score = 0.5 + max(p - 0.5, 0.5 - p) · 0.4).
-    edge = max(p_model - 0.5, 0.5 - p_model)
-    composite = round(0.5 + edge * 0.9, 3)
-    # American odds implied from the model (fair line, no vig).
+    # American odds from the MODEL (fair, no vig).
     if p_model >= 0.5:
-        american = int(round(-p_model / (1 - p_model) * 100))
+        model_american = int(round(-p_model / (1 - p_model) * 100))
     else:
-        american = int(round((1 - p_model) / p_model * 100))
+        model_american = int(round((1 - p_model) / p_model * 100))
+    # If a real book price exists, use it for the chip; compute edge.
+    if market is not None and market.get("american") is not None:
+        american = int(market["american"])
+        p_implied = _american_to_implied_prob(american)
+        edge_pct = (p_model - p_implied) if p_implied is not None else None
+        bookmaker = market.get("bookmaker") or market.get("bookmaker_key")
+        source = "market"
+    else:
+        american = model_american
+        p_implied = None
+        edge_pct = None
+        bookmaker = None
+        source = "model_projection"
+    # Composite score: gives real-book chips a small boost since
+    # they are actually tradeable; adds an edge boost when edge > 0.
+    base_edge = max(p_model - 0.5, 0.5 - p_model)
+    edge_boost = 0.0
+    if edge_pct is not None and edge_pct > 0:
+        edge_boost = min(0.15, edge_pct * 1.5)
+    market_bonus = 0.02 if source == "market" else 0.0
+    composite = round(0.5 + base_edge * 0.9 + edge_boost + market_bonus, 3)
+    composite = min(0.999, composite)
     return {
         "side":            side,
         "line":            line,
         "p_model":         round(p_model, 3),
-        "p_implied":       None,
+        "p_implied":       round(p_implied, 3) if p_implied is not None else None,
         "american":        american,
-        "bookmaker":       None,
-        "edge_pct":        None,
+        "bookmaker":       bookmaker,
+        "edge_pct":        round(edge_pct * 100, 2) if edge_pct is not None else None,
         "roi_bucket":      None,
         "simulation_std":  None,
         "composite_score": composite,
-        "source":          "model_projection",
-        "explanation":     _explain(anchor_line, anchor_side, side, line, p_model),
+        "source":          source,
+        "explanation":     _explain(anchor_line, anchor_side, side, line, p_model,
+                                      edge_pct=edge_pct, bookmaker=bookmaker),
     }
 
 
+def _american_to_implied_prob(american: Optional[int]) -> Optional[float]:
+    if american is None:
+        return None
+    try:
+        a = int(american)
+    except (TypeError, ValueError):
+        return None
+    if a > 0:
+        return 100.0 / (a + 100.0)
+    else:
+        return (-a) / ((-a) + 100.0)
+
+
 def _explain(anchor_line: float, anchor_side: str, side: str,
-              line: float, p_model: float) -> str:
+              line: float, p_model: float,
+              edge_pct: Optional[float] = None,
+              bookmaker: Optional[str] = None) -> str:
+    if edge_pct is not None and edge_pct > 0.02:
+        edge_str = f" · +{edge_pct * 100:.1f}% edge"
+    elif edge_pct is not None and edge_pct < -0.02:
+        edge_str = f" · {edge_pct * 100:.1f}% edge"
+    else:
+        edge_str = ""
+    src_str = f" ({bookmaker})" if bookmaker else ""
     if side.lower() in ("over", "under"):
-        return (f"Model implies P({side} {line}) = {p_model:.0%} "
-                f"(anchor {anchor_side} {anchor_line}).")
+        return (f"Model implies P({side} {line}) = {p_model:.0%}"
+                f"{edge_str}{src_str}.")
+    if side == "opp_covers":
+        sign_prefix = f"+{line}" if line >= 0 else f"{line}"
+        return (f"Opposing team covers at {sign_prefix} with "
+                f"{p_model:.0%} probability{edge_str}{src_str}.")
     sign_prefix = f"+{line}" if line >= 0 else f"{line}"
-    return (f"Model implies {sign_prefix} covers with {p_model:.0%} "
-            f"probability (anchor {anchor_line}).")
+    return (f"Picked team covers at {sign_prefix} with {p_model:.0%} "
+            f"probability{edge_str}{src_str}.")
 
 
 def _empty_bundle(sport: str, pick: dict,
