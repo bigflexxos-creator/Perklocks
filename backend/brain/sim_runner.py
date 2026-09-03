@@ -209,8 +209,16 @@ def simulate_pick(pick: dict) -> Optional[dict]:
         out.setdefault("simulator_version",    sim_version)
         out.setdefault("simulator_type",       sim_type)
         out.setdefault("seed",                 seed)
-        out.setdefault("independent_evidence", True)
-        out.setdefault("valid",                True)
+        # ── PERKLOCKS MAIN 36 · P0-3 SIMULATOR TRUST FAILS CLOSED ──
+        # Previous default was ``valid=True`` / ``independent_evidence=True``
+        # — a simulator that FORGOT to stamp provenance silently earned
+        # production authority.  Reverse the default: no provenance ==
+        # no trust.  A simulator must EXPLICITLY prove independence
+        # (via ``simulator_provenance`` + confidence bucket + decision_valid)
+        # before its result can strengthen Lock / convergence / APEX.
+        out.setdefault("independent_evidence", False)
+        out.setdefault("valid",                False)
+        out.setdefault("decision_valid",       False)
         # Post-Cert Defect 1 — PROVENANCE OVERRIDE.
         # The Phase-2 provenance contract is AUTHORITATIVE.  If the
         # simulator reports MODEL_CONDITIONED / PRIOR_ONLY / INVALID —
@@ -225,7 +233,7 @@ def simulate_pick(pick: dict) -> Optional[dict]:
         _conf = (out.get("input_quality")
                  or out.get("confidence_bucket")
                  or out.get("provenance_confidence") or "").upper()
-        _decision_valid = out.get("decision_valid", True)
+        _decision_valid = out.get("decision_valid", False)
         if _prov in ("MODEL_CONDITIONED", "PRIOR_ONLY", "INVALID"):
             out["independent_evidence"] = False
         if _prov == "INVALID":
@@ -234,9 +242,44 @@ def simulate_pick(pick: dict) -> Optional[dict]:
             out["independent_evidence"] = False
             out["valid"] = False
         if _prov in ("CAUSAL_INDEPENDENT", "EMPIRICAL_INDEPENDENT"):
-            # Independent provenance requires FULL/STRONG confidence.
-            if _conf and _conf not in ("FULL", "STRONG", "HIGH"):
+            # Independent provenance requires FULL/STRONG confidence
+            # AND explicit decision_valid=True to grant authority.
+            if (_conf in ("FULL", "STRONG", "HIGH")
+                    and _decision_valid is True):
+                out["independent_evidence"] = True
+                out["valid"] = True
+            else:
                 out["independent_evidence"] = False
+        # ── PERKLOCKS MAIN 36 · P0-7 + P0-8 — SIM TRUST STATE ─────
+        # Single canonical label every consumer (UI card, adapter,
+        # analytics) uses to gate "SIM EDGE" / "STRONGER THAN MODEL".
+        # Enforces:
+        #   • extreme model↔sim disagreement (≥15pp) never counts as
+        #     confirming evidence — labels MODEL_DISAGREEMENT even when
+        #     the simulator is INDEPENDENT.  A ~70 % model paired with
+        #     a 100 % sim CANNOT surface as SIM EDGE.
+        #   • fail-closed default: unknown/invalid sims are RESEARCH.
+        try:
+            _sim_p_raw = out.get("sim_win_probability")
+            _sim_p = float(_sim_p_raw) / 100.0 if _sim_p_raw and _sim_p_raw > 1.0 \
+                     else float(_sim_p_raw or 0)
+            _mdl_p_raw = pick.get("win_probability")
+            _mdl_p = float(_mdl_p_raw) / 100.0 if _mdl_p_raw and _mdl_p_raw > 1.0 \
+                     else float(_mdl_p_raw or 0)
+            _disagree_pp = abs(_sim_p - _mdl_p) * 100.0 if _sim_p and _mdl_p else 0.0
+        except Exception:
+            _sim_p, _mdl_p, _disagree_pp = 0.0, 0.0, 0.0
+        _EXTREME_DISAGREEMENT_PP = 15.0
+        if out.get("valid") is False:
+            out["sim_trust_state"] = "SIM_DATA_INSUFFICIENT"
+        elif _disagree_pp >= _EXTREME_DISAGREEMENT_PP:
+            out["sim_trust_state"] = "MODEL_DISAGREEMENT"
+        elif out.get("independent_evidence") is True:
+            out["sim_trust_state"] = "SIM_EDGE"
+        elif _prov == "MODEL_CONDITIONED":
+            out["sim_trust_state"] = "MODEL_CONDITIONED_SIM"
+        else:
+            out["sim_trust_state"] = "RESEARCH_SIM"
         return out
     except Exception as e:
         logger.warning("Simulator failed for pick %s (sport=%s): %s",
@@ -431,9 +474,19 @@ def _anchor_pick_to_sim(pick: dict, sim_wp: float,
             "atd_model_override",         # NFL ATD engine (legacy key)
             "nfl_yardage_engine_output",  # NFL yardage engine (if wired)
             "soccer_scorer_probability",  # Soccer scorer engine
+            "mlb_outs_model_output",      # MLB pitcher outs (repaired)
+            "pitcher_outs_expected",      # MLB pitcher outs legacy marker
+            "tennis_math_output",         # Tennis math engine
+            "nba_prop_model_output",      # NBA prop specialized model
+            "specialized_model_output",   # generic specialized-model marker
         )
-    )
+    ) or (pick.get("probability_source") or "").startswith(
+        ("mlb_", "nfl_", "nba_", "soccer_scorer",
+         "tennis_math", "pitcher_outs", "atd_", "k_math",
+         "specialized_"))
     _sim_type = (sim_meta or {}).get("simulator_type", "")
+    _sim_indep = bool((sim_meta or {}).get("independent_evidence", False))
+    _sim_valid = bool((sim_meta or {}).get("valid", False))
     # PASS OLD-LOGIC MIGRATION (2026-06) — accept sim_wp both as
     # PERCENT (0-100, produced by sim_mlb / sim_nba / sim_nfl / sim_nhl
     # via ``sim_wp_pct = round(p*100, 1)``) and as FRACTION (0-1, legacy
@@ -443,8 +496,15 @@ def _anchor_pick_to_sim(pick: dict, sim_wp: float,
     # ``win_probability`` — leaving book-implied / factor-mean seeds
     # as the final published probability.  Normalise once here.
     _sim_wp_frac = float(sim_wp) / 100.0 if float(sim_wp) > 1.0 else float(sim_wp)
+    # PERKLOCKS MAIN 36 · P0-4 — Brain cannot override specialized
+    # model.  A generic distribution_monte_carlo may only PROMOTE to
+    # ``win_probability`` when:
+    #   • no specialized production model already owns the market,
+    #   • the simulator is INDEPENDENT + VALID (fail-closed per P0-3),
+    #   • the simulator's p is within the sanity range.
     if (not _HAS_SPECIALIZED_ENGINE
             and _sim_type == "distribution_monte_carlo"
+            and _sim_indep and _sim_valid
             and 0.02 <= _sim_wp_frac <= 0.99):
         # Preserve the prior factor-average as audit for telemetry so
         # any regression is diagnosable.
@@ -505,13 +565,12 @@ def apply_simulations(picks: list[dict]) -> dict:
             continue
 
         # Extract simulator metadata (independent_evidence / valid).
-        # sport-specific sims (sim_mlb/nba/tennis/soccer/soccer_scorer)
-        # are ALL true independent simulators — they never seed off μ.
-        # If a caller writes an untyped result we default to
-        # independent=True + valid=True for backward compatibility.
+        # PERKLOCKS MAIN 36 · P0-3 — no legacy True default.  Simulators
+        # that don't stamp explicit provenance are treated as untrusted
+        # (independent=False, valid=False) and cannot anchor Lock Score.
         sim_meta = {
-            "independent_evidence": sim.get("independent_evidence", True),
-            "valid":                sim.get("valid", True),
+            "independent_evidence": sim.get("independent_evidence", False),
+            "valid":                sim.get("valid", False),
             "simulator_type":       sim.get("simulator_type",
                                             "distribution_monte_carlo"),
         }

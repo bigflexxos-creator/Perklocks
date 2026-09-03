@@ -116,12 +116,15 @@ async def _hot_scoring_shadow(rows: list[dict], threshold: float = 20.0) -> Rese
     if hits / n < 0.6:
         return None
     hr = hits / n
+    # PERKLOCKS MAIN 36 · P1 — use REAL Wilson lower bound, not the
+    # heuristic hr × 0.75 the old label claimed.
+    from services.discovery.confidence_system import wilson_lower_bound
     return ResearchShadowSignal(
         key="scoring_streak",
         label=f"{int(threshold)}+ PTS in {hits}/{n}",
         description=f"Scored {int(threshold)}+ in {hits} of last {n} games",
         hits=hits, n=n, hit_rate=round(hr, 3),
-        wilson_lower=round(hr * 0.75, 3),
+        wilson_lower=round(wilson_lower_bound(hits, n), 3),
         strength="strong" if hr >= 0.75 else "moderate",
         tags=["nba", "streak"],
     )

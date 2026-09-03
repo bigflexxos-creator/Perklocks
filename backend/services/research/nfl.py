@@ -111,12 +111,15 @@ async def _opportunity_streak_shadow(player_name: str) -> ResearchShadowSignal |
     if hits_5plus < max(3, int(0.6 * n)):
         return None
     hr = hits_5plus / n
+    # PERKLOCKS MAIN 36 · P1 — use REAL Wilson lower bound, not the
+    # heuristic hr × 0.7 the old label claimed.
+    from services.discovery.confidence_system import wilson_lower_bound
     return ResearchShadowSignal(
         key="target_streak",
         label=f"5+ targets in {hits_5plus}/{n}",
         description=f"{player_name} — 5+ targets in {hits_5plus} of last {n} games",
         hits=hits_5plus, n=n, hit_rate=round(hr, 3),
-        wilson_lower=round(hr * 0.7, 3),  # coarse; UI treats SHADOW leniently
+        wilson_lower=round(wilson_lower_bound(hits_5plus, n), 3),
         strength="strong" if hr >= 0.75 else "moderate",
         tags=["nfl", "opportunity"],
     )
