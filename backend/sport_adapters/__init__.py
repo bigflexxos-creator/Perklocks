@@ -87,6 +87,12 @@ class SportAdapter(ABC):
             "sim_ci_lower":        pick.get("sim_ci_lower"),
             "sim_ci_upper":        pick.get("sim_ci_upper"),
             "sim_runs":            pick.get("sim_runs"),
+            # PERKLOCKS MAIN 36 · P0-8 — canonical trust label gates
+            # the "SIM EDGE" UI chip.  Downstream must NOT render
+            # "STRONGER THAN MODEL" unless state == "SIM_EDGE".
+            "sim_trust_state":     pick.get("sim_trust_state"),
+            "independent_evidence": pick.get("independent_evidence"),
+            "valid":               pick.get("valid"),
         }
 
     # ── 4) Calibration shim ───────────────────────────────────────

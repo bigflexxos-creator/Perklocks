@@ -223,6 +223,13 @@ def _resolve_opportunity(ctx: dict, position: str, st: SeasonType):
     """Fetch or synthesize a role/opportunity object from ctx.
     NEVER fabricates a role; if ctx doesn't carry one AND the
     position is unrecognized, returns None so the sim fails safely.
+
+    PERKLOCKS MAIN 36 · P0-10 — when we synthesize a neutral
+    opportunity (ctx carries no per-player role evidence), the
+    returned object MUST carry ``provenance = PRIOR_ONLY`` so
+    downstream never labels it observed independent evidence.
+    Real per-player opportunities keep whatever provenance ctx
+    supplied (defaults to MODEL_DERIVED at ingest).
     """
     key = {"QB": "qb_opportunity", "RB": "rb_opportunity",
             "WR": "wr_opportunity", "TE": "wr_opportunity"}.get(position)
@@ -231,15 +238,24 @@ def _resolve_opportunity(ctx: dict, position: str, st: SeasonType):
     opp = ctx.get(key)
     if opp is not None:
         return opp
-    # Only synthesize a neutral opportunity if the position is
-    # known — this avoids fabricating a role that doesn't exist.
+    # Synthesized-neutral path — mark provenance so consumers cannot
+    # promote this to independent evidence.
     if position == "QB":
-        return QBOpportunity(role_certainty=0.85)
-    if position == "RB":
-        return RBOpportunity(role_certainty=0.75)
-    if position in ("WR", "TE"):
-        return WROpportunity(role_certainty=0.75)
-    return None
+        _opp = QBOpportunity(role_certainty=0.85)
+    elif position == "RB":
+        _opp = RBOpportunity(role_certainty=0.75)
+    elif position in ("WR", "TE"):
+        _opp = WROpportunity(role_certainty=0.75)
+    else:
+        return None
+    try:
+        # Dataclass fields — attach as attributes so consumers can
+        # inspect without relying on internal ctx wiring.
+        object.__setattr__(_opp, "provenance", "PRIOR_ONLY")
+        object.__setattr__(_opp, "is_synthesized", True)
+    except Exception:
+        pass
+    return _opp
 
 
 def _infer_position(pick: dict) -> Optional[str]:

@@ -3331,12 +3331,30 @@ except Exception as _res_exc:
 async def _track_user_api_usage(request, call_next):
     """Bump a per-user counter on every authenticated /api request.
 
-    Powers the admin dashboard's "top API users" ranking. Cheap
-    (fire-and-forget update_one with upsert) — never blocks the response.
-    Best-effort: any failure here is silently swallowed so a tracker bug
-    can't break the API surface.
+    PERKLOCKS MAIN 36 · P0-11 — this middleware sits OUTSIDE the
+    ``_ReliabilityMiddleware`` in the ASGI stack (later-added =
+    outer).  If ``call_next`` raises here, the exception bypasses
+    the reliability wrapper and the caller sees an ASGI-level 500
+    with no body.  Guard the ``call_next`` call so we always return
+    a valid Response — real exceptions still surface as JSON 500 via
+    the inner reliability middleware; only middleware-boundary
+    failures are converted to a safe response here.
     """
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        import uuid as _uuid, traceback as _tb
+        rid = getattr(request.state, "request_id", None) or _uuid.uuid4().hex[:12]
+        logger.error(
+            "MIDDLEWARE_FAIL _track_user_api_usage %s %s rid=%s: %s\n%s",
+            request.method, request.url.path, rid, exc, _tb.format_exc(),
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Middleware error — please retry.",
+                     "request_id": rid},
+            headers={"X-Request-ID": rid},
+        )
     try:
         path = str(request.url.path)
         if not path.startswith("/api/"):
@@ -3381,14 +3399,44 @@ async def _track_user_api_usage(request, call_next):
 async def _no_store_api_responses(request, call_next):
     """Force every /api response to bypass intermediate caches.
 
-    The published Expo bundle was hitting our backend through the same
-    edge proxy as the website, but the iOS native HTTP stack was serving
-    cached responses (especially `/picks/today`) for hours. Setting
-    Cache-Control: no-store + Pragma: no-cache + Expires: 0 stops every
-    layer (CDN, proxy, iOS NSURLCache, RN fetch cache) from holding
-    onto pick data.
+    PERKLOCKS MAIN 36 · P0-11 — hardened.  Guards against any
+    exception bubbling out of ``call_next`` AND validates that the
+    returned object is a Response before mutating headers (a broken
+    inner middleware could return ``None`` and crash the ASGI
+    protocol).  Never converts a genuine backend exception into a
+    fake 200 — invalid inner responses become a JSON 500.
     """
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        import uuid as _uuid, traceback as _tb
+        rid = getattr(request.state, "request_id", None) or _uuid.uuid4().hex[:12]
+        logger.error(
+            "MIDDLEWARE_FAIL _no_store_api_responses %s %s rid=%s: %s\n%s",
+            request.method, request.url.path, rid, exc, _tb.format_exc(),
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Middleware error — please retry.",
+                     "request_id": rid},
+            headers={"X-Request-ID": rid},
+        )
+    if response is None or not hasattr(response, "headers"):
+        # Inner middleware violated the Response contract — surface
+        # as JSON 500 rather than an opaque ASGI protocol error.
+        import uuid as _uuid
+        rid = getattr(request.state, "request_id", None) or _uuid.uuid4().hex[:12]
+        logger.error(
+            "MIDDLEWARE_FAIL _no_store_api_responses %s %s rid=%s: "
+            "inner middleware returned %r",
+            request.method, request.url.path, rid, response,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Invalid inner response — please retry.",
+                     "request_id": rid},
+            headers={"X-Request-ID": rid},
+        )
     if str(request.url.path).startswith("/api/"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"

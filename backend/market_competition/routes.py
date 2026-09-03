@@ -12,6 +12,7 @@ Mounted at /api/market-rank/{pick_id} via main router include in server.py.
 """
 from __future__ import annotations
 
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 
 router = APIRouter(tags=["market_competition"])
@@ -228,6 +229,13 @@ async def _rank_markets_for_event(db, event: str, sport: str, exclude_id: str = 
             # in `SOCCER_PLAYER_GAME_TRUTH_CERTIFIED`.
             "published_lock_score": 1, "published_grade": 1,
             "published_win_probability": 1, "canonical_published_at": 1,
+            # PERKLOCKS MAIN 36 · P0-1 · P0-2 — additive projection so
+            # the state resolver + separate current_pick payload have
+            # everything they need to label rows without collapsing
+            # distinct metrics into ``market_score``.
+            "signal_score": 1,
+            "publication_block_reason": 1, "publication_reject_reason": 1,
+            "publish_block_reason": 1, "canonical_reject_reason": 1,
         },
     )
     # PHASE 0 §7 (2026-06) — Score ALL candidates BEFORE dedupe.
@@ -276,7 +284,12 @@ async def _rank_markets_for_event(db, event: str, sport: str, exclude_id: str = 
             "variance_score":   p.get("variance_score"),
             "grade":            _pub_pg or p.get("grade"),
             "market_score":     round(score, 2),
+            "signal_score":     p.get("signal_score"),   # kept distinct from lock_score
             "is_current":       False,
+            # PERKLOCKS MAIN 36 · P0-1 — explicit state so the UI
+            # never confuses a research alt with a Published Lock.
+            "state":                    _pick_state(p),
+            "non_publication_reason":   _non_publication_reason(p),
         })
 
     # Pass 2 — dedupe by short_market keeping the highest market_score.
@@ -295,6 +308,47 @@ async def _rank_markets_for_event(db, event: str, sport: str, exclude_id: str = 
     candidates = list(best_by_short.values()) + unknown_candidates
     candidates.sort(key=lambda x: x["market_score"], reverse=True)
     return candidates
+
+
+def _pick_state(p: dict) -> str:
+    """PERKLOCKS MAIN 36 · P0-1 — explicit non-Locks state labels.
+
+    Every Pick Breakdown / Market Competition row carries one of:
+
+      • PUBLISHED_LOCK       — passed canonical publication; appears on Locks.
+      • RESEARCH_ALTERNATIVE — high model score but did NOT publish.
+      • INELIGIBLE           — flagged no_bet / disqualified pre-publication.
+      • UNAVAILABLE          — missing critical evidence (no line/odds).
+
+    A high-score research row must never masquerade as a published Lock;
+    only PUBLISHED_LOCK rows may drive the canonical Locks board.
+    """
+    if p.get("no_bet") is True:
+        return "INELIGIBLE"
+    if p.get("book_odds") in (None, "") or p.get("win_probability") in (None, ""):
+        return "UNAVAILABLE"
+    # PUBLISHED_LOCK — the immutable ``canonical_published_at``
+    # timestamp (set by PublishedPickContract when the pick passed
+    # the 85+ publication rule) is the sole source of truth.  A
+    # ``published_lock_score`` alone also proves the boundary was
+    # crossed.  Otherwise the row is research-only.
+    if p.get("canonical_published_at") or p.get("published_lock_score") is not None:
+        return "PUBLISHED_LOCK"
+    return "RESEARCH_ALTERNATIVE"
+
+
+def _non_publication_reason(p: dict) -> Optional[str]:
+    """Return a human-readable reason a high-model-score row didn't
+    publish, when the pick doc carries one; else None."""
+    for k in (
+        "publication_block_reason", "publication_reject_reason",
+        "publish_block_reason", "publish_reason",
+        "canonical_reject_reason",
+    ):
+        v = p.get(k)
+        if v:
+            return str(v)
+    return None
 
 
 def _classify(ranked: list[dict]) -> dict:
@@ -336,21 +390,73 @@ async def market_rank_for_pick(
     """Ranked list of every market available for the same event as `pick_id`.
 
     Used by the pick-detail UI to show "OTHER MARKETS IN THIS MATCH".
+
+    PERKLOCKS MAIN 36 · P0-2 — response contract fix.  Previously
+    ``market_score`` was only computed for ALTERNATIVES (the current
+    pick was excluded from the ranked list), so the frontend fell
+    back to 0 when it couldn't find ``is_current`` in the response.
+    Now the endpoint returns the current pick separately with its
+    OWN market_score using the SAME formula, and each row carries
+    ``state`` + ``signal_score`` explicitly so the UI never merges
+    or fabricates comparison metrics.  Missing metric → null, never 0.
     """
     db = _get_db()
-    pick = await db.picks.find_one({"id": pick_id}, {"_id": 0, "event": 1, "sport": 1})
-    if not pick:
+    current = await db.picks.find_one(
+        {"id": pick_id}, {"_id": 0}
+    )
+    if not current:
         raise HTTPException(404, "pick not found")
     ranked = await _rank_markets_for_event(
-        db, pick["event"], pick.get("sport") or "", exclude_id=pick_id,
+        db, current["event"], current.get("sport") or "", exclude_id=pick_id,
     )
     classified = _classify(ranked)
+
+    # Compute the current pick's market_score using the SAME formula
+    # and expose the metrics separately so the UI compares like to like.
+    def _score_or_none(p: dict) -> Optional[float]:
+        # Guard against missing win_probability / edge — return None
+        # (NOT 0) so the UI can render N/A.
+        if p.get("win_probability") in (None, "") \
+                or p.get("edge_percent") in (None, ""):
+            return None
+        try:
+            return round(_market_score(p), 2)
+        except Exception:
+            return None
+
+    _pub_ls = current.get("published_lock_score")
+    _pub_pg = current.get("published_grade")
+    _pub_wp = current.get("published_win_probability")
+    current_row = {
+        "id":               current.get("id"),
+        "market":           current.get("market"),
+        "short_market":     _short_market(current.get("market") or ""),
+        "selection":        current.get("selection"),
+        "win_probability":  _pub_wp if _pub_wp is not None else current.get("win_probability"),
+        "edge_percent":     current.get("edge_percent"),
+        "book_odds":        current.get("book_odds"),
+        "lock_score":       _pub_ls if _pub_ls is not None else current.get("lock_score"),
+        "lock_score_v2":    current.get("lock_score_v2"),
+        "tier_v2":          current.get("tier_v2"),
+        "is_apex":          current.get("is_apex", False),
+        "counter_score":    current.get("counter_score"),
+        "survival_score":   current.get("survival_score"),
+        "variance_score":   current.get("variance_score"),
+        "grade":            _pub_pg or current.get("grade"),
+        "signal_score":     current.get("signal_score"),   # distinct from lock_score
+        "market_score":     _score_or_none(current),
+        "is_current":       True,
+        "state":            _pick_state(current),
+        "non_publication_reason": _non_publication_reason(current),
+    }
+
     return {
-        "pick_id":  pick_id,
-        "event":    pick["event"],
-        "sport":    pick.get("sport"),
-        "total":    len(ranked),
-        "ranked":   ranked,
+        "pick_id":       pick_id,
+        "event":         current["event"],
+        "sport":         current.get("sport"),
+        "total":         len(ranked),
+        "ranked":        ranked,
+        "current_pick":  current_row,   # P0-2 — SAME metric as alternatives.
         **classified,
     }
 

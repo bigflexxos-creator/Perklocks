@@ -300,11 +300,31 @@ def simulate_mlb_pick(pick: dict, player_stats: dict | None = None) -> Optional[
             stats.get("k_rate", LEAGUE_K_RATE),
             int(EXPECTED_BF_PITCHER),
         )
-    elif "outs recorded" in ml or "outs" in ml:
-        distribution = _simulate_pitcher_outs(
-            stats.get("bf_per_inning", 3.7),
-            stats.get("expected_innings", 6.0),
-        )
+    elif "outs recorded" in ml or ("outs" in ml and "strikeouts" not in ml):
+        # PERKLOCKS MAIN 36 · P0-5 — no six-inning silent fallback.
+        # Previously ``stats.get("expected_innings", 6.0)`` and
+        # ``stats.get("bf_per_inning", 3.7)`` produced a full
+        # workload simulation from generic defaults, yielding
+        # near-100 % Outs probabilities for anyone.  Now: if either
+        # factual workload input is missing, we fail closed and let
+        # the specialized MLB outs model (already repaired) own the
+        # probability without Brain overwriting it.  Do NOT substitute
+        # K-rate for Outs workload.
+        _bfi = stats.get("bf_per_inning")
+        _eip = stats.get("expected_innings")
+        if _bfi is None or _eip is None:
+            return {
+                "ran":                   False,
+                "sim_signal":            "insufficient",
+                "reason":                "SIM_DATA_INSUFFICIENT",
+                "invalid_reason":        "pitcher_outs missing bf_per_inning/expected_innings",
+                "valid":                 False,
+                "decision_valid":        False,
+                "independent_evidence":  False,
+                "simulator_provenance":  "INVALID",
+                "simulator_type":        "distribution_monte_carlo",
+            }
+        distribution = _simulate_pitcher_outs(float(_bfi), float(_eip))
     else:
         # ── Game markets (Moneyline / Run Line / Total) — Poisson
         # team-score model.  This is the P0 (2026-06 Final Closure)

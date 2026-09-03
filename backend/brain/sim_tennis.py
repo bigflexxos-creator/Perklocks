@@ -321,13 +321,33 @@ def simulate_tennis_pick(pick: dict, tennis_ctx: dict | None = None) -> Optional
     threshold = _extract_threshold(market)
     is_under = _is_under(market)
 
+    # PERKLOCKS MAIN 36 · P0-9 — Tennis BO3/BO5 authority.
+    # Previously Brain silently used SETS_BO3 for every match, so an
+    # ATP men's Grand Slam (BO5) was simulated as BO3 → wrong total
+    # games distribution & wrong match-winner p.  Thread the resolved
+    # format from the authoritative helper.
+    try:
+        from services.tennis_match_format import resolve_tennis_match_format
+        _bo = int(resolve_tennis_match_format(
+            sport_key=pick.get("sport_key") or pick.get("league") or "",
+            league=pick.get("league") or pick.get("event") or "",
+            event_payload=pick,
+            tournament_name=pick.get("tournament") or pick.get("event") or "",
+        ) or SETS_BO3)
+        if _bo not in (SETS_BO3, 5):
+            _bo = SETS_BO3
+    except Exception:
+        _bo = SETS_BO3
+
     wins = 0
     total_games_dist: list[int] = []
     pick_match_wins = 0
     games_margin_dist: list[int] = []   # pick_games - opp_games (for spread analytics)
     for _ in range(RUNS):
         # Simulate match returning total games AND game count per side
-        total_games, p_sets, o_sets, p_games, o_games = _simulate_match_full(p_serve, o_serve)
+        total_games, p_sets, o_sets, p_games, o_games = _simulate_match_full(
+            p_serve, o_serve, bo=_bo,
+        )
         total_games_dist.append(total_games)
         games_margin_dist.append(p_games - o_games)
         pick_won = p_sets > o_sets
@@ -387,6 +407,7 @@ def simulate_tennis_pick(pick: dict, tennis_ctx: dict | None = None) -> Optional
         "sim_alt_lines": alt_lines if alt_lines else None,
         "sim_disagreement_with_model": disagreement,
         "sim_signal": _signal(disagreement),
+        "sim_match_format": _bo,   # PERKLOCKS MAIN 36 · P0-9
     }
     if cat == "game_spread":
         payload["sim_spread_line"] = spread_line
