@@ -2207,10 +2207,27 @@ async def alt_lines_for_pick(pick_id: str):
       • plain-English explanation
     """
     from services.alt_line_engine import generate_alt_lines
+    from services.alt_line_engine.game_markets import (
+        parse_game_market_pick, build_game_market_alt_lines,
+    )
     from services.pick_fusion_decorator import _parse_pick
     pick = await db.picks.find_one({"id": pick_id}, {"_id": 0})
     if not pick:
         raise HTTPException(404, "pick not found")
+
+    # ── GAME MARKET FAST-PATH (Spread / Total) ────────────────────
+    # Extend Alt-Line Magic beyond player props to game markets.
+    # Zero fabrication — probabilities are back-solved from the
+    # pick's own win_probability + line via a Normal distribution
+    # on margin-of-victory (spread) or total (total).
+    game_parsed = parse_game_market_pick(pick)
+    if game_parsed is not None:
+        bundle_dict = build_game_market_alt_lines(
+            sport=pick.get("sport", "").upper(),
+            pick=pick, parsed=game_parsed,
+        )
+        return {"pick_id": pick_id, "bundle": bundle_dict}
+
     parsed = _parse_pick(pick)
     if not parsed:
         return {"pick_id": pick_id, "supported": False,
