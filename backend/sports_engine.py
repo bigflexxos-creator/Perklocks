@@ -4754,11 +4754,20 @@ def _build_tennis_alt_picks(
                     from services.tennis_math_engine import (
                         score_tennis_matchup, has_real_tennis_signal,
                     )
+                    # PERKLOCKS-MAIN 34 · STEP 3A — canonical context bug.
+                    # Prior code referenced an undefined `game` symbol
+                    # (parameter is `event_payload`). The outer try
+                    # silently swallowed NameError as an
+                    # ALT_MODEL_SIGNAL_UNAVAILABLE — every Tennis alt
+                    # spread pick was rejected by the canonical barrier
+                    # because `mp` stayed None. Fixed to use
+                    # `event_payload` and split the ALT_MODEL_PROGRAMMING_ERROR
+                    # signal from ALT_MODEL_SIGNAL_UNAVAILABLE below.
                     _surface = str(
-                        (game.get("surface") if isinstance(game, dict) else "")
+                        (event_payload.get("surface") if isinstance(event_payload, dict) else "")
                         or "hard"
                     ).lower()
-                    _ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
+                    _ctx = (event_payload.get("_ctx") if isinstance(event_payload, dict) else None) or {}
                     _sig = score_tennis_matchup(
                         home, away, _surface, imp, _ctx,
                     )
@@ -4771,7 +4780,23 @@ def _build_tennis_alt_picks(
                         # would refine this; for now use the shared
                         # distribution verbatim.
                         mp = _p_home if side == home else (1.0 - _p_home)
-                except Exception:
+                except NameError as _prog_err:
+                    # STEP 3A — ALT_MODEL_PROGRAMMING_ERROR is a bug,
+                    # not a data availability issue. Log loudly so
+                    # regressions of this class surface immediately.
+                    logger.error(
+                        "TENNIS_ALT_SPREAD ALT_MODEL_PROGRAMMING_ERROR: %s",
+                        _prog_err,
+                    )
+                    mp = None
+                except Exception as _sig_err:
+                    # STEP 3A — genuine signal-unavailable (adapter
+                    # missing surface data, no Elo pair, ...). Debug-
+                    # level so it does not spam production logs.
+                    logger.debug(
+                        "TENNIS_ALT_SPREAD ALT_MODEL_SIGNAL_UNAVAILABLE: %s",
+                        _sig_err,
+                    )
                     mp = None
                 if mp is None:
                     # Fail closed — do not emit synthetic mp.
@@ -4826,11 +4851,12 @@ def _build_tennis_alt_picks(
                         score_tennis_matchup, has_real_tennis_signal,
                     )
                     import math as _math
+                    # STEP 3A — same undefined-`game` bug fixed here.
                     _surface = str(
-                        (game.get("surface") if isinstance(game, dict) else "")
+                        (event_payload.get("surface") if isinstance(event_payload, dict) else "")
                         or "hard"
                     ).lower()
-                    _ctx = (game.get("_ctx") if isinstance(game, dict) else None) or {}
+                    _ctx = (event_payload.get("_ctx") if isinstance(event_payload, dict) else None) or {}
                     _sig = score_tennis_matchup(home, away, _surface, imp, _ctx)
                     if _sig and has_real_tennis_signal(_sig):
                         _hp = float(_sig.get("home_win_prob") or 0.5)
@@ -4845,7 +4871,17 @@ def _build_tennis_alt_picks(
                         _z = (_proj_games - float(line)) / 2.5
                         _p_over = 1.0 / (1.0 + _math.exp(-_z))
                         mp = _p_over if side == "Over" else (1.0 - _p_over)
-                except Exception:
+                except NameError as _prog_err:
+                    logger.error(
+                        "TENNIS_ALT_TOTAL ALT_MODEL_PROGRAMMING_ERROR: %s",
+                        _prog_err,
+                    )
+                    mp = None
+                except Exception as _sig_err:
+                    logger.debug(
+                        "TENNIS_ALT_TOTAL ALT_MODEL_SIGNAL_UNAVAILABLE: %s",
+                        _sig_err,
+                    )
                     mp = None
                 if mp is None:
                     # Fail closed — no real Tennis distribution available.
@@ -5702,8 +5738,15 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                             f"({_o_imp:.2f}vs{_u_imp:.2f})"
                         )
                     else:
-                        _winner = "over"
-                        _reason = "kmath_neither_default_over"
+                        # STEP 4 — Universal Over/Under conservation:
+                        # remove the hidden `Overs-only` default when
+                        # neither side has any book signal. Deterministic
+                        # tie-break by pitcher-name hash removes the
+                        # systematic Over bias without dropping both
+                        # candidates (the authoritative K-math gate
+                        # downstream still decides emit/skip).
+                        _winner = "over" if (hash(str(_player_b)) & 1) == 0 else "under"
+                        _reason = "kmath_neither_deterministic_tiebreak"
                 logger.info(
                     "PAIR_DEDUP_K: pitcher=%s line=%s over_ok=%s under_ok=%s winner=%s reason=%s",
                     _player_b, _point_b, _o_ok, _u_ok, _winner, _reason,
@@ -5737,7 +5780,10 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 if _o_imp or _u_imp:
                     _winner = "over" if _o_imp >= _u_imp else "under"
                 else:
-                    _winner = "over"
+                    # STEP 4 — Universal Over/Under conservation:
+                    # deterministic tie-break on total absence of data
+                    # instead of a systematic Overs-only default.
+                    _winner = "over" if (hash(str(_player_b)) & 1) == 0 else "under"
                 _reason = f"kmath_error_book_impl_fallback({_o_imp:.2f}vs{_u_imp:.2f})"
         else:
             # Non-K symmetric pair → deterministic book-consensus.
