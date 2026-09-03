@@ -40,6 +40,9 @@ export default function HistoryScreen() {
   const [openId, setOpenId] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState<string | null>(null);
   const [analyses, setAnalyses] = useState<Record<string, string>>({});
+  // PERKLOCKS-MAIN 34 · P0D — auto-repoll timer id when the backend
+  // reports a settlement task is still running. Cleared on unmount.
+  const repollRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -49,6 +52,15 @@ export default function HistoryScreen() {
       setPicks(all.filter((p) => p.sport !== "KBO"));
       setStats(res?.stats ?? null);
       setLoadError(null);
+      // P0D — schedule an auto re-poll if the backend reports a
+      // settlement pass is still in flight. Prevents the "refresh #1
+      // stale, refresh #2 different" class the user flagged.
+      if (repollRef.current) { clearTimeout(repollRef.current); repollRef.current = null; }
+      const fresh = (res as any)?.settlement_freshness;
+      if (fresh?.settlement_in_flight && fresh?.recommended_repoll_seconds) {
+        const secs = Math.max(3, Math.min(15, Number(fresh.recommended_repoll_seconds) || 5));
+        repollRef.current = setTimeout(() => { void load(); }, secs * 1000);
+      }
     } catch (e) {
       // ── SLICE 7 (2026-08-26) — Preserve last-good history on transient error.
       // Previous behavior wiped picks+stats to [] / null on any error,
@@ -68,6 +80,13 @@ export default function HistoryScreen() {
   }, [filter]);
 
   useEffect(() => { setLoading(true); load(); }, [load]);
+
+  // Cleanup pending auto-repoll on unmount / filter change.
+  useEffect(() => {
+    return () => {
+      if (repollRef.current) { clearTimeout(repollRef.current); repollRef.current = null; }
+    };
+  }, []);
 
   // Smart refetch on focus — re-pull history when the user returns, but
   // suppress duplicate calls inside 30 s.

@@ -15,7 +15,7 @@
  *   5. Calibration Center — historical hit-rate by bucket
  *   6. Pattern Discovery 3.0 — SHADOW_SIGNAL trend candidates
  */
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
   ActivityIndicator, TextInput,
@@ -41,9 +41,20 @@ const SUBSECTIONS: { id: Subsection; label: string; icon: keyof typeof Ionicons.
   { id: "patterns",    label: "Patterns 3.0", icon: "sparkles" },
 ];
 
+// P0I/P0J/P0K (2026-09-02) — minimum typed-length before firing a
+// research request. Suggestion / Today-Feed taps bypass this via
+// `commitSubject()` because they already carry canonical identity.
+const MIN_TYPED_QUERY_LEN = 3;
+const KEYSTROKE_DEBOUNCE_MS = 280;
+
 export function StrategyLabWorkstation({ picks }: { picks: any[] }) {
   const [sport, setSport] = useState<Sport>("MLB");
   const [subject, setSubject] = useState<string>("");
+  // `committedSubject` is the value actually driving the research
+  // request — set either by the debounced keystroke path (after MIN
+  // length) or synchronously by a suggestion / Today-Feed tap. This
+  // separates the input UX from the research authority (P0J).
+  const [committedSubject, setCommittedSubject] = useState<string>("");
   const [opponent, setOpponent] = useState<string>("");
   const [section, setSection] = useState<Subsection>("overview");
   const [snapshot, setSnapshot] = useState<any | null>(null);
@@ -51,6 +62,11 @@ export function StrategyLabWorkstation({ picks }: { picks: any[] }) {
   const [error, setError] = useState<string | null>(null);
   const [line, setLine] = useState<string>("");
   const [marketHint, setMarketHint] = useState<string>("");
+  // Generation counter — every fetch increments; stale responses
+  // whose gen is not the latest are discarded (P0I stale-request
+  // protection: "Rapid player A → player B selection — stale A
+  // response cannot overwrite B").
+  const genRef = useRef(0);
 
   // Suggested subjects from live slate — filter picks by sport +
   // player_name present. Users can override manually.
@@ -68,8 +84,10 @@ export function StrategyLabWorkstation({ picks }: { picks: any[] }) {
     return out;
   }, [picks, sport]);
 
-  const loadSnapshot = useCallback(async () => {
-    if (!subject) { setSnapshot(null); return; }
+  const loadSnapshot = useCallback(async (subj: string) => {
+    // P0I/P0J — hardened research fetch.
+    if (!subj || subj.length < 2) { setSnapshot(null); return; }
+    const gen = ++genRef.current;
     setLoading(true); setError(null);
     try {
       const role = sport === "MLB"
@@ -77,21 +95,55 @@ export function StrategyLabWorkstation({ picks }: { picks: any[] }) {
             ? "pitcher" : "batter")
         : "player";
       const data = await api.labResearchContext({
-        sport, subject, opponent: opponent || undefined,
+        sport, subject: subj, opponent: opponent || undefined,
         include_shadow: true, include_distribution: true,
         include_calibration: false, role,
         market_hint: marketHint || undefined,
       });
+      // Stale-response guard — ignore a response older than the
+      // latest issued request (P0I "stale A cannot overwrite B").
+      if (gen !== genRef.current) return;
       setSnapshot(data);
+      // If the adapter reports no data, surface an explicit no-data
+      // state (P0K) rather than a silent empty section.
+      if (!data || (data && (data as any).no_data === true)) {
+        setError(null);
+      }
     } catch (e: any) {
+      if (gen !== genRef.current) return;
       setError(e?.message || "Failed to load snapshot");
       setSnapshot(null);
     } finally {
-      setLoading(false);
+      if (gen === genRef.current) setLoading(false);
     }
-  }, [sport, subject, opponent, marketHint]);
+  }, [sport, opponent, marketHint]);
 
-  useEffect(() => { loadSnapshot(); }, [loadSnapshot]);
+  // Debounced keystroke path — typed input only fires research when
+  // it stops changing for KEYSTROKE_DEBOUNCE_MS AND reaches MIN length.
+  useEffect(() => {
+    if (!subject) { setCommittedSubject(""); setSnapshot(null); return; }
+    if (subject.length < MIN_TYPED_QUERY_LEN) return;
+    const h = setTimeout(() => setCommittedSubject(subject), KEYSTROKE_DEBOUNCE_MS);
+    return () => clearTimeout(h);
+  }, [subject]);
+
+  // Whenever the committed subject changes (either via debounce or
+  // suggestion / Today-Feed tap using `commitSubject`) run the fetch.
+  useEffect(() => {
+    if (!committedSubject) return;
+    loadSnapshot(committedSubject);
+  }, [committedSubject, loadSnapshot]);
+
+  // Canonical-identity commit path — used by suggestion chips and
+  // future Today-Feed row taps to bypass the debounce + min-length
+  // gate. When a caller has a canonical player name, we treat it as
+  // authority and fire the research immediately.
+  const commitSubject = useCallback((canonicalName: string, opp?: string, mkt?: string) => {
+    setSubject(canonicalName);
+    if (opp) setOpponent(opp);
+    if (mkt) setMarketHint(mkt);
+    setCommittedSubject(canonicalName);
+  }, []);
 
   return (
     <View>
@@ -154,10 +206,16 @@ export function StrategyLabWorkstation({ picks }: { picks: any[] }) {
           {suggestions.map((sg, i) => (
             <TouchableOpacity
               key={sg.name + i}
+              testID={`sl-suggestion-${sg.name.replace(/\s+/g, '_')}`}
               onPress={() => {
-                setSubject(sg.name);
-                if (sg.opp && !opponent) setOpponent(sg.opp.replace(/^(vs|@)\s*/i, ""));
-                if (sg.market && !marketHint) setMarketHint(sg.market);
+                // P0I/P0J — suggestion chips carry canonical player
+                // identity direct from the live slate. Bypass the
+                // debounce + min-length gate and commit immediately.
+                commitSubject(
+                  sg.name,
+                  sg.opp ? sg.opp.replace(/^(vs|@)\s*/i, "") : undefined,
+                  sg.market || undefined,
+                );
               }}
               style={s.suggChip}
             >
@@ -185,29 +243,60 @@ export function StrategyLabWorkstation({ picks }: { picks: any[] }) {
       </ScrollView>
 
       {loading && (
-        <ActivityIndicator color={COLORS.textPrimary} style={{ marginTop: 16 }} />
+        <ActivityIndicator color={COLORS.textPrimary} style={{ marginTop: 16 }} testID="sl-loading" />
       )}
-      {error && (
-        <Text style={s.errTxt}>{error}</Text>
+      {error && !loading && (
+        <View style={{ marginTop: 12 }}>
+          <Text style={s.errTxt} testID="sl-error">⚠️  {error}</Text>
+          <TouchableOpacity
+            testID="sl-retry"
+            onPress={() => committedSubject && loadSnapshot(committedSubject)}
+            style={[s.chip, { alignSelf: "flex-start", marginTop: 6 }]}
+          >
+            <Text style={s.chipTxt}>RETRY</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* P0J — typed input is below the min-length threshold: show a
+          clarifying "keep typing" state so the tap doesn't feel dead. */}
+      {!loading && !error && subject && subject.length < MIN_TYPED_QUERY_LEN && (
+        <Text style={s.blurb} testID="sl-typing-hint">
+          Keep typing… (need {MIN_TYPED_QUERY_LEN}+ characters, or tap a
+          suggestion chip / player row).
+        </Text>
       )}
 
       {!loading && !error && !subject && (
         <TodayFeed sport={sport} onPickSubject={(name, opp) => {
-          setSubject(name);
-          if (opp) setOpponent(opp);
+          // P0I — Today-Feed row taps carry canonical player identity;
+          // commit directly instead of routing through the debounce path.
+          commitSubject(name, opp);
         }} />
       )}
 
-      {!loading && subject && snapshot && (
+      {/* P0K — explicit "no data" state when the fetch succeeded but
+          the adapter has zero authoritative rows. Prevents silent
+          failure mode ("nothing happens"). */}
+      {!loading && !error && committedSubject && snapshot &&
+        (snapshot as any).no_data === true && (
+        <Text style={s.blurb} testID="sl-no-data">
+          No settled research history for &quot;{committedSubject}&quot; in {sport}.
+          Try an alias or a different sport.
+        </Text>
+      )}
+
+      {!loading && !error && committedSubject && snapshot &&
+        (snapshot as any).no_data !== true && (
         <>
           {section === "overview"    && <OverviewPanel snap={snapshot} />}
           {section === "facts"       && <FactsPanel snap={snapshot} />}
           {section === "scorecard"   && (
-            <ScorecardPanel sport={sport} subject={subject}
+            <ScorecardPanel sport={sport} subject={committedSubject}
               opponent={opponent} marketHint={marketHint} line={line} />
           )}
           {section === "distribution"&& (
-            <DistributionPanel snap={snapshot} sport={sport} subject={subject}
+            <DistributionPanel snap={snapshot} sport={sport} subject={committedSubject}
               line={line} setLine={setLine} marketHint={marketHint} setMarketHint={setMarketHint} />
           )}
           {section === "dna"         && <MatchupDNAPanel snap={snapshot} />}

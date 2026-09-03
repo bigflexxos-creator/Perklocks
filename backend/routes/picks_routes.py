@@ -1032,6 +1032,36 @@ async def picks_history(
             "sweep_valid": _sweep["is_valid_sweep"],
             "sweep_reasons": _sweep["reasons"],
         },
+        # ─── PERKLOCKS-MAIN 34 · P0D — Settlement freshness ────────
+        # Explicit hint to the client so it can auto-refresh after a
+        # settlement pass triggered by this request completes. Prevents
+        # "refresh #1 stale, refresh #2 different" without indication.
+        "settlement_freshness": {
+            # Task is running in the background right now.
+            "settlement_in_flight": bool(
+                globals().get("_HIST_SETTLE_INFLIGHT")
+                and not globals().get("_HIST_SETTLE_INFLIGHT").done()
+            ),
+            # Cooldown window still active — a recent pass just ran.
+            "settlement_cooldown_until": float(
+                globals().get("_HIST_SETTLE_COOLDOWN_UNTIL", 0.0)
+            ),
+            # Recommended client re-poll delay (seconds) when a task is
+            # still in-flight; None otherwise.
+            "recommended_repoll_seconds": (
+                4 if (globals().get("_HIST_SETTLE_INFLIGHT")
+                       and not globals().get("_HIST_SETTLE_INFLIGHT").done())
+                else None
+            ),
+            # Server-side count of picks whose canonical settlement
+            # event has not landed yet (unresolved-with-past-event ⇒
+            # more grading is due). Client can surface this diagnostic.
+            "unresolved_with_past_event": sum(
+                1 for _p in picks
+                if _p.get("status") == "unresolved"
+                and (_p.get("event_time") or "") < datetime.now(timezone.utc).isoformat()
+            ),
+        },
     }
 
 
