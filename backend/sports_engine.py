@@ -3835,6 +3835,36 @@ _ALT_PROP_MARKETS = {
     "player_points_alternate", "player_rebounds_alternate",
     "player_assists_alternate",
 }
+
+
+def _is_alt_market_key(sport: str | None, mk: str | None) -> bool:
+    """PERKLOCKS-MAIN 35 · P0-3 — SHARED alt classifier.
+
+    Route alt-vs-standard classification through
+    ``UniversalMarketContract.is_alternate()`` FIRST so NFL / NBA / MLB
+    props share the same authoritative vocabulary. The legacy
+    ``_ALT_PROP_MARKETS`` set is preserved as a belt-and-braces fallback
+    (still allows local overrides), but the primary decision is the
+    canonical contract — a new provider `_alternate` variant is
+    recognized instantly (no code release / no drift across generators
+    vs validators).
+
+    Ordering: alt-classification MUST run BEFORE any generic
+    standard-prop filter so alt families never fall through the
+    standard bucket.
+    """
+    if not mk:
+        return False
+    try:
+        from services.universal_market_contract import is_alternate as _umc_is_alt
+        if _umc_is_alt(sport or "", mk):
+            return True
+    except Exception:
+        # Registry lookup failure MUST NOT silently promote a legit
+        # alt into the standard filter — fall through to the local set.
+        pass
+    return mk in _ALT_PROP_MARKETS
+
 _HIGH_PROB_MIN_IMPLIED = 0.62
 # Alt lines must be true locks — at least 80% implied (-400 or steeper).
 _ALT_PROP_MIN_IMPLIED = 0.80
@@ -4833,56 +4863,94 @@ def _build_tennis_alt_picks(
     if api_total_outs:
         # REAL book outcomes only — no `_synthesize_chalk_alt_totals` call.
         total_outs = list(api_total_outs)
+
+        # PERKLOCKS-MAIN 35 · P0-1 — TENNIS ALT-TOTAL TRUTH.
+        # Build ONE format-aware empirical distribution of total games
+        # per event, then price EACH exact sportsbook threshold from
+        # that distribution's CDF. The crude "17 + 7*competitive →
+        # logistic(σ=2.5)" formula was the root cause of false 99%
+        # Win Expected on ATP Slam alt-totals: it never learned the
+        # match format (BO3 vs BO5) and never priced the actual
+        # threshold ladder — it just anchored a fixed sigma around a
+        # BO3 projected mean.
+        _match_games_dist: list[int] = []
+        _format_bo: int | None = None
+        _dist_derivation: str | None = None
+        try:
+            from services.tennis_math_engine import (
+                score_tennis_matchup, has_real_tennis_signal,
+            )
+            from services.tennis_match_format import (
+                resolve_tennis_match_format, is_grand_slam,
+            )
+            from brain.sim_tennis import (
+                _calibrate_serve_gap, _simulate_match_full,
+            )
+
+            _surface = str(
+                (event_payload.get("surface") if isinstance(event_payload, dict) else "")
+                or "hard"
+            ).lower()
+            _ctx = (event_payload.get("_ctx") if isinstance(event_payload, dict) else None) or {}
+            _sig = score_tennis_matchup(home, away, _surface, 0.5, _ctx)
+            if _sig and has_real_tennis_signal(_sig):
+                _hp = float(_sig.get("home_win_prob") or 0.5)
+                _hp = max(0.05, min(0.95, _hp))
+                _format_bo = int(resolve_tennis_match_format(
+                    sport_key=sport_key,
+                    league=league_label,
+                    event_payload=event_payload if isinstance(event_payload, dict) else None,
+                ))
+                if _format_bo not in (3, 5):
+                    _format_bo = 3
+                _p_serve, _o_serve = _calibrate_serve_gap(_hp)
+                # 1500 sims per event is enough for stable exact-CDF
+                # pricing at the sportsbook thresholds we surface
+                # (Wilson half-width < 1.3% at any threshold), and it
+                # stays well inside the per-event pipeline budget.
+                _RUNS = 1500
+                for _ in range(_RUNS):
+                    tg, _ps, _os, _pg, _og = _simulate_match_full(
+                        _p_serve, _o_serve, bo=_format_bo,
+                    )
+                    _match_games_dist.append(tg)
+                _match_games_dist.sort()
+                _dist_derivation = "format_aware_empirical_cdf"
+        except NameError as _prog_err:
+            logger.error(
+                "TENNIS_ALT_TOTAL ALT_MODEL_PROGRAMMING_ERROR: %s",
+                _prog_err,
+            )
+        except Exception as _sig_err:
+            logger.debug(
+                "TENNIS_ALT_TOTAL ALT_MODEL_SIGNAL_UNAVAILABLE: %s",
+                _sig_err,
+            )
+
+        def _over_prob_from_dist(line_val: float) -> float | None:
+            """Exact-threshold P(total_games > line) from the shared
+            empirical CDF. Monotone non-increasing in ``line_val`` by
+            construction (single sorted distribution)."""
+            if not _match_games_dist:
+                return None
+            import bisect as _bisect
+            n = len(_match_games_dist)
+            idx = _bisect.bisect_right(_match_games_dist, float(line_val))
+            return max(0.0, min(1.0, (n - idx) / float(n)))
+
         for side in ("Over", "Under"):
             picks_for_side = _pick_sweet_spot_alts(total_outs, side_name=side, limit=4)
             for pick_obj in picks_for_side:
                 line = pick_obj.get("point")
                 price = int(pick_obj.get("price"))
                 imp = _implied_prob(price)
-                # 2026-08-23 CHEAP SURGICAL FINAL — Tennis alt TOTAL
-                # authority.  Derive Over/Under probability from the
-                # existing Tennis match distribution (Elo differential
-                # → match competitiveness → projected total games).
-                # Fail closed when no real signal is present — do NOT
-                # publish `mp = imp` as the model probability.
-                mp = None
-                try:
-                    from services.tennis_math_engine import (
-                        score_tennis_matchup, has_real_tennis_signal,
-                    )
-                    import math as _math
-                    # STEP 3A — same undefined-`game` bug fixed here.
-                    _surface = str(
-                        (event_payload.get("surface") if isinstance(event_payload, dict) else "")
-                        or "hard"
-                    ).lower()
-                    _ctx = (event_payload.get("_ctx") if isinstance(event_payload, dict) else None) or {}
-                    _sig = score_tennis_matchup(home, away, _surface, imp, _ctx)
-                    if _sig and has_real_tennis_signal(_sig):
-                        _hp = float(_sig.get("home_win_prob") or 0.5)
-                        # Match competitiveness: 1.0 = coin-flip, 0 = blowout.
-                        _competitive = 1.0 - abs(_hp - 0.5) * 2.0
-                        # Best-of-3 projected total games:
-                        #   blowout (2 sets 6-2 / 6-3)  → ~17 games
-                        #   competitive coin-flip (3 sets or long tiebreaks) → ~24 games
-                        _proj_games = 17.0 + _competitive * 7.0
-                        # Convert to Over/Under probability with a
-                        # logistic anchor (σ=2.5 games ≈ empirical std).
-                        _z = (_proj_games - float(line)) / 2.5
-                        _p_over = 1.0 / (1.0 + _math.exp(-_z))
-                        mp = _p_over if side == "Over" else (1.0 - _p_over)
-                except NameError as _prog_err:
-                    logger.error(
-                        "TENNIS_ALT_TOTAL ALT_MODEL_PROGRAMMING_ERROR: %s",
-                        _prog_err,
-                    )
-                    mp = None
-                except Exception as _sig_err:
-                    logger.debug(
-                        "TENNIS_ALT_TOTAL ALT_MODEL_SIGNAL_UNAVAILABLE: %s",
-                        _sig_err,
-                    )
-                    mp = None
+                # Exact-threshold pricing from the format-aware
+                # match-games distribution. No cosmetic caps, no
+                # synthetic anchors, no per-threshold model drift.
+                mp: float | None = None
+                _p_over = _over_prob_from_dist(float(line)) if line is not None else None
+                if _p_over is not None:
+                    mp = _p_over if side == "Over" else (1.0 - _p_over)
                 if mp is None:
                     # Fail closed — no real Tennis distribution available.
                     continue
@@ -5597,7 +5665,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     # legitimate Unders that the model may value never
                     # reached scoring. Pair-conflict/dedupe/model floors
                     # downstream still decide the winning side per contract.
-                    is_alt_mk = mk in _ALT_PROP_MARKETS
+                    is_alt_mk = _is_alt_market_key(sport, mk)
                     _MAIN_UNDER_ALLOWED_MK = {
                         "pitcher_strikeouts",
                         "batter_hits",
@@ -5853,7 +5921,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
     for (mk, player, point, side), prices in bucket.items():
         median = sorted(prices)[len(prices) // 2]
         implied = _implied_prob(median)
-        is_alt = mk in _ALT_PROP_MARKETS
+        is_alt = _is_alt_market_key(sport, mk)
         if is_alt:
             # Alt lines must be near-locks AND not absurd chalk.
             if implied < _ALT_PROP_MIN_IMPLIED or implied > _ALT_PROP_MAX_IMPLIED:

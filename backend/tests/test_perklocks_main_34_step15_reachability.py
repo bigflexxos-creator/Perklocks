@@ -105,13 +105,21 @@ def test_step15_frontend_failure_bucket():
 
 def test_step15_honours_market_contract_provider_unavailable():
     """If UniversalMarketContract already declares
-    PROVIDER_UNAVAILABLE (NBA off-season, NHL off-season, ...) the
-    classifier honours that and does NOT flag silent starvation."""
-    # NBA points market is declared PROVIDER_UNAVAILABLE at contract load.
+    PROVIDER_UNAVAILABLE / MODEL_UNAVAILABLE the classifier honours
+    that and does NOT flag silent starvation.
+
+    PERKLOCKS-MAIN 35 · P1-8 alignment: NBA h2h/points is
+    MODEL_UNAVAILABLE (provider IS wired, no game model shipped
+    yet) — matching sport_capability_registry. Was previously
+    PROVIDER_UNAVAILABLE which contradicted the sibling registry.
+    """
+    from services.sport_market_reachability import (
+        MODEL_UNAVAILABLE as MODEL_UNAVAILABLE_,
+    )
     r = classify_starvation("NBA", Family.NBA_POINTS, {
         "provider_events": 0,
     })
-    assert r.reason == NO_EVENTS
+    assert r.reason == MODEL_UNAVAILABLE_
     assert r.contradicts_market_contract is False
 
 

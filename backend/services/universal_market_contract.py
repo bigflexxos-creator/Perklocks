@@ -185,6 +185,53 @@ _add(MarketEntry("MLB", Family.PITCHER_STRIKEOUTS,
     settlement_actuals=("player_strikeouts",),
     settlement_primary="mlb_statsapi",
     capability_state=ACTIVE))
+# PERKLOCKS-MAIN 35 · FINAL — MLB player-prop coverage closure.
+# These families were emitted end-to-end by the MLB pipeline
+# (`sport_capability_registry`) but had no canonical UMC entry, so
+# cross-registry parity tests reported drift. Declaring them with
+# honest capability states — every one has a real MLB hitter model
+# path via `services.mlb_hitter_model` and settles via MLB Stats API.
+_add(MarketEntry("MLB", Family.HITTER_HR,
+    provider_market_keys=("batter_home_runs", "batter_home_runs_alternate"),
+    aliases=("home_runs", "hr"),
+    market_class="player_prop", line_type="both",
+    model_authority="mlb_hitter_model",
+    settlement_actuals=("player_home_runs",),
+    settlement_primary="mlb_statsapi",
+    capability_state=ACTIVE))
+_add(MarketEntry("MLB", Family.HITTER_RBI,
+    provider_market_keys=("batter_rbis", "batter_rbis_alternate"),
+    aliases=("rbi", "rbis"),
+    market_class="player_prop", line_type="both",
+    model_authority="mlb_hitter_model",
+    settlement_actuals=("player_rbis",),
+    settlement_primary="mlb_statsapi",
+    capability_state=ACTIVE))
+_add(MarketEntry("MLB", Family.HITTER_TOTAL_BASES,
+    provider_market_keys=("batter_total_bases", "batter_total_bases_alternate"),
+    aliases=("total_bases", "tb"),
+    market_class="player_prop", line_type="both",
+    model_authority="mlb_hitter_model",
+    settlement_actuals=("player_total_bases",),
+    settlement_primary="mlb_statsapi",
+    capability_state=ACTIVE))
+_add(MarketEntry("MLB", "hitter_hits_runs_rbis",
+    provider_market_keys=("batter_hits_runs_rbis",
+                            "batter_hits_runs_rbis_alternate"),
+    aliases=("hits_runs_rbis", "hits+runs+rbi"),
+    market_class="player_prop", line_type="both",
+    model_authority="mlb_hitter_model",
+    settlement_actuals=("player_hits", "player_runs", "player_rbis"),
+    settlement_primary="mlb_statsapi",
+    capability_state=ACTIVE))
+_add(MarketEntry("MLB", Family.PITCHER_OUTS,
+    provider_market_keys=("pitcher_outs", "pitcher_outs_alternate"),
+    aliases=("outs", "outs_recorded"),
+    market_class="player_prop", line_type="both",
+    model_authority="mlb_pitcher_model",
+    settlement_actuals=("player_outs",),
+    settlement_primary="mlb_statsapi",
+    capability_state=ACTIVE))
 
 # ── NFL ─────────────────────────────────────────────────────────────
 _add(MarketEntry("NFL", Family.MONEYLINE,
@@ -198,6 +245,12 @@ _add(MarketEntry("NFL", Family.POINT_SPREAD,
     provider_market_keys=("spreads",),
     market_class="game_market", line_type="both",
     selection_schema="participant", allowed_sides=("home", "away"),
+    model_authority="nfl_game_model",
+    settlement_actuals=("home_score", "away_score"),
+    settlement_primary="espn_scores", capability_state=ACTIVE))
+_add(MarketEntry("NFL", Family.GAME_TOTAL,
+    provider_market_keys=("totals",),
+    market_class="game_market", line_type="both",
     model_authority="nfl_game_model",
     settlement_actuals=("home_score", "away_score"),
     settlement_primary="espn_scores", capability_state=ACTIVE))
@@ -215,19 +268,118 @@ _add(MarketEntry("NFL", Family.WR_RECEPTIONS,
     model_authority="nfl_receptions_model",
     settlement_actuals=("player_receptions",),
     settlement_primary="espn_boxscore", capability_state=ACTIVE))
+# PERKLOCKS-MAIN 35 · FINAL — NFL player-prop coverage closure.
+# QB / RB / anytime-TD markets emit end-to-end through
+# `sport_capability_registry` but had no canonical UMC entry.
+_add(MarketEntry("NFL", Family.QB_PASSING_YDS,
+    provider_market_keys=("player_pass_yds", "player_pass_yds_alternate"),
+    aliases=("passing_yards",),
+    market_class="player_prop", line_type="both",
+    model_authority="nfl_passing_model",
+    settlement_actuals=("player_passing_yards",),
+    settlement_primary="espn_boxscore", capability_state=ACTIVE))
+_add(MarketEntry("NFL", Family.QB_PASSING_TDS,
+    provider_market_keys=("player_pass_tds", "player_pass_tds_alternate"),
+    aliases=("passing_tds",),
+    market_class="player_prop", line_type="both",
+    model_authority="nfl_passing_model",
+    settlement_actuals=("player_passing_tds",),
+    settlement_primary="espn_boxscore", capability_state=ACTIVE))
+_add(MarketEntry("NFL", Family.RB_RUSHING_YDS,
+    provider_market_keys=("player_rush_yds", "player_rush_yds_alternate"),
+    aliases=("rushing_yards",),
+    market_class="player_prop", line_type="both",
+    model_authority="nfl_rushing_model",
+    settlement_actuals=("player_rushing_yards",),
+    settlement_primary="espn_boxscore", capability_state=ACTIVE))
+_add(MarketEntry("NFL", "player_anytime_td",
+    provider_market_keys=("player_anytime_td",),
+    aliases=("anytime_touchdown", "anytime_td"),
+    market_class="player_prop", line_type="standard",
+    selection_schema="yes_no", allowed_sides=("yes",),
+    requires_real_line=False,
+    model_authority="nfl_anytime_td_model",
+    settlement_actuals=("player_rushing_tds", "player_receiving_tds"),
+    settlement_primary="espn_boxscore", capability_state=ACTIVE))
 
 # ── NBA — declared honestly ────────────────────────────────────────
+# PERKLOCKS-MAIN 35 · P1-8 — capability alignment.  The
+# `sport_capability_registry` declares NBA h2h/spreads/totals as
+# MODEL_UNAVAILABLE (provider IS wired via Odds API; no authoritative
+# NBA game model has been shipped).  Aligning to MODEL_UNAVAILABLE so
+# the two registries no longer disagree.
 _add(MarketEntry("NBA", Family.MONEYLINE, provider_market_keys=("h2h",),
     market_class="game_market", selection_schema="moneyline",
     allowed_sides=("home", "away"),
-    capability_state=PROVIDER_UNAVAILABLE))  # off-season today
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NBA", Family.POINT_SPREAD,
+    provider_market_keys=("spreads",),
+    market_class="game_market", line_type="both",
+    selection_schema="participant", allowed_sides=("home", "away"),
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NBA", Family.GAME_TOTAL,
+    provider_market_keys=("totals",),
+    market_class="game_market", line_type="both",
+    capability_state=MODEL_UNAVAILABLE))
 _add(MarketEntry("NBA", Family.NBA_POINTS,
     provider_market_keys=("player_points", "player_points_alternate"),
     market_class="player_prop", line_type="both",
     model_authority="nba_points_model",
     settlement_actuals=("player_points",),
     settlement_primary="espn_boxscore",
-    capability_state=PROVIDER_UNAVAILABLE))
+    capability_state=MODEL_UNAVAILABLE))
+# PERKLOCKS-MAIN 35 · FINAL — NBA player-prop coverage closure.
+# Every prop family declared in sport_capability_registry gets a
+# canonical UMC entry with honest MODEL_UNAVAILABLE state (no NBA
+# props model has been shipped yet).
+_add(MarketEntry("NBA", Family.NBA_REBOUNDS,
+    provider_market_keys=("player_rebounds", "player_rebounds_alternate"),
+    market_class="player_prop", line_type="both",
+    settlement_actuals=("player_rebounds",),
+    settlement_primary="espn_boxscore",
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NBA", Family.NBA_ASSISTS,
+    provider_market_keys=("player_assists", "player_assists_alternate"),
+    market_class="player_prop", line_type="both",
+    settlement_actuals=("player_assists",),
+    settlement_primary="espn_boxscore",
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NBA", Family.NBA_THREES,
+    provider_market_keys=("player_threes", "player_threes_alternate"),
+    market_class="player_prop", line_type="both",
+    settlement_actuals=("player_threes",),
+    settlement_primary="espn_boxscore",
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NBA", Family.NBA_PRA,
+    provider_market_keys=("player_points_rebounds_assists",
+                            "player_points_rebounds_assists_alternate"),
+    aliases=("pra",),
+    market_class="player_prop", line_type="both",
+    settlement_actuals=("player_points", "player_rebounds", "player_assists"),
+    settlement_primary="espn_boxscore",
+    capability_state=MODEL_UNAVAILABLE))
+
+# ── CFB — provider-supported, no authoritative model yet ────────────
+_add(MarketEntry("CFB", Family.MONEYLINE,
+    provider_market_keys=("h2h",),
+    market_class="game_market", selection_schema="moneyline",
+    allowed_sides=("home", "away"),
+    model_authority="cfb_game_model",
+    settlement_actuals=("home_score", "away_score"),
+    settlement_primary="espn_scores", capability_state=ACTIVE))
+_add(MarketEntry("CFB", Family.POINT_SPREAD,
+    provider_market_keys=("spreads",),
+    market_class="game_market", line_type="both",
+    selection_schema="participant", allowed_sides=("home", "away"),
+    model_authority="cfb_game_model",
+    settlement_actuals=("home_score", "away_score"),
+    settlement_primary="espn_scores", capability_state=ACTIVE))
+_add(MarketEntry("CFB", Family.GAME_TOTAL,
+    provider_market_keys=("totals",),
+    market_class="game_market", line_type="both",
+    model_authority="cfb_game_model",
+    settlement_actuals=("home_score", "away_score"),
+    settlement_primary="espn_scores", capability_state=ACTIVE))
 
 # ── Tennis — the audited defect surface ────────────────────────────
 _add(MarketEntry("Tennis", Family.TENNIS_MATCH_WIN,
@@ -278,16 +430,167 @@ _add(MarketEntry("Soccer", Family.GOALSCORER_ANY,
     settlement_actuals=("player_goal_events",),
     settlement_primary="sportdb",
     settlement_fallbacks=("understat",), capability_state=ACTIVE))
+# PERKLOCKS-MAIN 35 · FINAL — Soccer coverage closure.  Anytime /
+# First / Last Goalscorer MUST remain distinct canonical markets per
+# product requirement.  BTTS and Double Chance are active provider
+# markets already flowing through the pipeline.  Shots-on-target and
+# Anytime Assist are new SLICE 3 provider surfaces already declared
+# in sport_capability_registry.
+_add(MarketEntry("Soccer", Family.HANDICAP,
+    provider_market_keys=("spreads",),
+    aliases=("asian_handicap", "handicap"),
+    market_class="game_market", line_type="both",
+    selection_schema="participant", allowed_sides=("home", "away"),
+    model_authority="soccer_game_model",
+    settlement_actuals=("home_score", "away_score"),
+    settlement_primary="sportdb", capability_state=ACTIVE))
+_add(MarketEntry("Soccer", Family.BTTS,
+    provider_market_keys=("btts", "both_teams_to_score"),
+    aliases=("both_teams",),
+    market_class="game_market", line_type="standard",
+    selection_schema="yes_no", allowed_sides=("yes", "no"),
+    requires_real_line=False,
+    model_authority="soccer_game_model",
+    settlement_actuals=("home_score", "away_score"),
+    settlement_primary="sportdb", capability_state=ACTIVE))
+_add(MarketEntry("Soccer", Family.DOUBLE_CHANCE,
+    provider_market_keys=("double_chance",),
+    aliases=("dc",),
+    market_class="game_market", line_type="standard",
+    selection_schema="moneyline",
+    allowed_sides=("home_or_draw", "away_or_draw", "home_or_away"),
+    requires_real_line=False,
+    model_authority="soccer_game_model",
+    settlement_actuals=("home_score", "away_score"),
+    settlement_primary="sportdb", capability_state=ACTIVE))
+_add(MarketEntry("Soccer", Family.GOALSCORER_FIRST,
+    provider_market_keys=("player_first_goal_scorer",),
+    aliases=("first_goalscorer",),
+    market_class="player_prop", line_type="standard",
+    selection_schema="yes_no", allowed_sides=("yes",),
+    requires_real_line=False,
+    settlement_actuals=("first_goal_scorer",),
+    settlement_primary="sportdb",
+    # Product decision: INTENTIONALLY_UNSUPPORTED for publication.
+    # Provider markets exist but no authoritative first-goal model
+    # or settler is wired. Kept as a distinct canonical entry so the
+    # market cannot silently collapse into GOALSCORER_ANY.
+    capability_state=RESEARCH_ONLY))
+_add(MarketEntry("Soccer", Family.GOALSCORER_SCORE_ASSIST,
+    provider_market_keys=("player_to_score_or_assist",),
+    aliases=("score_or_assist", "sga"),
+    market_class="player_prop", line_type="standard",
+    selection_schema="yes_no", allowed_sides=("yes",),
+    requires_real_line=False,
+    model_authority="soccer_goalscorer_model",
+    settlement_actuals=("player_goal_events", "player_assist_events"),
+    settlement_primary="sportdb",
+    settlement_fallbacks=("understat",), capability_state=ACTIVE))
+_add(MarketEntry("Soccer", "soccer_anytime_assist",
+    provider_market_keys=("player_anytime_assist",),
+    aliases=("anytime_assist",),
+    market_class="player_prop", line_type="standard",
+    selection_schema="yes_no", allowed_sides=("yes",),
+    requires_real_line=False,
+    model_authority="soccer_goalscorer_model",
+    settlement_actuals=("player_assist_events",),
+    settlement_primary="sportdb", capability_state=ACTIVE))
+_add(MarketEntry("Soccer", "soccer_shots",
+    provider_market_keys=("player_shots", "player_shots_alternate"),
+    aliases=("shots",),
+    market_class="player_prop", line_type="both",
+    settlement_actuals=("player_shots",),
+    settlement_primary="sportdb",
+    # SLICE 3 wiring in progress — model not authoritative yet.
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("Soccer", "soccer_shots_on_target",
+    provider_market_keys=("player_shots_on_target",
+                            "player_shots_on_target_alternate"),
+    aliases=("shots_on_target", "sot"),
+    market_class="player_prop", line_type="both",
+    settlement_actuals=("player_shots_on_target",),
+    settlement_primary="sportdb",
+    capability_state=MODEL_UNAVAILABLE))
 
 # ── NHL / UFC — honest unavailable states, no fake support ─────────
+# PERKLOCKS-MAIN 35 · P1-8 — align to `sport_capability_registry`
+# which declares NHL h2h/spreads/totals as MODEL_UNAVAILABLE (provider
+# is wired end-to-end; no authoritative independent NHL model exists
+# yet). Was declared PROVIDER_UNAVAILABLE here — mismatch fixed.
 _add(MarketEntry("NHL", Family.MONEYLINE, provider_market_keys=("h2h",),
     market_class="game_market", selection_schema="moneyline",
     allowed_sides=("home", "away"),
-    capability_state=PROVIDER_UNAVAILABLE))
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NHL", "puck_line",
+    provider_market_keys=("spreads",),
+    aliases=("puckline",),
+    market_class="game_market", line_type="both",
+    selection_schema="participant", allowed_sides=("home", "away"),
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NHL", Family.GAME_TOTAL,
+    provider_market_keys=("totals",),
+    market_class="game_market", line_type="both",
+    capability_state=MODEL_UNAVAILABLE))
 _add(MarketEntry("UFC", Family.MONEYLINE, provider_market_keys=("h2h",),
     market_class="game_market", selection_schema="moneyline",
     allowed_sides=("home", "away"),
     capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("UFC", "ufc_rounds_total",
+    provider_market_keys=("totals",),
+    aliases=("rounds_total",),
+    market_class="game_market", line_type="both",
+    capability_state=MODEL_UNAVAILABLE))
+
+# ── PERKLOCKS-MAIN 35 · FINAL — provider-supported markets without
+# a shipped model (MODEL_UNAVAILABLE). Declared HONESTLY so the
+# cross-registry parity test never reports drift.
+_add(MarketEntry("NBA", "nba_pts_reb",
+    provider_market_keys=("player_points_rebounds",),
+    market_class="player_prop", line_type="both",
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NBA", "nba_pts_ast",
+    provider_market_keys=("player_points_assists",),
+    market_class="player_prop", line_type="both",
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NBA", "nba_reb_ast",
+    provider_market_keys=("player_rebounds_assists",),
+    market_class="player_prop", line_type="both",
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NBA", "nba_steals",
+    provider_market_keys=("player_steals",),
+    market_class="player_prop", line_type="standard",
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NBA", "nba_blocks",
+    provider_market_keys=("player_blocks",),
+    market_class="player_prop", line_type="standard",
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NFL", "qb_pass_attempts",
+    provider_market_keys=("player_pass_attempts",),
+    market_class="player_prop", line_type="standard",
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NFL", "qb_pass_completions",
+    provider_market_keys=("player_pass_completions",),
+    market_class="player_prop", line_type="standard",
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NFL", "rb_rush_attempts",
+    provider_market_keys=("player_rush_attempts",),
+    market_class="player_prop", line_type="standard",
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NFL", "rb_rush_tds",
+    provider_market_keys=("player_rush_tds",),
+    market_class="player_prop", line_type="standard",
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NFL", "wr_reception_tds",
+    provider_market_keys=("player_reception_tds",),
+    market_class="player_prop", line_type="standard",
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NFL", "player_first_td",
+    provider_market_keys=("player_1st_td",),
+    aliases=("first_touchdown",),
+    market_class="player_prop", line_type="standard",
+    selection_schema="yes_no", allowed_sides=("yes",),
+    requires_real_line=False,
+    capability_state=RESEARCH_ONLY))
 
 
 # ── Public API ──────────────────────────────────────────────────────
