@@ -353,6 +353,17 @@ def _today_str() -> str:
 # timing) the pick is hidden. Player props get the same treatment as
 # spreads/totals/moneyline: no live picks, period.
 _PREGAME_GRACE_SECONDS = 2 * 60
+# PERKLOCKS MAIN 36 UNIVERSAL IN-PLAY WINDOW FIX (2026-06-30).
+# Full-game player props remain valid (and bettable at most books)
+# until the player's game concludes — a MLB Hits/HRR/Strikeouts/Outs
+# prop is still live 3+ hours after first pitch, an NBA points prop
+# is live for ~2.5 h, an NFL yards prop for ~3.5 h.  The 2-minute
+# pregame cutoff was DROPPING every legit Lock-98 hitter card the
+# instant the game started, hiding them from Locks even though the
+# wager is still active.  Grace-widen the drop for these markets so
+# they only leave the board after the game realistically ends.
+_INPLAY_PLAYER_PROP_GRACE_SECONDS = 4 * 3600     # 4 hours (universal cap)
+_INPLAY_GAME_MARKET_GRACE_SECONDS = 2 * 60        # keep pregame for ML/Spread/Total
 
 # How long AFTER a game's listed start time we still surface its picks.
 # Player props (Hits, K's, etc.) are bookable through live betting at every
@@ -707,38 +718,77 @@ async def _decorate_with_understat_form(picks: list[dict]) -> list[dict]:
     return picks
 
 
+def _is_full_game_player_prop(pick: dict) -> bool:
+    """Return True for player-prop markets that remain settleable
+    throughout the game — Hits, Home Runs, Total Bases, Runs, RBIs,
+    H+R+RBIs, Strikeouts, Outs Recorded, Points, Rebounds, Assists,
+    Passing/Rushing/Receiving Yards, Receptions, etc.
+    Excluded: single-outcome game markets (Moneyline, Spread, Total
+    Runs/Points/Goals, First Inning, Puck/Run Line) which the user
+    doesn't want in-play.
+    """
+    m = (pick.get("market") or "").lower()
+    if not m:
+        return False
+    # Game-level markets — always live-restricted per user spec.
+    game_kw = ("moneyline", " ml ", " ml\b", "spread", "run line",
+                "puck line", "total runs", "total points", "total goals",
+                "first inning", "1st inning", "first 5", "1st 5",
+                "first half", "first quarter", "1h ", "1q ",
+                "match winner")
+    for kw in game_kw:
+        if kw in m:
+            return False
+    # Anything with a player-prop stat pattern is full-game.
+    player_kw = ("hits", "home run", "total bases", "runs", "rbi",
+                  "strikeouts", "outs recorded", "walks",
+                  "points", "rebounds", "assists", "threes", "steals",
+                  "blocks", "pra",
+                  "passing yards", "rushing yards", "receiving yards",
+                  "receptions", "passing tds", "rushing tds",
+                  "receiving tds", "carries", "targets", "attempts",
+                  "completions",
+                  "aces", "double faults", "break points", "games won",
+                  "shots on target", "shots", "goal scorer",
+                  "shots on goal")
+    for kw in player_kw:
+        if kw in m:
+            return True
+    return False
+
+
 def _filter_in_play_window(picks: list[dict]) -> list[dict]:
     """Drop picks whose game has already started.
 
-    User spec: "I do want pregame picks I don't want live picks." So
-    once an event's `event_time` is in the past (beyond a tiny clock-skew
-    grace) we drop the pick from the visible slate — even player props,
-    even MLB Hits/Strikeouts. Reused across /picks/today,
-    /picks/bet-killer, /picks/under-of-the-day, and /picks/rollover.
+    PERKLOCKS MAIN 36 UNIVERSAL IN-PLAY FIX (2026-06-30):
+    Universal, market-aware grace window.  Player props remain on
+    the board for up to 4 h past first pitch / kickoff / tip-off
+    (long enough to cover any regulation game), because they're
+    still active wagers.  Game-level ML/Spread/Total keep the tight
+    2-minute pregame cutoff per user spec.  A settled or safely
+    long-past event still drops in both cases.
 
-    Robust to both ISO suffixes: `...Z` (Odds API style) AND `...+00:00`
-    (tennis-extra scraper / Python isoformat() style). Earlier strict
-    `strptime` only matched the `Z` form, so tennis-extra picks fell into
-    the "unknown → keep" branch and remained visible all day even after
-    the match settled — which is the exact bug the user spotted with
-    morning tennis picks still showing in the evening.
+    Robust to both ISO suffixes: ``...Z`` and ``...+00:00``.
     """
     now_utc = datetime.now(timezone.utc)
     out: list[dict] = []
     for p in picks:
         et = p.get("event_time") or ""
         try:
-            # fromisoformat handles both `+00:00` and `Z` (Python 3.11+).
-            # Fall back to manual `Z` → `+00:00` swap for older interpreters.
             iso = et[:-1] + "+00:00" if et.endswith("Z") else et
             dt = datetime.fromisoformat(iso)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
         except Exception:
-            # Truly unparseable → keep the pick (safe default).
             out.append(p)
             continue
-        if (now_utc - dt).total_seconds() <= _PREGAME_GRACE_SECONDS:
+        # Choose grace based on market family.  Player props stay live
+        # throughout the game so users still see their Lock-98 hitter
+        # / pitcher / receiver cards after first pitch / kickoff.
+        grace = (_INPLAY_PLAYER_PROP_GRACE_SECONDS
+                  if _is_full_game_player_prop(p)
+                  else _INPLAY_GAME_MARKET_GRACE_SECONDS)
+        if (now_utc - dt).total_seconds() <= grace:
             out.append(p)
     return out
 
@@ -1513,6 +1563,26 @@ async def _ensure_today_picks() -> None:
     multiple clients hit an empty slate at the same time.
     """
     today = _today_str()
+    # ── PERKLOCKS ROOT FIX (2026-09-03) — Rejected Publication Healer ─
+    # Runs alongside every health check as a fire-and-forget background
+    # task.  Re-evaluates the Canonical Publication Boundary against
+    # picks whose enrichment fields (model_probability / identity_class)
+    # were unavailable at first ``publish_batch`` but have since been
+    # filled in by subsequent pipeline stages (scoring / sim / apex /
+    # identity healer).  Fail-closed: picks that still fail the boundary
+    # stay REJECTED.  The healer is idempotent (safe to run every
+    # request) and never blocks the request path — logged failures
+    # degrade to a no-op.  See docstring in
+    # ``services/publication_reconciliation.heal_rejected_publications``.
+    try:
+        from services.publication_reconciliation import (
+            heal_rejected_publications,
+        )
+        asyncio.create_task(
+            heal_rejected_publications(db, pick_date=today, limit=500)
+        )
+    except Exception as _heal_err:                          # pragma: no cover
+        logger.debug("heal_rejected background task skip: %s", _heal_err)
     # ── Phase C1 μ-closure (2026-06) — actionable-coverage health ─
     # Prior gate used the raw pick count for today (``>= 20``) as
     # "slate healthy".  That masked days with 20+ rejected /
