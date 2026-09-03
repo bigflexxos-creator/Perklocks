@@ -4720,7 +4720,7 @@ async def on_startup():
             intent_id = reservation.get("intent_id")
             try:
                 summary = await refresh_alt_lines(
-                    db, picks_scope=True, event_window_hours=36,
+                    db, picks_scope=True, event_window_hours=None,
                 )
                 await budget.commit(intent_id)
                 await coord.complete(
@@ -5781,7 +5781,7 @@ async def on_startup():
 
         async def _alt_lines_runner():
             return await refresh_alt_lines(
-                db, picks_scope=True, event_window_hours=36,
+                db, picks_scope=True, event_window_hours=None,
             )
 
         async def _alt_lines_run_under_lease(caller: str, reason: str):

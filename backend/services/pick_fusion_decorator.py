@@ -80,11 +80,13 @@ def _parse_pick(pick: dict) -> Optional[dict]:
     # can leak in when a market's selection is a direction not a player.
     if player_name.lower() in {"over", "under"}:
         return None
-    # Stat detection — reuse `pick_matchup_wiring._detect_stat`.
-    from services.pick_matchup_wiring import _detect_stat  # lazy
-    stat = _detect_stat(sport, market)
-    if not stat:
-        return None
+    # Stat detection — universal resolver in ``pick_matchup_wiring``.
+    # Applies canonical MLB pitcher-vs-batter K disambiguation and any
+    # future family-routing rules so every consumer (Alt-Line Magic,
+    # Matchup Intelligence, Similar/H2H engines) sees the same stat
+    # family for the same pick.  See ``resolve_market_stat`` for the
+    # ordered signal ladder.
+    from services.pick_matchup_wiring import resolve_market_stat  # lazy
     # Threshold.
     threshold = None
     tm = _THRESHOLD_RE.search(market)
@@ -93,6 +95,11 @@ def _parse_pick(pick: dict) -> Optional[dict]:
             threshold = float(tm.group(1))
         except (TypeError, ValueError):
             threshold = None
+    stat = resolve_market_stat(
+        sport, market, pick=pick, threshold=threshold,
+    )
+    if not stat:
+        return None
     # Soccer: implicit ≥1 threshold (0.5 line) for "Anytime Goal Scorer",
     # "First Goal Scorer", "To Score or Assist" style markets.
     if threshold is None and sport.upper() == "SOCCER":

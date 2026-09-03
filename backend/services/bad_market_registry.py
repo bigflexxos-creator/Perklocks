@@ -40,10 +40,11 @@ async def mark_bad(
     db, *,
     sport_key: str,
     markets: Iterable[str],
-    ttl_hours: int = DEFAULT_TTL_HOURS,
+    ttl_hours: Optional[int] = None,
     reason: str = "422_unsupported",
     event_id: Optional[str] = None,
     scope: str = "event",
+    event_commence_time: Optional[datetime] = None,
 ) -> None:
     """Persist bad-market records.
 
@@ -62,6 +63,27 @@ async def mark_bad(
 
     Backwards compatibility: existing rows without ``event_id`` remain
     valid GLOBAL markers.  Filter reads honor both scopes.
+
+    PERKLOCKS-MAIN 35 — DYNAMIC TIME-TO-EVENT PROVIDER BUDGET
+    (2026-06-30).  ``event_commence_time`` (optional UTC datetime)
+    enables adaptive TTL so late-appearing markets are discovered on
+    the correct cadence without starving the daily provider budget:
+
+        <  6h to kickoff  → 1h TTL (aggressive re-probe; NFL alt
+                                     props / MLB late-game hitters
+                                     land 2-6h before first pitch)
+        6h ≤ Δ < 24h      → 6h TTL (medium cadence)
+        ≥ 24h to kickoff  → 24h TTL (long cadence; do not burn
+                                      credits polling a market on
+                                      an event 5-days out)
+        already started   → 24h TTL (past events won't re-post)
+
+    Callers that pass an explicit ``ttl_hours`` override the adaptive
+    calculation (used by out-of-band ops probes).  Default TTL is
+    24h when neither an explicit ``ttl_hours`` nor a
+    ``event_commence_time`` is supplied — matches the pre-fix
+    behaviour so callers that don't yet plumb commence through
+    remain compatible.
     """
     if db is None or not sport_key:
         return
@@ -75,6 +97,9 @@ async def mark_bad(
             sport_key, list(markets))
         return
     now = datetime.now(timezone.utc)
+    # Adaptive TTL — only when caller didn't set an explicit value.
+    if ttl_hours is None:
+        ttl_hours = _adaptive_ttl_hours(now, event_commence_time)
     expires_at = now + timedelta(hours=ttl_hours)
     for m in markets:
         if not m:
@@ -92,15 +117,43 @@ async def mark_bad(
                     "marked_at":  now,
                     "expires_at": expires_at,
                     "reason":     reason,
+                    "ttl_hours":  ttl_hours,
                 }},
                 upsert=True,
             )
             logger.info(
                 "bad_market registered: sport=%s market=%s scope=%s "
-                "event=%s (%s)",
-                sport_key, m, scope, event_id, reason)
+                "event=%s ttl=%dh (%s)",
+                sport_key, m, scope, event_id, ttl_hours, reason)
         except Exception as e:
             logger.warning("bad_market_registry write failed: %s", e)
+
+
+def _adaptive_ttl_hours(
+    now: datetime, commence: Optional[datetime],
+) -> int:
+    """Return the adaptive TTL in hours based on time-to-event.
+
+    Near-event → short TTL (aggressive re-probe); far-event →
+    long TTL (protect provider budget).  Returns the legacy
+    ``DEFAULT_TTL_HOURS`` (24h) when ``commence`` is missing so
+    the pre-PERKLOCKS behaviour is preserved for legacy callers.
+    """
+    if commence is None:
+        return DEFAULT_TTL_HOURS
+    try:
+        delta = (commence - now).total_seconds()
+    except Exception:
+        return DEFAULT_TTL_HOURS
+    if delta < 0:
+        # Event already started — the market bundle isn't going to
+        # re-open; long TTL keeps the row out of the way.
+        return DEFAULT_TTL_HOURS
+    if delta < 6 * 3600:
+        return 1
+    if delta < 24 * 3600:
+        return 6
+    return DEFAULT_TTL_HOURS
 
 
 async def filter_markets(
@@ -194,4 +247,5 @@ __all__ = [
     "is_all_bad",
     "stats",
     "COLLECTION",
+    "_adaptive_ttl_hours",
 ]

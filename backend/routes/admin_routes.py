@@ -112,7 +112,7 @@ async def admin_odds_health(
 async def admin_alt_lines_snapshot(
     user: Annotated[UserPublic, Depends(current_admin)],
     picks_scope: bool = True,
-    event_window_hours: int = 36,
+    event_window_hours: Optional[int] = None,
 ):
     """Trigger a one-shot alt-lines snapshot immediately.
 
@@ -120,11 +120,19 @@ async def admin_alt_lines_snapshot(
     fire an out-of-band snapshot from this endpoint — e.g. after a
     new game-day board drops.  `picks_scope=True` restricts fetching
     to sports/events that already have picks today.
+
+    PERKLOCKS-MAIN 35 — UNIVERSAL PROVIDER-DRIVEN ACQUISITION
+    (2026-06-30).  ``event_window_hours`` now defaults to ``None``
+    (no artificial upper bound).  Callers may still pass an explicit
+    horizon (e.g. ``?event_window_hours=24``) for narrow ops probes.
     """
     from alt_lines_feed import refresh_alt_lines
     return await refresh_alt_lines(
         db, picks_scope=picks_scope,
-        event_window_hours=max(6, min(96, event_window_hours)),
+        event_window_hours=(
+            None if event_window_hours is None
+            else max(6, min(720, int(event_window_hours)))
+        ),
     )
 
 

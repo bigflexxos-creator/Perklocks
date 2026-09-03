@@ -152,6 +152,91 @@ def _detect_stat(sport: str, market: str) -> Optional[str]:
     return None
 
 
+# ═════════════════════════════════════════════════════════════════════
+# ALT-LINE MAGIC / MATCHUP UNIVERSAL STAT RESOLVER (2026-06-30)
+# ─────────────────────────────────────────────────────────────────────
+# ``_detect_stat`` returns a stat family key from a raw market string
+# alone — that string is IDENTICAL for MLB batter and pitcher
+# strikeouts ("... Strikeouts"), so both collapse to the "strikeouts"
+# key.  Downstream models & threshold grids key them separately:
+#     (MLB, strikeouts)         → BATTER grid  [0.5–3.5]
+#     (MLB, pitcher_strikeouts) → PITCHER grid [3.5–11.5]
+# A pitcher K prop that lands on the batter grid returns
+# ``supported: False`` from every threshold (no batter K model exists
+# for a pitcher), silently emptying the Alt-Line Magic bundle.
+#
+# ``resolve_market_stat`` is the ONE authoritative resolver every
+# consumer (Alt-Line Magic, Matchup Intelligence, Similar-Matchup
+# Engine, Prop H2H) uses to route a pick into the correct stat
+# family before downstream inference.  It layers ordered signals on
+# top of ``_detect_stat`` — no new fabricated data, only correct
+# routing:
+#
+#   1. canonical_market_family (definitive; set by canonical
+#      publication contract at generation time).
+#   2. provider_market_key (definitive; from the Odds API market
+#      key ingested by ``alt_lines_feed`` / bulk odds).
+#   3. Market suffix " · ALT LOCK" — emitted by
+#      ``sports_engine._prop_market_label`` ONLY when a pick is an
+#      alt-line variant.  MLB Odds API SPORT_CONFIG has no batter-K
+#      alt market (only ``pitcher_strikeouts_alternate``), so this
+#      marker on a Strikeouts market is a definitive PITCHER tag.
+#   4. Threshold heuristic: line ≥ 3.5 → pitcher (batter K props
+#      are quoted 0.5/1.5/2.5 in practice; the pitcher grid starts
+#      at 3.5 and runs to 11.5).
+# ═════════════════════════════════════════════════════════════════════
+def resolve_market_stat(
+    sport: str,
+    market: str,
+    *,
+    pick: Optional[dict] = None,
+    threshold: Optional[float] = None,
+) -> Optional[str]:
+    """Return the canonical stat family key for a pick's market.
+
+    Wraps ``_detect_stat`` and applies universal family disambiguation
+    that requires more than the raw market string alone.  Backwards-
+    compatible when called with only ``sport`` + ``market`` — it will
+    return the same result as ``_detect_stat`` unless a pick / threshold
+    pair unlocks a more specific family (e.g. pitcher_strikeouts).
+    """
+    stat = _detect_stat(sport, market)
+    if not stat:
+        return None
+    sport_u = (sport or "").upper()
+
+    # MLB · BATTER vs PITCHER Strikeouts disambiguation.
+    if sport_u == "MLB" and stat == "strikeouts":
+        cmf = ""
+        pmk = ""
+        if isinstance(pick, dict):
+            cmf = (pick.get("canonical_market_family") or "").lower()
+            pmk = (pick.get("provider_market_key")
+                    or pick.get("market_key") or "").lower()
+        market_l = (market or "").lower()
+        # Line comes from explicit arg OR the market string.
+        line_val: Optional[float] = None
+        if isinstance(threshold, (int, float)):
+            line_val = float(threshold)
+        else:
+            _tm = _THRESHOLD_RE.search(market or "")
+            if _tm:
+                try:
+                    line_val = float(_tm.group(1))
+                except (TypeError, ValueError):
+                    line_val = None
+        is_pitcher = (
+            cmf.startswith("pitcher_strikeouts")
+            or "pitcher_strikeouts" in pmk
+            or "alt lock" in market_l
+            or (line_val is not None and line_val >= 3.5)
+        )
+        if is_pitcher:
+            return "pitcher_strikeouts"
+
+    return stat
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Player + threshold parsing
 # ─────────────────────────────────────────────────────────────────────
@@ -435,8 +520,10 @@ async def build_matchup_payload(db, pick: dict) -> dict:
     if not player_name:
         return _empty_payload(sport, "team/moneyline market — no player matchup")
 
-    # 2. Stat.
-    stat = _detect_stat(sport, market)
+    # 2. Stat — universal resolver (routes MLB pitcher K props to the
+    #    pitcher_strikeouts family so Matchup Intelligence hits the
+    #    correct signal set, matching Alt-Line Magic).
+    stat = resolve_market_stat(sport, market, pick=pick)
     if not stat:
         return _empty_payload(sport, f"unrecognised stat in market: {market!r}")
 
