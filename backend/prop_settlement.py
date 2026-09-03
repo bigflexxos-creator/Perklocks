@@ -282,8 +282,33 @@ def _mlb_find_game(
             dist = abs((gd - et_dt).total_seconds())
         else:
             dist = 0.0
+        # PERKLOCKS ROOT FIX (2026-09-03) — universal wrong-series bug.
+        # When ``_settle_group`` merges (date, date-1) schedules for
+        # cross-midnight coverage, series matchups repeat (e.g. CWS @
+        # HOU on 09-02 AND 09-03).  The prior sort ``(tier, dist,
+        # gameDate)`` let YESTERDAY'S Final trump TODAY'S Live because
+        # tier=0 (Final) beat tier=1 (Live) — grading Yordan Alvarez's
+        # TB pick from today's live game against yesterday's completed
+        # boxscore where he already had 3 TB.  Universal fix: when the
+        # pick carries an ``event_time`` and one of the candidate
+        # games is within 12 h of it, distance DOMINATES tier so we
+        # can never grade against the wrong game in a series.
+        # Games further than 12 h from the pick's event_time fall
+        # back to legacy (tier, dist, gameDate) ordering — that leg
+        # only matters when no near-match exists at all.
+        _CLOSE_WINDOW = 12 * 3600.0
+        if et_dt and gd:
+            close = dist <= _CLOSE_WINDOW
+            # Within 12 h: distance dominates tier (guarantees today's
+            # Live wins over yesterday's Final in a series repeat).
+            # Outside 12 h: fall back to legacy tier-first ordering so
+            # a Final still beats a scheduled Preview when no near
+            # match exists at all.
+            if close:
+                return (0, dist, tier, g.get("gameDate") or "")
+            return (1, tier, dist, g.get("gameDate") or "")
         # Tertiary: earliest gameDate (ISO string sorts chronologically).
-        return (tier, dist, g.get("gameDate") or "")
+        return (0, 0.0, tier, g.get("gameDate") or "")
 
     matches.sort(key=_prio)
     return matches[0]
