@@ -739,6 +739,26 @@ def evidence_threshold(picks: list[dict]) -> tuple[list[dict], dict]:
                     or _cfb_sim.get("expected_total") is not None):
                 evidence += 1
 
+        # ── 2026-09-03 · TENNIS authoritative-model evidence ─────────
+        # PERKLOCKS-MAIN 35 · POST-CERT — Tennis picks were silently
+        # dropped by the evidence gate.  Today's Tennis flow does NOT
+        # populate `lock_components` (bucket_n / ev_units) for the
+        # primary Odds-API path, so those two evidence categories
+        # never triggered.  The real Tennis authority evidence lives
+        # on the pick as:
+        #   1. `brain.confidence_calibrated` — the calibrated model
+        #      probability with a real `confidence_band_n` sample.
+        #   2. `brain.confidence_band_n >= 100` — statistical power.
+        # These are genuinely-independent evidence categories from the
+        # already-counted `pick_rationale` and `edge_percent` signals.
+        _brain = p.get("brain") or {}
+        if (p.get("sport") == "Tennis"
+                and isinstance(_brain, dict)
+                and _brain.get("confidence_calibrated") is not None):
+            evidence += 1
+            if int(_brain.get("confidence_band_n") or 0) >= 100:
+                evidence += 1
+
         if evidence < threshold:
             stats["dropped"] += 1
             r = f"only_{evidence}_of_{threshold}_signals"
