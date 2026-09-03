@@ -94,12 +94,23 @@ SPORT_CONFIG: dict[str, tuple[str, list[str]]] = {
         "baseball_mlb",
         ["batter_hits_alternate", "batter_total_bases_alternate",
          "pitcher_strikeouts_alternate", "alternate_totals",
-         "alternate_runs_lines"],
+         "alternate_runs_lines", "alternate_run_lines"],
     ),
     "nfl": (
         "americanfootball_nfl",
         ["player_pass_yds_alternate", "player_rush_yds_alternate",
-         "player_anytime_td", "player_reception_alternate"],
+         "player_anytime_td", "player_reception_alternate",
+         "alternate_spreads", "alternate_totals"],
+    ),
+    "nba": (
+        "basketball_nba",
+        ["player_points_alternate", "player_rebounds_alternate",
+         "player_assists_alternate", "player_threes_alternate",
+         "alternate_spreads", "alternate_totals"],
+    ),
+    "nhl": (
+        "icehockey_nhl",
+        ["alternate_puck_lines", "alternate_totals"],
     ),
     # Tennis entries are inserted dynamically — see comment above.
 }

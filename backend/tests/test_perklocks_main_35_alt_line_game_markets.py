@@ -135,9 +135,12 @@ def test_bundle_builder_spread_returns_ranked_chips():
     )
     assert bundle["alt_lines"]
     assert len(bundle["alt_lines"]) >= 4
-    # Composite scores sorted desc.
-    scores = [a["composite_score"] for a in bundle["alt_lines"]]
-    assert scores == sorted(scores, reverse=True)
+    # TWO-WAY chips: every threshold-line must produce BOTH sides
+    # (team_covers + opp_covers) so users can flip the pick in-row.
+    sides = {a["side"] for a in bundle["alt_lines"]}
+    assert sides == {"team_covers", "opp_covers"}, (
+        f"spread chips must be two-way, got sides={sides}"
+    )
     # Every chip has model_projection source & American price.
     for chip in bundle["alt_lines"]:
         assert chip["source"] == "model_projection"

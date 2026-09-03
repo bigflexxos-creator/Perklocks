@@ -251,11 +251,33 @@ async def generate_alt_lines(
                               if market else None),
                 explanation=explanation,
             ))
-    # Sort by composite_score DESC, keep top_n.
-    scored.sort(key=lambda a: a.composite_score, reverse=True)
+    # ── Two-way pairing ─────────────────────────────────────────
+    # Emit BOTH Over AND Under chips per threshold so users can flip
+    # the pick straight from the chip row.  We rank threshold-LINES
+    # (not individual chips) by the max composite score of the pair,
+    # then keep top_n lines with both sides intact.
+    from collections import defaultdict
+    by_line: dict[float, list[AltLine]] = defaultdict(list)
+    for a in scored:
+        by_line[a.line].append(a)
+    # Sort lines by best composite in the pair.
+    ranked_lines = sorted(
+        by_line.items(),
+        key=lambda kv: max(a.composite_score for a in kv[1]),
+        reverse=True,
+    )[: max(1, int(top_n) // 2)]
+    # Rebuild the flat list preserving threshold ascending order
+    # inside the trimmed set so the chip row reads left-to-right by
+    # line, with Over/Under paired.
+    ranked_lines.sort(key=lambda kv: kv[0])
+    output: list[AltLine] = []
+    for line, chips in ranked_lines:
+        # Prefer Over first, then Under, for consistent chip order.
+        chips.sort(key=lambda a: 0 if a.side == "Over" else 1)
+        output.extend(chips)
     return AltLineBundle(
         sport=sport, player=player, stat=stat, opponent=opponent,
-        projected=projected, alt_lines=scored[: int(top_n)],
+        projected=projected, alt_lines=output,
         notes=dist.get("notes", []),
     )
 
