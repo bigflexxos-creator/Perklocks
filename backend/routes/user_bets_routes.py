@@ -288,6 +288,22 @@ async def list_user_bets(
     limit = max(1, min(limit, 500))
     cursor = db.user_bets.find(q, {"_id": 0}).sort("created_at", -1).limit(limit)
     bets = await cursor.to_list(limit)
+    # PERKLOCKS-MAIN 34 · STEP 3 (2026-09-03) — attach immutable
+    # PublishedPickContract to every My-Bets row so My Bets, Locks,
+    # Pick Breakdown, Parlay, History all describe the identical
+    # canonical wager. Never fail bets listing on a contract-attach
+    # hiccup (defensive on legacy pre-publication rows).
+    try:
+        from services.published_pick_contract import PublishedPickContract
+        for _b in bets:
+            if not isinstance(_b, dict):
+                continue
+            try:
+                _b["published_pick_contract"] = PublishedPickContract.from_pick(_b).as_dict()
+            except Exception:
+                pass
+    except Exception:
+        pass
     return {"bets": bets, "count": len(bets)}
 
 
@@ -505,6 +521,17 @@ async def user_analytics_history(
     limit = max(1, min(limit, 500))
     cursor = db.user_bets.find(q, {"_id": 0}).sort("created_at", -1).limit(limit)
     bets = await cursor.to_list(limit)
+    # STEP 3 — same canonical-wager parity attachment as /user/bets.
+    try:
+        from services.published_pick_contract import PublishedPickContract
+        for _b in bets:
+            if isinstance(_b, dict):
+                try:
+                    _b["published_pick_contract"] = PublishedPickContract.from_pick(_b).as_dict()
+                except Exception:
+                    pass
+    except Exception:
+        pass
     return {"history": bets, "count": len(bets)}
 
 
