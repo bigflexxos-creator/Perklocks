@@ -615,9 +615,23 @@ def _block_reason(pick: dict) -> str | None:
     if sport == "mlb" and pick.get("is_alt"):
         edge = float(pick.get("edge_percent") or 0)
         m_lower = market.lower()
+        # PERKLOCKS-MAIN 34 · STEP 6 (2026-09-03) — MLB alt run-line
+        # model-before-edge ordering. `edge_percent` must be the
+        # authoritative model-computed edge (from exact-threshold model
+        # probability), NOT a pre-model estimate. If the specialized
+        # MLB model has not run yet on this pick (no `model_win_prob` /
+        # `win_probability`), the alt-line edge gate cannot make a
+        # truthful decision — skip it and let downstream evaluation
+        # decide. Prevents rejecting authoritative alt run-line picks
+        # before the model gets a chance to compute their real edge.
+        _has_model_prob = (
+            pick.get("model_win_prob") is not None
+            or pick.get("win_probability") is not None
+            or pick.get("published_probability") is not None
+        )
         # Team totals — "Team Total Over 3.5" / "Team Total Under 2.5"
         alt_total_match = _ALT_TEAM_TOTAL_RE.search(market)
-        if alt_total_match:
+        if alt_total_match and _has_model_prob:
             try:
                 line = float(alt_total_match.group(1))
                 if 2.5 <= line <= 3.5 and edge < 8.0:
@@ -626,7 +640,7 @@ def _block_reason(pick: dict) -> str | None:
                 pass
         # Run lines — "+1.5 Spread", "Team +2.5 (Alt)", "Alt Run Line +3.5"
         alt_rl_match = _ALT_RUN_LINE_RE.search(market)
-        if alt_rl_match:
+        if alt_rl_match and _has_model_prob:
             try:
                 # Get whichever group captured the number
                 num_str = next((g for g in alt_rl_match.groups() if g), None)

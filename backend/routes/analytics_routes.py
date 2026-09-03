@@ -890,6 +890,21 @@ async def steam_endpoint(
         direction=direction if direction in ("toward", "away") else None,
         limit=max(1, min(200, limit)),
     )
+    # PERKLOCKS-MAIN 34 · STEP 3 (2026-09-03) — attach immutable
+    # PublishedPickContract to every Analytics steam-detector pick so
+    # Analytics consumers describe the identical canonical wager the
+    # Locks board publishes. Never fail Analytics on a contract-attach
+    # hiccup (defensive on legacy rows).
+    try:
+        from services.published_pick_contract import PublishedPickContract as _PPC
+        for _p in picks:
+            if isinstance(_p, dict):
+                try:
+                    _p["published_pick_contract"] = _PPC.from_pick(_p).as_dict()
+                except Exception:
+                    pass
+    except Exception:
+        pass
     return {
         "count": len(picks),
         "hours": hours,
