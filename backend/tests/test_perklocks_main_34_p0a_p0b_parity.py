@@ -31,6 +31,11 @@ _BASE = "http://localhost:8001"
 
 
 def _tok():
+    try:
+        from rate_limit import _reset_for_tests
+        _reset_for_tests(scope_prefix="ip:")
+    except Exception:
+        pass
     r = httpx.post(f"{_BASE}/api/auth/login",
                     json={"email": "demo@lockscore.ai", "password": "demo123"},
                     timeout=10)
