@@ -171,6 +171,7 @@ async def _fetch_events(cx: httpx.AsyncClient, sport_key: str) -> list[dict]:
 async def _fetch_event_odds(cx: httpx.AsyncClient, sport_key: str,
                              event_id: str, markets: list[str],
                              db: Optional[AsyncIOMotorDatabase] = None,
+                             event_commence_time: Optional[datetime] = None,
                              ) -> Optional[dict]:
     """Fetch alt-line markets for one event.
 
@@ -232,7 +233,8 @@ async def _fetch_event_odds(cx: httpx.AsyncClient, sport_key: str,
         if db is not None:
             await mark_bad(db, sport_key=sport_key, markets=markets,
                             event_id=event_id, scope="event",
-                            reason="single_market_422_or_error")
+                            reason="single_market_422_or_error",
+                            event_commence_time=event_commence_time)
         return None
 
     merged: Optional[dict] = None
@@ -268,7 +270,8 @@ async def _fetch_event_odds(cx: httpx.AsyncClient, sport_key: str,
     if failed_markets:
         await mark_bad(db, sport_key=sport_key, markets=failed_markets,
                         event_id=event_id, scope="event",
-                        reason="individual_market_422_or_error")
+                        reason="individual_market_422_or_error",
+                        event_commence_time=event_commence_time)
 
     return merged
 
@@ -488,7 +491,7 @@ async def refresh_alt_lines(
     *,
     picks_scope: bool = True,
     max_events_per_sport: int = 30,
-    event_window_hours: int = 36,
+    event_window_hours: Optional[int] = None,
 ) -> dict:
     """Pull alt-line markets for all active events across configured sports.
 
@@ -498,9 +501,20 @@ async def refresh_alt_lines(
         picks yet still get a *shortlist* fetch (events list only) so
         the pick-generation snapshot can find candidates, but we skip
         per-event alt-line pulls for un-picked events.
-      • Event window narrowed from +4 d → +36 h (rarely posted earlier).
       • `_fetch_event_odds` now consults the bad-market registry and
         no longer falls back to per-market retries on 422.
+
+    PERKLOCKS-MAIN 35 — UNIVERSAL PROVIDER-DRIVEN ACQUISITION WINDOW
+    (2026-06-30).  Previously ``event_window_hours=36`` silently
+    rejected acquisition of provider-posted events > 36h out (NFL Sun
+    slate on Wed, MLB doubleheaders 3d out, Tennis draw 5d ahead).
+    Rule: if the provider returns a real upcoming event we ACQUIRE it.
+    ``event_window_hours=None`` (default) means NO artificial upper
+    bound; only ``commence < now - 2h`` still drops events that are
+    already over.  Board display horizon is a separate concern and is
+    enforced downstream at read time, not here.  Callers may still
+    pass an explicit horizon for out-of-band snapshots that want to
+    scope narrowly (e.g. ops one-shot).
     """
     from services.bad_market_registry import ensure_indices as _ensure_bmr
     await _ensure_bmr(db)
@@ -586,20 +600,34 @@ async def refresh_alt_lines(
                         stats["skipped_no_picks"] += 1
                         continue
 
+                # PERKLOCKS-MAIN 35 — DYNAMIC TIME-TO-EVENT PROVIDER
+                # BUDGET.  Parse commence up-front so 422 failures on
+                # this event can compute an adaptive bad-market TTL
+                # (short cadence when kickoff is imminent, long when
+                # it is days away).
+                commence: Optional[datetime] = None
                 try:
                     commence = datetime.fromisoformat(
                         (ev.get("commence_time") or "").replace("Z", "+00:00")
                     )
                     if commence < now - timedelta(hours=2):
                         continue  # already over
-                    if commence > now + timedelta(hours=event_window_hours):
+                    # PERKLOCKS-MAIN 35 — UNIVERSAL PROVIDER-DRIVEN
+                    # ACQUISITION.  Only skip on the FUTURE side when
+                    # the caller has explicitly requested a horizon.
+                    # Default (``event_window_hours=None``) means "if
+                    # the provider posted it, we take it" — no fixed
+                    # 36h/72h cutoff.
+                    if (event_window_hours is not None
+                            and commence > now + timedelta(hours=event_window_hours)):
                         stats["skipped_out_of_window"] += 1
-                        continue  # too far out
+                        continue  # explicit horizon requested
                 except Exception:
                     pass
 
                 odds = await _fetch_event_odds(cx, sport_key, ev_id,
-                                                markets, db=db)
+                                                markets, db=db,
+                                                event_commence_time=commence)
                 if not odds:
                     continue
                 rows = _flatten_odds(odds, cfg_key, sport_key, now)

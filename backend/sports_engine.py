@@ -1483,23 +1483,19 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
     # suppressed OR book-followed.  Historical totals performance now
     # belongs in calibration, not capability suppression.
     commence = game.get("commence_time")
-    # Per-sport scheduling window. UFC fight cards run weekly, KBO has 5
-    # games/day all week, Tennis tournaments span 7-10 days — these sparse
-    # sports need a wider window than daily-game sports or we'd ship the
-    # board with 2-3 picks.
-    window_hours = {
-        "UFC": 10 * 24,
-        "KBO": 7 * 24,
-        "Tennis": 7 * 24,
-        "Soccer": 5 * 24,
-    }.get(sport, 72)
+    # PERKLOCKS-MAIN 35 — UNIVERSAL PROVIDER-DRIVEN ACQUISITION WINDOW
+    # (2026-06-30).  The per-sport ``window_hours`` future cutoff table
+    # (UFC 240h / KBO/Tennis 168h / Soccer 120h / default 72h) is
+    # RETIRED as an acquisition gate.  If the provider surfaces a real
+    # upcoming event we build picks for it; the board's display horizon
+    # is enforced downstream at read time.  We still drop events that
+    # have ALREADY started (past-cutoff of -30 min) — that is data
+    # hygiene, not a horizon.
     if commence:
         try:
             dt = datetime.strptime(commence, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
             now = datetime.now(timezone.utc)
             if dt < now - __import__("datetime").timedelta(minutes=30):
-                return []
-            if dt > now + __import__("datetime").timedelta(hours=window_hours):
                 return []
         except Exception:
             pass
@@ -7336,18 +7332,19 @@ _PROPS_PER_KEY_CAP = {
 }
 _DEFAULT_PROPS_PER_KEY = 3
 
-# Per-sport-key look-ahead window (in hours). World Cup pools use a 7-day
-# window so elite-team matches still get props fetched even when France
-# (Mbappé) / Brazil (Vinicius) / Germany etc. don't play for several days.
-_PROPS_LOOKAHEAD_HOURS = {
-    "soccer_fifa_world_cup": 168,         # 7 days
-    "soccer_fifa_club_world_cup": 168,    # 7 days
-    "soccer_uefa_champs_league": 168,
-    "soccer_uefa_champs_league_qualification": 168,
-    "soccer_uefa_europa_league": 168,
-    "soccer_uefa_europa_conference_league": 168,
-}
-_DEFAULT_LOOKAHEAD_HOURS = 72
+# Per-sport-key look-ahead window (in hours). PERKLOCKS-MAIN 35 —
+# UNIVERSAL PROVIDER-DRIVEN ACQUISITION WINDOW (2026-06-30).  The
+# ``_PROPS_LOOKAHEAD_HOURS`` per-competition table + the
+# ``_DEFAULT_LOOKAHEAD_HOURS`` scalar are RETIRED as an acquisition
+# gate.  Rule: if the provider surfaces an event, we ingest it —
+# there is no hard-coded 72h / 168h upper bound.  Time-to-event still
+# controls PRIORITY via ``_event_priority`` + PROVIDER BUDGET via the
+# existing per-key ``_PROPS_PER_KEY_CAP`` caps below (near events
+# rank higher, far events rank lower but still get included when
+# quota allows).  Board display horizon is a separate concern
+# (product rule) and is applied downstream at read time, not here.
+_PROPS_LOOKAHEAD_HOURS: dict[str, int] = {}   # kept for back-compat / debug
+_DEFAULT_LOOKAHEAD_HOURS: Optional[int] = None
 
 
 def _event_priority(ev: dict, sport: str) -> int:
@@ -7406,7 +7403,12 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
         if not isinstance(events, list):
             continue
         now = datetime.now(timezone.utc)
-        lookahead_hours = _PROPS_LOOKAHEAD_HOURS.get(key, _DEFAULT_LOOKAHEAD_HOURS)
+        # PERKLOCKS-MAIN 35 — UNIVERSAL PROVIDER-DRIVEN ACQUISITION.
+        # Per-key ``lookahead_hours`` upper bound is RETIRED — see the
+        # note on ``_PROPS_LOOKAHEAD_HOURS`` above.  Legacy per-key
+        # override is honoured ONLY when explicitly set (empty dict by
+        # default).
+        lookahead_hours = _PROPS_LOOKAHEAD_HOURS.get(key)
         upcoming = []
         for e in events:
             ct = e.get("commence_time")
@@ -7414,8 +7416,14 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                 continue
             try:
                 dt = datetime.strptime(ct, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                if now - _dt.timedelta(minutes=30) <= dt <= now + _dt.timedelta(hours=lookahead_hours):
-                    upcoming.append((dt, e))
+                # Past-cutoff (data hygiene) still enforced; future
+                # cutoff only when a legacy per-key override is set.
+                if dt < now - _dt.timedelta(minutes=30):
+                    continue
+                if (lookahead_hours is not None
+                        and dt > now + _dt.timedelta(hours=lookahead_hours)):
+                    continue
+                upcoming.append((dt, e))
             except Exception:
                 continue
         # Sort by (priority, commence_time): ANCHOR teams (Mbappé/Haaland/

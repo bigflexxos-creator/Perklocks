@@ -116,9 +116,31 @@ def test_parse_mlb_strikeout_market():
     got = _parse_pick(p)
     assert got is not None
     assert got["player"] == "Zack Wheeler"
-    assert got["stat"] == "strikeouts"
+    # ALT-LINE MAGIC ROOT FIX (2026-06-30) — pitcher K props
+    # (line > 3.5) must route to the pitcher_strikeouts family so
+    # they land on the correct threshold grid; batter K props keep
+    # the "strikeouts" family.  See test_perklocks_main_35_alt_line
+    # _magic_pitcher_k.py for the full contract.
+    assert got["stat"] == "pitcher_strikeouts"
     assert got["threshold"] == 6.5
     assert got["opponent"] == "Miami Marlins"
+
+
+def test_parse_mlb_batter_strikeout_market():
+    """Regression guard — batter K props (line ≤ 3.5) stay on the
+    batter strikeouts family so they get the correct low-line
+    threshold grid."""
+    from services.pick_fusion_decorator import _parse_pick
+    p = {
+        "sport": "MLB",
+        "market": "Aaron Judge (NYY) Over 1.5 Strikeouts",
+        "selection": "Aaron Judge",
+        "event": "New York Yankees @ Boston Red Sox",
+    }
+    got = _parse_pick(p)
+    assert got is not None
+    assert got["stat"] == "strikeouts"
+    assert got["threshold"] == 1.5
 
 
 def test_parse_nfl_prop_market():
