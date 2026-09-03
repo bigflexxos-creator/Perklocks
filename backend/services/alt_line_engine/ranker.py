@@ -142,6 +142,7 @@ async def generate_alt_lines(
     market_alt_lines: Optional[list[dict]] = None,   # from Odds API alt feed
     top_n: int = 8,
     canonical_player_id: Optional[str] = None,       # Session A additive
+    pick: Optional[dict] = None,                     # UNIVERSAL fallback source
 ) -> AltLineBundle:
     """Produce a ranked bundle of alt lines.
 
@@ -153,11 +154,20 @@ async def generate_alt_lines(
     `canonical_player_id` — Session A additive. Lets the safeguard
     hit `player_game_actuals` by canonical id + lowercase sport
     directly. Backwards-compatible: callers may still omit it.
+
+    `pick` — UNIVERSAL COVERAGE (2026-06-30) additive.  When the
+    trained-model distribution path returns nothing (family has no
+    trained model yet), the pick's ``win_probability`` + ``line`` are
+    used to synthesize a Poisson/Normal distribution over the
+    threshold grid so EVERY sport / EVERY player-prop market gets
+    alt-line chips.  Backwards-compatible: legacy callers may omit
+    it and the fallback simply won't trigger.
     """
     # ── Safeguards ────────────────────────────────────────────────
     safe, reason = await is_safe_for_alt_lines(
         db, sport=sport, player_name=player, stat=stat,
         canonical_player_id=canonical_player_id,
+        pick=pick,
     )
     if not safe:
         return AltLineBundle(sport=sport, player=player, stat=stat,
@@ -167,6 +177,7 @@ async def generate_alt_lines(
     # ── Distribution ──────────────────────────────────────────────
     dist = await build_outcome_distribution(
         db, sport=sport, player=player, stat=stat, opponent=opponent,
+        pick=pick,
     )
     if not dist.get("supported"):
         return AltLineBundle(sport=sport, player=player, stat=stat,

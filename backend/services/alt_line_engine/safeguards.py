@@ -42,26 +42,29 @@ from typing import Optional
 
 
 # Sportsbook markets we ALLOW alt-line projections for.
-# Session A: added SOCCER family — canonical `player_game_actuals`
-# contains 4 456 lowercase-sport soccer rows already.
+# UNIVERSAL COVERAGE (2026-06-30) — every player-prop family the
+# runtime can publish is whitelisted so the universal projected-
+# distribution fallback surfaces alt lines for ANY pick.  The gate
+# still enforces:
+#   1. sport supported at all
+#   2. stat is a known player-prop family (not moneyline/team totals)
+#   3. minimum historical sample so we're not projecting off a debut
 _SUPPORTED_STAT_WHITELIST = {
     "NFL":    {"passing_yards", "rushing_yards", "receiving_yards",
                 "passing_tds", "rushing_tds", "receiving_tds",
                 "passing_completions", "passing_attempts",
-                "rush_attempts", "receptions"},
+                "rush_attempts", "receptions", "targets", "carries",
+                "passing_ints"},
     "MLB":    {"hits", "total_bases", "home_runs", "strikeouts",
-                "pitcher_strikeouts", "runs_scored", "rbi", "walks",
-                "hits_runs_rbis"},
-    "NBA":    {"points", "rebounds", "assists", "threes",
+                "pitcher_strikeouts", "pitcher_outs",
+                "runs_scored", "rbi", "walks", "hits_runs_rbis"},
+    "NBA":    {"points", "rebounds", "assists", "threes", "threes_made",
                 "steals", "blocks", "points_rebounds_assists"},
-    "TENNIS": {"aces", "double_faults", "break_points_won"},
-    # Session A additive whitelist — matches player_game_actuals
-    # families we can safely settle later via the PitchAPI/Big Balls
-    # cascade (see providers/settlement_bridge.py). Adding these
-    # here only affects the *safeguard admission* gate — Magic
-    # probability/threshold math is unchanged.
+    "TENNIS": {"aces", "double_faults", "break_points_won",
+                "total_games"},
     "SOCCER": {"goals", "assists", "shots_on_target", "shots",
-                "goalscorer", "score_or_assist"},
+                "goalscorer", "score_or_assist", "goal_contributions"},
+    "NHL":    {"goals", "assists", "points", "shots_on_goal"},
 }
 
 
@@ -72,6 +75,7 @@ async def is_safe_for_alt_lines(
     stat: str,
     min_prior_games: int = 5,
     canonical_player_id: Optional[str] = None,
+    pick: Optional[dict] = None,
 ) -> tuple[bool, Optional[str]]:
     """Return (safe, reason).
 
@@ -87,6 +91,15 @@ async def is_safe_for_alt_lines(
     argument — passing it lets the reader hit the canonical store
     directly without a name-round-trip. Callers that only have a
     name still work exactly as before.
+
+    UNIVERSAL COVERAGE (2026-06-30): ``pick`` is an OPTIONAL keyword.
+    When it carries both ``win_probability`` and ``line``, the
+    minimum-history gate is BYPASSED — the universal projected-
+    distribution fallback derives probabilities purely from the pick's
+    own immutable model output (which already passed publication
+    gates upstream), so re-blocking on missing ``player_game_actuals``
+    rows would double-guard against a signal that has already been
+    verified.  Retired-player / market-support gates STILL apply.
     """
     sport_u = (sport or "").upper()
     stat_l = (stat or "").lower()
@@ -113,6 +126,32 @@ async def is_safe_for_alt_lines(
                     return False, f"player status: {p['status']}"
     except Exception:
         pass  # missing collection is fine — safeguard is best-effort
+
+    # ── Universal-fallback bypass ────────────────────────────────
+    # If the caller supplied a pick with the two ingredients the
+    # universal projected-distribution helper needs, the history
+    # gate is not applicable: probabilities come from the pick's own
+    # ``win_probability`` + ``line``, not from historical PA/AB rows.
+    if isinstance(pick, dict):
+        wp = pick.get("win_probability")
+        line = pick.get("line")
+        # Some picks store the line only in the market string; parse
+        # it out so the fallback path can still fire.
+        if line is None:
+            try:
+                import re as _re
+                _tm = _re.search(
+                    r"(?:Over|Under|O|U)\s+(-?\d+(?:\.\d+)?)",
+                    str(pick.get("market") or ""), _re.I,
+                )
+                if _tm:
+                    line = float(_tm.group(1))
+            except Exception:
+                line = None
+        if isinstance(wp, (int, float)) and isinstance(line, (int, float)):
+            wp_frac = wp / 100.0 if wp > 1.0 else wp
+            if 0.0 < wp_frac < 1.0:
+                return True, None
 
     # ── Historical-history gate (Session A: canonical-first order) ────
     sport_l = sport_u.lower()  # canonical store uses lowercase sport

@@ -53,8 +53,17 @@ _MLB_MARKET_STAT_MAP: list[tuple[re.Pattern, str]] = [
     (re.compile(r"total\s+bases", re.I),  "total_bases"),
     (re.compile(r"home\s*runs?|\bhr\b", re.I), "home_runs"),
     (re.compile(r"\brbis?\b", re.I),       "rbi"),
+    # Pitcher outs (Outs Recorded / Pitching Outs) — MUST come before
+    # the generic "hits" match because "Outs Recorded" contains no
+    # ambiguous tokens with the batter families above.  Universal
+    # projected-distribution fallback handles the modeling.
+    (re.compile(r"outs\s*recorded|pitching\s*outs|pitcher\s*outs",
+                 re.I), "pitcher_outs"),
     (re.compile(r"\bhits?\b", re.I),       "hits"),
     (re.compile(r"strikeouts?|\bks?\b", re.I), "strikeouts"),
+    (re.compile(r"\bwalks?\b", re.I),      "walks"),
+    (re.compile(r"\bruns?\s+scored\b|\bruns?\b(?!\s+line)", re.I),
+                                            "runs_scored"),
 ]
 
 _NFL_MARKET_STAT_MAP: list[tuple[re.Pattern, str]] = [

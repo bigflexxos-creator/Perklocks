@@ -12,8 +12,12 @@ from typing import Optional
 
 # Standard sportsbook threshold grids per stat.
 # Values chosen to match real book increments (0.5 lines).
+# UNIVERSAL COVERAGE (2026-06-30) — every player-prop family the
+# runtime can publish has a grid so the universal projected-
+# distribution fallback (see ``universal_projection.py``) has a
+# scoring surface for ANY sport / ANY market.
 _THRESHOLD_GRIDS: dict[tuple[str, str], list[float]] = {
-    # NFL
+    # NFL — passing / rushing / receiving / TDs
     ("NFL", "passing_yards"):
         [150.5, 175.5, 200.5, 225.5, 250.5, 275.5, 300.5, 325.5, 350.5],
     ("NFL", "rushing_yards"):
@@ -24,7 +28,23 @@ _THRESHOLD_GRIDS: dict[tuple[str, str], list[float]] = {
         [1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5],
     ("NFL", "passing_tds"):
         [0.5, 1.5, 2.5, 3.5],
-    # MLB
+    ("NFL", "rushing_tds"):
+        [0.5, 1.5, 2.5],
+    ("NFL", "receiving_tds"):
+        [0.5, 1.5, 2.5],
+    ("NFL", "passing_completions"):
+        [14.5, 17.5, 19.5, 21.5, 23.5, 25.5, 27.5, 29.5],
+    ("NFL", "passing_attempts"):
+        [24.5, 27.5, 29.5, 31.5, 33.5, 35.5, 37.5, 39.5],
+    ("NFL", "rush_attempts"):
+        [6.5, 9.5, 11.5, 13.5, 15.5, 17.5, 19.5, 21.5],
+    ("NFL", "targets"):
+        [3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5],
+    ("NFL", "carries"):
+        [6.5, 9.5, 11.5, 13.5, 15.5, 17.5, 19.5, 21.5],
+    ("NFL", "passing_ints"):
+        [0.5, 1.5],
+    # MLB — batter + pitcher families
     ("MLB", "hits"):
         [0.5, 1.5, 2.5, 3.5],
     ("MLB", "total_bases"):
@@ -35,9 +55,15 @@ _THRESHOLD_GRIDS: dict[tuple[str, str], list[float]] = {
         [0.5, 1.5, 2.5, 3.5],
     ("MLB", "pitcher_strikeouts"):
         [3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5, 11.5],
+    ("MLB", "pitcher_outs"):
+        [11.5, 12.5, 13.5, 14.5, 15.5, 16.5, 17.5, 18.5, 19.5,
+         20.5, 21.5],
     ("MLB", "runs_scored"): [0.5, 1.5],
-    ("MLB", "rbi"):        [0.5, 1.5, 2.5],
-    # NBA
+    ("MLB", "rbi"):         [0.5, 1.5, 2.5],
+    ("MLB", "walks"):       [0.5, 1.5, 2.5],
+    ("MLB", "hits_runs_rbis"):
+        [0.5, 1.5, 2.5, 3.5, 4.5],
+    # NBA — points / rebounds / assists / defensive / composite
     ("NBA", "points"):
         [9.5, 14.5, 19.5, 24.5, 29.5, 34.5, 39.5, 44.5],
     ("NBA", "rebounds"):
@@ -46,6 +72,12 @@ _THRESHOLD_GRIDS: dict[tuple[str, str], list[float]] = {
         [1.5, 3.5, 5.5, 7.5, 9.5, 11.5],
     ("NBA", "threes"):
         [0.5, 1.5, 2.5, 3.5, 4.5],
+    ("NBA", "threes_made"):
+        [0.5, 1.5, 2.5, 3.5, 4.5],
+    ("NBA", "steals"):
+        [0.5, 1.5, 2.5, 3.5],
+    ("NBA", "blocks"):
+        [0.5, 1.5, 2.5, 3.5],
     ("NBA", "points_rebounds_assists"):
         [19.5, 29.5, 39.5, 49.5],
     # Tennis
@@ -55,6 +87,32 @@ _THRESHOLD_GRIDS: dict[tuple[str, str], list[float]] = {
         [0.5, 1.5, 2.5, 3.5, 4.5, 5.5],
     ("TENNIS", "break_points_won"):
         [0.5, 1.5, 2.5, 3.5, 4.5],
+    ("TENNIS", "total_games"):
+        [18.5, 20.5, 21.5, 22.5, 23.5, 24.5, 25.5, 26.5, 27.5],
+    # Soccer — player + team
+    ("SOCCER", "goals"):
+        [0.5, 1.5, 2.5],
+    ("SOCCER", "goalscorer"):
+        [0.5],
+    ("SOCCER", "assists"):
+        [0.5, 1.5],
+    ("SOCCER", "shots_on_target"):
+        [0.5, 1.5, 2.5, 3.5],
+    ("SOCCER", "shots"):
+        [0.5, 1.5, 2.5, 3.5, 4.5],
+    ("SOCCER", "score_or_assist"):
+        [0.5],
+    ("SOCCER", "goal_contributions"):
+        [0.5, 1.5],
+    # NHL
+    ("NHL", "goals"):
+        [0.5, 1.5],
+    ("NHL", "assists"):
+        [0.5, 1.5, 2.5],
+    ("NHL", "points"):
+        [0.5, 1.5, 2.5, 3.5],
+    ("NHL", "shots_on_goal"):
+        [1.5, 2.5, 3.5, 4.5, 5.5],
 }
 
 
@@ -69,6 +127,7 @@ async def build_outcome_distribution(
     stat: str,
     opponent: Optional[str] = None,
     thresholds: Optional[list[float]] = None,
+    pick: Optional[dict] = None,
 ) -> dict:
     """Return a distribution dict:
         {
@@ -80,9 +139,14 @@ async def build_outcome_distribution(
           "notes":        [...],
         }
 
-    Each threshold's `p_over` comes from `predict_player_prop`, which
-    already blends the trained model output with Monte-Carlo shrinkage
-    from the base pipeline.
+    UNIVERSAL COVERAGE (2026-06-30) — every threshold gets scored:
+      1. If a trained ML model exists for (sport, stat), scores via
+         ``predict_player_prop`` (highest accuracy path).
+      2. Otherwise falls back to the universal projected-distribution
+         helper — back-solves a Poisson (count stats) or Normal
+         (continuous stats) from the pick's own ``win_probability``
+         + ``line`` and evaluates the grid.  No fabrication: the two
+         inputs come from the immutable ``PublishedPickContract``.
     """
     from services.trained_prediction_engine import predict_player_prop
     grid = thresholds or _grid_for(sport, stat)
@@ -113,6 +177,33 @@ async def build_outcome_distribution(
             "top_factors":      r.get("top_factors") or [],
             "expected_value":   r.get("expected_value"),
         }))
+    # ── Universal fallback ────────────────────────────────────────
+    # When the trained model produced NO usable rows (no model for
+    # this family / all thresholds unsupported), synthesize the
+    # distribution from the pick's own win_probability + line.
+    if not rows and isinstance(pick, dict):
+        from .universal_projection import universal_distribution
+        # win_probability is stored as a percent (0-100) on picks;
+        # the helper auto-detects & normalises.
+        wp = pick.get("win_probability")
+        line = pick.get("line")
+        # Some picks carry the line only in the market string — the
+        # ranker already parsed it upstream, but be defensive.
+        if line is None:
+            try:
+                import re as _re
+                m = _re.search(r"(?:Over|Under|O|U)\s+(-?\d+(?:\.\d+)?)",
+                                str(pick.get("market") or ""), _re.I)
+                if m:
+                    line = float(m.group(1))
+            except Exception:
+                line = None
+        fallback = universal_distribution(
+            stat=stat, line=line, win_probability=wp, grid=grid,
+        )
+        if fallback and fallback.get("supported"):
+            fallback["notes"] = notes + fallback.get("notes", [])
+            return fallback
     if not rows:
         return {"supported": False,
                  "reason": "distribution empty (all thresholds unsupported)",
