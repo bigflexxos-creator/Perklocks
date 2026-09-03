@@ -61,8 +61,21 @@ export function MarketRankPanel({ pick }: { pick: Pick }) {
 
   const ranked = data.ranked;
   const best = ranked[0];
-  const currentIdx = ranked.findIndex((r) => r.is_current);
-  const currentIsBest = currentIdx === 0;
+  // PERKLOCKS MAIN 36 · P0-2 (frontend consumer) — backend now returns
+  // the current pick SEPARATELY in ``current_pick`` with its OWN
+  // market_score computed via the SAME formula.  The legacy
+  // ``ranked.findIndex(is_current)`` never resolved because the backend
+  // excludes the current pick from ``ranked`` → ``ranked[-1] ?? 0``
+  // rendered "your pick at 0" on every card.  Read the separate field;
+  // missing metric renders as N/A, NEVER as 0.
+  const currentPick = (data as any).current_pick ?? null;
+  const currentIsBest = !!currentPick && best?.id === currentPick.id;
+  const currentScore =
+    typeof currentPick?.market_score === "number"
+      ? currentPick.market_score
+      : null;
+  const currentScoreStr =
+    currentScore != null ? currentScore.toFixed(0) : "N/A";
 
   return (
     <View style={styles.wrap}>
@@ -91,8 +104,8 @@ export function MarketRankPanel({ pick }: { pick: Pick }) {
         </Text>
         <Text style={styles.verdictDetail}>
           {currentIsBest
-            ? `Your pick scores ${best.market_score.toFixed(0)} \u2014 leads ${ranked.length - 1} other market${ranked.length > 2 ? "s" : ""}.`
-            : `${best.short_market} scores ${best.market_score.toFixed(0)} vs your pick at ${(ranked[currentIdx]?.market_score ?? 0).toFixed(0)}.`}
+            ? `Your pick scores ${best.market_score.toFixed(0)} \u2014 leads ${ranked.length} other market${ranked.length > 1 ? "s" : ""}.`
+            : `${best.short_market} scores ${best.market_score.toFixed(0)} vs your pick at ${currentScoreStr}.`}
         </Text>
       </View>
 
