@@ -391,6 +391,43 @@ def evaluate_publication(pick: dict) -> BoundaryVerdict:
             # the individual reason-specific guards above still fire.
             pass
 
+        # ── Rule 5.6 — UniversalMarketContract capability_state ──
+        # PERKLOCKS-MAIN 35 · FINAL — RESEARCH_ONLY / PROVIDER_UNAVAILABLE
+        # / SETTLEMENT_UNAVAILABLE markets MUST NEVER publish
+        # authoritative Locks even if a producer emits them.  Per the
+        # product mandate: "RESEARCH_ONLY markets must not silently
+        # publish authoritative Locks."  This is the runtime wire for
+        # the Universal Market Contract capability_state.
+        try:
+            from services.universal_market_contract import (
+                get as _umc_get, resolve_provider_key as _umc_resolve,
+                ACTIVE as _UMC_ACTIVE,
+            )
+            sport = pick.get("sport") or ""
+            # Prefer canonical family; fall back to provider key resolution.
+            fam = (pick.get("canonical_market_family")
+                    or pick.get("market_family")
+                    or _derive_market_family(pick))
+            entry = _umc_get(sport, fam) if (sport and fam) else None
+            if entry is None:
+                pmk = pick.get("provider_market_key")
+                if sport and pmk:
+                    entry = _umc_resolve(sport, pmk)
+            if entry is not None and entry.capability_state != _UMC_ACTIVE:
+                # Non-ACTIVE state = not publishable as a Lock.
+                reason_label = (f"UMC_CAPABILITY_STATE_"
+                                f"{entry.capability_state}")
+                reasons.append(reason_label)
+                logger.warning(
+                    "boundary_reject sport=%s family=%s "
+                    "capability_state=%s pick=%s",
+                    sport, entry.family, entry.capability_state,
+                    pick.get("id"),
+                )
+        except Exception:
+            # Registry failure must never mask other guards.
+            pass
+
         # ── Rule 3 — model provenance ──
         if not _has_model_provenance(pick):
             reasons.append(RejectionReason.MISSING_MODEL_PROVENANCE.value)
