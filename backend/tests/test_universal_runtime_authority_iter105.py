@@ -198,10 +198,13 @@ def test_rollover_endpoint_keeps_stricter_quality_gate():
     if rollover_block_start == -1:
         rollover_block_start = src.find("rollover")
     assert rollover_block_start != -1, "rollover route not found"
-    # Look for the apply_quality_gate call within the rollover route.
-    # Simple heuristic: rollover section must have `apply_quality_gate(picks)`
-    # (no enforce kwarg = default True).
-    assert "picks, qg_blocked = apply_quality_gate(picks)" in src
+    # PERKLOCKS MAIN 36 · P1 — quality gate now runs BEFORE the
+    # shared selector, so the variable is ``candidates`` (post-refactor).
+    # Legacy pattern with ``picks`` is also accepted for backward-compat.
+    assert (
+        "candidates, qg_blocked = apply_quality_gate(candidates)" in src
+        or "picks, qg_blocked = apply_quality_gate(picks)" in src
+    )
 
 
 # ─── 7. Live proof — Romulo scorer surfaces at read time ────────

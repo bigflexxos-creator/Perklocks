@@ -98,20 +98,31 @@ def test_rollover_returns_fewer_than_three_when_pool_is_short():
 # ─────────────────────────────────────────────────────────────────────
 def test_picks_route_stamps_selection_rank_and_selector_version():
     """The Phase 7 §7W metadata (selection_rank + selector_version)
-    MUST be stamped by /picks/rollover alongside on_rollover_at."""
+    MUST be stamped by /picks/rollover alongside on_rollover_at.
+
+    PERKLOCKS MAIN 36 · P1.7 — the fields moved from inline literals
+    to the ``services.rollover_selector.freeze_metadata`` helper so
+    live + replay use the same shape.  Test now accepts either the
+    inline literal (legacy) or the helper reference (post-refactor).
+    """
     import inspect
     from routes import picks_routes as pr
+    from services import rollover_selector as rs
     src = inspect.getsource(pr.pick_rollover)
+    freeze_src = inspect.getsource(rs.freeze_metadata)
+    combined = src + "\n" + freeze_src
     for required in (
         "rollover_selection_rank",
         "rollover_selector_version",
         "picks_route_live",
         "on_rollover_at",
     ):
-        assert required in src, (
+        assert required in combined, (
             f"/picks/rollover must stamp {required} on top-3 for "
             f"§7W snapshot reproducibility"
         )
+    # Route MUST call the helper — proves the stamping is live.
+    assert "freeze_metadata" in src
 
 
 # ─────────────────────────────────────────────────────────────────────

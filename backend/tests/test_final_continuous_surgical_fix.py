@@ -40,10 +40,14 @@ def test_mlb_catalog_has_required_tokens():
 
 # ── Fix 3 · Rollover canonical-score precedence ────────────────────
 def test_rollover_prefers_published_lock_score():
-    src = _src("/app/backend/routes/picks_routes.py")
-    idx = src.index("def _passes_v4")
-    end = src.index("return True, \"\"", idx)
-    body = src[idx:end]
+    """PERKLOCKS MAIN 36 · P1.2 — the ``_passes_v4`` local function was
+    replaced by the shared ``services.rollover_selector.passes_v5``.
+    The canonical-score precedence contract is preserved in the new
+    location.
+    """
+    from services import rollover_selector as rs
+    import inspect
+    body = inspect.getsource(rs.passes_v5)
     assert "published_lock_score" in body
     assert "p.get(\"published_lock_score\")" in body
 
