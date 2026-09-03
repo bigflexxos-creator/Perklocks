@@ -2403,8 +2403,12 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         p for p in canonical
         if "team total" not in (p.get("market") or "").lower()
     ]
-    if lite:
-        canonical = [_strip_for_lite(p) for p in canonical]
+    # SLICE 1.2B (2026-09-02) — the lite projection was previously
+    # applied here, but downstream decorators (Statcast, umpire, MLB
+    # usage, form) mutate picks IN PLACE and were leaking heavy blobs
+    # (statcast_batter, ump_zone, stuff_plus, home_meta) back onto the
+    # wire. The projection now runs at the FINAL step, right before
+    # `return`, so any post-strip decoration is naturally discarded.
 
     # ── Phase 4E follow-up (2026-08-06) — final eligibility filter ─────
     # The DB-level `grade != "Pass"` filter runs BEFORE the response
@@ -3063,6 +3067,9 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 "(EBM=%d, rescue_rejected=%s).  Root Closure invariant holds.",
                 len(rescued), len(ebm_ids), rescue_rejected,
             )
+            # SLICE 1.2B — rescued picks are extended into `canonical`
+            # and pass through the final Lightweight Board DTO projection
+            # at the return site (no double strip needed here).
             canonical.extend(rescued)
             # Root Closure Part-2 §6 — the merged set must be dedupe-clean
             # against the SAME canonical wager identity every downstream
@@ -3085,6 +3092,17 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             )
     except Exception as _ebm_err:
         logger.warning("Eligibility union rescue skipped: %s", _ebm_err)
+
+    # SLICE 1.2B — Apply the Lightweight Board DTO projection AS THE
+    # FINAL step, AFTER every on-read decoration (Statcast, umpire,
+    # MLB usage, ESPN meta, form, rescue…). This guarantees that
+    # mutating post-strip decorators (which re-attach heavy blobs like
+    # statcast_batter, ump_zone, stuff_plus, etc.) can't leak them back
+    # into the wire payload. The rescue path already applied its own
+    # projection above, so a second pass on rescued rows is a no-op —
+    # `_strip_for_lite` is idempotent on already-projected dicts.
+    if lite:
+        canonical = [_strip_for_lite(_p) for _p in canonical]
 
     return {"picks": canonical, "alt_availability": alt_availability,
              "odds_provider": _odds_envelope}

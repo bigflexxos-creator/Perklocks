@@ -503,10 +503,36 @@ function LockPickCardImpl({ pick, featured = false }: { pick: Pick; featured?: b
             </View>
           )}
           {/* ── Player-vs-Opponent Matchup Intelligence badge (2026-07-28) ──
-              Lazy-fetches /api/picks/{id}/matchup and shows a letter grade
-              only when the pick supports it AND we have historical rows.
-              Silently hides for team/moneyline markets and cold caches. */}
-          {!!pick.id && <MatchupGradeBadge pickId={pick.id} />}
+              SLICE 1.6 (2026-09-02) — Now feeds `preloaded` directly from
+              the Lightweight Board DTO (`pick.matchup_grade` +
+              `pick.matchup_score` + related whitelisted fields) so 100+
+              per-card `GET /api/picks/{id}/matchup` fetches are avoided
+              on a full home slate. The badge still falls back to a
+              lazy fetch when the pick payload lacks a grade. */}
+          {!!pick.id && (
+            <MatchupGradeBadge
+              pickId={pick.id}
+              preloaded={
+                (pick as any).matchup_grade
+                  ? {
+                      supported: true,
+                      matchup_grade: (pick as any).matchup_grade,
+                      sample_confidence: (pick as any).matchup_sample_confidence || "medium",
+                      opponent_team:
+                        pick.sport === "MLB"
+                          ? (pick as any).away_team_name ?? null
+                          : null,
+                      threshold_hit_rate: (pick as any).matchup_hit_rate ?? null,
+                      sample_size: (pick as any).matchup_sample_size ?? 0,
+                      player_name:
+                        (pick as any).player_name ||
+                        (pick as any).elite_player_name ||
+                        pick.selection,
+                    } as any
+                  : null
+              }
+            />
+          )}
         </View>
       </View>
 
@@ -1543,13 +1569,17 @@ function TrackBetButton({ pick }: { pick: LockPick }) {
         )}
       </Pressable>
 
-      {/* ── Stake picker modal ────────────────────────────────────── */}
-      <Modal
-        visible={pickerOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setPickerOpen(false)}
-      >
+      {/* ── Stake picker modal (SLICE 1.6 — lazy mount) ───────────
+          Only mount the Modal component tree when actually needed.
+          Previously every card row mounted 2 idle Modal instances,
+          costing ~200 native-view slots on a 100-card board. */}
+      {pickerOpen && (
+        <Modal
+          visible={pickerOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setPickerOpen(false)}
+        >
         <Pressable style={styles.modalBackdrop} onPress={() => setPickerOpen(false)}>
           <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
             <Text style={styles.modalTitle}>Track This Bet</Text>
@@ -1608,35 +1638,38 @@ function TrackBetButton({ pick }: { pick: LockPick }) {
             </Pressable>
           </Pressable>
         </Pressable>
-      </Modal>
+        </Modal>
+      )}
 
-      {/* ── Untrack confirmation modal ────────────────────────────── */}
-      <Modal
-        visible={confirmOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setConfirmOpen(false)}
-      >
-        <Pressable style={styles.modalBackdrop} onPress={() => setConfirmOpen(false)}>
-          <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.modalTitle}>Untrack Bet?</Text>
-            <Text style={styles.modalSub} numberOfLines={2}>
-              {pick.selection}
-            </Text>
-            <Text style={styles.modalMeta}>
-              Currently at {stake ?? "?"}u — remove from My Bets?
-            </Text>
-            <View style={styles.confirmRow}>
-              <Pressable style={styles.cancelBtn} onPress={() => setConfirmOpen(false)}>
-                <Text style={styles.cancelBtnText}>Keep</Text>
-              </Pressable>
-              <Pressable style={styles.destructiveBtn} onPress={submitUntrack}>
-                <Text style={styles.destructiveBtnText}>Untrack</Text>
-              </Pressable>
-            </View>
+      {/* ── Untrack confirmation modal (SLICE 1.6 — lazy mount) ─── */}
+      {confirmOpen && (
+        <Modal
+          visible={confirmOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setConfirmOpen(false)}
+        >
+          <Pressable style={styles.modalBackdrop} onPress={() => setConfirmOpen(false)}>
+            <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
+              <Text style={styles.modalTitle}>Untrack Bet?</Text>
+              <Text style={styles.modalSub} numberOfLines={2}>
+                {pick.selection}
+              </Text>
+              <Text style={styles.modalMeta}>
+                Currently at {stake ?? "?"}u — remove from My Bets?
+              </Text>
+              <View style={styles.confirmRow}>
+                <Pressable style={styles.cancelBtn} onPress={() => setConfirmOpen(false)}>
+                  <Text style={styles.cancelBtnText}>Keep</Text>
+                </Pressable>
+                <Pressable style={styles.destructiveBtn} onPress={submitUntrack}>
+                  <Text style={styles.destructiveBtnText}>Untrack</Text>
+                </Pressable>
+              </View>
+            </Pressable>
           </Pressable>
-        </Pressable>
-      </Modal>
+        </Modal>
+      )}
     </>
   );
 }

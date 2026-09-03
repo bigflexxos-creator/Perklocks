@@ -18,7 +18,13 @@
  *     backend already attaches on `/api/picks/today`.
  */
 import React, { useState } from "react";
-import { View, Text, Image, StyleSheet, Platform } from "react-native";
+import { View, Text, StyleSheet } from "react-native";
+// SLICE 3 (2026-09-02) — expo-image for cross-mount decoded cache +
+// smoother cross-fade on player headshots / team crests. Every card
+// mounts a PlayerIdentity; on a 100-card slate this is the #1 GPU
+// upload source. `cachePolicy="memory-disk"` also survives scroll
+// virtualization recycling with zero re-decode.
+import { Image } from "expo-image";
 import { COLORS, RADIUS } from "@/src/theme";
 import type { Pick } from "@/src/lib/api";
 
@@ -174,15 +180,15 @@ export function PlayerIdentity({
         }}
         // For headshots use ``cover`` so faces fill the circle cleanly;
         // for team logos keep ``contain`` so crests don't get cropped.
-        resizeMode={isHeadshot ? "cover" : "contain"}
+        contentFit={isHeadshot ? "cover" : "contain"}
+        // SLICE 3 — decoded-image cache survives scroll recycling.
+        cachePolicy="memory-disk"
+        transition={140}
         // Fixed dimensions — avoids layout shift.
         style={[
           styles.img,
           { width: size, height: size, borderRadius: radius, opacity: loaded ? 1 : 0.001 },
         ]}
-        {...(Platform.OS === "web"
-          ? ({ loading: "lazy" } as any)
-          : ({ } as any))}
       />
       {!loaded && (
         <View style={[styles.placeholder, { borderRadius: radius }]}>
