@@ -1696,6 +1696,16 @@ export const api = {
     request<{
       picks: (Pick & { status?: string; settled_at?: string; final_score?: Record<string, number>; loss_analysis?: string })[];
       stats: { total: number; won: number; lost: number; push: number; hit_rate: number; rollover_hit_rate: number; rollover_decided: number };
+      // PERKLOCKS-MAIN 34 · P0D — settlement freshness metadata so
+      // the client can auto-refresh after an in-flight settlement
+      // pass completes (prevents "refresh #1 stale, refresh #2
+      // different" without explanation).
+      settlement_freshness?: {
+        settlement_in_flight: boolean;
+        settlement_cooldown_until: number;
+        recommended_repoll_seconds: number | null;
+        unresolved_with_past_event: number;
+      };
     }>(`/picks/history?days=${days}${rolloverOnly ? "&rollover_only=true" : ""}`),
   lossAnalysis: (id: string) =>
     request<{ analysis: string; source: string }>(`/picks/${id}/loss-analysis`, { method: "POST" }),
