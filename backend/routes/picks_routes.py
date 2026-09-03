@@ -3374,6 +3374,20 @@ async def pick_detail(
     except Exception as _fusion_err:
         logger.debug("Fusion enrichment failed on /picks/{id}: %s",
                      _fusion_err)
+    # ── PERKLOCKS-MAIN 34 · STEP 1 ─────────────────────────────────────
+    # Attach the immutable `published_pick_contract` so Pick Breakdown
+    # (and every other downstream consumer) can read frozen canonical
+    # wager truth from ONE place rather than re-parsing raw pick fields.
+    # Adds ~350 B to the detail payload; carries `_provenance` so a
+    # regression that lets a mutable alias outrank a canonical value
+    # is immediately visible in the wire response.
+    try:
+        from services.published_pick_contract import PublishedPickContract
+        _contract = PublishedPickContract.from_pick(pick)
+        pick["published_pick_contract"] = _contract.as_dict()
+        pick["published_pick_contract_provenance"] = _contract.provenance()
+    except Exception as _c_err:
+        logger.debug("PublishedPickContract attach failed: %s", _c_err)
     return pick
 
 
