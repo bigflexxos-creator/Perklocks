@@ -231,7 +231,20 @@ def _is_player_market(pick: dict) -> bool:
 
 def _extract_event_participants(pick: dict) -> tuple[str, str]:
     """Return (home_team_norm, away_team_norm). Empty string when
-    unresolvable (do not guess)."""
+    unresolvable (do not guess).
+
+    PERKLOCKS-MAIN 35 · P0 UNIVERSAL IDENTITY — prefer canonical
+    team IDs (Level 1 authority) before falling back to display
+    names.  Never guess; if canonical IDs are absent we fall through
+    to `home_team`/`away_team` and finally to the "Away @ Home"
+    event-string parse (Level 5 controlled alias fallback).
+    """
+    # Level 1 — canonical event participant IDs (highest authority).
+    home_id = pick.get("canonical_home_team_id") or pick.get("home_team_id")
+    away_id = pick.get("canonical_away_team_id") or pick.get("away_team_id")
+    if home_id and away_id:
+        return _norm(str(home_id)), _norm(str(away_id))
+
     home = pick.get("home_team") or ""
     away = pick.get("away_team") or ""
     if not home or not away:
@@ -251,12 +264,16 @@ def _extract_player_team(pick: dict) -> str:
     """Return the player's team normalized.  Empty string when the pick
     lacks any enriched team hint (fail-open — see module docstring).
 
-    Post-Cert Defect 3B — recognises the Soccer scorer ingestion's
-    ``canonical_team_name`` field as an authoritative player-team
-    source (matches other authoritative fields like ``player_team`` /
-    ``elite_player_team``).  Never invents a team — only reads existing
-    enriched fields.
+    PERKLOCKS-MAIN 35 · P0 UNIVERSAL IDENTITY — the canonical
+    ``canonical_team_id`` field (Level 1 / Level 4 authority) always
+    wins.  Legacy display-name / abbrev fields remain as belt-and-
+    braces (Level 5 controlled alias fallback) so older rows never
+    silently regress into PLAYER_TEAM_UNRESOLVED.
     """
+    # Level 1/4 — canonical team ID (event-scoped roster membership).
+    cid = pick.get("canonical_team_id")
+    if isinstance(cid, str) and cid.strip():
+        return _norm(cid)
     for k in ("player_team", "elite_player_team",
               "player_team_name", "canonical_team_name",
               "team", "team_abbrev"):
