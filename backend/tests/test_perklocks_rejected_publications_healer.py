@@ -139,6 +139,19 @@ def test_healable_rejected_pick_is_published():
             # model_probability filled from win_probability (82 → 0.82)
             mp = row.get("model_probability")
             assert isinstance(mp, (int, float)) and 0.0 <= mp <= 1.0, row
+            # PERKLOCKS ROOT FIX §2 — canonical ``published_*`` mirror
+            # fields MUST be stamped, otherwise the main-board
+            # eligibility query (``published_lock_score >= 85``) will
+            # skip the healed row and the pick stays invisible.
+            assert row.get("published_lock_score") == 98.0, row
+            assert isinstance(row.get("published_probability"), (int, float))
+            assert 0.0 <= row["published_probability"] <= 1.0
+            assert row.get("published_odds") == -135
+            assert row.get("published_line") == 0.5
+            # Stale-grade healer — pick had no ``grade`` field, so
+            # canonical grade must be derived from the Lock Score
+            # (98.0 → "Elite Lock" per ``sports_engine._grade``).
+            assert row.get("published_grade") == "Elite Lock", row
         finally:
             await db.picks.delete_many({"pick_date": pd})
             client.close()
@@ -237,5 +250,50 @@ def test_healer_scopes_by_pick_date():
             assert row_o["publication_state"] == "REJECTED"
         finally:
             await db.picks.delete_many({"pick_date": {"$in": [pd_target, pd_other]}})
+            client.close()
+    asyncio.run(_run())
+
+
+
+def test_stale_pass_grade_is_healed_from_lock_score():
+    """PERKLOCKS ROOT FIX §3: a pick can enter REJECTED with
+    ``grade='Pass'`` stamped by APEX / v2 engines even when the
+    canonical Lock Score clears the >=85 floor.  The main-board
+    filter requires ``published_grade != 'Pass'`` when the field
+    exists, so a stale-Pass leak keeps the pick invisible even
+    after healing.  The healer MUST re-derive ``published_grade``
+    from the Lock Score whenever the incoming grade is Pass but
+    the canonical score qualifies.
+    """
+    async def _run():
+        client = AsyncIOMotorClient(MONGO_URL)
+        db = client[DB_NAME]
+        pd = "2099-12-26"
+        pid = f"heal-test-{uuid.uuid4()}"
+        try:
+            await db.picks.delete_many({"pick_date": pd})
+            row = _seed_healable_pick(pid, pd)
+            row["grade"] = "Pass"                   # stale APEX label
+            row["published_grade"] = "Pass"         # stale mirror
+            row["lock_score"] = 95.0                # canonical Strong Lock
+            await db.picks.insert_one(row)
+
+            from services.publication_reconciliation import (
+                heal_rejected_publications,
+            )
+            summary = await heal_rejected_publications(
+                db, pick_date=pd, limit=100,
+            )
+            assert summary["healed"] == 1
+
+            healed = await db.picks.find_one({"id": pid}, {"_id": 0})
+            assert healed["publication_state"] == "PUBLISHED"
+            # 95.0 → "Strong Lock" per sports_engine._grade.
+            assert healed.get("published_grade") == "Strong Lock", healed
+            # Legacy ``grade`` field also refreshed so downstream
+            # readers that fall back to `grade` see the tier.
+            assert healed.get("grade") == "Strong Lock", healed
+        finally:
+            await db.picks.delete_many({"pick_date": pd})
             client.close()
     asyncio.run(_run())
