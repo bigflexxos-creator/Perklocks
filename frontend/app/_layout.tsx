@@ -43,6 +43,15 @@ export default function RootLayout() {
   const [loaded, error] = useIconFonts();
   const [cacheBustDone, setCacheBustDone] = useState(false);
   const [bgUri, setBgUri] = useState<string | null>(null);
+  // SLICE 1.1 — After 500 ms, force-paint the shell even if the icon
+  // font CDN hasn't responded yet. Users prefer a functional shell with
+  // tofu icons for a few frames over a black splash for 2 s on flaky
+  // networks (Expo Go, cold CDN).
+  const [fontTimeoutElapsed, setFontTimeoutElapsed] = useState(false);
+  useEffect(() => {
+    const h = setTimeout(() => setFontTimeoutElapsed(true), 500);
+    return () => clearTimeout(h);
+  }, []);
 
   // Resolve the brand background to a URI we can use as a CSS background
   // on web (RN-Web's <Image> mis-sets opacity:0 inside React Navigation's
@@ -115,37 +124,64 @@ export default function RootLayout() {
     };
   }, []);
 
-  // Run the cache buster BEFORE any provider mounts so the BetSlipContext
-  // hydrates from a clean slate when a data-version bump occurs. This is
-  // what kills the "Marozsan 41-6" / other stale-pick artifacts that get
-  // pinned into AsyncStorage when picks shipped with bad explanations.
+  // SLICE 1.1 (2026-09-02) — Cold-start / runtime performance.
   //
-  // Layer 3: client-baked version check (`APP_DATA_VERSION`).
-  // Layer 2: backend-version check via `/api/version` — phones auto-wipe
-  // whenever the server ships a new DATA_VERSION.
+  // Previously we blocked the FIRST paint on the awaited chain:
+  //   L3 (client version, AsyncStorage) → L2 (network `/api/version`).
+  // The L2 network round-trip added ~200-800 ms to cold start with the
+  // splash screen frozen; on flaky networks it stalled for the full
+  // fetch timeout. The user's Slice 1.1 directive: "Remove network
+  // blocking on /api/version and fonts for cold start. Implement local
+  // shell -> async validation."
+  //
+  // New flow:
+  //   1. L3 cache bust (AsyncStorage compare) → fast, ~5ms. STILL
+  //      blocks the initial paint because it may wipe stale data that
+  //      would otherwise hydrate the auth/betslip providers.
+  //   2. Once L3 is done, the shell paints immediately.
+  //   3. L2 backend cache bust fires in the background WITHOUT blocking
+  //      the shell. If it wipes anything, the mutation is applied in
+  //      AsyncStorage and the fresh reads happen on the next screen
+  //      refresh cycle (all data-facing screens re-fetch on focus).
   useEffect(() => {
+    let cancelled = false;
     (async () => {
+      // Layer 3 — synchronous-ish client version check.
       const clientResult = await runCacheBustIfNeeded();
+      if (cancelled) return;
       if (clientResult.wiped) {
         // eslint-disable-next-line no-console
         console.log("[cachebust] L3 wiped AsyncStorage —", clientResult.reason);
       }
-      const backendResult = await runBackendCacheBustIfNeeded(
-        () => api.version().then((r) => r.data_version).catch(() => null),
-      );
-      if (backendResult.wiped) {
-        // eslint-disable-next-line no-console
-        console.log("[cachebust] L2 wiped AsyncStorage —", backendResult.reason);
-      }
+      // Unblock the shell right after L3 — do NOT await L2.
       setCacheBustDone(true);
+      // Layer 2 — backend version check fires in the background so the
+      // shell paints immediately. Result is applied lazily (screens
+      // re-fetch on focus; no in-flight requests to abort at this
+      // point in the boot sequence).
+      runBackendCacheBustIfNeeded(
+        () => api.version().then((r) => r.data_version).catch(() => null),
+      ).then((backendResult) => {
+        if (cancelled) return;
+        if (backendResult.wiped) {
+          // eslint-disable-next-line no-console
+          console.log("[cachebust] L2 wiped AsyncStorage (background) —",
+                       backendResult.reason);
+        }
+      }).catch(() => { /* silent — banner surfaces if needed */ });
     })();
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
-    if ((loaded || error) && cacheBustDone) {
+    // SLICE 1.1 — Hide splash as soon as the boot gate allows the shell
+    // to paint (see below). Splash was previously chained to (loaded ||
+    // error) && cacheBustDone; we now honor the 500 ms font timeout too
+    // so a black splash never lingers on flaky networks.
+    if (cacheBustDone && (loaded || error || fontTimeoutElapsed)) {
       SplashScreen.hideAsync();
     }
-  }, [loaded, error, cacheBustDone]);
+  }, [loaded, error, cacheBustDone, fontTimeoutElapsed]);
 
   // Global unhandled-error trap — captures errors that escape React's
   // render tree (async setTimeout callbacks, unhandled promise rejects).
@@ -182,9 +218,14 @@ export default function RootLayout() {
     };
   }, []);
 
-  // If the CDN is unreachable we fall through on error rather than wedging
-  // the app — icons will tofu, but the app still boots.
-  if ((!loaded && !error) || !cacheBustDone) return null;
+  // SLICE 1.1 — Boot gate: paint the shell as soon as either
+  //   • icon fonts finish loading / erroring, OR
+  //   • the 500 ms font timeout elapses (functional shell wins over
+  //     black splash on flaky CDNs / Expo Go cold starts)
+  // AND the local (L3) cache-bust check has completed. Backend (L2)
+  // cache bust runs in the background and never gates paint.
+  if (!cacheBustDone) return null;
+  if (!loaded && !error && !fontTimeoutElapsed) return null;
 
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#08090f" }}>

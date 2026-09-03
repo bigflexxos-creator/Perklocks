@@ -2530,6 +2530,119 @@ _LITE_STRIPPED_FIELDS = frozenset({
 })
 
 
+# ─────────────────────────────────────────────────────────────────────
+# SLICE 1.2B — TRUE LIGHTWEIGHT BOARD DTO (whitelist projection)
+# ─────────────────────────────────────────────────────────────────────
+#
+# The blacklist above (`_LITE_STRIPPED_FIELDS`) removes 22 heavy fields
+# but leaves 100+ auxiliary fields on every pick — publication metadata,
+# duplicated truth aliases (published_*, provider_*, no_vig_*), version
+# tags stuck on "legacy_unknown", 5 different lock_score copies, model
+# fusion payloads, snapshot blobs, etc. Byte-level audit on 2026-09-02
+# showed the "lite" payload still weighed ~1.08 MB across 110 picks
+# (~10 KB / pick average).
+#
+# Slice 1.2B pivots the lite path to a WHITELIST projection: we keep
+# only the ~55 fields the LockPickCard (and its immediate helpers —
+# PickEventRow, PlayerIdentity, MatchupGradeBadge, AltLineChips) actually
+# reads on the collapsed home board. Everything else (publication
+# telemetry, dupe aliases, deep sport blobs, snapshot debug) lives only
+# on `/api/picks/{pick_id}` — the same endpoint the card already
+# lazy-fetches on first "Why this pick?" expand.
+#
+# CANONICAL TRUTH INVARIANTS (test_phase24_slice_1_2_board_dto.py):
+#   * id, sport, market, selection, line, book_odds
+#   * published_lock_score, lock_score
+#   * publication_state, publication_revision
+#   * locks_eligibility (Universal 85+ reachability contract)
+# — every one is in the whitelist below. Nothing frozen may drift.
+_LITE_BOARD_WHITELIST = frozenset({
+    # ── Identifiers ──
+    "id", "sport", "league", "event", "event_time", "commence_time",
+    "market", "market_key", "market_family",
+    "selection", "side", "pick_date", "status",
+    "home_team_name", "away_team_name",
+    # ── Odds & lock signals (RENDERED on card) ──
+    "book_odds", "odds", "american_odds", "line",
+    "confidence", "grade",
+    "lock_score", "lock_score_v2", "lock_score_peak",
+    "edge_percent", "implied_probability", "win_probability",
+    "signal_score", "signal_score_raw",
+    "sim_win_probability", "sim_disagreement_with_model",
+    # ── Truth invariants (frozen canonical; contract tests) ──
+    "published_lock_score", "publication_state", "publication_revision",
+    "locks_eligibility", "locks_eligibility_rescued",
+    # ── Player-prop / matchup meta (used by card + PickEventRow) ──
+    "elite_player", "elite_player_name", "player_name",
+    "expected_minutes", "starter_probability", "penalty_taker",
+    "role", "archetype", "archetype_display",
+    "matchup_grade", "matchup_score", "market_fit",
+    "chalk_trap", "chalk_verified", "steam",
+    "tier_v2", "is_apex", "is_extra", "is_model_only", "is_upset_pick",
+    "pinned", "apex_blockers",
+    "source", "bookmaker",
+    "home_meta", "away_meta", "injury_chip", "subject_player_hurt",
+    # ── H2H / trend chips ──
+    "h2h_compact", "h2h_summary", "model_line",
+    "bvp_history", "bvp_lock_adjustment",
+    "player_form", "understat_form", "xG_form",
+    "why_this_pick", "why_not_this_pick",
+    # ── Board versioning ──
+    "board_version",
+    # ── Slimmed rationale (see _slim_rationale below) ──
+    "pick_rationale",
+    # ── Trimmed selection_v2 (`.selection.player` only — see _slim_selection_v2) ──
+    "selection_v2",
+})
+
+# Nested-blob byte caps to prevent heavy sub-payloads from riding the
+# board DTO. Anything bigger than the cap is dropped; the pick detail
+# endpoint returns the full object. Sizes tuned so the resulting DTO
+# stays under ~500B / pick.
+_LITE_NESTED_CAPS = {
+    "player_form":     600,   # streak object, 375B avg — keep short
+    "understat_form":  500,
+    "xG_form":         500,
+    "h2h_compact":     300,
+    "h2h_summary":     400,
+    "bvp_history":     400,
+    "home_meta":       220,
+    "away_meta":       220,
+    "matchup_grade":   150,
+    "apex_blockers":   400,
+    "locks_eligibility": 250,
+}
+
+
+def _slim_selection_v2(sv2):
+    """Compact `selection_v2` to just the fields the card reads.
+    LockPickCard only reads `.selection.player` for the player-prop
+    heuristic. Full v2 payload (~420B avg) is stripped to ~40B.
+    """
+    if not isinstance(sv2, dict):
+        return None
+    sel = sv2.get("selection")
+    if isinstance(sel, dict) and sel.get("player"):
+        return {"selection": {"player": sel.get("player")}}
+    return None
+
+
+def _cap_nested_blob(v, cap: int):
+    """If a nested dict/list serializes larger than `cap`, drop it
+    entirely (the detail endpoint still exposes the full object)."""
+    if v is None:
+        return None
+    if not isinstance(v, (dict, list)):
+        return v
+    try:
+        import json as _json
+        if len(_json.dumps(v, default=str, separators=(",", ":"))) > cap:
+            return None
+    except Exception:
+        return v
+    return v
+
+
 def _slim_rationale(r: dict) -> dict:
     """Trim `pick_rationale` for the lite payload.
 
@@ -2586,16 +2699,45 @@ def _slim_rationale(r: dict) -> dict:
 
 
 def _strip_for_lite(pick: dict) -> dict:
-    """Remove detail-only heavy fields so home-feed payload is small.
-    Returns a new dict — does NOT mutate the input.
+    """Return a whitelist-projected board DTO (Slice 1.2B).
 
-    `pick_rationale` is special-cased: rather than dropping it entirely
-    (which would break the home-card collapsed "Why this pick?" chip),
-    we slim it via `_slim_rationale` so the collapsed UI still works
-    but the deep blocks ride only on the detail endpoint."""
-    out = {k: v for k, v in pick.items() if k not in _LITE_STRIPPED_FIELDS}
-    if isinstance(out.get("pick_rationale"), dict):
-        out["pick_rationale"] = _slim_rationale(out["pick_rationale"])
+    Prior implementation was a blacklist that stripped ~22 heavy fields
+    but let ~100 auxiliary/duplicate fields through (~1.08 MB payload
+    for 110 picks). This implementation projects ONLY the fields the
+    collapsed LockPickCard, PickEventRow, PlayerIdentity, MatchupGradeBadge
+    and AltLineChips actually consume — everything else is served on
+    /api/picks/{pick_id}.
+
+    `pick_rationale` is slimmed via `_slim_rationale`, `selection_v2`
+    via `_slim_selection_v2`, and heavy nested blobs
+    (player_form, understat_form, h2h_*, bvp_history, meta) are capped
+    by `_cap_nested_blob` to keep the DTO under ~500B / pick.
+
+    Preserves all Phase-24 canonical-truth invariants
+    (see `test_phase24_slice_1_2_board_dto.py`).
+    """
+    out: dict = {}
+    for k, v in pick.items():
+        if k not in _LITE_BOARD_WHITELIST:
+            continue
+        if v is None:
+            continue
+        if k == "pick_rationale":
+            if isinstance(v, dict):
+                out[k] = _slim_rationale(v)
+            continue
+        if k == "selection_v2":
+            sv = _slim_selection_v2(v)
+            if sv is not None:
+                out[k] = sv
+            continue
+        cap = _LITE_NESTED_CAPS.get(k)
+        if cap is not None:
+            capped = _cap_nested_blob(v, cap)
+            if capped is not None:
+                out[k] = capped
+            continue
+        out[k] = v
     return out
 
 

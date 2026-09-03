@@ -12,7 +12,12 @@
  * leagues not in ESPN's registry). The event text always renders.
  */
 import React from "react";
-import { View, Text, StyleSheet, Image, Platform } from "react-native";
+import { View, Text, StyleSheet, Platform } from "react-native";
+// SLICE 3 (2026-09-02) — expo-image gives us cross-mount decoded image
+// cache + native placeholder + smoother cross-fade for team logos.
+// Every board row mounts one per team; the memory cache means the same
+// crest painted 40× (list virtualization) decodes exactly once.
+import { Image } from "expo-image";
 import type { Pick } from "@/src/lib/api";
 import { COLORS } from "@/src/theme";
 
@@ -137,7 +142,9 @@ function TeamCell({
                 backgroundColor: "#FFFFFF",
               },
             ]}
-            resizeMode="contain"
+            contentFit="contain"
+            cachePolicy="memory-disk"
+            transition={120}
           />
         ) : (
           <View

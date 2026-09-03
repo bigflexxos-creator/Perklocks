@@ -9,7 +9,7 @@ import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS, SPORTS } from "@/src/theme";
 import { api, Pick, LineType, SortKey, SortDirection, PickFilters } from "@/src/lib/api";
-import { LockPickCard } from "@/src/components/LockPickCard";
+import { LockBoardCard } from "@/src/components/LockBoardCard";
 import { ChipRow } from "@/src/components/ChipRow";
 import { FilterButton, FilterSheet } from "@/src/components/FilterSheet";
 import { GameFilterButton, GameFilterSheet } from "@/src/components/GameFilterSheet";
@@ -451,7 +451,7 @@ export default function LocksScreen() {
         </View>
       );
     }
-    return <LockPickCard pick={item.pick} featured={item.featured} />;
+    return <LockBoardCard pick={item.pick} featured={item.featured} />;
   }, []);
   const rowKeyExtractor = useCallback((item: Row) => item.key, []);
 

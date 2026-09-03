@@ -58,14 +58,32 @@ interface Props {
   pickId: string;
   /** If true, badge is compact (icon + grade only). Default: false. */
   compact?: boolean;
+  /**
+   * SLICE 1.6 — When the parent has already received matchup data from
+   * the pick payload (backend attaches `matchup_grade`/`matchup_score`
+   * onto goalscorer + player-prop picks via the Lightweight Board DTO
+   * whitelist), pass it here to bypass the per-card
+   * `GET /api/picks/{id}/matchup` fetch. Eliminates 100+ redundant API
+   * calls on a full home slate.
+   */
+  preloaded?: Partial<MatchupPayload> | null;
 }
 
-export function MatchupGradeBadge({ pickId, compact = false }: Props) {
-  const [data, setData] = useState<MatchupPayload | null>(null);
+export function MatchupGradeBadge({ pickId, compact = false, preloaded = null }: Props) {
+  // If the parent already has the matchup data (e.g. from the pick
+  // payload's inline `matchup_grade`/`matchup_score`), seed local state
+  // synchronously so the initial render already knows the grade and we
+  // never fire the network request.
+  const _seed = preloaded && (preloaded as any).matchup_grade
+    ? (preloaded as MatchupPayload)
+    : null;
+  const [data, setData] = useState<MatchupPayload | null>(_seed);
   const [error, setError] = useState<boolean>(false);
   const [open, setOpen] = useState<boolean>(false);
 
   useEffect(() => {
+    // SLICE 1.6 — skip fetch when we already have preloaded data.
+    if (_seed) return;
     let cancelled = false;
     (async () => {
       try {
@@ -78,6 +96,7 @@ export function MatchupGradeBadge({ pickId, compact = false }: Props) {
     return () => {
       cancelled = true;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pickId]);
 
   const handleOpen = useCallback(() => setOpen(true), []);
@@ -115,12 +134,16 @@ export function MatchupGradeBadge({ pickId, compact = false }: Props) {
         )}
       </Pressable>
 
-      <Modal
-        visible={open}
-        transparent
-        animationType="fade"
-        onRequestClose={handleClose}
-      >
+      {/* SLICE 1.6 — Modal lazy-mount: only construct the deep JSX
+          when the user actually taps the badge. Prevents 100 idle
+          Modal instances (one per card) on a full home slate. */}
+      {open && (
+        <Modal
+          visible={open}
+          transparent
+          animationType="fade"
+          onRequestClose={handleClose}
+        >
         <Pressable style={styles.modalOverlay} onPress={handleClose}>
           <Pressable style={styles.modalCard} onPress={() => { /* eat */ }}>
             <View style={styles.modalHeader}>
@@ -250,7 +273,8 @@ export function MatchupGradeBadge({ pickId, compact = false }: Props) {
             </Pressable>
           </Pressable>
         </Pressable>
-      </Modal>
+        </Modal>
+      )}
     </>
   );
 }
