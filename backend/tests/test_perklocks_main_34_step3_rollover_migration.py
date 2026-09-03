@@ -17,6 +17,14 @@ _BASE = "http://localhost:8001"
 
 
 def _tok():
+    # PERKLOCKS-MAIN 35 · P1-7 — deterministic auth (no 429 dependency).
+    # Reset the process-local rate-limit buckets before login so this
+    # test's own request never trips the shared throttle state.
+    try:
+        from rate_limit import _reset_for_tests
+        _reset_for_tests(scope_prefix="ip:")
+    except Exception:
+        pass
     r = httpx.post(f"{_BASE}/api/auth/login",
                     json={"email": "demo@lockscore.ai", "password": "demo123"},
                     timeout=10)

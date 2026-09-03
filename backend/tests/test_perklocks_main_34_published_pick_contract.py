@@ -196,6 +196,11 @@ def test_p0_live_published_picks_round_trip():
     """
     import httpx
     try:
+        try:
+            from rate_limit import _reset_for_tests
+            _reset_for_tests(scope_prefix="ip:")
+        except Exception:
+            pass
         r = httpx.post("http://localhost:8001/api/auth/login",
                         json={"email": "demo@lockscore.ai", "password": "demo123"},
                         timeout=10)
