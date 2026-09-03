@@ -2071,10 +2071,18 @@ async def _ensure_today_picks() -> None:
                 else:
                     sport_status[_sport] = "PROVIDER_UNAVAILABLE"
                     sport_starved.append(_sport)
-            elif (_last_result in ("HONEST_EMPTY", "honest_empty")) and (_now_ts - _last_succeed) < 4 * 3600:
-                # Recent successful refresh legitimately produced zero.
-                # Do NOT drive a retry loop for pre-season / off-window
-                # sports; wait for the next 4h window before re-checking.
+            elif (_last_result in ("HONEST_EMPTY", "honest_empty")) and (_now_ts - _last_succeed) < 20 * 60:
+                # PERKLOCKS-MAIN 35 · UNIVERSAL ACQUISITION FIX —
+                # Previously HONEST_EMPTY was cached for 4h, which
+                # meant late-appearing markets (MLB hitter props on
+                # late games, NFL alt props that get posted intraday,
+                # Tennis events posted after a morning empty probe)
+                # were suppressed for the rest of the day.  A 20-min
+                # window still protects the provider from stampede
+                # (combined with the 15-min per-sport cooldown below)
+                # while allowing newly-posted market families to be
+                # additively discovered without a mandatory manual
+                # force-refresh or a backend restart.
                 sport_status[_sport] = "HONEST_EMPTY"
             elif _last_attempt > 0 and (_now_ts - _last_attempt) < 15 * 60:
                 # Very recent attempt — respect a 15-min per-sport cooldown
