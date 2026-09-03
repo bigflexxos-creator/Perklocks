@@ -177,10 +177,12 @@ async def _rank_markets_for_event(db, event: str, sport: str, exclude_id: str = 
     current_short = ""
     current_sel_norm = ""
     current_line_norm = ""
+    current_event_time = ""
     if exclude_id:
         cur = await db.picks.find_one(
             {"id": exclude_id},
-            {"_id": 0, "selection": 1, "market": 1, "line": 1},
+            {"_id": 0, "selection": 1, "market": 1, "line": 1,
+             "event_time": 1},
         )
         if cur:
             current_side = _pick_side(cur)
@@ -191,6 +193,7 @@ async def _rank_markets_for_event(db, event: str, sport: str, exclude_id: str = 
                 current_line_norm = "" if line is None else f"{float(line):g}"
             except Exception:
                 current_line_norm = str(line)
+            current_event_time = (cur.get("event_time") or "").strip()
 
     def _is_same_canonical_wager(p: dict) -> bool:
         """Return True when `p` is a cross-book duplicate of the
@@ -212,8 +215,40 @@ async def _rank_markets_for_event(db, event: str, sport: str, exclude_id: str = 
             p_line_norm = str(p_line)
         return p_line_norm == current_line_norm
 
+    # ── PERKLOCKS ROOT FIX (2026-09-03) — same-game filter ───────────
+    # The main-board query filters by ``pick_date == today`` — but
+    # this endpoint queries by ``(event, sport)`` ONLY, so every
+    # historical pick for the same team matchup (Milwaukee Brewers @
+    # Chicago Cubs on 08-31, 09-01, 09-02, 09-03) bled into the
+    # panel.  Users then saw "Jake Bauers Over 0.5 Hits · 94 Lock"
+    # in tonight's Pick Breakdown and concluded the pick was missing
+    # from the board — the pick was really from THREE DAYS AGO.
+    # Universal fix: bound candidates to the same series game via
+    # ``event_time`` proximity to the current pick's event_time (±12 h
+    # covers same-day slates and cross-midnight ET/UTC drift; nothing
+    # longer, so yesterday's game can never sneak in).  When the
+    # current pick has no event_time we fall back to legacy behaviour
+    # so completed pick-breakdowns keep working.
+    _base_query: dict = {"event": event, "sport": sport}
+    if current_event_time:
+        try:
+            from datetime import datetime, timedelta, timezone
+            _cur_dt = datetime.fromisoformat(
+                current_event_time.replace("Z", "+00:00")
+            )
+            if _cur_dt.tzinfo is None:
+                _cur_dt = _cur_dt.replace(tzinfo=timezone.utc)
+            _lo = (_cur_dt - timedelta(hours=12)).isoformat().replace(
+                "+00:00", "Z",
+            )
+            _hi = (_cur_dt + timedelta(hours=12)).isoformat().replace(
+                "+00:00", "Z",
+            )
+            _base_query["event_time"] = {"$gte": _lo, "$lte": _hi}
+        except Exception:
+            pass
     cursor = db.picks.find(
-        {"event": event, "sport": sport},
+        _base_query,
         {
             "_id": 0, "id": 1, "sport": 1, "market": 1, "selection": 1,
             "win_probability": 1, "edge_percent": 1, "book_odds": 1,
