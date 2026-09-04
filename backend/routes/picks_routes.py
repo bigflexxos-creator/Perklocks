@@ -3107,6 +3107,31 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     if lite:
         canonical = [_strip_for_lite(_p) for _p in canonical]
 
+    # ── PERKLOCKS MAIN 37 · P0.2 canonical consumer parity ────────
+    # Attach the immutable ``PublishedPickContract`` to every Locks-
+    # board row so the wire response carries the SAME canonical
+    # authority the Pick Breakdown detail endpoint already publishes.
+    # This closes the last consumer-drift gap: any downstream reader
+    # (frontend Lock badge, Rollover, Alt-Line, evaluator) can pull
+    # ``pick.published_pick_contract.published_lock_score`` /
+    # ``.published_grade`` / ``.publication_state`` and be
+    # byte-identical between /picks/today and /{id}/matchup.  Legacy
+    # mutable aliases stay on the row for backward compat but the
+    # contract's ``_provenance`` tags surface any regression that
+    # ever lets a legacy value outrank a canonical one.
+    try:
+        from services.published_pick_contract import PublishedPickContract as _PPC
+        for _p in canonical:
+            if isinstance(_p, dict):
+                try:
+                    _p["published_pick_contract"] = \
+                        _PPC.from_pick(_p).as_dict()
+                except Exception:
+                    pass                    # per-row failure never blocks
+    except Exception as _ppc_err:
+        logger.debug("PublishedPickContract attach on Locks skipped: %s",
+                     _ppc_err)
+
     return {"picks": canonical, "alt_availability": alt_availability,
              "odds_provider": _odds_envelope}
 

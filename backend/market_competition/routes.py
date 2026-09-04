@@ -459,17 +459,34 @@ async def market_rank_for_pick(
         except Exception:
             return None
 
-    _pub_ls = current.get("published_lock_score")
-    _pub_pg = current.get("published_grade")
+    # PERKLOCKS MAIN 37 · P0.2/P0.3 — canonical read via
+    # ``PublishedPickContract`` instead of recreating
+    # published_* precedence locally.  This closes the exact
+    # duplication warning ("don't recreate published_grade > grade
+    # in two more places") — the contract owns the precedence rule.
+    try:
+        from services.published_pick_contract import PublishedPickContract as _PPC
+        _cc = _PPC.from_pick(current).as_dict()
+    except Exception:
+        _cc = {}
+    _pub_ls = _cc.get("published_lock_score")
+    _pub_pg = _cc.get("published_grade")
+    # win_probability precedence is not yet in PublishedPickContract's
+    # public surface (win_expected is 0-1 unit); keep the local
+    # legacy fallback for the wire but drive the canonical Lock badge
+    # (lock_score + grade) from the contract.
     _pub_wp = current.get("published_win_probability")
     current_row = {
         "id":               current.get("id"),
         "market":           current.get("market"),
         "short_market":     _short_market(current.get("market") or ""),
-        "selection":        current.get("selection"),
+        "selection":        _cc.get("selection") or current.get("selection"),
         "win_probability":  _pub_wp if _pub_wp is not None else current.get("win_probability"),
         "edge_percent":     current.get("edge_percent"),
-        "book_odds":        current.get("book_odds"),
+        "book_odds":        _cc.get("published_odds") or current.get("book_odds"),
+        # Canonical Lock authority — contract-first, legacy only when
+        # the contract has no published value at all (pre-canonical
+        # historical rows).
         "lock_score":       _pub_ls if _pub_ls is not None else current.get("lock_score"),
         "lock_score_v2":    current.get("lock_score_v2"),
         "tier_v2":          current.get("tier_v2"),
@@ -478,11 +495,21 @@ async def market_rank_for_pick(
         "survival_score":   current.get("survival_score"),
         "variance_score":   current.get("variance_score"),
         "grade":            _pub_pg or current.get("grade"),
-        "signal_score":     current.get("signal_score"),   # distinct from lock_score
+        # signal_score is a SEPARATE research metric (slate-wide
+        # percentile rank, 0-100) — see
+        # ``services.signal_engine.engine`` — NEVER merge it into
+        # lock_score / grade.  Explicit label surfaces on the wire so
+        # UI never treats it as an authoritative Lock number.
+        "signal_score":       current.get("signal_score"),
+        "signal_score_label": "Research Signal (0-100 percentile)",
         "market_score":     _score_or_none(current),
         "is_current":       True,
         "state":            _pick_state(current),
         "non_publication_reason": _non_publication_reason(current),
+        # Immutable contract published on the row so the frontend can
+        # read the SAME canonical truth here as in /picks/today and
+        # /{id}/matchup.  Zero-drift by construction.
+        "published_pick_contract": _cc,
     }
 
     return {

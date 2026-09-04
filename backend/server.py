@@ -2648,7 +2648,14 @@ _LITE_BOARD_WHITELIST = frozenset({
     "signal_score", "signal_score_raw",
     "sim_win_probability", "sim_disagreement_with_model",
     # ── Truth invariants (frozen canonical; contract tests) ──
-    "published_lock_score", "publication_state", "publication_revision",
+    "published_lock_score", "published_grade", "publication_state",
+    "publication_revision",
+    # PERKLOCKS MAIN 37 · P0.2 — surface the immutable
+    # ``PublishedPickContract`` on the lite wire payload so every
+    # frontend consumer (Lock badge, Rollover, Alt-Line, evaluator)
+    # reads canonical truth from a single field rather than juggling
+    # legacy aliases.
+    "published_pick_contract", "published_pick_contract_provenance",
     "locks_eligibility", "locks_eligibility_rescued",
     # ── Player-prop / matchup meta (used by card + PickEventRow) ──
     "elite_player", "elite_player_name", "player_name",
@@ -3508,9 +3515,29 @@ async def _no_store_api_responses(request, call_next):
             headers={"X-Request-ID": rid},
         )
     if str(request.url.path).startswith("/api/"):
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
+        # ── PERKLOCKS MAIN 37 · P0.1 middleware root fix ─────────────
+        # Optional header decoration is best-effort — if the response
+        # is a StreamingResponse with a locked headers container, a
+        # third-party ASGI adapter with an exotic ``.headers`` proxy,
+        # or ANY future decoration hook fails, we MUST preserve the
+        # original valid response rather than turning it into a 500
+        # solely because a header mutation raised.  The response is
+        # already valid at this point (verified above); nothing this
+        # block does is worth killing a real API payload for.
+        try:
+            response.headers["Cache-Control"] = \
+                "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"]  = "no-cache"
+            response.headers["Expires"] = "0"
+        except Exception as _dec_err:                       # pragma: no cover
+            import uuid as _uuid
+            rid = getattr(request.state, "request_id", None) \
+                or _uuid.uuid4().hex[:12]
+            logger.warning(
+                "MIDDLEWARE_DECORATION_FAIL _no_store_api_responses "
+                "%s %s rid=%s: %s — preserving original response",
+                request.method, request.url.path, rid, _dec_err,
+            )
     return response
 
 
