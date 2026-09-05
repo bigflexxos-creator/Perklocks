@@ -1,4 +1,4 @@
-import { Stack } from "expo-router";
+import { Stack, ThemeProvider, DefaultTheme } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect, useState } from "react";
 import { Image, Platform, StyleSheet, View } from "react-native";
@@ -6,7 +6,14 @@ import { Asset } from "expo-asset";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { ThemeProvider, DefaultTheme } from "@react-navigation/native";
+
+// ── MAIN 40 (Expo SDK 57 upgrade, 2026-06) ──
+// As of SDK 56 expo-router is no longer compatible with a standalone
+// `@react-navigation/*` install — Metro refuses to bundle when both
+// coexist. `ThemeProvider` + `DefaultTheme` are now re-exported from
+// `expo-router` itself (see node_modules/expo-router/build/exports.d.ts),
+// so the migration is a pure import path swap. Runtime shape and
+// props of the theme are unchanged.
 
 // React Navigation theme that paints all card backgrounds transparent so
 // the global PerkLocks backdrop (set on <body> on web, rendered as <Image>
