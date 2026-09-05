@@ -481,14 +481,35 @@ async def _decorate_with_espn_meta(picks: list[dict]) -> list[dict]:
         from services.espn_signal_engine import apply_signals as _sig
     except Exception:
         return picks
-    for p in picks:
+    # ── MAIN 39 · Slice 3 · P0.8 (2026-06) — bounded concurrency ──
+    # Prior implementation awaited _meta / _chip / _form / _sig
+    # SEQUENTIALLY per pick.  For 734 picks × 4 awaits at ~3-5 ms each
+    # (mostly Mongo point-reads) this was ~10 s of pure serial latency
+    # on the /picks/today hot path — confirmed by /tmp/profile_picks_today.py
+    # (10,570 ms in _decorate_with_espn_meta out of 13,438 ms total).
+    #
+    # Fix: fan out the 4 per-pick awaits with asyncio.gather (they
+    # don't depend on each other), and process picks in bounded chunks
+    # so we never open >CHUNK*4 concurrent Mongo cursors at once.
+    # The four helpers each mutate `pick` in place and never overlap
+    # in the fields they set (see espn_team_meta / espn_injury_notes /
+    # espn_form_cache / espn_signal_engine) so within-pick parallelism
+    # is race-free.  Fields written, idempotence, and error-swallow
+    # semantics are unchanged.
+    CHUNK = 32
+    async def _one(p):
         try:
-            await _meta(db, p)
-            await _chip(db, p)
-            await _form(db, p)        # form strings for the signal engine
-            await _sig(db, p)         # ← the analysis layer
+            await asyncio.gather(
+                _meta(db, p),
+                _chip(db, p),
+                _form(db, p),
+                _sig(db, p),
+                return_exceptions=True,
+            )
         except Exception:
             pass  # non-critical enrichment
+    for i in range(0, len(picks), CHUNK):
+        await asyncio.gather(*(_one(p) for p in picks[i:i + CHUNK]))
     # ── Player-headshot presentation layer (2026-06) ────────────────
     # Attach ``player_meta.headshot_url`` for PLAYER-PROP picks only.
     # Reuses db.players (ESPN athletes + MLB Stats API) — the same
