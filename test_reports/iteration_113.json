@@ -1,0 +1,45 @@
+{
+  "summary": "PERKLOCKS MAIN 39 slice — backend endpoint regression suite executed. 11/12 tests passed (91.7%). Targeted MAIN 39 regression pytests (test_perklocks_main39_slice.py) 4/4 GREEN: (T1) lite path source-level guard confirms `build_h2h_bundle_gate = None` on lite+canonical branch — 0 request-time build_h2h_bundle() calls on lite; (T2) 50 concurrent _ensure_today_picks() calls schedule exactly ONE healer sweep under in-flight + 120s cooldown guard; (T4) fresh 45s health cache skips full body (0 db access); (T5) stale cache re-stamps HEALTHY. Live endpoint suite (test_iter113_main39_slice_endpoints.py) 7/8 GREEN: /health 200, /api/auth/login → access_token, /api/picks/today?lite=true 200 with `published_pick_contract` on every row (MAIN 37 canonical parity preserved), 10 concurrent lite calls all 200 (no 500), /api/picks/{id}/h2h 200 with dict bundle (non-lite consumer unchanged), /api/picks/parlay 200. Only failure: /api/picks/rollover 500 due to PRE-EXISTING NameError `ODDS_DEAD_LO is not defined` at routes/picks_routes.py:690 — introduced by an earlier MAIN 36 P1.4 retirement that removed ODDS_DEAD_LO/ODDS_DEAD_HI from imports (lines 580-586) but LEFT a stale reference on line 690 in the sticky-cache survivability dict. Bug only triggers when `top` (rollover selection) is non-empty. This is UNRELATED to MAIN 39 (git diff HEAD confirms no touch to lines 580-702). MAIN 39 P0.1/P0.2/P0.3 slice ships cleanly.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/picks/rollover",
+        "issue": "500 NameError: name 'ODDS_DEAD_LO' is not defined at /app/backend/routes/picks_routes.py:690. Root cause: MAIN 36 P1.4 retirement removed ODDS_DEAD_LO/ODDS_DEAD_HI from the import block (lines 580-586, with retirement comment at 587-588) but the sticky-cache _survivability dict at line 690 still references both symbols. Only triggers when the rollover selector returns a non-empty `top` list, so the endpoint intermittently 500s in production. PRE-EXISTING, UNRELATED to MAIN 39 slice.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_perklocks_main39_slice.py",
+    "/app/backend/tests/test_iter113_main39_slice_endpoints.py",
+    "/app/test_reports/pytest/iter113_main39_slice.xml"
+  ],
+  "action_items": [
+    "Fix pre-existing NameError in /app/backend/routes/picks_routes.py:690 — either drop the 'odds_dead_zone' key from _survivability (P1.4 retirement was intended) or replace `[ODDS_DEAD_LO, ODDS_DEAD_HI]` with `[]` / `None` to reflect the retired dead-zone. This is causing intermittent /api/picks/rollover 500s in production. Not caused by MAIN 39 but blocks the 'existing behaviour preserved' bullet in the review request.",
+    "MAIN 39 slice itself is safe to ship — no additional changes required for P0.1 cache gate, P0.2 healer scheduling guard, or P0.3 lite path H2H skip."
+  ],
+  "critical_code_review_comments": [
+    "server.py: module-level globals (_ENSURE_HEALTH_STATE, _ENSURE_HEALTH_TS, _HEALER_IN_FLIGHT, _HEALER_LAST_RUN) declared at 2350-2353 AFTER first usage at 1534+. Python's late-binding via globals().get() makes this work (initial reads return None/0.0), but the ordering is unusual — consider hoisting the declarations above _ensure_today_picks for readability. Not a bug.",
+    "picks_routes.py:2932-2941 lite guard is correct — dead-codes build_h2h_bundle_gate on lite+canonical branch. The inner `for _slim in canonical` loop at 2933-2937 currently has no side effect (the `continue` is a no-op since the function immediately falls through to `build_h2h_bundle_gate = None`). Consider deleting the empty loop or actually short-circuiting when persisted h2h_summary is present on all rows. Cosmetic only — behaviour is correct.",
+    "picks_routes.py:690 references ODDS_DEAD_LO / ODDS_DEAD_HI which are no longer imported (see lines 580-588 retirement comment). Runtime NameError when `top` is non-empty. See action_items."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter113_main39_slice_endpoints.py (new — endpoint regression suite)"
+  ],
+  "success_rate": {
+    "backend": "91.7% (11/12 endpoint + regression tests); MAIN 39 slice itself 100% (4/4 targeted regression + 7/7 MAIN 39 endpoint scope)",
+    "frontend": "N/A (backend-only review)"
+  },
+  "seed_data_creation": "None — read-only tests against existing seeded slate. Auth via demo@lockscore.ai / demo123.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "MAIN 39 P0.1-P0.3 slice is verified GREEN. The only endpoint failure is /api/picks/rollover 500 caused by a pre-existing NameError on ODDS_DEAD_LO/ODDS_DEAD_HI at picks_routes.py:690 — main agent should either (a) drop the key or (b) restore imports. After that fix, re-run tests/test_iter113_main39_slice_endpoints.py::TestRolloverParlay to confirm 200. Auth: demo@lockscore.ai / demo123. Backend base URL from EXPO_BACKEND_URL (falls back to EXPO_PUBLIC_BACKEND_URL). /health warm latency observed ~30-80ms via public ingress. /api/picks/today?lite=true observed ~14-16s cold, ~1-6s warm — within the 20s client timeout budget but still slow (KNOWN out-of-scope per user).",
+  "rca_of_issue": "Pre-existing NameError at picks_routes.py:690. Reproduction: `curl -H 'Authorization: Bearer <token>' <base>/api/picks/rollover` when rollover selector's `top` list is non-empty. Backend log excerpt: `lockscore - ERROR - UNHANDLED GET /api/picks/rollover rid=03dc6a996656 / name 'ODDS_DEAD_LO' is not defined / File .../routes/picks_routes.py, line 690, in pick_rollover`. Mitigation: change line 690 `\"odds_dead_zone\": [ODDS_DEAD_LO, ODDS_DEAD_HI],` to `\"odds_dead_zone\": [],` (or delete the key entirely — the retirement comment at 587-588 says the -140/-110 dead-zone is no longer applied). Not caused by MAIN 39 changes (git diff HEAD confirms unchanged lines 580-702)."
+}
