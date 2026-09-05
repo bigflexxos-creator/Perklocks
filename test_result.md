@@ -2108,9 +2108,9 @@ frontend:
             at bottom of 46-game board. All picks reachable.
 
 metadata:
-  last_iteration: 117
-  last_iteration_topic: "MAIN 40 — Expo SDK 54 → 57 compatibility upgrade (real-device Expo Go blocker resolved)"
-  last_iteration_result: "GREEN. Expo Doctor 21/21. Metro bundles 1379 modules in ~700ms. All 6 tabs render on SDK 57 (Locks/Rollover/Parlay/My Bets/Lab/Profile). 41/41 new MAIN 40 tests + 67/67 MAIN 39 Slice 2 tests + all backend endpoints 200. Zero MAIN 37/39 code touched."
+  last_iteration: 118
+  last_iteration_topic: "MAIN 40 · Native reset — SDK 57 storage-migration safety (Locks ALL + Parlay contamination fix)"
+  last_iteration_result: "GREEN. APP_DATA_VERSION bumped to sdk57 tag; parlay-prefs key path bug fixed (real key was never wiped); useFilters v6→v7; useParlayPreferences v1→v2 with one-time salvage migration. Web preview: ALL 71 games · 162 picks, MLB→ALL round-trip clean. 127 frontend + 53 backend tests green. No MAIN 37/39 code touched."
 
 agent_communication:
     - agent: "main"

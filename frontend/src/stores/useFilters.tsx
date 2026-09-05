@@ -183,7 +183,15 @@ function reducer(state: FilterState, action: Action): FilterState {
 // obvious active filter — symptom was stale persisted arrays from
 // earlier sessions silently restricting the slate. Bumping the key
 // drops the old snapshot on every device.
-const STORAGE_KEY = "perkslocks_filters_v6";
+// v7 (MAIN 40, 2026-06-05, SDK 57 upgrade): Expo Go SDK 57 on iPhone
+// reported broken ALL Locks + broken Parlay while Web/Preview worked.
+// Root cause was stale SDK 54-era persisted state hydrating into the
+// new SDK 57 client (see cachebust.ts for the sibling parlay-prefs
+// key fix).  Bumping the filter key drops any leftover v6 snapshot
+// on every device's first SDK 57 launch so the categorical filter
+// arrays cannot silently contaminate the ALL tab.  Runtime shape
+// unchanged.
+const STORAGE_KEY = "perkslocks_filters_v7";
 
 async function loadPersisted(): Promise<Partial<FilterState> | null> {
   try {
