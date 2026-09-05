@@ -2108,9 +2108,9 @@ frontend:
             at bottom of 46-game board. All picks reachable.
 
 metadata:
-  last_iteration: 118
-  last_iteration_topic: "MAIN 40 · Native reset — SDK 57 storage-migration safety (Locks ALL + Parlay contamination fix)"
-  last_iteration_result: "GREEN. APP_DATA_VERSION bumped to sdk57 tag; parlay-prefs key path bug fixed (real key was never wiped); useFilters v6→v7; useParlayPreferences v1→v2 with one-time salvage migration. Web preview: ALL 71 games · 162 picks, MLB→ALL round-trip clean. 127 frontend + 53 backend tests green. No MAIN 37/39 code touched."
+  last_iteration: 119
+  last_iteration_topic: "MAIN 40 · Iter 3 — Body-read timeout gap closure (Classification C) — real iPhone ALL/Parlay failure"
+  last_iteration_result: "GREEN. Root cause identified: _fetchWithTimeout cleared AbortController timer when headers arrived, so subsequent `await res.text()` was unprotected. On iPhone Expo Go SDK 57, 500 KB+ chunked HTTPS/2 responses stalled the RN bridge indefinitely (MLB 170KB works; ALL 510KB and Parlay 698KB failed). Fix: read body inside the timeout guard. Timeout unchanged (20s). Web preview verified: cold ALL 71 games · 137 picks, MLB→ALL×5 all clean, Parlay renders 3 parlays. 134 frontend + 53 backend tests green (7 new body-read tests)."
 
 agent_communication:
     - agent: "main"
