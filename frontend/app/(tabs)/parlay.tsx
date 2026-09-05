@@ -108,13 +108,14 @@ export default function ParlayScreen() {
            advSub?: "safer" | "ev", silent: boolean = false) => {
       const myToken = _reqTokenRef.current + 1;
       _reqTokenRef.current = myToken;
+      let ok = false;
       try {
         setError(null);
         const res = await api.parlay(
           n, m, s, lt, incl, f, r, locked, sMode, wHours, excl, nonce, advSub,
         );
         // Race guard: if a newer request superseded this one, discard.
-        if (myToken !== _reqTokenRef.current) return;
+        if (myToken !== _reqTokenRef.current) return false;
         const parlays = res.parlays || [];
         const reason = res.reason || "";
         setParlays(parlays);
@@ -124,15 +125,19 @@ export default function ParlayScreen() {
           _parlayKey(n, m, s, lt, incl, excl, f, r, locked, sMode, wHours, nonce, advSub),
           { parlays, reason },
         );
+        ok = true;
       } catch (e: any) {
-        if (myToken !== _reqTokenRef.current) return;
+        if (myToken !== _reqTokenRef.current) return false;
         console.warn("parlay load", e);
         if (!silent) setError(String(e?.message || "Couldn't build parlays."));
+        ok = false;
       } finally {
-        if (myToken !== _reqTokenRef.current) return;
+        if (myToken !== _reqTokenRef.current) return; // eslint-disable-line no-unsafe-finally
         if (!silent) setLoading(false);
         setRefreshing(false);
       }
+      // MAIN 39 · P0.6 — explicit success/failure signal.
+      return ok;
     },
     [],
   );
@@ -172,8 +177,8 @@ export default function ParlayScreen() {
   // Smart refetch on focus — silent (SWR) so warm revisits never flash.
   useFocusRefetch(
     () => {
-      if (!hydrated) return;
-      load(legs, mode, sport, lineType, includedSports, excludedSports,
+      if (!hydrated) return true;
+      return load(legs, mode, sport, lineType, includedSports, excludedSports,
            filters, rank, lockedIds, sportMode, windowHours, refreshNonce,
            mode === "advanced" ? advancedSub : undefined, true);
     },

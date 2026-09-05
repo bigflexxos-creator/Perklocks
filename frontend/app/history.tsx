@@ -45,6 +45,8 @@ export default function HistoryScreen() {
   const repollRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
+    // MAIN 39 · P0.6 — explicit success/failure signal.
+    let ok = false;
     try {
       const res = await api.history(30, filter === "Rollover");
       const all = (res?.picks as HistoryPick[]) ?? [];
@@ -61,6 +63,7 @@ export default function HistoryScreen() {
         const secs = Math.max(3, Math.min(15, Number(fresh.recommended_repoll_seconds) || 5));
         repollRef.current = setTimeout(() => { void load(); }, secs * 1000);
       }
+      ok = true;
     } catch (e) {
       // ── SLICE 7 (2026-08-26) — Preserve last-good history on transient error.
       // Previous behavior wiped picks+stats to [] / null on any error,
@@ -73,10 +76,12 @@ export default function HistoryScreen() {
         : msg.length > 140 ? msg.slice(0, 140) + "…" : msg;
       setLoadError(cleanMsg);
       console.warn("history load (keeping last-good):", e);
+      ok = false;
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
+    return ok;
   }, [filter]);
 
   useEffect(() => { setLoading(true); load(); }, [load]);

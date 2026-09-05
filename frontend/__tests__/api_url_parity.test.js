@@ -132,19 +132,25 @@ test("§D1  No frontend file constructs backend URLs from raw env var", () => {
   expect(violations).toEqual([]);
 });
 
-test("§D2  Any inline backend URL retrieval uses getBackendUrl()", () => {
+test("§D2  Any inline backend URL retrieval uses getBackendUrl(), buildApiUrl(), or the api.* facade", () => {
+  // MAIN 39 · P0.7 (2026-06): relaxed to accept EITHER central helper
+  // OR the `api` facade after lab.tsx correlations-v2 was migrated
+  // off the raw `fetch(...)` pattern onto `api.labCorrelationsV2`
+  // (which routes through `buildApiUrl` internally).  Every `api.*`
+  // call ultimately goes through `request()` → `buildApiUrl()`, so
+  // an import of `api` from `@/src/lib/api` qualifies as central use.
   const files = walkTsFiles(APP_DIR, []);
   let seenCentralHelper = false;
   for (const f of files) {
     const src = fs.readFileSync(f, "utf-8");
     if (/from\s+["']@\/src\/lib\/api["']/.test(src)
-        && /getBackendUrl/.test(src)) {
+        && /\b(getBackendUrl|buildApiUrl|api)\b/.test(src)) {
       seenCentralHelper = true;
       break;
     }
   }
-  // At least one consumer must import getBackendUrl — proves the
-  // centralized helper is in use.
+  // At least one consumer must import a centralized surface —
+  // proves the central layer is in active use.
   expect(seenCentralHelper).toBe(true);
 });
 

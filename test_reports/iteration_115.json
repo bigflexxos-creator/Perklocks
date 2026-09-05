@@ -1,0 +1,39 @@
+{
+  "summary": "PERKLOCKS MAIN 39 SLICE 2 — Frontend reliability closure (P0.4 / P0.6 / P0.7) verified GREEN in preview browser + local static/runtime harnesses. Backend sanity 3/3 GREEN (no regression to MAIN 39 P0.1–P0.3). Zero new bugs found. (a) P0.4 non-retryable 4xx: LIVE proof — bad-login → /api/auth/login fired EXACTLY 1× (not 3×); /pick/deadbeef-nonexistent-id → /api/picks/deadbeef-nonexistent-id fired EXACTLY 1×. Local __tests__/main39_slice2.runner.js 19/19 pass across the full HTTP status matrix (400/401/403/404/405/409/410/418/422 → 1 attempt; 408/429/500/502/503/504 → up to 3 attempts; Network error + AbortError → retry; 200 → 1 attempt; no unhandled Promise rejections). Static contract test proves the nonRetryable tag + short-circuit branch is intact and the 401 auto-recover event still fires. (b) P0.6 focus refetch semantics: LIVE proof — Locks loaded (1× /api/picks/today), tabbed away to Lab and back within 30s → 0 duplicate /api/picks/today hits (cooldown honored); Rollover loaded (1× /api/picks/rollover), tabbed away and back within 30s → 0 duplicate hits. Static contract proves useFocusRefetch stamps ONLY on success, resets on `false` or rejection, and the in-flight guard is wired; all 5 screens (index.tsx, rollover.tsx, parlay.tsx, my-bets.tsx, history.tsx) explicitly `return true/false` from load(). (c) P0.7 Lab correlations-v2 centralized: LIVE proof — /api/lab/correlations-v2 → HTTP 200 in 0.16s with the exact `Cache-Control: no-cache, no-store, must-revalidate` + `Pragma: no-cache` headers the shared api.request layer adds. Source-level proof (grep + static test): lab.tsx no longer contains any raw `fetch(...)` for correlations-v2 and now routes through `api.labCorrelationsV2`; the unused `getBackendUrl` import is pruned. api.labCorrelationsV2 supports `sport` + `limit_per_section` params and constructs the exact endpoint. Combined proof harnesses: 22/22 static + 19/19 runtime + 6/6 live browser assertions = 47/47 PASS. Backend sanity — GET /api/picks/rollover (auth) → HTTP 200 (2 picks, rollover_version='v4-sticky', odds_dead_zone=[] retirement holds); GET /api/picks/today?lite=true → HTTP 200 (218 picks, ~5.8s warm — matches iter114 baseline); GET /api/lab/correlations-v2 (auth) → HTTP 200 (sections/generated_at/total_pairs_analyzed contract intact). Locks tab renders 71 games · 153 picks with 0 red-screen errors. No React Native deprecated packages introduced by this slice. No design/spacing regressions. Zero action items — SLICE 2 is ready to ship.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/frontend/__tests__/main39_slice2.test.js",
+    "/app/frontend/__tests__/main39_slice2.runner.js",
+    "/app/frontend/__tests__/main39_slice2.static.runner.js",
+    "/app/test_reports/iteration_114.json"
+  ],
+  "action_items": [
+    "None — MAIN 39 SLICE 2 frontend reliability closure is fully verified. Safe to close ticket."
+  ],
+  "critical_code_review_comments": [
+    "api.ts:748-753 correctly tags the HTTP error with `nonRetryable = !shouldRetry` + `status`, and the outer catch at api.ts:765-767 short-circuits on that tag — 4xx cannot re-enter the retry loop. Contract matches the runtime harness.",
+    "api.ts:721-733 401 auto-recover branch preserved: token cleared + `perkslocks:auth-expired` CustomEvent dispatched. AuthContext listener path is untouched by this slice.",
+    "useFocusRefetch.ts:68-90 uses a true post-settle stamp (never speculative) + in-flight guard. Boolean-signal contract is well-documented and backward compatible (undefined → success, false → failure, reject → failure).",
+    "api.ts:1040-1048 labCorrelationsV2 wrapper is a pure drop-in — same endpoint, same params, same shape; routing through `request()` inherits timeout + auth + no-cache headers + 4xx no-retry for free.",
+    "picks_routes.py:690 odds_dead_zone=[] P1.4 retirement (iter114 fix) is still in place — rollover 200 confirmed live 5× in iter114 and 1× here."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% (3/3 endpoint sanity checks: /api/picks/rollover, /api/picks/today?lite=true, /api/lab/correlations-v2 all HTTP 200 with contract-correct shapes)",
+    "frontend": "100% (22/22 static contract + 19/19 runtime retry-matrix + 6/6 live-browser assertions on P0.4/P0.6/P0.7)"
+  },
+  "seed_data_creation": "None — read-only tests against the existing seeded slate. Auth via demo@lockscore.ai / demo123.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "MAIN 39 SLICE 2 (P0.4/P0.6/P0.7) is fully verified. Auth: demo@lockscore.ai / demo123 → POST /api/auth/login → access_token. Backend base URL from EXPO_PUBLIC_BACKEND_URL (https://canonical-parity.preview.emergentagent.com). Note: The Correlation Lab section inside the Lab tab is behind a horizontally-scrollable secondary tab bar (Research Feed · Trend Radar · Cheatsheets · Correlations · …) — reaching it via Playwright in a mobile viewport requires either a testID or a horizontal scroll gesture on the sub-tab bar. Not a bug; just something to know if a future test wants a UI-level assertion on the Correlation Lab render. Also note: `page.goto('/')` triggers a full SPA reload and always refetches, so P0.6 focus-refetch cooldown MUST be exercised via in-app tab-bar taps, not `page.goto()`.",
+  "rca_of_issue": "N/A — no defects found. Prior slice-1 rollover NameError (iter114) remains fixed; slice-2 client reliability contracts (retry, focus, lab endpoint centralization) all hold."
+}

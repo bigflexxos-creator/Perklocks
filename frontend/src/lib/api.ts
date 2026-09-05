@@ -736,13 +736,35 @@ async function request<T>(
           const shouldRetry = res.status >= 500 || res.status === 408 || res.status === 429;
           if (!shouldRetry || attempt === MAX_RETRIES) {
             const msg = data?.detail || data?.error || `Request failed (${res.status})`;
-            throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+            // ── MAIN 39 · P0.4 (2026-06) — non-retryable 4xx contract ──
+            // Previously this bare `throw new Error(...)` was caught by
+            // the surrounding `catch (err)` below, which treated it
+            // like a network error and RETRIED the call up to
+            // MAX_RETRIES times — a 401/403/404 could hit the backend
+            // 3× instead of the intended 1×.  Fix: tag the Error with
+            // `nonRetryable` and status so the catch can identify a
+            // non-retryable HTTP failure and re-throw immediately
+            // without triggering the retry/backoff path.
+            const httpErr: any = new Error(
+              typeof msg === "string" ? msg : JSON.stringify(msg),
+            );
+            httpErr.status = res.status;
+            httpErr.nonRetryable = !shouldRetry;
+            throw httpErr;
           }
           lastErr = new Error(`HTTP ${res.status}`);
         } else {
           return data as T;
         }
       } catch (err: any) {
+        // ── MAIN 39 · P0.4 — non-retryable 4xx short-circuit ──────
+        // If the error was tagged `nonRetryable` (from the 4xx branch
+        // above), propagate it immediately so the caller sees exactly
+        // ONE network request.  Only network/timeout/abort/5xx/408/
+        // 429 continue through the retry loop below.
+        if (err && err.nonRetryable === true) {
+          throw err;
+        }
         // Network error / timeout / abort → retry
         lastErr = err;
         if (attempt === MAX_RETRIES) break;
@@ -1006,6 +1028,23 @@ export const api = {
       }[];
       total_pairs_seen: number;
     }>(`/lab/correlations${qs ? "?" + qs : ""}`);
+  },
+  // ── MAIN 39 · P0.7 (2026-06) — centralized Lab correlations-v2 ──
+  // Correlation Lab v2 uses the section-shaped `/api/lab/correlations-v2`
+  // endpoint that returns pre-bucketed rows (Today's Best · Best
+  // Historical · Highest ROI · Avoid Negative).  lab.tsx used to hit
+  // this via a raw `fetch(...)` and lost the shared reliability
+  // behavior (timeout, in-flight dedupe, auth, 4xx no-retry, cache
+  // headers, error normalization).  This wrapper preserves the exact
+  // endpoint / params / shape so lab.tsx is a pure drop-in swap.
+  labCorrelationsV2: (opts?: { sport?: string; limit_per_section?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.sport) params.set("sport", opts.sport);
+    if (opts?.limit_per_section != null) {
+      params.set("limit_per_section", String(opts.limit_per_section));
+    }
+    const qs = params.toString();
+    return request<any>(`/lab/correlations-v2${qs ? "?" + qs : ""}`);
   },
   // Bet Backtester — strategy filter → win rate, ROI, sample.
   labBacktest: (opts?: {
