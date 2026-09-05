@@ -637,11 +637,58 @@ const REQUEST_TIMEOUT_MS = 20_000;
 const MAX_RETRIES = 2;
 const _inflight = new Map<string, Promise<any>>();
 
-async function _fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
+/**
+ * Prepared HTTP response — the body has ALREADY been read and stringified
+ * inside the timeout guard, so consumers get status + text without a
+ * second unprotected `await response.text()`.
+ *
+ * See _fetchWithTimeout for the reason this shape exists.
+ */
+type PreparedResponse = {
+  ok: boolean;
+  status: number;
+  text: string;
+};
+
+// ── MAIN 40 · Native reset closure (2026-06-05) — body-read timeout ──
+// Previously `_fetchWithTimeout` returned the raw `Response` and the
+// caller ran `await res.text()` on the next line.  The AbortController
+// timer was `clearTimeout`'d in this function's `finally` as soon as
+// the headers arrived, so the body-read had NO timeout coverage.
+//
+// Real-device symptom (Expo Go SDK 57 on iOS): large payloads that
+// worked on Web/Preview would hang forever on iPhone.  Cold-launch
+// evidence — /api/picks/today?lite=true on the ALL tab is a 510 KB
+// chunked HTTPS/2 response (207 picks across 4 sports); MLB is 170 KB
+// (49 picks) — MLB works, ALL doesn't.  Parlay is 698 KB — Parlay
+// doesn't work either.  The payload-size vs failure correlation is
+// exact, and the only stage that runs unprotected against the large
+// payload is `res.text()` on iOS's RN 0.86 fetch bridge.
+//
+// Fix: read the body INSIDE the timeout guard.  Return the fully-
+// prepared response.  If the body-read stalls past `timeoutMs`, the
+// AbortController fires, the fetch stream rejects, and the retry
+// loop in `request()` picks it up as a normal transport error.
+//
+// This is the ONLY behavior change from the previous implementation.
+// Timeout duration is unchanged (20s).  Signature callers stay
+// source-compatible via the PreparedResponse shape.
+async function _fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<PreparedResponse> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: ctrl.signal });
+    const res = await fetch(url, { ...init, signal: ctrl.signal });
+    // CRITICAL: body-read is INSIDE the timeout guard.  On iOS RN 0.86
+    // this is the stage that previously hung on ≥500 KB chunked bodies
+    // via Expo Go's dev bridge.  The AbortController stays armed the
+    // whole time, so a stalled body-read now rejects with AbortError
+    // and hits the retry loop like any other transport failure.
+    const text = await res.text();
+    return { ok: res.ok, status: res.status, text };
   } finally {
     clearTimeout(timer);
   }
@@ -700,7 +747,9 @@ async function request<T>(
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         const res = await _fetchWithTimeout(finalUrl, init, opts.timeoutMs ?? REQUEST_TIMEOUT_MS);
-        const text = await res.text();
+        // MAIN 40 fix: `res.text` is already the body string (read
+        // inside the timeout guard).  No unprotected second await.
+        const text = res.text;
         let data: any = {};
         try { data = text ? JSON.parse(text) : {}; }
         catch { data = { detail: text }; }
