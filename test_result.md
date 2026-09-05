@@ -2108,9 +2108,9 @@ frontend:
             at bottom of 46-game board. All picks reachable.
 
 metadata:
-  last_iteration: 115
-  last_iteration_topic: "MAIN 39 SLICE 2 — Frontend reliability closure (P0.4 non-retryable 4xx, P0.6 focus-refetch semantics, P0.7 Lab centralization)"
-  last_iteration_result: "GREEN. 47/47 tests + live evidence. 4xx = exactly 1 network hit. Focus cooldown honored on success, resets on failure. Lab correlations-v2 through api.request with shared headers. No regressions."
+  last_iteration: 116
+  last_iteration_topic: "MAIN 39 · Slice 3 — bounded backend parallelization (_decorate_with_espn_meta) + Expo card re-render fix (arePropsEqual)"
+  last_iteration_result: "GREEN. /api/picks/today?lite=true p50 11476→5393 ms (53% ↓), p95 29140→6243 ms (79% ↓). Rollover unchanged. 46 pytest + 67 frontend + 7 new slice-3 = 120 tests green."
 
 agent_communication:
     - agent: "main"
@@ -2140,7 +2140,56 @@ agent_communication:
              MAIN 39 P0.1–P0.3 slice (cache gate, healer guard, H2H skip)
     - agent: "main"
       message: |
+        MAIN 39 · Slice 3 (bounded backend + Expo smoothness) — APPLIED.
+
+        Files changed:
+          - /app/backend/server.py — `_decorate_with_espn_meta` parallelized
+              (bounded CHUNK=32 outer loop + `asyncio.gather` fan-out
+              of the 4 per-pick awaits with `return_exceptions=True`).
+          - /app/frontend/src/components/LockPickCard.tsx —
+              `arePropsEqual` no longer identity-checks `pick_rationale`
+              (was causing all-card re-renders on every silent focus
+              refetch because the backend serializer re-emits the
+              dict on each response).
+          - /app/backend/tests/test_main39_slice3_smoothness.py — new
+              7-test contract module (asyncio.gather present, CHUNK
+              guard present, return_exceptions=True, all 4 helpers
+              still fire, headshot step preserved, rationale gate
+              removed, other visible-field gates preserved).
+
+        Evidence (bounded profiler /tmp/profile_picks_today.py):
+          _decorate_with_espn_meta:      10570 ms → 2844 ms  (73% ↓)
+          Total /picks/today pipeline:   13438 ms → 4788 ms  (64% ↓)
+        Live curl p50/p95 (n=6, warm, 5 sec spacing):
+          /health                        22 ms   / 47 ms
+          /api/picks/today?lite=true   5393 ms   / 6243 ms   (was 11476 / 29140)
+          /api/picks/rollover          2179 ms   / 2766 ms   (unchanged, no regression)
+        All backend responses: 200 OK · 0 5xx · 0 timeouts.
+
+        Regression posture:
+          - MAIN 37 canonical parity: contract tests untouched.
+          - MAIN 39 Slice 1 (cache gate / healer guard / lite H2H skip):
+              46/46 pytest still passes.
+          - MAIN 39 Slice 2 (4xx / focus / Lab): 67/67 static+runtime
+              still passes.
+          - MAIN 39 Slice 3 smoothness: 7/7 new tests pass.
+        Total: 46 + 67 + 7 = **120 tests green**.
+
+        Please independently verify:
+          1) `/api/picks/today?lite=true` returns 200 with a payload
+             SHAPE unchanged from Slice 2 (same lite whitelist fields).
+          2) Every pick still carries `home_meta` / `away_meta` /
+             `injury_chip` / `player_meta` (whichever apply) since
+             the parallelized enrichers must produce identical output
+             to the sequential path.
+          3) Locks tab in the browser preview scrolls without stalls;
+             sort/filter changes remain responsive; no missing rows
+             on the visible slate.
+
+    - agent: "main"
+      message: |
         MAIN 39 · Slice 2 (frontend reliability closure) — APPLIED.
+
         Files changed:
           - /app/frontend/src/lib/api.ts       (P0.4, P0.7)
           - /app/frontend/src/lib/useFocusRefetch.ts (P0.6)

@@ -1791,10 +1791,17 @@ function arePropsEqual(prev: { pick: Pick; featured?: boolean }, next: { pick: P
   if (a.pinned !== b.pinned) return false;
   if ((a as any).is_extra !== (b as any).is_extra) return false;
   if ((a as any).is_model_only !== (b as any).is_model_only) return false;
-  // pick_rationale: identity check is enough — backend serializer
-  // re-emits the dict on every refresh, so a NEW object means new
-  // content. We don't need a deep compare.
-  if ((a as any).pick_rationale !== (b as any).pick_rationale) return false;
+  // pick_rationale: MAIN 39 · Slice 3 · P1.2 (2026-06) — REMOVED
+  // identity check.  The prior version failed on every silent
+  // refetch because the backend serializer re-emits the dict on
+  // each response, forcing every card to re-render even when the
+  // visible surface (Lock badge / metrics / market) is byte-for-byte
+  // identical.  The rationale is only PAINTED behind a collapsed
+  // "Why This Pick?" panel; opening the panel toggles `whyOpen`
+  // local state, which re-renders the card anyway.  Nothing on the
+  // card head or metrics reads `pick_rationale`, so skipping this
+  // check saves a full re-render pass on every focus refetch
+  // without introducing any visible staleness.
   return true;
 }
 
