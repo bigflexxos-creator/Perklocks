@@ -63,11 +63,12 @@ export default function RolloverScreen() {
     const myToken = _reqTokenRef.current + 1;
     _reqTokenRef.current = myToken;
     const reqLt = lt; const reqSp = sp; const reqFilters = f;
+    let ok = false;
     try {
       setError(null);
       const res = await api.rollover(lt, f, sp);
       // If a newer request has been fired since, drop this result.
-      if (myToken !== _reqTokenRef.current) return;
+      if (myToken !== _reqTokenRef.current) return false;
       // Backend now returns an array of up to 3 picks.
       const arr = (res.picks && res.picks.length > 0)
         ? res.picks
@@ -83,16 +84,22 @@ export default function RolloverScreen() {
         _rolloverKey(reqLt, reqSp, reqFilters),
         { picks: nextPicks, pool: nextPool, survivability: nextSurv },
       );
+      ok = true;
     } catch (e: any) {
       // Only surface the error if we're STILL the latest request.
-      if (myToken !== _reqTokenRef.current) return;
+      if (myToken !== _reqTokenRef.current) return false;
       console.warn("rollover load", e);
       if (!silent) setError(String(e?.message || "Couldn't load rollover picks."));
+      ok = false;
     } finally {
-      if (myToken !== _reqTokenRef.current) return;
+      if (myToken !== _reqTokenRef.current) return; // eslint-disable-line no-unsafe-finally
       if (!silent) setLoading(false);
       setRefreshing(false);
     }
+    // MAIN 39 · P0.6 — explicit success/failure signal so
+    // useFocusRefetch doesn't lock out the next focus after a failed
+    // silent refresh.
+    return ok;
   }, []);
 
   useEffect(() => {

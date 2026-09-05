@@ -136,13 +136,21 @@ test("§D1  No fetch() with raw EXPO_PUBLIC_BACKEND_URL", () => {
   }
   expect(violations).toEqual([]);
 });
-test("§D2  At least one consumer imports getBackendUrl", () => {
+test("§D2  At least one consumer imports getBackendUrl OR buildApiUrl OR api from the central module", () => {
+  // ── MAIN 39 · P0.7 (2026-06) — relaxed from `getBackendUrl only` to
+  // `getBackendUrl OR buildApiUrl OR api` because lab.tsx was migrated
+  // off the raw `fetch(${base}/api/...)` pattern and now routes through
+  // `api.labCorrelationsV2()` (which internally uses `buildApiUrl`).
+  // The invariant we actually care about is "at least one consumer
+  // uses the centralized module" — either helper OR the `api` object
+  // satisfies it, since every `api.*` call ultimately routes through
+  // `request()` → `buildApiUrl()`.
   const files = walkTsFiles(APP_DIR, []);
   let seen = false;
   for (const f of files) {
     const src = fs.readFileSync(f, "utf-8");
     if (/from\s+["']@\/src\/lib\/api["']/.test(src)
-        && /getBackendUrl/.test(src)) {
+        && /\b(getBackendUrl|buildApiUrl|api)\b/.test(src)) {
       seen = true; break;
     }
   }

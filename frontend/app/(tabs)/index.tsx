@@ -483,7 +483,7 @@ export default function LocksScreen() {
   const load = useCallback(async (s: string, lt: LineType, sk: SortKey, f: PickFilters, dir: SortDirection, opts: { manual?: boolean } = {}) => {
     const now = Date.now();
     if (!opts.manual && (now - lastFetchTsRef.current) < FETCH_DEDUPE_MS) {
-      return; // silently coalesce back-to-back non-manual fetches
+      return true; // silently coalesce back-to-back non-manual fetches
     }
     lastFetchTsRef.current = now;
     const myToken = latestLoadTokenRef.current + 1;
@@ -495,6 +495,8 @@ export default function LocksScreen() {
     // re-fetch it on every picks refresh (tab focus, AppState resume,
     // filter tweak). Cuts request count roughly in half on warm returns.
     const statsFresh = _statsMem && (now - _statsMem.ts) < STATS_STALE_MS;
+    // MAIN 39 · P0.6 — explicit success/failure signal.
+    let ok = false;
     try {
       const [picksRes, statsRes] = await Promise.all([
         api.picksToday(s, lt, sk, f, dir, {
@@ -511,7 +513,7 @@ export default function LocksScreen() {
         statsFresh ? Promise.resolve(_statsMem!.data) : api.stats().catch(() => null),
       ]);
       // Discard if a newer load was fired after we sent this one.
-      if (myToken !== latestLoadTokenRef.current) return;
+      if (myToken !== latestLoadTokenRef.current) return false;
       // Clear any prior load-error banner — we got a clean response.
       setLoadError(null);
       // Defensive client-side filter — protect users from production
@@ -584,7 +586,9 @@ export default function LocksScreen() {
       if (fresh.length === 0 && picksRef.current.length > 0 && sameFilter) {
         setLoadError("Slate refreshing… showing your cached picks. Tap to retry.");
         // Skip setPicks([]) — keep cached.
-        return;
+        // Not a hard failure: we're keeping the last-good slate.
+        ok = true;
+        return true;
       }
       setPicks(fresh);
       lastLoadedForSportRef.current = requestedSport;
@@ -634,6 +638,7 @@ export default function LocksScreen() {
         _statsMem = { data: nextStats, ts: Date.now() };
       }
       setLastLoadedAt(new Date());
+      ok = true;
     } catch (e: any) {
       // CRITICAL (2026-06-28): preserve previously loaded picks on a
       // network failure (e.g. Cloudflare 520 during a uvicorn --reload
@@ -650,6 +655,7 @@ export default function LocksScreen() {
         setLoadError(cleanMsg);
         console.warn("load locks failed (cached picks kept):", e);
       }
+      ok = false;
     } finally {
       // Only clear loading flags if this is still the latest request.
       if (myToken === latestLoadTokenRef.current) {
@@ -657,6 +663,7 @@ export default function LocksScreen() {
         setRefreshing(false);
       }
     }
+    return ok;
   }, [
     // load() captures filterStore.{sports,leagues,markets,gameIds,searchText}
     // via its closure on each render. We MUST list them here so React
@@ -745,7 +752,13 @@ export default function LocksScreen() {
   // freshly-emitted picks (e.g. new H+R+RBI market family) surface as soon
   // as the user tabs back — without hammering the API on every focus.
   useFocusRefetch(
-    () => { load(sport, lineType, sortKey, filters, sortDir); loadCooldown(); },
+    () => {
+      loadCooldown();
+      // MAIN 39 · P0.6 — propagate load()'s boolean so a failed
+      // silent refresh doesn't lock out the next focus behind the
+      // 5s cooldown.
+      return load(sport, lineType, sortKey, filters, sortDir);
+    },
     [sport, lineType, sortKey, filters, sortDir, load, loadCooldown],
     5_000,
   );

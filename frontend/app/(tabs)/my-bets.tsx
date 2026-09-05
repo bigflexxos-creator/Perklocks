@@ -44,6 +44,15 @@ export default function MyBetsScreen() {
   const [tab, setTab] = useState<"pending" | "history">("pending");
 
   const load = useCallback(async (silent: boolean = false) => {
+    // ── MAIN 39 · P0.6 — explicit success/failure signaling ──
+    // Individual endpoints already fall back to null on error, so a
+    // total failure was previously invisible to useFocusRefetch (the
+    // Promise.all always resolves).  Now we watch how many of the
+    // five endpoints actually returned data — if EVERY single one
+    // came back null we treat that as a hard failure so the next
+    // screen focus can retry immediately instead of getting stuck
+    // behind the 30-second cooldown on the empty response.
+    let ok = false;
     try {
       const [s, sp, mk, p, h] = await Promise.all([
         api.myAnalyticsSummary().catch(() => null),
@@ -60,10 +69,13 @@ export default function MyBetsScreen() {
       swrCacheWrite<MyBetsSnapshot>(_mybetsKey, {
         summary: s, bySport: sp, byMarket: mk, pending: p, history: h,
       });
+      // At least one endpoint succeeded → success. All five null → failure.
+      ok = [s, sp, mk, p, h].some((r) => r !== null);
     } finally {
       if (!silent) setLoading(false);
       setRefreshing(false);
     }
+    return ok;
   }, []);
 
   useEffect(() => {

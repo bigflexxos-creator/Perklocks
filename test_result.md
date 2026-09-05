@@ -2108,9 +2108,9 @@ frontend:
             at bottom of 46-game board. All picks reachable.
 
 metadata:
-  last_iteration: 114
-  last_iteration_topic: "MAIN 39 P0 — Rollover 500 surgical fix (odds_dead_zone retired) + slice non-regression"
-  last_iteration_result: "GREEN. 46/46 pytest PASS. /api/picks/rollover 200 OK. /api/picks/today?lite=true still skips H2H (0 h2h keys / 231 rows). Cache gate warmed 16s→8s."
+  last_iteration: 115
+  last_iteration_topic: "MAIN 39 SLICE 2 — Frontend reliability closure (P0.4 non-retryable 4xx, P0.6 focus-refetch semantics, P0.7 Lab centralization)"
+  last_iteration_result: "GREEN. 47/47 tests + live evidence. 4xx = exactly 1 network hit. Focus cooldown honored on success, resets on failure. Lab correlations-v2 through api.request with shared headers. No regressions."
 
 agent_communication:
     - agent: "main"
@@ -2138,3 +2138,60 @@ agent_communication:
           1) `/api/picks/rollover` → 200 OK + valid contract shape
           2) `/api/picks/today` and `/api/picks/today?lite=true` still pass
              MAIN 39 P0.1–P0.3 slice (cache gate, healer guard, H2H skip)
+    - agent: "main"
+      message: |
+        MAIN 39 · Slice 2 (frontend reliability closure) — APPLIED.
+        Files changed:
+          - /app/frontend/src/lib/api.ts       (P0.4, P0.7)
+          - /app/frontend/src/lib/useFocusRefetch.ts (P0.6)
+          - /app/frontend/app/(tabs)/index.tsx (P0.6 — Locks)
+          - /app/frontend/app/(tabs)/rollover.tsx (P0.6)
+          - /app/frontend/app/(tabs)/parlay.tsx (P0.6)
+          - /app/frontend/app/(tabs)/my-bets.tsx (P0.6)
+          - /app/frontend/app/history.tsx (P0.6)
+          - /app/frontend/app/(tabs)/lab.tsx (P0.7)
+          - /app/frontend/__tests__/main39_slice2.test.js (new)
+          - /app/frontend/__tests__/main39_slice2.runner.js (new, node)
+          - /app/frontend/__tests__/main39_slice2.static.runner.js (new)
+          - /app/frontend/__tests__/api_url_parity.{test,runner}.js
+              (§D2 relaxed from getBackendUrl-only to include buildApiUrl / api.*)
+
+        Root causes:
+          P0.4: request() threw `new Error(...)` inside the `try` block
+                on non-retryable 4xx. The surrounding `catch (err)` then
+                caught it AS A NETWORK ERROR and retried up to
+                MAX_RETRIES=2 additional times → a single 401/403/404
+                was hitting the backend 3× per call.
+          P0.6: useFocusRefetch only reset its cooldown stamp when the
+                fetcher Promise REJECTED. Screen `load()` functions catch
+                errors internally and RESOLVE (setting local error
+                state), so a failed refresh was silently treated as a
+                success and the user was stuck behind the 30 s cooldown.
+          P0.7: lab.tsx used a raw `fetch(${base}/api/lab/correlations-v2)`
+                that bypassed the shared reliability layer (timeout,
+                4xx no-retry, in-flight dedupe, auth, cache headers).
+
+        Fixes:
+          P0.4: mark HTTP errors with `nonRetryable = !shouldRetry` +
+                `status` on the Error object; outer catch re-throws
+                nonRetryable immediately. `shouldRetry` predicate
+                unchanged (5xx | 408 | 429). AbortController timeout,
+                GET dedupe, 401 auto-recover event all preserved.
+          P0.6: hook now stamps `lastFetchRef` ONLY after a successful
+                settle; rejection OR explicit `false` return resets it.
+                Added in-flight guard so overlapping focuses can't
+                stack.  Five screens updated to return an explicit
+                boolean from `load()`.  Backward compatible: `void`
+                returns still count as success.
+          P0.7: added `api.labCorrelationsV2({ sport?, limit_per_section? })`
+                → same endpoint / params / response shape. Swapped
+                lab.tsx to call it. Unused `getBackendUrl` import
+                pruned.
+
+        Test evidence:
+          - main39_slice2.runner.js       →  19/19 PASS (retry-count matrix)
+          - main39_slice2.static.runner.js → 22/22 PASS (all contracts)
+          - api_url_parity.runner.js      →  15/15 PASS (unchanged)
+          - api_url_parity.behavioral.js  →  11/11 PASS (unchanged)
+          Live proof: /api/picks/rollover 200 OK · /api/picks/today?lite=true 200 OK · /api/lab/correlations-v2 200 OK
+
