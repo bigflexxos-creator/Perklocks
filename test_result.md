@@ -2108,9 +2108,9 @@ frontend:
             at bottom of 46-game board. All picks reachable.
 
 metadata:
-  last_iteration: 108
-  last_iteration_topic: "PHASE 24 ROOT CLOSURE — Q28 + Q29 + Preview scroll defect; ZERO fabrication; ZERO recompute; PERKLOCKS_WHOLE_APP_CERTIFIED"
-  last_iteration_result: "4/4 Phase 24 Root Closure tests green. Full certification stamp in /app/memory/phase24_final_certification.md."
+  last_iteration: 114
+  last_iteration_topic: "MAIN 39 P0 — Rollover 500 surgical fix (odds_dead_zone retired) + slice non-regression"
+  last_iteration_result: "GREEN. 46/46 pytest PASS. /api/picks/rollover 200 OK. /api/picks/today?lite=true still skips H2H (0 h2h keys / 231 rows). Cache gate warmed 16s→8s."
 
 agent_communication:
     - agent: "main"
@@ -2120,3 +2120,21 @@ agent_communication:
         scroll defect fixed and Playwright-proven. Settlement mirror
         preservation hook wired into the 3 legacy ReplaceOne writers
         so the mirror can no longer regress on re-publish.
+    - agent: "main"
+      message: |
+        MAIN 39 P0 ROLLOVER 500 FIX APPLIED.
+        File: /app/backend/routes/picks_routes.py (line 690).
+        Root cause: retired constants ODDS_DEAD_LO / ODDS_DEAD_HI were
+        removed from the local import block but still referenced in the
+        `survivability.odds_dead_zone` response payload, raising
+        NameError → HTTP 500.
+        Surgical fix: replaced the tuple with `[]` (empty band) with an
+        explanatory comment. Shape of the JSON contract is preserved.
+        Local proof: `GET /api/picks/rollover` (demo token) now returns
+        HTTP 200 with 2 picks, `survivability.odds_dead_zone=[]`,
+        `survivability.lock_floor=89`. No other ODDS_DEAD refs remain in
+        picks_routes.py (only the P1.4 retirement comment).
+        Requesting backend-only regression verification:
+          1) `/api/picks/rollover` → 200 OK + valid contract shape
+          2) `/api/picks/today` and `/api/picks/today?lite=true` still pass
+             MAIN 39 P0.1–P0.3 slice (cache gate, healer guard, H2H skip)

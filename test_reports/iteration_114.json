@@ -1,0 +1,38 @@
+{
+  "summary": "PERKLOCKS MAIN 39 rollover fix — backend-only regression re-verification. ALL GREEN. 46/46 pytest passed (100%): test_perklocks_main39_slice.py 4/4, test_perklocks_main_36_rollover_closure.py 16/16, test_rollover_history_tagger.py 18/18, test_iter113_main39_slice_endpoints.py 8/8 (previously 7/8 — TestRolloverParlay::test_rollover_endpoint_200 now GREEN). Live endpoint checks against https://canonical-parity.preview.emergentagent.com: (a) GET /api/picks/rollover → HTTP 200 with contract keys {picks, pick, total_evaluated, rollover_version='v4-sticky', sticky, composite_rank, survivability{lock_floor=89, wp_floor=0.6, edge_floor=0.0, edge_cap=12.0, odds_floor=-350, odds_dead_zone=[] ✓ RETIRED, max_legs=3}}, 2 picks returned. (b) 5x concurrent /api/picks/rollover all HTTP 200. (c) Backend logs (last 300–500 lines of backend.err.log) contain ZERO occurrences of ODDS_DEAD_LO / ODDS_DEAD_HI NameError / UNHANDLED GET /api/picks/rollover. (d) MAIN 39 P0.1 cache gate: 5x sequential /api/picks/today?lite=true all 200; warm-cache stabilised ~8s after ~16s cold — no ensure_today_picks storm. (e) MAIN 39 P0.3 lite skip: /api/picks/today returns h2h_summary (str) + h2h_compact (dict) hydrated; /api/picks/today?lite=true returns ZERO h2h-ish keys across 231 rows (grep for h2h/head_to_head → empty list). Fix at picks_routes.py:690 confirmed in place — `[ODDS_DEAD_LO, ODDS_DEAD_HI]` replaced with `[]` and a P1.4-retirement comment. MAIN 39 P0.1/P0.2/P0.3 slice fully intact; rollover 500 regression closed. Ready to ship.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_perklocks_main39_slice.py",
+    "/app/backend/tests/test_perklocks_main_36_rollover_closure.py",
+    "/app/backend/tests/test_rollover_history_tagger.py",
+    "/app/backend/tests/test_iter113_main39_slice_endpoints.py",
+    "/app/test_reports/pytest/iter114_rollover_fix.xml",
+    "/app/test_reports/pytest/iter114_endpoint_regression.xml"
+  ],
+  "action_items": [
+    "None — rollover fix verified, MAIN 39 slice regression-free. Safe to close ticket."
+  ],
+  "critical_code_review_comments": [
+    "picks_routes.py:690–693 fix is minimal and appropriate: retains the `odds_dead_zone` key with an empty list so downstream dashboards / tests see the P1.4 retirement explicitly rather than a KeyError, matching the retirement comment at 587-588. No architectural drift.",
+    "Cosmetic (no action requested per user policy): lite-branch empty for-loop at picks_routes.py:2933-2937 still present (noted in iter113); function correctness unaffected."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% (46/46 pytest across 4 suites; 5/5 live rollover, 5/5 sequential today?lite, all endpoints in scope)",
+    "frontend": "N/A (backend-only review per request)"
+  },
+  "seed_data_creation": "None — read-only tests against existing seeded slate. Auth via demo@lockscore.ai / demo123.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "MAIN 39 P0.1-P0.3 slice + rollover ODDS_DEAD_LO/HI NameError fix are both fully verified. Auth: demo@lockscore.ai / demo123 → POST /api/auth/login → access_token. Backend base URL from EXPO_PUBLIC_BACKEND_URL (frontend/.env). Note for future testing_agent iterations: test_iter113_main39_slice_endpoints.py at line 38 requires EXPO_BACKEND_URL or EXPO_PUBLIC_BACKEND_URL to be exported into the shell (not just present in frontend/.env) — invoke pytest as `EXPO_PUBLIC_BACKEND_URL=<url> pytest …`. /api/picks/today?lite=true observed ~8s warm / ~16s cold — within client budget but slow (KNOWN out-of-scope per user).",
+  "rca_of_issue": "Confirmed fixed. Original bug: NameError at picks_routes.py:690 referencing removed ODDS_DEAD_LO/ODDS_DEAD_HI symbols inside the sticky-cache survivability dict, triggered whenever the rollover selector produced a non-empty `top` list. Applied fix: line 690 now emits `\"odds_dead_zone\": []` with a P1.4-retirement inline comment (lines 690-693). Live 5x concurrent hits: all HTTP 200 with 2 picks and empty odds_dead_zone. Backend error log tail: no NameError or UNHANDLED GET /api/picks/rollover. Regression suite (46 tests) all GREEN. No further action required."
+}

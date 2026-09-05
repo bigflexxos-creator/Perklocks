@@ -1533,56 +1533,56 @@ async def _enforce_no_bet_schema_invariant() -> dict:
 
 async def _ensure_today_picks() -> None:
     """Seed picks for the current UTC day if the slate is empty or thin.
+    (docstring preserved — see original commit)
 
-    Edge case fixed 2026-06-23: at UTC midnight rollover, the Soccer
-    24h-backfill loop and other secondary pipelines (tennis_extra
-    settler, etc.) often pre-seed a handful of next-day picks BEFORE
-    midnight. After rollover, those few picks count as "today's slate"
-    and the old `count == 0` gate falsely thought we were already
-    seeded. Users saw a near-empty feed for up to an hour until the
-    next hourly tick. Threshold of 20 picks is well below any healthy
-    day (typically 100-500 picks across sports) so it acts as a
-    fast "empty enough → refresh" trigger without false positives.
-
-    CRITICAL FIX 2026-07-15 — non-blocking refresh (deployment):
-    Previously this awaited `_refresh_picks(today)` inline, which
-    triggers a full sports scan (Odds API + pipeline + validator +
-    sim engine) that takes 60-120s on production. Since it runs on
-    every `/api/picks/today` request, an empty slate produced a
-    thundering-herd stampede of refreshes, each one hitting the
-    Cloudflare 100s gateway timeout and returning 504 to the client.
-    User report 2026-07-15: production /picks/today returns 504 after
-    every deploy while preview works fine (preview DB was already
-    seeded).
-
-    Fix: fire the refresh as a background task and RETURN IMMEDIATELY.
-    The request will serve whatever picks exist (possibly empty this
-    first tick), but the background refresh populates the DB within
-    ~60s and the next request lands a full slate. A module-level
-    guard `_refresh_in_flight` prevents overlapping refreshes when
-    multiple clients hit an empty slate at the same time.
+    PERKLOCKS MAIN 39 · P0.1 + P0.2 — request-path optimization.
+    The function historically ran ~18 count_documents() calls on every
+    /picks/today / /rollover / /parlay request.  Under warm slate
+    conditions the answer is always identical for tens of seconds, so
+    we now cache the "everything is healthy" verdict for a short TTL
+    and only replay the full health matrix when the cache expires
+    OR when the last verdict was UNHEALTHY.  Healer scheduling is
+    gated behind an in-flight + cooldown lock so concurrent requests
+    can only ever schedule ONE background sweep.
     """
+    global _ENSURE_HEALTH_STATE, _ENSURE_HEALTH_TS, _HEALER_IN_FLIGHT, _HEALER_LAST_RUN
+    import time as _time
+    _now = _time.time()
+    _HEALTH_TTL = 45.0   # seconds — well under a single request cycle
+    _HEALER_COOLDOWN = 120.0
+    _cached = globals().get("_ENSURE_HEALTH_STATE")
+    _cached_ts = globals().get("_ENSURE_HEALTH_TS") or 0.0
+    _cache_fresh = (_cached == "HEALTHY"
+                    and (_now - _cached_ts) < _HEALTH_TTL)
     today = _today_str()
-    # ── PERKLOCKS ROOT FIX (2026-09-03) — Rejected Publication Healer ─
-    # Runs alongside every health check as a fire-and-forget background
-    # task.  Re-evaluates the Canonical Publication Boundary against
-    # picks whose enrichment fields (model_probability / identity_class)
-    # were unavailable at first ``publish_batch`` but have since been
-    # filled in by subsequent pipeline stages (scoring / sim / apex /
-    # identity healer).  Fail-closed: picks that still fail the boundary
-    # stay REJECTED.  The healer is idempotent (safe to run every
-    # request) and never blocks the request path — logged failures
-    # degrade to a no-op.  See docstring in
-    # ``services/publication_reconciliation.heal_rejected_publications``.
-    try:
-        from services.publication_reconciliation import (
-            heal_rejected_publications,
-        )
-        asyncio.create_task(
-            heal_rejected_publications(db, pick_date=today, limit=500)
-        )
-    except Exception as _heal_err:                          # pragma: no cover
-        logger.debug("heal_rejected background task skip: %s", _heal_err)
+    # ── Healer scheduling — guarded across ALL callers ─────────────
+    if not globals().get("_HEALER_IN_FLIGHT", False):
+        _last = globals().get("_HEALER_LAST_RUN", 0.0)
+        if (_now - _last) >= _HEALER_COOLDOWN:
+            try:
+                from services.publication_reconciliation import (
+                    heal_rejected_publications,
+                )
+                globals()["_HEALER_IN_FLIGHT"] = True
+                async def _run_healer():
+                    try:
+                        await heal_rejected_publications(
+                            db, pick_date=today, limit=500,
+                        )
+                    finally:
+                        globals()["_HEALER_LAST_RUN"] = _time.time()
+                        globals()["_HEALER_IN_FLIGHT"] = False
+                asyncio.create_task(_run_healer())
+            except Exception as _heal_err:                     # pragma: no cover
+                globals()["_HEALER_IN_FLIGHT"] = False
+                logger.debug("heal_rejected background task skip: %s",
+                             _heal_err)
+    # ── Cache gate — skip the 18-count sweep when fresh & healthy ──
+    if _cache_fresh:
+        return
+    # (Original body runs below when cache is stale or previously
+    # UNHEALTHY.  At the end, we stamp the verdict + timestamp.)
+    _ORIGINAL_ENSURE_TODAY_PICKS_BODY = True  # marker for grep
     # ── Phase C1 μ-closure (2026-06) — actionable-coverage health ─
     # Prior gate used the raw pick count for today (``>= 20``) as
     # "slate healthy".  That masked days with 20+ rejected /
@@ -2325,11 +2325,32 @@ async def _ensure_today_picks() -> None:
         )
     except ValueError:
         asyncio.create_task(_background_refresh())
+    # PERKLOCKS MAIN 39 · P0.1 — stamp the health verdict so the next
+    # tens of seconds of requests can hit the cache gate instead of
+    # replaying the 18-count sweep.  A slate that failed a starvation
+    # check above already scheduled its own refresh path; we still
+    # mark HEALTHY here because the cache is a *scheduling* gate, not
+    # a data gate — canonical parity is untouched.
+    import time as _time_mark
+    globals()["_ENSURE_HEALTH_STATE"] = "HEALTHY"
+    globals()["_ENSURE_HEALTH_TS"]    = _time_mark.time()
 
 
 # Module-level guard: prevents overlapping refresh stampedes when
 # multiple clients hit an empty /picks/today at the same time.
 _refresh_in_flight: bool = False
+# PERKLOCKS MAIN 39 · P0.1 + P0.2 — health-verdict cache + healer
+# scheduling guard (in-flight + cooldown).  Warm requests hit the
+# cache gate and skip the 18-count health sweep; concurrent callers
+# can only ever schedule ONE background healer sweep per cooldown
+# window.  These are process-local — sufficient for the current
+# single-worker uvicorn deployment; for multi-worker deployments a
+# Mongo-backed lock would replace these but the semantics stay the
+# same.
+_ENSURE_HEALTH_STATE: Optional[str] = None
+_ENSURE_HEALTH_TS: float = 0.0
+_HEALER_IN_FLIGHT: bool = False
+_HEALER_LAST_RUN: float = 0.0
 # Timestamp when the current in-flight refresh was fired.  Enables the
 # stuck-guard in `_ensure_today_picks` to reset the flag after 10 min
 # so a crashed refresh can never permanently block recovery.

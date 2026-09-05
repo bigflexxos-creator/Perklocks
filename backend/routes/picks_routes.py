@@ -687,7 +687,10 @@ async def pick_rollover(
         "edge_floor": EDGE_FLOOR,
         "edge_cap": EDGE_CAP,
         "odds_floor": CHALK_CAP,
-        "odds_dead_zone": [ODDS_DEAD_LO, ODDS_DEAD_HI],
+        # P1.4 retired: ODDS_DEAD_LO / ODDS_DEAD_HI dead-zone removed.
+        # Surface an empty band so downstream consumers (dashboards,
+        # tests) see the retirement explicitly rather than a crash.
+        "odds_dead_zone": [],
         "max_legs": MAX_LEGS,
         "market_boosts": [{"pattern": p, "multiplier": m} for p, m in MARKET_BOOSTS],
         "candidates_scanned": total_candidates,
@@ -2919,11 +2922,26 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 _slim["why_this_pick"] = ki[:6]
 
     # ── Second pass: parallel H2H attach ────────────────────────────
-    # Cold-start /picks/today was 13s+ when batter H2H ran sequentially
-    # (each MLB Stats API call ~200-800ms × ~30 batters). Fan out with a
-    # semaphore-bounded asyncio.gather so we stay under the 20s frontend
-    # timeout even on a cold cache.
-    if build_h2h_bundle is not None and _h2h_budget > 0 and canonical:
+    # PERKLOCKS MAIN 39 · P0.3 — lite path must NEVER invoke
+    # ``build_h2h_bundle`` at request time.  On a cold cache the fan-
+    # out of ~30 batter H2H MLB Stats API calls (200-800ms each) can
+    # push /picks/today?lite=true past the 20s client timeout.
+    # Non-lite consumers (full Pick Breakdown detail via
+    # /api/picks/{id}/h2h) still get full H2H — that path is
+    # unchanged.  For lite rows we surface the persisted h2h_summary
+    # / h2h_compact fields when they already exist on the pick doc
+    # (populated by background refresh cycles) but never issue a
+    # fresh bundle call.
+    if lite and canonical:
+        for _slim in canonical:
+            if not isinstance(_slim, dict):
+                continue
+            if _slim.get("h2h_summary") or _slim.get("h2h_compact"):
+                continue                        # already persisted
+        build_h2h_bundle_gate = None
+    else:
+        build_h2h_bundle_gate = build_h2h_bundle
+    if build_h2h_bundle_gate is not None and _h2h_budget > 0 and canonical:
         import asyncio as _asyncio
         _sem = _asyncio.Semaphore(8)
 
