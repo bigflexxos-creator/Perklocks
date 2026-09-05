@@ -45,7 +45,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 // deployed EAS bundle to wipe prior client caches on first launch so
 // the new client-side legacy-provider filter (see api.ts) is applied
 // against a fresh in-memory snapshot from the very first fetch.
-export const APP_DATA_VERSION = "20260822-sgo-legacy-filter-v72";
+export const APP_DATA_VERSION = "20260905-sdk57-migration-v1";
 
 // ─── Backend-version snapshot (Layer 2 - stored after each /api/version call)
 const CLIENT_VERSION_KEY = "perkslocks.client_data_version";
@@ -54,7 +54,19 @@ const BACKEND_VERSION_KEY = "perkslocks.backend_data_version";
 // ─── Every AsyncStorage key the app writes. Keep in sync with new caches. ──
 const KNOWN_CACHE_KEYS = [
   "perkslocks.betslip.v1",          // BetSlipContext
-  "perkslocks.parlay_prefs.v1",     // useParlayPreferences
+  // ── MAIN 40 (SDK 57 upgrade, 2026-06-05) — cache-bust key fix ──
+  // The old entry `perkslocks.parlay_prefs.v1` (dot + underscore
+  // notation) did NOT match the ACTUAL storage key used by
+  // useParlayPreferences.ts (`@perkslocks/parlay-prefs-v1` with
+  // slash + hyphen).  That meant every "cache-bust wipe" LEFT
+  // stale SDK 54-era parlay prefs on disk, which then hydrated
+  // into the SDK 57 client and broke the Parlay tab on native.
+  // Ship BOTH keys so any future defensive wipe cleans up the
+  // legacy mislabelled slot (harmless if absent) AND the real
+  // production keys the app actually writes.
+  "perkslocks.parlay_prefs.v1",     // legacy mislabelled slot (defensive)
+  "@perkslocks/parlay-prefs-v1",    // ACTUAL v1 key (SDK 54 era)
+  "@perkslocks/parlay-prefs-v2",    // SDK 57 migrated key
   "locks_feed_prefs_v1",            // Home tab persisted sport / sortKey / lineType (legacy)
   "locks_feed_prefs_v2",            // Home tab persisted sport / sortKey / lineType (current)
   // ── Persisted filter store ──
@@ -67,6 +79,10 @@ const KNOWN_CACHE_KEYS = [
   "perkslocks_filters_v4",
   "perkslocks_filters_v5",
   "perkslocks_filters_v6",
+  // MAIN 40: SDK 57 clean-slate filter key.  Any client still reading
+  // v6 is an orphan SDK 54 build; every SDK 57 client hydrates v7
+  // fresh on first launch and then persists it thereafter.
+  "perkslocks_filters_v7",
   // Add any new AsyncStorage keys here so a cache bust actually wipes them.
 ];
 
