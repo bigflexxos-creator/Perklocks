@@ -2108,9 +2108,9 @@ frontend:
             at bottom of 46-game board. All picks reachable.
 
 metadata:
-  last_iteration: 116
-  last_iteration_topic: "MAIN 39 · Slice 3 — bounded backend parallelization (_decorate_with_espn_meta) + Expo card re-render fix (arePropsEqual)"
-  last_iteration_result: "GREEN. /api/picks/today?lite=true p50 11476→5393 ms (53% ↓), p95 29140→6243 ms (79% ↓). Rollover unchanged. 46 pytest + 67 frontend + 7 new slice-3 = 120 tests green."
+  last_iteration: 117
+  last_iteration_topic: "MAIN 40 — Expo SDK 54 → 57 compatibility upgrade (real-device Expo Go blocker resolved)"
+  last_iteration_result: "GREEN. Expo Doctor 21/21. Metro bundles 1379 modules in ~700ms. All 6 tabs render on SDK 57 (Locks/Rollover/Parlay/My Bets/Lab/Profile). 41/41 new MAIN 40 tests + 67/67 MAIN 39 Slice 2 tests + all backend endpoints 200. Zero MAIN 37/39 code touched."
 
 agent_communication:
     - agent: "main"

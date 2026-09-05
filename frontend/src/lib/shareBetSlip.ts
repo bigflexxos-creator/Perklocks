@@ -18,7 +18,27 @@
  */
 import { Alert, Linking, Platform, Share as RNShare } from "react-native";
 import * as Sharing from "expo-sharing";
-import * as MediaLibrary from "expo-media-library";
+// ── MAIN 40 (Expo SDK 57 upgrade, 2026-06) ──
+// SDK 57 renamed expo-media-library's underlying native module to
+// `ExpoMediaLibraryNext`. On web the module has no native
+// implementation and eager top-level `import` throws
+// "Cannot find native module 'ExpoMediaLibraryNext'" at bundle
+// evaluation time, crashing the entire app.  We already guard every
+// call site with `Platform.OS === "web"` returning early, so the
+// fix is to lazy-load the module only when the native branch is
+// actually reached.  Runtime behavior on iOS/Android is unchanged.
+type MediaLibraryModule = typeof import("expo-media-library");
+let _mediaLibrary: MediaLibraryModule | null = null;
+function getMediaLibrary(): MediaLibraryModule {
+  if (Platform.OS === "web") {
+    throw new Error("MediaLibrary is not available on web");
+  }
+  if (!_mediaLibrary) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    _mediaLibrary = require("expo-media-library") as MediaLibraryModule;
+  }
+  return _mediaLibrary;
+}
 import * as Clipboard from "expo-clipboard";
 import { captureRef } from "react-native-view-shot";
 
@@ -219,6 +239,7 @@ export async function saveSlipImage(viewRef: any): Promise<boolean> {
   }
 
   // Permission flow
+  const MediaLibrary = getMediaLibrary();
   let perm = await MediaLibrary.getPermissionsAsync();
   if (!perm.granted) {
     if (!perm.canAskAgain) {

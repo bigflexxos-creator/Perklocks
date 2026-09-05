@@ -288,13 +288,19 @@ export function getSportColor(sport?: string) {
 
 // Confidence-bar gradient stops (green → lime → gold → orange → red).
 // Used by LockPickCard's progress bar per mockup spec §8.
+// ── MAIN 40 (Expo SDK 57 upgrade, 2026-06) ──
+// expo-linear-gradient in SDK 57 tightened the `colors` prop to
+// `readonly [ColorValue, ColorValue, ...ColorValue[]]`, so a bare
+// `string[]` no longer type-checks. Casting to `as const` gives us a
+// readonly tuple with the exact element count, which satisfies the
+// new signature without changing runtime behavior.
 export const CONFIDENCE_GRADIENT = [
   "#4DE68A",   // green (low-lock end)
   "#B6FF3D",   // lime
   "#FFD700",   // gold
   "#FF9548",   // orange
   "#FF5F5C",   // red
-];
+] as const;
 
 // ── Depth / shadow scale ────────────────────────────────────────────
 export const SHADOW = {
