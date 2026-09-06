@@ -458,6 +458,136 @@ def _canonicalize_picks(picks: list[dict]) -> list[dict]:
     return [_canonicalize_lock_score(p) for p in picks]
 
 
+# ═════════════════════════════════════════════════════════════════════
+# MAIN 40 · Iter 4 (2026-06-05) — ESPN enrichment moved OFF hot path
+# ─────────────────────────────────────────────────────────────────────
+# Support-confirmed root cause: cold /picks/today spent ~10.5 s inside
+# `_decorate_with_espn_meta` for 700+ picks (4 async helpers each), so
+# iPhone Expo Go SDK 57 requests approached the client's 20 s cap.
+#
+# Fix: split the enrichment into two phases
+#   1. HOT PATH  — `_apply_espn_cache_overlay(picks)`
+#      Pure O(n) dict lookup against `_ESPN_ENRICH_CACHE`.  Zero I/O.
+#      Missing entries → picks come back WITHOUT the ESPN display
+#      fields on this response.  The frontend already renders every
+#      pick without them (they're presentation-only overlays).
+#   2. BACKGROUND — `_ensure_espn_cache_warm(picks)`
+#      Fired as an asyncio.create_task from the request handler.  Runs
+#      the same 4-helper fan-out per pick, but writes the results
+#      into `_ESPN_ENRICH_CACHE` keyed by canonical_pick_id.  A single
+#      in-flight guard prevents concurrent duplicate warms.  Next
+#      request hits the cache → served in <2 s warm.
+#
+# Cache contract:
+#   * Keyed by canonical_pick_id.
+#   * Value: dict of ONLY the display fields the ESPN helpers add
+#     (home_meta / away_meta / injury_chip / player_form /
+#     espn_signals / signal_score_raw / signal_score / player_meta).
+#   * Purged when board version changes (new pick_date OR data_version
+#     bump) → we clear on every `_ensure_today_picks` cache reset.
+#   * ESPN enrichment NEVER modifies canonical publication truth:
+#     canonical_pick_id, published_lock_score, published_grade,
+#     publication_state, sport, market, selection, line, odds, event
+#     identity, book are ALL invariants and never overlaid by this
+#     cache.
+# ═════════════════════════════════════════════════════════════════════
+
+# Global in-process cache — keyed by canonical_pick_id (str).
+_ESPN_ENRICH_CACHE: dict[str, dict] = {}
+_ESPN_CACHE_VERSION: str | None = None
+_ESPN_WARM_INFLIGHT: bool = False
+# Display-only fields written by the four ESPN helpers.  Anything NOT
+# in this set is REFUSED overlay so canonical truth cannot be mutated.
+_ESPN_DISPLAY_FIELDS = frozenset({
+    "home_meta", "away_meta",
+    "injury_chip",
+    "player_form",              # legacy player-form badge (kept for parity)
+    "espn_signals",
+    "signal_score_raw",
+    "signal_score",
+    "player_meta",
+})
+
+
+def _current_board_version() -> str:
+    """Board identity token — bumps whenever the served slate changes.
+    Includes DATA_VERSION so a code-level bump also busts the ESPN cache.
+    """
+    return f"{_today_str()}::{DATA_VERSION}"
+
+
+def _reset_espn_cache_if_stale() -> None:
+    """Clear the in-process ESPN cache when the board version changes.
+    Called from the /picks/today handler before the overlay step."""
+    global _ESPN_ENRICH_CACHE, _ESPN_CACHE_VERSION, _ESPN_WARM_INFLIGHT
+    ver = _current_board_version()
+    if _ESPN_CACHE_VERSION != ver:
+        _ESPN_ENRICH_CACHE = {}
+        _ESPN_CACHE_VERSION = ver
+        _ESPN_WARM_INFLIGHT = False
+
+
+def _apply_espn_cache_overlay(picks: list[dict]) -> list[dict]:
+    """HOT-PATH ESPN enrichment — pure O(n) cache lookup, no I/O.
+
+    Missing entries return picks WITHOUT the display overlay fields.
+    The frontend already renders every pick without ESPN metadata (it
+    treats logos / injury_chip / signals as optional presentation).
+    """
+    if not picks or not _ESPN_ENRICH_CACHE:
+        return picks
+    for p in picks:
+        pid = p.get("canonical_pick_id") or p.get("id")
+        if not pid:
+            continue
+        cached = _ESPN_ENRICH_CACHE.get(pid)
+        if not cached:
+            continue
+        for k in _ESPN_DISPLAY_FIELDS:
+            if k in cached and k not in p:
+                p[k] = cached[k]
+    return picks
+
+
+async def _warm_espn_cache(picks: list[dict]) -> None:
+    """BACKGROUND ESPN enrichment — runs the 4-helper fan-out AND persists
+    the resulting display fields to `_ESPN_ENRICH_CACHE`.  Never blocks
+    the request path.
+
+    Guarded by `_ESPN_WARM_INFLIGHT` so concurrent /picks/today calls
+    don't stack duplicate warms.
+    """
+    global _ESPN_WARM_INFLIGHT
+    if _ESPN_WARM_INFLIGHT or not picks:
+        return
+    _ESPN_WARM_INFLIGHT = True
+    try:
+        # Deep-copy each pick's identity + minimum context needed by the
+        # helpers.  We DON'T mutate the caller's list — the caller has
+        # already returned to the client.  Warming works on shallow
+        # copies and the ONLY thing we persist is a display-fields dict.
+        working = [dict(p) for p in picks if (p.get("canonical_pick_id") or p.get("id"))]
+        if not working:
+            return
+        await _decorate_with_espn_meta(working)
+        # Persist ONLY the display fields — never canonical truth.
+        for p in working:
+            pid = p.get("canonical_pick_id") or p.get("id")
+            if not pid:
+                continue
+            overlay = {k: p[k] for k in _ESPN_DISPLAY_FIELDS if k in p}
+            if overlay:
+                _ESPN_ENRICH_CACHE[pid] = overlay
+        logger.info(
+            "ESPN cache warmed: %d entries (board=%s)",
+            len(_ESPN_ENRICH_CACHE), _ESPN_CACHE_VERSION,
+        )
+    except Exception as e:
+        logger.warning("ESPN cache warm failed: %s", e)
+    finally:
+        _ESPN_WARM_INFLIGHT = False
+
+
 async def _decorate_with_espn_meta(picks: list[dict]) -> list[dict]:
     """Attach ESPN team logos + colors + injury chip to every pick AND
     run the ESPN Signal Engine to fold the same context into the model.

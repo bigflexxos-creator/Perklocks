@@ -2108,9 +2108,9 @@ frontend:
             at bottom of 46-game board. All picks reachable.
 
 metadata:
-  last_iteration: 119
-  last_iteration_topic: "MAIN 40 · Iter 3 — Body-read timeout gap closure (Classification C) — real iPhone ALL/Parlay failure"
-  last_iteration_result: "GREEN. Root cause identified: _fetchWithTimeout cleared AbortController timer when headers arrived, so subsequent `await res.text()` was unprotected. On iPhone Expo Go SDK 57, 500 KB+ chunked HTTPS/2 responses stalled the RN bridge indefinitely (MLB 170KB works; ALL 510KB and Parlay 698KB failed). Fix: read body inside the timeout guard. Timeout unchanged (20s). Web preview verified: cold ALL 71 games · 137 picks, MLB→ALL×5 all clean, Parlay renders 3 parlays. 134 frontend + 53 backend tests green (7 new body-read tests)."
+  last_iteration: 120
+  last_iteration_topic: "MAIN 40 · Iter 4 — Support-confirmed root cause: ESPN off hot path + Parlay thin DTO"
+  last_iteration_result: "READY FOR PHYSICAL IPHONE VERIFICATION. FIX 1: _decorate_with_espn_meta moved to background board-version cache (cold 13.4s→4.7s, 65%↓). FIX 2: Parlay legs projected to thin canonical DTO (698KB→60KB, 91%↓). Canonical publication truth preserved via whitelist. 67 backend + 134 frontend = 201 tests green."
 
 agent_communication:
     - agent: "main"

@@ -2289,7 +2289,39 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 picks.sort(key=lambda p: (-p.get("lock_score", 0), _soccer_family_rank(p)))
     picks = await _decorate_with_player_form(picks)
     picks = await _decorate_with_understat_form(picks)
-    picks = await _decorate_with_espn_meta(picks)
+    # ── MAIN 40 · Iter 4 (2026-06-05) — ESPN enrichment off hot path ──
+    # Prior serial `_decorate_with_espn_meta(picks)` cost ~10.5 s cold
+    # for 700+ picks (measured; support-confirmed).  That pushed iPhone
+    # Expo Go SDK 57 clients past their 20 s timeout.  We now:
+    #   1. Overlay from a board-version-keyed in-process cache (O(n),
+    #      zero I/O).  If a pick isn't in the cache yet, it comes back
+    #      WITHOUT ESPN display fields on this response — the frontend
+    #      handles their absence gracefully (they're presentation-only).
+    #   2. Fire the ACTUAL enrichment as a background task so the next
+    #      /picks/today call served <2 s from the warmed cache.
+    # PublishedPickContract stays untouched — the overlay whitelist
+    # (see server._ESPN_DISPLAY_FIELDS) allows only display fields.
+    from server import (
+        _reset_espn_cache_if_stale,
+        _apply_espn_cache_overlay,
+        _warm_espn_cache,
+        _ESPN_ENRICH_CACHE,
+    )
+    _reset_espn_cache_if_stale()
+    picks = _apply_espn_cache_overlay(picks)
+    # Kick off background warm so the NEXT request gets a full overlay.
+    # Only fires if the cache is cold OR partial for this board version.
+    try:
+        need_warm = (
+            not _ESPN_ENRICH_CACHE
+            or len(_ESPN_ENRICH_CACHE) < max(1, int(len(picks) * 0.75))
+        )
+        if need_warm:
+            # Copy the list of picks so the background task can iterate
+            # safely even if the caller mutates its own list further.
+            asyncio.create_task(_warm_espn_cache(list(picks)))
+    except Exception:
+        pass  # non-critical — cache will warm on the next request
     # ── Signal Engine (Phase A, 2026-07-12) ─────────────────────────
     # Six universal signals (form/matchup/volume/injury/market/value)
     # combined into a 0-100 Signal Score + signal-driven why bullets.
