@@ -28,6 +28,7 @@ import {
 import { COLORS } from "@/src/theme";
 import { SkeletonList } from "@/src/components/Skeleton";
 import { EmptyState } from "@/src/components/EmptyState";
+import { safeBack } from "@/src/utils/safeBack";
 
 type ViewMode = "topDay" | "byGame";
 
@@ -347,7 +348,7 @@ export default function HRTab() {
       <Stack.Screen options={{ headerShown: false }} />
       <View style={styles.header}>
         <Pressable
-          onPress={() => router.back()}
+          onPress={() => safeBack()}
           hitSlop={12}
           style={styles.backBtn}
           testID="hr-back"

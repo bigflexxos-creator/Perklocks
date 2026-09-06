@@ -22,6 +22,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { COLORS } from "@/src/theme";
 import { api, PerfSummary, PerfBySport, PerfByBand, PerfTrendRow } from "@/src/lib/api";
+import { safeBack } from "@/src/utils/safeBack";
 
 const WINDOWS = [
   { label: "7D", days: 7 },
@@ -71,7 +72,7 @@ export default function CLVDashboardScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={16} testID="back-btn">
+        <Pressable onPress={() => safeBack()} hitSlop={16} testID="back-btn">
           <Ionicons name="chevron-back" size={26} color={COLORS.textPrimary} />
         </Pressable>
         <Text style={styles.title}>MODEL EDGE</Text>

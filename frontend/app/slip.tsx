@@ -9,6 +9,7 @@ import { Pick, api } from "@/src/lib/api";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { getDisplayLock, getDisplayLockRounded } from "@/src/lib/lockScore";
 import { buildSlipText, shareSlip, saveSlipImage, copySlipText } from "@/src/lib/shareBetSlip";
+import { safeBack } from "@/src/utils/safeBack";
 
 function buildSharePayload(picks: Pick[]) {
   return {
@@ -98,7 +99,7 @@ export default function SlipScreen() {
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <Stack.Screen options={{ headerShown: false }} />
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.backBtn}>
+        <Pressable onPress={() => safeBack()} hitSlop={10} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color={COLORS.textPrimary} />
         </Pressable>
         <Text style={styles.title}>MY BET SLIP</Text>

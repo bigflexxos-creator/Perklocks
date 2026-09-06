@@ -899,17 +899,34 @@ def build_mlb_total_factors(ctx: dict, side: str) -> tuple[dict, list[str]]:
         "Umpire Strike Zone":    None,  # roadmap: mlb_umpire integration
     }
     is_under = (side or "").strip().lower() == "under"
-    # Side-normalization: for Under picks, invert every Over-favourable
-    # factor.  `Weather` is already side-aware (accepts `side` param
-    # and returns Under-oriented value directly), so leave it alone.
-    # `Starter Quality` is inherently side-neutral (both teams' rotation
-    # quality contributes to whether the total lands high/low) — it also
-    # needs side flip: strong starters → fewer runs → favours Under.
+    # ── MAIN 40 · Closure item #4 (2026-06-05) — MLB totals direction ──
+    # Only the truly Over-favourable factors go here (higher raw value
+    # → more runs → Over-friendly).  `Combined Bullpen` and
+    # `Starter Quality` return their factors on the UNDER-friendly
+    # axis by design (higher factor = better bullpens / better
+    # starters = fewer runs), so they must NEVER be flipped for Under
+    # picks — flipping them was inverting legitimate Under evidence
+    # into anti-Under noise.  Confirmed root defect from support.
+    #
+    # Convention (post-fix):
+    #   Park Run Total    → higher = more runs → Over-favourable
+    #   Combined Team Offense → higher = more runs → Over-favourable
+    #   Combined Bullpen  → higher = BETTER bullpens = fewer runs → UNDER-favourable
+    #   Starter Quality   → higher = BETTER starters = fewer runs → UNDER-favourable
+    #   Weather           → already side-oriented (accepts `side` param)
+    # For Under picks we invert ONLY the Over-favourable factors so
+    # every factor ends up on the "higher = stronger evidence for the
+    # selected side" axis.
     OVER_FAVOURABLE = {
         "Park Run Total",
-        "Combined Bullpen",       # weak bullpens = more runs → Over
-        "Combined Team Offense",  # strong offense = more runs → Over
-        "Starter Quality",        # weak starters = more runs → Over
+        "Combined Team Offense",
+    }
+    # Under-favourable factors — these are ALREADY on the "higher =
+    # more Under evidence" axis, so they need to be flipped for OVER
+    # picks (not Under picks).
+    UNDER_FAVOURABLE = {
+        "Combined Bullpen",
+        "Starter Quality",
     }
     factors: dict[str, Optional[float]] = {}
     for k, v in raw.items():
@@ -917,8 +934,11 @@ def build_mlb_total_factors(ctx: dict, side: str) -> tuple[dict, list[str]]:
             factors[k] = None
             continue
         if is_under and k in OVER_FAVOURABLE:
-            # Mirror around 0.5 to invert direction while keeping the
-            # [0, 1] range that downstream aggregators expect.
+            factors[k] = round(1.0 - float(v), 3)
+        elif (not is_under) and k in UNDER_FAVOURABLE:
+            # OVER pick — flip UNDER-favourable factors so higher =
+            # stronger OVER evidence (weak bullpens / weak starters
+            # produce a higher factor after the flip).
             factors[k] = round(1.0 - float(v), 3)
         else:
             factors[k] = v

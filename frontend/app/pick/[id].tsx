@@ -24,6 +24,7 @@ import { MarkdownText } from "@/src/components/MarkdownText";
 import { SignalEnginePanel } from "@/src/components/SignalEnginePanel";
 import { getDisplayLockRounded } from "@/src/lib/lockScore";
 import { buildSlipText, shareSlip, saveSlipImage, copySlipText } from "@/src/lib/shareBetSlip";
+import { safeBack } from "@/src/utils/safeBack";
 
 export default function PickDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -115,7 +116,7 @@ export default function PickDetail() {
       <View style={styles.headerBar}>
         <Pressable
           testID="back-button"
-          onPress={() => router.back()}
+          onPress={() => safeBack()}
           hitSlop={12}
           style={styles.backBtn}
         >

@@ -11,6 +11,7 @@ import { api, AnalyticsRow } from "@/src/lib/api";
 import { COLORS } from "@/src/theme";
 import { XGFormShadowCard } from "@/src/components/XGFormShadowCard";
 import { useAuth } from "@/src/contexts/AuthContext";
+import { safeBack } from "@/src/utils/safeBack";
 
 type Performance = Awaited<ReturnType<typeof api.modelPerformance>>;
 type Learned = Awaited<ReturnType<typeof api.learnedWeights>>;
@@ -415,7 +416,7 @@ export default function AnalyticsScreen() {
 function Header() {
   return (
     <View style={styles.header}>
-      <Pressable onPress={() => router.back()} hitSlop={12} style={styles.backBtn}>
+      <Pressable onPress={() => safeBack()} hitSlop={12} style={styles.backBtn}>
         <Ionicons name="chevron-back" size={22} color={COLORS.textPrimary} />
       </Pressable>
       <Text style={styles.headerTitle}>Analytics</Text>

@@ -11,6 +11,7 @@ import { COLORS } from "@/src/theme";
 import { api } from "@/src/lib/api";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
+import { safeBack } from "@/src/utils/safeBack";
 
 type HistoryPick = {
   id: string;
@@ -219,7 +220,7 @@ export default function HistoryScreen() {
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <Stack.Screen options={{ headerShown: false }} />
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.backBtn}>
+        <Pressable onPress={() => safeBack()} hitSlop={10} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color={COLORS.textPrimary} />
         </Pressable>
         <Text style={styles.title}>PICK HISTORY</Text>
