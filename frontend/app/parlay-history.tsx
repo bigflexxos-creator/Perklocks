@@ -14,6 +14,7 @@ import { Stack, useRouter } from "expo-router";
 import { COLORS } from "@/src/theme";
 import { api } from "@/src/lib/api";
 import { buildSlipText, shareSlip, saveSlipImage, copySlipText } from "@/src/lib/shareBetSlip";
+import { safeBack } from "@/src/utils/safeBack";
 
 type Status = "live" | "won" | "lost" | "all";
 
@@ -102,7 +103,7 @@ export default function ParlayHistoryScreen() {
     <View style={[styles.root, { paddingTop: insets.top + 6 }]}>
       <Stack.Screen options={{ headerShown: false }} />
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={12} style={styles.backBtn}>
+        <Pressable onPress={() => safeBack()} hitSlop={12} style={styles.backBtn}>
           <Ionicons name="chevron-back" size={22} color={COLORS.textPrimary} />
         </Pressable>
         <View style={{ flex: 1, minWidth: 0 }}>

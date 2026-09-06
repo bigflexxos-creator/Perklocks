@@ -26,6 +26,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { COLORS } from "@/src/theme";
 import { api } from "@/src/lib/api";
+import { safeBack } from "@/src/utils/safeBack";
 
 type Feature = {
   name: string;
@@ -89,7 +90,7 @@ export default function PickEvidenceInspector() {
     return (
       <View style={[styles.center, { paddingTop: insets.top + 80 }]}>
         <Text style={styles.errTxt}>{err || "No data"}</Text>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+        <TouchableOpacity onPress={() => safeBack()} style={styles.backBtn}>
           <Text style={styles.backTxt}>← Back</Text>
         </TouchableOpacity>
       </View>
@@ -108,7 +109,7 @@ export default function PickEvidenceInspector() {
     >
       {/* Header */}
       <View style={styles.headerWrap}>
-        <TouchableOpacity onPress={() => router.back()} hitSlop={20}>
+        <TouchableOpacity onPress={() => safeBack()} hitSlop={20}>
           <Text style={styles.backTxt}>← Back</Text>
         </TouchableOpacity>
         <Text style={styles.h1}>EVIDENCE INSPECTOR</Text>
