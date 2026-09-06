@@ -2839,6 +2839,15 @@ _LITE_BOARD_WHITELIST = frozenset({
     "pinned", "apex_blockers",
     "source", "bookmaker",
     "home_meta", "away_meta", "injury_chip", "subject_player_hurt",
+    # ── Player identity/photo (MAIN 40 · Iter 5) ────────────────────
+    # `player_meta` is attached by `_decorate_with_espn_meta` /
+    # `player_meta_decorator.decorate_with_player_meta` for player-prop
+    # picks (headshot_url + canonical player identity). It was being
+    # dropped by the lite whitelist so the Locks board rendered without
+    # player photos on the mobile path. Adding it here preserves the
+    # small identity payload while the deep endpoint still returns the
+    # full object.
+    "player_meta",
     # ── H2H / trend chips ──
     "h2h_compact", "h2h_summary", "model_line",
     "bvp_history", "bvp_lock_adjustment",
@@ -2865,6 +2874,7 @@ _LITE_NESTED_CAPS = {
     "bvp_history":     400,
     "home_meta":       220,
     "away_meta":       220,
+    "player_meta":     260,   # MAIN 40 · Iter 5 — headshot_url + player identity
     "matchup_grade":   150,
     "apex_blockers":   400,
     "locks_eligibility": 250,
