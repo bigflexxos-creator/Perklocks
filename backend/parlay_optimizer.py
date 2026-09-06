@@ -957,8 +957,91 @@ def american_to_decimal(american: int) -> float:
 PARLAY_OPTIMIZER_VERSION = "parlay2.optimizer.v1.1"
 
 
+# ═════════════════════════════════════════════════════════════════════
+# MAIN 40 · Iter 4 (2026-06-05) — thin canonical ParlayLeg DTO
+# ─────────────────────────────────────────────────────────────────────
+# Support-confirmed root cause: Parlay response was 490–700 KB because
+# every leg embedded the FULL pick document (~154 fields / ~14 KB) plus
+# the complete `published_pick_contract`.  A 3-parlay × ~3-leg response
+# was ≈700 KB → iPhone Expo Go SDK 57 body-read stalled.
+#
+# Fix: project every leg to a thin display DTO that carries ONLY what
+#      the Parlay UI actually renders (id, sport, league, event,
+#      event_time, market, selection, line, book/odds, edge, grade,
+#      elite_player, lock_score) plus the CANONICAL identity fields
+#      the user directive requires (canonical_pick_id, published_*).
+#      Deep information stays available on demand via
+#      `GET /api/picks/{canonical_pick_id}`.
+#
+# Selection / ranking / correlation / survival math ALL untouched —
+# this touches serialization ONLY.  PublishedPickContract stays
+# authoritative on the deep endpoint.
+# ═════════════════════════════════════════════════════════════════════
+
+# Fields the Parlay UI actually reads from each leg (per frontend audit
+# on 2026-06-05 — parlay.tsx renders exactly these fields on the leg row).
+_PARLAY_LEG_DISPLAY_FIELDS = (
+    # Identity — MUST be preserved so the deep endpoint can be called.
+    "id",
+    "canonical_pick_id",
+    # Sport / league / event display
+    "sport",
+    "league",
+    "event",
+    "event_time",
+    "home_team",
+    "away_team",
+    # Wager identity
+    "market",
+    "selection",
+    "line",
+    "book",
+    "book_odds",
+    "american_odds",
+    # Grade / score — canonical publication surface
+    "grade",
+    "lock_score",
+    "published_lock_score",
+    "published_grade",
+    "publication_state",
+    # Model surface displayed on the card
+    "edge_percent",
+    "win_probability",
+    "implied_probability",
+    "elite_player",
+    # Player identity (for player-prop rendering)
+    "player_name",
+    # Correlation/synergy already computed by the optimizer and rendered
+    # in the reason strings; keep the field IDs the ranker exposes.
+    "correlation_family",
+    "synergy_score",
+    # Start time / pick_date so cards can group by day if needed.
+    "pick_date",
+)
+
+
+def _leg_to_thin_dto(leg: dict) -> dict:
+    """Project one parlay leg to a display-thin DTO.
+
+    Missing fields are simply omitted (rather than emitted as ``null``)
+    to keep the payload compact.  This function never mutates its input.
+    """
+    if not isinstance(leg, dict):
+        return {}
+    out: dict = {}
+    for k in _PARLAY_LEG_DISPLAY_FIELDS:
+        if k in leg and leg[k] is not None:
+            out[k] = leg[k]
+    return out
+
+
 def parlay_to_payload(parlay: dict, bucket_map: dict) -> dict:
     """Convert one built parlay to API response shape.
+
+    MAIN 40 · Iter 4 (2026-06-05): legs are now thin DTOs.  Deep
+    information (pick_rationale, signal_engine, pattern_signals, full
+    published_pick_contract, etc.) is available on demand via
+    ``GET /api/picks/{canonical_pick_id}``.
 
     Phase 8E — real-line integrity: legs missing a valid `book_odds`
     (0, None, or non-numeric) are excluded from the combined-odds
@@ -967,25 +1050,16 @@ def parlay_to_payload(parlay: dict, bucket_map: dict) -> dict:
     payload returns combined_odds=None so consumers surface the
     unavailability honestly (mirrors Phase 6 Edge Value contract).
 
-    PERKLOCKS-MAIN 34 · STEP 1b (2026-09-03) — every leg now carries a
-    `published_pick_contract` block so Parlay legs describe the
-    IDENTICAL canonical wager the Locks board publishes. The Parlay
-    ranking / correlation / survival math is untouched — this is a
-    pure identity-parity enrichment.
+    PERKLOCKS-MAIN 34 · STEP 1b (2026-09-03) — every leg still carries
+    the canonical identity via `canonical_pick_id` + `published_*`
+    fields so consumers can round-trip to the deep endpoint.  We DO NOT
+    emit the full ``published_pick_contract`` block per leg anymore —
+    it was duplicated identity data (also present in the pick doc) and
+    a large slice of the 700 KB payload.  Contract truth remains
+    authoritative on the deep endpoint.
     """
     legs = parlay["legs"]
     health = parlay["health"]
-    # STEP 1b — attach immutable canonical wager to every leg.
-    try:
-        from services.published_pick_contract import PublishedPickContract
-        for _leg in legs:
-            if not isinstance(_leg, dict):
-                continue
-            _c = PublishedPickContract.from_pick(_leg)
-            _leg["published_pick_contract"] = _c.as_dict()
-    except Exception:
-        # Never fail parlay ranking on a contract-attach hiccup.
-        pass
     decimal_total = 1.0
     priced_legs = 0
     for L in legs:
@@ -1011,12 +1085,15 @@ def parlay_to_payload(parlay: dict, bucket_map: dict) -> dict:
         combined_str = None
 
     reasons = explain_parlay(legs, health, bucket_map)
+    # MAIN 40 · Iter 4 — project legs to thin DTOs AFTER `explain_parlay`
+    # so the ranker still saw the full pick documents.
+    thin_legs = [_leg_to_thin_dto(L) for L in legs]
     return {
         "label": parlay.get("label", "BALANCED"),
         "grade": health["grade"],
         "strength_score": health["score"],
         "leg_count": len(legs),
-        "legs": legs,
+        "legs": thin_legs,
         "survival_pct": health["survival_pct"],
         "avg_edge_pct": health["avg_edge"],
         "avg_roi_pct": health["avg_roi_pct"],

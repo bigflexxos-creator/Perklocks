@@ -469,9 +469,14 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         }
 
     payloads = [parlay_to_payload(p, bucket_map) for p in top]
+    # MAIN 40 · Iter 4 (2026-06-05) — legs remain thin (see parlay_optimizer
+    # `_leg_to_thin_dto`).  Canonicalize each leg to overlay `lock_score`
+    # from the published snapshot, then re-thin so the canonicalizer's
+    # additive fields don't reinflate the payload.
+    from parlay_optimizer import _leg_to_thin_dto as _thin
     for _card in payloads:
         if isinstance(_card.get("legs"), list):
-            _card["legs"] = _canonicalize_picks(_card["legs"])
+            _card["legs"] = [_thin(L) for L in _canonicalize_picks(_card["legs"])]
 
     # ─── Phase 5 · Intelligence Enrichment (non-destructive) ─────────
     # Attach `intelligence` block per card (leg rankings, correlation
@@ -523,7 +528,12 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
                 ls = 0.0
             return (-pls, -ls)
         alternates.sort(key=_alt_rank)
-        card["alternates"] = alternates[:5]
+        # MAIN 40 · Iter 4 (2026-06-05) — thin alternate legs too.
+        # Before: 5 alternates × ~14 KB = ~70 KB per parlay card × 3 cards
+        # = 210 KB of duplicated pick documents.  Alternates now share the
+        # same display-only DTO shape as the primary legs so consumers
+        # can round-trip via GET /api/picks/{canonical_pick_id}.
+        card["alternates"] = [_thin(p) for p in alternates[:5]]
         card["alternates_count"] = len(card["alternates"])
     # Persist this parlay slate into history so the learning loop has
     # data to settle and aggregate from. Cheap — dedupes by signature.
