@@ -261,9 +261,39 @@ async def generate_alt_lines(
     for a in scored:
         by_line[a.line].append(a)
     # Sort lines by best composite in the pair.
+    # ── MAIN 40 · Closure item #5.1 (2026-06-05) — same-direction ranking ─
+    # Previously ranked each threshold line by max(Over_score, Under_score).
+    # Failure mode: at an extreme threshold where Under=99% and Over=1%,
+    # the max() picks up the strong Under composite and BOTH chips
+    # surface — including the useless 1% Over.  Fix: rank by the score
+    # of the BASE PICK'S SIDE.  Users see alt chips for their intended
+    # direction only.  If the base side cannot be inferred (no `pick`
+    # was passed) we conservatively fall back to the MINIMUM of the
+    # two composites so extreme-opposite lines can't game the ranking.
+    base_side: str | None = None
+    try:
+        sel = (pick or {}).get("selection", "") if isinstance(pick, dict) else ""
+        s = str(sel).lower()
+        if "over" in s:
+            base_side = "Over"
+        elif "under" in s:
+            base_side = "Under"
+    except Exception:
+        base_side = None
+
+    def _line_rank_score(alt_list: list[AltLine]) -> float:
+        if base_side is not None:
+            for a in alt_list:
+                if a.side == base_side:
+                    return a.composite_score
+            # Base side missing from pair → degrade to min so this line
+            # cannot rank on the opposite side's strong score alone.
+            return min((a.composite_score for a in alt_list), default=0.0)
+        return min((a.composite_score for a in alt_list), default=0.0)
+
     ranked_lines = sorted(
         by_line.items(),
-        key=lambda kv: max(a.composite_score for a in kv[1]),
+        key=lambda kv: _line_rank_score(kv[1]),
         reverse=True,
     )[: max(1, int(top_n) // 2)]
     # Rebuild the flat list preserving threshold ascending order
