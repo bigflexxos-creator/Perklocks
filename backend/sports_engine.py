@@ -7329,6 +7329,23 @@ _PROPS_PER_KEY_CAP = {
     # Bumped to 15 for full-slate MLS coverage. MLS is a core
     # user-region league (US Soccer) so justifies the extra credits.
     "soccer_usa_mls": 15,
+    # MAIN 41 · Item #P0 (2026-06-06) — NFL was silently falling back
+    # to _DEFAULT_PROPS_PER_KEY = 3 despite the slate carrying up to
+    # 16 games on Sunday.  User audit: FanDuel exposes deep player
+    # ladders for every NFL event, yet Perklocks generated 0 NFL
+    # player-prop picks.  Root fix: lift NFL to 16 so every eligible
+    # active-slate NFL event gets one fair prop-acquisition
+    # opportunity.  Modeling / integrity gates still decide whether
+    # a candidate becomes a Lock — this fix only ensures the model
+    # actually receives them.
+    "americanfootball_nfl":   16,
+    # CFB has 40-100+ games/week but only Locks-eligible power-conf
+    # matchups matter.  8 covers the typical Perklocks CFB slate.
+    "americanfootball_ncaaf": 8,
+    # NBA regular-season slate is 6-12 games/night.
+    "basketball_nba":         12,
+    # NHL regular-season slate is up to 14 games/night.
+    "icehockey_nhl":          14,
 }
 _DEFAULT_PROPS_PER_KEY = 3
 
