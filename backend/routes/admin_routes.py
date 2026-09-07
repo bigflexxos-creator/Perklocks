@@ -2195,53 +2195,103 @@ async def admin_odds_cache_stats(
 async def _fetch_game_market_alt_lines(
     db, *, pick: dict, market_type: str,
 ) -> list[dict]:
-    """Pull real sportsbook alt spread / total lines from the Odds
-    API cache for this pick's event.
+    """Pull real sportsbook alt spread / total lines for this pick's
+    event from the NORMALIZED alt-line store (``live_alt_lines``).
 
-    Returns a list of ``{line, side, american, bookmaker}`` rows the
-    game-market engine can index by (line, side).  Empty list when
-    the event has no cached alt-line payload.
+    Returns a list of ``{line, side, american, bookmaker,
+    provider_market_key, observed_at, real_observed_line}`` rows the
+    game-market engine can index.  Empty list when no real alt-line
+    was ingested for the pick's event.
+
+    MAIN 40 · Item #P0-C (2026-06-06) — SMU/FSU runtime evidence
+    demonstrated the previous path (raw ``odds_api_cache`` regex on
+    the URL, falling back to internal pick id) missed real ladders
+    that ``alt_lines_feed.refresh_alt_lines`` had already normalized.
+    Root fix:
+        1. NEVER use the internal Perklocks pick id as a provider
+           event id.  Use frozen canonical / provider identity.
+        2. Read from the normalized store (``live_alt_lines``) — not
+           the raw odds cache URL match.
     """
-    event_id = pick.get("event_id") or pick.get("id")
-    if not event_id:
+    # 1. Resolve provider event id via canonical → provider → legacy
+    #    event_id.  Explicitly refuse the internal pick id.
+    provider_event_id = (
+        pick.get("provider_event_id")
+        or pick.get("canonical_event_id")
+        or pick.get("event_id")
+    )
+    if not provider_event_id:
         return []
-    try:
-        doc = await db.odds_api_cache.find_one(
-            {"endpoint_type": "event_alt_lines",
-              "url": {"$regex": str(event_id)}},
-            {"body": 1},
-        )
-    except Exception:
+    if provider_event_id == pick.get("id"):
+        # Internal id ≠ provider id.  Refuse silently.
         return []
-    if not doc or not isinstance(doc.get("body"), dict):
-        return []
-    # Odds API markets for these families:
-    #   alternate_spreads / alternate_spreads_games  → outcomes by TEAM+pt
-    #   alternate_totals  / alternate_totals_games   → Over/Under + pt
-    #   alternate_run_lines / alternate_runs_lines   → MLB spread
-    #   alternate_puck_lines                         → NHL spread
+
+    # 2. Market-family allow list — canonical alternate families for
+    #    game markets across every wired sport.
     if market_type == "spread":
-        allow = {"alternate_spreads", "alternate_spreads_games",
-                  "alternate_run_lines", "alternate_runs_lines",
-                  "alternate_puck_lines"}
+        allow = {
+            "alternate_spreads", "alternate_spreads_games",
+            "alternate_run_lines", "alternate_runs_lines",
+            "alternate_puck_lines",
+        }
     else:
         allow = {"alternate_totals", "alternate_totals_games"}
+
+    # 3. Query the normalized store.  Preserve full ladder + full
+    #    provenance so multi-book policy can be applied downstream.
+    try:
+        cursor = db.live_alt_lines.find(
+            {"event_id": str(provider_event_id),
+             "market_key": {"$in": list(allow)}},
+            {"_id": 0, "line": 1, "selection": 1, "price": 1,
+             "sportsbook": 1, "market_key": 1, "last_seen": 1,
+             "home_team": 1, "away_team": 1},
+        )
+        docs = await cursor.to_list(length=4000)
+    except Exception:
+        docs = []
+
     rows: list[dict] = []
-    for bk in doc["body"].get("bookmakers", []) or []:
-        bk_key = bk.get("key")
-        for mkt in bk.get("markets", []) or []:
-            if mkt.get("key") not in allow:
+    home_team = (pick.get("home_team") or "").strip().lower()
+    away_team = (pick.get("away_team") or "").strip().lower()
+    for d in docs:
+        pt = d.get("line")
+        if pt is None:
+            continue
+        sel_raw = (d.get("selection") or "").strip()
+        sel_norm = sel_raw.lower()
+        mkey = d.get("market_key") or ""
+        # For totals the selection is "Over"/"Under".  For spread /
+        # run-line / puck-line, the selection is a TEAM NAME plus an
+        # inferred side.  Normalize both to a common ``side`` field
+        # so the engine can index by (line, side).
+        if mkey in ("alternate_totals", "alternate_totals_games"):
+            if sel_norm not in ("over", "under"):
                 continue
-            for outcome in mkt.get("outcomes", []) or []:
-                pt = outcome.get("point")
-                if pt is None:
-                    continue
-                rows.append({
-                    "line":       pt,
-                    "side":       outcome.get("name"),
-                    "american":   outcome.get("price"),
-                    "bookmaker":  bk_key,
-                })
+            side = "Over" if sel_norm == "over" else "Under"
+            signed_line = float(pt)
+        else:
+            # Spread family — infer HOME/AWAY from team-name match.
+            if home_team and sel_norm and sel_norm in home_team:
+                side = "Home"
+            elif away_team and sel_norm and sel_norm in away_team:
+                side = "Away"
+            else:
+                # Skip when we can't confidently map to Home/Away.
+                continue
+            # For spread markets ``pt`` is already the signed handicap
+            # relative to the selected team (Odds API convention).
+            signed_line = float(pt)
+        rows.append({
+            "line":                float(pt),
+            "signed_line":         signed_line,
+            "side":                side,
+            "american":            d.get("price"),
+            "bookmaker":           d.get("sportsbook"),
+            "provider_market_key": mkey,
+            "observed_at":         d.get("last_seen"),
+            "real_observed_line":  True,
+        })
     return rows
 
 
@@ -2293,29 +2343,60 @@ async def alt_lines_for_pick(pick_id: str):
     if not parsed:
         return {"pick_id": pick_id, "supported": False,
                 "reason": "pick market not supported for alt lines"}
-    # Fetch market alt lines if we've already cached them.
+    # ── Fetch normalized player-market alt lines ────────────────────
+    # MAIN 40 · Item #P0-C — read from ``live_alt_lines`` keyed by
+    # provider/canonical event id.  The previous URL-regex against
+    # ``odds_api_cache`` was fragile and, critically, fell back to
+    # the internal pick id (never a valid provider event id).
     market_alt: list[dict] = []
     try:
-        from services.odds_cache import _get_db as _oc_db
-        # Look for a cached event_alt_lines payload matching this event.
-        event_id = pick.get("event_id") or pick.get("id")
-        if event_id:
-            doc = await db.odds_api_cache.find_one(
-                {"endpoint_type": "event_alt_lines",
-                  "url": {"$regex": event_id}},
-                {"body": 1},
+        provider_event_id = (
+            pick.get("provider_event_id")
+            or pick.get("canonical_event_id")
+            or pick.get("event_id")
+        )
+        # Never use internal pick id as provider event id.
+        if provider_event_id and provider_event_id != pick.get("id"):
+            player_norm = (parsed.get("player") or "").strip().lower()
+            cursor = db.live_alt_lines.find(
+                {"event_id": str(provider_event_id)},
+                {"_id": 0, "line": 1, "selection": 1, "selection_norm": 1,
+                 "price": 1, "sportsbook": 1, "market_key": 1,
+                 "last_seen": 1},
             )
-            if doc and isinstance(doc.get("body"), dict):
-                for bk in doc["body"].get("bookmakers", []):
-                    for mkt in bk.get("markets", []):
-                        for outcome in mkt.get("outcomes", []):
-                            if outcome.get("name") in ("Over", "Under"):
-                                market_alt.append({
-                                    "line":       outcome.get("point"),
-                                    "side":       outcome.get("name"),
-                                    "american":   outcome.get("price"),
-                                    "bookmaker":  bk.get("key"),
-                                })
+            docs = await cursor.to_list(length=4000)
+            for d in docs:
+                sel_raw = (d.get("selection") or "").strip()
+                sel_norm = (d.get("selection_norm")
+                            or sel_raw.lower())
+                mkey = (d.get("market_key") or "").lower()
+                # Only player-alternate markets — the ranker owns the
+                # canonical stat mapping via market_key upstream.
+                if "alternate" not in mkey and "over_under" not in mkey:
+                    continue
+                # For Over/Under player-alternate markets, keep Over
+                # and Under directly.  For "milestone" markets whose
+                # selection carries the player name, match on player.
+                if sel_raw.lower() in ("over", "under"):
+                    side = "Over" if sel_raw.lower() == "over" else "Under"
+                else:
+                    if player_norm and player_norm not in sel_norm:
+                        continue
+                    # Milestone markets (e.g., NFL Anytime TD, "N+
+                    # yards") — expose as Over relative to threshold.
+                    side = "Over"
+                pt = d.get("line")
+                if pt is None:
+                    continue
+                market_alt.append({
+                    "line":                float(pt),
+                    "side":                side,
+                    "american":            d.get("price"),
+                    "bookmaker":           d.get("sportsbook"),
+                    "provider_market_key": mkey,
+                    "observed_at":         d.get("last_seen"),
+                    "real_observed_line":  True,
+                })
     except Exception:
         pass
     bundle = await generate_alt_lines(

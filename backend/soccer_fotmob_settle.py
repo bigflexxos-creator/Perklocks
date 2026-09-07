@@ -191,6 +191,33 @@ async def settle_soccer_leg(leg: dict) -> Optional[str]:
         away_goals = int((match.get("away") or {}).get("score"))
     except (TypeError, ValueError):
         return None
+
+    # ── MAIN 40 · Item #P0-A (2026-06-06) — REGULATION SCOPE ────────
+    # Same rule as ESPN settler: standard soccer wagers settle on
+    # REGULATION time.  FotMob exposes ``aet``, ``penaltyShootout``
+    # and ``home.scoreAet`` / ``home.scoreAfterExtraTime`` fields.
+    # When any signal indicates the game went beyond 90'+stoppage we
+    # roll the score back to the regulation-time score if FotMob
+    # publishes it; otherwise return None → UNRESOLVED.
+    _went_beyond_reg = bool(
+        status.get("aet") or status.get("penaltyShootout")
+        or status.get("penalties") or match.get("aet")
+        or (match.get("home") or {}).get("scoreAet")
+        or (match.get("away") or {}).get("scoreAet")
+    )
+    if _went_beyond_reg:
+        try:
+            reg_h = ((match.get("home") or {}).get("scoreAtHalfTimePlusFT")
+                     or (match.get("home") or {}).get("scoreFT")
+                     or (match.get("home") or {}).get("score90"))
+            reg_a = ((match.get("away") or {}).get("scoreAtHalfTimePlusFT")
+                     or (match.get("away") or {}).get("scoreFT")
+                     or (match.get("away") or {}).get("score90"))
+            if reg_h is None or reg_a is None:
+                return None
+            home_goals, away_goals = int(reg_h), int(reg_a)
+        except Exception:
+            return None
     total_goals = home_goals + away_goals
     market_lower = market.lower()
 
