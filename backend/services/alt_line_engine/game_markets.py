@@ -249,16 +249,21 @@ def build_game_market_alt_lines(
                               "degenerate win_probability")
 
     # ── Index real book prices by (line, side) ───────────────────
-    book_index: dict[tuple[float, str], dict] = {}
+    # MAIN 40 · Item #P0-C (2026-06-06) — MULTI-BOOK PRICE POLICY.
+    # The previous ``book_index[key] = m`` allowed iteration order
+    # to silently pick a winner among multiple sportsbooks quoting
+    # the SAME (line, side).  Rule change: collect all quotes per
+    # key, then select the BEST bettor-facing price (highest
+    # American — larger positive / less negative).  Provenance is
+    # preserved via the winning row's own ``bookmaker`` field; we
+    # NEVER relabel one book's quote as another's.
+    book_bucket: dict[tuple[float, str], list[dict]] = {}
     for m in (market_alt_lines or []):
         try:
             line = float(m.get("line") or m.get("point"))
             side = (m.get("side") or m.get("name") or "").strip()
             if not side:
                 continue
-            # For spreads the side is a team name; normalize to a
-            # canonical "team" / "opp" tag against the pick's own
-            # selection so lookups from either perspective hit.
             if parsed.market_type == "spread":
                 if side.lower() == (pick.get("selection") or "").lower():
                     key = (line, "team")
@@ -266,9 +271,25 @@ def build_game_market_alt_lines(
                     key = (-line, "opp")
             else:
                 key = (line, side.capitalize())
-            book_index[key] = m
+            book_bucket.setdefault(key, []).append(m)
         except (TypeError, ValueError):
             continue
+
+    def _best_bettor_price(quotes: list[dict]) -> Optional[dict]:
+        if not quotes:
+            return None
+        def _score(q: dict) -> float:
+            price = q.get("american") or q.get("price")
+            try:
+                return float(price)
+            except (TypeError, ValueError):
+                return float("-inf")
+        return max(quotes, key=_score)
+
+    book_index: dict[tuple[float, str], dict] = {
+        k: _best_bettor_price(v) for k, v in book_bucket.items()
+        if _best_bettor_price(v) is not None
+    }
 
     alt_lines: list[dict] = []
     for th in grid:
@@ -304,6 +325,10 @@ def build_game_market_alt_lines(
             ))
 
     # ── Rank by threshold-LINE (keep pairs together) ────────────
+    # MAIN 40 · Item #P0-C (2026-06-06) — apply the real-line hard
+    # gate BEFORE ranking so a model-only chip can never steal a
+    # top-N slot from a book-quoted chip.
+    alt_lines = [c for c in alt_lines if c.get("bettable") is True]
     from collections import defaultdict
     by_line: dict[float, list[dict]] = defaultdict(list)
     for chip in alt_lines:
@@ -377,14 +402,20 @@ def _row(*, side: str, line: float, p_model: float,
         edge_pct = None
         bookmaker = None
         source = "model_projection"
-    # Composite score: gives real-book chips a small boost since
-    # they are actually tradeable; adds an edge boost when edge > 0.
-    base_edge = max(p_model - 0.5, 0.5 - p_model)
+    # ── MAIN 40 · Item #P0-C (2026-06-06) — actionable-value rank ──
+    # The previous ``base_edge = max(p_model-0.5, 0.5-p_model)``
+    # rewarded a line MERELY for extreme distance from 50/50, which
+    # made low-edge extreme-probability chips outrank higher-edge
+    # near-fair chips.  Composite score is now driven purely by:
+    #   • bettor-facing edge vs implied (only when a real book quote
+    #     hydrates the row — model-only chips get 0.0)
+    #   • real-market presence bonus (small, tiebreaker only)
+    # Confidence / distance-from-0.5 alone is NOT actionable value.
     edge_boost = 0.0
     if edge_pct is not None and edge_pct > 0:
-        edge_boost = min(0.15, edge_pct * 1.5)
-    market_bonus = 0.02 if source == "market" else 0.0
-    composite = round(0.5 + base_edge * 0.9 + edge_boost + market_bonus, 3)
+        edge_boost = min(0.35, edge_pct * 2.5)
+    market_bonus = 0.05 if source == "market" else 0.0
+    composite = round(0.5 + edge_boost + market_bonus, 3)
     composite = min(0.999, composite)
     return {
         "side":            side,

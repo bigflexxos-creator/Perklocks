@@ -344,6 +344,32 @@ async def settle_soccer_leg(leg: dict) -> Optional[str]:
         away_goals = int(away_c.get("score"))
     except (TypeError, ValueError):
         return None
+
+    # ── MAIN 40 · Item #P0-A (2026-06-06) — REGULATION SCOPE ────────
+    # Standard soccer wagers settle on REGULATION time (90'+stoppage)
+    # unless the sportsbook explicitly quoted an ET / 120' market.
+    # When ESPN reports AET / PEN, `home_c["score"]` includes extra-
+    # time goals — that would silently contaminate 1X2, Totals, BTTS,
+    # Double Chance, Win-or-Draw, DNB.  Fix: for AET/PEN, recompute
+    # goals from the FIRST TWO linescore periods (periods 1 + 2 =
+    # regulation).  If linescore is unavailable, refuse to grade
+    # (returns None → downstream classifies as UNRESOLVED).
+    if status in ("STATUS_FINAL_AET", "STATUS_FINAL_PEN"):
+        try:
+            def _reg_goals(c):
+                ls = c.get("linescores") or []
+                if len(ls) < 2:
+                    return None
+                v0 = ls[0].get("value") if isinstance(ls[0], dict) else ls[0]
+                v1 = ls[1].get("value") if isinstance(ls[1], dict) else ls[1]
+                return int(v0 or 0) + int(v1 or 0)
+            _hr = _reg_goals(home_c)
+            _ar = _reg_goals(away_c)
+            if _hr is None or _ar is None:
+                return None
+            home_goals, away_goals = _hr, _ar
+        except Exception:
+            return None
     total_goals = home_goals + away_goals
     market_lower = market.lower()
 

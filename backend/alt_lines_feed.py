@@ -99,7 +99,21 @@ SPORT_CONFIG: dict[str, tuple[str, list[str]]] = {
     "nfl": (
         "americanfootball_nfl",
         ["player_pass_yds_alternate", "player_rush_yds_alternate",
-         "player_anytime_td", "player_reception_alternate",
+         "player_reception_yds_alternate",
+         "player_anytime_td", "player_pass_tds_alternate",
+         "player_reception_alternate", "player_receptions_alternate",
+         "alternate_spreads", "alternate_totals"],
+    ),
+    # MAIN 40 · Item #P0-C (2026-06-06) — CFB was entirely missing
+    # from the alt-line feed, so ``live_alt_lines`` never held the
+    # SMU/FSU alt ladder even though FanDuel exposes it.  Add it
+    # with the same families as NFL.
+    "cfb": (
+        "americanfootball_ncaaf",
+        ["player_pass_yds_alternate", "player_rush_yds_alternate",
+         "player_reception_yds_alternate",
+         "player_anytime_td", "player_pass_tds_alternate",
+         "player_reception_alternate", "player_receptions_alternate",
          "alternate_spreads", "alternate_totals"],
     ),
     "nba": (

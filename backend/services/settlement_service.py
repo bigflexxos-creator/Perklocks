@@ -332,7 +332,11 @@ class SettlementService:
 
         Identity fields extracted from the pick document (all wired
         into the wrong-identity fail-closed check):
-            canonical_event_id ← pick.fanduel_event_id | event_id | event
+            canonical_event_id ← pick.canonical_event_id
+                                | pick.provider_event_id
+                                | pick.fanduel_event_id
+                                | pick.event_id
+                                | pick.event (last-resort display string)
             market             ← pick.market
             side               ← pick.side | (parsed from market)
             line               ← pick.line
@@ -341,8 +345,19 @@ class SettlementService:
         if not pid:
             return {"status": REFUSAL_IDENTITY_MISMATCH,
                      "field": "pick_id", "expected": "non-empty", "got": pid}
+        # ── MAIN 40 · Item #P0-B (2026-06-06) — FROZEN IDENTITY FIRST ──
+        # Settlement must prefer immutable canonical publication
+        # identity before any provider-specific or legacy fallback.
+        # Ordering:
+        #   canonical_event_id  (frozen canonical — Perklocks source of truth)
+        #   provider_event_id   (frozen provider event id)
+        #   fanduel_event_id    (legacy sportsbook-specific frozen id)
+        #   event_id            (legacy provider id)
+        #   event               (display string — LAST-RESORT fallback ONLY)
         canonical_event_id = (
-            pick.get("fanduel_event_id")
+            pick.get("canonical_event_id")
+            or pick.get("provider_event_id")
+            or pick.get("fanduel_event_id")
             or pick.get("event_id")
             or pick.get("event")
             or ""
