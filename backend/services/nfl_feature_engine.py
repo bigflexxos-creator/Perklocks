@@ -446,6 +446,14 @@ async def build_nfl_game_context(
     out: dict[str, dict[str, dict]] = {}
     home_team = (game.get("home_team") or "").strip()
     away_team = (game.get("away_team") or "").strip()
+    # Per-invocation memo cache — same player often appears across many
+    # bookmakers / alt-lines (382 candidates for 30 unique players in a
+    # single NFL event).  Without this cache we hit ``db.players`` +
+    # ``nfl_player_weekly`` + ``resolve_nfl_position_for_player`` twice
+    # per outcome → ~1500 DB round-trips per event.  With the cache we
+    # collapse to O(unique_players).
+    _team_cache: dict[str, tuple] = {}
+    _pos_cache: dict[str, str] = {}
 
     for cand in prop_candidates:
         player = cand.get("player") or ""
@@ -461,12 +469,17 @@ async def build_nfl_game_context(
         cur_team = None
         hist_team = None
         gsis_id = None
-        try:
-            cur_team, hist_team, gsis_id = await resolve_nfl_current_team_for_player(
-                db, name=player, historical_team_fallback=cand.get("team") or None,
-            )
-        except Exception as e:
-            logger.debug("nfl current-team resolve err %s: %s", player, e)
+        _pk = player.strip().lower()
+        if _pk in _team_cache:
+            cur_team, hist_team, gsis_id = _team_cache[_pk]
+        else:
+            try:
+                cur_team, hist_team, gsis_id = await resolve_nfl_current_team_for_player(
+                    db, name=player, historical_team_fallback=cand.get("team") or None,
+                )
+            except Exception as e:
+                logger.debug("nfl current-team resolve err %s: %s", player, e)
+            _team_cache[_pk] = (cur_team, hist_team, gsis_id)
         # Determine which team is the player's team → opponent + is_home
         # Prefer the resolved CURRENT team; fall back to cand-supplied.
         player_team = cur_team or cand.get("team") or ""
@@ -512,12 +525,16 @@ async def build_nfl_game_context(
         # inference only when the player cannot be resolved (rookie
         # not yet in the weekly data, etc.).
         canonical_pos = None
-        try:
-            from sports_engine import resolve_nfl_position_for_player
-            canonical_pos = await resolve_nfl_position_for_player(
-                db, name=player, team=cand.get("team") or None)
-        except Exception:
-            canonical_pos = None
+        if _pk in _pos_cache:
+            canonical_pos = _pos_cache[_pk]
+        else:
+            try:
+                from sports_engine import resolve_nfl_position_for_player
+                canonical_pos = await resolve_nfl_position_for_player(
+                    db, name=player, team=cand.get("team") or None)
+            except Exception:
+                canonical_pos = None
+            _pos_cache[_pk] = canonical_pos
         position = canonical_pos or cand.get("position") or _infer_position(market)
         try:
             factors, sources = await build_nfl_prop_factors(

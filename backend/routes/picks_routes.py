@@ -1637,14 +1637,25 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # 72h horizon still bounds far-future leaks (line 1667). This
     # equally helps CFB Saturday slate (48-96h out) and MLS/NBA weekend
     # cards — a universal fix, not NFL-specific.
+    # PERKLOCKS MAIN 41 · NFL WEEKLY-SLATE HORIZON (2026-06-09) ────────
+    # NFL is a WEEKLY sport with real sportsbook markets published 5-7
+    # days before kickoff (Week 1 openers had full ATD ladders 3 days
+    # out).  The 72h horizon starves the NFL board for the Thu → Sun →
+    # Mon slate on any day earlier than Monday-of-game-week.  Apply an
+    # NFL-specific 168-hour horizon; keep every other sport at 72h so
+    # far-future soccer/CFB/MLB leaks stay closed.
+    _sport_scope = ((sport or "") + "," + (sports or "")).upper()
+    _nfl_scope   = "NFL" in _sport_scope
+    _horizon_hours = 168 if _nfl_scope else 72
     _win_start = (_now - _td(hours=30)).isoformat().replace("+00:00", "Z")
-    _win_end   = (_now + _td(hours=72)).isoformat().replace("+00:00", "Z")
-    # ── 72-hour board horizon (2026-07-26) ─────────────────────────────
-    # Hide picks for games starting > 72h from now regardless of
+    _win_end   = (_now + _td(hours=_horizon_hours)).isoformat().replace("+00:00", "Z")
+    # ── Board horizon (sport-scoped 2026-06-09) ─────────────────────
+    # Hide picks for games starting > N hours from now regardless of
     # `pick_date`. Fixes user report: Soccer tab timing out because
     # UEFA/CFB injectors were tagging today's `pick_date` on games 4-5
     # days away (1082 Soccer picks on the board vs realistic ~200).
-    _horizon_end = (_now + _td(hours=72)).isoformat().replace("+00:00", "Z")
+    # NFL uses 168h; other sports stay at 72h.
+    _horizon_end = (_now + _td(hours=_horizon_hours)).isoformat().replace("+00:00", "Z")
 
     q: dict = {
         # Accept picks matching EITHER pick_date=today OR event_time in
