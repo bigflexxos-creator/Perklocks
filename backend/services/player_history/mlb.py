@@ -267,6 +267,109 @@ async def populate_mlb_evidence(
     # or exact provider player_id.
     ev.identity_confidence = "HIGH" if (
         canonical_player_id or player_id) else "LOW"
+
+    # ── MAIN 40 · Item #P0-D (2026-06-06) — populate dark fields ──
+    try:
+        atomic: list[dict] = []
+        for r, a in list(zip(rows, all_actuals))[:20]:
+            atomic.append({
+                "date":              (r.get("event_time")
+                                        or r.get("date")
+                                        or r.get("game_date")),
+                "canonical_event_id": (r.get("canonical_event_id")
+                                          or r.get("game_id")),
+                "opponent":          r.get("opponent"),
+                "team":              r.get("team"),
+                "home_away":         (r.get("home_away") or "").lower() or None,
+                "actual":            a,
+                "season":            r.get("season"),
+            })
+        ev.atomic_games = atomic
+    except Exception:
+        pass
+
+    # Streak.
+    try:
+        if valid_count >= 1 and ev.threshold is not None:
+            th = float(ev.threshold)
+            _dir = (ev.direction or "over").lower()
+            _is_ms = _is_milestone_market(market)
+            def _hit(a):
+                if a is None:
+                    return None
+                if _is_ms:
+                    return a >= th
+                if _dir == "over":
+                    return a > th
+                if _dir == "under":
+                    return a < th
+                return None
+            streak_kind = None
+            streak_n = 0
+            for a in all_actuals:
+                h = _hit(a)
+                if h is None:
+                    continue
+                kind = "HIT" if h else "MISS"
+                if streak_kind is None:
+                    streak_kind = kind
+                    streak_n = 1
+                elif kind == streak_kind:
+                    streak_n += 1
+                else:
+                    break
+            if streak_kind is not None:
+                ev.streak = f"{streak_kind} x {streak_n}"
+    except Exception:
+        pass
+
+    # Days since last game (vs history_as_of).
+    try:
+        from datetime import datetime as _dt
+        latest_ts = rows[0].get("event_time") or rows[0].get("date")
+        if latest_ts:
+            _asof_str = (ev.history_as_of or "")[:19]
+            _asof = _dt.fromisoformat(_asof_str.replace("Z", "+00:00")) \
+                if _asof_str else None
+            _lg = _dt.fromisoformat(str(latest_ts)[:19]
+                                       .replace("Z", "+00:00"))
+            if _asof:
+                delta = (_asof - _lg).days
+                if delta >= 0:
+                    ev.days_since_last_game = delta
+    except Exception:
+        pass
+
+    # H2H source games.
+    try:
+        if opponent:
+            opp_norm = opponent.upper()
+            h2h_rows: list[dict] = []
+            for r, a in zip(rows, all_actuals):
+                if str(r.get("opponent") or "").upper() != opp_norm:
+                    continue
+                h2h_rows.append({
+                    "date":              r.get("event_time") or r.get("date"),
+                    "canonical_event_id": r.get("canonical_event_id")
+                                              or r.get("game_id"),
+                    "opponent":          r.get("opponent"),
+                    "team":              r.get("team"),
+                    "home_away":         (r.get("home_away") or "").lower() or None,
+                    "actual":            a,
+                    "season":            r.get("season"),
+                })
+                if len(h2h_rows) >= 15:
+                    break
+            if h2h_rows:
+                ev.h2h_source_games = h2h_rows
+                # trailing-5 vs opponent recent
+                recent = [g["actual"] for g in h2h_rows[:5]
+                           if g.get("actual") is not None]
+                if recent:
+                    ev.vs_opponent_recent = _window_dict(
+                        recent, "vs_opponent_recent", len(recent))
+    except Exception:
+        pass
     return ev
 
 

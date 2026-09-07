@@ -135,6 +135,17 @@ class PlayerHistoryEvidence:
     # Publication-time freeze (Phase 5.3 §20, §21) ──────────────
     history_as_of:      Optional[str]   = None   # ISO timestamp cutoff
 
+    # MAIN 40 · Item #P0-D (2026-06-06) — atomic transparency ────
+    # Optional dated per-game rows that power L5/L10/L20/season
+    # aggregates.  When present, each row carries:
+    #   {date, canonical_event_id, opponent, team, home_away,
+    #    actual, minutes/role/context as available}
+    # Consumers rendering "vs opponent = 4/5" should be able to
+    # click into these source rows.  Left ``None`` when the adapter
+    # cannot cheaply produce dated rows (never fabricated).
+    atomic_games:       Optional[list] = None
+    h2h_source_games:   Optional[list] = None
+
     # Sport-specific extras (never surfaced to Lock Score) ───────
     extras:             dict            = field(default_factory=dict)
 
