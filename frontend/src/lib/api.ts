@@ -90,12 +90,23 @@ function resolveBaseUrl(): string {
   // backend.  Now we return "" and let getBackendUrl() throw a clear
   // error at first API call so the misconfig is visible immediately.
   if (Platform.OS !== "web") {
-    if (envUrl && envUrl.trim().length > 0) return envUrl;
-    if (__DEV__) return PINNED_PREVIEW_URL;   // dev-only fallback
+    if (envUrl && envUrl.trim().length > 0) {
+      // eslint-disable-next-line no-console
+      console.log(`[api] Native backend origin resolved: ${envUrl}  __DEV__=${!!__DEV__}  Platform.OS=${Platform.OS}`);
+      return envUrl;
+    }
+    // MAIN 41 · P0-A (2026-06-06) — Fail-loud parity requirement.
+    // Previously ``if (__DEV__) return PINNED_PREVIEW_URL`` silently
+    // routed Expo Go against the pinned preview URL when
+    // EXPO_PUBLIC_BACKEND_URL was absent.  That masked the Preview↔Expo
+    // NFL parity defect (Expo hit a different backend build).  Native
+    // must ALWAYS resolve via ``EXPO_PUBLIC_BACKEND_URL`` — no silent
+    // dev/preview fallback.
     // eslint-disable-next-line no-console
     console.error(
-      "[api] EXPO_PUBLIC_BACKEND_URL is missing on native production build — " +
-      "API calls will fail loudly instead of silently using the preview backend."
+      "[api] EXPO_PUBLIC_BACKEND_URL is missing on native build — " +
+      "API calls will fail loudly. __DEV__=" + (__DEV__ ? "true" : "false") +
+      " Platform.OS=" + Platform.OS
     );
     return "";
   }

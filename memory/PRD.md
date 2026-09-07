@@ -68,6 +68,19 @@ Persisted at: `/app/memory/perklocks_main_35_certification_matrix.json`
 - Model-only chips filtered BEFORE ranking, not after.
 
 
+## MAIN 41 · P0-A EXPO PARITY SOURCE-DEFECTS (2026-06)
+Two confirmed source defects fixed:
+1. **Native API silent fallback removed** (`frontend/src/lib/api.ts`)
+   — `if (__DEV__) return PINNED_PREVIEW_URL` deleted from
+   `resolveBaseUrl()`.  Native must resolve via
+   `EXPO_PUBLIC_BACKEND_URL` or fail visibly.  Added parity log
+   `[api] Native backend origin resolved: ${envUrl}`.
+2. **Locks cache-bust key wired** (`frontend/src/lib/cachebust.ts`)
+   — `locks_picks_cache_v1` added to `KNOWN_CACHE_KEYS`.
+   `APP_DATA_VERSION` bumped to `20260906-main41-locks-cache-bust-v1`
+   so every existing Expo Go device wipes the orphaned Locks cache
+   on next launch (auth + version keys are preserved).
+
 ## MAIN 41 · NFL PROP PUBLICATION CLOSURE (2026-06 · End-to-end proven)
 
 **ROOT DEFECT**: `_PROPS_PER_KEY_CAP` in `sports_engine.py` had no
