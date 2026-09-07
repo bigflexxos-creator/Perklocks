@@ -68,7 +68,48 @@ Persisted at: `/app/memory/perklocks_main_35_certification_matrix.json`
 - Model-only chips filtered BEFORE ranking, not after.
 
 
+## MAIN 41 · NFL PROP SLATE CAP (2026-06 · Live-runtime verified)
+
+**ROOT DEFECT**: `_PROPS_PER_KEY_CAP` in `sports_engine.py` had no
+entry for `americanfootball_nfl`, so NFL fell back to
+`_DEFAULT_PROPS_PER_KEY = 3`.  On a Sunday slate carrying 14-16
+NFL games, only 3 events ever received prop-acquisition — the
+other 13+ events were silently starved BEFORE the model.
+
+**RUNTIME EVIDENCE (NE @ SEA, event `8c94552d022acec4a0458d70c19d3da9`)**:
+- Odds API returned rich prop payload: 8 bookmakers, FanDuel 11
+  markets / DraftKings 14 markets / Fanatics 14 markets.
+- `_extract_nfl_prop_candidates` yielded 820 candidates.
+- `build_nfl_game_context` precomputed 77 (player × market)
+  factor sets; 40 passed `MIN_FACTORS_NFL_PROP=3`.
+- `_props_picks_from_event` emitted **24 NFL prop candidates,
+  16 in Lock band 95-99, 8 in 90-94**.  Zero synthetic lines,
+  zero fabricated odds.
+
+**SURGICAL FIX**:
 ## MAIN 40 · SURGICAL CLOSURE ROUND 4 (2026-06 · Authority parity)
+- CFB Lock/Probability parity traced end-to-end via hydrate boundary.
+- Analytics converted to canonical accessor (Brier + Kelly).
+- Fusion promotion policy = deterministic (accessor refuses non-authority).
+- Historical intelligence proven live on Travis Kelce (60/60 games).
+- Soccer settlement branches all executable (8/8).
+
+
+- `sports_engine._PROPS_PER_KEY_CAP["americanfootball_nfl"] = 16`
+- Same commit also adds:
+  - `americanfootball_ncaaf: 8`  (typical CFB Locks-eligible slate)
+  - `basketball_nba: 12`         (nightly full slate)
+  - `icehockey_nhl: 14`          (nightly full slate)
+- CFB prop-acquisition also now included (was in the ingestion
+  wiring from Round 2 but not the acquisition scheduler).
+
+Regression protection: `tests/test_main41_nfl_prop_slate_cap.py`
+guards the cap + the standard prop-market list so the full FanDuel
+family (passing/rushing/receiving standard + alternates + anytime
+TD + first TD) remains reachable.
+
+Total MAIN 40/41 coverage: **75/75 targeted pytest cases pass.**
+
 
 CFB / Consumer parity closure with live-runtime evidence.
 
