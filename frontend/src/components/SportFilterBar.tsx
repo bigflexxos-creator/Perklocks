@@ -144,9 +144,20 @@ export function SportFilterBar({ sport, filters, onChange }: Props) {
               accent
             />
           )}
-          {/* NFL ATD entry point lives in the index.tsx NFL section as
-              a CTA button (NRFI-style), not in this market chip row —
-              per user 2026-06-30 "it should be under nfl tab". */}
+          {/* NFL Anytime-Touchdown chip — mirrors the MLB HR chip.
+              Tap navigates to the dedicated /atd slate screen (Top 5
+              Today · Full Board) backed by /api/nfl/atd/leaderboard.
+              Restored as chip on 2026-08-24 per user directive:
+              "same thing with nfl for atd". */}
+          {sport === "NFL" && (
+            <Pill
+              label="🏈 ATD"
+              active={false}
+              onPress={() => { try { router.push("/atd" as any); } catch {} }}
+              testID="market-pill-atd"
+              accent
+            />
+          )}
         </ScrollView>
       )}
 
