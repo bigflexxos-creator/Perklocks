@@ -178,7 +178,21 @@ function AltLineChip({ alt, onPress }: { alt: AltLine; onPress: () => void }) {
       testID={`alt-chip-${alt.side.toLowerCase()}-${alt.line}`}
     >
       <View style={styles.chipTop}>
-        <Text style={styles.chipSide}>{alt.side === "Over" ? "O" : "U"}</Text>
+        {/* ── MAIN 40 · Closure item #5.3 (2026-06-05) — spread display ──
+            Prior code did `alt.side === "Over" ? "O" : "U"` unconditionally.
+            For team spread markets `side` is the team name (e.g. "OLE MISS"),
+            not "Over"/"Under", so every spread chip was rendering as `U -3.5`.
+            Now we surface the actual selection identity for non-O/U sides
+            and fall back to the short O/U glyph only when the side IS
+            "Over" or "Under". Selection identity is truncated to fit the
+            chip width but never fabricated. */}
+        {(alt.side === "Over" || alt.side === "Under") ? (
+          <Text style={styles.chipSide}>{alt.side === "Over" ? "O" : "U"}</Text>
+        ) : (
+          <Text style={styles.chipSide} numberOfLines={1}>
+            {String(alt.side).slice(0, 10)}
+          </Text>
+        )}
         <Text style={styles.chipLine}>{formatLine(alt.line)}</Text>
       </View>
       <View style={styles.chipBottom}>

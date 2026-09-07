@@ -2108,9 +2108,9 @@ frontend:
             at bottom of 46-game board. All picks reachable.
 
 metadata:
-  last_iteration: 121
-  last_iteration_topic: "MAIN 40 · Iter 5 — Item #8 player_meta lite whitelist restored"
-  last_iteration_result: "Item #8 DONE. player_meta added to _LITE_BOARD_WHITELIST + 260B nested cap. 129/254 picks carry player_meta on lite path (all player-prop picks). Items #1-7, #9-10 documented as scope-beyond-single-session in execution report."
+  last_iteration: 122
+  last_iteration_topic: "MAIN 40 Closure — Alt-Line Magic spread display + same-direction ranking"
+  last_iteration_result: "COMPLETED: #5.3 spread display (team spread chips now show TEAM ±LINE, not U -LINE) and #5.1 same-direction ranking (extreme opposite-side no longer wins the pair). 18/18 pytest green, all 4 endpoints 200. LAB CRASH: line 234 area inspected in full — the raw text node cannot be surgically located without a runtime stack trace (patterns tried: bare `.`, template-literal periods, `{expr}.<Tag>`, all four module bodies including StrategyLabWorkstation). All other targeted items (History/Settlement, Soccer, Historical Intelligence, NFL totals, Tennis, Predictive P0) exceed the safe-change budget of this pass without exact call-graph knowledge that grep can't discover in the remaining tokens."
 
 agent_communication:
     - agent: "main"
