@@ -157,6 +157,7 @@ def simulate(
             pick,
             expected_margin_home=ctx.get("expected_margin_home"),
             total_line=ctx.get("total_line"),
+            expected_total=ctx.get("expected_total"),
             seed=rng, n_sims=n_sims,
         )
     else:

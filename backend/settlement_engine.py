@@ -441,11 +441,14 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
         except Exception:
             pass
     if stale_ids:
-        # P0.2b — route auto-void through SettlementService instead of
-        # a bulk db.picks.update_many.  VOID is not an outcome result
-        # so the FINAL barrier is bypassed; identity/versioning still
-        # applies.  This keeps the compatibility mirror as the SOLE
-        # write path for pick status.
+        # MAIN 40 · Item #2 (2026-06-06) — 14-day terminator emits
+        # `unresolved`, NOT `void`.  Fabricating VOID after provider
+        # data failed to arrive violates the settlement-truth contract:
+        # VOID is a sportsbook grading concept (the wager did not
+        # happen), whereas missing/stale data means truth is
+        # unavailable — that is UNRESOLVED.  Terminator still routes
+        # through SettlementService (single writer) and identity /
+        # versioning still applies.
         try:
             from services.settlement_service import SettlementService
             _svc_void = SettlementService(db)
@@ -457,23 +460,23 @@ async def settle_due_picks(db, sport_filter: Optional[list[str]] = None) -> dict
                         (pp for pp in picks if pp.get("id") == _sid), {})
                     _res = await _svc_void.settle_from_pick(
                         _stale_pick or {"id": _sid},
-                        result="void",
-                        source="settlement_engine:auto_void_stale_14d",
+                        result="unresolved",
+                        source="settlement_engine:unresolved_stale_14d",
                         authoritative_event_final=False,
                         analytics_mirror={
-                            "void_reason": "auto_void_stale_14d",
+                            "unresolved_reason": "provider_data_missing_14d",
                         },
                     )
                     if _res.get("status") in ("NEW_SETTLEMENT",
                                               "CORRECTION_APPLIED"):
                         voided_n += 1
                 except Exception as _ve:
-                    logger.debug("auto-void via svc failed for %s: %s",
+                    logger.debug("auto-unresolved via svc failed for %s: %s",
                                  _sid, _ve)
             counts["auto_voided"] = voided_n
         except Exception as _sve:
-            logger.warning("SettlementService auto-void err: %s", _sve)
-        # Remove voided picks from in-memory processing list
+            logger.warning("SettlementService auto-unresolved err: %s", _sve)
+        # Remove terminated picks from in-memory processing list
         voided_set = set(stale_ids)
         picks = [p for p in picks if p.get("id") not in voided_set]
 

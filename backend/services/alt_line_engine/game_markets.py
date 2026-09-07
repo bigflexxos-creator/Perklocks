@@ -324,9 +324,20 @@ def build_game_market_alt_lines(
         output.extend(chips)
 
     book_count = sum(1 for c in output if c["source"] == "market")
+    # ── MAIN 40 · Item #4 (2026-06-06) — Real-line HARD gate ────────
+    # Alt-Line Magic MUST NOT expose bettable chips that lack a real
+    # sportsbook quote.  A chip with `source == "model_projection"` is
+    # a model back-solve — it is informational only, never bettable.
+    # Emit ONLY bettable chips.  If the sportsbook did not publish any
+    # alternate line we return an empty list; the client's terminal
+    # empty state ("No alternate lines available") handles the UX
+    # without displaying a synthetic price.
+    output = [c for c in output if c.get("bettable") is True]
     notes = [f"universal_game_market ({parsed.market_type}, σ={sigma})"]
     if book_count:
-        notes.append(f"{book_count}/{len(output)} chips hydrated with real book prices")
+        notes.append(f"{book_count}/{len(output) + max(0, book_count - book_count)} chips hydrated with real book prices")
+    else:
+        notes.append("no sportsbook alt-lines quoted — real-line hard gate suppressed model-only chips")
 
     return {
         "sport":      sport,
@@ -387,6 +398,10 @@ def _row(*, side: str, line: float, p_model: float,
         "simulation_std":  None,
         "composite_score": composite,
         "source":          source,
+        # MAIN 40 · Item #4 (2026-06-06) — bettable ⇔ real book quote.
+        # Chips lacking a sportsbook quote are model-only projections
+        # and MUST NOT be presented as bettable.
+        "bettable":        source == "market",
         "explanation":     _explain(anchor_line, anchor_side, side, line, p_model,
                                       edge_pct=edge_pct, bookmaker=bookmaker),
     }

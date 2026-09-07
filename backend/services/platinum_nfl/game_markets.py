@@ -47,6 +47,7 @@ def simulate_game_market(
     seed: random.Random,
     n_sims: int = 5000,
     is_home_side: Optional[bool] = None,
+    expected_total: Optional[float] = None,
 ) -> dict:
     """Simulate an NFL game market.
 
@@ -61,7 +62,12 @@ def simulate_game_market(
         Fed by ``nfl_game_engine`` or an upstream feature engine.
     total_line
         Sportsbook total O/U line — the threshold that the sim
-        distribution is compared against.
+        distribution is compared against.  NEVER used as the mean
+        of the model's scoring distribution.
+    expected_total
+        Model's expected total points (distribution mean).  When
+        omitted, the sim falls back to ``total_line`` for backward
+        compatibility, but this collapses model edge to ~0.
     seed
         Deterministic RNG (§33).
     n_sims
@@ -89,6 +95,9 @@ def simulate_game_market(
         expected_margin_home=expected_margin_home,
         total_line=float(total_line),
         seed=seed, n=n_sims,
+        expected_total=(float(expected_total)
+                        if isinstance(expected_total, (int, float))
+                        else None),
     )
     margins = [s["margin_home"] for s in scripts]
     totals  = [s["total_points"] for s in scripts]

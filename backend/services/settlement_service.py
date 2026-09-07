@@ -47,7 +47,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 logger = logging.getLogger("lockscore.settlement")
 
 COLLECTION = "settlement_events"
-VALID_RESULTS = ("won", "lost", "void", "push", "cancelled")
+VALID_RESULTS = ("won", "lost", "void", "push", "cancelled", "unresolved")
 
 # ── Canonical grader version ──────────────────────────────────────────
 GRADER_VERSION = "settlement_service.v2.0"   # bumped from v1 by P0.2a
@@ -84,13 +84,21 @@ def _fingerprint(*, canonical_pick_id: str, canonical_event_id: str,
 
 
 def _pick_status_from_result(result: str) -> str:
-    """Map canonical result → legacy `pick.status`.  P0.2a: PUSH stays PUSH."""
+    """Map canonical result → legacy `pick.status`.  P0.2a: PUSH stays PUSH.
+
+    MAIN 40 · Item #2 (2026-06-06): `unresolved` is the terminal grade
+    for picks where authoritative provider data never arrived.  It is
+    NOT a sportsbook VOID (the wager did happen) — it means the truth
+    itself is unavailable.  Kept distinct from `void` so History and
+    Analytics can render it without contaminating W/L/PUSH/VOID
+    outcomes."""
     return {
-        "won":       "won",
-        "lost":      "lost",
-        "void":      "void",
-        "push":      "push",         # ← P0.2a fix (was "void")
-        "cancelled": "void",
+        "won":        "won",
+        "lost":       "lost",
+        "void":       "void",
+        "push":       "push",         # ← P0.2a fix (was "void")
+        "cancelled":  "void",
+        "unresolved": "unresolved",
     }.get(result, "pending")
 
 
