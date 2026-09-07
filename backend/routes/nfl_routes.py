@@ -58,19 +58,126 @@ async def nfl_atd_leaderboard(
     min_probability: float = Query(0.30, ge=0.05, le=0.95),
     min_opportunity_rating: str = Query("med", regex="^(low|med|high)$"),
 ):
-    """Rank every eligible NFL player by P(TD ≥ 1) under a neutral matchup.
+    """Return CURRENT BETTABLE ATD opportunities backed by canonical
+    published NFL ATD picks (real sportsbook odds, real ATD engine
+    output, current-roster team, current event membership).
 
-    `min_opportunity_rating` filters by L10 weighted touch volume:
-      low: ≥0  ·  med: ≥7.0  ·  high: ≥12.0 touches/game.
+    Block 2D · P0 (2026-06-09) — RE-POINTED per user directive:
+    the ATD tab must read the same canonical output as the main
+    board, not a separate historical-player-ranking endpoint.  The
+    historical leaderboard remains available as a *last-resort*
+    fallback (``mode="research_only"`` in the response) so the
+    screen never dead-ends when the canonical pipeline is warming up
+    for the day.  The frontend contract (``picks``: NFLAtdPick[])
+    is unchanged; new fields are additive.
     """
     try:
         from nfl_atd_engine import atd_leaderboard
-        return await atd_leaderboard(
+        # ── Primary: canonical published ATD picks ──────────────────
+        canonical: list[dict] = []
+        try:
+            cursor = db.picks.find(
+                {
+                    "sport": "NFL",
+                    "publication_state": "PUBLISHED",
+                    "market": {"$regex": r"Anytime\s*TD|1st\s*TD|First\s*TD",
+                               "$options": "i"},
+                },
+                {"_id": 0},
+            ).sort("lock_score", -1).limit(200)
+            async for p in cursor:
+                _ev = p.get("atd_evidence") or {}
+                _sel = p.get("selection") or p.get("pick") or ""
+                _team = (p.get("player_team")
+                         or p.get("canonical_team_id")
+                         or p.get("player_team_name")
+                         or "")
+                # Skip if no current team resolved (safety net — the
+                # publication gate already enforces this).
+                if not _team:
+                    continue
+                td_prob = float(_ev.get("td_probability") or 0.0)
+                if td_prob <= 0.0:
+                    # Fall back to win_probability/100 when engine
+                    # evidence wasn't captured on the pick.
+                    _wp = p.get("win_probability")
+                    if isinstance(_wp, (int, float)) and _wp > 0:
+                        td_prob = float(_wp) / 100.0
+                if td_prob < min_probability:
+                    continue
+                _opp_rating = _ev.get("opportunity_rating") or "med"
+                canonical.append({
+                    "player_id":       p.get("canonical_player_id") or p.get("player_id") or "",
+                    "player_name":     _sel or p.get("player_name") or "",
+                    "team":            _team,
+                    "opponent":        _ev.get("opponent")
+                                        or (p.get("home_team")
+                                             if p.get("away_team") == _team
+                                             else p.get("away_team"))
+                                        or "",
+                    "td_probability":  round(td_prob, 4),
+                    "confidence":      float(_ev.get("confidence") or 0.0),
+                    "opportunity_rating": _opp_rating,
+                    "weighted_touches_recent": float(_ev.get("weighted_touches_recent") or 0.0),
+                    "weighted_tds_recent":     float(_ev.get("weighted_tds_recent") or 0.0),
+                    "team_td_rate":            float(_ev.get("team_td_rate") or 0.0),
+                    "matchup_factor":          float(_ev.get("matchup_factor") or 1.0),
+                    "game_script_factor":      float(_ev.get("game_script_factor") or 1.0),
+                    "is_rb_archetype":         bool(_ev.get("is_rb_archetype")),
+                    "sample_games":            int(_ev.get("sample_games") or 0),
+                    "reasons":                 list(_ev.get("reasons") or []),
+                    # Betting provenance (new, non-breaking additive fields).
+                    "pick_id":         p.get("id"),
+                    "book_odds":       p.get("book_odds"),
+                    "implied_probability": p.get("implied_probability"),
+                    "edge_percent":    p.get("edge_percent"),
+                    "lock_score":      p.get("lock_score"),
+                    "event":           p.get("event"),
+                    "event_time":      p.get("event_time"),
+                    "market":          p.get("market"),
+                    "publication_state": p.get("publication_state"),
+                    "provenance":      "canonical_publication",
+                })
+            # Sort by (confidence, td_probability) desc — same ordering
+            # as the historical leaderboard so the UI is consistent.
+            canonical.sort(
+                key=lambda r: (r["confidence"], r["td_probability"]),
+                reverse=True,
+            )
+        except Exception:
+            canonical = []
+
+        if canonical:
+            return {
+                "mode": "canonical_publication",
+                "total_candidates": len(canonical),
+                "passed_filters": len(canonical),
+                "rejected": {},
+                "rules": {
+                    "min_probability": min_probability,
+                    "min_opportunity_rating": min_opportunity_rating,
+                    "note": "sourced from PUBLISHED ATD picks (canonical_publication)",
+                },
+                "league_means": {},
+                "picks": canonical[: max(1, int(limit))],
+            }
+
+        # ── Fallback: historical research view (never a betting card) ──
+        legacy = await atd_leaderboard(
             db,
             limit=limit,
             min_probability=min_probability,
             min_opportunity_rating=min_opportunity_rating,
         )
+        legacy["mode"] = "research_only"
+        legacy.setdefault("rules", {})[
+            "note"
+        ] = "canonical_publication empty — showing historical ranking (research only, not a bettable board)"
+        # Tag every legacy pick so the UI can render a subdued
+        # "research" pill (frontend can inspect ``provenance``).
+        for _r in legacy.get("picks") or []:
+            _r.setdefault("provenance", "historical_ranking")
+        return legacy
     except Exception as e:
         raise HTTPException(500, f"nfl atd leaderboard failed: {e}")
 

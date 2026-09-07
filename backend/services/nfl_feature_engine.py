@@ -33,6 +33,159 @@ logger = logging.getLogger("lockscore.services.nfl_feature_engine")
 MIN_FACTORS_NFL_PROP = 3
 
 
+# ────────────────────────────────────────────────────────────────────
+# Block 2D · P0 (2026-06-09) — CURRENT TEAM RESOLVER (SURGICAL FIX)
+# ────────────────────────────────────────────────────────────────────
+# The prop-outcome payload from OddsAPI carries the player name but
+# NEVER the team.  Downstream identity gate rejects any player-prop
+# whose ``player_team`` is unresolvable (``PLAYER_TEAM_UNRESOLVED``).
+#
+# Data sources (in priority order):
+#   1. ``db.players`` (sport="nfl") — ESPN active-roster feed,
+#      refreshed daily by ``services.nfl.espn_player_db`` and
+#      persisted with the CURRENT team + position.  This is the
+#      canonical current-roster authority.  Ships full team display
+#      name ("San Francisco 49ers") — no season gate.
+#   2. ``db.nfl_player_weekly`` — nflverse historical weekly stats
+#      (seasons 2019-2025 pre-2026 kickoff; adds 2026 as games play).
+#      Used ONLY to resolve the canonical GSIS ``player_id`` and as
+#      a historical-team fallback when the ESPN row is missing.
+#
+# We distinguish:
+#   * ``current_team``   — from ``db.players`` (or the most recent
+#                           2026-season nfl_player_weekly row once it
+#                           lands).  Used for identity gate + display.
+#   * ``historical_team``— last-known team of ANY season (kept for
+#                           back-compat + explanation panels).
+#
+# NEVER guesses.  Ambiguous names + no team hint → returns None.
+_ESPN_TO_FULL_NAME: dict[str, str] = {
+    # Handful of common abbrev fallbacks in case player_weekly stores
+    # abbreviations while ``db.players`` stores full names.  Not used
+    # for identity gate; only for the audit trail.
+}
+
+
+def _name_variants(name: str) -> list[str]:
+    """Return probable canonical variants for OddsAPI ↔ ESPN name
+    differences (Sr./Jr./II suffix drops, apostrophe/dash forms).
+    Preserves original as first entry.
+    """
+    if not name:
+        return []
+    n = name.strip()
+    out = [n]
+    # Drop trailing Jr./Sr./II/III/IV suffixes.
+    import re
+    stripped = re.sub(r"\s+(Jr\.?|Sr\.?|II|III|IV|V)$", "", n).strip()
+    if stripped and stripped != n:
+        out.append(stripped)
+    # Try adding "Jr." if we haven't already (ESPN sometimes carries
+    # suffix while OddsAPI drops it).
+    if not re.search(r"\s+(Jr\.?|Sr\.?|II|III|IV|V)$", n):
+        out.append(f"{n} Jr.")
+    return out
+
+
+async def resolve_nfl_current_team_for_player(
+    db, *, name: str, historical_team_fallback: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Return ``(current_team, historical_team, player_id)`` triplet.
+
+    Priority order (highest first):
+        1. ``db.players`` sport=nfl exact/variant match      →  current_team
+        2. ``db.nfl_player_weekly`` most-recent-season row   →  historical_team + GSIS
+    """
+    if not name:
+        return None, historical_team_fallback, None
+
+    variants = _name_variants(name)
+    current_team: Optional[str] = None
+    gsis_id: Optional[str] = None
+    historical_team: Optional[str] = None
+
+    # ── 1. ESPN active-roster source (db.players) ─────────────────
+    try:
+        # Match either 'name' / 'display_name' / 'full_name' / 'canonical_name'
+        # across variants.  There may be MULTIPLE rows per player (legacy
+        # ingest + current ingest); pick the freshest by ``updated_at``.
+        for v in variants:
+            v_low = v.lower()
+            cursor = db.players.find(
+                {"sport": "nfl",
+                 "$or": [
+                     {"name": v},
+                     {"display_name": v},
+                     {"full_name": v},
+                     {"canonical_name": v_low},
+                 ]},
+                {"_id": 0, "player_id": 1, "team": 1, "team_name": 1,
+                 "name": 1, "updated_at": 1},
+            ).sort("updated_at", -1).limit(5)
+            rows = [r async for r in cursor]
+            if not rows:
+                continue
+            # Prefer the freshest row that has ``team_name`` (full name).
+            row = next((r for r in rows if r.get("team_name")), rows[0])
+            t = (row.get("team_name") or row.get("team") or "").strip() or None
+            if t:
+                current_team = t
+            pid = row.get("player_id")
+            if pid and isinstance(pid, str) and pid.startswith("00-"):
+                gsis_id = pid
+            break
+    except Exception as e:
+        logger.debug("nfl players lookup err %s: %s", name, e)
+
+    # ── 2. nfl_player_weekly (GSIS + historical team) ─────────────
+    if not gsis_id or not historical_team:
+        for field in ("player_display_name", "player_name"):
+            for v in variants:
+                try:
+                    cursor = db.nfl_player_weekly.find(
+                        {field: v},
+                        {"_id": 0, "player_id": 1, "team": 1,
+                         "season": 1, "week": 1},
+                    ).sort([("season", -1), ("week", -1)]).limit(30)
+                    rows = [d async for d in cursor]
+                except Exception:
+                    rows = []
+                if not rows:
+                    continue
+                ids = {r.get("player_id") for r in rows if r.get("player_id")}
+                # Prefer 2026 rows as current-team source; fall back to
+                # newest row for historical_team.
+                _2026 = next(
+                    (r for r in rows if int(r.get("season") or 0) >= 2026),
+                    None,
+                )
+                if _2026 and not current_team:
+                    current_team = _2026.get("team") or None
+                historical_team = historical_team or (
+                    rows[0].get("team") if rows else None
+                )
+                # Only accept GSIS when unambiguous.
+                if not gsis_id and len(ids) == 1:
+                    gsis_id = next(iter(ids))
+                elif not gsis_id and len(ids) > 1 and current_team:
+                    # Narrow by resolved current team.
+                    _upper = (current_team or "").upper()
+                    matching = {
+                        r["player_id"] for r in rows
+                        if r.get("player_id") and (
+                            (r.get("team") or "").upper() == _upper
+                            or (r.get("team") or "").upper() in _upper
+                        )
+                    }
+                    if len(matching) == 1:
+                        gsis_id = next(iter(matching))
+                break
+            if gsis_id and historical_team:
+                break
+
+    return current_team, historical_team or historical_team_fallback, gsis_id
+
+
 def _scale(value: float, low: float, high: float,
            out_low: float = 0.30, out_high: float = 0.95) -> float:
     """Linear scale a raw value into an [out_low, out_high] factor."""
@@ -301,8 +454,22 @@ async def build_nfl_game_context(
         market = cand.get("market") or ""
         # Import inside to avoid circular
         from services.nfl_feature_engine import build_nfl_prop_factors
+        # Block 2D · P0 (2026-06-09) — resolve CURRENT team for this
+        # player (2026-season nfl_player_weekly row).  Used both for
+        # opponent selection here AND to unlock the publication gate
+        # downstream (see sports_engine.py ~L6913).
+        cur_team = None
+        hist_team = None
+        gsis_id = None
+        try:
+            cur_team, hist_team, gsis_id = await resolve_nfl_current_team_for_player(
+                db, name=player, historical_team_fallback=cand.get("team") or None,
+            )
+        except Exception as e:
+            logger.debug("nfl current-team resolve err %s: %s", player, e)
         # Determine which team is the player's team → opponent + is_home
-        player_team = cand.get("team") or ""
+        # Prefer the resolved CURRENT team; fall back to cand-supplied.
+        player_team = cur_team or cand.get("team") or ""
         opponent = ""
         is_home = False
         if player_team and (player_team.upper() == _abbrev(home_team).upper()):
@@ -370,6 +537,14 @@ async def build_nfl_game_context(
                 "position_used": position,
                 "position_source": ("canonical_registry"
                                      if canonical_pos else "market_inference"),
+                # Block 2D · P0 — carry the resolved CURRENT team all
+                # the way to the sync pick-emission stage so the pick
+                # doc can attach ``player_team`` for the identity gate.
+                "current_team":      cur_team,
+                "historical_team":   hist_team,
+                "canonical_player_id": gsis_id,
+                "opponent_team":     opponent,
+                "is_home":           is_home,
             }
         except Exception as e:
             logger.debug("nfl precompute failed for %s/%s: %s", player, market, e)
@@ -399,23 +574,64 @@ async def build_nfl_game_context(
             key_l = player.lower()
             if key_l in atd_out:
                 continue  # dedupe (Yes market often appears in multiple bookmakers)
-            player_team = cand.get("team") or ""
-            # Resolve to nflverse GSIS.  Refuses to guess on ambiguity.
+            # Block 2D · P0 (2026-06-09) — resolve CURRENT team FIRST so
+            # the ATD candidate is anchored on 2026 roster truth (fixes
+            # the stale "Etienne → Jaguars" class of regressions).  If
+            # no current team, fail closed — a real bettable ATD needs
+            # a current active-roster player.
+            cur_team = None
+            hist_team = None
+            gsis_id = None
             try:
-                pid = await resolve_player_id_from_name(
-                    db, name=player, team=player_team or None)
+                cur_team, hist_team, gsis_id = \
+                    await resolve_nfl_current_team_for_player(
+                        db, name=player,
+                        historical_team_fallback=cand.get("team") or None,
+                    )
             except Exception as e:
-                logger.debug("nfl_atd resolve err %s: %s", player, e)
-                pid = None
+                logger.debug("nfl_atd cur-team err %s: %s", player, e)
+            if not cur_team:
+                atd_out[key_l] = {
+                    "reject": "current_team_unresolved",
+                    "player_name": player,
+                    "historical_team": hist_team,
+                }
+                continue
+            # Reject if resolved current team isn't part of THIS event.
+            # Membership validated against event home/away abbreviations.
+            _home_ab = _abbrev(home_team).upper()
+            _away_ab = _abbrev(away_team).upper()
+            _cur_ab = _abbrev(cur_team).upper() if cur_team else ""
+            if _cur_ab and _cur_ab not in (_home_ab, _away_ab):
+                atd_out[key_l] = {
+                    "reject": "current_team_not_in_event",
+                    "player_name": player,
+                    "current_team": cur_team,
+                    "event": f"{away_team} @ {home_team}",
+                }
+                continue
+            is_home_current = (_cur_ab == _home_ab)
+            # Resolve to nflverse GSIS. Prefer GSIS learned above; if
+            # missing, fall back to the historical resolver (may be
+            # ambiguous — returns None then).
+            pid = gsis_id
+            if not pid:
+                try:
+                    pid = await resolve_player_id_from_name(
+                        db, name=player, team=cur_team or None)
+                except Exception as e:
+                    logger.debug("nfl_atd resolve err %s: %s", player, e)
+                    pid = None
             if not pid:
                 atd_out[key_l] = {
                     "reject": "unresolved_player_identity",
                     "player_name": player,
+                    "current_team": cur_team,
                 }
                 continue
-            # Determine opponent + spread (spread unavailable at this
-            # layer — kept None to skip game-script factor).
-            opp_full = away_team if is_home else home_team
+            # Determine opponent based on CURRENT team (not historical
+            # is_home from the outer loop).
+            opp_full = away_team if is_home_current else home_team
             opp_abbrev = _abbrev(opp_full)
             try:
                 result = await predict_player_atd(
@@ -430,6 +646,16 @@ async def build_nfl_game_context(
                     "engine_error": str(e)[:120],
                 }
                 continue
+            # Overwrite the engine's stale ``team`` field with the
+            # resolved CURRENT team so downstream consumers never
+            # display JAX-Etienne-style ghosts.  Historical team stays
+            # available for audit under ``historical_team``.
+            if isinstance(result, dict) and not result.get("reject"):
+                result["team"] = cur_team
+                result["historical_team"] = hist_team
+                result["opponent"] = opp_abbrev
+                result["is_home"] = is_home_current
+                result["canonical_player_id"] = pid
             atd_out[key_l] = result or {"reject": "engine_returned_none"}
     if atd_out:
         return {"nfl_precomputed": out, "nfl_atd_precomputed": atd_out}
