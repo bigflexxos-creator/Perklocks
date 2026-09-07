@@ -68,6 +68,29 @@ Persisted at: `/app/memory/perklocks_main_35_certification_matrix.json`
 - Model-only chips filtered BEFORE ranking, not after.
 
 
+## MAIN 41 · P0-B1 CANONICAL PUBLICATION SHIELD (2026-06)
+**Runtime symptom**: NFL props visible on Preview after previous
+force-refresh disappeared after the next scheduler tick.
+
+**Root cause** (`services/pick_refresh_orchestrator.py`): the
+`_apply_atomic_delete` + id-collision `delete_many` + `SEMANTIC_DELETE`
+passes could destroy previously-published pick documents because
+NONE of the three `delete_many` filters excluded rows carrying
+frozen publication truth (`publication_source`).
+
+**Surgical fix**: every `delete_many` inside `_refresh_picks` now
+carries an explicit publication-shield predicate:
+`{"$or": [{"publication_source": {"$in": [None, "", False]}},
+          {"publication_source": {"$exists": False}}]}`
+so a canonically-published document survives every future refresh
+regardless of whether the refresh re-emits it.
+
+**Verified**: seeded 3 synthetic canonical publications → simulated
+game-only recurring refresh → `would_delete_count == 0` for shielded
+docs → all 3 survive. Immutable per PublishedPickContract.
+
+Regression protection: `tests/test_main41_publication_shield.py`.
+
 ## MAIN 41 · P0-A EXPO PARITY SOURCE-DEFECTS (2026-06)
 Two confirmed source defects fixed:
 1. **Native API silent fallback removed** (`frontend/src/lib/api.ts`)

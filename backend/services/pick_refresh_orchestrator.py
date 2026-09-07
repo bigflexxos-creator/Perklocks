@@ -1412,6 +1412,21 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         if _or_clauses:
             _family_conservation_filter = {"$or": _or_clauses}
     async def _apply_atomic_delete():
+        # ── MAIN 41 · P0-B1 (2026-06-06) — Canonical publication
+        # truth SHIELD.  Every ``delete_many`` in this atomic block
+        # must exclude rows carrying a real ``publication_source``
+        # for the CURRENT board horizon.  Without this, a subsequent
+        # refresh that fails to re-emit the SAME (event, player,
+        # family, line) still wipes the previously-published pick,
+        # producing the "NFL props disappeared from Preview" symptom.
+        # Frozen publication truth (immutable per PublishedPickContract)
+        # cannot be deleted by a candidate-cycle refresh.  For CURRENT
+        # board eligibility the mutable filters still decide; this
+        # shield only prevents outright document removal.
+        _publication_shield = {"$or": [
+            {"publication_source": {"$in": [None, "", False]}},
+            {"publication_source": {"$exists": False}},
+        ]}
         # Fail-safe: never wipe healthy rows when the refresh produced
         # nothing (execution failure / provider outage / cache miss).
         if not _has_refreshed_families:
@@ -1426,18 +1441,22 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
             await db.picks.delete_many({
                 "pick_date": date_str, "sport": sport_filter,
                 **_pin_filter, **_family_conservation_filter,
+                **_publication_shield,
             })
             await db.picks.delete_many({
                 "id": {"$in": list(seen_ids)}, "sport": sport_filter,
                 **_pin_filter,
+                **_publication_shield,
             })
         else:
             await db.picks.delete_many({
                 "pick_date": date_str, **_pin_filter,
                 **_family_conservation_filter,
+                **_publication_shield,
             })
             await db.picks.delete_many({
                 "id": {"$in": list(seen_ids)}, **_pin_filter,
+                **_publication_shield,
             })
         # ── ID-COLLISION FRESH-OVERWRITE ──
         # If the current refresh re-generates a pick whose `id` is ALSO a
@@ -1453,12 +1472,20 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         # through the synth + clamp pipeline), so the "highest-ever lock"
         # invariant still holds.
         if seen_ids:
+            # MAIN 41 · P0-B1 shield — never destroy canonical
+            # publication truth even when re-inserting by id.
+            _publication_shield = {"$or": [
+                {"publication_source": {"$in": [None, "", False]}},
+                {"publication_source": {"$exists": False}},
+            ]}
             if sport_filter:
                 await db.picks.delete_many(
-                    {"id": {"$in": list(seen_ids)}, "sport": sport_filter}
+                    {"id": {"$in": list(seen_ids)}, "sport": sport_filter,
+                     **_publication_shield}
                 )
             else:
-                await db.picks.delete_many({"id": {"$in": list(seen_ids)}})
+                await db.picks.delete_many({"id": {"$in": list(seen_ids)},
+                                             **_publication_shield})
 
         # ── 2026-07-28 DEFECT #4 FIX: semantic-identity delete ─────────
         # ────────────────────────────────────────────────────────────
@@ -1552,8 +1579,17 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
                             (_row.get("market") or "")[:80],
                         )
                 if _stale_ids:
+                    # MAIN 41 · P0-B1 shield — never destroy
+                    # canonical publication truth via semantic dedupe.
+                    # A previously-published pick with different id
+                    # but matching (event, player, family, line) is
+                    # NOT stale — it IS the canonical record.
                     _res = await db.picks.delete_many(
-                        {"id": {"$in": _stale_ids}},
+                        {"id": {"$in": _stale_ids},
+                         "$or": [
+                             {"publication_source": {"$in": [None, "", False]}},
+                             {"publication_source": {"$exists": False}},
+                         ]},
                     )
                     _semantic_deleted += int(getattr(_res, "deleted_count", 0) or 0)
             if _semantic_deleted:
