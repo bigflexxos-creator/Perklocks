@@ -115,9 +115,23 @@ async def get_player_history(
             opponent=opponent,
             home_away=home_away,
         )
-    # Sports that legitimately do not participate in Stage 2 (CFB /
-    # NHL — no player-prop coverage per capability registry) return
-    # an honest UNAVAILABLE — never a fake PASS (§14).
+    # MAIN 40 · Item #P0-D (2026-06-06) — NHL universal history
+    # wiring.  The existing ``player_history/nhl.py`` adapter was
+    # never dispatched from the universal service.  We now route
+    # NHL requests through the same contract as every other sport.
+    if sport_u == "NHL":
+        from .nhl import populate_nhl_evidence
+        return await populate_nhl_evidence(
+            db, ev,
+            player_id=player_id,
+            canonical_player_id=canonical_player_id,
+            player_name=player_name,
+            opponent=opponent,
+            home_away=home_away,
+        )
+    # Sports that legitimately do not participate in Stage 2 (CFB —
+    # no player-prop coverage per capability registry) return an
+    # honest UNAVAILABLE — never a fake PASS (§14).
     ev.data_quality = DataQuality.UNAVAILABLE.value
     ev.source = "SPORT_NOT_SUPPORTED"
     return ev

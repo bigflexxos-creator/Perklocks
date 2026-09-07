@@ -264,6 +264,130 @@ async def populate_standard_evidence(
     ev.identity_confidence = "HIGH" if (
         canonical_player_id or player_id) else "LOW"
 
+    # ── MAIN 40 · Item #P0-D (2026-06-06) — populate dark fields ──
+    # Atomic dated games (up to 20 most recent) so consumers can
+    # click through L5/L10/L20/vs_opponent aggregates to the exact
+    # source rows.  Derived STRICTLY from the loaded rows — no new
+    # provider calls.
+    try:
+        atomic: list[dict] = []
+        for r, a in list(zip(rows, all_actuals))[:20]:
+            atomic.append({
+                "date":              (r.get("event_time")
+                                        or r.get("date")
+                                        or r.get("game_date")),
+                "canonical_event_id": (r.get("canonical_event_id")
+                                          or r.get("game_id")),
+                "opponent":          (r.get("opponent")
+                                        or r.get("opp_team_id")),
+                "team":              r.get("team"),
+                "home_away":         (r.get("home_away") or "").lower() or None,
+                "actual":            a,
+                "season":            r.get("season"),
+            })
+        ev.atomic_games = atomic
+    except Exception:
+        # Atomic transparency must never break the shared populate.
+        pass
+
+    # Streak against the requested threshold — current consecutive
+    # HIT/MISS sequence in newest-first order.  Skips games with a
+    # None actual to preserve integrity.
+    try:
+        if valid_count >= 1 and ev.threshold is not None:
+            th = float(ev.threshold)
+            _dir = (ev.direction or "over").lower()
+            def _hit(a: Optional[float]) -> Optional[bool]:
+                if a is None:
+                    return None
+                if milestone_market:
+                    return a >= th
+                if _dir == "over":
+                    return a > th
+                if _dir == "under":
+                    return a < th
+                return None
+            streak_kind: Optional[str] = None
+            streak_n = 0
+            for a in all_actuals:
+                h = _hit(a)
+                if h is None:
+                    continue
+                kind = "HIT" if h else "MISS"
+                if streak_kind is None:
+                    streak_kind = kind
+                    streak_n = 1
+                elif kind == streak_kind:
+                    streak_n += 1
+                else:
+                    break
+            if streak_kind is not None:
+                ev.streak = f"{streak_kind} x {streak_n}"
+    except Exception:
+        pass
+
+    # Days since last authoritative game.  Compared against
+    # ``history_as_of`` (publication-time freeze) — never today's
+    # wall-clock, so retro-testing is deterministic.
+    try:
+        from datetime import datetime as _dt
+        latest_ts = rows[0].get("event_time") or rows[0].get("date")
+        if latest_ts:
+            _asof_str = (ev.history_as_of or "")[:19]
+            _asof = _dt.fromisoformat(_asof_str.replace("Z", "+00:00")) \
+                if _asof_str else None
+            _lg = _dt.fromisoformat(str(latest_ts)[:19]
+                                       .replace("Z", "+00:00"))
+            if _asof:
+                delta = (_asof - _lg).days
+                if delta >= 0:
+                    ev.days_since_last_game = delta
+    except Exception:
+        pass
+
+    # H2H source games — when the caller supplied an opponent, expose
+    # the exact dated games we counted.  Powers "vs_opponent 4/5"
+    # click-through UX.
+    try:
+        if opponent:
+            opp_norm = opponent.upper()
+            h2h_rows: list[dict] = []
+            for r, a in zip(rows, all_actuals):
+                ok = (r.get("opponent") or r.get("opp_team_id") or "")
+                if not ok:
+                    continue
+                if str(ok).upper() != opp_norm:
+                    continue
+                h2h_rows.append({
+                    "date":              (r.get("event_time")
+                                            or r.get("date")),
+                    "canonical_event_id": (r.get("canonical_event_id")
+                                              or r.get("game_id")),
+                    "opponent":          ok,
+                    "team":              r.get("team"),
+                    "home_away":         (r.get("home_away") or "").lower() or None,
+                    "actual":            a,
+                    "season":            r.get("season"),
+                })
+                if len(h2h_rows) >= 15:
+                    break
+            if h2h_rows:
+                ev.h2h_source_games = h2h_rows
+    except Exception:
+        pass
+
+    # vs_opponent_recent — trailing 5 H2H games (populated from the
+    # h2h_source_games we just built).
+    try:
+        if ev.h2h_source_games:
+            recent = [g["actual"] for g in ev.h2h_source_games[:5]
+                       if g.get("actual") is not None]
+            if recent:
+                ev.vs_opponent_recent = _win(
+                    recent, "vs_opponent_recent", len(recent))
+    except Exception:
+        pass
+
     if row_context_fn is not None:
         try:
             extras = row_context_fn(rows) or {}

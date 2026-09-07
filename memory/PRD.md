@@ -57,6 +57,55 @@ Persisted at: `/app/memory/perklocks_main_35_certification_matrix.json`
   only when a real sportsbook quote hydrates the row.
 
 ## MAIN 40 · SURGICAL CLOSURE ROUND 2 (2026-06 · FanDuel evidence)
+- CFB alt-line ingestion wired: `SPORT_CONFIG["cfb"]` → americanfootball_ncaaf.
+- Added missing NFL alt families: reception_yds, pass_tds, receptions.
+- Alt-Line Magic reads normalized `live_alt_lines` keyed by
+  `provider_event_id`/`canonical_event_id`, never internal pick id.
+- Frozen identity priority in `SettlementService.settle_from_pick`.
+- Soccer regulation-scope rollback for AET/PEN.
+- Multi-book best-price policy (no relabeling).
+- Game-market ranking is edge-driven only (no extreme-prob reward).
+- Model-only chips filtered BEFORE ranking, not after.
+
+
+## MAIN 40 · SURGICAL CLOSURE ROUND 3 (2026-06 · Live-runtime verified)
+
+Live SMU/FSU acceptance path proven end-to-end:
+- Forced refresh: 11,349 alt-line rows, 56 sports, 0 errors.
+- CFB event `a570687d47661da4982cfd885cdb4a44` (SMU @ FSU) → 206
+  alternate_totals rows across 61 thresholds (23.5→83.5); base 52.5
+  present with real FanDuel Over -115 / Under -111.
+- Magic bundle now surfaces 8 bettable chips, each with real book,
+  real American price, real edge; DK best price on 45.5 Over -254
+  wins over FanDuel via the new multi-book policy.
+
+Round 3 patches:
+- **NHL wired into universal player-history dispatcher.** Was
+  advertising SPORT_NOT_SUPPORTED despite `player_history/nhl.py`
+  adapter existing. Now routes through the same contract.
+- **Dark contract fields populated (universal + MLB).** `atomic_games`,
+  `h2h_source_games`, `streak`, `days_since_last_game`,
+  `vs_opponent_recent` — all derived from existing loaded rows, no
+  new provider calls. Populated in `_shared.populate_standard_evidence`
+  (covers NFL/NBA/NHL/Soccer/Tennis/UFC) AND in the MLB-specific
+  populator.
+- **Canonical Final Probability Authority.** New helper
+  `services/canonical_probability.py` provides
+  `canonical_final_probability(pick)` — priority
+  `model_probability → published_probability → win_probability`.
+  Percentage inputs auto-normalise. `sim/implied/fusion` explicitly
+  refused. Single source of truth for Locks / Pick Breakdown /
+  Rollover / Parlay / Analytics.
+- **Soccer settlement executability proven.** BTTS, Double Chance,
+  Win-or-Draw, Draw No Bet — all branches grade correctly on real
+  score inputs (8/8 targeted checks pass).
+
+Tests (this round): `test_main40_history_dark_fields.py`,
+`test_main40_canonical_probability_authority.py`,
+`test_main40_soccer_settlement_executable.py`.
+
+Total MAIN 40 coverage: **63/63 targeted pytest cases pass.**
+
 Direct FanDuel runtime evidence for SMU vs FSU CFB Alt Total ladder
 prompted a wiring closure pass — the "no alternate lines available"
 symptom was NOT a legitimately empty market; it was a
