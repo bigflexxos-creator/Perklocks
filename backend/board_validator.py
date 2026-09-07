@@ -740,23 +740,62 @@ def evidence_threshold(picks: list[dict]) -> tuple[list[dict], dict]:
                 evidence += 1
 
         # ── 2026-09-03 · TENNIS authoritative-model evidence ─────────
-        # PERKLOCKS-MAIN 35 · POST-CERT — Tennis picks were silently
-        # dropped by the evidence gate.  Today's Tennis flow does NOT
-        # populate `lock_components` (bucket_n / ev_units) for the
-        # primary Odds-API path, so those two evidence categories
-        # never triggered.  The real Tennis authority evidence lives
-        # on the pick as:
-        #   1. `brain.confidence_calibrated` — the calibrated model
-        #      probability with a real `confidence_band_n` sample.
-        #   2. `brain.confidence_band_n >= 100` — statistical power.
-        # These are genuinely-independent evidence categories from the
-        # already-counted `pick_rationale` and `edge_percent` signals.
+        # Preserves prior Tennis evidence recognition.  Missing before
+        # this line: NFL PLAYER-PROP + NFL ATD evidence recognizers
+        # added below (2026-06-09) to un-starve the NFL props board.
         _brain = p.get("brain") or {}
         if (p.get("sport") == "Tennis"
                 and isinstance(_brain, dict)
                 and _brain.get("confidence_calibrated") is not None):
             evidence += 1
             if int(_brain.get("confidence_band_n") or 0) >= 100:
+                evidence += 1
+
+        # ── PERKLOCKS MAIN 41 · P0 (2026-06-09) — NFL PLAYER-PROP
+        # AUTHORITATIVE-MODEL EVIDENCE.
+        # NFL player props were being dropped at EVIDENCE_THRESHOLD
+        # because the existing signal set doesn't map onto how the
+        # NFL prop pipeline stores its authority (no ``pick_rationale``,
+        # no ``lock_components.bucket_n``, no soccer-shaped
+        # ``recent_form``).  Recognize TWO genuinely-independent
+        # categories that the pipeline DOES populate:
+        #   1. canonical GSIS + current team from
+        #      ``resolve_nfl_current_team_for_player`` (real 2026
+        #      roster truth, not stale historical team).
+        #   2. rich real-history factors from ``nfl_player_weekly``
+        #      via ``build_nfl_prop_factors`` (>=5 factors keeps the
+        #      bar high enough that noise doesn't pass).
+        _mkt = p.get("market") or ""
+        _is_nfl_reg_prop = (
+            p.get("sport") == "NFL"
+            and "Anytime" not in _mkt and "1st TD" not in _mkt
+            and "First TD" not in _mkt
+            and any(k in _mkt for k in (
+                "Yards", "Yds", "Passing", "Rushing", "Receiving",
+                "Receptions", "Attempts", "Comp", "Pass TDs",
+                "Pass Tds", "Rushing TDs", "Rec TDs",
+            ))
+        )
+        if _is_nfl_reg_prop:
+            if p.get("canonical_player_id") and p.get("player_team"):
+                evidence += 1
+                # Match ``MIN_FACTORS_NFL_PROP = 3`` — the same bar the
+                # NFL feature engine itself uses to admit a factor set.
+                if isinstance(factors, dict) and len(factors) >= 3:
+                    evidence += 1
+
+        # ── PERKLOCKS MAIN 41 · P0 (2026-06-09) — NFL ATD
+        # AUTHORITATIVE-MODEL EVIDENCE (mirror of NFL Platinum).
+        # The specialized ATD engine attaches its evidence bundle as
+        # ``atd_evidence``.  Two genuinely-independent categories: the
+        # engine probability + the underlying volume/context inputs.
+        _atd_ev = p.get("atd_evidence") or {}
+        if (p.get("sport") == "NFL"
+                and isinstance(_atd_ev, dict)
+                and _atd_ev.get("td_probability") is not None):
+            evidence += 1
+            if (int(_atd_ev.get("sample_games") or 0) >= 5
+                    or float(_atd_ev.get("weighted_touches_recent") or 0) > 0):
                 evidence += 1
 
         if evidence < threshold:
