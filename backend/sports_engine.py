@@ -6906,9 +6906,9 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 if team_label and team_label not in market_label:
                     # Insert tag right after the player name.
                     market_label = market_label.replace(player, f"{player} ({team_label})", 1)
-        # Block 2D A1 — ATD engine's independent probability overrides
-        # the seed mp for anytime_td / 1st_td picks when the specialized
-        # engine returned a valid result.
+        # Block 2D A1 (2026-08) — ATD engine's independent probability
+        # overrides the seed mp for anytime_td / 1st_td picks when the
+        # specialized engine returned a valid result.
         _effective_mp = _atd_model_override if _atd_model_override is not None else mp
         new_pick = _build_pick(
             sport=sport, league=f"{league} · Props", event=f"{away} @ {home}",
@@ -6930,6 +6930,60 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             home_team_name=home,
             away_team_name=away,
         )
+        # Block 2D · P0 (2026-06-09) — SURGICAL NFL TEAM ATTACH.
+        # The identity gate rejects any player-prop lacking a
+        # ``player_team`` / ``canonical_team_id`` (PLAYER_TEAM_UNRESOLVED).
+        # OddsAPI prop outcomes carry NO team, so we look the resolved
+        # CURRENT team up from the precompute stash written by
+        # services.nfl_feature_engine.build_nfl_game_context and attach
+        # it here.  Falls open (no attach) when resolution failed — the
+        # gate will then correctly reject the pick.
+        if new_pick is not None and sport == "NFL":
+            try:
+                _cur_team = None
+                _canonical_pid = None
+                _pos_used = None
+                _pc_row = None
+                if mk in ("player_anytime_td", "player_1st_td"):
+                    _pc_row = (
+                        (payload.get("_ctx") or {}).get("nfl_atd_precomputed", {})
+                        .get(player.strip().lower())
+                    ) or {}
+                    if isinstance(_pc_row, dict) and not _pc_row.get("reject"):
+                        _cur_team = _pc_row.get("team")
+                        _canonical_pid = _pc_row.get("canonical_player_id")
+                else:
+                    _pc_row = (
+                        ((payload.get("_ctx") or {}).get("nfl_precomputed", {})
+                         .get(player.strip().lower()) or {})
+                        .get(mk) or {}
+                    )
+                    if isinstance(_pc_row, dict):
+                        _cur_team = _pc_row.get("current_team")
+                        _canonical_pid = _pc_row.get("canonical_player_id")
+                        _pos_used = _pc_row.get("position_used")
+                if isinstance(_cur_team, str) and _cur_team.strip():
+                    new_pick["player_team"] = _cur_team
+                    new_pick["canonical_team_id"] = _cur_team
+                    new_pick["player_team_name"] = _cur_team
+                if _canonical_pid:
+                    new_pick["canonical_player_id"] = _canonical_pid
+                    new_pick["player_id"] = _canonical_pid
+                if _pos_used:
+                    new_pick.setdefault("position", _pos_used)
+                # Identity class per canonical_publication_boundary
+                # contract (AUTHORITATIVE/MAPPED/PROVISIONAL/UNRESOLVED).
+                # AUTHORITATIVE when we have BOTH canonical GSIS +
+                # current team from the 2026 roster feed; PROVISIONAL
+                # when partially resolved; leave unset so the boundary
+                # rejects it when neither is present.
+                if _canonical_pid and _cur_team:
+                    new_pick.setdefault("identity_class", "AUTHORITATIVE")
+                elif _canonical_pid or _cur_team:
+                    new_pick.setdefault("identity_class", "PROVISIONAL")
+            except Exception as _teamerr:
+                logger.debug("NFL team attach failed for %s/%s: %s",
+                             player, mk, _teamerr)
         # Block 2D A1 — attach ATD evidence block for downstream
         # consumers (rationale UI, telemetry).  This is
         # POST_SCORE_EXPLANATION_ONLY at the pick level — Lock Score

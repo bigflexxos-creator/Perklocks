@@ -267,6 +267,13 @@ async def _player_profile_from_weekly(db, player_id: str) -> Optional[dict]:
         rushing_yards, receiving_yards → rush_yd, rec_yd
         game_id, team                → passthrough
         season, week                 → composite date "YYYY-WW"
+
+    Block 2D · P0 (2026-06-09) — the returned ``team`` field now
+    reflects the player's CURRENT (most-recent 2026-season) roster,
+    NOT the last historical log entry.  Historical last-known team is
+    preserved separately as ``historical_team`` so audit/UI can still
+    surface it if needed.  Fixes the stale-team regression class
+    ("Etienne → Jaguars" after a real-world roster move).
     """
     cursor = db.nfl_player_weekly.find(
         {"player_id": player_id},
@@ -299,10 +306,26 @@ async def _player_profile_from_weekly(db, player_id: str) -> Optional[dict]:
         })
     if not games:
         return None
+    # Determine CURRENT team = most-recent 2026-season row's team.
+    # Fall back to the newest available row when no 2026 rows exist
+    # (offseason case — engine will still produce a probability but
+    # the pipeline must fail-close on identity elsewhere).
+    _current_team = None
+    for r in rows:
+        try:
+            if int(r.get("season") or 0) >= 2026:
+                _current_team = r.get("team")
+                break
+        except Exception:
+            continue
+    _historical_team = games[0].get("team")
     return {
         "player_id": player_id,
         "name":      games[0].get("name"),
-        "team":      games[0].get("team"),
+        # ``team`` is the CURRENT active-roster team — never stale.
+        "team":      _current_team or _historical_team,
+        "current_team":    _current_team,
+        "historical_team": _historical_team,
         "games":     games,
     }
 
@@ -491,6 +514,8 @@ async def predict_player_atd(
         "player_id": player_id,
         "player_name": profile["name"],
         "team": team,
+        "current_team":    profile.get("current_team") or team,
+        "historical_team": profile.get("historical_team") or team,
         "opponent": opponent,
         "td_probability": round(probability, 4),
         "confidence": round(confidence, 4),
