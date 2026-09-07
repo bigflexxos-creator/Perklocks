@@ -45,7 +45,13 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 // deployed EAS bundle to wipe prior client caches on first launch so
 // the new client-side legacy-provider filter (see api.ts) is applied
 // against a fresh in-memory snapshot from the very first fetch.
-export const APP_DATA_VERSION = "20260905-sdk57-migration-v1";
+//
+// 2026-06-06 — MAIN 41 · P0-A closure.  Added ``locks_picks_cache_v1``
+// to KNOWN_CACHE_KEYS.  Bump version once so every existing Expo Go
+// device drops its orphaned Locks board cache and re-hydrates from the
+// canonical /api/picks/today response on next launch.  Preserves auth
+// state (auth + version keys are never wiped, see comment below).
+export const APP_DATA_VERSION = "20260906-main41-locks-cache-bust-v1";
 
 // ─── Backend-version snapshot (Layer 2 - stored after each /api/version call)
 const CLIENT_VERSION_KEY = "perkslocks.client_data_version";
@@ -83,6 +89,14 @@ const KNOWN_CACHE_KEYS = [
   // v6 is an orphan SDK 54 build; every SDK 57 client hydrates v7
   // fresh on first launch and then persists it thereafter.
   "perkslocks_filters_v7",
+  // ── MAIN 41 · P0-A (2026-06-06) — Locks board picks cache ──
+  // The Locks screen (app/(tabs)/index.tsx) persists the last picks
+  // payload under ``locks_picks_cache_v1`` for offline-first hydration.
+  // This key was NOT in the cache-bust list, so an Expo device could
+  // hydrate the Locks screen from an OLD cached response for hours
+  // even after the backend published fresh NFL props — driving the
+  // "Expo Go still shows NFL GAME · 0 / PROP · 0" symptom.
+  "locks_picks_cache_v1",
   // Add any new AsyncStorage keys here so a cache bust actually wipes them.
 ];
 
