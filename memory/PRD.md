@@ -68,7 +68,7 @@ Persisted at: `/app/memory/perklocks_main_35_certification_matrix.json`
 - Model-only chips filtered BEFORE ranking, not after.
 
 
-## MAIN 41 · NFL PROP SLATE CAP (2026-06 · Live-runtime verified)
+## MAIN 41 · NFL PROP PUBLICATION CLOSURE (2026-06 · End-to-end proven)
 
 **ROOT DEFECT**: `_PROPS_PER_KEY_CAP` in `sports_engine.py` had no
 entry for `americanfootball_nfl`, so NFL fell back to
