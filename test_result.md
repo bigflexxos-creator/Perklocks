@@ -2108,9 +2108,9 @@ frontend:
             at bottom of 46-game board. All picks reachable.
 
 metadata:
-  last_iteration: 122
-  last_iteration_topic: "MAIN 40 Closure — Alt-Line Magic spread display + same-direction ranking"
-  last_iteration_result: "COMPLETED: #5.3 spread display (team spread chips now show TEAM ±LINE, not U -LINE) and #5.1 same-direction ranking (extreme opposite-side no longer wins the pair). 18/18 pytest green, all 4 endpoints 200. LAB CRASH: line 234 area inspected in full — the raw text node cannot be surgically located without a runtime stack trace (patterns tried: bare `.`, template-literal periods, `{expr}.<Tag>`, all four module bodies including StrategyLabWorkstation). All other targeted items (History/Settlement, Soccer, Historical Intelligence, NFL totals, Tennis, Predictive P0) exceed the safe-change budget of this pass without exact call-graph knowledge that grep can't discover in the remaining tokens."
+  last_iteration: 123
+  last_iteration_topic: "MAIN 40 Closure — Item #3.C History GET read-only"
+  last_iteration_result: "COMPLETED: fire-and-forget settle_due_picks(db) removed from GET /api/picks/history in picks_routes.py. Dedicated POST /picks/settle write path preserved. settlement_freshness envelope shape preserved (values now always inactive). 5/5 endpoints 200; 18/18 pytest green."
 
 agent_communication:
     - agent: "main"
