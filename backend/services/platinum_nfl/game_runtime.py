@@ -106,9 +106,17 @@ def platinum_game_side_probability(
         season_type = classify_season_type(
             {"sport_key": sport_key, "commence_time": game.get("commence_time")}
         )
+        # THRESHOLD = sportsbook total line (never fabricated).  When the
+        # book line is missing we cannot grade a totals side — fall back
+        # to the model expected_total only as a last resort.  This value
+        # is compared AGAINST the distribution, never used as its mean.
         anchor_total = book_total_line
         if not isinstance(anchor_total, (int, float)):
             anchor_total = ctx.get("expected_total")
+        # MODEL MEAN = model's expected_total.  Independent of the book
+        # line.  Enforces P(Over) + P(Under) + P(Push) = 1 while
+        # preserving true edge vs the sportsbook threshold.
+        model_expected_total = ctx.get("expected_total")
         pick_stub = {
             "market": market,
             "side": side,
@@ -124,6 +132,9 @@ def platinum_game_side_probability(
             pick_stub,
             expected_margin_home=float(ctx["expected_margin_home"]),
             total_line=float(anchor_total),
+            expected_total=(float(model_expected_total)
+                            if isinstance(model_expected_total, (int, float))
+                            else None),
             seed=random.Random(seed_int),
             n_sims=N_SIMS,
             is_home_side=is_home_side,

@@ -36,6 +36,11 @@ class AltLine:
     composite_score: float
     market_odds:     Optional[dict]     # {bookmaker, american, decimal}
     explanation:     str
+    # MAIN 40 · Item #4 (2026-06-06) — real-line hard gate.  Chips
+    # without a live sportsbook quote are model-only projections and
+    # MUST NOT be presented as bettable.  Defaults to False so any
+    # legacy caller / test harness that omits it degrades safely.
+    bettable:        bool = False
 
 
 @dataclass
@@ -250,6 +255,9 @@ async def generate_alt_lines(
                                 "bookmaker": market.get("bookmaker")}
                               if market else None),
                 explanation=explanation,
+                # Real-line hard gate — bettable iff a real sportsbook
+                # quote hydrates this row.
+                bettable=(source == "market"),
             ))
     # ── Two-way pairing ─────────────────────────────────────────
     # Emit BOTH Over AND Under chips per threshold so users can flip
@@ -305,10 +313,20 @@ async def generate_alt_lines(
         # Prefer Over first, then Under, for consistent chip order.
         chips.sort(key=lambda a: 0 if a.side == "Over" else 1)
         output.extend(chips)
+    # ── MAIN 40 · Item #4 (2026-06-06) — Real-line hard gate ────────
+    # Drop model-only chips from the emitted bundle so the client
+    # never presents an unbettable chip as bettable.  When the book
+    # publishes no alternate line for this pick we emit an empty
+    # ``alt_lines`` list; the client's terminal empty state handles
+    # the UX with copy that is truthful to the sportsbook state.
+    output = [a for a in output if getattr(a, "bettable", False)]
+    notes = list(dist.get("notes", []))
+    if not output:
+        notes.append("real-line hard gate suppressed model-only alt chips")
     return AltLineBundle(
         sport=sport, player=player, stat=stat, opponent=opponent,
         projected=projected, alt_lines=output,
-        notes=dist.get("notes", []),
+        notes=notes,
     )
 
 

@@ -148,7 +148,8 @@ def expected_plays(possessions_home: float, possessions_away: float,
 
 def sample_game_script(*, expected_margin_home: float,
                        total_line: float, seed: random.Random,
-                       n: int = 1) -> list[dict]:
+                       n: int = 1,
+                       expected_total: Optional[float] = None) -> list[dict]:
     """Sample ``n`` game-script realizations.
 
     Returns a list of dicts with:
@@ -158,16 +159,28 @@ def sample_game_script(*, expected_margin_home: float,
         pass_rate_away: pass-play rate for away team
         garbage_time:   True if margin >= 17 by end of Q3
 
+    The scoring distribution is centered on the model's
+    ``expected_total`` (independent of any sportsbook line).  The
+    sportsbook ``total_line`` is used ONLY for sigma scaling and as a
+    fallback mean when ``expected_total`` is not supplied — it is
+    never treated as the model's prediction of game scoring.
+
     Margins are drawn from Normal(expected_margin_home, sigma) with
     sigma tied to the total (higher totals → more variance).  Pass
     rates follow the script: trailing teams pass more, leading teams
     run more.
     """
-    sigma = max(9.0, LEAGUE_TOTAL_STD * math.sqrt(total_line / LEAGUE_TOTAL_MEAN))
+    # Sigma scales with expected scoring level, not the book line.
+    scale_ref = float(expected_total) if isinstance(expected_total, (int, float)) \
+        else float(total_line)
+    sigma = max(9.0, LEAGUE_TOTAL_STD * math.sqrt(max(scale_ref, 20.0) / LEAGUE_TOTAL_MEAN))
+    # Distribution mean is the MODEL's expected_total — never the book line.
+    total_mean = float(expected_total) if isinstance(expected_total, (int, float)) \
+        else float(total_line)
     out: list[dict] = []
     for _ in range(n):
         margin = seed.gauss(expected_margin_home, sigma)
-        total  = max(20.0, seed.gauss(total_line, LEAGUE_TOTAL_STD * 0.55))
+        total  = max(20.0, seed.gauss(total_mean, LEAGUE_TOTAL_STD * 0.55))
         # Home team script
         script_home = _pass_rate_from_margin(margin)
         script_away = _pass_rate_from_margin(-margin)

@@ -225,6 +225,19 @@ async def settle_soccer_leg(leg: dict) -> Optional[str]:
             return "won" if home_goals != away_goals else "lost"
         return None
 
+    # ─── Draw No Bet ─────────────────────────────────────────────────
+    # Bet on a team.  On a DRAW the stake is refunded → PUSH.
+    # Otherwise it grades exactly like Moneyline.
+    if "draw no bet" in market_lower or "dnb" == market_lower.strip():
+        sel = selection or market
+        if home_goals == away_goals:
+            return "push"
+        if _names_match(sel, home_team) or "home" in _norm(sel).split():
+            return "won" if home_goals > away_goals else "lost"
+        if _names_match(sel, away_team) or "away" in _norm(sel).split():
+            return "won" if away_goals > home_goals else "lost"
+        return None
+
     # ─── Both Teams to Score ─────────────────────────────────────────
     if "both teams to score" in market_lower or "btts" in market_lower:
         is_yes = ("yes" in _norm(selection) or "yes" in market_lower) and "no" not in _norm(selection)

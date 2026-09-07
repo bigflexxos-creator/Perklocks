@@ -45,3 +45,30 @@ MODEL_UNAVAILABLE (honest — provider wired, model deferred), 2 RESEARCH_ONLY
 requirement).
 
 Persisted at: `/app/memory/perklocks_main_35_certification_matrix.json`
+
+## MAIN 40 · SURGICAL CLOSURE (2026-06)
+Continuous surgical patch pass — smallest-safe-change per item, no
+audits/redesigns.  Each closure is guarded by a targeted test in
+`/app/backend/tests/test_main40_*.py`.
+
+- **NFL Totals — Independent scoring distribution.** `sample_game_script`
+  now centers on the model's `expected_total`, not the sportsbook line.
+  Book line remains the O/U THRESHOLD. `P(Over)+P(Under)+P(Push)=1`.
+- **History / Settlement Truth.** `PublishedResultsTruthService` no longer
+  filters historical eligibility by mutable `off_board` / `no_bet` — a
+  legitimately-published pick that later flips off-board still surfaces
+  in History (spec §5). Publication evidence check moved BEFORE mutable
+  exclusion flags.
+- **Provider-missing → UNRESOLVED, not VOID.** `SettlementService`
+  accepts `unresolved` as a first-class result; `settlement_engine`'s
+  14-day terminator emits `unresolved` instead of fabricating VOID.
+- **Soccer Draw No Bet.** Both FotMob and ESPN settlers now grade DNB
+  (team wins → won, team loses → lost, DRAW → PUSH). Allow-list was
+  already advertising DNB; grader was missing.
+- **Alt-Line Magic Real-Line Hard Gate.** `AltLine.bettable = (source ==
+  "market")`. Both game-market and player-market bundles filter out
+  model-only chips — bettable chips must be backed by a real
+  sportsbook quote. Empty bundle → client's existing empty state.
+- **Lab crash (Text-node) BLOCKED.** Cannot repro runtime stack in
+  this container per user directive; item left blocked without
+  blind edits (would create Cabinets more risk than value).

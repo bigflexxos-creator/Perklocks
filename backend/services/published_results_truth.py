@@ -114,6 +114,38 @@ def classify_publication(pick: dict) -> str:
                                the official published performance
                                dataset.
     """
+    if pick.get("no_bet") is True and not (
+        pick.get("on_main_board_at") or pick.get("on_rollover_at") or
+        pick.get("on_hr_board_at")   or pick.get("on_under_at")    or
+        pick.get("on_atd_board_at")  or pick.get("on_parlay_at")   or
+        pick.get("published_at")     or pick.get("_has_prediction_snapshot")
+    ):
+        # `no_bet` is only decisive when there is NO historical
+        # publication evidence.  See publication-first block below.
+        return "PROVEN_NOT_PUBLISHED"
+    # ── MAIN 40 · Item #2 (2026-06-06) — publication evidence FIRST ──
+    # Historical publication takes precedence over current mutable
+    # flags.  We first check the immutable historical signal (board
+    # stamp / snapshot / published_at + Lock floor); only if that
+    # evidence is absent do we consult the current mutable
+    # exclusion flags.
+    has_board_stamp = any(pick.get(k) for k in (
+        "on_main_board_at", "on_rollover_at", "on_hr_board_at",
+        "on_under_at", "on_atd_board_at", "on_parlay_at",
+    ))
+    has_snapshot = pick.get("_has_prediction_snapshot") is True
+    has_published_at = bool(pick.get("published_at"))
+    is_lock_qualified = _is_public_lock(pick)
+
+    if is_lock_qualified and (has_board_stamp or has_snapshot or has_published_at):
+        return "PROVEN_PUBLISHED"
+    if pick.get("elite_pitcher_override") is True and is_lock_qualified:
+        return "PROVEN_PUBLISHED"
+
+    # No historical publication evidence — fall through to explicit
+    # exclusion flags.  These MUST come AFTER the publication check so
+    # a legitimately-published pick that later got flagged no_bet /
+    # hidden is not retroactively erased from history.
     if pick.get("no_bet") is True:
         return "PROVEN_NOT_PUBLISHED"
     if pick.get("hide_from_main_board") is True:
@@ -121,25 +153,9 @@ def classify_publication(pick: dict) -> str:
     if pick.get("excluded_from_history") is True:
         return "PROVEN_NOT_PUBLISHED"
 
-    # ── PROVEN_PUBLISHED requires: real publication evidence + 85+ Lock ──
-    has_board_stamp = any(pick.get(k) for k in (
-        "on_main_board_at", "on_rollover_at", "on_hr_board_at",
-        "on_under_at", "on_atd_board_at", "on_parlay_at",
-    ))
-    has_snapshot = pick.get("_has_prediction_snapshot") is True
-    has_published_at = bool(pick.get("published_at"))
-
-    is_lock_qualified = _is_public_lock(pick)
-    is_on_board = pick.get("off_board") is not True
-
-    if is_lock_qualified and is_on_board and (has_board_stamp or has_snapshot or has_published_at):
-        return "PROVEN_PUBLISHED"
-    if pick.get("elite_pitcher_override") is True and is_lock_qualified:
-        return "PROVEN_PUBLISHED"
-
     # ── LEGACY_RESEARCH_ONLY — writer-tag emission without real
-    # publication evidence, OR sub-85, OR off_board.  Preserved but
-    # excluded from public History/Analytics.
+    # publication evidence, OR sub-85.  Preserved but excluded from
+    # public History/Analytics.
     if pick.get("publication_source") or pick.get("published_at"):
         return "LEGACY_RESEARCH_ONLY"
 
@@ -267,8 +283,12 @@ def canonical_query(*, days: int, exclude_ambiguous_legacy: bool = True,
         time_field_gate,
         provenance_gate,
         lock_gate,
-        {"off_board":             {"$ne": True}},
-        {"no_bet":                {"$ne": True}},
+        # ── MAIN 40 · Item #2 · 2026-06-06 ─────────────────────────
+        # `off_board` and `no_bet` are MUTABLE CURRENT-BOARD fields.
+        # Publication is a historical event backed by publication-time
+        # evidence (`provenance_gate`) + Lock floor.  A pick that
+        # legitimately made the board and is now off-board or flagged
+        # no_bet MUST still appear in history (spec §5).
         {"hide_from_main_board":  {"$ne": True}},
         {"excluded_from_history": {"$ne": True}},
     ]}
@@ -393,13 +413,16 @@ async def load_published(db, *, days: int = 30,
 
     if snap_admit_ids:
         # Bounded admission — preserve time window + rejection gates.
+        # `off_board`/`no_bet` intentionally excluded here for the same
+        # reason as canonical_query: they are mutable current-board
+        # fields and must not retroactively erase historical
+        # publication (MAIN 40 · Item #2).
         admit_q = {
             "id": {"$in": list(snap_admit_ids)[:500]},
             "$or": [
                 {"settled_at": {"$gte": cutoff}},
                 {"event_time": {"$gte": cutoff}},
             ],
-            "no_bet":                {"$ne": True},
             "hide_from_main_board":  {"$ne": True},
             "excluded_from_history": {"$ne": True},
         }
