@@ -26,7 +26,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -415,6 +415,75 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         logger.info("Refreshing picks for %s · sport_filter=%s", date_str, sport_filter)
     else:
         logger.info("Refreshing picks for %s", date_str)
+
+    # ── PERKLOCKS MAIN 41 · P0 (2026-06-09) — DISTRIBUTED LEASE ─────
+    # Both Kubernetes backend replicas were entering this function
+    # concurrently, producing duplicate NFL-prop-loop entries millis
+    # apart and racing on writes.  Acquire a per-(date, sport_filter)
+    # expiring Mongo lease so exactly ONE instance runs each cycle.
+    # Uses the module-level ``db`` proxy already in scope.
+    import os as _os
+    _lease_db = db  # module-level DBProxy
+    _lease_acquired = False
+    _lease_owner = None
+    _lease_key = f"picks_refresh:{date_str}:{sport_filter or 'ALL'}"
+    _instance_id = _os.environ.get(
+        "HOSTNAME", "instance-" + str(_os.getpid())
+    )
+    _lease_now = datetime.now(timezone.utc)
+    _lease_ttl_sec = 25 * 60  # 25-min max cycle time
+    _lease_expires = _lease_now + timedelta(seconds=_lease_ttl_sec)
+    try:
+        try:
+            await _lease_db.scheduler_leases.create_index(
+                "expires_at", expireAfterSeconds=0,
+            )
+            await _lease_db.scheduler_leases.create_index(
+                "lease_key", unique=True,
+            )
+        except Exception:
+            pass
+        _res = await _lease_db.scheduler_leases.find_one_and_update(
+            {"lease_key": _lease_key,
+             "$or": [
+                 {"expires_at": {"$lt": _lease_now}},
+                 {"expires_at": {"$exists": False}},
+             ]},
+            {"$set": {
+                "lease_key":    _lease_key,
+                "owner":        _instance_id,
+                "acquired_at":  _lease_now,
+                "expires_at":   _lease_expires,
+                "cycle_date":   date_str,
+                "sport_filter": sport_filter,
+            }},
+            upsert=True,
+            return_document=True,
+        )
+        if _res and _res.get("owner") == _instance_id:
+            _lease_acquired = True
+            _lease_owner = _instance_id
+    except Exception as _lease_err:
+        _msg = str(_lease_err).lower()
+        if "duplicate" in _msg or "e11000" in _msg:
+            _lease_acquired = False  # another instance owns it
+        else:
+            logger.warning(
+                "REFRESH LEASE acquire errored (falling open, treat "
+                "as owned): %s", _lease_err,
+            )
+            _lease_acquired = True  # fall open on infra errors
+    if not _lease_acquired:
+        logger.info(
+            "REFRESH LEASE HELD BY ANOTHER INSTANCE — SKIP "
+            "lease=%s this=%s", _lease_key, _instance_id,
+        )
+        return 0
+    logger.info(
+        "REFRESH LEASE acquired lease=%s owner=%s ttl=%ds",
+        _lease_key, _instance_id, _lease_ttl_sec,
+    )
+    # ── /LEASE ACQUIRED ────────────────────────────────────────────
     # ── P8 FINAL SURGICAL REPAIR (2026-08-25) — safe_picks REGRESSION LOCK ──
     # Universal pre-declaration eliminates read-before-assignment for
     # every downstream branch/exception path, including:
@@ -2237,6 +2306,16 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         invalidate_signal_rank(date_str)
     except Exception as _iv_err:
         logger.debug("signal_rank invalidate skipped: %s", _iv_err)
+    # PERKLOCKS MAIN 41 · P0 (2026-06-09) — release the distributed
+    # refresh lease so the next legitimate cycle can start immediately
+    # (otherwise TTL takes 25 min).  Only the owner deletes the row.
+    if _lease_owner and _lease_db is not None:
+        try:
+            await _lease_db.scheduler_leases.delete_one(
+                {"lease_key": _lease_key, "owner": _lease_owner},
+            )
+        except Exception:
+            pass
     return len(safe_picks)
 
 

@@ -447,9 +447,32 @@ def record_odds_call_result(*, status_code: int | None, body: str = "",
                 _API_LAST_ERR = f"422: {(body or '')[:160]}"
                 _push_cb_state_async()
                 return
+            # PERKLOCKS MAIN 41 · P0 (2026-06-09) — VERIFIED PRODUCTION
+            # ROOT (Emergent Support runtime inspection): the pipeline
+            # calls ``record_odds_call_result`` from probe/cache
+            # short-circuits and per-event fallbacks with
+            # ``status_code=None`` and no genuine upstream exception.
+            # These are NOT true provider failures — they're internal
+            # observability signals.  Counting them was tripping the
+            # breaker after 8 successive cache-short-circuits, freezing
+            # the NFL feed even though the real provider was healthy
+            # (4.8M quota remaining).  Treat null-status + no-exception
+            # as observability-only, mirroring the 422 exemption above.
+            if status_code is None and not exception:
+                _API_TOTAL_FAIL += 1
+                _API_LAST_ERR = "observability_only: null_status_no_exception"
+                _push_cb_state_async()
+                return
             _API_FAIL_STREAK += 1
             _API_TOTAL_FAIL += 1
-            _API_LAST_ERR = f"{status_code}: {(body or '')[:160]}"
+            # FIX 3 · logging: distinguish HTTP failure vs transport vs
+            # observability so the log stops emitting the misleading
+            # ``None: `` prefix.
+            _sc_label = (
+                f"HTTP {status_code}" if isinstance(status_code, int)
+                else ("transport_exc" if exception else "observability_only")
+            )
+            _API_LAST_ERR = f"{_sc_label}: {(body or '')[:160]}"
             try:
                 from services.odds_provider import report_failure as _op_fail
                 _op_fail(int(status_code or 0), "non_200")
@@ -530,14 +553,19 @@ async def _gateway_fallback_get(*, url: str, params: dict,
                 ok=True,
             )
             return result.data
-        record_odds_call_result(
-            status_code=result.get("http_status") if result else None,
-            body=result.get("reason", "") if result else "",
-            ok=False,
-        )
+        # PERKLOCKS MAIN 41 · P0 (2026-06-09) — FIX 2 · REMOVE DOUBLE
+        # RECORDING.  ``gw.fetch`` already records the underlying
+        # provider outcome inside ``odds_api_gateway``.  This wrapper
+        # previously called ``record_odds_call_result`` again on both
+        # the None-return path AND the exception path, producing TWO
+        # failure increments per single provider attempt.  With
+        # ``_API_FAIL_TRIP=8`` that halved the breaker's tolerance —
+        # 4 real failures tripped it.  Emergent Support verified this
+        # is the duplicate.  Leave gateway-internal recording as the
+        # single source of truth here.
         return None
-    except Exception as e:
-        record_odds_call_result(status_code=None, exception=str(e))
+    except Exception:
+        # gw.fetch's internal recorder already handled this failure.
         return None
 
 
@@ -1148,7 +1176,16 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
             if book_odds <= -1000 or book_odds >= 3500:
                 book_odds = None
         elif is_alt_prop:
-            if book_odds <= -1000 or book_odds >= 5000 or (-100 < book_odds < 100):
+            # PERKLOCKS MAIN 41 · P0 (2026-06-09) — was ``<= -1000``.
+            # The upstream candidate gate accepts alt implieds up to
+            # ``_ALT_PROP_MAX_IMPLIED = 0.95`` (≈ -1900).  Nulling
+            # book_odds here at -1000 caused legitimate NFL alt-line
+            # picks (Cooper Kupp Over 4.5 RecYds, Sam Darnold Over
+            # 149.5 PassYds, etc.) to be emitted with book_odds=None
+            # and then dropped by the orchestrator's malformed-pick
+            # gate as missing book_odds.  Align to the same 0.95-impl
+            # ceiling.  Absurd chalk (-2000+) still nulls.
+            if book_odds <= -2000 or book_odds >= 5000 or (-100 < book_odds < 100):
                 book_odds = None
         else:
             if book_odds <= -1000 or book_odds >= 5000 or (-100 < book_odds < 100):
@@ -7600,6 +7637,21 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
             await asyncio.sleep(1.1)  # space requests under rate limit
             payload = await _fetch_event_props_payload(sport, key, ev["id"])
             book_had_player_markets = isinstance(payload, dict) and bool(payload.get("bookmakers"))
+            # MAIN 41 · P0-B3 (2026-06-09) — visibility log for NFL prop
+            # loop.  Without this the entire per-event branch is a black
+            # box: caller only sees "selecting 16" then silence.  INFO
+            # level so it survives normal filtering.
+            if sport == "NFL":
+                logger.info(
+                    "NFL-prop-loop: ev=%s home=%s@away=%s has_payload=%s "
+                    "has_books=%s bookmakers=%d",
+                    (ev.get("id") or "?")[:12],
+                    (ev.get("home_team") or "?")[:15],
+                    (ev.get("away_team") or "?")[:15],
+                    payload is not None,
+                    book_had_player_markets,
+                    len((payload or {}).get("bookmakers") or []),
+                )
             if book_had_player_markets:
                 payload["id"] = ev["id"]
                 # 2026-07-21 — attach real game context to prop payload
@@ -7645,7 +7697,11 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                             week=_current_nfl_week(),
                         )
                     except Exception as _ctx_err:
-                        logger.debug("NFL props ctx build failed: %s", _ctx_err)
+                        logger.warning(
+                            "NFL props ctx build failed for ev=%s: %s",
+                            (ev.get("id") or "?")[:12], _ctx_err,
+                            exc_info=True,
+                        )
                 # ── Phase 4D finalization (2026-08-06) — NBA + CFB
                 # per-event precompute. Mirrors the NFL pattern:
                 # walk the bookmaker payload once per event, hand off
