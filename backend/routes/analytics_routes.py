@@ -489,9 +489,17 @@ async def analytics_xg_form_shadow(
         shadow_lock = form.get("shadow_lock_score") or lock_score
         b["lock_sum"]   += float(lock_score)
         b["shadow_sum"] += float(shadow_lock)
-        # Brier scores — quadratic loss between predicted prob and actual.
-        wp_live   = float(pick.get("win_probability") or 0) / 100.0
-        wp_shadow = float(form.get("shadow_win_probability") or pick.get("win_probability") or 0) / 100.0
+        # MAIN 40 · Item #P0-E (2026-06-06) — canonical probability
+        # authority for Brier.  Raw ``win_probability`` on a pick doc
+        # can be the pre-shrinkage engine output.  We MUST use the
+        # frozen canonical (published) probability so Brier compares
+        # the actual bet the user saw against the outcome.
+        from services.canonical_probability import canonical_final_probability
+        _cf = canonical_final_probability(pick)
+        wp_live   = float(_cf) if _cf is not None else float(pick.get("win_probability") or 0) / 100.0
+        wp_shadow = (float(form.get("shadow_win_probability") or 0) / 100.0
+                     if form.get("shadow_win_probability") is not None
+                     else wp_live)
         b["brier_live"]   += (wp_live   - won) ** 2
         b["brier_shadow"] += (wp_shadow - won) ** 2
 
@@ -842,10 +850,24 @@ async def kelly_for_pick_endpoint(
     pick = await db.picks.find_one({"id": pick_id}, {
         "_id": 0, "id": 1, "book_odds": 1, "no_vig_pct": 1,
         "win_probability": 1, "market": 1, "selection": 1, "sport": 1,
+        # MAIN 40 · Item #P0-E — pull canonical published fields so
+        # the Kelly stake uses the frozen truth, not raw engine.
+        "published_probability": 1, "model_probability": 1,
     })
     if not pick:
         return {"error": "pick_not_found", "pick_id": pick_id}
-    prob = pick.get("no_vig_pct") or pick.get("win_probability") or 0
+    # MAIN 40 · Item #P0-E — canonical accessor gives us the
+    # frozen published probability when available; ``no_vig_pct`` is
+    # only used as a fallback (it's a book-implied number, not the
+    # model authority).
+    from services.canonical_probability import canonical_final_probability
+    _cf = canonical_final_probability(pick)
+    if _cf is not None:
+        prob = _cf * 100.0  # kelly_stake expects percentage
+        prob_src = "canonical_final_probability"
+    else:
+        prob = pick.get("no_vig_pct") or pick.get("win_probability") or 0
+        prob_src = "no_vig_pct" if pick.get("no_vig_pct") else "win_probability"
     odds = pick.get("book_odds") or 0
     kelly = kelly_stake(
         win_probability=prob, american_odds=odds,
@@ -859,7 +881,7 @@ async def kelly_for_pick_endpoint(
         "selection":       pick.get("selection"),
         "sport":           pick.get("sport"),
         "book_odds":       odds,
-        "prob_source":     "no_vig_pct" if pick.get("no_vig_pct") else "win_probability",
+        "prob_source":     prob_src,
         "prob_used":       prob,
         **kelly,
     }

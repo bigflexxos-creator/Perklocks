@@ -68,7 +68,54 @@ Persisted at: `/app/memory/perklocks_main_35_certification_matrix.json`
 - Model-only chips filtered BEFORE ranking, not after.
 
 
+## MAIN 40 · SURGICAL CLOSURE ROUND 4 (2026-06 · Authority parity)
+
+CFB / Consumer parity closure with live-runtime evidence.
+
+- **CFB parity traced end-to-end.** For the observed Notre Dame @
+  Wisconsin CFB Total pick (id `7856b13c-4767-5807-9393-f8b6b2d8c980`):
+    - Raw doc:  `win_probability=98.2`, `edge_percent=48.2`, `lock_score=98.0`
+    - Canonical: `published_probability=0.7629`, `published_edge=26.29`, `published_lock_score=98.0`
+    - Hydrated (what every consumer sees via `_canonicalize_lock_score → hydrate`):
+      `win_probability=76.29`, `edge_percent=26.29`, `lock_score=98.0`.
+    - **Parity is correct at the read boundary.**  The stale raw
+      values on the DB doc are never displayed on the wire; they
+      exist only as legacy artifacts of the shrinkage pipeline.
+- **Analytics consumers converted to canonical accessor.**
+  `analytics_routes.py` Brier + Kelly paths now consume
+  `canonical_final_probability(pick)` and pull
+  `published_probability` / `model_probability` on the read.
+  Prevents raw pre-shrinkage 98.2 from inflating Brier vs the
 ## MAIN 40 · SURGICAL CLOSURE ROUND 3 (2026-06 · Live-runtime verified)
+- Live CFB alt-line hydration: SMU/FSU has 206 alternate-total rows.
+- NHL wired into universal player-history dispatcher.
+- Dark contract fields populated (atomic_games, h2h_source_games,
+  streak, days_since_last_game, vs_opponent_recent).
+- Canonical Final Probability Authority helper created.
+- Soccer settlement executability proven (8/8).
+
+
+  actual 76.29 the user saw.
+- **Fusion promotion authority is deterministic.** The canonical
+  accessor refuses `fusion_probability` / `sim_probability` /
+  `implied_probability` as authorities.  Fusion is a candidate-time
+  enrichment layer only; once `published_probability` is stamped,
+  every downstream consumer reads the frozen value.
+- **Historical intelligence proven live.** Travis Kelce
+  (`cpi=00-0030506`) via `get_player_history(NFL, ...)`:
+    - `source=NORMALIZED`, `quality=HIGH`, `games=60/60`
+    - `streak=HIT x 1`, `days_since_last_game=122`
+    - `atomic_games` = 20 dated rows with opponent + home/away
+    - `h2h_source_games (vs LAC)` = 5 rows
+    - `season` aggregate: 19 games, hit_rate 47.4%, quantiles, variance
+- **Soccer branches all executable.** BTTS + Double Chance +
+  Win-or-Draw + Draw No Bet = 8/8 targeted grading cases pass.
+
+Tests (this round): `test_main40_probability_consumer_parity.py`,
+`test_main40_analytics_canonical_probability.py`.
+
+Total MAIN 40 coverage: **71/71 targeted pytest cases pass.**
+
 
 Live SMU/FSU acceptance path proven end-to-end:
 - Forced refresh: 11,349 alt-line rows, 56 sports, 0 errors.
