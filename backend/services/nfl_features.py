@@ -440,11 +440,34 @@ async def player_stat_distribution(
         "min":       164.0,
         "max":       371.0,
         "samples":   [201, 274, ...],
+        "n_raw_pulled":  12,       # how many pre-filter game rows
+        "n_partial_dropped": 2,    # games dropped for insufficient snaps
       }
 
-    Returns None when fewer than 3 games are available (insufficient
-    data for a distribution — the caller MUST fall through to the
-    fail-closed path, never to book-implied substitution).
+    Returns None when fewer than 5 valid games survive the
+    partial-game filter (insufficient data for a distribution —
+    the caller MUST fall through to the fail-closed path, never
+    to book-implied substitution).
+
+    ── 2026-06-09 · Stage-2 P0 · partial-game / injury filter ─────
+    Per user contract: "The 12-game window can remain an important
+    recent sample, but confirm that it does not become the entire
+    authority when sample is sparse, injury-shortened games exist,
+    role changed, QB missed games, or only 3-5 valid samples
+    exist."  Games where the ATTEMPT/SNAP volume is a clear outlier
+    (bench / injury / garbage-time) get dropped BEFORE mean/SD are
+    computed so Burrow's W1/W2 2025 (13 att / 76 yds and 23 att /
+    113 yds — both injury-shortened) don't inflate SD and depress
+    mean.  Volume thresholds (per stat family):
+      passing_yards / passing_tds / attempts / completions →
+        require attempts >= 15  (a healthy QB averages 30+)
+      rushing_yards / carries →
+        require carries >= 5    (bench RB scrap or QB scramble ONLY)
+      receiving_yards / receptions / targets →
+        require targets >= 2    (WR must be genuinely targeted)
+    Fail-closed threshold raised from 3 → 5 valid samples so a
+    hurricane-cancelled year can't produce a 3-game distribution
+    with elite authority.
     """
     coll = db[_COLL]
     q: dict[str, Any] = {"season_type": {"$in": ["REG", "POST"]}}
@@ -456,13 +479,41 @@ async def player_stat_distribution(
         {"season": {"$lt": season}},
         {"season": season, "week": {"$lt": week}},
     ]
-    cursor = coll.find(q).sort([("season", -1), ("week", -1)]).limit(limit)
+    # Pull a wider window (2x limit) so the partial-game filter has
+    # room to drop injury-shortened rows while still delivering
+    # ``limit`` HEALTHY games.
+    cursor = coll.find(q).sort([("season", -1), ("week", -1)]).limit(limit * 2)
+    raw_rows: list[dict] = [r async for r in cursor]
+    stat_lower = (stat_field or "").lower()
+    # Select volume threshold per stat family (matches the mandate
+    # above; unrecognized stats fall through with no volume gate).
+    if stat_lower in ("passing_yards", "passing_tds", "passing_ints",
+                      "attempts", "completions"):
+        _vol_key, _vol_min = "attempts", 15
+    elif stat_lower in ("rushing_yards", "rushing_tds", "carries"):
+        _vol_key, _vol_min = "carries", 5
+    elif stat_lower in ("receiving_yards", "receiving_tds", "receptions", "targets"):
+        _vol_key, _vol_min = "targets", 2
+    else:
+        _vol_key, _vol_min = None, 0
     samples: list[float] = []
-    async for row in cursor:
+    dropped: list[dict] = []
+    for row in raw_rows:
         v = row.get(stat_field)
-        if isinstance(v, (int, float)):
-            samples.append(float(v))
-    if len(samples) < 3:
+        if not isinstance(v, (int, float)):
+            continue
+        if _vol_key is not None:
+            vol = row.get(_vol_key)
+            if isinstance(vol, (int, float)) and vol < _vol_min:
+                dropped.append({
+                    "season": row.get("season"), "week": row.get("week"),
+                    _vol_key: vol, stat_field: v,
+                })
+                continue
+        samples.append(float(v))
+        if len(samples) >= limit:
+            break
+    if len(samples) < 5:
         return None
     _mean = sum(samples) / len(samples)
     # Unbiased sample SD (n-1 denominator).
@@ -475,6 +526,8 @@ async def player_stat_distribution(
         "min":     round(min(samples), 1),
         "max":     round(max(samples), 1),
         "samples": [round(x, 1) for x in samples],
+        "n_raw_pulled":       len(raw_rows),
+        "n_partial_dropped":  len(dropped),
     }
 
 

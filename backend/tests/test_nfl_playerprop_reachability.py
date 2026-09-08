@@ -172,6 +172,101 @@ def test_distribution_hit_probability_varies_by_threshold():
     print("[reachability] per-rung distribution monotone + spread ✓")
 
 
+def test_cdf_direction_side_awareness():
+    """Verify the CDF direction is correct for Over vs Under.
+
+    Distribution: μ=250, σ=50 (canonical QB-like passing-yard profile).
+      P(Over 175)  ≈  1 - Φ(-1.5)  ≈  0.933   ← HIGH (line far below mean)
+      P(Over 250)  ≈  1 - Φ(0.0)   ≈  0.500   ← MID  (at the mean)
+      P(Over 350)  ≈  1 - Φ(2.0)   ≈  0.023   ← LOW  (line 2σ above mean)
+      P(Under 175) = 1 − P(Over 175) ≈ 0.067
+      P(Under 350) = 1 − P(Over 350) ≈ 0.977
+    """
+    from services.nfl_features import distribution_hit_probability as dhp
+    dist = {"mean": 250.0, "sd": 50.0}
+    # Over side
+    p_over_low  = dhp(dist, 175, "over")
+    p_over_mid  = dhp(dist, 250, "over")
+    p_over_high = dhp(dist, 350, "over")
+    assert p_over_low  >= 0.90,  f"Over 175 low: {p_over_low}"
+    assert 0.45 <= p_over_mid <= 0.55, f"Over 250 mid: {p_over_mid}"
+    assert p_over_high <= 0.10,  f"Over 350 low: {p_over_high}"
+    # Under side
+    p_under_low  = dhp(dist, 175, "under")
+    p_under_high = dhp(dist, 350, "under")
+    assert p_under_low  <= 0.10, f"Under 175: {p_under_low}"
+    assert p_under_high >= 0.90, f"Under 350: {p_under_high}"
+    # Complementary check within the [0.03, 0.97] clamp band.
+    for line in (175, 250, 350):
+        po = dhp(dist, line, "over")
+        pu = dhp(dist, line, "under")
+        # The clamp can pinch either tail, so allow ±0.02 slack.
+        assert abs((po + pu) - 1.0) < 0.05, (
+            f"P(Over {line}) + P(Under {line}) = {po + pu:.3f} !≈ 1.0"
+        )
+    print(f"[reachability] CDF direction correct  "
+          f"Over 175={p_over_low:.3f}, 250={p_over_mid:.3f}, 350={p_over_high:.3f} ✓")
+
+
+def test_distribution_fail_closed_on_thin_samples():
+    """<5 valid games → return None (fail-closed, per user contract
+    'Do not use only 12 games blindly').  Also verifies the partial-
+    game / injury filter drops low-attempts QB rows before mean/SD
+    are computed."""
+    # Injury-shortened rows should be excluded ...
+    import asyncio as _asy
+    from services.nfl_features import player_stat_distribution as psd
+    # Build a minimal fake collection with 4 healthy games — must return None.
+    class _Cursor:
+        def __init__(self, rows):
+            self.rows = rows
+        def sort(self, *_a, **_kw): return self
+        def limit(self, _n): return self
+        def __aiter__(self):
+            async def _gen():
+                for r in self.rows:
+                    yield r
+            return _gen()
+    class _Coll:
+        def __init__(self, rows):
+            self._rows = rows
+        def find(self, _q): return _Cursor(self._rows)
+    class _DB(dict):
+        def __getitem__(self, _k): return _Coll(self._rows)
+        def __init__(self, rows):
+            self._rows = rows
+    # 4 healthy pass-yds rows (attempts >= 15).  Should fail-closed to None.
+    rows_thin = [
+        {"season": 2025, "week": 1,  "attempts": 30, "passing_yards": 275},
+        {"season": 2024, "week": 18, "attempts": 34, "passing_yards": 300},
+        {"season": 2024, "week": 17, "attempts": 28, "passing_yards": 240},
+        {"season": 2024, "week": 16, "attempts": 32, "passing_yards": 260},
+    ]
+    async def _run(rows):
+        return await psd(_DB(rows), "Test QB", "passing_yards", 2026, 1, limit=12)
+    d_thin = _asy.get_event_loop().run_until_complete(_run(rows_thin))
+    assert d_thin is None, f"expected None for 4-game sample, got {d_thin}"
+    # 6 mixed rows — 2 injury-shortened (attempts=8) MUST be dropped;
+    # remaining 4 healthy is still under 5 → still None.
+    rows_mixed = rows_thin + [
+        {"season": 2024, "week": 15, "attempts":  8, "passing_yards":  85},
+        {"season": 2024, "week": 14, "attempts":  6, "passing_yards":  62},
+    ]
+    d_mixed = _asy.get_event_loop().run_until_complete(_run(rows_mixed))
+    assert d_mixed is None, f"expected None after partial-game filter, got {d_mixed}"
+    # 8 healthy rows — must return a valid distribution now.
+    rows_ok = rows_thin + [
+        {"season": 2024, "week": 15, "attempts": 30, "passing_yards": 245},
+        {"season": 2024, "week": 14, "attempts": 31, "passing_yards": 265},
+        {"season": 2024, "week": 13, "attempts": 33, "passing_yards": 280},
+        {"season": 2024, "week": 12, "attempts": 29, "passing_yards": 255},
+    ]
+    d_ok = _asy.get_event_loop().run_until_complete(_run(rows_ok))
+    assert d_ok is not None and d_ok["n_games"] >= 5
+    print(f"[reachability] fail-closed at <5 samples + partial-filter ✓  "
+          f"(healthy path: n={d_ok['n_games']}, mean={d_ok['mean']}, sd={d_ok['sd']})")
+
+
 def test_chalk_trap_spares_independent_authority_on_low_edge():
     """A -1400 chalk alt whose model probability came from the
     coherent player distribution (``mp_from_book_seed=False``) must
@@ -210,6 +305,8 @@ if __name__ == "__main__":
     test_chalk_trap_fires_on_book_copy_probability()
     test_chalk_trap_spares_independent_model()
     test_distribution_hit_probability_varies_by_threshold()
+    test_cdf_direction_side_awareness()
+    test_distribution_fail_closed_on_thin_samples()
     test_chalk_trap_spares_independent_authority_on_low_edge()
     print("=" * 60)
-    print("NFL PLAYER-PROP REACHABILITY CONTRACT · 7/7 PASS")
+    print("NFL PLAYER-PROP REACHABILITY CONTRACT · 9/9 PASS")

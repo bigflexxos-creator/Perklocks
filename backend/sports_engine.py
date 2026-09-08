@@ -6227,22 +6227,41 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
     #   6. median ASC          → cheaper price on ties.
     def _dedup_sort_key(c):
         _implied, _mk, _player, _point, _side, _median, _is_alt = c
-        # ── 2026-06-09 · alt-line VALUE-FIRST ordering ─────────────
-        # For alts we want CHEAPEST implied processed first because
-        # the ``alt_over_per_player`` cap (3 per player per side) is
-        # a hard first-N gate.  Steepest-chalk alt (-1500) at implied
-        # 0.94 has the *hardest* task to earn positive edge; a cheaper
-        # alt (-400) at implied 0.80 with the same factor mean has
-        # much more room for a legitimate edge.  Previously we
-        # sorted alts by ``-float(_implied)`` (steepest first) — the
-        # -1500 rows filled the cap and blocked every -400 sibling
-        # regardless of model support.  Main lines keep DESC-implied
-        # (favorite-first) because there is no per-family alt cap
-        # for them; ``std_seen`` picks the single best mainline
-        # instead.
+        # ── 2026-06-09 · Stage-2 P0 · POINT-ASC alt ordering ─────────
+        # Per user mandate (Stage-2 P0 continuation):
+        #   "Provider ordering must not decide which rungs get
+        #    modeled.  Correct sequence: ALL observed provider
+        #    quotes → canonicalize → group duplicate identical
+        #    thresholds → preserve provenance → model ALL unique
+        #    supported thresholds → post-model ranking/select for
+        #    board."
+        # Prior ordering was `implied ASC` — filled the per-player
+        # slot pool with the CHEAPEST (longshot) alts first and
+        # starved the easy chalk rungs (174.5/189.5/199.5) that the
+        # per-rung distribution can independently model as HIGH
+        # RELIABILITY.  Correct ordering: `point ASC` for Over
+        # side, `point DESC` for Under side — the ladder is
+        # processed IN ORDER from the safest rung outward so the
+        # cap only truncates the extremes on either end, never the
+        # middle-of-ladder rungs the model most reliably scores.
+        # Main lines still keep DESC-implied (favorite-first)
+        # because there is no per-family alt cap for them.
+        if _is_alt:
+            _pt = float(_point) if isinstance(_point, (int, float)) else 0.0
+            # Over: lowest line first (safest chalk → longshot).
+            # Under: highest line first (safest chalk → longshot).
+            _side_sign = -1.0 if str(_side or "").lower() == "under" else 1.0
+            return (
+                1,                       # alts after mainlines
+                _side_sign * _pt,        # point-ordered by side
+                str(_mk or ""),
+                str(_side or ""),
+                int(_median) if isinstance(_median, (int, float)) else 0,
+            )
+        # Mainline path — DESC implied (favorite first).
         return (
-            0 if not _is_alt else 1,
-            float(_implied) if _is_alt else -float(_implied),
+            0,
+            -float(_implied),
             str(_mk or ""),
             float(_point) if isinstance(_point, (int, float)) else 0.0,
             str(_side or ""),
@@ -6276,19 +6295,16 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         side_lower = str(side).lower()
         if is_alt:
             cap_dict = alt_under_per_player if side_lower == "under" else alt_over_per_player
-            # ── 2026-06-09 · §A9 NFL ALT LADDER COMPLETENESS ──────────
-            # Per user directive (NFL Universal Prop Closure §A9):
-            #   "Evaluate complete observed ladders before ranking."
-            # NFL uses 24 slots per player per side so a full observed
-            # ladder (10/15/20/25/30/40/50/60/70/80/100/125/150/175/
-            # 200/225/250/300 range across pass-yds/rush-yds/rec-yds/
-            # receptions/pass-tds) survives pre-model dedupe.  The
-            # LATER model/scoring/board_quality gates decide which
-            # rungs earn Lock authority.  Non-NFL sports keep the
-            # original 3-per-side cap.  This is the surgical block
-            # BLOCK 1 (Alt-per-player cap surgery) requested by the
-            # Perklocks NFL final continuous fix directive.
-            _alt_cap = 24 if sport == "NFL" else 3
+            # ── 2026-06-09 · Stage-2 P0 · MODEL-ALL alt-ladder cap ────
+            # Prior 24 slot cap starved DK's widest ladders (26+
+            # unique Burrow rungs).  Per user contract "model ALL
+            # unique supported thresholds — provider ordering must
+            # NOT decide which rungs get modeled", raised to 40 so
+            # every observed unique threshold across all books
+            # survives to the modelling step and post-model board
+            # selection has the full canonical universe to rank
+            # from.  Non-NFL sports keep the tighter 3-per-side cap.
+            _alt_cap = 40 if sport == "NFL" else 3
             if cap_dict.get(player, 0) >= _alt_cap:
                 continue
             cap_dict[player] = cap_dict.get(player, 0) + 1
