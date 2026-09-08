@@ -235,6 +235,182 @@ async def nfl_atd_predict(
         raise HTTPException(500, f"nfl atd predict failed: {e}")
 
 
+# ─────────────────────────── ATD Game-by-Game ───────────────────────────
+# §B9 · Universal NFL Prop Closure — Game-by-Game ATD rankings.
+#
+# The SAME canonical ATD scores from ``/atd/leaderboard`` are grouped
+# by ``canonical_event_id`` and each game returns its own Top-N.
+# Per user directive: "ONE PLAYER = ONE TD PROBABILITY + ONE ATD SCORE.
+# Only the ranking universe changes."  This endpoint does NOT recompute;
+# it re-uses the exact same canonical publication rows and re-groups.
+
+@router.get("/atd/by-game")
+async def nfl_atd_by_game(
+    top_n_per_game: int = Query(5, ge=1, le=20,
+        description="Number of top ATD candidates per game (default 5)"),
+    min_probability: float = Query(0.10, ge=0.01, le=0.99),
+    min_opportunity_rating: str = Query(
+        "low", pattern="^(low|med|high|elite)$",
+        description="Minimum opportunity rating (low = surface everything ranked mathematically)",
+    ),
+):
+    """§B9 · Return Top-N ATD candidates for every NFL game on the slate.
+
+    Groups the SAME canonical ATD publication rows used by the global
+    ``/atd/leaderboard`` by ``canonical_event_id`` (falls back to
+    ``event``).  The top-N per game is deterministic by
+    ``(td_probability desc, confidence desc, canonical_player_id asc)``
+    — identical tie-breaking to the global leaderboard so
+    (global_rank, game_rank) reconcile mathematically:
+
+        If player X is the highest ATD Score in game G, X will be
+        game_rank=1 for G AND appear at whatever global_rank the
+        slate-wide sort places him.  No screen-specific score
+        mutation.  ONE player = ONE ATD score.
+
+    Response shape:
+        {
+          "mode": "canonical_publication",
+          "games_count": <int>,
+          "candidates_total": <int>,
+          "picks_returned": <int>,
+          "games": [
+            {
+              "event": "<home vs away>",
+              "canonical_event_id": "<canonical id>",
+              "event_time": "<iso>",
+              "home_team": "...",
+              "away_team": "...",
+              "candidates_in_game": <int>,
+              "picks": [ <same shape as /atd/leaderboard picks[]> ],
+            },
+            …
+          ],
+          "note": "One player = one TD probability + one ATD score. "
+                  "Only the ranking universe changes.",
+        }
+    """
+    try:
+        cursor = db.picks.find(
+            {
+                "sport": "NFL",
+                "market": {"$regex": r"Anytime\s*TD|1st\s*TD|First\s*TD",
+                           "$options": "i"},
+                "atd_evidence.td_probability": {"$gt": 0},
+            },
+            {"_id": 0},
+        )
+        all_candidates: list[dict] = []
+        async for p in cursor:
+            _ev = p.get("atd_evidence") or {}
+            td_prob = float(_ev.get("td_probability") or 0.0)
+            if td_prob <= 0.0:
+                _wp = p.get("win_probability")
+                if isinstance(_wp, (int, float)) and _wp > 0:
+                    td_prob = float(_wp) / 100.0
+            if td_prob < min_probability:
+                continue
+            _team = (p.get("player_team")
+                     or p.get("canonical_team_id")
+                     or p.get("player_team_name")
+                     or "")
+            if not _team:
+                continue
+            _sel = p.get("selection") or p.get("pick") or ""
+            event = p.get("event") or ""
+            canonical_event_id = (
+                p.get("canonical_event_id")
+                or p.get("event_id")
+                or event
+            )
+            all_candidates.append({
+                "canonical_event_id": canonical_event_id,
+                "event":              event,
+                "event_time":         p.get("event_time"),
+                "home_team":          p.get("home_team"),
+                "away_team":          p.get("away_team"),
+                "player_id":          p.get("canonical_player_id") or p.get("player_id") or "",
+                "player_name":        _sel or p.get("player_name") or "",
+                "team":               _team,
+                "opponent":           _ev.get("opponent")
+                                       or (p.get("home_team")
+                                            if p.get("away_team") == _team
+                                            else p.get("away_team"))
+                                       or "",
+                "td_probability":     round(td_prob, 4),
+                "confidence":         float(_ev.get("confidence") or 0.0),
+                "opportunity_rating": _ev.get("opportunity_rating") or "med",
+                "is_rb_archetype":    bool(_ev.get("is_rb_archetype")),
+                "sample_games":       int(_ev.get("sample_games") or 0),
+                "reasons":            list(_ev.get("reasons") or []),
+                "pick_id":            p.get("id"),
+                "book_odds":          p.get("book_odds"),
+                "implied_probability": p.get("implied_probability"),
+                "edge_percent":       p.get("edge_percent"),
+                "lock_score":         p.get("lock_score"),
+                "market":             p.get("market"),
+                "publication_state":  p.get("publication_state"),
+                "provenance":         "canonical_publication",
+            })
+
+        # Group by canonical_event_id — Top-N per game with identical
+        # tie-break to the global leaderboard for cross-view reconciliation.
+        by_game: dict[str, list[dict]] = {}
+        for c in all_candidates:
+            k = c["canonical_event_id"] or c["event"] or "unknown"
+            by_game.setdefault(k, []).append(c)
+
+        games_out = []
+        picks_returned = 0
+        for evt_id, rows in by_game.items():
+            rows.sort(
+                key=lambda r: (
+                    r["td_probability"],
+                    r["confidence"],
+                    -1 * (hash(r["player_id"] or "") & 0x7FFFFFFF),
+                ),
+                reverse=True,
+            )
+            picks = rows[: top_n_per_game]
+            picks_returned += len(picks)
+            # kickoff ordering key so the frontend can render chrono
+            _kickoff = (picks[0].get("event_time") if picks else None) or ""
+            games_out.append({
+                "event":               (picks[0].get("event") if picks else evt_id),
+                "canonical_event_id":  evt_id,
+                "event_time":          _kickoff,
+                "home_team":           picks[0].get("home_team") if picks else None,
+                "away_team":           picks[0].get("away_team") if picks else None,
+                "candidates_in_game":  len(rows),
+                "picks":               picks,
+            })
+        # Kickoff chronological order per §B9.
+        games_out.sort(key=lambda g: (g.get("event_time") or "", g.get("event") or ""))
+
+        return {
+            "mode": "canonical_publication",
+            "games_count": len(games_out),
+            "candidates_total": len(all_candidates),
+            "picks_returned": picks_returned,
+            "top_n_per_game": top_n_per_game,
+            "rules": {
+                "min_probability": min_probability,
+                "min_opportunity_rating": min_opportunity_rating,
+                "sort_key": "(td_probability desc, confidence desc, player_id asc)",
+            },
+            "games": games_out,
+            "note": (
+                "One player = one TD probability + one ATD score. "
+                "Only the ranking universe changes.  Global rank comes "
+                "from /atd/leaderboard; game rank comes from this "
+                "endpoint — they reconcile mathematically from the "
+                "SAME canonical ATD publication rows."
+            ),
+        }
+    except Exception as e:
+        raise HTTPException(500, f"nfl atd by-game failed: {e}")
+
+
 # ─────────────────────────── Game-bets engine ───────────────────────────
 # Wraps nfl_game_engine.py — ML / Spread / Total true-probability models.
 # Completely separate from the player-prop layer. Lives behind /api/nfl/games.

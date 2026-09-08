@@ -317,6 +317,21 @@ _BOARD_QUALITY_FLOORS: dict[str, dict[str, float]] = {
     "MLB_prop":               {"lock_min": 70, "edge_min":  0.0, "win_prob_min": 0.50},
     "Soccer_ags":             {"lock_min": 75, "edge_min":  0.0, "win_prob_min": 0.30},
     "Tennis":                 {"lock_min": 70, "edge_min": -2.0, "win_prob_min": 0.50},
+    # ── 2026-06-09 · NFL ALT-LINE VISIBILITY FIX (§A1/§A2) ─────────
+    # Per user directive (Universal NFL Prop Closure §A2): real
+    # observed sportsbook alternate lines must reach evaluation and
+    # the Locks board.  The "default" floor's win_prob_min=0.45 was
+    # dropping 328/503 fresh NFL candidates by "win_prob_low" —
+    # legitimately hard alt-rungs (Justin Herbert Rush +4500,
+    # Darnell Washington Rec Yds +2100, etc.) have honest model
+    # probabilities in the 0.15-0.45 band and MUST be allowed onto
+    # the board when they carry positive edge.  A NEW dedicated
+    # NFL key allows a lower wp floor (0.15) while keeping the
+    # lock_min at 65 (unchanged general filter) and edge_min at
+    # -3.0 (unchanged) — the Lock Score itself remains the
+    # authoritative gate.  Non-alt NFL props stay eligible with
+    # the same floors — Lock Score is the primary quality signal.
+    "NFL":                    {"lock_min": 65, "edge_min": -3.0, "win_prob_min": 0.15},
     # Tennis Extra (TennisExplorer scrape for Umag/Bastad/Gstaad/Athens/
     # Iasi/Kitzbuhel/etc.) is book-anchored — edge_percent is definitionally
     # 0.0 or slightly negative due to vig math between no-vig `win_probability`
@@ -362,6 +377,12 @@ def _quality_key(pick: dict) -> str:
         if (pick.get("source") or "").lower() in _TENNIS_SCRAPE_SOURCES:
             return "Tennis_scrape"
         return "Tennis"
+    if sport == "NFL":
+        # 2026-06-09 · §A1/§A2 — NFL gets its own quality key so
+        # hard alt-rungs with legitimate low model probability +
+        # positive edge can survive board_quality.  Lock Score
+        # remains the primary quality gate.
+        return "NFL"
     return "default"
 
 

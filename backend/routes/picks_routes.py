@@ -3170,6 +3170,42 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         logger.debug("PublishedPickContract attach on Locks skipped: %s",
                      _ppc_err)
 
+    # ── §A15 · CANONICAL GRADE/LOCK INVARIANT (wire boundary) ─────────
+    # Read-time serializer safety net: some decorator between the
+    # earlier `_canonicalize_picks` pass and here can overwrite
+    # ``grade`` back to the stale DB value (repro'd on lite payload:
+    # 34 NFL picks with lock>=85 + grade=Pass leaked past hydrate()).
+    # Re-run the grade invariant one last time IMMEDIATELY before
+    # returning so the wire payload can never contradict the canonical
+    # lock_score.  Idempotent — a pick already carrying the canonical
+    # grade is untouched.
+    for _p in canonical:
+        if not isinstance(_p, dict):
+            continue
+        try:
+            _ls = _p.get("lock_score")
+            if _ls is None:
+                continue
+            _lsf = float(_ls)
+            if _lsf >= 100.0:
+                _cg = "APEX Lock"
+            elif _lsf >= 98.0:
+                _cg = "Elite Lock"
+            elif _lsf >= 95.0:
+                _cg = "Strong Lock"
+            elif _lsf >= 90.0:
+                _cg = "Lock"
+            elif _lsf >= 85.0:
+                _cg = "Playable"
+            else:
+                _cg = "Pass"
+            if _p.get("grade") != _cg:
+                _p["_grade_repaired_from"] = _p.get("grade")
+                _p["grade"] = _cg
+                _p["_grade_repaired_at"] = "wire_boundary"
+        except (TypeError, ValueError, AttributeError):
+            pass
+
     return {"picks": canonical, "alt_availability": alt_availability,
              "odds_provider": _odds_envelope}
 
