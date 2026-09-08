@@ -403,4 +403,109 @@ __all__ = [
     "player_prop_hit_rate_vs_opponent",
     "player_prop_hit_rate_all_opponents",
     "build_player_features",
+    "player_stat_distribution",
+    "distribution_hit_probability",
 ]
+
+
+# ── PER-RUNG INDEPENDENT DISTRIBUTION (2026-06-09 · Stage-2 P0) ─────
+#
+# Per user-mandate:
+#   "Every NFL wager must have evidence for this exact identity:
+#    PLAYER + GAME + MARKET + SIDE + EXACT THRESHOLD."
+# The historical-hit-rate function above is fixed-line; it cannot
+# answer P(pass_yards ≥ 174.5) vs P(pass_yards ≥ 349.5) from ONE
+# coherent distribution.  ``player_stat_distribution`` returns the
+# mean and dispersion of the player's stat over the last ``limit``
+# regular-season games (default 10) so any downstream caller can
+# evaluate P(stat ≥ threshold) for EVERY rung using the SAME
+# distribution.  Fully deterministic — no RNG, no synthetic seed.
+async def player_stat_distribution(
+    db,
+    player: str,
+    stat_field: str,
+    season: int,
+    week: int,
+    *,
+    limit: int = 12,
+) -> Optional[dict]:
+    """Return the empirical mean / SD of the player's last ``limit``
+    games for the given ``stat_field`` (e.g. ``"passing_yards"``).
+
+    Output shape:
+      {
+        "n_games":   10,
+        "mean":      262.4,
+        "sd":         48.7,
+        "min":       164.0,
+        "max":       371.0,
+        "samples":   [201, 274, ...],
+      }
+
+    Returns None when fewer than 3 games are available (insufficient
+    data for a distribution — the caller MUST fall through to the
+    fail-closed path, never to book-implied substitution).
+    """
+    coll = db[_COLL]
+    q: dict[str, Any] = {"season_type": {"$in": ["REG", "POST"]}}
+    if "-" in player and len(player) >= 8:
+        q["player_id"] = player
+    else:
+        q["player_display_name"] = player
+    q["$or"] = [
+        {"season": {"$lt": season}},
+        {"season": season, "week": {"$lt": week}},
+    ]
+    cursor = coll.find(q).sort([("season", -1), ("week", -1)]).limit(limit)
+    samples: list[float] = []
+    async for row in cursor:
+        v = row.get(stat_field)
+        if isinstance(v, (int, float)):
+            samples.append(float(v))
+    if len(samples) < 3:
+        return None
+    _mean = sum(samples) / len(samples)
+    # Unbiased sample SD (n-1 denominator).
+    _var = sum((x - _mean) ** 2 for x in samples) / max(len(samples) - 1, 1)
+    _sd = _var ** 0.5
+    return {
+        "n_games": len(samples),
+        "mean":    round(_mean, 2),
+        "sd":      round(max(_sd, 1.0), 2),   # floor at 1.0 to avoid /0
+        "min":     round(min(samples), 1),
+        "max":     round(max(samples), 1),
+        "samples": [round(x, 1) for x in samples],
+    }
+
+
+def distribution_hit_probability(
+    dist: Optional[dict], threshold: float, side: str = "over",
+) -> Optional[float]:
+    """Convert (distribution, threshold, side) → calibrated hit
+    probability using a normal-approximation CDF built from the
+    empirical mean/SD.  Returns None when ``dist`` is missing.
+
+    * side="over"  → P(X ≥ threshold)
+    * side="under" → P(X ≤ threshold)
+
+    Uses ``math.erf`` for the CDF — no scipy dependency.  Clamps to
+    [0.03, 0.97] so a 4-sigma tail can't produce a numerical zero /
+    one (calibration authority still owns final probability).
+    """
+    if not dist or not isinstance(dist, dict):
+        return None
+    try:
+        mu = float(dist["mean"])
+        sd = float(dist["sd"])
+    except Exception:
+        return None
+    if sd <= 0:
+        return None
+    import math
+    # Normal CDF via erf: Phi(z) = 0.5 * (1 + erf(z / sqrt(2)))
+    z = (float(threshold) - mu) / sd
+    _phi_ge_z = 0.5 * (1.0 - math.erf(z / math.sqrt(2.0)))
+    _over = _phi_ge_z            # P(X ≥ threshold)
+    _under = 1.0 - _phi_ge_z     # P(X ≤ threshold)
+    p = _over if str(side or "over").lower() == "over" else _under
+    return round(max(0.03, min(0.97, p)), 4)

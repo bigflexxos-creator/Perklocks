@@ -7089,7 +7089,16 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             and mk not in ("player_anytime_td", "player_1st_td")
             and _atd_model_override is None
         ):
-            _fv = [v for v in factors.values() if isinstance(v, (int, float))]
+            # Exclude sidecar keys (leading ``__``) from the factor
+            # blender.  ``__rung_p_hat`` carries the raw per-rung
+            # distribution probability the promotion step below
+            # consumes.  Every legitimate factor key is human-readable
+            # ("L5 Avg vs Line" etc.); the sidecar convention keeps
+            # the blender pure while letting metadata ride along.
+            _fv = [
+                v for k, v in factors.items()
+                if isinstance(v, (int, float)) and not str(k).startswith("__")
+            ]
             # ── 2026-06-09 · condition relaxed: fire on ≥3 real factor
             # values REGARDLESS of whether ``_mlb_features_used``
             # (a.k.a. ``_sources``) was populated.  The NFL feature
@@ -7115,6 +7124,22 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 # Real independent factor mean replaced the book-implied
                 # seed — the pick has legitimate model authority.
                 _mp_book_seed_flag = False
+                # ── 2026-06-09 · Stage-2 P0 · per-rung promotion ──────
+                # If the feature engine stamped ``__rung_p_hat`` (the
+                # raw P̂(X ≥ this exact threshold) drawn from the
+                # coherent 12-game distribution) we PROMOTE it into
+                # ``mp`` in a 60/40 blend with the factor mean.  This
+                # is the "per-rung independent probability" the audit
+                # demanded — every rung along a Burrow Pass Yds
+                # ladder gets its OWN model probability rather than
+                # inheriting the shared factor mean.  Weighting keeps
+                # both the coherent distribution signal and the L3
+                # trend / H-A / matchup / hit-rate evidence in the
+                # authority.  Never uses book_implied.
+                _p_hat = factors.get("__rung_p_hat")
+                if isinstance(_p_hat, (int, float)) and 0.0 < _p_hat < 1.0:
+                    _blended = 0.60 * float(_p_hat) + 0.40 * _cal_mp
+                    mp = max(0.05, min(0.97, _blended))
         # ── Phase 2A.5 DEFECT #4 (2026-08) ─────────────────────────────
         # Elite-scorer factor manipulation (+10 %) and forced Lock Score
         # floor (88.0) RETIRED.  No player receives an artificial Lock

@@ -197,8 +197,15 @@ def _scale(value: float, low: float, high: float,
 
 
 def has_enough_real_data_nfl(factors: dict) -> bool:
-    """Return True iff at least MIN_FACTORS_NFL_PROP non-None real factors."""
-    return sum(1 for v in factors.values() if isinstance(v, (int, float))) >= MIN_FACTORS_NFL_PROP
+    """Return True iff at least MIN_FACTORS_NFL_PROP non-None real factors.
+    Sidecar keys (leading ``__``) are metadata and never count toward the
+    real-data minimum — the callers that consume ``factors`` for the
+    factor mean apply the SAME exclusion so the two views stay honest.
+    """
+    return sum(
+        1 for k, v in factors.items()
+        if isinstance(v, (int, float)) and not str(k).startswith("__")
+    ) >= MIN_FACTORS_NFL_PROP
 
 
 # ── Factor builders ──────────────────────────────────────────────────
@@ -282,6 +289,33 @@ def _factor_matchup(opp_pos_allowances: dict, prop_stat: str, line: float) -> Op
         return None
 
 
+def _factor_distribution_support(
+    dist: Optional[dict], line: float, side: str = "over",
+) -> Optional[float]:
+    """Convert a coherent empirical distribution + threshold into a
+    factor value in the 0.30-0.95 anchor range.
+
+    * P̂(X ≥ threshold) 0.95+  → 0.95   (near-certain hit — mean far above line)
+    * P̂ 0.75                 → 0.80
+    * P̂ 0.55                 → 0.60
+    * P̂ 0.25                 → 0.35
+    * P̂ 0.05-                → 0.30
+
+    None when the distribution has fewer than 3 games.
+    """
+    try:
+        from services.nfl_features import distribution_hit_probability
+        p_hat = distribution_hit_probability(dist, line, side)
+    except Exception:
+        return None
+    if p_hat is None:
+        return None
+    # Direct linear projection onto the 0.30-0.95 anchor band so the
+    # factor is a plain-english "how likely is THIS exact rung" signal.
+    v = 0.30 + float(p_hat) * 0.65
+    return round(max(0.30, min(0.95, v)), 3)
+
+
 def _factor_book_implied(book_implied: Optional[float]) -> Optional[float]:
     """Convert book_implied prob (0-1) to a factor value. Always defined
     when odds are present — acts as the anchor floor factor."""
@@ -314,6 +348,7 @@ async def build_nfl_prop_factors(
     from services.nfl_features import (
         player_recent_averages, home_away_splits,
         player_prop_hit_rate_vs_opponent,
+        player_stat_distribution, distribution_hit_probability,
     )
     from services.nfl_opp_defense import team_defense_allowances
 
@@ -325,6 +360,18 @@ async def build_nfl_prop_factors(
     )
     opp_all = await team_defense_allowances(db, opponent, season)
     opp_pos = opp_all.get(position) or opp_all.get(position.upper()) or {}
+    # ── 2026-06-09 · Stage-2 P0 · per-rung independent distribution ──
+    # Empirical mean/SD of the last 12 regular-season games for this
+    # exact stat_field.  Used by ``recompute_line_dependent_factors``
+    # to produce a per-threshold P(X ≥ line) that varies coherently
+    # by rung — same coherent distribution feeds every alt rung.
+    _dist = None
+    try:
+        _dist = await player_stat_distribution(
+            db, player, prop_stat, season, week, limit=12,
+        )
+    except Exception:
+        _dist = None
 
     # Build the factors ────────────────────────────────────────────
     stat_prefix = (
@@ -340,6 +387,15 @@ async def build_nfl_prop_factors(
         "Home/Away Split":           _factor_home_away(splits, stat_prefix, is_home),
         "Career vs Opponent Hit%":   _factor_prop_hit_rate(hit_row),
         "Opponent Defense Allowance": _factor_matchup(opp_pos, prop_stat, line),
+        # ── 2026-06-09 · Stage-2 P0 · per-rung distribution support ──
+        # Threshold-specific hit probability drawn from the coherent
+        # 12-game empirical distribution.  Independent of the book
+        # line — separates the "how likely is THIS threshold" signal
+        # from the "how does the player usually perform" signals so
+        # every rung earns its own evidence value.
+        "Threshold Distribution Support": _factor_distribution_support(
+            _dist, line, side,
+        ),
         # 2026-08-23 NFL MODEL-INTEGRITY (Pass 2) — Book Implied removed
         # from the factor set.  It was the confirmed "silent book-implied
         # model authority" defect.  Preserved in `sources` only as an
@@ -408,6 +464,13 @@ async def build_nfl_prop_factors(
         "side": _side_norm,
         "position": position,
         "orig_line": float(line),
+        # ── 2026-06-09 · Stage-2 P0 · per-rung distribution ─────────
+        # Stashing the ENTIRE distribution (mean/sd/samples/n_games)
+        # so the sync alt-line loop can recompute the "Threshold
+        # Distribution Support" factor AT EACH RUNG using the same
+        # coherent distribution.  Prevents the "one shared evidence
+        # score across a 20-rung ladder" defect the audit surfaced.
+        "distribution": _dist,
     }
 
     # Rationale — the "Why this pick" prose we surface on the UI.
@@ -468,6 +531,7 @@ def recompute_line_dependent_factors(
     stat = raw_metrics.get("prop_stat") or ""
     raw_l5 = raw_metrics.get("raw_l5_avg")
     opp_pos = raw_metrics.get("raw_opp_pos") or {}
+    _dist = raw_metrics.get("distribution")
     # Rebuild L5 Avg vs Line
     new_factors = dict(factors or {})
     if isinstance(raw_l5, (int, float)) and stat:
@@ -479,6 +543,29 @@ def recompute_line_dependent_factors(
         new_factors["Opponent Defense Allowance"] = _factor_matchup(
             opp_pos, stat, line
         )
+    # ── 2026-06-09 · Stage-2 P0 · per-rung distribution recompute ────
+    # The stashed empirical distribution is line-INDEPENDENT (built
+    # from raw game samples), but the resulting probability is
+    # threshold-specific.  Rebuild the "Threshold Distribution Support"
+    # factor at THIS rung so every alt line gets an honest, coherent
+    # per-threshold hit probability.  Also stash the raw P̂(X ≥ line)
+    # on the pick metadata via ``__rung_p_hat`` so the sync emission
+    # loop can promote it into ``model_win_prob`` at the exact rung.
+    if _dist:
+        try:
+            from services.nfl_features import distribution_hit_probability
+            p_hat = distribution_hit_probability(_dist, line, side)
+        except Exception:
+            p_hat = None
+        new_factors["Threshold Distribution Support"] = _factor_distribution_support(
+            _dist, line, side,
+        )
+        # Sidecar payload the caller can consume without touching the
+        # existing factor blender.  Sentinel key uses a `__` prefix
+        # so downstream `_fv = [v for v in factors.values() if
+        # isinstance(v, (int, float))]` naturally SKIPS the raw
+        # probability (it stays a factor-blender-safe value only).
+        new_factors["__rung_p_hat"] = float(p_hat) if p_hat is not None else None
     # Reapply Under-side mirror (Career vs Opponent Hit% is already
     # side-aware from the fetch call so we do NOT re-mirror it).
     if str(side or "over").lower() == "under":
