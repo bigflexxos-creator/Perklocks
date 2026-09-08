@@ -2184,6 +2184,65 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as _lad_err:
         logger.warning("NFL ladder monotonicity guard skipped: %s", _lad_err)
 
+    # ── §RANKING · NFL LOCK RELIABILITY FLOOR (2026-06-09) ───────────
+    # Per user directive (Rung Selection Fix): Lock Score must reflect
+    # exact-wager RELIABILITY / hit quality — not lottery payout.
+    # Symptom: Burrow 419.5 Pass Yds @ +3700 (wp=37.5 %) and Burrow
+    # 319.5 @ +345 (wp=45.4 %) both landed at lock=88.4 because the
+    # score didn't scale with model probability once evidence /
+    # magic / edge boxes were checked.  Fix: cap lock at
+    # `60 + wp × 40` for every NFL pick.  This makes Lock Score
+    # monotone in probability:
+    #     wp 0.30 → cap 72   (below 85 board — fail-closed longshot)
+    #     wp 0.50 → cap 80
+    #     wp 0.62 → cap ~85  (board threshold)
+    #     wp 0.70 → cap 88
+    #     wp 0.80 → cap 92   (Lock)
+    #     wp 0.90 → cap 96   (Strong Lock)
+    #     wp 0.95 → cap 98   (Elite)
+    # Legitimate high-probability alts (Cooper Kupp Over 19.5 Rec Yds
+    # @ -240 · wp=71.4 %) are UNTOUCHED — this only caps ranking
+    # authority for lower-probability rungs. Value / edge / EV
+    # remain separate metrics on the pick.  Non-NFL untouched.
+    try:
+        _reliability_hits = 0
+        for _p in safe_picks:
+            if (_p.get("sport") or "").strip() != "NFL":
+                continue
+            try:
+                _wp = float(_p.get("win_probability") or 0.0)
+                if _wp > 1.0:
+                    _wp = _wp / 100.0
+                _lock = float(_p.get("lock_score") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            _reliability_cap = 60.0 + max(0.0, min(1.0, _wp)) * 40.0
+            if _lock > _reliability_cap:
+                _p["lock_score"]      = round(_reliability_cap, 1)
+                _p["lock_score_v2"]   = min(float(_p.get("lock_score_v2") or _reliability_cap), _reliability_cap)
+                _p["lock_score_peak"] = min(float(_p.get("lock_score_peak") or _reliability_cap), _reliability_cap)
+                if _reliability_cap < 100.0:
+                    _p["apex_lock"]   = False
+                    _p["apex_status"] = "NOT_APEX"
+                    _p["apex_reason"] = _p.get("apex_reason") or "nfl_lock_reliability_floor_hit_probability"
+                _p["reliability_cap_applied"] = True
+                _p["reliability_cap_prior"]   = _lock
+                _p["reliability_cap_wp"]      = round(_wp, 4)
+                try:
+                    from sports_engine import _grade as _grade_fn
+                    _p["grade"] = _grade_fn(_reliability_cap)
+                except Exception:
+                    pass
+                _reliability_hits += 1
+        if _reliability_hits:
+            logger.info(
+                "NFL Lock reliability floor: %d picks capped by hit-probability "
+                "(lock <= 60 + wp*40) — Value/Edge remain visible separately.",
+                _reliability_hits,
+            )
+    except Exception as _rel_err:
+        logger.warning("NFL reliability floor skipped: %s", _rel_err)
+
     if safe_picks:
         # ATOMIC-SWAP: do the wipe NOW, immediately before the insert.
         # The enrichment passes above ran on in-memory `safe_picks` —
