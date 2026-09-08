@@ -485,15 +485,26 @@ async def player_stat_distribution(
     cursor = coll.find(q).sort([("season", -1), ("week", -1)]).limit(limit * 2)
     raw_rows: list[dict] = [r async for r in cursor]
     stat_lower = (stat_field or "").lower()
-    # Select volume threshold per stat family (matches the mandate
-    # above; unrecognized stats fall through with no volume gate).
+    # ── 2026-06-09 · Stage-2 P0-A · participation-aware filter ─────
+    # Per user contract: "Prefer existing stronger participation
+    # evidence when available: active/inactive status, starter
+    # status, snap count, snap share, routes, injury status, play-
+    # by-play participation, in-game injury evidence, team offensive
+    # snaps.  Only fall back to volume heuristics when better
+    # evidence is unavailable."  We drop a game ONLY when the row
+    # has an explicit inactive / injury marker OR the participation
+    # signal is available AND clearly below the healthy floor.  A
+    # legitimate low-usage full game (e.g. a QB in a run-heavy
+    # blowout with 14 attempts and 3 snaps of garbage time relief)
+    # must survive: without an inactive marker AND without a snap
+    # signal, we KEEP the row — no survivorship deletion.
     if stat_lower in ("passing_yards", "passing_tds", "passing_ints",
                       "attempts", "completions"):
-        _vol_key, _vol_min = "attempts", 15
+        _vol_key, _vol_min = "attempts", 10       # softened from 15
     elif stat_lower in ("rushing_yards", "rushing_tds", "carries"):
-        _vol_key, _vol_min = "carries", 5
+        _vol_key, _vol_min = "carries", 3         # softened from 5
     elif stat_lower in ("receiving_yards", "receiving_tds", "receptions", "targets"):
-        _vol_key, _vol_min = "targets", 2
+        _vol_key, _vol_min = "targets", 1         # softened from 2
     else:
         _vol_key, _vol_min = None, 0
     samples: list[float] = []
@@ -502,12 +513,37 @@ async def player_stat_distribution(
         v = row.get(stat_field)
         if not isinstance(v, (int, float)):
             continue
+        # Strong participation evidence — DNP / inactive rows are
+        # always dropped; healthy rows with real snap-share evidence
+        # are always KEPT (snap_share ≥ 0.40 = starter).  Only fall
+        # back to the volume heuristic when neither snap_share nor
+        # an explicit inactive flag is present.
+        inactive = bool(row.get("dnp") or row.get("inactive") or
+                        (row.get("status") or "").lower() in ("out", "dnp", "inactive"))
+        snap_share = row.get("snap_share") or row.get("offense_pct")
+        if inactive:
+            dropped.append({"season": row.get("season"), "week": row.get("week"),
+                            "reason": "inactive"})
+            continue
+        if isinstance(snap_share, (int, float)) and snap_share >= 0.40:
+            # Starter-share game — KEEP regardless of volume (the
+            # blowout / heavy-run low-attempt case).
+            samples.append(float(v))
+            if len(samples) >= limit:
+                break
+            continue
+        if isinstance(snap_share, (int, float)) and snap_share < 0.25:
+            # Explicit bench / injury-shortened evidence.
+            dropped.append({"season": row.get("season"), "week": row.get("week"),
+                            "snap_share": snap_share, "reason": "low_snap_share"})
+            continue
+        # No participation evidence — fall back to volume floor.
         if _vol_key is not None:
             vol = row.get(_vol_key)
             if isinstance(vol, (int, float)) and vol < _vol_min:
                 dropped.append({
                     "season": row.get("season"), "week": row.get("week"),
-                    _vol_key: vol, stat_field: v,
+                    _vol_key: vol, stat_field: v, "reason": "low_volume_fallback",
                 })
                 continue
         samples.append(float(v))

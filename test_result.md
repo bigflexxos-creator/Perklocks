@@ -3072,7 +3072,100 @@ distribution factor is strongly aligned.
 report.**
 
 
-## STAGE 2 · P0 CONTINUATION · DISTRIBUTION VALIDATION (2026-06-09)
+## STAGE 2 · P0-A PARTICIPATION-AWARE FILTER (2026-06-09 · surgical)
+
+Per user contract "Prefer existing stronger participation evidence
+when available; only fall back to volume heuristics when better
+evidence is unavailable", the partial-game filter was hardened
+from a pure volume gate to a participation-aware three-tier:
+```
+   1. explicit inactive marker  (dnp / inactive / status)      → DROP
+   2. snap_share ≥ 0.40                                        → KEEP
+   3. snap_share < 0.25                                        → DROP
+   4. no participation evidence + volume < softened floor       → DROP
+   5. otherwise                                                 → KEEP
+```
+Volume floors softened (attempts 15→10, carries 5→3, targets 2→1)
+so a legitimate low-usage full game (blowout with 12 QB attempts,
+scramble-heavy RB with 4 carries) survives when the row lacks
+participation evidence.  No survivorship bias — a healthy full
+game with genuinely low downside is preserved.
+
+Contract test `test_distribution_fail_closed_on_thin_samples`
+continues to pass under the softened floor: 4 games still returns
+None (fail-closed on <5 valid), 8 games returns a valid distribution.
+
+## Stage-2 P0-B → P0-R remaining scope (honest audit)
+
+The user's Stage-2 P0 continuation lists 14 additional surgeries
+(P0-B threshold-aware factors · P0-C correlation guard · P0-D
+shrinkage · P0-E model-all-before-select · P0-F immutability
+regenerate audit · P0-G disappearing chalk audit · P0-H/I/J
+best-lock ranking · P0-K efficient-chalk audit · P0-L/M ceiling
++ reliability audit · P0-N/O/Q runtime proofs · P0-P filter
+reconfirm · P0-R Preview visual).  Each requires:
+* a code-side surgical edit
+* a scoped NFL refresh (~15 min through 16 games)
+* a runtime forensic + full histogram + top-25 proof
+
+A single conversation slice cannot honestly complete all 14 without
+either (a) mass-producing untested code or (b) fabricating runtime
+proofs.  Both violate the explicit user directives:
+* "Do not fabricate elite picks."
+* "Do NOT manufacture 93-100 production scores."
+* "Do not hard-code -200 to -600 eligibility."
+
+The right unit of work per iteration is 1-2 surgeries + a real
+refresh cycle + a full runtime forensic.  Continuing that cadence
+into P0-B (threshold-aware L5/L3/H-A/career-hit-rate) is the
+correct next step and will deliver a substantive lift.
+
+### Verdict — Stage 2 combined pass
+**NFL PLAYER PROP + ALT-LINE CLOSURE — NOT CERTIFIED**
+
+- ✅ P0-A · Participation-aware filter (softened + explicit inactive
+     / snap-share tiers; contract test 8 preserved).
+- ✅ CDF direction · monotone survival · fail-closed on <5 · APEX
+     gate · Lock-Score ≠ Value · chalk-trap fail-closed on book-
+     copy · chalk-trap spare on independent authority — all still
+     locked (9/9 contract tests).
+- ⚠️  P0-B / P0-C — L5 / L3 / H-A / career-hit-rate are still
+     shared across a ladder; correlation guard not yet documented.
+- ⚠️  P0-E — pre-model alt-cap is now 40 with POINT-ASC ordering
+     but the correct architecture is model-all-then-select-post-
+     model.  Not shipped.
+- ⚠️  P0-F — Burrow 174.5/189.5/199.5 rows still `mp_from_book_seed=
+     None` from 2026-09-07 21:53.  Need to distinguish canonical
+     publication immutability from a stale-refresh-shield bug.
+     Not diagnosed this pass.
+- ⚠️  P0-G — audit of downstream disappearance for -200 to -600
+     rungs not run.
+- ⚠️  P0-J — Best-Lock vs Best-Value board ranking not yet
+     implemented as a discrete post-model selection.
+- ⚠️  P0-N / P0-O / P0-Q / P0-R — runtime proofs not produced this
+     pass to avoid fabrication under time pressure.
+
+**Exact remaining blocker & path**:
+1. `services.nfl_feature_engine.build_nfl_prop_factors` — the four
+   remaining factors (L5 Avg vs Line, L3 vs Season Trend, H/A
+   Split, Career vs Opponent Hit%) all pin to `orig_line` and
+   share their value across a ladder.  Convert each to per-rung
+   variants using the already-computed distribution samples plus
+   the existing threshold-aware `player_prop_hit_rate_vs_opponent`
+   which already accepts a `line` parameter.
+2. `sports_engine._props_picks_from_event` — model every unique
+   observed threshold BEFORE the alt-cap; move the cap to the
+   post-model board-selection step.
+3. Add a Best-Lock / Best-Value post-model dedupe on
+   `(player, market_family, side)` picking the single highest
+   `lock_score` for board display.
+4. Diagnose the Burrow 174.5/189.5/199.5 rows: query the refresh
+   shield decision log for their canonical_pick_ids and prove
+   whether they are legitimately immutable or protected by a
+   stale refresh-shield defect.
+
+**Publish blocked** until the remaining P0 surgeries are executed
+sequentially with a real refresh + runtime forensic after each.
 
 ### Forensic on Joe Burrow — required regression
 Source game rows pulled directly from `nfl_player_weekly` via the
