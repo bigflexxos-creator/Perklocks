@@ -6305,6 +6305,18 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             mp = max(0.80, min(0.94, implied))
         else:
             mp = max(0.65, min(0.95, implied))
+        # ── 2026-06-09 · MP-FROM-BOOK LEAKAGE MARKER ────────────────
+        # Per user directive (NFL Universal Prop Closure §A4):
+        # sportsbook implied probability must NOT be substituted for
+        # independent model authority.  This marker tracks whether the
+        # NFL feature engine's per-line factor override at L7062-7089
+        # later replaces this book-implied seed with a real independent
+        # probability.  Downstream (Block 8 orchestrator) any NFL pick
+        # that never earned an independent probability is capped below
+        # the 85 Lock-board threshold so book-implied leakage cannot
+        # earn Lock authority (fail-closed).  Non-NFL sports are
+        # untouched — MLB / Soccer / etc. keep their existing paths.
+        _mp_book_seed_flag = (sport == "NFL")
         # Pitcher props use a different factor recipe than batter props.
         is_pitcher_prop = mk.startswith("pitcher_")
         # ── REAL FEATURE ENGINE (2026-07-21 Phase 1 MLB) ─────────────
@@ -7087,6 +7099,10 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 # numerical certainty; the lower 0.05 cap is a
                 # defensive floor against pathological zero rows only.
                 mp = max(0.05, min(0.97, _cal_mp))
+                # ── 2026-06-09 · fail-closed clearance ────────────────
+                # Real independent factor mean replaced the book-implied
+                # seed — the pick has legitimate model authority.
+                _mp_book_seed_flag = False
         # ── Phase 2A.5 DEFECT #4 (2026-08) ─────────────────────────────
         # Elite-scorer factor manipulation (+10 %) and forced Lock Score
         # floor (88.0) RETIRED.  No player receives an artificial Lock
@@ -7161,6 +7177,18 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         # it here.  Falls open (no attach) when resolution failed — the
         # gate will then correctly reject the pick.
         if new_pick is not None and sport == "NFL":
+            # ── 2026-06-09 · MP-FROM-BOOK LEAKAGE STAMP ──────────────
+            # Stamp the fail-closed marker onto the pick so the
+            # orchestrator can enforce the "no book-implied
+            # substitution for model authority" contract downstream.
+            # True = mp was NEVER independently overridden (book
+            # substitution). False = real NFL feature-engine factor
+            # mean replaced the seed → legitimate independent
+            # probability present.
+            try:
+                new_pick["mp_from_book_seed"] = bool(_mp_book_seed_flag)
+            except Exception:
+                pass
             try:
                 _cur_team = None
                 _canonical_pid = None

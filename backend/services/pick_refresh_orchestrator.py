@@ -2118,6 +2118,55 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as _alt_cap_err:
         logger.warning("NFL alt-line value floor skipped: %s", _alt_cap_err)
 
+    # ── NFL PROP MP-FROM-BOOK LEAKAGE FAIL-CLOSED CAP (2026-06-09) ────
+    # Per user directive (Universal NFL Prop Closure §A4): NFL picks
+    # whose `mp` was never overridden by the real feature-engine factor
+    # mean (mp_from_book_seed=True) MUST NOT earn Lock authority.
+    # Fail-closed → cap lock at 84.9 so they fall below the 85 board
+    # threshold.  Non-NFL sports untouched.  The Doubs regression case
+    # (Over 1.5 Receptions @ -750 with model_wp==implied==88.2%) is
+    # the exact anti-pattern this prevents from becoming a Lock.
+    try:
+        _leak_cap_hits = 0
+        for _p in safe_picks:
+            if (_p.get("sport") or "").strip() != "NFL":
+                continue
+            if _p.get("mp_from_book_seed") is not True:
+                continue
+            try:
+                _lock = float(_p.get("lock_score") or 0.0)
+            except (TypeError, ValueError):
+                _lock = 0.0
+            if _lock < 85.0:
+                continue  # already off-board
+            _p["lock_score"]      = 84.9
+            _p["lock_score_v2"]   = min(float(_p.get("lock_score_v2") or 84.9), 84.9)
+            _p["lock_score_peak"] = min(float(_p.get("lock_score_peak") or 84.9), 84.9)
+            _p["apex_lock"]       = False
+            _p["apex_score"]      = 84.9
+            _p["apex_status"]     = "NOT_APEX"
+            _p["apex_reason"]     = "nfl_mp_book_seed_no_independent_authority"
+            _p["mp_leakage_cap_applied"] = True
+            _p["mp_leakage_cap_reason"]  = (
+                "MODEL_PROBABILITY_UNAVAILABLE:mp_from_book_seed — "
+                "NFL feature engine did not produce an independent "
+                "exact-threshold probability; book-implied seed cannot "
+                "earn Lock authority (fail-closed per §A4)."
+            )
+            try:
+                from sports_engine import _grade as _grade_fn
+                _p["grade"] = _grade_fn(84.9)
+            except Exception:
+                pass
+            _leak_cap_hits += 1
+        if _leak_cap_hits:
+            logger.info(
+                "NFL mp-from-book leakage fail-closed cap: %d picks below 85",
+                _leak_cap_hits,
+            )
+    except Exception as _leak_err:
+        logger.warning("NFL mp-leakage fail-closed cap skipped: %s", _leak_err)
+
     if safe_picks:
         # ATOMIC-SWAP: do the wipe NOW, immediately before the insert.
         # The enrichment passes above ran on in-memory `safe_picks` —
