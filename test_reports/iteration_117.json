@@ -1,0 +1,37 @@
+{
+  "summary": "Backend verification of the surgical NFL ATD leaderboard routing fix (merged orphan docstring pair in /app/backend/routes/nfl_routes.py that had produced a SyntaxError, causing router import failure and HTTP 404). All 8 targeted pytest cases PASS. GET /api/nfl/atd/leaderboard now returns 200 with mode='canonical_publication', 3 real published NFL ATD picks (Derrick Henry 0.6784, Jonathan Taylor 0.6632, Bijan Robinson 0.6530), each carrying real book_odds (-215, -205, -168), publication_state='PUBLISHED', and provenance='canonical_publication'. Sort is verified by td_probability DESC with confidence tiebreaker (no position/archetype bias in sort key — matches user directive). Filters (limit=5, min_probability=0.1, min_opportunity_rating=low) honored. /api/nfl/atd/predict reachable (no routing 404). Regression: /api/picks/today?lite=true still 200 with Bearer. No mocked/fabricated data detected — every pick traces to a real published picks row.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_nfl_atd_leaderboard_routing_fix.py",
+    "/app/test_reports/pytest/iter117_nfl_atd_routing_fix.xml"
+  ],
+  "action_items": [
+    "Observation only (NOT a bug per user directive): the 3 currently-canonical NFL ATD picks are all RBs (Henry, Taylor, Robinson). The CODE is position-agnostic and sorts purely by td_probability — user directive that 'ATD should not just be running backs, should be top 5 mathematically' is now correctly implemented at the routing/sort level. If, over time, the NFL publication pipeline surfaces WRs/TEs whose td_probability >= 0.10, they will rank naturally. Per the review request 'Do NOT touch NFL data volume' — no action needed."
+  ],
+  "critical_code_review_comments": [
+    "nfl_routes.py routing fix is minimal and correct (docstring merge). Router registers cleanly and endpoint responds 200.",
+    "Sort key (td_probability, confidence) with reverse=True is mathematically correct and free of positional bias.",
+    "Publication_state gate correctly relaxed in DB query so chalk-trap off_board rows still count for leaderboard math, while the response still surfaces publication_state so the UI can distinguish."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_nfl_atd_leaderboard_routing_fix.py (new pytest suite, 8 cases)"
+  ],
+  "success_rate": {
+    "backend": "100% (8/8 tests passed)",
+    "frontend": "N/A — backend-only verification per request"
+  },
+  "seed_data_creation": "None — no data mutations performed; verification is read-only.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The NFL ATD routing bug (SyntaxError → import failure → 404) is fully resolved. Test suite at /app/backend/tests/test_nfl_atd_leaderboard_routing_fix.py is reusable as a regression check. If NFL publication data grows to include WR/TE candidates, re-run to confirm sort remains td_probability-DESC and position-agnostic.",
+  "rca_of_issue": "Root cause: two adjacent docstrings at lines ~84 of nfl_routes.py — the first closed then a plain-text block followed by a second docstring — created a Python SyntaxError, blocking `import routes.nfl_routes` at server boot. Because server.py conditionally mounts the router only on successful import, the /api/nfl/* prefix silently disappeared, yielding 404s. Fix (already applied by main agent): merged the two docstrings into one continuous docstring so the module parses cleanly. Verification: the module now imports and all 8 targeted assertions (200 response, key shape, mode='canonical_publication', pick fields, provenance/PUBLISHED, DESC sort by td_probability with confidence tiebreaker, limit/min_probability filters, predict route reachable, /api/picks/today regression) pass."
+}

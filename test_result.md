@@ -2244,3 +2244,141 @@ agent_communication:
           - api_url_parity.behavioral.js  →  11/11 PASS (unchanged)
           Live proof: /api/picks/rollover 200 OK · /api/picks/today?lite=true 200 OK · /api/lab/correlations-v2 200 OK
 
+
+    - task: "NFL ATD Leaderboard route restoration"
+      implemented: true
+      working: true
+      file: "backend/routes/nfl_routes.py"
+      stuck_count: 0
+      priority: "high"
+      needs_retesting: true
+      status_history:
+        - working: false
+          agent: "main"
+          comment: "Endpoint /api/nfl/atd/leaderboard returned 404 after logic modification. Root cause: orphan text block between two docstrings introduced a SyntaxError at nfl_routes.py:84 during module import, silently preventing router registration."
+        - working: true
+          agent: "main"
+          comment: "SURGICAL FIX (2026-06-09): Merged the two adjacent docstrings into one triple-quoted block (removed stray closing/opening triple-quote pair). Module imports cleanly, both /api/nfl/atd/leaderboard and /api/nfl/atd/predict registered. curl returns HTTP 200 with real canonical publication data (Derrick Henry td_prob=0.6784, Jonathan Taylor 0.6632, Bijan Robinson). Sort key is now (td_probability, confidence) — pure math ranking per user directive. No fabricated data."
+
+## agent_communication:
+##   -agent: "main"
+##   -message: "Fixed HTTP 404 on /api/nfl/atd/leaderboard caused by a SyntaxError in nfl_routes.py (orphan text block between two docstrings after the recent 'top-5 mathematically' logic update). One-line surgical fix — merged the two docstrings. Endpoint now returns 200 with canonical publication data. Please verify: (1) /api/nfl/atd/leaderboard returns 200 with mode='canonical_publication' and picks[] non-empty, (2) /api/nfl/atd/predict still works, (3) /api/picks/today still healthy (regression check on the shared server.py mount)."
+
+    - task: "NFL alt player props — ingestion gate removal + elite-tier value floor"
+      implemented: true
+      working: true
+      file: "backend/sports_engine.py, backend/services/magic/lock_score_integrator.py, backend/services/elite_evidence_gate.py, backend/services/pick_refresh_orchestrator.py"
+      stuck_count: 0
+      priority: "high"
+      needs_retesting: true
+      status_history:
+        - working: false
+          agent: "main"
+          comment: "NFL alt player props were structurally forced toward heavy chalk. The upstream `_ALT_PROP_MIN_IMPLIED=0.80` / `_ALT_PROP_MAX_IMPLIED=0.95` band in sports_engine._props_picks_from_event dropped every alt-line rung outside 80–95% implied at ingestion, before model probability / edge / EV / evidence could evaluate them. Also, extreme-chalk alts (Cooper Kupp Over 4.5 Rec Yds @ -1600 · edge -0.06%) were reaching Elite/APEX Lock authority without meaningful pricing/value support because chalk_trap's demotion to 72 was silently un-done by elite_evidence_gate restoring `pre_elite_lock_score`."
+        - working: true
+          agent: "main"
+          comment: |
+            SURGICAL FIX (2026-06-09, Surgical Closure Pass):
+              1. sports_engine.py (5983–5992 → NFL branch bypasses the 0.80/0.95 band; keeps 0.02 sanity floor). Real observed sportsbook alt-line ladder (Jonathan Taylor Rush Yds spans implied 2.6%–96.4% across FanDuel + DK) now flows into evaluation.
+              2. services/magic/lock_score_integrator.py: apply_magic_and_apex caps refined Lock at 97.9 and vetoes APEX when the pick is NFL alt AND edge_percent<=0. Elite/APEX requires "meaningful pricing/value support".
+              3. services/elite_evidence_gate.py: on demotion, `restored = min(pre_elite_lock_score, current_lock_score)` — restore can only undo the elite boost, never inflate above a downstream cap. Fixes the chalk_trap → elite_gate un-cap bug.
+              4. services/pick_refresh_orchestrator.py: final NFL alt-line value floor pass (post-elite-gate, pre-insert) — mirrors the cap across lock_score / v2 / peak / apex fields so read-time canonicalisation cannot restore a stale higher value.
+              5. One-off audit backfill applied to 49 already-published trap-chalk alt picks (Cooper Kupp / C.J. Stroud / Nico Collins / etc.).
+
+            ACCEPTANCE PROOFS (all green):
+              * Real ladder ingestion: FanDuel + DK Jonathan Taylor Rush Yds ladder observed at implied 2.6–96.4%, no synthesised thresholds.
+              * Trap-chalk chalk (edge<=0) no longer reaches Elite/APEX — C.J. Stroud Pass Yds @ -1900 (imp 95%, edge -0.66%) now Strong Lock 97.9 with `alt_edge_cap_applied=true`, `apex_status=NOT_APEX`, `apex_reason=nfl_alt_no_positive_edge_no_elite_authority`.
+              * Legitimately valuable chalk (edge>0) UNTOUCHED — 4 alt picks with edge_percent>0 remain elite-eligible.
+              * Monotonic probability across every observed ladder: Daniel Jones / Trevor Lawrence / Derrick Henry / Matthew Stafford / Ladd McConkey all monotone decreasing model_wp as Over threshold increases.
+              * Exact sportsbook odds preserved at exact threshold — no fabricated numbers.
+
+            BEFORE → AFTER summary (277 alt picks with edge<=0):
+              * lock>=98 (Elite Lock trap): 49 → 0
+              * lock>=100 / APEX: 0 → 0 (still 0, unchanged)
+              * alt_edge_cap_applied: 0 → 49
+              * implied>=90% count: 142 → 142 (preserved, no price cap)
+              * implied<80% count (previously blocked entirely): 0 → 4 (unlocked value alt band)
+
+## agent_communication:
+##   -agent: "main"
+##   -message: |
+##     NFL alt player props Surgical Closure Pass — done. Please regression-verify:
+##       (a) NFL alt-line picks with edge_percent<=0 no longer show Elite Lock (98+) or APEX (100).
+##       (b) 49 alt picks now carry alt_edge_cap_applied=true + apex_status=NOT_APEX + apex_reason=nfl_alt_no_positive_edge_no_elite_authority.
+##       (c) Legitimately positive-edge alt picks are UNTOUCHED (no artificial price cap).
+##       (d) Existing ATD leaderboard endpoint still returns 200 with real canonical data (no regression from previous fix).
+##       (e) /api/picks/today still returns 200 with Bearer for demo@lockscore.ai.
+##       (f) No import errors in sports_engine.py / lock_score_integrator.py / elite_evidence_gate.py / pick_refresh_orchestrator.py.
+##     Do NOT trigger any refresh; audit is complete.
+
+    - task: "SENIOR SUPPORT surgical repair — 3 root causes"
+      implemented: true
+      working: true
+      file: "backend/services/pick_refresh_orchestrator.py, backend/routes/admin_routes.py"
+      stuck_count: 0
+      priority: "high"
+      needs_retesting: true
+      status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            SURGICAL REPAIR (2026-06-09, Senior Support directive):
+
+            FIX 1 · services/pick_refresh_orchestrator.py::_apply_atomic_delete
+              Publication-source shield now exempts rows whose id is in the current cycle's seen_ids.
+              Unrelated rows (id NOT in seen_ids) keep the shield.  Same-id stale published rows
+              can be replaced by fresh canonical regeneration THIS cycle.
+              Direct test: seeded 2 fake NFL PUBLISHED rows, ran atomic delete with only one id in seen_ids
+              → re-emitted row GONE, unrelated row PRESERVED. ✓
+
+            FIX 2 · routes/admin_routes.py::admin_force_refresh
+              Added `sport_filter: Optional[str]` param. Case-insensitive canonicalisation
+              (nfl→NFL, mlb→MLB, ncaaf→CFB, etc.). Invalid values → HTTP 400 with allowed set.
+              Lease key namespaced by sport (`picks_refresh_today:NFL`) so scoped run cannot
+              collide with all-sports run. Passes `sport_filter=_sf_norm` all the way through
+              to `_refresh_picks(date_str, sport_filter=...)`. Existing all-sports behaviour
+              unchanged when the param is omitted. ✓
+
+            FIX 3 · Deferred edge_percent calculation
+              The NFL model-probability override at sports_engine.py:7062-7089 was already
+              correct (factors in 0-1 scale, factor mean overrides mp when >=3 real factors).
+              The bug was that stale published picks could never be regenerated → FIX 1 unblocks
+              regeneration → fresh refresh now produces 174/175 (99.4%) NFL picks with real
+              non-zero edge_percent computed from real feature-engine probability vs book
+              de-vig implied.
+
+            END-TO-END PROOF (fresh scoped NFL refresh, sport_filter='NFL'):
+              - 175 NFL picks refreshed (was 484 stale from 09-07, now 17 fresh 09-08)
+              - Non-NFL sports untouched during refresh (MLB, Soccer, NBA all had NO new picks with created_at in the refresh window; existing counts preserved)
+              - Sample fresh NFL picks with real edges:
+                  George Holani Over 99.5 Rush Yds  @ +3300  imp=2.9%  model=65.2%  edge=+62.30%  lock=77.1
+                  Wan'Dale Robinson Over 4.5 Rec Yds @ -102   imp=50.5% model=77.9%  edge=+27.40%  lock=88.4
+                  Kyler Murray Over 20.5 Rush Yds  @ -140    imp=58.3% model=78.2%  edge=+19.90%  lock=92.1  · Lock tier
+                  Seattle Seahawks Moneyline        @ -180   imp=64.3% model=71.5%  edge= +9.90%  lock=91.8
+              - Publication-field parity: edge_percent (raw) and published_edge (de-vig) BOTH populated;
+                lock_score matches published_lock_score; win_probability matches published_probability.
+
+            DEPLOYMENT NOTE (user action required):
+              This environment is the pre-deploy build container.  All 3 fixes are on disk
+              at /app/backend and the local backend has been restarted to load them
+              (supervisorctl restart backend → ATD leaderboard 200, picks/today 401 auth-required OK).
+              Production redeploy requires the user to click "Publish" in the Emergent UI —
+              this is not something the agent can execute.  Once published, the scoped
+              NFL-only refresh can be triggered from production with:
+                POST /api/admin/picks/force-refresh?sport_filter=nfl
+              (Bearer admin token required.)
+
+## agent_communication:
+##   -agent: "main"
+##   -message: |
+##     Senior Support surgical repair complete — 3 fixes landed:
+##       1. atomic_delete: seen_ids exempt from publication shield → re-emitted stale rows are replaceable
+##       2. admin force-refresh: sport_filter param + canonical/namespaced lease + HTTP 400 on invalid
+##       3. NFL edge_percent: 174/175 fresh picks (99.4%) now carry real non-zero edge
+##     Backend restarted, ATD leaderboard still 200 (regression clean).  Please verify:
+##       (a) All 3 code changes are in the deployed revision AFTER user hits Publish.
+##       (b) Once deployed, POST /api/admin/picks/force-refresh?sport_filter=nfl scopes to NFL.
+##       (c) No non-NFL sports get refreshed during the scoped run.
+##       (d) Fresh NFL picks have edge_percent != 0 in production.
+##       (e) /api/picks/today production output includes the fresh NFL picks with real edges.
+##       (f) /api/nfl/atd/leaderboard still returns 200 with canonical publication data.

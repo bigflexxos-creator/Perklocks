@@ -282,6 +282,24 @@ def apply_elite_evidence_gate(picks: list[dict[str, Any]]) -> dict[str, int]:
             restored = round(float(pre), 1)
         except (TypeError, ValueError):
             restored = 0.0
+        # ── 2026-06-09 · RESTORE MUST NEVER RE-INFLATE ────────────
+        # Downstream caps (chalk_trap, NFL alt-edge cap, learning v2
+        # demotions, evidence-governor haircut) may have already
+        # driven ``lock_score`` BELOW the pre-elite snapshot.  A
+        # naive restore in that case silently *un-does* those caps
+        # — e.g. chalk_trap sets lock_score=72 on a -1900 alt, then
+        # this restore lifts it back to pre_elite (99).  Cap the
+        # restore so it can only *undo the elite boost*, never
+        # inflate above the current authoritative score.  This is
+        # additive-safe: for picks where no downstream cap fired,
+        # ``current_lock`` == pre_elite (the boost was reverted
+        # cleanly) and behaviour is unchanged.
+        try:
+            _current_lock = float(p.get("lock_score") or 0.0)
+        except (TypeError, ValueError):
+            _current_lock = 0.0
+        if _current_lock < restored:
+            restored = _current_lock
         p["lock_score"] = restored
         if _grade_fn and _conf_fn:
             try:
