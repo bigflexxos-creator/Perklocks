@@ -765,6 +765,7 @@ async def admin_force_refresh(
     user: Annotated[UserPublic, Depends(current_admin)] = None,
     emergency: bool = False,
     reason: str = "admin_force_refresh",
+    sport_filter: Optional[str] = None,
 ):
     """Admin-only emergency refresh — Phase 2β hardened.
 
@@ -782,12 +783,43 @@ async def admin_force_refresh(
     Emergency-reserve capacity may be requested via ``?emergency=1&
     reason=board_missing`` or ``reason=board_critically_stale`` — see
     ``services.provider_budget.EMERGENCY_REASONS``.
+
+    ── 2026-06-09 SENIOR SUPPORT SURGICAL REPAIR ──────────────────
+    ``sport_filter`` (``?sport_filter=NFL``) scopes generation +
+    validation + atomic delete + publication to a single sport.  When
+    omitted the endpoint behaves exactly as before (all-sports refresh).
+    Case-insensitive; canonicalised to sports_engine's expected form
+    (``NFL`` / ``MLB`` / ``NBA`` / ``NHL`` / ``CFB`` / ``Soccer`` /
+    ``Tennis`` / ``UFC``).  Do NOT execute an all-sports refresh when
+    this parameter is set — the lease name is namespaced by sport so
+    the NFL-scoped run cannot collide with the all-sports lease.
     """
     import asyncio
     from sports_engine import reset_odds_api_circuit
     from services.job_coordinator import JobCoordinator
     from services.provider_budget import ProviderBudget
     from services.job_registry import get_job
+
+    # ── Normalise sport_filter to the canonical form _refresh_picks
+    # expects.  Reject unknown values with a 400 so callers can't
+    # accidentally trigger an ALL-sports refresh by typing a bad code.
+    _sf_norm: Optional[str] = None
+    if sport_filter is not None:
+        _canon = {
+            "nfl": "NFL", "mlb": "MLB", "nba": "NBA", "nhl": "NHL",
+            "cfb": "CFB", "wnba": "WNBA", "ncaaf": "CFB",
+            "soccer": "Soccer", "tennis": "Tennis", "ufc": "UFC",
+        }
+        _sf_norm = _canon.get((sport_filter or "").strip().lower())
+        if _sf_norm is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_sport_filter",
+                    "provided": sport_filter,
+                    "allowed": sorted(set(_canon.values())),
+                },
+            )
 
     coord   = JobCoordinator(db)
     budget  = ProviderBudget(db)
@@ -796,15 +828,21 @@ async def admin_force_refresh(
     lease_s = int(reg.get("lease_seconds") or 900)
     min_iv  = int(reg.get("min_interval_seconds") or 900)
 
+    # Namespace the lease by sport so an NFL-scoped refresh can't
+    # collide with an all-sports refresh and vice-versa.
+    _lease_key = "picks_refresh_today" if _sf_norm is None \
+                 else f"picks_refresh_today:{_sf_norm}"
+
     # ── 1. Distributed lease ────────────────────────────────────────
     lease = await coord.acquire(
-        "picks_refresh_today",
+        _lease_key,
         lease_seconds=lease_s,
         min_interval_seconds=min_iv,
         caller=f"admin:{getattr(user, 'id', 'unknown')}",
         reason=reason,
         metadata={"triggered_by": "admin_force_refresh",
-                   "emergency_requested": bool(emergency)},
+                   "emergency_requested": bool(emergency),
+                   "sport_filter": _sf_norm},
     )
     if not lease:
         raise HTTPException(
@@ -826,7 +864,7 @@ async def admin_force_refresh(
             },
         )
     lease_token = lease.lease_token
-    request_key = f"admin_force_refresh:{lease_token}"
+    request_key = f"admin_force_refresh:{_sf_norm or 'ALL'}:{lease_token}"
 
     # ── 2. Budget reservation ───────────────────────────────────────
     reservation = await budget.reserve(
@@ -838,12 +876,13 @@ async def admin_force_refresh(
         reason=reason,
         request_key=request_key,
         ttl_seconds=lease_s + 300,
-        metadata={"lease_token_hash": lease_token[:12] + "…"},
+        metadata={"lease_token_hash": lease_token[:12] + "…",
+                   "sport_filter": _sf_norm},
     )
     if not reservation.get("allowed"):
         # Release the lease so the next admin tap can retry.
         await coord.fail(
-            "picks_refresh_today", lease_token,
+            _lease_key, lease_token,
             error=f"budget_denied:{reservation.get('outcome')}",
             retry_after_seconds=300,
         )
@@ -868,14 +907,18 @@ async def admin_force_refresh(
 
     async def _run_and_settle():
         try:
-            await _refresh_picks(today_str)
+            # ── SENIOR SUPPORT REPAIR ──: pass the sport filter all
+            # the way through to `_refresh_picks` so generation,
+            # atomic delete, and publication all scope to this sport.
+            await _refresh_picks(today_str, sport_filter=_sf_norm)
             await budget.commit(intent_id)
             await coord.complete(
-                "picks_refresh_today", lease_token,
+                _lease_key, lease_token,
                 result_metadata={
                     "date": today_str,
                     "intent_id": intent_id,
                     "budget_committed": True,
+                    "sport_filter": _sf_norm,
                 },
                 next_eligible_at=(
                     datetime.now(timezone.utc)
@@ -887,15 +930,19 @@ async def admin_force_refresh(
             # blocked by a phantom reservation.
             await budget.release(intent_id, reason=f"refresh_failed:{e}")
             await coord.fail(
-                "picks_refresh_today", lease_token,
+                _lease_key, lease_token,
                 error=str(e), retry_after_seconds=300,
             )
 
     asyncio.create_task(_run_and_settle())
-    existing = await db.picks.count_documents({"pick_date": today_str})
+    _count_filter = {"pick_date": today_str}
+    if _sf_norm:
+        _count_filter["sport"] = _sf_norm
+    existing = await db.picks.count_documents(_count_filter)
     return {
         "queued": True,
         "date": today_str,
+        "sport_filter": _sf_norm,
         "existing_count": existing,
         "circuit_state_after_reset": pre_state,
         "lease": {

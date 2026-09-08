@@ -450,6 +450,47 @@ def apply_magic_and_apex(pick: dict, mo: MagicOutput) -> dict[str, Any]:
     refined = max(0.0, min(NON_APEX_HARD_CAP, base + delta))
     refined = round(refined, 1)
 
+    # ── 2026-06-09 · NFL ALT-LINE ELITE-TIER VALUE FLOOR ─────────────
+    # Per user directive (Surgical Closure Pass): "extremely easy
+    # alternate thresholds cannot reach 98/99/100 merely because model
+    # hit probability is huge. Those tiers must still satisfy the
+    # existing evidence/convergence requirements, including … meaningful
+    # pricing/value support."
+    #
+    # NFL alt-line picks with non-positive edge (Cooper Kupp Over 4.5
+    # Rec Yds @ -1600, edge -0.06% → prior lock 98.1 was the exact
+    # trap-chalk anti-pattern) are capped BELOW the Elite Lock 98
+    # tier so they can still surface at Strong Lock (95) or Lock (90)
+    # when the model genuinely converges, but never masquerade as
+    # elite without independent value support.  Legitimate high-priced
+    # alts (edge > 0) are untouched — this is a value floor, not a
+    # price cap.  Also vetoes APEX promotion for the same reason.
+    _alt_edge_cap_hit = False
+    try:
+        _sport = (pick.get("sport") or "").strip()
+        _mkt = (pick.get("market") or "")
+        _is_nfl_alt = (
+            _sport == "NFL"
+            and ("ALT LOCK" in _mkt or pick.get("alt_line") is True
+                 or pick.get("is_alt_line") is True)
+        )
+        if _is_nfl_alt:
+            try:
+                _edge_raw = pick.get("edge_percent")
+                _edge = float(_edge_raw) if _edge_raw is not None else 0.0
+            except (TypeError, ValueError):
+                _edge = 0.0
+            if _edge <= 0.0:
+                if refined >= 98.0:
+                    refined = 97.9
+                _alt_edge_cap_hit = True
+                pick["alt_edge_cap_applied"]  = True
+                pick["alt_edge_cap_reason"]   = (
+                    f"nfl_alt_no_positive_edge:{_edge:.2f}pct_no_elite_authority"
+                )
+    except Exception:
+        pass  # defensive — this cap must never break scoring
+
     # Stamp Magic delta provenance (regardless of APEX outcome).
     pick["lock_score_v3_base"]         = round(base, 1)
     pick["lock_score_v3_delta"]        = delta
@@ -472,6 +513,24 @@ def apply_magic_and_apex(pick: dict, mo: MagicOutput) -> dict[str, Any]:
         categories_available=delta_res.categories_available,
     )
     pick["apex_gate_version"] = apex_dec.gate_version
+
+    # ── 2026-06-09 · NFL ALT-LINE APEX VETO (value support) ──────────
+    # A trap-chalk alt (edge <= 0) must not receive APEX (100)
+    # authority even if the APEX gate's evidence/magic/context checks
+    # all pass.  This is the enforcement pair to the elite-tier
+    # value floor above: "meaningful pricing/value support" is
+    # required for APEX.  Non-alt picks and edge-positive alts are
+    # untouched.
+    if _alt_edge_cap_hit and apex_dec.eligible:
+        apex_dec = ApexDecision(
+            eligible=False,
+            block_reason="nfl_alt_no_meaningful_value_support_for_apex",
+            requirements_met=list(apex_dec.requirements_met),
+            requirements_failed=list(apex_dec.requirements_failed) + [
+                "nfl_alt_edge_not_positive"
+            ],
+            gate_version=apex_dec.gate_version,
+        )
 
     # ── P6 FINAL SURGICAL REPAIR (2026-08-25) — APEX STATE TELEMETRY ──
     # Additive-only stamping. Existing `apex_lock` / `apex_reasons` /

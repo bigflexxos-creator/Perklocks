@@ -346,6 +346,25 @@ async def build_nfl_prop_factors(
         # audit hint (visible to the pick rationale) but no longer
         # participates in evidence scoring.
     }
+    # ── 2026-06-09 · alt-line line-relative factor recompute ─────────
+    # Preserve raw metrics that are LINE-INDEPENDENT so the sync
+    # emission loop in ``sports_engine._props_picks_from_event`` can
+    # rebuild the LINE-DEPENDENT factors (``L5 Avg vs Line`` and
+    # ``Opponent Defense Allowance``) at the exact alt-line threshold
+    # instead of reusing whichever threshold got iterated last in
+    # ``build_nfl_game_context``.  This unblocks alt-lines that share
+    # a market_key with different points (e.g. Player Rec Yds Over
+    # 30.5 / 50.5 / 80.5 all key ``player_reception_yds_alternate``).
+    # No new DB round-trips (all sourced from ``rolling``/``opp_pos``
+    # already fetched above).  Under-side factor mirroring is applied
+    # after this snapshot so recomputed Over factors are honestly
+    # mirrored to Under.
+    _raw_l5_avg = None
+    try:
+        _raw_l5_avg = ((rolling or {}).get("l5") or {}).get(prop_stat)
+    except Exception:
+        _raw_l5_avg = None
+    _raw_opp_pos = opp_pos or {}
     # 2026-08-23 side-aware mirroring — every naturally Over-flavoured
     # factor above is mirrored on Under so evidence cannot silently
     # reward the opposite selected side (§Model-Integrity — "L5/L3/
@@ -375,6 +394,22 @@ async def build_nfl_prop_factors(
     if isinstance(book_implied, (int, float)):
         sources.append("odds_api_book_implied[audit_only]")
 
+    # Line-independent raw metrics for alt-line line-relative recompute
+    # in the sync emission loop (see sports_engine.py L6684 area).
+    # Callers may ignore ``raw_l5_avg`` / ``raw_opp_pos`` — they are
+    # additive and don't affect any existing consumer.
+    _raw_metrics = {
+        "raw_l5_avg": (
+            round(float(_raw_l5_avg), 3)
+            if isinstance(_raw_l5_avg, (int, float)) else None
+        ),
+        "raw_opp_pos": _raw_opp_pos or None,
+        "prop_stat": prop_stat,
+        "side": _side_norm,
+        "position": position,
+        "orig_line": float(line),
+    }
+
     # Rationale — the "Why this pick" prose we surface on the UI.
     rationale_bits = []
     l5 = ((rolling or {}).get("l5") or {}).get(prop_stat)
@@ -398,7 +433,7 @@ async def build_nfl_prop_factors(
                 f"per game to opposing {position}s in {season}."
             )
 
-    return factors, sources
+    return factors, sources, _raw_metrics
 
 
 __all__ = [
@@ -406,7 +441,61 @@ __all__ = [
     "build_nfl_game_context",
     "has_enough_real_data_nfl",
     "MIN_FACTORS_NFL_PROP",
+    "recompute_line_dependent_factors",
 ]
+
+
+def recompute_line_dependent_factors(
+    factors: dict, raw_metrics: dict, *, line: float, side: str = "over",
+) -> dict:
+    """Rebuild ONLY the line-dependent NFL factors at a fresh ``line``
+    using the raw metrics stashed by ``build_nfl_prop_factors``.
+
+    ``L3 vs Season Trend``, ``Home/Away Split``, ``Career vs Opponent
+    Hit%`` are line-INDEPENDENT and passed through unchanged.
+    ``L5 Avg vs Line`` and ``Opponent Defense Allowance`` are rebuilt
+    against ``line``.  Under-side mirror is reapplied consistently
+    with the original build path.
+
+    Called by the sync emission loop in
+    ``sports_engine._props_picks_from_event`` so alt-line NFL props
+    that share a market_key with different points get honestly
+    evaluated at their own threshold (previously all alt rungs used
+    whichever threshold was iterated last in the precompute).
+    """
+    if not raw_metrics or not isinstance(raw_metrics, dict):
+        return dict(factors or {})
+    stat = raw_metrics.get("prop_stat") or ""
+    raw_l5 = raw_metrics.get("raw_l5_avg")
+    opp_pos = raw_metrics.get("raw_opp_pos") or {}
+    # Rebuild L5 Avg vs Line
+    new_factors = dict(factors or {})
+    if isinstance(raw_l5, (int, float)) and stat:
+        _fake_rolling = {"l5": {stat: raw_l5}}
+        new_factors["L5 Avg vs Line"] = _factor_rolling_avg_vs_line(
+            _fake_rolling, stat, line
+        )
+    if opp_pos and stat:
+        new_factors["Opponent Defense Allowance"] = _factor_matchup(
+            opp_pos, stat, line
+        )
+    # Reapply Under-side mirror (Career vs Opponent Hit% is already
+    # side-aware from the fetch call so we do NOT re-mirror it).
+    if str(side or "over").lower() == "under":
+        # Undo any pre-mirroring stashed by the precompute — the
+        # precompute already mirrored Under factors *before* stashing.
+        # Detect whether the original was in the Over frame by checking
+        # ``raw_metrics.side`` == the current ``side``; if they agree,
+        # the factors passed in are already correctly mirrored for the
+        # current side and only the two rebuilt ones (Over frame) need
+        # to be mirrored now.
+        orig_side = str(raw_metrics.get("side") or "over").lower()
+        if orig_side == "under":
+            for _k in ("L5 Avg vs Line", "Opponent Defense Allowance"):
+                v = new_factors.get(_k)
+                if isinstance(v, (int, float)):
+                    new_factors[_k] = round(1.0 - v, 3)
+    return new_factors
 
 
 # ── Async pre-loader (called from the sports_engine props fetcher) ────
@@ -537,7 +626,7 @@ async def build_nfl_game_context(
             _pos_cache[_pk] = canonical_pos
         position = canonical_pos or cand.get("position") or _infer_position(market)
         try:
-            factors, sources = await build_nfl_prop_factors(
+            factors, sources, raw_metrics = await build_nfl_prop_factors(
                 db,
                 player=player, opponent=opponent, position=position,
                 prop_stat=stat,
@@ -551,6 +640,7 @@ async def build_nfl_game_context(
             out.setdefault(key_l, {})[market] = {
                 "factors": factors,
                 "sources": sources,
+                "raw_metrics": raw_metrics,   # for line-relative recompute
                 "position_used": position,
                 "position_source": ("canonical_registry"
                                      if canonical_pos else "market_inference"),

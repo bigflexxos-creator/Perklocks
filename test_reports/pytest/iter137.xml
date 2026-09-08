@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="3" skipped="0" tests="8" time="5.138" timestamp="2026-09-08T06:22:15.515119+00:00" hostname="agent-env-94a57b11-1651-4cbd-8cc5-d049697d5eae"><testcase classname="tests.test_iter137_nfl_alt_surgical_closure.TestATDLeaderboard" name="test_atd_leaderboard_200_canonical_publication_non_empty" time="0.389" /><testcase classname="tests.test_iter137_nfl_alt_surgical_closure.TestNFLPicksLiteValueFloor" name="test_endpoint_returns_200_with_bearer" time="3.673" /><testcase classname="tests.test_iter137_nfl_alt_surgical_closure.TestNFLPicksLiteValueFloor" name="test_no_nfl_alt_with_nonpositive_edge_reaches_elite_or_apex" time="0.000" /><testcase classname="tests.test_iter137_nfl_alt_surgical_closure.TestTrapChalkFlags" name="test_49_trap_chalk_alts_carry_expected_flags" time="0.468" /><testcase classname="tests.test_iter137_nfl_alt_surgical_closure.TestTrapChalkFlags" name="test_trap_chalk_all_have_nonpositive_edge_and_capped_lock_score" time="0.001"><failure message="RuntimeError: Task &lt;Task pending name='Task-2' coro=&lt;TestTrapChalkFlags.test_trap_chalk_all_have_nonpositive_edge_and_capped_lock_score.&lt;locals&gt;._run() running at /app/backend/tests/test_iter137_nfl_alt_surgical_closure.py:211&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop">tests/test_iter137_nfl_alt_surgical_closure.py:230: in test_trap_chalk_all_have_nonpositive_edge_and_capped_lock_score
+    offenders = asyncio.new_event_loop().run_until_complete(_run())
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/asyncio/base_events.py:654: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+tests/test_iter137_nfl_alt_surgical_closure.py:211: in _run
+    async for p in cursor:
+/root/.venv/lib/python3.11/site-packages/motor/core.py:1390: in next
+    if self.alive and (self._buffer_size() or await self._get_more()):
+                                              ^^^^^^^^^^^^^^^^^^^^^^
+E   RuntimeError: Task &lt;Task pending name='Task-2' coro=&lt;TestTrapChalkFlags.test_trap_chalk_all_have_nonpositive_edge_and_capped_lock_score.&lt;locals&gt;._run() running at /app/backend/tests/test_iter137_nfl_alt_surgical_closure.py:211&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop</failure></testcase><testcase classname="tests.test_iter137_nfl_alt_surgical_closure.TestPositiveEdgeAltsUntouched" name="test_positive_edge_nfl_alts_have_no_cap_flag" time="0.001"><failure message="RuntimeError: Task &lt;Task pending name='Task-3' coro=&lt;TestPositiveEdgeAltsUntouched.test_positive_edge_nfl_alts_have_no_cap_flag.&lt;locals&gt;._fetch() running at /app/backend/tests/test_iter137_nfl_alt_surgical_closure.py:254&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop">tests/test_iter137_nfl_alt_surgical_closure.py:258: in test_positive_edge_nfl_alts_have_no_cap_flag
+    db_pos = asyncio.new_event_loop().run_until_complete(_fetch())
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/asyncio/base_events.py:654: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+tests/test_iter137_nfl_alt_surgical_closure.py:254: in _fetch
+    async for p in cursor:
+/root/.venv/lib/python3.11/site-packages/motor/core.py:1390: in next
+    if self.alive and (self._buffer_size() or await self._get_more()):
+                                              ^^^^^^^^^^^^^^^^^^^^^^
+E   RuntimeError: Task &lt;Task pending name='Task-3' coro=&lt;TestPositiveEdgeAltsUntouched.test_positive_edge_nfl_alts_have_no_cap_flag.&lt;locals&gt;._fetch() running at /app/backend/tests/test_iter137_nfl_alt_surgical_closure.py:254&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop</failure></testcase><testcase classname="tests.test_iter137_nfl_alt_surgical_closure.TestImportSanity" name="test_touched_modules_import_cleanly" time="0.234" /><testcase classname="tests.test_iter137_nfl_alt_surgical_closure.TestLadderIntegrity" name="test_nfl_alt_ladder_monotone_and_odds_present" time="0.002"><failure message="RuntimeError: Task &lt;Task pending name='Task-4' coro=&lt;TestLadderIntegrity.test_nfl_alt_ladder_monotone_and_odds_present.&lt;locals&gt;._fetch() running at /app/backend/tests/test_iter137_nfl_alt_surgical_closure.py:309&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop">tests/test_iter137_nfl_alt_surgical_closure.py:342: in test_nfl_alt_ladder_monotone_and_odds_present
+    groups = asyncio.new_event_loop().run_until_complete(_fetch())
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/asyncio/base_events.py:654: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+tests/test_iter137_nfl_alt_surgical_closure.py:309: in _fetch
+    async for p in cursor:
+/root/.venv/lib/python3.11/site-packages/motor/core.py:1390: in next
+    if self.alive and (self._buffer_size() or await self._get_more()):
+                                              ^^^^^^^^^^^^^^^^^^^^^^
+E   RuntimeError: Task &lt;Task pending name='Task-4' coro=&lt;TestLadderIntegrity.test_nfl_alt_ladder_monotone_and_odds_present.&lt;locals&gt;._fetch() running at /app/backend/tests/test_iter137_nfl_alt_surgical_closure.py:309&gt; cb=[_run_until_complete_cb() at /usr/local/lib/python3.11/asyncio/base_events.py:181]&gt; got Future &lt;Future pending cb=[_chain_future.&lt;locals&gt;._call_check_cancel() at /usr/local/lib/python3.11/asyncio/futures.py:387]&gt; attached to a different loop</failure></testcase></testsuite></testsuites>

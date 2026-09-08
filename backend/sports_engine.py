@@ -5981,15 +5981,37 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         implied = _implied_prob(median)
         is_alt = _is_alt_market_key(sport, mk)
         if is_alt:
-            # Alt lines must be near-locks AND not absurd chalk.
-            if implied < _ALT_PROP_MIN_IMPLIED or implied > _ALT_PROP_MAX_IMPLIED:
-                if mk and mk.startswith("batter_") or mk and mk.startswith("pitcher_"):
-                    try:
-                        from services.mlb_gates import record_rejection as _mlb_reject
-                        _mlb_reject("implied_probability_gate", market_key=mk)
-                    except Exception:
-                        pass
-                continue
+            # ── 2026-06-09 · NFL ALT LADDER GATE REMOVAL ──────────────────
+            # Per user directive (Surgical Closure Pass): the 0.80–0.95
+            # implied-probability band was acting as an upstream
+            # candidate-selection gate that structurally forced the NFL
+            # alt pool toward heavy chalk BEFORE the model evaluates
+            # exact-threshold probability, fair price, edge, EV, evidence
+            # quality, or opportunity context.  Real observed sportsbook
+            # alternate lines (across the entire published ladder) must
+            # be allowed into evaluation; trap-chalk vs true-value is
+            # decided downstream at scoring/publication (APEX gate,
+            # edge floors for elite tiers, evidence convergence).
+            # Non-NFL sports keep the original 0.80–0.95 band — this is
+            # a surgical NFL-only change.
+            if sport != "NFL":
+                if implied < _ALT_PROP_MIN_IMPLIED or implied > _ALT_PROP_MAX_IMPLIED:
+                    if mk and mk.startswith("batter_") or mk and mk.startswith("pitcher_"):
+                        try:
+                            from services.mlb_gates import record_rejection as _mlb_reject
+                            _mlb_reject("implied_probability_gate", market_key=mk)
+                        except Exception:
+                            pass
+                    continue
+            else:
+                # NFL alts: keep only a hard sanity floor (2% implied)
+                # to reject obviously-broken +5000-and-worse outcomes.
+                # Everything else flows into exact-threshold model
+                # evaluation.  DO NOT cap the top end — a -500 / -1000 /
+                # -1600 line is a real observed sportsbook price and
+                # must be allowed to compete on model+edge+evidence.
+                if implied < 0.02:
+                    continue
         elif mk == "player_goal_scorer_anytime":
             if implied < _SOCCER_PROP_MIN_IMPLIED:
                 continue
@@ -6205,9 +6227,22 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
     #   6. median ASC          → cheaper price on ties.
     def _dedup_sort_key(c):
         _implied, _mk, _player, _point, _side, _median, _is_alt = c
+        # ── 2026-06-09 · alt-line VALUE-FIRST ordering ─────────────
+        # For alts we want CHEAPEST implied processed first because
+        # the ``alt_over_per_player`` cap (3 per player per side) is
+        # a hard first-N gate.  Steepest-chalk alt (-1500) at implied
+        # 0.94 has the *hardest* task to earn positive edge; a cheaper
+        # alt (-400) at implied 0.80 with the same factor mean has
+        # much more room for a legitimate edge.  Previously we
+        # sorted alts by ``-float(_implied)`` (steepest first) — the
+        # -1500 rows filled the cap and blocked every -400 sibling
+        # regardless of model support.  Main lines keep DESC-implied
+        # (favorite-first) because there is no per-family alt cap
+        # for them; ``std_seen`` picks the single best mainline
+        # instead.
         return (
             0 if not _is_alt else 1,
-            -float(_implied),
+            float(_implied) if _is_alt else -float(_implied),
             str(_mk or ""),
             float(_point) if isinstance(_point, (int, float)) else 0.0,
             str(_side or ""),
@@ -6795,6 +6830,30 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     else:
                         factors = {k: v for k, v in real_factors.items() if v is not None}
                         _mlb_features_used = _sources
+                        # ── 2026-06-09 · alt-line line-relative recompute ──
+                        # Rebuild the LINE-DEPENDENT factors
+                        # (``L5 Avg vs Line`` and ``Opponent Defense
+                        # Allowance``) at the current candidate's line so
+                        # alt-line rungs (30.5/50.5/80.5 all sharing one
+                        # ``player_reception_yds_alternate`` key) get
+                        # honestly evaluated at their own threshold
+                        # instead of reusing whichever line was iterated
+                        # last in ``build_nfl_game_context``.
+                        _raw = _pc.get("raw_metrics") or {}
+                        _cand_line = point if isinstance(point, (int, float)) else None
+                        if _raw and _cand_line is not None:
+                            try:
+                                from services.nfl_feature_engine import (
+                                    recompute_line_dependent_factors as _relite,
+                                )
+                                factors = _relite(
+                                    factors, _raw, line=float(_cand_line), side=side,
+                                )
+                            except Exception as _relite_err:
+                                logger.debug(
+                                    "NFL line-relative recompute failed for %s / %s @ %s: %s",
+                                    player, mk, _cand_line, _relite_err,
+                                )
                 except Exception as e:
                     logger.debug("NFL sync gate failed for %s / %s: %s", player, mk, e)
                     _skip_pick = True

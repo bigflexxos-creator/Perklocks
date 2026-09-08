@@ -1492,9 +1492,22 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         # cannot be deleted by a candidate-cycle refresh.  For CURRENT
         # board eligibility the mutable filters still decide; this
         # shield only prevents outright document removal.
+        #
+        # ── 2026-06-09 · SENIOR SUPPORT SURGICAL REPAIR ─────────────
+        # The shield was blocking freshly-regenerated canonical picks
+        # from overwriting their own stale published rows.  When a
+        # canonical pick's id appears in the CURRENT refresh cycle's
+        # ``seen_ids`` set, that row is being re-emitted THIS cycle —
+        # it MUST be deletable so the fresh version (with corrected
+        # lock_score / edge / alt_edge_cap / etc.) can insert cleanly.
+        # Rows whose ids are NOT in ``seen_ids`` keep the shield
+        # (unrelated previously-published picks stay protected).
         _publication_shield = {"$or": [
             {"publication_source": {"$in": [None, "", False]}},
             {"publication_source": {"$exists": False}},
+            # Exempt rows re-emitted this cycle — they will be
+            # replaced with fresh canonical output immediately below.
+            {"id": {"$in": list(seen_ids)}} if seen_ids else {"_id_": "never"},
         ]}
         # Fail-safe: never wipe healthy rows when the refresh produced
         # nothing (execution failure / provider outage / cache miss).
@@ -1512,10 +1525,11 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
                 **_pin_filter, **_family_conservation_filter,
                 **_publication_shield,
             })
+            # Re-emitted-id deletes: strip the shield entirely — these
+            # picks are BY DEFINITION being replaced this cycle.
             await db.picks.delete_many({
                 "id": {"$in": list(seen_ids)}, "sport": sport_filter,
                 **_pin_filter,
-                **_publication_shield,
             })
         else:
             await db.picks.delete_many({
@@ -1525,7 +1539,6 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
             })
             await db.picks.delete_many({
                 "id": {"$in": list(seen_ids)}, **_pin_filter,
-                **_publication_shield,
             })
         # ── ID-COLLISION FRESH-OVERWRITE ──
         # If the current refresh re-generates a pick whose `id` is ALSO a
@@ -1541,20 +1554,19 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         # through the synth + clamp pipeline), so the "highest-ever lock"
         # invariant still holds.
         if seen_ids:
-            # MAIN 41 · P0-B1 shield — never destroy canonical
-            # publication truth even when re-inserting by id.
-            _publication_shield = {"$or": [
-                {"publication_source": {"$in": [None, "", False]}},
-                {"publication_source": {"$exists": False}},
-            ]}
+            # ── MAIN 41 · P0-B1 shield ─ 2026-06-09 SENIOR SUPPORT
+            # REPAIR: for picks WHOSE ID IS IN seen_ids, the shield
+            # is intentionally NOT applied — the whole point of this
+            # delete is to replace them with the fresh canonical
+            # version emitted THIS cycle.  Unrelated rows (id NOT
+            # in seen_ids) are never touched by this delete_many
+            # because the id-filter narrows the scope.
             if sport_filter:
                 await db.picks.delete_many(
-                    {"id": {"$in": list(seen_ids)}, "sport": sport_filter,
-                     **_publication_shield}
+                    {"id": {"$in": list(seen_ids)}, "sport": sport_filter}
                 )
             else:
-                await db.picks.delete_many({"id": {"$in": list(seen_ids)},
-                                             **_publication_shield})
+                await db.picks.delete_many({"id": {"$in": list(seen_ids)}})
 
         # ── 2026-07-28 DEFECT #4 FIX: semantic-identity delete ─────────
         # ────────────────────────────────────────────────────────────
@@ -2031,6 +2043,80 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
             )
     except Exception as _eg_err:
         logger.warning("Elite Evidence Gate skipped: %s", _eg_err)
+
+    # ── NFL ALT-LINE ELITE-TIER VALUE FLOOR (2026-06-09) ──────────────
+    # Per user directive (Surgical Closure Pass):
+    #   "Extremely easy alternate thresholds cannot reach 98/99/100
+    #    merely because model hit probability is huge. Those tiers must
+    #    still satisfy … meaningful pricing/value support."
+    # A trap-chalk alt (Cooper Kupp Over 4.5 Rec Yds @ -1600 with
+    # edge = -0.06 %) may pass every evidence / role / matchup / magic
+    # gate above yet lacks the *value* to earn Elite / Strong / APEX
+    # Lock authority.  Runs LAST — after Block 8 Magic, evidence
+    # governor, chalk_trap, and elite_evidence_gate — so no downstream
+    # writer can un-cap it.  Applies ONLY to NFL alt-line picks
+    # (surgical scope); non-alt picks and edge-positive alts are
+    # untouched.  This is a value floor, not a price cap — a -500 /
+    # -1000 / -1600 line with genuine positive edge still keeps its
+    # elite score.
+    try:
+        _alt_cap_hits = 0
+        for _p in safe_picks:
+            if (_p.get("sport") or "").strip() != "NFL":
+                continue
+            _mkt = _p.get("market") or ""
+            _is_alt = bool(
+                _p.get("is_alt")
+                or _p.get("is_alt_line") is True
+                or _p.get("alt_line") is True
+                or "ALT LOCK" in _mkt
+                or ((_p.get("line_type") or "").lower().find("alt") >= 0)
+            )
+            if not _is_alt:
+                continue
+            try:
+                _edge = float(_p.get("edge_percent")
+                              if _p.get("edge_percent") is not None else 0.0)
+            except (TypeError, ValueError):
+                _edge = 0.0
+            if _edge > 0.0:
+                continue  # legitimate positive-edge alt — untouched
+            try:
+                _lock = float(_p.get("lock_score") or 0.0)
+            except (TypeError, ValueError):
+                _lock = 0.0
+            if _lock < 98.0:
+                continue  # already below Elite Lock — nothing to cap
+            # Apply the value floor: block Elite / Strong / APEX tier
+            # for this pick.  97.9 keeps the pick visible on the board
+            # (Lock 90+ tier) but never elite/apex without positive
+            # edge.  Mirror across v1 / v2 / peak so read-time
+            # canonicalisation cannot restore a stale higher value.
+            _p["lock_score"]      = 97.9
+            _p["lock_score_v2"]   = min(float(_p.get("lock_score_v2") or 97.9), 97.9)
+            _p["lock_score_peak"] = min(float(_p.get("lock_score_peak") or 97.9), 97.9)
+            _p["apex_lock"]       = False
+            _p["apex_score"]      = 97.9
+            _p["apex_status"]     = "NOT_APEX"
+            _p["apex_reason"]     = "nfl_alt_no_positive_edge_no_elite_authority"
+            _p["alt_edge_cap_applied"] = True
+            _p["alt_edge_cap_reason"]  = (
+                f"nfl_alt_edge_not_positive:{_edge:.2f}pct_no_elite_authority"
+            )
+            _alt_cap_hits += 1
+            # Re-derive grade so the badge reflects the capped tier.
+            try:
+                from sports_engine import _grade as _grade_fn
+                _p["grade"] = _grade_fn(97.9)
+            except Exception:
+                pass
+        if _alt_cap_hits:
+            logger.info(
+                "NFL alt-line value floor: capped %d picks below Elite "
+                "(edge<=0 pre-elite-authority)", _alt_cap_hits,
+            )
+    except Exception as _alt_cap_err:
+        logger.warning("NFL alt-line value floor skipped: %s", _alt_cap_err)
 
     if safe_picks:
         # ATOMIC-SWAP: do the wipe NOW, immediately before the insert.

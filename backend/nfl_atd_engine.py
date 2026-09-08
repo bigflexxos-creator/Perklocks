@@ -37,13 +37,27 @@ logger = logging.getLogger("lockscore.nfl_atd")
 # ── Recency / sample gates ──
 RECENT_TAU = 4.5                 # exp-decay constant — games-ago/4.5
 MIN_GAMES_SAMPLE = 5
-MIN_TOTAL_TOUCHES = 10
+# ── 2026-06-09 · ATD position-fairness relaxation ─────────────────────
+# User directive: "ATD section should not just be running backs, should
+# be top 5 mathematically."  Previously ``MIN_TOTAL_TOUCHES = 10`` and
+# ``w_touches < 8.0`` inside ``predict_player_atd`` rejected legitimate
+# receiving-heavy candidates (elite WRs / red-zone TEs) whose season
+# targets/game sits at 5-8.  These gates were RB-appropriate but did
+# not treat receiving-first players fairly.  The math (Poisson-derived
+# TD probability) is already the right ranking mechanism — we only
+# needed to stop volume-based gates from filtering out real receivers
+# BEFORE the math runs.  Book-implied is never used; conversion
+# efficiency and outlier gates remain intact so a random 1-target WR
+# with 1 lucky TD still can't rank.
+MIN_TOTAL_TOUCHES = 6            # was 10 — includes 5-target WRs w/ ≥2 games
 MIN_RECENT_TD_OR_VOLUME = True
-RECENT_WINDOW = 10              # used for the "recent TD involvement" gate
+RECENT_WINDOW = 10               # used for the "recent TD involvement" gate
 
 # Volume / opportunity rating thresholds (touches/game in last 10).
 OPPORTUNITY_HIGH = 12.0
-OPPORTUNITY_MED = 7.0
+OPPORTUNITY_MED = 5.0            # was 7.0 — elite WRs (6-8 targets/g) now
+                                 # register as "med" opportunity, not "low"
+                                 # (the leaderboard's default cut-off).
 
 # Conversion efficiency floor — players below 1.5% TD-per-touch are
 # usually special teams / depth players; reject.
@@ -419,10 +433,14 @@ async def predict_player_atd(
     outlier = _td_outlier_check(games)
     if outlier:
         return {"reject": outlier}
-    # Random-dart gate: must have either ≥1 TD in last 10 OR weighted touches ≥ 8
+    # Random-dart gate: must have either ≥1 TD in last 10 OR weighted touches ≥ 4
+    # (relaxed from 8 on 2026-06-09 so receiving-first players — WRs / red-zone
+    # TEs whose targets/game sits at 4-6 — aren't rejected before the Poisson
+    # math runs.  Conversion-efficiency, outlier, and total-touches gates
+    # above still block genuinely random-dart profiles.)
     if MIN_RECENT_TD_OR_VOLUME:
         recent_tds = sum(1 for g in last_n if g["td"] > 0)
-        if recent_tds == 0 and w_touches < 8.0:
+        if recent_tds == 0 and w_touches < 4.0:
             return {"reject": "no_recent_red_zone_path",
                     "recent_tds_L10": recent_tds,
                     "weighted_touches_L10": round(w_touches, 2)}

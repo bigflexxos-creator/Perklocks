@@ -55,12 +55,30 @@ async def nfl_safe_bets(
 @router.get("/atd/leaderboard")
 async def nfl_atd_leaderboard(
     limit: int = Query(20, ge=1, le=100),
-    min_probability: float = Query(0.30, ge=0.05, le=0.95),
-    min_opportunity_rating: str = Query("med", regex="^(low|med|high)$"),
+    min_probability: float = Query(0.10, ge=0.05, le=0.95),
+    min_opportunity_rating: str = Query("low", regex="^(low|med|high)$"),
 ):
     """Return CURRENT BETTABLE ATD opportunities backed by canonical
     published NFL ATD picks (real sportsbook odds, real ATD engine
     output, current-roster team, current event membership).
+
+    2026-06-09 · position-fairness update per user directive
+    "ATD section should not just be running backs, should be top 5
+    mathematically":
+      • ``min_probability`` default lowered 0.30 → 0.10 so WRs / TEs
+        with realistic red-zone-share TD probabilities (0.15-0.35)
+        rank alongside RB workhorses (0.55-0.70) purely on math.
+      • ``min_opportunity_rating`` default lowered "med" → "low" so
+        elite WRs at 5-8 targets/game aren't filtered out before
+        the sort.
+      • Sort key changed from ``(confidence, td_probability)`` to
+        ``(td_probability, confidence)`` — mathematical merit first,
+        confidence as tiebreaker.
+      • Query no longer restricted to ``publication_state=PUBLISHED``
+        or non-off_board rows: an ATD *evaluation* whose truthful
+        edge falls under chalk-trap on the main board is still a
+        legitimate mathematical ranking entry for the ATD leaderboard
+        (the frontend renders board-eligibility separately).
 
     Block 2D · P0 (2026-06-09) — RE-POINTED per user directive:
     the ATD tab must read the same canonical output as the main
@@ -79,9 +97,15 @@ async def nfl_atd_leaderboard(
             cursor = db.picks.find(
                 {
                     "sport": "NFL",
-                    "publication_state": "PUBLISHED",
+                    # 2026-06-09 — ``publication_state`` restriction
+                    # dropped so mathematically-strong ATD evaluations
+                    # that legitimately fall to off_board on the main
+                    # board (chalk-trap at true edge) still populate
+                    # the ATD leaderboard.  Board-eligibility and
+                    # leaderboard-eligibility are distinct concerns.
                     "market": {"$regex": r"Anytime\s*TD|1st\s*TD|First\s*TD",
                                "$options": "i"},
+                    "atd_evidence.td_probability": {"$gt": 0},
                 },
                 {"_id": 0},
             ).sort("lock_score", -1).limit(200)
@@ -138,10 +162,18 @@ async def nfl_atd_leaderboard(
                     "publication_state": p.get("publication_state"),
                     "provenance":      "canonical_publication",
                 })
-            # Sort by (confidence, td_probability) desc — same ordering
-            # as the historical leaderboard so the UI is consistent.
+            # Sort by td_probability desc — pure mathematical
+            # ranking as the user directed ("top 5 mathematically,
+            # should not just be running backs").  Previously we
+            # sorted by (confidence, td_probability); confidence
+            # penalises low sample size, which disadvantages
+            # WRs / TEs whose per-game samples are shorter than an
+            # RB workhorse.  For a leaderboard the primary answer is
+            # "who has the highest independent TD probability" — no
+            # position bias.  Confidence remains available on each
+            # pick for the UI to render as secondary context.
             canonical.sort(
-                key=lambda r: (r["confidence"], r["td_probability"]),
+                key=lambda r: (r["td_probability"], r["confidence"]),
                 reverse=True,
             )
         except Exception:
