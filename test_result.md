@@ -2722,3 +2722,102 @@ agent_communication:
 
 ### Environmental note (genuine blocker)
 Production deployment requires the user's "Publish" click. The agent cannot promote code to production from the build container.
+
+
+## STAGE 2 CONTINUATION (2026-06-09 · P0-A / P0-B / P0-C closed)
+
+### Files changed in this slice
+- `backend/routes/picks_routes.py` — Eligibility-union rescue query now
+  honours market / league / game_ids / events / grade / line_type filters,
+  restoring canonical market-family authority on `/api/picks/today`.
+  Previously the rescue re-injected the full sport slate regardless of
+  filter, silently voiding every NFL prop pill except sport.
+- `backend/server.py` — `_MARKET_REGEX["player_receptions"]` now excludes
+  `Yds` so it matches ONLY "Receptions", never "Reception Yds".  The
+  receiving_yards / player_receptions families are cleanly disjoint.
+- `backend/evidence_engine.py` — `evidence_multiplier(score)` gains two
+  intermediate tiers (0.95 at score 65, 0.97 at score 70) so a base 99
+  Lock with medium-to-strong evidence lands in the 94-96-99 band instead
+  of the previously-mathematically-unreachable 93-99 hole (base 99 × 0.93
+  = 92.1 was the exact ceiling that clamped every NFL board pick).
+
+### P0-A · NFL canonical prop filters — CLOSED
+Curl matrix against `/api/picks/today?sport=NFL&market=<token>&lite=true`:
+```
+  (unfiltered)              total=327
+  moneyline                 total=  2
+  spread                    total=  2
+  passing_yards             total= 95   (std + alt via `passing yards|pass yds\b`)
+  rushing_yards             total= 56   (std + alt via `rushing yards|rush yds\b`)
+  receiving_yards           total=127   (std + alt via `receiving yards|reception yds\b|rec yds\b`)
+  player_receptions         total= 30   (ONLY "Receptions", not "Reception Yds")
+  player_pass_completions   total=  3
+  player_pass_tds           total=  2
+  player_pass_attempts      total=  2
+  player_rush_attempts      total=  8
+  player_rush_tds           total=  0
+  player_reception_tds      total=  0
+  player_1st_td             total=  0
+```
+Sum(canonical families) = 327 ✅ exact parity with unfiltered slate — no
+double-counting, no cross-family leakage.  Tapping "PASS YDS" now isolates
+both the standard `player_pass_yds` main line AND every published
+`player_pass_yds_alternate` rung (261 alt picks on wire).
+
+### P0-B · Deep alt-ladder reachability (Joe Burrow trace) — CLOSED
+Traced the raw Odds-API cache (`odds_api_cache`, sport_key=
+`americanfootball_nfl`, market=`player_pass_yds_alternate`, event=
+Cincinnati Bengals):
+  * DraftKings offers 26 alt rungs (Over 189.5 @ -1080 through
+    Over 429.5 @ +4000)
+  * FanDuel offers 10 alt rungs (Over 174.5 @ -1400 through
+    Over 399.5 @ +1280)
+DB now surfaces 24 Burrow Pass Yds picks (3 chalk-trap off_board,
+3 standard-line off_board grade=Pass, 18 Playable alts 319.5-419.5).
+Model behaviour verified canonical: the chalk-trap governor
+(edge=0 on -1400 line = pure book-follow) intentionally shelves the
+174.5/189.5/199.5 rungs so the board never masquerades a book-mirror
+as an independent lock — per user directive "Do NOT fabricate lines".
+Wire count on `/api/picks/today?sport=NFL`: **327 total NFL picks · 261
+alt picks** (vs 33 at Stage-2 start · 8× increase from the rescue-query
+canonical filter fix).
+
+### P0-C · Elite 93-99 score reachability — CLOSED (math), pending refresh
+Root cause: `evidence_engine.evidence_multiplier` had a 0.93 → 1.00 jump
+across score buckets 60-79 → 80+.  With `base = 99` (magic ceiling),
+any pick with score 60-79 clamped to `99 × 0.93 = 92.1` — the exact
+ceiling on the NFL board (no picks in [90-93) or higher until score
+crosses 80).  Fix inserts smooth intermediate rungs (score ≥ 65 → 0.95,
+≥ 70 → 0.97); mathematical verification:
+```
+  score  mult   base 99 → lock   base 100 → lock
+    40   0.85     84.1            85.0
+    60   0.93     92.1            93.0
+    65   0.95     94.0            95.0    ← 93-95 band unlocked
+    70   0.97     96.0            97.0    ← 95-97 band unlocked
+    80   1.00     99.0            99.0
+```
+93-99 is now mathematically reachable for NFL picks with genuine
+evidence convergence (score ≥ 65).  A scoped NFL refresh has been
+kicked off via `/api/admin/picks/force-refresh?sport_filter=NFL` to
+re-score the existing slate; the new score dispersion will land after
+the ~10 min ingest completes.  Existing DB rows retain their prior
+scores until the atomic-swap insert lands.
+
+### Test artifacts
+- `backend/tests/test_nfl_stage2_p0_closure.py` — Executable proof
+  runner covering P0-A canonical filter matrix, P0-B raw ladder trace,
+  P0-C multiplier reachability.  Independent of pytest so any harness
+  (or a bare `python -m`) can replay the closure.
+
+### Explicitly NOT shipped in this slice (P0-D)
+Specialized ATD (§B2-B17) is a multi-hour data-ingestion pass and
+requires user confirmation before I proceed:
+  * Populate `atd_evidence.td_probability` for every player with an
+    Anytime TD sportsbook line, not just RBs (WR/TE/QB expansion via
+    nflverse red-zone targets + goal-line carries).
+  * Independent Poisson-lambda touchdown model (opportunity-driven,
+    not book-follow).
+  * Wire the frontend ATD tab (Section 1 · TRUE TOP 5 · Section 2 ·
+    Game-by-Game) mirroring the MLB HR section UI.
+Handing off P0-D to the user for scope approval before continuing.
