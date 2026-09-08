@@ -2588,3 +2588,80 @@ agent_communication:
 ##       (b) /api/nfl/atd/by-game returns 200 with games[] non-empty
 ##       (c) /api/nfl/atd/leaderboard still 200 (regression)
 ##       (d) tests/test_nfl_prop_closure_p0.py still 13/13 pass
+
+    - task: "Deep Alt Ladder Closure — Block 1 P0-A + Unit-Safety §22"
+      implemented: true
+      working: true
+      file: "backend/sports_engine.py, backend/services/signal_engine/calculators.py, backend/board_validator.py, backend/services/nfl_ladder_monotonicity.py, backend/services/published_prediction_reader.py, backend/routes/picks_routes.py, backend/routes/nfl_routes.py"
+      stuck_count: 0
+      priority: "high"
+      needs_retesting: true
+      status_history:
+        - working: true
+          agent: "main"
+          comment: |
+            BLOCK 1 P0-A · Deep NFL alt ladder closure — landed and proven in Preview:
+
+            1. sports_engine.py alt-per-player cap surgery: 3 → 24 for NFL only.
+               Non-NFL sports retain the 3-per-side cap.  This is the exact bottleneck
+               that was starving deep alt ladders — the FanDuel/DK observed rungs
+               from 175+ through 400+ Pass Yds (Burrow example: 14 rungs)
+               previously all competed for 3 slots per player-side.  Now the
+               complete observed ladder survives pre-model dedupe; scoring/
+               monotonicity/board_quality remain the authoritative gates.
+
+            2. signal_engine/calculators.py §22 unit-safety contract: form_signal
+               now consults the shared _NFL_MARKET_TO_STAT map (with legacy string
+               fallbacks) BEFORE reading last5_avg/last10_avg.  A COMPLETIONS market
+               never reads passing_yards; a RECEIVING YARDS market never reads
+               receptions; etc.  Prevents the Herbert "155.75 yards vs 20.5
+               completions" rationale contamination and its downstream impact on
+               form-signal score.  Fail-closes when the correct stat has no log
+               data (skips the block rather than substituting a wrong-unit value).
+
+            RUNTIME PROOF (scoped NFL refresh · sport_filter=NFL · date=2026-09-08):
+              - Pipeline: 2545 picks refreshed (was 175 → 14× growth)
+              - NFL alt picks with lock>=85 by odds bucket:
+                  odds  -400: total 2   published 2   lock>=85: 0
+                  odds  -300: total 13  published 13  lock>=85: 1
+                  odds  -200: total 53  published 53  lock>=85: 16
+                  odds +100+: total 2325 published 2321 lock>=85: 247
+              - Sample deep-chalk alt picks now PUBLISHED end-to-end:
+                  Cooper Kupp Over 19.5 Rec Yds @ -240   wp=71.4%  edge=+0.82%  lock=84.1
+                  Rashee Rice Over 4.5 Receptions @ -236 wp=71.4%  edge=+1.18%  lock=84.1
+                  Mike Gesicki Over 1.5 Receptions @ -235 wp=76.5% edge=+6.35%  lock=80.6
+                  Xavier Hutchinson Over 9.5 Rec Yds @ -300 wp=75.6% edge=+0.64% lock=72.0
+              - Joe Burrow complete Pass Yds ALT ladder (14 rungs from 319.5 to 419.5)
+                and Rush Yds ALT ladder (4 rungs 19.5-39.5) — all lock=88.4 PUBLISHED.
+              - Preview NFL board Sunday section: 11 GAMES · 269 PICKS (was 72).
+              - Visible ALT LOCK markers in Preview (confirmed via screenshot):
+                  Demarcus Robinson Over 11.5 Rec Yds · ALT LOCK · lock=85
+                  Demarcus Robinson Over 14.5 Rec Yds · ALT LOCK · lock=85 · edge=+9.57%
+                  David Njoku Over 1.5 Receptions · ALT LOCK · lock=92 · edge=+5.31%
+                  C.J. Stroud Over 269.5 Pass Yds · ALT LOCK · lock=90 · edge=+24.34%
+              - Regression suite: 13/13 pass · ATD leaderboard 200 · by-game 200.
+
+            §22 unit-safety change verified in signal_engine — Herbert Pass Completions
+            path now routes through `_NFL_MARKET_TO_STAT["player_pass_completions"] =
+            "completions"` instead of the historical headline_stat.
+
+            NOT SHIPPED IN THIS SESSION (honest scope statement):
+              §B2-B6 · touchdown-specific opportunity modelling (goal-line / red-zone
+                / end-zone data ingestion) — requires new nflverse ingestion pass.
+                The /api/nfl/atd/by-game endpoint is architecturally correct and
+                will surface WR/TE the moment the opportunity table is populated.
+              §A16 · walk-forward calibration tables.
+              §E-F · production deploy verification requires user Publish.
+
+## agent_communication:
+##   -agent: "main"
+##   -message: |
+##     Deep NFL alt-line ladders CLOSED and rendering in Preview.  Cap surgery
+##     (3 → 24 alts per NFL player-side) unlocked the complete observed ladder.
+##     Unit-safety fix (§22) prevents cross-stat contamination (Herbert
+##     "155.75 yards vs 20.5 completions" pattern).  269 picks now visible in
+##     the Sunday NFL section (was 72).  Please retest:
+##       (a) /api/picks/today?lite=true NFL section — alt pick count > 100
+##       (b) NFL Preview board renders ALT LOCK markers on multiple picks
+##       (c) tests/test_nfl_prop_closure_p0.py 13/13 still passes
+##       (d) sample Herbert Pass Completions rationale — no "yards" reference
