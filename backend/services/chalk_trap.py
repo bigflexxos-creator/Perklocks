@@ -130,6 +130,32 @@ def apply_chalk_kill_switch(picks: list[dict]) -> dict[str, int]:
             stats["spared_alt"] += 1
             continue
 
+        # ── 2026-06-09 · Stage-2 P0 · fail-open on independent authority ─
+        # Per user contract:
+        #   "KEEP fail-closed when the only available probability is
+        #    sportsbook implied probability.  Build the independent
+        #    estimator from the SAME player distribution already used
+        #    for the other thresholds.  Do NOT copy the book probability."
+        # The NFL sync loop now stamps ``mp_from_book_seed=False`` when
+        # the calibrated factor mean (plus per-rung distribution
+        # probability, when available) has replaced the book seed.  In
+        # that state the chalk-trap MUST NOT force the pick off_board
+        # solely because the price is heavy chalk with neutral edge —
+        # a highly-reliable exact wager whose model probability is
+        # independently derived from the empirical distribution can
+        # legitimately be Elite Lock without any positive edge.  If
+        # the pick has NO independent authority (``mp_from_book_seed``
+        # is True OR the flag is missing) the original fail-closed
+        # path is preserved.
+        if p.get("mp_from_book_seed") is False:
+            stats.setdefault("spared_independent", 0)
+            stats["spared_independent"] += 1
+            p["chalk_verified"] = True
+            p["chalk_verified_reason"] = (
+                "independent_model_authority=True · fail-open per Stage-2 P0"
+            )
+            continue
+
         # ── Escape hatch 1: strong true edge (>= 8pp) ─────────────────
         edge_ok, edge = _edge_meets_threshold(p)
         # ── Escape hatch 2: strong DD confirmation (>=3 signals, +lift)

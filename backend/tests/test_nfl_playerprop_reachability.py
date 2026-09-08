@@ -145,11 +145,71 @@ def test_chalk_trap_spares_independent_model():
     print("[reachability] chalk-trap spared independent-model alt ✓")
 
 
+# ────────────────────────────────────────────────────────────────────
+# 6. Per-rung independent distribution (Stage-2 P0)
+# ────────────────────────────────────────────────────────────────────
+def test_distribution_hit_probability_varies_by_threshold():
+    """Same coherent distribution → strictly monotone P̂ as the
+    threshold slides across the ladder.  Proves the per-rung
+    authority mandate — different rungs must NOT share one shared
+    hit probability."""
+    from services.nfl_features import distribution_hit_probability as dhp
+    dist = {"n_games": 12, "mean": 262.4, "sd": 48.7,
+            "min": 164, "max": 371, "samples": []}
+    rungs = [174.5, 199.5, 224.5, 249.5, 265.5, 285.5, 305.5, 325.5, 350.5, 375.5]
+    probs = [dhp(dist, r, "over") for r in rungs]
+    print("[reachability] per-rung P̂ over Burrow-like distribution:")
+    for r, p in zip(rungs, probs):
+        print(f"  P̂(>= {r:>6}) = {p:.3f}")
+    # Every subsequent rung MUST be strictly ≤ the prior (survival
+    # function is monotone non-increasing).
+    for a, b in zip(probs, probs[1:]):
+        assert a >= b, f"non-monotone survival: {a} !>= {b}"
+    # And the ladder must exhibit meaningful spread — a very high P̂
+    # near the mean drops to a very low P̂ four sigma above.
+    assert probs[0] >= 0.90, f"chalk rung P̂ too low: {probs[0]}"
+    assert probs[-1] <= 0.15, f"longshot rung P̂ too high: {probs[-1]}"
+    print("[reachability] per-rung distribution monotone + spread ✓")
+
+
+def test_chalk_trap_spares_independent_authority_on_low_edge():
+    """A -1400 chalk alt whose model probability came from the
+    coherent player distribution (``mp_from_book_seed=False``) must
+    NOT be trap-demoted merely because edge≈0.  This is the direct
+    Burrow-174.5 regression: the model agrees with the book because
+    the SAME distribution that grades every rung honestly puts the
+    QB well above 174 yards — that agreement is EVIDENCE, not a
+    book-copy defect."""
+    from services.chalk_trap import apply_chalk_kill_switch
+    pick = {
+        "book_odds": -1400,
+        "edge_percent": 0.4,
+        "win_probability": 93.7,
+        "implied_probability": 93.3,
+        "is_alt": True,
+        "lock_score": 96.0,
+        "market": "Independent QB Over 174.5 Player Pass Yds · ALT LOCK",
+        "sport": "NFL",
+        "mp_from_book_seed": False,      # << key differentiator
+        "data_driven_contribs": {"distribution": 0.005},
+    }
+    stats = apply_chalk_kill_switch([pick])
+    assert not pick.get("chalk_trap"), (
+        "independent-authority chalk was trap-demoted despite low edge"
+    )
+    assert stats.get("spared_independent", 0) >= 1, (
+        f"independent-authority spare clause did not fire: {stats}"
+    )
+    print("[reachability] independent-authority chalk stays Elite ✓")
+
+
 if __name__ == "__main__":
     test_multiplier_map_no_92_ceiling()
     test_lock_and_value_are_independent_dimensions()
     test_apex_gate_still_strict()
     test_chalk_trap_fires_on_book_copy_probability()
     test_chalk_trap_spares_independent_model()
+    test_distribution_hit_probability_varies_by_threshold()
+    test_chalk_trap_spares_independent_authority_on_low_edge()
     print("=" * 60)
-    print("NFL PLAYER-PROP REACHABILITY CONTRACT · 5/5 PASS")
+    print("NFL PLAYER-PROP REACHABILITY CONTRACT · 7/7 PASS")
