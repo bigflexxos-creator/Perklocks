@@ -2591,21 +2591,28 @@ _MARKET_REGEX = {
     "player_threes":        r"\bthrees\b|3[- ]pointers made|three[- ]point(?:er)?s? made",
 
     # ── NFL props ─────────────────────────────────────────────────────────
-    "passing_yards":   r"passing yards",
-    "rushing_yards":   r"rushing yards",
-    "receiving_yards": r"receiving yards",
+    # 2026-06-09 · §P0-A NFL Canonical Filter Fix — pick market strings
+    # use the ABBREVIATED forms "Pass Yds" / "Rush Yds" / "Reception Yds"
+    # (both standard AND `_alternate` rows share the same market string
+    # since the label suffix "  · ALT LOCK" is added post-facto).  The
+    # old regex only matched "passing yards" so tapping PASS YDS in the
+    # UI returned 0 picks.  Broadened to match both long and abbreviated
+    # forms → one canonical filter covers standard + alt for each family.
+    "passing_yards":   r"passing yards|pass yds\b",
+    "rushing_yards":   r"rushing yards|rush yds\b",
+    "receiving_yards": r"receiving yards|reception yds\b|rec yds\b",
     # Additional NFL/CFB categories added 2026-08-08 Phase-1 market
     # surfacing.  Backend already ingests these via propline_feed /
     # nfl_feature_engine / cfb_precompute; picks arrive with market
     # strings like "Player Passing TDs Over 1.5" etc.
     "player_1st_td":         r"\b1st td\b|\bfirst td\b|first touchdown scorer",
     "player_pass_tds":       r"passing tds?|pass tds?",
-    "player_pass_attempts":  r"passing attempts?|pass attempts?",
-    "player_pass_completions": r"passing completions?|pass completions?",
-    "player_rush_attempts":  r"rushing attempts?|rush attempts?|\bcarries\b",
+    "player_pass_attempts":  r"passing attempts?|pass attempts?|pass att\b",
+    "player_pass_completions": r"passing completions?|pass completions?|pass comp\b",
+    "player_rush_attempts":  r"rushing attempts?|rush attempts?|rush att\b|\bcarries\b",
     "player_rush_tds":       r"rushing tds?|rush tds?",
-    "player_receptions":     r"\breceptions?\b(?!\s*yards)(?!\s*tds?)",
-    "player_reception_tds":  r"receiving tds?|reception tds?",
+    "player_receptions":     r"player\s+receptions?\b(?!\s*yards)(?!\s*tds?)(?!\s*yds)|\breceptions?\b(?!\s*yards)(?!\s*tds?)(?!\s*yds)",
+    "player_reception_tds":  r"receiving tds?|reception tds?|rec tds?",
 
     # ── Tennis ────────────────────────────────────────────────────────────
     "match_winner":  r"\bmoneyline\b|match winner|to win match",

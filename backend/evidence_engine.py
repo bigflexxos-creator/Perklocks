@@ -319,8 +319,25 @@ def evidence_multiplier(score: int) -> float:
     the raw lock (so a high-edge market signal still surfaces), but
     we never amplify above 1.00 — evidence can only TEMPER, never
     INFLATE, the lock score.
+
+    ── PERKLOCKS STAGE-2 · P0-C · 93-99 REACHABILITY CLOSURE (2026-06-09) ──
+    Prior mapping only had five tiers (score>=80 → 1.00, ≥60 → 0.93,
+    ≥40 → 0.85, ≥20 → 0.78, else → 0.70).  The gap from 0.93 → 1.00
+    meant a canonical base lock of 99 with medium evidence (score
+    60-79) was permanently clipped to 92.1, and the ENTIRE 93-99
+    band was unreachable for non-APEX NFL picks — the exact ceiling
+    the audit reported.
+    Fix: introduce two intermediate tiers so a genuinely strong pick
+    with score 70-79 lands at 0.97 (base 99 → 96), and score 65-69
+    lands at 0.95 (base 99 → 94).  Score < 65 still tempers to 0.93
+    (base 99 → 92) so weak-evidence picks continue to under-price.
+    The elite 93-99 band is now legitimately reachable for
+    exact-wager NFL locks whose evidence clears the 65+ threshold
+    without any change to weak-evidence tempering.
     """
     if score >= 80:  return 1.00
+    if score >= 70:  return 0.97
+    if score >= 65:  return 0.95
     if score >= 60:  return 0.93
     if score >= 40:  return 0.85
     if score >= 20:  return 0.78

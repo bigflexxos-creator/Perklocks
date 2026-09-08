@@ -3090,6 +3090,46 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         if sport and sport.lower() not in ("all", "any"):
             _rescue_query["sport"] = {"$regex": f"^{re.escape(sport)}$",
                                         "$options": "i"}
+        # ── P0-A CANONICAL MARKET FILTER PARITY (2026-06-09) ──────────
+        # The eligibility-union rescue MUST honour the same user-supplied
+        # market / league / game / event / search filters that shaped the
+        # primary query. Prior to this closure, an NFL user tapping
+        # `PASS_YDS` still received the full published NFL slate because
+        # the rescue query only scoped by `sport` — every non-passing
+        # pick that was dropped by the DB filter got re-injected here.
+        # Now the rescue query mirrors the exact same $regex predicates
+        # applied on the primary read, so the market-family filter is
+        # the SAME AUTHORITATIVE PROJECTION on both paths.
+        if market_list:
+            _rx_list = [r for r in (_market_regex(m) for m in market_list) if r]
+            if len(_rx_list) == 1:
+                _rescue_query["market"] = {"$regex": _rx_list[0], "$options": "i"}
+            elif len(_rx_list) > 1:
+                _rescue_query["market"] = {
+                    "$regex": "|".join(f"(?:{r})" for r in _rx_list),
+                    "$options": "i",
+                }
+        if league_list:
+            _lg_pat = [re.escape(str(lg)) for lg in league_list]
+            if len(_lg_pat) == 1:
+                _rescue_query["league"] = {"$regex": _lg_pat[0], "$options": "i"}
+            elif len(_lg_pat) > 1:
+                _rescue_query["league"] = {"$regex": "|".join(_lg_pat), "$options": "i"}
+        if game_id_list:
+            _rescue_query["$or"] = [
+                {"event_id": {"$in": game_id_list}},
+                {"game_id":  {"$in": game_id_list}},
+            ]
+        if event_list:
+            _rescue_query["event"] = {"$in": event_list}
+        if grade:
+            _rescue_query["grade"] = grade
+        if line_type:
+            _lt = line_type.lower()
+            if _lt == "main":
+                _rescue_query["is_alt"] = {"$ne": True}
+            elif _lt == "alt":
+                _rescue_query["is_alt"] = True
         rescued, ebm_ids, rescue_rejected = await rescue_missing_eligible(
             db, _served_ids, _rescue_query,
         )
