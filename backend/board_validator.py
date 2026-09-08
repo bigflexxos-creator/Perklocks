@@ -777,12 +777,25 @@ def evidence_threshold(picks: list[dict]) -> tuple[list[dict], dict]:
             ))
         )
         if _is_nfl_reg_prop:
+            # ── 2026-06-09 · SURGICAL DE-NEST (Emergent Support trace).
+            # Previously the ``len(factors) >= 3`` factor-evidence point
+            # was NESTED inside the identity check.  When ``player_team``
+            # was momentarily unresolved a legitimate prop lost BOTH
+            # signals and topped out at 2/3, silently dropping ~5,555
+            # regular NFL props with reason ``only_2_of_3_signals``.
+            # Identity evidence and factor evidence are INDEPENDENT
+            # signals and must be counted independently.  Upstream event/
+            # team membership + canonical identity hard gates
+            # (lines 250–275) still block genuinely invalid identity
+            # from ever reaching this accounting step, so de-nesting
+            # here does NOT weaken canonical player identity or current
+            # team validation — it only fixes evidence *counting*.
             if p.get("canonical_player_id") and p.get("player_team"):
                 evidence += 1
-                # Match ``MIN_FACTORS_NFL_PROP = 3`` — the same bar the
-                # NFL feature engine itself uses to admit a factor set.
-                if isinstance(factors, dict) and len(factors) >= 3:
-                    evidence += 1
+            # Match ``MIN_FACTORS_NFL_PROP = 3`` — the same bar the
+            # NFL feature engine itself uses to admit a factor set.
+            if isinstance(factors, dict) and len(factors) >= 3:
+                evidence += 1
 
         # ── PERKLOCKS MAIN 41 · P0 (2026-06-09) — NFL ATD
         # AUTHORITATIVE-MODEL EVIDENCE (mirror of NFL Platinum).
