@@ -5909,6 +5909,31 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     "batter_total_bases",
                     "batter_hits_runs_rbis",
                     "pitcher_outs",
+                    # ── 2026-06-09 · NFL MAIN-LINE PAIR-DEDUP FIX ──
+                    # NE @ SEA regression: every NFL main-line prop
+                    # (Passing/Rushing/Receiving Yards, Receptions,
+                    # Attempts, Completions, Pass TDs) is priced -110
+                    # to -115 on BOTH sides → implied delta < 5pp →
+                    # PAIR_DEDUP_STD marked winner=None and dropped
+                    # BOTH sides.  Result: 0 NFL main lines survived
+                    # to the model.  This is the exact "main-line
+                    # starvation" boundary the user called out.
+                    # Preserve balanced-pass-through for the NFL
+                    # families so the model — not book pricing — is
+                    # the sole authority for choosing the winning
+                    # side.  Alt lines are unaffected (their pairs
+                    # are naturally imbalanced, e.g. -1400 vs +800).
+                    "player_pass_yds",
+                    "player_pass_tds",
+                    "player_pass_attempts",
+                    "player_pass_completions",
+                    "player_pass_interceptions",
+                    "player_rush_yds",
+                    "player_rush_attempts",
+                    "player_rush_tds",
+                    "player_receptions",
+                    "player_reception_yds",
+                    "player_reception_tds",
                 }
                 if abs(_o_imp - _u_imp) < 0.05:
                     if _fam in _KEEP_BOTH_ON_BALANCED_FAMILIES:
@@ -6062,6 +6087,33 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             # downstream — this only stops the pre-model starvation.
             if implied < 0.50:
                 continue
+        elif mk in ("player_pass_yds", "player_pass_tds", "player_pass_attempts",
+                    "player_pass_completions", "player_pass_interceptions",
+                    "player_rush_yds", "player_rush_attempts", "player_rush_tds",
+                    "player_receptions", "player_reception_yds",
+                    "player_reception_tds"):
+            # ── 2026-06-09 · NFL MAIN-LINE STARVATION FIX ──────────────
+            # NE @ SEA regression trace: 691 real regular NFL prop
+            # candidates entered `_props_picks_from_event` but the
+            # generic ``_HIGH_PROB_MIN_IMPLIED = 0.62`` floor at L6101
+            # silently dropped every main-line NFL prop (Passing Yards
+            # Over -110 ≈ 0.524 implied, Reception Yards -115 ≈ 0.535,
+            # Receptions -125 ≈ 0.556 — all below 0.62).  The generic
+            # floor was designed for MLB HR / hitting markets that
+            # naturally price ≥ 62%; NFL yardage / receptions main
+            # lines price close to 50/50 by design so a 0.62 floor was
+            # equivalent to a "no NFL main lines allowed" rule.
+            # Alt-lines already have their own [0.80, 0.95] gate above
+            # and are unaffected.  Downstream evidence (≥3 factors),
+            # model-probability independence, edge floor (-1%), and
+            # the 85 Lock threshold still decide quality — this only
+            # stops the pre-model acquisition-time starvation.  0.42
+            # matches the noise-vs-signal balance used for
+            # pitcher_strikeouts main lines and rejects only absurd
+            # underdog-side prices where the market itself is telling
+            # us the outcome is unlikely.
+            if implied < 0.42:
+                continue
         # ── 2026-07-21 BLANKET ODDS CAP for K props ──────────────────
         # Regardless of mk key, reject any pitcher strikeout pick
         # priced worse than -250. Belt-and-suspenders vs. any mk-key
@@ -6097,6 +6149,35 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 "player_to_score_or_assist",
                 "player_first_goal_scorer",
                 "mma_method_of_victory",
+                # ── 2026-06-09 · NFL DOUBLE-GATE FIX ──────────────
+                # These markets each have their OWN pre-model implied
+                # floor above (0.42, matched to NFL main-line pricing
+                # around -110 to -125).  Without adding them here the
+                # generic 0.62 floor immediately below re-blocks every
+                # single one — the exact same "double-gate" bug the
+                # H+R+RBI note calls out.
+                "player_pass_yds",
+                "player_pass_yds_alternate",
+                "player_pass_tds",
+                "player_pass_tds_alternate",
+                "player_pass_attempts",
+                "player_pass_attempts_alternate",
+                "player_pass_completions",
+                "player_pass_completions_alternate",
+                "player_pass_interceptions",
+                "player_pass_interceptions_alternate",
+                "player_rush_yds",
+                "player_rush_yds_alternate",
+                "player_rush_attempts",
+                "player_rush_attempts_alternate",
+                "player_rush_tds",
+                "player_rush_tds_alternate",
+                "player_receptions",
+                "player_receptions_alternate",
+                "player_reception_yds",
+                "player_reception_yds_alternate",
+                "player_reception_tds",
+                "player_reception_tds_alternate",
             }
             if not _mk_gated and implied < _HIGH_PROB_MIN_IMPLIED:
                 continue
@@ -6922,17 +7003,31 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         elif (
             sport == "NFL"
             and factors
-            and _mlb_features_used            # NFL branch reuses this list
             and mk not in ("player_anytime_td", "player_1st_td")
-            and _atd_model_override is None   # ATD path already overrides mp
+            and _atd_model_override is None
         ):
             _fv = [v for v in factors.values() if isinstance(v, (int, float))]
+            # ── 2026-06-09 · condition relaxed: fire on ≥3 real factor
+            # values REGARDLESS of whether ``_mlb_features_used``
+            # (a.k.a. ``_sources``) was populated.  The NFL feature
+            # engine sometimes returns real factor values but empty
+            # ``sources`` (e.g. when the alt-line precompute uses the
+            # game's shared factor set without stamping per-source
+            # tokens).  User trace: Mike Evans Rec Over 1.5 · -1400 ·
+            # ALT LOCK still showed model_win=implied=93.3% / edge=0%
+            # because the earlier condition ``and _mlb_features_used``
+            # short-circuited whenever sources were empty, letting
+            # the book-implied seed at L6188-6191 stand.  Independence
+            # gate is factor-truth, not source-token presence.
             if len(_fv) >= 3:
                 _cal_mp = sum(_fv) / len(_fv)
-                if is_alt:
-                    mp = max(0.55, min(0.97, _cal_mp))
-                else:
-                    mp = max(0.30, min(0.97, _cal_mp))
+                # No artificial lift on the low end — an honest factor
+                # mean of 0.32 must stay at 0.32 (violates policy P8
+                # otherwise: "Do NOT manufacture positive edge").  The
+                # upper 0.97 cap prevents a factor-set collapse to
+                # numerical certainty; the lower 0.05 cap is a
+                # defensive floor against pathological zero rows only.
+                mp = max(0.05, min(0.97, _cal_mp))
         # ── Phase 2A.5 DEFECT #4 (2026-08) ─────────────────────────────
         # Elite-scorer factor manipulation (+10 %) and forced Lock Score
         # floor (88.0) RETIRED.  No player receives an artificial Lock
