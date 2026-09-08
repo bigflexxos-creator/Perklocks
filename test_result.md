@@ -2382,3 +2382,57 @@ agent_communication:
 ##       (d) Fresh NFL picks have edge_percent != 0 in production.
 ##       (e) /api/picks/today production output includes the fresh NFL picks with real edges.
 ##       (f) /api/nfl/atd/leaderboard still returns 200 with canonical publication data.
+
+    - task: "NFL Universal Prop + ATD Closure — book-seed fail-closed marker"
+      implemented: true
+      working: "NA"
+      file: "backend/sports_engine.py, backend/services/pick_refresh_orchestrator.py"
+      stuck_count: 0
+      priority: "high"
+      needs_retesting: true
+      status_history:
+        - working: "NA"
+          agent: "main"
+          comment: |
+            SURGICAL FIX (2026-06-09, Universal NFL Prop Closure §A4):
+              1. sports_engine.py:6307-6316 — Added `_mp_book_seed_flag = (sport == "NFL")`
+                 at the point where mp is seeded from clamp(implied_probability).
+              2. sports_engine.py:7085-7090 — Cleared the flag to False when the NFL
+                 feature engine's factor mean (>=3 real factors) replaces the seed.
+              3. sports_engine.py:7183-7194 — Stamped `pick["mp_from_book_seed"]` onto
+                 every NFL pick.
+              4. services/pick_refresh_orchestrator.py — New fail-closed cap that runs
+                 AFTER the alt-edge cap: any NFL pick with `mp_from_book_seed=True` AND
+                 `lock_score>=85` is capped to 84.9 with `apex_reason=`
+                 `nfl_mp_book_seed_no_independent_authority` and `mp_leakage_cap_applied=True`.
+                 Book-implied seed can never earn Lock authority.
+
+            This addresses the Doubs regression case (Over 1.5 Receptions @ -750
+            where model_wp=implied=88.2% because the factor engine never overrode
+            the seed).  After a fresh scoped NFL refresh, all such picks will fall
+            below the 85 board threshold and never Lock.
+
+            NOT YET IMPLEMENTED (from Part A/B/C directive):
+              §A1  · full evidence trace for every declared supported NFL market
+              §A5  · targeted Doubs runtime proof (needs fresh refresh + report)
+              §A6-A9 · full ladder monotonicity enforcement (§A10 ladder guard)
+              §A11 · Burrow 200+ diagnostic report
+              §A15 · Demarcus Robinson grade/lock canonicalisation fix
+              §A16 · walk-forward calibration tables
+              §B1-B17 · specialised ATD engine + true whole-slate Top 5 + game-by-game rankings
+              §D   · complete runtime proofs
+              §E-F · production deploy + Preview/Web + Expo Go parity certification
+
+            STATUS: NFL UNIVERSAL PROP + ALT + ATD PRODUCTION CLOSURE — NOT CERTIFIED
+            Failed contracts enumerated above; each is a separate root-cause item
+            requiring dedicated surgical passes.  Deployment is a user action
+            (Publish button); the agent cannot execute production deploys from
+            inside the build container.
+
+## agent_communication:
+##   -agent: "main"
+##   -message: |
+##     Per directive: reporting NFL UNIVERSAL PROP + ALT + ATD CLOSURE — NOT CERTIFIED.
+##     Only §A4 (book-seed fail-closed marker) was completed in this session.
+##     All other clauses (§A1, §A5, §A6-A11, §A15, §A16, §B1-B17, §D, §E-F)
+##     remain open and require dedicated surgical passes.
