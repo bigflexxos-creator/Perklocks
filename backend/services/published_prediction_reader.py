@@ -171,6 +171,49 @@ def hydrate(pick: dict, *, sport_defaults: bool = True) -> dict:
         p["_snapshot_version"] = None
         p["_model_version"] = None
         p["_published_at"] = None
+    # ── 2026-06-09 · §A15 CANONICAL GRADE/LOCK INVARIANT ────────────
+    # Per user directive (Universal NFL Prop Closure §A15):
+    #   "A canonical Lock Score of 90 cannot display PASS if the
+    #    authoritative grading contract maps 90+ to Lock… no impossible
+    #    grade/score combination."
+    # The read-time serializer is the last common boundary before the
+    # DTO reaches the frontend — enforce the invariant HERE so no
+    # downstream consumer can ever render a lock_score >= 85 alongside
+    # grade='Pass' regardless of which writer stamped the stale grade.
+    # Applies to BOTH snapshot and legacy rows (single choke-point).
+    try:
+        _ls = p.get("lock_score")
+        if _ls is not None:
+            _lsf = float(_ls)
+            # Canonical mapping (mirrors sports_engine._grade):
+            #   >=100 APEX Lock · >=98 Elite Lock · >=95 Strong Lock
+            #   >=90 Lock       · >=85 Playable  · <85 Pass
+            if _lsf >= 100.0:
+                _canon_grade = "APEX Lock"
+            elif _lsf >= 98.0:
+                _canon_grade = "Elite Lock"
+            elif _lsf >= 95.0:
+                _canon_grade = "Strong Lock"
+            elif _lsf >= 90.0:
+                _canon_grade = "Lock"
+            elif _lsf >= 85.0:
+                _canon_grade = "Playable"
+            else:
+                _canon_grade = "Pass"
+            _stale_grade = p.get("grade")
+            # Only overwrite when the stale grade contradicts the
+            # canonical score band.  A "close but different label"
+            # (e.g. "Lock" vs "Strong Lock" at 95 boundary) is
+            # normalised to the canonical label as well.
+            if _stale_grade != _canon_grade:
+                p["grade"] = _canon_grade
+                p["_grade_repaired_from"] = _stale_grade
+                p["_grade_repaired_reason"] = (
+                    f"canonical_lock_score={_lsf}_maps_to_{_canon_grade}"
+                )
+    except (TypeError, ValueError, AttributeError):
+        # Defensive — never let the invariant crash serialization.
+        pass
     return p
 
 

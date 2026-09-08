@@ -2167,6 +2167,23 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     except Exception as _leak_err:
         logger.warning("NFL mp-leakage fail-closed cap skipped: %s", _leak_err)
 
+    # ── §A10 · NFL LADDER MONOTONICITY GUARD (2026-06-09) ─────────────
+    # Per user directive: probabilities across an Over ladder must
+    # come from ONE coherent distribution — P(easier Over) >=
+    # P(harder Over).  Non-monotonic ladders are a distribution defect;
+    # fail-close offending picks below 85 so they never claim Lock
+    # authority.  Non-NFL sports untouched.
+    try:
+        from services.nfl_ladder_monotonicity import enforce_ladder_monotonicity
+        _ladder_summary = enforce_ladder_monotonicity(safe_picks, sport="NFL")
+        # Emit summary so ops can track ladder integrity over time.
+        try:
+            _stats.setdefault("ladder_monotonicity", _ladder_summary)
+        except Exception:
+            pass
+    except Exception as _lad_err:
+        logger.warning("NFL ladder monotonicity guard skipped: %s", _lad_err)
+
     if safe_picks:
         # ATOMIC-SWAP: do the wipe NOW, immediately before the insert.
         # The enrichment passes above ran on in-memory `safe_picks` —

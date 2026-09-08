@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="5" skipped="1" tests="23" time="17.952" timestamp="2026-09-08T19:41:18.583604+00:00" hostname="agent-env-94a57b11-1651-4cbd-8cc5-d049697d5eae"><testcase classname="tests.test_nfl_p0_universal_verification" name="test_e_ladder_module_imports" time="0.000" /><testcase classname="tests.test_nfl_p0_universal_verification" name="test_g_atd_leaderboard_200" time="2.169" /><testcase classname="tests.test_nfl_p0_universal_verification" name="test_g_picks_today_lite_200" time="8.005" /><testcase classname="tests.test_nfl_p0_universal_verification" name="test_g_force_refresh_bad_sport_400" time="0.163" /><testcase classname="tests.test_nfl_p0_universal_verification" name="test_a_grade_invariant_no_stale_pass" time="3.450"><failure message="AssertionError: §A15 VIOLATION: [{'sel': &quot;Wan'Dale Robinson&quot;, 'lock': 88.4, 'grade': 'Pass'}, {'sel': 'Demarcus Robinson', 'lock': 89.7, 'grade': 'Pass'}, {'sel': 'Tony Pollard', 'lock': 85.7, 'grade': 'Pass'}, {'sel': 'Pat Freiermuth', 'lock': 85.2, 'grade': 'Pass'}, {'sel': 'Jauan Jennings', 'lock': 85.4, 'grade': 'Pass'}]&#10;assert not [{'grade': 'Pass', 'lock': 88.4, 'sel': &quot;Wan'Dale Robinson&quot;}, {'grade': 'Pass', 'lock': 89.7, 'sel': 'Demarcus Robinson'}, {'grade': 'Pass', 'lock': 85.7, 'sel': 'Tony Pollard'}, {'grade': 'Pass', 'lock': 85.2, 'sel': 'Pat Freiermuth'}, {'grade': 'Pass', 'lock': 85.4, 'sel': 'Jauan Jennings'}, {'grade': 'Pass', 'lock': 85.4, 'sel': 'Tyquan Thornton'}, ...]">tests/test_nfl_p0_universal_verification.py:120: in test_a_grade_invariant_no_stale_pass
+    assert not offenders, f"§A15 VIOLATION: {offenders[:5]}"
+E   AssertionError: §A15 VIOLATION: [{'sel': "Wan'Dale Robinson", 'lock': 88.4, 'grade': 'Pass'}, {'sel': 'Demarcus Robinson', 'lock': 89.7, 'grade': 'Pass'}, {'sel': 'Tony Pollard', 'lock': 85.7, 'grade': 'Pass'}, {'sel': 'Pat Freiermuth', 'lock': 85.2, 'grade': 'Pass'}, {'sel': 'Jauan Jennings', 'lock': 85.4, 'grade': 'Pass'}]
+E   assert not [{'grade': 'Pass', 'lock': 88.4, 'sel': "Wan'Dale Robinson"}, {'grade': 'Pass', 'lock': 89.7, 'sel': 'Demarcus Robinson'}, {'grade': 'Pass', 'lock': 85.7, 'sel': 'Tony Pollard'}, {'grade': 'Pass', 'lock': 85.2, 'sel': 'Pat Freiermuth'}, {'grade': 'Pass', 'lock': 85.4, 'sel': 'Jauan Jennings'}, {'grade': 'Pass', 'lock': 85.4, 'sel': 'Tyquan Thornton'}, ...]</failure></testcase><testcase classname="tests.test_nfl_p0_universal_verification" name="test_a_grade_values_valid" time="3.529"><failure message="AssertionError: lock&gt;=85 with invalid grade: [{'sel': &quot;Wan'Dale Robinson&quot;, 'lock': 88.4, 'grade': 'Pass'}, {'sel': 'Demarcus Robinson', 'lock': 89.7, 'grade': 'Pass'}, {'sel': 'Tony Pollard', 'lock': 85.7, 'grade': 'Pass'}, {'sel': 'Pat Freiermuth', 'lock': 85.2, 'grade': 'Pass'}, {'sel': 'Jauan Jennings', 'lock': 85.4, 'grade': 'Pass'}]&#10;assert not [{'grade': 'Pass', 'lock': 88.4, 'sel': &quot;Wan'Dale Robinson&quot;}, {'grade': 'Pass', 'lock': 89.7, 'sel': 'Demarcus Robinson'}, {'grade': 'Pass', 'lock': 85.7, 'sel': 'Tony Pollard'}, {'grade': 'Pass', 'lock': 85.2, 'sel': 'Pat Freiermuth'}, {'grade': 'Pass', 'lock': 85.4, 'sel': 'Jauan Jennings'}, {'grade': 'Pass', 'lock': 85.4, 'sel': 'Tyquan Thornton'}, ...]">tests/test_nfl_p0_universal_verification.py:142: in test_a_grade_values_valid
+    assert not bad, f"lock&gt;=85 with invalid grade: {bad[:5]}"
+E   AssertionError: lock&gt;=85 with invalid grade: [{'sel': "Wan'Dale Robinson", 'lock': 88.4, 'grade': 'Pass'}, {'sel': 'Demarcus Robinson', 'lock': 89.7, 'grade': 'Pass'}, {'sel': 'Tony Pollard', 'lock': 85.7, 'grade': 'Pass'}, {'sel': 'Pat Freiermuth', 'lock': 85.2, 'grade': 'Pass'}, {'sel': 'Jauan Jennings', 'lock': 85.4, 'grade': 'Pass'}]
+E   assert not [{'grade': 'Pass', 'lock': 88.4, 'sel': "Wan'Dale Robinson"}, {'grade': 'Pass', 'lock': 89.7, 'sel': 'Demarcus Robinson'}, {'grade': 'Pass', 'lock': 85.7, 'sel': 'Tony Pollard'}, {'grade': 'Pass', 'lock': 85.2, 'sel': 'Pat Freiermuth'}, {'grade': 'Pass', 'lock': 85.4, 'sel': 'Jauan Jennings'}, {'grade': 'Pass', 'lock': 85.4, 'sel': 'Tyquan Thornton'}, ...]</failure></testcase><testcase classname="tests.test_nfl_p0_universal_verification" name="test_b_book_seed_marker_present_and_dominant" time="0.208"><skipped type="pytest.skip" message="no fresh NFL picks in last 30min across common collections">/app/backend/tests/test_nfl_p0_universal_verification.py:165: no fresh NFL picks in last 30min across common collections</skipped></testcase><testcase classname="tests.test_nfl_p0_universal_verification" name="test_b_book_seed_true_capped_or_below_85" time="0.001"><failure message="RuntimeError: Event loop is closed">tests/test_nfl_p0_universal_verification.py:192: in test_b_book_seed_true_capped_or_below_85
+    coll_name, offenders_all = _run(_q())
+                               ^^^^^^^^^^
+tests/test_nfl_p0_universal_verification.py:48: in _run
+    return loop.run_until_complete(coro)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/asyncio/base_events.py:654: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+tests/test_nfl_p0_universal_verification.py:183: in _q
+    cnt = await coll.count_documents({
+/root/.venv/lib/python3.11/site-packages/motor/metaprogramming.py:74: in method
+    return framework.run_on_executor(
+/root/.venv/lib/python3.11/site-packages/motor/frameworks/asyncio/__init__.py:85: in run_on_executor
+    return loop.run_in_executor(_EXECUTOR, functools.partial(fn, *args, **kwargs))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/asyncio/base_events.py:817: in run_in_executor
+    self._check_closed()
+/usr/local/lib/python3.11/asyncio/base_events.py:520: in _check_closed
+    raise RuntimeError('Event loop is closed')
+E   RuntimeError: Event loop is closed</failure></testcase><testcase classname="tests.test_nfl_p0_universal_verification" name="test_cd_independent_probability[Romeo Doubs]" time="0.001"><failure message="RuntimeError: Event loop is closed">tests/test_nfl_p0_universal_verification.py:225: in test_cd_independent_probability
+    coll_name, picks = _run(_q())
+                       ^^^^^^^^^^
+tests/test_nfl_p0_universal_verification.py:48: in _run
+    return loop.run_until_complete(coro)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/asyncio/base_events.py:654: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+tests/test_nfl_p0_universal_verification.py:220: in _q
+    picks = [p async for p in cur]
+            ^^^^^^^^^^^^^^^^^^^^^^
+tests/test_nfl_p0_universal_verification.py:220: in &lt;listcomp&gt;
+    picks = [p async for p in cur]
+            ^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/motor/core.py:1390: in next
+    if self.alive and (self._buffer_size() or await self._get_more()):
+                                                    ^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/motor/core.py:1411: in _get_more
+    return self._refresh()
+           ^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/motor/metaprogramming.py:74: in method
+    return framework.run_on_executor(
+/root/.venv/lib/python3.11/site-packages/motor/frameworks/asyncio/__init__.py:85: in run_on_executor
+    return loop.run_in_executor(_EXECUTOR, functools.partial(fn, *args, **kwargs))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/asyncio/base_events.py:817: in run_in_executor
+    self._check_closed()
+/usr/local/lib/python3.11/asyncio/base_events.py:520: in _check_closed
+    raise RuntimeError('Event loop is closed')
+E   RuntimeError: Event loop is closed</failure></testcase><testcase classname="tests.test_nfl_p0_universal_verification" name="test_cd_independent_probability[Joe Burrow]" time="0.001"><failure message="RuntimeError: Event loop is closed">tests/test_nfl_p0_universal_verification.py:225: in test_cd_independent_probability
+    coll_name, picks = _run(_q())
+                       ^^^^^^^^^^
+tests/test_nfl_p0_universal_verification.py:48: in _run
+    return loop.run_until_complete(coro)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/asyncio/base_events.py:654: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+tests/test_nfl_p0_universal_verification.py:220: in _q
+    picks = [p async for p in cur]
+            ^^^^^^^^^^^^^^^^^^^^^^
+tests/test_nfl_p0_universal_verification.py:220: in &lt;listcomp&gt;
+    picks = [p async for p in cur]
+            ^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/motor/core.py:1390: in next
+    if self.alive and (self._buffer_size() or await self._get_more()):
+                                                    ^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/motor/core.py:1411: in _get_more
+    return self._refresh()
+           ^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/motor/metaprogramming.py:74: in method
+    return framework.run_on_executor(
+/root/.venv/lib/python3.11/site-packages/motor/frameworks/asyncio/__init__.py:85: in run_on_executor
+    return loop.run_in_executor(_EXECUTOR, functools.partial(fn, *args, **kwargs))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/asyncio/base_events.py:817: in run_in_executor
+    self._check_closed()
+/usr/local/lib/python3.11/asyncio/base_events.py:520: in _check_closed
+    raise RuntimeError('Event loop is closed')
+E   RuntimeError: Event loop is closed</failure></testcase><testcase classname="tests.test_nfl_prop_closure_p0" name="test_a15_lock_90_never_displays_pass" time="0.000" /><testcase classname="tests.test_nfl_prop_closure_p0" name="test_a15_lock_98_maps_to_elite_lock" time="0.000" /><testcase classname="tests.test_nfl_prop_closure_p0" name="test_a15_lock_100_maps_to_apex_lock" time="0.000" /><testcase classname="tests.test_nfl_prop_closure_p0" name="test_a15_lock_95_maps_to_strong_lock" time="0.000" /><testcase classname="tests.test_nfl_prop_closure_p0" name="test_a15_lock_88_maps_to_playable_not_pass" time="0.000" /><testcase classname="tests.test_nfl_prop_closure_p0" name="test_a15_lock_72_stays_pass_no_false_repair" time="0.000" /><testcase classname="tests.test_nfl_prop_closure_p0" name="test_a15_snapshot_path_honors_published_lock_score" time="0.000" /><testcase classname="tests.test_nfl_prop_closure_p0" name="test_a10_monotonic_ladder_passes_through" time="0.000" /><testcase classname="tests.test_nfl_prop_closure_p0" name="test_a10_non_monotonic_ladder_fails_closed" time="0.034" /><testcase classname="tests.test_nfl_prop_closure_p0" name="test_a10_different_players_independent" time="0.000" /><testcase classname="tests.test_nfl_prop_closure_p0" name="test_a10_non_nfl_untouched" time="0.000" /><testcase classname="tests.test_nfl_prop_closure_p0" name="test_a4_book_seed_true_default_for_nfl" time="0.000" /><testcase classname="tests.test_nfl_prop_closure_p0" name="test_a4_book_seed_false_untouched" time="0.000" /></testsuite></testsuites>

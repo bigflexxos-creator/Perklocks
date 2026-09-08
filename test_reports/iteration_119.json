@@ -1,0 +1,57 @@
+{
+  "summary": "Universal NFL Prop Closure P0 backend verification. §A10/§A15/§A4 unit-level fixes all pass (13/13 P0 regression tests). Regression sanity endpoints all healthy (ATD leaderboard 200, picks/today?lite=true 200, force-refresh bad sport 400). §A5 (Doubs) and §A11 (Burrow) independence proven from DB — wp != imp on the fresh picks. §A4 book-seed cap fires correctly in DB (0 leakage: no NFL pick has mp_from_book_seed=True + lock>=85 + no cap). CRITICAL FINDING: §A15 grade invariant is applied in-memory by hydrate() (verified against a real DB offender) BUT the wire payload from /api/picks/today?lite=true still returns 34 NFL picks with lock_score>=85 AND grade='Pass'. Root cause: some decorator step between _canonicalize_picks (line 2340 in picks_routes.py) and _strip_for_lite (line 3146) is overwriting `grade` back to the stale value AFTER hydrate stamped the canonical grade. The _grade_repaired_from marker is also missing from the wire (may just be stripped by lite whitelist — but grade regression itself is the real bug). Additionally, mp_from_book_seed marker is NOT in _LITE_BOARD_WHITELIST so it's stripped on the lite path (marker present at 30.3% of NFL picks in DB overall, but 0/64 in lite API — informational, not fail-closed).",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/picks/today?lite=true",
+        "issue": "§A15 grade invariant is bypassed on the lite wire payload. 34 out of 64 NFL picks returned with lock_score>=85 AND grade='Pass'. hydrate() correctly repairs the grade in-memory (verified via inline call: Wan'Dale Robinson doc → grade='Playable' post-hydrate), but the final wire response reverts grade='Pass'. This means a decorator/mutation step between routes/picks_routes.py:2340 (_canonicalize_picks) and :3146 (_strip_for_lite) is re-reading the stale `grade` field from Mongo or a projection cache, overwriting the hydrate-repaired value. Sample offenders: Wan'Dale Robinson (lock=88.4, grade=Pass, published_grade=Playable), Demarcus Robinson (89.7/Pass), Tony Pollard (85.7/Pass), Pat Freiermuth (85.2/Pass), and 30 more.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "GET /api/picks/today?lite=true",
+        "issue": "mp_from_book_seed field not projected on the lite wire payload (not in _LITE_BOARD_WHITELIST at server.py:2809). 0/64 NFL picks in API include the marker. DB confirms 30.3% presence overall and 0% leakage (all True+lock>=85 have cap applied), so this is presentation-only — but observability suffers. Consider adding 'mp_from_book_seed', 'mp_leakage_cap_applied', 'apex_reason' to the lite whitelist for QA visibility."
+      },
+      {
+        "endpoint": "N/A (DB)",
+        "issue": "§A4 marker (mp_from_book_seed) presence in DB is only 30.3% (183/604) across all NFL picks in the `picks` collection. This is a legacy backfill gap — older rows predate the fix. The most-recent picks (2026-09-08T19:35 batch) all carry the marker (Doubs, Burrow, Wan'Dale, etc.), which satisfies the ‘fresh picks’ intent. The 30-min freshness window queried in the review returns 0 rows because created_at timestamps are stored as ISO strings dated 2026-09-08 (not TZ-aware datetime), so a `created_at >= now-30min` filter matches nothing regardless of pipeline health."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_nfl_prop_closure_p0.py",
+    "/app/backend/tests/test_nfl_p0_universal_verification.py",
+    "/app/test_reports/pytest/nfl_p0_regression.xml",
+    "/app/test_reports/pytest/nfl_p0_verification.xml"
+  ],
+  "action_items": [
+    "CRITICAL — Trace and fix the decorator/mutation between routes/picks_routes.py:2340 and :3146 that overwrites `grade` back to the stale DB value AFTER hydrate() has repaired it. Suggested approach: add a post-hydrate audit-log inside _strip_for_lite (or right before it) that asserts `pick['lock_score'] < 85 or pick['grade'] != 'Pass'` and logs the mutator responsible. Likely candidates: a locks-eligibility re-projection, the PublishedPickContract attach step (picks_routes.py:3161-3171), an ESPN overlay decorator, or _decorate_with_espn_meta re-loading a stale doc from Mongo.",
+    "MEDIUM — Add `mp_from_book_seed`, `mp_leakage_cap_applied`, and `apex_reason` to _LITE_BOARD_WHITELIST (server.py:2809) so §A4 marker is inspectable on the wire payload. Currently only visible via direct DB inspection.",
+    "LOW — Consider running a one-time backfill pass that writes `mp_from_book_seed=False` on legacy NFL picks that predate the marker (currently 30.3% coverage; new picks carry the marker but the tail predates §A4)."
+  ],
+  "critical_code_review_comments": [
+    "hydrate() in services/published_prediction_reader.py correctly repairs stale grade in-memory (verified). The bug is downstream, not in hydrate.",
+    "_LITE_BOARD_WHITELIST (server.py:2809-2862) does not include the new §A4 diagnostic fields (`mp_from_book_seed`, `mp_leakage_cap_applied`, `apex_reason`, `_grade_repaired_from`, `_grade_repaired_reason`). Even when they are stamped, lite consumers can't see them.",
+    "nfl_ladder_monotonicity module imports cleanly and behaves correctly against the 4 §A10 unit tests (monotonic-passes / non-monotonic-fails-closed / different-players-independent / non-nfl-untouched).",
+    "services/pick_refresh_orchestrator.py wiring for the mp-leakage cap and ladder guard is present at lines 2124-2178."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_nfl_p0_universal_verification.py (new — live API + DB verification scaffold)"
+  ],
+  "success_rate": {
+    "backend": "88%",
+    "frontend": "N/A (skipped per request)"
+  },
+  "seed_data_creation": "None — no refresh triggered, no rows created, per agent-to-agent context note.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The 13 P0 unit tests in test_nfl_prop_closure_p0.py all pass locally. The critical open bug is that the wire response from /api/picks/today?lite=true still emits lock_score>=85 + grade='Pass' pairs for NFL picks (34 offenders), even though hydrate() repairs them correctly in isolation. When re-testing after main agent's fix: (1) pull the DB offender `Wan'Dale Robinson` (id='e9c9a801-2b18-5836-ba05-2df3f1d3b75b', published_grade='Playable', grade='Pass' stale) and (2) hit /api/picks/today?lite=true with Bearer demo/demo123 — that specific pick should surface with grade='Playable' post-fix. Regression endpoints (ATD leaderboard, force-refresh bad sport) all working correctly and can stay lightly tested.",
+  "rca_of_issue": "§A15 wire-level violation RCA: hydrate() in services/published_prediction_reader.py aliases published_grade→grade AND enforces the canonical mapping (lock>=85 => Playable, lock>=90 => Lock, etc.). Direct call on the offender doc returns grade='Playable'. However, the /api/picks/today?lite=true handler in routes/picks_routes.py invokes _canonicalize_picks (which calls hydrate) at line 2340 THEN runs 800+ lines of decorators/filters/rescues/ESPN overlays/PublishedPickContract attach before _strip_for_lite at line 3146. Empirically the wire response has `grade='Pass'` AND `_prediction_source=None` (should be 'snapshot' after hydrate), so either (a) picks are re-fetched from Mongo mid-pipeline and hydrate is not re-applied, or (b) a decorator explicitly writes `pick['grade'] = pick.get('published_grade') or pick.get('_grade_stale_source') or 'Pass'` using the wrong source. Reproduction: `curl /api/picks/today?lite=true | jq '.picks[] | select(.sport==\"NFL\" and .lock_score>=85 and .grade==\"Pass\") | {selection, lock_score, grade, published_grade}'` returns 34 rows. Mitigation: re-invoke `hydrate_many()` (or an idempotent grade-invariant sweep) as the very last step inside picks_routes.py right before the return at line 3173, OR immediately before _strip_for_lite at line 3146."
+}
