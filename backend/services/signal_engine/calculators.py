@@ -163,6 +163,61 @@ async def form_signal(db, pick: dict) -> dict:
             l10_map = pf.get("last10_avg") or {}
             if "strikeout" in mkt_l and _f(l10_map.get("pitcher_strikeouts")) > 0:
                 stat = "pitcher_strikeouts"
+            # ── 2026-06-09 · §22 UNIT-SAFETY CONTRACT (NFL) ────────────
+            # Herbert Over 20.5 Pass Completions was displaying rationale
+            # "L5 avg 155.75 yards — 660 % above the 20.5 line" — the
+            # historical lookup's headline_stat for a QB is
+            # ``passing_yards``, but the MARKET is COMPLETIONS.  A
+            # cross-unit comparison is a data-integrity failure.  Force
+            # the NFL market → stat mapping here so form/trend/consistency
+            # all read the correct log field.  Prefers the shared canonical
+            # ``_NFL_MARKET_TO_STAT`` map for identity with the rest of
+            # the pipeline.  Falls back to substring detection for
+            # legacy market names.
+            if (pick.get("sport") or "").upper() == "NFL":
+                try:
+                    from sports_engine import _NFL_MARKET_TO_STAT as _NFL_M2S
+                except Exception:
+                    _NFL_M2S = {}
+                mkey = (pick.get("market_key") or "").lower()
+                mapped = _NFL_M2S.get(mkey)
+                if not mapped:
+                    # Legacy market string routing.
+                    if "completion" in mkt_l:
+                        mapped = "completions"
+                    elif "pass yds" in mkt_l or "pass yards" in mkt_l or "passing yards" in mkt_l:
+                        mapped = "passing_yards"
+                    elif "pass attempt" in mkt_l:
+                        mapped = "pass_attempts"
+                    elif "pass tds" in mkt_l or "passing tds" in mkt_l:
+                        mapped = "passing_tds"
+                    elif "interception" in mkt_l:
+                        mapped = "interceptions"
+                    elif "rush yds" in mkt_l or "rushing yards" in mkt_l:
+                        mapped = "rushing_yards"
+                    elif "rush attempt" in mkt_l:
+                        mapped = "rush_attempts"
+                    elif "rush tds" in mkt_l or "rushing tds" in mkt_l:
+                        mapped = "rushing_tds"
+                    elif "reception yds" in mkt_l or "receiving yards" in mkt_l:
+                        mapped = "receiving_yards"
+                    elif ("receptions" in mkt_l) and ("rec yds" not in mkt_l):
+                        mapped = "receptions"
+                    elif "reception tds" in mkt_l or "receiving tds" in mkt_l:
+                        mapped = "receiving_tds"
+                if mapped and mapped != stat:
+                    # Only switch when the mapped log-field is non-empty
+                    # (otherwise the guard on line 172 falls through and
+                    # the block is skipped, which is the correct
+                    # fail-closed behaviour for missing data).
+                    if _f((pf.get("last5_avg") or {}).get(mapped)) > 0 \
+                       or _f(l10_map.get(mapped)) > 0:
+                        stat = mapped
+                    else:
+                        # No completions/receptions/etc. logged for
+                        # this player — force the block to skip
+                        # instead of showing yards vs completions.
+                        stat = mapped  # will hit l5==0/l10==0 guard
             l5 = _f((pf.get("last5_avg") or {}).get(stat))
             l10 = _f(l10_map.get(stat))
             # Guard: when the mapped stat has NO production in the entire

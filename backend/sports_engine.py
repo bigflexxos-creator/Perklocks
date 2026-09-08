@@ -6276,8 +6276,20 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         side_lower = str(side).lower()
         if is_alt:
             cap_dict = alt_under_per_player if side_lower == "under" else alt_over_per_player
-            # Allow up to 3 alts per player per side (e.g. points/rebs/assists)
-            if cap_dict.get(player, 0) >= 3:
+            # ── 2026-06-09 · §A9 NFL ALT LADDER COMPLETENESS ──────────
+            # Per user directive (NFL Universal Prop Closure §A9):
+            #   "Evaluate complete observed ladders before ranking."
+            # NFL uses 24 slots per player per side so a full observed
+            # ladder (10/15/20/25/30/40/50/60/70/80/100/125/150/175/
+            # 200/225/250/300 range across pass-yds/rush-yds/rec-yds/
+            # receptions/pass-tds) survives pre-model dedupe.  The
+            # LATER model/scoring/board_quality gates decide which
+            # rungs earn Lock authority.  Non-NFL sports keep the
+            # original 3-per-side cap.  This is the surgical block
+            # BLOCK 1 (Alt-per-player cap surgery) requested by the
+            # Perklocks NFL final continuous fix directive.
+            _alt_cap = 24 if sport == "NFL" else 3
+            if cap_dict.get(player, 0) >= _alt_cap:
                 continue
             cap_dict[player] = cap_dict.get(player, 0) + 1
         else:
