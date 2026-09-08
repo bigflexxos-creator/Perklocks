@@ -2821,3 +2821,142 @@ requires user confirmation before I proceed:
   * Wire the frontend ATD tab (Section 1 · TRUE TOP 5 · Section 2 ·
     Game-by-Game) mirroring the MLB HR section UI.
 Handing off P0-D to the user for scope approval before continuing.
+
+
+## STAGE 2 PLAYER-PROP CLOSURE (2026-06-09 · post-continuation)
+
+### Reachability contract tests
+- `backend/tests/test_nfl_playerprop_reachability.py` — 5/5 PASS
+  * `test_multiplier_map_no_92_ceiling` — every 93/94/95/96/97/98/99
+    tier is mathematically reachable from at least one (base, score)
+    combination.
+  * `test_lock_and_value_are_independent_dimensions` — a strong-
+    evidence pick (score=82, base=99) reaches Lock=99 even when the
+    edge is neutral.  Lock ≠ Value proven.
+  * `test_apex_gate_still_strict` — APEX_MIN_BASE_SCORE=97,
+    NON_APEX_HARD_CAP=99, APEX_SCORE=100, NFL in APEX_ELIGIBLE_SPORTS.
+    100 remains mathematically reachable but rare-convergence-gated.
+  * `test_chalk_trap_fires_on_book_copy_probability` — a -1400 alt
+    with wp=imp, zero DD signals, edge=0 is trap-demoted (fail-closed
+    on book-copy probability preserved per user directive).
+  * `test_chalk_trap_spares_independent_model` — a -320 alt with
+    edge=+4.5pp and 3 DD signals passes the trap unchanged, proving
+    the trap is not a blanket off_board for low-edge chalk.
+
+### Actual current-slate proof (post-refresh, honest)
+NFL player-prop on-board universe: **318 picks**
+
+Lock score histogram:
+```
+  [100 APEX]  0
+  [99]        0
+  [98]        0
+  [97]        0
+  [96]        0
+  [95]        0
+  [93-95]     0
+  [90-92]     4
+  [85-89]   314
+  [<85]       0
+```
+
+Honest evidence deficiency (why 93+ is empty on the current slate):
+- 314/318 NFL player-prop picks have `evidence_score` in [60-64].
+  New multiplier maps 60-64 → 0.93 (unchanged) so base 99 clamps
+  at 92.1.  The `93-99` corridor unlocks at evidence_score ≥ 65
+  (mult 0.95).  Current slate evidence signals genuinely do not
+  converge above 64 for these props.
+- The 4 picks at [90-92] use base=99 × mult 0.93 = 92.1 — the exact
+  ceiling that was previously the WHOLE-BOARD ceiling.  Freeing
+  intermediate tiers has already opened the path; genuine convergence
+  is now the only gate.
+- 100 APEX requires `magic_tier == ALIGNED_STRONG` + base ≥ 97 +
+  ≥5/6 category votes.  Current slate produces `magic_tier =
+  INSUFFICIENT_EVIDENCE` for every NFL player prop, so no APEX
+  candidate.  Not a code ceiling — an evidence-availability one.
+
+### Burrow Pass Yds ladder — complete regression
+```
+line   odds   wp%    imp%   edge%   LS    ev  status
+174.5  -1400  93.3   93.3    0.0   98.1  45  off_board:chalk_trap (mp=book_copy, ev=45)
+189.5  -1060  91.4   91.4    0.0   97.7  45  off_board:chalk_trap
+199.5   -650  86.7   86.7    0.0   95.6  45  off_board:chalk_trap
+265.5   -115  55.8   53.5    2.3   75.6  54  off_board:gate (lock<85)
+267.5   -114  55.6   53.3    2.3   75.5  54  off_board:gate
+273.5   -115  54.57  53.5    1.07  75.0  53  off_board:gate
+319.5   +345  54.0   22.5   31.5   88.4  61  ON BOARD
+329.5   +442  53.6   18.5   35.1   88.4  61  ON BOARD
+...
+419.5  +3700  50.6    2.6   48.0   88.4  61  ON BOARD  (BEST VALUE rung)
+```
+`BEST LOCK` on-board = 319.5 @ +345 (LS=88.4, wp=54%).
+`BEST VALUE` on-board = 419.5 @ +3700 (edge=48%, wp=50.6%).
+The three easier rungs (174.5/189.5/199.5) are trap-demoted because
+`win_probability == implied_probability` (pure book-copy) and
+`evidence_score == 45` (insufficient).  This is the fail-closed
+guarantee the user explicitly asked to preserve; a genuine
+independently-modelled variant is spared by the chalk-trap alt
+escape clause (see `test_chalk_trap_spares_independent_model`).
+
+### Certification status
+- ✅  1. NFL filters work.  Every canonical family filter returns only
+       its own picks; sum(family) == full slate.
+- ✅  2. Standard + ALT share the same market-family filter (regex
+       covers both display forms).
+- ✅  3. Full real ladders are preserved (26 DK + 10 FD rungs for
+       Burrow all present in DB).
+- ✅  4. Easier high-hit rungs eligible via chalk-trap alt escape when
+       independently modelled (proof: reachability test 5).  Rungs
+       that are pure book-copies remain fail-closed off_board per
+       user's explicit contract.
+- ✅  5. Longshots not promoted solely for huge edge (all Burrow
+       longshots capped at 88.4 despite +30-48% edge because the
+       evidence-driven multiplier caps them at their evidence tier).
+- ⚠️  6. Per-rung exact-threshold math: `win_probability` DOES vary
+       per rung (54.0 → 50.6) but `lock_score_v3_base` and
+       `evidence_score` are currently uniform across the alt ladder.
+       Not a ceiling — a modelling depth issue.  The scoring path
+       has no artificial cap; the upstream feature engine needs a
+       per-threshold evidence pass for genuine per-rung Lock Scores.
+- ⚠️  7. Best Lock vs Best Value: separation exists in the data
+       (edge_percent and lock_score are independent fields), but
+       currently both dimensions co-move on the alt ladder because
+       every longshot rung shares the same evidence_score.  The
+       Sim-Edge tab already surfaces high-value picks separately;
+       a dedicated "Best Lock Rung / Best Value Rung" annotation
+       on the wire would be an additive follow-up.
+- ✅  8. 93-99 player-prop scores are mathematically reachable
+       (`test_multiplier_map_no_92_ceiling` proves every tier).
+- ✅  9. 100 APEX mathematically reachable with strict convergence
+       (`test_apex_gate_still_strict` verifies gate preservation).
+- ✅ 10. No artificial NFL score ceiling remains.  The 92.1 ceiling
+       (evidence_multiplier 0.93 → 1.00 jump) is fixed; every other
+       cap (reliability floor, magic delta, non-APEX 99) is a
+       DIRECTED authority tied to real evidence.
+- ✅ 11. Current-slate elite scores shown only if genuinely earned.
+       Zero picks show at 93+ because evidence genuinely doesn't
+       converge; ceiling is not the block, upstream evidence quality
+       is.
+- ✅ 12. No unrelated systems changed (ATD, MLB HR, other sports
+       untouched).
+
+### Verdict
+**NFL PLAYER PROP + ALT-LINE CLOSURE — NOT YET CERTIFIED**
+
+Blockers remaining before Publish:
+1. **Per-rung independent evidence pass** (item 6).  The NFL
+   feature engine (`services.nfl_feature_engine`) currently emits a
+   single feature vector per (player, market_family); the alt-ladder
+   modelling then reuses that vector for every rung.  For genuine
+   per-threshold `lock_score`, the feature engine needs an
+   exact-threshold evidence pass that outputs distinct
+   `evidence_score` per rung.
+2. **Independent probability for chalk rungs** — Burrow
+   174.5/189.5/199.5 currently produce `win_probability ==
+   implied_probability` because the NFL feature engine has no
+   independent P(passing yards ≥ threshold) estimator for these
+   deep-safe rungs.  Without that estimator the fail-closed
+   trap will (correctly) keep dropping them.
+Both blockers are upstream evidence-engine work, NOT scoring-path
+ceilings.  The scoring path is now provably free of artificial
+93-99 clamps.
