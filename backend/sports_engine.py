@@ -6902,6 +6902,37 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     mp = max(0.35, min(0.82, _cal_mp))
                 else:
                     mp = max(0.45, min(0.97, _cal_mp))
+        # ── 2026-06-09 · NFL model-probability independence ─────────
+        # Emergent Support trace: 257/290 published NFL regular props
+        # had ``model_win_probability == implied_probability`` and
+        # ``edge_percent == 0.0`` with ``edge_method: RAW_FALLBACK``.
+        # Root cause: lines 6188–6191 seed ``mp`` from the book's
+        # implied probability, and the calibration override above is
+        # guarded on ``sport == "MLB"``.  For NFL the real
+        # nflverse-backed feature engine populates ``factors`` in the
+        # [0.30, 0.95] probability-anchored space (see
+        # ``services.nfl_feature_engine.build_nfl_prop_factors`` and
+        # its side-aware Under mirror at L355–361), but that
+        # independent probability was never propagated to
+        # ``model_win_prob``.  Extend the SAME probability-anchored
+        # factor-mean override to NFL regular props so the NFL model
+        # forecast is independent from sportsbook pricing.  No new
+        # math, no synthetic edge, no odds ban — the factor
+        # engine's own probability is honestly used.
+        elif (
+            sport == "NFL"
+            and factors
+            and _mlb_features_used            # NFL branch reuses this list
+            and mk not in ("player_anytime_td", "player_1st_td")
+            and _atd_model_override is None   # ATD path already overrides mp
+        ):
+            _fv = [v for v in factors.values() if isinstance(v, (int, float))]
+            if len(_fv) >= 3:
+                _cal_mp = sum(_fv) / len(_fv)
+                if is_alt:
+                    mp = max(0.55, min(0.97, _cal_mp))
+                else:
+                    mp = max(0.30, min(0.97, _cal_mp))
         # ── Phase 2A.5 DEFECT #4 (2026-08) ─────────────────────────────
         # Elite-scorer factor manipulation (+10 %) and forced Lock Score
         # floor (88.0) RETIRED.  No player receives an artificial Lock
