@@ -2665,3 +2665,60 @@ agent_communication:
 ##       (b) NFL Preview board renders ALT LOCK markers on multiple picks
 ##       (c) tests/test_nfl_prop_closure_p0.py 13/13 still passes
 ##       (d) sample Herbert Pass Completions rationale — no "yards" reference
+
+## CONTINUATION CHECKPOINT (2026-06-09 · end of current session)
+
+### What is SHIPPED (code on disk, backend running, verified locally):
+  §A1/§A2  · NFL board_quality dedicated key (win_prob_min=0.15) — deep alt ladder reaches Locks board
+  §A4      · mp_from_book_seed marker + orchestrator fail-closed cap (no book-implied substitution for Lock authority)
+  §A5/§A11 · Doubs + Burrow independent probabilities verified end-to-end
+  §A10     · services/nfl_ladder_monotonicity.py — Over-ladder inversion detector, fail-closed
+  §A15     · Canonical grade/lock invariant — hydrate() + wire-boundary safety net in picks_routes.py
+  §A9/§P0-A · sports_engine.py alt-per-player cap 3 → 24 (NFL only). Complete observed ladder now flows past pre-model dedupe
+  §22      · signal_engine/calculators.py unit-safety contract via _NFL_MARKET_TO_STAT (Herbert 155.75-yards anti-pattern fixed)
+  §Ranking · services/pick_refresh_orchestrator.py NFL Lock reliability floor: lock ≤ 60 + wp × 40 (extreme longshots capped fail-closed)
+  §B9      · /api/nfl/atd/by-game endpoint live (reuses canonical publication rows, groups by canonical_event_id)
+  §Admin   · /api/admin/picks/force-refresh accepts sport_filter with 400 on invalid; lease namespaced
+  §Test    · tests/test_nfl_prop_closure_p0.py — 13/13 passing
+
+### Remaining work explicitly requested (NOT shipped — hand-off for next session):
+
+  P0-A · NFL PROP FILTERS (frontend)
+    - Frontend NFL prop filter currently uses fragile string matching (market.includes(...))
+    - Must switch to canonical market-family resolver: player_pass_yds + player_pass_yds_alternate → PASS_YDS (etc.)
+    - Same resolver used for backend DTO, filter buttons, board rendering, filter counts
+    - Filter buttons: ALL / GAME / PASS_YDS / PASS_COMPLETIONS / PASS_ATTEMPTS / PASS_TD / INTERCEPTIONS / RUSH_YDS / RUSH_ATTEMPTS / RUSH_TD / REC_YDS / RECEPTIONS / REC_TD / ATD
+    - Files to inspect: frontend/app/(tabs)/index.tsx (filters state), frontend/src/lib/api.ts (line_type param), frontend NFL filter rendering component
+    - Regression case: tap PASS YDS → both standard 267.5 AND alt 200+/225+/250+/etc. Burrow rungs appear
+
+  P0-B · BURROW RAW-PROVIDER LADDER TRACE
+    - Fresh refresh only showed Burrow Pass Yds alt rungs 319.5-419.5 (chalk side)
+    - Must trace raw Odds API player_pass_yds_alternate response for Burrow to determine if easier rungs (175+/200+/225+) are provider-offered
+    - If offered but lost: fix pre-model ordering so easier rungs survive the 24-slot cap
+    - If not offered: prove from raw response
+
+  P0-C · ELITE 93-99 SCORE AUTHORITY REACHABILITY
+    - Current NFL board appears to top out at lock 92
+    - Audit all lock_score caps/clamps/gates in the NFL path:
+      * services/magic/lock_score_integrator.py (NON_APEX_HARD_CAP = 99)
+      * services/magic/apex_gate.py (APEX_MIN_BASE_SCORE = 97)
+      * board_validator floors
+      * chalk_trap DEMOTED_LOCK (72)
+      * new reliability floor 60 + wp*40 (wp=0.85 → cap=94; wp=0.95 → cap=98)
+    - Prove 93-99 is mathematically reachable when wp ≥ 0.83
+
+  P0-D · SPECIALIZED ATD (§B2-B17)
+    - Current /atd/leaderboard + /atd/by-game only surface RBs with populated atd_evidence.td_probability
+    - Must expand candidate universe to include WR/TE/QB where sportsbook Anytime TD markets exist
+    - Steps for next session:
+      1. Search existing data sources (nflverse, SportDataIO, ESPN, player_game_logs, play-by-play)
+         for goal-line carries / red-zone carries / red-zone targets / end-zone targets
+      2. Populate atd_evidence for every player with an Anytime TD sportsbook line, not just RBs
+      3. Compute independent P(TD≥1) via touchdown-intensity model (Poisson with lambda from real opportunity)
+      4. Keep TD Probability and ATD Score separate (0-100 setup-quality score)
+      5. Ensure global Top 5 = five highest ATD Scores across the entire slate (no quotas)
+      6. Game-by-game reuses same canonical rows (already wired at /atd/by-game)
+      7. Wire frontend ATD tab (SECTION 1 · TRUE TOP 5 · SECTION 2 · GAME BY GAME) using MLB HR section as visual reference
+
+### Environmental note (genuine blocker)
+Production deployment requires the user's "Publish" click. The agent cannot promote code to production from the build container.
