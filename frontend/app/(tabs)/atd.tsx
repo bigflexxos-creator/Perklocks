@@ -1,18 +1,17 @@
 /**
  * NFL Anytime-Touchdown (ATD) slate screen.
  *
- * Mirrors the MLB HR tab UX (per user request 2026-06-30: "I want to do
- * same thing with nfl for atd"). Backed by /api/nfl/atd/leaderboard,
- * which returns picks already ranked by td_probability across the slate.
+ * 2026-06-25 · restructured to match the MLB HR presentation pattern
+ * with one CRITICAL difference: the Top 5 has NO per-game
+ * diversification quota (see comment on `topFive` below).  Both
+ * SECTION 1 · TOP 5 and SECTION 2 · BY GAME are rendered on ONE
+ * scrolling screen — no toggle.  Picks that appear in Top 5 are
+ * excluded from BY GAME so the two sections never duplicate.
  *
- * Modes:
- *  • "🔥 Top 5 Today" (default) — top 5 picks of the day with full
- *    rationale bullets and opportunity rating.
- *  • "📋 Full Board" — extended top-25 view for power users.
- *
- * Auto-refreshes on pull-down.
+ * Backed by /api/nfl/atd/leaderboard which returns picks already
+ * ranked by td_probability across the slate.
  */
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   RefreshControl, ScrollView, StyleSheet,
   Text, View, Pressable,
@@ -25,8 +24,6 @@ import { COLORS } from "@/src/theme";
 import { SkeletonList } from "@/src/components/Skeleton";
 import { EmptyState } from "@/src/components/EmptyState";
 import { safeBack } from "@/src/utils/safeBack";
-
-type ViewMode = "top5" | "full";
 
 function gradeForProb(p: number): string {
   if (p >= 0.70) return "A+";
@@ -48,13 +45,27 @@ function oppRatingChip(r: string): { bg: string; fg: string; label: string } {
   return                  { bg: "rgba(239, 68, 68, 0.18)",   fg: "#fca5a5", label: "LOW OPP" };
 }
 
-function PickCard({ pick, rank }: { pick: NFLAtdPick; rank: number }) {
+/** Canonical game key from (team, opponent) — matches the pair regardless of home/away. */
+function gameKey(pick: NFLAtdPick): string {
+  const a = (pick.team || "").trim();
+  const b = (pick.opponent || "").trim();
+  if (!b) return a || "unknown";
+  return [a, b].sort().join(" @ ");
+}
+function gameTitle(pick: NFLAtdPick): string {
+  const t = (pick.team || "").trim();
+  const o = (pick.opponent || "").trim();
+  if (!o) return t || "TBD";
+  return `${t} vs ${o}`;
+}
+
+function PickCard({ pick, rank, hideRank = false }: { pick: NFLAtdPick; rank: number; hideRank?: boolean }) {
   const grade = gradeForProb(pick.td_probability);
   const opp = oppRatingChip(pick.opportunity_rating);
   return (
     <View style={styles.card}>
       <View style={styles.headerRow}>
-        <Text style={styles.rank}>#{rank}</Text>
+        {!hideRank && <Text style={styles.rank}>#{rank}</Text>}
         <View style={[styles.gradeChip, { backgroundColor: gradeColor(grade) }]}>
           <Text style={styles.gradeText}>{grade}</Text>
         </View>
@@ -79,21 +90,14 @@ function PickCard({ pick, rank }: { pick: NFLAtdPick; rank: number }) {
         </View>
         <View style={styles.metaChip}>
           <Text style={styles.metaText}>
-            {pick.weighted_touches_recent.toFixed(1)} touch/g
+            {pick.weighted_touches_recent.toFixed(1)} touches
           </Text>
         </View>
-        {pick.weighted_tds_recent > 0 && (
-          <View style={styles.metaChip}>
-            <Text style={styles.metaText}>
-              {pick.weighted_tds_recent.toFixed(2)} TD/g
-            </Text>
-          </View>
-        )}
-        {pick.sample_games > 0 && (
-          <View style={styles.metaChip}>
-            <Text style={styles.metaText}>n={pick.sample_games}g</Text>
-          </View>
-        )}
+        <View style={styles.metaChip}>
+          <Text style={styles.metaText}>
+            {pick.weighted_tds_recent.toFixed(1)} recent TD
+          </Text>
+        </View>
       </View>
 
       {pick.reasons && pick.reasons.length > 0 && (
@@ -108,18 +112,18 @@ function PickCard({ pick, rank }: { pick: NFLAtdPick; rank: number }) {
 }
 
 export default function NFLAtdScreen() {
-  const router = useRouter();
+  useRouter();
   const [data, setData] = useState<NFLAtdLeaderboardResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [mode, setMode] = useState<ViewMode>("top5");
 
   const load = useCallback(async () => {
     try {
       setError(null);
-      // Pull a wide window (25), filter for display below.
-      const res = await api.nflAtdLeaderboard(25, 0.30, "med");
+      // Pull a wide window (60) so BY GAME sections have material even
+      // after the true Top 5 are lifted out.
+      const res = await api.nflAtdLeaderboard(60, 0.30, "med");
       setData(res);
     } catch (e: any) {
       setError(e?.message || "Failed to load ATD board");
@@ -136,8 +140,45 @@ export default function NFLAtdScreen() {
     load();
   }, [load]);
 
-  const picks = data?.picks ?? [];
-  const displayed = mode === "top5" ? picks.slice(0, 5) : picks;
+  const picks: NFLAtdPick[] = useMemo(() => data?.picks ?? [], [data]);
+
+  // ── TRUE Top 5 · NO per-game diversification ──────────────────
+  // MLB HR enforces "one HR pick per game" in flattenTopOfDay() so a
+  // hot Yankees lineup doesn't crowd out other games. That rule does
+  // NOT apply here: if two players in the same event are the two
+  // strongest ATD wagers on the slate, they both belong in Top 5.
+  // Rank mathematically by td_probability descending (backend already
+  // sorts, but we re-sort defensively).
+  const topFive = useMemo(() => {
+    const sorted = [...picks].sort((a, b) => b.td_probability - a.td_probability);
+    return sorted.slice(0, 5);
+  }, [picks]);
+
+  // ── BY GAME · remaining picks, grouped ────────────────────────
+  // Exclude every pick already surfaced in Top 5 by player_id so the
+  // two sections never duplicate. Group by canonical (team, opponent)
+  // pair. Within each game keep the highest td_probability first.
+  const byGame = useMemo(() => {
+    const topIds = new Set(topFive.map(p => p.player_id));
+    const remaining = picks.filter(p => !topIds.has(p.player_id));
+    const groups = new Map<string, { title: string; picks: NFLAtdPick[] }>();
+    for (const p of remaining) {
+      const k = gameKey(p);
+      if (!groups.has(k)) {
+        groups.set(k, { title: gameTitle(p), picks: [] });
+      }
+      groups.get(k)!.picks.push(p);
+    }
+    // Sort games by their strongest remaining pick (best-first) so
+    // interesting matchups float up.
+    const arr = Array.from(groups.entries()).map(([key, g]) => ({
+      key,
+      title: g.title,
+      picks: g.picks.sort((a, b) => b.td_probability - a.td_probability),
+    }));
+    arr.sort((a, b) => (b.picks[0]?.td_probability ?? 0) - (a.picks[0]?.td_probability ?? 0));
+    return arr;
+  }, [picks, topFive]);
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -152,33 +193,12 @@ export default function NFLAtdScreen() {
           <Ionicons name="chevron-back" size={22} color={COLORS.textPrimary} />
         </Pressable>
         <Ionicons name="american-football-outline" size={20} color={COLORS.goldElite} />
-        <Text style={styles.headerTitle}>ATD PICKS</Text>
+        <Text style={styles.headerTitle}>NFL ANYTIME TOUCHDOWNS</Text>
         {data && (
           <Text style={styles.headerSub}>
-            {mode === "top5" ? `Top ${displayed.length} of the day` : `${displayed.length} picks`}
+            {topFive.length + byGame.reduce((n, g) => n + g.picks.length, 0)} picks
           </Text>
         )}
-      </View>
-
-      <View style={styles.toggleRow}>
-        <Pressable
-          onPress={() => setMode("top5")}
-          style={[styles.toggleBtn, mode === "top5" && styles.toggleBtnActive]}
-          testID="atd-toggle-top"
-        >
-          <Text style={[styles.toggleText, mode === "top5" && styles.toggleTextActive]}>
-            🔥 Top 5 Today
-          </Text>
-        </Pressable>
-        <Pressable
-          onPress={() => setMode("full")}
-          style={[styles.toggleBtn, mode === "full" && styles.toggleBtnActive]}
-          testID="atd-toggle-full"
-        >
-          <Text style={[styles.toggleText, mode === "full" && styles.toggleTextActive]}>
-            📋 Full Board
-          </Text>
-        </Pressable>
       </View>
 
       {loading ? (
@@ -199,7 +219,7 @@ export default function NFLAtdScreen() {
             testID="atd-error"
           />
         </ScrollView>
-      ) : displayed.length === 0 ? (
+      ) : picks.length === 0 ? (
         <ScrollView
           contentContainerStyle={styles.scroll}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.voltBlue} />}
@@ -218,14 +238,33 @@ export default function NFLAtdScreen() {
           contentContainerStyle={styles.scroll}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.voltBlue} />}
         >
+          {/* ── SECTION 1 · TOP 5 ANYTIME TDS ─────────────────── */}
+          <Text style={styles.sectionTitle}>🔥 TOP 5 TODAY</Text>
           <Text style={styles.intro}>
-            {mode === "top5"
-              ? "Top 5 anytime-TD picks across the slate · ranked by td_probability (recent touches/TDs · RB archetype · opponent matchup)."
-              : "Full ATD board · all picks meeting minimum opportunity + probability filters."}
+            True five highest-ranked ATD wagers across the slate — no per-game quota.
           </Text>
-          {displayed.map((p, i) => (
-            <PickCard key={`${p.player_id}-${i}`} pick={p} rank={i + 1} />
+          {topFive.map((p, i) => (
+            <PickCard key={`top-${p.player_id}-${i}`} pick={p} rank={i + 1} />
           ))}
+
+          {/* ── SECTION 2 · BY GAME ────────────────────────────── */}
+          {byGame.length > 0 && (
+            <>
+              <View style={{ height: 12 }} />
+              <Text style={styles.sectionTitle}>🏈 BY GAME</Text>
+              <Text style={styles.intro}>
+                Remaining ATD candidates grouped by matchup, best pick first.
+              </Text>
+              {byGame.map((g) => (
+                <View key={g.key} style={styles.gameGroup}>
+                  <Text style={styles.gameGroupTitle}>{g.title}</Text>
+                  {g.picks.map((p, i) => (
+                    <PickCard key={`bg-${p.player_id}-${i}`} pick={p} rank={i + 1} hideRank />
+                  ))}
+                </View>
+              ))}
+            </>
+          )}
           <View style={{ height: 32 }} />
         </ScrollView>
       )}
@@ -234,48 +273,61 @@ export default function NFLAtdScreen() {
 }
 
 const styles = StyleSheet.create({
-  safe:   { flex: 1, backgroundColor: COLORS.background },
-  header: { flexDirection: "row", alignItems: "center", gap: 10,
-            paddingHorizontal: 14, paddingTop: 6, paddingBottom: 10,
-            borderBottomWidth: 1, borderBottomColor: COLORS.borderDefault },
-  backBtn:     { padding: 4, marginRight: -4 },
-  headerTitle: { color: COLORS.textPrimary, fontSize: 17, fontWeight: "900", letterSpacing: 0.8 },
-  headerSub:   { color: COLORS.textMuted, fontSize: 11, marginLeft: "auto", fontWeight: "600" },
-
-  toggleRow: { flexDirection: "row", gap: 8, paddingHorizontal: 14, paddingVertical: 10,
-               borderBottomWidth: 1, borderBottomColor: COLORS.borderDefault },
-  toggleBtn: { flex: 1, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8,
-               backgroundColor: "rgba(255,255,255,0.04)", borderWidth: 1,
-               borderColor: COLORS.borderDefault, alignItems: "center" },
-  toggleBtnActive: { backgroundColor: "rgba(74, 222, 128, 0.18)", borderColor: COLORS.goldElite },
-  toggleText:      { color: COLORS.textSecondary, fontSize: 12, fontWeight: "700" },
-  toggleTextActive:{ color: COLORS.textPrimary, fontWeight: "900" },
-
-  scroll: { paddingHorizontal: 12, paddingTop: 12 },
-  intro:  { color: COLORS.textSecondary, fontSize: 11.5, lineHeight: 16,
-            marginBottom: 14, paddingHorizontal: 4 },
-  center: { flexGrow: 1, alignItems: "center", justifyContent: "center",
-            paddingHorizontal: 24, gap: 8 },
-  errorText:  { color: "#fca5a5", fontSize: 13, textAlign: "center" },
-  emptyTitle: { color: COLORS.textPrimary, fontSize: 15, fontWeight: "700" },
-  hintText:   { color: COLORS.textMuted, fontSize: 12, textAlign: "center" },
-
-  card: { backgroundColor: COLORS.surface, borderRadius: 14, padding: 14,
-          marginBottom: 12, borderWidth: 1, borderColor: COLORS.borderDefault },
+  safe: { flex: 1, backgroundColor: COLORS.deepBlack },
+  header: {
+    flexDirection: "row", alignItems: "center", paddingHorizontal: 14,
+    paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#1e293b",
+  },
+  backBtn: { marginRight: 8, padding: 4 },
+  headerTitle: {
+    color: COLORS.textPrimary, fontSize: 17, fontWeight: "800",
+    marginLeft: 8, letterSpacing: 0.5, flex: 1,
+  },
+  headerSub: { color: COLORS.textMuted, fontSize: 12 },
+  scroll: { padding: 12, paddingBottom: 24 },
+  sectionTitle: {
+    color: COLORS.textPrimary, fontSize: 14, fontWeight: "800",
+    letterSpacing: 1.0, marginTop: 8, marginBottom: 4,
+  },
+  intro: { color: COLORS.textMuted, fontSize: 12, marginBottom: 8 },
+  gameGroup: { marginTop: 10 },
+  gameGroupTitle: {
+    color: COLORS.textPrimary, fontSize: 13, fontWeight: "700",
+    letterSpacing: 0.4, marginBottom: 6, marginTop: 6,
+  },
+  card: {
+    backgroundColor: "rgba(15,23,42,0.65)",
+    borderRadius: 14, padding: 12,
+    marginBottom: 10, borderWidth: 1, borderColor: "#1e293b",
+  },
   headerRow: { flexDirection: "row", alignItems: "center" },
-  rank:    { color: COLORS.goldElite, fontSize: 18, fontWeight: "900", width: 32, textAlign: "center" },
-  gradeChip: { paddingHorizontal: 7, paddingVertical: 3, borderRadius: 4, minWidth: 32, alignItems: "center" },
-  gradeText: { color: "#0a0a0a", fontWeight: "900", fontSize: 11.5, letterSpacing: 0.4 },
-  name:  { color: COLORS.textPrimary, fontSize: 14, fontWeight: "900" },
-  sub:   { color: COLORS.textMuted, fontSize: 11, marginTop: 2 },
-  score: { color: COLORS.textPrimary, fontSize: 16, fontWeight: "900", lineHeight: 18 },
-  pct:   { color: COLORS.goldElite, fontSize: 10, fontWeight: "700" },
-
-  metaRow:  { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 8 },
-  metaChip: { paddingHorizontal: 7, paddingVertical: 3, borderRadius: 4,
-              backgroundColor: "rgba(255,255,255,0.05)", borderWidth: 1, borderColor: COLORS.borderDefault },
-  metaText: { color: COLORS.textSecondary, fontSize: 10.5, fontWeight: "700" },
-
-  bullets: { marginTop: 8, gap: 2 },
-  bullet:  { color: COLORS.textSecondary, fontSize: 11.5, lineHeight: 16 },
+  rank: {
+    color: COLORS.textPrimary, fontSize: 15, fontWeight: "800",
+    width: 34,
+  },
+  gradeChip: {
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8,
+    minWidth: 32, alignItems: "center",
+  },
+  gradeText: { color: "#0f172a", fontSize: 13, fontWeight: "800" },
+  name: { color: COLORS.textPrimary, fontSize: 15, fontWeight: "700" },
+  sub: { color: COLORS.textMuted, fontSize: 12 },
+  score: { color: COLORS.goldElite, fontSize: 20, fontWeight: "800" },
+  pct: { color: COLORS.textMuted, fontSize: 11 },
+  metaRow: { flexDirection: "row", flexWrap: "wrap", marginTop: 8 },
+  metaChip: {
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6,
+    backgroundColor: "rgba(30,41,59,0.85)",
+    borderWidth: StyleSheet.hairlineWidth, borderColor: "#334155",
+    marginRight: 6, marginBottom: 6,
+  },
+  metaText: { color: COLORS.textPrimary, fontSize: 11, fontWeight: "600" },
+  bullets: { marginTop: 8 },
+  bullet: { color: COLORS.textMuted, fontSize: 12, marginBottom: 3 },
+  toggleRow: {},
+  toggleBtn: {},
+  toggleBtnActive: {},
+  toggleText: {},
+  toggleTextActive: {},
 });
