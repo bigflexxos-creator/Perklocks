@@ -850,7 +850,11 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     Standard, <80 Pass — so high lock numbers are preserved for genuinely
     high-quality bets across multiple dimensions, not just confidence.
     """
-    weighted = {k: round(v * 100, 1) for k, v in factors.items()}
+    weighted = {
+        k: round(v * 100, 1)
+        for k, v in factors.items()
+        if not (isinstance(k, str) and k.startswith("__"))
+    }
 
     # PASS 3-5 REACHABILITY (2026-06) — Legacy pick=None call-site
     # migration.  When callers pass no ``pick`` we synthesize a
@@ -1102,7 +1106,10 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
         if not isinstance(pick.get("factors"), dict) \
            or not any(isinstance(v, (int, float))
                         for v in (pick.get("factors") or {}).values()):
-            pick["factors"] = dict(factors) if isinstance(factors, dict) else {}
+            pick["factors"] = {
+                k: v for k, v in (factors.items() if isinstance(factors, dict) else [])
+                if not (isinstance(k, str) and k.startswith("__"))
+            }
         apply_universal_lock(pick)
     except Exception:  # pragma: no cover — never break legacy paths
         pass
