@@ -6335,6 +6335,54 @@ async def on_startup():
     except Exception as e:
         logger.warning("NFL nflverse loop failed to start: %s", e)
 
+    # ── NFL Player Weekly (nflverse parquets 2019 → now) ──────────
+    # 2026-06-10 · ATD PART B follow-up. ``nfl_player_weekly`` is the
+    # substrate for the xTD (v2) ATD Challenger, block2d position
+    # resolution, opponent-def splits, and role/target-share features.
+    # It previously had NO caller anywhere in production — the
+    # collection stayed empty until someone ran the ingester by hand,
+    # which is exactly the regression class the user asked us to
+    # eliminate. This deferred task backfills 2019 → current year
+    # once at startup and then refreshes weekly. Idempotent bulk
+    # upserts (see ``refresh_nfl_weekly``) — safe to re-run at will.
+    #
+    # Additive only. Does NOT touch:
+    #   • the 85 Lock threshold,
+    #   • prop evidence / identity validation,
+    #   • the alternate-prop gate,
+    #   • the model (v1 or v2 dispatch),
+    #   • or any other sport's ingest cadence.
+    try:
+        from services.nfl_data_ingest import refresh_nfl_weekly as _nfl_weekly_refresh
+
+        async def _nfl_player_weekly_loop():
+            while True:
+                try:
+                    cur_year = datetime.now(timezone.utc).year
+                    yrs = tuple(range(2019, cur_year + 1))
+                    r = await _nfl_weekly_refresh(db, years=yrs)
+                    logger.info(
+                        "NFL player_weekly refresh: total_upserts=%s per_year=%s",
+                        r.get("total_upserts"),
+                        {k: v.get("rows") if isinstance(v, dict) else v
+                         for k, v in (r.get("per_year_counts") or {}).items()},
+                    )
+                except Exception as e:
+                    logger.warning("NFL player_weekly cycle failed: %s", e)
+                # Weekly cadence — same rhythm as the nflverse
+                # parquets update.
+                await asyncio.sleep(7 * 24 * 60 * 60)
+
+        _deferred_task(_nfl_player_weekly_loop, DEFER_BASE * 12)
+        logger.info(
+            "NFL nfl_player_weekly ingest loop scheduled "
+            "(seed 2019→now, weekly refresh)"
+        )
+    except Exception as e:
+        logger.warning(
+            "NFL nfl_player_weekly loop failed to start: %s", e
+        )
+
     # Phase 5c — Steam detector. Watches pick_line_history for rapid
     # implied-probability moves and tags picks with a `steam` block.
     # Runs every 60s (loop-internal), independent of line-observer
