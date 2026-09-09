@@ -5352,10 +5352,68 @@ async def on_startup():
         await db.players.create_index([("player_id", 1), ("sport", 1)], unique=True)
         await db.games.create_index([("game_id", 1), ("sport", 1)], unique=True)
         await db.player_game_logs.create_index([("player_id", 1), ("date", -1)])
+        # ── 2026-06-25 · PRODUCTION NFL INGESTION FIX ─────────────────
+        # Older deployments created a 2-field UNIQUE index
+        # `player_id_1_game_id_1` on `player_game_logs`.  NFL players
+        # legitimately have MULTIPLE stat-block documents per
+        # `(player_id, game_id)` (passing / rushing / receiving), so
+        # that stale unique index caused duplicate-key errors on the
+        # 2nd stat-block insert per game — aborting the entire NFL
+        # historical backfill (stuck at 2 games in Production).
+        # Drop it idempotently, log before/after, and preserve the
+        # correct NON-UNIQUE 3-field composite (player_id, game_id,
+        # stat_block) so per-stat-block rows coexist.  Safe when the
+        # stale index is already absent (list_indexes → early return).
+        try:
+            _before = await db.player_game_logs.list_indexes().to_list(None)
+            logger.info(
+                "player_game_logs indexes BEFORE cleanup: %s",
+                [ix.get("name") for ix in _before],
+            )
+            _stale = next(
+                (ix for ix in _before
+                    if ix.get("name") == "player_id_1_game_id_1"),
+                None,
+            )
+            if _stale is not None:
+                logger.warning(
+                    "player_game_logs stale UNIQUE index detected "
+                    "(name=player_id_1_game_id_1, unique=%s, key=%s) — "
+                    "dropping so NFL multi-stat-block ingestion can "
+                    "insert per-stat-block documents.",
+                    _stale.get("unique"), _stale.get("key"),
+                )
+                await db.player_game_logs.drop_index(
+                    "player_id_1_game_id_1")
+                logger.info(
+                    "player_game_logs.player_id_1_game_id_1 DROPPED",
+                )
+            else:
+                logger.info(
+                    "player_game_logs stale index absent — no-op "
+                    "(startup safe on fresh envs).",
+                )
+        except Exception as _idx_err:
+            logger.warning(
+                "player_game_logs stale-index cleanup non-fatal error: %s",
+                _idx_err,
+            )
         # Composite index — NFL stores multiple rows per (player, game) keyed
         # by stat_block (passing/rushing/receiving). Other sports have one
-        # row per (player, game). Non-unique to keep all sports working.
-        await db.player_game_logs.create_index([("player_id", 1), ("game_id", 1), ("stat_block", 1)])
+        # row per (player, game). NON-UNIQUE to keep multi-stat-block
+        # rows coexisting.
+        await db.player_game_logs.create_index(
+            [("player_id", 1), ("game_id", 1), ("stat_block", 1)],
+            name="player_id_1_game_id_1_stat_block_1",
+        )
+        try:
+            _after = await db.player_game_logs.list_indexes().to_list(None)
+            logger.info(
+                "player_game_logs indexes AFTER cleanup: %s",
+                [ix.get("name") for ix in _after],
+            )
+        except Exception:
+            pass
         await db.season_totals.create_index([("player_id", 1), ("sport", 1), ("season", 1), ("competition", 1)])
         await db.team_form.create_index([("team_id", 1), ("sport", 1)])
         # ── Multi-Season Ingestion (Phase 1 of historical props pipeline) ──
