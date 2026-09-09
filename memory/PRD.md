@@ -1,80 +1,28 @@
-# PERKLOCKS — Product Requirements & Session Log
+# LockScore — Product Requirements (Live)
 
-## PRODUCT REQUIREMENTS (immutable)
-- Maintain immutable canonical truth (`PublishedPickContract`)
-- Zero mock data. Never fabricate sportsbook lines or synthesize odds
-- Preserve EXPO parity
-- Real runtime sportsbook data must flow completely to the UI
-- Historical team must NEVER override current roster membership
+## North Star
+NFL player-prop closure with immutable canonical truth. BEST_LOCK is
+driven by exact-wager reliability; BEST_VALUE captures price edge.
+Every alt rung is modelled independently — no shared factor values,
+no shared sample sizes, no artificial ceilings on 93-99 Lock Scores.
 
-## SESSION LOG — 2026-09-07 (MAIN 41)
+## Stage-2 FINAL ROOT FIX (2026-06-25) — CERTIFIED
+### Sample-Emission Contract
+- Each `EvidenceFeature` binds its `sample_size` to the TRUE per-feature
+  evidence horizon (L3 → 3, L5 → 5, distribution → actual n_games).
+- Threshold / distribution / trend factors route to `form` category
+  (no more `intangible n=1` demotion).
+- Sentinel keys (`__factor_sample_sizes`, `__rung_p_hat`) stripped
+  before pick storage.
+- Contract tests: 4/4 emission + 12/12 reachability PASS.
 
-### Goal
-Close NFL prop pipeline: current-team identity + regular props + ATD, then
-prove end-to-end on the live board.
+### Preserved Contracts
+- Correlation guard caps L5/L3/Historical ≤ 0.75; factor_mean ≤ 0.90.
+- 93-99 corridor + 100 APEX architecturally reachable.
+- Chalk-trap fail-closed on book-copy, spare on independent authority.
+- NFL sample tier (5, 12); MLB unchanged (10, 30).
 
-### Changes Applied
-1. **`services/nfl_feature_engine.py`** — new
-   `resolve_nfl_current_team_for_player()` reads from `db.players`
-   (ESPN roster, refreshed daily) with `updated_at desc` freshness + name
-   variants (Jr./Sr./II). Falls back to `nfl_player_weekly` for GSIS.
-   Distinguishes `current_team` vs `historical_team`.
-   Adds per-invocation memo cache so 382-candidate events don't hit DB
-   1500× per event.
-2. **`sports_engine.py`** — after `_build_pick` for NFL, attaches
-   `player_team`, `canonical_team_id`, `canonical_player_id`,
-   `player_team_name`, `position`, and `identity_class`
-   (AUTHORITATIVE / PROVISIONAL).
-3. **`nfl_atd_engine.py`** — `_player_profile_from_weekly` now returns
-   `current_team` (from most-recent 2026 row if present else latest);
-   `predict_player_atd` propagates `current_team` + `historical_team`.
-   Fixes stale-team regression class (Etienne → JAX ghosts).
-4. **`routes/nfl_routes.py`** — `/api/nfl/atd/leaderboard` now sources
-   from PUBLISHED canonical ATD picks first (`db.picks` where
-   `market ~ /Anytime|1st TD|First TD/`), falls back to legacy
-   historical ranking with `mode: "research_only"` and every pick
-   tagged `provenance: "historical_ranking"` so the UI can distinguish.
-5. **`routes/picks_routes.py`** — NFL-specific 168-hour board horizon
-   (was 72h). Other sports remain at 72h.
-
-Frontend:
-6. **`frontend/src/components/SportFilterBar.tsx`** — Added
-   `🏈 ATD` chip for NFL (mirrors MLB `🚀 HR` chip). Routes to `/atd`.
-
-### Verified Via Direct-Call Funnel Audit (5 NFL events)
-- Raw ATD outcomes: 148
-- ATD engine accepted: 75
-- Passed edge floor: 36
-- Lock ≥85: 2 (both AUTHORITATIVE with player_team resolved)
-- Team resolution: 100% on NE @ SEA event (31/31)
-- Model probabilities individualized (McCaffrey 65.6%, Purdy 22.7%,
-  Woody Marks 53.3%, Ferguson 15.3%). No compression.
-- Sportsbook edges natural (-22% to +22%). No compression.
-- Legitimate rejection reasons: unresolved_player_identity,
-  current_team_unresolved (undrafted/preseason additions),
-  no_recent_red_zone_path.
-
-### OUTSTANDING — NEEDS NEXT SESSION
-- **Direct-call emission proven; running orchestrator not persisting NFL
-  props to DB despite `Props fetch NFL: selecting 16` firing every ~5min.**
-- Symptom: 0 NFL prop picks written to DB across many refresh cycles.
-- Likely root cause: `_fetch_player_props_for_sport("NFL")` returns 0 picks
-  even though `_props_picks_from_event` in-process produces valid picks.
-- Investigation pending: race between concurrent refresh triggers /
-  bad_market_registry duplicate-key exceptions / event-loop cancellation.
-- Verified NOT the cause: identity gate, team resolution, edge threshold,
-  lock threshold, `_game_ctx` UnboundLocalError (NBA-only), horizon.
-
-### Test Credentials
-`demo@lockscore.ai` / `demo123` (admin)
-
-### API Endpoints Confirmed
-- `GET /api/mlb/hr-slate` → 200, 36 picks ✅
-- `GET /api/nfl/atd/leaderboard?limit=25` → 200, currently mode=research_only
-  (falls back because 0 canonical ATD picks in DB yet)
-- `GET /api/picks/today?sport=NFL` → 4 game-level picks (all real, no props)
-
-### Frontend Verified
-- MLB HR chip → `/hr` → 36 picks rendering
-- NFL ATD chip → `/atd` → picks rendering (research_only mode)
-- NFL tab → market chips include "🏈 ATD" alongside standard prop chips
+## Backlog (NOT this pass)
+- Live slate rollover proof once frozen Burrow rows retire.
+- Publish gated by explicit user consent (currently blocked).
+- ATD / MLB HR — deferred by user directive.
