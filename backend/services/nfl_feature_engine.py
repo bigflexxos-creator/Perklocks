@@ -543,14 +543,64 @@ def recompute_line_dependent_factors(
         new_factors["Opponent Defense Allowance"] = _factor_matchup(
             opp_pos, stat, line
         )
-    # ── 2026-06-09 · Stage-2 P0 · per-rung distribution recompute ────
-    # The stashed empirical distribution is line-INDEPENDENT (built
-    # from raw game samples), but the resulting probability is
-    # threshold-specific.  Rebuild the "Threshold Distribution Support"
-    # factor at THIS rung so every alt line gets an honest, coherent
-    # per-threshold hit probability.  Also stash the raw P̂(X ≥ line)
-    # on the pick metadata via ``__rung_p_hat`` so the sync emission
-    # loop can promote it into ``model_win_prob`` at the exact rung.
+    # ── 2026-06-09 · Stage-2 P0-B/C · threshold-aware L5/L3 + guard ─
+    # Prior L3-vs-season-trend and H/A-split factors were LINE-
+    # INDEPENDENT — every alt rung in a ladder inherited the same
+    # value.  Per user contract: "Every final wager must be evaluated
+    # as PLAYER + GAME + MARKET + SIDE + EXACT THRESHOLD.  Shared
+    # player/context inputs are allowed; final threshold evidence
+    # is not shared."  We compute L5 and L3 threshold-clearing rates
+    # directly from the empirical distribution samples so each rung
+    # sees a different value derived from HISTORICAL PERFORMANCE AT
+    # THIS EXACT THRESHOLD.
+    #
+    # CORRELATION GUARD: Distribution / L5 / L3 all draw on
+    # overlapping historical outcomes.  Cap the SECONDARY signals so
+    # they cannot triple-count history into a fabricated APEX:
+    #   * Threshold Distribution Support = FULL authority
+    #     (base rung probability from the whole distribution).
+    #   * L5 Threshold Support / L3 Threshold Support = SUPPORTING
+    #     confidence only — anchor to 0.50 ± half the raw hit-rate
+    #     deviation so a 5/5 or 3/3 clearance can only lift the
+    #     factor to ~0.75 (never to 0.95 numerical certainty).
+    if _dist and isinstance(_dist.get("samples"), list) and _dist["samples"]:
+        samples = _dist["samples"]
+        # L5 threshold support — last 5 games
+        _last5 = samples[:5]
+        if _last5:
+            if str(side or "over").lower() == "under":
+                _hits5 = sum(1 for x in _last5 if x <= line)
+            else:
+                _hits5 = sum(1 for x in _last5 if x >= line)
+            _rate5 = _hits5 / len(_last5)
+            # Anchor 0.50 ± 0.30 · rate-deviation → range [0.35, 0.65]
+            new_factors["L5 Threshold Support"] = round(
+                max(0.30, min(0.75, 0.50 + 0.30 * (_rate5 - 0.50))), 3
+            )
+        # L3 threshold support — last 3 games
+        _last3 = samples[:3]
+        if _last3:
+            if str(side or "over").lower() == "under":
+                _hits3 = sum(1 for x in _last3 if x <= line)
+            else:
+                _hits3 = sum(1 for x in _last3 if x >= line)
+            _rate3 = _hits3 / len(_last3)
+            new_factors["L3 Threshold Support"] = round(
+                max(0.30, min(0.75, 0.50 + 0.25 * (_rate3 - 0.50))), 3
+            )
+        # Wider-history threshold support — all available samples
+        # (this DOES overlap with the distribution but is presented
+        # here purely as clearing FREQUENCY rather than distribution-
+        # derived probability, kept as supporting evidence only).
+        if str(side or "over").lower() == "under":
+            _hits_all = sum(1 for x in samples if x <= line)
+        else:
+            _hits_all = sum(1 for x in samples if x >= line)
+        _rate_all = _hits_all / len(samples)
+        new_factors["Historical Threshold Rate"] = round(
+            max(0.30, min(0.75, 0.50 + 0.25 * (_rate_all - 0.50))), 3
+        )
+    # ── Stage-2 P0 · per-rung distribution recompute (existing) ─────
     if _dist:
         try:
             from services.nfl_features import distribution_hit_probability
@@ -560,11 +610,6 @@ def recompute_line_dependent_factors(
         new_factors["Threshold Distribution Support"] = _factor_distribution_support(
             _dist, line, side,
         )
-        # Sidecar payload the caller can consume without touching the
-        # existing factor blender.  Sentinel key uses a `__` prefix
-        # so downstream `_fv = [v for v in factors.values() if
-        # isinstance(v, (int, float))]` naturally SKIPS the raw
-        # probability (it stays a factor-blender-safe value only).
         new_factors["__rung_p_hat"] = float(p_hat) if p_hat is not None else None
     # Reapply Under-side mirror (Career vs Opponent Hit% is already
     # side-aware from the fetch call so we do NOT re-mirror it).
