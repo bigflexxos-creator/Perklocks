@@ -6892,6 +6892,24 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                                 "sample_games":            _atd_pc.get("sample_games"),
                                 "reasons":                 _atd_pc.get("reasons") or [],
                                 "source":                  "nfl_atd_engine",
+                                # ATD Part B (2026-06-10) — v2 xTD Challenger evidence.
+                                # These fields are populated by the split-lambda model
+                                # ONLY (falsy/None when v1 Champion ran).  Auditors can
+                                # verify model provenance via ``model``, and downstream
+                                # UI can render the xTD split for transparency.
+                                "model":                   _atd_pc.get("model") or "v1",
+                                "position":                _atd_pc.get("position"),
+                                "position_group":          _atd_pc.get("position_group"),
+                                "xtd_rush":                _atd_pc.get("xtd_rush"),
+                                "xtd_rec":                 _atd_pc.get("xtd_rec"),
+                                "lambda_total":            _atd_pc.get("lambda_total"),
+                                "shrunk_rush_conv":        _atd_pc.get("shrunk_rush_conv"),
+                                "shrunk_rec_conv":         _atd_pc.get("shrunk_rec_conv"),
+                                "opp_rush_factor":         _atd_pc.get("opp_rush_factor"),
+                                "opp_rec_factor":          _atd_pc.get("opp_rec_factor"),
+                                "role_stability_factor":   _atd_pc.get("role_stability_factor"),
+                                "weighted_target_share_recent": _atd_pc.get("weighted_target_share_recent"),
+                                "weighted_air_yards_share_recent": _atd_pc.get("weighted_air_yards_share_recent"),
                             }
                             try:
                                 from services.pipeline_diagnostic import log_reason as _plog

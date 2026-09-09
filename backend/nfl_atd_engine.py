@@ -247,9 +247,19 @@ def _profile_from_player_game_logs(player_id: str,
         rush_yd = _to_int(r.get("nfl_yds")) or 0 if r.get("stat_block") == "rushing" else 0
         existing = by_game.get(gid)
         if existing:
-            existing["car"] = max(existing["car"], car)
-            existing["tgts"] = max(existing["tgts"], tgts)
-            existing["td"] = max(existing["td"], td)
+            # ATD PART B fix (2026-06-10) — multi-stat-block aggregation.
+            # A player who scores 1 rushing TD + 1 receiving TD in the same
+            # game has 2 TDs, not max(1,1)=1.  ``max()`` silently capped
+            # multi-way TD nights, understating conversion efficiency and
+            # calibration targets for RB/WR hybrid usage (e.g., Kamara,
+            # McCaffrey, D.Henry receiving scores).  Rushing block never
+            # contributes ``tgts`` and receiving block never contributes
+            # ``car`` in the source data, so summing is equivalent to
+            # overwrite-with-nonzero for those two — but for ``td`` the
+            # sum is the ONLY correct operation.
+            existing["car"] += car
+            existing["tgts"] += tgts
+            existing["td"] += td
             existing["rush_yd"] += rush_yd
             existing["rec_yd"] += rec_yd
         else:
@@ -554,6 +564,519 @@ async def predict_player_atd(
         "total_tds": int(total_tds),
         "reasons": reasons,
     }
+
+
+# ═════════════════════════════════════════════════════════════════════
+# ATD PART B — xTD CHALLENGER (v2) — 2026-06-10
+#
+# Position-aware, expected-touchdown formulation.  Split λ into
+# scoring-channel components:
+#
+#     λ_rush = xTD_rush = w_carries × shrunk_rush_TDs_per_carry × opp_rush_factor × script_rb
+#     λ_rec  = xTD_rec  = w_targets × shrunk_rec_TDs_per_target × opp_rec_factor  × script_wr
+#     λ_qb_rush = w_car_qb × shrunk_qb_rush_TDs_per_carry × opp_rush_factor
+#     λ_total = λ_rush + λ_rec (or λ_qb_rush for QBs)
+#     P(TD ≥ 1) = 1 − exp(−λ_total)
+#
+# Bayesian shrinkage anchors sparse rookie / low-sample rates toward the
+# league POSITION mean (empirical Bayes), preventing 1-lucky-TD outliers
+# from dominating.  Air-yards-share × target-share × wopr act as a
+# red-zone-role proxy (deep-air, high-target-share receivers convert
+# targets to TDs at higher rates in the ML literature).
+#
+# Historical validation harness lives at scripts/atd_backtest.py.
+# ═════════════════════════════════════════════════════════════════════
+
+_LEAGUE_CACHE_V2: dict[str, Any] = {"computed_at": None, "data": None}
+
+
+async def _league_means_v2(db) -> dict:
+    """Compute (and cache) league-level position-split TD rates and
+    per-team offensive/defensive splits from ``nfl_player_weekly``.
+
+    Uses REG-season only for stability.
+    """
+    now = datetime.now(timezone.utc).timestamp()
+    if (_LEAGUE_CACHE_V2["data"] and _LEAGUE_CACHE_V2["computed_at"]
+            and now - _LEAGUE_CACHE_V2["computed_at"] < _CACHE_TTL_SEC):
+        return _LEAGUE_CACHE_V2["data"]
+
+    # League position rates — TDs per opportunity, position-split.
+    # Use last two full seasons (2024+2025) for the prior.
+    max_season_doc = await db.nfl_player_weekly.find_one(
+        {"season_type": "REG"}, sort=[("season", -1)],
+        projection={"season": 1, "_id": 0},
+    )
+    max_season = int((max_season_doc or {}).get("season") or 2025)
+    seasons = [max_season - 1, max_season]
+
+    pos_agg = [d async for d in db.nfl_player_weekly.aggregate([
+        {"$match": {"season_type": "REG", "season": {"$in": seasons}}},
+        {"$group": {
+            "_id": "$position",
+            "car":     {"$sum": "$carries"},
+            "tgt":     {"$sum": "$targets"},
+            "rush_td": {"$sum": "$rushing_tds"},
+            "rec_td":  {"$sum": "$receiving_tds"},
+            "n_rows":  {"$sum": 1},
+        }},
+    ], allowDiskUse=True)]
+    pos_rates: dict[str, dict] = {}
+    for p in pos_agg:
+        pos = p["_id"] or "UNK"
+        car = max(1, p["car"])
+        tgt = max(1, p["tgt"])
+        pos_rates[pos] = {
+            "rush_td_per_carry": p["rush_td"] / car,
+            "rec_td_per_target": p["rec_td"] / tgt,
+            "carries": p["car"],
+            "targets": p["tgt"],
+        }
+    # Sensible defaults if a position hasn't been sampled yet.
+    default_rush = 0.032  # ~3.2% RB league avg
+    default_rec = 0.060   # ~6% WR league avg
+
+    # Per-team offensive splits — rush TDs/g, rec TDs/g, most recent full season.
+    team_off = [d async for d in db.nfl_player_weekly.aggregate([
+        {"$match": {"season_type": "REG", "season": max_season}},
+        {"$group": {
+            "_id": {"team": "$team", "game": "$game_id"},
+            "rush_td": {"$sum": "$rushing_tds"},
+            "rec_td":  {"$sum": "$receiving_tds"},
+        }},
+        {"$group": {
+            "_id": "$_id.team",
+            "rush_td_pg": {"$avg": "$rush_td"},
+            "rec_td_pg":  {"$avg": "$rec_td"},
+            "n_games":    {"$sum": 1},
+        }},
+    ], allowDiskUse=True)]
+    team_off_map = {t["_id"]: {
+        "rush_td_pg": t.get("rush_td_pg", 0.0) or 0.0,
+        "rec_td_pg":  t.get("rec_td_pg", 0.0) or 0.0,
+        "n_games":    t.get("n_games", 0) or 0,
+    } for t in team_off if t.get("_id")}
+
+    league_rush_td_pg = (
+        sum(t["rush_td_pg"] * max(1, t["n_games"]) for t in team_off_map.values()) /
+        max(1, sum(max(1, t["n_games"]) for t in team_off_map.values()))
+    ) if team_off_map else 1.1
+    league_rec_td_pg = (
+        sum(t["rec_td_pg"] * max(1, t["n_games"]) for t in team_off_map.values()) /
+        max(1, sum(max(1, t["n_games"]) for t in team_off_map.values()))
+    ) if team_off_map else 1.3
+
+    # Per-team DEFENSIVE splits — TDs allowed to opponents, from
+    # ``opponent_team`` field.  We aggregate the TDs a team ALLOWED by
+    # inverting: for each row, the opponent_team is the DEFENSE that
+    # gave up those TDs.
+    team_def = [d async for d in db.nfl_player_weekly.aggregate([
+        {"$match": {"season_type": "REG", "season": max_season}},
+        {"$group": {
+            "_id": {"def_team": "$opponent_team", "game": "$game_id"},
+            "rush_td": {"$sum": "$rushing_tds"},
+            "rec_td":  {"$sum": "$receiving_tds"},
+        }},
+        {"$group": {
+            "_id": "$_id.def_team",
+            "rush_td_allowed_pg": {"$avg": "$rush_td"},
+            "rec_td_allowed_pg":  {"$avg": "$rec_td"},
+            "n_games":            {"$sum": 1},
+        }},
+    ], allowDiskUse=True)]
+    team_def_map = {t["_id"]: {
+        "rush_td_allowed_pg": t.get("rush_td_allowed_pg", 0.0) or 0.0,
+        "rec_td_allowed_pg":  t.get("rec_td_allowed_pg", 0.0) or 0.0,
+        "n_games":            t.get("n_games", 0) or 0,
+    } for t in team_def if t.get("_id")}
+
+    out = {
+        "pos_rates": pos_rates,
+        "pos_default_rush": default_rush,
+        "pos_default_rec": default_rec,
+        "team_off": team_off_map,
+        "team_def": team_def_map,
+        "league_rush_td_pg": league_rush_td_pg,
+        "league_rec_td_pg":  league_rec_td_pg,
+        "seasons_used": seasons,
+        "primary_season": max_season,
+    }
+    _LEAGUE_CACHE_V2["data"] = out
+    _LEAGUE_CACHE_V2["computed_at"] = now
+    return out
+
+
+async def _player_profile_v2(db, player_id: str,
+                              cutoff_season: Optional[int] = None,
+                              cutoff_week: Optional[int] = None) -> Optional[dict]:
+    """Rich player profile from ``nfl_player_weekly`` with position +
+    advanced usage fields.  When ``cutoff_(season|week)`` are provided,
+    only rows STRICTLY BEFORE that game-week are returned — used by the
+    backtest harness (leave-one-out) to avoid look-ahead bias.
+    """
+    q: dict = {"player_id": player_id, "season_type": "REG"}
+    if cutoff_season is not None and cutoff_week is not None:
+        q["$or"] = [
+            {"season": {"$lt": cutoff_season}},
+            {"season": cutoff_season, "week": {"$lt": cutoff_week}},
+        ]
+    cursor = db.nfl_player_weekly.find(
+        q, {"_id": 0},
+    ).sort([("season", -1), ("week", -1)]).limit(40)
+    rows = [d async for d in cursor]
+    if not rows:
+        return None
+    games: list[dict] = []
+    for r in rows:
+        car = _to_int(r.get("carries")) or 0
+        tgts = _to_int(r.get("targets")) or 0
+        rush_td = _to_int(r.get("rushing_tds")) or 0
+        rec_td = _to_int(r.get("receiving_tds")) or 0
+        try:
+            target_share = float(r.get("target_share") or 0.0)
+        except (TypeError, ValueError):
+            target_share = 0.0
+        try:
+            ay_share = float(r.get("air_yards_share") or 0.0)
+        except (TypeError, ValueError):
+            ay_share = 0.0
+        try:
+            wopr = float(r.get("wopr") or 0.0)
+        except (TypeError, ValueError):
+            wopr = 0.0
+        season = _to_int(r.get("season")) or 0
+        week = _to_int(r.get("week")) or 0
+        composite_date = f"{season:04d}-{week:02d}"
+        games.append({
+            "game_id": r.get("game_id") or f"{season}_{week}",
+            "date": composite_date,
+            "season": season, "week": week,
+            "team": r.get("team"),
+            "opponent": r.get("opponent_team"),
+            "name": r.get("player_display_name") or r.get("player_name"),
+            "position": r.get("position") or "",
+            "position_group": r.get("position_group") or "",
+            "car": car, "tgts": tgts,
+            "rush_td": rush_td, "rec_td": rec_td, "td": rush_td + rec_td,
+            "target_share": target_share,
+            "air_yards_share": ay_share,
+            "wopr": wopr,
+        })
+    # Determine CURRENT team = most-recent 2026-season row's team.
+    current_team = None
+    for r in rows:
+        try:
+            if int(r.get("season") or 0) >= 2026:
+                current_team = r.get("team")
+                break
+        except Exception:
+            continue
+    return {
+        "player_id": player_id,
+        "name": games[0]["name"],
+        "team": current_team or games[0]["team"],
+        "current_team": current_team,
+        "historical_team": games[0]["team"],
+        "position": games[0]["position"],
+        "position_group": games[0]["position_group"],
+        "games": games,
+    }
+
+
+def _shrink_rate(numer: int, denom: int, prior_rate: float,
+                 prior_weight: float) -> float:
+    """Empirical-Bayes shrinkage of an observed rate toward a prior."""
+    return (numer + prior_rate * prior_weight) / max(1e-6, (denom + prior_weight))
+
+
+async def _predict_player_atd_v2(
+    db, *, player_id: str, opponent: Optional[str] = None,
+    spread: Optional[float] = None,
+    cutoff_season: Optional[int] = None, cutoff_week: Optional[int] = None,
+) -> dict:
+    """xTD (Expected Touchdown) probability model — Challenger.
+
+    Splits λ by scoring channel (rush + rec) and shrinks conversion
+    rates toward the league POSITION mean.  Uses ``nfl_player_weekly``
+    only.  Backward-compatible output shape (keys the pipeline needs
+    are all present).
+    """
+    profile = await _player_profile_v2(db, player_id,
+                                        cutoff_season=cutoff_season,
+                                        cutoff_week=cutoff_week)
+    if not profile or len(profile["games"]) < MIN_GAMES_SAMPLE:
+        return {"reject": "insufficient_history",
+                "games_logged": len(profile["games"]) if profile else 0,
+                "model": "v2"}
+
+    games = profile["games"]
+    league = await _league_means_v2(db)
+    pos = (profile["position"] or "").upper()
+    pos_group = (profile["position_group"] or "").upper()
+
+    # Only RB/WR/TE/QB can score anytime TDs meaningfully.
+    if pos_group not in ("RB", "WR", "TE", "QB"):
+        return {"reject": "non_scoring_position", "position": pos,
+                "position_group": pos_group, "model": "v2"}
+
+    # Recency-weighted opportunity averages (L10).
+    last_n = games[: RECENT_WINDOW]
+    weights = _exp_weights(len(last_n))
+
+    w_car = _weighted_avg([g["car"] for g in last_n], weights)
+    w_tgt = _weighted_avg([g["tgts"] for g in last_n], weights)
+    w_target_share = _weighted_avg([g["target_share"] for g in last_n], weights)
+    w_air_yards_share = _weighted_avg([g["air_yards_share"] for g in last_n], weights)
+    w_wopr = _weighted_avg([g["wopr"] for g in last_n], weights)
+
+    total_car = sum(g["car"] for g in games)
+    total_tgt = sum(g["tgts"] for g in games)
+    total_rush_td = sum(g["rush_td"] for g in games)
+    total_rec_td = sum(g["rec_td"] for g in games)
+    total_touches = total_car + total_tgt
+
+    # Volume gate — position-aware.
+    if pos_group == "RB":
+        if total_car < 20 and total_tgt < 10:
+            return {"reject": "volume_too_low",
+                    "total_car": total_car, "total_tgt": total_tgt,
+                    "model": "v2"}
+    else:
+        if total_tgt < 15 and total_car < 5 and pos_group != "QB":
+            return {"reject": "volume_too_low",
+                    "total_car": total_car, "total_tgt": total_tgt,
+                    "model": "v2"}
+        if pos_group == "QB" and total_car < 15:
+            return {"reject": "volume_too_low_qb",
+                    "total_car_qb": total_car, "model": "v2"}
+
+    # Outlier gate — single game dominates historical TDs.
+    outlier = _td_outlier_check(games)
+    if outlier:
+        return {"reject": outlier, "model": "v2"}
+
+    # Random-dart gate.
+    recent_tds = sum(1 for g in last_n if g["td"] > 0)
+    recent_opportunity = w_car + 0.85 * w_tgt
+    if recent_tds == 0 and recent_opportunity < 4.0:
+        return {"reject": "no_recent_red_zone_path",
+                "recent_tds_L10": recent_tds,
+                "recent_opportunity_L10": round(recent_opportunity, 2),
+                "model": "v2"}
+
+    # ── Bayesian-shrunk per-touch conversion rates ────────────────
+    pos_rates = league["pos_rates"]
+    prior_rush = (pos_rates.get(pos) or {}).get("rush_td_per_carry",
+                    league["pos_default_rush"]) or league["pos_default_rush"]
+    prior_rec = (pos_rates.get(pos) or {}).get("rec_td_per_target",
+                    league["pos_default_rec"]) or league["pos_default_rec"]
+
+    # Prior weight — higher for sparse-position players; anchors rookies
+    # firmly toward league mean until they have real data.
+    prior_weight_rush = 40.0  # equivalent to 40 carries of "average" data
+    prior_weight_rec = 30.0   # equivalent to 30 targets
+
+    shrunk_rush_conv = _shrink_rate(total_rush_td, total_car,
+                                    prior_rush, prior_weight_rush)
+    shrunk_rec_conv = _shrink_rate(total_rec_td, total_tgt,
+                                   prior_rec, prior_weight_rec)
+
+    # ── Red-zone / role-quality booster ────────────────────────────
+    # Air-yards share × wopr acts as a proxy for red-zone / high-value
+    # role.  Elite deep receivers (Hill, Chase, Jefferson) get a small
+    # (max +12%) TD-per-target booster to reflect that their targets
+    # skew high-leverage; low-usage possession backs get 0 bump.
+    role_booster = 1.0
+    if pos_group in ("WR", "TE"):
+        role_booster = 1.0 + max(0.0, min(0.12,
+            0.6 * max(0.0, w_air_yards_share - 0.15)
+            + 0.3 * max(0.0, w_wopr - 0.40)))
+    elif pos_group == "RB":
+        # RBs with high target share are receiving-back stars; small
+        # booster on rec conversion.
+        rec_role = min(0.10, max(0.0, w_target_share - 0.05) * 0.8)
+        # Applied only to rec conv — not rush conv (RBs already get
+        # goal-line carries via w_car).
+        shrunk_rec_conv *= (1.0 + rec_role)
+
+    shrunk_rec_conv *= role_booster
+
+    # ── Opponent factor (position-appropriate defensive splits) ────
+    opp_rush_factor = 1.0
+    opp_rec_factor = 1.0
+    opp_up = (opponent or "").upper()
+    if opp_up:
+        td = league["team_def"].get(opp_up) or league["team_def"].get(opponent)
+        if td:
+            opp_rush_factor = td["rush_td_allowed_pg"] / max(0.01, league["league_rush_td_pg"])
+            opp_rec_factor  = td["rec_td_allowed_pg"]  / max(0.01, league["league_rec_td_pg"])
+    opp_rush_factor = max(0.7, min(1.4, opp_rush_factor))
+    opp_rec_factor  = max(0.7, min(1.4, opp_rec_factor))
+
+    # ── Game script (spread-based) ────────────────────────────────
+    script_rush = 1.0
+    script_rec = 1.0
+    if spread is not None:
+        if pos_group == "RB":
+            if spread <= -3:
+                script_rush = 1.08 + min(0.10, abs(spread + 3) * 0.012)
+            elif spread >= 4:
+                script_rush = 0.92
+        elif pos_group in ("WR", "TE"):
+            if spread >= 3:
+                script_rec = 1.06 + min(0.08, (spread - 3) * 0.010)
+            elif spread <= -7:
+                script_rec = 0.94
+        elif pos_group == "QB":
+            if spread <= -3:
+                script_rush = 1.05
+    script_rush = max(0.85, min(1.20, script_rush))
+    script_rec = max(0.85, min(1.20, script_rec))
+
+    # ── Role stability (variance penalty) ────────────────────────
+    # High variance in target_share / carries L6 → user-facing role
+    # instability (rotational back, injury replacement).  Shrink λ by
+    # up to 15%.
+    def _cv(values: list[float]) -> float:
+        if not values:
+            return 0.0
+        mu = sum(values) / len(values)
+        if mu <= 1e-6:
+            return 0.0
+        var = sum((v - mu) ** 2 for v in values) / len(values)
+        return math.sqrt(var) / mu
+
+    l6 = last_n[:6]
+    if pos_group == "RB":
+        cv_role = _cv([g["car"] for g in l6])
+    else:
+        cv_role = _cv([g["tgts"] for g in l6])
+    stability_factor = max(0.85, 1.0 - min(0.15, cv_role * 0.25))
+
+    # ── λ construction (xTD split) ───────────────────────────────
+    xtd_rush = w_car * shrunk_rush_conv * opp_rush_factor * script_rush
+    xtd_rec = w_tgt * shrunk_rec_conv * opp_rec_factor * script_rec
+    if pos_group == "QB":
+        # QBs — rushing TDs only (passing TDs don't count as ATD for QB
+        # scoring their own TD).  xtd_rec is effectively 0.
+        xtd_rec = 0.0
+
+    lam_total = (xtd_rush + xtd_rec) * stability_factor
+    lam_total = max(0.0, lam_total)
+
+    probability = 1.0 - math.exp(-lam_total)
+    probability = max(0.0, min(0.95, probability))
+
+    # ── Confidence ───────────────────────────────────────────────
+    n_used = len(games)
+    sample_penalty = max(0.0, 0.18 - (n_used / 60.0))
+    variance_penalty = min(0.15, (1.0 - stability_factor))
+    confidence = max(0.0, probability - sample_penalty - variance_penalty)
+
+    # Opportunity rating (touches/g).
+    w_touches = w_car + w_tgt
+    rating = _opportunity_rating(w_touches)
+
+    reasons = [
+        f"{round(w_car, 1)} car/g · {round(w_tgt, 1)} tgt/g L{len(last_n)} ({rating})",
+        f"pos {pos or pos_group} · rush conv {round(shrunk_rush_conv*100, 1)}%/car · "
+        f"rec conv {round(shrunk_rec_conv*100, 1)}%/tgt",
+        f"xTD_rush {round(xtd_rush, 3)} · xTD_rec {round(xtd_rec, 3)}",
+    ]
+    if opp_up:
+        reasons.append(f"vs {opp_up} · rush ×{round(opp_rush_factor, 2)} · rec ×{round(opp_rec_factor, 2)}")
+    if spread is not None:
+        reasons.append(f"spread {spread:+.1f} · rush script ×{round(script_rush, 2)} · rec script ×{round(script_rec, 2)}")
+    if stability_factor < 0.99:
+        reasons.append(f"role stability ×{round(stability_factor, 2)}")
+
+    return {
+        "player_id": player_id,
+        "player_name": profile["name"],
+        "team": profile["team"] or "",
+        "current_team": profile.get("current_team") or profile["team"] or "",
+        "historical_team": profile.get("historical_team") or profile["team"] or "",
+        "position": pos,
+        "position_group": pos_group,
+        "opponent": opponent,
+        "td_probability": round(probability, 4),
+        "confidence": round(confidence, 4),
+        "opportunity_rating": rating,
+        "weighted_touches_recent": round(w_touches, 2),
+        "weighted_carries_recent": round(w_car, 2),
+        "weighted_targets_recent": round(w_tgt, 2),
+        "weighted_target_share_recent": round(w_target_share, 4),
+        "weighted_air_yards_share_recent": round(w_air_yards_share, 4),
+        "weighted_wopr_recent": round(w_wopr, 4),
+        "shrunk_rush_conv": round(shrunk_rush_conv, 4),
+        "shrunk_rec_conv": round(shrunk_rec_conv, 4),
+        "opp_rush_factor": round(opp_rush_factor, 3),
+        "opp_rec_factor": round(opp_rec_factor, 3),
+        "game_script_rush": round(script_rush, 3),
+        "game_script_rec": round(script_rec, 3),
+        "role_stability_factor": round(stability_factor, 3),
+        "xtd_rush": round(xtd_rush, 4),
+        "xtd_rec": round(xtd_rec, 4),
+        "lambda_total": round(lam_total, 4),
+        # Back-compat fields for the pipeline / UI consumers.
+        "team_td_rate": round(
+            (league["team_off"].get(profile["team"] or "") or {}).get("rush_td_pg", league["league_rush_td_pg"])
+            + (league["team_off"].get(profile["team"] or "") or {}).get("rec_td_pg", league["league_rec_td_pg"])
+        , 3),
+        "conv_efficiency": round(
+            ((total_rush_td + total_rec_td) / total_touches) if total_touches else 0.0
+        , 4),
+        "opportunity_share": round(w_target_share or 0.0, 4),
+        "matchup_factor": round((opp_rush_factor + opp_rec_factor) / 2.0, 3),
+        "game_script_factor": round((script_rush + script_rec) / 2.0, 3),
+        "lambda_structural": round(xtd_rush + xtd_rec, 4),
+        "lambda_conv": round(xtd_rec + xtd_rush, 4),
+        "lambda_blended": round(lam_total, 4),
+        "is_rb_archetype": pos_group == "RB",
+        "sample_games": len(games),
+        "total_touches": int(total_touches),
+        "total_tds": int(total_rush_td + total_rec_td),
+        "reasons": reasons,
+        "model": "v2",
+    }
+
+
+# ── Champion / Challenger dispatch ──────────────────────────────
+# Rename the pre-existing v1 implementation and expose a single
+# ``predict_player_atd`` wrapper that dispatches based on the
+# ``NFL_ATD_MODEL`` env flag.  Default: "v2" (xTD Challenger).
+_predict_player_atd_v1 = predict_player_atd  # capture the v1 impl above
+
+import os as _os  # noqa: E402
+
+
+def _current_atd_model() -> str:
+    """Read the flag fresh on every call so tests / ops can flip it
+    without a process restart."""
+    return _os.environ.get("NFL_ATD_MODEL", "v2").strip().lower() or "v2"
+
+
+async def predict_player_atd(  # type: ignore[no-redef]
+    db, *, player_id: str, opponent: Optional[str] = None,
+    spread: Optional[float] = None,
+    cutoff_season: Optional[int] = None,
+    cutoff_week: Optional[int] = None,
+    model: Optional[str] = None,
+) -> dict:
+    """Dispatch wrapper — routes to Champion (v1) or Challenger (v2)
+    based on the explicit ``model`` kwarg or the ``NFL_ATD_MODEL`` env
+    var.  Public signature is a superset of v1's — the v1 call sites
+    remain source-compatible.
+    """
+    chosen = (model or _current_atd_model()).lower()
+    if chosen == "v1":
+        return await _predict_player_atd_v1(
+            db, player_id=player_id, opponent=opponent, spread=spread,
+        )
+    return await _predict_player_atd_v2(
+        db, player_id=player_id, opponent=opponent, spread=spread,
+        cutoff_season=cutoff_season, cutoff_week=cutoff_week,
+    )
 
 
 async def atd_leaderboard(

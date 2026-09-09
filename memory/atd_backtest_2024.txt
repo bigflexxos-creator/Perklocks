@@ -1,0 +1,53 @@
+  … processed 200 candidates (v1 scored 179, v2 scored 184)
+  … processed 400 candidates (v1 scored 368, v2 scored 376)
+  … processed 600 candidates (v1 scored 551, v2 scored 562)
+  … processed 800 candidates (v1 scored 736, v2 scored 748)
+  … processed 1000 candidates (v1 scored 916, v2 scored 929)
+  … processed 1200 candidates (v1 scored 1104, v2 scored 1120)
+
+==============================================================================
+ATD CHAMPION (v1) vs CHALLENGER (v2) — season 2024 weeks 6-18
+==============================================================================
+Total candidates examined:  1300
+V1 scored:                  1192
+V2 scored:                  1209
+Both scored (fair set):     1191
+
+── Full-set metrics (each model on its own scored rows) ──
+  v1 Brier:    0.22476   log-loss: 0.64466   ECE: 0.0856   base-rate: 0.336
+  v2 Brier:    0.22040   log-loss: 0.64033   ECE: 0.0703   base-rate: 0.337
+
+── Fair-set metrics (only rows both models scored) ──
+  v1 Brier:    0.22494   log-loss: 0.64512   ECE: 0.0857   base-rate: 0.337
+  v2 Brier:    0.21874   log-loss: 0.63461   ECE: 0.0672   base-rate: 0.337
+
+── Calibration curves (fair set) ──
+  v1 calibration:
+    bucket              n   avg_pred     actual   |err|
+    [0.00-0.10)        48      0.080      0.188   0.108
+    [0.10-0.20)       312      0.157      0.266   0.109
+    [0.20-0.30)       346      0.250      0.315   0.066
+    [0.30-0.40)       208      0.339      0.380   0.041
+    [0.40-0.50)        72      0.451      0.375   0.076
+    [0.50-0.60)       128      0.557      0.438   0.120
+    [0.60-0.70)        77      0.632      0.494   0.139
+    [0.70-0.80)         0          —          —       —
+    [0.80-0.90)         0          —          —       —
+    [0.90-1.00)         0          —          —       —
+
+  v2 calibration:
+    bucket              n   avg_pred     actual   |err|
+    [0.00-0.10)        95      0.082      0.211   0.129
+    [0.10-0.20)       318      0.149      0.233   0.084
+    [0.20-0.30)       283      0.251      0.336   0.085
+    [0.30-0.40)       247      0.347      0.372   0.026
+    [0.40-0.50)       161      0.441      0.478   0.037
+    [0.50-0.60)        82      0.543      0.500   0.043
+    [0.60-0.70)         5      0.617      0.400   0.217
+    [0.70-0.80)         0          —          —       —
+    [0.80-0.90)         0          —          —       —
+    [0.90-1.00)         0          —          —       —
+
+==============================================================================
+VERDICT: CHALLENGER WINS  (v1 Brier 0.22494 vs v2 Brier 0.21874, Δ = +0.00620)
+==============================================================================

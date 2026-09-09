@@ -25,4 +25,19 @@ no shared sample sizes, no artificial ceilings on 93-99 Lock Scores.
 ## Backlog (NOT this pass)
 - Live slate rollover proof once frozen Burrow rows retire.
 - Publish gated by explicit user consent (currently blocked).
-- ATD / MLB HR — deferred by user directive.
+
+## NFL ATD 10X — PART B CERTIFIED (2026-06-10)
+- Multi-stat-block TD aggregation bug fixed (SUM instead of `max()`)
+- xTD split-λ Challenger engine (v2) shipped and default
+  (`nfl_atd_engine._predict_player_atd_v2`)
+- Bayesian-shrunk per-touch conversion rates by position (empirical Bayes)
+- Red-zone role proxy via `air_yards_share × wopr` (WR/TE)
+- Role-stability variance penalty (≤ 15%)
+- Feature-flag dispatch: `NFL_ATD_MODEL=v2` (default), `v1` (reversible)
+- Champion-vs-Challenger backtest (2024 + 2025 REG, n=1759 total):
+  * 2025 fair set: Brier 0.207 → **0.204** (-1.6%), ECE 0.064 → **0.045** (-29%)
+  * 2024 fair set: Brier 0.228 → **0.224** (-2.0%), ECE 0.098 → **0.070** (-29%)
+- Runtime proof: position-appropriate xTD split verified (Chase/Amon-Ra
+  pure rec, McCaffrey dual-threat, Henry rush-dominant)
+- Existing NFL-ATD tests: 35 PASS (mock upgraded for v2 path)
+- Full evidence: `/app/memory/atd_part_b_certification.md`

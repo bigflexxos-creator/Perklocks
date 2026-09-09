@@ -379,22 +379,67 @@ def test_atd_engine_recognises_strong_player_vs_opponent_profile():
         def __init__(self, rows): self.rows = rows
         def find(self, *a, **k): return _Cursor([])   # legacy coll empty
         def aggregate(self, *a, **k): return _Cursor([])
+        async def find_one(self, *a, **kw): return None
+        async def count_documents(self, *a, **kw): return 0
 
     class _Weekly(_Coll):
-        def find(self, *a, **k):
-            # Return synthetic weekly rows.
-            weekly = [{
+        def _synthetic(self):
+            # Synthetic weekly rows — includes fields BOTH v1 and v2 need.
+            return [{
                 "player_id": "TEST_GSIS",
                 "player_display_name": "Test RB",
+                "player_name": "Test RB",
                 "team": "TEN",
+                "opponent_team": "IND",
+                "position": "RB",
+                "position_group": "RB",
                 "season": 2025, "week": i,
+                "season_type": "REG",
                 "game_id": f"G{i}",
                 "carries": 22, "targets": 3,
                 "rushing_tds": 1 if i % 2 == 0 else 0,
                 "receiving_tds": 0,
                 "rushing_yards": 110, "receiving_yards": 15,
+                "target_share": 0.10, "air_yards_share": 0.08,
+                "wopr": 0.35,
             } for i in range(1, 11)]
-            return _Cursor(weekly)
+
+        def find(self, *a, **k):
+            return _Cursor(self._synthetic())
+
+        async def find_one(self, *a, **kw):
+            rows = self._synthetic()
+            return rows[0] if rows else None
+
+        def aggregate(self, pipeline, *a, **k):
+            # Return a plausible position-rate aggregation for v2's
+            # ``_league_means_v2`` so it doesn't produce zeros.
+            # Detect which stage the caller is asking for by pipeline
+            # shape (dumb but sufficient for this test).
+            try:
+                first_match = pipeline[0].get("$match", {}) if pipeline else {}
+            except Exception:
+                first_match = {}
+            has_pos_group = any(
+                "position" in ((stg.get("$group") or {}).get("_id") or {})
+                if isinstance(stg.get("$group"), dict) else False
+                for stg in pipeline
+            )
+            # Position rates aggregation (grouped by $position).
+            if pipeline and any(stg.get("$group", {}).get("_id") == "$position"
+                                for stg in pipeline):
+                return _Cursor([
+                    {"_id": "RB", "car": 5000, "tgt": 1500,
+                     "rush_td": 160, "rec_td": 90, "n_rows": 800},
+                    {"_id": "WR", "car": 100,  "tgt": 8000,
+                     "rush_td": 5,   "rec_td": 500, "n_rows": 1200},
+                ])
+            # Team offensive / defensive aggregations.
+            return _Cursor([
+                {"_id": "TEN", "rush_td_pg": 1.1, "rec_td_pg": 1.3, "n_games": 10},
+                {"_id": "IND", "rush_td_allowed_pg": 1.2,
+                 "rec_td_allowed_pg": 1.4, "n_games": 10},
+            ])
 
     class _Games(_Coll):
         def find(self, *a, **k):
