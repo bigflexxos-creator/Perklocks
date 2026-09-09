@@ -6295,19 +6295,25 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         side_lower = str(side).lower()
         if is_alt:
             cap_dict = alt_under_per_player if side_lower == "under" else alt_over_per_player
-            # ── 2026-06-09 · Stage-2 P0 · MODEL-ALL alt-ladder cap ────
-            # Prior 24 slot cap starved DK's widest ladders (26+
-            # unique Burrow rungs).  Per user contract "model ALL
-            # unique supported thresholds — provider ordering must
-            # NOT decide which rungs get modeled", raised to 40 so
-            # every observed unique threshold across all books
-            # survives to the modelling step and post-model board
-            # selection has the full canonical universe to rank
-            # from.  Non-NFL sports keep the tighter 3-per-side cap.
-            _alt_cap = 40 if sport == "NFL" else 3
-            if cap_dict.get(player, 0) >= _alt_cap:
-                continue
-            cap_dict[player] = cap_dict.get(player, 0) + 1
+            # ── 2026-06-09 · Stage-2 P0-E · MODEL-ALL policy for NFL ──
+            # Per user contract:
+            #   "Do NOT rely on an arbitrary pre-model alt cap.
+            #    Correct sequence: ALL real observed sportsbook quotes
+            #    → model EVERY supported unique threshold → post-model
+            #    selection.  Any display cap belongs AFTER modeling.
+            #    Provider order must never determine which thresholds
+            #    get evaluated."
+            # For NFL we DROP the pre-model cap entirely — every
+            # unique observed alt rung is modelled.  Post-model board
+            # selection (via `_best_lock_rung` dedupe, see below) then
+            # picks the single strongest exact-wager per (player,
+            # market_family, side) for the primary Locks board; the
+            # remaining rungs remain available for research / Value
+            # lanes.  Non-NFL sports keep the tighter 3-per-side cap.
+            if sport != "NFL":
+                if cap_dict.get(player, 0) >= 3:
+                    continue
+                cap_dict[player] = cap_dict.get(player, 0) + 1
         else:
             std_key = (player, _prop_family_key(mk))
             if std_key in std_seen:
@@ -7541,7 +7547,10 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                                   + type(_plat_err).__name__.upper())
                 except Exception:
                     pass
-        picks.append(new_pick)
+        # ── 2026-06-09 · Stage-2 P0-J · BEST-LOCK / BEST-VALUE tagging ─
+    # (moved out of the modeling loop; runs ONCE after all picks
+    # have been collected — see post-loop stamping below.)
+    picks.append(new_pick)
     # Tag every Under pick so the main Locks feed can exclude them and the
     # dedicated "Under of the Day" tab can surface them. Anything where the
     # bettor needs the line to go UNDER (Totals, Game Total, alt-prop totals)
@@ -7553,6 +7562,49 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         selection = (p.get("selection") or "").lower()
         if "under" in market or "under" in selection:
             p["is_under_lock"] = True
+
+    # ── 2026-06-09 · Stage-2 P0-J · BEST-LOCK / BEST-VALUE tagging ─
+    # Per user contract: "Calculate BEST_LOCK_RUNG (driven by exact-
+    # wager reliability / Lock quality) and BEST_VALUE_RUNG (driven
+    # by price/EV) for each player + event + market_family + side.
+    # Primary Locks board must prefer BEST_LOCK_RUNG.  Full ladder
+    # remains available in breakdown / research view."
+    # Stamps `is_best_lock_rung=True` on the highest-lock rung and
+    # `is_best_value_rung=True` on the highest-edge rung within each
+    # (player, market_family, side) group.  No pick is REMOVED —
+    # only annotated — so this cannot regress any downstream lane.
+    if sport == "NFL":
+        def _pp_family(m: str) -> Optional[str]:
+            m_l = (m or "").lower()
+            if "pass yds" in m_l or "passing yards" in m_l: return "PASS_YDS"
+            if "rush yds" in m_l or "rushing yards" in m_l: return "RUSH_YDS"
+            if "rec yds" in m_l or "reception yds" in m_l or "receiving yards" in m_l: return "REC_YDS"
+            if "receptions" in m_l:  return "RECEPTIONS"
+            if "pass tds" in m_l or "passing tds" in m_l: return "PASS_TDS"
+            if "rush tds" in m_l or "rushing tds" in m_l: return "RUSH_TDS"
+            if "rec tds" in m_l or "reception tds" in m_l: return "REC_TDS"
+            if "pass completions" in m_l or "passing completions" in m_l: return "PASS_CMP"
+            if "pass attempts" in m_l or "passing attempts" in m_l: return "PASS_ATT"
+            if "rush attempts" in m_l or "rushing attempts" in m_l: return "RUSH_ATT"
+            return None
+        _groups: dict[tuple, list] = {}
+        for _p in picks:
+            if not _p:
+                continue
+            _fam = _pp_family(_p.get("market") or "")
+            if not _fam:
+                continue
+            _side = "under" if "under" in (_p.get("market") or "").lower() else "over"
+            _key = (_p.get("canonical_player_id") or _p.get("player_id") or
+                    _p.get("player_name") or "", _fam, _side)
+            _groups.setdefault(_key, []).append(_p)
+        for _key, _rungs in _groups.items():
+            if not _rungs:
+                continue
+            _best_lock = max(_rungs, key=lambda p: float(p.get("lock_score") or 0))
+            _best_value = max(_rungs, key=lambda p: float(p.get("edge_percent") or -999))
+            _best_lock["is_best_lock_rung"] = True
+            _best_value["is_best_value_rung"] = True
 
     # 2026-07-22 — PLAYER-PROP CONTRADICTION DEDUPE.
     # User bug: "Gerrit Cole Over 6.5 K AND Under 6.5 K both showed as

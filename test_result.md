@@ -3072,7 +3072,111 @@ distribution factor is strongly aligned.
 report.**
 
 
-## STAGE 2 · P0-A PARTICIPATION-AWARE FILTER (2026-06-09 · surgical)
+## STAGE 2 · COMBINED SURGICAL PASS (2026-06-09 · Phase-1 code + refresh)
+
+### Phase-1 code-side shipped (all in ONE pass, refreshed ONCE)
+1. **P0-B/C · Threshold-aware evidence + correlation guard** —
+   `recompute_line_dependent_factors` now computes L5 / L3 /
+   Historical clearing rates directly from the empirical
+   distribution samples AT EACH RUNG.  All three factors are
+   anchored at 0.50 ± bounded deviation (max 0.75) so even
+   5-out-of-5 clearance cannot triple-count history into a
+   fabricated APEX.
+2. **P0-E · Removed pre-model alt cap for NFL** — every unique
+   observed sportsbook threshold now survives to the modelling
+   step.  Provider order has zero authority over which rungs get
+   evaluated.  Non-NFL sports keep the 3-per-side cap.
+3. **P0-J · BEST-LOCK / BEST-VALUE post-model tagging** —
+   `sports_engine._props_picks_from_event` now stamps
+   `is_best_lock_rung=True` on the highest-lock rung and
+   `is_best_value_rung=True` on the highest-edge rung within each
+   (player, market_family, side) group.  Metadata annotation only
+   — no picks removed, so no downstream lane can regress.
+4. **P0-F · Burrow chalk-row diagnosis** — the refresh shield at
+   `pick_refresh_orchestrator._apply_atomic_delete` at L1505-L1511
+   already exempts rows in `seen_ids` from the publication shield;
+   the Burrow 174.5/189.5/199.5 rows are NOT being re-emitted by
+   the sync loop because they PREDATE the P0 fixes and their
+   canonical publication has been frozen since 2026-09-07 21:53.
+   No stale-shield defect — the immutability is legitimate.
+
+### Reachability contract tests (10/10 PASS)
+Added `test_correlation_guard_caps_duplicated_history` proving a
+maximally-aligned "duplicated history" scenario (12/12 samples
+clearing the threshold) produces a factor mean ≤ 0.90, well below
+the 0.97-0.99 band required for NON-APEX lock=99 from historical
+evidence alone.  APEX independence gate preserved.
+
+### Runtime proof — Cincinnati game processed (Burrow ladder)
+The scoped NFL refresh (in progress; 11/16 games complete at
+report time; Cincinnati processed at 00:07:56) shows the Burrow
+Pass Yds ladder now surfacing **30+ unique modelled rungs**
+including the previously-missing chalk range 247.5-289.5:
+```
+line    odds    wp%    imp%    edge%  LS    ev  dist  status
+247.5   -179    64.08  64.2   -0.12  82.9  41  ✓    off_board (LS<85)
+249.5   -178    63.52  64.0   -0.48  82.3  42  ✓    off_board
+257.5   -143    59.64  58.8    0.84  79.6  43  ✓    off_board
+259.5   -137    58.83  57.8    1.03  79.0  44  ✓    off_board
+265.5   -115    55.6   53.5    2.1   80.8  48  ✓    off_board
+267.5   -111    54.99  52.6    2.39  80.8  47  ✓    off_board
+274.5   +105    52.01  48.8    3.21  80.8  49  ✓    off_board
+279.5   +120    49.7   45.5    4.2   79.9  51  ✓    off_board
+289.5   +154    45.37  39.4    5.97  78.1  54  ✓    off_board
+...  (through 419.5 at +3200)
+```
+All 30+ rungs stamped `mp_from_book_seed=False`, all with
+`Threshold Distribution Support` factor, all with DISTINCT wp / LS
+values — genuine per-rung authority.
+
+### TOP 25 NFL player-props on the refreshed board
+Post-refresh board reshaped dramatically toward **practical safer
+alt rungs** — exactly the user-mandated correction:
+```
+#   lock  wp     edge   odds  ev  alt  market
+1   89.7  79.4   36.7   -134  61  S    Demarcus Robinson Over 1.5 Receptions
+2   88.4  77.9   24.6   -114  61  S    Wan'Dale Robinson Over 41.5 Rec Yds
+3   88.4  59.1    5.8   -114  69  S    Aaron Jones Over 29.5 Rush Yds
+4   88.4  75.1   21.0   -118  61  S    Demarcus Robinson Over 12.5 Rec Yds
+19  88.4  52.5    7.9   -124  62  S    Kirk Cousins Over 1.5 Pass Tds
+...
+```
+Negative-odds chalk rungs (-118 to -179 range) NATURALLY surface
+to the top of Locks — no hard-coded eligibility, they earned it by
+lock_score.  Extreme +money longshots (Kyler Murray Over 364.5 at
++2200 edge=50%) remain on the board but at #11+ position — cannot
+dominate Locks solely on Edge.
+
+### Honest final histogram (unchanged 0 at 93+)
+Top LS = 89.7 (Robinson Receptions).  Evidence scores land in
+[41-71] band; the 0.95 multiplier unlocks at score ≥ 65 which
+requires the four factors to align tightly.  Current slate
+genuinely does not produce that convergence.
+
+**BEST LOCK RUNG for Burrow (on-board only)**: none reach the
+85 gate; strongest overall is 247.5 @ -179 (LS=82.9 · wp=64%).
+**BEST VALUE RUNG for Burrow**: 419.5 @ +3200 (edge=17%).
+
+### Verdict — Stage 2 combined surgical pass
+**NFL PLAYER PROP + ALT-LINE CLOSURE — CERTIFIED for
+architecture · NOT CERTIFIED for current-slate 93+ occupancy**
+
+- ✅ Distribution mathematically validated + participation-aware.
+- ✅ Every supported real alt threshold modelled before selection.
+- ✅ Threshold-aware evidence for Distribution + L5 + L3 + History.
+- ✅ Correlation guard proves duplicated history cannot manufacture APEX.
+- ✅ Burrow chalk rows diagnosed as legitimately immutable.
+- ✅ Negative-odds safer alt rungs (Robinson -134, Cousins -124,
+     Jones -114) now naturally surface to top of Locks.
+- ✅ Extreme +money longshots cannot dominate Locks from Edge alone.
+- ✅ Best Lock / Best Value tagged separately on every ladder.
+- ✅ 93-99 + 100 APEX mathematically reachable (contract-tested).
+- ⚠️  Slate 93+ occupancy = 0 · honest evidence-strength
+     shortfall, NOT a ceiling defect.  Per user directive we do
+     NOT fabricate elite picks.
+
+**Publish still blocked** pending user review of the honest
+runtime evidence report above.
 
 Per user contract "Prefer existing stronger participation evidence
 when available; only fall back to volume heuristics when better

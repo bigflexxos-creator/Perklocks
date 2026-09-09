@@ -298,6 +298,58 @@ def test_chalk_trap_spares_independent_authority_on_low_edge():
     print("[reachability] independent-authority chalk stays Elite ✓")
 
 
+# ────────────────────────────────────────────────────────────────────
+# 10. Correlation guard — duplicated history cannot manufacture 98+
+# ────────────────────────────────────────────────────────────────────
+def test_correlation_guard_caps_duplicated_history():
+    """Distribution / L5 / L3 / Historical-rate all draw on the SAME
+    12 recent games.  Per user contract:
+      "Do NOT treat distribution / L5 / L3 / career hit rate as four
+       independent confirmations when they overlap historically."
+    The supporting factors are anchored at 0.50 ± bounded deviation
+    (max 0.75) so even a 5/5 clearance cannot lift the factor mean
+    into the 0.98+ range required to earn APEX from historical
+    evidence alone.
+    """
+    from services.nfl_feature_engine import recompute_line_dependent_factors
+    # Craft a scenario where every recent sample clears the threshold —
+    # the maximally-aligned "duplicated history" case.
+    _raw_metrics = {
+        "prop_stat": "passing_yards",
+        "raw_l5_avg": 320.0,
+        "raw_opp_pos": {},
+        "side": "over",
+        "position": "QB",
+        "orig_line": 200.0,
+        "distribution": {
+            "n_games": 12,
+            "mean": 320.0, "sd": 40.0, "min": 275, "max": 372,
+            "samples": [320, 310, 340, 305, 350, 300, 315, 325, 330, 295, 355, 285],
+        },
+    }
+    factors = recompute_line_dependent_factors(
+        {}, _raw_metrics, line=200.0, side="over"
+    )
+    # Extract every numeric factor (excluding sidecar keys).
+    _fv = [v for k, v in factors.items()
+           if isinstance(v, (int, float)) and not str(k).startswith("__")]
+    factor_mean = sum(_fv) / len(_fv) if _fv else 0.0
+    # Even in this maximum-alignment scenario, the factor mean must
+    # NOT approach the 0.97-0.99 band that would let a NON-APEX pick
+    # reach lock=99 from historical evidence alone.
+    assert factor_mean <= 0.90, (
+        f"correlation guard failed — duplicated history produced "
+        f"factor mean {factor_mean:.3f} (must be <= 0.90)"
+    )
+    # And the supporting factors themselves must be clamped ≤ 0.75.
+    for k in ("L5 Threshold Support", "L3 Threshold Support",
+              "Historical Threshold Rate"):
+        v = factors.get(k)
+        if isinstance(v, (int, float)):
+            assert v <= 0.75, f"{k}={v} exceeds correlation-guard cap 0.75"
+    print(f"[reachability] correlation guard  factor_mean={factor_mean:.3f} ≤ 0.90 ✓")
+
+
 if __name__ == "__main__":
     test_multiplier_map_no_92_ceiling()
     test_lock_and_value_are_independent_dimensions()
@@ -308,5 +360,6 @@ if __name__ == "__main__":
     test_cdf_direction_side_awareness()
     test_distribution_fail_closed_on_thin_samples()
     test_chalk_trap_spares_independent_authority_on_low_edge()
+    test_correlation_guard_caps_duplicated_history()
     print("=" * 60)
-    print("NFL PLAYER-PROP REACHABILITY CONTRACT · 9/9 PASS")
+    print("NFL PLAYER-PROP REACHABILITY CONTRACT · 10/10 PASS")
