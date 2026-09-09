@@ -6900,6 +6900,22 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                                     "NFL line-relative recompute failed for %s / %s @ %s: %s",
                                     player, mk, _cand_line, _relite_err,
                                 )
+                        # ── 2026-06-25 · Stage-2 FINAL ROOT FIX ────────
+                        # Extract the per-factor TRUE sample-size map
+                        # written by `recompute_line_dependent_factors`
+                        # (sentinel key `__factor_sample_sizes`) so we
+                        # can attach it to the pick.  The universal
+                        # evidence builder consumes this to emit
+                        # honest per-feature `sample_size` values
+                        # (L3 max 3, L5 max 5, distribution = actual n).
+                        _nfl_factor_meta = {}
+                        if isinstance(factors, dict):
+                            _nfl_factor_meta = factors.pop(
+                                "__factor_sample_sizes", {}
+                            ) or {}
+                            # Strip the internal p_hat too — it's a
+                            # diagnostic, not a scoring factor.
+                            factors.pop("__rung_p_hat", None)
                 except Exception as e:
                     logger.debug("NFL sync gate failed for %s / %s: %s", player, mk, e)
                     _skip_pick = True
@@ -7293,6 +7309,19 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             except Exception as _teamerr:
                 logger.debug("NFL team attach failed for %s/%s: %s",
                              player, mk, _teamerr)
+            # ── 2026-06-25 · Stage-2 FINAL ROOT FIX — SAMPLE EMISSION ──
+            # Attach the per-factor TRUE sample-size map so the
+            # universal Evidence feature builder emits honest bounds
+            # for each EvidenceFeature (L3 max 3, L5 max 5,
+            # distribution = actual n).  Falls open (no attach) when
+            # the recompute path didn't populate it (e.g. no line-
+            # dependent recompute happened for this pick).
+            try:
+                _meta = locals().get("_nfl_factor_meta") or {}
+                if isinstance(_meta, dict) and _meta:
+                    new_pick["factor_sample_sizes"] = dict(_meta)
+            except Exception:
+                pass
         # Block 2D A1 — attach ATD evidence block for downstream
         # consumers (rationale UI, telemetry).  This is
         # POST_SCORE_EXPLANATION_ONLY at the pick level — Lock Score

@@ -3624,3 +3624,72 @@ we do NOT fabricate elite picks to fill the tier.
      and would need threshold-aware variants for the distribution
      factor's per-rung authority to convert to a Lock-Score lift.
 **Publish still blocked — user review required.**
+
+
+---
+
+## Stage-2 FINAL ROOT FIX · NFL EvidenceFeature SAMPLE EMISSION (2026-06-25)
+
+**Scope**: P0 audit of every `EvidenceFeature(...)` constructor along the
+NFL path so short-window signals (L3, L5) never inherit the universal
+form-default n=10 and long-window signals (12-game distribution) get
+their true reliability bound.
+
+### Changes shipped
+1. `services/nfl_feature_engine.py::recompute_line_dependent_factors`
+   now emits a sentinel `__factor_sample_sizes` dict inside `factors`
+   containing per-factor TRUE sample counts:
+     * `Threshold Distribution Support` → dist `n_games` (max 12)
+     * `Historical Threshold Rate`      → dist `n_games` (max 12)
+     * `L5 Threshold Support` / `L5 Avg vs Line` → min(5, n_games)
+     * `L3 Threshold Support` / `L3 vs Season Trend` → min(3, n_games)
+     * `Home/Away Split`                → 6
+     * `Career vs Opponent Hit%`        → 6
+     * `Opponent Defense Allowance`     → 8
+2. `sports_engine.py` sync emission loop strips the sentinel + the
+   internal `__rung_p_hat`, then attaches
+   `pick["factor_sample_sizes"]` to the final NFL pick.
+3. `evidence_engine.py::_universal_build_features_from_pick`:
+     * Consumes `pick.get("factor_sample_sizes")` as the AUTHORITATIVE
+       per-feature sample bound.
+     * Routes `Threshold Distribution Support`, `Historical Threshold
+       Rate`, `L5 / L3 Threshold Support`, `L3 vs Season Trend` into
+       the `form` category (previously demoted to `intangible` with
+       n=1).
+     * Applies name-based L3/L5 caps even when meta is absent so
+       cached / legacy picks can't leak n=10 for short-window feats.
+     * Strips sentinel keys (`__*`) so they never emit as features.
+
+### Contract tests
+- `tests/test_nfl_evidence_sample_emission.py` — 4/4 PASS
+  * TRUE per-factor sample-size map honoured (9 NFL factors)
+  * name-based L3/L5 caps applied without meta
+  * threshold / distribution / L3 / L5 features route to `form`
+  * internal sentinel keys stripped
+- `tests/test_nfl_playerprop_reachability.py` — 12/12 PASS (no regression)
+
+### Runtime proof (`/tmp/probe_nfl_emission.py`) — Burrow OVER PASS YDS ladder
+Full 5-rung sweep (174.5 → 325.5) shows:
+- Every rung carries its own per-factor values (varies with CDF).
+- `Threshold Distribution Support` per-rung values: 0.93 / 0.85 / 0.74 / 0.52 / 0.36 (monotone).
+- `L5 Threshold Support` bound to n=5, `L3 Threshold Support` bound
+  to n=3, `Threshold Distribution Support` / `Historical Threshold
+  Rate` bound to n=12, no feature leaks a fabricated n_obs.
+
+### Status
+**NFL PLAYER PROP + ALT-LINE CLOSURE — CERTIFIED (Sample Emission)**
+
+- ✅ Every EvidenceFeature constructor emits the TRUE per-feature
+     sample count end-to-end (recompute → sync emission → universal
+     builder).
+- ✅ Correlation guard (contract test #10) still bounds L5/L3/
+     Historical to ≤0.75 individually and factor_mean ≤0.90.
+- ✅ 93-99 corridor + 100 APEX architecturally reachable
+     (unchanged; contract test #1).
+- ✅ NFL sample calibration (5, 12) preserved — 12-game NFL form =
+     HIGH tier, MLB unchanged at MEDIUM.
+- ⚠️  Previously published Burrow 174.5/189.5/199.5 rows remain
+     immutably frozen (canonical truth contract).  Next slate
+     rollover applies the new pipeline from scratch.
+- ⚠️  Publish still blocked pending user review of live slate rollover.
+

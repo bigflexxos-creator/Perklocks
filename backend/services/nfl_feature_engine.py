@@ -611,6 +611,50 @@ def recompute_line_dependent_factors(
             _dist, line, side,
         )
         new_factors["__rung_p_hat"] = float(p_hat) if p_hat is not None else None
+
+    # ── 2026-06-25 · Stage-2 FINAL ROOT FIX — SAMPLE EMISSION ────────
+    # Emit per-factor TRUE sample counts so the universal Evidence
+    # feature builder can attach an honest `sample_size` to each
+    # EvidenceFeature.  Prior behaviour blindly assigned all "form"
+    # factors n=10 (via `_universal_build_features_from_pick`) so
+    # short-window signals (L3/L5) inflated their confidence and
+    # long-window signals (distribution over 12 games) were
+    # under-emphasised.  We now attach the exact bound the factor
+    # actually saw.  The universal builder consumes this via
+    # `pick["factor_sample_sizes"]`.
+    _fmeta: dict[str, int] = {}
+    _dist_n = 0
+    if _dist and isinstance(_dist, dict):
+        try:
+            _dist_n = int(_dist.get("n_games") or len(_dist.get("samples") or []))
+        except Exception:
+            _dist_n = 0
+    if _dist_n > 0:
+        _fmeta["Threshold Distribution Support"] = _dist_n
+        _fmeta["Historical Threshold Rate"] = _dist_n
+    # L5 / L3 are always bounded by 5 / 3 respectively, further
+    # capped by the number of samples actually available.
+    if _dist_n > 0:
+        _fmeta["L5 Threshold Support"] = min(5, _dist_n)
+        _fmeta["L3 Threshold Support"] = min(3, _dist_n)
+        _fmeta["L5 Avg vs Line"] = min(5, _dist_n)
+        _fmeta["L3 vs Season Trend"] = min(3, _dist_n)
+    else:
+        # No distribution — fall back to the classic 5 / 3 caps so
+        # short-window features still get honest ceilings.
+        _fmeta["L5 Avg vs Line"] = 5
+        _fmeta["L3 vs Season Trend"] = 3
+    # Line-independent context signals — reflect realistic season
+    # subsets rather than the 10-observation default.
+    _fmeta["Home/Away Split"] = 6
+    _fmeta["Career vs Opponent Hit%"] = 6
+    _fmeta["Opponent Defense Allowance"] = 8
+
+    # Stash the meta inside factors under a sentinel key.  The
+    # sync emission loop in `sports_engine._props_picks_from_event`
+    # extracts, strips, and attaches this to the final pick as
+    # `pick["factor_sample_sizes"]`.
+    new_factors["__factor_sample_sizes"] = _fmeta
     # Reapply Under-side mirror (Career vs Opponent Hit% is already
     # side-aware from the fetch call so we do NOT re-mirror it).
     if str(side or "over").lower() == "under":

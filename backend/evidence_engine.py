@@ -856,25 +856,54 @@ def _universal_build_features_from_pick(pick: dict) -> list[EvidenceFeature]:
 
     sport = (pick.get("sport") or "").upper()
 
+    # ── 2026-06-25 · Stage-2 FINAL ROOT FIX — SAMPLE EMISSION ────────
+    # NFL (and any future sport that populates this) attaches an
+    # authoritative per-factor TRUE sample-size map to the pick as
+    # `pick["factor_sample_sizes"]`.  When present we consume it as
+    # the source of truth for each feature's `sample_size` — no more
+    # blind n=10 for L3/L5 or n=1 for the 12-game distribution.
+    _fs_meta = pick.get("factor_sample_sizes") or {}
+    if not isinstance(_fs_meta, dict):
+        _fs_meta = {}
+
     # 1) Factor breakdown — each factor becomes its own feature.
     factors = pick.get("factors") or {}
     for k, v in (factors.items() if isinstance(factors, dict) else []):
+        # Skip internal sentinel keys — they are diagnostics, not
+        # scoring factors.
+        if isinstance(k, str) and k.startswith("__"):
+            continue
         try:
             score_v = float(v)
         except Exception:
             continue
         # Categorize by name keyword.
         kl = k.lower()
-        if any(w in kl for w in ("form", "recent", "streak", "rolling")):
+        # NFL threshold / distribution / trend signals — these are
+        # first-class FORM features (historical clearance frequency
+        # or empirical-distribution CDF at the exact rung).  Route
+        # them explicitly so they aren't demoted to `intangible`.
+        if any(w in kl for w in (
+            "threshold", "distribution", "trend", "hit%", "hit rate",
+        )):
             cat: FeatureCategory = "form"
             n_obs = 10
-        elif any(w in kl for w in ("matchup", "h2h", "vs", "opponent")):
+        elif any(w in kl for w in ("form", "recent", "streak", "rolling")):
+            cat = "form"
+            n_obs = 10
+        elif kl.startswith("l3 ") or " l3 " in kl or kl.startswith("l5 ") or " l5 " in kl:
+            cat = "form"
+            n_obs = 5
+        elif any(w in kl for w in ("matchup", "h2h", "vs", "opponent", "defense")):
             cat = "matchup"
             n_obs = 8
         elif any(w in kl for w in ("market", "edge", "value", "book", "clv")):
             cat = "market"
             n_obs = 5
-        elif any(w in kl for w in ("park", "weather", "surface", "rest", "venue")):
+        elif any(w in kl for w in (
+            "park", "weather", "surface", "rest", "venue",
+            "home/away", "home away", "split",
+        )):
             cat = "context"
             n_obs = 5
         elif any(w in kl for w in ("model", "sim", "ml", "ai")):
@@ -883,6 +912,23 @@ def _universal_build_features_from_pick(pick: dict) -> list[EvidenceFeature]:
         else:
             cat = "intangible"
             n_obs = 1
+
+        # If the sport attached an authoritative sample-size map,
+        # let it override the heuristic n_obs.  This is the final
+        # bound the factor actually saw historically — no inflation,
+        # no artificial ceiling.
+        _true_n = _fs_meta.get(k)
+        if isinstance(_true_n, (int, float)) and _true_n > 0:
+            n_obs = int(_true_n)
+        else:
+            # Even without an authoritative map, apply the strict
+            # L3 / L5 caps by name so short-window features never
+            # inherit a 10-observation default.
+            if kl.startswith("l3 ") or " l3 " in kl:
+                n_obs = min(n_obs, 3)
+            elif kl.startswith("l5 ") or " l5 " in kl:
+                n_obs = min(n_obs, 5)
+
         features.append(EvidenceFeature(
             name=k, category=cat, value=score_v,
             sample_size=n_obs, lookback_days=14,
