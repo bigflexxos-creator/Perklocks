@@ -591,8 +591,17 @@ def distribution_hit_probability(
     * side="under" → P(X ≤ threshold)
 
     Uses ``math.erf`` for the CDF — no scipy dependency.  Clamps to
-    [0.03, 0.97] so a 4-sigma tail can't produce a numerical zero /
-    one (calibration authority still owns final probability).
+    [0.02, 0.99] so a 4-sigma tail can't produce a numerical zero /
+    one (calibration authority still owns final probability), while
+    permitting the 99+ tail needed for the Peak non-APEX grade tier
+    (`reliability_cap = 60 + WP × 40 = 99.6` clamps to LS=99 via
+    the universal 99 non-APEX ceiling — see
+    `services.magic.lock_score_integrator.NON_APEX_HARD_CAP`).
+    Prior 0.97 clamp was too tight and prevented distribution-
+    derived player-prop WP from ever reaching the Peak-non-APEX
+    reliability floor.  APEX 100 remains gated by
+    `services.magic.apex_gate.evaluate_apex` (independent
+    convergence — NOT reachable via CDF alone).
     """
     if not dist or not isinstance(dist, dict):
         return None
@@ -610,4 +619,4 @@ def distribution_hit_probability(
     _over = _phi_ge_z            # P(X ≥ threshold)
     _under = 1.0 - _phi_ge_z     # P(X ≤ threshold)
     p = _over if str(side or "over").lower() == "over" else _under
-    return round(max(0.03, min(0.97, p)), 4)
+    return round(max(0.02, min(0.99, p)), 4)
