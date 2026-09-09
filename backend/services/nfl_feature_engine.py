@@ -361,14 +361,15 @@ async def build_nfl_prop_factors(
     opp_all = await team_defense_allowances(db, opponent, season)
     opp_pos = opp_all.get(position) or opp_all.get(position.upper()) or {}
     # ── 2026-06-09 · Stage-2 P0 · per-rung independent distribution ──
-    # Empirical mean/SD of the last 12 regular-season games for this
-    # exact stat_field.  Used by ``recompute_line_dependent_factors``
-    # to produce a per-threshold P(X ≥ line) that varies coherently
-    # by rung — same coherent distribution feeds every alt rung.
+    # Empirical mean/SD of the last 17 regular-season games (a full
+    # NFL regular season) for this exact stat_field.  Used by
+    # ``recompute_line_dependent_factors`` to produce a per-threshold
+    # P(X ≥ line) that varies coherently by rung — same coherent
+    # distribution feeds every alt rung.
     _dist = None
     try:
         _dist = await player_stat_distribution(
-            db, player, prop_stat, season, week, limit=12,
+            db, player, prop_stat, season, week, limit=17,
         )
     except Exception:
         _dist = None

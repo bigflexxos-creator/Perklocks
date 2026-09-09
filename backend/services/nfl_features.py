@@ -427,10 +427,23 @@ async def player_stat_distribution(
     season: int,
     week: int,
     *,
-    limit: int = 12,
+    limit: int = 17,
 ) -> Optional[dict]:
     """Return the empirical mean / SD of the player's last ``limit``
     games for the given ``stat_field`` (e.g. ``"passing_yards"``).
+
+    ── 2026-06-25 · Stage-2 FINAL LIVE ACCEPTANCE ─────────────────
+    ``limit`` raised from 12 → 17 (a full NFL regular season) to
+    remove the ARTIFICIAL sample cap that had previously matched
+    the HIGH-tier ceiling.  The HIGH-tier cut (n≥12) is a
+    reliability-SATURATION anchor — it does NOT mean the
+    underlying distribution should stop collecting at n=12.  A
+    healthy player with 17 comparable in-season games must be
+    represented with 17 samples; a player with only 8 comparable
+    games is represented with 8 (fail-closed at n<5 preserved).
+    The wider-window pull (``limit * 2`` = 34 raw rows) still lets
+    the partial-game filter drop injury-shortened rows before
+    mean/SD are computed — no survivorship loss.
 
     Output shape:
       {
