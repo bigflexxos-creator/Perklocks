@@ -1354,7 +1354,37 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
     #     suppression.  Model prob + market prob + edge + evidence +
     #     score decide — with the >=85 board rule as the single gate.
     EDGE_FLOOR = -1.0
-    if edge < EDGE_FLOOR:
+    # ── 2026-06-25 · Stage-2 alt-ladder MODEL-FIRST · SELECT-SECOND ──
+    # NFL player-prop ALT rungs are reliability wagers, not edge
+    # wagers.  A safer -400 rung with model WP = book_implied - 2pp
+    # legitimately carries negative edge yet is exactly the "Peak
+    # non-APEX / Rare Lock" candidate the grading contract expects.
+    # The `EDGE_FLOOR = -1.0` was rejecting those rungs before Lock
+    # Score / reliability_cap ever got a chance to grade them.
+    #
+    # Fix: for NFL player-prop ALT emissions, model every unique
+    # provider rung.  Lock Score's own `reliability_cap = 60 + WP × 40`
+    # (plus the >=85 board-eligibility gate) already prevents weak
+    # picks from surfacing — no edge floor is needed to guard the
+    # board.  Best VALUE selection continues to rank by edge/EV
+    # (positive-edge candidates only will win Best Value).  Best
+    # LOCK selection ranks by reliability + evidence — negative-edge
+    # safer rungs can legitimately win Best LOCK when justified.
+    #
+    # Standard (non-alt) and non-NFL markets keep the -1.0 floor
+    # unchanged — this is a narrow alt-ladder exemption.
+    _nfl_alt_reliability = (sport == "NFL" and is_alt_prop
+                             and market_l != ""
+                             and any(w in market_l for w in (
+                                 "pass yds", "pass yards", "pass complet",
+                                 "pass tds", "pass touchdown",
+                                 "rush yds", "rush yards",
+                                 "rush tds", "rush touchdown",
+                                 "reception yds", "receiving yds",
+                                 "receiving yards",
+                                 "receptions", "rec yds",
+                             )))
+    if edge < EDGE_FLOOR and not _nfl_alt_reliability:
         try:
             from services import funnel_telemetry as _funnel
             _funnel.record(
