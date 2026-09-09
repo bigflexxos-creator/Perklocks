@@ -1,8 +1,17 @@
 """NFL historical client — uses ESPN's free public scoreboard API.
 
 No key required. Endpoints:
-  • Scoreboard:    https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard
-  • Box score:     https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event={id}
+  • Scoreboard:    https://site.web.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard
+  • Box score:     https://site.web.api.espn.com/apis/site/v2/sports/football/nfl/summary?event={id}
+
+2026-06-25 · PRODUCTION FIX
+The legacy ``site.api.espn.com`` host returns HTTP 403 "Access Denied"
+from cloud-hosted IPs (production pods, Kubernetes egress).  Preview
+worked only because manual/local requests came from residential IPs.
+The identical-schema mirror ``site.web.api.espn.com`` (used by
+espn.com's own SPA) is unblocked and returns the same JSON.  We use
+that host in production; the request contract, response schema, and
+downstream parsing are unchanged.
 
 We ingest the CURRENT NFL season only (Sept → Feb). For each completed
 game we store team result and per-player stats from the boxscore.
@@ -20,7 +29,7 @@ import httpx
 
 logger = logging.getLogger("lockscore.historical.nfl")
 
-_BASE = "https://site.api.espn.com/apis/site/v2/sports/football/nfl"
+_BASE = "https://site.web.api.espn.com/apis/site/v2/sports/football/nfl"
 _TIMEOUT = 25.0
 _PACE = 0.4  # 2.5 req/sec
 
@@ -29,21 +38,48 @@ _now = datetime.now(timezone.utc)
 _CURRENT_SEASON = _now.year if _now.month >= 8 else _now.year - 1
 
 
-async def _get(cx: httpx.AsyncClient, path: str, params: dict | None = None) -> dict | None:
+async def _get(cx: httpx.AsyncClient, path: str, params: dict | None = None,
+                *, verbose: bool = False) -> dict | None:
+    """Fetch an ESPN endpoint with retries + honest failure reporting.
+
+    ``verbose=True`` bubbles up the exact status + first 200 bytes of
+    the failure body via the module logger so production diagnostic
+    output is observable (previously the helper silently returned
+    ``None`` on 4xx / 5xx / exception — hiding the 403 access-denied
+    from ``site.api.espn.com`` for weeks).
+    """
     backoff = 1.0
+    url = f"{_BASE}{path}"
     for attempt in range(1, 4):
         try:
-            r = await cx.get(f"{_BASE}{path}", params=params or {})
+            r = await cx.get(url, params=params or {})
             if r.status_code == 200:
+                if verbose:
+                    logger.info(
+                        "NFL ESPN OK  url=%s params=%s status=%s bytes=%d",
+                        url, params, r.status_code, len(r.content),
+                    )
                 return r.json()
             if r.status_code == 429:
                 await asyncio.sleep(min(backoff, 30))
                 backoff *= 2
                 continue
-            logger.warning("NFL %s → %s", path, r.status_code)
+            # Non-200 / non-429 — log the ACTUAL failure body so
+            # future host-block or schema-change failures are visible
+            # from the production log without a code change.
+            _body = (r.text or "")[:240].replace("\n", " ")
+            logger.warning(
+                "NFL ESPN FAIL url=%s params=%s status=%s ctype=%s bytes=%d body=%r",
+                url, params, r.status_code,
+                r.headers.get("content-type", "?"),
+                len(r.content), _body,
+            )
             return None
         except Exception as e:
-            logger.warning("NFL %s exception (attempt %d): %s", path, attempt, e)
+            logger.warning(
+                "NFL ESPN EXC url=%s params=%s attempt=%d error=%s",
+                url, params, attempt, e,
+            )
             await asyncio.sleep(min(backoff, 10))
             backoff *= 2
     return None
@@ -81,7 +117,8 @@ async def backfill_season(db, season: int) -> dict:
                 break
             wk_end = cur + timedelta(days=6)  # inclusive 7-day window
             date_arg = f"{cur.strftime('%Y%m%d')}-{wk_end.strftime('%Y%m%d')}"
-            data = await _get(cx, "/scoreboard", {"dates": date_arg})
+            data = await _get(cx, "/scoreboard", {"dates": date_arg},
+                              verbose=(games_seen == 0))
             await asyncio.sleep(_PACE)
             cur = wk_end + timedelta(days=1)
             if not data:

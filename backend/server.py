@@ -4062,6 +4062,169 @@ async def _mlb_pregame_loop():
             await asyncio.sleep(_MLB_QUICK_REFRESH_INTERVAL)
 
 
+# ── 2026-06-25 · PRODUCTION NFL RUNTIME FIX ──────────────────────────
+# Support forensic (2026-06-25) confirmed the recurring generator only
+# scheduled MLB.  NFL only ever populated Preview because sport_filter=
+# "NFL" refreshes were triggered manually.  Adding a parallel NFL
+# pregame loop with the SAME lease / budget guardrails so Production
+# regenerates the NFL slate automatically without a manual force-
+# refresh.  NFL is a WEEKLY sport — the cadence is much slower than
+# MLB's daily grind (books post the week's slate Tuesday, adjust
+# Thursday, lock late Sunday).  We refresh every 30 min in-season so
+# Preview and Production remain in sync, then back off out of season.
+_NFL_REFRESH_INTERVAL_SECONDS = int(os.environ.get(
+    "NFL_PREGAME_INTERVAL_SECONDS", str(30 * 60)))  # 30 min in-season
+_NFL_OUT_OF_SEASON_SLEEP = int(os.environ.get(
+    "NFL_OUT_OF_SEASON_SLEEP_SECONDS", str(6 * 3600)))  # re-check every 6h
+
+
+def _nfl_is_in_season(now: datetime) -> bool:
+    """Return True during NFL season window (Aug 1 → Feb 20).
+
+    Uses UTC month-day comparison so no locale trickery.  The regular
+    season kicks off in early September but preseason props post from
+    August; the Super Bowl finishes mid-February.  Outside this window
+    we sleep the loop to avoid burning provider credits + memory.
+    """
+    m, d = now.month, now.day
+    # August through December — in season.
+    if m >= 8:
+        return True
+    # January through Feb 20 — postseason.
+    if m == 1:
+        return True
+    if m == 2 and d <= 20:
+        return True
+    return False
+
+
+async def _nfl_pregame_loop():
+    """Refresh NFL picks on an in-season cadence so Production has real
+    picks without a manual admin force-refresh.
+
+    Contract:
+      • Refresh **today** at 30-min cadence while in season.
+      • Refresh **tomorrow** at 60-min cadence — books post the slate
+        days in advance.
+      • Acquire a JobCoordinator lease + ProviderBudget reservation
+        (identical to `_mlb_pregame_loop`) so overlapping refreshes
+        cannot double-book credits or CPU.
+      • Sleep 6h out-of-season instead of spinning tight — memory
+        cliff protection.
+    """
+    # Let startup settle so the initial seed / bootstrap completes.
+    await asyncio.sleep(180)
+    from services.job_coordinator import JobCoordinator as _NJC
+    from services.provider_budget import ProviderBudget as _NPB
+    last_tomorrow_at: float = 0.0
+    tomorrow_cadence = max(_NFL_REFRESH_INTERVAL_SECONDS,
+                            2 * _NFL_REFRESH_INTERVAL_SECONDS // 2 + 60 * 60)
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            if not _nfl_is_in_season(now):
+                logger.info(
+                    "NFL pregame loop: outside season window (m=%d,d=%d), "
+                    "sleeping %dh.",
+                    now.month, now.day, _NFL_OUT_OF_SEASON_SLEEP // 3600,
+                )
+                await asyncio.sleep(_NFL_OUT_OF_SEASON_SLEEP)
+                continue
+
+            # ── Today's slate ─────────────────────────────────────
+            coord = _NJC(db)
+            budget = _NPB(db)
+            lease = await coord.acquire(
+                "nfl_pregame_refresh_today",
+                lease_seconds=1800,           # NFL refresh takes ~25-30 min
+                min_interval_seconds=_NFL_REFRESH_INTERVAL_SECONDS,
+                caller="nfl_pregame_loop",
+                reason="pregame_30min",
+            )
+            if lease:
+                token = lease.lease_token
+                r = await budget.reserve(
+                    estimated_credits=90,
+                    endpoint_type="picks_refresh_nfl_today",
+                    caller="nfl_pregame_loop",
+                    job_name="nfl_pregame_refresh_today",
+                    reason="pregame_30min",
+                    request_key=f"nfl_today:{token}",
+                    ttl_seconds=1800,
+                )
+                if r.get("allowed"):
+                    intent = r["intent_id"]
+                    try:
+                        await _refresh_picks(_today_str(), sport_filter="NFL")
+                        await budget.commit(intent)
+                        await coord.complete(
+                            "nfl_pregame_refresh_today", token,
+                        )
+                    except Exception as e:
+                        await budget.release(intent, reason=f"err:{e}")
+                        await coord.fail(
+                            "nfl_pregame_refresh_today", token,
+                            error=str(e), retry_after_seconds=300,
+                        )
+                else:
+                    await coord.fail(
+                        "nfl_pregame_refresh_today", token,
+                        error=f"budget_denied:{r.get('outcome')}",
+                        retry_after_seconds=600,
+                    )
+            # ── Tomorrow's slate — slower cadence ─────────────────
+            t_now = asyncio.get_event_loop().time()
+            if t_now - last_tomorrow_at >= tomorrow_cadence:
+                last_tomorrow_at = t_now
+                coord = _NJC(db)
+                budget = _NPB(db)
+                lease = await coord.acquire(
+                    "nfl_pregame_refresh_tomorrow",
+                    lease_seconds=1800,
+                    min_interval_seconds=tomorrow_cadence,
+                    caller="nfl_pregame_loop",
+                    reason="pregame_tomorrow_60min",
+                )
+                if lease:
+                    token = lease.lease_token
+                    r = await budget.reserve(
+                        estimated_credits=60,
+                        endpoint_type="picks_refresh_nfl_tomorrow",
+                        caller="nfl_pregame_loop",
+                        job_name="nfl_pregame_refresh_tomorrow",
+                        reason="pregame_tomorrow_60min",
+                        request_key=f"nfl_tomorrow:{token}",
+                        ttl_seconds=1800,
+                    )
+                    if r.get("allowed"):
+                        intent = r["intent_id"]
+                        try:
+                            tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+                            await _refresh_picks(tomorrow_str, sport_filter="NFL")
+                            await budget.commit(intent)
+                            await coord.complete(
+                                "nfl_pregame_refresh_tomorrow", token,
+                            )
+                        except Exception as e:
+                            await budget.release(intent, reason=f"err:{e}")
+                            await coord.fail(
+                                "nfl_pregame_refresh_tomorrow", token,
+                                error=str(e), retry_after_seconds=300,
+                            )
+                    else:
+                        await coord.fail(
+                            "nfl_pregame_refresh_tomorrow", token,
+                            error=f"budget_denied:{r.get('outcome')}",
+                            retry_after_seconds=600,
+                        )
+            await asyncio.sleep(_NFL_REFRESH_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning("NFL pregame refresh failed: %s", e)
+            await asyncio.sleep(_NFL_REFRESH_INTERVAL_SECONDS)
+
+
 async def _settlement_loop():
     """Per-sport settlement cadence — fast where it's free, careful where it costs.
 
@@ -4526,91 +4689,120 @@ async def on_startup():
     try:
         async def _nfl_bootstrap_guard():
             import asyncio as _aio
-            try:
-                n = await db.games.count_documents({"sport": "nfl", "status": "Final"})
-                if n >= 32:
-                    logger.info("NFL bootstrap guard: %d Final games — sufficient, skip", n)
-                    return
-                logger.warning(
-                    "NFL bootstrap guard: only %d Final games (< 32) — scheduling "
-                    "one-shot backfill of 2025/2024 seasons via historical/nfl.py "
-                    "with skip_if_done=False (overrides any stale zero-row "
-                    "'done' marker from the pre-fix ESPN year= path)", n)
-                from historical.multi_season import backfill_seasons
-                # ── 2026-08-27 PRODUCTION NFL BOOTSTRAP HARDENING ─────
-                # Backfill BOTH the current and prior season so a bad
-                # single-season fetch (rate limit, ESPN throttle,
-                # network blip) doesn't leave Production with 0 games.
-                # historical/nfl.py is idempotent (upsert-only) so
-                # over-fetching is safe.  Retry up to 3× with a
-                # widening delay so a transient upstream failure
-                # doesn't leave NFL permanently starved.
-                res = None
-                for attempt in range(3):
-                    try:
-                        res = await backfill_seasons(
-                            db, sports=["nfl"], seasons=[2025, 2024],
-                            lookback=1, skip_if_done=False,
-                        )
-                        logger.info(
-                            "NFL bootstrap guard: backfill attempt %d result=%s",
-                            attempt + 1, res)
-                        # Post-attempt sufficiency check
-                        _m = await db.games.count_documents(
-                            {"sport": "nfl", "status": "Final"})
-                        if _m >= 32:
-                            break
-                        logger.warning(
-                            "NFL bootstrap guard: attempt %d still only %d "
-                            "Final games — retrying in %ds",
-                            attempt + 1, _m, 10 * (attempt + 1))
-                        await _aio.sleep(10 * (attempt + 1))
-                    except Exception as _re:
-                        logger.warning(
-                            "NFL bootstrap guard: attempt %d raised %s — "
-                            "retrying in %ds",
-                            attempt + 1, _re, 10 * (attempt + 1))
-                        await _aio.sleep(10 * (attempt + 1))
-                # Final sufficiency check + trigger picks refresh so the
-                # newly-hydrated ratings are consumed immediately (users
-                # see NFL populate without a manual retry).
-                m = await db.games.count_documents(
-                    {"sport": "nfl", "status": "Final"})
-                if m < 32:
-                    logger.error(
-                        "NFL bootstrap guard: AFTER 3 attempts still only %d "
-                        "Final games — historical/nfl.py per-client path "
-                        "needs investigation (upstream ESPN dates= empty?)", m)
-                    return
-                logger.info(
-                    "NFL bootstrap guard: post-backfill %d Final games — OK. "
-                    "Triggering one NFL picks refresh so hydrated ratings "
-                    "surface in /api/picks/today immediately.", m)
-                # Trigger an immediate NFL-scoped refresh so Production
-                # users don't have to wait for the next scheduler tick.
+            # ── 2026-06-25 · PRODUCTION NFL HARDENING ────────────────
+            # This guard runs continuously (not one-shot) so a
+            # transient ESPN outage during startup can't leave NFL
+            # dead until the next deployment.  It sleeps long between
+            # attempts once history is sufficient (12h re-check as a
+            # safety net) and retries more aggressively while
+            # insufficient.  Every path is idempotent (upsert-only).
+            _HIST_MIN = int(os.environ.get("NFL_HISTORY_MIN", "32"))
+            _SUFFICIENT_RECHECK_S = int(os.environ.get(
+                "NFL_HISTORY_RECHECK_SUFFICIENT_S", str(12 * 3600)))
+            _INSUFFICIENT_RETRY_S = int(os.environ.get(
+                "NFL_HISTORY_RETRY_INSUFFICIENT_S", str(30 * 60)))
+            _initial_delay_done = False
+            while True:
                 try:
-                    from services.pick_refresh_orchestrator import (
-                        PickRefreshOrchestrator, PickRefreshRequest,
-                    )
-                    from datetime import datetime as _dt, timezone as _tz
-                    _ds = _dt.now(_tz.utc).strftime("%Y-%m-%d")
-                    _o = PickRefreshOrchestrator()
-                    _r = await _o.refresh(PickRefreshRequest(
-                        slate_date=_ds, sport_filter="NFL",
-                        caller="nfl_bootstrap_guard",
-                        reason="post-history-backfill-hydrate",
-                    ))
-                    logger.info(
-                        "NFL bootstrap guard: post-hydrate refresh "
-                        "published=%s generated=%s",
-                        getattr(_r, "published_count", "?"),
-                        getattr(_r, "generated_count", "?"))
-                except Exception as _refresh_err:
+                    if not _initial_delay_done:
+                        await _aio.sleep(30)   # let startup settle once
+                        _initial_delay_done = True
+                    n = await db.games.count_documents({"sport": "nfl", "status": "Final"})
+                    if n >= _HIST_MIN:
+                        logger.info(
+                            "NFL bootstrap guard: %d Final games — "
+                            "sufficient (min=%d), sleeping %dh",
+                            n, _HIST_MIN, _SUFFICIENT_RECHECK_S // 3600,
+                        )
+                        await _aio.sleep(_SUFFICIENT_RECHECK_S)
+                        continue
                     logger.warning(
-                        "NFL bootstrap guard: post-hydrate refresh "
-                        "failed (non-fatal): %s", _refresh_err)
-            except Exception as _e:
-                logger.warning("NFL bootstrap guard failed (non-fatal): %s", _e)
+                        "NFL bootstrap guard: only %d Final games (< %d) — "
+                        "attempting NFL history backfill via historical/nfl.py "
+                        "with skip_if_done=False (overrides any stale zero-row "
+                        "'done' marker from the pre-fix ESPN year= path)",
+                        n, _HIST_MIN,
+                    )
+                    from historical.multi_season import backfill_seasons
+                    # Backfill BOTH the current and prior season so a
+                    # bad single-season fetch doesn't leave Production
+                    # with 0 games.  Idempotent (upsert-only).  Retry
+                    # up to 3× with widening delay per pass.
+                    for attempt in range(3):
+                        try:
+                            res = await backfill_seasons(
+                                db, sports=["nfl"], seasons=[2025, 2024],
+                                lookback=1, skip_if_done=False,
+                            )
+                            logger.info(
+                                "NFL bootstrap guard: backfill attempt %d result=%s",
+                                attempt + 1, res,
+                            )
+                            _m = await db.games.count_documents(
+                                {"sport": "nfl", "status": "Final"})
+                            if _m >= _HIST_MIN:
+                                break
+                            logger.warning(
+                                "NFL bootstrap guard: attempt %d still only %d "
+                                "Final games — retrying in %ds",
+                                attempt + 1, _m, 10 * (attempt + 1),
+                            )
+                            await _aio.sleep(10 * (attempt + 1))
+                        except Exception as _re:
+                            logger.warning(
+                                "NFL bootstrap guard: attempt %d raised %s — "
+                                "retrying in %ds",
+                                attempt + 1, _re, 10 * (attempt + 1),
+                            )
+                            await _aio.sleep(10 * (attempt + 1))
+                    m = await db.games.count_documents(
+                        {"sport": "nfl", "status": "Final"})
+                    if m < _HIST_MIN:
+                        logger.error(
+                            "NFL bootstrap guard: still only %d Final games — "
+                            "will re-attempt in %ds (upstream ESPN may be "
+                            "rate-limited or blocking egress)",
+                            m, _INSUFFICIENT_RETRY_S,
+                        )
+                        await _aio.sleep(_INSUFFICIENT_RETRY_S)
+                        continue
+                    logger.info(
+                        "NFL bootstrap guard: post-backfill %d Final games — OK. "
+                        "Triggering one NFL picks refresh so hydrated ratings "
+                        "surface in /api/picks/today immediately.", m,
+                    )
+                    try:
+                        from services.pick_refresh_orchestrator import (
+                            PickRefreshOrchestrator, PickRefreshRequest,
+                        )
+                        from datetime import datetime as _dt, timezone as _tz
+                        _ds = _dt.now(_tz.utc).strftime("%Y-%m-%d")
+                        _o = PickRefreshOrchestrator()
+                        _r = await _o.refresh(PickRefreshRequest(
+                            slate_date=_ds, sport_filter="NFL",
+                            caller="nfl_bootstrap_guard",
+                            reason="post-history-backfill-hydrate",
+                        ))
+                        logger.info(
+                            "NFL bootstrap guard: post-hydrate refresh "
+                            "published=%s generated=%s",
+                            getattr(_r, "published_count", "?"),
+                            getattr(_r, "generated_count", "?"),
+                        )
+                    except Exception as _refresh_err:
+                        logger.warning(
+                            "NFL bootstrap guard: post-hydrate refresh "
+                            "failed (non-fatal): %s", _refresh_err,
+                        )
+                    await _aio.sleep(_SUFFICIENT_RECHECK_S)
+                except _aio.CancelledError:
+                    break
+                except Exception as _e:
+                    logger.warning(
+                        "NFL bootstrap guard iteration failed (non-fatal): %s",
+                        _e,
+                    )
+                    await _aio.sleep(_INSUFFICIENT_RETRY_S)
         asyncio.create_task(_nfl_bootstrap_guard())
     except Exception as _nfl_guard_err:
         logger.warning("NFL guard wiring failed (non-fatal): %s", _nfl_guard_err)
@@ -5239,6 +5431,16 @@ async def on_startup():
         "MLB pregame quick-refresh loop armed (%d-sec cadence during UTC %02d:00–%02d:00)",
         _MLB_QUICK_REFRESH_INTERVAL,
         _MLB_WINDOW_START_UTC_HOUR, _MLB_WINDOW_END_UTC_HOUR,
+    )
+    # ── 2026-06-25 · PRODUCTION NFL FIX — automatic scheduler ─────────
+    # NFL was Preview-only because refreshes were manual.  Register the
+    # in-season pregame loop so Production regenerates the NFL slate on
+    # a 30-min cadence without any admin intervention.  Out-of-season
+    # the loop hibernates on a 6h re-check (no cost, no memory pressure).
+    _deferred_task(_nfl_pregame_loop,                       DEFER_BASE * 2)
+    logger.info(
+        "NFL pregame refresh loop armed (%d-sec cadence during NFL season)",
+        _NFL_REFRESH_INTERVAL_SECONDS,
     )
     # ── 2026-07-28 late-night one-shot MLB refresh ────────────────────
     # If the server boots between 23:00–03:00 UTC (i.e. late West Coast
