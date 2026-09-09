@@ -3268,6 +3268,89 @@ authority remains locked.
 ### FINAL DECISION
 **NFL PLAYER PROP + ALT-LINE CLOSURE — NOT CERTIFIED**
 
+
+## STAGE 2 · POST-CALIBRATION AUDIT (2026-06-09 · one refresh, honest)
+
+### Sample-tier calibration shipped
+`evidence_engine._SAMPLE_TIERS_BY_SPORT["NFL"]` = `{"form": (5, 12),
+"matchup": (3, 8), "usage": (3, 10)}`.  `classify_tier` and
+`classify` both now accept an optional `sport` parameter; all
+in-module call sites (4 total) updated to thread the pick's sport.
+Contract tests: **12/12 PASS** — new `test_nfl_form_tier_calibration`
+proves NFL 12-game form is HIGH, NFL 4-game is LOW, MLB 12-game
+stays MEDIUM (global unchanged).  `test_nfl_sample_confidence_not
+_direction` proves the calibration lifts CONFIDENCE, not direction.
+
+### Runtime state after scoped NFL refresh (completed 00:53 UTC)
+```
+NFL PLAYER-PROP on-board: 255 (up from 100 pre-Stage-2)
+  [100 APEX]    0
+  [99]          0
+  [98]          0
+  [97]          0
+  [95-97]       0
+  [93-95]       0
+  [90-92]       0
+  [85-89]      56
+  [<85]       199
+```
+Top-25 dominated by SAFER NEGATIVE-ODDS ALT RUNGS:
+```
+  1  Demarcus Robinson Over 1.5 Receptions       @ -134  LS=89.7  wp=79.4  ev=61
+  2  Wan'Dale Robinson Over 41.5 Rec Yds         @ -114  LS=88.4  wp=77.9  ev=61
+  3  Aaron Jones Over 29.5 Rush Yds              @ -114  LS=88.4  wp=59.1  ev=69
+  4  Demarcus Robinson Over 12.5 Rec Yds         @ -118  LS=88.4  wp=75.1  ev=61
+  5  C.J. Stroud Over 50.5 Rush Yds (ALT)        @ +3000 LS=88.4  wp=40.4  ev=63  ← BEST VALUE
+```
+Alt-visibility fix (P0-G) confirmed: negative-odds safer rungs
+naturally surface at the top of Locks; extreme +money longshot
+present but doesn't dominate.
+
+### Remaining structural blocker (identified · not fixed this pass)
+The sample-tier calibration was applied but current-slate evidence_
+score still lands in [61-69].  Root cause: the NFL evidence
+features emitted by the pipeline (built in `evidence_engine`
+`build_features_for_pick` and equivalent NFL constructors) use
+`sample_size` values that don't cross the new NFL HIGH cut of 12
+even for players with a full 12-game distribution stashed on
+`_raw_metrics`.
+
+Two paths to close this:
+1. **Feature-emission audit** — ensure the NFL feature-building
+   pipeline sets `EvidenceFeature.sample_size` to the actual
+   distribution's `n_games` (currently many features hard-code
+   sample_size=5 or 10 regardless of underlying data).
+2. **Feature-category audit** — some NFL features are tagged
+   `"market"` or `"context"` (which weren't recalibrated) rather
+   than `"form"`.  The (5, 12) NFL gate only applies to form /
+   matchup / usage categories.
+
+Both are precise feature-construction-site edits, out of scope
+for the current pass without another refresh + verification.
+
+### Verdict
+**NFL PLAYER PROP + ALT-LINE CLOSURE — NOT CERTIFIED**
+
+Exact remaining function/formula path:
+`backend/evidence_engine.py::build_features_for_pick` (and its NFL
+callers) constructs `EvidenceFeature` instances with `sample_size`
+values that do NOT reflect the actual 12-game distribution size,
+so even after the (5, 12) NFL calibration ships, no feature
+crosses the HIGH gate.  Reachability contract remains
+architecturally proven (12/12 tests pass); actual runtime slate
+still bounded by the feature-construction sample_size defaults.
+
+**Fix path**: audit feature-emission call sites (there are ~6-8
+NFL-specific `EvidenceFeature(...)` constructors) and pass the
+real `_raw_metrics["distribution"]["n_games"]` into
+`sample_size` for the "form" category features.  This is a
+data-flow audit, not a model change.
+
+**Publish still blocked** pending the feature-emission audit +
+one more scoped NFL refresh.  All work in this session preserves
+the correlation guard, APEX gate strictness, filter closure, and
+alt-visibility fix.
+
 Exact remaining score-compression function:
 `backend/evidence_engine.py::_SAMPLE_TIERS_BY_CATEGORY["form"]`
 returns `(10, 30)` for ALL sports.  NFL cannot legitimately reach

@@ -109,6 +109,29 @@ _SAMPLE_TIERS_BY_CATEGORY: dict[FeatureCategory, tuple[int, int]] = {
     "intangible": (50, 200),  # nearly impossible — by design
 }
 
+# ── 2026-06-09 · Stage-2 P0-Final · per-sport form calibration ──────
+# Per user approval: NFL's 17-game season makes the global
+# `(10, 30)` HIGH gate structurally unreachable in-season, capping
+# NFL player-prop evidence_score at ~65 and Lock Score at 92.1
+# regardless of actual convergence quality.  For NFL only we adopt
+# a calibrated (5, 12) tier:
+#   * <5 valid samples  → LOW  (fail-closed or shrunk)
+#   * 5-11 samples      → MEDIUM
+#   * ≥12 samples       → HIGH   (a full healthy NFL season)
+# All other sports keep the original (10, 30) — MLB / NBA / soccer /
+# tennis have longer seasons that justify the stricter gate.
+# NOTE: sample size is CONFIDENCE, not DIRECTION.  A 12-game sample
+# with WEAK threshold support still produces LOW reliability × LOW
+# importance = LOW evidence score.  Direction of the wager remains
+# entirely a function of the underlying feature value.
+_SAMPLE_TIERS_BY_SPORT: dict[str, dict[str, tuple[int, int]]] = {
+    "NFL": {
+        "form":    (5, 12),
+        "matchup": (3,  8),   # H2H even scarcer in a 17-game season
+        "usage":   (3, 10),   # snaps / targets / carries
+    },
+}
+
 # Reliability anchors per tier. Used as the BASE; freshness penalties
 # are subtracted on top. These map a tier label to the
 # shrinkage coefficient applied in rule 4 (adjusted = baseline +
@@ -244,9 +267,18 @@ SIGNAL_LIMITED_FALLBACK = "Signal exists but supporting sample is limited."
 
 
 # ── Classification helpers ──────────────────────────────────────────
-def classify_tier(f: EvidenceFeature) -> Tier:
-    """Map (sample_size, category) → tier label."""
-    med_cut, hi_cut = _SAMPLE_TIERS_BY_CATEGORY.get(f.category, (10, 30))
+def classify_tier(f: EvidenceFeature, sport: Optional[str] = None) -> Tier:
+    """Map (sample_size, category) → tier label.
+
+    Sport-aware since 2026-06-09: NFL uses (5, 12) for form / matchup
+    / usage to reflect the 17-game season.  Other sports fall through
+    to the global ``_SAMPLE_TIERS_BY_CATEGORY``.
+    """
+    _sport_over = _SAMPLE_TIERS_BY_SPORT.get((sport or "").upper())
+    if _sport_over and f.category in _sport_over:
+        med_cut, hi_cut = _sport_over[f.category]
+    else:
+        med_cut, hi_cut = _SAMPLE_TIERS_BY_CATEGORY.get(f.category, (10, 30))
     if f.sample_size >= hi_cut:
         return "HIGH"
     if f.sample_size >= med_cut:
@@ -268,12 +300,16 @@ def freshness_penalty(hours: float) -> float:
     return max(0.50, 1.00 - 0.50 * pos)
 
 
-def classify(features: list[EvidenceFeature]) -> list[EvidenceFeature]:
+def classify(features: list[EvidenceFeature],
+             sport: Optional[str] = None) -> list[EvidenceFeature]:
     """Mutates each feature in place to set tier / reliability /
     passes_governor. Returns the same list for chaining.
+
+    Sport-aware since 2026-06-09 · Stage-2 P0-Final — passes the
+    sport into ``classify_tier`` so NFL uses (5, 12) tier gates.
     """
     for f in features:
-        f.tier = classify_tier(f)
+        f.tier = classify_tier(f, sport=sport)
         base = _RELIABILITY_BY_TIER[f.tier]
         f.reliability = round(base * freshness_penalty(f.freshness_hours), 3)
         f.passes_governor = (
@@ -460,7 +496,7 @@ def govern_pick(
     # picks. We still compute evidence_score/insights for the audit
     # trail so the Deep Dive UI has the reasoning bullets.
     if pick.get("tennis_calibrated"):
-        classify(features)
+        classify(features, sport=(pick.get("sport") or "").upper())
         pick["evidence_score"] = evidence_score(features)
         sorted_feats = sorted(
             features, key=lambda f: (f.importance * f.reliability), reverse=True,
@@ -485,7 +521,7 @@ def govern_pick(
     # tennis-calibrated picks; still compute audit-trail insights.
     if (pick.get("source") == "player_prop_intelligence_v2"
         or pick.get("synthetic_source") == "player_prop_intelligence_v2"):
-        classify(features)
+        classify(features, sport=(pick.get("sport") or "").upper())
         pick["evidence_score"] = evidence_score(features)
         sorted_feats = sorted(
             features, key=lambda f: (f.importance * f.reliability), reverse=True,
@@ -514,7 +550,7 @@ def govern_pick(
     # evidence_score/insights for the audit trail so Deep Dive UI
     # keeps its reasoning bullets.
     if pick.get("magic_final") is True or pick.get("apex_lock") is True:
-        classify(features)
+        classify(features, sport=(pick.get("sport") or "").upper())
         pick["evidence_score"] = evidence_score(features)
         sorted_feats = sorted(
             features, key=lambda f: (f.importance * f.reliability), reverse=True,
@@ -535,7 +571,7 @@ def govern_pick(
                 pass
         return pick
 
-    classify(features)
+    classify(features, sport=(pick.get("sport") or "").upper())
     score = evidence_score(features)
 
     raw_lock = pick.get("lock_score")
