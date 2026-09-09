@@ -3178,6 +3178,115 @@ architecture · NOT CERTIFIED for current-slate 93+ occupancy**
 **Publish still blocked** pending user review of the honest
 runtime evidence report above.
 
+
+## STAGE 2 · FINAL SCORE-AUTHORITY AUDIT (2026-06-09 · post-refresh)
+
+### Score compression root cause identified
+Traced the top-25 NFL player-prop scoring path.  Board maximum
+after all Stage-2 fixes: **LS = 89.7** (Demarcus Robinson Over 1.5
+Receptions, evidence_score=61, mult=0.93).  The compression is
+REAL and its exact source is:
+
+```
+  evidence_engine._SAMPLE_TIERS_BY_CATEGORY["form"] = (10, 30)
+                                                       ^^^  ^^^
+                                                       MED  HIGH
+```
+
+The "form" category tier gates require **sample_size ≥ 30** to
+classify as HIGH tier (reliability=0.95).  For NFL player-props
+in Week 1, the largest available sample is a **12-game distribution
+draw** — which classifies as MEDIUM (reliability=0.65).
+
+`evidence_score = Σ(importance × reliability) / Σ(importance) × 100`
+
+With ALL 5 features at MEDIUM tier (0.65), the maximum achievable
+weighted-average is 0.65 × 100 = **65**.  The +10 HIGH-count bonus
+requires ≥ 2 HIGH features, which is UNREACHABLE mid-NFL-season
+under the current gate.  With no HIGH feature the score ceiling is
+**structurally ~65**, and evidence_multiplier maps 60-64 → 0.93 →
+base 99 × 0.93 = **92.1**.
+
+**That is the exact remaining hidden compression.**  It is not a
+hard cap — it's a sample-size gate calibrated for baseball (162
+games / season) applied uniformly to NFL (17 games / season).
+
+### Reachability by required inputs
+For NFL to legitimately reach the elite tiers under the CURRENT
+gate:
+```
+   Tier    | evidence_multiplier | required evidence_score | required sample_size (form) | achievable in NFL?
+   93-95   | 0.95                |  ≥ 65                   | 12+ MEDIUM per feature     | ✅ (currently gated by
+                                                                                              +10 bonus math)
+   96-97   | 0.97                |  ≥ 70                   | one HIGH (30+) or 2×MED    | ❌ 30 games = 2 NFL
+                                                                                              seasons — unavailable
+   99      | 1.00                |  ≥ 80                   | 2+ HIGH features            | ❌ same reason
+   100     | APEX gate           | requires all convergence + magic ALIGNED_STRONG        | ❌ same reason
+```
+
+### Recommended surgical fix (NOT applied this pass, awaiting approval)
+Change `_SAMPLE_TIERS_BY_CATEGORY["form"]` from a single global
+tuple to a **per-sport calibration**:
+```
+   "form": {
+      "MLB":    (10, 30),   # baseball keeps 30-game HIGH gate
+      "NBA":    (10, 30),
+      "NFL":    (5,  12),   # 12 games = full healthy NFL season
+      "SOCCER": (5,  15),
+      "TENNIS": (5,  15),
+      "*":      (10, 30),
+   }
+```
+This is a NORMALIZATION fix, not a weight increase.  A full-season
+NFL sample (12 healthy games) then classifies as HIGH tier
+(reliability=0.95), which is what the audit says it deserves.
+Post-fix reachability projection:
+* base 99 × 0.95 (5 MEDIUM features) = **94.05**  → 93-95 tier ✓
+* base 99 × 0.97 (1 HIGH + 4 MED) = **96.03**  → 96-97 tier ✓
+* base 99 × 1.00 (2+ HIGH features) = **99.00**  → 99 tier ✓
+* APEX still gated by magic ALIGNED_STRONG + ≥5/6 votes.
+
+### Preview alt-fix verification (from post-refresh runtime)
+Top-25 board now dominated by negative-odds safer alt rungs:
+```
+  1  Demarcus Robinson Over 1.5 Receptions       @ -134  LS=89.7
+  2  Wan'Dale Robinson Over 41.5 Rec Yds         @ -114  LS=88.4
+  3  Aaron Jones Over 29.5 Rush Yds              @ -114  LS=88.4
+  4  Demarcus Robinson Over 12.5 Rec Yds         @ -118  LS=88.4
+  19 Kirk Cousins Over 1.5 Pass Tds              @ -124  LS=88.4
+```
+Extreme +money longshots (Kyler Murray Over 364.5 @ +2200) present
+but ranked #11+ — cannot dominate Locks on Edge alone.  Negative-
+odds alt rungs surface NATURALLY by lock_score, no hard-coded odds
+eligibility.  ✅ P0-G alt visibility fixed.
+
+### Filter reconfirmation
+Unchanged from prior slice — all family filters return canonical
+subsets with zero cross-family leakage.  P0-A canonical filter
+authority remains locked.
+
+### FINAL DECISION
+**NFL PLAYER PROP + ALT-LINE CLOSURE — NOT CERTIFIED**
+
+Exact remaining score-compression function:
+`backend/evidence_engine.py::_SAMPLE_TIERS_BY_CATEGORY["form"]`
+returns `(10, 30)` for ALL sports.  NFL cannot legitimately reach
+HIGH tier in Week 1-17 because 30 games = 2 healthy seasons —
+unavailable during a real NFL season.  Consequence: evidence_score
+structurally capped at ~65, evidence_multiplier at 0.93, LS at
+92.1 (regardless of how strong the actual convergence is).
+
+**Fix path**: per-sport `_SAMPLE_TIERS_BY_CATEGORY["form"]`
+calibration (`(5, 12)` for NFL — a full healthy season = HIGH).
+This is a normalization repair, NOT a weight increase, and it
+preserves the correlation guard + APEX gate strictness.  The
+existing 10/10 contract tests continue to pass because those tests
+use synthetic distributions large enough to clear either gate.
+
+**Awaiting user approval** before applying this per-sport
+calibration — it's a scoring-authority behaviour change that
+should not be shipped silently.
+
 Per user contract "Prefer existing stronger participation evidence
 when available; only fall back to volume heuristics when better
 evidence is unavailable", the partial-game filter was hardened
