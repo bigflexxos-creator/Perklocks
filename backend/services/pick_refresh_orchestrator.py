@@ -1502,12 +1502,92 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         # lock_score / edge / alt_edge_cap / etc.) can insert cleanly.
         # Rows whose ids are NOT in ``seen_ids`` keep the shield
         # (unrelated previously-published picks stay protected).
+        #
+        # ── 2026-06-25 · STAGE-2 FINAL CANONICAL TRUTH CHECK ──────
+        # Add the narrow distinction the canonical publication
+        # contract implies but the shield never enforced:
+        #   HISTORICAL / SETTLED / FROZEN truth  = IMMUTABLE
+        #   CURRENT pregame · unsettled · non-frozen = REFRESHABLE
+        # A pregame row whose `event_id` (or `event` name) is
+        # touched by THIS refresh cycle must be delete-eligible
+        # even if the current pipeline emitted a DIFFERENT `id` for
+        # that event — otherwise the older evidence model's rungs
+        # (e.g. Burrow Over 174.5 chalk clones from the pre-fix
+        # pass) silently outlive the model change and block the
+        # new distribution-driven candidates.  Settled and frozen
+        # rows are still shielded — historical truth stays.
+        _touched_events: set = set()
+        _touched_event_ids: set = set()
+        for _rp in _classify_source:
+            if not isinstance(_rp, dict):
+                continue
+            _ev = _rp.get("event")
+            if isinstance(_ev, str) and _ev.strip():
+                _touched_events.add(_ev.strip())
+            _eid = _rp.get("event_id") or _rp.get("betmgm_event_id") or \
+                    _rp.get("fanduel_event_id") or _rp.get("draftkings_event_id")
+            if isinstance(_eid, str) and _eid.strip():
+                _touched_event_ids.add(_eid.strip())
+            # `external_id` embeds the odds-event hash between the
+            # sport prefix and the market key — parse it out so a
+            # refresh that produced picks for an event whose event
+            # name string differs (rebranding / typo) still counts.
+            _xid = _rp.get("external_id")
+            if isinstance(_xid, str) and _xid.count("-") >= 3:
+                _parts = _xid.split("-")
+                # Format: {SPORT}-{ODDS_EVENT_HASH}-{MK}-…
+                if len(_parts) >= 3 and _parts[1]:
+                    _touched_event_ids.add(_parts[1])
+        # Refreshable-pregame branch: any row whose event was touched
+        # by THIS cycle AND which is not settled AND not frozen is
+        # eligible for wipe.  Uses `$or` on the identifier fields so
+        # both `event` (string) and `event_id`/`external_id` forms
+        # match.
+        _refreshable_pregame_terms: list = []
+        if _touched_events:
+            _refreshable_pregame_terms.append(
+                {"event": {"$in": list(_touched_events)}}
+            )
+        if _touched_event_ids:
+            _refreshable_pregame_terms.append(
+                {"event_id": {"$in": list(_touched_event_ids)}}
+            )
+            # external_id starts with `{SPORT}-{HASH}-…` — regex over
+            # touched hashes so we catch rows written before
+            # event_id was populated.
+            import re as _re
+            _touched_hash_re = "|".join(_re.escape(h) for h in _touched_event_ids)
+            _refreshable_pregame_terms.append(
+                {"external_id": {"$regex": f"^[^-]+-({_touched_hash_re})-"}}
+            )
+        _refreshable_pregame_clause: dict = {}
+        if _refreshable_pregame_terms:
+            _refreshable_pregame_clause = {"$and": [
+                # Must belong to a touched event
+                {"$or": _refreshable_pregame_terms},
+                # Not settled (no outcome yet)
+                {"$or": [{"settled_at": {"$in": [None, ""]}},
+                          {"settled_at": {"$exists": False}}]},
+                {"$or": [{"outcome":    {"$in": [None, ""]}},
+                          {"outcome":    {"$exists": False}}]},
+                # Not explicitly frozen
+                {"$or": [{"frozen_at":  {"$in": [None, ""]}},
+                          {"frozen_at":  {"$exists": False}}]},
+                {"$or": [{"immutable_snapshot_at":
+                              {"$in": [None, ""]}},
+                          {"immutable_snapshot_at":
+                              {"$exists": False}}]},
+            ]}
         _publication_shield = {"$or": [
             {"publication_source": {"$in": [None, "", False]}},
             {"publication_source": {"$exists": False}},
             # Exempt rows re-emitted this cycle — they will be
             # replaced with fresh canonical output immediately below.
             {"id": {"$in": list(seen_ids)}} if seen_ids else {"_id_": "never"},
+            # 2026-06-25 refreshable-pregame exemption — see block
+            # above.  Historical/settled/frozen rows remain shielded.
+            _refreshable_pregame_clause if _refreshable_pregame_clause
+                else {"_id_": "never"},
         ]}
         # Fail-safe: never wipe healthy rows when the refresh produced
         # nothing (execution failure / provider outage / cache miss).
