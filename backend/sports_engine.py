@@ -7620,9 +7620,23 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 except Exception:
                     pass
         # ── 2026-06-09 · Stage-2 P0-J · BEST-LOCK / BEST-VALUE tagging ─
-    # (moved out of the modeling loop; runs ONCE after all picks
-    # have been collected — see post-loop stamping below.)
-    picks.append(new_pick)
+        # (moved out of the modeling loop; runs ONCE after all picks
+        # have been collected — see post-loop stamping below.)
+        #
+        # ── 2026-06-25 · ALT-LADDER 60→1 COLLAPSE FIX ────────────
+        # `picks.append(new_pick)` had been left at 4-space indent
+        # after a prior refactor, so it fired ONCE after the whole
+        # modeling loop finished — using ONLY the LAST iteration's
+        # `new_pick`.  Every preceding alt rung (59 of 60 in the
+        # Maye/Darnold Pass Yds ladder) was silently dropped even
+        # though `_build_pick` had already returned a valid pick.
+        # Restored to the correct 8-space (in-loop) indent so every
+        # scored rung enters the picks list.  Guarded on
+        # `new_pick is not None` — a soft None from `_build_pick`
+        # (e.g. edge-floor rejection for non-NFL, mp validation)
+        # still skips cleanly.
+        if new_pick is not None:
+            picks.append(new_pick)
     # Tag every Under pick so the main Locks feed can exclude them and the
     # dedicated "Under of the Day" tab can surface them. Anything where the
     # bettor needs the line to go UNDER (Totals, Game Total, alt-prop totals)
@@ -7695,25 +7709,45 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         if "rushing yards" in m_l or "rush yds" in m_l:      return "RUSH_YDS"
         if "receiving yards" in m_l or "reception yds" in m_l: return "REC_YDS"
         if "receptions" in m_l:     return "REC"
+        if "pass completions" in m_l or "passing completions" in m_l: return "PASS_CMP"
+        if "pass attempts" in m_l or "passing attempts" in m_l:       return "PASS_ATT"
+        if "rush attempts" in m_l or "rushing attempts" in m_l:       return "RUSH_ATT"
         if "pass tds" in m_l or "passing tds" in m_l: return "PASS_TDS"
         if "rush tds" in m_l or "rushing tds" in m_l: return "RUSH_TDS"
+        if "receiving tds" in m_l or "rec tds" in m_l: return "REC_TDS"
         if "goal scorer" in m_l:    return "GOAL"
         return ""
 
     def _prop_key(pk: dict) -> tuple:
+        # ── 2026-06-25 · Stage-Fix ALT-LADDER COLLAPSE ────────────
+        # `_prop_market_label` writes the label with a **lowercase**
+        # side ("over 149.5 Player Pass Yds"), while earlier
+        # pipeline stages capitalized it ("Over 149.5 …").  The old
+        # case-sensitive delim check + regex both failed on
+        # lowercase labels: `player_hint=None` → this pick fell
+        # into `prop_unkeyed` (harmless), OR the regex matched
+        # `Over`/`Under` inside a downstream-capitalized label but
+        # missed the mixed-case ladder → all rungs collapsed to
+        # `(player, family, None)` and only ONE alt rung per
+        # (player, family) survived the dedupe.  Fix: match
+        # case-insensitively.  Unique lines still produce unique
+        # keys; contradiction pairs (Over/Under at the SAME line)
+        # still collapse to one row as intended.
         m = pk.get("market") or ""
+        m_lower = m.lower()
         fam = _prop_family(m)
         if not fam:
             return None
         player_hint = None
-        for delim in (" (", " Over ", " Under "):
-            if delim in m:
-                player_hint = m.split(delim, 1)[0].strip()
+        for delim in (" (", " over ", " under "):
+            _idx = m_lower.find(delim)
+            if _idx >= 0:
+                player_hint = m[:_idx].strip()
                 break
         if not player_hint:
             return None
         import re
-        _m = re.search(r"(?:Over|Under)\s+(\d+\.?\d*)", m)
+        _m = re.search(r"(?:Over|Under)\s+(\d+\.?\d*)", m, flags=re.IGNORECASE)
         line_hint = float(_m.group(1)) if _m else None
         return (player_hint.lower(), fam, line_hint)
 
