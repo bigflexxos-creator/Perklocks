@@ -7161,10 +7161,16 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 # No artificial lift on the low end — an honest factor
                 # mean of 0.32 must stay at 0.32 (violates policy P8
                 # otherwise: "Do NOT manufacture positive edge").  The
-                # upper 0.97 cap prevents a factor-set collapse to
-                # numerical certainty; the lower 0.05 cap is a
+                # upper 0.99 cap prevents a factor-set collapse to
+                # numerical certainty; the lower 0.02 cap is a
                 # defensive floor against pathological zero rows only.
-                mp = max(0.05, min(0.97, _cal_mp))
+                # 2026-06-25 · raised from 0.97 → 0.99 so the exact-
+                # wager reliability_cap `60 + WP × 40` can reach 99.6
+                # (clamped to 99 by NON_APEX_HARD_CAP) when the
+                # feature engine legitimately produces convergent
+                # near-certain evidence.  APEX 100 remains separate
+                # via `apex_gate.evaluate_apex`.
+                mp = max(0.02, min(0.99, _cal_mp))
                 # ── 2026-06-09 · fail-closed clearance ────────────────
                 # Real independent factor mean replaced the book-implied
                 # seed — the pick has legitimate model authority.
@@ -7184,7 +7190,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 _p_hat = factors.get("__rung_p_hat")
                 if isinstance(_p_hat, (int, float)) and 0.0 < _p_hat < 1.0:
                     _blended = 0.60 * float(_p_hat) + 0.40 * _cal_mp
-                    mp = max(0.05, min(0.97, _blended))
+                    mp = max(0.02, min(0.99, _blended))
         # ── Phase 2A.5 DEFECT #4 (2026-08) ─────────────────────────────
         # Elite-scorer factor manipulation (+10 %) and forced Lock Score
         # floor (88.0) RETIRED.  No player receives an artificial Lock
