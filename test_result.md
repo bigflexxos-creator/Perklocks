@@ -129,6 +129,41 @@ None for Phase 1. Explicit deferrals per user directive:
 ### STOP
 No further phases executed per user directive.
 
+## ITERATION 138 — NFL 4-Closure Backend Verification (2026-06)
+
+### Focus (this iteration = TESTING ONLY, no code changes)
+Verify backend certification of the 4 recently completed NFL closures:
+
+1. **ATD Part B (xTD V2)** — `nfl_atd_engine.py` split-lambda Poisson model deployed as champion; multi-stat-block TD history aggregation fixed (SUM not MAX).
+2. **Auto-Ingest** — `refresh_nfl_weekly` deferred startup task in `server.py` populates `nfl_player_weekly` from 2019 → current.
+3. **Star Player 93-99 Root Closure** — Canonical name resolution merges variants (A.J. Brown, AJ Brown, Jaxon Smith-Njigba, JSN, etc.); Lock Score `edge_percent <= 0` cap removed in `sports_engine.py` + `services/magic/lock_score_integrator.py`; `__rung_p_hat` emitted for exact-threshold authority.
+4. **Alt-Ladder Truth** — `_prop_market_label` in `sports_engine.py` displays NFL integer-alt markets as `N+ [Market]` (e.g. `15+ Receiving Yards`) while backend settlement retains `.5` threshold.
+
+### Test tasks (backend only)
+- `GET /api/picks/today?sport=NFL` returns 200 with `pick_date` and non-empty picks list.
+- Backend logs contain no NFL engine tracebacks in last startup cycle.
+- ATD picks present in NFL slate expose `xtd_v2` or `atd_engine_version` provenance (via targeted script `scripts/nfl_pick_trace.py`).
+- Star-player rows (Drake Maye, A.J. Brown, JSN) not filtered out by canonical resolver — check with `scripts/nfl_pick_trace.py`.
+- Alt-ladder integer markets present raw `.5` line in settlement fields but display `N+` in `market_label` (regression test: `tests/test_nfl_alt_ladder_truth.py`).
+- Lock Score distribution: NFL player props with WP ≥ 0.825 and evidence_score ≥ 65 can reach LS ≥ 93 (no artificial cap).
+- Focused pytest sweep: `tests/test_nfl_alt_ladder_truth.py`, `tests/test_iter137_nfl_alt_surgical_closure.py`, `tests/test_nfl_alt_ladder_full_emission.py`, `tests/test_nfl_atd_leaderboard_routing_fix.py`.
+
+### Test priority
+`high_first` — Certify each of the 4 closures independently, then joint runtime check on `/api/picks/today?sport=NFL`.
+
+### DO NOT MODIFY (frozen contract from prior session)
+- Exact-threshold probability (`__rung_p_hat`)
+- 85/15 rung/factor blend
+- Lock Score 93-99 authority
+- Star-player identity/aliasing
+- ATD V2 engine
+- Alt-ladder display formatter (`_prop_market_label` in `sports_engine.py`)
+
+### Credentials
+Demo: `demo@lockscore.ai` / `demo123`
+
+
+
 #
 # 2. Incorporate User Feedback:
 #    - When a user provides feedback that something is or isn't working, add this information to the relevant task's status_history

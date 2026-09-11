@@ -5701,7 +5701,8 @@ def _team_abbr(team_name: str) -> str:
     return (parts[-1][:3] if parts else team_name[:3]).upper()
 
 
-def _prop_market_label(market_key: str, side: str, point: float | None) -> str:
+def _prop_market_label(market_key: str, side: str, point: float | None,
+                       sport: str | None = None) -> str:
     # Anytime goal scorer has no point — just "Yes" the player scores at all.
     if market_key == "player_goal_scorer_anytime":
         return "Anytime Goal Scorer"
@@ -5726,6 +5727,57 @@ def _prop_market_label(market_key: str, side: str, point: float | None) -> str:
         "player_points": "Points", "player_rebounds": "Rebounds",
         "player_assists": "Assists",
     }.get(base_key, base_key.replace("_", " ").title())
+
+    # ─────────────────────────────────────────────────────────────
+    # NFL REAL ALT-LADDER TRUTH CLOSURE (2026-06-10 · P0-D / P0-J)
+    # ─────────────────────────────────────────────────────────────
+    # Convert alt-line OVER wagers on integer-valued NFL stats from
+    # raw-provider form ("Over 14.5 Player Reception Yds  · ALT LOCK")
+    # into sportsbook-milestone form ("15+ Receiving Yards").
+    #
+    # Rules:
+    #   * Applies ONLY to sport == "NFL"
+    #   * Applies ONLY to alt markets (`_alternate` suffix)
+    #   * Applies ONLY when side is OVER (Under alts stay half-yard)
+    #   * Applies to yards families + reception counts + attempts
+    #     + completions + rush attempts (all integer-valued)
+    #   * Preserves the raw threshold internally — the settlement /
+    #     grading path continues to read the exact `point` field
+    #     (14.5, 199.5, etc.).  Only the human-readable label is
+    #     converted.
+    #   * Main lines stay in "Over N.5 …" form (per P0-D).
+    # Downstream identity keys / dedupe use ``line`` / ``point``,
+    # NOT this label — so the display change is decorative-only.
+    _nfl_yard_families = {
+        "player_pass_yds": "Passing Yards",
+        "player_rush_yds": "Rushing Yards",
+        "player_reception_yds": "Receiving Yards",
+        "player_receptions": "Receptions",
+        "player_pass_attempts": "Passing Attempts",
+        "player_pass_completions": "Passing Completions",
+        "player_rush_attempts": "Rushing Attempts",
+        "player_pass_tds": "Passing TDs",
+    }
+    if (
+        sport
+        and str(sport).upper() == "NFL"
+        and is_alt
+        and str(side).lower() == "over"
+        and isinstance(point, (int, float))
+        and base_key in _nfl_yard_families
+    ):
+        # Sportsbook milestone: floor(point)+1 handles both half-lines
+        # (14.5 → 15, 199.5 → 200) AND integer points (14 → 15) — an
+        # OVER wager on any integer stat wins when the result exceeds
+        # ``point`` (i.e. ``result >= floor(point) + 1``).
+        try:
+            import math as _math
+            milestone = int(_math.floor(float(point)) + 1)
+        except (TypeError, ValueError):
+            milestone = None
+        if milestone is not None and milestone > 0:
+            return f"{milestone}+ {_nfl_yard_families[base_key]}"
+
     label = f"{side} {point} {pretty}"
     return f"{label}  · ALT LOCK" if is_alt else label
 
@@ -7447,7 +7499,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             # `side` carries the method string (KO/TKO, Submission, Decision).
             market_label = f"{player} wins by {side}"
         else:
-            market_label = f"{player} {_prop_market_label(mk, side, label_point)}"
+            market_label = f"{player} {_prop_market_label(mk, side, label_point, sport=sport)}"
 
         # Tag MLB props with the player's team so users can disambiguate
         # name-collision players (Max Muncy LAD vs Max Muncy OAK, etc.).

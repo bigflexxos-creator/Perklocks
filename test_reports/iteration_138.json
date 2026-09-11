@@ -1,0 +1,67 @@
+{
+  "summary": "NFL 4-closure certification sweep on live backend. 5 of 7 verification items pass; 1 CRITICAL failure (alt-ladder display parity) and 1 real pytest failure. Pytest overall: 27 passed / 4 failed (1 real product behavior, 3 test-scaffolding motor/asyncio loop bugs). Auth OK (demo@lockscore.ai/demo123), /api/picks/today?sport=NFL&lite=true returns 200 with 908 NFL picks and valid per-pick pick_date=2026-09-11, ATD leaderboard reachable with V2 engine provenance, nfl_player_weekly deferred ingest hydrated (129,808 docs, seasons 2019-2026), Lock Score cap correctly removed (108 picks with edge_percent<=0 still carry LS>90). CRITICAL: 801/801 NFL alt-lock picks emitted from /api/picks/today still show raw provider label 'Over N.5 Player X · ALT LOCK' instead of required 'N+ [Market]' format — _prop_market_label unit tests pass in isolation (14/14) but the wiring from publisher → pick.market field is not calling it (or is_alt flag not propagating). Star-player canonical name check inconclusive (A.J. Brown / JSN not in today's live slate). NO CODE CHANGES MADE per directive.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/picks/today?sport=NFL&lite=true",
+        "issue": "Alt-ladder display truth NOT applied end-to-end. All 801 NFL alt-lock picks carry raw label 'Over N.5 Player X Yds  · ALT LOCK' instead of the required 'N+ [Market]' milestone form (e.g. 'Cade Otton Over 14.5 Player Reception Yds  · ALT LOCK' should be '15+ Receiving Yards'). _prop_market_label unit tests all pass (14/14), so the formatter is correct — but the publish pipeline is not invoking it (or is_alt/side flags not set) when writing pick.market. Verified via scripts/nfl_alt_ladder_truth_probe.py which shows every published alt-line row with alt=False and raw label. Reference: backend/sports_engine.py:5704 (_prop_market_label) — confirm callers pass sport='NFL', side='over', point=<line>, market_key ending in '_alternate'.",
+        "priority": "CRITICAL"
+      },
+      {
+        "endpoint": "pytest tests/test_iter137_nfl_alt_surgical_closure.py::TestTrapChalkFlags::test_49_trap_chalk_alts_carry_expected_flags",
+        "issue": "Only 1/67 trap-chalk alts carry the 4 required flags (alt_edge_cap_applied + apex_status=NOT_APEX + apex_lock=False + correct apex_reason). Sample failing pick: 'Christian McCaffrey Over 24.5 Player Rush Yds  · ALT LOCK' edge=0.0 pre_elite=98.9 lock_score=97.9 apex=NOT_APEX cap_reason=nfl_alt_edge_not_positive:0.00pct_no_elite_authority. NOTE: This test appears STALE relative to closure #3 (Lock Score edge_percent<=0 cap removal). LS=97.9 on edge=0.0 is consistent with the new closure (cap removed), so the assertion 'alt_edge_cap_applied=True' now conflicts with the current design. Main-agent decision needed: either the test contract needs updating, or the closure inadvertently disabled the flag emission on trap-chalk rows.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "pytest tests/test_iter137_nfl_alt_surgical_closure.py (3 tests)",
+        "issue": "3 tests fail with 'RuntimeError: got Future attached to a different loop' — motor async cursor iterated inside a fresh event loop while the AsyncIOMotorClient was bound to a different loop. Not a product bug — test-scaffolding bug. Tests: test_trap_chalk_all_have_nonpositive_edge_and_capped_lock_score, test_positive_edge_nfl_alts_have_no_cap_flag, test_nfl_alt_ladder_monotone_and_odds_present. Fix pattern: build the AsyncIOMotorClient inside the same loop that runs run_until_complete (or use pytest-asyncio fixtures)."
+      },
+      {
+        "endpoint": "tests/test_iter137_nfl_alt_surgical_closure.py, tests/test_nfl_atd_leaderboard_routing_fix.py",
+        "issue": "Both hard-crash at import-time on KeyError: 'EXPO_PUBLIC_BACKEND_URL' because they use os.environ[...] with no fallback. Backend .env is populated but the pytest process env is not seeded. Suggest either load_dotenv('/app/frontend/.env') or fall back to a local http://localhost:8001. Manual workaround used in this run: export EXPO_PUBLIC_BACKEND_URL before pytest."
+      },
+      {
+        "endpoint": "ATD picks in db.picks",
+        "issue": "Inconsistent version tags: v2_engine_version='1.0.0' AND model_version='legacy_unknown' on same document. atd_evidence.source='nfl_atd_engine' confirms V2 is producing the pick, but the legacy model_version label survives from an earlier writer path. Not a functional failure — provenance still tracks V2 — but the mixed tag is confusing for downstream analytics."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/pytest/iter138_nfl_cert.xml",
+    "/app/backend/tests/test_nfl_alt_ladder_truth.py",
+    "/app/backend/tests/test_iter137_nfl_alt_surgical_closure.py",
+    "/app/backend/tests/test_nfl_alt_ladder_full_emission.py",
+    "/app/backend/tests/test_nfl_atd_leaderboard_routing_fix.py",
+    "/app/backend/scripts/nfl_alt_ladder_truth_probe.py"
+  ],
+  "action_items": [
+    "CRITICAL: Wire _prop_market_label into the /api/picks/today publisher path for NFL alt markets. Unit tests pass but production picks still carry raw 'Over N.5 Player X Yds · ALT LOCK' — investigate where the pick.market string is composed for lite payload emission and ensure sport='NFL', is_alt=True (market_key.endswith('_alternate')), side='over' propagate to _prop_market_label. Probe evidence: db.picks rows show `alt=False` on rows whose market suffix is `· ALT LOCK` — the alt marker itself is not being set on the persisted row.",
+    "Triage test_iter137_nfl_alt_surgical_closure.py::TestTrapChalkFlags::test_49_trap_chalk_alts_carry_expected_flags — decide whether the trap-chalk flag emission should still fire under the LS-cap-removal closure. If yes, restore flag emission; if no, update test expectations.",
+    "Fix motor asyncio loop-binding in 3 iter137 tests (build AsyncIOMotorClient inside the run_until_complete loop or migrate to @pytest.mark.asyncio).",
+    "Add EXPO_PUBLIC_BACKEND_URL fallback in test_iter137_nfl_alt_surgical_closure.py and test_nfl_atd_leaderboard_routing_fix.py so pytest runs cleanly without manual env export.",
+    "Reconcile ATD pick document tags — either drop legacy model_version='legacy_unknown' or set it to 'v2' when v2_engine_version is present."
+  ],
+  "critical_code_review_comments": [
+    "backend/sports_engine.py:5704 _prop_market_label — logic is correct and tested in isolation, but appears unreferenced by the /api/picks/today lite publisher for player-prop alts. Verify callsites in the emission pipeline.",
+    "sports_engine.py is 9986 lines — recommend splitting the label/formatter helpers into a services/labels/ module.",
+    "test files hard-code os.environ[...] without defaults — brittle collection failures."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "71% (27/31 pytest + 5/7 verification items)",
+    "frontend": "N/A (backend-only sweep per directive)"
+  },
+  "seed_data_creation": "None. Verification-only sweep. Auth used pre-existing demo@lockscore.ai/demo123 credential.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Set EXPO_PUBLIC_BACKEND_URL=https://canonical-parity.preview.emergentagent.com in shell before pytest, or the two iter137 & atd-routing suites crash at collection. Live NFL slate as of this run: 908 NFL picks under pick_date=2026-09-11 (Ravens@Colts, KC vs SEA, etc.). ATD leaderboard endpoint is /api/nfl/atd/leaderboard (needs bearer). Alt-ladder truth probe: scripts/nfl_alt_ladder_truth_probe.py works out-of-box (no env needed). nfl_player_weekly collection is hydrated for seasons 2019-2026 (129,808 docs).",
+  "rca_of_issue": "PRIMARY BUG — Alt-ladder display parity: _prop_market_label (sports_engine.py:5704-5782) is correctly implemented and 14/14 unit tests pass, but production /api/picks/today?sport=NFL&lite=true returns 801/801 alt-lock picks with pick.market = raw provider string ('Over N.5 Player X Yds · ALT LOCK'). Two candidate root causes: (a) the publisher composing pick.market is bypassing _prop_market_label for player-prop alts (a separate code path from the goalscorer/first_td players formatter around line 7502), or (b) the market_key seen by the formatter does not end with '_alternate' at publish time (the probe shows `alt=False` on the emitted row), so the guard `if is_alt` never triggers. RECOMMENDED PROBE: grep sports_engine.py for the exact writer of pick.market on the lite path and log the market_key + is_alt at that call. This is a wiring/plumbing gap, not a formatter defect — DO NOT modify _prop_market_label itself. SECONDARY — TrapChalk flag test failure: LS cap removal closure (#3) was applied but the alt_edge_cap_applied flag emission (test_iter137 requirement) may have been dropped as a side-effect. Confirm intent with prior main-agent before code changes."
+}
