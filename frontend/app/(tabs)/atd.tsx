@@ -1,15 +1,19 @@
 /**
- * NFL Anytime-Touchdown (ATD) slate screen.
+ * NFL Anytime-Touchdown (ATD) slate screen — MLB HR-style experience.
  *
- * 2026-06-25 · restructured to match the MLB HR presentation pattern
- * with one CRITICAL difference: the Top 5 has NO per-game
- * diversification quota (see comment on `topFive` below).  Both
- * SECTION 1 · TOP 5 and SECTION 2 · BY GAME are rendered on ONE
- * scrolling screen — no toggle.  Picks that appear in Top 5 are
- * excluded from BY GAME so the two sections never duplicate.
+ * 2026-06-11 · Restructured per user directive to mirror MLB HR PICKS:
+ *  • Two view modes toggled at the top:
+ *      🔥 TOP 5 TODAY  — true five highest-ranked ATD wagers across
+ *                        the whole active slate.
+ *      📋 BY GAME       — ATD candidates grouped by canonical matchup.
+ *  • BY GAME is backed by /api/nfl/atd/by-game so the "one player =
+ *    one ATD score" invariant is preserved (identical tie-breaking to
+ *    the global leaderboard).
+ *  • Real sportsbook ATD odds surfaced when a canonical publication
+ *    row exists. Never synthesised.
  *
- * Backed by /api/nfl/atd/leaderboard which returns picks already
- * ranked by td_probability across the slate.
+ * The canonical NFL ATD pipeline (nfl_atd_engine + xTD v2 + Bayesian
+ * shrinkage) is UNCHANGED — this screen is a READ-only UX rewrite.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -19,11 +23,19 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { api, type NFLAtdLeaderboardResponse, type NFLAtdPick } from "@/src/lib/api";
+import {
+  api,
+  type NFLAtdLeaderboardResponse,
+  type NFLAtdByGameResponse,
+  type NFLAtdByGameGroup,
+  type NFLAtdPick,
+} from "@/src/lib/api";
 import { COLORS } from "@/src/theme";
 import { SkeletonList } from "@/src/components/Skeleton";
 import { EmptyState } from "@/src/components/EmptyState";
 import { safeBack } from "@/src/utils/safeBack";
+
+type ViewMode = "topDay" | "byGame";
 
 function gradeForProb(p: number): string {
   if (p >= 0.70) return "A+";
@@ -45,23 +57,17 @@ function oppRatingChip(r: string): { bg: string; fg: string; label: string } {
   return                  { bg: "rgba(239, 68, 68, 0.18)",   fg: "#fca5a5", label: "LOW OPP" };
 }
 
-/** Canonical game key from (team, opponent) — matches the pair regardless of home/away. */
-function gameKey(pick: NFLAtdPick): string {
-  const a = (pick.team || "").trim();
-  const b = (pick.opponent || "").trim();
-  if (!b) return a || "unknown";
-  return [a, b].sort().join(" @ ");
-}
-function gameTitle(pick: NFLAtdPick): string {
-  const t = (pick.team || "").trim();
-  const o = (pick.opponent || "").trim();
-  if (!o) return t || "TBD";
-  return `${t} vs ${o}`;
+/** Format American odds → "+150" / "-210". Returns "" when missing. */
+function fmtOdds(o?: number | null): string {
+  if (o === null || o === undefined || !Number.isFinite(o)) return "";
+  return o > 0 ? `+${Math.round(o)}` : `${Math.round(o)}`;
 }
 
-function PickCard({ pick, rank, hideRank = false }: { pick: NFLAtdPick; rank: number; hideRank?: boolean }) {
+function PickCard({ pick, rank, hideRank = false }:
+                  { pick: NFLAtdPick; rank: number; hideRank?: boolean }) {
   const grade = gradeForProb(pick.td_probability);
   const opp = oppRatingChip(pick.opportunity_rating);
+  const oddsStr = fmtOdds(pick.book_odds);
   return (
     <View style={styles.card}>
       <View style={styles.headerRow}>
@@ -76,6 +82,7 @@ function PickCard({ pick, rank, hideRank = false }: { pick: NFLAtdPick; rank: nu
           </Text>
           <Text style={styles.sub}>
             {pick.team}{pick.opponent ? ` vs ${pick.opponent}` : ""}
+            {pick.position ? ` · ${pick.position}` : ""}
           </Text>
         </View>
         <View style={{ alignItems: "flex-end" }}>
@@ -88,16 +95,25 @@ function PickCard({ pick, rank, hideRank = false }: { pick: NFLAtdPick; rank: nu
         <View style={[styles.metaChip, { backgroundColor: opp.bg, borderColor: opp.fg + "40" }]}>
           <Text style={[styles.metaText, { color: opp.fg }]}>{opp.label}</Text>
         </View>
-        <View style={styles.metaChip}>
-          <Text style={styles.metaText}>
-            {pick.weighted_touches_recent.toFixed(1)} touches
-          </Text>
-        </View>
-        <View style={styles.metaChip}>
-          <Text style={styles.metaText}>
-            {pick.weighted_tds_recent.toFixed(1)} recent TD
-          </Text>
-        </View>
+        {oddsStr ? (
+          <View style={[styles.metaChip, styles.oddsChip]}>
+            <Text style={styles.oddsText}>ATD {oddsStr}</Text>
+          </View>
+        ) : null}
+        {typeof pick.weighted_touches_recent === "number" && (
+          <View style={styles.metaChip}>
+            <Text style={styles.metaText}>
+              {pick.weighted_touches_recent.toFixed(1)} touches
+            </Text>
+          </View>
+        )}
+        {typeof pick.weighted_tds_recent === "number" && (
+          <View style={styles.metaChip}>
+            <Text style={styles.metaText}>
+              {pick.weighted_tds_recent.toFixed(1)} recent TD
+            </Text>
+          </View>
+        )}
       </View>
 
       {pick.reasons && pick.reasons.length > 0 && (
@@ -113,18 +129,24 @@ function PickCard({ pick, rank, hideRank = false }: { pick: NFLAtdPick; rank: nu
 
 export default function NFLAtdScreen() {
   useRouter();
-  const [data, setData] = useState<NFLAtdLeaderboardResponse | null>(null);
+  const [top, setTop] = useState<NFLAtdLeaderboardResponse | null>(null);
+  const [byGame, setByGame] = useState<NFLAtdByGameResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<ViewMode>("topDay");
 
   const load = useCallback(async () => {
     try {
       setError(null);
-      // Pull a wide window (60) so BY GAME sections have material even
-      // after the true Top 5 are lifted out.
-      const res = await api.nflAtdLeaderboard(60, 0.30, "med");
-      setData(res);
+      // Fire BOTH endpoints in parallel — they hit the same canonical
+      // NFL ATD publication rows so scores/odds match across views.
+      const [tRes, gRes] = await Promise.all([
+        api.nflAtdLeaderboard(60, 0.10, "low"),
+        api.nflAtdByGame(5, 0.05, "low"),
+      ]);
+      setTop(tRes);
+      setByGame(gRes);
     } catch (e: any) {
       setError(e?.message || "Failed to load ATD board");
     } finally {
@@ -140,45 +162,35 @@ export default function NFLAtdScreen() {
     load();
   }, [load]);
 
-  const picks: NFLAtdPick[] = useMemo(() => data?.picks ?? [], [data]);
-
-  // ── TRUE Top 5 · NO per-game diversification ──────────────────
-  // MLB HR enforces "one HR pick per game" in flattenTopOfDay() so a
-  // hot Yankees lineup doesn't crowd out other games. That rule does
-  // NOT apply here: if two players in the same event are the two
-  // strongest ATD wagers on the slate, they both belong in Top 5.
-  // Rank mathematically by td_probability descending (backend already
-  // sorts, but we re-sort defensively).
+  // ── TOP 5 · true whole-slate ranking, NO per-game diversification ──
+  // MLB HR enforces "one HR pick per game" so a hot lineup doesn't
+  // crowd out other games.  That rule does NOT apply here: if two
+  // players in the same event are the two strongest ATD wagers on
+  // the slate, they both belong in Top 5.  Backend is already
+  // ranked by td_probability desc; we re-sort defensively.
   const topFive = useMemo(() => {
-    const sorted = [...picks].sort((a, b) => b.td_probability - a.td_probability);
-    return sorted.slice(0, 5);
-  }, [picks]);
+    const picks: NFLAtdPick[] = top?.picks ?? [];
+    return [...picks]
+      .sort((a, b) => b.td_probability - a.td_probability)
+      .slice(0, 5);
+  }, [top]);
 
-  // ── BY GAME · remaining picks, grouped ────────────────────────
-  // Exclude every pick already surfaced in Top 5 by player_id so the
-  // two sections never duplicate. Group by canonical (team, opponent)
-  // pair. Within each game keep the highest td_probability first.
-  const byGame = useMemo(() => {
-    const topIds = new Set(topFive.map(p => p.player_id));
-    const remaining = picks.filter(p => !topIds.has(p.player_id));
-    const groups = new Map<string, { title: string; picks: NFLAtdPick[] }>();
-    for (const p of remaining) {
-      const k = gameKey(p);
-      if (!groups.has(k)) {
-        groups.set(k, { title: gameTitle(p), picks: [] });
-      }
-      groups.get(k)!.picks.push(p);
+  const games: NFLAtdByGameGroup[] = useMemo(
+    () => byGame?.games ?? [],
+    [byGame],
+  );
+
+  // Header summary counts adapt to current mode.
+  const summary = useMemo(() => {
+    if (mode === "topDay") {
+      return `Top ${topFive.length} of ${top?.passed_filters ?? 0}`;
     }
-    // Sort games by their strongest remaining pick (best-first) so
-    // interesting matchups float up.
-    const arr = Array.from(groups.entries()).map(([key, g]) => ({
-      key,
-      title: g.title,
-      picks: g.picks.sort((a, b) => b.td_probability - a.td_probability),
-    }));
-    arr.sort((a, b) => (b.picks[0]?.td_probability ?? 0) - (a.picks[0]?.td_probability ?? 0));
-    return arr;
-  }, [picks, topFive]);
+    return `${games.length}g · ${byGame?.picks_returned ?? 0} picks`;
+  }, [mode, topFive.length, top, games.length, byGame]);
+
+  const emptyForCurrentMode =
+    (mode === "topDay" && topFive.length === 0) ||
+    (mode === "byGame" && games.length === 0);
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -194,11 +206,31 @@ export default function NFLAtdScreen() {
         </Pressable>
         <Ionicons name="american-football-outline" size={20} color={COLORS.goldElite} />
         <Text style={styles.headerTitle}>NFL ANYTIME TOUCHDOWNS</Text>
-        {data && (
-          <Text style={styles.headerSub}>
-            {topFive.length + byGame.reduce((n, g) => n + g.picks.length, 0)} picks
-          </Text>
+        {(top || byGame) && (
+          <Text style={styles.headerSub}>{summary}</Text>
         )}
+      </View>
+
+      {/* View mode toggle — MLB HR pattern */}
+      <View style={styles.toggleRow}>
+        <Pressable
+          onPress={() => setMode("topDay")}
+          style={[styles.toggleBtn, mode === "topDay" && styles.toggleBtnActive]}
+          testID="atd-toggle-top"
+        >
+          <Text style={[styles.toggleText, mode === "topDay" && styles.toggleTextActive]}>
+            🔥 Top 5 Today
+          </Text>
+        </Pressable>
+        <Pressable
+          onPress={() => setMode("byGame")}
+          style={[styles.toggleBtn, mode === "byGame" && styles.toggleBtnActive]}
+          testID="atd-toggle-game"
+        >
+          <Text style={[styles.toggleText, mode === "byGame" && styles.toggleTextActive]}>
+            📋 By Game
+          </Text>
+        </Pressable>
       </View>
 
       {loading ? (
@@ -219,16 +251,20 @@ export default function NFLAtdScreen() {
             testID="atd-error"
           />
         </ScrollView>
-      ) : picks.length === 0 ? (
+      ) : emptyForCurrentMode ? (
         <ScrollView
           contentContainerStyle={styles.scroll}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.voltBlue} />}
         >
           <EmptyState
             icon="american-football-outline"
-            title="No NFL ATD picks yet"
-            message="Slate is built once probable usage data lands."
-            secondaryHint="Check back closer to gameday."
+            title="No qualifying ATD picks"
+            message={
+              mode === "topDay"
+                ? "The slate is quiet — no players clear the ATD model floor yet."
+                : "No games with qualifying ATD candidates on today's slate."
+            }
+            secondaryHint="Check back closer to gameday — the slate refreshes automatically."
             testID="atd-empty"
           />
         </ScrollView>
@@ -238,28 +274,34 @@ export default function NFLAtdScreen() {
           contentContainerStyle={styles.scroll}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.voltBlue} />}
         >
-          {/* ── SECTION 1 · TOP 5 ANYTIME TDS ─────────────────── */}
-          <Text style={styles.sectionTitle}>🔥 TOP 5 TODAY</Text>
-          <Text style={styles.intro}>
-            True five highest-ranked ATD wagers across the slate — no per-game quota.
-          </Text>
-          {topFive.map((p, i) => (
-            <PickCard key={`top-${p.player_id}-${i}`} pick={p} rank={i + 1} />
-          ))}
-
-          {/* ── SECTION 2 · BY GAME ────────────────────────────── */}
-          {byGame.length > 0 && (
+          {mode === "topDay" ? (
             <>
-              <View style={{ height: 12 }} />
-              <Text style={styles.sectionTitle}>🏈 BY GAME</Text>
+              <Text style={styles.sectionTitle}>🔥 TOP 5 TODAY</Text>
               <Text style={styles.intro}>
-                Remaining ATD candidates grouped by matchup, best pick first.
+                True five highest-ranked ATD wagers across the slate —
+                no per-game quota, real sportsbook odds when available.
               </Text>
-              {byGame.map((g) => (
-                <View key={g.key} style={styles.gameGroup}>
-                  <Text style={styles.gameGroupTitle}>{g.title}</Text>
+              {topFive.map((p, i) => (
+                <PickCard key={`top-${p.player_id}-${i}`} pick={p} rank={i + 1} />
+              ))}
+            </>
+          ) : (
+            <>
+              <Text style={styles.sectionTitle}>📋 BY GAME</Text>
+              <Text style={styles.intro}>
+                ATD candidates grouped by matchup. One player = one ATD
+                score across every view.
+              </Text>
+              {games.map((g) => (
+                <View key={g.canonical_event_id || g.event} style={styles.gameGroup}>
+                  <Text style={styles.gameGroupTitle}>{g.event}</Text>
                   {g.picks.map((p, i) => (
-                    <PickCard key={`bg-${p.player_id}-${i}`} pick={p} rank={i + 1} hideRank />
+                    <PickCard
+                      key={`bg-${g.canonical_event_id || g.event}-${p.player_id}-${i}`}
+                      pick={p}
+                      rank={i + 1}
+                      hideRank
+                    />
                   ))}
                 </View>
               ))}
@@ -285,6 +327,30 @@ const styles = StyleSheet.create({
     marginLeft: 8, letterSpacing: 0.5, flex: 1,
   },
   headerSub: { color: COLORS.textMuted, fontSize: 12 },
+  toggleRow: {
+    flexDirection: "row",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    gap: 8,
+  },
+  toggleBtn: {
+    flex: 1,
+    paddingVertical: 9,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#1e293b",
+    backgroundColor: "rgba(15,23,42,0.6)",
+    alignItems: "center",
+  },
+  toggleBtnActive: {
+    borderColor: COLORS.goldElite,
+    backgroundColor: "rgba(255,215,0,0.10)",
+  },
+  toggleText: {
+    color: COLORS.textMuted, fontSize: 13, fontWeight: "700",
+    letterSpacing: 0.4,
+  },
+  toggleTextActive: { color: COLORS.textPrimary },
   scroll: { padding: 12, paddingBottom: 24 },
   sectionTitle: {
     color: COLORS.textPrimary, fontSize: 14, fontWeight: "800",
@@ -323,11 +389,16 @@ const styles = StyleSheet.create({
     marginRight: 6, marginBottom: 6,
   },
   metaText: { color: COLORS.textPrimary, fontSize: 11, fontWeight: "600" },
+  oddsChip: {
+    backgroundColor: "rgba(255,215,0,0.12)",
+    borderColor: "rgba(255,215,0,0.45)",
+  },
+  oddsText: {
+    color: COLORS.goldElite,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.4,
+  },
   bullets: { marginTop: 8 },
   bullet: { color: COLORS.textMuted, fontSize: 12, marginBottom: 3 },
-  toggleRow: {},
-  toggleBtn: {},
-  toggleBtnActive: {},
-  toggleText: {},
-  toggleTextActive: {},
 });

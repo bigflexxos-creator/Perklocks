@@ -158,6 +158,21 @@ export function SportFilterBar({ sport, filters, onChange }: Props) {
               accent
             />
           )}
+          {/* NFL Star Player Watchlist chip (2026-06-11) — visibility-
+              only filter that keeps only canonical picks whose player
+              identity matches the curated NFL star roster.  Does NOT
+              modify Lock Scores, WP, evidence, or publication state.
+              Composes with the market pills so "STARS + PASS YDS"
+              returns only star-QB passing props, etc. */}
+          {sport === "NFL" && (
+            <Pill
+              label={filters.starsOnly ? "⭐ STARS ✓" : "⭐ STARS"}
+              active={!!filters.starsOnly}
+              onPress={() => onChange({ ...filters, starsOnly: !filters.starsOnly })}
+              testID="market-pill-nfl-stars"
+              accent
+            />
+          )}
         </ScrollView>
       )}
 

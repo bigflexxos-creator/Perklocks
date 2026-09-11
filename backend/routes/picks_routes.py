@@ -1079,6 +1079,7 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                       game_ids: Optional[str] = None,        # NEW: CSV multi-select
                       events: Optional[str] = None,          # NEW: pipe-separated multi-select
                       search: Optional[str] = None,          # NEW: free-text search
+                      stars_only: Optional[bool] = False,    # NEW: NFL Star Watchlist visibility filter
                       lite: Optional[bool] = False):
     """Top picks from today's 72-hour window (lock score >= 85).
 
@@ -2580,6 +2581,52 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             "picks_today canonical wager dedupe skipped: %s", _dd_err,
         )
 
+    # ── NFL STAR PLAYER WATCHLIST (2026-06-11) ────────────────────────
+    # Visibility-ONLY filter — never mutates Lock Score, WP, evidence,
+    # or publication state.  When `stars_only=true` and sport=NFL,
+    # narrow the canonical response to picks whose player identity
+    # matches the curated NFL star roster in `elite_players.py`.
+    # Uses canonical player-identity fields when available and falls
+    # back to accent-insensitive whole-word matching in `market` /
+    # `selection` / `player_name` (same helper elite-boost already
+    # uses).  No score changes, no synthetic picks, no dedupe changes.
+    if stars_only and canonical:
+        try:
+            from elite_players import find_elite_player, _ELITE_LOOKUP
+            _nfl_lookup = _ELITE_LOOKUP.get("NFL", {})
+            _pre_star = len(canonical)
+
+            def _pick_is_nfl_star(p: dict) -> bool:
+                if str(p.get("sport") or "").upper() != "NFL":
+                    # When stars_only is set alongside a sport filter
+                    # other than NFL we STILL filter the non-NFL rows
+                    # out — the watchlist is currently NFL-only per
+                    # user directive.  Non-NFL Locks stay visible when
+                    # `stars_only=false`.
+                    return False
+                # Pre-tagged by elite_players.apply_elite_boost.
+                if p.get("elite_player") and p.get("elite_player_name"):
+                    return True
+                # Live-check across every identity surface.
+                for f in ("elite_player_name", "canonical_player_name",
+                          "player_name", "selection", "market"):
+                    v = p.get(f)
+                    if v and find_elite_player("NFL", str(v)):
+                        return True
+                return False
+
+            canonical = [p for p in canonical if _pick_is_nfl_star(p)]
+            logger.info(
+                "picks_today NFL Star Watchlist: %d → %d picks "
+                "(visibility-only, no score change)",
+                _pre_star, len(canonical),
+            )
+        except Exception as _star_err:
+            logger.warning(
+                "picks_today NFL Star Watchlist filter skipped: %s",
+                _star_err,
+            )
+
     # ── Alt-line availability diagnostic (2026-07-13) ─────────────────
     # When the client asks for `line_type=alt` and gets zero (or very
     # few) tennis picks back, the reason is almost always that The Odds
@@ -3180,6 +3227,36 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 logger.warning(
                     "NflAltLabelProjection rescue-path skipped: %s", _r_lp_err,
                 )
+            # ── NFL STAR WATCHLIST also applies on rescue path ───────────
+            # Otherwise stars_only=true leaks non-star canonically-eligible
+            # picks back in through the rescue extension.  Visibility-only,
+            # never mutates any pick.
+            if stars_only:
+                try:
+                    from elite_players import find_elite_player
+                    _pre_r_star = len(rescued)
+
+                    def _r_is_nfl_star(p: dict) -> bool:
+                        if str(p.get("sport") or "").upper() != "NFL":
+                            return False
+                        if p.get("elite_player") and p.get("elite_player_name"):
+                            return True
+                        for f in ("elite_player_name", "canonical_player_name",
+                                  "player_name", "selection", "market"):
+                            v = p.get(f)
+                            if v and find_elite_player("NFL", str(v)):
+                                return True
+                        return False
+
+                    rescued = [p for p in rescued if _r_is_nfl_star(p)]
+                    logger.info(
+                        "NFL Star Watchlist (rescue path): %d → %d",
+                        _pre_r_star, len(rescued),
+                    )
+                except Exception as _rs_err:
+                    logger.warning(
+                        "NFL Star Watchlist rescue-path skipped: %s", _rs_err,
+                    )
             # SLICE 1.2B — rescued picks are extended into `canonical`
             # and pass through the final Lightweight Board DTO projection
             # at the return site (no double strip needed here).
