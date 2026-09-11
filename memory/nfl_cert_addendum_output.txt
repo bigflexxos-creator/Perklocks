@@ -1,0 +1,143 @@
+==============================================================================
+A. EXACT NFL PLAYER-PROP LOCK DISTRIBUTION (non-overlapping)
+==============================================================================
+  85-89  : 534
+  90-92  : 218
+  93-95  : 96
+  96-97  : 12
+  98     : 0
+  99     : 0
+  100    : 0
+
+==============================================================================
+B/C. TOP-5 SCORE MATH — where the final Lock comes from
+==============================================================================
+──────────────────────────────────────────────────────────────────────────────
+Player       : Caleb Williams
+Market       : Caleb Williams Over 159.5 Player Pass Yds  · ALT LOCK
+Line         : 159.5   Main/Alt: MAIN
+Book         : None   Odds: -780
+__rung_p_hat : None (from stored factors) [note: stripped after mp compute — see live sample in D]
+factor_mean  : 0.7355
+blended WP   : 0.9057 (from mp = 0.85·rung + 0.15·factor_mean)
+raw pre-auth : lock_score_v3_base=99.0 lock_score_raw=99.0
+WP ceiling   : 60 + 0.9057×40 = 96.23
+evidence mul : 1.0   evidence_count: 3
+magic tier   : INSUFFICIENT_EVIDENCE   shrinkage Δ: -0.39   shrinkage w: 0.804
+reliability  : cap_applied=None cap_wp=None cap_prior=None
+FINAL LS     : 96.0
+──────────────────────────────────────────────────────────────────────────────
+Player       : Caleb Williams
+Market       : Caleb Williams Over 149.5 Player Pass Yds  · ALT LOCK
+Line         : 149.5   Main/Alt: MAIN
+Book         : None   Odds: -1140
+__rung_p_hat : None (from stored factors) [note: stripped after mp compute — see live sample in D]
+factor_mean  : 0.7402
+blended WP   : 0.9231 (from mp = 0.85·rung + 0.15·factor_mean)
+raw pre-auth : lock_score_v3_base=99.0 lock_score_raw=99.0
+WP ceiling   : 60 + 0.9231×40 = 96.92
+evidence mul : 1.0   evidence_count: 2
+magic tier   : INSUFFICIENT_EVIDENCE   shrinkage Δ: -0.08   shrinkage w: 0.797
+reliability  : cap_applied=None cap_wp=None cap_prior=None
+FINAL LS     : 96.0
+──────────────────────────────────────────────────────────────────────────────
+Player       : Justin Herbert
+Market       : Justin Herbert Over 4.5 Player Rush Yds  · ALT LOCK
+Line         : 4.5   Main/Alt: MAIN
+Book         : None   Odds: -1200
+__rung_p_hat : None (from stored factors) [note: stripped after mp compute — see live sample in D]
+factor_mean  : 0.745
+blended WP   : 0.9227 (from mp = 0.85·rung + 0.15·factor_mean)
+raw pre-auth : lock_score_v3_base=99.0 lock_score_raw=99.0
+WP ceiling   : 60 + 0.9227×40 = 96.91
+evidence mul : 1.0   evidence_count: 2
+magic tier   : INSUFFICIENT_EVIDENCE   shrinkage Δ: 0.0   shrinkage w: 0.79
+reliability  : cap_applied=None cap_wp=None cap_prior=None
+FINAL LS     : 96.0
+──────────────────────────────────────────────────────────────────────────────
+Player       : Baker Mayfield
+Market       : Baker Mayfield Over 4.5 Player Rush Yds  · ALT LOCK
+Line         : 4.5   Main/Alt: MAIN
+Book         : None   Odds: -670
+__rung_p_hat : None (from stored factors) [note: stripped after mp compute — see live sample in D]
+factor_mean  : 0.6928
+blended WP   : 0.9215 (from mp = 0.85·rung + 0.15·factor_mean)
+raw pre-auth : lock_score_v3_base=99.0 lock_score_raw=99.0
+WP ceiling   : 60 + 0.9215×40 = 96.86
+evidence mul : 1.0   evidence_count: 3
+magic tier   : INSUFFICIENT_EVIDENCE   shrinkage Δ: -0.93   shrinkage w: 0.818
+reliability  : cap_applied=None cap_wp=None cap_prior=None
+FINAL LS     : 96.0
+──────────────────────────────────────────────────────────────────────────────
+Player       : Josh Allen
+Market       : Josh Allen Over 9.5 Player Rush Yds  · ALT LOCK
+Line         : 9.5   Main/Alt: MAIN
+Book         : None   Odds: -1300
+__rung_p_hat : None (from stored factors) [note: stripped after mp compute — see live sample in D]
+factor_mean  : 0.7093
+blended WP   : 0.9018 (from mp = 0.85·rung + 0.15·factor_mean)
+raw pre-auth : lock_score_v3_base=99.0 lock_score_raw=99.0
+WP ceiling   : 60 + 0.9018×40 = 96.07
+evidence mul : 1.0   evidence_count: 2
+magic tier   : INSUFFICIENT_EVIDENCE   shrinkage Δ: 0.53   shrinkage w: 0.804
+reliability  : cap_applied=None cap_wp=None cap_prior=None
+FINAL LS     : 96.0
+
+==============================================================================
+D. 98/99 REACHABILITY — REAL production scoring path
+==============================================================================
+  Joe Burrow           O99.5    rung=0.9628 mp=0.942  ceiling=97.68  ev_mult=1.0  LS=97.7
+  Joe Burrow           O149.5   rung=0.899 mp=0.8838  ceiling=95.35  ev_mult=1.0  LS=95.4
+  Justin Jefferson     O19.5    rung=0.8992 mp=0.8802  ceiling=95.21  ev_mult=1.0  LS=95.2
+  Ja'Marr Chase        O3.5     rung=0.8761 mp=0.8575  ceiling=94.3  ev_mult=1.0  LS=94.3
+  Patrick Mahomes      O199.5   rung=0.8764 mp=0.8475  ceiling=93.9  ev_mult=1.0  LS=93.9
+
+── Injected-WP reachability (real compute_lock_score path) ──
+  wp=0.95  → ceiling=98.0 mult=1.0 LS=98.0
+  wp=0.975 → ceiling=99.0 mult=1.0 LS=99.0
+  wp=0.98  → ceiling=99.2 mult=1.0 LS=99.0
+
+==============================================================================
+E. JOE BURROW 200+ TARGETED MODEL PROOF
+==============================================================================
+  identity : team=Cincinnati Bengals gsis=00-0036442
+  historical n_games   : 20
+  recent samples used  : [236, 305, 309, 225, 284, 261, 76, 113, 277, 412, 252, 271]
+  projected mean       : 267.9
+  variance             : 7301.9
+  std-dev              : 85.5
+  distribution family  : normal (empirical CDF fallback for ties)
+  exact threshold      : 199.5 (i.e. 200+)
+  CDF-normal P(>199.5) : 0.7881
+  empirical hit-rate   : 0.85  (raw)
+  Laplace-smoothed     : 0.8182
+  __rung_p_hat emitted : 0.7785
+  factor_mean          : 0.701
+  85/15 blended WP     : 0.7669
+  ceiling = 60+mp×40   : 90.67
+  VERDICT              : identity, samples, distribution, and threshold all consistent — model result is genuine, no book-implied leak
+
+==============================================================================
+F. JUSTIN JEFFERSON — PROVIDER-CACHE PROOF
+==============================================================================
+  Vikings events in cache: 0
+  TOTAL 'Justin Jefferson' rows in Vikings cache payloads: 0
+  → PROVIDER_MARKET_MISSING confirmed at raw-payload level.
+
+==============================================================================
+G. PERMANENT NFL PICK TRACE — API demo
+==============================================================================
+  Tracing: Josh Allen · Josh Allen Over 9.5 Player Rush Yds  · ALT LOCK (LS=96.0)
+    PROVIDER                     → OK: sportsbook=?  odds=-1300
+    PLAYER_IDENTITY              → OK: gsis=00-0034857 name=Josh Allen
+    TEAM                         → OK: Buffalo Bills
+    EVENT                        → OK: event_id=?
+    MARKET_MAP                   → OK: Josh Allen Over 9.5 Player Rush Yds  · ALT LOCK
+    HISTORY                      → OK: 114 nflverse REG rows
+    FACTORS                      → OK: 6 real factors  DQ=72
+    EXACT_THRESHOLD_P            → OK: __rung_p_hat/wp=0.9018
+    FINAL_WP                     → OK: blended WP=90.2
+    LOCK_SCORE                   → OK: LS=96.0  authority_ceiling=96.07
+    ELIGIBILITY                  → OK: locks_board_eligible=True
+    PUBLICATION                  → OK: PUBLISHED at 2026-09-11T19:15:24.549372+00:00
+    BOARD_VISIBILITY             → OK: tier=PEAK_NON_APEX grade=Strong Lock
