@@ -2137,66 +2137,45 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     # writer can un-cap it.  Applies ONLY to NFL alt-line picks
     # (surgical scope); non-alt picks and edge-positive alts are
     # untouched.  This is a value floor, not a price cap — a -500 /
-    # -1000 / -1600 line with genuine positive edge still keeps its
-    # elite score.
+    # NFL Player Prop Root Closure (2026-06-10) — DEPRECATED VALUE FLOOR
+    # ------------------------------------------------------------------
+    # This block previously capped any NFL alt-line pick with
+    # edge_percent ≤ 0 at Lock Score 97.9, on the theory that
+    # non-positive edge could not justify Elite Lock authority.  Per
+    # the P0-F user directive:
+    #
+    #   "A sportsbook can heavily price a very safe alternate prop.
+    #    Example: a true 96% wager priced at -500 can still be a very
+    #    high-confidence Lock even if its calculated EV is small.
+    #    That should not automatically prevent 98/99."
+    #
+    # Root cause of the mis-cap: NFL Lock Score should be authored by
+    # exact-threshold HIT PROBABILITY, not BETTING VALUE.  Efficient
+    # sportsbook pricing on a mathematically safe alt threshold must
+    # not disqualify it from 93-99.
+    #
+    # EV / edge is preserved as a display-only signal on the pick
+    # payload so users can still see it as betting-value context.  It
+    # simply no longer authors Lock Score for NFL player-prop alts.
     try:
-        _alt_cap_hits = 0
+        _released = 0
         for _p in safe_picks:
             if (_p.get("sport") or "").strip() != "NFL":
                 continue
-            _mkt = _p.get("market") or ""
-            _is_alt = bool(
-                _p.get("is_alt")
-                or _p.get("is_alt_line") is True
-                or _p.get("alt_line") is True
-                or "ALT LOCK" in _mkt
-                or ((_p.get("line_type") or "").lower().find("alt") >= 0)
-            )
-            if not _is_alt:
-                continue
-            try:
-                _edge = float(_p.get("edge_percent")
-                              if _p.get("edge_percent") is not None else 0.0)
-            except (TypeError, ValueError):
-                _edge = 0.0
-            if _edge > 0.0:
-                continue  # legitimate positive-edge alt — untouched
-            try:
-                _lock = float(_p.get("lock_score") or 0.0)
-            except (TypeError, ValueError):
-                _lock = 0.0
-            if _lock < 98.0:
-                continue  # already below Elite Lock — nothing to cap
-            # Apply the value floor: block Elite / Strong / APEX tier
-            # for this pick.  97.9 keeps the pick visible on the board
-            # (Lock 90+ tier) but never elite/apex without positive
-            # edge.  Mirror across v1 / v2 / peak so read-time
-            # canonicalisation cannot restore a stale higher value.
-            _p["lock_score"]      = 97.9
-            _p["lock_score_v2"]   = min(float(_p.get("lock_score_v2") or 97.9), 97.9)
-            _p["lock_score_peak"] = min(float(_p.get("lock_score_peak") or 97.9), 97.9)
-            _p["apex_lock"]       = False
-            _p["apex_score"]      = 97.9
-            _p["apex_status"]     = "NOT_APEX"
-            _p["apex_reason"]     = "nfl_alt_no_positive_edge_no_elite_authority"
-            _p["alt_edge_cap_applied"] = True
-            _p["alt_edge_cap_reason"]  = (
-                f"nfl_alt_edge_not_positive:{_edge:.2f}pct_no_elite_authority"
-            )
-            _alt_cap_hits += 1
-            # Re-derive grade so the badge reflects the capped tier.
-            try:
-                from sports_engine import _grade as _grade_fn
-                _p["grade"] = _grade_fn(97.9)
-            except Exception:
-                pass
-        if _alt_cap_hits:
+            if _p.get("alt_edge_cap_applied"):
+                _p["alt_edge_cap_applied"] = False
+                _p["alt_edge_cap_released_reason"] = (
+                    "nfl_player_prop_lock_authority_is_hit_probability_not_ev"
+                )
+                _released += 1
+        if _released:
             logger.info(
-                "NFL alt-line value floor: capped %d picks below Elite "
-                "(edge<=0 pre-elite-authority)", _alt_cap_hits,
+                "NFL alt-line value floor RELEASED: reverted %d pre-cap flags "
+                "(Lock authority is exact-threshold hit probability, not EV)",
+                _released,
             )
     except Exception as _alt_cap_err:
-        logger.warning("NFL alt-line value floor skipped: %s", _alt_cap_err)
+        logger.warning("NFL alt-line value floor release skipped: %s", _alt_cap_err)
 
     # ── NFL PROP MP-FROM-BOOK LEAKAGE FAIL-CLOSED CAP (2026-06-09) ────
     # Per user directive (Universal NFL Prop Closure §A4): NFL picks
