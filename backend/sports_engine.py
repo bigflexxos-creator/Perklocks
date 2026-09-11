@@ -1068,6 +1068,136 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     # badges / progress bars.
     score = min(99.0, score)
 
+    # ═════════════════════════════════════════════════════════════════
+    # NFL PLAYER-PROP LOCK AUTHORITY (2026-06-10 · P0-G / P0-H)
+    # ─────────────────────────────────────────────────────────────────
+    # For NFL player props (main + alt), the Lock Score authority is
+    # EXACT-THRESHOLD HIT PROBABILITY, not betting value.  The generic
+    # 6-component composite (edge-heavy, 35% weight) is only a
+    # secondary signal.  A truly safe alt priced efficiently by the
+    # book must be able to reach 93-99 purely on the calibrated win
+    # probability of the exact wager.
+    #
+    # Reachability ceiling (P0-H — the safety cap kept, but fed the
+    # CORRECT probability):
+    #     LS_max = 60 + wp * 40
+    # so 80% → 92, 87.5% → 95, 92.5% → 97, 95% → 98, 97.5% → 99.
+    #
+    # Guardrails:
+    #   * Requires ≥ 3 real factors AND ≥ 2 stat-family evidence
+    #     signals (MIN_FACTORS_NFL_PROP already enforced upstream).
+    #   * Requires data_quality ≥ 55 (evidence-based DQ, not
+    #     placeholder 75).  Weak evidence → score falls back to the
+    #     composite so an unknown player can never manufacture a 98.
+    #   * Ambiguous / rejected identity + unresolved current_team
+    #     never reach this branch (fail-closed upstream).
+    #   * NFL_PROP_LOCK_AUTHORITY=off env flag disables this branch
+    #     for instant revert in ops.
+    #
+    # This narrowly-scoped policy does NOT touch:
+    #   * NFL team markets (spreads, moneylines, totals)
+    #   * MLB / NBA / Soccer / Tennis / CFB scoring paths
+    #   * ATD engine (its output already flows through predict_player_atd)
+    # ═════════════════════════════════════════════════════════════════
+    try:
+        import os as _os
+        _nfl_prop_authority_on = (_os.environ.get(
+            "NFL_PROP_LOCK_AUTHORITY", "on").lower() != "off")
+        if _nfl_prop_authority_on and pick:
+            _sport_up = (pick.get("sport") or "").strip().upper()
+            _mkt = (pick.get("market") or "").lower()
+            # Detect NFL PLAYER prop (main or alt).  Team markets
+            # (moneyline / spread / total) do NOT contain a "player_"
+            # marker and are ignored by this branch.
+            _is_nfl_player_prop = (
+                _sport_up in ("NFL", "AMERICANFOOTBALL_NFL")
+                and (
+                    "player" in _mkt
+                    or "yards" in _mkt or "yds" in _mkt
+                    or "receptions" in _mkt or "receiving" in _mkt
+                    or "rushing" in _mkt or "passing" in _mkt
+                    or "attempts" in _mkt or "completions" in _mkt
+                    or "alt lock" in _mkt
+                )
+                # Never treat pure team markets as player props.
+                and not any(
+                    _mkt.endswith(t) for t in
+                    (" moneyline", " spread", " total", " -1.5 spread",
+                     " +1.5 spread")
+                )
+            )
+            if _is_nfl_player_prop:
+                # Calibrated exact-wager win probability.
+                _wp_source = (
+                    win_prob if win_prob is not None
+                    else (pick.get("model_win_prob")
+                          if pick.get("model_win_prob") is not None
+                          else pick.get("win_probability"))
+                )
+                try:
+                    _wp = float(_wp_source or 0)
+                except (TypeError, ValueError):
+                    _wp = 0.0
+                _wp_frac = _wp / 100.0 if _wp > 1.0 else _wp
+                _wp_frac = max(0.0, min(1.0, _wp_frac))
+                # P0-H authority ceiling.
+                _authority_ceiling = 60.0 + _wp_frac * 40.0
+                # Evidence quality gate — data_quality already computed
+                # above using MIN_FACTORS_NFL_PROP-aware inputs.
+                _n_real_factors = sum(
+                    1 for k, v in (factors or {}).items()
+                    if not (isinstance(k, str) and k.startswith("__"))
+                    and isinstance(v, (int, float)) and v is not None
+                )
+                _evidence_ok = (
+                    _n_real_factors >= 3
+                    and data_quality >= 55.0
+                    and _wp_frac >= 0.60
+                )
+                if _evidence_ok:
+                    # AUTHORITY-DOMINANT SCORE: hit probability IS the
+                    # Lock Score for NFL player props with sufficient
+                    # evidence.  The composite (edge/align/DQ/vol) is
+                    # relegated to a display-only signal — per P0-G,
+                    # it must NOT knock a legitimately safe alt down
+                    # into the 80s just because sportsbook pricing is
+                    # efficient.
+                    #
+                    # Evidence multiplier — narrow band (0.94-1.00)
+                    # modulates the authority ceiling based on
+                    # data_quality and factor sample depth.  Strong
+                    # evidence hits the ceiling exactly; borderline
+                    # evidence gets a small haircut so unknowns can
+                    # never manufacture a 99.
+                    if data_quality >= 75.0 and _n_real_factors >= 4:
+                        _evidence_mult = 1.00
+                    elif data_quality >= 65.0 and _n_real_factors >= 3:
+                        _evidence_mult = 0.98
+                    else:
+                        _evidence_mult = 0.95
+                    _authority_score = _authority_ceiling * _evidence_mult
+                    # Never demote — a stronger composite (e.g. massive
+                    # positive edge on a value alt) can still shine.
+                    score = max(score, _authority_score)
+                    # And the ceiling stays a HARD cap so a 95% WP can
+                    # reach ~98 but not 99.
+                    score = min(_authority_ceiling, score)
+                    # Provenance breadcrumbs for auditability.
+                    pick["nfl_prop_authority_applied"] = True
+                    pick["nfl_prop_authority_wp"] = round(_wp_frac, 4)
+                    pick["nfl_prop_authority_ceiling"] = round(_authority_ceiling, 2)
+                    pick["nfl_prop_authority_evidence_mult"] = _evidence_mult
+                else:
+                    pick["nfl_prop_authority_applied"] = False
+                    pick["nfl_prop_authority_skip_reason"] = (
+                        f"evidence_gate:n={_n_real_factors},dq={data_quality:.0f},"
+                        f"wp={_wp_frac:.2f}"
+                    )
+        # Preserve the 0-99 clamp after the authority adjustment.
+        score = min(99.0, score)
+    except Exception as _authority_err:  # pragma: no cover — never break scoring
+        logger.debug("nfl_prop_lock_authority skipped: %s", _authority_err)
+
     # Store the 6 components + evidence signals so the UI / analytics can
     # inspect them later. Evidence fields (ev_units, bucket_hit, agreement)
     # are the new chalk-neutral tier gates added 2026-07-04.
@@ -6964,13 +7094,27 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                         # honest per-feature `sample_size` values
                         # (L3 max 3, L5 max 5, distribution = actual n).
                         _nfl_factor_meta = {}
+                        _nfl_rung_p_hat_diagnostic = None
                         if isinstance(factors, dict):
                             _nfl_factor_meta = factors.pop(
                                 "__factor_sample_sizes", {}
                             ) or {}
-                            # Strip the internal p_hat too — it's a
-                            # diagnostic, not a scoring factor.
-                            factors.pop("__rung_p_hat", None)
+                            # NFL Star Player + 93-99 Root Closure
+                            # (2026-06-10 · P0-E) — DO NOT strip
+                            # ``__rung_p_hat`` here.  Prior code
+                            # popped this sidecar before the mp
+                            # blender at line ~7370 could consume it,
+                            # so the exact-threshold rung probability
+                            # never reached scoring and every NFL
+                            # player-prop mp collapsed to the shrunk
+                            # factor mean (≤ 0.77 in practice).
+                            # Keep it in-place; it is stripped later
+                            # (after mp computation) by the
+                            # ``k.startswith("__")`` guard used by
+                            # data_quality / evidence-count filters.
+                            _nfl_rung_p_hat_diagnostic = factors.get(
+                                "__rung_p_hat"
+                            )
                 except Exception as e:
                     logger.debug("NFL sync gate failed for %s / %s: %s", player, mk, e)
                     _skip_pick = True
@@ -7237,7 +7381,21 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 # authority.  Never uses book_implied.
                 _p_hat = factors.get("__rung_p_hat")
                 if isinstance(_p_hat, (int, float)) and 0.0 < _p_hat < 1.0:
-                    _blended = 0.60 * float(_p_hat) + 0.40 * _cal_mp
+                    # NFL Star Player + 93-99 Root Closure (2026-06-10)
+                    # · P0-E — exact-threshold probability is PRIMARY.
+                    # Prior blend (60·rung + 40·factor_mean) let the
+                    # shrunk factor mean drag legitimate ~95% alt-rung
+                    # probabilities down into the 70s.  Per the user
+                    # directive: "Generic matchup/trend/context
+                    # evidence should modify or CALIBRATE the underlying
+                    # distribution — not OVERPOWER the exact-threshold
+                    # probability after it has been calculated."
+                    #
+                    # New blend (85·rung + 15·factor_mean) makes rung
+                    # authoritative while retaining a small context
+                    # signal so a distribution outlier can't fully
+                    # ignore an ambiguous matchup/game-script.
+                    _blended = 0.85 * float(_p_hat) + 0.15 * _cal_mp
                     mp = max(0.02, min(0.99, _blended))
         # ── Phase 2A.5 DEFECT #4 (2026-08) ─────────────────────────────
         # Elite-scorer factor manipulation (+10 %) and forced Lock Score
@@ -7249,7 +7407,31 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         # override the composite.  Phase 1D/2A composite math is the
         # only authority for Lock Score.
         is_elite_scorer = False
-        lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
+        # NFL Star Player + 93-99 Root Closure (2026-06-10) — pass a
+        # minimal pick shim into compute_lock_score so the NFL player-
+        # prop Lock authority branch (which needs ``sport`` + ``market``
+        # visibility) can fire.  Non-NFL callers see identical
+        # behavior — the authority gate is scoped to NFL props only.
+        # Detect alt-line status from the market key.  ALT-form markets
+        # in the NFL prop pipeline carry the "_alternate" suffix.
+        _mk_alt = "_alternate" in (mk or "")
+        _prop_pick_shim = {
+            "sport": sport,
+            "market": mk or "",
+            "model_win_prob": (mp or 0) * 100,
+            "book_odds": price,
+            "is_alt_line": bool(_mk_alt),
+        }
+        lock, breakdown = compute_lock_score(
+            factors, win_prob=mp * 100, pick=_prop_pick_shim,
+        )
+        # Bubble the authority provenance up so _build_pick can copy
+        # onto the final pick (the shim itself is discarded).
+        _prop_authority_applied = _prop_pick_shim.get("nfl_prop_authority_applied")
+        _prop_authority_wp = _prop_pick_shim.get("nfl_prop_authority_wp")
+        _prop_authority_ceiling = _prop_pick_shim.get("nfl_prop_authority_ceiling")
+        _prop_authority_mult = _prop_pick_shim.get("nfl_prop_authority_evidence_mult")
+        _prop_authority_skip = _prop_pick_shim.get("nfl_prop_authority_skip_reason")
         label_point = None if mk in ("player_goal_scorer_anytime", "player_to_score_or_assist", "player_first_goal_scorer", "mma_method_of_victory", "player_anytime_td", "player_1st_td") else point
         if mk == "player_goal_scorer_anytime":
             market_label = f"{player} Anytime Goal Scorer"
@@ -7313,6 +7495,24 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         # it here.  Falls open (no attach) when resolution failed — the
         # gate will then correctly reject the pick.
         if new_pick is not None and sport == "NFL":
+            # NFL Player-Prop Lock Authority provenance stamp (2026-06-10).
+            # Copy the authority breadcrumbs from the scoring shim onto
+            # the final pick so downstream consumers / audit trails can
+            # confirm the Lock Score was authored by exact-threshold
+            # hit probability, not the composite edge.
+            try:
+                if _prop_authority_applied is not None:
+                    new_pick["nfl_prop_authority_applied"] = _prop_authority_applied
+                if _prop_authority_wp is not None:
+                    new_pick["nfl_prop_authority_wp"] = _prop_authority_wp
+                if _prop_authority_ceiling is not None:
+                    new_pick["nfl_prop_authority_ceiling"] = _prop_authority_ceiling
+                if _prop_authority_mult is not None:
+                    new_pick["nfl_prop_authority_evidence_mult"] = _prop_authority_mult
+                if _prop_authority_skip is not None:
+                    new_pick["nfl_prop_authority_skip_reason"] = _prop_authority_skip
+            except Exception:
+                pass
             # ── 2026-06-09 · MP-FROM-BOOK LEAKAGE STAMP ──────────────
             # Stamp the fail-closed marker onto the pick so the
             # orchestrator can enforce the "no book-implied

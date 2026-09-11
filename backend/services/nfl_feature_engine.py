@@ -66,25 +66,119 @@ _ESPN_TO_FULL_NAME: dict[str, str] = {
 }
 
 
+def _canonical_name_key(name: str) -> str:
+    """NFL Star Player Root Closure (2026-06-10) — canonical name key.
+
+    Fold every sportsbook / ESPN / nflverse name variant to a single
+    comparison key.  Two names collapse to the SAME key iff they
+    refer to the same player under normal spelling variance.
+
+    Operations (idempotent):
+      * lower-case
+      * unicode NFKD → drop combining marks (é → e, ñ → n)
+      * strip apostrophes, periods, commas
+      * fold hyphens & underscores → single space
+      * collapse repeated whitespace
+      * drop trailing jr/sr/ii/iii/iv/v suffix
+      * normalize initials — "a j" → "aj", "d j" → "dj", etc.
+        (Handles A.J. Brown ↔ AJ Brown ↔ A J Brown ↔ A. J. Brown.)
+
+    Returns "" when the input is empty.  Never guesses across two
+    different players (uniqueness is enforced by caller — this helper
+    only NORMALIZES a single name).
+    """
+    import re, unicodedata
+    if not name:
+        return ""
+    n = unicodedata.normalize("NFKD", str(name))
+    n = "".join(ch for ch in n if not unicodedata.combining(ch))
+    n = n.lower().strip()
+    # Punctuation folding
+    n = n.replace("’", "").replace("'", "").replace("`", "")
+    n = n.replace(".", "").replace(",", "")
+    n = n.replace("-", " ").replace("_", " ")
+    # Collapse whitespace
+    n = re.sub(r"\s+", " ", n).strip()
+    # Drop trailing suffix (jr, sr, ii, iii, iv, v)
+    n = re.sub(r"\s+(jr|sr|ii|iii|iv|v)$", "", n)
+    # Fold two consecutive single-letter tokens ("a j" → "aj") so
+    # "A.J. Brown" ↔ "AJ Brown" ↔ "A J Brown" all match.
+    parts = n.split(" ")
+    i = 0
+    folded = []
+    while i < len(parts):
+        p = parts[i]
+        if (i + 1 < len(parts)
+                and len(p) == 1 and p.isalpha()
+                and len(parts[i + 1]) == 1 and parts[i + 1].isalpha()):
+            folded.append(p + parts[i + 1])
+            i += 2
+        else:
+            folded.append(p)
+            i += 1
+    return " ".join(folded)
+
+
 def _name_variants(name: str) -> list[str]:
-    """Return probable canonical variants for OddsAPI ↔ ESPN name
-    differences (Sr./Jr./II suffix drops, apostrophe/dash forms).
-    Preserves original as first entry.
+    """Return probable canonical variants for OddsAPI ↔ ESPN ↔ nflverse
+    name differences (Sr./Jr./II suffix drops, apostrophe/dash forms,
+    initial spacing).  Preserves original as first entry.
+
+    NFL Star Player Root Closure (2026-06-10) — extended to emit:
+      * Original ("A.J. Brown")
+      * Suffix-stripped ("A.J. Brown Jr" → "A.J. Brown")
+      * Suffix-added ("A.J. Brown" + " Jr.")
+      * Space-collapsed initials ("A.J." ↔ "AJ" ↔ "A J")
+      * Apostrophe-stripped ("Ja'Marr" ↔ "JaMarr")
+      * Hyphen ↔ space ("Smith-Njigba" ↔ "Smith Njigba")
+      * Period stripped ("A.J." → "AJ", "T.J." → "TJ")
+
+    Only emits variants that PRESERVE identity — never fuzzy-merges
+    two players.  Ambiguity is caught downstream (multi-GSIS-id
+    match refuses to resolve).
     """
     if not name:
         return []
     n = name.strip()
-    out = [n]
-    # Drop trailing Jr./Sr./II/III/IV suffixes.
+    variants = [n]
+    seen = {n}
+
+    def _add(v: str) -> None:
+        v = (v or "").strip()
+        if v and v not in seen:
+            seen.add(v)
+            variants.append(v)
+
     import re
+    # Suffix drop / add
     stripped = re.sub(r"\s+(Jr\.?|Sr\.?|II|III|IV|V)$", "", n).strip()
-    if stripped and stripped != n:
-        out.append(stripped)
-    # Try adding "Jr." if we haven't already (ESPN sometimes carries
-    # suffix while OddsAPI drops it).
+    _add(stripped)
     if not re.search(r"\s+(Jr\.?|Sr\.?|II|III|IV|V)$", n):
-        out.append(f"{n} Jr.")
-    return out
+        _add(f"{n} Jr.")
+    # Apostrophe strip / smart quote fold
+    if "'" in n or "’" in n:
+        _add(n.replace("'", "").replace("’", ""))
+        _add(n.replace("’", "'"))
+    # Hyphen ↔ space
+    if "-" in n:
+        _add(n.replace("-", " "))
+        _add(n.replace("-", ""))
+    # Space between last-name compound → hyphen ("Smith Njigba" → "Smith-Njigba")
+    if " " in stripped:
+        parts = stripped.split(" ")
+        if len(parts) >= 3:
+            # Try joining last two tokens with hyphen (JSN case)
+            _add(" ".join(parts[:-2] + ["-".join(parts[-2:])]))
+    # Initial-spacing variants: "A.J. Brown" ↔ "AJ Brown" ↔ "A J Brown"
+    # Regex-detect a leading initial block and rewrite in all forms.
+    m = re.match(r"^([A-Z])\.?\s*([A-Z])\.?\s+(.+)$", n)
+    if m:
+        a, b, rest = m.group(1), m.group(2), m.group(3)
+        _add(f"{a}.{b}. {rest}")
+        _add(f"{a}{b} {rest}")
+        _add(f"{a} {b} {rest}")
+        _add(f"{a}.{b} {rest}")
+    return variants
 
 
 async def resolve_nfl_current_team_for_player(
@@ -95,6 +189,11 @@ async def resolve_nfl_current_team_for_player(
     Priority order (highest first):
         1. ``db.players`` sport=nfl exact/variant match      →  current_team
         2. ``db.nfl_player_weekly`` most-recent-season row   →  historical_team + GSIS
+        3. ``_canonical_name_key`` scan across BOTH sources
+           (2026-06-10 · NFL Star Player Root Closure — folds
+           punctuation / initial / apostrophe / hyphen variants that
+           earlier variant list couldn't reach).  Fails closed on
+           ambiguity — never guesses across two different players.
     """
     if not name:
         return None, historical_team_fallback, None
@@ -182,6 +281,89 @@ async def resolve_nfl_current_team_for_player(
                 break
             if gsis_id and historical_team:
                 break
+
+    # ── 3. Canonical-name-key fallback (2026-06-10) ──────────────
+    # If the variant list still failed to resolve BOTH team + gsis,
+    # do one broader scan folding by _canonical_name_key.  This
+    # catches sportsbook forms not covered by the variant list
+    # (e.g. "AJ Brown" ↔ "A.J. Brown", "JaMarr Chase" ↔
+    # "Ja'Marr Chase", "Jaxon Smith Njigba" ↔ "Jaxon Smith-Njigba").
+    if not gsis_id or not current_team:
+        want = _canonical_name_key(name)
+        if want:
+            # First 2 chars of canonical key — apostrophe/period-safe
+            # prefix so "jamarr chase" scans against "Ja'Marr Chase"
+            # too.  Very-short prefixes trade a bit of DB fanout for
+            # complete coverage of the fold classes.
+            first_tok = (want[:2]) if len(want) >= 2 else want[:1]
+            try:
+                cursor = db.players.find(
+                    {"sport": "nfl",
+                     "$or": [
+                         {"name": {"$regex": f"^{first_tok}", "$options": "i"}},
+                         {"display_name": {"$regex": f"^{first_tok}", "$options": "i"}},
+                         {"full_name": {"$regex": f"^{first_tok}", "$options": "i"}},
+                     ]},
+                    {"_id": 0, "player_id": 1, "team": 1, "team_name": 1,
+                     "name": 1, "display_name": 1, "full_name": 1,
+                     "updated_at": 1},
+                ).sort("updated_at", -1).limit(200)
+                matches = []
+                async for r in cursor:
+                    keys = {
+                        _canonical_name_key(r.get(f) or "")
+                        for f in ("name", "display_name", "full_name")
+                    }
+                    if want in keys:
+                        matches.append(r)
+                # Dedupe by player_id — one canonical player may have
+                # multiple rows (legacy + current ingest).  Normalize
+                # numeric vs "espn_1234" string forms so they collapse.
+                def _norm_pid(pid) -> str:
+                    if pid is None:
+                        return ""
+                    s = str(pid)
+                    return s[5:] if s.startswith("espn_") else s
+                _by_pid: dict = {}
+                for r in matches:
+                    pid = r.get("player_id")
+                    if pid is None:
+                        continue
+                    _by_pid.setdefault(_norm_pid(pid), r)
+                if len(_by_pid) == 1:
+                    row = next(iter(_by_pid.values()))
+                    if not current_team:
+                        current_team = (row.get("team_name")
+                                          or row.get("team") or None)
+                    _pid = row.get("player_id")
+                    if _pid and isinstance(_pid, str) and _pid.startswith("00-"):
+                        if not gsis_id:
+                            gsis_id = _pid
+            except Exception as e:
+                logger.debug("canonical-key fallback err %s: %s", name, e)
+
+            # Also scan nfl_player_weekly for GSIS by canonical key.
+            if not gsis_id:
+                try:
+                    cursor = db.nfl_player_weekly.find(
+                        {"$or": [
+                            {"player_display_name": {"$regex": f"^{first_tok}", "$options": "i"}},
+                            {"player_name": {"$regex": f"^{first_tok[0]}\\.", "$options": "i"}},
+                        ]},
+                        {"_id": 0, "player_id": 1, "player_display_name": 1,
+                         "player_name": 1, "team": 1, "season": 1},
+                    ).sort("season", -1).limit(300)
+                    ids_by_key: dict = {}
+                    async for r in cursor:
+                        k = _canonical_name_key(r.get("player_display_name") or "")
+                        if k == want and r.get("player_id"):
+                            ids_by_key.setdefault(r["player_id"], r)
+                    if len(ids_by_key) == 1:
+                        pid, row = next(iter(ids_by_key.items()))
+                        gsis_id = pid
+                        historical_team = historical_team or (row.get("team") or None)
+                except Exception as e:
+                    logger.debug("canonical-key weekly err %s: %s", name, e)
 
     return current_team, historical_team or historical_team_fallback, gsis_id
 
@@ -403,6 +585,38 @@ async def build_nfl_prop_factors(
         # audit hint (visible to the pick rationale) but no longer
         # participates in evidence scoring.
     }
+    # ── 2026-06-10 · NFL Star Player + 93-99 Root Closure · P0-E ─────
+    # Emit the RAW exact-threshold hit probability alongside the
+    # shrunk factor.  The prior architecture only exposed the
+    # anchored/shrunk value, so a genuinely-safe alt rung (e.g. Joe
+    # Burrow Over 199.5 yds ≈ 0.95) was capped at ~0.75 by shrinkage
+    # and further diluted by factor-mean averaging.  This sidecar key
+    # carries the empirical/CDF-derived rung probability so
+    # ``sports_engine`` can use it as the authoritative
+    # ``model_win_prob`` per P0-E (rung-primary, generic factors
+    # calibrate only).
+    _rung_p_hat: Optional[float] = None
+    if _dist:
+        try:
+            from services.nfl_features import distribution_hit_probability as _dhp
+            _rung_p_hat = _dhp(_dist, line, side)
+        except Exception:
+            _rung_p_hat = None
+        # Empirical-samples fallback when the CDF path returns None
+        # (aggregated mean/sd missing but per-game samples present).
+        # Laplace-smoothed to keep the [0.02, 0.99] band.
+        if _rung_p_hat is None and isinstance(_dist.get("samples"), list):
+            _samps = _dist["samples"]
+            if _samps:
+                if str(side or "over").lower() == "under":
+                    _h = sum(1 for x in _samps if x <= line)
+                else:
+                    _h = sum(1 for x in _samps if x >= line)
+                _rung_p_hat = round((_h + 1) / (len(_samps) + 2), 4)
+                _rung_p_hat = max(0.02, min(0.99, _rung_p_hat))
+    factors["__rung_p_hat"] = (
+        float(_rung_p_hat) if _rung_p_hat is not None else None
+    )
     # ── 2026-06-09 · alt-line line-relative factor recompute ─────────
     # Preserve raw metrics that are LINE-INDEPENDENT so the sync
     # emission loop in ``sports_engine._props_picks_from_event`` can
@@ -608,6 +822,32 @@ def recompute_line_dependent_factors(
             p_hat = distribution_hit_probability(_dist, line, side)
         except Exception:
             p_hat = None
+        # NFL Star Player + 93-99 Root Closure (2026-06-10) — P0-E.
+        # Ensure the exact-threshold empirical probability is ALWAYS
+        # emitted when samples exist.  Prior behavior only emitted
+        # ``__rung_p_hat`` from the normal-CDF path, which returns
+        # ``None`` when the distribution's aggregated mean/sd isn't
+        # populated (frequent for lower-volume props).  In that case
+        # the pipeline collapsed to the shrunk factor mean and the
+        # exact-wager probability was lost — a Joe Burrow Over 199.5
+        # got scored on the same generic factor mean as Over 299.5.
+        #
+        # Fallback: smoothed empirical hit-rate with a Laplace prior
+        # (add-1 to hits, add-2 to denominator).  Preserves calibration
+        # on rare-event tails and matches the [0.02, 0.99] clamp of
+        # the CDF path.
+        if p_hat is None and isinstance(_dist.get("samples"), list):
+            _s = _dist["samples"]
+            if _s:
+                if str(side or "over").lower() == "under":
+                    _hits = sum(1 for x in _s if x <= line)
+                else:
+                    _hits = sum(1 for x in _s if x >= line)
+                # Laplace smoothing keeps a 16/16 → 0.944 rather than
+                # 1.000 (numerical certainty would defeat the ceiling
+                # calibration).
+                p_hat = round((_hits + 1) / (len(_s) + 2), 4)
+                p_hat = max(0.02, min(0.99, p_hat))
         new_factors["Threshold Distribution Support"] = _factor_distribution_support(
             _dist, line, side,
         )

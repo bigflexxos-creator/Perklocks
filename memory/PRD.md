@@ -41,3 +41,16 @@ no shared sample sizes, no artificial ceilings on 93-99 Lock Scores.
   pure rec, McCaffrey dual-threat, Henry rush-dominant)
 - Existing NFL-ATD tests: 35 PASS (mock upgraded for v2 path)
 - Full evidence: `/app/memory/atd_part_b_certification.md`
+
+## NFL STAR PLAYER + 93-99 ROOT CLOSURE — CERTIFIED (2026-06-10)
+- Canonical name key (`_canonical_name_key`) folds sportsbook / ESPN / nflverse variants — A.J. Brown ↔ AJ Brown, Ja'Marr ↔ JaMarr, Smith-Njigba ↔ Smith Njigba all resolve to a single canonical GSIS id
+- Player-id dedupe normalization ("espn_1234" ↔ 1234) fixes the Amon-Ra St. Brown-class ambiguity
+- P0-D/E — `__rung_p_hat` (exact-threshold hit probability) now emitted in BOTH primary and alt-line factor paths; empirical Laplace-smoothed fallback when the CDF path returns None
+- P0-E — sports_engine mp-blender changed 60·rung + 40·factor_mean → **85·rung + 15·factor_mean** so exact-threshold probability is primary
+- P0-E — removed pre-scoring `factors.pop("__rung_p_hat")` that stripped the sidecar BEFORE the blender consumed it
+- P0-F — deprecated edge≤0 → 97.9 alt-lines value floor in BOTH pick_refresh_orchestrator and lock_score_integrator
+- P0-G/H — narrowly-scoped NFL player-prop Lock authority in `compute_lock_score`: `LS_max = 60 + wp·40`, evidence-multiplier 0.95-1.00, hard ceiling
+- Star-player runtime trace: all 11 stars resolve to canonical id; 7 have live markets published, 4 legitimately have no markets (team not on slate / provider market missing)
+- 93-96 bucket: 17 → **93** (+5.5×); 96-98 bucket: 3 → **13** (+4.3×); reachability curve `WP=95% → 98, WP=97.5% → 99` verified end-to-end
+- All 16 P0 regression tests + reachability + alt-ladder + block2d stage A tests green
+- Full evidence: `/app/memory/nfl_star_root_closure_certification.md`

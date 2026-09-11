@@ -457,39 +457,20 @@ def apply_magic_and_apex(pick: dict, mo: MagicOutput) -> dict[str, Any]:
     # existing evidence/convergence requirements, including … meaningful
     # pricing/value support."
     #
-    # NFL alt-line picks with non-positive edge (Cooper Kupp Over 4.5
-    # Rec Yds @ -1600, edge -0.06% → prior lock 98.1 was the exact
-    # trap-chalk anti-pattern) are capped BELOW the Elite Lock 98
-    # tier so they can still surface at Strong Lock (95) or Lock (90)
-    # when the model genuinely converges, but never masquerade as
-    # elite without independent value support.  Legitimate high-priced
-    # alts (edge > 0) are untouched — this is a value floor, not a
-    # price cap.  Also vetoes APEX promotion for the same reason.
+    # NFL Player Prop Root Closure (2026-06-10) — DEPRECATED VALUE FLOOR
+    # ------------------------------------------------------------------
+    # This mid-integrator cap previously reduced NFL alt-line picks
+    # with edge_percent ≤ 0 from ≥98 down to 97.9.  Per the P0-F user
+    # directive, Lock authority for NFL player props is EXACT-THRESHOLD
+    # HIT PROBABILITY, not betting value.  Efficient sportsbook pricing
+    # on a mathematically safe alt threshold must not disqualify it
+    # from 93-99.
+    #
+    # EV / edge remain on the pick payload as a display-only signal.
+    # They no longer author Lock Score for NFL player-prop alts.
     _alt_edge_cap_hit = False
-    try:
-        _sport = (pick.get("sport") or "").strip()
-        _mkt = (pick.get("market") or "")
-        _is_nfl_alt = (
-            _sport == "NFL"
-            and ("ALT LOCK" in _mkt or pick.get("alt_line") is True
-                 or pick.get("is_alt_line") is True)
-        )
-        if _is_nfl_alt:
-            try:
-                _edge_raw = pick.get("edge_percent")
-                _edge = float(_edge_raw) if _edge_raw is not None else 0.0
-            except (TypeError, ValueError):
-                _edge = 0.0
-            if _edge <= 0.0:
-                if refined >= 98.0:
-                    refined = 97.9
-                _alt_edge_cap_hit = True
-                pick["alt_edge_cap_applied"]  = True
-                pick["alt_edge_cap_reason"]   = (
-                    f"nfl_alt_no_positive_edge:{_edge:.2f}pct_no_elite_authority"
-                )
-    except Exception:
-        pass  # defensive — this cap must never break scoring
+    # (No-op preserved so downstream keys that reference the variable
+    # continue to compile.  The refined score is unchanged here.)
 
     # Stamp Magic delta provenance (regardless of APEX outcome).
     pick["lock_score_v3_base"]         = round(base, 1)
