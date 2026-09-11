@@ -2060,6 +2060,22 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             logger.info("BoardUtilityLayer: %s", _bul_stats)
     except Exception as _bul_err:
         logger.warning("BoardUtilityLayer skipped: %s", _bul_err)
+    # ── NFL ALT-LADDER LABEL PROJECTION (2026-06-11) ──────────────
+    # READ-TIME rewrite of NFL alt-lock OVER labels to sportsbook-
+    # milestone form (e.g. "Over 199.5 Player Pass Yds · ALT LOCK"
+    # → "200+ Passing Yards").  Applies ONLY to the outgoing
+    # response object; settlement fields (raw ``line`` /
+    # ``threshold``) are UNTOUCHED.  Frozen historical rows in
+    # ``db.picks`` remain immutable per PUBLICATION_CONTRACT §3.
+    try:
+        from services.nfl_alt_label_projection import (
+            apply_nfl_alt_label_projection,
+        )
+        _nfl_lp_stats = apply_nfl_alt_label_projection(picks)
+        if _nfl_lp_stats.get("rewritten"):
+            logger.info("NflAltLabelProjection: %s", _nfl_lp_stats)
+    except Exception as _nfl_lp_err:
+        logger.warning("NflAltLabelProjection skipped: %s", _nfl_lp_err)
     # Phase C4 μ-closure (2026-06) — restore multi-scorer eligibility.
     # Prior code capped goalscorer picks at ``top_n=1`` per event,
     # silently removing legitimate secondary scorers who cleared the
@@ -3148,6 +3164,22 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 "(EBM=%d, rescue_rejected=%s).  Root Closure invariant holds.",
                 len(rescued), len(ebm_ids), rescue_rejected,
             )
+            # NFL Alt-Ladder READ-TIME projection MUST also apply to
+            # rescued picks — they arrive directly from DB and bypass
+            # the earlier apply_nfl_alt_label_projection stage.
+            try:
+                from services.nfl_alt_label_projection import (
+                    apply_nfl_alt_label_projection,
+                )
+                _r_stats = apply_nfl_alt_label_projection(rescued)
+                if _r_stats.get("rewritten"):
+                    logger.info(
+                        "NflAltLabelProjection (rescue path): %s", _r_stats,
+                    )
+            except Exception as _r_lp_err:
+                logger.warning(
+                    "NflAltLabelProjection rescue-path skipped: %s", _r_lp_err,
+                )
             # SLICE 1.2B — rescued picks are extended into `canonical`
             # and pass through the final Lightweight Board DTO projection
             # at the return site (no double strip needed here).

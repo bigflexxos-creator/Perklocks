@@ -1,0 +1,123 @@
+==============================================================================
+STEP 1 — Locate TB @ CIN raw provider payloads
+==============================================================================
+cache collections: ['odds_api_cache']
+  found 0 tb/cin-related cache rows
+
+==============================================================================
+STEP 2 — Raw provider rungs per player/market/book
+==============================================================================
+
+==============================================================================
+STEP 3 — Currently-PUBLISHED canonical picks for the same players
+==============================================================================
+
+  Joe Burrow: 46 published picks
+    line=1.5     odds=-205   book=?          alt=False  Joe Burrow Over 1.5 Player Pass Tds
+    line=4.5     odds=-194   book=?          alt=False  Joe Burrow Over 4.5 Player Rush Yds  · ALT LOCK
+    line=5.5     odds=-115   book=?          alt=False  Joe Burrow Over 5.5 Player Rush Yds
+    line=8.5     odds=-114   book=?          alt=False  Joe Burrow Over 8.5 Player Rush Yds  · ALT LOCK
+    line=9.5     odds=102    book=?          alt=False  Joe Burrow Over 9.5 Player Rush Yds  · ALT LOCK
+    line=14.5    odds=225    book=?          alt=False  Joe Burrow Over 14.5 Player Rush Yds  · ALT LOCK
+    line=18.5    odds=193    book=?          alt=False  Joe Burrow Over 18.5 Player Rush Yds  · ALT LOCK
+    line=19.5    odds=356    book=?          alt=False  Joe Burrow Over 19.5 Player Rush Yds  · ALT LOCK
+    line=24.5    odds=-112   book=?          alt=False  Joe Burrow Over 24.5 Player Pass Completions
+    line=28.5    odds=425    book=?          alt=False  Joe Burrow Over 28.5 Player Rush Yds  · ALT LOCK
+    line=29.5    odds=920    book=?          alt=False  Joe Burrow Over 29.5 Player Rush Yds  · ALT LOCK
+    line=34.5    odds=-120   book=?          alt=False  Joe Burrow Over 34.5 Player Pass Attempts
+    line=239.5   odds=-218   book=?          alt=False  Joe Burrow Over 239.5 Player Pass Yds  · ALT LOCK
+    line=247.5   odds=-179   book=?          alt=False  Joe Burrow Over 247.5 Player Pass Yds  · ALT LOCK
+    line=249.5   odds=-182   book=?          alt=False  Joe Burrow Over 249.5 Player Pass Yds  · ALT LOCK
+    line=257.5   odds=-143   book=?          alt=False  Joe Burrow Over 257.5 Player Pass Yds  · ALT LOCK
+    line=259.5   odds=-145   book=?          alt=False  Joe Burrow Over 259.5 Player Pass Yds  · ALT LOCK
+    line=267.5   odds=-116   book=?          alt=False  Joe Burrow Over 267.5 Player Pass Yds  · ALT LOCK
+    line=268.5   odds=-112   book=?          alt=False  Joe Burrow Over 268.5 Player Pass Yds  · ALT LOCK
+    line=269.5   odds=-113   book=?          alt=False  Joe Burrow Over 269.5 Player Pass Yds  · ALT LOCK
+    line=274.5   odds=108    book=?          alt=False  Joe Burrow Over 274.5 Player Pass Yds  · ALT LOCK
+    line=277.5   odds=102    book=?          alt=False  Joe Burrow Over 277.5 Player Pass Yds  · ALT LOCK
+    line=279.5   odds=112    book=?          alt=False  Joe Burrow Over 279.5 Player Pass Yds  · ALT LOCK
+    line=287.5   odds=119    book=?          alt=False  Joe Burrow Over 287.5 Player Pass Yds  · ALT LOCK
+    line=289.5   odds=139    book=?          alt=False  Joe Burrow Over 289.5 Player Pass Yds  · ALT LOCK
+    line=297.5   odds=140    book=?          alt=False  Joe Burrow Over 297.5 Player Pass Yds  · ALT LOCK
+    line=299.5   odds=172    book=?          alt=False  Joe Burrow Over 299.5 Player Pass Yds  · ALT LOCK
+    line=307.5   odds=164    book=?          alt=False  Joe Burrow Over 307.5 Player Pass Yds  · ALT LOCK
+    line=309.5   odds=216    book=?          alt=False  Joe Burrow Over 309.5 Player Pass Yds  · ALT LOCK
+    line=317.5   odds=192    book=?          alt=False  Joe Burrow Over 317.5 Player Pass Yds  · ALT LOCK
+
+  Baker Mayfield: 19 published picks
+    line=1.5     odds=-105   book=?          alt=False  Baker Mayfield Over 1.5 Player Pass Tds
+    line=3.5     odds=-115   book=?          alt=False  Baker Mayfield Over 3.5 Player Rush Attempts
+    line=4.5     odds=-670   book=?          alt=False  Baker Mayfield Over 4.5 Player Rush Yds  · ALT LOCK
+    line=9.5     odds=-260   book=?          alt=False  Baker Mayfield Over 9.5 Player Rush Yds  · ALT LOCK
+    line=14.5    odds=-130   book=?          alt=False  Baker Mayfield Over 14.5 Player Rush Yds  · ALT LOCK
+    line=15.5    odds=-120   book=?          alt=False  Baker Mayfield Over 15.5 Player Rush Yds
+    line=16.5    odds=-111   book=?          alt=False  Baker Mayfield Over 16.5 Player Rush Yds  · ALT LOCK
+    line=19.5    odds=122    book=?          alt=False  Baker Mayfield Over 19.5 Player Rush Yds  · ALT LOCK
+    line=24.5    odds=191    book=?          alt=False  Baker Mayfield Over 24.5 Player Rush Yds  · ALT LOCK
+    line=26.5    odds=143    book=?          alt=False  Baker Mayfield Over 26.5 Player Rush Yds  · ALT LOCK
+    line=29.5    odds=285    book=?          alt=False  Baker Mayfield Over 29.5 Player Rush Yds  · ALT LOCK
+    line=31.5    odds=-110   book=?          alt=False  Baker Mayfield Over 31.5 Player Pass Attempts
+    line=36.5    odds=230    book=?          alt=False  Baker Mayfield Over 36.5 Player Rush Yds  · ALT LOCK
+    line=39.5    odds=650    book=?          alt=False  Baker Mayfield Over 39.5 Player Rush Yds  · ALT LOCK
+    line=46.5    odds=380    book=?          alt=False  Baker Mayfield Over 46.5 Player Rush Yds  · ALT LOCK
+    line=274.5   odds=235    book=?          alt=False  Baker Mayfield Over 274.5 Player Pass Yds  · ALT LOCK
+    line=299.5   odds=375    book=?          alt=False  Baker Mayfield Over 299.5 Player Pass Yds  · ALT LOCK
+    line=309.5   odds=400    book=?          alt=False  Baker Mayfield Over 309.5 Player Pass Yds  · ALT LOCK
+    line=319.5   odds=500    book=?          alt=False  Baker Mayfield Over 319.5 Player Pass Yds  · ALT LOCK
+
+  Ja'Marr Chase: 24 published picks
+    line=5.5     odds=-310   book=?          alt=False  Ja'Marr Chase Over 5.5 Player Receptions  · ALT LOCK
+    line=6.5     odds=-158   book=?          alt=False  Ja'Marr Chase Over 6.5 Player Receptions  · ALT LOCK
+    line=7.5     odds=116    book=?          alt=False  Ja'Marr Chase Over 7.5 Player Receptions  · ALT LOCK
+    line=8.5     odds=194    book=?          alt=False  Ja'Marr Chase Over 8.5 Player Receptions  · ALT LOCK
+    line=9.5     odds=320    book=?          alt=False  Ja'Marr Chase Over 9.5 Player Receptions  · ALT LOCK
+    line=10.5    odds=550    book=?          alt=False  Ja'Marr Chase Over 10.5 Player Receptions  · ALT LOCK
+    line=11.5    odds=800    book=?          alt=False  Ja'Marr Chase Over 11.5 Player Receptions  · ALT LOCK
+    line=69.5    odds=-225   book=?          alt=False  Ja'Marr Chase Over 69.5 Player Reception Yds  · ALT LOCK
+    line=79.5    odds=-148   book=?          alt=False  Ja'Marr Chase Over 79.5 Player Reception Yds  · ALT LOCK
+    line=83.5    odds=-118   book=?          alt=False  Ja'Marr Chase Over 83.5 Player Reception Yds
+    line=85.5    odds=-110   book=?          alt=False  Ja'Marr Chase Over 85.5 Player Reception Yds  · ALT LOCK
+    line=89.5    odds=102    book=?          alt=False  Ja'Marr Chase Over 89.5 Player Reception Yds  · ALT LOCK
+    line=95.5    odds=117    book=?          alt=False  Ja'Marr Chase Over 95.5 Player Reception Yds  · ALT LOCK
+    line=99.5    odds=148    book=?          alt=False  Ja'Marr Chase Over 99.5 Player Reception Yds  · ALT LOCK
+    line=105.5   odds=155    book=?          alt=False  Ja'Marr Chase Over 105.5 Player Reception Yds  · ALT LOCK
+    line=109.5   odds=200    book=?          alt=False  Ja'Marr Chase Over 109.5 Player Reception Yds  · ALT LOCK
+    line=115.5   odds=210    book=?          alt=False  Ja'Marr Chase Over 115.5 Player Reception Yds  · ALT LOCK
+    line=119.5   odds=304    book=?          alt=False  Ja'Marr Chase Over 119.5 Player Reception Yds  · ALT LOCK
+    line=124.5   odds=320    book=?          alt=False  Ja'Marr Chase Over 124.5 Player Reception Yds  · ALT LOCK
+    line=125.5   odds=270    book=?          alt=False  Ja'Marr Chase Over 125.5 Player Reception Yds  · ALT LOCK
+    line=129.5   odds=425    book=?          alt=False  Ja'Marr Chase Over 129.5 Player Reception Yds  · ALT LOCK
+    line=135.5   odds=370    book=?          alt=False  Ja'Marr Chase Over 135.5 Player Reception Yds  · ALT LOCK
+    line=139.5   odds=430    book=?          alt=False  Ja'Marr Chase Over 139.5 Player Reception Yds  · ALT LOCK
+    line=145.5   odds=500    book=?          alt=False  Ja'Marr Chase Over 145.5 Player Reception Yds  · ALT LOCK
+
+  Tee Higgins: 2 published picks
+    line=7.5     odds=475    book=?          alt=False  Tee Higgins Over 7.5 Player Receptions  · ALT LOCK
+    line=60.5    odds=-114   book=?          alt=False  Tee Higgins Over 60.5 Player Reception Yds  · ALT LOCK
+
+  Cade Otton: 25 published picks
+    line=2.5     odds=-220   book=?          alt=False  Cade Otton Over 2.5 Player Receptions  · ALT LOCK
+    line=3.5     odds=110    book=?          alt=False  Cade Otton Over 3.5 Player Receptions  · ALT LOCK
+    line=4.5     odds=229    book=?          alt=False  Cade Otton Over 4.5 Player Receptions  · ALT LOCK
+    line=5.5     odds=450    book=?          alt=False  Cade Otton Over 5.5 Player Receptions  · ALT LOCK
+    line=6.5     odds=850    book=?          alt=False  Cade Otton Over 6.5 Player Receptions  · ALT LOCK
+    line=14.5    odds=-398   book=?          alt=False  Cade Otton Over 14.5 Player Reception Yds  · ALT LOCK
+    line=19.5    odds=-278   book=?          alt=False  Cade Otton Over 19.5 Player Reception Yds  · ALT LOCK
+    line=20.5    odds=-238   book=?          alt=False  Cade Otton Over 20.5 Player Reception Yds  · ALT LOCK
+    line=21.5    odds=-244   book=?          alt=False  Cade Otton Over 21.5 Player Reception Yds  · ALT LOCK
+    line=24.5    odds=-190   book=?          alt=False  Cade Otton Over 24.5 Player Reception Yds  · ALT LOCK
+    line=29.5    odds=-125   book=?          alt=False  Cade Otton Over 29.5 Player Reception Yds  · ALT LOCK
+    line=30.5    odds=-109   book=?          alt=False  Cade Otton Over 30.5 Player Reception Yds  · ALT LOCK
+    line=31.5    odds=-110   book=?          alt=False  Cade Otton Over 31.5 Player Reception Yds  · ALT LOCK
+    line=39.5    odds=145    book=?          alt=False  Cade Otton Over 39.5 Player Reception Yds  · ALT LOCK
+    line=40.5    odds=132    book=?          alt=False  Cade Otton Over 40.5 Player Reception Yds  · ALT LOCK
+    line=41.5    odds=131    book=?          alt=False  Cade Otton Over 41.5 Player Reception Yds  · ALT LOCK
+    line=49.5    odds=250    book=?          alt=False  Cade Otton Over 49.5 Player Reception Yds  · ALT LOCK
+    line=50.5    odds=193    book=?          alt=False  Cade Otton Over 50.5 Player Reception Yds  · ALT LOCK
+    line=51.5    odds=193    book=?          alt=False  Cade Otton Over 51.5 Player Reception Yds  · ALT LOCK
+    line=59.5    odds=408    book=?          alt=False  Cade Otton Over 59.5 Player Reception Yds  · ALT LOCK
+    line=60.5    odds=280    book=?          alt=False  Cade Otton Over 60.5 Player Reception Yds  · ALT LOCK
+    line=61.5    odds=290    book=?          alt=False  Cade Otton Over 61.5 Player Reception Yds  · ALT LOCK
+    line=69.5    odds=650    book=?          alt=False  Cade Otton Over 69.5 Player Reception Yds  · ALT LOCK
+    line=70.5    odds=425    book=?          alt=False  Cade Otton Over 70.5 Player Reception Yds  · ALT LOCK
+    line=71.5    odds=425    book=?          alt=False  Cade Otton Over 71.5 Player Reception Yds  · ALT LOCK

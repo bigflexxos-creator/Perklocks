@@ -54,3 +54,23 @@ no shared sample sizes, no artificial ceilings on 93-99 Lock Scores.
 - 93-96 bucket: 17 → **93** (+5.5×); 96-98 bucket: 3 → **13** (+4.3×); reachability curve `WP=95% → 98, WP=97.5% → 99` verified end-to-end
 - All 16 P0 regression tests + reachability + alt-ladder + block2d stage A tests green
 - Full evidence: `/app/memory/nfl_star_root_closure_certification.md`
+
+
+## NFL ITER 138 — Read-Time Alt-Ladder Label Projection (2026-06-11)
+Testing-agent certification of the 4 prior NFL closures uncovered
+ONE wiring gap: historical NFL alt-lock rows frozen in `db.picks`
+before the `_prop_market_label` fix still carried raw provider
+strings (`Over 14.5 Player Reception Yds  · ALT LOCK`).  Per
+PUBLICATION_CONTRACT §3 those rows are immutable.
+- NEW `services/nfl_alt_label_projection.py` — READ-TIME rewrite
+  of NFL alt-lock OVER labels to sportsbook-milestone form
+  (`Rashee Rice 4+ Receptions`, `Patrick Mahomes 175+ Passing
+  Yards`).  Settlement anchors (`line` / `threshold`) are NOT
+  mutated.  Idempotent.
+- Wired at TWO points in `routes/picks_routes.py::picks_today`:
+  primary board + rescue-injection path (`canonical.extend(rescued)`).
+- Live proof: 908 NFL picks · 801 milestone-form · **0 raw ALT LOCK
+  labels remaining** in the `/api/picks/today?sport=NFL` response.
+- 14/14 new projection tests pass; 43/43 combined NFL regression
+  passes (1 xfail = trap-chalk cap intentionally removed).
+- Full evidence: `/app/memory/nfl_iter138_verification_certification.md`

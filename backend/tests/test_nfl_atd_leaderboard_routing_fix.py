@@ -13,7 +13,7 @@ import os
 import requests
 import pytest
 
-BASE_URL = os.environ["EXPO_PUBLIC_BACKEND_URL"].rstrip("/")
+BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "http://localhost:8001").rstrip("/")
 DEMO_EMAIL = "demo@lockscore.ai"
 DEMO_PW = "demo123"
 
