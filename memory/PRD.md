@@ -73,4 +73,27 @@ PUBLICATION_CONTRACT §3 those rows are immutable.
   labels remaining** in the `/api/picks/today?sport=NFL` response.
 - 14/14 new projection tests pass; 43/43 combined NFL regression
   passes (1 xfail = trap-chalk cap intentionally removed).
+
+## NFL ITER 139 — ATD Tab + Alt-Ladder Filter Pills + Star Watchlist (2026-06-11)
+Continuous surgical NFL build.  Additive READ-path UX only.
+- **ATD Tab** (`app/(tabs)/atd.tsx`): MLB HR-style toggle between
+  🔥 Top 5 Today (whole-slate rank, no per-game quota) and 📋 By Game
+  (grouped by canonical matchup).  Real ATD odds surfaced via new
+  `ATD -168` chip.  Uses existing `/nfl/atd/leaderboard` +
+  `/nfl/atd/by-game` — canonical publication rows, one player = one
+  ATD score across views.
+- **Alt-Ladder Filter Pills**: already-wired canonical NFL market
+  chips (PASS YDS / RUSH YDS / REC YDS / RECEPTIONS + others)
+  proven zero-cross-family-leakage at runtime.
+- **NFL Star Watchlist**: new `stars_only=true` query param on
+  `/api/picks/today` narrows NFL response to `elite_players`
+  roster.  Applied on primary path AND rescue-injection path.
+  Visibility-only — 359/359 picks compared before/after: zero
+  scoring-field mutations.  Composes with market chips
+  (STARS + PASS YDS → 75 star-QB rows).
+- 49/49 targeted NFL regression tests pass (1 xfail correctly).
+- Iter 138 non-regression holds: 908 NFL total · 801 milestone-form
+  · 0 raw ` · ALT LOCK`.
+- Full evidence: `/app/memory/nfl_iter139_atd_stars_filters_certification.md`
+
 - Full evidence: `/app/memory/nfl_iter138_verification_certification.md`

@@ -578,6 +578,11 @@ export type PickFilters = {
   /** Sim Edge floor (0–100). When > 0, hide picks below this Monte
    *  Carlo win-probability threshold. 0 / undefined = no filter. */
   simEdgeFloor?: number;
+  /** NFL Star Player Watchlist — visibility-only filter that keeps
+   *  only canonical picks whose player identity matches the curated
+   *  NFL star roster.  DOES NOT change Lock Scores, WP, evidence,
+   *  or publication state (2026-06-11). */
+  starsOnly?: boolean;
 };
 
 export type SportMarket = { token: string; label: string };
@@ -1283,6 +1288,8 @@ export const api = {
     if (filters?.maxImplied != null) qs.set("max_implied", String(filters.maxImplied));
     if (filters?.market) qs.set("market", filters.market);
     if (filters?.league) qs.set("league", filters.league);
+    // NFL Star Watchlist — visibility-only filter (2026-06-11).
+    if (filters?.starsOnly) qs.set("stars_only", "true");
     // Lite payload — strip detail-only fields (sportsbook_mapping,
     // evidence_breakdown, probability, etc). 5x smaller payload
     // (~1.5MB → ~300KB) for a much snappier home tab. The pick-detail
@@ -2048,6 +2055,21 @@ export const api = {
     request<NFLAtdLeaderboardResponse>(
       `/nfl/atd/leaderboard?limit=${limit}&min_probability=${minProbability}&min_opportunity_rating=${minOpportunityRating}`,
     ),
+  // ── ATD BY GAME (2026-06-11) ─────────────────────────────────────
+  // Groups the SAME canonical ATD publication rows by matchup so the
+  // ATD tab can render an MLB-HR-style toggle: Top 5 Today vs By Game.
+  // One player = one TD probability, identical tie-breaking to the
+  // global leaderboard (see /nfl/atd/by-game).
+  nflAtdByGame: (
+    topNPerGame: number = 5,
+    minProbability: number = 0.05,
+    minOpportunityRating: "low" | "med" | "high" | "elite" = "low",
+  ) =>
+    request<NFLAtdByGameResponse>(
+      `/nfl/atd/by-game?top_n_per_game=${topNPerGame}` +
+        `&min_probability=${minProbability}` +
+        `&min_opportunity_rating=${minOpportunityRating}`,
+    ),
   nflGameSafeBets: (limit: number = 10, minProbability: number = 0.78) =>
     request<NFLGameSafeBetsResponse>(
       `/nfl/games/safe-bets?limit=${limit}&min_probability=${minProbability}`,
@@ -2105,11 +2127,21 @@ export type NFLAtdPick = {
   td_probability: number;
   confidence: number;
   opportunity_rating: "low" | "med" | "high" | string;
-  weighted_touches_recent: number;
-  weighted_tds_recent: number;
+  /** Present on `/atd/leaderboard`; absent on `/atd/by-game`. */
+  weighted_touches_recent?: number;
+  /** Present on `/atd/leaderboard`; absent on `/atd/by-game`. */
+  weighted_tds_recent?: number;
   is_rb_archetype?: boolean;
-  sample_games: number;
+  sample_games?: number;
   reasons: string[];
+  /** Real sportsbook ATD odds (American). Present when a canonical
+   *  publication row is available; NULL otherwise. Never synthesised. */
+  book_odds?: number | null;
+  /** Sportsbook-implied % for the ATD wager (0-100). */
+  implied_probability?: number | null;
+  /** Lock Score already computed by the canonical scoring pipeline. */
+  lock_score?: number | null;
+  position?: string | null;
 };
 export type NFLAtdLeaderboardResponse = {
   total_candidates: number;
@@ -2118,6 +2150,26 @@ export type NFLAtdLeaderboardResponse = {
   rules: Record<string, unknown>;
   league_means?: Record<string, number>;
   picks: NFLAtdPick[];
+};
+
+export type NFLAtdByGameGroup = {
+  event: string;
+  canonical_event_id?: string;
+  event_time?: string;
+  home_team?: string;
+  away_team?: string;
+  candidates_in_game: number;
+  picks: NFLAtdPick[];
+};
+export type NFLAtdByGameResponse = {
+  mode: string;
+  games_count: number;
+  candidates_total: number;
+  picks_returned: number;
+  top_n_per_game: number;
+  rules?: Record<string, unknown>;
+  games: NFLAtdByGameGroup[];
+  note?: string;
 };
 
 export type NFLGamePick = {
