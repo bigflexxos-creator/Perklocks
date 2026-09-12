@@ -331,7 +331,99 @@ async def refresh_all(db, year: Optional[int] = None) -> dict[str, int]:
     except Exception as e:
         logger.warning("CFB sp_ratings fetch failed: %s", e)
         counts["sp_ratings"] = 0
+    try:
+        counts["advanced_stats"] = await fetch_advanced_stats(db, year)
+    except Exception as e:
+        logger.warning("CFB advanced_stats fetch failed: %s", e)
+        counts["advanced_stats"] = 0
     return counts
+
+
+# ─── Advanced season stats (EPA/PPA, success rate, explosiveness,
+#     havoc, finishing drives, red-zone) ──────────────────────────
+async def fetch_advanced_stats(db, year: int) -> int:
+    """Populate ``cfb_advanced_stats`` from CFBD /stats/season/advanced.
+
+    Real inputs surfaced per team:
+      offense.ppa / successRate / explosiveness / pointsPerOpportunity
+      offense.passingPlays.ppa / .successRate / .explosiveness
+      offense.rushingPlays.ppa / .successRate / .explosiveness
+      offense.standardDowns / passingDowns  (success rate)
+      defense.ppa / successRate / explosiveness / pointsPerOpportunity
+      defense.havoc.total / frontSeven / db
+      defense.passingPlays / rushingPlays
+      offense.fieldPosition.averageStart
+      defense.fieldPosition.averageStart
+
+    Data is season-averaged; per-week temporal integrity is handled
+    at CHALLENGER read-time by preferring PRIOR-year data for early-
+    season projections and blending in current-season SP+ diffs as
+    the season progresses.
+    """
+    async with httpx.AsyncClient() as client:
+        rows = await _get(client, f"/stats/season/advanced?year={year}")
+    if not rows:
+        return 0
+    await db.cfb_advanced_stats.create_index(
+        [("year", 1), ("team", 1)], unique=True, background=True)
+
+    def _n(d: dict, *path):
+        cur: Any = d
+        for k in path:
+            if not isinstance(cur, dict):
+                return None
+            cur = cur.get(k)
+        try:
+            return float(cur) if cur is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    n = 0
+    for r in rows:
+        team = r.get("team")
+        if not team:
+            continue
+        doc = {
+            "year": year,
+            "team": team,
+            "conference": r.get("conference"),
+            # Offense
+            "off_ppa":              _n(r, "offense", "ppa"),
+            "off_success_rate":     _n(r, "offense", "successRate"),
+            "off_explosiveness":    _n(r, "offense", "explosiveness"),
+            "off_points_per_opp":   _n(r, "offense", "pointsPerOpportunity"),
+            "off_pass_ppa":         _n(r, "offense", "passingPlays", "ppa"),
+            "off_pass_success":     _n(r, "offense", "passingPlays", "successRate"),
+            "off_pass_explosive":   _n(r, "offense", "passingPlays", "explosiveness"),
+            "off_rush_ppa":         _n(r, "offense", "rushingPlays", "ppa"),
+            "off_rush_success":     _n(r, "offense", "rushingPlays", "successRate"),
+            "off_rush_explosive":   _n(r, "offense", "rushingPlays", "explosiveness"),
+            "off_standard_success": _n(r, "offense", "standardDowns", "successRate"),
+            "off_passing_success":  _n(r, "offense", "passingDowns", "successRate"),
+            "off_field_pos_avg":    _n(r, "offense", "fieldPosition", "averageStart"),
+            # Defense
+            "def_ppa":              _n(r, "defense", "ppa"),
+            "def_success_rate":     _n(r, "defense", "successRate"),
+            "def_explosiveness":    _n(r, "defense", "explosiveness"),
+            "def_points_per_opp":   _n(r, "defense", "pointsPerOpportunity"),
+            "def_pass_ppa":         _n(r, "defense", "passingPlays", "ppa"),
+            "def_pass_success":     _n(r, "defense", "passingPlays", "successRate"),
+            "def_rush_ppa":         _n(r, "defense", "rushingPlays", "ppa"),
+            "def_rush_success":     _n(r, "defense", "rushingPlays", "successRate"),
+            "def_field_pos_avg":    _n(r, "defense", "fieldPosition", "averageStart"),
+            # Havoc / disruption
+            "def_havoc_total":      _n(r, "defense", "havoc", "total"),
+            "def_havoc_front7":     _n(r, "defense", "havoc", "frontSeven"),
+            "def_havoc_db":         _n(r, "defense", "havoc", "db"),
+            "_fetched_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.cfb_advanced_stats.update_one(
+            {"year": year, "team": team},
+            {"$set": doc}, upsert=True,
+        )
+        n += 1
+    logger.info("CFB advanced_stats: %d team rows for %d", n, year)
+    return n
 
 
 async def loop(db, interval_hours: int = 24) -> None:
