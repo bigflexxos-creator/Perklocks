@@ -416,6 +416,19 @@ SOCCER_MARKETS = [
     # budget on first-goalscorer markets in this repair.
     "player_goal_scorer_anytime",
     "player_to_score_or_assist",
+    # 2026-06-11 — SHOTS / SOT / ASSISTS acquisition (per user
+    # directive "wire existing Odds API player-prop markets").  These
+    # keys are confirmed live on the current API subscription (EPL
+    # returns real bookmaker prices at 11 books for player_shots +
+    # player_shots_on_target + player_assists) and the downstream
+    # ingester + settlement bridge (`real_line_scorer_ingest`,
+    # `services/providers/pitchapi`) already handle them.  Missing
+    # only from acquisition — added here so live_alt_lines starts
+    # carrying rows and the existing publication pipeline surfaces
+    # picks on the boards.
+    "player_shots",
+    "player_shots_on_target",
+    "player_assists",
     # Game markets.  `alternate_totals` provides the multi-line
     # Over/Under surface (1.5 / 2.0 / 2.5 / 3.0 / ...).  `btts` is the
     # Both Teams to Score market.  `double_chance` is the real

@@ -4144,7 +4144,10 @@ PLAYER_PROP_MARKETS = {
     "Soccer": [
         "player_goal_scorer_anytime",
         "player_to_score_or_assist",
-        "player_anytime_assist",
+        # 2026-06-11 — corrected from invalid `player_anytime_assist`
+        # (returned 422 INVALID_MARKET) to the real Odds API key
+        # `player_assists` (verified live: EPL returns 2 books).
+        "player_assists",
         "player_shots",
         "player_shots_on_target",
     ],

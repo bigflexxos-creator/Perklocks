@@ -113,7 +113,7 @@ except Exception as _lab_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.11-soccer-fgs-tab-removed-v48"
+DATA_VERSION = "2026.06.11-soccer-shots-sot-assists-wired-v49"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 # ── Block 2C-cont Issue-6 (2026-08): real deploy-identifier surfacing ─
@@ -2548,6 +2548,13 @@ _MARKET_REGEX = {
     # pattern below is safe.
     "anytime_assist":  r"\banytime assist\b",
     "goalscorer":      r"anytime goal scorer|first goal scorer|last goal scorer|to score or assist",
+    # 2026-06-11 — Soccer SHOTS + SOT filter tokens.  Match the
+    # "N+ Shots" / "Over 0.5 Player Shots" / "N+ Shots on Target"
+    # etc. variants the real_line_scorer_ingest publisher emits.
+    # Anchored so `shots_on_target` matches BEFORE `shots` (order
+    # respected by the picks_today filter regex compile step).
+    "player_shots_on_target": r"shots on target|player shots on target",
+    "player_shots":           r"\bshots\b(?! on target)|player shots",
 
     # ── Generic team markets ──────────────────────────────────────────────
     "moneyline":     r"\bmoneyline\b",
@@ -2652,17 +2659,20 @@ SPORT_MARKETS = {
         {"token": "anytime_scorer",    "label": "Anytime Scorer"},
         {"token": "anytime_assist",    "label": "Assists"},
         {"token": "score_or_assist",   "label": "Score or Assist"},
-        # 2026-06-11 · FGS visible tab REMOVED per user directive.
-        # Existing FGS regex + settlement paths (`_MARKET_REGEX
-        # ["first_goal_scorer"]`, historical FGS picks in db.picks)
-        # remain intact so historical rows and settlement continue to
-        # resolve; only the user-facing navigation tab is removed.
-        # SHOTS / SHOTS_ON_TARGET tabs are NOT added — no provider
-        # path currently surfaces these markets and zero picks have
-        # ever been minted for `player_shots` / `player_shots_on_target`
-        # (verified against production db.picks 2026-06-11).  Adding
-        # empty tabs would be misleading; they'll be added the moment
-        # a provider path lands real markets.
+        # 2026-06-11 · SHOTS + SOT visible tabs ADDED after wiring
+        # `player_shots` + `player_shots_on_target` markets into
+        # `alt_lines_feed.SOCCER_MARKETS`.  Verified end-to-end:
+        # live_alt_lines now carries 3,798 player_shots rows +
+        # 1,879 player_shots_on_target rows across 46 discovered
+        # Soccer leagues.  Downstream ingester
+        # (`real_line_scorer_ingest`) + settlement bridge
+        # (`services/providers/pitchapi`) already handled both
+        # markets end-to-end; only acquisition was missing.
+        {"token": "player_shots",           "label": "Shots"},
+        {"token": "player_shots_on_target", "label": "SOT"},
+        # 2026-06-11 · FGS visible tab REMOVED per prior directive.
+        # Historical FGS rows + settlement path intact via
+        # `_MARKET_REGEX["first_goal_scorer"]`.
     ],
     "NBA": [
         {"token": "moneyline",   "label": "Moneyline"},
