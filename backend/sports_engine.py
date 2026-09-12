@@ -2070,6 +2070,23 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     pick={"book_odds": side_ml, "edge_percent": _e_ml,
                           "win_probability": mp * 100},
                     edge_percent=_e_ml)
+            elif sport == "CFB":
+                # 2026-06-11 · CFB FALSE HIGH-LOCK FIX — route CFB
+                # moneyline through the same authoritative Lock Score
+                # path as NFL (real pick/context: book_odds, win_prob,
+                # edge_percent).  Previously fell through the legacy
+                # ``pick=None`` branch which mapped raw win-prob into
+                # a 90s score regardless of evidence quality; combined
+                # with the (also fixed) first-token team-name collision
+                # in ``services/cfb_game_model._lookup`` this produced
+                # e.g. Texas Southern ML +1500 LS=98.
+                _e_ml = round((mp - _implied_prob(side_ml)) * 100, 2)
+                lock, breakdown = compute_lock_score(
+                    factors, win_prob=mp * 100,
+                    pick={"book_odds": side_ml, "edge_percent": _e_ml,
+                          "win_probability": mp * 100,
+                          "sport": "CFB", "market": f"{side} Moneyline"},
+                    edge_percent=_e_ml)
             else:
                 lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
             _opp_ml_prices = [away_ml if side == home else home_ml]

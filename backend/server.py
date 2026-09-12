@@ -113,7 +113,7 @@ except Exception as _lab_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.08.08-canonical-board-cache-v46"
+DATA_VERSION = "2026.06.11-nfl-iter139-star-watchlist-v47"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 # ── Block 2C-cont Issue-6 (2026-08): real deploy-identifier surfacing ─

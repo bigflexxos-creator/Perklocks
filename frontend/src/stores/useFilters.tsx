@@ -191,7 +191,16 @@ function reducer(state: FilterState, action: Action): FilterState {
 // on every device's first SDK 57 launch so the categorical filter
 // arrays cannot silently contaminate the ALL tab.  Runtime shape
 // unchanged.
-const STORAGE_KEY = "perkslocks_filters_v7";
+// v8 (Iter 139, 2026-06-11): Expo Go still rendering pre-Iter138/139
+// NFL player-prop board even though production Web shows the new
+// 93+ picks.  Root cause is a persisted v7 snapshot carrying a
+// restrictive ``markets`` array from a prior session that silently
+// filters out the newly-earned high-Lock alt-yardage rungs on the
+// ALL tab.  Bumping to v8 drops the v7 snapshot on every device's
+// next launch so the ALL/NFL tab starts fresh and hydrates the full
+// canonical board.  Runtime shape unchanged; adds one optional
+// ``starsOnly`` scalar for the NFL Star Watchlist pill.
+const STORAGE_KEY = "perkslocks_filters_v8";
 
 async function loadPersisted(): Promise<Partial<FilterState> | null> {
   try {

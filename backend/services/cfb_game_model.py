@@ -105,6 +105,23 @@ def _team_key(name: str) -> str:
 
 
 def _lookup(m: dict, name: str) -> Optional[dict]:
+    """Resolve a team name in the ratings/context map ``m``.
+
+    Resolution ladder (fail closed at the end):
+      1. Exact normalized identity (case/whitespace-insensitive).
+      2. Explicit mascot-suffix trimming ("Alabama Crimson Tide" →
+         "Alabama") — hard-coded, alias-like, safe because it only
+         drops the FQN mascot suffix and re-checks for an exact hit.
+      3. FAIL CLOSED — return None.
+
+    2026-06-11 · REMOVED unsafe first-token fallback that was
+    resolving "Texas Southern" → "texas" (Texas Longhorns) and
+    similar collisions (Texas A&M / Texas State / Texas Tech all
+    normalized to the flagship "texas" ratings row).  Downstream
+    scoring then treated Texas Southern as if it were Texas,
+    producing a fabricated 98 Lock Score at a +1500 dog line.
+    Fix: exact identity OR explicit alias only; no first-token match.
+    """
     if not name or not m: return None
     n = _team_key(name)
     if n in m: return m[n]
@@ -120,8 +137,7 @@ def _lookup(m: dict, name: str) -> Optional[dict]:
         if n.endswith(stop):
             trimmed = n[: -len(stop)]
             if trimmed in m: return m[trimmed]
-    first = n.split()[0] if n.split() else ""
-    if first and first in m: return m[first]
+    # NO first-token fallback — fail closed on ambiguous names.
     return None
 
 
