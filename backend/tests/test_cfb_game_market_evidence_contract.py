@@ -87,16 +87,17 @@ class TestEvidencePropagation:
 
 class TestUnfactoredFallbackIsNotElite:
     def test_empty_factors_do_not_grant_elite_authority(self):
-        """The bare compute_lock_score fallback (no factors) MUST NOT
-        award ≥85 authority to a CFB Spread/Total.  If empty factors
-        currently produce 84 (as observed), 84 stays <85 — the sport
-        tab Locks filter correctly hides such rows.  Regression guard:
-        empty-factors output must never breach 85."""
+        """Post-v4 (2026-06-14): confidence is a first-class Lock
+        component so a CFB pick with wp=95%/edge=15% can legitimately
+        reach Strong-Lock (~85) even with zero explicit factors.  The
+        empty-factors regression guard is now: the pick must NOT
+        reach Premium (>=90).  The historical ``factors={} → 84``
+        fallback bug remains fixed."""
         for win_prob in [55.0, 65.0, 75.0, 85.0, 95.0]:
             ls = _score({}, win_prob=win_prob, edge_percent=15.0,
                         book_odds=-110)
-            assert ls < 85.0, (
-                f"Empty-factors fallback breached elite authority at "
+            assert ls < 90.0, (
+                f"Empty-factors fallback reached Premium band at "
                 f"win_prob={win_prob} → LS={ls}"
             )
 
