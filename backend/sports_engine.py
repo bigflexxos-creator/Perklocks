@@ -41,12 +41,18 @@ SPORT_KEYS: dict[str, list[str]] = {
     # "WNBA": ["basketball_wnba"],  # DISABLED — killing ROI (-31% Player Points)
     "NFL": ["americanfootball_nfl", "americanfootball_nfl_preseason"],
     # CFB (College Football) — Week 0 is mid-late August. The Odds API
-    # key `americanfootball_ncaaf` covers FBS (and some FCS) games.
-    # We piggyback on the NFL pipeline architecture — same markets,
-    # same lock thresholds, same probability engine — and add CFB-
-    # specific signals (returning production, transfer portal, SoS)
-    # in a follow-up session once a CFB-data provider key lands.
-    "CFB": ["americanfootball_ncaaf"],
+    # exposes two active football-college keys:
+    #   * ``americanfootball_ncaaf``      — FBS (Power-5 + G5)
+    #   * ``americanfootball_ncaaf_fcs``  — FCS (2026-06-12 wiring closure)
+    # Both are wired under the canonical ``CFB`` sport so a single
+    # sport tab covers the whole college-football slate.  Duplicate-
+    # event safety: canonical event IDs are provider-scoped, and every
+    # candidate is deduped downstream via the standard
+    # ``id``/``external_id`` machinery in ``_persist_picks``.  A single
+    # game can only appear under one provider key at a time (FBS
+    # cross-division games surface under `_ncaaf`, pure FCS games
+    # under `_ncaaf_fcs`) — no cross-key collision by construction.
+    "CFB": ["americanfootball_ncaaf", "americanfootball_ncaaf_fcs"],
     # UFC / MMA — The Odds API uses one combined MMA key (covers UFC events).
     "UFC": ["mma_mixed_martial_arts"],
     # Phase 1B (2026-06) — NHL wired per R2a. Real sportsbook events /
@@ -3035,6 +3041,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                                 }
                                 total_pick["model_source"] = "mlb_shared_run_distribution_v1"
                             # ── 2026-08-27 CFB TOTAL provenance ──────
+                            # ── 2026-06-12 · UNIVERSAL AUTHORITY (A4) ─
                             if sport == "CFB":
                                 _cfb_tot_gm2 = game_ctx.get("_cfb_game_model") or {}
                                 if _cfb_tot_gm2.get("available"):
@@ -3055,6 +3062,32 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                                         "market_threshold": line,
                                         "side": best["side"],
                                     }
+                                    _dq_str_t = str(_cfb_tot_gm2.get("data_quality") or "")
+                                    _prov_t = (
+                                        "CAUSAL_INDEPENDENT"
+                                        if ("returning_prod_both" in _dq_str_t
+                                            and "portal_both" in _dq_str_t)
+                                        else "EMPIRICAL_INDEPENDENT"
+                                        if any(k in _dq_str_t for k in (
+                                            "returning_prod_partial",
+                                            "portal_partial",
+                                            "returning_prod_both",
+                                            "portal_both"))
+                                        else "MODEL_CONDITIONED"
+                                    )
+                                    total_pick["probability_provenance"]  = _prov_t
+                                    total_pick["data_quality"]            = _dq_str_t or None
+                                    total_pick["model_probability"]       = round(float(best["mp"]), 4)
+                                    total_pick["simulator_probability"]   = round(float(best["mp"]), 4)
+                                    total_pick["cfb_engine_version"]      = "cfb_sp_game.v2.2026-06-12"
+                                    total_pick["cfb_publication_version"] = "cfb_publication.v2.2026-06-12"
+                                    total_pick["cfb_generated_at"]        = datetime.now(timezone.utc).isoformat()
+                                    _fs_t: list = list(total_pick.get("factor_sources") or [])
+                                    for _src in (list(_cfb_tot_gm2.get("sources") or [])):
+                                        if _src and _src not in _fs_t:
+                                            _fs_t.append(_src)
+                                    if _fs_t:
+                                        total_pick["factor_sources"] = _fs_t
                             # PHASE 2A — de-vig handled at build time.
                             # 2026-08-23 FINAL SURGICAL — ONE SOCCER
                             # PRODUCTION WRITER (Totals).  Legacy Soccer
@@ -3359,6 +3392,12 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     )
                     attach_game_sim_provenance(_sp_pick, _nfl_plat_sp)
                 # ── 2026-08-27 CFB SPREAD provenance ──────────────
+                # ── 2026-06-12 · UNIVERSAL AUTHORITY CONTRACT (A4) ──
+                # Every CFB spread pick must carry the same
+                # ``cfb_engine_version`` + ``probability_provenance`` +
+                # ``data_quality`` stamp as the moneyline path so the
+                # safety net and downstream consumers can uniformly
+                # distinguish current-engine rows from legacy.
                 if _sp_pick and sport == "CFB":
                     _cfb_sp_gm2 = ((game.get("_ctx") if isinstance(game, dict) else None) or {}).get("_cfb_game_model") or {}
                     if _cfb_sp_gm2.get("available"):
@@ -3378,6 +3417,32 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                             "market_threshold": line,
                             "side": side,
                         }
+                        _dq_str = str(_cfb_sp_gm2.get("data_quality") or "")
+                        _prov = (
+                            "CAUSAL_INDEPENDENT"
+                            if ("returning_prod_both" in _dq_str
+                                and "portal_both" in _dq_str)
+                            else "EMPIRICAL_INDEPENDENT"
+                            if any(k in _dq_str for k in (
+                                "returning_prod_partial",
+                                "portal_partial",
+                                "returning_prod_both",
+                                "portal_both"))
+                            else "MODEL_CONDITIONED"
+                        )
+                        _sp_pick["probability_provenance"]     = _prov
+                        _sp_pick["data_quality"]               = _dq_str or None
+                        _sp_pick["model_probability"]          = round(float(mp), 4)
+                        _sp_pick["simulator_probability"]      = round(float(mp), 4)
+                        _sp_pick["cfb_engine_version"]         = "cfb_sp_game.v2.2026-06-12"
+                        _sp_pick["cfb_publication_version"]    = "cfb_publication.v2.2026-06-12"
+                        _sp_pick["cfb_generated_at"]           = datetime.now(timezone.utc).isoformat()
+                        _fs: list = list(_sp_pick.get("factor_sources") or [])
+                        for _src in (list(_cfb_sp_gm2.get("sources") or [])):
+                            if _src and _src not in _fs:
+                                _fs.append(_src)
+                        if _fs:
+                            _sp_pick["factor_sources"] = _fs
                 # PHASE 2A — de-vig handled at build time.
                 picks.append(_sp_pick)
     return [p for p in picks if p is not None]
@@ -3471,6 +3536,8 @@ LEAGUE_LABELS: dict[str, str] = {
     "americanfootball_nfl_preseason": "NFL Preseason",
     "icehockey_nhl": "NHL",
     "americanfootball_ncaaf": "CFB",
+    # FCS wired under canonical CFB (2026-06-12 wiring closure).
+    "americanfootball_ncaaf_fcs": "CFB",
     # UFC / MMA
     "mma_mixed_martial_arts": "UFC / MMA",
     # KBO
