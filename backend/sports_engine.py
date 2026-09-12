@@ -1082,7 +1082,14 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     # formula from lines 902-906 of v3).  Same math, promoted from
     # a fallback-only path to a first-class scoring component.
     def _v4_confidence_component(wp_pct: float) -> float:
-        wp = wp_pct / 100.0 if wp_pct > 1.0 else wp_pct
+        # NaN/Inf-safe: coerce non-finite inputs to 0 before mapping.
+        try:
+            wp_pct_f = float(wp_pct)
+            if not (wp_pct_f == wp_pct_f) or wp_pct_f in (float("inf"), float("-inf")):
+                wp_pct_f = 0.0
+        except (TypeError, ValueError):
+            wp_pct_f = 0.0
+        wp = wp_pct_f / 100.0 if wp_pct_f > 1.0 else wp_pct_f
         wp = max(0.0, min(1.0, wp))
         if   wp < 0.30: return 40 + wp * (50 / 0.30)               # 40-90
         elif wp < 0.50: return 50 + (wp - 0.30) * (20 / 0.20)      # 50-70
@@ -1096,6 +1103,8 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     )
     try:
         _v4_wp_val = float(_v4_wp_source)
+        if not (_v4_wp_val == _v4_wp_val) or _v4_wp_val in (float("inf"), float("-inf")):
+            _v4_wp_val = 0.0
     except (TypeError, ValueError):
         _v4_wp_val = 0.0
     confidence_comp = _v4_confidence_component(_v4_wp_val)

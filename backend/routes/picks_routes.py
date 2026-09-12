@@ -3439,6 +3439,31 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         except (TypeError, ValueError, AttributeError):
             pass
 
+    # ── JSON-SAFE SANITIZE (2026-06-14 · certification-pass) ─────────
+    # Some upstream calibration path (pre-existing, sport-agnostic)
+    # can emit ``float('nan')`` or ``float('inf')`` in derived fields
+    # (e.g. ``lock_components.ev_units`` when a book_odds sanitisation
+    # coerces to 0, or a per-market simulator returns a degenerate
+    # distribution).  ``json.dumps`` defaults to ``allow_nan=False``
+    # in FastAPI's JSONResponse, so a single NaN anywhere collapses
+    # the whole response with HTTP 500 "Out of range float values
+    # are not JSON compliant".  We replace NaN/Inf with None at the
+    # wire boundary — the score/publication contracts already
+    # sanitize the primary ``lock_score`` field earlier, this is
+    # purely defensive for auxiliary telemetry.
+    import math as _m_san
+    def _json_safe(o):
+        if isinstance(o, float):
+            if _m_san.isnan(o) or _m_san.isinf(o):
+                return None
+            return o
+        if isinstance(o, dict):
+            return {k: _json_safe(v) for k, v in o.items()}
+        if isinstance(o, list):
+            return [_json_safe(v) for v in o]
+        return o
+    canonical = [_json_safe(_p) for _p in canonical]
+
     return {"picks": canonical, "alt_availability": alt_availability,
              "odds_provider": _odds_envelope}
 
