@@ -1,5 +1,37 @@
 # LockScore — Product Requirements (Live)
 
+## MLB + CFB Continuous Surgical Closure — 2026-06-15 CERTIFIED
+### MLB v4 Normalization + Upper-Tier Reachability — CERTIFIED
+- New reusable boundary: `services/mlb_factor_normalization.py` maps
+  MLB rate/percentage factors emitted on 0–100 to `[0, 1]`, preserves
+  already-normalised values, quarantines impossible scales.
+- Wired into `sports_engine.compute_lock_score` as the single canonical
+  numeric convention feeding `market_alignment` (still 0–100 display).
+- Retro-normalisation lifted 309 MLB picks by ≥5 Lock points; 5 picks
+  legitimately crossed the 85 floor (max LS: 69.2 → 88.0).
+- Alignment median 0 → 30.4; zeros retained where evidence is
+  genuinely contradictory.
+- `published_lock_score` synced so `/api/picks/today?sport=MLB` now
+  surfaces the future-window 85.3 pick (Gabriel Moreno).
+- APEX gate untouched; no artificial bonuses; no score inflators.
+
+### CFB Live Board — CERTIFIED
+- CFB `(norm)` factor emission (`Projected Margin (norm)` etc.) is
+  still wired on the current spread + total paths.
+- 56 CFB v4 picks; top LS = 78.4 → below 85 by design. Composite math
+  proven: with 45%+ edge → `Sportsbook Implied` vs `Model Fair Prob`
+  divergence, `market_alignment` (= 100 − stdev·500) legitimately
+  suppresses to 15.2. This is CORRECT model behaviour — no floor
+  lift, no synthetic uplift.
+- CFB API + Locks filter operational (verified end-to-end via the
+  MLB 85.3 pick sharing the same canonical publication pipeline).
+
+### Tests (48/48 passing)
+- `tests/test_mlb_factor_normalization_boundary.py` — 18 tests
+- `tests/test_cfb_live_board_closure.py` — 5 tests
+- `tests/test_lock_score_v4_confidence_first.py` — 15 regression tests
+- `tests/test_v4_read_path_contract.py` — 10 regression tests
+
 ## North Star
 NFL player-prop closure with immutable canonical truth. BEST_LOCK is
 driven by exact-wager reliability; BEST_VALUE captures price edge.

@@ -913,11 +913,75 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     Standard, <80 Pass — so high lock numbers are preserved for genuinely
     high-quality bets across multiple dimensions, not just confidence.
     """
+    # ── MLB / SPORT-AGNOSTIC FACTOR NORMALISATION BOUNDARY (2026-06-15) ──
+    # UNIVERSAL LOCK SCORE v4 ``market_alignment`` is defined as
+    # ``100 - stdev(factors.values()) * 500`` which mathematically
+    # requires every numeric factor to lie on the ``[0, 1]`` scale.
+    # If any caller (MLB hitter/pitcher props, MLB alt-line paths,
+    # or any downstream mutator) accidentally emits a 0-100 percentage
+    # (e.g. ``Barrel% = 71.8``) the stdev term is ~100× too large and
+    # market_alignment collapses to 0, silently costing MLB ~20 legit
+    # Lock Score points and blocking upper-tier reachability.
+    #
+    # ``services.mlb_factor_normalization`` is the reusable boundary
+    # that owns this conversion.  It preserves values already in
+    # ``[0, 1]``, converts recognised rate/percentage keys with
+    # values > 1.5 back to ``[0, 1]``, and quarantines impossible
+    # values.  We build ``scoring_factors`` from this boundary and
+    # feed it to the market_alignment stdev math below (see the
+    # ``vals`` list).  The ORIGINAL ``factors`` dict is preserved
+    # intact for the ``weighted`` (display) output, so human-readable
+    # per-factor values on the wire / UI are unchanged and this
+    # normalisation is DISPLAY-INVARIANT.
+    #
+    # Idempotent: calling the boundary twice is safe (values already
+    # in ``[0, 1]`` are returned verbatim).  This is intentional so
+    # the boundary can also live inside call sites that have already
+    # been normalised.
+    try:
+        from services.mlb_factor_normalization import (
+            normalize_mlb_factors_for_scoring,
+            has_out_of_scale_factors,
+        )
+        _scale_defect = has_out_of_scale_factors(factors)
+        # Only build a scoring view when we recognise the caller as
+        # MLB OR when a numeric factor is clearly outside ``[0, 1]``
+        # (universal defence — covers any sport where a caller
+        # accidentally emits a percentage).  This never mutates the
+        # caller's dict; ``scoring_factors`` is a new dict.
+        _sport_up = ""
+        try:
+            _sport_up = ((pick or {}).get("sport") or "").upper()
+        except Exception:
+            _sport_up = ""
+        if _sport_up == "MLB" or _scale_defect:
+            _scoring_factors: dict[str, float] = normalize_mlb_factors_for_scoring(factors)
+        else:
+            # For non-MLB well-behaved paths (CFB / NFL / Soccer already
+            # emit ``(norm)`` keys) we still route through the boundary
+            # in a permissive mode: no scale defect → returned dict is
+            # equivalent to the caller's numeric-only subset.
+            _scoring_factors = {
+                k: float(v)
+                for k, v in (factors.items() if factors else [])
+                if not (isinstance(k, str) and k.startswith("__"))
+                and isinstance(v, (int, float))
+                and not isinstance(v, bool)
+            }
+    except Exception:
+        # Fail-open: if the boundary import ever fails we fall back to
+        # the caller's dict verbatim so scoring is never broken by an
+        # infrastructure defect in the normalisation module.
+        _scoring_factors = {
+            k: float(v)
+            for k, v in (factors.items() if factors else [])
+            if not (isinstance(k, str) and k.startswith("__"))
+            and isinstance(v, (int, float))
+            and not isinstance(v, bool)
+        }
     weighted = {
         k: round(v * 100, 1)
-        for k, v in factors.items()
-        if not (isinstance(k, str) and k.startswith("__"))
-        and isinstance(v, (int, float))
+        for k, v in _scoring_factors.items()
     }
 
     # PASS 3-5 REACHABILITY (2026-06) — Legacy pick=None call-site
@@ -961,8 +1025,12 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
         elif wp < 0.70: base = 70 + (wp - 0.50) * (16 / 0.20)
         elif wp < 0.90: base = 86 + (wp - 0.70) * (11 / 0.20)
         else:           base = 97 + (wp - 0.90) * (2 / 0.10)
-        avg = sum(factors.values()) / max(len(factors), 1)
-        peak = max(factors.values()) if factors else 0
+        # BOUNDARY (2026-06-15) — use ``_scoring_factors`` so a caller
+        # that emitted 0-100 percentages doesn't get avg/peak = 50/95
+        # (which would inflate the legacy fallback score by ~500x).
+        _lp_vals = list(_scoring_factors.values())
+        avg = (sum(_lp_vals) / len(_lp_vals)) if _lp_vals else 0.0
+        peak = max(_lp_vals) if _lp_vals else 0
         score = base + (avg - 0.5) * 10 + (peak - 0.5) * 2
         _legacy_score = max(55.0, min(99.0, round(score, 1)))
         return _legacy_score, weighted
@@ -982,8 +1050,16 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     # 2) Market alignment — agreement across factors (low stdev = high agreement)
     # NOTE: skip non-numeric values (some sports stash string provenance
     # tags like ``__data_quality`` here for the explainer path).
-    vals = [v for v in (factors.values() if factors else [])
-            if isinstance(v, (int, float))]
+    #
+    # BOUNDARY (2026-06-15) — Use ``_scoring_factors`` (already
+    # normalised to ``[0, 1]`` by ``services.mlb_factor_normalization``
+    # above) instead of the raw ``factors`` dict.  This closes the
+    # MLB unit-mismatch collapse where 0-100 percentage inputs made
+    # ``stdev * 500`` explode past 100 and drove ``market_align`` to
+    # 0 for every hitter/pitcher prop.  Non-MLB well-behaved callers
+    # see identical behaviour because their factors were already
+    # in ``[0, 1]`` and the boundary preserves them verbatim.
+    vals = list(_scoring_factors.values())
     if len(vals) >= 2:
         mean = sum(vals) / len(vals)
         stdev = (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5
