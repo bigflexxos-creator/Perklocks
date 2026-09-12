@@ -42,14 +42,35 @@ APEX_GATE_VERSION = "apex_gate.v1.0"
 
 
 APEX_ELIGIBLE_SPORTS: frozenset[str] = frozenset({
-    "MLB", "Soccer", "NBA", "Tennis", "NFL",
+    "MLB", "Soccer", "NBA", "Tennis", "NFL", "CFB",
 })
 
 # Explicit sport-level unavailability list — evidence infrastructure
 # is materially incomplete (per Block 3H closure).  These sports can
 # still receive normal scoring; only APEX is denied.
+#
+# 2026-06-11 · CFB HIGH-TIER REACHABILITY CLOSURE — CFB removed from
+# the unavailability list per the surgical directive.  The blacklist
+# was a "sport-specific CFB ceiling" that made Apex 100 mathematically
+# unreachable regardless of evidence convergence — the very ceiling the
+# directive forbids.
+#
+# CFB Apex remains EXCEPTIONALLY RARE (0-Apex slates are expected and
+# valid) because ``evaluate_apex()`` still requires ALL of:
+#   • real sportsbook line + canonical identity
+#   • magic_tier == ALIGNED_STRONG + magic_score_available
+#   • zero CONTRADICTORY core categories + zero risk_flags
+#   • base_lock_score ≥ 97.0 (BEFORE Magic delta — anti-promotion)
+#   • ≥ 5/6 independent categories positive
+#   • at least one context category (role_opportunity OR matchup)
+#   • market_intel present (real market snapshot required)
+#   • NO forced/quota Apex — evidence must genuinely converge
+#
+# CFB typically emits SP+ + optional returning-production + optional
+# portal-net, so 5+ independent-category convergence is uncommon; that
+# scarcity is intended, not a hard block.
 APEX_UNAVAILABLE_SPORTS: frozenset[str] = frozenset({
-    "CFB", "UFC", "MMA", "NHL", "KBO",
+    "UFC", "MMA", "NHL", "KBO",
 })
 
 APEX_MIN_BASE_SCORE = 97.0
