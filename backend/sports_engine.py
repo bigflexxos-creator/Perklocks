@@ -15,6 +15,7 @@ Coverage from a single key:
 Free tier: 500 requests/month. We use 5 per daily refresh (~150/month).
 """
 import os
+import math
 import random
 import asyncio
 import logging
@@ -26,6 +27,56 @@ from typing import Optional
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+# ── CFB SCORING-FACTOR NORMALIZATION HELPERS (2026-06-14) ────────────
+# `compute_lock_score`'s `market_align` component computes stdev across
+# the numeric factor values with a 500× scale, which implicitly assumes
+# every numeric factor is expressed on the same [0,1] band (matches
+# the Soccer / MLB / NFL feature-engine convention).  CFB previously
+# emitted raw points AND raw percentages mixed together (e.g.
+# ``Projected Margin=15.5`` alongside ``Model Fair Prob=78.0``),
+# forcing stdev huge and ``market_align → 0`` on every CFB pick.
+# That single defect capped legitimate strong CFB setups at ~70.7
+# regardless of edge / evidence quality (systemic ~15-18 Lock-point
+# loss).
+#
+# Fix (surgical, scope-locked — sports_engine only, no model touch):
+#   • Raw evidence values remain preserved as STRING factor keys
+#     (unit-annotated for the UI / Why-This-Pick explainer; skipped
+#     by ``market_align``'s ``isinstance(v, (int, float))`` filter).
+#   • Numeric scoring inputs are added under ``(norm)``-suffixed
+#     keys, each in [0,1], so ``market_align`` computes meaningfully.
+# The underlying SP+ probability (``estimate_cfb_game``), sportsbook
+# odds, ``mp``, ``edge``, and sigma remain UNCHANGED — this is
+# strictly a scoring-input normalization at the boundary.
+def _cfb_norm_margin(pts: float) -> float:
+    """Map raw CFB margin (points) to [0,1] via logistic(0.10x).
+
+    Matches the SAME transform ``estimate_cfb_game`` uses to convert
+    ``expected_margin → p_home_ml`` (``MARGIN_K=0.10``), so the
+    normalized factor tracks the model's own probability semantics.
+    A +10 margin → 0.731; a −10 margin → 0.269; parity → 0.5.
+    """
+    try:
+        return round(1.0 / (1.0 + math.exp(-0.10 * float(pts))), 4)
+    except (OverflowError, TypeError, ValueError):
+        return 0.5
+
+
+def _cfb_norm_total(pts: float) -> float:
+    """Map raw CFB expected total (points) to [0,1].
+
+    Center = 50.0 (matches the ``estimate_cfb_game`` neutral base:
+    ``h_off=25, a_def=25 ⇒ h_pts=25, a_pts=25, total=50``).  Scale
+    = 8.0 so a ±16-pt swing spans the ~0.12↔0.88 band.  Values
+    within the empirically-observed 35-70 total range map into
+    [0.15, 0.92], leaving room for extremes without saturation.
+    """
+    try:
+        return round(1.0 / (1.0 + math.exp(-(float(pts) - 50.0) / 8.0)), 4)
+    except (OverflowError, TypeError, ValueError):
+        return 0.5
 # Odds API key resolution: prefer THE_ODDS_API_KEY env var (the recommended
 # Odds API key MUST be provided via env. No source fallback — a committed
 # key is a leak vector (SEC-002, fixed 2026-06-25). If missing, the
@@ -2111,11 +2162,22 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         _m_sig      = float(_cfb_gm0.get("margin_sigma") or 13.7)
                         # Signed relative to the SELECTED side.
                         _margin_side = _exp_margin if side == home else -_exp_margin
-                        factors["Projected Margin"] = round(_margin_side, 2)
-                        factors["Expected Total"] = round(_exp_total, 2)
-                        factors["Model Fair Prob"] = round(mp * 100, 2)
-                        factors["Sportsbook Implied Prob"] = round(
-                            _implied_prob(side_ml) * 100, 2)
+                        _sp_base_margin = float(
+                            _prov0.get("sp_base_margin") or _exp_margin)
+                        _sp_base_side = (_sp_base_margin
+                                          if side == home else -_sp_base_margin)
+                        _book_impl = _implied_prob(side_ml)
+                        # ── RAW EVIDENCE (UI/humans) — string factor
+                        # keys so ``market_align`` skips them via its
+                        # ``isinstance(v, (int, float))`` filter.  The
+                        # 5 existing key names are preserved so the
+                        # ``picks_routes`` CFB legitimacy safety-net
+                        # (checks non-empty value) keeps firing.
+                        factors["Projected Margin"] = f"{_margin_side:+.2f} pts"
+                        factors["Expected Total"] = f"{_exp_total:.2f} pts"
+                        factors["Model Fair Prob"] = f"{mp * 100:.2f}%"
+                        factors["Sportsbook Implied Prob"] = f"{_book_impl * 100:.2f}%"
+                        factors["SP+ Margin Base"] = f"{_sp_base_side:+.2f} pts"
                         # String factors are stashed under __ prefix so
                         # compute_lock_score skips them in its numeric
                         # weighted dict but they still surface on the
@@ -2124,12 +2186,17 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                             _cfb_gm0.get("data_quality") or "sp_plus")
                         factors["__model_uncertainty_reason"] = str(
                             _prov0.get("active_sigma_reason") or "nominal")
-                        # SP+ decomposition — offense / defense advantage
-                        # is captured by the projected-margin sign, but
-                        # we also surface raw base_margin so the pick
-                        # explainer can attribute the edge to ratings.
-                        factors["SP+ Margin Base"] = float(
-                            _prov0.get("sp_base_margin") or _exp_margin)
+                        # ── NORMALIZED SCORING INPUTS — [0,1] band ─
+                        # These are what ``compute_lock_score`` sees
+                        # via ``market_align`` / ``weighted``.  Values
+                        # are semantically identical to the raw
+                        # evidence, just expressed on the shared
+                        # normalized scale used by every other sport.
+                        factors["Projected Margin (norm)"] = _cfb_norm_margin(_margin_side)
+                        factors["Expected Total (norm)"]   = _cfb_norm_total(_exp_total)
+                        factors["Model Fair Prob (norm)"]  = round(float(mp), 4)
+                        factors["Sportsbook Implied (norm)"] = round(float(_book_impl), 4)
+                        factors["SP+ Rating Δ (norm)"]     = _cfb_norm_margin(_sp_base_side)
 
                         # ── DATA-QUALITY-AWARE MARKET PRIOR SHRINKAGE ─
                         # When the ONLY signal is raw SP+ (no returning
@@ -2167,8 +2234,14 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                                     (1.0 - _shrink_w) * mp
                                     + _shrink_w * _mkt
                                 )
-                                factors["Weak-Evidence Market Shrink"] = round(
-                                    (mp - _mp_shrunk) * 100, 2)
+                                # Raw (%) for humans, normalized (fraction)
+                                # for the scoring math — same [0,1]
+                                # band as the other ``(norm)`` inputs.
+                                factors["Weak-Evidence Market Shrink"] = (
+                                    f"{(mp - _mp_shrunk) * 100:.2f}%"
+                                )
+                                factors["Weak-Evidence Shrink (norm)"] = round(
+                                    max(0.0, min(1.0, (mp - _mp_shrunk))), 4)
                                 mp = _mp_shrunk
                                 _e_ml = round(
                                     (mp - _implied_prob(side_ml)) * 100, 2)
@@ -2969,12 +3042,84 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         elif sport == "CFB":
                             # v3 composite for CFB totals (mirror of NFL).
                             _e_t_cfb = round((best["mp"] - best["implied"]) * 100, 2)
+                            # ── CFB TOTAL EVIDENCE PROPAGATION (2026-06-12 · PART F) ─
+                            # Populate factor evidence keys (mirror of CFB ML
+                            # emission block) so compute_lock_score receives
+                            # real Total-specific evidence instead of empty
+                            # dict.  Without this, compute_lock_score's
+                            # unfactored fallback returned 84.0 for every
+                            # CFB Total regardless of edge/probability.
+                            _cfb_t_gm = game_ctx.get("_cfb_game_model") or {}
+                            if _cfb_t_gm.get("available"):
+                                _t_prov = _cfb_t_gm.get("provenance") or {}
+                                _t_exp_margin = float(_cfb_t_gm.get("expected_margin") or 0.0)
+                                _t_exp_total  = float(_cfb_t_gm.get("expected_total") or 0.0)
+                                _t_sp_base    = float(
+                                    (_t_prov or {}).get("sp_base_margin") or 0.0)
+                                _t_mp     = float(best["mp"])
+                                _t_impl   = float(best["implied"])
+                                # ── RAW EVIDENCE (UI/humans) ──────────
+                                factors["Projected Margin"] = f"{_t_exp_margin:+.2f} pts"
+                                factors["Expected Total"] = f"{_t_exp_total:.2f} pts"
+                                factors["Model Fair Prob"] = f"{_t_mp * 100:.2f}%"
+                                factors["Sportsbook Implied Prob"] = f"{_t_impl * 100:.2f}%"
+                                factors["SP+ Margin Base"] = f"{_t_sp_base:+.2f} pts"
+                                factors["__data_quality"] = str(_cfb_t_gm.get("data_quality") or "sp_plus")
+                                factors["__model_uncertainty_reason"] = "nominal"
+                                # ── NORMALIZED SCORING INPUTS ──────────
+                                # For Totals, the primary evidence axis
+                                # is the ``Expected Total`` — the Over/
+                                # Under side-aware probability already
+                                # lives in ``Model Fair Prob (norm)``.
+                                # Projected Margin is a supplementary
+                                # game-strength signal, not side-flipped.
+                                factors["Projected Margin (norm)"] = _cfb_norm_margin(_t_exp_margin)
+                                factors["Expected Total (norm)"]   = _cfb_norm_total(_t_exp_total)
+                                factors["Model Fair Prob (norm)"]  = round(_t_mp, 4)
+                                factors["Sportsbook Implied (norm)"] = round(_t_impl, 4)
+                                factors["SP+ Rating Δ (norm)"]     = _cfb_norm_margin(_t_sp_base)
                             lock, breakdown = compute_lock_score(
                                 factors, win_prob=best["mp"] * 100,
                                 pick={"book_odds": best["price"],
                                       "edge_percent": _e_t_cfb,
-                                      "win_probability": best["mp"] * 100},
+                                      "win_probability": best["mp"] * 100,
+                                      "sport": "CFB",
+                                      "data_quality": str(_cfb_t_gm.get("data_quality") or ""),
+                                      "probability_provenance": (
+                                          "CAUSAL_INDEPENDENT"
+                                          if ("returning_prod_both" in str(_cfb_t_gm.get("data_quality") or "")
+                                              and "portal_both" in str(_cfb_t_gm.get("data_quality") or ""))
+                                          else "EMPIRICAL_INDEPENDENT"
+                                          if any(k in str(_cfb_t_gm.get("data_quality") or "")
+                                                 for k in ("returning_prod_partial", "portal_partial",
+                                                           "returning_prod_both", "portal_both"))
+                                          else "MODEL_CONDITIONED"
+                                      )},
                                 edge_percent=_e_t_cfb)
+                            # ── PART G · FAIL-CLOSED GUARD ─────────────
+                            if not factors:
+                                try:
+                                    from services import funnel_telemetry as _funnel
+                                    _funnel.record(
+                                        sport="CFB", market="total", stage="scoring",
+                                        reason="INSUFFICIENT_EVIDENCE",
+                                        event=f"{away} @ {home}",
+                                        detail="factors={} — fail-closed guard",
+                                    )
+                                except Exception:
+                                    pass
+                                # Force lock to 0 — no pick will emit
+                                # because Locks floor is 85 (matches the
+                                # "fail-closed" contract without needing
+                                # a `continue` at this non-loop depth).
+                                lock = 0.0
+                                breakdown = {}
+                            else:
+                                _cfb_t_source = dict(factors) if isinstance(factors, dict) else {}
+                                if isinstance(breakdown, dict):
+                                    breakdown = {**breakdown, **_cfb_t_source}
+                                else:
+                                    breakdown = _cfb_t_source
                         else:
                             lock, breakdown = compute_lock_score(factors, win_prob=best["mp"] * 100)
                         total_pick = _build_pick(
@@ -3362,11 +3507,79 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     # score the pick with its real edge_percent rather
                     # than the legacy band map.
                     _e_sp_cfb = round((mp - implied) * 100, 2)
+                    # ── CFB SPREAD EVIDENCE PROPAGATION (2026-06-12 · PART E) ─
+                    # Populate factor evidence keys (mirror of the CFB ML
+                    # emission block) so compute_lock_score receives real
+                    # evidence instead of an empty dict.  Without this,
+                    # compute_lock_score's unfactored fallback path
+                    # deterministically returned 84.0 for every Spread
+                    # regardless of edge/probability.
+                    _cfb_sp_gm = ((game.get("_ctx") if isinstance(game, dict) else None) or {}).get("_cfb_game_model") or {}
+                    if _cfb_sp_gm.get("available"):
+                        _sp_prov = _cfb_sp_gm.get("provenance") or {}
+                        _sp_exp_margin = _cfb_sp_gm.get("expected_margin") or 0.0
+                        # Side-signed margin: side_is_home ? +margin : -margin
+                        _sp_margin_side = _sp_exp_margin if side == home else -_sp_exp_margin
+                        _sp_exp_total = float(_cfb_sp_gm.get("expected_total") or 0.0)
+                        _sp_base_raw = float(
+                            (_sp_prov or {}).get("sp_base_margin") or _sp_exp_margin)
+                        _sp_base_side = (_sp_base_raw
+                                          if side == home else -_sp_base_raw)
+                        # ── RAW EVIDENCE (UI/humans) ──────────
+                        factors["Projected Margin"] = f"{float(_sp_margin_side):+.2f} pts"
+                        factors["Expected Total"] = f"{_sp_exp_total:.2f} pts"
+                        factors["Model Fair Prob"] = f"{float(mp) * 100:.2f}%"
+                        factors["Sportsbook Implied Prob"] = f"{float(implied) * 100:.2f}%"
+                        factors["SP+ Margin Base"] = f"{_sp_base_side:+.2f} pts"
+                        factors["__data_quality"] = str(_cfb_sp_gm.get("data_quality") or "sp_plus")
+                        factors["__model_uncertainty_reason"] = "nominal"
+                        # ── NORMALIZED SCORING INPUTS ──────────
+                        factors["Projected Margin (norm)"] = _cfb_norm_margin(float(_sp_margin_side))
+                        factors["Expected Total (norm)"]   = _cfb_norm_total(_sp_exp_total)
+                        factors["Model Fair Prob (norm)"]  = round(float(mp), 4)
+                        factors["Sportsbook Implied (norm)"] = round(float(implied), 4)
+                        factors["SP+ Rating Δ (norm)"]     = _cfb_norm_margin(_sp_base_side)
                     lock, breakdown = compute_lock_score(
                         factors, win_prob=mp * 100,
                         pick={"book_odds": price, "edge_percent": _e_sp_cfb,
-                              "win_probability": mp * 100},
+                              "win_probability": mp * 100,
+                              "sport": "CFB",
+                              "data_quality": str(_cfb_sp_gm.get("data_quality") or ""),
+                              "probability_provenance": (
+                                  "CAUSAL_INDEPENDENT"
+                                  if ("returning_prod_both" in str(_cfb_sp_gm.get("data_quality") or "")
+                                      and "portal_both" in str(_cfb_sp_gm.get("data_quality") or ""))
+                                  else "EMPIRICAL_INDEPENDENT"
+                                  if any(k in str(_cfb_sp_gm.get("data_quality") or "")
+                                         for k in ("returning_prod_partial", "portal_partial",
+                                                   "returning_prod_both", "portal_both"))
+                                  else "MODEL_CONDITIONED"
+                              )},
                         edge_percent=_e_sp_cfb)
+                    # ── PART G · FAIL-CLOSED GUARD ─────────────────────
+                    # If the SP+ model didn't run (available=False) OR
+                    # factors ended up empty for any reason, we MUST NOT
+                    # award compute_lock_score's unfactored fallback
+                    # authority (LS=84 constant).  Skip this candidate.
+                    if not factors:
+                        try:
+                            from services import funnel_telemetry as _funnel
+                            _funnel.record(
+                                sport="CFB", market="spread", stage="scoring",
+                                reason="INSUFFICIENT_EVIDENCE",
+                                event=f"{away} @ {home}",
+                                detail="factors={} — fail-closed guard",
+                            )
+                        except Exception:
+                            pass
+                        continue
+                    # Merge source evidence factors into breakdown so DB
+                    # persists both (mirror of CFB ML persistence merge).
+                    _cfb_sp_source = dict(factors) if isinstance(factors, dict) else {}
+                    if isinstance(breakdown, dict):
+                        breakdown = {**breakdown, **_cfb_sp_source}
+                    else:
+                        breakdown = _cfb_sp_source
                 else:
                     lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
                 sign = "+" if (line or 0) > 0 else ""
