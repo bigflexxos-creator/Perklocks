@@ -2204,6 +2204,58 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                               else "MODEL_CONDITIONED"
                           )},
                     edge_percent=_e_ml)
+                # ── CFB EVIDENCE-PERSISTENCE ROOT CLOSURE (2026-06-12) ─
+                # Preserve rich source-evidence factor keys alongside
+                # compute_lock_score's numeric breakdown so the DB pick
+                # persists BOTH:
+                #   • numeric breakdown (per-component contributions)
+                #   • source evidence (Model Fair Prob, Projected Margin,
+                #     Expected Total, SP+ Margin Base, Sportsbook Implied
+                #     Prob, __data_quality, __model_uncertainty_reason)
+                # Without this merge, ``_build_pick(..., factors=breakdown)``
+                # dropped every evidence key → downstream Magic Tier
+                # Policy saw ``signals_present=0`` → ``factor_sources=[]``
+                # → Lock capped at the SP+-alone ceiling (~92).
+                #
+                # Source factors override breakdown on key collision so
+                # the persisted value is the raw evidence (Model Fair
+                # Prob = 67.3, not compute_lock_score's ×100 weighted
+                # 6730.0).  breakdown-only numeric contributions (any
+                # keys compute_lock_score computed that aren't in the
+                # source dict) still survive under their original names.
+                _cfb_source_factors = dict(factors) if isinstance(factors, dict) else {}
+                if isinstance(breakdown, dict):
+                    _persisted_factors = {**breakdown, **_cfb_source_factors}
+                else:
+                    _persisted_factors = _cfb_source_factors
+                # Also capture the probability_provenance we just fed
+                # into compute_lock_score so it can be stamped on the
+                # emitted pick (post _build_pick).  Recomputed identically
+                # here so the DB pick reflects the exact tier applied.
+                _cfb_prob_prov = (
+                    "CAUSAL_INDEPENDENT"
+                    if ("returning_prod_both" in (
+                        (game.get("_ctx", {}) if isinstance(game, dict) else {})
+                        .get("_cfb_game_model", {}).get("data_quality") or "")
+                        and "portal_both" in (
+                        (game.get("_ctx", {}) if isinstance(game, dict) else {})
+                        .get("_cfb_game_model", {}).get("data_quality") or "")
+                    ) else "EMPIRICAL_INDEPENDENT"
+                    if any(k in (
+                        (game.get("_ctx", {}) if isinstance(game, dict) else {})
+                        .get("_cfb_game_model", {}).get("data_quality") or "")
+                        for k in ("returning_prod_partial",
+                                  "portal_partial",
+                                  "returning_prod_both",
+                                  "portal_both"))
+                    else "MODEL_CONDITIONED"
+                )
+                # Overwrite the local `breakdown` binding — the code
+                # below passes ``factors=breakdown`` to `_build_pick`
+                # for every sport.  Doing the merge here (CFB only)
+                # avoids touching the shared `_build_pick(...)` call
+                # site → zero risk for MLB/NBA/NFL/Soccer/Tennis paths.
+                breakdown = _persisted_factors
             else:
                 lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
             _opp_ml_prices = [away_ml if side == home else home_ml]
@@ -2259,6 +2311,35 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                             "market": "Moneyline",
                             "side": side,
                         }
+                        # ── CFB EVIDENCE-PERSISTENCE ROOT CLOSURE (R3) ─
+                        # Persist the probability_provenance + top-level
+                        # data_quality + model probability triple so
+                        # downstream Magic Tier Policy, safety net,
+                        # analytics, and UI display can see WHY the
+                        # scoring authority ceiling was (or wasn't)
+                        # applied — no more `None` on 48/48 CFB rows.
+                        try:
+                            ml_pick["probability_provenance"] = _cfb_prob_prov  # noqa: F821
+                        except NameError:
+                            pass
+                        ml_pick["data_quality"] = _cfb_gm.get("data_quality")
+                        ml_pick["model_probability"] = round(_side_prob, 4)
+                        ml_pick["simulator_probability"] = round(_side_prob, 4)
+                        # CFB engine/publication version markers — used
+                        # by the stale-pick safety net to distinguish
+                        # current legitimate rows from pre-fix legacy.
+                        ml_pick["cfb_engine_version"]      = "cfb_sp_game.v2.2026-06-12"
+                        ml_pick["cfb_publication_version"] = "cfb_publication.v2.2026-06-12"
+                        ml_pick["cfb_generated_at"]        = datetime.now(timezone.utc).isoformat()
+                        # factor_sources aids Magic Tier Policy
+                        # (services.magic_tier_policy._extract_data_quality_signals
+                        # reads this field for the signals_present count).
+                        _fs: list = list(ml_pick.get("factor_sources") or [])
+                        for _src in (list(_cfb_gm.get("sources") or [])):
+                            if _src and _src not in _fs:
+                                _fs.append(_src)
+                        if _fs:
+                            ml_pick["factor_sources"] = _fs
             # PHASE 2A — de-vig computed at build time (canonical edge).
             # Post-build attachment retired for game markets.
             if ml_pick:
@@ -3594,11 +3675,30 @@ async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
                     # provider events and bookmakers were all present.
                     # Reuse the existing pre-loader — no new query
                     # paths, no math changes.
+                    #
+                    # 2026-06-12 · R2 — also preload returning-production
+                    # + portal-net maps so data_quality can advance
+                    # beyond "sp_plus" and unlock the elite-authority
+                    # ceiling.  These remain RESEARCH_ONLY for the
+                    # active probability (per feature-promotion rule);
+                    # they contribute ONLY to data_quality classification.
                     try:
                         _cfb_ratings = await _load_cfb_sp_ratings_by_team()
                     except Exception:
                         _cfb_ratings = {}
-                    g["_ctx"] = {"cfb_sp_ratings_by_team": _cfb_ratings}
+                    try:
+                        _cfb_rp = await _load_cfb_returning_prod_by_team()
+                    except Exception:
+                        _cfb_rp = {}
+                    try:
+                        _cfb_pt = await _load_cfb_portal_net_by_team()
+                    except Exception:
+                        _cfb_pt = {}
+                    g["_ctx"] = {
+                        "cfb_sp_ratings_by_team":      _cfb_ratings,
+                        "cfb_returning_prod_by_team":  _cfb_rp,
+                        "cfb_portal_net_by_team":      _cfb_pt,
+                    }
             except Exception as e:
                 logger.debug("%s context prefetch failed for %s: %s",
                              sport, g.get("id"), e)
@@ -3731,6 +3831,28 @@ async def _load_cfb_sp_ratings_by_team() -> dict:
     """Pre-load SP+ ratings once per CFB fetch cycle so every game's
     per-team lookup is O(1) in memory.  Returns lower-cased team-name
     dict of rating rows (rating, offense_rating, defense_rating).
+
+    ── CFB EVIDENCE-PERSISTENCE ROOT CLOSURE (2026-06-12, R2) ────────
+    Historical call sites only loaded SP+ ratings, leaving
+    ``ctx["cfb_returning_prod_by_team"]`` and
+    ``ctx["cfb_portal_net_by_team"]`` empty despite 270 returning-prod
+    rows + 7,359 portal rows sitting in Mongo.  ``estimate_cfb_game``
+    then classified every CFB game as ``data_quality="sp_plus"``
+    (thin evidence) → ``probability_provenance="MODEL_CONDITIONED"``
+    → Lock capped ~92 for every pick regardless of raw model strength.
+
+    Returning-production and portal-net remain **RESEARCH_ONLY** for
+    the ACTIVE probability (per feature-promotion rule 2026-08-27 —
+    ΔBrier +0.005 on 2024 validation).  They participate ONLY in
+    ``data_quality`` classification so the elite-authority ceiling
+    lifts when both maps have data for the game.
+
+    Also exposes:
+      * ``cfb_returning_prod_by_team``: {lower_team_key: {percent_ppa,
+        passing_ppa, rushing_ppa, receiving_ppa, year}}
+      * ``cfb_portal_net_by_team``:     {lower_team_key: {net,
+        incoming_n, outgoing_n, qb_delta, ol_delta, skill_delta,
+        def_delta}}
     """
     from server import db as _db
     ratings: dict = {}
@@ -3770,6 +3892,131 @@ async def _load_cfb_sp_ratings_by_team() -> dict:
         except Exception:
             pass
     return ratings
+
+
+async def _load_cfb_returning_prod_by_team() -> dict:
+    """R2 pre-load: returning-production keyed by lower-cased team.
+
+    Sourced from ``db.cfb_returning_production`` (270 rows).  Most
+    recent year wins on team-key collision.  Sibling of
+    ``_load_cfb_sp_ratings_by_team`` — same lower-cased identity
+    convention, same alias expansion via ``cfb_teams``.
+    """
+    from server import db as _db
+    rp: dict = {}
+    try:
+        rows = await _db.cfb_returning_production.find({}, {"_id": 0}
+        ).sort([("year", -1)]).to_list(length=1000)
+        for r in rows:
+            tk = str(r.get("team") or "").strip().lower()
+            if tk and tk not in rp:
+                rp[tk] = r
+        # Alias expansion (cfb_teams alternate names / mascot / abbrev)
+        async for t in _db.cfb_teams.find({},
+                {"school": 1, "alternate_names": 1, "mascot": 1,
+                 "abbreviation": 1, "_id": 0}):
+            school = str(t.get("school") or "").strip().lower()
+            row = rp.get(school)
+            if not row:
+                continue
+            for alias in (t.get("alternate_names") or []):
+                ak = str(alias or "").strip().lower()
+                if ak: rp.setdefault(ak, row)
+            mascot = str(t.get("mascot") or "").strip().lower()
+            if mascot:
+                combo = f"{school} {mascot}"
+                rp.setdefault(combo, row)
+                rp.setdefault(mascot, row)
+            abbrev = str(t.get("abbreviation") or "").strip().lower()
+            if abbrev: rp.setdefault(abbrev, row)
+    except Exception as _e:
+        try:
+            logger.warning("cfb_returning_production preload failed: %s", _e)
+        except Exception:
+            pass
+    return rp
+
+
+async def _load_cfb_portal_net_by_team() -> dict:
+    """R2 pre-load: portal-net movement aggregated per destination team.
+
+    Sourced from ``db.cfb_portal`` (7,359 rows) — one row per
+    transfer.  We aggregate the most-recent-season net delta per
+    team so ``estimate_cfb_game`` receives the ``{net, incoming_n,
+    outgoing_n}`` dict shape it expects.
+
+    Aggregation is intentionally simple (recent-season count-based
+    net rating delta).  Refinement to per-position weighted deltas
+    remains a future task tied to the RESEARCH_ONLY promotion gate.
+    """
+    from server import db as _db
+    portal: dict = {}
+    try:
+        # Find the most recent season present in the collection.
+        latest_row = await _db.cfb_portal.find({}, {"season": 1, "_id": 0}
+                       ).sort([("season", -1)]).limit(1).to_list(length=1)
+        if not latest_row:
+            return portal
+        latest_season = latest_row[0].get("season")
+
+        incoming: dict[str, list[float]] = {}
+        outgoing: dict[str, list[float]] = {}
+
+        async for row in _db.cfb_portal.find(
+                {"season": latest_season},
+                {"_id": 0, "destination": 1, "origin": 1, "rating": 1},
+        ):
+            dest = str(row.get("destination") or "").strip().lower()
+            orig = str(row.get("origin") or "").strip().lower()
+            try:
+                r = float(row.get("rating") or 0.0)
+            except (TypeError, ValueError):
+                r = 0.0
+            if dest:
+                incoming.setdefault(dest, []).append(r)
+            if orig:
+                outgoing.setdefault(orig, []).append(r)
+
+        # Compose net = mean(incoming) − mean(outgoing) scaled by an
+        # overall count-balance factor.  Value bounded internally in
+        # ``estimate_cfb_game._portal_adj`` (±2.0 rating pts hard cap).
+        all_teams = set(incoming.keys()) | set(outgoing.keys())
+        for team in all_teams:
+            in_list = incoming.get(team) or []
+            out_list = outgoing.get(team) or []
+            in_mean = sum(in_list) / len(in_list) if in_list else 0.0
+            out_mean = sum(out_list) / len(out_list) if out_list else 0.0
+            portal[team] = {
+                "net":         round(in_mean - out_mean, 3),
+                "incoming_n":  len(in_list),
+                "outgoing_n":  len(out_list),
+                "season":      latest_season,
+            }
+
+        # Alias expansion via cfb_teams
+        async for t in _db.cfb_teams.find({},
+                {"school": 1, "alternate_names": 1, "mascot": 1,
+                 "abbreviation": 1, "_id": 0}):
+            school = str(t.get("school") or "").strip().lower()
+            row = portal.get(school)
+            if not row:
+                continue
+            for alias in (t.get("alternate_names") or []):
+                ak = str(alias or "").strip().lower()
+                if ak: portal.setdefault(ak, row)
+            mascot = str(t.get("mascot") or "").strip().lower()
+            if mascot:
+                combo = f"{school} {mascot}"
+                portal.setdefault(combo, row)
+                portal.setdefault(mascot, row)
+            abbrev = str(t.get("abbreviation") or "").strip().lower()
+            if abbrev: portal.setdefault(abbrev, row)
+    except Exception as _e:
+        try:
+            logger.warning("cfb_portal preload failed: %s", _e)
+        except Exception:
+            pass
+    return portal
 
 
 async def fetch_soccer_picks(date_str: str) -> list[dict]:
