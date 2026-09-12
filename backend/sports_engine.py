@@ -1389,6 +1389,23 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     # if a downstream calibrator writes a distinct field later).
     pick.setdefault("calibrated_win_probability",
                      round(_v4_wp_val, 4) if _v4_wp_val else 0.0)
+    # ── v4 PERSISTENCE BRIDGE (2026-06-14) ──────────────────────────
+    # Callers pass a throwaway ``pick={...}`` dict here; the actual
+    # persisted pick is later built from scratch in ``_build_pick``
+    # using only ``factors`` (== ``weighted`` == our return value).
+    # We therefore ALSO stash the version + calibrated wp + effective
+    # weights INSIDE ``weighted`` under ``__`` keys so ``_build_pick``
+    # can promote them to top-level fields on the real persisted pick.
+    # ``compute_lock_score`` itself skips ``__``-prefixed keys in its
+    # numeric weighted math (see the ``weighted = {...}`` build at
+    # line 910), so this stash cannot pollute market_align or edge.
+    _v4_persisted_wp = (
+        round(_v4_wp_val, 4) if _v4_wp_val else 0.0
+    )
+    weighted["__lock_score_version"] = "v4.confidence_first.2026-06-14"
+    weighted["__calibrated_win_probability"] = _v4_persisted_wp
+    weighted["__effective_weights"] = _v4_effective_weights
+    weighted["__confidence_component"] = round(confidence_comp, 1)
     final_score = max(55.0, min(99.0, round(score, 1)))
 
     # ── PERKLOCKS PASS 4 (2026-06) — Universal Lock Authority wiring.
@@ -1713,6 +1730,20 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
     # whenever wp>=65 & edge>=1 (weak candidate → booster → board-
     # qualified score).  Lock Score must be earned from the scoring
     # model; eligibility is decided once, at the >=85 board rule.
+    # ── v4 PERSISTENCE BRIDGE (2026-06-14) ──────────────────────────
+    # Extract v4 metadata stashed by ``compute_lock_score`` inside
+    # ``factors`` under ``__``-prefixed keys.  These become top-level
+    # fields on the persisted pick so ``lock_score_version`` etc. are
+    # queryable and appear on the wire without any downstream copy.
+    _v4_ver = None
+    _v4_cwp = None
+    _v4_ew = None
+    _v4_conf = None
+    if isinstance(factors, dict):
+        _v4_ver = factors.pop("__lock_score_version", None)
+        _v4_cwp = factors.pop("__calibrated_win_probability", None)
+        _v4_ew  = factors.pop("__effective_weights", None)
+        _v4_conf = factors.pop("__confidence_component", None)
     return {
         "sport": sport, "league": league, "event": event,
         "event_time": event_time, "market": market, "selection": pick_side,
@@ -1734,6 +1765,11 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
            if _devig_prob is not None else {}),
         "lock_score": lock, "grade": _grade(lock), "confidence": _confidence(lock),
         "factors": factors, "key_insights": insights,
+        # v4 CONFIDENCE-FIRST provenance (top-level for query/UI).
+        **({"lock_score_version": _v4_ver} if _v4_ver else {}),
+        **({"calibrated_win_probability": _v4_cwp} if _v4_cwp is not None else {}),
+        **({"lock_effective_weights": _v4_ew} if _v4_ew else {}),
+        **({"lock_confidence_component": _v4_conf} if _v4_conf is not None else {}),
         "external_id": str(external_id),
         # Line classification — used by the UI's MAIN | ALT | BOTH toggle.
         "is_alt": bool(is_alt_prop),
