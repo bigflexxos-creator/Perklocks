@@ -113,7 +113,7 @@ except Exception as _lab_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.11-nfl-iter139-star-watchlist-v47"
+DATA_VERSION = "2026.06.11-soccer-fgs-tab-removed-v48"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 # ── Block 2C-cont Issue-6 (2026-08): real deploy-identifier surfacing ─
@@ -2652,7 +2652,17 @@ SPORT_MARKETS = {
         {"token": "anytime_scorer",    "label": "Anytime Scorer"},
         {"token": "anytime_assist",    "label": "Assists"},
         {"token": "score_or_assist",   "label": "Score or Assist"},
-        {"token": "first_goal_scorer", "label": "FGS"},
+        # 2026-06-11 · FGS visible tab REMOVED per user directive.
+        # Existing FGS regex + settlement paths (`_MARKET_REGEX
+        # ["first_goal_scorer"]`, historical FGS picks in db.picks)
+        # remain intact so historical rows and settlement continue to
+        # resolve; only the user-facing navigation tab is removed.
+        # SHOTS / SHOTS_ON_TARGET tabs are NOT added — no provider
+        # path currently surfaces these markets and zero picks have
+        # ever been minted for `player_shots` / `player_shots_on_target`
+        # (verified against production db.picks 2026-06-11).  Adding
+        # empty tabs would be misleading; they'll be added the moment
+        # a provider path lands real markets.
     ],
     "NBA": [
         {"token": "moneyline",   "label": "Moneyline"},
