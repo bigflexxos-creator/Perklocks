@@ -522,10 +522,18 @@ class TestApexFalsePositives:
 # ═════════════════════════════════════════════════════════════════════════
 
 class TestSportMarketWhitelist:
-    def test_cfb_apex_unavailable(self):
-        allowed, reason = apex_market_allowed("CFB", "moneyline", {})
-        assert allowed is False
-        assert "cfb" in (reason or "").lower()
+    def test_cfb_apex_now_available(self):
+        # 2026-06-12 · CFB HIGH-TIER REACHABILITY CLOSURE — CFB
+        # removed from the Apex blacklist so the sport-specific
+        # ceiling can no longer suppress a legitimate current pick.
+        # Apex is still gated by ALL other requirements (real market
+        # line, ALIGNED_STRONG, base >= 97, ≥ 5 categories, context,
+        # market_intel, zero contradictions) so it remains rare.
+        pick = {"book_odds": -180, "implied_probability": 64.3}
+        allowed, reason = apex_market_allowed(
+            "CFB", "Ohio State Buckeyes Moneyline", pick,
+        )
+        assert allowed is True, f"CFB unexpectedly blocked: {reason}"
 
     def test_ufc_apex_unavailable(self):
         allowed, reason = apex_market_allowed("UFC", "moneyline", {})

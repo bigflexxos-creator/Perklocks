@@ -2077,6 +2077,88 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             logger.info("NflAltLabelProjection: %s", _nfl_lp_stats)
     except Exception as _nfl_lp_err:
         logger.warning("NflAltLabelProjection skipped: %s", _nfl_lp_err)
+    # ── CFB STALE PRE-FIX SAFETY NET (2026-06-11 · PROVENANCE-FIRST v2) ─
+    # Belt-and-suspenders READ-time filter for the class of stale rows
+    # documented in `cfb_stale_pre_fix_retirement_report.md` (Texas
+    # Southern +1500 ML, Alabama State +1000 ML, etc.) that were minted
+    # BEFORE the empty-factors + no-provenance legacy path was replaced.
+    #
+    # PROVENANCE-FIRST v2 (2026-06-12 · High-Tier Reachability Closure):
+    # A CFB pick's TOP-LEVEL markers (`model_source`, `cfb_game_sim`)
+    # are stamped by BOTH the current emission path AND older buggy
+    # paths — they are necessary but INSUFFICIENT proof of legitimacy.
+    # The current emission path (see ``sports_engine.py:2110``) ALWAYS
+    # stamps FACTOR-LEVEL provenance:
+    #     factors["Model Fair Prob"]
+    #     factors["__data_quality"]
+    #     factors["SP+ Margin Base"]
+    #     factors["Sportsbook Implied Prob"]
+    # These keys appear only when ``_cfb_gm0.get("available")`` was
+    # true AND the code emitted the surfacing block — i.e. the current
+    # post-fix CFB game model actually ran end-to-end for this pick.
+    #
+    # Authority ladder:
+    #   1. ``lock_score < 95``           → ALLOW (below elite-authority)
+    #   2. Factor-level CFB provenance present
+    #      (any of Model Fair Prob / __data_quality / SP+ Margin Base
+    #       / Sportsbook Implied Prob) → ALLOW at ANY score up to 100.
+    #   3. Otherwise (LS ≥ 95 + empty or legacy factors) → BLOCK.
+    #      This is the pre-fix Texas Southern / Alabama State signature:
+    #      legacy row that has top-level markers but no factor-level
+    #      current-engine emission stamp.
+    #
+    # This cannot suppress a legitimate current pick because every
+    # current CFB emission path stamps at least
+    # ``factors["Model Fair Prob"]`` when the SP+ model resolves both
+    # sides successfully — the only path that reaches lock_score ≥ 95.
+    _CFB_CURRENT_FACTOR_KEYS = (
+        "Model Fair Prob", "__data_quality",
+        "SP+ Margin Base", "Sportsbook Implied Prob",
+    )
+
+    def _cfb_has_current_engine_provenance(_p: dict) -> bool:
+        """Factor-level check: only current post-fix CFB engine emits
+        these keys.  Legacy pre-fix rows have ``factors: {}`` or
+        legacy-only keys."""
+        _factors = _p.get("factors") or {}
+        if not isinstance(_factors, dict) or not _factors:
+            return False
+        for _fk in _CFB_CURRENT_FACTOR_KEYS:
+            if _factors.get(_fk) not in (None, "", {}, []):
+                return True
+        return False
+
+    try:
+        _kept = []
+        _blocked = 0
+        _blocked_examples: list[str] = []
+        for _p in picks:
+            if str(_p.get("sport") or "").upper() != "CFB":
+                _kept.append(_p)
+                continue
+            _ls = float(_p.get("lock_score") or 0)
+            if _ls >= 95.0 and not _cfb_has_current_engine_provenance(_p):
+                _blocked += 1
+                if len(_blocked_examples) < 5:
+                    _blocked_examples.append(
+                        f"{_p.get('event') or '?'} · "
+                        f"{_p.get('market') or '?'} · LS={_ls:.1f} · "
+                        f"odds={_p.get('book_odds')}"
+                    )
+                continue
+            _kept.append(_p)
+        if _blocked:
+            picks = _kept
+            logger.info(
+                "CFB stale-pre-fix safety net v2 (factor-level provenance): "
+                "blocked %d rows with LS>=95 lacking factor-level "
+                "current-engine emission stamps. Examples: %s",
+                _blocked, _blocked_examples,
+            )
+    except Exception as _cfb_safe_err:
+        logger.warning(
+            "CFB stale-pre-fix safety net skipped: %s", _cfb_safe_err,
+        )
     # Phase C4 μ-closure (2026-06) — restore multi-scorer eligibility.
     # Prior code capped goalscorer picks at ``top_n=1`` per event,
     # silently removing legitimate secondary scorers who cleared the
