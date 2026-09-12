@@ -2077,49 +2077,44 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             logger.info("NflAltLabelProjection: %s", _nfl_lp_stats)
     except Exception as _nfl_lp_err:
         logger.warning("NflAltLabelProjection skipped: %s", _nfl_lp_err)
-    # ── CFB STALE PRE-FIX SAFETY NET (2026-06-11 · PROVENANCE-FIRST v2) ─
-    # Belt-and-suspenders READ-time filter for the class of stale rows
-    # documented in `cfb_stale_pre_fix_retirement_report.md` (Texas
-    # Southern +1500 ML, Alabama State +1000 ML, etc.) that were minted
-    # BEFORE the empty-factors + no-provenance legacy path was replaced.
-    #
-    # PROVENANCE-FIRST v2 (2026-06-12 · High-Tier Reachability Closure):
-    # A CFB pick's TOP-LEVEL markers (`model_source`, `cfb_game_sim`)
-    # are stamped by BOTH the current emission path AND older buggy
-    # paths — they are necessary but INSUFFICIENT proof of legitimacy.
-    # The current emission path (see ``sports_engine.py:2110``) ALWAYS
-    # stamps FACTOR-LEVEL provenance:
-    #     factors["Model Fair Prob"]
-    #     factors["__data_quality"]
-    #     factors["SP+ Margin Base"]
-    #     factors["Sportsbook Implied Prob"]
-    # These keys appear only when ``_cfb_gm0.get("available")`` was
-    # true AND the code emitted the surfacing block — i.e. the current
-    # post-fix CFB game model actually ran end-to-end for this pick.
-    #
-    # Authority ladder:
-    #   1. ``lock_score < 95``           → ALLOW (below elite-authority)
-    #   2. Factor-level CFB provenance present
-    #      (any of Model Fair Prob / __data_quality / SP+ Margin Base
-    #       / Sportsbook Implied Prob) → ALLOW at ANY score up to 100.
-    #   3. Otherwise (LS ≥ 95 + empty or legacy factors) → BLOCK.
-    #      This is the pre-fix Texas Southern / Alabama State signature:
-    #      legacy row that has top-level markers but no factor-level
-    #      current-engine emission stamp.
-    #
-    # This cannot suppress a legitimate current pick because every
-    # current CFB emission path stamps at least
-    # ``factors["Model Fair Prob"]`` when the SP+ model resolves both
-    # sides successfully — the only path that reaches lock_score ≥ 95.
+    # ── CFB STALE PRE-FIX SAFETY NET (2026-06-12 · v3 EXPLICIT-VERSION) ─
+    # v3 authority ladder (each rung sufficient to KEEP a pick):
+    #   1. Explicit engine/publication version present:
+    #        • ``cfb_engine_version``      (stamped by sports_engine at
+    #                                       emit; e.g. cfb_sp_game.v2.*)
+    #        • ``cfb_publication_version`` (stamped at emit)
+    #      → ALLOW at ANY lock_score up to 100 Apex. This is the
+    #        preferred, unambiguous, non-heuristic legitimacy signal.
+    #   2. Factor-level current-engine provenance (fallback for
+    #      rows persisted before the explicit-version stamp was
+    #      introduced but AFTER factor-persistence was fixed):
+    #        • factors["Model Fair Prob"]
+    #        • factors["__data_quality"]
+    #        • factors["SP+ Margin Base"]
+    #        • factors["Sportsbook Implied Prob"]
+    #      → ALLOW.
+    #   3. Otherwise (LS ≥ 95 + no version + no factor-level provenance)
+    #      → BLOCK. This is the pre-fix Texas Southern / Alabama State
+    #      signature.
+    #   4. LS < 95 always allowed regardless of provenance (below
+    #      elite-authority band; the elite gate never applied).
     _CFB_CURRENT_FACTOR_KEYS = (
         "Model Fair Prob", "__data_quality",
         "SP+ Margin Base", "Sportsbook Implied Prob",
     )
+    _CFB_EXPLICIT_VERSION_KEYS = (
+        "cfb_engine_version",
+        "cfb_publication_version",
+    )
 
-    def _cfb_has_current_engine_provenance(_p: dict) -> bool:
-        """Factor-level check: only current post-fix CFB engine emits
-        these keys.  Legacy pre-fix rows have ``factors: {}`` or
-        legacy-only keys."""
+    def _cfb_has_explicit_version(_p: dict) -> bool:
+        for _k in _CFB_EXPLICIT_VERSION_KEYS:
+            _v = _p.get(_k)
+            if _v not in (None, "", {}, []):
+                return True
+        return False
+
+    def _cfb_has_factor_provenance(_p: dict) -> bool:
         _factors = _p.get("factors") or {}
         if not isinstance(_factors, dict) or not _factors:
             return False
@@ -2127,6 +2122,12 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             if _factors.get(_fk) not in (None, "", {}, []):
                 return True
         return False
+
+    def _cfb_has_current_provenance(_p: dict) -> bool:
+        # Explicit version is the primary/preferred authority.
+        # Factor-level provenance is the fallback for pre-explicit-
+        # version rows that still carry current-engine evidence keys.
+        return _cfb_has_explicit_version(_p) or _cfb_has_factor_provenance(_p)
 
     try:
         _kept = []
@@ -2137,7 +2138,7 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 _kept.append(_p)
                 continue
             _ls = float(_p.get("lock_score") or 0)
-            if _ls >= 95.0 and not _cfb_has_current_engine_provenance(_p):
+            if _ls >= 95.0 and not _cfb_has_current_provenance(_p):
                 _blocked += 1
                 if len(_blocked_examples) < 5:
                     _blocked_examples.append(
@@ -2150,9 +2151,10 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         if _blocked:
             picks = _kept
             logger.info(
-                "CFB stale-pre-fix safety net v2 (factor-level provenance): "
-                "blocked %d rows with LS>=95 lacking factor-level "
-                "current-engine emission stamps. Examples: %s",
+                "CFB stale-pre-fix safety net v3 (explicit-version): "
+                "blocked %d rows with LS>=95 lacking explicit engine/"
+                "publication version AND factor-level provenance. "
+                "Examples: %s",
                 _blocked, _blocked_examples,
             )
     except Exception as _cfb_safe_err:
