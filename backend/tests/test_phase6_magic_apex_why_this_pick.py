@@ -84,22 +84,28 @@ def test_model_only_pick_has_edge_percent_none_not_zero():
 # ─────────────────────────────────────────────────────────────────────
 def test_shorter_odds_alone_do_not_boost_lock_score():
     from sports_engine import compute_lock_score
-    # Two picks with identical evidence and edge — only book_odds
-    # differ.  The chalky pick must NOT receive a higher Lock Score.
+    # v4 CONFIDENCE-FIRST update (2026-06-14):
+    #   The true chalk-bias check must hold ``win_probability`` and
+    #   ``edge`` CONSTANT so that only ``book_odds`` differs.  The
+    #   previous version varied wp alongside odds (fav wp=80%, dog
+    #   wp=40%), which under v4 legitimately produces a confidence-
+    #   driven LS spread (that is the intended semantic, not chalk
+    #   bias).  This revised test isolates ``book_odds`` — if odds
+    #   alone still perturb LS, that is a true chalk bias regression.
     base_factors = {
-        "Recent Form (L5)":        0.55,
+        "Recent Form (L5)":         0.55,
         "Matchup vs Defense":       0.55,
         "Recent Volume / Usage":    0.55,
     }
-    fav = {"book_odds": -400, "edge_percent": +2.0, "win_probability": 80.0}
-    dog = {"book_odds": +150, "edge_percent": +2.0, "win_probability": 40.0}
-    ls_fav, _ = compute_lock_score(dict(base_factors), win_prob=80,
+    fav = {"book_odds": -400, "edge_percent": +2.0, "win_probability": 65.0}
+    dog = {"book_odds": +150, "edge_percent": +2.0, "win_probability": 65.0}
+    ls_fav, _ = compute_lock_score(dict(base_factors), win_prob=65,
                                     pick=fav, edge_percent=+2.0)
-    ls_dog, _ = compute_lock_score(dict(base_factors), win_prob=40,
+    ls_dog, _ = compute_lock_score(dict(base_factors), win_prob=65,
                                     pick=dog, edge_percent=+2.0)
-    # Chalk penalty for -400 juice should keep Fav's Lock Score in the
-    # same ballpark as the underdog's — no >8pt automatic boost.
-    assert abs(ls_fav - ls_dog) <= 8.0, (
+    # With identical wp/edge/evidence, LS must be within 5pt (only
+    # ``vol_comp`` can differ — chalk (-400) has −10, dog (+150) has 0).
+    assert abs(ls_fav - ls_dog) <= 5.0, (
         f"chalk bias detected: fav_ls={ls_fav}, dog_ls={ls_dog}"
     )
 

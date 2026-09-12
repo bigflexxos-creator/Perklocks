@@ -870,12 +870,18 @@ def _compute_data_quality_score(pick: dict | None,
     elif prov == "INVALID":
         comps.append(("model_provenance", 0.0))
 
-    # (i) market edge (already computed on the pick).
-    ep = pick.get("edge_percent")
-    if isinstance(ep, (int, float)):
-        # Positive edge lifts DQ; neutral edge keeps it near 60.
-        comps.append(("market_edge",
-                       max(0.0, min(100.0, 60.0 + float(ep) * 3.0))))
+    # (i) market edge — REMOVED (v4 confidence-first, 2026-06-14).
+    # Edge is a VALUE signal, not an EVIDENCE-QUALITY signal.  The
+    # `data_quality` component is intended to represent evidence /
+    # data completeness only; folding `market_edge = 60 + edge × 3`
+    # into DQ created a second Edge channel that stacked on top of
+    # the primary `edge_comp` (0.35 weight) — effectively double-
+    # counting Edge and inflating high-edge / low-confidence picks.
+    # Edge remains the dominant driver of `edge_comp` in the
+    # composite; it must not also drive `data_quality`.
+    # (Historical formulation left in the docstring above for
+    # archaeology; do NOT re-add without a validated calibration
+    # improvement.)
 
     # (j) lineup/injury completeness — ONLY when REAL data present.
     for k in ("lineup_confirmed", "injury_report", "starter_confirmed"):
@@ -962,7 +968,14 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
         return _legacy_score, weighted
 
     # ── v3 six-component composite ────────────────────────────────────────
-    # 1) Normalized model edge (35%)
+    # (2026-06-14) v4 CONFIDENCE-FIRST UPGRADE: adds a first-class
+    # ``confidence_comp`` (from calibrated ``win_probability``) and
+    # halves Edge's authority (0.35 → 0.15) to restore the correct
+    # Perklocks semantic — Lock Score primarily tracks prediction
+    # confidence; Edge remains a secondary value signal.  Missing-
+    # component redistribution is now EXPLICIT-PREGAME to guarantee
+    # Edge cannot regain dominance when ROI/CLV are unavailable.
+    # 1) Normalized model edge (v4 weight = 0.15, was 0.35)
     edge_pct = pick.get("edge_percent") or 0
     edge_comp = max(0.0, min(100.0, 50 + edge_pct * 5))
 
@@ -1034,29 +1047,95 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
         cls_comp = 50.0
 
     # ── Post-Cert Defect 4 — WEIGHT NORMALISATION over AVAILABLE
-    # components.  ROI (n<10) and CLV (missing closing odds) were
-    # previously fixed at neutral 50 with full 0.15 / 0.10 weight,
-    # mathematically capping legitimate high-edge + high-alignment
-    # pregame picks around 83 — below the >=85 Locks floor.  We now
-    # redistribute the unavailable-component weight proportionally
-    # across the components we DO have data for, so a strong pregame
-    # pick can legitimately reach 85+ without inventing evidence.
-    _components = [
-        ("edge",   edge_comp,    0.35, True),
-        ("align",  market_align, 0.20, True),
-        ("roi",    roi_comp,     0.15, roi_available),
-        ("dq",     data_quality, 0.10, True),
-        ("vol",    vol_comp,     0.10, True),
-        ("clv",    cls_comp,     0.10, cls_available),
-    ]
+    # components.  (v4 CONFIDENCE-FIRST 2026-06-14 UPDATE.)
+    # Historical ROI (n<10) and CLV (missing closing odds) were
+    # previously fixed at neutral 50 with full 0.15 / 0.10 weight.
+    # v3 redistributed unavailable weight proportionally across the
+    # remaining components — which allowed Edge's 0.35 to swell to
+    # ~0.47 effective when ROI+CLV were absent (the common pregame
+    # case).  v4 uses EXPLICIT PREGAME WEIGHTS when ROI/CLV are
+    # unavailable so Edge cannot regain dominance and Confidence
+    # remains the primary authority.
+    #
+    # v4 (CONFIDENCE-FIRST):
+    #   confidence  0.25     (was 0.00; new first-class component)
+    #   edge        0.15     (was 0.35 — reduced to secondary value)
+    #   align       0.20
+    #   dq          0.15     (was 0.10; DQ no longer contains a
+    #                         hidden edge channel — safe to widen)
+    #   vol         0.10
+    #   roi         0.10     (was 0.15)
+    #   clv         0.05     (was 0.10)
+    #   TOTAL       1.00
+    #
+    # EXPLICIT PREGAME (ROI + CLV both absent — the typical case):
+    #   confidence  0.30
+    #   edge        0.18
+    #   align       0.24
+    #   dq          0.18
+    #   vol         0.10
+    #   TOTAL       1.00
+    #   → edge effective = 18 % (was ~47 % under v3 renormalization)
+    # ────────────────────────────────────────────────────────────
+    # v4 confidence input — REUSES the already-validated piecewise
+    # ephemeral map (compute_lock_score's own legacy `wp → base`
+    # formula from lines 902-906 of v3).  Same math, promoted from
+    # a fallback-only path to a first-class scoring component.
+    def _v4_confidence_component(wp_pct: float) -> float:
+        wp = wp_pct / 100.0 if wp_pct > 1.0 else wp_pct
+        wp = max(0.0, min(1.0, wp))
+        if   wp < 0.30: return 40 + wp * (50 / 0.30)               # 40-90
+        elif wp < 0.50: return 50 + (wp - 0.30) * (20 / 0.20)      # 50-70
+        elif wp < 0.70: return 70 + (wp - 0.50) * (16 / 0.20)      # 70-86
+        elif wp < 0.90: return 86 + (wp - 0.70) * (11 / 0.20)      # 86-97
+        else:            return 97 + (wp - 0.90) * (2 / 0.10)       # 97-99
+
+    _v4_wp_source = (
+        win_prob if win_prob is not None
+        else (pick.get("win_probability") if pick else 0) or 0
+    )
+    try:
+        _v4_wp_val = float(_v4_wp_source)
+    except (TypeError, ValueError):
+        _v4_wp_val = 0.0
+    confidence_comp = _v4_confidence_component(_v4_wp_val)
+
+    if roi_available and cls_available:
+        # Full-signal case — proportional to v4 default weights.
+        _components = [
+            ("confidence", confidence_comp, 0.25, True),
+            ("edge",       edge_comp,       0.15, True),
+            ("align",      market_align,    0.20, True),
+            ("dq",         data_quality,    0.15, True),
+            ("vol",        vol_comp,        0.10, True),
+            ("roi",        roi_comp,        0.10, True),
+            ("clv",        cls_comp,        0.05, True),
+        ]
+    else:
+        # EXPLICIT-PREGAME weights (ROI or CLV missing — typical
+        # pre-event case).  Not just renormalised v4-full; explicitly
+        # chosen so Edge cannot regain dominance regardless of which
+        # historical component is absent.
+        _components = [
+            ("confidence", confidence_comp, 0.30, True),
+            ("edge",       edge_comp,       0.18, True),
+            ("align",      market_align,    0.24, True),
+            ("dq",         data_quality,    0.18, True),
+            ("vol",        vol_comp,        0.10, True),
+            ("roi",        roi_comp,        0.10 if roi_available else 0.0,
+                                                  roi_available),
+            ("clv",        cls_comp,        0.05 if cls_available else 0.0,
+                                                  cls_available),
+        ]
     _avail_weight = sum(w for _, _, w, ok in _components if ok)
     if _avail_weight > 0:
         score = sum(v * w / _avail_weight
                     for _, v, w, ok in _components if ok)
     else:
         # Every component missing — degenerate case; keep original score.
-        score = (0.35 * edge_comp + 0.20 * market_align + 0.15 * roi_comp
-                 + 0.10 * data_quality + 0.10 * vol_comp + 0.10 * cls_comp)
+        score = (0.25 * confidence_comp + 0.15 * edge_comp
+                 + 0.20 * market_align + 0.15 * data_quality
+                 + 0.10 * vol_comp + 0.10 * roi_comp + 0.05 * cls_comp)
 
     # ── Bet-Quality Floor (EVIDENCE-BASED, 2026-07-04 chalk-bias fix) ────
     # OLD: floor required BOTH win_prob AND edge (e.g. Elite needs wp≥80
@@ -1259,10 +1338,19 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     except Exception as _authority_err:  # pragma: no cover — never break scoring
         logger.debug("nfl_prop_lock_authority skipped: %s", _authority_err)
 
-    # Store the 6 components + evidence signals so the UI / analytics can
-    # inspect them later. Evidence fields (ev_units, bucket_hit, agreement)
-    # are the new chalk-neutral tier gates added 2026-07-04.
+    # Store the 7 v4 components + evidence signals so the UI / analytics
+    # can inspect them later.  ``confidence`` (v4, 2026-06-14) is the
+    # new first-class calibrated-win-probability component; the shrunken
+    # ``edge`` weight (0.15) is preserved as secondary value signal.
+    # ``effective_weights`` freezes the runtime weight table (full vs
+    # explicit-pregame) so 3-6 months from now the historical calibration
+    # can be reconstructed exactly.
+    _v4_effective_weights = {
+        name: (round(w / _avail_weight, 4) if _avail_weight > 0 else 0.0)
+        for (name, _v, w, ok) in _components if ok
+    }
     pick["lock_components"] = {
+        "confidence":   round(confidence_comp, 1),
         "edge":         round(edge_comp, 1),
         "alignment":    round(market_align, 1),
         "roi":          round(roi_comp, 1),
@@ -1275,7 +1363,23 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
         "bucket_hit":   round(bucket_hit, 4) if bucket_n else None,
         "bucket_n":     bucket_n,
         "agreement":    round(factor_agreement, 3),
+        # v4 provenance — effective weights actually applied to this pick
+        "effective_weights": _v4_effective_weights,
     }
+    # ── FORMULA VERSION STAMP (v4 CONFIDENCE-FIRST 2026-06-14) ─────
+    # Every pick freezes which scoring version generated it so a
+    # future settlement / calibration pass can reconstruct the exact
+    # semantics.  Historical picks scored under v3 retain their
+    # original version marker (this stamp is CANDIDATE-level and
+    # never rewrites a pre-existing value).
+    pick.setdefault("lock_score_version", "v4.confidence_first.2026-06-14")
+    # Freeze the calibrated confidence input separately from
+    # win_probability so future audits can distinguish the raw model
+    # probability from the value that fed the confidence component
+    # (they are identical today but that may not always be the case
+    # if a downstream calibrator writes a distinct field later).
+    pick.setdefault("calibrated_win_probability",
+                     round(_v4_wp_val, 4) if _v4_wp_val else 0.0)
     final_score = max(55.0, min(99.0, round(score, 1)))
 
     # ── PERKLOCKS PASS 4 (2026-06) — Universal Lock Authority wiring.
