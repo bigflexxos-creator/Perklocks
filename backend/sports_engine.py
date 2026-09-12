@@ -854,6 +854,7 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
         k: round(v * 100, 1)
         for k, v in factors.items()
         if not (isinstance(k, str) and k.startswith("__"))
+        and isinstance(v, (int, float))
     }
 
     # PASS 3-5 REACHABILITY (2026-06) — Legacy pick=None call-site
@@ -909,7 +910,10 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     edge_comp = max(0.0, min(100.0, 50 + edge_pct * 5))
 
     # 2) Market alignment — agreement across factors (low stdev = high agreement)
-    vals = list(factors.values()) if factors else []
+    # NOTE: skip non-numeric values (some sports stash string provenance
+    # tags like ``__data_quality`` here for the explainer path).
+    vals = [v for v in (factors.values() if factors else [])
+            if isinstance(v, (int, float))]
     if len(vals) >= 2:
         mean = sum(vals) / len(vals)
         stdev = (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5
@@ -2081,11 +2085,124 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 # in ``services/cfb_game_model._lookup`` this produced
                 # e.g. Texas Southern ML +1500 LS=98.
                 _e_ml = round((mp - _implied_prob(side_ml)) * 100, 2)
+                # ── CFB EVIDENCE SURFACING (2026-06-11) ────────────────
+                # Populate REAL model-derived factor dict from the SP+
+                # game model.  Every factor listed here was directly
+                # produced by ``estimate_cfb_game``; downstream
+                # ``compute_lock_score`` and the ``Why This Pick?``
+                # panel can now cite real numbers instead of generic
+                # filler.
+                try:
+                    _cfb_ctx0 = ((game.get("_ctx") if isinstance(game, dict) else None) or {})
+                    _cfb_gm0 = _cfb_ctx0.get("_cfb_game_model") or {}
+                    _prov0 = _cfb_gm0.get("provenance") or {}
+                    if _cfb_gm0.get("available"):
+                        # Offensive / defensive advantage — expected
+                        # points delta produced by the SP+ engine
+                        # (already home_off + (25-away_def), etc.).
+                        _exp_margin = float(_cfb_gm0.get("expected_margin") or 0.0)
+                        _exp_total  = float(_cfb_gm0.get("expected_total") or 0.0)
+                        _m_sig      = float(_cfb_gm0.get("margin_sigma") or 13.7)
+                        # Signed relative to the SELECTED side.
+                        _margin_side = _exp_margin if side == home else -_exp_margin
+                        factors["Projected Margin"] = round(_margin_side, 2)
+                        factors["Expected Total"] = round(_exp_total, 2)
+                        factors["Model Fair Prob"] = round(mp * 100, 2)
+                        factors["Sportsbook Implied Prob"] = round(
+                            _implied_prob(side_ml) * 100, 2)
+                        # String factors are stashed under __ prefix so
+                        # compute_lock_score skips them in its numeric
+                        # weighted dict but they still surface on the
+                        # pick object for the Why-This-Pick explainer.
+                        factors["__data_quality"] = str(
+                            _cfb_gm0.get("data_quality") or "sp_plus")
+                        factors["__model_uncertainty_reason"] = str(
+                            _prov0.get("active_sigma_reason") or "nominal")
+                        # SP+ decomposition — offense / defense advantage
+                        # is captured by the projected-margin sign, but
+                        # we also surface raw base_margin so the pick
+                        # explainer can attribute the edge to ratings.
+                        factors["SP+ Margin Base"] = float(
+                            _prov0.get("sp_base_margin") or _exp_margin)
+
+                        # ── DATA-QUALITY-AWARE MARKET PRIOR SHRINKAGE ─
+                        # When the ONLY signal is raw SP+ (no returning
+                        # production, no portal churn context), an
+                        # implied-prob-vs-model gap of e.g. 40 points
+                        # on a longshot dog should not command elite
+                        # authority.  Blend model probability toward
+                        # sportsbook implied when evidence is thin.
+                        # Blend weight scales with number of q_bits:
+                        #   sp_plus alone            → 0.25 shrink toward market
+                        #   sp_plus + partial context→ 0.15
+                        #   sp_plus + both contexts  → 0.00 (no shrink)
+                        # This ONLY narrows extreme model-vs-market
+                        # disagreements; legitimate high-confidence
+                        # picks with proper evidence still reach 93-99.
+                        _dq = str(_cfb_gm0.get("data_quality") or "")
+                        _has_rp_both = "returning_prod_both" in _dq
+                        _has_pt_both = "portal_both" in _dq
+                        _has_any_ctx = any(
+                            k in _dq for k in
+                            ("returning_prod_both", "returning_prod_partial",
+                             "portal_both", "portal_partial"))
+                        if _has_rp_both and _has_pt_both:
+                            _shrink_w = 0.0
+                        elif _has_any_ctx:
+                            _shrink_w = 0.15
+                        else:
+                            _shrink_w = 0.25
+                        if _shrink_w > 0 and side_ml:
+                            _mkt = _implied_prob(side_ml)
+                            # Only shrink when the model disagrees
+                            # materially with the market (>15pt gap).
+                            if abs(mp - _mkt) > 0.15:
+                                _mp_shrunk = (
+                                    (1.0 - _shrink_w) * mp
+                                    + _shrink_w * _mkt
+                                )
+                                factors["Weak-Evidence Market Shrink"] = round(
+                                    (mp - _mp_shrunk) * 100, 2)
+                                mp = _mp_shrunk
+                                _e_ml = round(
+                                    (mp - _implied_prob(side_ml)) * 100, 2)
+                except Exception as _cfb_fx_err:
+                    logger.debug(
+                        "CFB evidence factor surfacing failed: %s",
+                        _cfb_fx_err)
+
                 lock, breakdown = compute_lock_score(
                     factors, win_prob=mp * 100,
                     pick={"book_odds": side_ml, "edge_percent": _e_ml,
                           "win_probability": mp * 100,
-                          "sport": "CFB", "market": f"{side} Moneyline"},
+                          "sport": "CFB", "market": f"{side} Moneyline",
+                          "data_quality": str(
+                              (game.get("_ctx", {}) if isinstance(game, dict) else {})
+                              .get("_cfb_game_model", {}).get("data_quality") or ""),
+                          # ── CFB probability_provenance mapping ────
+                          # Governs the ``model_provenance`` component
+                          # of _compute_data_quality_score.  Thin data
+                          # (SP+ alone) is capped MODEL_CONDITIONED
+                          # (50) so weak-evidence longshots cannot
+                          # command elite Lock authority.
+                          "probability_provenance": (
+                              "CAUSAL_INDEPENDENT"
+                              if ("returning_prod_both" in (
+                                  (game.get("_ctx", {}) if isinstance(game, dict) else {})
+                                  .get("_cfb_game_model", {}).get("data_quality") or "")
+                                and "portal_both" in (
+                                  (game.get("_ctx", {}) if isinstance(game, dict) else {})
+                                  .get("_cfb_game_model", {}).get("data_quality") or "")
+                              ) else "EMPIRICAL_INDEPENDENT"
+                              if any(k in (
+                                  (game.get("_ctx", {}) if isinstance(game, dict) else {})
+                                  .get("_cfb_game_model", {}).get("data_quality") or "")
+                                     for k in ("returning_prod_partial",
+                                               "portal_partial",
+                                               "returning_prod_both",
+                                               "portal_both"))
+                              else "MODEL_CONDITIONED"
+                          )},
                     edge_percent=_e_ml)
             else:
                 lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
