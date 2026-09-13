@@ -197,18 +197,95 @@ def _matchup_component(pick: Mapping[str, Any],
     return peak * (55.0 / 0.30)
 
 
-def _convergence_component(scoring_factors: Mapping[str, float] | None) -> float:
-    """Reuse the stdev-based agreement math on the already-normalised
-    scoring factors so this authority computation is consistent with
-    compute_lock_score's ``market_alignment`` term."""
+def _convergence_component(scoring_factors: Mapping[str, float] | None,
+                            pick: Mapping[str, Any] | None = None) -> float:
+    """Multi-signal agreement.  For player props / MLB / CFB where the
+    factors dict contains homogeneous evidence signals (e.g. Statcast
+    xBA, Barrel%, Hard-Hit% for MLB HRR; SP+ margin/rating for CFB),
+    the raw stdev-based agreement is meaningful.
+
+    For NFL GAME MARKETS the ``factors`` deliberately mix HETEROGENEOUS
+    axes — ``Model Win Prob (norm)``, ``Expected Margin (norm)``,
+    ``Model-vs-Market Δ``, ``Simulation Stability (norm)`` — that
+    measure DIFFERENT concepts.  Their absolute values are on the same
+    [0,1] band but taking the raw stdev of them and calling that
+    "convergence" is semantically wrong: a game where the model side
+    probability is 0.72, expected-margin support is 0.64, and
+    simulation stability is 0.91 is a STRONGLY AGREEING game (all
+    signals point the same direction with high stability), yet the
+    stdev would collapse the naive convergence toward zero.
+
+    Fix (2026-09-13 · P2): for NFL game markets, derive convergence
+    from the SEMANTIC alignment of the axes rather than raw stdev.
+
+    Every non-game caller and non-NFL sport keeps the original stdev
+    math — proven correct for the homogeneous-evidence sports.
+    """
     if not scoring_factors:
         return 80.0
+    # ── SEMANTIC CONVERGENCE for NFL game markets ────────────────
+    sport = (pick or {}).get("sport") or ""
+    market = ((pick or {}).get("market") or "").lower()
+    is_nfl_game = (
+        sport == "NFL" and market != "" and not any(
+            w in market for w in (
+                "yards", "yds", "receptions", "completions",
+                "attempts", "touchdowns", "tds", "atd",
+                "anytime", "longest", "first td", "1st td",
+                "player ", "pass ", "rush ", "reception",
+            )
+        )
+    )
+    if is_nfl_game:
+        # Model side probability (or fair prob) — evidence axis 1.
+        wp    = _first_numeric(scoring_factors, (
+            "Model Win Prob (norm)", "Model Fair Prob (norm)",
+        ))
+        # Expected-margin support (favorite side, [0,1]).
+        marg  = _first_numeric(scoring_factors, (
+            "Expected Margin (norm)", "Projected Margin (norm)",
+            "SP+ Rating Δ (norm)",
+        ))
+        # Model-vs-market delta (higher = more edge on our side).
+        mvm   = _first_numeric(scoring_factors, (
+            "Model-vs-Market Δ",
+        ))
+        # Simulation stability (already a stability signal on [0,1]).
+        stab  = _first_numeric(scoring_factors, (
+            "Simulation Stability (norm)", "Sim Stability (norm)",
+        ))
+        # Semantic agreement — each axis contributes 0..1 support in
+        # the SAME direction of the pick.  We treat "high support" as
+        # ≥ 0.55 (better than a coin flip vs market anchor).
+        supports = [x for x in (wp, marg, mvm, stab) if x is not None]
+        if not supports:
+            return 80.0
+        # Fraction of supporting axes → agreement %.
+        agree = sum(1 for x in supports if x >= 0.55) / len(supports)
+        # Blend with the mean support strength so a lopsided-but-
+        # borderline set doesn't score identically to a lopsided-
+        # and-strong set.
+        mean_support = sum(supports) / len(supports)
+        return _clamp(100.0 * (0.5 * agree + 0.5 * mean_support), 0.0, 100.0)
+
+    # ── DEFAULT stdev-based agreement (homogeneous evidence sports) ──
     vals = [float(v) for v in scoring_factors.values() if isinstance(v, (int, float))]
     if len(vals) < 2:
         return 80.0
     mean = sum(vals) / len(vals)
     stdev = (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5
     return _clamp(100.0 - stdev * 500.0, 0.0, 100.0)
+
+
+def _first_numeric(d: Mapping[str, Any], keys) -> float | None:
+    for k in keys:
+        v = d.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            v = float(v)
+            if v > 1.5:
+                v /= 100.0
+            return max(0.0, min(1.0, v))
+    return None
 
 
 def _distribution_component(pick: Mapping[str, Any]) -> float:
@@ -280,7 +357,7 @@ def compute_bet_quality_authority(
         "reliability":   _reliability_component(pick),
         "history":       _history_component(pick, factors),
         "matchup":       _matchup_component(pick, factors),
-        "convergence":   _convergence_component(scoring_factors),
+        "convergence":   _convergence_component(scoring_factors, pick),
         "distribution":  _distribution_component(pick),
         "data_quality":  _data_quality_component(pick, factors),
     }

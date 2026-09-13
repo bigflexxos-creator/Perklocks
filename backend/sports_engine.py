@@ -1944,7 +1944,52 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
                                  "receiving yards",
                                  "receptions", "rec yds",
                              )))
-    if edge < EDGE_FLOOR and not _nfl_alt_reliability:
+    # ── EDGE-KILL EXEMPTIONS (2026-09-13 · P0) ────────────────────
+    # Retire the hard generation-time edge<-1% kill for the two market
+    # families that the current Locks contract wants the LS≥85 gate
+    # (not raw edge) to decide:
+    #
+    #   (1) MLB PLAYER PROPS — Hits / Total Bases / H+R+RBI / RBI / HR
+    #       / Pitcher Strikeouts / Pitcher Outs.  Real Statcast +
+    #       matchup evidence can legitimately produce a strong Lock
+    #       Score even when the modelled edge lands slightly negative
+    #       (safer alt rungs, chalk juice) — the LS floor already
+    #       prevents un-earned board admission.
+    #
+    #   (2) NFL GAME MARKETS — Moneyline / Spread / Total.  Platinum
+    #       game predictions with strong evidence can also live in
+    #       the near-zero / mildly-negative edge band on heavy chalk;
+    #       Lock Score with the Platinum-evidence adapter is the
+    #       correct admission signal.
+    #
+    # Edge remains STORED + VISIBLE on the persisted pick.  A negative
+    # edge NEVER lifts a score; it simply no longer deletes an
+    # otherwise-qualified candidate before Lock Score evaluation
+    # runs.  Every malformed / no-model / no-real-line / data-
+    # integrity gate below is unchanged.
+    _mlb_prop_edge_exempt = (
+        sport == "MLB" and market_l != "" and any(
+            w in market_l for w in (
+                "hits", "total bases", "hits + runs + rbis",
+                "hits + runs + rb", "h+r+rbi",
+                "rbis", " rbi", "home run", "hr ",
+                "strikeout", " ks", "pitcher outs", "outs recorded",
+            )
+        )
+    )
+    _nfl_game_market_edge_exempt = (
+        sport == "NFL" and market_l != "" and not is_alt_prop and any(
+            w in market_l for w in (
+                "moneyline", " ml ", " ml",
+                "spread", "handicap",
+                "total points", "over/under", " total ",
+            )
+        )
+    )
+    _edge_kill_exempt = (_nfl_alt_reliability
+                          or _mlb_prop_edge_exempt
+                          or _nfl_game_market_edge_exempt)
+    if edge < EDGE_FLOOR and not _edge_kill_exempt:
         try:
             from services import funnel_telemetry as _funnel
             _funnel.record(
