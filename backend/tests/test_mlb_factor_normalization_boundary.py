@@ -279,6 +279,9 @@ def test_cfb_norm_factors_unchanged():
         "__calibrated_win_probability",
         "__effective_weights",
         "__confidence_component",
+        "__bet_quality_authority_ceiling",
+        "__bet_quality_authority_version",
+        "__bet_quality_authority_components",
     }
     for k in weighted.keys():
         if k in _v4_bridge_keys:
