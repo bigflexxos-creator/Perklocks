@@ -968,6 +968,29 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
                 and isinstance(v, (int, float))
                 and not isinstance(v, bool)
             }
+        # ── MARKET-ANCHOR EXCLUSION (2026-09-13 · v3 rollback) ─────
+        # "Sportsbook Implied (norm)" and its aliases are MARKET
+        # REFERENCE values, not model evidence.  Including them in
+        # ``_scoring_factors`` blows up ``_convergence_component``
+        # (their sign is opposite to model probability on longshots →
+        # near-zero convergence) and pulls composite ``market_align``
+        # toward the book, artificially depressing legitimate high-
+        # confidence picks like Alabama State ML with WP=91% down to
+        # LS=68.  Filter here — the market-anchor is retained on the
+        # persisted ``factors`` dict for display, but does not
+        # participate in evidence-based scoring.
+        _MARKET_ANCHOR_KEYS = {
+            "Sportsbook Implied (norm)",
+            "Sportsbook Implied",
+            "Book Implied (norm)",
+            "Book Implied",
+            "Market Implied (norm)",
+            "Market Implied",
+        }
+        _scoring_factors = {
+            k: v for k, v in _scoring_factors.items()
+            if k not in _MARKET_ANCHOR_KEYS
+        }
     except Exception:
         # Fail-open: if the boundary import ever fails we fall back to
         # the caller's dict verbatim so scoring is never broken by an
@@ -1565,24 +1588,48 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
                 _bq_authority_key == "NFL"
                 and bool(pick.get("nfl_prop_authority_applied"))
             )
-            if _bq_is_player_prop:
-                # NFL player prop — PRESERVE the current exact-threshold
-                # authority score.  BQ authority remains stamped on the
-                # pick for audit / display but does NOT modify the final
-                # NFL prop Lock Score, so today's live 96-97 tier stays
-                # exactly where it is.  The old ``60 + WP*40`` cap was
-                # already skipped earlier for NFL_PLAYER
-                # (``_bq_skip_old_cap``), so a legitimate composite that
-                # exceeds the exact-threshold authority ceiling still
-                # emits at the composite value.  Regression prevention
-                # per Part K + Part E of the 2026-09-13 closure pass.
-                pass
-            else:
-                # MLB / CFB / NFL game — BQ is AUTHORITATIVE.
-                # Clamp into the [55, 99] production band; 100 is
-                # reserved for the separate APEX gate.
-                final_score = round(
-                    max(55.0, min(99.0, _bq_ceiling)), 1)
+            # ── SURGICAL COMPRESSION ROLLBACK (2026-09-13 · v3) ────
+            # The previous handoff replaced the composite with the BQ
+            # ceiling for MLB / CFB / NFL-game (``final_score =
+            # _bq_ceiling``).  That collapsed every strong composite
+            # onto BQ's math ceiling — which tops around 96-97 even
+            # for peak evidence — and produced the board-crushing
+            # compression the user reported (MLB almost nothing >85,
+            # CFB unable to reach high tiers, NFL game markets stuck).
+            #
+            # ROLLBACK contract:
+            #   * BQ authority remains STAMPED on the pick for audit /
+            #     evidence provenance, unchanged.  Downstream consumers
+            #     still see ``bet_quality_authority`` with the ceiling,
+            #     the seven components and the version tag.
+            #   * BQ NEVER LOWERS the composite Lock Score.  A
+            #     composite of 95 with a BQ ceiling of 84 stays at 95;
+            #     the composite already reflects the total betting
+            #     setup quality via the v4 confidence-first
+            #     weights + edge + alignment + ROI + CLV
+            #     integrity gates.
+            #   * NFL player prop preservation branch stays as-is:
+            #     the exact-threshold authority (``60 + WP·0.4``)
+            #     already governs 96-97 there; BQ makes no change.
+            #   * Evidence-based LIFT — when BQ's ceiling exceeds the
+            #     composite and BQ is high-tier (≥ 90), promote the
+            #     composite UP toward BQ.  This is the user's exact
+            #     "TOTAL BETTING SETUP QUALITY" contract: strong
+            #     multi-signal evidence can legitimately elevate a
+            #     mid-composite pick into the 90-99 band it deserves,
+            #     without letting BQ crush a legitimately-high composite.
+            #     Apex 100 is reserved by the separate gate and is
+            #     never emitted here (clamped to [55, 99]).
+            if not _bq_is_player_prop:
+                # Evidence-based LIFT — when BQ's ceiling exceeds the
+                # composite, promote the composite UP toward BQ.  The
+                # threshold is 85 (the board floor) so BQ can rescue
+                # a mid-composite pick whose multi-signal evidence
+                # legitimately reaches 85+ / 90+ / 98+, without
+                # crushing a stronger composite.  BQ never LOWERS.
+                if _bq_ceiling >= 85.0 and _bq_ceiling > final_score:
+                    final_score = round(
+                        max(55.0, min(99.0, _bq_ceiling)), 1)
             # CEILING semantics: only intervene in the ELITE tier
             # (92+) where the old ``60 + WP*40`` authority historically
             # over-capped good props.  Below 92 the composite is left
