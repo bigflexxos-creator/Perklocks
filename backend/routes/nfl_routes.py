@@ -91,21 +91,33 @@ async def nfl_atd_leaderboard(
     """
     try:
         from nfl_atd_engine import atd_leaderboard
+        from datetime import datetime, timezone, timedelta
+        # ── ATD FRESHNESS + MARKET PURITY (2026-09-13, Part H) ─────
+        # (1) MARKET PURITY — restrict the canonical query to the
+        #     ANYTIME-TD family ONLY.  ``1st TD`` and ``First TD``
+        #     rows must NEVER surface on the ANYTIME-TD leaderboard —
+        #     they are a distinct market with distinct exact-threshold
+        #     semantics.
+        # (2) FRESHNESS — only accept rows whose ``event_time`` is
+        #     current or upcoming (with a 15-minute clock-skew
+        #     grace).  Yesterday's ATD candidates are historical
+        #     research, not a bettable live-board row.
+        _now = datetime.now(timezone.utc)
+        _min_event_time = (_now - timedelta(minutes=15)).isoformat()
         # ── Primary: canonical published ATD picks ──────────────────
         canonical: list[dict] = []
         try:
             cursor = db.picks.find(
                 {
                     "sport": "NFL",
-                    # 2026-06-09 — ``publication_state`` restriction
-                    # dropped so mathematically-strong ATD evaluations
-                    # that legitimately fall to off_board on the main
-                    # board (chalk-trap at true edge) still populate
-                    # the ATD leaderboard.  Board-eligibility and
-                    # leaderboard-eligibility are distinct concerns.
-                    "market": {"$regex": r"Anytime\s*TD|1st\s*TD|First\s*TD",
+                    # 2026-09-13 — restrict to the canonical
+                    # ``Anytime TD`` market only (was previously
+                    # including ``1st TD`` / ``First TD``).
+                    "market": {"$regex": r"Anytime\s*TD",
                                "$options": "i"},
                     "atd_evidence.td_probability": {"$gt": 0},
+                    # Freshness — event must be current/upcoming.
+                    "event_time": {"$gte": _min_event_time},
                 },
                 {"_id": 0},
             ).sort("lock_score", -1).limit(200)
@@ -188,28 +200,39 @@ async def nfl_atd_leaderboard(
                 "rules": {
                     "min_probability": min_probability,
                     "min_opportunity_rating": min_opportunity_rating,
+                    "min_event_time": _min_event_time,
+                    "market_filter": "Anytime TD only",
                     "note": "sourced from PUBLISHED ATD picks (canonical_publication)",
                 },
                 "league_means": {},
                 "picks": canonical[: max(1, int(limit))],
             }
 
-        # ── Fallback: historical research view (never a betting card) ──
-        legacy = await atd_leaderboard(
-            db,
-            limit=limit,
-            min_probability=min_probability,
-            min_opportunity_rating=min_opportunity_rating,
-        )
-        legacy["mode"] = "research_only"
-        legacy.setdefault("rules", {})[
-            "note"
-        ] = "canonical_publication empty — showing historical ranking (research only, not a bettable board)"
-        # Tag every legacy pick so the UI can render a subdued
-        # "research" pill (frontend can inspect ``provenance``).
-        for _r in legacy.get("picks") or []:
-            _r.setdefault("provenance", "historical_ranking")
-        return legacy
+        # ── Fallback: EXPLICIT no-current-bettable-ATD state ─────────
+        # Part H — the historical research view must NEVER masquerade
+        # as a live betting card.  When the canonical bettable set is
+        # empty we return an explicit ``no_current_bettable_atd`` mode
+        # with an empty picks list.  The historical research view
+        # remains discoverable via the dedicated
+        # ``atd_leaderboard`` engine call for offline analytics but
+        # this live endpoint no longer emits research rows dressed as
+        # betting cards.
+        return {
+            "mode": "no_current_bettable_atd",
+            "total_candidates": 0,
+            "passed_filters": 0,
+            "rejected": {},
+            "rules": {
+                "min_probability": min_probability,
+                "min_opportunity_rating": min_opportunity_rating,
+                "min_event_time": _min_event_time,
+                "market_filter": "Anytime TD only",
+                "note": ("no current bettable ATD candidates — historical "
+                          "research view is intentionally not returned here"),
+            },
+            "league_means": {},
+            "picks": [],
+        }
     except Exception as e:
         raise HTTPException(500, f"nfl atd leaderboard failed: {e}")
 
@@ -291,12 +314,19 @@ async def nfl_atd_by_game(
         }
     """
     try:
+        from datetime import datetime, timezone, timedelta
+        # 2026-09-13 (Part H) — same freshness + market-purity gate
+        # as ``/atd/leaderboard`` so both endpoints share the SAME
+        # canonical current-slate ATD candidate universe.
+        _now = datetime.now(timezone.utc)
+        _min_event_time = (_now - timedelta(minutes=15)).isoformat()
         cursor = db.picks.find(
             {
                 "sport": "NFL",
-                "market": {"$regex": r"Anytime\s*TD|1st\s*TD|First\s*TD",
+                "market": {"$regex": r"Anytime\s*TD",
                            "$options": "i"},
                 "atd_evidence.td_probability": {"$gt": 0},
+                "event_time": {"$gte": _min_event_time},
             },
             {"_id": 0},
         )

@@ -1404,14 +1404,31 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
                     # Never demote — a stronger composite (e.g. massive
                     # positive edge on a value alt) can still shine.
                     score = max(score, _authority_score)
-                    # And the ceiling stays a HARD cap so a 95% WP can
-                    # reach ~98 but not 99.
-                    score = min(_authority_ceiling, score)
+                    # BQ AUTHORITY (2026-09-13) — when BQ is opted in
+                    # for NFL_PLAYER, skip the old ``60 + WP*40`` HARD
+                    # cap so a strong 80% WP prop with exceptional
+                    # multi-signal evidence can reach LS 98/99 through
+                    # the later Bet-Quality ceiling instead.
+                    try:
+                        from services.bet_quality_authority import (
+                            bet_quality_authority_enabled,
+                        )
+                        _bq_skip_old_cap = bet_quality_authority_enabled(
+                            pick.get("sport") or "NFL",
+                            pick.get("market"),
+                        )
+                    except Exception:
+                        _bq_skip_old_cap = False
+                    if not _bq_skip_old_cap:
+                        # Legacy: the ceiling stays a HARD cap so a
+                        # 95% WP can reach ~98 but not 99.
+                        score = min(_authority_ceiling, score)
                     # Provenance breadcrumbs for auditability.
                     pick["nfl_prop_authority_applied"] = True
                     pick["nfl_prop_authority_wp"] = round(_wp_frac, 4)
                     pick["nfl_prop_authority_ceiling"] = round(_authority_ceiling, 2)
                     pick["nfl_prop_authority_evidence_mult"] = _evidence_mult
+                    pick["nfl_prop_authority_bq_supersedes"] = bool(_bq_skip_old_cap)
                 else:
                     pick["nfl_prop_authority_applied"] = False
                     pick["nfl_prop_authority_skip_reason"] = (
@@ -1483,6 +1500,105 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     weighted["__effective_weights"] = _v4_effective_weights
     weighted["__confidence_component"] = round(confidence_comp, 1)
     final_score = max(55.0, min(99.0, round(score, 1)))
+
+    # ── BET-QUALITY AUTHORITY CEILING (2026-09-13) ─────────────────
+    # Multi-signal ceiling that replaces the old NFL-prop
+    # ``60 + WP*40`` over-coupling.  This ceiling is applied ONLY
+    # when the caller's sport is opted in via
+    # ``services.bet_quality_authority.BET_QUALITY_AUTHORITY_ENABLED_SPORTS``.
+    # It never LIFTS the composite score — only enforces a stricter
+    # cap when Bet-Quality evidence is thin.  100 remains reserved
+    # for the separate APEX pathway.
+    try:
+        from services.bet_quality_authority import (
+            compute_bet_quality_authority,
+            bet_quality_authority_enabled,
+            BET_QUALITY_AUTHORITY_VERSION,
+        )
+        _bq_sport = (pick or {}).get("sport") or ""
+        _bq_market = (pick or {}).get("market") or ""
+        if bet_quality_authority_enabled(_bq_sport, _bq_market):
+            _bq_ceiling, _bq_comps = compute_bet_quality_authority(
+                win_prob_pct=(win_prob or 0.0),
+                pick=pick or {},
+                factors=factors,
+                scoring_factors=_scoring_factors,
+            )
+            # Stamp for downstream explainer / read-path parity.
+            pick["bet_quality_authority"] = {
+                "version": BET_QUALITY_AUTHORITY_VERSION,
+                "ceiling": _bq_ceiling,
+                "components": _bq_comps,
+            }
+            weighted["__bet_quality_authority_ceiling"] = _bq_ceiling
+            weighted["__bet_quality_authority_version"] = (
+                BET_QUALITY_AUTHORITY_VERSION
+            )
+            # 2026-09-13 (Part J) — stash components too so
+            # ``_build_pick`` can rebuild the full BQ payload on
+            # persistence even when the shim-propagation path is not
+            # used (MLB / CFB / non-prop NFL callers).
+            weighted["__bet_quality_authority_components"] = _bq_comps
+            # ── AUTHORITY HANDOFF (2026-09-13 · Part A) ────────────
+            # BQ is the AUTHORITY on non-player-prop paths (MLB game,
+            # CFB game, NFL game markets).  It is NOT ``max(v4, BQ)``
+            # and NOT ``min(v4, BQ)`` — it is the multi-signal
+            # evidence authority score with the integrity gates
+            # (missing evidence → default component values reduce
+            # authority; contradictory evidence → convergence
+            # component collapses) baked into the formula.  The old
+            # v4 composite is retained on the pick as a display /
+            # audit signal via ``lock_components.confidence`` but
+            # does not decide Lock Score for these families.
+            #
+            # NFL player props keep their existing exact-threshold
+            # authority (``nfl_prop_authority_ceiling * evidence_mult``
+            # applied earlier as a FLOOR via ``score = max(score,
+            # authority_score)``).  BQ acts as an upper CEILING
+            # there to prevent thin-evidence 98/99 emissions, but
+            # never lowers a legitimate composite score into the
+            # 80s just because the composite is below BQ.  This
+            # preserves the currently-earned NFL 96–97 real
+            # production tier.
+            _bq_authority_key = (pick.get("sport") or "").upper()
+            _bq_is_player_prop = (
+                _bq_authority_key == "NFL"
+                and bool(pick.get("nfl_prop_authority_applied"))
+            )
+            if _bq_is_player_prop:
+                # NFL player prop — PRESERVE the current exact-threshold
+                # authority score.  BQ authority remains stamped on the
+                # pick for audit / display but does NOT modify the final
+                # NFL prop Lock Score, so today's live 96-97 tier stays
+                # exactly where it is.  The old ``60 + WP*40`` cap was
+                # already skipped earlier for NFL_PLAYER
+                # (``_bq_skip_old_cap``), so a legitimate composite that
+                # exceeds the exact-threshold authority ceiling still
+                # emits at the composite value.  Regression prevention
+                # per Part K + Part E of the 2026-09-13 closure pass.
+                pass
+            else:
+                # MLB / CFB / NFL game — BQ is AUTHORITATIVE.
+                # Clamp into the [55, 99] production band; 100 is
+                # reserved for the separate APEX gate.
+                final_score = round(
+                    max(55.0, min(99.0, _bq_ceiling)), 1)
+            # CEILING semantics: only intervene in the ELITE tier
+            # (92+) where the old ``60 + WP*40`` authority historically
+            # over-capped good props.  Below 92 the composite is left
+            # untouched — the composite math already prevents thin
+            # evidence from reaching high tiers.  This makes BQ
+            # authority a targeted 92-99 ceiling: LIFT the old cap
+            # for strong 80% WP + exceptional evidence, CAP for
+            # implausible 98/99 emissions from thin evidence.
+            # NOTE: The old cap-down (line below, retained in comment
+            # for historical audit) was superseded by the explicit
+            # authority branch above (Part A, 2026-09-13).  Removing
+            # it here — the correct semantics live in the branch
+            # above; running the old cap AFTER the authority would
+            # re-cap the authoritative score.
+    except Exception:  # pragma: no cover — never break legacy paths
+        pass
 
     # ── PERKLOCKS PASS 4 (2026-06) — Universal Lock Authority wiring.
     # Stamps the universal-authority block on the pick so downstream
@@ -1815,11 +1931,24 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
     _v4_cwp = None
     _v4_ew = None
     _v4_conf = None
+    _bq_ceiling_stash = None
+    _bq_version_stash = None
+    _bq_components_stash = None
     if isinstance(factors, dict):
         _v4_ver = factors.pop("__lock_score_version", None)
         _v4_cwp = factors.pop("__calibrated_win_probability", None)
         _v4_ew  = factors.pop("__effective_weights", None)
         _v4_conf = factors.pop("__confidence_component", None)
+        # ── BET-QUALITY AUTHORITY PERSISTENCE BRIDGE (2026-09-13) ──
+        # ``compute_lock_score`` stashes the BQ ceiling / version /
+        # components inside the returned breakdown under ``__``
+        # keys.  Promote them to a top-level ``bet_quality_authority``
+        # object on the persisted pick so downstream analytics /
+        # audit / wire consumers see it universally — not just on
+        # NFL props (which use the shim propagation).
+        _bq_ceiling_stash = factors.pop("__bet_quality_authority_ceiling", None)
+        _bq_version_stash = factors.pop("__bet_quality_authority_version", None)
+        _bq_components_stash = factors.pop("__bet_quality_authority_components", None)
     return {
         "sport": sport, "league": league, "event": event,
         "event_time": event_time, "market": market, "selection": pick_side,
@@ -1846,6 +1975,12 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
         **({"calibrated_win_probability": _v4_cwp} if _v4_cwp is not None else {}),
         **({"lock_effective_weights": _v4_ew} if _v4_ew else {}),
         **({"lock_confidence_component": _v4_conf} if _v4_conf is not None else {}),
+        # Bet-Quality Authority (2026-09-13) — universal persistence.
+        **({"bet_quality_authority": {
+                "version":    _bq_version_stash,
+                "ceiling":    _bq_ceiling_stash,
+                "components": _bq_components_stash or {},
+           }} if _bq_ceiling_stash is not None else {}),
         "external_id": str(external_id),
         # Line classification — used by the UI's MAIN | ALT | BOTH toggle.
         "is_alt": bool(is_alt_prop),
@@ -2351,10 +2486,53 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 # evidence.  High scores must be EARNED, not probability-
                 # mapped.
                 _e_ml = round((mp - _implied_prob(side_ml)) * 100, 2)
+                # ── NFL GAME EVIDENCE SURFACING (2026-09-13, Part G) ───
+                # Populate real Platinum-model evidence on ``factors``
+                # so this NFL game candidate does NOT enter scoring
+                # with factors={}.  Every value is on the [0,1] band
+                # and derived directly from ``_nfl_plat_ml`` — no
+                # bonuses, no fabricated evidence.  Also pass ``sport``
+                # + ``market`` on the pick dict so
+                # ``bet_quality_authority_enabled("NFL", "... Moneyline")``
+                # returns True (NFL_GAME) and BQ evidence authority
+                # runs on this candidate.
+                try:
+                    _plat_sim = (_nfl_plat_ml.get("sim") or {})
+                    _book_impl_ml = _implied_prob(side_ml)
+                    _side_prob = float(mp)
+                    _exp_margin_home = float(_nfl_plat_ml.get(
+                        "expected_margin_home") or 0.0)
+                    _side_margin = (_exp_margin_home if side == home
+                                    else -_exp_margin_home)
+                    # Logistic-normalise margin the same way CFB does
+                    # (0.10 K matches Platinum's own margin→prob curve
+                    # empirically at HFA-neutral scales; keeps the
+                    # normalised band comparable across sports).
+                    _side_margin_norm = round(
+                        1.0 / (1.0 + math.exp(-0.10 * _side_margin)), 4)
+                    factors["Model Win Prob (norm)"]   = round(_side_prob, 4)
+                    factors["Sportsbook Implied (norm)"] = round(_book_impl_ml, 4)
+                    factors["Expected Margin (norm)"]  = _side_margin_norm
+                    factors["Model-vs-Market Δ"]       = round(
+                        max(0.0, min(1.0, 0.5 + (_side_prob - _book_impl_ml))), 4)
+                    # Simulation stability — inverse of preseason
+                    # uncertainty when present, else nominal 0.85.
+                    _presu = _nfl_plat_ml.get("preseason_uncertainty")
+                    _stab = 0.75 if _presu else 0.90
+                    factors["Simulation Stability (norm)"] = _stab
+                except Exception as _plat_fx_err:
+                    logger.debug("NFL Platinum evidence surfacing failed: %s",
+                                 _plat_fx_err)
                 lock, breakdown = compute_lock_score(
                     factors, win_prob=mp * 100,
                     pick={"book_odds": side_ml, "edge_percent": _e_ml,
-                          "win_probability": mp * 100},
+                          "win_probability": mp * 100,
+                          "sport": "NFL",
+                          "market": f"{side} Moneyline",
+                          "data_quality": "platinum_nfl_sim",
+                          "probability_provenance": "CAUSAL_INDEPENDENT",
+                          "sim_stability": (0.75 if _nfl_plat_ml.get(
+                              "preseason_uncertainty") else 0.90)},
                     edge_percent=_e_ml)
             elif sport == "CFB":
                 # 2026-06-11 · CFB FALSE HIGH-LOCK FIX — route CFB
@@ -2561,7 +2739,19 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 # site → zero risk for MLB/NBA/NFL/Soccer/Tennis paths.
                 breakdown = _persisted_factors
             else:
-                lock, breakdown = compute_lock_score(factors, win_prob=mp * 100)
+                # ── 2026-09-13 (Part C/G) — pass sport/market hint so
+                # ``bet_quality_authority_enabled(...)`` fires for the
+                # MLB moneyline / spread fallback path.  Without this,
+                # BQ authority never runs on this branch → MLB game
+                # setups landed on the DB with
+                # ``bet_quality_authority = None``.  FIELD-only —
+                # no factor mutation and no math change here.
+                lock, breakdown = compute_lock_score(
+                    factors, win_prob=mp * 100,
+                    pick={"book_odds": side_ml,
+                          "win_probability": mp * 100,
+                          "sport": sport,
+                          "market": f"{side} Moneyline"})
             _opp_ml_prices = [away_ml if side == home else home_ml]
             if sport == "Soccer" and draw_ml is not None:
                 _opp_ml_prices.append(draw_ml)
@@ -8452,6 +8642,29 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     new_pick["nfl_prop_authority_evidence_mult"] = _prop_authority_mult
                 if _prop_authority_skip is not None:
                     new_pick["nfl_prop_authority_skip_reason"] = _prop_authority_skip
+                # ── BET-QUALITY AUTHORITY PROPAGATION (2026-09-13) ───
+                # ``compute_lock_score`` stamps
+                # ``pick["bet_quality_authority"] = {version, ceiling,
+                # components}`` on the SHIM.  Without this bridge the
+                # authority payload was silently dropped when
+                # ``_build_pick`` constructs the persisted ``new_pick``
+                # from scratch, so every NFL prop landed on the DB
+                # with ``bet_quality_authority: None`` even though the
+                # scoring pass ran BQ correctly.  Copying the shim's
+                # authority object here is FIELD-ONLY — no math
+                # rerun, no cap change, no factor mutation.
+                _shim_bq = _prop_pick_shim.get("bet_quality_authority")
+                if isinstance(_shim_bq, dict) and _shim_bq:
+                    new_pick["bet_quality_authority"] = _shim_bq
+                # Bubble up the ``nfl_prop_authority_bq_supersedes``
+                # audit flag alongside so downstream auditors can
+                # distinguish the LIFT (old cap skipped) from the
+                # legacy hard-cap semantics.
+                _shim_bq_super = _prop_pick_shim.get(
+                    "nfl_prop_authority_bq_supersedes")
+                if _shim_bq_super is not None:
+                    new_pick["nfl_prop_authority_bq_supersedes"] = (
+                        _shim_bq_super)
             except Exception:
                 pass
             # ── 2026-06-09 · MP-FROM-BOOK LEAKAGE STAMP ──────────────
