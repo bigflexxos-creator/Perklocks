@@ -164,10 +164,12 @@ def _history_component(pick: Mapping[str, Any],
         if s >= 20: return 85.0
         if s >= 12: return 80.0
         if s >= 6:  return 74.0
-    # No explicit history data → adequate default (absence of data
-    # ≠ negative evidence).  85 keeps well-formed picks structurally
-    # reachable at the 90+ band without forcing a manufactured history.
-    return 85.0
+    # No explicit history data → MISSING per P2 (UEA contract).
+    # Return a soft-neutral 60 rather than 85 so absent history no
+    # longer masquerades as strong evidence.  The UEA authority is
+    # the correct place to reward a real hit-rate — BQ here acts as
+    # a legacy compatibility shim and must not manufacture support.
+    return 60.0
 
 
 def _matchup_component(pick: Mapping[str, Any],
@@ -188,7 +190,8 @@ def _matchup_component(pick: Mapping[str, Any],
             if v > 1.5: v /= 100.0
             candidates.append(max(0.0, min(1.0, v)))
     if not candidates:
-        return 85.0
+        # P2 (UEA): missing matchup evidence is MISSING, not 85.
+        return 60.0
     # Use the strongest matchup signal available.
     peak = max(candidates)
     # 0.30 → 55, 0.65 → 90, 1.0 → 98
@@ -304,8 +307,9 @@ def _distribution_component(pick: Mapping[str, Any]) -> float:
     lc = pick.get("lock_components") or {}
     if isinstance(lc, dict) and lc.get("volatility") is not None:
         return _clamp(float(lc["volatility"]))
-    # Default: mid-band 85 (adequate).
-    return 85.0
+    # Default: mid-band 65 (adequate but not strong).  P2 UEA: absent
+    # simulation evidence should not masquerade as an 85-quality axis.
+    return 65.0
 
 
 def _data_quality_component(pick: Mapping[str, Any],

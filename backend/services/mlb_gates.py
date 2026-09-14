@@ -160,20 +160,56 @@ def data_quality_cap_for_status(status: str) -> Optional[float]:
     if the sportsbook line was real and the pick otherwise qualified.
     The intended contract is: preserve uncertainty safeguards for
     UNKNOWN, but allow Board reachability when the pick legitimately
-    qualifies ≥ canonical floor.  New cap ``88`` sits ABOVE the
-    canonical 85 floor and BELOW the ``projected_starter`` cap
-    (92) — a truly elite pick can still surface, but its lock
-    ceiling remains materially below a confirmed-lineup pick, which
-    is the appropriate uncertainty safeguard.
+    qualifies ≥ canonical floor.
+
+    ── UEA P8 (2026-06) — Projected starters no longer HARD-capped.
+    A projected starter with exceptional evidence coverage
+    (authoritative projected lineup, strong PA, real line, strong
+    exact-threshold history, strong Statcast, strong matchup, strong
+    simulation, high DQ) can reach 96-99 legitimately.  The old
+    universal ≤92 hard ceiling made this mathematically impossible.
+    We now return ``None`` for projected_starter so
+    ``data_quality_cap_for_status`` does not apply a blanket cap; the
+    caller consults ``projected_starter_max_by_coverage`` for a
+    coverage-based restriction instead.  UNKNOWN keeps its softer
+    88 cap.  BENCH / SCRATCHED remain fail-closed.
     """
     if status in ("bench", "scratched"):
         return None            # do not publish
     if status == "unknown":
         return 88.0            # early-availability: above 85 Board floor
     if status == "projected_starter":
-        return 92.0            # cap below Lock tier without confirmation
+        # NO universal hard cap — coverage decides.  Callers should
+        # use ``projected_starter_max_by_coverage(coverage)``.
+        return None
     # confirmed_starter — no cap
     return 99.0
+
+
+def projected_starter_max_by_coverage(coverage: float,
+                                        contradictions: int = 0) -> float:
+    """Coverage-based projected-starter ceiling.  Replaces the old
+    universal ≤92 hard cap so a projected hitter can reach 96–99
+    ONLY when the evidence coverage is truly high.
+
+    coverage in [0, 1]:
+        < 0.55 : 90.0    (thin evidence — softer than 92 for safety)
+        < 0.65 : 92.0    (moderate evidence — matches old cap)
+        < 0.75 : 94.0    (good evidence)
+        < 0.85 : 96.0    (strong evidence)
+        < 0.90 : 97.5    (very strong evidence)
+        >= 0.90: 99.0    (peak — 100 remains APEX-only)
+    """
+    if contradictions >= 2:
+        return 89.0
+    if contradictions >= 1:
+        return min(94.0, projected_starter_max_by_coverage(coverage, 0))
+    if coverage >= 0.90: return 99.0
+    if coverage >= 0.85: return 97.5
+    if coverage >= 0.75: return 96.0
+    if coverage >= 0.65: return 94.0
+    if coverage >= 0.55: return 92.0
+    return 90.0
 
 
 def should_publish(status: str) -> bool:

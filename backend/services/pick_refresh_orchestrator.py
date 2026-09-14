@@ -2265,6 +2265,7 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     # remain separate metrics on the pick.  Non-NFL untouched.
     try:
         _reliability_hits = 0
+        _reliability_scoped = 0
         for _p in safe_picks:
             if (_p.get("sport") or "").strip() != "NFL":
                 continue
@@ -2275,7 +2276,48 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
                 _lock = float(_p.get("lock_score") or 0.0)
             except (TypeError, ValueError):
                 continue
+            # ── UEA SCOPE (2026-06 · P4) ─────────────────────────────
+            # The stale `60 + wp × 40` downstream cap collapsed even
+            # complete-evidence NFL picks — a full-coverage Eagles ML
+            # with strong margin + convergence + no contradictions
+            # was being reduced to `60 + wp × 40` regardless of
+            # authority.  Retire the cap as a HARD upper-tier cap for
+            # picks that ALREADY earned full EvidenceAuthority; keep
+            # it as protection for low-evidence / thin-coverage picks
+            # where WP is the only strong signal.
+            _uea_block = _p.get("evidence_authority") or {}
+            _uea_cov = float(_uea_block.get("coverage") or 0.0)
+            _uea_contras = _uea_block.get("contradictions") or []
+            _uea_ceiling = float(_uea_block.get("ceiling") or 0.0)
+            _has_full_evidence = (
+                _uea_cov >= 0.65
+                and not _uea_contras
+                and _uea_ceiling >= 85.0
+            )
             _reliability_cap = 60.0 + max(0.0, min(1.0, _wp)) * 40.0
+            if _has_full_evidence:
+                # SCOPED: allow legitimate high-evidence picks to keep
+                # their authority-earned score.  Cap only when the
+                # UEA authority itself is lower than the composite —
+                # never below the authority ceiling.
+                _new_cap = max(_reliability_cap, _uea_ceiling)
+                if _lock > _new_cap:
+                    _p["lock_score"]      = round(_new_cap, 1)
+                    _p["lock_score_v2"]   = min(float(_p.get("lock_score_v2") or _new_cap), _new_cap)
+                    _p["lock_score_peak"] = min(float(_p.get("lock_score_peak") or _new_cap), _new_cap)
+                    _p["reliability_cap_applied"] = True
+                    _p["reliability_cap_prior"]   = _lock
+                    _p["reliability_cap_wp"]      = round(_wp, 4)
+                    _p["reliability_cap_scoped"]  = "uea_authority"
+                    _p["reliability_cap_effective"] = round(_new_cap, 2)
+                    try:
+                        from sports_engine import _grade as _grade_fn
+                        _p["grade"] = _grade_fn(_new_cap)
+                    except Exception:
+                        pass
+                    _reliability_scoped += 1
+                continue
+            # LEGACY: apply the old hard cap for low-evidence picks.
             if _lock > _reliability_cap:
                 _p["lock_score"]      = round(_reliability_cap, 1)
                 _p["lock_score_v2"]   = min(float(_p.get("lock_score_v2") or _reliability_cap), _reliability_cap)
@@ -2287,17 +2329,18 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
                 _p["reliability_cap_applied"] = True
                 _p["reliability_cap_prior"]   = _lock
                 _p["reliability_cap_wp"]      = round(_wp, 4)
+                _p["reliability_cap_scoped"]  = "legacy_low_evidence"
                 try:
                     from sports_engine import _grade as _grade_fn
                     _p["grade"] = _grade_fn(_reliability_cap)
                 except Exception:
                     pass
                 _reliability_hits += 1
-        if _reliability_hits:
+        if _reliability_hits or _reliability_scoped:
             logger.info(
-                "NFL Lock reliability floor: %d picks capped by hit-probability "
-                "(lock <= 60 + wp*40) — Value/Edge remain visible separately.",
-                _reliability_hits,
+                "NFL Lock reliability floor: %d legacy-capped, %d UEA-scoped "
+                "(Value/Edge remain visible separately).",
+                _reliability_hits, _reliability_scoped,
             )
     except Exception as _rel_err:
         logger.warning("NFL reliability floor skipped: %s", _rel_err)
