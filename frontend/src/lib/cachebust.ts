@@ -58,7 +58,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 // Bumping BOTH the client cache version AND the filter STORAGE_KEY
 // (v7 → v8) so the Locks / NFL / ALL tab hydrates fresh from the
 // canonical /api/picks/today response on next launch.
-export const APP_DATA_VERSION = "20260611-nfl-iter139-expo-parity-v1";
+export const APP_DATA_VERSION = "2026.06.11-soccer-shots-sot-assists-wired-v49";
 
 // ─── Backend-version snapshot (Layer 2 - stored after each /api/version call)
 const CLIENT_VERSION_KEY = "perkslocks.client_data_version";

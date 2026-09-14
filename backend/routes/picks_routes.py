@@ -3378,6 +3378,61 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     if lite:
         canonical = [_strip_for_lite(_p) for _p in canonical]
 
+    # ── PERKLOCKS EXTREME-JUICE BOARD ADMISSION (2026-06 · P4) ────
+    # Standard-market picks priced worse than -1000 must not appear
+    # on the Locks board.  NFL alt player props remain EXEMPT per
+    # the alt contract (their odds ladder is intentional and
+    # sportsbook-authoritative).  This is admission-only — the
+    # underlying odds and Lock Score are not mutated; the row is
+    # simply hidden from the wire.
+    try:
+        from services.board_utility_layer import (
+            EXTREME_JUICE_MAX_AMERICAN, _american_worse_than,
+        )
+        _pre_extreme = len(canonical)
+        def _is_nfl_alt(_p: dict) -> bool:
+            if not isinstance(_p, dict):
+                return False
+            sp = str(_p.get("sport") or "").upper()
+            if sp != "NFL":
+                return False
+            m = str(_p.get("market") or "").lower()
+            # NFL alt player props are the intentional exemption —
+            # detect via well-known alt threshold patterns or the
+            # explicit `alt_line_provider` / `is_alt` markers already
+            # stamped by the alt intake path.
+            if _p.get("is_alt") is True or _p.get("alt_line_provider"):
+                return True
+            if any(t in m for t in (
+                    "alt", "alternate",
+                    " 15+ ", " 25+ ", " 35+ ", " 50+ ", " 75+ ",
+                    " 3+ ", " 4+ ", " 5+ ", " 6+ ",
+                    " 100+ ", " 125+ ", " 150+ ", " 175+ ", " 200+ ",
+                    " 225+ ", " 250+ ", " 275+ ", " 300+ ")):
+                return True
+            return False
+        canonical = [
+            _p for _p in canonical
+            if not (isinstance(_p, dict)
+                     and _american_worse_than(
+                         _p.get("book_odds"),
+                         EXTREME_JUICE_MAX_AMERICAN)
+                     and not _is_nfl_alt(_p))
+        ]
+        _dropped = _pre_extreme - len(canonical)
+        if _dropped:
+            import logging
+            logging.getLogger("lockscore").info(
+                "picks/today: extreme-juice board admission dropped "
+                "%d standard-market rows priced worse than %d "
+                "(NFL alt exempt).",
+                _dropped, EXTREME_JUICE_MAX_AMERICAN,
+            )
+    except Exception as _ej_err:
+        import logging
+        logging.getLogger("lockscore").warning(
+            "picks/today: extreme-juice admission skipped: %s", _ej_err)
+
     # ── PERKLOCKS MAIN 37 · P0.2 canonical consumer parity ────────
     # Attach the immutable ``PublishedPickContract`` to every Locks-
     # board row so the wire response carries the SAME canonical
