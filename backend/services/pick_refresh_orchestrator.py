@@ -2346,6 +2346,61 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
         logger.warning("NFL reliability floor skipped: %s", _rel_err)
 
     if safe_picks:
+        # ── UEA LIVE PROVENANCE STAMP (2026-06 · P25) ────────────────
+        # Right before atomic persist, stamp every in-scope pick with
+        # its recomputed Evidence Authority audit block so the
+        # `evidence_authority` field lands on the DB alongside the
+        # authoritative lock_score.  This is READ-ONLY on scoring:
+        # the recompute happens from persisted factors + provenance,
+        # never mutates lock_score.  Zero-cost when UEA already
+        # stamped the pick in-flight (idempotent).
+        try:
+            from services.evidence_authority_contract import (
+                compute_authority_score, peak_non_apex_eligible,
+                enabled as _uea_enabled,
+            )
+            from services.evidence_authority_adapters import (
+                build_contract_for_pick,
+            )
+            _uea_stamped = 0
+            for _p in safe_picks:
+                if _p.get("evidence_authority"):
+                    continue      # already stamped in-flight
+                _sport = str(_p.get("sport") or "").upper()
+                if not _uea_enabled(_sport):
+                    continue
+                _factors = _p.get("factors") or {}
+                _sf = None
+                for _k in ("scoring_factors", "signal_axes",
+                             "factor_scores"):
+                    if isinstance(_p.get(_k), dict):
+                        _sf = _p[_k]
+                        break
+                if _sf is None:
+                    _sf = {k: v for k, v in _factors.items()
+                             if isinstance(v, (int, float))}
+                # Adapter is case-sensitive on sport in the pick.
+                _p_for_adapter = dict(_p)
+                _p_for_adapter["sport"] = _sport
+                _c = build_contract_for_pick(
+                    _p_for_adapter, _factors, _sf)
+                if _c is None:
+                    continue
+                _r = compute_authority_score(_c)
+                _p["evidence_authority"] = _r
+                _elig, _why = peak_non_apex_eligible(_r)
+                if _elig:
+                    _p["peak_non_apex_eligible"] = True
+                elif float(_p.get("lock_score") or 0.0) >= 99.0:
+                    _p["peak_non_apex_denied_reason"] = _why
+                _uea_stamped += 1
+            if _uea_stamped:
+                logger.info(
+                    "UEA post-scoring stamp: %d picks provenance-stamped.",
+                    _uea_stamped,
+                )
+        except Exception as _uea_err:
+            logger.warning("UEA post-stamp skipped: %s", _uea_err)
         # ATOMIC-SWAP: do the wipe NOW, immediately before the insert.
         # The enrichment passes above ran on in-memory `safe_picks` —
         # the DB still has the PREVIOUS slate visible to clients this

@@ -78,6 +78,10 @@ def _limiting_axis(components: dict) -> tuple[str, Any]:
 
 async def build_report(*, db=None) -> dict:
     if db is None:
+        # ── UEA live-distribution runs from the CLI too — make sure
+        # we load .env so we hit the same lockscore_db the server uses.
+        from dotenv import load_dotenv
+        load_dotenv()
         from services.database import get_database
         db = get_database()
     now = __import__("datetime").datetime.utcnow()
@@ -101,6 +105,7 @@ async def build_report(*, db=None) -> dict:
 
     async for pick in cursor:
         sport = str(pick.get("sport") or "").upper()
+        # Case-normalise from the DB where docs use ``Soccer`` / ``Tennis``.
         if sport not in IN_SCOPE_SPORTS:
             continue
         family = _classify_market_family(sport, pick.get("market") or "")
