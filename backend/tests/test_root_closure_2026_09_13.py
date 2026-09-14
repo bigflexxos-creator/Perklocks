@@ -47,10 +47,14 @@ def test_mlb_bq_authority_is_final_score():
     bq = pick.get("bet_quality_authority")
     assert bq is not None
     assert 90.0 <= ls <= 99.0, f"strong MLB HRR should be ≥90; got {ls}"
-    # LS must match BQ ceiling exactly (BQ is authoritative).
-    assert abs(ls - bq["ceiling"]) < 0.15, (
-        f"MLB LS {ls} must equal BQ ceiling {bq['ceiling']}"
+    # UEA P0-P26 (2026-06): both BQ and UEA can lift a strong
+    # composite.  LS must be AT LEAST BQ ceiling — a UEA lift above
+    # BQ is legitimate when multi-signal evidence is strong.
+    assert ls >= bq["ceiling"] - 0.15, (
+        f"MLB LS {ls} must be ≥ BQ ceiling {bq['ceiling']}"
     )
+    # And LS must not exceed 99 (Apex is separate).
+    assert ls <= 99.0
 
 
 def test_mlb_weak_evidence_drops_below_floor():

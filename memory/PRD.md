@@ -1,5 +1,30 @@
 # LockScore — Product Requirements (Live)
 
+
+## Universal Evidence Authority (UEA) — 2026-06 CERTIFIED (STRUCTURAL)
+### Scope: MLB · NFL · CFB · SOCCER · TENNIS (NBA/NHL/UFC untouched)
+- New shared contract at `services/evidence_authority_contract.py`
+  with 9 axes and first-class MISSING semantics — absent evidence is
+  MISSING (not synthetic 85).
+- Sport-agnostic adapters at `services/evidence_authority_adapters.py`
+  map existing MLB/NFL/CFB/Soccer/Tennis evidence into the contract.
+  Correlated Elo / SP+ / xG derivatives deduped; Sportsbook Implied
+  excluded from independent-evidence axes.
+- `compute_lock_score` LIFTS on strong evidence, CEILINGS on
+  contradictions; final clamped to 99 (Apex 100 preserved).
+- NFL WP cap `60 + wp × 40` surgically scoped in
+  `pick_refresh_orchestrator.py` — full-evidence picks keep UEA
+  authority; thin-evidence picks still receive legacy protection.
+- MLB projected-starter cap replaced with coverage-based helper
+  `projected_starter_max_by_coverage`.  Confirmed / bench /
+  scratched behaviour preserved.
+- New `services/cfb_independent_simulator.py` produces a genuinely-
+  independent Monte Carlo margin/total distribution (P16/P17).
+- 36 new tests + 134 regression tests pass (170 total).
+- Live-distribution + peak-provenance report:
+  `services/uea_live_distribution_report.py`.
+
+
 ## MLB + CFB Continuous Surgical Closure — 2026-06-15 CERTIFIED
 ### MLB v4 Normalization + Upper-Tier Reachability — CERTIFIED
 - New reusable boundary: `services/mlb_factor_normalization.py` maps

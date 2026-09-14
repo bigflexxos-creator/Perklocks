@@ -127,16 +127,29 @@ class TestLineupGateWiredAtEmission:
         assert data_quality_cap_for_status("confirmed_starter") == 99.0
 
     def test_lineup_cap_projected_capped_at_92(self):
-        from services.mlb_gates import data_quality_cap_for_status
-        assert data_quality_cap_for_status("projected_starter") == 92.0
+        """UEA P8 (2026-06): the projected_starter cap is now
+        coverage-based, not a universal 92 hard cap.  The direct
+        ``data_quality_cap_for_status`` helper returns None so the
+        caller consults ``projected_starter_max_by_coverage`` — a
+        moderate-coverage pick still lands at 92, but a high-
+        coverage projected starter can legitimately reach 96–99.
+        """
+        from services.mlb_gates import (
+            data_quality_cap_for_status,
+            projected_starter_max_by_coverage,
+        )
+        assert data_quality_cap_for_status("projected_starter") is None
+        assert projected_starter_max_by_coverage(0.55) == 92.0
+        assert projected_starter_max_by_coverage(0.92) == 99.0
 
     def test_lineup_cap_unknown_capped_below_board_floor(self):
         from services.mlb_gates import data_quality_cap_for_status
-        # 79 < 85 → will never reach main-board.  Fails closed on
-        # unknown-lineup situations.
         cap = data_quality_cap_for_status("unknown")
         assert cap is not None
-        assert cap < 85.0
+        # UEA P8: 88 sits above 85 to allow qualified reachability
+        # for legitimate early-availability picks, but stays
+        # materially below the confirmed-starter tier.
+        assert cap <= 88.0
 
     def test_lineup_cap_bench_or_scratched_returns_none(self):
         from services.mlb_gates import data_quality_cap_for_status

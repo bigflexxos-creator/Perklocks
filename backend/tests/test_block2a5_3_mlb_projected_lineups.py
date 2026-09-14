@@ -132,13 +132,28 @@ class TestLineupCaps:
         assert data_quality_cap_for_status("confirmed_starter") == 99.0
 
     def test_projected_cap_92(self):
-        from services.mlb_gates import data_quality_cap_for_status
-        assert data_quality_cap_for_status("projected_starter") == 92.0
+        """UEA P8 (2026-06): projected_starter no longer has a
+        universal 92 hard cap.  Coverage-based cap is used instead —
+        the helper returns None so callers must consult
+        ``projected_starter_max_by_coverage``.  Verify the coverage-
+        based helper still yields 92 for moderate coverage (matches
+        the old behaviour) so this contract is a strict superset."""
+        from services.mlb_gates import (
+            data_quality_cap_for_status,
+            projected_starter_max_by_coverage,
+        )
+        assert data_quality_cap_for_status("projected_starter") is None
+        assert projected_starter_max_by_coverage(0.55) == 92.0
+        # High coverage: legitimate projected starter can reach 99.
+        assert projected_starter_max_by_coverage(0.92) == 99.0
 
     def test_unknown_cap_below_board_floor(self):
         from services.mlb_gates import data_quality_cap_for_status
         cap = data_quality_cap_for_status("unknown")
-        assert cap is not None and cap < 85.0
+        # UEA P8: 88 sits above the 85 board floor by design so an
+        # early-availability pick can still surface if evidence is
+        # strong.  Verify it remains a materially restricted cap.
+        assert cap is not None and cap <= 88.0
 
     def test_bench_scratched_return_none(self):
         from services.mlb_gates import data_quality_cap_for_status

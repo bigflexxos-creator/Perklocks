@@ -1647,6 +1647,75 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     except Exception:  # pragma: no cover — never break legacy paths
         pass
 
+    # ══════════════════════════════════════════════════════════════════
+    # UNIVERSAL EVIDENCE AUTHORITY CONTRACT (2026-06 · P0–P26)
+    # ------------------------------------------------------------------
+    # Wires the shared 9-axis contract used by MLB / NFL / CFB / Soccer
+    # / Tennis into the primary Lock-Score integration point.
+    #
+    # Semantics — MUST match the user's approved contract:
+    #   * MISSING evidence is MISSING (never a synthetic 85).
+    #   * Progressive coverage requirements decide tier reachability
+    #     (85 / 90 / 93 / 96 / 99).
+    #   * ACTS AS A LIFT for legitimate high-evidence picks whose
+    #     composite under-scored; NEVER lowers a strong composite.
+    #   * ACTS AS A CEILING only when contradictions are present.
+    #   * Apex 100 is untouched (final clamp remains [55, 99] here).
+    #   * Legacy 98/99 manufacturers keep their evidence contribution
+    #     but cannot independently determine 98/99 anymore — the
+    #     contract requires cross-axis coverage and convergence.
+    #
+    # NBA / NHL / UFC are NOT enabled — the contract falls through as
+    # a no-op for those sports (uea_enabled() gates dispatch).
+    # ══════════════════════════════════════════════════════════════════
+    try:
+        from services.evidence_authority_contract import (
+            compute_authority_score,
+            peak_non_apex_eligible,
+            enabled as _uea_enabled,
+            UEA_VERSION as _UEA_VERSION,
+        )
+        from services.evidence_authority_adapters import (
+            build_contract_for_pick,
+        )
+        _uea_sport = (pick or {}).get("sport") or ""
+        if pick is not None and _uea_enabled(_uea_sport):
+            _uea_contract = build_contract_for_pick(
+                pick, factors, _scoring_factors)
+            if _uea_contract is not None:
+                _uea_res = compute_authority_score(_uea_contract)
+                pick["evidence_authority"] = _uea_res
+                _uea_ceiling = float(_uea_res.get("ceiling") or 0.0)
+                _uea_contras = _uea_res.get("contradictions") or []
+                # LIFT: strong evidence with insufficient composite.
+                # Only lifts when the UEA authority has GOOD coverage
+                # (≥ 0.55) and no contradictions.  Prevents thin-
+                # evidence composites from being falsely promoted.
+                if (not _uea_contras
+                        and _uea_res.get("coverage", 0.0) >= 0.55
+                        and _uea_ceiling >= 85.0
+                        and _uea_ceiling > final_score):
+                    # Cap at 99 — Apex is separate.
+                    final_score = round(min(99.0, _uea_ceiling), 1)
+                # CEILING: contradictions collapse elite tiers.
+                if _uea_contras:
+                    final_score = round(min(final_score, _uea_ceiling), 1)
+                # Peak (99) provenance — requires the strict universal
+                # eligibility.  When not eligible, cap at 98 unless the
+                # separate Apex gate runs later.
+                eligible, why = peak_non_apex_eligible(_uea_res)
+                if final_score >= 99.0 and not eligible:
+                    final_score = 98.5      # cannot manufacture 99
+                    pick["peak_non_apex_denied_reason"] = why
+                elif eligible:
+                    pick["peak_non_apex_eligible"] = True
+                weighted["__evidence_authority_ceiling"] = _uea_ceiling
+                weighted["__evidence_authority_version"] = _UEA_VERSION
+                weighted["__evidence_authority_coverage"] = _uea_res.get("coverage")
+                weighted["__evidence_authority_strong_axes"] = _uea_res.get("strong_axes")
+    except Exception:  # pragma: no cover — never break legacy paths
+        pass
+
     # ── PERKLOCKS PASS 4 (2026-06) — Universal Lock Authority wiring.
     # Stamps the universal-authority block on the pick so downstream
     # publication / rollover / parlay consumers can validate that the
@@ -2939,6 +3008,36 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                                 _fs.append(_src)
                         if _fs:
                             ml_pick["factor_sources"] = _fs
+                        # ── UEA P16/P17 (2026-06) — INDEPENDENT SIM ──
+                        # SP+ probability alone is not independent
+                        # convergence — it feeds every downstream
+                        # derivative.  Run a genuinely independent
+                        # margin/total Monte Carlo using SP+ inputs
+                        # (mean margin, sigma, home flag, RP/portal),
+                        # and stamp the DISTINCT probability + stability
+                        # so the Evidence Authority sees two truly
+                        # independent axes (SP+ derived + Monte Carlo).
+                        try:
+                            from services.cfb_independent_simulator import (
+                                stamp_independent_sim_on_pick,
+                            )
+                            # Seed feature dict for the sim from the
+                            # existing cfb_game_sim block + any
+                            # top-level margin/total already present.
+                            _sim_factors = {
+                                "expected_margin": _cfb_gm.get("expected_margin"),
+                                "expected_total":  _cfb_gm.get("expected_total"),
+                                "expected_margin_sigma": _cfb_gm.get("margin_sigma"),
+                                "expected_total_sigma":  _cfb_gm.get("total_sigma"),
+                                "is_home": 1 if side == home else 0,
+                                "returning_production_norm":
+                                    _cfb_ctx.get("returning_production_norm"),
+                                "portal_net_norm":
+                                    _cfb_ctx.get("portal_net_norm"),
+                            }
+                            stamp_independent_sim_on_pick(ml_pick, _sim_factors)
+                        except Exception:
+                            pass
             # PHASE 2A — de-vig computed at build time (canonical edge).
             # Post-build attachment retired for game markets.
             if ml_pick:
@@ -8884,6 +8983,23 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     "updated_at": _lu_blk.get("updated_at"),
                 }
                 _cap = _lu_blk.get("cap")
+                # ── UEA P8 (2026-06) — projected starter no longer hard-capped.
+                # Use coverage-based projected-starter cap when the
+                # UEA authority is available on the pick.  Confirmed
+                # starters stay uncapped (99).  Unknown keeps 88.
+                if _raw == "projected_starter":
+                    try:
+                        from services.mlb_gates import (
+                            projected_starter_max_by_coverage,
+                        )
+                        _uea_blk = new_pick.get("evidence_authority") or {}
+                        _cov = float(_uea_blk.get("coverage") or 0.0)
+                        _contras = len(_uea_blk.get("contradictions") or [])
+                        _cap = projected_starter_max_by_coverage(_cov, _contras)
+                    except Exception:
+                        # Fall back to old 92 cap if UEA unavailable —
+                        # never break scoring on import error.
+                        _cap = 92.0
                 if isinstance(_cap, (int, float)):
                     _cur_lock = float(new_pick.get("lock_score") or 0.0)
                     if _cur_lock > float(_cap):
