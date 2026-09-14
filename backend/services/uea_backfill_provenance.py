@@ -28,7 +28,9 @@ async def backfill():
     IN_SCOPE = {"MLB", "NFL", "CFB", "SOCCER", "TENNIS"}
     stamped = 0
     scanned = 0
-    q = {"evidence_authority": {"$exists": False}}
+    # Rescan ALL in-scope picks — the adapter improved so previously-
+    # stamped picks may now recompute with better coverage.
+    q = {}
     cursor = db.picks.find(q,
         projection={"_id": 1, "sport": 1, "market": 1, "factors": 1,
                      "win_probability": 1, "model_win_probability": 1,
@@ -36,7 +38,21 @@ async def backfill():
                      "sim_stability": 1, "no_vig_implied_pct": 1,
                      "lock_score": 1, "matchup_score": 1,
                      "exact_threshold_hit_rate": 1,
-                     "history_sample_size": 1})
+                     "history_sample_size": 1,
+                     "nfl_prop_authority_applied": 1,
+                     "nfl_prop_authority_wp": 1,
+                     "nfl_prop_authority_ceiling": 1,
+                     "calibrated_win_probability": 1,
+                     "magic_tier_at_integration": 1,
+                     "tier": 1,
+                     "apex_lock": 1,
+                     "identity_class": 1,
+                     "sim_result": 1,
+                     "simulation_pass": 1,
+                     "cfb_independent_sim": 1,
+                     "real_data_count": 1,
+                     "real_data_sources": 1,
+                     "mp_from_book_seed": 1})
     async for p in cursor:
         scanned += 1
         sport_up = str(p.get("sport") or "").upper()

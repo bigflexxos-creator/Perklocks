@@ -69,7 +69,14 @@ def _model_probability_axis(pick: Mapping[str, Any]) -> EvidenceValue:
     prov = str(pick.get("probability_provenance") or "").upper()
     if prov in ("BOOK_IMPLIED", "PRIOR_ONLY", "INVALID"):
         return EvidenceValue.missing(f"provenance={prov or 'none'}")
-    wp = _num(pick.get("model_win_probability")) or _num(pick.get("win_probability"))
+    # NFL Prop Authority already ran — trust its win-probability.
+    wp = _num(pick.get("nfl_prop_authority_wp"))
+    if wp is not None and wp <= 1.5:
+        wp *= 100.0
+    if wp is None:
+        wp = _num(pick.get("model_win_probability")) \
+            or _num(pick.get("win_probability")) \
+            or _num(pick.get("calibrated_win_probability"))
     if wp is None:
         wp = _num(pick.get("sim_win_probability"))
     if wp is None:
@@ -116,6 +123,21 @@ def _reliability_axis(pick: Mapping[str, Any]) -> EvidenceValue:
     if sim_prov and sim_prov in _PROV_QUALITY:
         return EvidenceValue.available_score(
             _PROV_QUALITY[sim_prov], f"sim_provenance={sim_prov}")
+    # Inferred reliability from downstream authority flags — the NFL
+    # Prop Authority / MLB pick paths persist these when the scorer
+    # ran with real evidence.
+    if pick.get("nfl_prop_authority_applied") is True:
+        return EvidenceValue.available_score(92.0, "nfl_prop_authority")
+    if pick.get("magic_tier_at_integration") in ("STRONG", "ELITE",
+                                                    "APEX", "PEAK"):
+        return EvidenceValue.available_score(94.0,
+            f"magic_tier={pick.get('magic_tier_at_integration')}")
+    if pick.get("tier") == "PEAK_NON_APEX":
+        return EvidenceValue.available_score(93.0, "tier=PEAK_NON_APEX")
+    if pick.get("apex_lock") is True:
+        return EvidenceValue.available_score(96.0, "apex_lock")
+    if pick.get("identity_class") == "AUTHORITATIVE":
+        return EvidenceValue.available_score(88.0, "identity=AUTHORITATIVE")
     return EvidenceValue.missing("no_provenance")
 
 
@@ -126,6 +148,9 @@ _HISTORY_HR_KEYS = (
     "exact_threshold_hit_rate", "historical_hit_rate",
     "at_or_over_hit_rate", "L10 Hit Rate", "Recent L10 Hit Rate",
     "L10_hit_rate", "l10_hit_rate", "hit_rate_at_line",
+    # NFL/CFB Alt Prop scorer already persists these:
+    "Historical Threshold Rate", "L5 Threshold Support",
+    "L3 Threshold Support", "Threshold Distribution Support",
 )
 
 
@@ -167,6 +192,12 @@ _MATCHUP_KEYS = (
     "matchup_score", "opp_defense_grade", "opp_xga_norm",
     "opp_ba_allowed", "opp_iso_allowed",
     "opp_shot_suppression", "opp_xga_per90_norm",
+    # NFL / MLB / Soccer / Tennis scorers already persist these:
+    "Home/Away Split", "Home/Away Splits",
+    "Career vs Opponent Hit%", "Matchup History",
+    "H2H Record", "H2H", "Injuries / Suspensions",
+    "Defensive Rating", "Recent Volume / Usage",
+    "Matchup vs Defense",
 )
 
 
@@ -294,6 +325,24 @@ def _distribution_axis(pick: Mapping[str, Any]) -> EvidenceValue:
             return EvidenceValue.available_score(
                 75.0 + min(20.0, (abs((v if v > 1.5 else v * 100) - 50.0)) * 0.4),
                 f"{k}_present")
+    # Downstream simulator/component blocks — trust their presence
+    # and any embedded stability metric.
+    sim = pick.get("sim_result")
+    if isinstance(sim, dict) and sim:
+        stab = _num(sim.get("stability")) or _num(sim.get("simulation_stability"))
+        if stab is not None:
+            s = _pct_to_100(stab)
+            if s is not None:
+                return EvidenceValue.available_score(s, "sim_result.stability")
+        return EvidenceValue.available_score(82.0, "sim_result_present")
+    if pick.get("cfb_independent_sim"):
+        stab = _num((pick["cfb_independent_sim"] or {}).get("stability"))
+        s = _pct_to_100(stab) or 80.0
+        return EvidenceValue.available_score(s, "cfb_indep_sim")
+    if _num(pick.get("simulation_pass")) is not None:
+        v = _num(pick.get("simulation_pass"))
+        return EvidenceValue.available_score(min(100.0, max(60.0, v)),
+            f"simulation_pass={v}")
     lc = pick.get("lock_components") or {}
     if isinstance(lc, dict) and lc.get("volatility") is not None:
         v = _num(lc.get("volatility"))
@@ -330,6 +379,11 @@ def _data_quality_axis(pick: Mapping[str, Any],
         return EvidenceValue.available_score(65.0, dq_str)
     if "heuristic" in dq_str:
         return EvidenceValue.available_score(55.0, dq_str)
+    # NFL / MLB / Soccer scorers persist real_data_count / real_data_sources.
+    rdc = _num(pick.get("real_data_count"))
+    if rdc is not None and rdc >= 4:
+        return EvidenceValue.available_score(min(97.0, 82.0 + rdc * 3),
+            f"real_data_count={int(rdc)}")
     # Coarse fallback — factor count as a soft proxy.  Exclude market
     # anchors (they are context, not evidence) so a market-only factor
     # bag doesn't manufacture DQ.
