@@ -194,6 +194,18 @@ def attach_game_sim_provenance(pick: dict, result: dict) -> None:
     pick["season_type"] = result.get("season_type")
     if result.get("preseason_uncertainty"):
         pick["preseason_uncertainty"] = result["preseason_uncertainty"]
+    # ── INDEPENDENT-AUTHORITY PROVENANCE (2026-09-13) ───────────────
+    # Platinum NFL game-sim probabilities are derived independently
+    # from the game simulator — they are NOT copied from the book
+    # implied probability seed.  Stamp the standard breadcrumbs the
+    # downstream chalk-trap + reliability-floor gates look for so
+    # a legitimate strong Platinum pick (Eagles ML, Detroit ML, etc.)
+    # isn't fail-closed to LS≈72 as if it were a book-seed row.
+    pick["mp_from_book_seed"]        = False
+    pick["probability_provenance"]   = pick.get(
+        "probability_provenance") or "CAUSAL_INDEPENDENT"
+    pick["data_quality"]             = pick.get(
+        "data_quality") or "platinum_nfl_sim"
     sim = result.get("sim") or {}
     pick["platinum_game_sim"] = {
         "sim_probability": sim.get("sim_probability"),
