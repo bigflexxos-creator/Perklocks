@@ -191,6 +191,38 @@ async def nfl_atd_leaderboard(
         except Exception:
             canonical = []
 
+        # ── UNIVERSE EXPANDER (2026-09-14) ────────────────────────────
+        # The canonical publication cycle may lag the provider's ATD
+        # market push — an event with real ``player_anytime_td``
+        # sportsbook rows in ``live_alt_lines`` can miss the last
+        # canonical tick and disappear from BOTH the leaderboard AND
+        # the by-game view.  Bridge the gap by running the SAME
+        # authoritative ATD pre-loader on-demand for any event that
+        # has fresh provider ATD rows but no canonical publication
+        # yet.  Same engine, same rejects, no fake scores.
+        try:
+            from services.nfl_atd_universe import (
+                expand_atd_universe_from_live_alt_lines,
+            )
+            _covered = {
+                (c.get("event") or "") for c in canonical if c.get("event")
+            }
+            _on_demand = await expand_atd_universe_from_live_alt_lines(
+                db,
+                canonical_event_ids=_covered,
+                min_probability=float(min_probability or 0.0),
+            )
+            if _on_demand:
+                canonical.extend(_on_demand)
+                canonical.sort(
+                    key=lambda r: (r["td_probability"], r["confidence"]),
+                    reverse=True,
+                )
+        except Exception:
+            # Fail-open: expander errors never dark-hole the canonical
+            # response.  Publication path stays authoritative.
+            pass
+
         if canonical:
             return {
                 "mode": "canonical_publication",
@@ -202,7 +234,12 @@ async def nfl_atd_leaderboard(
                     "min_opportunity_rating": min_opportunity_rating,
                     "min_event_time": _min_event_time,
                     "market_filter": "Anytime TD only",
-                    "note": "sourced from PUBLISHED ATD picks (canonical_publication)",
+                    "note": (
+                        "sourced from PUBLISHED ATD picks "
+                        "(canonical_publication) + on-demand ATD engine "
+                        "expansion for events with fresh provider rows "
+                        "not yet in the canonical universe"
+                    ),
                 },
                 "league_means": {},
                 "picks": canonical[: max(1, int(limit))],
@@ -382,6 +419,38 @@ async def nfl_atd_by_game(
                 "publication_state":  p.get("publication_state"),
                 "provenance":         "canonical_publication",
             })
+
+        # ── UNIVERSE EXPANDER (2026-09-14) ────────────────────────────
+        # Extend the by-game universe with any current-slate event
+        # that has real provider ATD rows in ``live_alt_lines`` but
+        # no canonical publication yet.  This uses the SAME
+        # authoritative ATD engine — no fake scores, no model
+        # change.  Guarantees that legitimate matchups (e.g.
+        # DEN @ KC on the day of kickoff) appear in By Game even
+        # when the canonical publication cycle has not yet emitted
+        # their rows to ``db.picks``.  The by-game grouping then
+        # ranks WITHIN each game against the ATD engine's real
+        # probabilities.
+        try:
+            from services.nfl_atd_universe import (
+                expand_atd_universe_from_live_alt_lines,
+            )
+            _covered = {
+                (c.get("event") or "") for c in all_candidates if c.get("event")
+            } | {
+                (c.get("canonical_event_id") or "") for c in all_candidates
+                if c.get("canonical_event_id")
+            }
+            _on_demand = await expand_atd_universe_from_live_alt_lines(
+                db,
+                canonical_event_ids=_covered,
+                min_probability=float(min_probability or 0.0),
+            )
+            if _on_demand:
+                all_candidates.extend(_on_demand)
+        except Exception:
+            # Fail-open: never dark-hole the canonical response.
+            pass
 
         # Group by canonical_event_id — Top-N per game with identical
         # tie-break to the global leaderboard for cross-view reconciliation.
