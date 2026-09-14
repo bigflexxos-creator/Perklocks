@@ -1970,10 +1970,22 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
     _mlb_prop_edge_exempt = (
         sport == "MLB" and market_l != "" and any(
             w in market_l for w in (
-                "hits", "total bases", "hits + runs + rbis",
-                "hits + runs + rb", "h+r+rbi",
-                "rbis", " rbi", "home run", "hr ",
-                "strikeout", " ks", "pitcher outs", "outs recorded",
+                # Canonical + provider-key variants (with underscores).
+                "hits", "total bases", "total_bases",
+                "hits + runs + rbis", "hits + runs + rb",
+                "hits_runs_rbis", "h+r+rbi",
+                "rbis", " rbi", "batter_",
+                "home run", "hr ", "player_home_runs",
+                "strikeout", " ks", "pitcher_strikeouts",
+                "pitcher outs", "outs recorded", "pitcher_outs",
+            )
+        )
+    )
+    _mlb_game_market_edge_exempt = (
+        sport == "MLB" and market_l != "" and any(
+            w in market_l for w in (
+                "moneyline", " ml", "spread", "run line", "run_line",
+                "total", "totals", "team_total", "alternate_total",
             )
         )
     )
@@ -1988,6 +2000,7 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
     )
     _edge_kill_exempt = (_nfl_alt_reliability
                           or _mlb_prop_edge_exempt
+                          or _mlb_game_market_edge_exempt
                           or _nfl_game_market_edge_exempt)
     if edge < EDGE_FLOOR and not _edge_kill_exempt:
         try:
