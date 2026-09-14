@@ -354,7 +354,9 @@ async def _ingest_player_scorer_row(
         _e_scorer = round((model_prob - book_impl) * 100, 2)
         lock, _ = compute_lock_score(
             factors, win_prob=model_prob*100,
-            pick={"book_odds": price, "edge_percent": _e_scorer,
+            pick={"sport": "Soccer",  # UEA activation
+                  "market": row.get("market_key") or "",
+                  "book_odds": price, "edge_percent": _e_scorer,
                   "win_probability": model_prob*100},
             edge_percent=_e_scorer)
         # ── UNIVERSAL Soccer Player-Prop Lock Ladder (2026-08-22) ──
@@ -707,7 +709,9 @@ async def _ingest_game_market_row(
         _e_game = round((model_prob - book_impl) * 100, 2)
         lock, _ = compute_lock_score(
             factors, win_prob=model_prob*100,
-            pick={"book_odds": price, "edge_percent": _e_game,
+            pick={"sport": "Soccer",  # UEA activation
+                  "market": mk or "",
+                  "book_odds": price, "edge_percent": _e_game,
                   "win_probability": model_prob*100},
             edge_percent=_e_game)
         edge_pct_prelim = (model_prob - book_impl) * 100
@@ -827,6 +831,40 @@ async def _upsert_pick(db, doc: dict) -> None:
     though the read gate accepted the stamped field.
     """
     pick_id = doc["id"]
+    # ── UEA POST-STAMP (2026-06 · P25) ────────────────────────────
+    # Idempotent UEA provenance stamp — every mature in-scope Soccer
+    # pick that lands on the board via ``real_line_scorer_ingest``
+    # gets its Evidence Authority audit block computed from the
+    # persisted factors so peak (98/99) provenance is never a
+    # mystery on the board.  Read-only on Lock Score — the value in
+    # ``doc['lock_score']`` was already authoritatively computed by
+    # ``compute_lock_score`` above.
+    try:
+        if not doc.get("evidence_authority"):
+            from services.evidence_authority_contract import (
+                compute_authority_score, peak_non_apex_eligible,
+                enabled as _uea_enabled,
+            )
+            from services.evidence_authority_adapters import (
+                build_contract_for_pick,
+            )
+            _sport_up = str(doc.get("sport") or "").upper()
+            if _uea_enabled(_sport_up):
+                _f = doc.get("factors") or {}
+                _sf = {k: v for k, v in _f.items()
+                        if isinstance(v, (int, float))}
+                _d = dict(doc); _d["sport"] = _sport_up
+                _c = build_contract_for_pick(_d, _f, _sf)
+                if _c is not None:
+                    _r = compute_authority_score(_c)
+                    doc["evidence_authority"] = _r
+                    _elig, _why = peak_non_apex_eligible(_r)
+                    if _elig:
+                        doc["peak_non_apex_eligible"] = True
+                    elif float(doc.get("lock_score") or 0.0) >= 99.0:
+                        doc["peak_non_apex_denied_reason"] = _why
+    except Exception:
+        pass
     # Root Closure (2026-06) — the canonical settlement mirror
     # (`status` = 'won'/'lost'/'push'/'void') is authoritative once
     # a settlement_events row exists.  Never regress it back to
