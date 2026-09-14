@@ -191,29 +191,37 @@ async def nfl_atd_leaderboard(
         except Exception:
             canonical = []
 
-        # ── UNIVERSE EXPANDER (2026-09-14) ────────────────────────────
-        # The canonical publication cycle may lag the provider's ATD
-        # market push — an event with real ``player_anytime_td``
-        # sportsbook rows in ``live_alt_lines`` can miss the last
-        # canonical tick and disappear from BOTH the leaderboard AND
-        # the by-game view.  Bridge the gap by running the SAME
-        # authoritative ATD pre-loader on-demand for any event that
-        # has fresh provider ATD rows but no canonical publication
-        # yet.  Same engine, same rejects, no fake scores.
+        # ── UNIVERSE EXPANDER (2026-09-14 · rev 2) ────────────────────
+        # Per-player merge: for EVERY current-slate event with fresh
+        # provider ATD rows, run the SAME authoritative ATD engine
+        # for players not already canonically covered — not just for
+        # events with zero canonical rows.  This fixes the 1-player-
+        # per-game truncation (DET@BUF only showing Gibbs, etc.).
         try:
             from services.nfl_atd_universe import (
                 expand_atd_universe_from_live_alt_lines,
+                dedupe_atd_candidates,
             )
-            _covered = {
-                (c.get("event") or "") for c in canonical if c.get("event")
-            }
+            _cov: dict[str, dict[str, set]] = {}
+            for c in canonical:
+                _keys = {c.get("event") or "", c.get("canonical_event_id") or ""}
+                for k in _keys:
+                    if not k:
+                        continue
+                    bucket = _cov.setdefault(k, {"player_ids": set(), "player_names": set()})
+                    _pid = (c.get("player_id") or "").strip()
+                    if _pid:
+                        bucket["player_ids"].add(_pid)
+                    _nm = (c.get("player_name") or "").strip().lower()
+                    if _nm:
+                        bucket["player_names"].add(_nm)
             _on_demand = await expand_atd_universe_from_live_alt_lines(
                 db,
-                canonical_event_ids=_covered,
+                canonical_by_event=_cov,
                 min_probability=float(min_probability or 0.0),
             )
             if _on_demand:
-                canonical.extend(_on_demand)
+                canonical = dedupe_atd_candidates(canonical, _on_demand)
                 canonical.sort(
                     key=lambda r: (r["td_probability"], r["confidence"]),
                     reverse=True,
@@ -420,43 +428,52 @@ async def nfl_atd_by_game(
                 "provenance":         "canonical_publication",
             })
 
-        # ── UNIVERSE EXPANDER (2026-09-14) ────────────────────────────
-        # Extend the by-game universe with any current-slate event
-        # that has real provider ATD rows in ``live_alt_lines`` but
-        # no canonical publication yet.  This uses the SAME
-        # authoritative ATD engine — no fake scores, no model
-        # change.  Guarantees that legitimate matchups (e.g.
-        # DEN @ KC on the day of kickoff) appear in By Game even
-        # when the canonical publication cycle has not yet emitted
-        # their rows to ``db.picks``.  The by-game grouping then
-        # ranks WITHIN each game against the ATD engine's real
-        # probabilities.
+        # ── UNIVERSE EXPANDER (2026-09-14 · rev 2) ────────────────────
+        # Per-player merge (not per-event).  For every current-slate
+        # event with fresh provider ``player_anytime_td`` rows, run
+        # the SAME authoritative ATD engine for provider players
+        # NOT already canonically published — even when the event
+        # already has 1+ canonical row.  Fixes the "one player per
+        # game" truncation (DET@BUF only Gibbs, etc.).  Canonical
+        # rows always win a dedupe collision.
         try:
             from services.nfl_atd_universe import (
                 expand_atd_universe_from_live_alt_lines,
+                dedupe_atd_candidates,
             )
-            _covered = {
-                (c.get("event") or "") for c in all_candidates if c.get("event")
-            } | {
-                (c.get("canonical_event_id") or "") for c in all_candidates
-                if c.get("canonical_event_id")
-            }
+            _cov: dict[str, dict[str, set]] = {}
+            for c in all_candidates:
+                _keys = {c.get("event") or "", c.get("canonical_event_id") or ""}
+                for k in _keys:
+                    if not k:
+                        continue
+                    bucket = _cov.setdefault(k, {"player_ids": set(), "player_names": set()})
+                    _pid = (c.get("player_id") or "").strip()
+                    if _pid:
+                        bucket["player_ids"].add(_pid)
+                    _nm = (c.get("player_name") or "").strip().lower()
+                    if _nm:
+                        bucket["player_names"].add(_nm)
             _on_demand = await expand_atd_universe_from_live_alt_lines(
                 db,
-                canonical_event_ids=_covered,
+                canonical_by_event=_cov,
                 min_probability=float(min_probability or 0.0),
             )
             if _on_demand:
-                all_candidates.extend(_on_demand)
+                all_candidates = dedupe_atd_candidates(all_candidates, _on_demand)
         except Exception:
             # Fail-open: never dark-hole the canonical response.
             pass
 
-        # Group by canonical_event_id — Top-N per game with identical
-        # tie-break to the global leaderboard for cross-view reconciliation.
+        # Group by event NAME (with canonical_event_id fallback).
+        # Canonical rows persist ``canonical_event_id = event_name``
+        # while on-demand rows carry the Odds API event id hex — using
+        # the event NAME as the primary group key coalesces both
+        # sources onto the same matchup card.  Falls back to
+        # ``canonical_event_id`` when event name is empty.
         by_game: dict[str, list[dict]] = {}
         for c in all_candidates:
-            k = c["canonical_event_id"] or c["event"] or "unknown"
+            k = (c.get("event") or c.get("canonical_event_id") or "unknown").strip()
             by_game.setdefault(k, []).append(c)
 
         games_out = []
