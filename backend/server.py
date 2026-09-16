@@ -121,6 +121,14 @@ try:
 except Exception as _perf_err:
     logger.warning("Board stress fixture routes failed to mount: %s", _perf_err)
 
+# ── Session 10 Soccer Final Root Closure diagnostics ──
+try:
+    from routes.soccer_final_closure_routes import router as _soccer_final_router
+    app.include_router(_soccer_final_router)
+    logger.info("Soccer Final Root Closure routes mounted")
+except Exception as _sfc_err:
+    logger.warning("Soccer Final Root Closure routes failed to mount: %s", _sfc_err)
+
 # Lab research/analytics endpoints (Session 2+3 build 2026-07-07).
 try:
     from lab_routes import router as _lab_router
