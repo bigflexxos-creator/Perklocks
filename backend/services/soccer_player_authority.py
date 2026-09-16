@@ -63,6 +63,11 @@ class TerminalReason(str, Enum):
     EVENT_IDENTITY_FAILED          = "EVENT_IDENTITY_FAILED"
     TEAM_IDENTITY_FAILED           = "TEAM_IDENTITY_FAILED"
     PLAYER_IDENTITY_FAILED         = "PLAYER_IDENTITY_FAILED"
+    # ── Session 10.1 Live-Truth Closure (2026-09-16) ─────────────
+    # Current-event vs canonical current-team invariants.
+    CURRENT_TEAM_MISMATCH          = "CURRENT_TEAM_MISMATCH"    # player is on team_X but event has teams (A, B) with X∉{A,B}
+    STALE_PLAYER_TEAM              = "STALE_PLAYER_TEAM"        # pick's "team" field is the player's FORMER team
+    STALE_PLAYER_EVENT             = "STALE_PLAYER_EVENT"       # event slate uses a former-competition context
     NO_REAL_ODDS                   = "NO_REAL_ODDS"
     ODDS_POLICY                    = "ODDS_POLICY"
     EXPECTED_MINUTES_MISSING       = "EXPECTED_MINUTES_MISSING"
@@ -77,6 +82,72 @@ class TerminalReason(str, Enum):
     DEDUPE_COLLISION               = "DEDUPE_COLLISION"
     MARKET_MAPPING                 = "MARKET_MAPPING"
     OTHER                          = "OTHER"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Session 10.1 · Current-team invariant helpers
+# ─────────────────────────────────────────────────────────────────
+# Historical player logs describe FORM only.  They MUST NOT establish
+# current roster membership — Robbie Ure (Sirius → Sevilla July 2026)
+# is a live example of the failure mode where prior-season scoring
+# history keeps generating "hot scorer" picks for the FORMER team.
+#
+# `verify_current_team` is the single choke-point: given a player and
+# an event (home_team, away_team) plus a canonical current_team
+# resolved from a transfer registry, decide whether the pick is
+# CURRENT, STALE_PLAYER_TEAM, or CURRENT_TEAM_MISMATCH.
+# ═══════════════════════════════════════════════════════════════════
+def _normalize_team_name(s: Optional[str]) -> str:
+    if not s: return ""
+    return "".join(c for c in s.lower().strip() if c.isalnum() or c.isspace())
+
+
+def verify_current_team(
+    player_name: Optional[str],
+    canonical_current_team: Optional[str],
+    event_home_team: Optional[str],
+    event_away_team: Optional[str],
+    pick_team_hint: Optional[str] = None,
+) -> tuple[bool, Optional[TerminalReason], str]:
+    """Return (is_current, terminal_reason_if_stale, note).
+
+    Contract:
+      * When `canonical_current_team` is UNKNOWN we return
+        (True, None, "unverified_no_registry") — fail-open at this
+        layer.  Higher layers may still require registry hits for
+        elite reachability, but we do not delete legitimate picks
+        just because our roster registry hasn't been populated yet.
+      * When registry knows the current team:
+          - if it matches EITHER event side → CURRENT (pass)
+          - if it matches the pick_team_hint but NOT any event side
+            → STALE_PLAYER_EVENT (event is from former competition)
+          - otherwise → CURRENT_TEAM_MISMATCH
+      * When `pick_team_hint` is the player's FORMER team and
+        registry has a different current_team → STALE_PLAYER_TEAM
+    """
+    if not player_name:
+        return (False, TerminalReason.PLAYER_IDENTITY_FAILED,
+                "no_player_name")
+    if not canonical_current_team:
+        return (True, None, "unverified_no_registry")
+    cur = _normalize_team_name(canonical_current_team)
+    h   = _normalize_team_name(event_home_team)
+    a   = _normalize_team_name(event_away_team)
+    hint = _normalize_team_name(pick_team_hint)
+    # Loose containment either direction to handle canonical short/long forms.
+    def _same(x, y):
+        if not x or not y: return False
+        return x == y or x in y or y in x
+    if _same(cur, h) or _same(cur, a):
+        return (True, None, f"current_team_matches_event:{canonical_current_team}")
+    if hint and (_same(hint, h) or _same(hint, a)):
+        # Event side matches the pick's declared team hint (former team)
+        # but the canonical current team is neither event side.
+        return (False, TerminalReason.STALE_PLAYER_TEAM,
+                f"pick_hints_former_team_{pick_team_hint}_but_current_is_{canonical_current_team}")
+    return (False, TerminalReason.CURRENT_TEAM_MISMATCH,
+            f"current_team_{canonical_current_team}_absent_from_event_"
+            f"{event_home_team}_vs_{event_away_team}")
 
 
 # ═══════════════════════════════════════════════════════════════════

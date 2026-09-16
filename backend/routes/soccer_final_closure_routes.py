@@ -373,6 +373,132 @@ async def publication_recon(
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Session 10.1 · Live-Truth Closure endpoints
+# ═══════════════════════════════════════════════════════════════════
+@router.post("/transfer-registry/seed")
+async def seed_transfer_registry(
+    user: Annotated[UserPublic, Depends(current_user)],
+):
+    """Seed the transfer registry with manually-verified transfers.
+    Idempotent — safe to call repeatedly."""
+    from services.soccer_transfer_registry import seed_known_transfers
+    n = await seed_known_transfers(_get_db())
+    return {"seeded_or_updated": n}
+
+
+@router.get("/transfer-registry/lookup")
+async def transfer_registry_lookup(
+    user: Annotated[UserPublic, Depends(current_user)],
+    player: str = Query(...),
+):
+    """Return canonical current-team registry row for a player."""
+    from services.soccer_transfer_registry import get_current_team
+    row = await get_current_team(_get_db(), player)
+    return {"player": player, "row": row}
+
+
+@router.get("/stale-transfer-scan")
+async def stale_transfer_scan(
+    user: Annotated[UserPublic, Depends(current_user)],
+    pick_date: Optional[str] = None,
+    quarantine: bool = Query(False, description="If true, off-board offending picks"),
+):
+    """Scan today's Soccer player-prop candidates for canonical
+    current-team violations.  Emits CURRENT_TEAM_MISMATCH and
+    STALE_PLAYER_TEAM terminal-reason counts.  Optionally
+    quarantines offending picks with off_board_reason set."""
+    from services.soccer_transfer_registry import (
+        scan_stale_transfer_attachments, quarantine_stale_picks,
+    )
+    db = _get_db()
+    report = await scan_stale_transfer_attachments(db, pick_date=pick_date)
+    quarantined = 0
+    if quarantine and report["affected_pick_ids"]:
+        # Rescan the full affected list — the diagnostic only returned first 100.
+        # For safety, only quarantine the sampled offenders in this call.
+        quarantined = await quarantine_stale_picks(
+            db, report["affected_pick_ids"],
+            reason="STALE_TRANSFER_AUTOCORRECTION",
+        )
+    return {**report, "quarantined_now": quarantined}
+
+
+@router.get("/live-player-trace")
+async def live_player_trace(
+    user: Annotated[UserPublic, Depends(current_user)],
+    player: str = Query(..., description="Player display name"),
+    pick_date: Optional[str] = None,
+):
+    """End-to-end live trace for a player.  Walks:
+       canonical picks → publication_state → off_board_reason →
+       transfer registry → current-team invariant → /api/picks/today
+       parity check.
+    """
+    from services.soccer_transfer_registry import (
+        get_current_team, _parse_player_from_market, _parse_event_sides,
+    )
+    from services.soccer_player_authority import verify_current_team
+    from datetime import datetime, timezone
+    db = _get_db()
+    if pick_date is None:
+        pick_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Registry lookup
+    registry = await get_current_team(db, player)
+    canonical_current = registry.get("current_team") if registry else None
+    # Candidates in canonical picks today
+    candidates = []
+    async for p in db.picks.find({
+        "sport": "Soccer",
+        "pick_date": pick_date,
+        "$or": [
+            {"market":    {"$regex": rf"\b{player}\b", "$options": "i"}},
+            {"selection": {"$regex": rf"\b{player}\b", "$options": "i"}},
+        ],
+    }).limit(20):
+        home, away = _parse_event_sides(p.get("event") or "")
+        is_cur, reason, note = verify_current_team(
+            player_name=player,
+            canonical_current_team=canonical_current,
+            event_home_team=home,
+            event_away_team=away,
+            pick_team_hint=p.get("team"),
+        )
+        candidates.append({
+            "id":                p.get("id"),
+            "event":             p.get("event"),
+            "event_time":        p.get("event_time"),
+            "market":            p.get("market"),
+            "selection":         p.get("selection"),
+            "team":              p.get("team"),
+            "league":            p.get("league"),
+            "source":            p.get("source"),
+            "lock_score":        p.get("lock_score"),
+            "publication_state": p.get("publication_state"),
+            "off_board_reason":  p.get("off_board_reason"),
+            "canonical_id":      p.get("canonical_id"),
+            "current_team_verdict": {
+                "is_current":       is_cur,
+                "terminal_reason":  reason.value if reason else None,
+                "note":             note,
+            },
+        })
+    return {
+        "player":                    player,
+        "pick_date":                 pick_date,
+        "registry":                  registry,
+        "canonical_current_team":    canonical_current,
+        "candidates_found":          len(candidates),
+        "candidates":                candidates,
+        "note": (
+            "For a truly live proof, `candidates` should be non-empty AND every "
+            "entry should carry a current_team_verdict.is_current = True. "
+            "Any entry with a terminal_reason is a stale transfer / mismatch "
+            "that must be quarantined."
+        ),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Invariants — mathematical sanity check on the derived markets
 # ═══════════════════════════════════════════════════════════════════
 @router.get("/invariants")
