@@ -5100,6 +5100,19 @@ async def on_startup():
             "Phase 2A.5E ingest task launch failed: %s", _p2a5e_task_err,
         )
 
+    # ── Session 3 · Board snapshot prewarmer ──────────────────────
+    # Prime the frozen snapshot cache on startup and every
+    # `BOARD_SNAPSHOT_PREWARM_SEC` (default 12 s) so real user GETs
+    # never trigger the 1-2 s cold-miss path themselves.  Runs as an
+    # `asyncio.create_task` so startup is never blocked.  Failures
+    # are silently ignored — this is a pure optimization, never a
+    # correctness contract.
+    try:
+        from services.board_snapshot_prewarm import start_prewarm_task
+        await start_prewarm_task(app)
+    except Exception as _prewarm_err:
+        logger.warning("board snapshot prewarmer failed to start: %s", _prewarm_err)
+
     # Recurring deferred task — re-run the real-line ingest every
     # 15 minutes so newly-cached alt lines land on the board
     # between full refresh cycles (Odds API alt-lines fetcher runs
