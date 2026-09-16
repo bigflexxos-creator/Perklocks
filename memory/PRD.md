@@ -154,3 +154,44 @@ Continuous surgical NFL build.  Additive READ-path UX only.
 - Full evidence: `/app/memory/nfl_iter139_atd_stars_filters_certification.md`
 
 - Full evidence: `/app/memory/nfl_iter138_verification_certification.md`
+
+---
+## Session 5 · Universal Historical Intelligence 2.0 (2026-09-17)
+
+### Backend adapters — all wired to REAL raw historical stores
+- `services/historical_intelligence.py`
+  - NFLPlayerHistoricalAdapter (129,657 rows: pass/rush/rec yds/tds, receptions, targets, ATD)
+  - NFLTeamHistoricalAdapter (570 rows: ML/spread/total from raw final scores)
+  - MLBPlayerHistoricalAdapter (64,976 rows: hits/TB/H+R+RBI/HR/RBI/runs/Ks/outs)
+  - MLBTeamHistoricalAdapter (4,026 rows: ML/run line/total)
+  - SoccerPlayerHistoricalAdapter (50,112 rows: goals/assists/G+A/shots/SOT)
+  - SoccerTeamHistoricalAdapter (25,497 finished matches: 1X2/handicap/total/BTTS/DC)
+  - TennisHistoricalAdapter (37,992 ATP rows: ML/game spread/game total; safe score parser)
+  - CFBHistoricalAdapter (2,231 final games: ML/spread/total)
+  - Universal reducer: L5/L10/L20/SEASON scope trim, HOME/AWAY filter, VS OPP, quantiles.
+  - MISSING ≠ ZERO: raw actual `null`, `NO PRIOR MATCHUPS` sentinels, honest coverage %.
+
+### Endpoints
+- `GET /api/picks/{pick_id}/historical-intelligence?sample_scope&venue_scope&context_scope`
+- `GET /api/historical-intelligence/coverage` — 36/36 CERTIFIED coverage matrix
+
+### Frontend
+- `src/components/HistoricalIntelligence.tsx` — universal reusable component
+- Tabs: GAME LOGS · VS OPP · SPLITS · DISTRIBUTION
+- Sample toggles L5/L10/L20/SEASON (real refetch)
+- Venue toggles ALL/HOME/AWAY (Tennis auto-hidden, surface splits used instead)
+- Threshold chart via `react-native-svg` (dots + dashed line, lightweight)
+- Current-Line hero clearly distinct from Lock Score / Win Expected
+- Loading skeleton, honest missing states, endpoint failure never crashes Pick Breakdown
+- Mounted in `app/pick/[id].tsx`
+
+### Performance
+- Locks lite: p50 40ms, ETag 304 32ms (unchanged from Session 3)
+- HI endpoint after indexes: cold 8-20ms, p50 10-20ms, p95 <180ms
+- New indexes: `player_game_actuals.hi_player_recent`, `team_game_actuals.hi_team_recent`
+
+### Preservation
+- No sports_engine / UEA / Lock Score / 85 threshold / scoring changes
+- No NBA/NHL/UFC touched
+- ATD by-game merge preserved from Session 3
+- Board snapshot cache + prewarm intact

@@ -2172,6 +2172,24 @@ export const api = {
         win_rate: number; n_games: number;
       }>;
     }>(`/nfl/games/teams?limit=${limit}`),
+
+  // ─── Session 5 · Universal Historical Intelligence 2.0 ─────────
+  // Lazy-loaded, market-aware historical actuals against today's
+  // EXACT sportsbook line.  Returns null summaries when data is
+  // genuinely missing — never zero-imputed.
+  historicalIntelligence: (
+    pickId: string,
+    opts: { sampleScope?: string; venueScope?: string; contextScope?: string } = {},
+  ) => {
+    const p = new URLSearchParams();
+    if (opts.sampleScope)  p.set("sample_scope",  opts.sampleScope);
+    if (opts.venueScope)   p.set("venue_scope",   opts.venueScope);
+    if (opts.contextScope) p.set("context_scope", opts.contextScope);
+    const qs = p.toString(); const suffix = qs ? `?${qs}` : "";
+    return request<HistoricalIntelligenceResponse>(
+      `/picks/${pickId}/historical-intelligence${suffix}`,
+    );
+  },
 };
 
 // ─── NFL response types (shared with screens that render the cards) ───
@@ -2288,4 +2306,84 @@ export type NFLGameSafeBetsResponse = {
 export type AnalyticsRow = {
   key: string; count: number; wins: number; losses: number; pushes: number;
   hit_rate: number; units: number; roi: number; avg_edge: number; avg_clv: number;
+};
+
+
+// ─── Universal Historical Intelligence 2.0 (Session 5) ─────────────
+export type HistoricalObservation = {
+  date: string;
+  opponent_id?: string | null;
+  opponent_name?: string | null;
+  home_away?: "home" | "away" | null;
+  actual?: number | null;
+  result?: "HIT" | "MISS" | "PUSH" | null;
+  context: Record<string, any>;
+  provenance?: string | null;
+  event_id?: string | null;
+};
+
+export type HistoricalSummary = {
+  n: number;
+  hits: number;
+  misses: number;
+  pushes: number;
+  hit_rate: number | null;
+  mean: number | null;
+  median: number | null;
+  q25: number | null;
+  q75: number | null;
+  stddev: number | null;
+  note?: string;
+  games?: HistoricalObservation[];
+};
+
+export type HistoricalIntelligenceResponse = {
+  sport: string;
+  entity_id: string;
+  entity_name?: string | null;
+  market_family: string;
+  current_threshold: number | null;
+  scope: {
+    sample_scope: string;
+    venue_scope: string;
+    context_scope?: string | null;
+    side: string;
+  };
+  games: HistoricalObservation[];
+  sample_size: number;
+  hits: number;
+  misses: number;
+  pushes: number;
+  hit_rate: number | null;
+  mean: number | null;
+  median: number | null;
+  q25: number | null;
+  q75: number | null;
+  stddev: number | null;
+  trend: "up" | "down" | "flat" | null;
+  home_summary: HistoricalSummary | null;
+  away_summary: HistoricalSummary | null;
+  opponent_summary: HistoricalSummary | null;
+  context_summary: Record<string, HistoricalSummary> | null;
+  data_coverage: {
+    raw_actual_pct: number;
+    opponent_id_pct: number;
+    home_away_pct: number;
+    total_observations: number;
+  };
+  provenance: string[];
+  latency_ms?: number;
+  pick?: {
+    id: string;
+    sport: string;
+    market: string;
+    line?: number | null;
+    book_odds?: number | null;
+    home_team?: string | null;
+    away_team?: string | null;
+    player_name?: string | null;
+    player_team?: string | null;
+    opponent?: string | null;
+    commence_time?: string | null;
+  };
 };
