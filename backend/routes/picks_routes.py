@@ -2415,10 +2415,32 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # Six universal signals (form/matchup/volume/injury/market/value)
     # combined into a 0-100 Signal Score + signal-driven why bullets.
     # Runs AFTER espn meta so injury/form/record items are available.
-    # Persists to db.picks so the Rollover ranker reads signal_score.
+    #
+    # 2026-06-XX · BOARD READ-ONLY HOT PATH CLOSURE — this block is the
+    # single biggest per-request cost on the lite mobile board path:
+    # (1) it runs six per-pick signal calculators synchronously, and
+    # (2) `persist=True` issues a bulk_write back to `db.picks` on EVERY
+    # GET, which competes with the canonical publisher for the same
+    # collection and can serialize the entire request chain on Mongo
+    # write locks during high-fanout mobile navigation.
+    #
+    # Contract fix: for the lite mobile hot path (`?lite=true`) we SKIP
+    # this decoration entirely.  The persisted `signal_score` /
+    # `signal_score_raw` / `historical_signal` fields are ALREADY on
+    # the pick doc from the last background `refresh_slate_signal_rank`
+    # tick (see the `asyncio.create_task(...)` a few hundred lines
+    # above), so `_strip_for_lite` still surfaces them read-only.
+    # Non-lite consumers (Pick Breakdown detail) preserve the original
+    # `persist=True` behavior — they are low-frequency and benefit
+    # from the freshest signal decoration.
     try:
-        from services.signal_engine import decorate_signals_bulk
-        picks = await decorate_signals_bulk(db, picks, persist=True)
+        if lite:
+            # Lite path: read-only.  Signal fields flow through from
+            # the persisted doc; no synchronous compute, no Mongo write.
+            pass
+        else:
+            from services.signal_engine import decorate_signals_bulk
+            picks = await decorate_signals_bulk(db, picks, persist=True)
     except Exception as _sig_err:
         logger.warning("Signal Engine decoration skipped: %s", _sig_err)
     # ── Real-streak override (2026-06-30) ───────────────────────────────
@@ -2746,19 +2768,30 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # History tab shows ONLY picks the user actually saw on their
     # board — no more "60 Nordic picks I never had on my slate"
     # leaks from below-floor Total Goals / Win-or-Draw / etc.
+    #
+    # 2026-06-XX · BOARD READ-ONLY HOT PATH CLOSURE — this stamp
+    # was previously awaited synchronously inside the request path,
+    # blocking the response on a Mongo update_many.  The comment
+    # itself said "fire-and-forget"; make it actually fire-and-
+    # forget via `asyncio.create_task` so lite mobile GETs do not
+    # wait on the write.  Semantics unchanged: the stamp still
+    # lands (idempotent, setOnInsert-style) before /history renders
+    # in the next tick.
     if canonical:
         pick_ids = [p.get("id") for p in canonical if p.get("id")]
         if pick_ids:
             try:
                 stamp_iso = datetime.now(timezone.utc).isoformat()
-                # setOnInsert-style: only set if not already set, so the
-                # FIRST time a pick surfaces is preserved (not overwritten
-                # by every subsequent refresh).
-                await db.picks.update_many(
-                    {"id": {"$in": pick_ids},
-                     "on_main_board_at": {"$exists": False}},
-                    {"$set": {"on_main_board_at": stamp_iso}},
-                )
+                async def _stamp_board_visibility(_ids: list[str], _iso: str) -> None:
+                    try:
+                        await db.picks.update_many(
+                            {"id": {"$in": _ids},
+                             "on_main_board_at": {"$exists": False}},
+                            {"$set": {"on_main_board_at": _iso}},
+                        )
+                    except Exception as _e:  # pragma: no cover
+                        logger.debug("board-visibility stamp bg err: %s", _e)
+                asyncio.create_task(_stamp_board_visibility(pick_ids, stamp_iso))
             except Exception as e:
                 logger.debug("board-visibility stamping skipped: %s", e)
 
