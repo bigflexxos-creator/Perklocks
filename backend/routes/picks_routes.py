@@ -106,16 +106,20 @@ _compute_throttle = rate_limit(rate_per_min=30, burst=10, scope="user")
 async def picks_all(
     user: Annotated[UserPublic, Depends(current_user)],
     sport: Optional[str] = None,
+    limit: int = 5000,
+    offset: int = 0,
 ):
     """P0.2d — canonical Locks board projection.
 
-    Consumes ``BoardProjectionService`` which applies the same
-    canonical eligibility contract (``is_main_board_eligible``),
-    canonical dedupe, deterministic sort, and lifecycle window as
-    ``/picks/today``.  Previously this endpoint returned an unfiltered
-    ``db.picks.find(pick_date=today)`` result which meant sport tabs
-    and the `all` view could disagree with the main board on
-    membership — that divergence is now closed.
+    Session 7 Board Root Closure (2026-09-17):
+        The former hard cap ``projected[:200]`` — the arbitrary
+        200-pick truncation flagged in the deep-dive audit — has been
+        lifted.  The canonical population is now returned in full up
+        to the caller-supplied ``limit`` (default 5000) with an
+        ``offset`` for deterministic cursor pagination.  Filter runs
+        BEFORE pagination.  Order:  full board → filter → sort →
+        paginated slice.  The pagination window is not a canonical
+        truncation.
     """
     from server import (
         _ensure_today_picks, _today_str, _filter_in_play_window,
@@ -125,13 +129,24 @@ async def picks_all(
     await _ensure_today_picks()
     raw = await db.picks.find(
         {"pick_date": _today_str()}, {"_id": 0},
-    ).to_list(length=1000)
+    ).to_list(length=None)          # FULL canonical population
     svc = BoardProjectionService()
     projected = svc.project(
         raw, sport=sport,
         lifecycle_filter=_filter_in_play_window,
     )
-    return {"picks": _canonicalize_picks(projected[:200])}
+    total = len(projected)
+    limit = max(1, min(int(limit), 10000))
+    offset = max(0, int(offset))
+    slice_ = projected[offset:offset + limit]
+    return {
+        "picks":       _canonicalize_picks(slice_),
+        "total":       total,
+        "returned":    len(slice_),
+        "offset":      offset,
+        "limit":       limit,
+        "has_more":    offset + len(slice_) < total,
+    }
 
 
 @router.get("/nrfi-yrfi")

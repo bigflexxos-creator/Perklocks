@@ -43,6 +43,12 @@ class MatchDistribution:
     margin_hist:    dict[int, int]  # sparse histogram of (p_games - o_games)
     total_hist:     dict[int, int]  # sparse histogram of total games
     provenance:     str = "markov_v1"
+    # Session 6 P1 · Serve/return + simulation provenance flags.
+    # These are set by callers (spw_from_matchup) to disclose whether
+    # the SPWs feeding this simulation are empirically independent
+    # (real serve % + return % observations) or derived from Elo.
+    serve_return_provenance: str = "ELO_DERIVED"
+    simulation_provenance:   str = "MODEL_CONDITIONED"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -51,9 +57,18 @@ class MatchDistribution:
 @dataclass
 class PricedMarkets:
     ml_prob:         float
-    spread_prices:   list[dict]     # [{threshold, side, p_cover, ...}]
-    total_prices:    list[dict]     # [{threshold, side, p_over, p_under}]
+    spread_prices:   list[dict]     # [{spread, p_cover, ...}]
+    total_prices:    list[dict]     # [{threshold, p_over, p_under}]
     distribution:    MatchDistribution
+    # Session 6 P2 · Evidence family map — used by UEA/convergence
+    # gating to prevent Elo → Elo-derived S/R → Elo-conditioned sim
+    # being counted as three independent evidence votes.
+    evidence_families: dict[str, str] = field(default_factory=lambda: {
+        "strength":      "elo_and_surface_elo",
+        "serve_return":  "elo_derived",
+        "simulation":    "model_conditioned_on_elo",
+        "market":        "external_benchmark_only",
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -189,27 +204,80 @@ def spw_from_matchup(matchup_prob: float, tour: Optional[str] = None,
 
 def price_spreads(dist: MatchDistribution, thresholds: list[float]
                    ) -> list[dict]:
-    """For each threshold (positive = favored player -X.5, etc.), compute
-    P(player_games - opponent_games > threshold) directly from the
-    margin histogram — no ML-probability proxy."""
+    """Price sportsbook spread rungs from the simulated margin
+    distribution.
+
+    Session 6 P0 fix (2026-09-17):
+        ``thresholds`` are now SPORTSBOOK SPREAD NUMBERS from the
+        player's perspective (favourite negative, dog positive).  The
+        cover predicate is:
+
+            spread = -3.5  →  player must win by MORE than 3.5 games
+                              → P(margin >  3.5)
+            spread = +3.5  →  player may lose by AT MOST 3 games
+                              → P(margin > -3.5)
+
+        Both cases reduce to ``P(margin > -spread)``.  This is
+        mathematically monotone: harder spread (more negative for a
+        favourite / less positive for a dog) yields a strictly smaller
+        cover set.  No post-hoc clamp.
+
+    Returns a list of rows with fields:
+        - spread            (sportsbook convention, signed)
+        - p_cover           (probability THIS player covers)
+        - p_push            (probability of an exact-line push)
+        - opponent_p_cover  (1 - p_cover - p_push)
+    """
     prices: list[dict] = []
     total = float(dist.n_sims)
-    for t in thresholds:
-        hits_over = 0
-        pushes = 0
+    for s in thresholds:
+        cutoff = -s   # convert sportsbook spread → margin cutoff
+        cover_cnt = 0
+        push_cnt  = 0
         for m, cnt in dist.margin_hist.items():
-            if m > t: hits_over += cnt
-            elif m == t: pushes += cnt
-        p_over = hits_over / total
-        p_push = pushes / total
+            if m > cutoff:
+                cover_cnt += cnt
+            elif m == cutoff:
+                push_cnt += cnt
+        p_cover = cover_cnt / total
+        p_push  = push_cnt / total
         prices.append({
-            "threshold": t,
-            "p_cover_over":  round(p_over, 4),
-            "p_cover_under": round(1 - p_over - p_push, 4),
-            "p_push":        round(p_push, 4),
-            "source":        "margin_hist",
+            "spread":           s,
+            "p_cover":          round(p_cover, 4),
+            "p_push":           round(p_push, 4),
+            "opponent_p_cover": round(1 - p_cover - p_push, 4),
+            "margin_cutoff":    cutoff,     # transparency for auditors
+            "source":           "margin_hist",
         })
     return prices
+
+
+def enforce_monotonic_ladder(spread_prices: list[dict]) -> list[dict]:
+    """Sanity guard for the sportsbook-convention ladder.
+
+    Under the P0 fix, spread rungs are indexed by ``spread`` (signed).
+    As ``spread`` moves DOWN (favourite gets a harder handicap), the
+    player's cover set shrinks, so ``p_cover`` must be non-decreasing
+    in ``spread`` (i.e. more-negative spread → smaller p_cover).
+
+    Any breach is guaranteed to be Monte-Carlo noise now that the
+    predicate is analytically correct; we clamp only for display and
+    always tag the row with a provenance note.
+    """
+    sorted_prices = sorted(spread_prices, key=lambda r: r["spread"])
+    out: list[dict] = []
+    last: Optional[float] = None
+    for row in sorted_prices:
+        row_c = dict(row)
+        if last is not None and row_c["p_cover"] < last - 1e-6:
+            row_c["monotonicity_note"] = (
+                f"cover prob {row_c['p_cover']} < previous {last} "
+                f"— MC sim noise; clamped for display"
+            )
+            row_c["p_cover"] = round(max(row_c["p_cover"], last), 4)
+        last = row_c["p_cover"]
+        out.append(row_c)
+    return out
 
 
 def price_totals(dist: MatchDistribution, thresholds: list[float]
@@ -241,6 +309,9 @@ def price_from_matchup(matchup_prob: float, tour: Optional[str] = None,
     spw_p, spw_o = spw_from_matchup(matchup_prob, tour, best_of=best_of)
     dist = simulate_match(spw_p, spw_o, best_of=best_of, n_sims=n_sims,
                           seed=int((matchup_prob * 10_000)) & 0xFFFFFFFF)
+    # Session 6 P1/P2 · disclose provenance on every distribution.
+    dist.serve_return_provenance = "ELO_DERIVED"
+    dist.simulation_provenance   = "MODEL_CONDITIONED"
     spread_prices = price_spreads(dist, spread_thresholds or [])
     total_prices  = price_totals(dist,  total_thresholds  or [])
     return PricedMarkets(
@@ -255,21 +326,7 @@ def price_from_matchup(matchup_prob: float, tour: Optional[str] = None,
 # Ladder monotonicity check — sanity guard
 # ---------------------------------------------------------------------------
 
-def enforce_monotonic_ladder(spread_prices: list[dict]) -> list[dict]:
-    """Return a copy where cover probability is non-increasing in the
-    threshold (harder spread must not become easier).  Emits a note in
-    the offending row's metadata rather than mutating the histogram."""
-    sorted_prices = sorted(spread_prices, key=lambda r: r["threshold"])
-    last = None
-    out = []
-    for row in sorted_prices:
-        row_c = dict(row)
-        if last is not None and row_c["p_cover_over"] > last + 1e-6:
-            row_c["monotonicity_note"] = (
-                f"cover prob {row_c['p_cover_over']} > previous {last} "
-                f"— likely sim noise; clamped for display"
-            )
-            row_c["p_cover_over"] = round(min(row_c["p_cover_over"], last), 4)
-        last = row_c["p_cover_over"]
-        out.append(row_c)
-    return out
+def enforce_monotonic_ladder_deprecated(spread_prices: list[dict]) -> list[dict]:
+    """Deprecated legacy shape — retained for import compatibility.
+    Callers now use the sportsbook-convention version above."""
+    return spread_prices

@@ -48,6 +48,8 @@ async def matchup_diagnostic(
 
     db = _get_db()
     ev = await compose_matchup(db, player, opponent, surface=surface, tier=tier)
+    # Sportsbook-convention spreads: negative = player is favourite,
+    # positive = player is dog.  Pricing engine converts internally.
     priced = price_from_matchup(
         ev.matchup_prob or 0.5, tour=(ev.player.tour or "ATP"),
         spread_thresholds=[-6.5, -5.5, -4.5, -3.5, -2.5, -1.5,
@@ -64,10 +66,29 @@ async def matchup_diagnostic(
         "distribution": priced.distribution.to_dict(),
         "spreads":      enforce_monotonic_ladder(priced.spread_prices),
         "totals":       priced.total_prices,
+        # Session 6 P1/P2 provenance disclosure.
+        "evidence_families": priced.evidence_families,
+        "serve_return_provenance": priced.distribution.serve_return_provenance,
+        "simulation_provenance":   priced.distribution.simulation_provenance,
         "independence": {
-            "empirical_independent": ev.reliability >= 0.4 and not ev.missing_flags,
-            "model_conditioned":     ev.reliability < 0.4 or bool(ev.missing_flags),
-            "notes":                 ev.missing_flags,
+            # A pick is EMPIRICAL_INDEPENDENT only when ALL are true:
+            # 1. Reliability >= 0.4
+            # 2. No missing evidence flags
+            # 3. Serve/return + simulation are backed by real
+            #    independent observations (currently never — Session
+            #    6 P1 flags them as ELO_DERIVED / MODEL_CONDITIONED
+            #    until raw serve% ingest is wired).
+            "empirical_independent": (
+                ev.reliability >= 0.4
+                and not ev.missing_flags
+                and priced.distribution.serve_return_provenance == "EMPIRICAL"
+                and priced.distribution.simulation_provenance == "EMPIRICAL_INDEPENDENT"
+            ),
+            "model_conditioned": True,
+            "notes": (ev.missing_flags or []) + [
+                f"serve_return={priced.distribution.serve_return_provenance}",
+                f"simulation={priced.distribution.simulation_provenance}",
+            ],
         },
     }
 
