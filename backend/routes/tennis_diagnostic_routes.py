@@ -130,3 +130,80 @@ async def independence_audit(
         "reliability":   reliability,
         "missing_flags": missing_flags,
     }
+
+
+@router.get("/walkforward")
+async def tennis_walkforward(
+    user: Annotated[UserPublic, Depends(current_user)],
+    sample_limit: Optional[int] = None,
+    min_matches_per_player: int = 5,
+):
+    """Session 8 · Chronological walk-forward validation.
+
+    Replays ``tennis_matches_history`` in strict chronological order,
+    generating an Elo-based match win probability at each step from
+    ONLY prior matches, scoring against the actual outcome AFTER the
+    prediction is recorded.  Returns per-tour/surface/bucket
+    Brier + log-loss + calibration.  Baseline champion is 50/50
+    (in the absence of authentic historical odds — those metrics
+    are honestly omitted).
+    """
+    from services.tennis_walkforward import run_walkforward
+    return await run_walkforward(
+        _get_db(),
+        sample_limit=sample_limit,
+        min_matches_per_player=min_matches_per_player,
+    )
+
+
+# ── Session 9 · Final Six Partials Closure ──────────────────────────
+# These two endpoints close the "Tennis calibration — no leakage" and
+# "Real champion vs challenger" partials from the acceptance report.
+
+@router.get("/calibrated-walkforward")
+async def tennis_calibrated_walkforward(
+    user: Annotated[UserPublic, Depends(current_user)],
+    train_end: str = "2020-12-31",
+    calibration_end: str = "2023-12-31",
+    min_matches_per_player: int = 5,
+):
+    """Chronological TRAIN → CALIBRATION → TEST split.  Fits a Platt
+    rescaler ONLY on the calibration window; the rescaler is
+    evaluated on the UNTOUCHED test period alongside the raw
+    challenger.  Reports 5% calibration buckets from 50-55 up through
+    95+.  Honestly recommends KEEPING the rescaler only when it
+    improves TEST-set Brier — refuses to force probabilities upward
+    on training evidence alone."""
+    from services.tennis_calibration_walkforward import run_calibrated_walkforward
+    return await run_calibrated_walkforward(
+        _get_db(),
+        train_end=train_end,
+        calibration_end=calibration_end,
+        min_matches_per_player=min_matches_per_player,
+    )
+
+
+@router.get("/champion-comparison")
+async def tennis_champion_comparison(
+    user: Annotated[UserPublic, Depends(current_user)],
+    train_end: str = "2020-12-31",
+    calibration_end: str = "2023-12-31",
+    min_matches_per_player: int = 5,
+):
+    """Attempted reconstruction of the pre-Session-6 tennis champion
+    versus the new raw and calibrated challengers on the untouched
+    TEST period.  The old champion combined a deterministic hash-
+    based strength signal with a sportsbook `market_bump`.  Because
+    ``tennis_matches_history`` has NO historical odds, the market_bump
+    is UNRECOVERABLE.  We reconstruct the hash component faithfully
+    and label the comparison honestly as:
+        `ACTUAL CHAMPION COMPARISON — NOT CERTIFIED`
+    We DO NOT substitute a 50/50 baseline and call it the champion.
+    """
+    from services.tennis_calibration_walkforward import run_champion_comparison
+    return await run_champion_comparison(
+        _get_db(),
+        train_end=train_end,
+        calibration_end=calibration_end,
+        min_matches_per_player=min_matches_per_player,
+    )
