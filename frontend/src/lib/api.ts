@@ -665,6 +665,7 @@ type PreparedResponse = {
   status: number;
   text: string;
   etag?: string;
+  boardVersion?: string;
 };
 
 // ── MAIN 40 · Native reset closure (2026-06-05) — body-read timeout ──
@@ -694,9 +695,32 @@ async function _fetchWithTimeout(
   url: string,
   init: RequestInit,
   timeoutMs: number,
+  callerSignal?: AbortSignal,
 ): Promise<PreparedResponse> {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const timer = setTimeout(() => {
+    try { (ctrl as any)._perkslocks_timeoutFired = true; } catch {}
+    ctrl.abort();
+  }, timeoutMs);
+  // Chain a caller-provided AbortSignal (Client Request Race
+  // Controller) — when the caller cancels because a newer request
+  // has replaced this one, we abort here immediately.  We stamp
+  // `_perkslocks_callerAborted` on the internal controller so the
+  // catch site can distinguish caller-abort from timeout-abort and
+  // tag the resulting error with `errFromCallerAbort=true`.
+  let onCallerAbort: (() => void) | null = null;
+  if (callerSignal) {
+    if (callerSignal.aborted) {
+      try { (ctrl as any)._perkslocks_callerAborted = true; } catch {}
+      ctrl.abort();
+    } else {
+      onCallerAbort = () => {
+        try { (ctrl as any)._perkslocks_callerAborted = true; } catch {}
+        ctrl.abort();
+      };
+      try { callerSignal.addEventListener("abort", onCallerAbort); } catch {}
+    }
+  }
   try {
     const res = await fetch(url, { ...init, signal: ctrl.signal });
     // CRITICAL: body-read is INSIDE the timeout guard.  On iOS RN 0.86
@@ -710,9 +734,17 @@ async function _fetchWithTimeout(
     // an extra field on the PreparedResponse; existing callers ignore
     // it transparently (dict spread / destructure).
     const etag = res.headers.get("etag") || res.headers.get("ETag") || undefined;
-    return { ok: res.ok, status: res.status, text, etag };
+    // Session 8 · surface backend board_version headers so the client
+    // race controller can pin cursor pagination to a frozen slate.
+    const boardVersion = res.headers.get("x-board-version")
+      || res.headers.get("X-Board-Version")
+      || undefined;
+    return { ok: res.ok, status: res.status, text, etag, boardVersion };
   } finally {
     clearTimeout(timer);
+    if (callerSignal && onCallerAbort) {
+      try { callerSignal.removeEventListener("abort", onCallerAbort); } catch {}
+    }
   }
 }
 
@@ -747,7 +779,7 @@ function _pathParticipatesInEtag(path: string): boolean {
 
 async function request<T>(
   path: string,
-  opts: { method?: string; body?: any; auth?: boolean; timeoutMs?: number } = {},
+  opts: { method?: string; body?: any; auth?: boolean; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<T> {
   const method = (opts.method || "GET").toUpperCase();
   // REMEDIATION.1 — every request goes through the ONE authoritative
@@ -756,7 +788,11 @@ async function request<T>(
   const url = buildApiUrl(path);
 
   // In-flight dedupe — GETs only (mutations must NEVER be deduped).
-  const dedupeKey = method === "GET" ? `${method}:${url}` : null;
+  // Session 9 Client Request Race Controller — do NOT dedupe when a
+  // caller-provided AbortSignal is present.  Dedupe collapses two
+  // callers onto ONE underlying request; if either caller cancels
+  // via its signal, the other would be silently torn down too.
+  const dedupeKey = method === "GET" && !opts.signal ? `${method}:${url}` : null;
   if (dedupeKey && _inflight.has(dedupeKey)) {
     return _inflight.get(dedupeKey) as Promise<T>;
   }
@@ -823,8 +859,18 @@ async function request<T>(
 
     let lastErr: any = null;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      // Fast-path: if the caller cancelled between retries, exit
+      // immediately with an ABORTED_SUPERSEDED-tagged error.  This
+      // keeps back-off delays from surfacing stale responses.
+      if (opts.signal && opts.signal.aborted) {
+        const err: any = new Error("request superseded");
+        err.errFromCallerAbort = true;
+        err.nonRetryable = true;
+        err.kind = "ABORTED_SUPERSEDED";
+        throw err;
+      }
       try {
-        const res = await _fetchWithTimeout(finalUrl, init, opts.timeoutMs ?? REQUEST_TIMEOUT_MS);
+        const res = await _fetchWithTimeout(finalUrl, init, opts.timeoutMs ?? REQUEST_TIMEOUT_MS, opts.signal);
         // MAIN 40 fix: `res.text` is already the body string (read
         // inside the timeout guard).  No unprotected second await.
         const text = res.text;
@@ -839,8 +885,9 @@ async function request<T>(
         }
 
         let data: any = {};
+        let parseFailed = false;
         try { data = text ? JSON.parse(text) : {}; }
-        catch { data = { detail: text }; }
+        catch { data = { detail: text }; parseFailed = true; }
         if (!res.ok) {
           // ── 401 auto-recover (2026-06-26) ───────────────────────
           // A 401 means our stored token is invalid — either the
@@ -887,6 +934,11 @@ async function request<T>(
             );
             httpErr.status = res.status;
             httpErr.nonRetryable = !shouldRetry;
+            // Session 9 taxonomy tags — read by errorTaxonomy.classifyError.
+            if (res.status === 401 || res.status === 403)      httpErr.kind = "AUTH_FAILURE";
+            else if (res.status === 429)                        httpErr.kind = "HTTP_429";
+            else if (res.status >= 500)                         httpErr.kind = "HTTP_5XX";
+            if (parseFailed)                                    httpErr.errFromParse = true;
             throw httpErr;
           }
           lastErr = new Error(`HTTP ${res.status}`);
@@ -911,15 +963,31 @@ async function request<T>(
           return data as T;
         }
       } catch (err: any) {
+        // Session 9 Race Controller — caller-cancelled requests are
+        // NEVER retried and NEVER treated as network failures.  The
+        // AbortError from a caller-cancelled fetch is repackaged as
+        // an ABORTED_SUPERSEDED error so callers can short-circuit.
+        const wasCallerAbort = err && (err.errFromCallerAbort === true
+          // fetch's AbortError has no direct reason; detect via caller-signal state.
+          || (opts.signal && opts.signal.aborted));
+        if (wasCallerAbort) {
+          const wrapped: any = new Error("request superseded");
+          wrapped.errFromCallerAbort = true;
+          wrapped.nonRetryable = true;
+          wrapped.kind = "ABORTED_SUPERSEDED";
+          throw wrapped;
+        }
+        // Internal timeout guard fired.  Tag as TIMEOUT so the taxonomy
+        // classifier can distinguish this from raw NETWORK_OFFLINE.
+        // AbortError with no caller-signal ⇒ our own timeout.
+        if (err && (err.name === "AbortError")) {
+          err.errFromTimeout = true;
+          err.kind = err.kind || "TIMEOUT";
+        }
         // ── MAIN 39 · P0.4 — non-retryable 4xx short-circuit ──────
-        // If the error was tagged `nonRetryable` (from the 4xx branch
-        // above), propagate it immediately so the caller sees exactly
-        // ONE network request.  Only network/timeout/abort/5xx/408/
-        // 429 continue through the retry loop below.
         if (err && err.nonRetryable === true) {
           throw err;
         }
-        // Network error / timeout / abort → retry
         lastErr = err;
         if (attempt === MAX_RETRIES) break;
       }
@@ -1353,7 +1421,7 @@ export const api = {
       shadow_mode:     boolean;
       generated_at:    string;
     }>("/analytics/xg-form-shadow"),
-  picksToday: (sport?: string, lineType?: LineType, sortKey?: SortKey, filters?: PickFilters, direction?: SortDirection, extra?: { sports?: string[]; leagues?: string[]; markets?: string[]; gameIds?: string[]; search?: string }) => {
+  picksToday: (sport?: string, lineType?: LineType, sortKey?: SortKey, filters?: PickFilters, direction?: SortDirection, extra?: { sports?: string[]; leagues?: string[]; markets?: string[]; gameIds?: string[]; search?: string; signal?: AbortSignal }) => {
     const qs = new URLSearchParams();
     if (sport && sport !== "All") qs.set("sport", sport);
     if (lineType && lineType !== "both") qs.set("line_type", lineType);
@@ -1379,17 +1447,8 @@ export const api = {
     if (filters?.league) qs.set("league", filters.league);
     // NFL Star Watchlist — visibility-only filter (2026-06-11).
     if (filters?.starsOnly) qs.set("stars_only", "true");
-    // Lite payload — strip detail-only fields (sportsbook_mapping,
-    // evidence_breakdown, probability, etc). 5x smaller payload
-    // (~1.5MB → ~300KB) for a much snappier home tab. The pick-detail
-    // screen calls /api/picks/{id} separately and still gets the full
-    // document, so no UX regression. (Perf, 2026-06-25.)
     qs.set("lite", "true");
     const q = qs.toString();
-    // 2026-07-13: Response now includes `alt_availability` diagnostic
-    // when the ALT tab is empty for a sport whose tournaments aren't
-    // covered by the book (e.g. tennis 250s). Frontend renders a
-    // friendly explanation instead of a bare "no picks" empty state.
     return request<{
       picks: Pick[];
       alt_availability?: {
@@ -1398,7 +1457,7 @@ export const api = {
         message:    string;
         suggestion?: string;
       } | null;
-    }>(`/picks/today${q ? `?${q}` : ""}`).then((r) => ({
+    }>(`/picks/today${q ? `?${q}` : ""}`, { signal: extra?.signal }).then((r) => ({
       ...r,
       picks: dropLegacySgoPicks(r.picks || []),
     }));
@@ -1409,6 +1468,50 @@ export const api = {
     ),
   picksAll: (sport?: string) =>
     request<{ picks: Pick[] }>(`/picks/all${sport && sport !== "All" ? `?sport=${sport}` : ""}`),
+  /**
+   * Session 8 · Version-pinned cursor pagination for the canonical
+   * Locks board.  Backend enforces:
+   *   - deterministic sort (lock_score DESC, event_time ASC, id ASC)
+   *   - board_version = stable hash of today's canonical population
+   *   - cursor payload includes board_version so pages NEVER blend
+   *     across versions if a publish happens mid-scroll
+   *
+   * Client contract:
+   *   - Retain `board_version` returned by page 1 and pass it on
+   *     subsequent pages so we stay pinned to the same immutable
+   *     slate even if the backend publishes a newer version.
+   *   - When response.newer_version_available is TRUE, surface a
+   *     "Newer board available — refresh" banner but continue
+   *     rendering the immutable current view until the user opts in.
+   *   - Never merge picks with a different board_version than the
+   *     ones already committed to state.
+   */
+  picksBoard: (params: {
+    sport?: string;
+    cursor?: string | null;
+    board_version?: string | null;
+    limit?: number;
+    signal?: AbortSignal;
+  } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.sport && params.sport !== "All") qs.set("sport", params.sport);
+    if (params.limit) qs.set("limit", String(params.limit));
+    if (params.cursor) qs.set("cursor", params.cursor);
+    if (params.board_version) qs.set("board_version", params.board_version);
+    const q = qs.toString();
+    return request<{
+      board_version:            string;
+      current_board_version:    string;
+      newer_version_available:  boolean;
+      picks:                    Pick[];
+      total:                    number;
+      returned:                 number;
+      offset:                   number;
+      limit:                    number;
+      has_more:                 boolean;
+      next_cursor:              string | null;
+    }>(`/picks/all${q ? `?${q}` : ""}`, { signal: params.signal });
+  },
   // (Bet Killer endpoint removed — superseded by Under-of-the-Day.)
   rollover: (lineType?: LineType, filters?: PickFilters, sport?: string) => {
     const qs = new URLSearchParams();

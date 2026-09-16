@@ -113,6 +113,14 @@ try:
 except Exception as _td_err:
     logger.warning("Tennis diagnostic routes failed to mount: %s", _td_err)
 
+# ── Session 8 Board scale stress fixture (read-only, non-canonical) ──
+try:
+    from routes.board_stress_routes import router as _perf_router
+    app.include_router(_perf_router)
+    logger.info("Board stress fixture routes mounted")
+except Exception as _perf_err:
+    logger.warning("Board stress fixture routes failed to mount: %s", _perf_err)
+
 # Lab research/analytics endpoints (Session 2+3 build 2026-07-07).
 try:
     from lab_routes import router as _lab_router

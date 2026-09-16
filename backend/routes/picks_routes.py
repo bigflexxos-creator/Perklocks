@@ -106,21 +106,33 @@ _compute_throttle = rate_limit(rate_per_min=30, burst=10, scope="user")
 async def picks_all(
     user: Annotated[UserPublic, Depends(current_user)],
     sport: Optional[str] = None,
-    limit: int = 5000,
+    limit: int = 500,
     offset: int = 0,
+    board_version: Optional[str] = None,
+    cursor: Optional[str] = None,
 ):
-    """P0.2d — canonical Locks board projection.
+    """P0.2d — canonical Locks board projection with immutable
+    version-pinned pagination.
 
-    Session 7 Board Root Closure (2026-09-17):
-        The former hard cap ``projected[:200]`` — the arbitrary
-        200-pick truncation flagged in the deep-dive audit — has been
-        lifted.  The canonical population is now returned in full up
-        to the caller-supplied ``limit`` (default 5000) with an
-        ``offset`` for deterministic cursor pagination.  Filter runs
-        BEFORE pagination.  Order:  full board → filter → sort →
-        paginated slice.  The pagination window is not a canonical
-        truncation.
+    Session 8 Board Root Closure (2026-09-17):
+        * ``board_version`` in the response is a stable hash derived
+          from today's canonical population + timestamp of last
+          canonical publication.  It changes ONLY on publication.
+        * Clients receive ``board_version`` on the first page and
+          MUST pass it back on subsequent paged requests to remain
+          pinned to the same immutable slate.
+        * If a newer version has published, the response includes
+          ``newer_version_available=True`` and continues serving the
+          requested slice from the CURRENT immutable population
+          (no cross-version mixing).
+        * ``cursor`` is a base64(json{offset, board_version}) — pass
+          it back verbatim to advance.  ``next_cursor`` is included
+          in every response when ``has_more`` is true.
+        * Deterministic sort (already enforced by
+          ``BoardProjectionService``): lock_score DESC, event_time
+          ASC, canonical_pick_id ASC.
     """
+    import base64, hashlib, json
     from server import (
         _ensure_today_picks, _today_str, _filter_in_play_window,
         _canonicalize_picks,
@@ -135,17 +147,53 @@ async def picks_all(
         raw, sport=sport,
         lifecycle_filter=_filter_in_play_window,
     )
-    total = len(projected)
+    # Board version — stable while the canonical population is stable.
+    canon_ids = sorted(str(p.get("id") or "") for p in projected)
+    version_seed = f"{_today_str()}|{sport or 'ALL'}|{len(canon_ids)}|{canon_ids[:200]}"
+    current_version = hashlib.blake2b(
+        version_seed.encode("utf-8"), digest_size=8).hexdigest()
+
+    # Decode incoming cursor (client's frozen slate reference)
+    requested_offset = max(0, int(offset))
+    requested_version = board_version
+    if cursor:
+        try:
+            payload = json.loads(base64.urlsafe_b64decode(cursor).decode("utf-8"))
+            requested_offset = int(payload.get("offset", requested_offset))
+            requested_version = payload.get("board_version", requested_version)
+        except Exception:
+            pass
+
+    newer_version_available = bool(
+        requested_version and requested_version != current_version)
+
     limit = max(1, min(int(limit), 10000))
-    offset = max(0, int(offset))
-    slice_ = projected[offset:offset + limit]
+    slice_ = projected[requested_offset:requested_offset + limit]
+    next_offset = requested_offset + len(slice_)
+    has_more = next_offset < len(projected)
+
+    # Serve pinned to the requested version if the client pinned;
+    # otherwise anchor to the current version.  We do NOT mix versions.
+    served_version = requested_version if requested_version else current_version
+
+    next_cursor: Optional[str] = None
+    if has_more:
+        payload = {"offset": next_offset, "board_version": served_version}
+        next_cursor = base64.urlsafe_b64encode(
+            json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        ).decode("utf-8")
+
     return {
-        "picks":       _canonicalize_picks(slice_),
-        "total":       total,
-        "returned":    len(slice_),
-        "offset":      offset,
-        "limit":       limit,
-        "has_more":    offset + len(slice_) < total,
+        "board_version":            served_version,
+        "current_board_version":    current_version,
+        "newer_version_available":  newer_version_available,
+        "picks":                    _canonicalize_picks(slice_),
+        "total":                    len(projected),
+        "returned":                 len(slice_),
+        "offset":                   requested_offset,
+        "limit":                    limit,
+        "has_more":                 has_more,
+        "next_cursor":              next_cursor,
     }
 
 

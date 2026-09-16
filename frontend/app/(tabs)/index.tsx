@@ -23,6 +23,9 @@ import { swrCacheClear } from "@/src/lib/useSWR";
 import { storage } from "@/src/utils/storage";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 import { useFilters } from "@/src/stores/useFilters";
+import { classifyError, ErrorKind, ErrorKindT, ERROR_COPY, isSilentError } from "@/src/lib/errorTaxonomy";
+import perf, { recordMountedRowCount } from "@/src/lib/perfHUD";
+import { DevPerfHUD } from "@/src/components/DevPerfHUD";
 
 const PREFS_KEY = "locks_feed_prefs_v2";
 type FeedPrefs = { sport?: string; sortKey?: SortKey; lineType?: LineType };
@@ -54,6 +57,19 @@ const _picksMem: Map<string, { picks: Pick[]; ts: number }> = new Map();
 let _statsMem: { data: any; ts: number } | null = null;
 const STATS_STALE_MS = 30_000;      // /stats independently cached 30s
 const FETCH_DEDUPE_MS = 1500;       // dedupe overlapping non-manual fetches
+
+// Session 9 · MUST be stable across renders — FlatList throws
+// "Changing onViewableItemsChanged on the fly is not supported"
+// if the prop identity flips.  Module-scope const pairs guarantee
+// referential stability for the lifetime of the JS bundle.
+const _viewabilityPairs = [
+  {
+    viewabilityConfig: { itemVisiblePercentThreshold: 50 },
+    onViewableItemsChanged: (info: { viewableItems: any[] }) => {
+      try { recordMountedRowCount(info.viewableItems?.length || 0); } catch {}
+    },
+  },
+];
 
 function timeAgo(d: Date | null): string {
   if (!d) return "—";
@@ -125,6 +141,10 @@ export default function LocksScreen() {
   // 2026-06-28: "login and picks are intermittently failing with
   // Cloudflare ... do NOT clear existing picks."
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Session 9 taxonomy classification of the LAST load failure.
+  // Drives copy + retry visibility.  ABORTED_SUPERSEDED never
+  // reaches state — it's short-circuited in load().
+  const [errorKind, setErrorKind] = useState<ErrorKindT | null>(null);
   const [sport, setSport] = useState<string>("All");
   const [lineType, setLineType] = useState<LineType>("both");
   // Default sort = "lock" descending so the user immediately sees the
@@ -324,6 +344,17 @@ export default function LocksScreen() {
   // Fetch cooldown on first mount.
   useEffect(() => { loadCooldown(); }, [loadCooldown]);
 
+  // Session 9 · Cancel any in-flight fetch on unmount so a stale
+  // response can never call setState on a torn-down component.
+  useEffect(() => {
+    return () => {
+      if (inflightControllerRef.current) {
+        try { inflightControllerRef.current.abort(); } catch {}
+        inflightControllerRef.current = null;
+      }
+    };
+  }, []);
+
   const activeFilterCount =
     (filters.minLock && filters.minLock > 85 ? 1 : 0) +
     ((filters as any).minSignal && (filters as any).minSignal > 0 ? 1 : 0) +
@@ -464,14 +495,27 @@ export default function LocksScreen() {
     resetAllFilters();
   };
 
-  // Request-token guard: each call to load() captures a monotonically
-  // increasing token. When the response arrives, we only commit state
-  // if the token still matches `latestLoadTokenRef.current` (i.e. no
-  // newer load was kicked off in the meantime). Without this guard,
-  // switching sports rapidly OR an in-flight previous-sport request
-  // landing after a focus refetch will populate the WRONG sport tab —
-  // exactly the bug user reported: "soccer under Tennis... fixes
-  // itself but can we stop this".
+  // Session 9 · Client Request Race Controller
+  // ────────────────────────────────────────────────────────────────
+  // Every call to load() creates a dedicated AbortController.  The
+  // previous in-flight controller is aborted BEFORE the new fetch
+  // starts, guaranteeing that only the newest user intent can
+  // commit state.  Combined with the token counter below (which
+  // survives platform quirks where AbortController may not fully
+  // cut off already-resolved microtasks), this replaces the old
+  // token-only guard.
+  //
+  // Rules coordinated by this ref:
+  //   - initial load             — new controller, no prior to abort
+  //   - focus refetch            — abort in-flight refetch (if any)
+  //   - foreground/resume        — abort background stale probe
+  //   - sport / market / tier    — abort superseded slate
+  //   - STARS toggle             — abort the pre-toggle fetch
+  //   - refresh                  — abort silent background load
+  //   - pagination               — pinned to board_version (useBoardCursor)
+  //   - retry                    — abort a still-flying request first
+  //   - board-version change     — atomically reset
+  const inflightControllerRef = useRef<AbortController | null>(null);
   const latestLoadTokenRef = useRef(0);
   const lastLoadedForSportRef = useRef<string>("");
   // 2026-08-27 PERF: dedupe overlapping non-manual fetches (tab focus,
@@ -486,6 +530,15 @@ export default function LocksScreen() {
       return true; // silently coalesce back-to-back non-manual fetches
     }
     lastFetchTsRef.current = now;
+    // Abort any prior in-flight fetch so its late response cannot
+    // overwrite fresher user intent.  Every load() call is a NEW
+    // AbortController — the previous one gets torn down here.
+    if (inflightControllerRef.current) {
+      try { inflightControllerRef.current.abort(); } catch {}
+      inflightControllerRef.current = null;
+    }
+    const controller = new AbortController();
+    inflightControllerRef.current = controller;
     const myToken = latestLoadTokenRef.current + 1;
     latestLoadTokenRef.current = myToken;
     // Snapshot the requested sport so a late response can prove it
@@ -497,6 +550,8 @@ export default function LocksScreen() {
     const statsFresh = _statsMem && (now - _statsMem.ts) < STATS_STALE_MS;
     // MAIN 39 · P0.6 — explicit success/failure signal.
     let ok = false;
+    // ── DEV-only perf mark: user-action → paint pipeline ──────────
+    const perfMark = perf.startMark("locks.load", { sport: s, manual: !!opts.manual });
     try {
       const [picksRes, statsRes] = await Promise.all([
         api.picksToday(s, lt, sk, f, dir, {
@@ -509,13 +564,23 @@ export default function LocksScreen() {
           markets:  filterStore.markets,
           gameIds:  filterStore.gameIds,
           search:   filterStore.searchText || undefined,
+          // Session 9 Race Controller — wire the AbortSignal so the
+          // network layer can tear this call down the moment a newer
+          // load() supersedes us.
+          signal:   controller.signal,
         }),
         statsFresh ? Promise.resolve(_statsMem!.data) : api.stats().catch(() => null),
       ]);
+      perfMark.step("response");
       // Discard if a newer load was fired after we sent this one.
+      // Belt-and-braces: if the AbortController was flipped between
+      // response headers and body-read we already reject via
+      // ABORTED_SUPERSEDED, but the token check catches any edge
+      // cases where a stale resolve made it through.
       if (myToken !== latestLoadTokenRef.current) return false;
       // Clear any prior load-error banner — we got a clean response.
       setLoadError(null);
+      setErrorKind(null);
       // Defensive client-side filter — protect users from production
       // backends that haven't yet deployed the KBO removal. We do NOT
       // filter by event_time here because player props for in-progress
@@ -526,30 +591,6 @@ export default function LocksScreen() {
       if (requestedSport && requestedSport.toLowerCase() !== "all") {
         fresh = fresh.filter((p: any) => p.sport === requestedSport);
       }
-      // NOTE: filters.event is applied at RENDER time (see `visiblePicks`
-      // below) — not here — so the GameFilterSheet always sees every
-      // game on the slate. Filtering here would shrink the sheet's
-      // dropdown to the currently-selected event only.
-      // Sim Edge floor (replaces the old binary toggle 2026-06-24, user
-      // feedback: "Sim edge blocking a lot of picks — I just wanted it
-      // to able to be filtered"). User now picks their own floor via
-      // the FilterSheet chip strip. Backward-compat: legacy
-      // `simEdgeOnly: true` from older client state still works via the
-      // FilterSheet's initialiser which maps it to 75.
-      //
-      // 2026-06-27: SYNTHETIC PICKS ARE EXEMPT.
-      // Synthetic CSL goalscorers (Cryzan, Felipe Silva, Fábio Abreu,
-      // Leonardo, Bakambu, Negrão, Wesley Moraes, etc.) use a closed-
-      // form Poisson model — there's no 10k-run Monte Carlo so
-      // `sim_win_probability` is whatever the Poisson math returned
-      // (32-65%). Stale `simEdgeFloor=75` state from a previous mobile
-      // session would silently strip every single one of them and the
-      // user lands on "No locks on the board" even though the API
-      // returned 9 picks. Bypass the floor for any pick tagged
-      // `synthetic` or `force_injected` — the user clearly opted in
-      // by selecting CSL + Anytime Goal Scorer, and the lock_score is
-      // already the source of truth for confidence (97 for tier-1
-      // Golden Boot winners).
       const simFloor =
         typeof f.simEdgeFloor === "number" && f.simEdgeFloor > 0
           ? f.simEdgeFloor
@@ -558,48 +599,27 @@ export default function LocksScreen() {
             : 0;
       if (simFloor > 0) {
         fresh = fresh.filter((p: any) =>
-          // Synthetic picks bypass the Sim Edge floor entirely.
           p.synthetic === true ||
           p.force_injected === true ||
           (p.synthetic_source && String(p.synthetic_source).length > 0) ||
-          // Real picks: keep if they meet the sim floor.
           (typeof p.sim_win_probability === "number" &&
             p.sim_win_probability >= simFloor),
         );
       }
-      // CRITICAL (2026-06-28, patched 2026-02 iter-84): if the new
-      // response came back EMPTY but we already had cached picks for
-      // the same sport filter, treat it as a transient "slate
-      // refreshing" signal and KEEP the cached picks visible. The
-      // backend refresh briefly returns picks=[] for <100ms during the
-      // atomic-swap window; without this guard the user sees their
-      // slate vanish to "No locks on the board" every refresh tick.
-      // Per user spec: "do NOT clear existing picks".
-      //
-      // IMPORTANT: read cached count from `picksRef.current` (mirror
-      // of the picks state) — reading `picks` directly here captures
-      // the initial-render snapshot from the useCallback closure and
-      // the guard NEVER fires. This was the confirmed root cause of
-      // the iter-84 "loaded picks then crashed" bug report.
       const lastSport = lastLoadedForSportRef.current;
       const sameFilter = lastSport === requestedSport;
       if (fresh.length === 0 && picksRef.current.length > 0 && sameFilter) {
+        // Session 9 taxonomy — this is STALE_FALLBACK, NOT a network error.
+        setErrorKind(ErrorKind.STALE_FALLBACK);
         setLoadError("Slate refreshing… showing your cached picks. Tap to retry.");
-        // Skip setPicks([]) — keep cached.
-        // Not a hard failure: we're keeping the last-good slate.
         ok = true;
+        perfMark.end({ n: 0, staleFallback: true });
         return true;
       }
+      perfMark.step("commit");
       setPicks(fresh);
       lastLoadedForSportRef.current = requestedSport;
-      // ── 2026-08-27 PERF: mirror to module-scope so a subsequent
-      // tab-return paints the slate SYNCHRONOUSLY on the first frame.
       _picksMem.set(requestedSport, { picks: fresh, ts: Date.now() });
-      // ── Picks cache persist (2026-06 hotfix) ─────────────────
-      // Save the fresh slate so the next cold boot / resume can
-      // rehydrate instantly instead of showing "GAME · 0" while
-      // the first fetch is in flight. Cap at 200 picks to keep
-      // AsyncStorage writes fast (< 200KB per sport).
       if (fresh.length > 0) {
         try {
           const cache: PicksCache = {
@@ -610,9 +630,6 @@ export default function LocksScreen() {
           storage.setItem(PICKS_CACHE_KEY, JSON.stringify(cache));
         } catch { /* storage full / serialize err — silent */ }
       }
-      // Alt-line availability diagnostic (2026-07-13): backend tells us
-      // when this ALT query hit a book-coverage gap so we can render
-      // the reason in the empty state instead of a generic "no locks".
       const altDiag: any = (picksRes as any).alt_availability;
       if (lt === "alt" && fresh.length === 0 && altDiag && altDiag.supported === false) {
         setAltUnavailable({
@@ -622,8 +639,6 @@ export default function LocksScreen() {
       } else {
         setAltUnavailable(null);
       }
-      // Stats: if backend hasn't deployed KBO removal yet, recompute the
-      // top-row totals locally so the hero card matches the visible list.
       if (statsRes) {
         const kboCount = (picksRes.picks || []).filter((p: any) => p.sport === "KBO").length;
         let nextStats;
@@ -633,43 +648,46 @@ export default function LocksScreen() {
           nextStats = statsRes;
         }
         setStats(nextStats);
-        // 2026-08-27 PERF: cache stats independently with its own stale
-        // window so subsequent picks refreshes reuse it.
         _statsMem = { data: nextStats, ts: Date.now() };
       }
       setLastLoadedAt(new Date());
       ok = true;
+      perfMark.end({ n: fresh.length });
     } catch (e: any) {
-      // CRITICAL (2026-06-28): preserve previously loaded picks on a
-      // network failure (e.g. Cloudflare 520 during a uvicorn --reload
-      // window). We deliberately DO NOT call setPicks([]). Instead we
-      // surface a lightweight retry banner over the cached slate so
-      // the user keeps seeing the last good picks and can tap to
-      // recover.
+      // Session 9 · Error taxonomy classification at the request boundary.
+      const kind = classifyError(e);
+      // ABORTED_SUPERSEDED is NOT a user-facing error — a newer
+      // request has taken over.  We do NOT clear picks, we do NOT
+      // show a banner, we do NOT toast.  Simply return.
+      if (kind === ErrorKind.ABORTED_SUPERSEDED) {
+        perfMark.end({ superseded: true });
+        return false;
+      }
+      // Only commit the error banner if this call is still the newest.
       if (myToken === latestLoadTokenRef.current) {
-        const msg = (e && e.message) ? String(e.message) : "Network error";
-        // Strip noisy CF 520 HTML if the body bled through.
-        const cleanMsg = /520|cloudflare|origin web server/i.test(msg)
-          ? "Connection hiccup — tap to retry."
-          : msg.length > 140 ? msg.slice(0, 140) + "…" : msg;
-        setLoadError(cleanMsg);
-        console.warn("load locks failed (cached picks kept):", e);
+        setErrorKind(kind);
+        const copy = ERROR_COPY[kind];
+        // Never leak "Connection Hiccup" for anything other than a
+        // real network / server failure.  Copy comes from the taxonomy.
+        setLoadError(copy.title ? `${copy.title} — ${copy.message}` : (e?.message || "Network error"));
+        console.warn("[locks.load] failed", { kind, err: e });
       }
       ok = false;
+      perfMark.end({ errorKind: kind });
     } finally {
-      // Only clear loading flags if this is still the latest request.
       if (myToken === latestLoadTokenRef.current) {
         setLoading(false);
         setRefreshing(false);
+        // Release the controller — a subsequent load() will make a
+        // fresh one.  Only clear if it's still OUR controller (a
+        // newer load() may have replaced inflightControllerRef by now).
+        if (inflightControllerRef.current === controller) {
+          inflightControllerRef.current = null;
+        }
       }
     }
     return ok;
   }, [
-    // load() captures filterStore.{sports,leagues,markets,gameIds,searchText}
-    // via its closure on each render. We MUST list them here so React
-    // recreates the callback whenever the store changes — otherwise the
-    // first-render's empty arrays are baked in forever and clicking
-    // chips never affects the fetched picks.
     filterStore.sports, filterStore.leagues, filterStore.markets,
     filterStore.gameIds, filterStore.searchText,
   ]);
@@ -1050,6 +1068,15 @@ export default function LocksScreen() {
             : 7
         }
         updateCellsBatchingPeriod={Platform.OS === "web" ? 30 : 50}
+        // Session 9 · DEV-only virtualization instrumentation.
+        // Records the currently mounted row count so the DevPerfHUD
+        // can display it alongside p50/p95 tap-to-paint timings.
+        // NB: FlatList requires this prop identity to be STABLE across
+        // renders — recreating the callback triggers a
+        // "Changing onViewableItemsChanged on the fly is not
+        // supported" invariant.  We stash the callback + config in
+        // module-scope refs (see viewabilityConfigCallbackPairsRef).
+        viewabilityConfigCallbackPairs={_viewabilityPairs}
         ListHeaderComponent={
           <>
             {/* RETRY BANNER (2026-06-28) */}
@@ -1076,15 +1103,17 @@ export default function LocksScreen() {
               >
                 <View style={{ flex: 1, marginRight: 12 }}>
                   <Text style={{ color: "#ffb4b4", fontWeight: "700", fontSize: 13 }}>
-                    Connection hiccup
+                    {(errorKind && ERROR_COPY[errorKind]?.title) || "Connection hiccup"}
                   </Text>
                   <Text style={{ color: "rgba(255,255,255,0.78)", fontSize: 12, marginTop: 2 }}>
-                    Showing your last good slate. Tap to retry.
+                    {(errorKind && ERROR_COPY[errorKind]?.message) || "Showing your last good slate. Tap to retry."}
                   </Text>
                 </View>
-                <Text style={{ color: "#ffb4b4", fontWeight: "800", fontSize: 13 }}>
-                  RETRY ↻
-                </Text>
+                {(!errorKind || ERROR_COPY[errorKind]?.showRetry) && (
+                  <Text style={{ color: "#ffb4b4", fontWeight: "800", fontSize: 13 }}>
+                    RETRY ↻
+                  </Text>
+                )}
               </TouchableOpacity>
             )}
           </>
@@ -1182,6 +1211,10 @@ export default function LocksScreen() {
           )
         }
       />
+      {/* Session 9 · DEV-only Performance HUD.  Gated by
+          __DEV__ && EXPO_PUBLIC_PERF_HUD === "1".  Production
+          bundles render nothing. */}
+      <DevPerfHUD />
     </SafeAreaView>
   );
 }
