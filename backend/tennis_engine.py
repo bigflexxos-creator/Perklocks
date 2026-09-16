@@ -240,16 +240,14 @@ class TennisComponents:
 
 
 def _player_hash(name: str) -> float:
-    """Deterministic 0-1 number per player.
-
-    **Phase 4E.1 note:** this function is *no longer* the tennis
-    identity baseline.  It survives only as a bounded ±0.05
-    micro-noise term inside the surface / form / serve / matchup
-    heuristics (its influence on the composite is capped at ~±5
-    points).  The primary identity now comes from
-    :mod:`services.tennis_identity.resolve_tennis_identity` which
-    prefers a stable Sackmann ``player_id`` and explicitly marks
-    name-fallback identities.
+    """Session 6 Tennis Root Closure (2026-09-17): this function is now
+    UNUSED in production scoring paths.  It survives only to avoid
+    breaking legacy imports.  All component scores (surface / form /
+    serve / matchup / variance) source real evidence from
+    :mod:`services.tennis_strength` and return MISSING when authoritative
+    history is unavailable.  Any residual call site will trip the
+    ``synthetic_hash_used`` provenance flag and be caught by the
+    Independence Contract in Section P11.
     """
     if not name:
         return 0.5
@@ -290,105 +288,77 @@ def _implied_to_form_signal(implied_pct: float) -> float:
 
 
 # ───────────────────────── Component scorers ─────────────────────────
+#
+# Session 6 Tennis Root Closure (2026-09-17)
+#
+# These scorers now consume REAL evidence produced by
+# :mod:`services.tennis_strength` (Elo + surface Elo + recency-weighted
+# form + H2H shrinkage).  When authoritative history is unavailable each
+# helper returns ``None`` — never a synthetic hash.  Callers convert
+# ``None`` into an explicit MISSING flag on the composite and DOWN-WEIGHT
+# reliability accordingly.  This kills the deterministic
+# player-name-hash contamination path.
+
+from services.tennis_strength import (  # noqa: E402
+    MatchupEvidence,
+    evidence_to_surface_score  as _ev_surface,
+    evidence_to_form_score     as _ev_form,
+    evidence_to_matchup_score  as _ev_matchup,
+    evidence_to_h2h_score      as _ev_h2h,
+    evidence_reliability       as _ev_reliability,
+)
 
 
-def _surface_score(player: str, surface: str, implied_pct: float) -> float:
-    """0-100. Heuristic: anchor strongly on book-implied strength (the market
-    is the closest proxy we have to real serve%/return%/surface fit), with a
-    small player-identity variance bump so siblings get different scores.
-
-    When real stats come online, replace this with:
-        wins_last_20_on_surface / 20  + recent_weight + opponent_strength.
-    """
-    if not player:
-        return 50.0
-    # Market is the dominant signal: a 75% implied means the book has *priced*
-    # surface fit into the line. Stretch the mapping so 60% implied → 70 score
-    # and 80% implied → 90 score.
-    market = _implied_to_form_signal(implied_pct)            # 0..1
-    market_scaled = 0.55 + market * 0.45                     # 0.55..1.0
-    # Identity variance ±5 around the market anchor — replaces real surface
-    # win % once data is wired in.
-    noise = (_player_hash(player + "|" + surface) - 0.5) * 0.10  # ±0.05
-    # Specialist bump: heavy fav (≥65%) on grass/clay → +6 (surface-specific data).
-    specialist = 0.06 if surface in ("Grass", "Clay") and implied_pct >= 65 else 0.0
-    raw = market_scaled + noise + specialist
-    return round(max(0.0, min(1.0, raw)) * 100, 1)
+def _surface_score(player: str, surface: str, implied_pct: float,
+                   evidence: MatchupEvidence | None = None) -> float | None:
+    """0-100. Surface Elo-derived score.  MISSING (None) when neither
+    side has enough surface history."""
+    if evidence is not None:
+        return _ev_surface(evidence)
+    return None
 
 
-def _form_score(player: str, implied_pct: float) -> float:
-    """0-100. Opponent-strength-adjusted L10 proxy. The book's implied prob
-    IS the market's L10-adjusted strength estimate so we anchor heavily.
-
-    Real implementation: weighted recent-match-result vector.
-    """
-    if not player:
-        return 50.0
-    market = _implied_to_form_signal(implied_pct)
-    market_scaled = 0.55 + market * 0.45                     # 0.55..1.0
-    noise = (_player_hash(player + "|form") - 0.5) * 0.08    # ±0.04
-    raw = market_scaled + noise
-    return round(max(0.0, min(1.0, raw)) * 100, 1)
+def _form_score(player: str, implied_pct: float,
+                evidence: MatchupEvidence | None = None) -> float | None:
+    """0-100. Recency-weighted, opponent-adjusted form.  Returns None
+    when no L10 form is derivable for either side."""
+    if evidence is not None:
+        return _ev_form(evidence)
+    return None
 
 
-def _serve_return_score(player: str, implied_pct: float, market: str) -> float:
-    """0-100. Hold%, break%, 1st-serve-won%, return-pts-won composite.
-
-    Heuristic: serve dominance correlates tightly with moneyline pricing in
-    pro tennis (serve metrics are 60-70% of match outcome variance). Totals
-    markets are flatter — favour mid-range scores.
-    """
-    if not player:
-        return 50.0
-    market_l = (market or "").lower()
-    market_signal = _implied_to_form_signal(implied_pct)
-    noise = (_player_hash(player + "|serve") - 0.5) * 0.08
-    # Totals markets: weak serve correlation, target 65-75 score.
-    if "total games" in market_l or "games over" in market_l or "games under" in market_l:
-        raw = 0.65 + market_signal * 0.20 + noise
-        return round(max(0.0, min(1.0, raw)) * 100, 1)
-    # Moneyline / Spread: anchor on market 55-100, noise ±4.
-    raw = 0.55 + market_signal * 0.45 + noise
-    return round(max(0.0, min(1.0, raw)) * 100, 1)
+def _serve_return_score(player: str, implied_pct: float, market: str,
+                        evidence: MatchupEvidence | None = None
+                        ) -> float | None:
+    """0-100. Serve/return matchup — Elo blend acts as the proxy until
+    authoritative serve% data is wired in.  Returns None when no
+    strength evidence is available.  Never falls back to a hash."""
+    if evidence is not None:
+        return _ev_matchup(evidence)
+    return None
 
 
 def _motivation_score(tier: int, implied_pct: float) -> float:
-    """0-100. Tournament level + workload + retirement risk + ranking pressure.
-
-    Heuristic: tier carries most signal (Grand Slam > Masters > 500 > 250).
-    Heavy chalk (-300+) has incentive risk: top players sometimes coast vs
-    weak opponents. Lighter favourites (-150 to -200) tend to be fully on.
-    """
-    # Tier base: tier 5 GS → 95, tier 2 250 → 65.
+    """0-100. Tour-tier motivation — remains deterministic on TIER
+    only (real, published information).  No player-hash noise.
+    Chalk-coast heuristic is retained because it's derived from the
+    real book-implied price, not from an identity hash."""
     tier_base = {5: 95, 4: 88, 3: 78, 2: 70}.get(tier, 65)
-    # Chalk-coast penalty: -8 if heavy fav, +3 if balanced.
-    if implied_pct >= 80:
-        chalk_adj = -8
-    elif implied_pct >= 70:
-        chalk_adj = -3
-    elif implied_pct >= 55:
-        chalk_adj = 3
-    else:
-        chalk_adj = -5  # underdog less motivated unless ranking points at stake
+    if implied_pct >= 80:   chalk_adj = -8
+    elif implied_pct >= 70: chalk_adj = -3
+    elif implied_pct >= 55: chalk_adj = 3
+    else:                   chalk_adj = -5
     return round(max(0.0, min(100.0, tier_base + chalk_adj)), 1)
 
 
-def _matchup_score(player: str, opponent: str, implied_pct: float) -> float:
-    """0-100. H2H, style clash, big server vs weak return, lefty adjustment.
-
-    Heuristic: combine identity pair-hash (deterministic H2H simulator) with
-    market signal. When real H2H data is integrated, replace pair-hash with
-    win_rate_against_opponent.
-    """
-    if not player or not opponent:
-        return 60.0
-    # Sort player names so the hash is direction-aware (h2h is asymmetric).
-    pair = f"{player}|vs|{opponent}"
-    base = _player_hash(pair)
-    market_signal = _implied_to_form_signal(implied_pct)
-    # If our model also has an edge, that boosts matchup confidence.
-    raw = (0.45 * base) + (0.55 * market_signal)
-    return round(max(0.0, min(1.0, raw)) * 100, 1)
+def _matchup_score(player: str, opponent: str, implied_pct: float,
+                   evidence: MatchupEvidence | None = None) -> float | None:
+    """0-100. Real H2H (recency + surface + shrinkage) score.  When no
+    prior meetings exist the caller MUST treat this as MISSING —
+    ``0/0`` is never valid H2H evidence."""
+    if evidence is not None:
+        return _ev_h2h(evidence)
+    return None
 
 
 def _market_edge(pick: dict) -> float:
@@ -398,31 +368,28 @@ def _market_edge(pick: dict) -> float:
     return float(pick.get("edge_percent") or 0.0)
 
 
-def _variance_penalty(player: str, tier: int, implied_pct: float, edge_pct: float) -> float:
-    """0-100. Higher = MORE variance (worse). Penalises:
-      • small sample / Challenger tiers
-      • absurd edges (often data error)
-      • huge upset risk (very chalky moneylines flip more than you think)
-      • injury uncertainty (heuristic via identity hash)
-    """
+def _variance_penalty(player: str, tier: int, implied_pct: float, edge_pct: float,
+                      evidence: MatchupEvidence | None = None) -> float:
+    """0-100. Higher = MORE variance (worse).  Session 6: no longer
+    reads _player_hash; instead uses REAL evidence reliability
+    (thin/old samples increase variance)."""
     score = 0.0
-    # Tier-based sample variance: 250s & lower have noisier data.
+    # Tier-based sample variance
     score += {5: 5, 4: 10, 3: 15, 2: 22}.get(tier, 30)
-    # Edge sanity: edges > 12% in tennis are usually our model overfitting.
-    if edge_pct >= 18:
-        score += 25
-    elif edge_pct >= 12:
-        score += 12
-    elif edge_pct >= 8:
-        score += 4
-    # Chalk-flip risk: -350+ moneylines lose to upsets in ~12% of cases.
-    if implied_pct >= 80:
-        score += 10
-    elif implied_pct >= 70:
-        score += 5
-    # Identity-based injury / retirement risk approximation (capped small).
-    if player:
-        score += _player_hash(player + "|injury") * 8
+    # Edge sanity
+    if edge_pct >= 18:   score += 25
+    elif edge_pct >= 12: score += 12
+    elif edge_pct >= 8:  score +=  4
+    # Chalk-flip risk
+    if implied_pct >= 80: score += 10
+    elif implied_pct >= 70: score += 5
+    # REAL reliability signal — thin/absent history increases variance.
+    if evidence is not None:
+        rel = _ev_reliability(evidence)   # 0..1  (1 = deep, recent)
+        score += (1.0 - rel) * 12.0       # up to +12 variance for MISSING
+    else:
+        # No evidence available at all — same treatment as reliability=0.
+        score += 12.0
     return round(max(0.0, min(100.0, score)), 1)
 
 
@@ -450,11 +417,20 @@ def compute_components(
     *,
     calibrated_surface_fit: Optional[float] = None,
     calibrated_serve_return: Optional[float] = None,
+    evidence: MatchupEvidence | None = None,
 ) -> TennisComponents:
     """Calculate all 7 components + composite for a tennis pick.
 
-    Pure function — no DB or HTTP calls. Heuristics only; swap helpers when
-    real stats are wired in.
+    Session 6 Tennis Root Closure (2026-09-17):
+        When ``evidence`` is provided (real strength snapshot for both
+        players + shrunk H2H), the component scorers derive their values
+        from historical actuals.  When ``evidence`` is None or a
+        particular component returns None, we DO NOT synthesise a value
+        from a player-name hash — the component is treated as MISSING
+        (recorded on ``pick`` as ``tennis_missing_flags``) and the
+        variance penalty absorbs the missing reliability.  This kills
+        the deterministic-hash contamination that Session 5 audit
+        flagged.
     """
     league = (pick.get("league") or "").strip()
     surface = SURFACE_BY_LEAGUE.get(league, "Hard")
@@ -472,18 +448,35 @@ def compute_components(
     if player:
         opponent = players[1] if player == players[0] else players[0]
     else:
-        # For Totals (no player side), use both players' averaged scores by
-        # passing the favourite (higher implied prob proxy → player 1).
         player = players[0] if players[0] else ""
         opponent = players[1] if players[1] else ""
 
-    surface_s      = _surface_score(player, surface, implied_pct)
-    form_s         = _form_score(player, implied_pct)
-    serve_return_s = _serve_return_score(player, implied_pct, market)
-    motivation_s   = _motivation_score(tier, implied_pct)
-    matchup_s      = _matchup_score(player, opponent, implied_pct)
-    edge_pct       = _market_edge(pick)
-    variance_s     = _variance_penalty(player, tier, implied_pct, edge_pct)
+    # ── Real-evidence component scores.  None == MISSING, which
+    # requires an explicit prior-based fallback (NOT a hash).
+    raw_surface = _surface_score(player, surface, implied_pct, evidence)
+    raw_form    = _form_score(player, implied_pct, evidence)
+    raw_sr      = _serve_return_score(player, implied_pct, market, evidence)
+    raw_matchup = _matchup_score(player, opponent, implied_pct, evidence)
+    edge_pct    = _market_edge(pick)
+    motivation_s= _motivation_score(tier, implied_pct)
+    variance_s  = _variance_penalty(player, tier, implied_pct, edge_pct, evidence)
+
+    # Missing-flag bookkeeping — surfaced downstream on the pick doc so
+    # the calibration/lock layer can honestly report reduced authority.
+    missing_flags: list[str] = []
+    def _missing_default(component: str, val: Optional[float],
+                          neutral: float = 60.0) -> float:
+        if val is None:
+            missing_flags.append(component)
+            return neutral
+        return val
+
+    surface_s      = _missing_default("surface", raw_surface, 55.0)
+    form_s         = _missing_default("form",    raw_form,    55.0)
+    serve_return_s = _missing_default("serve_return", raw_sr,  55.0)
+    matchup_s      = _missing_default("matchup", raw_matchup, 55.0)
+
+    # Sackmann-calibrated real overrides (unchanged wiring).
 
     # Phase 3c — Sackmann calibrated overrides. If the caller has
     # pre-computed real z-score-normalized values from
@@ -521,6 +514,11 @@ def compute_components(
         tier=tier,
     )
     comp.confidence = _composite_confidence(comp)
+    # Persist missing flags so the calibration + lock layer sees them.
+    if missing_flags:
+        pick["tennis_missing_flags"] = missing_flags
+        pick["tennis_evidence_reliability"] = round(
+            _ev_reliability(evidence) if evidence else 0.0, 3)
 
     # ── Phase 4E.1 — stamp identity + data-quality on the components
     # without changing the composite.  This is purely reporting so the
@@ -720,10 +718,43 @@ async def apply_tennis_engine(db, picks: list[dict]) -> list[dict]:
         except Exception as _id_err:
             logger.debug("tennis identity resolution failed: %s", _id_err)
 
+        # ── Session 6 Tennis Root Closure (2026-09-17) ────────────
+        # Compose REAL matchup evidence from tennis_matches_history
+        # (Elo + surface Elo + recency-weighted L5/L10 form +
+        # shrunk H2H).  If either side has thin/no history the
+        # evidence returns MISSING flags per component; the tennis
+        # engine downgrades reliability rather than falling back to
+        # a player-name hash.
+        evidence = None
+        try:
+            from services.tennis_strength import compose_matchup
+            _players_ev = _parse_players(p.get("event") or "")
+            _market_l = (p.get("market") or "").lower()
+            _sel = (p.get("selection") or "").strip()
+            _p_ev = _selection_player(_market_l, _sel, _players_ev)
+            _o_ev = ""
+            if _p_ev and _players_ev:
+                _o_ev = _players_ev[1] if _p_ev == _players_ev[0] else _players_ev[0]
+            elif _players_ev:
+                _p_ev = _players_ev[0]; _o_ev = _players_ev[1]
+            _surface_ev = SURFACE_BY_LEAGUE.get(
+                (p.get("league") or "").strip(), "Hard")
+            _as_of = str(p.get("commence_time") or p.get("event_time") or "")[:10] or None
+            if _p_ev and _o_ev:
+                evidence = await compose_matchup(
+                    db, _p_ev, _o_ev, surface=_surface_ev,
+                    tier=TOURNAMENT_TIER.get((p.get("league") or "").strip()),
+                    as_of_iso=_as_of,
+                )
+                p["tennis_strength_evidence"] = evidence.to_dict()
+        except Exception as _ev_err:
+            logger.debug("tennis strength evidence failed: %s", _ev_err)
+
         comp = compute_components(
             p,
             calibrated_surface_fit=cal_sf,
             calibrated_serve_return=cal_sr,
+            evidence=evidence,
         )
         p["tennis_components"] = comp.to_dict()
 
@@ -822,16 +853,18 @@ async def apply_tennis_engine(db, picks: list[dict]) -> list[dict]:
             form_bump    = (comp.form         - 80.0) * 0.05   # up to +1.0 at 100
             var_pen      = max(0.0, (comp.variance - 22.0) * 0.06)  # up to -4.7 at 100
             tier_bonus   = {5: 2.0, 4: 1.5, 3: 1.0, 2: 0.5}.get(comp.tier, 0.3)
-            # Market agreement bump: books know something. When market
-            # and data agree the pick is safer.
-            if _implied >= 80.0:
-                market_bump = 1.5
-            elif _implied >= 70.0:
-                market_bump = 1.0
-            elif _implied >= 60.0:
-                market_bump = 0.5
-            else:
-                market_bump = 0.0
+            # Session 6 Tennis Root Closure (2026-09-17):
+            # market_bump has been REMOVED from independent evidence.
+            # Book-implied probability already influences (a) the
+            # win_probability model input, (b) the elite gate above
+            # (market_elite / aligned_elite), and (c) the No-Bet
+            # filters upstream.  Awarding another explicit Lock Score
+            # bonus for "book agrees" was double-counting and
+            # penalised legitimate non-favourite edges.  Sportsbook
+            # consensus remains a BENCHMARK / sanity check via
+            # `model_market_delta` — never an independent evidence
+            # vote inside the Lock band formula.
+            market_bump = 0.0
 
             # 2026-07-16 v5 formula — base band depends on tour tier:
             # ITF Futures / M25 / W25: base 82, cap 96 (need to earn 95+
