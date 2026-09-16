@@ -426,28 +426,57 @@ def _block_reason(pick: dict) -> str | None:
             # CSL goalscorer" — CSL scorer intel is fresh via
             # csl_espn_live, but V1 didn't know about it so Rule 2
             # was killing every CSL AGS pick.)
-            has_form_source_leagues = {
-                # Chinese Super League — ESPN scrape (csl_espn_live).
-                "china super league", "chinese super league",
-                # Top-5 EU + Understat coverage.
-                "premier league", "la liga", "serie a", "bundesliga",
-                "ligue 1",
-                # Continental competitions with EU-team overlap.
-                "uefa champions league", "uefa europa league",
-                "uefa conference league",
-                # Additional Understat + ESPN-covered leagues.
-                "mls", "j1 league", "eredivisie", "primeira liga",
-                "championship", "efl championship",
-                # Wikipedia top-scorer pipeline (services/wiki_top_scorers
-                # + soccer_hot_scorers) — league-official scorer tables
-                # are our form source for the Nordic leagues.
-                # (2026-07-12 user report: "Sweden and Norway goalscorer
-                # not populating on board".)
-                "allsvenskan", "eliteserien", "veikkausliiga",
-            }
-            pick_league_lc = (pick.get("league") or "").lower()
-            has_form_source = any(
-                cl in pick_league_lc for cl in has_form_source_leagues
+            # ── Session 10 · Soccer Final Root Closure ────────────
+            # OLD (retired): a `has_form_source_leagues` whitelist
+            # granted trust to picks whose LEAGUE NAME appeared in a
+            # hard-coded set.  That created the "goalscorer provider
+            # coverage broader than publication coverage" dark hole
+            # — perfectly modelable scorers from Argentine Primera,
+            # Copa Libertadores, Saudi Pro etc. failed a league-name
+            # check even though their player evidence was defensible.
+            #
+            # NEW: trust is granted by PLAYER × FIXTURE evidence via
+            # `services.soccer_player_authority.classify_authority`.
+            # The `soccer_player_authority` module is the ONLY
+            # authority for elite reachability — league name is
+            # never an eligibility gate.
+            #
+            # A pick is `evidence_trusted` when:
+            #   1. It carries genuine ATG evidence in pick_rationale
+            #      (real per-90 rate, real xG, real match sample), OR
+            #   2. Elite anchor rate is present, OR
+            #   3. Live scorer intel source flag is present.
+            def _has_real_evidence(p: dict) -> bool:
+                pr = p.get("pick_rationale") or {}
+                evd = pr.get("evidence") or []
+                # Any evidence line with a concrete rate signal.
+                for e in evd:
+                    el = (e or "").lower()
+                    if any(tok in el for tok in (
+                        "goals/90", "goals per 90", "xg/90", "xg per",
+                        "npxg", "shots/90", "shots per 90", "goal rate",
+                        "per match", "per 90", "sample",
+                    )):
+                        return True
+                # Direct model fields present?
+                if any(p.get(k) not in (None, 0) for k in (
+                    "sim_expected_goals", "sim_player_xg",
+                    "matchup_score", "xG_form",
+                )):
+                    return True
+                # Rich samples block from the scorer ingest.
+                samples = p.get("samples") or {}
+                if samples.get("goals") and samples.get("matches"):
+                    if int(samples.get("matches") or 0) >= 5:
+                        return True
+                return False
+            has_form_source = (
+                _has_real_evidence(pick)
+                or ((pick.get("source") or "").lower() in {
+                    "csl_espn_leaderboard", "csl_espn_live",
+                    "understat", "wiki_top_scorers",
+                    "soccer_hot_scorers",
+                })
             )
             trust_scorer = is_elite or has_form_source
 

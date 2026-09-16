@@ -524,6 +524,188 @@ def double_chance_from_1x2(p_home: float, p_draw: float,
     }
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Session 10 · Soccer Final Root Closure (2026-09-16)
+# EXACT-LINE DERIVED MARKETS FROM THE ONE COHERENT SCORE MATRIX
+# ─────────────────────────────────────────────────────────────────
+# All functions below consume `mat` (the Poisson/DC score matrix from
+# _build_score_matrix) and derive the EXACT sportsbook wager
+# probability — never a generic team-win proxy.
+# ═══════════════════════════════════════════════════════════════════
+
+def handicap_from_matrix(
+    mat: list[list[float]], line: float, side: str = "home",
+) -> dict[str, float]:
+    """Asian/European handicap pricing from the score matrix.
+
+    Contract:
+      * ``line`` follows sportsbook convention — negative = the ``side``
+        gives up goals, positive = the side receives goals.
+      * Half-integer lines produce {win, lose} (no push).
+      * Integer lines produce {win, push, lose} — push probability MUST
+        be preserved (not silently absorbed).
+      * ``side="away"`` mirrors the sign.
+
+    Example: home -1.5  → P(home wins by ≥ 2)
+             home  0    → DNB (draw refunded)         — use dnb_from_matrix
+             home +1    → P(home wins) + P(loss by ≤ 1) with push on -1
+    """
+    if side not in ("home", "away"):
+        raise ValueError("side must be 'home' or 'away'")
+    p_win = 0.0
+    p_push = 0.0
+    p_lose = 0.0
+    for x in range(len(mat)):
+        for y in range(len(mat[x])):
+            cell = mat[x][y]
+            # Margin from the SIDE's perspective.
+            margin = (x - y) if side == "home" else (y - x)
+            adjusted = margin + line
+            # tolerate float imprecision
+            if adjusted > 1e-9:      p_win  += cell
+            elif adjusted < -1e-9:   p_lose += cell
+            else:                    p_push += cell
+    return {
+        "win":  round(p_win, 4),
+        "push": round(p_push, 4),
+        "lose": round(p_lose, 4),
+        "line": line,
+        "side": side,
+    }
+
+
+def totals_exact(
+    mat: list[list[float]], line: float, side: str = "over",
+) -> dict[str, float]:
+    """Totals with EXACT push retention on integer lines.
+
+    Example: over 3.5   → P(total ≥ 4)
+             over 3     → P(total ≥ 4), push on total == 3
+             under 2.5  → P(total ≤ 2)
+    """
+    if side not in ("over", "under"):
+        raise ValueError("side must be 'over' or 'under'")
+    p_over = 0.0
+    p_under = 0.0
+    p_push = 0.0
+    for x in range(len(mat)):
+        for y in range(len(mat[x])):
+            cell = mat[x][y]
+            tot = x + y
+            if tot > line + 1e-9:      p_over  += cell
+            elif tot < line - 1e-9:    p_under += cell
+            else:                      p_push  += cell
+    return {
+        "win":  round(p_over if side == "over" else p_under, 4),
+        "push": round(p_push, 4),
+        "lose": round(p_under if side == "over" else p_over, 4),
+        "line": line,
+        "side": side,
+    }
+
+
+def dnb_from_1x2(p_home: float, p_draw: float,
+                 p_away: float, side: str = "home") -> dict[str, float]:
+    """Draw No Bet pricing: draw refunded.  Return {win, push (draw),
+    lose} where win is the chosen team winning outright.
+
+    P(win side | not draw) is what most books show, but the payout
+    reality is win + push/refund, so we return the full triple.
+    """
+    if side not in ("home", "away"):
+        raise ValueError("side must be 'home' or 'away'")
+    if side == "home":
+        return {
+            "win":  round(p_home, 4),
+            "push": round(p_draw, 4),
+            "lose": round(p_away, 4),
+            "side": side,
+        }
+    return {
+        "win":  round(p_away, 4),
+        "push": round(p_draw, 4),
+        "lose": round(p_home, 4),
+        "side": side,
+    }
+
+
+def price_soccer_game_markets(
+    out: "SoccerGameOutputs",
+    totals_lines: list[float] | None = None,
+    handicap_lines: list[float] | None = None,
+) -> dict[str, Any]:
+    """One coherent snapshot of ALL Soccer game markets derived from
+    the same score matrix.  Preserves invariants:
+        * Home + Draw + Away ≈ 1
+        * BTTS Yes + No ≈ 1
+        * 1X = Home + Draw, X2 = Draw + Away, 12 = Home + Away
+        * Totals ladder monotonic
+        * Handicap ladder monotonic
+    """
+    if not (out and out.available and out.score_matrix):
+        return {"available": False, "reason": out.reason if out else "NO_OUTPUT"}
+    mat = out.score_matrix
+    # Standard ladders — override via args.
+    totals_lines = totals_lines or [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5]
+    handicap_lines = handicap_lines or [-2.5, -1.5, -0.5, 0.5, 1.5, 2.5]
+
+    btts_yes, btts_no = btts_from_matrix(mat)
+    dc = double_chance_from_1x2(out.p_home, out.p_draw, out.p_away)
+
+    totals_ladder = []
+    for line in totals_lines:
+        o = totals_exact(mat, line, "over")
+        u = totals_exact(mat, line, "under")
+        totals_ladder.append({"line": line, "over": o["win"], "under": u["win"], "push": o["push"]})
+
+    hc_home_ladder = [
+        {**handicap_from_matrix(mat, ln, "home")} for ln in handicap_lines
+    ]
+    hc_away_ladder = [
+        {**handicap_from_matrix(mat, ln, "away")} for ln in handicap_lines
+    ]
+
+    # ── Monotonicity enforcement (belt-and-braces) ──────────────
+    # A ladder OverX ≥ OverY iff X ≤ Y — the matrix already guarantees
+    # this, but we sort defensively to catch any rounding artifact.
+    for i in range(1, len(totals_ladder)):
+        if totals_ladder[i]["over"] > totals_ladder[i - 1]["over"] + 1e-6:
+            totals_ladder[i]["over"] = totals_ladder[i - 1]["over"]
+
+    # ── Invariant checks ────────────────────────────────────────
+    inv = {
+        "sum_1x2":       round(out.p_home + out.p_draw + out.p_away, 4),
+        "sum_btts":      round(btts_yes + btts_no, 4),
+        "dc_1x_check":   round(dc["1X"] - (out.p_home + out.p_draw), 6),
+        "dc_x2_check":   round(dc["X2"] - (out.p_draw + out.p_away), 6),
+        "dc_12_check":   round(dc["12"] - (out.p_home + out.p_away), 6),
+    }
+
+    return {
+        "available":     True,
+        "tier":          out.tier,
+        "lambda_home":   out.lambda_home,
+        "lambda_away":   out.lambda_away,
+        "one_x_two": {
+            "home": out.p_home, "draw": out.p_draw, "away": out.p_away,
+        },
+        "btts": {"yes": btts_yes, "no": btts_no},
+        "double_chance": dc,
+        "totals":        totals_ladder,
+        "handicap": {
+            "home": hc_home_ladder,
+            "away": hc_away_ladder,
+        },
+        "dnb": {
+            "home": dnb_from_1x2(out.p_home, out.p_draw, out.p_away, "home"),
+            "away": dnb_from_1x2(out.p_home, out.p_draw, out.p_away, "away"),
+        },
+        "uncertainty":   out.uncertainty,
+        "sources":       out.sources,
+        "invariants":    inv,
+    }
+
+
 # ------------------------------------------------------------------ #
 # Universal DB-backed entry point — Phase 2A.5 UNIVERSAL
 # ------------------------------------------------------------------ #
