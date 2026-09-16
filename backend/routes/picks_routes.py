@@ -48,7 +48,7 @@ import re
 from datetime import datetime, timezone, timedelta
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from auth import UserPublic
 from deps import current_user, db, logger
@@ -1061,6 +1061,8 @@ async def refresh_signal_rank(user: Annotated[UserPublic, Depends(current_user)]
 # `@router.get("/today")`).
 @router.get("/today")
 async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
+                      request: Request,
+                      response: Response,
                       sport: Optional[str] = None,
                       sports: Optional[str] = None,          # NEW: CSV multi-select
                       grade: Optional[str] = None,
@@ -1111,6 +1113,57 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         _strip_for_lite,
     )
     await _ensure_today_picks()
+
+    # ── SESSION 2 · FROZEN BOARD SNAPSHOT (behind existing endpoint) ─
+    # Single canonical Locks truth remains ``/api/picks/today``.  The
+    # snapshot below is a pure server-side derived cache scoped to
+    # the ``lite=true`` mobile hot path.  Non-lite consumers (Pick
+    # Breakdown detail) bypass the cache to always receive the
+    # freshest decorated payload.
+    _snapshot_params: dict[str, Any] = {
+        "sport": sport, "sports": sports, "grade": grade,
+        "day_offset": day_offset, "line_type": line_type,
+        "sort": sort, "direction": direction,
+        "min_lock": min_lock, "min_signal": min_signal,
+        "min_implied": min_implied, "max_implied": max_implied,
+        "market": market, "markets": markets,
+        "league": league, "leagues": leagues,
+        "game_ids": game_ids, "events": events, "search": search,
+        "stars_only": bool(stars_only), "lite": bool(lite),
+    }
+    _snap: Any = None
+    if lite:
+        try:
+            from services.board_snapshot_cache import (
+                get_snapshot as _bsc_get,
+            )
+            _snap = _bsc_get(_snapshot_params)
+            if _snap is not None:
+                # If-None-Match short-circuit → 304 Not Modified.
+                _client_etag = request.headers.get("if-none-match") or ""
+                # Strip weak/quotes for tolerant compare.
+                _cle = _client_etag.strip().strip('"').lstrip("W/").strip('"')
+                if _cle and _cle == _snap.board_version:
+                    response.status_code = 304
+                    response.headers["ETag"] = f'"{_snap.board_version}"'
+                    response.headers["X-Board-Version"] = _snap.board_version
+                    response.headers["X-Snapshot-Cache"] = "HIT-304"
+                    return Response(
+                        status_code=304,
+                        headers={
+                            "ETag": f'"{_snap.board_version}"',
+                            "X-Board-Version": _snap.board_version,
+                            "X-Snapshot-Cache": "HIT-304",
+                        },
+                    )
+                # Cache hit → serve directly; skip all inline enrichment.
+                response.headers["ETag"] = f'"{_snap.board_version}"'
+                response.headers["X-Board-Version"] = _snap.board_version
+                response.headers["X-Snapshot-Cache"] = "HIT"
+                response.headers["Cache-Control"] = "private, max-age=0, must-revalidate"
+                return _snap.response
+        except Exception as _sc_err:
+            logger.debug("snapshot cache lookup skipped: %s", _sc_err)
 
     # ── Slate-wide Signal Score percentile ranking (2026-07-17) ─────
     # Coverage sweep + percentile-rank pass. Ranks are persisted on
@@ -3552,8 +3605,31 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         return o
     canonical = [_json_safe(_p) for _p in canonical]
 
-    return {"picks": canonical, "alt_availability": alt_availability,
+    _final_response = {"picks": canonical, "alt_availability": alt_availability,
              "odds_provider": _odds_envelope}
+
+    # ── SESSION 2 · FROZEN BOARD SNAPSHOT (write-through) ────────────
+    # Cache the fully-processed lite response so subsequent requests
+    # in the TTL window bypass the entire in-line enrichment chain.
+    # Non-lite (Pick Breakdown) responses are NEVER cached: they
+    # depend on freshly recomputed devig / signal decoration and
+    # must always reflect the newest canonical state.
+    if lite:
+        try:
+            from services.board_snapshot_cache import (
+                compute_board_version as _bsc_ver,
+                put_snapshot as _bsc_put,
+            )
+            _bv = _bsc_ver(canonical)
+            _bsc_put(_snapshot_params, _final_response, _bv)
+            response.headers["ETag"] = f'"{_bv}"'
+            response.headers["X-Board-Version"] = _bv
+            response.headers["X-Snapshot-Cache"] = "MISS"
+            response.headers["Cache-Control"] = "private, max-age=0, must-revalidate"
+        except Exception as _sc_err:
+            logger.debug("snapshot cache write skipped: %s", _sc_err)
+
+    return _final_response
 
 
 @router.get("/bet-killer", deprecated=True)

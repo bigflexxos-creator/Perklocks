@@ -664,6 +664,7 @@ type PreparedResponse = {
   ok: boolean;
   status: number;
   text: string;
+  etag?: string;
 };
 
 // ── MAIN 40 · Native reset closure (2026-06-05) — body-read timeout ──
@@ -704,10 +705,44 @@ async function _fetchWithTimeout(
     // whole time, so a stalled body-read now rejects with AbortError
     // and hits the retry loop like any other transport failure.
     const text = await res.text();
-    return { ok: res.ok, status: res.status, text };
+    // Session 2 · ETag support — surface response ETag so the caller
+    // can store it for the next If-None-Match request.  Returned as
+    // an extra field on the PreparedResponse; existing callers ignore
+    // it transparently (dict spread / destructure).
+    const etag = res.headers.get("etag") || res.headers.get("ETag") || undefined;
+    return { ok: res.ok, status: res.status, text, etag };
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Session 2 · ETag / snapshot store — per-URL cached body keyed by
+// canonical URL (path + sorted query, no cache-buster).  On a 304
+// response the request() helper returns the cached body from this
+// store instead of failing on empty payload.
+type _EtagEntry<T = unknown> = { etag: string; body: T; ts: number };
+const _etagStore: Map<string, _EtagEntry> = new Map();
+
+/** Canonical URL used as the ETag store key — drops the `_=…`
+ *  cache-buster + `If-None-Match` cannot leak across users because
+ *  auth tokens do not appear in the URL. */
+function _etagKey(url: string): string {
+  try {
+    const [base, qs] = url.split("?");
+    if (!qs) return base;
+    const parts = qs
+      .split("&")
+      .filter((p) => !p.startsWith("_="))
+      .sort();
+    return parts.length ? `${base}?${parts.join("&")}` : base;
+  } catch { return url; }
+}
+
+/** Endpoints that participate in the server-side snapshot / ETag
+ *  cache. Currently: the mobile Locks board.  Adding a new path is
+ *  a two-line change: match here + backend must return ETag header. */
+function _pathParticipatesInEtag(path: string): boolean {
+  return path.startsWith("/picks/today");
 }
 
 async function request<T>(
@@ -727,17 +762,38 @@ async function request<T>(
   }
 
   const exec = async (): Promise<T> => {
+    // Session 2 · Session-scoped snapshot participation branch.
+    // `/picks/today` returns an ETag; we send If-None-Match on
+    // subsequent identical GETs so a matching snapshot yields a
+    // 304 with 0-byte body.  For all other endpoints keep the
+    // aggressive no-cache posture (they aren't cache-participants).
+    const _isEtagParticipant = method === "GET" && _pathParticipatesInEtag(path);
+    const _etagKeyForRequest = _etagKey(url);
+    const _prevEntry = _isEtagParticipant
+      ? _etagStore.get(_etagKeyForRequest)
+      : undefined;
+
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "application/json",
+    };
+    if (_isEtagParticipant) {
+      // Allow the backend's ETag / 304 flow to work.  We still
+      // append a per-request marker on the URL below to prevent
+      // the RN fetch layer's aggressive same-URL body-cache; the
+      // If-None-Match header carries the snapshot identity.
+      if (_prevEntry?.etag) {
+        headers["If-None-Match"] = _prevEntry.etag;
+      }
+    } else {
       // Force every layer (browser HTTP cache, iOS NSURLCache, any
       // CDN/edge proxy in front of the backend) to bypass cached
       // responses and hit our origin. Without these, iOS in particular
       // will happily serve a hours-old `/picks/today` payload to the
       // app even though the same URL in Safari shows fresh data.
-      "Cache-Control": "no-cache, no-store, must-revalidate",
-      "Pragma": "no-cache",
-    };
+      headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
+      headers["Pragma"] = "no-cache";
+    }
     if (opts.auth !== false) {
       const tok = await getToken();
       if (tok) headers.Authorization = `Bearer ${tok}`;
@@ -745,8 +801,14 @@ async function request<T>(
     // Cache-buster query param on GETs ensures any intermediate cache that
     // ignores headers (some CDNs do) can't serve a stale entry — the URL
     // itself is unique per request.
+    //
+    // Session 2 exception: ETag-participating endpoints
+    // (currently `/picks/today`) MUST have a stable URL so the
+    // server's snapshot cache key resolves to the same entry across
+    // requests.  Without this, every GET generates a new cache key
+    // and the ETag/304 fast path never triggers.
     let finalUrl = url;
-    if (method === "GET") {
+    if (method === "GET" && !_isEtagParticipant) {
       const sep = url.includes("?") ? "&" : "?";
       finalUrl = `${url}${sep}_=${Date.now()}`;
     }
@@ -766,6 +828,16 @@ async function request<T>(
         // MAIN 40 fix: `res.text` is already the body string (read
         // inside the timeout guard).  No unprotected second await.
         const text = res.text;
+
+        // Session 2 · 304 Not Modified — return the previously cached
+        // body verbatim (kept in the etag store).  This is what makes
+        // the mobile Locks board load in ~10 ms on repeat fetches
+        // when the canonical publication has not changed.
+        if (_isEtagParticipant && res.status === 304 && _prevEntry) {
+          _prevEntry.ts = Date.now();
+          return _prevEntry.body as T;
+        }
+
         let data: any = {};
         try { data = text ? JSON.parse(text) : {}; }
         catch { data = { detail: text }; }
@@ -819,6 +891,23 @@ async function request<T>(
           }
           lastErr = new Error(`HTTP ${res.status}`);
         } else {
+          // Session 2 · Cache the ETag + body for subsequent
+          // If-None-Match requests.  Only for participating GETs.
+          if (_isEtagParticipant && res.etag) {
+            _etagStore.set(_etagKeyForRequest, {
+              etag: res.etag.replace(/^W\//, "").replace(/^"|"$/g, ""),
+              body: data,
+              ts: Date.now(),
+            });
+            // Keep the store bounded — the mobile board has ~8-12
+            // distinct filter combinations so 32 is plenty of head-
+            // room and prevents runaway memory on long sessions.
+            if (_etagStore.size > 32) {
+              const oldest = [..._etagStore.entries()]
+                .sort((a, b) => a[1].ts - b[1].ts)[0];
+              if (oldest) _etagStore.delete(oldest[0]);
+            }
+          }
           return data as T;
         }
       } catch (err: any) {
