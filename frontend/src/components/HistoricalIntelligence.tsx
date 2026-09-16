@@ -302,7 +302,14 @@ export function HistoricalIntelligence({
       {tab === "splits"      && <SplitsTab data={data} supportsHomeAway={supportsHomeAway} />}
       {tab === "distribution"&& <DistributionTab data={data} />}
 
-      {/* Provenance footer */}
+      {/* Provenance / proxy footer */}
+      {data.games.some((g: any) => g.context?.proxy) && (
+        <View style={styles.proxyBanner}>
+          <Text style={styles.proxyText}>
+            ⚠ {data.games[0].context?.proxy}
+          </Text>
+        </View>
+      )}
       <Text style={styles.provenance}>
         {data.data_coverage.total_observations} historical observations · {data.provenance.join(", ")}
         {data.latency_ms ? `  ·  ${data.latency_ms.toFixed(0)}ms` : ""}
@@ -402,14 +409,20 @@ function TabBar({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) {
 // ─── Game Logs Tab ─────────────────────────────────────────────────
 function GameLogsTab({ data }: { data: HistoricalIntelligenceResponse }) {
   const cols = logColumnsFor(data.sport, data.market_family);
+  const isPlayerMarket = /pass_|rush_|rec_|receptions|targets|atd|hits|total_bases|home_runs|rbi|runs|hits_runs_rbi|strikeouts|outs|goals|assists|goal_or_assist|shots|sot/.test(data.market_family);
   if (data.games.length === 0) {
     return (
       <View style={styles.emptyPad}>
         <Text style={styles.dim}>
           {data.data_coverage.total_observations === 0
-            ? "PLAYER MATCH HISTORY UNAVAILABLE"
+            ? (isPlayerMarket ? "PLAYER MATCH HISTORY UNAVAILABLE" : "TEAM MATCH HISTORY UNAVAILABLE")
             : "No games in this scope"}
         </Text>
+        {data.data_coverage.total_observations === 0 && data.entity_name && (
+          <Text style={[styles.dim, { fontSize: 10, marginTop: 4 }]}>
+            {data.entity_name} not present in {(data.provenance[0] || "").replace("adapter:", "")}
+          </Text>
+        )}
       </View>
     );
   }
@@ -742,6 +755,15 @@ const styles = StyleSheet.create({
   provenance: {
     color: COLORS.textMuted, fontSize: 9, marginTop: 10,
     letterSpacing: 0.6, textAlign: "center",
+  },
+  proxyBanner: {
+    marginTop: 10, padding: 8, borderRadius: 8,
+    backgroundColor: COLORS.surfaceGloss,
+    borderWidth: 1, borderColor: COLORS.borderGold,
+  },
+  proxyText: {
+    color: COLORS.goldRich, fontSize: 10, fontWeight: "600",
+    textAlign: "center",
   },
 });
 

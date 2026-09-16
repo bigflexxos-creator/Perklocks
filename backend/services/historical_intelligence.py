@@ -400,12 +400,25 @@ class NFLPlayerHistoricalAdapter(HistoricalAdapter):
         actuals_key = _NFL_MARKET_MAP.get(family)
         if not actuals_key and family != "atd":
             return []
-        # Query strategy: canonical_player_id first (indexed), fallback to
-        # legacy player_id / name only when canonical id is missing.
+        # Query strategy: canonical_player_id first (indexed) — but only
+        # if the id looks NFL-canonical ("00-XXXXXXX").  Otherwise fall
+        # back to player_identities → gsis lookup by name.
         base_q: Optional[dict] = None
-        if q.entity_id:
-            base_q = {"sport": "nfl", "canonical_player_id": q.entity_id}
-        elif q.entity_name:
+        eid = str(q.entity_id or "")
+        looks_gsis = eid.startswith("00-") and len(eid) >= 8
+        if looks_gsis:
+            base_q = {"sport": "nfl", "canonical_player_id": eid}
+        if base_q is None and q.entity_name:
+            norm = q.entity_name.strip().lower().replace(".", "")
+            ident = await db.player_identities.find_one(
+                {"sport": "NFL", "name_norm": norm},
+                {"provider_ids": 1, "canonical_player_id": 1})
+            if ident:
+                gsis = (ident.get("provider_ids") or {}).get("gsis") \
+                       or (ident.get("provider_ids") or {}).get("nfl_gsis")
+                if gsis:
+                    base_q = {"sport": "nfl", "canonical_player_id": gsis}
+        if base_q is None and q.entity_name:
             base_q = {"sport": "nfl", "player_name": q.entity_name}
         if not base_q:
             return []
@@ -518,9 +531,14 @@ _MLB_HITTER_MAP = {
     "home_runs":         lambda a: a.get("hr"),
     "rbi":               lambda a: a.get("rbi"),
     "runs":              lambda a: a.get("r"),
+    # Note: MLB raw actuals do not contain Runs Scored (universal
+    # coverage gap).  We surface H+RBI as an APPROXIMATION and set a
+    # `runs_unavailable` flag on each observation so the frontend can
+    # honestly disclose the proxy in-context. MISSING ≠ ZERO is
+    # preserved by never fabricating a Runs value.
     "hits_runs_rbi":     lambda a: (
-        None if any(a.get(k) is None for k in ("h", "r", "rbi"))
-        else float(a.get("h") or 0) + float(a.get("r") or 0) + float(a.get("rbi") or 0)
+        None if a.get("h") is None or a.get("rbi") is None
+        else float(a.get("h") or 0) + float(a.get("rbi") or 0)
     ),
     "batter_strikeouts": lambda a: a.get("strikeouts"),
 }
@@ -533,16 +551,16 @@ _MLB_PITCHER_MAP = {
 def _mlb_market_family(market: str) -> Optional[str]:
     if not market: return None
     m = market.lower()
+    # Compound markets FIRST (before "rbi"/"hits" catch-all)
+    if "hits + runs + rbi" in m or "h+r+rbi" in m or "hits, runs" in m or "hits runs rbi" in m: return "hits_runs_rbi"
     # Pitcher first (strikeouts / outs)
     if "outs recorded" in m or ("outs" in m and "pitch" in m): return "outs"
-    if "strikeout" in m and "batter" not in m:
-        # pitcher K prop
-        return "strikeouts"
     if "batter strikeouts" in m: return "batter_strikeouts"
+    if "strikeout" in m and "batter" not in m:
+        return "strikeouts"
     if "total base" in m:      return "total_bases"
     if "home run" in m:        return "home_runs"
     if "rbi" in m or "run batted" in m: return "rbi"
-    if "hits + runs + rbi" in m or "h+r+rbi" in m or "hrr" in m: return "hits_runs_rbi"
     if "hit" in m and "run" not in m: return "hits"
     if "run" in m and "line" not in m: return "runs"
     if "run line" in m: return "run_line"
@@ -561,11 +579,27 @@ class MLBPlayerHistoricalAdapter(HistoricalAdapter):
         pitcher_fn = _MLB_PITCHER_MAP.get(family)
         if hitter_fn is None and pitcher_fn is None:
             return []
-        # Canonical-id-first strategy; falls back to legacy player_id.
+        # Canonical-id-first strategy — but only when the id looks
+        # numeric (MLBAM-style).  Otherwise it's a fallback entity_id
+        # (usually the player's display name) that we resolve via
+        # player_identities.
         base_q: Optional[dict] = None
-        if q.entity_id:
-            base_q = {"sport": "mlb", "canonical_player_id": str(q.entity_id)}
-        elif q.entity_name:
+        eid = str(q.entity_id or "")
+        looks_numeric = eid.isdigit() or (eid.startswith("6") and len(eid) == 6)
+        if looks_numeric:
+            base_q = {"sport": "mlb", "canonical_player_id": eid}
+        # If no numeric MLBAM id — look up via player_identities.name_norm
+        if base_q is None and q.entity_name:
+            norm = q.entity_name.strip().lower().replace(".", "")
+            ident = await db.player_identities.find_one(
+                {"sport": "MLB", "name_norm": norm},
+                {"provider_ids": 1, "canonical_player_id": 1})
+            if ident:
+                mlbam = (ident.get("provider_ids") or {}).get("mlb_stats")
+                if mlbam:
+                    base_q = {"sport": "mlb", "canonical_player_id": str(mlbam)}
+        if base_q is None and q.entity_name:
+            # Last-resort — direct player_name (rarely populated).
             base_q = {"sport": "mlb", "player_name": q.entity_name}
         if not base_q:
             return []
@@ -584,6 +618,9 @@ class MLBPlayerHistoricalAdapter(HistoricalAdapter):
                    ("h", "hr", "rbi", "r", "tb", "at_bats", "strikeouts",
                     "k", "outs")}
             ctx["season"] = doc.get("season")
+            # Transparent proxy disclosure for H+R+RBI (Runs missing).
+            if family == "hits_runs_rbi":
+                ctx["proxy"] = "H+RBI (Runs unavailable in source)"
             obs.append(HistoricalObservation(
                 date=str(doc.get("event_time") or doc.get("ingested_at") or "")[:10],
                 opponent_id=doc.get("canonical_opponent_id"),

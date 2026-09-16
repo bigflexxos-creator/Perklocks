@@ -122,6 +122,33 @@ def _guess_team_from_market(market: str, home: Optional[str],
     return None
 
 
+def _parse_player_from_market(market: str) -> Optional[str]:
+    """Extract player name from market strings like:
+       "Fernando Tatis Jr. (SD) Over 2.5 Hits + Runs + RBIs"
+       "C.J. Stroud Over 215.5 Player Pass Yds"
+       "Vinicius Junior Anytime Goal Scorer"
+
+    Strategy: take everything before " (TEAM)", " Over ", " Under ", or
+    "  Anytime "; strip any trailing " Player".
+    """
+    if not market:
+        return None
+    m = market.strip()
+    # Cut at team abbreviation "(XYZ)" if present
+    m = re.split(r"\s*\([A-Z]{2,4}\)\s*", m, maxsplit=1)[0]
+    # Cut at " Over " / " Under " / " Anytime " / " Moneyline " etc
+    m = re.split(r"\s+(?:Over|Under|Anytime|Total|Moneyline|Alt|ALT)\b",
+                 m, maxsplit=1, flags=re.IGNORECASE)[0]
+    m = m.strip()
+    # Reject if it looks like a market keyword mash-up
+    if not m or len(m) > 60:
+        return None
+    # Reject if all letters are uppercase (team abbreviations)
+    if m.isupper() and " " not in m:
+        return None
+    return m
+
+
 def _resolve_entity(pick: dict, sport: str, family: Optional[str]
                     ) -> tuple[str, str, Optional[str]]:
     """Return (entity_type, entity_id, entity_name)."""
@@ -132,14 +159,15 @@ def _resolve_entity(pick: dict, sport: str, family: Optional[str]
         pname = pick.get("player_name")
         if pname:
             pname = re.sub(r"\s*\([A-Z]{2,4}\)\s*$", "", pname).strip()
-        # Tennis: parse from market prefix if player_name is empty
-        if sport == "Tennis" and not pname:
-            pname = _parse_team_from_market_prefix(pick.get("market") or "", sport)
+        # Fallback — parse player name from market prefix when the pick
+        # was published without identity fields (very common for MLB
+        # alt/compound markets).
+        if not pname:
+            pname = _parse_player_from_market(pick.get("market") or "")
         return "player", str(pid or pname or ""), pname
     # team
     ctid = pick.get("canonical_team_id") or ""
     team_name = None
-    # If canonical_team_id looks legit (not fallback:), use it as name.
     if ctid and not str(ctid).startswith("fallback:"):
         team_name = ctid
     if not team_name:
@@ -151,6 +179,14 @@ def _resolve_entity(pick: dict, sport: str, family: Optional[str]
             pick.get("market") or "", sport)
     if not team_name:
         team_name = pick.get("team")
+    # Game-level totals ("Total Goals Over 2.5", "Total Over 8.5") don't
+    # name a team — fall back to home_team so we surface real history.
+    if not team_name and family == "total":
+        home = pick.get("home_team")
+        if not home:
+            home, _ = _parse_event_teams(pick.get("event"))
+        if home:
+            team_name = home
     return "team", str(team_name or ""), team_name
 
 
