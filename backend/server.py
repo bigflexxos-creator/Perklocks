@@ -105,6 +105,14 @@ try:
 except Exception as _hi_err:
     logger.warning("Historical Intelligence routes failed to mount: %s", _hi_err)
 
+# ── Session 6 Tennis Root Closure diagnostics ──
+try:
+    from routes.tennis_diagnostic_routes import router as _tennis_diag_router
+    app.include_router(_tennis_diag_router)
+    logger.info("Tennis Root Closure diagnostic routes mounted")
+except Exception as _td_err:
+    logger.warning("Tennis diagnostic routes failed to mount: %s", _td_err)
+
 # Lab research/analytics endpoints (Session 2+3 build 2026-07-07).
 try:
     from lab_routes import router as _lab_router
