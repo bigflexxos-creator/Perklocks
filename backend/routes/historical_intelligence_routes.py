@@ -127,23 +127,28 @@ def _parse_player_from_market(market: str) -> Optional[str]:
        "Fernando Tatis Jr. (SD) Over 2.5 Hits + Runs + RBIs"
        "C.J. Stroud Over 215.5 Player Pass Yds"
        "Vinicius Junior Anytime Goal Scorer"
+       "Sam LaPorta 3+ Receptions vs Buffalo Bills"
+       "James Cook 40+ Rushing Yards  · ALT LOCK"
 
-    Strategy: take everything before " (TEAM)", " Over ", " Under ", or
-    "  Anytime "; strip any trailing " Player".
+    Strategy: strip trailing " · ALT LOCK" tag, cut at " (TEAM)",
+    " Over "/" Under "/" Anytime "/" Total ", and the "N+" alt-line
+    signature ("3+"/"20+"/"175+"), then take everything to the left.
     """
     if not market:
         return None
     m = market.strip()
+    # Strip trailing " · ALT LOCK" / " · ALT" suffix
+    m = re.sub(r"\s*·\s*ALT.*$", "", m, flags=re.IGNORECASE).strip()
     # Cut at team abbreviation "(XYZ)" if present
     m = re.split(r"\s*\([A-Z]{2,4}\)\s*", m, maxsplit=1)[0]
-    # Cut at " Over " / " Under " / " Anytime " / " Moneyline " etc
-    m = re.split(r"\s+(?:Over|Under|Anytime|Total|Moneyline|Alt|ALT)\b",
+    # Cut at "N+" alt-line signature (e.g., "3+", "20+", "150+")
+    m = re.split(r"\s+\d+\+\b", m, maxsplit=1)[0]
+    # Cut at " Over " / " Under " / " Anytime " / " Total " / " Moneyline "
+    m = re.split(r"\s+(?:Over|Under|Anytime|Total|Moneyline)\b",
                  m, maxsplit=1, flags=re.IGNORECASE)[0]
-    m = m.strip()
-    # Reject if it looks like a market keyword mash-up
+    m = m.strip().rstrip(",")
     if not m or len(m) > 60:
         return None
-    # Reject if all letters are uppercase (team abbreviations)
     if m.isupper() and " " not in m:
         return None
     return m
@@ -158,7 +163,13 @@ def _resolve_entity(pick: dict, sport: str, family: Optional[str]
                or pick.get("player_id") or "")
         pname = pick.get("player_name")
         if pname:
+            # Clean pname: strip trailing " (TEAM)", "N+ X ..." alt-line
+            # tail, or " Over/Under X..." suffix that some publishers put
+            # in the player_name field itself.
             pname = re.sub(r"\s*\([A-Z]{2,4}\)\s*$", "", pname).strip()
+            pname = re.split(r"\s+\d+\+\b", pname, maxsplit=1)[0].strip()
+            pname = re.split(r"\s+(?:Over|Under|Anytime|Total|Moneyline)\b",
+                             pname, maxsplit=1, flags=re.IGNORECASE)[0].strip()
         # Fallback — parse player name from market prefix when the pick
         # was published without identity fields (very common for MLB
         # alt/compound markets).
