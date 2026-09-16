@@ -238,6 +238,36 @@ def _summarize(obs: list[HistoricalObservation],
             "stddev": stddev}
 
 
+def _opp_matches(obs_opp_id: Optional[str], obs_opp_name: Optional[str],
+                 target_id: Optional[str], target_name: Optional[str]) -> bool:
+    """Match a historical observation's opponent against today's opponent.
+    Handles abbreviations vs full names (e.g., "BUF" vs "Buffalo Bills")."""
+    def _norm(s: Optional[str]) -> str:
+        return (s or "").strip().lower()
+    tid = _norm(target_id); tname = _norm(target_name)
+    oid = _norm(obs_opp_id); oname = _norm(obs_opp_name)
+    if tid and oid and tid == oid: return True
+    if tname and oname:
+        if tname == oname: return True
+        # Substring — "buffalo bills" contains "buffalo"
+        if tname in oname or oname in tname: return True
+        # Abbreviation matching: strip spaces and compare
+        tnc = tname.replace(" ", "").replace(".", "")
+        onc = oname.replace(" ", "").replace(".", "")
+        if len(onc) <= 4 and onc in tnc: return True
+        if len(tnc) <= 4 and tnc in onc: return True
+        # Any word overlap of 4+ chars (Bills / Broncos / Cowboys / etc)
+        t_words = {w for w in tname.split() if len(w) >= 4}
+        o_words = {w for w in oname.split() if len(w) >= 4}
+        if t_words & o_words: return True
+    # Cross-field: today has full name, observation has abbreviation-only
+    if tname and oid:
+        oid_clean = oid.replace(" ", "")
+        if len(oid_clean) <= 4 and oid_clean in tname.replace(" ", ""):
+            return True
+    return False
+
+
 async def query_historical(db, q: HistoricalQuery) -> HistoricalResponse:
     """Universal entry point.  Dispatches to the sport adapter,
     then runs the shared reducer.  Empty responses are honest —
@@ -267,12 +297,10 @@ async def query_historical(db, q: HistoricalQuery) -> HistoricalResponse:
 
     vs_opp: Optional[list[HistoricalObservation]] = None
     opp_summary: Optional[dict[str, Any]] = None
-    if q.opponent_id:
-        vs_opp = [o for o in all_obs if (o.opponent_id or "") == q.opponent_id]
-    if q.opponent_name and not vs_opp:
-        norm = q.opponent_name.strip().lower()
+    if q.opponent_id or q.opponent_name:
         vs_opp = [o for o in all_obs
-                  if (o.opponent_name or "").strip().lower() == norm]
+                  if _opp_matches(o.opponent_id, o.opponent_name,
+                                  q.opponent_id, q.opponent_name)]
     if vs_opp:
         opp_summary = _summarize(vs_opp, q.current_threshold, q.side)
         opp_summary["games"] = [asdict(o) for o in vs_opp[:10]]
@@ -375,16 +403,20 @@ def _nfl_market_family_from_market(market: str) -> Optional[str]:
     if not market:
         return None
     m = market.lower()
-    if "passing yard" in m or "pass yard" in m:                          return "pass_yds"
+    if "passing yard" in m or "pass yard" in m or "pass yds" in m or "passing yds" in m:
+                                                                         return "pass_yds"
     if "passing td" in m or "passing tds" in m or "pass tds" in m:       return "pass_tds"
     if "interception" in m:                                              return "interceptions"
     if "completion" in m:                                                return "completions"
     if "pass attempt" in m or ("attempt" in m and "pass" in m):          return "attempts"
-    if "rushing yard" in m or "rush yard" in m:                          return "rush_yds"
+    if "rushing yard" in m or "rush yard" in m or "rush yds" in m or "rushing yds" in m:
+                                                                         return "rush_yds"
     if "carr" in m or "rushing attempt" in m or "rush attempt" in m:     return "rush_attempts"
     if "rushing td" in m or "rush td" in m:                              return "rush_tds"
-    if "receiving yard" in m or "rec yard" in m:                         return "rec_yds"
-    if "reception" in m and "yard" not in m:                             return "receptions"
+    if ("receiving yard" in m or "rec yard" in m
+        or "reception yd" in m or "receiving yd" in m
+        or "reception yards" in m):                                      return "rec_yds"
+    if "reception" in m and "yd" not in m and "yard" not in m:           return "receptions"
     if "receiving td" in m or "rec td" in m:                             return "rec_tds"
     if "target" in m:                                                    return "targets"
     if "anytime td" in m or "anytime touchdown" in m:                    return "atd"

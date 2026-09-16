@@ -303,16 +303,15 @@ export function HistoricalIntelligence({
       {tab === "distribution"&& <DistributionTab data={data} />}
 
       {/* Provenance / proxy footer */}
-      {data.games.some((g: any) => g.context?.proxy) && (
+      {data.games.some((g: any) => g.context?.proxy) ? (
         <View style={styles.proxyBanner}>
           <Text style={styles.proxyText}>
-            ⚠ {data.games[0].context?.proxy}
+            {`⚠ ${data.games[0].context?.proxy}`}
           </Text>
         </View>
-      )}
+      ) : null}
       <Text style={styles.provenance}>
-        {data.data_coverage.total_observations} historical observations · {data.provenance.join(", ")}
-        {data.latency_ms ? `  ·  ${data.latency_ms.toFixed(0)}ms` : ""}
+        {`${data.data_coverage.total_observations} historical observations · ${data.provenance.join(", ")}${data.latency_ms ? `  ·  ${data.latency_ms.toFixed(0)}ms` : ""}`}
       </Text>
     </View>
   );
@@ -426,9 +425,28 @@ function GameLogsTab({ data }: { data: HistoricalIntelligenceResponse }) {
       </View>
     );
   }
+  // Inline H2H vs opponent chip — user wants this visible alongside game logs
+  const opp = data.opponent_summary;
+  const oppName = data.pick?.opponent;
+  const showH2H = !!opp && opp.n > 0 && !!oppName;
   return (
     <View style={{ marginTop: 8 }}>
-      <View style={styles.logHead}>
+      {showH2H && (
+        <View style={styles.h2hStrip}>
+          <Text style={styles.h2hStripLabel}>H2H VS {oppName!.toUpperCase().slice(0, 22)}</Text>
+          <Text style={styles.h2hStripStat}>
+            {opp!.hits}/{Math.max(opp!.hits + opp!.misses, opp!.n)} · {fmtPct(opp!.hit_rate)} · n={opp!.n}
+          </Text>
+        </View>
+      )}
+      {!showH2H && oppName && data.opponent_summary && (
+        <View style={styles.h2hStripDim}>
+          <Text style={styles.h2hStripLabel}>H2H VS {oppName.toUpperCase().slice(0, 22)}</Text>
+          <Text style={[styles.h2hStripStat, { color: COLORS.textMuted }]}>
+            NO PRIOR MATCHUPS
+          </Text>
+        </View>
+      )}      <View style={styles.logHead}>
         {cols.map((c) => (
           <Text key={c.key}
             style={[styles.logHeadText, { width: c.width || 60 }]}
@@ -764,6 +782,27 @@ const styles = StyleSheet.create({
   proxyText: {
     color: COLORS.goldRich, fontSize: 10, fontWeight: "600",
     textAlign: "center",
+  },
+  h2hStrip: {
+    flexDirection: "row", justifyContent: "space-between",
+    alignItems: "center", paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 8, marginBottom: 6,
+    backgroundColor: COLORS.voltBlue + "22",
+    borderWidth: 1, borderColor: COLORS.voltBlue + "88",
+  },
+  h2hStripDim: {
+    flexDirection: "row", justifyContent: "space-between",
+    alignItems: "center", paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 8, marginBottom: 6,
+    backgroundColor: COLORS.surfaceInset,
+    borderWidth: 1, borderColor: COLORS.borderDefault,
+  },
+  h2hStripLabel: {
+    color: COLORS.textPrimary, fontSize: 10, fontWeight: "800",
+    letterSpacing: 1.0,
+  },
+  h2hStripStat: {
+    color: COLORS.textPrimary, fontSize: 12, fontWeight: "800",
   },
 });
 
