@@ -638,6 +638,18 @@ async def _load_active_sports() -> None:
     active set.  On FAILURE we preserve the last-good snapshot —
     a transient provider blip never wipes it.  Reuses the existing
     ``_get`` cache path — no aggressive polling.
+
+    2026-09-15 · SESSION 3 CACHE-FALLBACK — the Odds API ``/sports``
+    endpoint intermittently returns empty even when the tournament
+    catalog is healthy (observed live during Tennis funnel audit:
+    ``_ACTIVE_KEYS=0`` while ``odds_api_cache`` contained fresh
+    entries for ``tennis_wta_guadalajara_open`` and
+    ``tennis_wta_monterrey_open``).  When that happens the caller's
+    static ``SPORT_KEYS`` list becomes the sole source of truth and
+    rotating tournaments (WTA/ATP tour swings, ITF weekly events)
+    silently disappear.  Fallback: derive active keys from
+    ``odds_api_cache`` — any key with a fresh event body IS active
+    by definition.  Purely dynamic, no manual list maintenance.
     """
     global _ACTIVE_LOADED, _ACTIVE_LOADED_AT
     import time as _t
@@ -656,6 +668,31 @@ async def _load_active_sports() -> None:
             _ACTIVE_LOADED = True
             _ACTIVE_LOADED_AT = _now
             return
+    # FAILURE — try the cache-derived fallback before giving up.
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        from server import db as _db
+        _now_iso = _dt.now(_tz.utc).isoformat()
+        _cached_keys: set[str] = set()
+        # Any sport_key whose cache still holds a current/future
+        # event body counts as "active" for our purposes.
+        async for _doc in _db.odds_api_cache.find(
+            {"body.commence_time": {"$gte": _now_iso}},
+            {"sport_key": 1, "_id": 0},
+        ).limit(5000):
+            _sk = _doc.get("sport_key")
+            if _sk:
+                _cached_keys.add(_sk)
+        if _cached_keys:
+            _ACTIVE_KEYS.clear()
+            _ACTIVE_KEYS.update(_cached_keys)
+            _ACTIVE_LOADED = True
+            _ACTIVE_LOADED_AT = _now
+            return
+    except Exception:
+        # Fallback is a pure optimization — never let a cache read
+        # failure regress the API-only behavior.
+        pass
     # FAILURE — keep last-good snapshot; only advance the timestamp
     # so we don't hammer the provider retrying immediately.
     _ACTIVE_LOADED_AT = _now
