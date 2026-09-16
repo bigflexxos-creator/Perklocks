@@ -98,9 +98,10 @@ except Exception as _picks_mount_err:
 
 # Session 4 · Universal Historical Intelligence on-demand endpoint.
 try:
-    from routes.historical_intelligence_routes import router as _hi_router
+    from routes.historical_intelligence_routes import router as _hi_router, diag_router as _hi_diag_router
     app.include_router(_hi_router)
-    logger.info("Historical Intelligence routes mounted at /api/picks/{id}/historical-intelligence")
+    app.include_router(_hi_diag_router)
+    logger.info("Historical Intelligence routes mounted (pick + coverage matrix)")
 except Exception as _hi_err:
     logger.warning("Historical Intelligence routes failed to mount: %s", _hi_err)
 

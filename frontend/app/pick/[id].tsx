@@ -18,6 +18,7 @@ import { RiskMeterPanel } from "@/src/components/RiskMeterPanel";
 import { EvidencePanel } from "@/src/components/EvidencePanel";
 import { PitcherH2HPanel } from "@/src/components/PitcherH2HPanel";
 import { H2HPanel } from "@/src/components/H2HPanel";
+import { HistoricalIntelligence } from "@/src/components/HistoricalIntelligence";
 import { XGFormPanel } from "@/src/components/XGFormPanel";
 import { ProbabilityBreakdownPanel } from "@/src/components/ProbabilityBreakdownPanel";
 import { MarkdownText } from "@/src/components/MarkdownText";
@@ -376,10 +377,17 @@ export default function PickDetail() {
                 non-strikeout picks. */}
             <PitcherH2HPanel pick={pick} />
 
-            {/* Unified H2H (2026-02) — team-level for every sport, plus
-                player-level splits sourced from the sport-specific engines
-                (MLB Stats, tennis history DB, soccer settled picks).
-                Light-theme card for visible high-contrast rendering. */}
+            {/* Universal Historical Intelligence 2.0 (Session 5, 2026-09-17)
+                — one universal on-demand card driving every sport through
+                the /api/picks/{id}/historical-intelligence contract.
+                Replaces the legacy H2HPanel with tabs (Game Logs / VS Opp /
+                Splits / Distribution) and real L5/L10/L20/SEASON toggles.
+                MISSING data stays MISSING; the Locks lite hot path is
+                never touched. */}
+            <HistoricalIntelligence pickId={pick.id} />
+
+            {/* Legacy H2H (kept for continuity — will be retired once
+                Historical Intelligence graduates from beta). */}
             <H2HPanel pickId={pick.id} />
 
             {/* Batter-vs-Pitcher card — MLB hit/total bases/HR props only.
