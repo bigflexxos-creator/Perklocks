@@ -487,28 +487,12 @@ function GameLogsTab({ data }: { data: HistoricalIntelligenceResponse }) {
       </View>
     );
   }
-  // Inline H2H vs opponent chip — user wants this visible alongside game logs
-  const opp = data.opponent_summary;
-  const oppName = data.pick?.opponent;
-  const showH2H = !!opp && opp.n > 0 && !!oppName;
+  // GAME LOGS tab shows ONLY the player's own game logs.
+  // H2H vs opponent lives on the dedicated VS OPP tab — mixing them
+  // here confused users (e.g., a "H2H VS ROYALS · NO PRIOR MATCHUPS"
+  // strip appearing above a table of games vs Milwaukee / Miami / LA).
   return (
     <View style={{ marginTop: 8 }}>
-      {showH2H && (
-        <View style={styles.h2hStrip}>
-          <Text style={styles.h2hStripLabel}>H2H VS {oppName!.toUpperCase().slice(0, 22)}</Text>
-          <Text style={styles.h2hStripStat}>
-            {opp!.hits}/{Math.max(opp!.hits + opp!.misses, opp!.n)} · {fmtPct(opp!.hit_rate)} · n={opp!.n}
-          </Text>
-        </View>
-      )}
-      {!showH2H && oppName && data.opponent_summary && (
-        <View style={styles.h2hStripDim}>
-          <Text style={styles.h2hStripLabel}>H2H VS {oppName.toUpperCase().slice(0, 22)}</Text>
-          <Text style={[styles.h2hStripStat, { color: COLORS.textMuted }]}>
-            NO PRIOR MATCHUPS
-          </Text>
-        </View>
-      )}
       <View style={styles.logHead}>
         {cols.map((c) => (
           <Text key={c.key}
