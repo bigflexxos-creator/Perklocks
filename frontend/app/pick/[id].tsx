@@ -17,8 +17,7 @@ import { SimulatorPanel } from "@/src/components/SimulatorPanel";
 import { RiskMeterPanel } from "@/src/components/RiskMeterPanel";
 import { EvidencePanel } from "@/src/components/EvidencePanel";
 import { PitcherH2HPanel } from "@/src/components/PitcherH2HPanel";
-import { H2HPanel } from "@/src/components/H2HPanel";
-import { HistoricalIntelligence } from "@/src/components/HistoricalIntelligence";
+import { Intelligence2 } from "@/src/components/Intelligence2";
 import { XGFormPanel } from "@/src/components/XGFormPanel";
 import { ProbabilityBreakdownPanel } from "@/src/components/ProbabilityBreakdownPanel";
 import { MarkdownText } from "@/src/components/MarkdownText";
@@ -384,11 +383,14 @@ export default function PickDetail() {
                 Splits / Distribution) and real L5/L10/L20/SEASON toggles.
                 MISSING data stays MISSING; the Locks lite hot path is
                 never touched. */}
-            <HistoricalIntelligence pickId={pick.id} />
+            {/* PERKLOCKS INTELLIGENCE 2.0 — presentation shell (header +
+                RECENT FORM / MATCHUP / ENVIRONMENT / DISTRIBUTION) over the
+                SAME Historical Intelligence contract; the HI card is the
+                expandable GAME LOGS · VS OPP · SPLITS · MORE section. */}
+            <Intelligence2 pick={pick} />
 
-            {/* Legacy H2H (kept for continuity — will be retired once
-                Historical Intelligence graduates from beta). */}
-            <H2HPanel pickId={pick.id} />
+            {/* Legacy H2HPanel RETIRED (P2): Historical Intelligence is the
+                single H2H / VS OPP contract — no contradictory samples. */}
 
             {/* Batter-vs-Pitcher card — MLB hit/total bases/HR props only.
                 Populated by /app/backend/mlb_bvp.py at pick-generation time

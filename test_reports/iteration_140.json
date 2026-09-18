@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 140 continuation — backend 5/5 pytest green, frontend flows verified. BACKEND: /api/ops/refresh-health returns last_cycle rows (MLB/NFL/CFB) and live counts (MLB upcoming_72h=20, CFB=73, NFL=250, Soccer=412, Tennis=1). /api/picks/{id}/historical-intelligence for NFL Trevor Lawrence pick — provenance has no 'adapter:'/'_SportDispatcher' leaks, opponent dates real (not YYYY-09-01). Kane soccer pick 7b702d7d-6d3c-57c4-ac49-2368a1249e14 opponent_summary has both all_competitions and same_competition keys, each with n=2 games (real dates). /api/picks/today?lite=true&sort=lock&direction=desc: 406 picks, first5=[98,98,98,98,98] last5=[85,85,85,85,85], 0 monotonic violations; sports present {'CFB','MLB','NFL','SOCCER','TENNIS'}. FRONTEND: Board loads (188 games · 26 picks headline), sort chip 'LOCK' active with HIGH→LOW default; scroll of 58 unique cards observed non-increasing (one apparent violation attributable to virtualization re-render, not sort order — backend list already proven monotonic). No 'NFL ANYTIME TOUCHDOWNS' card on board. MLB and CFB picks visible on board (also SOCCER). NFL sport-chip → 🏈 ATD pill (testID market-pill-atd) present and navigates to /atd. /atd: Top 5 Today ranked list (Derrick Henry 77%, Chase Brown 60%, David Montgomery 51%...), By Game view shows 5 games with atd-game-<matchup> testIDs, each game has 2 team logos and TOP ATD CANDIDATES rows, SHOW LESS/VIEW ALL toggles work. Pick Breakdown for Trevor Lawrence Over 215.5 pass yds (id bf444687-aaaf-53c1-999b-2de98aaee82e): Intelligence 2.0 shell present — testIDs intel2, intel2-avatar, intel2-form, intel2-matchup, intel2-env, intel2-dist, intel2-expand all found; header has avatar+player, team/opp ('Trevor Lawrence · Jacksonville Jaguars · vs Denver Broncos'), market·line·odds line, and coverage badge (STRONG DATA). RECENT FORM (HIT RATE L10 70%, 7/10, AVG/MEDIAN 237.4/249.5), MATCHUP (1/3 over 215.5·33%·avg 176.7), ENVIRONMENT (Matchup/Kickoff), DISTRIBUTION (Q25·MEDIAN·Q75 212.5·249.5·261.3, STD DEV 51.07) all render. intel2-expand toggles between 'HIDE GAME LOGS · VS OPP · SPLITS · MORE' and 'SHOW GAME LOGS · VS OPP · SPLITS · MORE' correctly. On VS OPP/GAME LOGS tab: dates are real (01/11, 01/04, 12/28, 12/21…) — no YYYY-09-01 placeholders. H2H VS DENVER BRONCOS shown once inside Historical Intelligence card only — NO legacy second panel. No '_SportDispatcher' or 'adapter:' text anywhere in body. ISSUE FOUND: 5 console errors 'Unexpected text node: <whitespace>. A text node cannot be a child of a <View>.' — these surface as an on-screen alert visible over the Pick Breakdown page (see /tmp/pick1.png, /tmp/pick_bottom.png). Root: raw whitespace/string is being rendered as a child of a <View> somewhere in the pick detail render tree (likely HistoricalIntelligence.tsx which is 822 lines).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Pick Breakdown (Intelligence 2.0 / HistoricalIntelligence)", "issue": "Console error 'Unexpected text node: <whitespace>. A text node cannot be a child of a <View>.' fires 5x on load and displays as an on-screen toast/alert overlay. Likely a raw string/whitespace between JSX children inside a <View>. Reference: /app/frontend/src/components/HistoricalIntelligence.tsx (822 lines) or downstream child components. Not seen inside Intelligence2.tsx.", "testID": "n/a", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "Global styles", "issue": "Deprecated RN-Web style props still emitted at runtime: 'shadow*' → 'boxShadow', 'textShadow*' → 'textShadow', 'props.pointerEvents' → 'style.pointerEvents'. Reference: browser console warnings across / and /pick/[id]."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter140_continuation.py",
+    "/app/test_reports/pytest/iter140_continuation.xml"
+  ],
+  "action_items": [
+    "Find and remove stray whitespace/string children under <View> in Pick Breakdown render tree (start in HistoricalIntelligence.tsx). Typical culprits: `{cond && ' '}`, `{value}` where value is a plain space string, or `<View> </View>` with a literal space between tags. This alert appears on-screen and looks unprofessional to end users.",
+    "Migrate deprecated RN-Web style props (shadow*/textShadow*/props.pointerEvents) to silence console warnings and future-proof for RN-Web upgrades.",
+    "(Non-blocking) Consider adding a dedicated sort='lock' visible chip label on the Locks board top bar so 'monotonic non-increasing' behavior is visually attributable to a user-selected chip."
+  ],
+  "critical_code_review_comments": [
+    "Intelligence2.tsx (204 lines) is clean and correctly wraps all text in <Text>. Whitespace bug is not here.",
+    "HistoricalIntelligence.tsx is 822 lines — split into smaller focused modules (sample/venue selectors, tabs, per-tab renderers) to make future audits easier.",
+    "picks_routes.py returns list-vs-detail objects with matching truth_fingerprint/publication_version — parity holds.",
+    "board_health_routes.py returns both last_cycle and live blocks; API contract is stable and well-shaped."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter140_continuation.py"
+  ],
+  "success_rate": {"backend": "100% (5/5)", "frontend": "90% — core flows all pass; 1 HIGH-priority on-screen console alert on Pick Breakdown"},
+  "seed_data_creation": "None — used pre-existing demo user and live production data.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Trevor Lawrence NFL player-prop pick id: bf444687-aaaf-53c1-999b-2de98aaee82e (Over 215.5 Player Pass Yds, LS=85). Kane soccer HI pick id: 7b702d7d-6d3c-57c4-ac49-2368a1249e14. Board scroll on web uses inner container [data-testid=\"locks-scroll\"] not window; virtualization drops+remounts cards, so JS-side monotonic checks require sorting collected samples by scrollTop rather than by insertion order — trust the backend `sort=lock&direction=desc` monotonic result instead. Intel2 testIDs: intel2, intel2-avatar, intel2-form, intel2-matchup, intel2-env, intel2-dist, intel2-expand. /api/ops/refresh-health data lives under `live` (per-sport upcoming_72h + board_eligible_85) while `last_cycle` is an array of {sport, slate_date, duration_sec, published_count, status}.",
+  "rca_of_issue": "Unexpected-text-node warning: React-Native-Web enforces that children of <View> must be a component or wrapped <Text>. When a JSX expression like `{condition && ' '}` evaluates to a bare string or when JSX contains whitespace between tags on separate lines inside a Fragment inside a View, RNW raises this warning. In this pick's render tree only Intelligence2.tsx (clean) and HistoricalIntelligence.tsx (822 lines) are involved after the header — the culprit is almost certainly in HistoricalIntelligence.tsx or one of its downstream helpers. Reproduction: login demo@lockscore.ai / demo123, navigate to /pick/bf444687-aaaf-53c1-999b-2de98aaee82e — the toast 'Unexpected text node:       . A text node cannot be a child of a <View>.' appears at the bottom of the screen within ~3s. Mitigation: locate raw string/whitespace children (`grep -n \"^\\s*' '\" HistoricalIntelligence.tsx`, review conditional renders emitting bare strings), wrap in <Text> or convert to null."
+}

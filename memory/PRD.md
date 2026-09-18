@@ -209,3 +209,21 @@ Continuous surgical NFL build.  Additive READ-path UX only.
 - Harness: `scripts/p10_final_parity_harness.py` (92 picks, 0 unexplained diffs); `scripts/parity_list_vs_detail.py`.
 - Open: Kane VS Union real game logs (needs match-level ingest), NBA authority (no NBA slate), settlement
   single-authority consolidation, Intelligence 2.0 UI, player media, P11 device reliability matrix, ATD tab entry.
+
+## FINAL CERTIFICATION PASS (2026-09-18, iteration 141) — see test_reports/iteration_141.json
+- MLB props recovered (root causes, all surgical): (a) `alt_lines_feed._flatten_odds` now persists `side` (Over/Under) and
+  disambiguates the composite key — the MLB prop cache-first reconstruction (`sports_engine` ~5731) emitted direction-less
+  outcomes that the fail-closed direction filter dropped → 0 props every cache-HIT cycle; legacy rows without `side` are
+  treated as cache MISS. (b) per-sport refresh timeout: MLB gets 900s (`PERKLOCKS_REFRESH_SPORT_TIMEOUT_SEC_MLB`) — the 420s
+  cap killed the MLB cycle ~80s before insert. (c) `game_context` probable-pitcher lookup uses US/Eastern game date (UTC
+  slice resolved tomorrow's starters for evening games) + Stuff+ import fixed. Board: 314 MLB rows (287 props), all ≥85.
+- NFL alt parity: `locks_eligibility.rescue_missing_eligible` now `hydrate()`s rescued rows (mutable aliases leaked to lite).
+  Regression fixture: tests/test_nfl_alt_rescue_parity_regression.py. Harness: 480 checked, 0 unexplained diffs.
+- ATD permanent fix: durable universe collection `nfl_atd_universe_rows` (persist on live expansion, fallback between provider
+  snapshots); alt-lines feed acquires `player_anytime_td` for ALL upcoming NFL events (full slate: 15 games / 188 candidates);
+  ATD chip no longer shows Locks-board "PASS" on leaderboard rows (evidence badge instead; L-score still shown).
+- Intelligence 2.0 polish: stray whitespace text node in HistoricalIntelligence GameLogsTab removed (red toast gone);
+  pointerEvents → style; Pick type extended (player_name/team/home/away/line/venue/lineup_status).
+- Ops note: uvicorn runs with --reload; editing backend .py kills in-flight refresh & orphans `scheduler_leases` /
+  `scheduled_jobs` leases (owner pid dead). Release orphans before re-triggering.
+- Open: CFB 2.0 model upgrade (NEXT), P11 device matrix, CFBD quota. HR / TB MLB families rarely clear 85 (honest).

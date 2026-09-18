@@ -1046,3 +1046,22 @@ async def canonical_consistency_check(
                 "Consumers (market-rank, picks/today, parlay, rollover) MUST read published_* — see "
                 "SOCCER_PLAYER_GAME_TRUTH_CERTIFIED (2026-08-27).",
     }
+
+
+@router.get("/refresh-health")
+async def refresh_health(user: Annotated[UserPublic, Depends(current_user)]):
+    """Anti-starvation audit: per-sport outcome of the last refresh cycle
+    (OK / TIMEOUT / ERROR, published_count, duration) plus live upcoming
+    pick counts so a starved sport is visible immediately."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    rows = [r async for r in db.refresh_health.find({}, {"_id": 0}).sort("finished_at", -1).limit(30)]
+    cut = (now + timedelta(hours=72)).isoformat()
+    live: dict[str, dict] = {}
+    for sp in ("NFL", "MLB", "CFB", "Soccer", "Tennis"):
+        q = {"sport": sp, "event_time": {"$gte": now.isoformat(), "$lte": cut}, "off_board": {"$ne": True}}
+        live[sp] = {
+            "upcoming_72h": await db.picks.count_documents(q),
+            "board_eligible_85": await db.picks.count_documents({**q, "published_lock_score": {"$gte": 85}}),
+        }
+    return {"generated_at": now.isoformat(), "last_cycle": rows, "live": live}

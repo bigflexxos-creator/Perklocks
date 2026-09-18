@@ -1001,9 +1001,14 @@ async def picks_history(
     #   4. Summarise / expose stats over the returned settled records
     #   5. Pending picks remain available inside `_truth.summarise` for
     #      diagnostic counts but never consume the response payload.
-    _HISTORY_STATES = ("won", "lost", "push", "void", "unresolved")
+    # P5 — OFF_BOARD and NO_BET are pregame dispositions projected
+    # explicitly (never folded into VOID or LOSS); UNRESOLVED is
+    # projected explicitly (truth unavailable ≠ void).
+    _HISTORY_STATES = ("won", "lost", "push", "void", "unresolved", "off_board", "no_bet")
     history_visible = [p for p in picks
                         if p.get("status") in _HISTORY_STATES]
+    for _hp in history_visible:
+        _hp["settlement_state"] = str(_hp.get("status") or "pending").upper()
     # Sort history-visible newest-first — prefer settled_at (canonical
     # grading timestamp) then fall back to event_time.
     history_visible.sort(
@@ -1252,6 +1257,7 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     When both are present, results are the UNION (`$in` query). Empty
     arrays = no filter.
     """
+    _REQUESTED_SORT_FN: list = [None]   # set by the sort stage; re-applied post-rescue
     # Lazy import every helper from server.py used in this handler.
     # server.py itself `include_router`s this module so a top-level
     # `from server import ...` would deadlock the bootstrap.
@@ -2547,44 +2553,51 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             if "Anytime Assist" in mm:                          return 3
             return 4
 
-        if s == "time":
-            # Pure chronological — earliest kickoff first by default;
-            # latest first when asc=False reversed (we treat time asc as
-            # earliest→latest, which is the natural meaning, so flip
-            # signature only when direction explicitly says desc).
-            # Default 'time' direction is "soonest first" which is asc by
-            # natural time ordering — keep that as the default.
-            if asc:
-                picks.sort(key=lambda p: (_event_dt(p), -p.get("lock_score", 0), _soccer_family_rank(p)))
-            else:
-                # iter-94 fix: `reverse=True` would flip EVERY key
-                # including the family tiebreaker (rank 4 first, rank 0
-                # last). Negate the primary time key instead so only
-                # the kickoff direction reverses; -lock and family_rank
-                # stay in their natural (higher-first / rank-0-first)
-                # order. Convert dt → timestamp so we can sign it.
-                def _neg_dt(p: dict) -> float:
-                    dt = _event_dt(p)
-                    try:
-                        return -dt.timestamp()
-                    except Exception:
-                        return 0.0
-                picks.sort(key=lambda p: (_neg_dt(p), -p.get("lock_score", 0), _soccer_family_rank(p)))
-        elif s == "edge":
-            # Pure edge sort — no today-first bucket so highest edges
-            # always at top regardless of date.
-            picks.sort(key=lambda p: (m * p.get("edge_percent", 0), -p.get("lock_score", 0), _soccer_family_rank(p)))
-        elif s == "win":
-            # Win % sort — model win_probability highest first by default.
-            picks.sort(key=lambda p: (m * p.get("win_probability", 0), -p.get("lock_score", 0), _soccer_family_rank(p)))
-        elif s == "implied":
-            picks.sort(key=lambda p: (m * p.get("implied_probability", 0), -p.get("lock_score", 0), _soccer_family_rank(p)))
-        else:  # "lock" (default)
-            # Pure lock_score sort with the shared Soccer family tiebreaker.
-            if asc:
-                picks.sort(key=lambda p: (p.get("lock_score", 0), _soccer_family_rank(p)))
-            else:
-                picks.sort(key=lambda p: (-p.get("lock_score", 0), _soccer_family_rank(p)))
+        def _apply_requested_sort(picks: list) -> None:
+            """Requested board ordering. Re-applied after any later
+            merge (eligibility-union rescue / dedupe) so injected rows
+            never land at the bottom regardless of Lock Score."""
+            if s == "time":
+                # Pure chronological — earliest kickoff first by default;
+                # latest first when asc=False reversed (we treat time asc as
+                # earliest→latest, which is the natural meaning, so flip
+                # signature only when direction explicitly says desc).
+                # Default 'time' direction is "soonest first" which is asc by
+                # natural time ordering — keep that as the default.
+                if asc:
+                    picks.sort(key=lambda p: (_event_dt(p), -p.get("lock_score", 0), _soccer_family_rank(p)))
+                else:
+                    # iter-94 fix: `reverse=True` would flip EVERY key
+                    # including the family tiebreaker (rank 4 first, rank 0
+                    # last). Negate the primary time key instead so only
+                    # the kickoff direction reverses; -lock and family_rank
+                    # stay in their natural (higher-first / rank-0-first)
+                    # order. Convert dt → timestamp so we can sign it.
+                    def _neg_dt(p: dict) -> float:
+                        dt = _event_dt(p)
+                        try:
+                            return -dt.timestamp()
+                        except Exception:
+                            return 0.0
+                    picks.sort(key=lambda p: (_neg_dt(p), -p.get("lock_score", 0), _soccer_family_rank(p)))
+            elif s == "edge":
+                # Pure edge sort — no today-first bucket so highest edges
+                # always at top regardless of date.
+                picks.sort(key=lambda p: (m * p.get("edge_percent", 0), -p.get("lock_score", 0), _soccer_family_rank(p)))
+            elif s == "win":
+                # Win % sort — model win_probability highest first by default.
+                picks.sort(key=lambda p: (m * p.get("win_probability", 0), -p.get("lock_score", 0), _soccer_family_rank(p)))
+            elif s == "implied":
+                picks.sort(key=lambda p: (m * p.get("implied_probability", 0), -p.get("lock_score", 0), _soccer_family_rank(p)))
+            else:  # "lock" (default)
+                # Pure lock_score sort with the shared Soccer family tiebreaker.
+                if asc:
+                    picks.sort(key=lambda p: (p.get("lock_score", 0), _soccer_family_rank(p)))
+                else:
+                    picks.sort(key=lambda p: (-p.get("lock_score", 0), _soccer_family_rank(p)))
+
+        _apply_requested_sort(picks)
+        _REQUESTED_SORT_FN[0] = _apply_requested_sort
     picks = await _decorate_with_player_form(picks)
     picks = await _decorate_with_understat_form(picks)
     # ── MAIN 40 · Iter 4 (2026-06-05) — ESPN enrichment off hot path ──
@@ -3600,6 +3613,14 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                                  before - len(canonical))
             except Exception as _dd:
                 logger.warning("post-rescue dedupe skipped: %s", _dd)
+            # Rescued rows were appended AFTER the requested sort ran —
+            # re-apply it so high Lock Scores are never buried at the
+            # bottom of a lock-desc board.
+            try:
+                if _REQUESTED_SORT_FN[0] is not None:
+                    _REQUESTED_SORT_FN[0](canonical)
+            except Exception as _rs_err:
+                logger.warning("post-rescue re-sort skipped: %s", _rs_err)
         elif rescue_rejected:
             logger.info(
                 "picks_today eligibility-union rescue: no EBM rescued; "

@@ -275,15 +275,18 @@ async def query_historical(db, q: HistoricalQuery) -> HistoricalResponse:
     adapter = get_adapter(q.sport)
     provenance: list[str] = []
     all_obs: list[HistoricalObservation] = []
+    # P2.1 — provenance is USER-FACING: describe the data source of the
+    # observations, never a Python class / Mongo collection name.
     if adapter is None:
-        provenance.append(f"no_adapter_for_sport:{q.sport}")
+        provenance.append("DATA TEMPORARILY UNAVAILABLE")
     else:
         try:
             all_obs = await adapter.fetch_observations(db, q) or []
-            provenance.append(f"adapter:{type(adapter).__name__}")
+            _src = sorted({str(o.provenance) for o in all_obs if o.provenance})
+            provenance.extend(_src[:3] if _src else (["NO RECENT HISTORY"] if not all_obs else ["verified match history"]))
         except Exception as _err:
             logger.warning("adapter %s failed: %s", q.sport, _err, exc_info=True)
-            provenance.append(f"adapter_error:{_err}")
+            provenance.append("DATA TEMPORARILY UNAVAILABLE")
 
     venue_filtered = _apply_venue_scope(all_obs, q.venue_scope)
     scoped = _apply_sample_scope(venue_filtered, q.sample_scope)
@@ -304,6 +307,21 @@ async def query_historical(db, q: HistoricalQuery) -> HistoricalResponse:
     if vs_opp:
         opp_summary = _summarize(vs_opp, q.current_threshold, q.side)
         opp_summary["games"] = [asdict(o) for o in vs_opp[:10]]
+        # P1.4 — keep ALL COMPETITIONS and SAME COMPETITION separate.
+        # The current competition is the modal `league`/`competition`
+        # of the most recent observations (no hardcoding).
+        _comp_of = lambda o: (o.context or {}).get("competition") or (o.context or {}).get("league")
+        _recent_comps = [_comp_of(o) for o in all_obs[:10] if _comp_of(o)]
+        _cur_comp = max(set(_recent_comps), key=_recent_comps.count) if _recent_comps else None
+        if _cur_comp:
+            same = [o for o in vs_opp if _comp_of(o) == _cur_comp]
+            opp_summary["all_competitions"] = {"n": len(vs_opp), "hits": opp_summary.get("hits"),
+                                               "hit_rate": opp_summary.get("hit_rate")}
+            opp_summary["same_competition"] = (
+                {**_summarize(same, q.current_threshold, q.side), "competition": _cur_comp,
+                 "games": [asdict(o) for o in same[:10]]}
+                if same else {"n": 0, "competition": _cur_comp, "note": "NO PRIOR MATCHUPS IN THIS COMPETITION"}
+            )
     elif q.opponent_id or q.opponent_name:
         opp_summary = {"n": 0, "note": "NO PRIOR MATCHUPS"}
 
@@ -759,16 +777,20 @@ class SoccerPlayerHistoricalAdapter(HistoricalAdapter):
         fn = _SOCCER_PLAYER_MAP.get(family)
         if fn is None:
             return []
-        or_clauses: list[dict] = []
+        # Identity: canonical ID first → provider (understat) id →
+        # controlled normalized name.  Never a loose substring.
+        base: Optional[dict] = None
         if q.entity_id:
-            or_clauses.append({"player_id": str(q.entity_id)})
-        if q.entity_name:
+            for key in ("canonical_player_id", "player_id"):
+                cand = {key: str(q.entity_id)}
+                if await db.soccer_player_game_logs.count_documents(cand, limit=1):
+                    base = cand
+                    break
+        if base is None and q.entity_name:
             nm = q.entity_name.strip()
-            or_clauses.append({"player_name": nm})
-            or_clauses.append({"name_canonical": nm.lower()})
-        if not or_clauses:
+            base = {"$or": [{"player_name": nm}, {"name_canonical": nm.lower()}]}
+        if base is None:
             return []
-        base = {"$or": or_clauses}
         obs: list[HistoricalObservation] = []
         cursor = db.soccer_player_game_logs.find(base).sort("match_date", -1).limit(120)
         async for doc in cursor:
@@ -791,9 +813,11 @@ class SoccerPlayerHistoricalAdapter(HistoricalAdapter):
                          "shots": doc.get("shots"),
                          "sot": doc.get("shots_on_target"),
                          "league": doc.get("league"),
+                         "competition": doc.get("competition") or doc.get("league"),
+                         "xg": doc.get("xg"), "npxg": doc.get("npxg"), "xa": doc.get("xa"),
                          "season": doc.get("season")},
                 provenance=doc.get("source"),
-                event_id=doc.get("match_id"),
+                event_id=doc.get("canonical_event_id") or doc.get("match_id"),
             ))
         return obs
 
@@ -1051,6 +1075,105 @@ class _SportDispatcher(HistoricalAdapter):
         return []
 
 
+# ===========================================================================
+# NBA ADAPTERS — P1.6 / P2.1.  Canonical history ONLY
+# (player_game_actuals / team_game_actuals, sport="NBA").  No name-based
+# legacy history exists in this deployment, so MODEL and HI cannot diverge:
+# both resolve from the same canonical observations (or honestly return
+# nothing).  Registered so the dispatcher never answers "unsupported sport"
+# for NBA — it answers NO RECENT HISTORY / NO PRIOR MATCHUP instead.
+# ===========================================================================
+
+_NBA_MARKET_MAP = {
+    "points": "points", "player_points": "points", "pts": "points",
+    "rebounds": "rebounds", "player_rebounds": "rebounds", "reb": "rebounds",
+    "assists": "assists", "player_assists": "assists", "ast": "assists",
+    "threes": "threes", "player_threes": "threes", "3pm": "threes",
+    "pra": "pra", "steals": "steals", "blocks": "blocks",
+}
+
+
+class NBAPlayerHistoricalAdapter(HistoricalAdapter):
+    sport = "NBA"
+
+    async def fetch_observations(self, db, q: HistoricalQuery) -> list[HistoricalObservation]:
+        key = _NBA_MARKET_MAP.get(q.market_family)
+        if not key:
+            return []
+        base_q: Optional[dict] = None
+        if q.entity_id:
+            base_q = {"sport": {"$in": ["NBA", "nba"]}, "canonical_player_id": str(q.entity_id)}
+            if await db.player_game_actuals.count_documents(base_q, limit=1) == 0:
+                base_q = None
+        if base_q is None and q.entity_name:
+            base_q = {"sport": {"$in": ["NBA", "nba"]}, "player_name": q.entity_name}
+        if not base_q:
+            return []
+        obs: list[HistoricalObservation] = []
+        async for doc in db.player_game_actuals.find(base_q).sort("event_time", -1).limit(80):
+            a = doc.get("actuals") or {}
+            if key == "pra":
+                parts = [a.get("points"), a.get("rebounds"), a.get("assists")]
+                actual = sum(float(x) for x in parts) if all(x is not None for x in parts) else None
+            else:
+                v = a.get(key)
+                try:
+                    actual = float(v) if v is not None else None
+                except Exception:
+                    actual = None
+            obs.append(HistoricalObservation(
+                date=str(doc.get("event_time") or "")[:10],
+                opponent_id=doc.get("canonical_opponent_id"),
+                opponent_name=doc.get("opponent") or doc.get("canonical_opponent_id"),
+                home_away=doc.get("home_away"),
+                actual=actual,
+                context={"season": doc.get("season"), "minutes": a.get("minutes")},
+                provenance=doc.get("source") or "player_game_actuals",
+                event_id=doc.get("canonical_event_id") or doc.get("event_id"),
+            ))
+        return obs
+
+
+class NBATeamHistoricalAdapter(HistoricalAdapter):
+    sport = "NBA"
+
+    async def fetch_observations(self, db, q: HistoricalQuery) -> list[HistoricalObservation]:
+        fam = q.market_family
+        if fam not in ("moneyline", "spread", "total"):
+            return []
+        team = q.entity_name or q.entity_id
+        if not team:
+            return []
+        obs: list[HistoricalObservation] = []
+        cur = db.team_game_actuals.find(
+            {"sport": {"$in": ["NBA", "nba"]}, "$or": [{"team": team}, {"canonical_team_id": str(q.entity_id or "")}]}
+        ).sort("event_time", -1).limit(80)
+        async for doc in cur:
+            a = doc.get("actuals") or {}
+            pf, pa = a.get("points_for"), a.get("points_against")
+            if pf is None or pa is None:
+                actual = None
+            elif fam == "total":
+                actual = float(pf) + float(pa)
+            elif fam == "spread":
+                actual = float(pf) - float(pa)
+            else:
+                actual = 1.0 if float(pf) > float(pa) else 0.0
+            obs.append(HistoricalObservation(
+                date=str(doc.get("event_time") or "")[:10],
+                opponent_id=doc.get("canonical_opponent_id"),
+                opponent_name=doc.get("opponent"),
+                home_away=doc.get("home_away"),
+                actual=actual,
+                context={"season": doc.get("season")},
+                provenance=doc.get("source") or "team_game_actuals",
+                event_id=doc.get("canonical_event_id") or doc.get("event_id"),
+            ))
+        return obs
+
+
+register_adapter("NBA",    _SportDispatcher(
+    "NBA", NBAPlayerHistoricalAdapter(), NBATeamHistoricalAdapter()))
 register_adapter("NFL",    _SportDispatcher(
     "NFL", NFLPlayerHistoricalAdapter(), NFLTeamHistoricalAdapter()))
 register_adapter("MLB",    _SportDispatcher(

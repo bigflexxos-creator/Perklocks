@@ -628,6 +628,8 @@ async def refresh_alt_lines(
                 # / anytime scorer markets for new fixtures.  Other
                 # sports still respect picks_scope to control burn.
                 is_soccer = cfg_key.startswith("soccer") or sport_key.startswith("soccer")
+                # Per-event market bundle (may be narrowed below).
+                ev_markets = list(markets)
                 if picks_scope and scoped_pairs and not is_soccer:
                     # Phase 4E follow-up — canonicalise via alias map
                     # so CSL etc. resolve across name variants.
@@ -635,8 +637,22 @@ async def refresh_alt_lines(
                     away_n = _team_key(sport_key, ev.get("away_team") or "")
                     pair = (home_n, away_n)
                     if not home_n or not away_n or pair not in scoped_pairs:
-                        stats["skipped_no_picks"] += 1
-                        continue
+                        # ── ATD FULL-SLATE COVERAGE (2026-09-18) ──
+                        # The ATD leaderboard universe is provider-
+                        # driven (real Anytime TD prices).  Restricting
+                        # NFL acquisition to picks-scope left By Game at
+                        # 5 of ~16 games.  For out-of-scope NFL events we
+                        # still acquire the SINGLE `player_anytime_td`
+                        # market (≈1 credit/event) so every game on the
+                        # slate has a real ATD price universe.  All other
+                        # sports keep the picks-scope gate.
+                        if cfg_key == "nfl" and "player_anytime_td" in markets:
+                            ev_markets = ["player_anytime_td"]
+                            stats["nfl_atd_full_slate_events"] = (
+                                stats.get("nfl_atd_full_slate_events", 0) + 1)
+                        else:
+                            stats["skipped_no_picks"] += 1
+                            continue
 
                 # PERKLOCKS-MAIN 35 — DYNAMIC TIME-TO-EVENT PROVIDER
                 # BUDGET.  Parse commence up-front so 422 failures on
@@ -664,7 +680,7 @@ async def refresh_alt_lines(
                     pass
 
                 odds = await _fetch_event_odds(cx, sport_key, ev_id,
-                                                markets, db=db,
+                                                ev_markets, db=db,
                                                 event_commence_time=commence)
                 if not odds:
                     continue
@@ -721,6 +737,21 @@ def _flatten_odds(odds: dict, cfg_key: str, sport_key: str,
                 sel = o.get("description") or o.get("name") or ""
                 if not sel:
                     continue
+                # 2026-09-18 MLB PROP BOARD RECOVERY — persist the
+                # Over/Under (or Yes/No) direction.  Player-prop
+                # outcomes carry the player in ``description`` and the
+                # direction in ``name``; dropping ``name`` collapsed
+                # Over and Under into ONE cache row and the cache-first
+                # reconstruction then emitted direction-less outcomes
+                # that the fail-closed direction filter rejected →
+                # 0 MLB props on the board every cache-HIT cycle.
+                _side_raw = o.get("name")
+                side = (
+                    str(_side_raw).strip()
+                    if _side_raw and o.get("description")
+                    and str(_side_raw).strip().lower() != str(sel).strip().lower()
+                    else None
+                )
                 line = o.get("point")
                 try:
                     line = float(line) if line is not None else None
@@ -732,6 +763,8 @@ def _flatten_odds(odds: dict, cfg_key: str, sport_key: str,
                 except Exception:
                     price = None
                 composite = _composite_key(event_id, book, mkey, sel, line)
+                if side:
+                    composite = f"{composite}:{side.lower()}"
                 out.append({
                     "sport": sport,
                     "odds_api_sport": sport_key,
@@ -744,6 +777,7 @@ def _flatten_odds(odds: dict, cfg_key: str, sport_key: str,
                     "market_key": mkey,
                     "selection": sel,
                     "selection_norm": _norm(sel),
+                    "side": side,
                     "line": line,
                     "price": price,
                     "market_id": composite,

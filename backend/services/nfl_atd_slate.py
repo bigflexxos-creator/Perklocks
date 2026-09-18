@@ -14,6 +14,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+import logging
+
+logger = logging.getLogger("lockscore.nfl_atd_slate")
 
 ATD_MARKET_REGEX = r"Anytime\s*TD"
 
@@ -89,6 +92,74 @@ def _candidate_from_pick(p: dict, min_probability: float) -> Optional[dict]:
 _UNIVERSE_CACHE: dict[str, dict] = {}
 _UNIVERSE_TTL_S = 600.0
 _UNIVERSE_INFLIGHT: dict[str, "asyncio.Task"] = {}
+DURABLE_UNIVERSE_COLLECTION = "nfl_atd_universe_rows"
+
+
+def _durable_key(r: dict) -> str:
+    ev = str(r.get("canonical_event_id") or r.get("event") or "").strip()
+    pl = str(r.get("player_id") or r.get("canonical_player_id") or "").strip() \
+        or str(r.get("player_name") or "").strip().lower()
+    return f"{ev}::{pl}"
+
+
+async def _persist_durable_universe(db, rows: list[dict]) -> None:
+    """Upsert real provider-derived on-demand rows so the slate survives
+    provider snapshot gaps / TTL expiry / restarts.  Best-effort."""
+    try:
+        from pymongo import UpdateOne
+        now_iso = datetime.now(timezone.utc).isoformat()
+        ops = []
+        for r in rows:
+            k = _durable_key(r)
+            if not k or k.endswith("::"):
+                continue
+            doc = {kk: vv for kk, vv in r.items() if not kk.startswith("_")}
+            doc["_key"] = k
+            doc["persisted_at"] = now_iso
+            ops.append(UpdateOne({"_key": k}, {"$set": doc}, upsert=True))
+        if ops:
+            await db[DURABLE_UNIVERSE_COLLECTION].bulk_write(ops, ordered=False)
+        # Prune rows for games that kicked off more than 2 days ago.
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+        await db[DURABLE_UNIVERSE_COLLECTION].delete_many({"event_time": {"$lt": cutoff}})
+    except Exception as e:  # pragma: no cover
+        logger.debug("ATD durable universe persist skipped: %s", e)
+
+
+async def _load_durable_universe(db, cov: dict, min_event_time: str,
+                                 min_probability: float) -> list[dict]:
+    """Return persisted on-demand rows for still-upcoming games that are
+    not already canonically covered.  Empty on any failure."""
+    try:
+        rows = await db[DURABLE_UNIVERSE_COLLECTION].find(
+            {"event_time": {"$gte": min_event_time}}, {"_id": 0, "_key": 0},
+        ).to_list(length=5000)
+    except Exception as e:  # pragma: no cover
+        logger.debug("ATD durable universe load skipped: %s", e)
+        return []
+    out: list[dict] = []
+    for r in rows:
+        try:
+            if float(r.get("td_probability") or 0.0) < min_probability:
+                continue
+        except Exception:
+            continue
+        covered = False
+        for k in (r.get("event"), r.get("canonical_event_id")):
+            b = cov.get(k or "")
+            if b and (str(r.get("player_name") or "").strip().lower() in b["player_names"]
+                      or (r.get("player_id") or "") in b["player_ids"]):
+                covered = True
+                break
+        if covered:
+            continue
+        r["candidate_state"] = "ON_DEMAND"
+        r["provenance"] = "durable_universe"
+        r["odds_as_of"] = r.get("persisted_at")
+        out.append(r)
+    if out:
+        logger.info("ATD durable universe: served %d persisted rows (provider feed between snapshots)", len(out))
+    return out
 
 
 async def build_atd_universe(db, *, min_probability: float = 0.10) -> dict:
@@ -168,6 +239,21 @@ async def _build_atd_universe_uncached(db, *, min_probability: float = 0.10) -> 
                 r.setdefault("model_probability", r.get("td_probability"))
                 r.setdefault("player", r.get("player_name"))
                 r.setdefault("odds", r.get("book_odds"))
+            await _persist_durable_universe(db, on_demand)
+        else:
+            # ── ATD PERMANENT FIX (2026-09-18) — durable universe ──
+            # The live provider feed (`live_alt_lines`) snapshots 3×/day
+            # and its rows TTL out after 90 min, so between snapshots the
+            # on-demand expansion returned [] and the slate collapsed to
+            # the 1-2 canonical rows ("ATD section is broke again").
+            # Fall back to the last REAL provider-derived universe rows
+            # we persisted for still-upcoming games.  Nothing is
+            # fabricated: every row was emitted by the same engine from
+            # real book prices; `odds_as_of` exposes their age.
+            on_demand = await _load_durable_universe(
+                db, cov, min_event_time, float(min_probability or 0.0),
+            )
+        if on_demand:
             on_demand_count = len(on_demand)
             candidates = dedupe_atd_candidates(canonical, on_demand)
     except Exception:
@@ -240,6 +326,21 @@ async def build_atd_slate(db, *, min_probability: float = 0.10, top_n: int = 5,
             "top": rows[:top_n_per_game],
         })
     games.sort(key=lambda g: (g["state"] == "STARTED", g.get("commence_time") or "", g.get("event") or ""))
+
+    # Team logos from the ESPN team-meta cache (Mongo read only, fail-open).
+    try:
+        from services.espn_team_meta import lookup as _team_lookup
+        for g in games:
+            for side in ("home", "away"):
+                nm = g.get(f"{side}_team")
+                if not nm:
+                    continue
+                meta = await _team_lookup(db, str(nm).strip(), "NFL")
+                if meta:
+                    g[f"{side}_logo"] = meta.get("logo")
+                    g[f"{side}_abbrev"] = meta.get("abbreviation")
+    except Exception:
+        pass
 
     data_as_of = None
     for c in cands:
