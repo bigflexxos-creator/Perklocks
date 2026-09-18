@@ -1516,3 +1516,177 @@ def _explain_delta(old_wp: Optional[float], new_wp: Optional[float],
         ),
     }
 
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Session 10.4 · Soccer Existing-History Reconnect
+# ═══════════════════════════════════════════════════════════════════
+@router.get("/hydrated-history-trace")
+async def hydrated_history_trace(
+    user: Annotated[UserPublic, Depends(current_user)],
+    pick_id: Optional[str] = None,
+    universal_n: int = 9,
+):
+    """P0 runtime proof — for a real live pick, hydrate `PlayerEvidence`
+    via the shared hydrator and demonstrate stat_fields are populated
+    from the existing history stores."""
+    from datetime import datetime, timezone
+    from services.soccer_evidence_hydrator import hydrate_soccer_player_evidence
+    from services.soccer_player_authority import (
+        estimate_player_lambda, player_lock_authority, classify_authority,
+    )
+    from services.soccer_game_model import (
+        build_soccer_team_ctx, estimate_soccer_game_probabilities,
+    )
+    from services.soccer_transfer_registry import _parse_event_sides
+
+    db = _get_db()
+    now = datetime.now(timezone.utc)
+    target_q: dict = {"id": pick_id} if pick_id else {
+        "sport": "Soccer",
+        "market": {"$regex": r"Kane.*Anytime|Kane.*Goal Scorer",
+                    "$options": "i"},
+        "book_odds": {"$ne": None},
+        "event_time": {"$gte": now.isoformat()},
+    }
+    target = await db.picks.find_one(target_q, sort=[("event_time", 1)])
+    if not target:
+        return {"error": "no_target_pick_found", "query": target_q}
+
+    async def _trace(pk: dict, role: str = "target") -> dict:
+        player = _extract_player(pk.get("market") or "", pk.get("selection") or "")
+        event = pk.get("event") or ""
+        home, away = _parse_event_sides(event)
+        team_lambda = opp_def = None
+        player_side = None
+        try:
+            ctx = await build_soccer_team_ctx(
+                db, home_team=home or "", away_team=away or "",
+                league=pk.get("league") or "",
+            )
+            gout = estimate_soccer_game_probabilities(ctx, home or "", away or "")
+            if gout and gout.available:
+                th = (pk.get("team") or "").lower()
+                if th and home and th in home.lower():
+                    player_side = "home"; team_lambda = gout.lambda_home; opp_def = gout.lambda_away
+                elif th and away and th in away.lower():
+                    player_side = "away"; team_lambda = gout.lambda_away; opp_def = gout.lambda_home
+                elif gout.lambda_home >= gout.lambda_away:
+                    player_side = "home"; team_lambda = gout.lambda_home; opp_def = gout.lambda_away
+                else:
+                    player_side = "away"; team_lambda = gout.lambda_away; opp_def = gout.lambda_home
+        except Exception:
+            pass
+        implied = pk.get("implied_probability")
+        ev, source, row = await hydrate_soccer_player_evidence(
+            db,
+            player_name=player or "",
+            league=pk.get("league") or "",
+            canonical_player_id=pk.get("canonical_player_id"),
+            canonical_player_name=pk.get("canonical_player_name"),
+            aliases=pk.get("aliases") or [],
+            provider_player_name=player or "",
+            team=pk.get("team"), opponent=None, event_id=pk.get("id"),
+            is_home=(player_side == "home"),
+            book_odds=pk.get("book_odds"),
+            market_implied=(implied / 100.0 if implied else None),
+            devig_implied=(implied / 100.0 if implied else None),
+            team_lambda=team_lambda, opp_def_strength=opp_def,
+        )
+        auth = classify_authority(ev)
+        lam = estimate_player_lambda(ev)
+        la = player_lock_authority(
+            ev, model_prob=lam.get("atg_prob"),
+            devig_prob=ev.devig_implied,
+        )
+        return {
+            "role": role,
+            "pick_id": pk.get("id"),
+            "player": player,
+            "event": event,
+            "league": pk.get("league"),
+            "sportsbook": pk.get("bookmaker"),
+            "book_odds": pk.get("book_odds"),
+            "implied_pct": implied,
+            "OLD_production": {
+                "win_probability": pk.get("win_probability"),
+                "lock_score": pk.get("lock_score"),
+                "factors_present": bool(pk.get("factors")),
+                "rationale_present": bool(pk.get("pick_rationale")),
+            },
+            "resolver": {
+                "source": source,
+                "row_present": bool(row),
+                "goals": row.get("goals") if row else None,
+                "xg":    (row.get("xg") or row.get("xG")) if row else None,
+                "npxg":  (row.get("npxg") or row.get("npxG")) if row else None,
+                "shots": row.get("shots") if row else None,
+                "sot":   (row.get("shots_on_target") or row.get("sot")) if row else None,
+                "assists": row.get("assists") if row else None,
+                "minutes": row.get("minutes") if row else None,
+                "games":   (row.get("games") or row.get("matches") or row.get("appearances")) if row else None,
+                "season":  row.get("season") if row else None,
+            },
+            "player_evidence": {
+                "goals_per_90": ev.goals_per_90,
+                "xg_per_90": ev.xg_per_90,
+                "npxg_per_90": ev.npxg_per_90,
+                "shots_per_90": ev.shots_per_90,
+                "sot_per_90": ev.sot_per_90,
+                "assists_per_90": ev.assists_per_90,
+                "sample_matches": ev.sample_matches,
+                "team_lambda": ev.team_lambda,
+                "opp_def_strength": ev.opp_def_strength,
+                "evidence_families": ev.evidence_families,
+                "nonempty": any(v is not None for v in (
+                    ev.goals_per_90, ev.xg_per_90, ev.npxg_per_90,
+                    ev.shots_per_90, ev.sot_per_90)),
+            },
+            "NEW_reconnected": {
+                "authority": auth.value,
+                "authority_ceiling": la.reachable_max,
+                "ceiling_reasons": la.ceiling_reasons,
+                "lambda_player": lam.get("lambda_player"),
+                "atg_prob": lam.get("atg_prob"),
+                "base_family": lam.get("base_family"),
+            },
+            "verdict": "HISTORY_RECONNECTED" if row else "HISTORY_MISSING_FROM_STORE",
+        }
+
+    target_trace = await _trace(target, role="target")
+    picked_ids = {target["id"]}
+    universal_traces = []
+    async for p in db.picks.find({
+        "sport": "Soccer",
+        "market": {"$regex":
+            "Anytime Goal Scorer|Score or Assist|Shots on Target|Shots",
+            "$options": "i"},
+        "book_odds": {"$ne": None},
+        "event_time": {"$gte": now.isoformat()},
+        "publication_state": {"$ne": "OFF_BOARD"},
+    }).sort([("lock_score", -1)]).limit(80):
+        if len(universal_traces) >= universal_n: break
+        if p["id"] in picked_ids: continue
+        universal_traces.append(await _trace(p, role="universal"))
+        picked_ids.add(p["id"])
+    total = 1 + len(universal_traces)
+    reconciled = sum(
+        1 for t in [target_trace] + universal_traces
+        if t.get("verdict") == "HISTORY_RECONNECTED"
+        and t.get("player_evidence", {}).get("nonempty"))
+    return {
+        "as_of": now.isoformat(),
+        "kane_or_target": target_trace,
+        "universal": universal_traces,
+        "summary": {
+            "total_players_traced": total,
+            "history_reconnected":  reconciled,
+            "history_missing":      total - reconciled,
+            "reconnect_rate":       round(reconciled / total, 3) if total else None,
+        },
+        "note": ("Runtime proof that services.soccer_evidence_hydrator "
+                 "reuses services.soccer_feature_resolver.resolve_soccer_player_features "
+                 "and produces a nonempty PlayerEvidence when history exists. "
+                 "No new provider ingest. No Locks GET provider calls."),
+    }
+
