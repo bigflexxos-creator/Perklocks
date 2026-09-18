@@ -192,6 +192,8 @@ class PublishedPayload:
     feature_snapshot_version: str
     publication_source: str
     is_legacy: bool = False
+    # PROBABILITY AUTHORITY (2026-09-18) — additive, frozen with the snapshot.
+    probability_contract: Optional[dict] = None
     # MAGIC 3A.1 — first-class line preservation (default None so
     # older test fixtures/consumers don't need updates).
     # `published_side` is the deterministically-parsed side
@@ -230,6 +232,10 @@ class PublishedPayload:
             "validator_version": self.validator_version,
             "simulation_version": self.simulation_version,
             "feature_snapshot_version": self.feature_snapshot_version,
+            "probability_contract": self.probability_contract,
+            "raw_model_probability": (self.probability_contract or {}).get("raw_model_probability"),
+            "calibrated_probability": (self.probability_contract or {}).get("calibrated_probability"),
+            "calibrator_version": (self.probability_contract or {}).get("calibrator_version"),
             "published_at": published_at.isoformat(),
             "publication_source": self.publication_source,
             "is_legacy": self.is_legacy,
@@ -850,6 +856,21 @@ class PredictionPublicationService:
         )
 
     # ── Internals ───────────────────────────────────────────────
+    @staticmethod
+    def _probability_contract_for(candidate: dict) -> Optional[dict]:
+        """PROBABILITY AUTHORITY boundary.  Every NEW publication carries the
+        typed contract (raw/calibrated probability, versions, uncertainty,
+        eligibility).  Legacy backfills pass through untouched.  In
+        ``shadow`` mode the production win_probability is NOT altered."""
+        try:
+            existing = candidate.get("probability_contract")
+            if isinstance(existing, dict) and existing.get("authority_version"):
+                return existing
+            from services.probability_authority import evaluate
+            return evaluate(candidate).to_dict()
+        except Exception as e:  # never block publication on diagnostics
+            logger.debug("probability contract unavailable: %s", e)
+            return None
     def _build_payload(
         self, candidate: dict, publication_source: str,
     ) -> PublishedPayload:
@@ -968,6 +989,7 @@ class PredictionPublicationService:
             validator_version=_s("validator_version"),
             simulation_version=_s("simulation_version"),
             feature_snapshot_version=_s("feature_snapshot_version"),
+            probability_contract=self._probability_contract_for(candidate),
             publication_source=publication_source,
             is_legacy=(publication_source == "legacy_backfill"),
         )

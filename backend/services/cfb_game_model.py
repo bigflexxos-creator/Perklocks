@@ -321,8 +321,46 @@ def cfb_cover_probability(expected_margin: float, book_line: float,
 def cfb_over_probability(expected_total: float, book_line: float,
                          side_is_over: bool,
                          total_sigma: float = TOTAL_SIGMA_BASE) -> float:
-    z = (expected_total - book_line) / total_sigma
+    """Over/Under probability from the predictive total distribution.
+
+    PROBABILITY AUTHORITY (2026-09-18): ``total_sigma`` defaults to the
+    EMPIRICALLY FITTED out-of-sample residual sigma when the registry
+    holds one (see ``services.cfb_total_residuals``); otherwise the prior
+    constant.  Over + Under + Push are coherent: on integer lines the push
+    mass P(|T − line| < 0.5) is removed and the two sides are
+    complementary conditional on no push.
+    """
+    sigma = float(total_sigma)
+    if sigma == TOTAL_SIGMA_BASE:
+        try:
+            from services.cfb_total_residuals import empirical_total_sigma
+            sigma = empirical_total_sigma() or sigma
+        except Exception:
+            pass
+    # PROBABILITY CLOSURE (2026-09-18): the fixed-σ NORMAL confidence path
+    # is retired.  The predictive is the Student-t posterior predictive
+    # whose degrees of freedom = prior pseudo-count + verified out-of-sample
+    # residuals (services.cfb_total_residuals).  `sigma` (tier-blended
+    # prior) is the prior scale; it is never a cap.
+    try:
+        from services.cfb_total_residuals import predictive_total_over_probability
+        r = predictive_total_over_probability(float(expected_total), float(book_line), sigma)
+        p_over = r["p_over"]
+        return round(p_over if side_is_over else (1.0 - p_over), 4)
+    except Exception as _exc:  # scipy unavailable → legacy normal (logged)
+        import logging
+        logging.getLogger("lockscore.cfb_game_model").warning(
+            "student-t predictive unavailable, using normal: %s", _exc)
+    z = (expected_total - book_line) / sigma
     p_over = _norm_cdf(z)
+    if float(book_line).is_integer():
+        p_push = _norm_cdf((expected_total - book_line + 0.5) / sigma) - \
+                 _norm_cdf((expected_total - book_line - 0.5) / sigma)
+        p_over = _norm_cdf((expected_total - book_line - 0.5) / sigma)
+        denom = max(1e-9, 1.0 - p_push)
+        p_over = p_over / denom
+        p_under = (1.0 - p_push - p_over * denom) / denom
+        return round(p_over if side_is_over else p_under, 4)
     return round(p_over if side_is_over else (1.0 - p_over), 4)
 
 

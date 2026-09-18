@@ -17,7 +17,7 @@ import { View, Text, StyleSheet, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS } from "@/src/theme";
 import type { Pick, HistoricalIntelligenceResponse, HistoricalSummary } from "@/src/lib/api";
-import { HistoricalIntelligence } from "@/src/components/HistoricalIntelligence";
+import { HistoricalIntelligence, type HIFailure } from "@/src/components/HistoricalIntelligence";
 import { PlayerAvatar } from "@/src/components/PlayerAvatar";
 
 const fmtOdds = (o: any) => (o == null ? "—" : Number(o) > 0 ? `+${o}` : String(o));
@@ -28,13 +28,26 @@ function isPlayerProp(p: Pick): boolean {
   return !!(p.player_name || p.player_meta?.display_name || (p as any).canonical_player_id);
 }
 
-function coverageLabel(hi: HistoricalIntelligenceResponse | null): { label: string; tone: "ok" | "warn" | "muted" } {
+type HIState = { hi: HistoricalIntelligenceResponse | null; failure: HIFailure | null };
+
+function coverageLabel(s: HIState): { label: string; tone: "ok" | "warn" | "muted" } {
+  if (s.failure && !s.hi) return { label: "HISTORY QUERY FAILED", tone: "warn" };
+  const hi = s.hi;
   if (!hi) return { label: "LOADING", tone: "muted" };
+  if (hi.status === "SOURCE_UNAVAILABLE") return { label: "SOURCE UNAVAILABLE", tone: "warn" };
   const n = hi.data_coverage?.total_observations ?? 0;
   if (n === 0) return { label: "NO RECENT HISTORY", tone: "warn" };
   if (n < 5) return { label: "LIMITED SAMPLE", tone: "warn" };
   if (n >= 15) return { label: "STRONG DATA", tone: "ok" };
   return { label: "MODEL + HISTORY", tone: "ok" };
+}
+
+/** Text for an empty module — honest about WHY it is empty. */
+function emptyText(s: HIState, whenEmpty: string): string {
+  if (s.failure && !s.hi) return "HISTORY QUERY FAILED";
+  if (!s.hi) return "Loading…";
+  if (s.hi.status === "SOURCE_UNAVAILABLE") return "SOURCE UNAVAILABLE";
+  return whenEmpty;
 }
 
 function Module({ title, children, testID }: { title: string; children: React.ReactNode; testID?: string }) {
@@ -64,10 +77,13 @@ function summaryLine(s: HistoricalSummary | null | undefined, threshold: number 
 
 export function Intelligence2({ pick }: { pick: Pick }) {
   const [hi, setHi] = useState<HistoricalIntelligenceResponse | null>(null);
+  const [failure, setFailure] = useState<HIFailure | null>(null);
   const [expanded, setExpanded] = useState(true);
-  const onData = useCallback((d: HistoricalIntelligenceResponse) => setHi(d), []);
+  const onData = useCallback((d: HistoricalIntelligenceResponse) => { setHi(d); setFailure(null); }, []);
+  const onFailure = useCallback((f: HIFailure | null) => setFailure(f), []);
   const player = isPlayerProp(pick);
-  const cov = coverageLabel(hi);
+  const hiState: HIState = { hi, failure };
+  const cov = coverageLabel(hiState);
 
   const header = useMemo(() => {
     const ev = (pick as any).event || `${pick.away_team ?? ""} @ ${pick.home_team ?? ""}`;
@@ -133,11 +149,11 @@ export function Intelligence2({ pick }: { pick: Pick }) {
               <Stat k="AVG / MEDIAN" v={`${num(hi.mean)} / ${num(hi.median)}`} hint={hi.trend ? `trend ${hi.trend}` : undefined} />
             </>
           ) : (
-            <Text style={styles.missing}>{hi ? "NO RECENT HISTORY" : "Loading…"}</Text>
+            <Text style={styles.missing}>{emptyText(hiState, "NO RECENT HISTORY")}</Text>
           )}
         </Module>
         <Module title="MATCHUP" testID="intel2-matchup">
-          <Text style={styles.body}>{hi ? summaryLine(hi.opponent_summary, hi.current_threshold) : "Loading…"}</Text>
+          <Text style={styles.body}>{hi ? summaryLine(hi.opponent_summary, hi.current_threshold) : emptyText(hiState, "Loading…")}</Text>
           {hi?.opponent_summary?.note ? <Text style={styles.statHint}>{hi.opponent_summary.note}</Text> : null}
         </Module>
         <Module title="ENVIRONMENT" testID="intel2-env">
@@ -151,7 +167,7 @@ export function Intelligence2({ pick }: { pick: Pick }) {
               <Stat k="Q25 · MEDIAN · Q75" v={`${num(hi.q25)} · ${num(hi.median)} · ${num(hi.q75)}`} />
               <Stat k="STD DEV" v={num(hi.stddev, 2)} hint={hi.current_threshold != null ? `current line ${hi.current_threshold}` : undefined} />
             </>
-          ) : <Text style={styles.missing}>{hi ? "NO PRIOR SAMPLE" : "Loading…"}</Text>}
+          ) : <Text style={styles.missing}>{emptyText(hiState, "NO PRIOR SAMPLE")}</Text>}
         </Module>
       </View>
 
@@ -161,9 +177,10 @@ export function Intelligence2({ pick }: { pick: Pick }) {
         <Ionicons name={expanded ? "chevron-up" : "chevron-down"} size={16} color={COLORS.voltBlue} />
       </Pressable>
       {/* The HI card is ALWAYS mounted (hidden when collapsed) so the single
-          fetch drives header + modules — one evidence contract. */}
-      <View style={expanded ? styles.shown : styles.hidden}>
-        <HistoricalIntelligence pickId={pick.id} onData={onData} />
+          fetch drives header + modules — one evidence contract.  A query
+          failure force-expands the card so the RETRY control is reachable. */}
+      <View style={expanded || (failure && !hi) ? styles.shown : styles.hidden}>
+        <HistoricalIntelligence pickId={pick.id} onData={onData} onFailure={onFailure} />
       </View>
     </View>
   );

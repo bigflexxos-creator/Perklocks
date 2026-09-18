@@ -250,6 +250,10 @@ def simulate_nba_pick(pick: dict, recent_rows: list[dict] | None = None) -> Opti
     real_stats_used = 0
     real_lam = None
     real_sigma = None
+    minutes_mean = None
+    minutes_sd = None
+    closure_p = None
+    n_games_real = None
     _stat_key_by_cat = {
         "points":    "points",
         "rebounds":  "rebounds",
@@ -285,6 +289,16 @@ def simulate_nba_pick(pick: dict, recent_rows: list[dict] | None = None) -> Opti
             real_lam = max(0.5, mean)
             real_sigma = max(1.5, variance ** 0.5)
             real_stats_used = len(vals)
+            n_games_real = len(vals)
+            # PROBABILITY CLOSURE (2026-09-18) — minutes / role uncertainty.
+            # The stat distribution is conditioned on the player's minutes;
+            # minutes variance is a separate, explicit source of threshold
+            # uncertainty (rate × minutes_sd), never hidden inside σ.
+            _mins = [float(r.get("minutes")) for r in recent_rows[:10]
+                     if isinstance(r.get("minutes"), (int, float)) and float(r.get("minutes")) > 0]
+            if len(_mins) >= 3:
+                minutes_mean = sum(_mins) / len(_mins)
+                minutes_sd = (sum((m - minutes_mean) ** 2 for m in _mins) / len(_mins)) ** 0.5
             # Additional independent signals — minutes stability, pace,
             # usage, rest days — collected via the existing
             # nba_feature_engine helpers so we don't duplicate logic.
@@ -309,13 +323,21 @@ def simulate_nba_pick(pick: dict, recent_rows: list[dict] | None = None) -> Opti
         lam = _calibrate_lambda(threshold, model_wp, is_under, count_dist=count_dist)
         lam *= _factor_adjustment(pick, cat)
 
+    role_cv = (minutes_sd / minutes_mean) if (minutes_mean and minutes_sd) else 0.0
     if count_dist == "normal":
         if real_lam is None:
             sigma = max(2.0, math.sqrt(lam) * 1.5)
-        # Vectorised — clip to non-negative integer counts.
-        distribution = np.clip(np.round(np.random.normal(lam, sigma, RUNS)), 0, None).astype(int)
+        # Vectorised — clip to non-negative integer counts.  Role/minutes
+        # variance widens the sampled distribution: σ_total² = σ² + (λ·cv)².
+        sigma_total = math.sqrt(sigma ** 2 + (lam * role_cv) ** 2) if role_cv else sigma
+        distribution = np.clip(np.round(np.random.normal(lam, sigma_total, RUNS)), 0, None).astype(int)
     else:
-        distribution = np.random.poisson(lam, RUNS)
+        if role_cv:
+            # Gamma-Poisson mixture: per-run rate scaled by a minutes multiplier.
+            mult = np.clip(np.random.normal(1.0, role_cv, RUNS), 0.05, None)
+            distribution = np.random.poisson(lam * mult)
+        else:
+            distribution = np.random.poisson(lam, RUNS)
 
     if is_under:
         wins = int(np.sum(distribution < threshold))
@@ -323,6 +345,19 @@ def simulate_nba_pick(pick: dict, recent_rows: list[dict] | None = None) -> Opti
         wins = int(np.sum(distribution > threshold))
     n = RUNS
     p_win = wins / n
+    # Closed-form threshold probability (Student-t, df = n_games − 1, role
+    # variance folded in) for the EMPIRICAL branch — this is the
+    # probability the authority audits; MC stays for percentiles/alt lines.
+    if real_lam is not None and count_dist == "normal":
+        try:
+            from services.probability_closures import nba_threshold_probability
+            closure_p = nba_threshold_probability(
+                real_lam, real_sigma, threshold, "under" if is_under else "over",
+                minutes_mean=minutes_mean, minutes_sd=minutes_sd, n_games=n_games_real,
+            )["p"]
+            p_win = closure_p
+        except Exception:
+            closure_p = None
     ci_lo, ci_hi = _wilson_ci(p_win, n)
     sim_wp_pct = round(p_win * 100, 1)
     disagreement = round(sim_wp_pct - model_wp * 100, 2)
@@ -351,6 +386,16 @@ def simulate_nba_pick(pick: dict, recent_rows: list[dict] | None = None) -> Opti
         "sim_market_category": cat,
         "sim_disagreement_with_model": disagreement,
         "sim_signal": _signal(disagreement),
+        # PROBABILITY CLOSURE provenance — consumed by
+        # services.probability_closures.nba_player_closure (authority).
+        "sim_distribution": ("student_t_role_var" if (real_lam is not None and count_dist == "normal")
+                             else "gamma_poisson" if role_cv else count_dist),
+        "sim_role_cv": round(role_cv, 4),
+        "sim_closed_form_probability": round(closure_p * 100, 2) if closure_p is not None else None,
+        **({"projection_mean": round(real_lam, 3), "projection_sd": round(real_sigma, 3),
+            "sample_games": n_games_real,
+            "minutes_projection": round(minutes_mean, 2) if minutes_mean else None,
+            "minutes_sd": round(minutes_sd, 2) if minutes_sd else None} if real_lam is not None else {}),
         # Risk Meter — P10/P25/P50/P75/P90 of the projected stat
         # distribution plus where the line sits within it.
         **compute_percentiles(distribution, threshold=threshold),

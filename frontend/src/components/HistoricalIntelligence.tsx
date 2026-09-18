@@ -19,7 +19,7 @@ import {
 } from "react-native";
 import Svg, { Circle, Line } from "react-native-svg";
 import { COLORS } from "@/src/theme";
-import { api, HistoricalIntelligenceResponse, HistoricalObservation } from "@/src/lib/api";
+import { api, getBackendUrl, HistoricalIntelligenceResponse, HistoricalObservation } from "@/src/lib/api";
 
 type SampleScope = "L5" | "L10" | "L20" | "SEASON";
 type VenueScope  = "ALL" | "HOME" | "AWAY";
@@ -188,13 +188,36 @@ const MARKET_LABEL: Record<string, string> = {
 };
 
 // ─── Component ──────────────────────────────────────────────────────
+export type HIFailure = { message: string; status?: number; kind?: string; origin: string };
+
+function _describeFailure(e: any): HIFailure {
+  let origin = "";
+  try { origin = getBackendUrl() || "same-origin"; } catch { origin = "unconfigured"; }
+  const raw = String(e?.message || "");
+  let message = raw;
+  // 503 bodies carry {status:"QUERY_FAILED", message:...} (JSON-stringified by request()).
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && parsed.message) message = String(parsed.message);
+  } catch {}
+  if (e?.kind === "TIMEOUT") message = "History request timed out";
+  else if (e?.kind === "NETWORK_OFFLINE" || /network request failed/i.test(raw)) message = "Network unreachable";
+  else if (!message) message = "Historical Intelligence temporarily unavailable";
+  return { message, status: e?.status, kind: e?.kind, origin };
+}
+
 export function HistoricalIntelligence({
   pickId,
   onData,
-}: { pickId: string; onData?: (d: HistoricalIntelligenceResponse) => void }) {
+  onFailure,
+}: {
+  pickId: string;
+  onData?: (d: HistoricalIntelligenceResponse) => void;
+  onFailure?: (f: HIFailure | null) => void;
+}) {
   const [data, setData]         = useState<HistoricalIntelligenceResponse | null>(null);
   const [loading, setLoading]   = useState(true);
-  const [error, setError]       = useState<string | null>(null);
+  const [failure, setFailure]   = useState<HIFailure | null>(null);
   const [tab, setTab]           = useState<Tab>("logs");
   const [sample, setSample]     = useState<SampleScope>("L10");
   const [venue, setVenue]       = useState<VenueScope>("ALL");
@@ -202,7 +225,8 @@ export function HistoricalIntelligence({
   const load = useCallback(async (opts: { sample?: SampleScope; venue?: VenueScope } = {}) => {
     const s = opts.sample ?? sample;
     const v = opts.venue  ?? venue;
-    setLoading(true); setError(null);
+    setLoading(true); setFailure(null);
+    try { onFailure?.(null); } catch {}
     try {
       const r = await api.historicalIntelligence(pickId, {
         sampleScope: s, venueScope: v,
@@ -210,11 +234,15 @@ export function HistoricalIntelligence({
       setData(r);
       try { onData?.(r); } catch {}
     } catch (e: any) {
-      setError(e?.message || "Historical Intelligence temporarily unavailable");
+      // QUERY_FAILED — the history source was NOT consulted successfully.
+      // Never collapse this into "NO RECENT HISTORY".
+      const f = _describeFailure(e);
+      setFailure(f);
+      try { onFailure?.(f); } catch {}
     } finally {
       setLoading(false);
     }
-  }, [pickId, sample, venue, onData]);
+  }, [pickId, sample, venue, onData, onFailure]);
 
   useEffect(() => { void load(); }, [pickId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -237,11 +265,20 @@ export function HistoricalIntelligence({
       </View>
     );
   }
-  if (error) {
+  if (failure && !data) {
     return (
-      <View style={styles.card}>
+      <View style={styles.card} testID="hi-query-failed">
         <Text style={styles.title}>HISTORICAL INTELLIGENCE</Text>
-        <Text style={styles.dim}>{error}</Text>
+        <View style={styles.emptyPad}>
+          <Text style={styles.failTitle}>HISTORY QUERY FAILED</Text>
+          <Text style={styles.dim}>{failure.message}</Text>
+          <Text style={[styles.dim, { fontSize: 10, marginTop: 4 }]}>
+            {`${failure.kind || (failure.status ? `HTTP ${failure.status}` : "ERROR")} · ${failure.origin}`}
+          </Text>
+          <Pressable onPress={() => void load()} style={styles.retryBtn} hitSlop={8} testID="hi-retry">
+            <Text style={styles.retryTxt}>RETRY</Text>
+          </Pressable>
+        </View>
       </View>
     );
   }
@@ -253,6 +290,7 @@ export function HistoricalIntelligence({
   const line   = data.current_threshold;
   const familyLabel = MARKET_LABEL[family] || (family || "Market").toUpperCase();
   const supportsHomeAway = !isTennis(sport);
+  const hiStatus = data.status || (data.data_coverage.total_observations > 0 ? "AVAILABLE_WITH_DATA" : "AVAILABLE_EMPTY");
 
   return (
     <View style={styles.card}>
@@ -298,11 +336,22 @@ export function HistoricalIntelligence({
           <ActivityIndicator color={COLORS.voltBlue} size="small" />
         </View>
       )}
+      {failure && !loading && (
+        <Pressable onPress={() => void load()} style={styles.failBanner} testID="hi-query-failed-inline">
+          <Text style={styles.failBannerTxt}>{`HISTORY QUERY FAILED · ${failure.message} · TAP TO RETRY`}</Text>
+        </Pressable>
+      )}
+      {hiStatus === "SOURCE_UNAVAILABLE" && (
+        <View style={styles.emptyPad} testID="hi-source-unavailable">
+          <Text style={styles.failTitle}>HISTORY SOURCE UNAVAILABLE</Text>
+          <Text style={styles.dim}>No verified history source exists yet for this sport / market.</Text>
+        </View>
+      )}
 
-      {tab === "logs"        && <GameLogsTab data={data} />}
-      {tab === "vsopp"       && <VsOppTab data={data} />}
-      {tab === "splits"      && <SplitsTab data={data} supportsHomeAway={supportsHomeAway} />}
-      {tab === "distribution"&& <DistributionTab data={data} />}
+      {hiStatus !== "SOURCE_UNAVAILABLE" && tab === "logs"        && <GameLogsTab data={data} />}
+      {hiStatus !== "SOURCE_UNAVAILABLE" && tab === "vsopp"       && <VsOppTab data={data} />}
+      {hiStatus !== "SOURCE_UNAVAILABLE" && tab === "splits"      && <SplitsTab data={data} supportsHomeAway={supportsHomeAway} />}
+      {hiStatus !== "SOURCE_UNAVAILABLE" && tab === "distribution"&& <DistributionTab data={data} />}
 
       {/* Provenance / proxy footer */}
       {data.games.some((g: any) => g.context?.proxy) ? (
@@ -314,6 +363,9 @@ export function HistoricalIntelligence({
       ) : null}
       <Text style={styles.provenance}>
         {`${data.data_coverage.total_observations} historical observations · ${data.provenance.join(", ")}${data.latency_ms ? `  ·  ${data.latency_ms.toFixed(0)}ms` : ""}`}
+      </Text>
+      <Text style={styles.provenance} testID="hi-status-line">
+        {`${hiStatus} · ${data.scope.sample_scope} n=${data.sample_size}/${data.data_coverage.total_observations}${data.served_by?.host ? ` · src ${data.served_by.host}` : ""}`}
       </Text>
     </View>
   );
@@ -783,6 +835,18 @@ const styles = StyleSheet.create({
   chartCaption: { color: COLORS.textMuted, fontSize: 10, marginTop: 4 },
 
   emptyPad: { paddingVertical: 22, alignItems: "center" },
+  failTitle: { color: COLORS.electricBlaze, fontSize: 11, fontWeight: "900", letterSpacing: 0.8 },
+  retryBtn: {
+    marginTop: 12, minHeight: 44, minWidth: 120, paddingHorizontal: 18,
+    alignItems: "center", justifyContent: "center", borderRadius: 10,
+    borderWidth: 1, borderColor: COLORS.voltBlue,
+  },
+  retryTxt: { color: COLORS.voltBlue, fontSize: 11, fontWeight: "900", letterSpacing: 0.8 },
+  failBanner: {
+    marginTop: 8, minHeight: 44, justifyContent: "center", paddingHorizontal: 10,
+    borderRadius: 8, borderWidth: 1, borderColor: COLORS.electricBlaze,
+  },
+  failBannerTxt: { color: COLORS.electricBlaze, fontSize: 10.5, fontWeight: "800", letterSpacing: 0.4 },
 
   provenance: {
     color: COLORS.textMuted, fontSize: 9, marginTop: 10,

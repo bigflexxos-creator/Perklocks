@@ -104,10 +104,32 @@ class HistoricalResponse:
     context_summary:  Optional[dict[str, Any]]
     data_coverage:  dict[str, Any]
     provenance:     list[str]
+    # Honest availability semantics (P0 2026-09-18).  Never conflate
+    # "the source answered and had nothing" with "no source" / "the
+    # source crashed".  QUERY_FAILED is never returned inside a 200 —
+    # see HistoricalQueryFailed.
+    status:         str = "AVAILABLE_EMPTY"   # AVAILABLE_WITH_DATA | AVAILABLE_EMPTY | SOURCE_UNAVAILABLE
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         return d
+
+
+HI_STATUS_WITH_DATA = "AVAILABLE_WITH_DATA"
+HI_STATUS_EMPTY = "AVAILABLE_EMPTY"
+HI_STATUS_SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
+HI_STATUS_QUERY_FAILED = "QUERY_FAILED"
+
+
+class HistoricalQueryFailed(Exception):
+    """Raised when the sport adapter crashed (DB / network / code).
+    The route maps this to HTTP 503 + status=QUERY_FAILED so clients
+    retry and render a failure state — never a false 'no history'."""
+
+    def __init__(self, sport: str, err: BaseException):
+        super().__init__(f"historical adapter {sport} failed: {err}")
+        self.sport = sport
+        self.err = err
 
 
 # ---------------------------------------------------------------------------
@@ -277,16 +299,22 @@ async def query_historical(db, q: HistoricalQuery) -> HistoricalResponse:
     all_obs: list[HistoricalObservation] = []
     # P2.1 — provenance is USER-FACING: describe the data source of the
     # observations, never a Python class / Mongo collection name.
+    status = HI_STATUS_EMPTY
     if adapter is None:
         provenance.append("DATA TEMPORARILY UNAVAILABLE")
+        status = HI_STATUS_SOURCE_UNAVAILABLE
     else:
         try:
             all_obs = await adapter.fetch_observations(db, q) or []
             _src = sorted({str(o.provenance) for o in all_obs if o.provenance})
             provenance.extend(_src[:3] if _src else (["NO RECENT HISTORY"] if not all_obs else ["verified match history"]))
+            status = HI_STATUS_WITH_DATA if all_obs else HI_STATUS_EMPTY
         except Exception as _err:
+            # P0 false-empty closure: a crashed adapter used to be returned
+            # as a 200 with 0 observations ("NO RECENT HISTORY").  That is
+            # a lie — the DB was never successfully consulted.  Fail loud.
             logger.warning("adapter %s failed: %s", q.sport, _err, exc_info=True)
-            provenance.append("DATA TEMPORARILY UNAVAILABLE")
+            raise HistoricalQueryFailed(q.sport, _err) from _err
 
     venue_filtered = _apply_venue_scope(all_obs, q.venue_scope)
     scoped = _apply_sample_scope(venue_filtered, q.sample_scope)
@@ -393,6 +421,7 @@ async def query_historical(db, q: HistoricalQuery) -> HistoricalResponse:
         context_summary=context_summary,
         data_coverage=data_coverage,
         provenance=provenance,
+        status=status,
     )
 
 

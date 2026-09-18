@@ -135,6 +135,9 @@ class PublicationState(str, enum.Enum):
 
 class RejectionReason(str, enum.Enum):
     SYNTHETIC_BOOK_ODDS         = "SYNTHETIC_BOOK_ODDS"
+    # PROBABILITY AUTHORITY (2026-09-18)
+    BOOK_IMPLIED_SEED           = "BOOK_IMPLIED_SEED"
+    PROBABILITY_AUTHORITY_INELIGIBLE = "PROBABILITY_AUTHORITY_INELIGIBLE"
     NO_REAL_LINE_WITH_ODDS      = "NO_REAL_LINE_WITH_ODDS"
     SYNTHETIC_EDGE              = "SYNTHETIC_EDGE"
     MISSING_MODEL_PROVENANCE    = "MISSING_MODEL_PROVENANCE"
@@ -350,6 +353,29 @@ def evaluate_publication(pick: dict) -> BoundaryVerdict:
         if pick.get("model_line") is True:
             reasons.append(
                 RejectionReason.MODEL_LINE_NOT_REAL_OFFERING.value)
+        # ── PROBABILITY AUTHORITY fail-closed (2026-09-18) ──────────
+        # A sportsbook-implied SEED is not a model probability.  Any
+        # candidate whose probability_source is still a seed (NBA game
+        # markets before sim promotion, or any sport) can NEVER publish.
+        _psrc = str(pick.get("probability_source") or "").lower()
+        if _psrc.startswith(("book_implied_seed", "book_implied", "implied_seed", "market_seed")):
+            reasons.append(RejectionReason.BOOK_IMPLIED_SEED.value)
+        _pc = pick.get("probability_contract")
+        if isinstance(_pc, dict) and _pc.get("publication_eligible") is False:
+            reasons.append(RejectionReason.PROBABILITY_AUTHORITY_INELIGIBLE.value)
+        elif not isinstance(_pc, dict):
+            # Contract not yet stamped → evaluate inline for INTEGRITY
+            # reasons only (independent of shadow/active calibration mode):
+            # a player confirmed OUT can never be a publishable prop.
+            try:
+                from services.probability_authority import evaluate as _pa_eval
+                _c = _pa_eval(pick)
+                if not _c.publication_eligible and _c.fallback_reason in (
+                        "LINEUP_OUT", "BOOK_IMPLIED_SEED_NOT_PUBLISHABLE"):
+                    reasons.append(RejectionReason.PROBABILITY_AUTHORITY_INELIGIBLE.value)
+                    pick.setdefault("probability_fallback_reason", _c.fallback_reason)
+            except Exception:
+                pass
         # Additional model-source guard: even without ``model_line``
         # a producer that tags ``model_source`` starting with the
         # synthesized-line prefixes must be rejected.  Keeps future
