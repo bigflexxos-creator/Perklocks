@@ -294,3 +294,20 @@ Continuous surgical NFL build.  Additive READ-path UX only.
 - **147**: iteration_147.json — board manifest COMMITTED & stable (0 flaps), HI Trevor Lawrence AVAILABLE_WITH_DATA 10/10,
   Rush/Rec/Receptions HI 200 with status, 503 on /picks/today keeps cards visible, warm tab switching no spinners.
   Known minor: dev-only red-box "Unexpected text node: ." from `src/components/StrategyLabWorkstation.tsx:149` (Lab tab, pre-existing).
+
+## NATIVE PERFORMANCE CLOSURE (iteration 148, 2026-09-18) — frontend only
+- MLB live: `src/contexts/MLBLiveContext.tsx` → module-level external store (`_publish/_subscribe`), `useMLBLive` uses
+  `useSyncExternalStore` with a keyed selector + `_sameGame` identity guard; non-MLB cards pass null → constant snapshot.
+  Provider still polls 60s (visibility-paused); context value now only {lookup, refresh} and never changes on poll.
+- Featured hero: `src/lib/featuredStore.ts` (`setFeaturedPickId`, `useIsFeatured`); `listRows` deps = [dayGroups] only;
+  rotation effect sets store id; `LockPickCard` derives `featured` via keyed subscription. Proof: 15s (2 rotations + poll)
+  → 3 of 59 mounted cards re-rendered, total renders 60→64.
+- Cache authority: `src/lib/serverStateKeys.ts` canonical keys; `_picksMem/_statsMem` in index.tsx are adapters over
+  `picks|lite|{sport}` / `profile|stats`; PICKS_CACHE_KEY AsyncStorage hydrates the SWR resource; `useBoardCursor` seeds
+  from / writes (complete page only) to `picks|lite|{sport}`; `swrCacheTs`, bounded TTL sweep (40 entries / 10 min) for
+  `pick-detail|` and `historical-intelligence|` keys. pick/[id].tsx + HistoricalIntelligence seed from cache, revalidate quietly.
+- Prefetch: `preloadPrimaryTabs` seeds Rollover, Parlay (user prefs key), My Bets, Profile via Promise.allSettled (4/4 fire).
+- Dedupe proof: boot 17 API reqs, tab loop 1 = 12, loop 2 = 0 (all warm), no URL requested >3×.
+- getItemLayout: SKIPPED (variable-height cards: featured atmosphere, tiers, live rows).
+- Dev telemetry: `window.__lockCardRenders`, `__lockCardRendersById` (DEV only). StrategyLabWorkstation boolean coercions
+  added for the dev red-box (not reproduced after fix).

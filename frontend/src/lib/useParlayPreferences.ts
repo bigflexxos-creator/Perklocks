@@ -36,7 +36,7 @@ import type { SportsbookId } from "@/src/lib/sportsbookLinks";
 // `legs`, `lineType`).  The legacy `-v1` key stays wiped only by
 // the cachebust; we do NOT delete it here so a downgrade path can
 // still read its own state.
-const STORAGE_KEY = "@perkslocks/parlay-prefs-v2";
+export const STORAGE_KEY = "@perkslocks/parlay-prefs-v2";
 const LEGACY_STORAGE_KEY_V1 = "@perkslocks/parlay-prefs-v1";
 
 export type SportMode = "auto" | "custom" | "single";

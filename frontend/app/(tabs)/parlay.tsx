@@ -46,15 +46,7 @@ const CARD_TAGLINES: Record<ParlayCard["label"], string> = {
 // to inputs (mode/legs/sport/etc.) that has never been resolved
 // triggers the skeleton state.
 type ParlaySnapshot = { parlays: ParlayCard[]; reason: string };
-const _parlayKey = (
-  n: number, m: string, s: string, lt: string,
-  incl: string[], excl: string[], f: any, r: number,
-  locked: string[], sMode: string, wHours: number, nonce: number,
-  advSub?: string,
-) =>
-  `parlay|${n}|${m}|${s}|${lt}|${incl.join(",")}|${excl.join(",")}|`
-  + `${JSON.stringify(f || {})}|${r}|${locked.join(",")}|`
-  + `${sMode}|${wHours}|${nonce}|${advSub || ""}`;
+import { parlayKey as _parlayKey } from "@/src/lib/serverStateKeys";
 
 // Health grade → colour
 const GRADE_TINT: Record<string, string> = {

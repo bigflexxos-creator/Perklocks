@@ -6,6 +6,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { COLORS, GRADE_COLORS } from "@/src/theme";
+import { swrCacheRead, swrCacheWrite } from "@/src/lib/useSWR";
+import { pickDetailKey } from "@/src/lib/serverStateKeys";
 import { api, Pick } from "@/src/lib/api";
 import { useBetSlip, MAX_SLIP_SIZE } from "@/src/contexts/BetSlipContext";
 import { formatGameTime } from "@/src/lib/formatGameTime";
@@ -30,8 +32,11 @@ export default function PickDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const slip = useBetSlip();
-  const [pick, setPick] = useState<Pick | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Native perf closure — detail cached under a canonical SWR key so
+  // back → reopen paints immediately and revalidates quietly.
+  const _detailSeed = id ? swrCacheRead<any>(pickDetailKey(String(id))) : undefined;
+  const [pick, setPick] = useState<Pick | null>(_detailSeed ?? null);
+  const [loading, setLoading] = useState(_detailSeed === undefined);
   const [aiLoading, setAiLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const shareCardRef = useRef<View>(null);
@@ -78,6 +83,7 @@ export default function PickDetail() {
         const p = await api.pickDetail(id);
         if (cancelled) return;
         setPick(p);
+        swrCacheWrite(pickDetailKey(String(id)), p);
         setLoading(false);
         // If the pick hasn't been AI-enriched yet, kick off the upgrade.
         if ((p as any).ai_pending) {
