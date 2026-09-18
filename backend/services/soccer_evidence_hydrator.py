@@ -119,6 +119,41 @@ async def hydrate_soccer_player_evidence(
     assists_p90= row.get("assists_per_90")or _to_per_90(assists, minutes)
     kp_p90     = row.get("key_passes_per_90") or _to_per_90(kp, minutes)
 
+    # ── P1.2 PRIOR-SEASON SHRINKAGE ─────────────────────────────────
+    # When the resolver selected CURRENT-season evidence and attached the
+    # player's own prior-season row, the current per-90 rates are shrunk
+    # toward the player's PRIOR rates (minutes-weighted, prior capped at
+    # 900 minutes of support) instead of toward a league-average scorer.
+    # The prior SUPPORTS the estimate; it never replaces current evidence.
+    prior = row.get("prior_season_form") if isinstance(row.get("prior_season_form"), dict) else None
+    prior_shrink_meta = None
+    if prior and row.get("form_freshness") == "CURRENT_SEASON":
+        p_min = float(prior.get("minutes") or 0)
+        cur_min = float(minutes or 0)
+        if p_min >= 450 and cur_min > 0:
+            w_prior = min(p_min, 900.0)
+            w_cur = cur_min
+            def _blend(cur_rate, prior_total):
+                pr = _to_per_90(prior_total, p_min)
+                if cur_rate is None and pr is None:
+                    return None
+                if cur_rate is None:
+                    return pr
+                if pr is None:
+                    return cur_rate
+                return (cur_rate * w_cur + pr * w_prior) / (w_cur + w_prior)
+            goals_p90 = _blend(goals_p90, prior.get("goals"))
+            xg_p90    = _blend(xg_p90,    prior.get("xg"))
+            shots_p90 = _blend(shots_p90, prior.get("shots"))
+            xa_p90    = _blend(xa_p90,    prior.get("xa"))
+            assists_p90 = _blend(assists_p90, prior.get("assists"))
+            npxg_p90  = _blend(npxg_p90,  prior.get("xg")) if npxg_p90 is not None else npxg_p90
+            # Combined evidence size = current matches + supported prior matches.
+            prior_games = int(prior.get("games") or 0)
+            matches = int(matches or 0) + min(prior_games, 10)
+            prior_shrink_meta = {"prior_season": prior.get("season"), "prior_minutes": p_min,
+                                 "prior_games": prior_games, "w_prior": w_prior, "w_cur": w_cur}
+
     # Provenance families — tag every family that had SOMETHING real.
     families = ["market_context"] if book_odds is not None else []
     if any(v is not None for v in (xg_p90, npxg_p90, goals_p90, shots_p90)):
@@ -152,6 +187,8 @@ async def hydrate_soccer_player_evidence(
         missing_flags=[k for k in ("xg","npxg","assists","xa","shots","sot")
                         if row.get(k) is None and row.get(f"{k}_per_90") is None],
     )
+    if prior_shrink_meta:
+        row = dict(row); row["prior_season_shrinkage"] = prior_shrink_meta
     return ev, source, row
 
 

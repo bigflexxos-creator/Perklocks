@@ -2,13 +2,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   View, Text, StyleSheet, FlatList, RefreshControl,
   ActivityIndicator, Pressable, TouchableOpacity, Animated, Easing,
-  AppState, Platform,
+  Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS, SPORTS } from "@/src/theme";
-import { api, Pick, LineType, SortKey, SortDirection, PickFilters } from "@/src/lib/api";
+import { api, Pick, LineType, SortKey, SortDirection, PickFilters, getBackendUrl, noteTruthManifest } from "@/src/lib/api";
 import { LockBoardCard } from "@/src/components/LockBoardCard";
 import { ChipRow } from "@/src/components/ChipRow";
 import { FilterButton, FilterSheet } from "@/src/components/FilterSheet";
@@ -26,6 +26,7 @@ import { useFilters } from "@/src/stores/useFilters";
 import { classifyError, ErrorKind, ErrorKindT, ERROR_COPY, isSilentError } from "@/src/lib/errorTaxonomy";
 import perf, { recordMountedRowCount } from "@/src/lib/perfHUD";
 import { DevPerfHUD } from "@/src/components/DevPerfHUD";
+import { subscribeConnectivity } from "@/src/lib/connectivity";
 
 const PREFS_KEY = "locks_feed_prefs_v2";
 type FeedPrefs = { sport?: string; sortKey?: SortKey; lineType?: LineType };
@@ -44,9 +45,12 @@ type FeedPrefs = { sport?: string; sortKey?: SortKey; lineType?: LineType };
 // never restores the wrong sport. Cache is display-only; the fresh
 // fetch always wins if it lands with data. Zero backend / scorer /
 // pipeline changes.
-const PICKS_CACHE_KEY = "locks_picks_cache_v1";
+// P0.7 — cache identity includes the API origin + board_version so a
+// slate from another backend / another publication can never be shown
+// as current.  Restored data is flagged STALE until a fresh read lands.
+const PICKS_CACHE_KEY = "locks_picks_cache_v2";
 const PICKS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-type PicksCache = { sport: string; picks: Pick[]; ts: number };
+type PicksCache = { sport: string; picks: Pick[]; ts: number; origin?: string; boardVersion?: string | null };
 
 // ── 2026-08-27 PERKLOCKS SURGICAL PERF FIX ─────────────────────────
 // Module-scope caches — survive tab-navigation unmounts (React
@@ -163,6 +167,9 @@ export default function LocksScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [stats, setStats] = useState<{ total_picks: number; elite_count: number; avg_edge_percent: number } | null>(_statsMem?.data ?? null);
   const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
+  // P0.7 — canonical board identity of the slate on screen + stale flag.
+  const [boardVersion, setBoardVersion] = useState<string | null>(null);
+  const [slateStale, setSlateStale] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   // Alt-line availability diagnostic (2026-07-13). Populated by the
   // backend when the ALT tab is empty for a sport that the book doesn't
@@ -223,9 +230,16 @@ export default function LocksScreen() {
         // what the user is about to view. Prevents "NFL under MLB"
         // flashes on sport switch.
         if (c.sport !== sport) return;
+        // P0.7 — never restore a slate that belongs to another API origin.
+        let _origin = "";
+        try { _origin = getBackendUrl(); } catch {}
+        if (c.origin && _origin && c.origin !== _origin) return;
         // Only rehydrate if we don't already have fresh picks in memory.
         if (picksRef.current.length > 0) return;
         setPicks(c.picks);
+        setBoardVersion(c.boardVersion ?? null);
+        setLastLoadedAt(c.ts ? new Date(c.ts) : null);
+        setSlateStale(true);
         lastLoadedForSportRef.current = c.sport;
       } catch { /* corrupt cache — ignore */ }
     })();
@@ -586,6 +600,9 @@ export default function LocksScreen() {
       // filter by event_time here because player props for in-progress
       // games (e.g. batter Over 0.5 Hits) are still legitimate locks
       // that the user wants to see on the slate even after first pitch.
+      // P0.5/P0.7 — adopt the canonical board identity from the response.
+      const _bv: string | null = (picksRes as any).board_version ?? (picksRes as any).truth_manifest?.board_version ?? null;
+      noteTruthManifest((picksRes as any).truth_manifest);
       let fresh = (picksRes.picks || []).filter((p: any) => p.sport !== "KBO");
       // Sport-mismatch guard (uses requestedSport declared at top of try block)
       if (requestedSport && requestedSport.toLowerCase() !== "all") {
@@ -618,14 +635,20 @@ export default function LocksScreen() {
       }
       perfMark.step("commit");
       setPicks(fresh);
+      setBoardVersion(_bv);
+      setSlateStale(false);
       lastLoadedForSportRef.current = requestedSport;
       _picksMem.set(requestedSport, { picks: fresh, ts: Date.now() });
       if (fresh.length > 0) {
         try {
+          let _origin = "";
+          try { _origin = getBackendUrl(); } catch {}
           const cache: PicksCache = {
             sport: requestedSport,
             picks: fresh.slice(0, 200),
             ts: Date.now(),
+            origin: _origin,
+            boardVersion: _bv,
           };
           storage.setItem(PICKS_CACHE_KEY, JSON.stringify(cache));
         } catch { /* storage full / serialize err — silent */ }
@@ -665,6 +688,8 @@ export default function LocksScreen() {
       }
       // Only commit the error banner if this call is still the newest.
       if (myToken === latestLoadTokenRef.current) {
+        // P0.11 — keep last-good visible, but mark it STALE explicitly.
+        if (picksRef.current.length > 0) setSlateStale(true);
         setErrorKind(kind);
         const copy = ERROR_COPY[kind];
         // Never leak "Connection Hiccup" for anything other than a
@@ -791,17 +816,16 @@ export default function LocksScreen() {
   //   Fix: subscribe to AppState. On every "active" transition, force
   //   a silent refetch of the board + cooldown. Bounded by the same
   //   5s cooldown as focus refetch to avoid a burst on rapid toggles.
-  const lastResumeRef = useRef<number>(0);
+  //   P0.10 — foreground handling now comes from the ONE global
+  //   connectivity authority (src/lib/connectivity.ts): a single debounced
+  //   `foreground` signal per active transition, after a reachability probe.
   useEffect(() => {
-    const sub = AppState.addEventListener("change", (next) => {
-      if (next !== "active") return;
-      const now = Date.now();
-      if (now - lastResumeRef.current < 5_000) return;
-      lastResumeRef.current = now;
+    const unsub = subscribeConnectivity((_s, event) => {
+      if (event !== "foreground") return;
       load(sport, lineType, sortKey, filters, sortDir);
       loadCooldown();
     });
-    return () => { sub.remove(); };
+    return unsub;
   }, [sport, lineType, sortKey, filters, sortDir, load, loadCooldown]);
 
   const onRefresh = () => {
@@ -1079,6 +1103,17 @@ export default function LocksScreen() {
         viewabilityConfigCallbackPairs={_viewabilityPairs}
         ListHeaderComponent={
           <>
+            {/* P0.11 STALE-WHILE-REVALIDATE pill — restored/last-good slate
+                is visible but explicitly marked until a fresh read lands. */}
+            {slateStale && !loadError && picks.length > 0 && (
+              <View testID="stale-slate-pill" style={styles.stalePill}>
+                <ActivityIndicator size="small" color={COLORS.goldRich} />
+                <Text style={styles.stalePillTxt}>
+                  {refreshing || loading ? "UPDATING" : "STALE"} · LAST UPDATED {timeAgo(lastLoadedAt).toUpperCase()}
+                  {boardVersion ? ` · BOARD ${String(boardVersion).slice(0, 8)}` : ""}
+                </Text>
+              </View>
+            )}
             {/* RETRY BANNER (2026-06-28) */}
             {!!loadError && (
               <TouchableOpacity
@@ -1108,6 +1143,11 @@ export default function LocksScreen() {
                   <Text style={{ color: "rgba(255,255,255,0.78)", fontSize: 12, marginTop: 2 }}>
                     {(errorKind && ERROR_COPY[errorKind]?.message) || "Showing your last good slate. Tap to retry."}
                   </Text>
+                  {slateStale && picks.length > 0 && (
+                    <Text testID="stale-slate-meta" style={{ color: "rgba(255,255,255,0.6)", fontSize: 10.5, marginTop: 4, letterSpacing: 0.6, fontWeight: "700" }}>
+                      STALE · LAST UPDATED {timeAgo(lastLoadedAt).toUpperCase()}{boardVersion ? ` · BOARD ${String(boardVersion).slice(0, 8)}` : ""}
+                    </Text>
+                  )}
                 </View>
                 {(!errorKind || ERROR_COPY[errorKind]?.showRetry) && (
                   <Text style={{ color: "#ffb4b4", fontWeight: "800", fontSize: 13 }}>
@@ -1349,6 +1389,13 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: "rgba(0,255,170,0.35)",
   },
   toastText: { color: COLORS.textPrimary, fontSize: 13, fontWeight: "700" },
+  stalePill: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    paddingHorizontal: 12, paddingVertical: 8, marginBottom: 12,
+    borderRadius: 10, borderWidth: 1,
+    borderColor: COLORS.borderDefault, backgroundColor: COLORS.surface,
+  },
+  stalePillTxt: { color: COLORS.goldRich, fontSize: 10.5, fontWeight: "800", letterSpacing: 0.8 },
   refreshBtn: {
     minWidth: 44, height: 44, borderRadius: 22,
     backgroundColor: "rgba(0,0,0,0.65)",

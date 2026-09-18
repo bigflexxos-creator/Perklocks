@@ -627,6 +627,23 @@ export type ParlayCard = {
 
 const TOKEN_KEY = "lockscore_token";
 
+// ── P0.5 · cross-surface truth manifest (same on every board response) ──
+export type TruthManifest = {
+  api_origin?: string | null;
+  environment?: string | null;
+  board_version?: string | null;
+  publication_version?: number | null;
+  generated_at?: string | null;
+  data_as_of?: string | null;
+  pick_count?: number;
+};
+// Last manifest observed from any board read — surfaced by the DEV HUD.
+export let lastTruthManifest: TruthManifest | null = null;
+export function noteTruthManifest(m: TruthManifest | null | undefined): void {
+  if (m) lastTruthManifest = m;
+}
+
+
 export async function getToken(): Promise<string | null> {
   return await storage.secureGet(TOKEN_KEY, "");
 }
@@ -635,6 +652,50 @@ export async function setToken(t: string | null): Promise<void> {
   if (!t) await storage.secureRemove(TOKEN_KEY);
   else await storage.secureSet(TOKEN_KEY, t);
 }
+
+// ── P0.9 · single-flight auth verification ──────────────────────────
+// Many simultaneous 401s (8 board sub-requests) must resolve to ONE
+// verification round-trip and ONE possible logout.  Resolves `true` only
+// when /auth/me answers a definitive 401/403-with-invalid-token for the
+// CURRENT stored token.  Any network / timeout / 5xx ⇒ `false` (keep token).
+let _authVerifyInflight: Promise<boolean> | null = null;
+let _authVerifyLastAt = 0;
+let _authVerifyLastResult = false;
+export async function verifyAuthSingleFlight(): Promise<boolean> {
+  const now = Date.now();
+  if (_authVerifyInflight) return _authVerifyInflight;
+  // Memoise a definitive answer for 5 s so a burst of 401s collapses.
+  if (now - _authVerifyLastAt < 5000) return _authVerifyLastResult;
+  _authVerifyInflight = (async () => {
+    try {
+      const tok = await getToken();
+      if (!tok) return true; // nothing to keep — already logged out
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      try {
+        const res = await fetch(buildApiUrl("/auth/me"), {
+          headers: { Authorization: `Bearer ${tok}`, Accept: "application/json" },
+          signal: ctrl.signal,
+        });
+        // Only a definitive auth rejection clears the session.
+        return res.status === 401;
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch {
+      return false; // offline / timeout / abort ⇒ KEEP TOKEN
+    } finally {
+      _authVerifyLastAt = Date.now();
+    }
+  })();
+  try {
+    _authVerifyLastResult = await _authVerifyInflight;
+    return _authVerifyLastResult;
+  } finally {
+    _authVerifyInflight = null;
+  }
+}
+
 
 // ── Reliability layer: retries + timeout + in-flight dedupe ─────────────
 // Surgical hardening that doesn't change response shapes. Adds:
@@ -903,17 +964,23 @@ async function request<T>(
           // (a bad login attempt is a legitimate 401 we want the
           // caller to handle, not redirect).
           if (res.status === 401 && !path.startsWith("/auth/") && opts.auth !== false) {
-            try { await setToken(null); } catch {}
-            try {
-              // Fire a custom global event for the AuthContext to
-              // pick up. Wrapped in try/catch so it's a no-op in
-              // any runtime that lacks `EventTarget`.
-              if (typeof globalThis !== "undefined" && (globalThis as any).dispatchEvent) {
-                (globalThis as any).dispatchEvent(
-                  new CustomEvent("perkslocks:auth-expired", { detail: { path } }),
-                );
-              }
-            } catch {}
+            // ── P0.9 SINGLE-FLIGHT AUTH VERIFICATION ────────────────
+            // An unexpected 401 on a data endpoint is NOT proof the
+            // session is dead.  Verify ONCE (globally single-flight)
+            // against /auth/me with the stored token; only a definitive
+            // 401 from the auth authority clears the session.  Network
+            // failure / timeout / 5xx during verification KEEPS the token.
+            const definitivelyInvalid = await verifyAuthSingleFlight();
+            if (definitivelyInvalid) {
+              try { await setToken(null); } catch {}
+              try {
+                if (typeof globalThis !== "undefined" && (globalThis as any).dispatchEvent) {
+                  (globalThis as any).dispatchEvent(
+                    new CustomEvent("perkslocks:auth-expired", { detail: { path } }),
+                  );
+                }
+              } catch {}
+            }
           }
           // 4xx errors are intentional — don't retry (e.g. 401 means bad
           // creds, retrying won't help). Only retry 5xx + 408 + 429.
@@ -1451,6 +1518,8 @@ export const api = {
     const q = qs.toString();
     return request<{
       picks: Pick[];
+      board_version?: string;
+      truth_manifest?: TruthManifest;
       alt_availability?: {
         supported:  boolean;
         reason:     string;
@@ -2262,6 +2331,13 @@ export const api = {
         `&min_probability=${minProbability}` +
         `&min_opportunity_rating=${minOpportunityRating}`,
     ),
+  // ── P4 · ONE ATD slate truth (Top 5 + By Game from the same universe) ──
+  nflAtdSlate: (minProbability: number = 0.10, topN: number = 5, topNPerGame: number = 3,
+                extra?: { signal?: AbortSignal }) =>
+    request<NFLAtdSlateResponse>(
+      `/nfl/atd/slate?min_probability=${minProbability}&top_n=${topN}&top_n_per_game=${topNPerGame}`,
+      { signal: extra?.signal },
+    ),
   nflGameSafeBets: (limit: number = 10, minProbability: number = 0.78) =>
     request<NFLGameSafeBetsResponse>(
       `/nfl/games/safe-bets?limit=${limit}&min_probability=${minProbability}`,
@@ -2351,6 +2427,11 @@ export type NFLAtdPick = {
   implied_probability?: number | null;
   /** Lock Score already computed by the canonical scoring pipeline. */
   lock_score?: number | null;
+  grade?: string | null;
+  candidate_state?: "PUBLISHED" | "ON_DEMAND" | string;
+  canonical_pick_id?: string | null;
+  global_rank?: number;
+  game_rank?: number;
   position?: string | null;
 };
 export type NFLAtdLeaderboardResponse = {
@@ -2362,6 +2443,29 @@ export type NFLAtdLeaderboardResponse = {
   picks: NFLAtdPick[];
 };
 
+export type NFLAtdSlateGame = {
+  canonical_event_id: string;
+  event: string;
+  away_team?: string | null;
+  home_team?: string | null;
+  commence_time?: string;
+  state?: "SCHEDULED" | "STARTED";
+  candidates_in_game: number;
+  candidates: NFLAtdPick[];
+  top: NFLAtdPick[];
+};
+export type NFLAtdSlateResponse = {
+  mode: string;
+  board_version: string;
+  publication_version?: number | null;
+  generated_at: string;
+  data_as_of?: string | null;
+  universe_count: number;
+  canonical_count?: number;
+  on_demand_count?: number;
+  top5: NFLAtdPick[];
+  games: NFLAtdSlateGame[];
+};
 export type NFLAtdByGameGroup = {
   event: string;
   canonical_event_id?: string;

@@ -104,7 +104,7 @@ def test_A_payload_carries_every_required_field():
         assert snap["is_legacy"] is False
         assert snap["publication_source"] == "canonical_pipeline"
         assert snap["published_lock_score"] == 88.0
-        assert snap["published_grade"] == "Strong Lock"
+        assert snap["published_grade"] == "Playable"  # P0.4: grade derived from published lock 88.0
         assert snap["published_line"] == 1.5
         assert snap["published_odds"] == -140
         assert r.was_new is True
@@ -230,7 +230,7 @@ def test_E_dual_write_updates_picks_document():
         for f in PUBLISHED_FIELDS:
             assert f in row, f"picks doc missing {f} after dual-write"
         assert row["published_lock_score"] == 88.0
-        assert row["published_grade"] == "Strong Lock"
+        assert row["published_grade"] == "Playable"  # P0.4
         # Legacy field should also still exist untouched.
         assert row["lock_score"] == 88.0
         await _wipe(db)
@@ -364,17 +364,17 @@ def test_J_service_never_updates_existing_snapshot():
         # Now mutate the candidate lock_score and try to re-publish.
         c["lock_score"] = 45.0
         r2 = await pub.publish(c)
-        # Because idempotency_key changes when values change but we
-        # still write snapshot_version=1, the second insert should
-        # collide on (prediction_id, snapshot_version=1) unique index
-        # and NOT overwrite the existing snapshot.
+        # P0.3 VERSIONED RE-PUBLICATION: the v1 snapshot is immutable
+        # (still 88.0), the re-score lands as v2 and becomes active.
+        v1 = await db[SNAPSHOT_COLLECTION].find_one(
+            {"prediction_id": "pub_test_j1", "snapshot_version": 1}, {"_id": 0})
+        assert v1["published_lock_score"] == 88.0, \
+            "v1 snapshot was mutated post-publication — CONTRACT VIOLATION"
+        assert v1["is_active"] is False
         snap = await pub.get_active_snapshot("pub_test_j1")
-        assert snap["published_lock_score"] == 88.0, \
-            "snapshot was mutated post-publication — CONTRACT VIOLATION"
-        # A drift warning should have been logged (idempotency key was
-        # different but snapshot_version is the same).
+        assert snap["snapshot_version"] == 2
+        assert snap["published_lock_score"] == 45.0
+        assert r2.snapshot_version == 2
         n = await db[SNAPSHOT_COLLECTION].count_documents(
             {"prediction_id": "pub_test_j1"})
-        assert n == 1
-        await _wipe(db)
-    _run(run())
+        assert n == 2

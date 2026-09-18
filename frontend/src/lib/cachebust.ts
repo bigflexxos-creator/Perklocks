@@ -111,6 +111,7 @@ const KNOWN_CACHE_KEYS = [
   // even after the backend published fresh NFL props — driving the
   // "Expo Go still shows NFL GAME · 0 / PROP · 0" symptom.
   "locks_picks_cache_v1",
+  "locks_picks_cache_v2",
   // Add any new AsyncStorage keys here so a cache bust actually wipes them.
 ];
 

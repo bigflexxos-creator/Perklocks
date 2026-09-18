@@ -457,6 +457,54 @@ async def pick_rollover(
     )
     _now_ts = datetime.now(timezone.utc)
     is_sticky_hit = False
+    _sport_active_here = bool(sport and sport.lower() != "all")
+    _no_filters = (
+        not _sport_active_here
+        and not (market or "").strip()
+        and not (league or "").strip()
+        and (line_type or "").lower() in ("", "both")
+    )
+    # ── P6 OFFICIAL SLATE (rollover_slates) — READER FIRST ──────────
+    # Once today's Top 3 is frozen it is served as-is: game start does
+    # not remove a leg, settlement does not replace it, refresh does not
+    # rerank it.  Only legitimate PREGAME invalidation replaces a leg
+    # (audited in rollover_slate_events) — handled in the recompute path
+    # below when ``_official_repair`` is set.  Filtered requests never
+    # read or mutate official membership.
+    _official_slate = None
+    _official_repair = False
+    if _no_filters:
+        try:
+            from services.rollover_official_slate import (
+                get_official_slate as _ros_get, _pregame_invalid_reason as _ros_invalid,
+            )
+            _official_slate = await _ros_get(db, _today_str())
+            if _official_slate and _official_slate.get("legs"):
+                _leg_ids = [l.get("canonical_pick_id") for l in _official_slate["legs"] if l.get("canonical_pick_id")]
+                _leg_docs = {d["id"]: d async for d in db.picks.find({"id": {"$in": _leg_ids}}, {"_id": 0})}
+                _now_dt = datetime.now(timezone.utc)
+                _official_repair = any(
+                    _ros_invalid(_leg_docs.get(l.get("canonical_pick_id")), _now_dt)
+                    for l in _official_slate["legs"] if not l.get("invalidated")
+                )
+                if not _official_repair:
+                    _ordered = [_leg_docs[i] for i in _leg_ids if i in _leg_docs]
+                    if _ordered:
+                        return {
+                            "picks": _canonicalize_picks(_ordered),
+                            "pick":  _canonicalize_lock_score(_ordered[0]),
+                            "composite_rank": None,
+                            "total_evaluated": len(_ordered),
+                            "scoped_to_today": True,
+                            "rollover_version": "v6-official-slate",
+                            "selector_version": _official_slate.get("selector_version"),
+                            "sticky": True,
+                            "slate": {k: _official_slate.get(k) for k in
+                                      ("slate_id", "slate_date", "version", "frozen_at", "board_version", "leg_count")},
+                            "survivability": {"mode": "official_slate"},
+                        }
+        except Exception as _ros_err:
+            logger.debug("official rollover slate read skipped: %s", _ros_err)
     cached = _ROLLOVER_STICKY_CACHE.get(_sticky_key)
     if cached and (_now_ts - cached["at"]).total_seconds() < 14400:  # 4h TTL
         cached_ids = cached.get("ids") or []
@@ -525,14 +573,7 @@ async def pick_rollover(
     # so the frozen-restore block never crashes on the first request
     # (previously it referenced the variable before it was assigned
     # further down during base_q construction).
-    _sport_active_here = bool(sport and sport.lower() != "all")
-    _no_filters = (
-        not _sport_active_here
-        and not (market or "").strip()
-        and not (league or "").strip()
-        and (line_type or "").lower() in ("", "both")
-    )
-    if _no_filters:
+    if _no_filters and not _official_slate:
         try:
             frozen_docs = await db.picks.find(
                 {"pick_date": _today_str(),
@@ -776,6 +817,39 @@ async def pick_rollover(
     # P36 P1.7 — stamp canonical_event_id + shared selector_version so
     # replay / analytics can reproduce the exact live selection.  Only
     # LIVE_FROZEN_SELECTION rows count toward prospective performance.
+    # ── P6 — freeze / reconcile the OFFICIAL slate (unfiltered only) ──
+    if top and _no_filters:
+        try:
+            from services.rollover_official_slate import (
+                freeze_official_slate as _ros_freeze,
+                reconcile_official_slate as _ros_reconcile,
+            )
+            if _official_slate and _official_repair:
+                _official_slate = await _ros_reconcile(
+                    db, _official_slate, [p for p in candidates if p.get("id")],
+                    selector_version=_SELECTOR_VERSION,
+                )
+            elif not _official_slate:
+                _bv = None
+                try:
+                    from services.board_snapshot_cache import compute_board_version as _cbv
+                    _bv = _cbv(top)
+                except Exception:
+                    pass
+                _official_slate = await _ros_freeze(
+                    db, _today_str(), [{**p, "rollover_ev_score": p.get("composite_rank")} for p in top],
+                    selector_version=_SELECTOR_VERSION, board_version=_bv,
+                )
+            # Serve the OFFICIAL membership (never the transient recompute).
+            _leg_ids = [l.get("canonical_pick_id") for l in (_official_slate or {}).get("legs", [])
+                        if l.get("canonical_pick_id") and not l.get("invalidated")]
+            if _leg_ids:
+                _leg_docs = {d["id"]: d async for d in db.picks.find({"id": {"$in": _leg_ids}}, {"_id": 0})}
+                _ordered = [_leg_docs[i] for i in _leg_ids if i in _leg_docs]
+                if _ordered:
+                    top = [{**d, "composite_rank": round(_ev_score(d), 2)} for d in _ordered]
+        except Exception as _ros_err:
+            logger.debug("official rollover slate freeze skipped: %s", _ros_err)
     if top:
         try:
             _tagged_ids = [p.get("id") for p in top if p.get("id")]
@@ -966,7 +1040,22 @@ async def picks_history(
     # totals when they wasn't on rollover in general".  We drop that
     # fallback entirely; if no picks are tagged we return an empty set
     # rather than fabricate a superset.
-    rollover_picks = [p for p in settled if p.get("on_rollover_at")]
+    # P6.2 — Official Rollover History comes from ``rollover_slates``
+    # (frozen official membership).  Tagger-reconstructed rows are
+    # RESEARCH_REPLAY and never count as official membership.
+    _official_leg_ids: set = set()
+    try:
+        async for _sl in db.rollover_slates.find({"scope": "official"}, {"_id": 0, "legs.canonical_pick_id": 1, "legs.invalidated": 1}):
+            for _l in _sl.get("legs") or []:
+                if _l.get("canonical_pick_id") and not _l.get("invalidated"):
+                    _official_leg_ids.add(_l["canonical_pick_id"])
+    except Exception:
+        pass
+    rollover_picks = [
+        p for p in settled
+        if (p.get("id") in _official_leg_ids)
+        or (p.get("on_rollover_at") and p.get("rollover_frozen_source") == "picks_route_live")
+    ]
     ro_won = sum(1 for p in rollover_picks if p.get("status") == "won")
     ro_lost = sum(1 for p in rollover_picks if p.get("status") == "lost")
     ro_push = sum(1 for p in rollover_picks if p.get("status") == "push")
@@ -2360,6 +2449,10 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 continue
             if (_p.get("status") or "pending") != "pending":
                 continue
+            # P0.2 — published picks are frozen; the governor runs
+            # BEFORE publication only.  Never rescore on GET.
+            if _p.get("published_lock_score") is not None:
+                continue
             if (
                 _p.get("elite_player")
                 or _p.get("lock_anchored_to_sim")
@@ -3671,6 +3764,25 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     _final_response = {"picks": canonical, "alt_availability": alt_availability,
              "odds_provider": _odds_envelope}
 
+    # ── P0.5 CROSS-SURFACE TRUTH MANIFEST ────────────────────────────
+    # Same manifest on every board response so Preview / Production Web /
+    # Expo Go can prove they read one canonical publication.  Each pick
+    # also carries a deterministic `truth_fingerprint` over the scored
+    # canonical fields (presentation fields excluded).
+    try:
+        from services.truth_manifest import build_manifest as _tm_build, truth_fingerprint as _tm_fp
+        from services.board_snapshot_cache import compute_board_version as _tm_bv
+        _manifest_bv = _tm_bv(canonical)
+        for _p in canonical:
+            if isinstance(_p, dict):
+                if _p.get("publication_version") is None and _p.get("snapshot_version") is not None:
+                    _p["publication_version"] = _p["snapshot_version"]
+                _p["truth_fingerprint"] = _tm_fp(_p)
+        _final_response["truth_manifest"] = _tm_build(request, _manifest_bv, canonical)
+        _final_response["board_version"] = _manifest_bv
+    except Exception as _tm_err:
+        logger.debug("truth manifest skipped: %s", _tm_err)
+
     # ── SESSION 2 · FROZEN BOARD SNAPSHOT (write-through) ────────────
     # Cache the fully-processed lite response so subsequent requests
     # in the TTL window bypass the entire in-line enrichment chain.
@@ -3827,6 +3939,7 @@ async def force_refresh(user: Annotated[UserPublic, Depends(current_user)]):
 @router.get("/{pick_id}")
 async def pick_detail(
     pick_id: str,
+    request: Request,
     user: Annotated[UserPublic, Depends(current_user)],
 ):
     """Pick detail with lazy evidence governance + canonicalization."""
@@ -3834,40 +3947,27 @@ async def pick_detail(
     if not pick:
         raise HTTPException(status_code=404, detail="Pick not found")
     from server import _canonicalize_lock_score  # lazy
-    # ── Quality-gate caps BEFORE canonicalize (2026-06-30 fix) ──────────
-    # The detail endpoint must run the same cap pipeline as /picks/today,
-    # otherwise the displayed Lock 60 on the home card "magically"
-    # turns back into Lock 95 in the detail view. Sequence mirrors
-    # `apply_quality_gate` in quality_gate.py:
-    #   1. _apply_elite_scorer_anchor — sets anchor win_prob / edge
-    #      for elite scorers on Anytime markets.
-    #   2. _apply_display_cap — Anytime calibration cap (75) for non-
-    #      elite picks; sets coherence_cap_ceiling.
-    #   3. _apply_lockscore_coherence — neg-edge cap (60/70) +
-    #      low-wp cap (75) + no-form-data cap (78); sets
-    #      coherence_cap_ceiling.
-    # After this, `_canonicalize_lock_score` will honour the ceiling
-    # via its `min(max(...), ceiling)` clamp added in fix #2.
-    try:
-        from quality_gate import (
-            _apply_display_cap, _apply_elite_scorer_anchor,
-            _apply_lockscore_coherence,
-        )
-        _apply_elite_scorer_anchor(pick)
-        _apply_display_cap(pick)
-        _apply_lockscore_coherence(pick)
-    except Exception as _qg_err:
-        logger.debug("Quality-gate caps failed on /picks/{id}: %s", _qg_err)
-    # Canonicalize lock_score → max(v1, v2) clamped by coherence ceiling
-    # so detail view matches the home feed card. Single source of truth.
+    # ── FINAL UNIVERSAL ROOT CLOSURE · P0.2 (ONE SCORING LIFECYCLE) ──
+    # A published pick is FROZEN.  GET /picks/{id} is a READER: no
+    # quality-gate cap, no evidence governance, no signal-driven score
+    # movement may run against a pick that carries a canonical
+    # publication snapshot.  Those steps belong BEFORE publication.
+    # Only legacy rows without a snapshot still take the repair path.
+    _is_published = pick.get("published_lock_score") is not None
+    if not _is_published:
+        try:
+            from quality_gate import (
+                _apply_display_cap, _apply_elite_scorer_anchor,
+                _apply_lockscore_coherence,
+            )
+            _apply_elite_scorer_anchor(pick)
+            _apply_display_cap(pick)
+            _apply_lockscore_coherence(pick)
+        except Exception as _qg_err:
+            logger.debug("Quality-gate caps failed on /picks/{id}: %s", _qg_err)
+    # Canonicalize lock_score → hydrate from the published snapshot.
     pick = _canonicalize_lock_score(pick)
-    # Lazy evidence governance — see /api/picks/today for context.
-    # Phase-3 trigger (2026-06-25): also re-govern when the pick was
-    # generated PRE-shrinkage (i.e. has no `win_probability_raw` yet).
-    # Without this, existing DB picks never get the new shrinkage math
-    # applied — they'd carry the un-shrunk model probability until
-    # the next refresh cycle deletes and re-creates them.
-    needs_govern = (
+    needs_govern = (not _is_published) and (
         (pick.get("evidence_score") is None and (pick.get("status") or "pending") == "pending")
         or (
             pick.get("win_probability") is not None
@@ -3907,16 +4007,24 @@ async def pick_detail(
     except Exception as _se:
         logger.debug("Real-streak enrichment failed on /picks/{id}: %s", _se)
     # ── Signal Engine (Phase A, 2026-07-12) ─────────────────────────
-    # ESPN meta decoration first (injury/form/record items feed the
-    # calculators AND makes the detail win_probability match the home
-    # card, which also runs the espn signal layer), then compute the
-    # 0-100 Signal Score + signal-driven why bullets.
+    # P8 ZERO HOT-PATH PROVIDERS: the detail render overlays ESPN
+    # display fields from the in-process cache only (same as the board)
+    # and schedules the live fan-out in the background.  No provider
+    # network call happens inside this GET.  The signal layer's ±6pt
+    # score movement is NOT applied to a published pick — hydrate()
+    # restores frozen truth regardless.
     try:
-        from server import _decorate_with_espn_meta  # lazy
+        from server import (  # lazy
+            _apply_espn_cache_overlay, _reset_espn_cache_if_stale,
+            _warm_espn_cache,
+        )
         from services.signal_engine import decorate_signals_bulk
-        await _decorate_with_espn_meta([pick])
-        pick = _canonicalize_lock_score(pick)  # espn layer may move lock
+        _reset_espn_cache_if_stale()
+        _apply_espn_cache_overlay([pick])
+        if "home_meta" not in pick and "player_meta" not in pick:
+            asyncio.create_task(_warm_espn_cache([dict(pick)]))
         await decorate_signals_bulk(db, [pick], persist=True)
+        pick = _canonicalize_lock_score(pick)  # snapshot wins after any decoration
     except Exception as _sig_err:
         logger.debug("Signal Engine failed on /picks/{id}: %s", _sig_err)
     # ── Fusion Enrichment (2026-07-28, Phase-1 wire-up) ──────────────
@@ -3945,6 +4053,16 @@ async def pick_detail(
         pick["published_pick_contract_provenance"] = _contract.provenance()
     except Exception as _c_err:
         logger.debug("PublishedPickContract attach failed: %s", _c_err)
+    # P0.5 — deterministic truth fingerprint (same function as the board).
+    try:
+        from services.truth_manifest import truth_fingerprint as _tm_fp, build_manifest as _tm_build
+        if pick.get("publication_version") is None and pick.get("snapshot_version") is not None:
+            pick["publication_version"] = pick["snapshot_version"]
+        pick["truth_fingerprint"] = _tm_fp(pick)
+        pick["truth_manifest"] = _tm_build(request, None, [pick],
+                                           publication_version=pick.get("publication_version"))
+    except Exception as _tm_err:
+        logger.debug("truth fingerprint skipped: %s", _tm_err)
     return pick
 
 

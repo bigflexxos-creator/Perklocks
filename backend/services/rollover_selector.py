@@ -110,15 +110,29 @@ def passes_v5(p: dict) -> tuple[bool, str]:
 
 
 def ev_score(p: dict) -> float:
-    """Composite ranker — identical for live + replay."""
-    wp = _norm_prob(p.get("win_probability"))
-    sim = _norm_prob(p.get("sim_win_probability")) or wp
+    """Composite ranker — identical for live + replay.
+
+    P6 (FINAL UNIVERSAL ROOT CLOSURE): rank PRIMARILY by conservative
+    calibrated win probability.  No permanent market bonuses, no generic
+    alt bonus, and win_probability is never counted twice when a sim
+    probability is absent (the sim term is simply dropped and its weight
+    re-normalised).  A published `calibrated_win_probability` (0-1 or
+    0-100) is preferred over the raw model probability when present.
+    """
+    cal = p.get("calibrated_win_probability")
+    wp = _norm_prob(cal) if cal is not None else _norm_prob(p.get("win_probability"))
+    if not wp:
+        wp = _norm_prob(p.get("win_probability"))
+    sim_raw = p.get("sim_win_probability")
+    sim = _norm_prob(sim_raw) if sim_raw is not None else None
     edge = float(p.get("edge_percent") or 0)
     odds = float(p.get("book_odds") or -100)
     edge_norm = max(0.0, min(1.0, edge / 8.0))
-    alt_bonus = 1.0 if p.get("is_alt") else 0.0
-    base = 0.55 * wp + 0.20 * sim + 0.15 * edge_norm + 0.10 * alt_bonus
-    mkt_mult = _market_multiplier(p.get("market") or "")
+    if sim is not None:
+        # conservative: the lower of model/sim anchors the primary term
+        base = 0.65 * min(wp, sim) + 0.20 * max(wp, sim) + 0.15 * edge_norm
+    else:
+        base = 0.85 * wp + 0.15 * edge_norm
     chalk_pen = min(0.30, (abs(odds) - 200) / 500.0) if odds <= -200 else 0.0
     sig = p.get("historical_signal") or {}
     if sig.get("label") == "hot" and float(sig.get("consistency") or 0) >= 0.7:
@@ -132,7 +146,7 @@ def ev_score(p: dict) -> float:
         sig_mult = (1.0 + ((float(ss) - 50.0) / 50.0) * 0.08) if ss is not None else 1.0
     except (TypeError, ValueError):
         sig_mult = 1.0
-    return base * mkt_mult * (1.0 - chalk_pen) * hist_mult * sig_mult
+    return base * (1.0 - chalk_pen) * hist_mult * sig_mult
 
 
 def canonical_event_key(p: dict) -> str:
