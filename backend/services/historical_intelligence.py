@@ -146,6 +146,53 @@ class HistoricalAdapter:
         raise NotImplementedError
 
 
+async def _enrich_event_time_from_team_actuals(
+    db, docs: list[dict], sport_key: str
+) -> list[dict]:
+    """Defensive event_time backfill for `player_game_actuals`.
+
+    Some historical ingestion pipelines populate `player_game_actuals`
+    rows with `event_time=None` (e.g., legacy MLB player_game_logs).
+    The authoritative event date lives in `team_game_actuals` keyed
+    by the same `event_id`.  This helper does a single batch join
+    per query so the frontend game-log table never shows placeholder
+    "ingested_at" dates — instead it shows the real, varied game dates.
+
+    Universally applied across sports (mlb, nfl, nba, nhl) via the
+    shared adapter base pattern.  Also re-sorts docs by real event_time
+    DESC so chronology matches reality post-join.
+    """
+    if not docs:
+        return docs
+    missing_ids = [str(d.get("event_id") or "")
+                   for d in docs if not d.get("event_time")]
+    missing_ids = [x for x in missing_ids if x]
+    if missing_ids:
+        ev_map: dict[str, str] = {}
+        try:
+            async for td in db.team_game_actuals.find(
+                {"sport": sport_key,
+                 "event_id": {"$in": list(set(missing_ids))},
+                 "event_time": {"$ne": None}},
+                {"event_id": 1, "event_time": 1},
+            ):
+                eid = str(td.get("event_id") or "")
+                if eid and eid not in ev_map:
+                    ev_map[eid] = td.get("event_time")
+        except Exception:
+            ev_map = {}
+        for d in docs:
+            if not d.get("event_time"):
+                et = ev_map.get(str(d.get("event_id") or ""))
+                if et:
+                    d["event_time"] = et
+    # Re-sort by real event_time descending so game logs render in
+    # true chronological order.  Docs with no join (event_time still
+    # None) sink to the bottom, marked honestly.
+    docs.sort(key=lambda d: str(d.get("event_time") or ""), reverse=True)
+    return docs
+
+
 def register_adapter(sport: str, adapter: HistoricalAdapter) -> None:
     _SPORT_ADAPTERS[sport.upper()] = adapter
 
@@ -502,8 +549,15 @@ class NFLPlayerHistoricalAdapter(HistoricalAdapter):
         if not base_q:
             return []
         obs: list[HistoricalObservation] = []
+        docs: list[dict] = []
         cursor = db.player_game_actuals.find(base_q).sort("event_time", -1).limit(80)
         async for doc in cursor:
+            docs.append(doc)
+        # Universal defensive event_time enrichment — protects the game
+        # log table from ever showing placeholder dates if the NFL
+        # ingestion ever regresses on event_time population.
+        docs = await _enrich_event_time_from_team_actuals(db, docs, "nfl")
+        for doc in docs:
             actuals = doc.get("actuals") or {}
             if actuals_key == "__total_tds__":
                 a = 0.0
@@ -523,7 +577,7 @@ class NFLPlayerHistoricalAdapter(HistoricalAdapter):
                     try: actual = float(v)
                     except Exception: actual = None
             obs.append(HistoricalObservation(
-                date=str(doc.get("event_time") or "")[:10],
+                date=str(doc.get("event_time") or doc.get("ingested_at") or "")[:10],
                 opponent_id=doc.get("canonical_opponent_id"),
                 opponent_name=doc.get("opponent") or doc.get("canonical_opponent_id"),
                 home_away=doc.get("home_away"),
@@ -683,8 +737,17 @@ class MLBPlayerHistoricalAdapter(HistoricalAdapter):
         if not base_q:
             return []
         obs: list[HistoricalObservation] = []
+        # Fetch player game logs.  We prefer event_time DESC but many
+        # legacy MLB rows have event_time=None; the shared helper does
+        # a batch join against team_game_actuals so game logs render
+        # true, varied dates instead of the batch ingestion timestamp.
+        docs: list[dict] = []
         cursor = db.player_game_actuals.find(base_q).sort("event_time", -1).limit(120)
         async for doc in cursor:
+            docs.append(doc)
+        docs = await _enrich_event_time_from_team_actuals(db, docs, "mlb")
+
+        for doc in docs:
             actuals = doc.get("actuals") or {}
             fn = hitter_fn or pitcher_fn
             v = fn(actuals)

@@ -203,11 +203,18 @@ def _resolve_entity(pick: dict, sport: str, family: Optional[str]
     return "team", str(team_name or ""), team_name
 
 
-def _resolve_opponent(pick: dict, entity_type: str, entity_name: Optional[str]
+def _resolve_opponent(pick: dict, entity_type: str, entity_name: Optional[str],
+                       player_team_fallback: Optional[str] = None
                        ) -> tuple[Optional[str], Optional[str]]:
     """opponent_id / opponent_name.  Derive from home_team/away_team
     or from `event` string when canonical_opponent_id is empty (very
-    common for player props)."""
+    common for player props).
+
+    ``player_team_fallback`` — used when the pick payload lacks
+    ``player_team_name``/``player_team`` (very common for MLB props
+    published without team context).  Callers should look it up from
+    ``player_identities.current_team`` and pass it in.
+    """
     opp_id = pick.get("canonical_opponent_id")
     if opp_id and str(opp_id).startswith("fallback:"):
         opp_id = None
@@ -228,12 +235,74 @@ def _resolve_opponent(pick: dict, entity_type: str, entity_name: Optional[str]
         else:
             # For players — need player's team to know which side is theirs.
             team_context = (pick.get("player_team_name")
-                            or pick.get("player_team"))
+                            or pick.get("player_team")
+                            or player_team_fallback)
             if team_context:
                 tc = team_context.lower()
                 if home and tc in home.lower():  opp_name = away
                 elif away and tc in away.lower(): opp_name = home
+                # partial match — "philadelphia phillies" contains "phillies"
+                elif home and any(w in home.lower() for w in tc.split() if len(w) >= 4):
+                    opp_name = away
+                elif away and any(w in away.lower() for w in tc.split() if len(w) >= 4):
+                    opp_name = home
     return opp_id, opp_name
+
+
+async def _lookup_player_team(db, sport: str, canonical_player_id: Any,
+                              entity_name: Optional[str]) -> Optional[str]:
+    """Look up a player's current team from `player_identities`.
+
+    Used when the pick payload doesn't include `player_team_name` —
+    common for MLB props published through some odds providers.
+    Without it, opponent resolution fails and VS OPP always shows
+    "NO PRIOR MATCHUPS" even when the player has 90+ game logs.
+    """
+    if not sport:
+        return None
+    sport_norm = sport.upper()
+    # Provider-id keys per sport in `player_identities.provider_ids`.
+    # Any sport not listed still resolves via `name_norm` fallback
+    # (soccer, tennis, CFB, WNBA…), so this map is purely an
+    # accelerator, not a gate.
+    provider_key_map = {
+        "MLB": "mlb_stats",
+        "NFL": "gsis",
+        "NBA": "nba_stats",
+        "NHL": "nhl_stats",
+        "WNBA": "wnba_stats",
+        "SOCCER": "fotmob",
+        "CFB": "cfbd",
+    }
+    pk = provider_key_map.get(sport_norm)
+    q_or: list[dict[str, Any]] = []
+    cpid = str(canonical_player_id or "").strip()
+    if cpid and pk:
+        q_or.append({f"provider_ids.{pk}": cpid})
+    if entity_name:
+        norm = entity_name.strip().lower().replace(".", "")
+        q_or.append({"name_norm": norm})
+    if not q_or:
+        return None
+    try:
+        ident = await db.player_identities.find_one(
+            {"sport": sport_norm, "$or": q_or},
+            {"current_team": 1, "historical_teams": 1},
+        )
+    except Exception:
+        return None
+    if not ident:
+        return None
+    ct = ident.get("current_team")
+    if isinstance(ct, str) and ct.strip():
+        return ct.strip()
+    # historical_teams may be the freshest signal for out-of-season leagues
+    ht = ident.get("historical_teams") or []
+    if isinstance(ht, list) and ht:
+        latest = ht[-1] if isinstance(ht[-1], dict) else None
+        if latest and latest.get("team"):
+            return str(latest["team"])
+    return None
 
 
 def _resolve_side(market: str) -> str:
@@ -312,7 +381,20 @@ async def historical_intelligence(
     market        = pick.get("market") or ""
     family        = resolve_market_family(sport, market)
     entity_type, entity_id, entity_name = _resolve_entity(pick, sport, family)
-    opponent_id, opponent_name = _resolve_opponent(pick, entity_type, entity_name)
+
+    # Player-team fallback — when the pick payload lacks player_team_name,
+    # look it up from player_identities so opponent resolution can work.
+    player_team_fallback: Optional[str] = None
+    if entity_type == "player" and not (pick.get("player_team_name")
+                                        or pick.get("player_team")):
+        player_team_fallback = await _lookup_player_team(
+            db, sport, pick.get("canonical_player_id") or pick.get("player_id"),
+            entity_name,
+        )
+
+    opponent_id, opponent_name = _resolve_opponent(
+        pick, entity_type, entity_name, player_team_fallback=player_team_fallback,
+    )
 
     # Tennis: opponent comes from event/home/away as the OTHER player.
     if sport == "Tennis" and not opponent_name:
