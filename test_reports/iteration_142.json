@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration 142 — Expo Go vs Web Historical Intelligence parity defect P0 verification: BACKEND 9/9 green (5 unit + 4 HTTP). FRONTEND: Trevor Lawrence pick 6d76acfa-6c03-560f-b0b8-8a1626adeee6 renders AVAILABLE_WITH_DATA status line 'AVAILABLE_WITH_DATA · L10 n=10/80 · src canonical-parity.cluster-12.preview.emergentcf.cloud', HIT RATE (L10) 100% 10/10 hero, and Intel2 does NOT show 'NO RECENT HISTORY'. L5 toggle refetches → 'L5 n=5/80'. Playwright 503 route intercept: card shows 'HISTORY QUERY FAILED' (5 occurrences across Intel2 header pill, RECENT FORM, MATCHUP, ENVIRONMENT, DISTRIBUTION modules), testID hi-retry present, 'NO RECENT HISTORY' NEVER appears. Unroute + tap hi-retry recovers to AVAILABLE_WITH_DATA · 10/10. Backend endpoint returns 200 with status=AVAILABLE_WITH_DATA, sample_size=10, data_coverage.total_observations=80, served_by.host + served_by.db present; L5 → sample_size=5; HOME → AVAILABLE_WITH_DATA (source-level); unknown pick → 404. All acceptance criteria PASS.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "shadow*/textShadow*/pointerEvents (informational, pre-existing across all screens)", "issue": "Deprecated style props still emit console warnings (shadow*, textShadow*, props.pointerEvents). Non-blocking, not introduced by this iteration. Reference: multiple components."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_historical_intelligence_status_semantics.py",
+    "/app/backend/tests/test_hi_endpoint_status_semantics_http.py"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "routes/historical_intelligence_routes.py correctly maps HistoricalQueryFailed → 503 with detail.status=QUERY_FAILED + served_by fingerprint; returns 404 for unknown pick id.",
+    "services/historical_intelligence.py: status semantics honest — AVAILABLE_WITH_DATA when adapter returned ≥1 obs, AVAILABLE_EMPTY when 0 obs, SOURCE_UNAVAILABLE when no adapter, QUERY_FAILED raised on adapter crash (never a false-empty 200). data_coverage.total_observations reflects raw pool (80) independent of sample scope, and sample_size reflects L5/L10 scope correctly.",
+    "HistoricalIntelligence.tsx renders hi-status-line testID with '<STATUS> · <SCOPE> n=<sample_size>/<total_observations> · src <host>' format matching spec. hi-retry button present on failure. Intelligence2 header + all sub-modules echo 'HISTORY QUERY FAILED' when failure && !hi."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_hi_endpoint_status_semantics_http.py (new HTTP-level test)"
+  ],
+  "success_rate": {"backend": "100% (9/9)", "frontend": "100% (success path + L5 toggle + 503 failure semantics + retry recovery)"},
+  "seed_data_creation": "None — used pre-existing demo user and existing pick 6d76acfa-6c03-560f-b0b8-8a1626adeee6.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "HI endpoint fully certified. Login testIDs: login-email-input/password-input/submit-button. Pick page testIDs: hi-status-line, hi-retry, intel2, intel2-form, intel2-matchup, intel2-env, intel2-dist. Playwright page.route('**/historical-intelligence**') reliably forces 503 flow. Card retry ladder ~5s (2 backoff attempts) before surfacing failure — use wait 10s in tests. Backend fingerprint host observed: canonical-parity.cluster-12.preview.emergentcf.cloud, db: perklocks.",
+  "rca_of_issue": "Not applicable — this iteration was a P0 parity fix (previous behavior: Expo Go silently rendered '0 obs / NO RECENT HISTORY' while Web showed 10/10). Root cause was already fixed by E1 in this iteration: (1) backend adapter crash used to return 200 + empty obs — now raises HistoricalQueryFailed → HTTP 503 with detail.status=QUERY_FAILED; (2) backend response now includes explicit status enum + served_by fingerprint; (3) frontend never renders 'NO RECENT HISTORY' on fetch failure — instead shows 'HISTORY QUERY FAILED' + RETRY. All three mitigations verified via unit tests, HTTP tests, and Playwright end-to-end flows including 503 injection + retry recovery."
+}

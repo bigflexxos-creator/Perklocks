@@ -825,86 +825,40 @@ async def apply_tennis_engine(db, picks: list[dict]) -> list[dict]:
         elite_calibrated = sackmann_elite or market_elite or aligned_elite
         is_99_eligible = comp.is_99_lock_eligible or elite_calibrated
 
-        if not is_99_eligible:
-            if p.get("grade") == "Elite Lock":
-                p["grade"] = "Strong Lock"
-            # 2026-07-16 v4 — LOCK-BAND ONLY formula. Picks that survive
-            # the NO_BET filters (edge/confidence gates) are ALL Lock-tier
-            # by definition, so the floor is 90, not 70. Differentiation
-            # happens WITHIN the 90-99 Lock band based on the calibrated
-            # Sackmann evidence.
-            #
-            # User principle (2026-07-15): "75 lock score shouldn't be
-            # on the board — I want 90-99 with all the data we added."
-            #
-            # Anchor at 88 (below floor) and layer in signal-driven
-            # bumps so weak calibrations sit at 90 (clamped floor) and
-            # strong calibrations push toward 97 (near-elite ceiling).
-            # Elite-calibrated players get 99 via the gate above.
-            try:
-                _implied = float(p.get("implied_probability") or 50.0)
-            except (TypeError, ValueError):
-                _implied = 50.0
-            # Bumps calibrated to Sackmann z-score distribution
-            # (component floor ~40, average ~65, elite ~90+).
-            surface_bump = (comp.surface      - 70.0) * 0.12   # up to +3.6 at 100
-            sr_bump      = (comp.serve_return - 70.0) * 0.10   # up to +3.0 at 100
-            edge_bump    = max(-0.5, min(2.0, comp.market_edge * 0.4))
-            form_bump    = (comp.form         - 80.0) * 0.05   # up to +1.0 at 100
-            var_pen      = max(0.0, (comp.variance - 22.0) * 0.06)  # up to -4.7 at 100
-            tier_bonus   = {5: 2.0, 4: 1.5, 3: 1.0, 2: 0.5}.get(comp.tier, 0.3)
-            # Session 6 Tennis Root Closure (2026-09-17):
-            # market_bump has been REMOVED from independent evidence.
-            # Book-implied probability already influences (a) the
-            # win_probability model input, (b) the elite gate above
-            # (market_elite / aligned_elite), and (c) the No-Bet
-            # filters upstream.  Awarding another explicit Lock Score
-            # bonus for "book agrees" was double-counting and
-            # penalised legitimate non-favourite edges.  Sportsbook
-            # consensus remains a BENCHMARK / sanity check via
-            # `model_market_delta` — never an independent evidence
-            # vote inside the Lock band formula.
-            market_bump = 0.0
-
-            # 2026-07-16 v5 formula — base band depends on tour tier:
-            # ITF Futures / M25 / W25: base 82, cap 96 (need to earn 95+
-            #   via genuine strong calibration to clear the strict ITF filter)
-            # Main tour (ATP/WTA/Challenger): base 90, cap 99 — full
-            #   Lock band per user mandate "90-99 range not 97".
-            # The elite gates (Sackmann/market/aligned) still pin genuine
-            # locks at exactly 99; the formula naturally spreads
-            # non-elite picks across 91-98 based on calibrated evidence.
-            _tier_str = str(p.get("league") or p.get("tier") or "").lower()
-            _is_itf = any(k in _tier_str for k in (
-                "itf", "futures", "m15", "m25", "w15", "w25", "w35",
-            ))
-            # ── 2026-08-23 CHEAP SURGICAL — remove automatic Tennis
-            # Lock 90 floor.  Prior code force-floored every non-ITF
-            # Tennis pick to 90 (and 82 for ITF), so weak-evidence
-            # picks arrived on the board with an unearned Lock Score.
-            # We keep the same raw formula and ceiling, but the floor
-            # is dropped to the strict board floor (85) — genuine
-            # sub-85 picks now fail the Locks gate honestly instead
-            # of being lifted into it.  Real book line + odds
-            # unchanged.  The strict >=85 Locks board rule and
-            # canonical barrier still apply downstream.
-            if _is_itf:
-                base = 82.0
-                floor = 60.0
-                ceiling = 96.0
-            else:
-                base = 90.0
-                floor = 60.0
-                ceiling = 99.0
-            raw = base + surface_bump + sr_bump + edge_bump + form_bump \
-                - var_pen + tier_bonus + market_bump
-            new_lock = round(max(floor, min(ceiling, raw)), 1)
-            p["lock_score_99_eligible"] = False
-        else:
-            # 99-LOCK eligible — Sackmann-verified elite player with
-            # strong market agreement. Full lock 99.
-            new_lock = 99.0
-            p["lock_score_99_eligible"] = True
+        # ── PROBABILITY AUTHORITY · TENNIS CLOSURE (2026-09-18) ────────
+        # The former construction started every non-ITF candidate at
+        # base=90 (+bumps, ceiling 99) and assigned lock_score=99 directly
+        # on eligibility.  That manufactured the 90-99 band instead of
+        # earning it.  Tennis now feeds its calibrated match probability
+        # and the SAME Sackmann evidence components (surface, serve/return,
+        # form, variance, tier) into the universal Lock Score authority —
+        # identical formula every other sport uses.  90-99 / Apex remain
+        # reachable only when probability + evidence genuinely support it.
+        if p.get("grade") == "Elite Lock" and not is_99_eligible:
+            p["grade"] = "Strong Lock"
+        from sports_engine import compute_lock_score as _canonical_lock
+        _clamp01 = lambda v: max(0.0, min(1.0, float(v)))
+        _factors = {
+            "Surface Edge (Sackmann)":        _clamp01(comp.surface / 100.0),
+            "Serve/Return Edge (Sackmann)":   _clamp01(comp.serve_return / 100.0),
+            "Recent Form (Sackmann)":         _clamp01(comp.form / 100.0),
+            "Variance Control":               _clamp01(1.0 - comp.variance / 100.0),
+            "Tier Evidence":                  _clamp01({5: 0.95, 4: 0.85, 3: 0.75, 2: 0.65}.get(comp.tier, 0.55)),
+        }
+        try:
+            _wp = float(p.get("win_probability") or 0.0)
+        except (TypeError, ValueError):
+            _wp = 0.0
+        try:
+            _edge = float(p.get("edge_percent")) if p.get("edge_percent") is not None else None
+        except (TypeError, ValueError):
+            _edge = None
+        _lock, _bd = _canonical_lock(_factors, win_prob=_wp, pick=p, edge_percent=_edge)
+        new_lock = round(float(_lock), 1)
+        p["lock_breakdown"] = _bd
+        p["lock_score_authority"] = "canonical_compute_lock_score"
+        # Eligibility is evidence metadata, never a score assignment.
+        p["lock_score_99_eligible"] = bool(is_99_eligible)
 
         # ── CRITICAL FIX (2026-07-16): overwrite ALL lock shadow fields ─
         # `_canonicalize_lock_score` at read time computes:

@@ -105,6 +105,14 @@ try:
 except Exception as _hi_err:
     logger.warning("Historical Intelligence routes failed to mount: %s", _hi_err)
 
+# Probability Authority shadow report / refit (read-only boundary proof).
+try:
+    from routes.probability_authority_routes import router as _pa_router
+    app.include_router(_pa_router)
+    logger.info("Probability Authority routes mounted (shadow-report, refit)")
+except Exception as _pa_err:
+    logger.warning("Probability Authority routes failed to mount: %s", _pa_err)
+
 # ── Session 6 Tennis Root Closure diagnostics ──
 try:
     from routes.tennis_diagnostic_routes import router as _tennis_diag_router
@@ -6682,6 +6690,33 @@ async def on_startup():
         logger.info("Propline alt-line feed armed (DK+FD+BetMGM+BetRivers+Bovada, 8-min cadence)")
     except Exception as e:
         logger.warning("propline_feed failed to start: %s", e)
+
+    # ── PROBABILITY AUTHORITY (2026-09-18) — load registry champions at
+    # boot; refit calibrators chronologically once per day (registry
+    # writes only — frozen picks never mutate; production win_probability
+    # changes only for families explicitly promoted via env flags).
+    async def _probability_authority_loop():
+        from services import probability_authority as _pa
+        from services import cfb_total_residuals as _cfb_res
+        try:
+            await _pa.load_champions(db)
+            await _cfb_res.load(db)
+        except Exception as e:
+            logger.warning("probability authority load failed: %s", e)
+        while True:
+            try:
+                summary = await _pa.fit_all_calibrators(db)
+                logger.info("probability authority shadow fit: %s", summary)
+                await _cfb_res.fit(db)
+            except Exception as e:
+                logger.warning("probability authority fit failed: %s", e)
+            await asyncio.sleep(24 * 3600)
+    try:
+        _deferred_task(_probability_authority_loop, DEFER_BASE * 12)
+        logger.info("Probability authority armed (mode=%s)",
+                    os.environ.get("PROBABILITY_AUTHORITY_MODE", "shadow"))
+    except Exception as e:
+        logger.warning("probability authority failed to start: %s", e)
 
     logger.info("PerkLocks AI started")
 

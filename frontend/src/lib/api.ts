@@ -1,5 +1,6 @@
 import { storage } from "@/src/utils/storage";
 import { Platform } from "react-native";
+import Constants from "expo-constants";
 
 // ═══════════════════════════════════════════════════════════════════
 // Expo/Native freshness closure — 2026-08-22
@@ -78,6 +79,29 @@ function dropLegacySgoPicks<T extends { id?: string }>(picks: T[]): T[] {
 // ═══════════════════════════════════════════════════════════════════
 const FORCE_PREVIEW_BACKEND = false;
 const PINNED_PREVIEW_URL = "https://canonical-parity.preview.emergentagent.com";
+const PREVIEW_DOMAIN = ".preview.emergentagent.com";
+
+/** Expo Go only: when the inlined preview URL and the live dev-server host
+ *  are BOTH preview domains but differ, the bundle is stale relative to the
+ *  tunnel — use the dev-server origin so native and web hit the same backend. */
+function _nativePreviewOriginGuard(envUrl: string): string {
+  try {
+    const hostUri: string | undefined =
+      (Constants.expoConfig as any)?.hostUri ||
+      (Constants as any).manifest2?.extra?.expoGo?.debuggerHost ||
+      (Constants as any).manifest?.hostUri;
+    if (!hostUri) return envUrl;
+    const devHost = String(hostUri).replace(/^https?:\/\//, "").split("/")[0].split(":")[0].toLowerCase();
+    const envHost = envUrl.replace(/^https?:\/\//, "").split("/")[0].split(":")[0].toLowerCase();
+    if (!devHost.endsWith(PREVIEW_DOMAIN) || !envHost.endsWith(PREVIEW_DOMAIN)) return envUrl;
+    if (devHost === envHost) return envUrl;
+    // eslint-disable-next-line no-console
+    console.warn(`[api] EXPO_PUBLIC_BACKEND_URL host (${envHost}) ≠ dev-server host (${devHost}); following dev-server host for parity`);
+    return `https://${devHost}`;
+  } catch {
+    return envUrl;
+  }
+}
 
 function resolveBaseUrl(): string {
   if (FORCE_PREVIEW_BACKEND) return PINNED_PREVIEW_URL;
@@ -91,9 +115,20 @@ function resolveBaseUrl(): string {
   // error at first API call so the misconfig is visible immediately.
   if (Platform.OS !== "web") {
     if (envUrl && envUrl.trim().length > 0) {
+      // P0 (2026-09-18) Expo Go ↔ Preview parity guard.  EXPO_PUBLIC_*
+      // values are inlined at BUNDLE time.  When the dev server (tunnel)
+      // moves to a new preview domain but the inlined value still names
+      // the OLD preview domain, Expo Go silently talks to a DIFFERENT
+      // backend/DB than the web preview on the same URL — pick ids are
+      // deterministic so the pick resolves there, but history/evidence
+      // may not, producing false "NO RECENT HISTORY".  The live dev-server
+      // host (`hostUri`) is the ground truth for Expo Go; when both are
+      // preview domains and disagree, follow hostUri.  Production builds
+      // have no hostUri → unchanged fail-loud contract.
+      const swapped = _nativePreviewOriginGuard(envUrl);
       // eslint-disable-next-line no-console
-      console.log(`[api] Native backend origin resolved: ${envUrl}  __DEV__=${!!__DEV__}  Platform.OS=${Platform.OS}`);
-      return envUrl;
+      console.log(`[api] Native backend origin resolved: ${swapped}${swapped !== envUrl ? `  (env=${envUrl} → dev-server host)` : ""}  __DEV__=${!!__DEV__}  Platform.OS=${Platform.OS}`);
+      return swapped;
     }
     // MAIN 41 · P0-A (2026-06-06) — Fail-loud parity requirement.
     // Previously ``if (__DEV__) return PINNED_PREVIEW_URL`` silently
@@ -2563,6 +2598,12 @@ export type HistoricalSummary = {
   games?: HistoricalObservation[];
 };
 
+export type HistoricalIntelligenceStatus =
+  | "AVAILABLE_WITH_DATA"   // source consulted, ≥1 observation
+  | "AVAILABLE_EMPTY"       // source consulted, genuinely nothing for this entity
+  | "SOURCE_UNAVAILABLE"    // no history source exists for this sport/market
+  | "QUERY_FAILED";         // request/DB failure — client-side only, never "no history"
+
 export type HistoricalIntelligenceResponse = {
   sport: string;
   entity_id: string;
@@ -2598,6 +2639,9 @@ export type HistoricalIntelligenceResponse = {
     total_observations: number;
   };
   provenance: string[];
+  // Honest availability semantics — see backend services/historical_intelligence.py
+  status?: HistoricalIntelligenceStatus;
+  served_by?: { host?: string | null; db?: string | null; pid?: number; at?: string };
   latency_ms?: number;
   pick?: {
     id: string;

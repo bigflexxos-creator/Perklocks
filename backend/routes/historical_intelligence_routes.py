@@ -12,12 +12,14 @@ import re
 import time
 from typing import Annotated, Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from deps import current_user
 from auth import UserPublic
 from services.historical_intelligence import (
     HistoricalQuery,
+    HistoricalQueryFailed,
+    HI_STATUS_QUERY_FAILED,
     query_historical,
     resolve_market_family,
     COVERAGE_MATRIX_SPEC,
@@ -276,8 +278,22 @@ def _resolve_threshold(pick: dict, family: Optional[str] = None
 # Main endpoint
 # ---------------------------------------------------------------------------
 
+def _served_by(request: Request, db) -> dict[str, Any]:
+    """Backend fingerprint every surface can display verbatim.  When two
+    clients (Preview/Web vs Expo Go) disagree, comparing this block
+    proves in one glance whether they talked to the same backend + DB."""
+    import os
+    return {
+        "host": request.headers.get("host"),
+        "db": getattr(db, "name", None),
+        "pid": os.getpid(),
+        "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
 @router.get("/{pick_id}/historical-intelligence")
 async def historical_intelligence(
+    request: Request,
     user: Annotated[UserPublic, Depends(current_user)],
     pick_id: str,
     sample_scope: str = Query("L10", pattern="^(L5|L10|L20|SEASON|ALL)$"),
@@ -285,7 +301,8 @@ async def historical_intelligence(
     context_scope: Optional[str] = None,
 ):
     t0 = time.perf_counter()
-    pick = await _get_db().picks.find_one({"id": pick_id})
+    db = _get_db()
+    pick = await db.picks.find_one({"id": pick_id})
     if not pick:
         raise HTTPException(404, "canonical pick not found")
 
@@ -322,9 +339,25 @@ async def historical_intelligence(
         context_scope=context_scope,
         side=_resolve_side(market),
     )
-    resp = await query_historical(_get_db(), q)
+    try:
+        resp = await query_historical(db, q)
+    except HistoricalQueryFailed as exc:
+        # 5xx so the client retry ladder engages; body carries the honest
+        # status so the UI renders QUERY FAILED (retryable), never
+        # "NO RECENT HISTORY".
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": HI_STATUS_QUERY_FAILED,
+                "message": "Historical Intelligence query failed — history source could not be consulted.",
+                "sport": exc.sport,
+                "pick_id": pick_id,
+                "served_by": _served_by(request, db),
+            },
+        )
     d = resp.to_dict()
     d["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+    d["served_by"] = _served_by(request, db)
     d["pick"] = {
         "id":            pick.get("id"),
         "sport":         sport,

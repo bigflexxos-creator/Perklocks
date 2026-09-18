@@ -227,3 +227,42 @@ Continuous surgical NFL build.  Additive READ-path UX only.
 - Ops note: uvicorn runs with --reload; editing backend .py kills in-flight refresh & orphans `scheduler_leases` /
   `scheduled_jobs` leases (owner pid dead). Release orphans before re-triggering.
 - Open: CFB 2.0 model upgrade (NEXT), P11 device matrix, CFBD quota. HR / TB MLB families rarely clear 85 (honest).
+
+## P0 HI PARITY + PROBABILITY AUTHORITY CLOSURE (2026-09-18, iteration 142+)
+- **Expo Go ↔ Web Historical Intelligence parity (P0)** — first divergence: the HI service swallowed adapter
+  exceptions and returned HTTP 200 with 0 observations ("NO RECENT HISTORY" false-empty); the client had no way to
+  distinguish it from a real empty. Closure: `services/historical_intelligence.py` raises `HistoricalQueryFailed`
+  → route returns **503 + detail.status=QUERY_FAILED**; every 200 carries `status` ∈ {AVAILABLE_WITH_DATA,
+  AVAILABLE_EMPTY, SOURCE_UNAVAILABLE} + `served_by{host,db,pid,at}` fingerprint. Frontend
+  (`HistoricalIntelligence.tsx`, `Intelligence2.tsx`): QUERY FAILED state with RETRY (testID hi-retry), status footer
+  (testID hi-status-line: `AVAILABLE_WITH_DATA · L10 n=10/80 · src <host>`), header pill/modules never say
+  "NO RECENT HISTORY" on failure. `api.ts` native guard: when the inlined EXPO_PUBLIC_BACKEND_URL preview host ≠ the live
+  dev-server host (`Constants.expoConfig.hostUri`, both preview domains) Expo Go follows the dev-server host (stale
+  bundle ≠ different backend). Trevor Lawrence 150+ pick id `6d76acfa-6c03-560f-b0b8-8a1626adeee6` → L10 10/10, 80 obs.
+  Tests: tests/test_historical_intelligence_status_semantics.py, tests/test_hi_endpoint_status_semantics_http.py.
+- **Probability closures** `services/probability_closures.py` (wired inside `probability_authority.evaluate`, shadow-first;
+  recorded on `probability_contract.closure` + `closure_probability`):
+  - SOCCER player props (GOALSCORER/ASSISTS/SHOTS/SOT/GOAL_CONTRIBUTION): minutes/lineup model — Poisson exposure
+    rescaling (k from "N+"/line) × availability prior by `lineup_status` (confirmed .99/84', projected .88/80',
+    unknown .80/72', bench .72/28', OUT → fail-closed `LINEUP_OUT`); goal_scorer_v3 picks get availability only.
+    `canonical_publication_boundary` rejects LINEUP_OUT / BOOK_IMPLIED_SEED inline (integrity, mode-independent).
+  - NBA player props: `nba_threshold_probability` Student-t (df=n_games−1) with role variance (rate×minutes_sd)²;
+    `brain/sim_nba.py` empirical branch now uses it (points/PRA) or gamma-Poisson (counts) and stamps
+    projection_mean/sd, sample_games, minutes_projection/sd → authority closure. Book-implied seeds fail closed.
+    Game markets are separate families (NBA_ML/SPREAD/TOTAL).
+  - CFB TOTAL: fixed-σ normal retired — `cfb_over_probability` → `cfb_total_residuals.predictive_total_over_probability`
+    Student-t posterior predictive, df = PRIOR_DF(6) + verified residual n, scale = NIG blend of tier prior σ and
+    residual σ. Miami@Stanford O46.5 fixture 0.9266 → 0.9015; Akron@Wake U50.5 0.8832 → 0.8608; converges to normal as
+    residuals accumulate (test). Registry `CFB_TOTAL_SIGMA` now stores `sigma_raw`, `prior_df`.
+  - TENNIS: closure records `lock_score_authority` (flags LEGACY_LOCK_CONSTRUCTION if not canonical).
+  - Family keys: NFL alt tokens (passing/rushing/receiving yards, anytime touchdown), soccer h2h/market_key fallback,
+    GOAL_CONTRIBUTION before GOALSCORER; team-ambiguous tokens require player identity.
+- **Shadow report** `GET /api/probability-authority/shadow-report` (per-family live board evaluation + registry metrics +
+  readiness verdict PROMOTED / READY_FOR_PROMOTION / IDENTITY_IS_CHAMPION / NOT_ENOUGH_EVIDENCE / NO_SETTLED_EVIDENCE);
+  `POST /api/probability-authority/refit`. Current: MLB_HRR READY_FOR_PROMOTION (platt), MLB_HITS identity champion,
+  all NFL/CFB/Tennis/NBA families NO_SETTLED_EVIDENCE (no settled rows yet) — honest, nothing promoted, mode=shadow.
+  Point-in-time guard excludes 680 soccer rows whose published_at was re-stamped after event_time.
+- Promotion: env `PROBABILITY_AUTHORITY_MODE=active` + `PROB_AUTH_PROMOTE_<FAMILY>=1` (or registry promoted) — only then
+  a family's calibrated/closure probability drives win_probability for NEW publications. Lock Score formula untouched.
+- Pre-existing failing tests (not from this session): test_cfb_game_market_evidence_contract (2), test_iter115 (3),
+  test_block2a_tennis_consolidation sim matrix (2), test_nfl_nba_rationale_smoke (async), test_sim_phase_b sim_runs 20000.
