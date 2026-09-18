@@ -499,6 +499,356 @@ async def live_player_trace(
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Session 10.2 · Soccer Player-Prop Universal Root Closure
+# ─────────────────────────────────────────────────────────────────
+# One authoritative view of the Soccer player-prop pipeline across
+# ALL market families (ATG, SGA, ASSISTS, SHOTS, SOT).
+# ═══════════════════════════════════════════════════════════════════
+
+_PLAYER_MARKET_FAMILIES = {
+    "atg":     ["Anytime Goal Scorer", "To Score", "Anytime Scorer"],
+    "sga":     ["Score or Assist"],
+    "assists": ["Anytime Assist", "To Record an Assist", "To Assist"],
+    "shots":   ["Player Shots", "Total Shots"],
+    "sot":     ["Shots on Target", "SOT"],
+}
+
+
+def _market_family_for(text: str) -> Optional[str]:
+    if not text: return None
+    t = text.lower()
+    if "score or assist" in t:              return "sga"
+    if "assist" in t:                       return "assists"
+    if "shots on target" in t or "sot" in t: return "sot"
+    if "shots" in t:                        return "shots"
+    if "goal scorer" in t or "to score" in t or "anytime" in t: return "atg"
+    return None
+
+
+@router.get("/raw-provider-inventory")
+async def raw_provider_inventory(
+    user: Annotated[UserPublic, Depends(current_user)],
+    pick_date: Optional[str] = None,
+):
+    """P0 · Raw provider inventory across today's Soccer player-prop
+    universe.  Aggregates from the canonical `picks` collection
+    (which is fed by every ingest gateway).  Reports raw rows, unique
+    players, players×events, players×events×markets, events,
+    leagues, sportsbooks per market family."""
+    from datetime import datetime, timezone
+    db = _get_db()
+    if pick_date is None:
+        pick_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    q = {"sport": "Soccer", "pick_date": pick_date}
+    inventory: dict[str, dict] = {k: {
+        "rows": 0, "players": set(), "player_events": set(),
+        "player_events_markets": set(), "events": set(),
+        "leagues": set(), "sportsbooks": set(),
+    } for k in _PLAYER_MARKET_FAMILIES.keys()}
+    async for p in db.picks.find(q, {
+        "market": 1, "selection": 1, "event": 1, "league": 1,
+        "bookmaker": 1, "source": 1,
+    }):
+        fam = _market_family_for(p.get("market") or "")
+        if not fam: continue
+        inv = inventory[fam]
+        inv["rows"] += 1
+        player = _extract_player(p.get("market") or "", p.get("selection") or "")
+        ev = p.get("event") or ""
+        if player: inv["players"].add(player)
+        if player and ev: inv["player_events"].add(f"{player}|{ev}")
+        if player and ev: inv["player_events_markets"].add(f"{player}|{ev}|{fam}")
+        if ev: inv["events"].add(ev)
+        if p.get("league"): inv["leagues"].add(p["league"])
+        if p.get("bookmaker"): inv["sportsbooks"].add(p["bookmaker"])
+    # Serialize
+    return {
+        "pick_date": pick_date,
+        "families": {
+            fam: {
+                "rows":                   inv["rows"],
+                "unique_players":         len(inv["players"]),
+                "unique_player_events":   len(inv["player_events"]),
+                "unique_player_events_markets": len(inv["player_events_markets"]),
+                "unique_events":          len(inv["events"]),
+                "unique_leagues":         len(inv["leagues"]),
+                "unique_sportsbooks":     len(inv["sportsbooks"]),
+                "sportsbooks":            sorted(inv["sportsbooks"])[:15],
+            }
+            for fam, inv in inventory.items()
+        },
+    }
+
+
+@router.get("/funnel")
+async def player_prop_funnel(
+    user: Annotated[UserPublic, Depends(current_user)],
+    pick_date: Optional[str] = None,
+):
+    """P11 · Full player-prop funnel reconciliation with terminal
+    reason counts.  Per-family stages: RAW → NORMALIZED → EVENT
+    RESOLVED → PLAYER RESOLVED → CURRENT_TEAM_VERIFIED → MODEL
+    GENERATED → UEA FULL/STRONG/LIMITED/INSUFFICIENT → LS bands →
+    OFF_BOARD → PUBLISHED.  Every stage must reconcile; no silent
+    drops."""
+    from datetime import datetime, timezone
+    from services.soccer_transfer_registry import (
+        get_current_team, _parse_event_sides,
+    )
+    from services.soccer_player_authority import verify_current_team
+    db = _get_db()
+    if pick_date is None:
+        pick_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    families = list(_PLAYER_MARKET_FAMILIES.keys())
+    counts: dict[str, dict] = {fam: {
+        "raw": 0, "normalized": 0, "event_resolved": 0,
+        "player_resolved": 0, "current_team_verified": 0,
+        "current_team_mismatch": 0, "current_team_unknown": 0,
+        "model_generated": 0,
+        "ls_85_89": 0, "ls_90_92": 0, "ls_93_95": 0, "ls_96_98": 0, "ls_99": 0,
+        "off_board": 0, "published": 0,
+        "terminal_reasons": {},
+    } for fam in families}
+
+    q = {"sport": "Soccer", "pick_date": pick_date}
+    async for p in db.picks.find(q, {
+        "id": 1, "market": 1, "selection": 1, "event": 1, "team": 1,
+        "league": 1, "bookmaker": 1, "book_odds": 1, "lock_score": 1,
+        "publication_state": 1, "off_board_reason": 1, "canonical_id": 1,
+        "source": 1, "win_probability": 1,
+    }):
+        fam = _market_family_for(p.get("market") or "")
+        if not fam: continue
+        c = counts[fam]
+        c["raw"] += 1
+        # NORMALIZED — pick has market + selection recognised
+        player = _extract_player(p.get("market") or "", p.get("selection") or "")
+        if not player:
+            c["terminal_reasons"].setdefault("PLAYER_IDENTITY_FAILED", 0)
+            c["terminal_reasons"]["PLAYER_IDENTITY_FAILED"] += 1
+            continue
+        c["normalized"] += 1
+        # EVENT RESOLVED — parseable
+        ev = p.get("event") or ""
+        home, away = _parse_event_sides(ev)
+        if not (home and away):
+            c["terminal_reasons"].setdefault("EVENT_IDENTITY_FAILED", 0)
+            c["terminal_reasons"]["EVENT_IDENTITY_FAILED"] += 1
+            continue
+        c["event_resolved"] += 1
+        # PLAYER RESOLVED — we have a canonical-shape name
+        c["player_resolved"] += 1
+        # CURRENT TEAM VERIFIED
+        registry = await get_current_team(db, player)
+        canon = registry.get("current_team") if registry else None
+        is_cur, reason, note = verify_current_team(
+            player_name=player,
+            canonical_current_team=canon,
+            event_home_team=home, event_away_team=away,
+            pick_team_hint=p.get("team"),
+        )
+        if is_cur and canon is None:
+            c["current_team_unknown"] += 1
+        elif is_cur:
+            c["current_team_verified"] += 1
+        else:
+            c["current_team_mismatch"] += 1
+            tr = reason.value if reason else "OTHER"
+            c["terminal_reasons"].setdefault(tr, 0)
+            c["terminal_reasons"][tr] += 1
+            continue
+        # MODEL GENERATED — lock_score or win_probability present
+        ls = p.get("lock_score")
+        if ls is None and p.get("win_probability") is None:
+            c["terminal_reasons"].setdefault("MODEL_NOT_RUN", 0)
+            c["terminal_reasons"]["MODEL_NOT_RUN"] += 1
+            continue
+        c["model_generated"] += 1
+        # LS bands
+        try: ls_v = float(ls or 0)
+        except Exception: ls_v = 0.0
+        if   ls_v >= 99: c["ls_99"] += 1
+        elif ls_v >= 96: c["ls_96_98"] += 1
+        elif ls_v >= 93: c["ls_93_95"] += 1
+        elif ls_v >= 90: c["ls_90_92"] += 1
+        elif ls_v >= 85: c["ls_85_89"] += 1
+        # Publication vs off-board
+        if p.get("publication_state") == "OFF_BOARD":
+            c["off_board"] += 1
+            rr = p.get("off_board_reason") or "UNSPECIFIED_OFF_BOARD"
+            c["terminal_reasons"].setdefault(rr, 0)
+            c["terminal_reasons"][rr] += 1
+        elif p.get("publication_state") == "PUBLISHED" or p.get("canonical_id"):
+            c["published"] += 1
+        elif ls_v < 85:
+            c["terminal_reasons"].setdefault("LOCK_SCORE_BELOW_85", 0)
+            c["terminal_reasons"]["LOCK_SCORE_BELOW_85"] += 1
+        else:
+            c["terminal_reasons"].setdefault("PUBLICATION_FILTER", 0)
+            c["terminal_reasons"]["PUBLICATION_FILTER"] += 1
+
+    # Universal totals
+    totals = {
+        "raw": sum(v["raw"] for v in counts.values()),
+        "published": sum(v["published"] for v in counts.values()),
+        "off_board": sum(v["off_board"] for v in counts.values()),
+    }
+    return {"pick_date": pick_date, "families": counts, "totals": totals}
+
+
+def _extract_player(market: str, selection: str) -> Optional[str]:
+    # Selection is the authoritative player field in real sportsbook rows
+    # (e.g. selection="Lamine Yamal", market="Lamine Yamal To Score or Assist").
+    if selection and selection.strip():
+        s = selection.strip()
+        # Strip trailing " to Score" / " to Assist" / " to Score or Assist" if
+        # the sportsbook packed the event descriptor into the selection.
+        for suffix in (" to Score or Assist", " to Score", " to Assist"):
+            if s.lower().endswith(suffix.lower()):
+                s = s[: -len(suffix)].strip()
+                break
+        return s or None
+    # Fallback — parse from market for legacy rows (e.g. hot-scorers format).
+    if market:
+        for sep in (" - Anytime Goal Scorer", " - Score or Assist",
+                    " - Anytime Assist", " - To Score",
+                    " - Shots on Target", " - Player Shots",
+                    " - Anytime Scorer",
+                    " Anytime Goal Scorer", " To Score or Assist",
+                    " Anytime Assist", " Shots on Target", " Shots"):
+            if sep in market:
+                return market.split(sep, 1)[0].strip()
+    return None
+
+
+@router.post("/retire-hot-scorers")
+async def retire_hot_scorers_picks(
+    user: Annotated[UserPublic, Depends(current_user)],
+    dry_run: bool = False,
+):
+    """P3 · Retroactive quarantine — off-board every pick whose
+    `source == 'soccer_hot_scorers_v1'` because that pipeline can no
+    longer establish a current-market pick.  Preserves the rows for
+    audit; does NOT delete."""
+    db = _get_db()
+    from datetime import datetime, timezone
+    q = {
+        "sport": "Soccer",
+        "source": "soccer_hot_scorers_v1",
+        "publication_state": {"$ne": "OFF_BOARD"},
+    }
+    to_off = await db.picks.count_documents(q)
+    if dry_run or to_off == 0:
+        return {"would_off_board": to_off, "off_boarded": 0, "dry_run": bool(dry_run)}
+    res = await db.picks.update_many(q, {"$set": {
+        "publication_state":              "OFF_BOARD",
+        "off_board_reason":               "SYNTHETIC_HOT_SCORERS_RETIRED",
+        "hot_scorers_retired_at":         datetime.now(timezone.utc).isoformat(),
+    }})
+    return {"off_boarded": int(res.modified_count), "would_off_board": to_off}
+
+
+@router.get("/live-acceptance-traces")
+async def live_acceptance_traces(
+    user: Annotated[UserPublic, Depends(current_user)],
+    pick_date: Optional[str] = None,
+):
+    """P14 · Auto-select three real current sportsbook player-prop
+    candidates and return their end-to-end traces:
+        A. Highest-lock player (elite/high-evidence)
+        B. Median-lock player (ordinary)
+        C. Player outside the 'big five' European leagues
+    Each trace mirrors `/live-player-trace` output — real DB rows,
+    no fabrication."""
+    from datetime import datetime, timezone
+    from services.soccer_transfer_registry import (
+        get_current_team, _parse_event_sides,
+    )
+    from services.soccer_player_authority import verify_current_team
+    db = _get_db()
+    if pick_date is None:
+        pick_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    BIG_FIVE = {"Premier League", "La Liga", "Serie A", "Bundesliga", "Ligue 1"}
+    # Only pick from REAL current sportsbook markets — real book_odds required.
+    q = {"sport": "Soccer", "pick_date": pick_date,
+         "book_odds": {"$ne": None},
+         "source": {"$ne": "soccer_hot_scorers_v1"},
+         "$or": [
+             {"market": {"$regex": "Anytime|Score or Assist|Shots|Assist",
+                          "$options": "i"}},
+         ]}
+    all_players = []
+    async for p in db.picks.find(q, {
+        "id": 1, "market": 1, "selection": 1, "event": 1, "team": 1,
+        "league": 1, "bookmaker": 1, "book_odds": 1, "lock_score": 1,
+        "publication_state": 1, "canonical_id": 1, "off_board_reason": 1,
+        "event_time": 1, "win_probability": 1,
+    }).limit(500):
+        all_players.append(p)
+    if not all_players:
+        return {
+            "pick_date": pick_date,
+            "verdict": "BLOCKED_BY_REAL_PROVIDER_DATA",
+            "message": "No real-sportsbook Soccer player-prop rows on the current slate.",
+            "candidates_seen": 0,
+        }
+    # Sort by lock_score to pick A (elite) and B (median)
+    all_players.sort(key=lambda p: float(p.get("lock_score") or 0), reverse=True)
+    a_pick = all_players[0]
+    b_pick = all_players[len(all_players) // 2]
+    c_pick = next(
+        (p for p in all_players if (p.get("league") or "") not in BIG_FIVE),
+        None,
+    )
+    picks_out = []
+    for label, pk in (("A_elite", a_pick), ("B_median", b_pick), ("C_non_big5", c_pick)):
+        if pk is None:
+            picks_out.append({"role": label, "trace": None,
+                              "verdict": "NO_MATCH_FOR_ROLE"})
+            continue
+        player = _extract_player(pk.get("market") or "", pk.get("selection") or "")
+        home, away = _parse_event_sides(pk.get("event") or "")
+        registry = await get_current_team(db, player) if player else None
+        canon = registry.get("current_team") if registry else None
+        is_cur, reason, note = verify_current_team(
+            player_name=player,
+            canonical_current_team=canon,
+            event_home_team=home, event_away_team=away,
+            pick_team_hint=pk.get("team"),
+        )
+        picks_out.append({
+            "role": label,
+            "player": player,
+            "pick_id": pk.get("id"),
+            "event": pk.get("event"),
+            "event_time": pk.get("event_time"),
+            "market": pk.get("market"),
+            "selection": pk.get("selection"),
+            "team": pk.get("team"),
+            "league": pk.get("league"),
+            "sportsbook": pk.get("bookmaker"),
+            "book_odds": pk.get("book_odds"),
+            "lock_score": pk.get("lock_score"),
+            "win_probability": pk.get("win_probability"),
+            "publication_state": pk.get("publication_state"),
+            "off_board_reason": pk.get("off_board_reason"),
+            "canonical_id": pk.get("canonical_id"),
+            "current_team_registry": registry,
+            "current_team_verdict": {
+                "is_current": is_cur,
+                "terminal_reason": reason.value if reason else None,
+                "note": note,
+            },
+        })
+    return {
+        "pick_date": pick_date,
+        "eligible_pool_size": len(all_players),
+        "traces": picks_out,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Invariants — mathematical sanity check on the derived markets
 # ═══════════════════════════════════════════════════════════════════
 @router.get("/invariants")

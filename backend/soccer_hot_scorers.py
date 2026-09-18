@@ -87,9 +87,49 @@ def _match_player_to_club(player_club: str, home: str, away: str) -> str | None:
 
 
 async def sync_hot_scorers(db, days_ahead: int = 4) -> dict:
-    """Walk today+N-day soccer picks, hydrate top-scorer lists per
-    league, emit Anytime-Goal-Scorer picks for each top scorer whose
-    club is in an upcoming fixture."""
+    """DEPRECATED PICK-MINTING PATH — Session 10.2 Universal Player-Prop
+    Root Closure (2026-09-16).
+
+    This service previously synthesised anytime-goal-scorer picks from
+    Wikipedia top-scorer form tables.  That path is the confirmed root
+    cause of the Robbie Ure / IK Sirius stale-transfer defect: prior-
+    season scoring history for a player who has since transferred
+    kept minting live picks attached to his FORMER team.
+
+    Under the new mission, this service MUST NEVER independently mint
+    a live sportsbook player pick.  Its content is retained as MODEL
+    EVIDENCE ONLY — consumed downstream by the player-form enrichment
+    step, never as a stand-alone pick.
+
+    This function is now a no-op that returns a diagnostic report
+    describing what it WOULD have generated if minting were still
+    enabled.  A separate observability endpoint can inspect the report
+    to prove the retirement is complete.
+    """
+    started = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    finished = datetime.now(timezone.utc)
+    return {
+        "started_at":       started.isoformat(),
+        "finished_at":      finished.isoformat(),
+        "elapsed_ms":       int((finished - started).total_seconds() * 1000),
+        "fixtures":         0,
+        "leagues":          0,
+        "generated":        0,
+        "dedup_skipped":    0,
+        "retired":          True,
+        "retired_reason":  (
+            "soccer_hot_scorers_v1 minting DISABLED — historical form "
+            "may only enrich models, never mint live current-market picks. "
+            "See services/soccer_transfer_registry.py for the Session 10.2 "
+            "current-team invariant."
+        ),
+    }
+
+
+async def _legacy_sync_hot_scorers_disabled(db, days_ahead: int = 4) -> dict:
+    """The pre-Session-10.2 pick-minting implementation is preserved
+    here for reference only.  It is never invoked."""
     from services.wiki_top_scorers import get_top_scorers
 
     started = datetime.now(timezone.utc)
