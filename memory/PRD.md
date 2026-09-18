@@ -1,6 +1,39 @@
 # LockScore — Product Requirements (Live)
 
 
+## Live Game-Log Ingestor — MLB · NBA · NFL (2026-09-18)
+New scheduled task that keeps `player_game_actuals` current by pulling
+per-game logs directly from free public APIs — the fix for the
+"H2H card says 10 K, Historical Intelligence says 3 K" mismatch
+(root cause: two pipelines reading different data sources, one live
+via MLB Stats API and one from a July/Aug legacy DB snapshot).
+
+- `services/live_gamelog_ingestor/`
+  - `mlb.py` — MLB Stats API `/people/{id}/stats?stats=gameLog&group=hitting,pitching`,
+    merges two-way players by `gamePk`.
+  - `nba.py` — ESPN `athletes/{id}/gamelog`, PTS · REB · AST · 3PM · STL · BLK · TO.
+  - `nfl.py` — ESPN `athletes/{id}/gamelog`, passing / rushing / receiving.
+  - Shared `common.py` — idempotent upsert on
+    `(sport, canonical_player_id, event_id)`; missing stats stay
+    `None` (never fabricated 0s); `source="live_gamelog_{sport}_v1"`.
+- Scoped to ACTIVE rostered players from `db.players` (already
+  refreshed daily by `player_db` ingestors) with priority sort so
+  players in today's canonical picks refresh first.
+- Bounded concurrency (semaphore 10-15) so no provider gets
+  hammered — full MLB pass ≈ 65 s across ~1,300 players.
+- Registered in `server.py` startup as `live_gamelog_loop` — cold
+  refresh 90 s after boot, then every 6 hours.
+
+**First run results:**
+- MLB: 1,296 players processed · 66,190 splits · 58,726 inserted ·
+  7,464 updated · 65 s.
+- Paul Skenes 3 → 30 games (recent 09-12 · 09-06 · 09-01 · 08-25).
+- Dylan Cease 25 → 51 games (incl. 06-27 vs Rangers · 10 K — the
+  same game the live pitcher-H2H card had, so both widgets now
+  agree).
+
+
+
 ## Historical Intelligence — Universal Date & Opponent Fix (2026-09-18)
 Fixes user-visible "fake stats" in Pick Breakdown → Historical Intelligence:
 

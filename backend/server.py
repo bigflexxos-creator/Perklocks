@@ -5890,6 +5890,43 @@ async def on_startup():
     except Exception as e:
         logger.warning("NBA/NFL/CFB player_db loop failed to start: %s", e)
 
+    # ── Live Game-Log Ingestor (MLB · NBA · NFL) — 2026-09-18 ───────
+    # Keeps `player_game_actuals` current by pulling per-game logs
+    # from free public APIs (MLB Stats API, ESPN) every 6 hours.  This
+    # is what makes the "GAME LOGS" and "VS OPP" tabs in the Pick
+    # Breakdown reflect reality — before this loop, the collection
+    # was frozen at a July/Aug legacy backfill, causing the same
+    # pitcher to show 10 K on the live H2H card and 3 K on the
+    # historical intelligence card.  Prioritises players who appear
+    # in today's canonical picks so freshness reaches the UI within
+    # one refresh cycle.
+    try:
+        from services.live_gamelog_ingestor import refresh_all_sports as _live_gamelog_refresh
+        async def _live_gamelog_loop() -> None:
+            # Cold-start refresh ~90 sec after boot — after the daily
+            # `mlb_stats_api` + `espn_public` player-roster refreshes
+            # have populated `db.players`, since we iterate that set.
+            await asyncio.sleep(90)
+            while True:
+                try:
+                    summary = await _live_gamelog_refresh(db)
+                    logger.info("Live gamelog refresh: %s", summary)
+                except Exception as e:
+                    logger.warning("Live gamelog refresh failed: %s", e)
+                # Every 6 hours — MLB has 4 primetime slates per day,
+                # NFL is weekly but stat corrections trickle in, NBA
+                # is daily.  6h keeps freshness within one prime cycle
+                # without overloading providers.
+                await asyncio.sleep(6 * 60 * 60)
+        _TASK_REGISTRY.register_and_start(
+            'live_gamelog_loop', lambda: _live_gamelog_loop(),
+            task_type='recurring_loop', critical=False,
+        )
+        logger.info("Live gamelog ingestor (MLB + NBA + NFL) armed — 6h refresh")
+    except Exception as e:
+        logger.warning("Live gamelog loop failed to start: %s", e)
+
+
     # ── ESPN MLS scorer leaderboard ingest (2026-07-22) ──────────────
     # Scrapes ESPN's public MLS scoring + assists tables into
     # `espn_mls_stats` collection. Used by `mls_scorer_gate` to
