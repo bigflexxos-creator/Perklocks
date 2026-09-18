@@ -146,7 +146,7 @@ export function SportFilterBar({ sport, filters, onChange }: Props) {
           )}
           {/* NFL Anytime-Touchdown chip — mirrors the MLB HR chip.
               Tap navigates to the dedicated /atd slate screen (Top 5
-              Today · Full Board) backed by /api/nfl/atd/leaderboard.
+              Today · By Game) backed by the ONE slate endpoint /api/nfl/atd/slate.
               Restored as chip on 2026-08-24 per user directive:
               "same thing with nfl for atd". */}
           {sport === "NFL" && (

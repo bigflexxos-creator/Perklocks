@@ -85,40 +85,74 @@ async def build_mlb_game_context(game: dict) -> dict[str, Any]:
         from mlb_bvp import _get_json, MLB_STATS_BASE
         gid = game.get("id") or game.get("external_id")
         commence = game.get("commence_time") or game.get("event_time") or ""
-        date_str = commence[:10] if commence else None
+        # 2026-09-18 MLB PROP BOARD RECOVERY — the StatsAPI ``date``
+        # parameter is the LOCAL (US/Eastern) game date.  Slicing the
+        # UTC commence string gave the NEXT day for every evening game
+        # (01:40Z / 02:15Z), so ctx resolved tomorrow's probable
+        # starters (e.g. Skubal for a Glasnow start) → every K/Outs
+        # factor missed by name → pitcher props gated as
+        # missing_feature_data.  Convert to Eastern first; when a
+        # doubleheader yields two matches, take the game nearest to
+        # the provider's commence time.
+        date_str = None
+        _commence_dt = None
+        if commence:
+            try:
+                from datetime import datetime as _dt
+                from zoneinfo import ZoneInfo
+                _commence_dt = _dt.fromisoformat(
+                    str(commence).replace("Z", "+00:00"))
+                date_str = _commence_dt.astimezone(
+                    ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+            except Exception:
+                date_str = str(commence)[:10]
         if date_str:
             data = await _get_json(
                 f"{MLB_STATS_BASE}/schedule?sportId=1&date={date_str}"
                 f"&hydrate=probablePitcher(note)"
             )
+            _matches = []
             for d in (data or {}).get("dates", []):
                 for gm in d.get("games", []):
                     tteams = gm.get("teams") or {}
                     home_name = ((tteams.get("home") or {}).get("team") or {}).get("name", "")
                     if home_name == home_team:
-                        ph = ((tteams.get("home") or {}).get("probablePitcher") or {})
-                        pa = ((tteams.get("away") or {}).get("probablePitcher") or {})
-                        if ph.get("fullName"):
-                            ctx["starting_pitcher_home"] = {
-                                "name": ph.get("fullName"),
-                                "id":   ph.get("id"),
-                            }
-                        if pa.get("fullName"):
-                            ctx["starting_pitcher_away"] = {
-                                "name": pa.get("fullName"),
-                                "id":   pa.get("id"),
-                            }
-                        break
+                        _matches.append(gm)
+            if len(_matches) > 1 and _commence_dt is not None:
+                def _gap(gm):
+                    try:
+                        from datetime import datetime as _dt
+                        return abs((_dt.fromisoformat(
+                            str(gm.get("gameDate")).replace("Z", "+00:00"))
+                            - _commence_dt).total_seconds())
+                    except Exception:
+                        return float("inf")
+                _matches.sort(key=_gap)
+            for gm in _matches[:1]:
+                tteams = gm.get("teams") or {}
+                ph = ((tteams.get("home") or {}).get("probablePitcher") or {})
+                pa = ((tteams.get("away") or {}).get("probablePitcher") or {})
+                if ph.get("fullName"):
+                    ctx["starting_pitcher_home"] = {
+                        "name": ph.get("fullName"),
+                        "id":   ph.get("id"),
+                    }
+                if pa.get("fullName"):
+                    ctx["starting_pitcher_away"] = {
+                        "name": pa.get("fullName"),
+                        "id":   pa.get("id"),
+                    }
     except Exception as e:
         logger.debug("probable pitcher ctx fetch failed: %s", e)
 
     # 4) Attach Stuff+ from the existing cache when the starters resolved.
     try:
-        from services.mlb_stuff_plus import get_by_name
+        from services.mlb_stuff_plus import get_pitcher_stuff
+        _sp_db = _get_db()
         for side_key in ("starting_pitcher_home", "starting_pitcher_away"):
             sp = ctx.get(side_key)
-            if isinstance(sp, dict) and sp.get("name"):
-                sp_grade = await get_by_name(sp["name"])
+            if _sp_db is not None and isinstance(sp, dict) and sp.get("name"):
+                sp_grade = await get_pitcher_stuff(_sp_db, sp["name"])
                 if sp_grade and isinstance(sp_grade, dict):
                     if "stuff_plus" in sp_grade:
                         sp["stuff_plus"] = sp_grade["stuff_plus"]

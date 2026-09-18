@@ -259,6 +259,14 @@ def simulate_nba_pick(pick: dict, recent_rows: list[dict] | None = None) -> Opti
         "steals":    "steals",
         "blocks":    "blocks",
     }
+    # P1.6 — MODEL and Historical Intelligence must resolve from the SAME
+    # canonical observations.  Rows that are not canonical-identity
+    # keyed (legacy name-based logs) may NOT drive an EMPIRICAL_INDEPENDENT
+    # distribution; they are dropped here so the sim stays honestly
+    # MODEL_CONDITIONED.
+    if recent_rows:
+        recent_rows = [r for r in recent_rows
+                       if isinstance(r, dict) and (r.get("canonical_player_id") or r.get("canonical_event_id"))]
     if recent_rows and cat in _stat_key_by_cat:
         stat_key = _stat_key_by_cat[cat]
         vals: list[float] = []

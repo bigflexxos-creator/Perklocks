@@ -52,6 +52,17 @@ async def nfl_safe_bets(
         raise HTTPException(500, f"nfl safe-bets failed: {e}")
 
 
+@router.get("/media/player/{media_key}")
+async def player_media_lookup(media_key: str):
+    """P3 — cached lightweight player media (Mongo only; no provider
+    discovery at screen time).  404 is an OPTIONAL failure for clients."""
+    from services.player_media import get_player_media
+    row = await get_player_media(db, media_key)
+    if not row:
+        raise HTTPException(404, "no media")
+    return row
+
+
 @router.get("/atd/slate")
 async def nfl_atd_slate(
     min_probability: float = Query(0.10, ge=0.01, le=0.99),

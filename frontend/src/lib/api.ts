@@ -328,6 +328,14 @@ export type Pick = {
   // Injected by backend `_decorate_with_espn_meta` on `/api/picks/today`
   // and detail endpoints. Available for MLB, NFL, NBA, CFB, NHL, WNBA,
   // NCAAB, and every ESPN-covered soccer league.
+  // ─── Intelligence 2.0 header fields (canonical pick payload) ────────
+  player_name?: string | null;
+  player_team?: string | null;
+  home_team?: string | null;
+  away_team?: string | null;
+  line?: number | null;
+  lineup_status?: string | null;
+  venue?: string | null;
   home_meta?: {
     logo?: string;
     color?: string;
@@ -449,6 +457,13 @@ export type Pick = {
   // athlete ingestor + MLB Stats API).  Presentation-only metadata —
   // never influences pick identity, dedupe, Lock Score, probability,
   // edge, publication, or settlement.  Absent for game markets.
+  // P3 — background player media (Mongo-only overlay). Optional.
+  player_media?: {
+    headshot_url?: string | null;
+    verified?: boolean | null;
+    source?: string | null;
+    team_logo?: string | null;
+  };
   player_meta?: {
     display_name: string;
     team?: string;
@@ -2450,6 +2465,10 @@ export type NFLAtdSlateGame = {
   home_team?: string | null;
   commence_time?: string;
   state?: "SCHEDULED" | "STARTED";
+  home_logo?: string | null;
+  away_logo?: string | null;
+  home_abbrev?: string | null;
+  away_abbrev?: string | null;
   candidates_in_game: number;
   candidates: NFLAtdPick[];
   top: NFLAtdPick[];

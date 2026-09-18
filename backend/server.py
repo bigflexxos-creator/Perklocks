@@ -683,6 +683,16 @@ async def _decorate_with_espn_meta(picks: list[dict]) -> list[dict]:
         await decorate_with_player_meta(db, picks)
     except Exception as _pm_err:
         logger.debug("player_meta decorator skipped (non-fatal): %s", _pm_err)
+    # P3 — player_media overlay (Mongo-only) + BACKGROUND ingest for
+    # players not yet resolved.  Never blocks the read path.
+    try:
+        from services.player_media import overlay_player_media, ingest_player_media_for_picks
+        await overlay_player_media(db, picks)
+        _missing = [p for p in picks if "player_media" not in p]
+        if _missing:
+            asyncio.create_task(ingest_player_media_for_picks(db, [dict(p) for p in _missing[:150]]))
+    except Exception as _media_err:
+        logger.debug("player_media overlay skipped (non-fatal): %s", _media_err)
     return picks
 
 
@@ -1626,12 +1636,70 @@ async def _refresh_picks(
     :class:`services.pick_refresh_orchestrator.PickRefreshOrchestrator`.
     """
     orchestrator = PickRefreshOrchestrator()
+    # ── ANTI-STARVATION (2026-09-18) ──────────────────────────────────
+    # The monolithic ALL cycle had been hanging inside generation since
+    # 2026-09-16 (lease acquired, never "Refresh done"), so MLB / CFB /
+    # Tennis starved for two days while per-sport refreshes worked.
+    # An ALL request now fans out into ISOLATED per-sport refreshes, each
+    # under its own timeout.  One hung or failing sport can never block
+    # another; every outcome is recorded in `refresh_health` for audit.
+    if sport_filter is None:
+        sports = [s.strip() for s in os.environ.get(
+            "PERKLOCKS_REFRESH_SPORTS", "NFL,MLB,CFB,Soccer,Tennis").split(",") if s.strip()]
+        per_sport_timeout = float(os.environ.get("PERKLOCKS_REFRESH_SPORT_TIMEOUT_SEC", "420"))
+        # 2026-09-18 MLB PROP BOARD RECOVERY — the 420s cap was killing the
+        # MLB cycle ~80s BEFORE its insert step (fetch ~150s + BvP ~165s +
+        # simulator/enrichment ~120s for ~540 candidates), so every MLB
+        # player prop was generated, scored and then discarded on every
+        # cycle ("refresh[MLB] TIMEOUT after 420.0s").  Props-heavy sports
+        # get a wider per-sport budget; other sports keep the default.
+        _per_sport_timeouts = {
+            "MLB": float(os.environ.get("PERKLOCKS_REFRESH_SPORT_TIMEOUT_SEC_MLB", "900")),
+        }
+        total = 0
+        for sp in sports:
+            started = datetime.now(timezone.utc)
+            _sp_timeout = _per_sport_timeouts.get(sp, per_sport_timeout)
+            outcome: dict = {"sport": sp, "slate_date": date_str, "started_at": started.isoformat()}
+            try:
+                res = await asyncio.wait_for(
+                    orchestrator.refresh(PickRefreshRequest(
+                        slate_date=date_str, sport_filter=sp,
+                        caller="server._refresh_picks_compat", reason="all-cycle per-sport isolation",
+                    )),
+                    timeout=_sp_timeout,
+                )
+                n = int(res.published_count or 0)
+                total += n
+                outcome.update({"status": "OK", "published_count": n})
+            except asyncio.TimeoutError:
+                outcome.update({"status": "TIMEOUT", "timeout_sec": _sp_timeout})
+                logger.error("refresh[%s] TIMEOUT after %ss — continuing with next sport", sp, _sp_timeout)
+            except Exception as e:
+                outcome.update({"status": "ERROR", "error": str(e)[:300]})
+                logger.error("refresh[%s] failed: %s — continuing with next sport", sp, e)
+            outcome["finished_at"] = datetime.now(timezone.utc).isoformat()
+            outcome["duration_sec"] = round((datetime.now(timezone.utc) - started).total_seconds(), 1)
+            try:
+                await db.refresh_health.update_one(
+                    {"sport": sp, "slate_date": date_str}, {"$set": outcome}, upsert=True)
+            except Exception:
+                pass
+        return total
     result = await orchestrator.refresh(PickRefreshRequest(
         slate_date=date_str,
         sport_filter=sport_filter,
         caller="server._refresh_picks_compat",
         reason="legacy signature",
     ))
+    try:
+        await db.refresh_health.update_one(
+            {"sport": sport_filter, "slate_date": date_str},
+            {"$set": {"sport": sport_filter, "slate_date": date_str, "status": "OK",
+                      "published_count": int(result.published_count or 0),
+                      "finished_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    except Exception:
+        pass
     return int(result.published_count or 0)
 
 
@@ -2886,7 +2954,7 @@ _LITE_BOARD_WHITELIST = frozenset({
     "publication_version", "snapshot_version", "model_version",
     "canonical_event_id", "canonical_pick_id", "published_at",
     "published_probability", "published_edge", "external_id", "event_id",
-    "generation_id", "book", "sportsbook",
+    "generation_id", "book", "sportsbook", "player_media",
     # PERKLOCKS MAIN 37 · P0.2 — surface the immutable
     # ``PublishedPickContract`` on the lite wire payload so every
     # frontend consumer (Lock badge, Rollover, Alt-Line, evaluator)

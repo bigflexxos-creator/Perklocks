@@ -27,6 +27,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Iterable, Optional
 
+from services.published_prediction_reader import hydrate
+
 # ── Canonical reason codes (fixed enum — forbidden to invent new ones) ──
 CANONICAL_LOCK_FLOOR = 85.0
 
@@ -245,7 +247,15 @@ async def rescue_missing_eligible(db, served_ids: set, rescue_query: dict):
             v = p.get(_bk)
             if v is not None and not isinstance(v, (str, int, float, bool)):
                 p[_bk] = str(v)
-        rescued.append(p)
+        # FINAL UNIVERSAL ROOT CLOSURE · NFL ALT PARITY (2026-09-18) —
+        # rescued rows arrive straight from db.picks and previously
+        # bypassed the canonical reader, so the MUTABLE top-level
+        # aliases (win_probability / edge_percent / grade …) leaked
+        # onto the lite board while /picks/{id} hydrated the frozen
+        # ``published_*`` snapshot → list 75.1 vs detail/DB 70.67.
+        # The lite board is a PROJECTION of published truth: hydrate
+        # from the snapshot exactly like every other read path.
+        rescued.append(hydrate(p))
     return rescued, ebm_ids, rejected
 
 

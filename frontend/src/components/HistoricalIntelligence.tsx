@@ -190,7 +190,8 @@ const MARKET_LABEL: Record<string, string> = {
 // ─── Component ──────────────────────────────────────────────────────
 export function HistoricalIntelligence({
   pickId,
-}: { pickId: string }) {
+  onData,
+}: { pickId: string; onData?: (d: HistoricalIntelligenceResponse) => void }) {
   const [data, setData]         = useState<HistoricalIntelligenceResponse | null>(null);
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState<string | null>(null);
@@ -207,12 +208,13 @@ export function HistoricalIntelligence({
         sampleScope: s, venueScope: v,
       });
       setData(r);
+      try { onData?.(r); } catch {}
     } catch (e: any) {
       setError(e?.message || "Historical Intelligence temporarily unavailable");
     } finally {
       setLoading(false);
     }
-  }, [pickId, sample, venue]);
+  }, [pickId, sample, venue, onData]);
 
   useEffect(() => { void load(); }, [pickId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -446,7 +448,8 @@ function GameLogsTab({ data }: { data: HistoricalIntelligenceResponse }) {
             NO PRIOR MATCHUPS
           </Text>
         </View>
-      )}      <View style={styles.logHead}>
+      )}
+      <View style={styles.logHead}>
         {cols.map((c) => (
           <Text key={c.key}
             style={[styles.logHeadText, { width: c.width || 60 }]}
@@ -505,16 +508,27 @@ function VsOppTab({ data }: { data: HistoricalIntelligenceResponse }) {
       </View>
       {opp.games && (
         <View style={{ marginTop: 10 }}>
-          {opp.games.map((g: HistoricalObservation, i: number) => (
-            <View key={i} style={styles.vsRow}>
-              <Text style={styles.vsRowDate}>{fmtDate(g.date)}</Text>
-              <Text style={styles.vsRowActual}>{fmtNum(g.actual, 1)}</Text>
-              <Text style={[styles.vsRowResult,
-                g.result === "HIT" && { color: COLORS.neonGreen },
-                g.result === "MISS" && { color: COLORS.electricBlaze },
-              ]}>{g.result || "—"}</Text>
-            </View>
-          ))}
+          {opp.games.map((g: HistoricalObservation, i: number) => {
+            // Derive HIT / MISS / PUSH vs the CURRENT line when the
+            // observation carries no precomputed result (same rule the
+            // summary uses; missing actual stays "—", never a MISS).
+            let res: string | undefined = g.result || undefined;
+            if (!res && g.actual != null && data.current_threshold != null) {
+              const side = (data.scope?.side || "over").toLowerCase();
+              if (g.actual === data.current_threshold) res = "PUSH";
+              else res = ((g.actual > data.current_threshold) === (side !== "under")) ? "HIT" : "MISS";
+            }
+            return (
+              <View key={i} style={styles.vsRow}>
+                <Text style={styles.vsRowDate}>{fmtDate(g.date)}</Text>
+                <Text style={styles.vsRowActual}>{fmtNum(g.actual, 1)}</Text>
+                <Text style={[styles.vsRowResult,
+                  res === "HIT" && { color: COLORS.neonGreen },
+                  res === "MISS" && { color: COLORS.electricBlaze },
+                ]}>{res || "—"}</Text>
+              </View>
+            );
+          })}
         </View>
       )}
     </View>

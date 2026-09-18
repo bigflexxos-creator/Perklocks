@@ -38,7 +38,7 @@ logger = logging.getLogger("lockscore.mlb_live")
 
 MLB_BASE = "https://statsapi.mlb.com/api/v1"
 CACHE_TTL_SECONDS = 15  # matches user's spec
-HTTP_TIMEOUT_SECONDS = 8
+HTTP_TIMEOUT_SECONDS = 20   # 2026-09-18: 8s produced intermittent empty-error schedule failures → MLB props ctx empty → all props gated
 
 # Minimal in-memory cache: { url: (expires_at_unix, parsed_json) }
 _cache: dict[str, tuple[float, Any]] = {}

@@ -103,19 +103,22 @@ AUTHORITY: dict[str, dict[str, dict[str, Any]]] = {
         "player_points": {"canonical": UNAVAILABLE,
                            "preserved_specialists": ()},
     },
+    # P1.6 NBA ROOT CLOSURE — split-brain resolved in favour of the
+    # universal_market_contract: no authoritative NBA model has shipped
+    # with real canonical evidence (player_game_actuals/team_game_actuals
+    # carry zero NBA rows in this deployment).  Authority is therefore
+    # MODEL_UNAVAILABLE for every NBA market — one answer everywhere.
+    # brain/sim_nba reconstructs a distribution from an existing
+    # probability and is provenance=MODEL_CONDITIONED (research only),
+    # never independent predictive evidence.  Do NOT manufacture
+    # authority here until real NBA evidence + a proven model exist.
     "NBA": {
-        "moneyline":     {"canonical": "nba_feature_engine",
-                           "preserved_specialists": ()},
-        "spread":        {"canonical": "nba_feature_engine",
-                           "preserved_specialists": ()},
-        "total":         {"canonical": "nba_feature_engine",
-                           "preserved_specialists": ()},
-        "player_points": {"canonical": "nba_player_prop_intel",
-                           "preserved_specialists": ()},
-        "player_assists":{"canonical": "nba_player_prop_intel",
-                           "preserved_specialists": ()},
-        "player_rebounds":{"canonical": "nba_player_prop_intel",
-                            "preserved_specialists": ()},
+        "moneyline":     {"canonical": UNAVAILABLE, "preserved_specialists": ()},
+        "spread":        {"canonical": UNAVAILABLE, "preserved_specialists": ()},
+        "total":         {"canonical": UNAVAILABLE, "preserved_specialists": ()},
+        "player_points": {"canonical": UNAVAILABLE, "preserved_specialists": ()},
+        "player_assists":{"canonical": UNAVAILABLE, "preserved_specialists": ()},
+        "player_rebounds":{"canonical": UNAVAILABLE, "preserved_specialists": ()},
     },
     "NHL": {
         # Fail-closed until authoritative NHL simulator is wired end-

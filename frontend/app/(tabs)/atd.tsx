@@ -23,6 +23,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { Image } from "expo-image";
 import {
   api,
   getBackendUrl,
@@ -40,9 +41,14 @@ import { safeBack } from "@/src/utils/safeBack";
 type ViewMode = "topDay" | "byGame";
 
 /** P0.4 — no client-derived grade.  Canonical published rows show the
- *  backend grade; on-demand candidates show an evidence/data badge. */
+ *  backend grade when it is a positive Locks verdict (Lock / Playable).
+ *  A Locks-board "Pass" is NOT an ATD verdict — the ATD leaderboard is
+ *  ranked by calibrated TD probability, so a Pass-graded published row
+ *  falls through to the same evidence/data badge as on-demand rows.
+ *  The Lock Score itself stays visible (L62) in the compact row. */
 function dataBadge(pick: NFLAtdPick): string {
-  if (pick.candidate_state === "PUBLISHED" && pick.grade) return String(pick.grade).toUpperCase();
+  const g = pick.grade ? String(pick.grade).toUpperCase() : "";
+  if (pick.candidate_state === "PUBLISHED" && g && g !== "PASS") return g;
   if ((pick.sample_games ?? 0) >= 8) return "STRONG DATA";
   if ((pick.sample_games ?? 0) >= 4) return "MODEL";
   return "LIMITED DATA";
@@ -163,16 +169,46 @@ function CandidateRow({ pick, rank }: { pick: NFLAtdPick; rank: number }) {
   );
 }
 
+/** Team logo with fallback chain logo → abbrev initials.  Image failures are
+ *  optional failures: they never affect the card. */
+function TeamMark({ logo, abbrev, name }: { logo?: string | null; abbrev?: string | null; name?: string | null }) {
+  const [failed, setFailed] = useState(false);
+  const initials = (abbrev || (name || "").split(" ").map((w) => w[0]).join("").slice(0, 3) || "?").toUpperCase();
+  if (logo && !failed) {
+    return (
+      <Image
+        source={{ uri: logo }}
+        style={styles.teamLogo}
+        contentFit="contain"
+        cachePolicy="memory-disk"
+        transition={120}
+        onError={() => setFailed(true)}
+        accessibilityLabel={name || abbrev || "team"}
+      />
+    );
+  }
+  return (
+    <View style={[styles.teamLogo, styles.teamInitials]}>
+      <Text style={styles.teamInitialsTxt}>{initials}</Text>
+    </View>
+  );
+}
+
 function GameCard({ game }: { game: NFLAtdSlateGame }) {
   const [expanded, setExpanded] = useState(false);
   const rows = expanded ? game.candidates : game.top;
   const title = game.away_team && game.home_team
-    ? `${game.away_team} @ ${game.home_team}`
+    ? `${game.away_abbrev || game.away_team} @ ${game.home_abbrev || game.home_team}`
     : game.event;
   return (
     <View style={styles.gameGroup} testID={`atd-game-${game.canonical_event_id}`}>
       <View style={styles.gameHead}>
-        <Text style={styles.gameGroupTitle} numberOfLines={1}>{title}</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flex: 1 }}>
+          <TeamMark logo={game.away_logo} abbrev={game.away_abbrev} name={game.away_team} />
+          <Text style={styles.gameAt}>@</Text>
+          <TeamMark logo={game.home_logo} abbrev={game.home_abbrev} name={game.home_team} />
+          <Text style={styles.gameGroupTitle} numberOfLines={1}>{title}</Text>
+        </View>
         <Text style={styles.gameTime}>
           {game.state === "STARTED" ? "STARTED" : fmtKickoff(game.commence_time)}
         </Text>
@@ -398,6 +434,10 @@ const styles = StyleSheet.create({
     borderRadius: 8, borderWidth: 1, borderColor: COLORS.borderDefault, backgroundColor: COLORS.surface,
   },
   staleTxt: { color: COLORS.goldRich, fontSize: 10.5, fontWeight: "800", letterSpacing: 0.8 },
+  teamLogo: { width: 22, height: 22, borderRadius: 11 },
+  teamInitials: { backgroundColor: COLORS.surfaceElevated, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: COLORS.borderDefault },
+  teamInitialsTxt: { color: COLORS.textSecondary, fontSize: 8, fontWeight: "900" },
+  gameAt: { color: COLORS.textMuted, fontSize: 11, fontWeight: "800" },
   gameHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   gameTime: { color: COLORS.textMuted, fontSize: 11, fontWeight: "700", marginLeft: 8 },
   gameKicker: { color: COLORS.textMuted, fontSize: 9.5, fontWeight: "800", letterSpacing: 1.2, marginTop: 6, marginBottom: 4 },
@@ -410,7 +450,7 @@ const styles = StyleSheet.create({
   candLock: { color: COLORS.voltBlue, fontSize: 11, fontWeight: "800", width: 34, textAlign: "right" },
   viewAll: { alignSelf: "flex-start", paddingVertical: 8, paddingHorizontal: 4, minHeight: 44, justifyContent: "center" },
   viewAllTxt: { color: COLORS.voltBlue, fontSize: 11.5, fontWeight: "800", letterSpacing: 0.8 },
-  safe: { flex: 1, backgroundColor: COLORS.deepBlack },
+  safe: { flex: 1, backgroundColor: COLORS.bg },
   header: {
     flexDirection: "row", alignItems: "center", paddingHorizontal: 14,
     paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth,

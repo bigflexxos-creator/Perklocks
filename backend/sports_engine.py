@@ -5739,6 +5739,20 @@ async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) 
                  "last_seen": {"$gte": _stale}},
                 {"_id": 0},
             ).to_list(length=5000)
+            # 2026-09-18 MLB PROP BOARD RECOVERY — legacy cache rows
+            # written before ``side`` was persisted carry no
+            # Over/Under direction and CANNOT be reconstructed into
+            # valid outcomes (the direction filter downstream fails
+            # closed).  Treat them as absent so the provider fetch
+            # repopulates a direction-complete cache.
+            _legacy_rows = [r for r in _cache_rows if not r.get("side")]
+            if _legacy_rows:
+                logger.info(
+                    "MLB prop cache event=%s: %d/%d rows lack side "
+                    "(legacy) → provider fetch required",
+                    event_id, len(_legacy_rows), len(_cache_rows),
+                )
+                _cache_rows = [r for r in _cache_rows if r.get("side")]
             # ── 2026-06 μ-closure: FAMILY-AWARE cache completeness ─────
             # Old behavior: ANY fresh row for the event caused a cache
             # HIT, even if the caller requested a DIFFERENT market
@@ -5775,7 +5789,7 @@ async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) 
                     _mk = _bm["markets"].setdefault(_mkey, {"key": _mkey,
                                                              "outcomes": []})
                     _mk["outcomes"].append({
-                        "name":        r.get("selection"),
+                        "name":        r.get("side"),
                         "description": r.get("selection"),
                         "point":       r.get("line"),
                         "price":       r.get("price"),

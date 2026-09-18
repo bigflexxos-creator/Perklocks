@@ -105,6 +105,15 @@ def _derive_market_family(pick: dict) -> str:
     if "run line" in m or "runline" in m:
         return "run_line"
     if "spread" in m or "handicap" in m:
+        # MLB's provider label is "+1.5 Spread" but the canonical family
+        # (universal_market_contract) is RUN_LINE — the "spread" family
+        # is honestly MODEL_UNAVAILABLE for MLB, which was rejecting every
+        # real MLB run-line pick at the boundary.  Same for NHL puck line.
+        sp = str(pick.get("sport") or "").upper()
+        if sp == "MLB":
+            return "run_line"
+        if sp == "NHL":
+            return "puck_line"
         return "spread"
     if "team total" in m:
         return "team_total"

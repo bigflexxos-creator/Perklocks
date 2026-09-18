@@ -20,6 +20,12 @@ adjustments.  Safe to re-run: it is idempotent (already-restored rows
 are no-ops).
 """
 from __future__ import annotations
+# P5 QUARANTINE — legacy direct grade writer. Exits unless
+# PERKLOCKS_ALLOW_LEGACY_SETTLEMENT_WRITE=1 (audited override).
+import sys as _sys, os as _os
+_sys.path.insert(0, "/app/backend")
+from services.settlement_authority import require_legacy_override as _rlo
+_rlo(__file__)
 
 import asyncio
 import os
