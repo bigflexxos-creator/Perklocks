@@ -1,6 +1,41 @@
 # LockScore — Product Requirements (Live)
 
 
+## Historical Intelligence — Universal Date & Opponent Fix (2026-09-18)
+Fixes user-visible "fake stats" in Pick Breakdown → Historical Intelligence:
+
+1. **Real game log dates (universal)** — `player_game_actuals` docs
+   whose `event_time` was `None` (63,855 MLB rows on the ingested
+   batch) previously fell back to `ingested_at`, collapsing every
+   game-log date to the ingestion day ("08/11 08/11 08/11…").
+   - One-time script `backend/scripts/backfill_player_event_time.py`
+     joins `team_game_actuals.event_time` by `event_id` across MLB /
+     NFL / NBA / NHL.
+   - Runtime defensive helper
+     `_enrich_event_time_from_team_actuals()` in
+     `services/historical_intelligence.py` protects every player
+     adapter (MLB + NFL wired) against future regressions in the
+     ingestion pipeline.
+2. **VS OPP resolves for player props (universal)** — picks whose
+   payload lacks `player_team_name` (very common for MLB/NFL/NBA
+   props published through some odds providers) previously returned
+   `NO PRIOR MATCHUPS` even when 90+ game logs vs that opponent
+   existed. Route now performs a `_lookup_player_team()` against
+   `player_identities.current_team` keyed by `provider_ids`
+   (mlb_stats · gsis · nba_stats · nhl_stats · wnba_stats · fotmob ·
+   cfbd) with name-norm fallback, then hands the result to
+   `_resolve_opponent()` as `player_team_fallback`.
+3. **`_resolve_opponent()` partial-word match** — now also matches
+   `"phillies" ⊂ "philadelphia phillies"` so short player-team
+   labels still resolve.
+
+Verified end-to-end:
+- Bryce Harper (Over 0.5 Hits): dates now 08-11, 08-09, 08-05, 07-28,
+  06-23 (real). VS Milwaukee Brewers → 9 prior matchups, 55.6% hit.
+- Oneil Cruz / Paul Skenes: dates now span 2022-2026 correctly.
+
+
+
 ## Universal Evidence Authority (UEA) — 2026-06 CERTIFIED (STRUCTURAL)
 ### Scope: MLB · NFL · CFB · SOCCER · TENNIS (NBA/NHL/UFC untouched)
 - New shared contract at `services/evidence_authority_contract.py`
