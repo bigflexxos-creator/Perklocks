@@ -137,14 +137,24 @@ AUTHORITY: dict[str, dict[str, dict[str, Any]]] = {
                                 "preserved_specialists": ()},
         "double_chance":     {"canonical": "soccer_game_model",
                                 "preserved_specialists": ()},
+        # Session 10.3 (2026-09-16) Soccer Player-Prop Final Live
+        # Publication Closure — register the previously-missing
+        # market families so real sportsbook Shots / SOT / Score-or-
+        # Assist / Assists rows can publish alongside ATG rather than
+        # dying to PUBLICATION_FILTER because the family isn't in the
+        # authority registry.
         "goal_scorer":       {"canonical": "sportdb_scorer_intel",
                                 "preserved_specialists": (
                                     "csl_espn_leaderboard",
+                                    "soccer_player_authority_v1",
                                 )},
-        # Phase 23 gap closure (2026-09-02): no authoritative
-        # Soccer player-assists model wired in production.
-        # Fail-closed here.
-        "player_assists":    {"canonical": UNAVAILABLE,
+        "score_or_assist":   {"canonical": "soccer_player_authority_v1",
+                                "preserved_specialists": ()},
+        "player_shots":      {"canonical": "soccer_player_authority_v1",
+                                "preserved_specialists": ()},
+        "player_shots_on_target": {"canonical": "soccer_player_authority_v1",
+                                    "preserved_specialists": ()},
+        "player_assists":    {"canonical": "soccer_player_authority_v1",
                                 "preserved_specialists": ()},
     },
     "Tennis": {
