@@ -283,11 +283,13 @@ def _served_by(request: Request, db) -> dict[str, Any]:
     clients (Preview/Web vs Expo Go) disagree, comparing this block
     proves in one glance whether they talked to the same backend + DB."""
     import os
+    from services.board_generation import authority_fingerprint
     return {
         "host": request.headers.get("host"),
         "db": getattr(db, "name", None),
         "pid": os.getpid(),
         "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        **authority_fingerprint(),
     }
 
 

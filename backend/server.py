@@ -1791,7 +1791,7 @@ async def _enforce_no_bet_schema_invariant() -> dict:
 
 
 
-async def _ensure_today_picks() -> None:
+async def _ensure_today_picks(allow_heal: bool = False) -> None:
     """Seed picks for the current UTC day if the slate is empty or thin.
     (docstring preserved — see original commit)
 
@@ -1816,7 +1816,10 @@ async def _ensure_today_picks() -> None:
                     and (_now - _cached_ts) < _HEALTH_TTL)
     today = _today_str()
     # ── Healer scheduling — guarded across ALL callers ─────────────
-    if not globals().get("_HEALER_IN_FLIGHT", False):
+    # Iteration 144-F — a board READ never mutates membership: the healer
+    # is scheduled only by lifecycle callers (startup/scheduler) and runs
+    # inside the committed-generation boundary.
+    if allow_heal and not globals().get("_HEALER_IN_FLIGHT", False):
         _last = globals().get("_HEALER_LAST_RUN", 0.0)
         if (_now - _last) >= _HEALER_COOLDOWN:
             try:
@@ -1825,10 +1828,20 @@ async def _ensure_today_picks() -> None:
                 )
                 globals()["_HEALER_IN_FLIGHT"] = True
                 async def _run_healer():
+                    from services import board_generation as _bg
+                    _gid = await _bg.begin(scope="HEAL")
                     try:
-                        await heal_rejected_publications(
+                        _healed = await heal_rejected_publications(
                             db, pick_date=today, limit=500,
                         )
+                        _n = int(_healed) if isinstance(_healed, (int, float)) else 0
+                        if await _bg.validate(_gid, _n):
+                            await _bg.commit(_gid, None, _n, 0)
+                        else:
+                            await _bg.fail(_gid, "heal validation failed")
+                    except Exception as _hx:
+                        await _bg.fail(_gid, repr(_hx))
+                        raise
                     finally:
                         globals()["_HEALER_LAST_RUN"] = _time.time()
                         globals()["_HEALER_IN_FLIGHT"] = False
@@ -3879,7 +3892,19 @@ async def _daily_refresh_loop():
     reported 2026-06-23 at 00:48 UTC.
     """
     try:
-        await _ensure_today_picks()
+        from services import board_generation as _bg0
+        await _bg0.load_active()
+        await _ensure_today_picks(allow_heal=True)
+
+        async def _heal_lifecycle_loop():
+            # 144-F: healing moved off the read path onto a lifecycle loop.
+            while True:
+                await asyncio.sleep(600)
+                try:
+                    await _ensure_today_picks(allow_heal=True)
+                except Exception as _hl:
+                    logger.debug("heal lifecycle tick skipped: %s", _hl)
+        asyncio.create_task(_heal_lifecycle_loop())
     except Exception as e:
         logger.warning("Startup picks seed failed: %s", e)
 

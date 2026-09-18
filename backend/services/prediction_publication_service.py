@@ -879,6 +879,30 @@ class PredictionPublicationService:
             raise ValueError(
                 "candidate missing stable id / prediction_id — cannot publish")
 
+        # ── Iteration 146 · PROMOTED-FAMILY probability becomes canonical ──
+        # Only a family whose registry entry is PROMOTED (and only in
+        # ``active`` mode) lets the calibrated probability drive the
+        # published Win Expected; Lock Score is then recomputed through the
+        # SAME canonical compute_lock_score (input changed — formula did not).
+        # Shadow/unpromoted families are untouched.  Runs inside the
+        # committed-generation boundary because publication does.
+        try:
+            from services.probability_authority import stamp as _pa_stamp
+            _pa_stamp(candidate)
+            if candidate.pop("lock_score_recompute_required", False):
+                from sports_engine import compute_lock_score as _canonical_lock
+                _ls, _bd = _canonical_lock(candidate.get("factors") or {},
+                                           win_prob=float(candidate["win_probability"]),
+                                           pick=candidate, edge_percent=candidate.get("edge_percent"))
+                _new = round(float(_ls), 1)
+                candidate["legacy_lock_score"] = candidate.get("lock_score")
+                for _k in ("lock_score", "lock_score_v2", "lock_score_raw", "lock_score_v2_raw", "lock_score_peak"):
+                    if _k in candidate or _k == "lock_score":
+                        candidate[_k] = _new
+                candidate["lock_score_authority"] = "canonical_compute_lock_score"
+        except Exception as _pa_err:  # authority must never block publication
+            logger.debug("probability authority stamp skipped: %s", _pa_err)
+
         def _f(key: str, default: float = 0.0) -> float:
             v = candidate.get(key)
             try:

@@ -34,6 +34,8 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS } from "@/src/theme";
 import { api } from "@/src/lib/api";
+import { swrCacheRead, swrCacheWrite } from "@/src/lib/useSWR";
+const _labKey = "lab|picksAll";
 import { PickEventRow } from "@/src/components/PickEventRow";
 import { StrategyLabWorkstation } from "@/src/components/StrategyLabWorkstation";
 
@@ -102,8 +104,11 @@ export default function LabScreen() {
   // picks the submodule within that group.
   const [group, setGroup] = useState<LabGroup>("TODAY");
   const [module, setModule] = useState<LabModule>("workstation");
-  const [picks, setPicks] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  // 145-D · stale-while-revalidate: warm revisits paint the cached list
+  // instantly and revalidate quietly (no full-screen spinner after warm).
+  const _labInitial = swrCacheRead<any[]>(_labKey);
+  const [picks, setPicks] = useState<any[]>(_labInitial ?? []);
+  const [loading, setLoading] = useState(_labInitial === undefined);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -125,7 +130,9 @@ export default function LabScreen() {
       // proof bullets. `picksAll` returns the full document (~200 rows,
       // no lite stripping) which is fine for Lab's use-cases.
       const res = await api.picksAll();
-      setPicks(res.picks || []);
+      const _rows = res.picks || [];
+      setPicks(_rows);
+      swrCacheWrite<any[]>(_labKey, _rows);
     } catch (e: any) {
       setError(e?.message || "Failed to load picks");
     } finally {

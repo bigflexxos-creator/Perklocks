@@ -57,6 +57,10 @@ export default function RootLayout() {
   const [fontTimeoutElapsed, setFontTimeoutElapsed] = useState(false);
   useEffect(() => {
     const h = setTimeout(() => setFontTimeoutElapsed(true), 500);
+    // 145-C · hydrate selective last-known-good server state (Rollover ·
+    // Parlay · My Bets · Profile) so warm tabs paint instantly after a
+    // cold boot and remain navigable offline.
+    import("@/src/lib/useSWR").then((m) => m.swrHydrateFromStorage()).catch(() => {});
     return () => clearTimeout(h);
   }, []);
 

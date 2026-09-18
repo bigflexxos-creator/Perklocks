@@ -133,6 +133,45 @@ async def shadow_report(user: Annotated[UserPublic, Depends(current_user)]):
     return await build_shadow_report(_get_db())
 
 
+@router.post("/promote/{family}")
+async def promote_family(family: str, user: Annotated[UserPublic, Depends(current_user)]):
+    """Iteration 146 — controlled, family-specific promotion.  Promotes ONLY
+    when the existing shadow evidence passes the established gate
+    (shadow_ready, held-out n ≥ MIN_TEST_N, calibrated log-loss beats
+    identity).  Never lowers thresholds, never touches other families."""
+    from fastapi import HTTPException
+    db = _get_db()
+    fam = family.upper()
+    doc = await db[pa.REGISTRY].find_one({"family": fam, "is_active": True}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, {"family": fam, "verdict": "NO_SETTLED_EVIDENCE"})
+    rd = _readiness(doc)
+    if rd["verdict"] == "PROMOTED":
+        return {"family": fam, "promotion_status": "promoted", "readiness": rd, "changed": False}
+    if not (rd["promotion_ready"] and rd["improves_log_loss"]):
+        raise HTTPException(409, {"family": fam, "readiness": rd,
+                                  "message": "family does not pass the promotion gate — remains shadow"})
+    now = datetime.now(timezone.utc).isoformat()
+    await db[pa.REGISTRY].update_one({"family": fam, "is_active": True},
+                                     {"$set": {"promotion_status": "promoted", "promoted_at": now,
+                                               "promoted_by": getattr(user, "email", None)}})
+    await pa.load_champions(db)
+    return {"family": fam, "promotion_status": "promoted", "readiness": rd, "changed": True,
+            "mode": pa._MODE(), "calibrator_version": doc.get("calibrator_version"), "champion": doc.get("champion"),
+            "note": "Calibrated probability drives NEW publications of this family only (active mode); "
+                    "published rows are frozen; board truth changes only through committed generations."}
+
+
+@router.post("/demote/{family}")
+async def demote_family(family: str, user: Annotated[UserPublic, Depends(current_user)]):
+    db = _get_db()
+    fam = family.upper()
+    await db[pa.REGISTRY].update_one({"family": fam, "is_active": True},
+                                     {"$set": {"promotion_status": "shadow_ready"}})
+    await pa.load_champions(db)
+    return {"family": fam, "promotion_status": "shadow_ready"}
+
+
 @router.post("/refit")
 async def refit(user: Annotated[UserPublic, Depends(current_user)]):
     db = _get_db()

@@ -394,6 +394,30 @@ def _tennis_gap_fill_filter(primary_picks: list[dict],
 
 
 async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> int:
+    """Iteration 144 — committed-generation boundary for EVERY membership-
+    changing refresh (scheduled loops + manual UPDATE).  Readers stay pinned
+    to the active generation while this builds; the active pointer moves
+    once on commit; a failure leaves the active generation untouched."""
+    from services import board_generation as _bg
+    _gid = await _bg.begin(scope=(sport_filter or "ALL").upper())
+    try:
+        _n = await _refresh_picks_build(date_str, sport_filter=sport_filter)
+    except Exception as _exc:
+        await _bg.fail(_gid, repr(_exc))
+        raise
+    try:
+        _count = int(_n or 0)
+    except Exception:
+        _count = 0
+    if not await _bg.validate(_gid, _count):
+        await _bg.fail(_gid, f"validation failed (scope={sport_filter or 'ALL'}, picks={_count})")
+        return _n
+    _bv, _count2, _events = await _bg.board_state()
+    await _bg.commit(_gid, _bv, _count2 or _count, _events)
+    return _n
+
+
+async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None) -> int:
     """Generate today's picks, replace any existing rows for that date.
 
     Critical: only delete existing picks AFTER we've successfully generated

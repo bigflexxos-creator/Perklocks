@@ -532,6 +532,9 @@ export default function LocksScreen() {
   const inflightControllerRef = useRef<AbortController | null>(null);
   const latestLoadTokenRef = useRef(0);
   const lastLoadedForSportRef = useRef<string>("");
+  // 144-I — highest committed generation revision accepted so far; arrival
+  // order never decides truth.
+  const acceptedRevisionRef = useRef<number>(0);
   // 2026-08-27 PERF: dedupe overlapping non-manual fetches (tab focus,
   // AppState resume, filter store settle). `manual=true` from onRefresh
   // / onForceRefresh bypasses this guard.
@@ -625,6 +628,29 @@ export default function LocksScreen() {
       }
       const lastSport = lastLoadedForSportRef.current;
       const sameFilter = lastSport === requestedSport;
+      // ── Iteration 144-H/I — committed-generation acceptance ─────────
+      // Truth is decided by the committed generation, never by arrival
+      // order or by "non-empty".  Responses labelled BUILDING/VALIDATING/
+      // FAILED (partial populations) or carrying an OLDER revision than
+      // the one already accepted keep the current board visible and are
+      // never persisted as last-known-good.
+      const _tm: any = (picksRes as any).truth_manifest || null;
+      const _gstate: string = String(_tm?.generation_state || "COMMITTED");
+      const _grev: number = typeof _tm?.revision === "number" ? _tm.revision : 0;
+      const _committed = _gstate === "COMMITTED" || _gstate === "LEGACY_UNTRACKED";
+      if (!_committed && picksRef.current.length > 0) {
+        setErrorKind(ErrorKind.STALE_FALLBACK);
+        setLoadError("Board updating… showing the last committed board.");
+        ok = true;
+        perfMark.end({ n: fresh.length, uncommitted: _gstate });
+        return true;
+      }
+      if (_committed && _grev > 0 && sameFilter && _grev < acceptedRevisionRef.current) {
+        // Older generation arrived after a newer one — discard.
+        ok = true;
+        perfMark.end({ n: fresh.length, staleGeneration: _grev });
+        return true;
+      }
       if (fresh.length === 0 && picksRef.current.length > 0 && sameFilter) {
         // Session 9 taxonomy — this is STALE_FALLBACK, NOT a network error.
         setErrorKind(ErrorKind.STALE_FALLBACK);
@@ -634,12 +660,13 @@ export default function LocksScreen() {
         return true;
       }
       perfMark.step("commit");
+      if (_committed && _grev > 0) acceptedRevisionRef.current = _grev;
       setPicks(fresh);
       setBoardVersion(_bv);
       setSlateStale(false);
       lastLoadedForSportRef.current = requestedSport;
       _picksMem.set(requestedSport, { picks: fresh, ts: Date.now() });
-      if (fresh.length > 0) {
+      if (fresh.length > 0 && _committed) {
         try {
           let _origin = "";
           try { _origin = getBackendUrl(); } catch {}
